@@ -82,6 +82,12 @@ public actor HostTransport {
                     box.tryResume {
                         continuation.resume(throwing: RworkTransportError.listenerFailed(String(describing: error)))
                     }
+                case .cancelled:
+                    // A cancel during startup (e.g. stop() raced start()) is terminal —
+                    // resume the continuation so start() does not hang on a dead listener.
+                    box.tryResume {
+                        continuation.resume(throwing: RworkTransportError.listenerFailed("cancelled during start"))
+                    }
                 default:
                     break
                 }

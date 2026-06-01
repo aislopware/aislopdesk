@@ -209,6 +209,86 @@ final class HandshakeReconnectTests: XCTestCase {
         await client2.close()
     }
 
+    // MARK: Reconnect DEDUP when received > acked (acks lag receipt — the iOS-background case)
+
+    /// The realistic background case: the client *received* all N outputs but its `ack`
+    /// only reached K (< N) before the connection dropped (acks lag receipt). On
+    /// reconnect a correct client reports its TRUE highest received seq (N), not its
+    /// acked seq (K). The host must replay NOTHING — `messages(after: N)` is empty —
+    /// so no already-displayed output is duplicated. The very next data-channel message
+    /// must be the live seq N+1.
+    ///
+    /// This guards the dedup-on-reconnect path: it proves the host keys replay off the
+    /// client-reported `lastReceivedSeq`, not off `ackedSeq`. (The K-based case above
+    /// covers the genuinely-lost-tail scenario where lastReceivedSeq == acked.)
+    func testReconnectWithReceivedAboveAckedReplaysNothing() async throws {
+        let (host, port) = try await startHost()
+        defer { Task { await host.stop() } }
+
+        // 1. Connect a fresh client.
+        let client1 = ClientTransport()
+        try await client1.connect(host: "127.0.0.1", port: port)
+        let session = try await nextSession(host)
+        let client1SessionID = await client1.sessionID
+        let sessionID = try XCTUnwrap(client1SessionID)
+
+        // 2. Host sends output seq 1..N.
+        let n = 8
+        for i in 1...n {
+            _ = try await session.sendOutput(Data("line-\(i)\n".utf8))
+        }
+
+        // 3. Client RECEIVES all N (tracks true highest received = N) but only ACKS K < N
+        //    (the ack lagged receipt — exactly what happens when iOS suspends the app
+        //    right after delivery but before the ack round-trips).
+        let k = 3
+        var highestReceived: Int64 = 0
+        while highestReceived < Int64(n) {
+            let msg = try await nextInbound(client1)
+            if case let .output(seq, _) = msg { highestReceived = max(highestReceived, seq) }
+        }
+        XCTAssertEqual(highestReceived, Int64(n), "client received the full 1..N stream")
+        try await client1.sendAck(seq: Int64(k)) // ack only reached K
+
+        // Host has produced all N; the ack only released up to K (so 4..N are retained).
+        try await waitUntil(timeout: .seconds(5)) { await session.highestSeq == Int64(n) }
+
+        // 4. Client drops.
+        await client1.close()
+        try await Task.sleep(for: .milliseconds(200))
+
+        // 5. Reconnect reporting the TRUE highest received seq = N (NOT the acked K).
+        let client2 = ClientTransport()
+        try await client2.connect(
+            host: "127.0.0.1",
+            port: port,
+            resume: sessionID,
+            lastReceivedSeq: highestReceived // == N
+        )
+        let client2Returning = await client2.returningClient
+        let client2ResumeFrom = await client2.resumeFromSeq
+        let client2SessionID = await client2.sessionID
+        XCTAssertTrue(client2Returning, "host must recognize the resuming sessionID")
+        XCTAssertEqual(client2ResumeFrom, Int64(n))
+        XCTAssertEqual(client2SessionID, sessionID)
+
+        // 6. The host must replay NOTHING: messages(after: N) is empty, so no retained
+        //    (un-acked but already-received) output is re-sent. Prove it by sending one
+        //    live output and asserting the FIRST thing the client sees is the live
+        //    seq N+1 — never a duplicate of any seq <= N.
+        let liveSeq = try await session.sendOutput(Data("after-resume\n".utf8))
+        XCTAssertEqual(liveSeq, Int64(n + 1))
+
+        let first = try await nextInbound(client2)
+        guard case let .output(seq, bytes) = first else {
+            return XCTFail("expected the live output, got \(first)")
+        }
+        XCTAssertEqual(seq, Int64(n + 1), "first post-reconnect output must be the live N+1, not a replayed duplicate")
+        XCTAssertEqual(bytes, Data("after-resume\n".utf8))
+
+        await client2.close()
+    }
+
     // MARK: Helpers
 
     /// Polls `condition` until true or `timeout`, with a small sleep between tries.

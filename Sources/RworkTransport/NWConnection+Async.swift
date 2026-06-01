@@ -9,6 +9,13 @@ import RworkProtocol
 extension NWConnection {
     /// Starts the connection on `queue` and suspends until it reaches `.ready`.
     /// Throws ``RworkTransportError/connectionFailed(_:)`` if it fails/cancels first.
+    ///
+    /// Cancellation-aware: an unreachable/refused endpoint parks `NWConnection` in
+    /// `.waiting` indefinitely (waitForConnectivity), which is NOT a terminal state, so
+    /// without this the readiness continuation would never resume. If the awaiting task
+    /// is cancelled (e.g. `ClientTransport.connect`'s handshake-timeout fires), we cancel
+    /// the underlying connection — which drives it to `.cancelled` — and resume the
+    /// continuation, so the continuation is never leaked and the socket is torn down.
     func startAndWaitReady(on queue: DispatchQueue) async throws {
         // A small box so the state handler and the continuation share completion state
         // without racing: only the first terminal transition resumes.
@@ -23,24 +30,36 @@ extension NWConnection {
             }
         }
         let box = Box()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            stateUpdateHandler = { newState in
-                switch newState {
-                case .ready:
-                    box.tryResume { continuation.resume() }
-                case let .failed(error):
-                    box.tryResume {
-                        continuation.resume(throwing: RworkTransportError.connectionFailed(String(describing: error)))
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                stateUpdateHandler = { newState in
+                    switch newState {
+                    case .ready:
+                        box.tryResume { continuation.resume() }
+                    case let .failed(error):
+                        box.tryResume {
+                            continuation.resume(throwing: RworkTransportError.connectionFailed(String(describing: error)))
+                        }
+                    case .cancelled:
+                        box.tryResume {
+                            continuation.resume(throwing: RworkTransportError.connectionFailed("cancelled"))
+                        }
+                    default:
+                        break
                     }
-                case .cancelled:
-                    box.tryResume {
-                        continuation.resume(throwing: RworkTransportError.connectionFailed("cancelled"))
-                    }
-                default:
-                    break
                 }
+                if Task.isCancelled {
+                    // Cancelled before we even installed the handler / started: bail out
+                    // and let the cancellation handler cancel the connection.
+                    box.tryResume { continuation.resume(throwing: CancellationError()) }
+                    return
+                }
+                start(queue: queue)
             }
-            start(queue: queue)
+        } onCancel: {
+            // Cancelling drives the connection to `.cancelled`, which the state handler
+            // turns into a thrown error (if it hasn't already resumed).
+            cancel()
         }
         // Detach the temporary handler; NWMessageChannel installs its own.
         stateUpdateHandler = nil

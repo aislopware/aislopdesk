@@ -78,6 +78,53 @@ public actor ClientTransport {
         let endpointPort = NWEndpoint.Port(rawValue: port) ?? .any
         let endpointHost = NWEndpoint.Host(host)
 
+        // The whole readiness + handshake sequence is bounded by `handshakeTimeout`.
+        // Network.framework parks a connection to an unreachable/refused endpoint in
+        // `.waiting` indefinitely (waitForConnectivity), so wrapping ONLY `awaitHelloAck`
+        // would still let `startAndWaitReady` wedge forever. Racing the entire sequence
+        // against a single sleep gives the documented bounded guarantee. On any failure
+        // (timeout or error) we tear down the control channel/connection we opened so we
+        // never leak an open NWConnection or a parked `helloAckWaiter`.
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await Task.sleep(for: handshakeTimeout)
+                    throw RworkTransportError.timedOut("handshake")
+                }
+                group.addTask { [weak self] in
+                    guard let self else { throw RworkTransportError.invalidState("client deinit") }
+                    try await self.performConnect(
+                        endpointHost: endpointHost,
+                        endpointPort: endpointPort,
+                        resume: resume,
+                        lastReceivedSeq: lastReceivedSeq
+                    )
+                }
+                // Wait for the first child to finish. If the handshake child wins it
+                // returns Void (success); if the timeout child wins it throws.
+                try await group.next()
+                group.cancelAll()
+            }
+        } catch {
+            // Handshake failed/timed out: resume any parked waiter, then tear down the
+            // control channel + connection we opened (the data channel is only created
+            // after a successful handshake, so it is handled by `performConnect`'s own
+            // failure path / left untouched here).
+            failHelloAckIfWaiting(error)
+            await teardownAfterFailedHandshake()
+            throw error
+        }
+    }
+
+    /// The actual readiness + handshake steps, run as a child of the bounded task group
+    /// in ``connect(host:port:resume:lastReceivedSeq:handshakeTimeout:)`` so a stuck
+    /// readiness or a missing `helloAck` cannot wedge the caller past the timeout.
+    private func performConnect(
+        endpointHost: NWEndpoint.Host,
+        endpointPort: NWEndpoint.Port,
+        resume: UUID,
+        lastReceivedSeq: Int64
+    ) async throws {
         // 1. CONTROL connection: open, send control preamble.
         let controlConn = NWConnection(host: endpointHost, port: endpointPort, using: TransportParameters.makeTCP())
         try await controlConn.startAndWaitReady(on: DispatchQueue(label: "rwork.client.control"))
@@ -85,6 +132,9 @@ public actor ClientTransport {
 
         let control = NWMessageChannel(connection: controlConn, channel: .control)
         await control.start()
+        // Retain the control channel immediately so a timeout/cancel teardown (or
+        // close() during the in-flight handshake) can close it.
+        self.controlChannel = control
 
         // 2. Arm the SINGLE control forwarder BEFORE sending hello so we cannot miss the
         //    reply. It intercepts the first `helloAck` (resumes `helloAckWaiter`) and
@@ -93,13 +143,13 @@ public actor ClientTransport {
         helloAckDelivered = false
         startControlForwarding(from: control)
 
-        // 3. Send hello and await helloAck (bounded).
+        // 3. Send hello and await helloAck.
         try await control.send(.hello(
             protocolVersion: Rwork.protocolVersion,
             sessionID: resume,
             lastReceivedSeq: lastReceivedSeq
         ))
-        let ack = try await awaitHelloAck(timeout: handshakeTimeout)
+        let ack = try await suspendForHelloAck()
         guard case let .helloAck(authoritativeID, resumeSeq, returning) = ack else {
             throw RworkTransportError.handshakeFailed("expected helloAck, got \(ack)")
         }
@@ -116,7 +166,6 @@ public actor ClientTransport {
         await data.start()
         try await data.waitUntilReady()
 
-        self.controlChannel = control
         self.dataChannel = data
         self.connection = RworkConnection(data: data, control: control)
 
@@ -124,27 +173,39 @@ public actor ClientTransport {
         startDataForwarding(from: data)
     }
 
-    /// Suspends until the control forwarder delivers `helloAck`, or `timeout` elapses.
-    private func awaitHelloAck(timeout: Duration) async throws -> WireMessage {
-        try await withThrowingTaskGroup(of: WireMessage.self) { group in
-            group.addTask { [weak self] in
-                guard let self else { throw RworkTransportError.invalidState("client deinit") }
-                return try await self.suspendForHelloAck()
-            }
-            group.addTask {
-                try await Task.sleep(for: timeout)
-                throw RworkTransportError.timedOut("helloAck")
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
+    /// Tears down a half-open handshake: cancel forwarders and close the control
+    /// channel/connection we opened. Leaves the inbound stream open (the caller is
+    /// retrying `connect`, not closing the transport).
+    private func teardownAfterFailedHandshake() async {
+        for task in forwarders { task.cancel() }
+        forwarders.removeAll()
+        await controlChannel?.close()
+        await dataChannel?.close()
+        controlChannel = nil
+        dataChannel = nil
+        connection = nil
     }
 
     /// The actor-isolated suspension point the helloAck waiter parks on.
+    ///
+    /// Wrapped in `withTaskCancellationHandler` so that if the surrounding child task is
+    /// cancelled (handshake timeout, or `connect`'s task group tearing down) the stored
+    /// `helloAckWaiter` is resumed with a cancellation error rather than leaked
+    /// (`SWIFT TASK CONTINUATION MISUSE`). `failHelloAckIfWaiting` is idempotent (nil
+    /// guard), so the normal delivery path racing the cancel is safe.
     private func suspendForHelloAck() async throws -> WireMessage {
-        try await withCheckedThrowingContinuation { continuation in
-            helloAckWaiter = continuation
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // If cancellation already fired before we parked, resume immediately
+                // instead of storing a continuation that nothing would ever resume.
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    helloAckWaiter = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.failHelloAckIfWaiting(CancellationError()) }
         }
     }
 
@@ -157,6 +218,9 @@ public actor ClientTransport {
                 for try await message in channel.inbound {
                     await self.handleControlInbound(message)
                 }
+                // A clean finish (FIN) BEFORE the helloAck arrived is itself a handshake
+                // failure — fail any still-parked waiter so `connect` does not hang.
+                await self.failHelloAckIfWaiting(RworkTransportError.handshakeFailed("control stream ended before helloAck"))
                 await self.finishInbound(error: nil)
             } catch {
                 await self.failHelloAckIfWaiting(error)
@@ -230,6 +294,9 @@ public actor ClientTransport {
 
     /// Tears down both channels and finishes the inbound stream.
     public func close() {
+        // If close() races an in-flight handshake, resume the parked waiter so the
+        // suspended `connect` unwinds instead of leaking its continuation.
+        failHelloAckIfWaiting(RworkTransportError.invalidState("transport closed during handshake"))
         for task in forwarders { task.cancel() }
         forwarders.removeAll()
         let data = dataChannel
