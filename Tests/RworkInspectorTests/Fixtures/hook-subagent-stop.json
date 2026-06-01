@@ -1,0 +1,1 @@
+{"hook_event_name":"SubagentStop","agent_id":"deadbeef","agent_type":"Ariadne","description":"Find all callers of foo()","agent_transcript_path":"/Users/dev/.claude/projects/encoded-cwd/session/subagents/agent-deadbeef.jsonl","last_assistant_message":"Found 2 callers of foo() in src/a.swift and src/b.swift."}

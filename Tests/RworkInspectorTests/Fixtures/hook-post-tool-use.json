@@ -1,0 +1,1 @@
+{"hook_event_name":"PostToolUse","tool_use_id":"toolu_hook_01","tool_name":"Write","tool_input":{"file_path":"/tmp/out.txt","content":"hello"},"tool_result":"File created successfully","is_error":false,"duration_ms":42}

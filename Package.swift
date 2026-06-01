@@ -21,6 +21,7 @@ let package = Package(
         .library(name: "RworkClient", targets: ["RworkClient"]),
         .library(name: "RworkTerminal", targets: ["RworkTerminal"]),
         .library(name: "RworkTTY", targets: ["RworkTTY"]),
+        .library(name: "RworkInspector", targets: ["RworkInspector"]),
     ],
     targets: [
         // MARK: Libraries
@@ -51,6 +52,14 @@ let package = Package(
         // mapping logic is unit-testable (the executable target itself is not importable).
         .target(name: "RworkTTY"),
 
+        // Read-only structured inspector (WF-6). Tails Claude Code's JSONL transcript
+        // (+ subagent files + hooks) on the host, models typed `InspectorEvent`s, and
+        // streams them over a SECOND length-prefixed channel (NWConnection #2) to a
+        // SwiftUI read-only client. INDEPENDENT of the terminal byte pipeline — it
+        // reuses only RworkProtocol's framing *style*, never the terminal WireMessage.
+        // Read-only: it observes the transcript, it never drives the agent.
+        .target(name: "RworkInspector", dependencies: ["RworkProtocol"]),
+
         // MARK: Executables
 
         // Headless host daemon (PTY + transport). Sources under Sources/rwork-hostd.
@@ -66,5 +75,14 @@ let package = Package(
         // RworkClientTests exercises the REAL PATH 1 e2e: a HostServer (RworkHost) +
         // RworkClient over loopback, so it depends on RworkHost + RworkTTY too.
         .testTarget(name: "RworkClientTests", dependencies: ["RworkClient", "RworkHost", "RworkTransport", "RworkTerminal", "RworkTTY"]),
+        // Fixture-based tests for the inspector: JSONL parsing, tool-card pairing,
+        // subagent tree, the append-follow tailer, transport round-trip, hook ingest.
+        // The `Fixtures/` tree is read off disk via `#filePath` (see Fixtures.swift),
+        // so it is excluded from the build rather than bundled as a resource.
+        .testTarget(
+            name: "RworkInspectorTests",
+            dependencies: ["RworkInspector", "RworkProtocol"],
+            exclude: ["Fixtures"]
+        ),
     ]
 )

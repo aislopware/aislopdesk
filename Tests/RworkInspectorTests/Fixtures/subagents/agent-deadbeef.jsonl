@@ -1,0 +1,3 @@
+{"type":"user","uuid":"sa-1","isSidechain":true,"agentId":"deadbeef","timestamp":"2026-06-02T10:00:10.000Z","message":{"role":"user","content":[{"type":"text","text":"Find all callers of foo()."}]}}
+{"type":"assistant","uuid":"sa-2","isSidechain":true,"agentId":"deadbeef","timestamp":"2026-06-02T10:00:11.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_sa_01","name":"Grep","input":{"pattern":"foo","path":"src"}}]}}
+{"type":"user","uuid":"sa-3","isSidechain":true,"agentId":"deadbeef","timestamp":"2026-06-02T10:00:12.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_sa_01","content":"src/a.swift:10: foo()\nsrc/b.swift:20: foo()","is_error":false}]}}
