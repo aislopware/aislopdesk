@@ -57,7 +57,10 @@ public final class ConnectionViewModel {
     private var client: RworkClient?
     private var reconnect: ReconnectManager?
     private var supervisorTask: Task<Void, Never>?
+    /// The single events loop (chrome status + forward to the terminal model).
     private var observeTask: Task<Void, Never>?
+    /// The terminal model's `output` byte-pump loop (separate from events).
+    private var outputTask: Task<Void, Never>?
     /// True between a deliberate ``disconnect()`` and the next ``connect()`` so a trailing
     /// `.disconnected` event is not mis-read as a drop to reconnect.
     private var deliberatelyClosed = false
@@ -108,10 +111,10 @@ public final class ConnectionViewModel {
         let client = makeClient()
         self.client = client
 
-        // Watch the client's events at the connection level so a non-deliberate drop flips
-        // the chrome to "reconnecting" and a clean exit is reflected.
+        // Single UI-layer events loop (chrome status + forward to the terminal model).
         observeEvents(client)
-        observeTask = Task { @MainActor [weak self] in
+        // Separate output byte-pump for the terminal model (output has a single consumer).
+        outputTask = Task { @MainActor [weak self] in
             await self?.terminal.observe(client: client)
         }
 
@@ -156,12 +159,18 @@ public final class ConnectionViewModel {
 
     // MARK: Internals
 
-    /// Mirrors connection-relevant client events into the chrome status. The terminal model
-    /// folds the same stream for its own state; here we only need the connect/drop signal.
+    /// The **single** UI-layer consumer of `client.events`: it folds each event into the
+    /// chrome status AND forwards it to the terminal model (one loop, two folds). The terminal
+    /// model deliberately does NOT open its own `for await client.events` loop — two
+    /// independent loops over the same event source would split the stream nondeterministically
+    /// (a `.disconnected`/`.reconnected`/`.title` would reach only one of them, diverging the
+    /// chrome and terminal statuses). `RworkClient` multicasts events so the reconnect
+    /// supervisor still gets its own copy; here we keep exactly one UI consumer.
     private func observeEvents(_ client: RworkClient) {
-        Task { @MainActor [weak self] in
+        observeTask = Task { @MainActor [weak self] in
             for await event in client.events {
                 guard let self else { return }
+                // Fold into chrome status first…
                 switch event {
                 case .disconnected:
                     if self.deliberatelyClosed {
@@ -178,6 +187,9 @@ public final class ConnectionViewModel {
                 case .title, .bell:
                     break
                 }
+                // …then forward EVERY event to the terminal model so its status / title /
+                // bell / exit / resume-seq stay consistent with the chrome.
+                self.terminal.handle(event)
             }
         }
     }
@@ -185,8 +197,10 @@ public final class ConnectionViewModel {
     private func teardown() async {
         supervisorTask?.cancel()
         observeTask?.cancel()
+        outputTask?.cancel()
         supervisorTask = nil
         observeTask = nil
+        outputTask = nil
         await client?.close()
         client = nil
         reconnect = nil

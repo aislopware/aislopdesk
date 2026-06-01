@@ -106,6 +106,44 @@ final class KeyRepeaterTests: XCTestCase {
         XCTAssertEqual(sink.all.suffix(2), ["←", "←"])
     }
 
+    /// Integration test against the PRODUCTION ``DispatchRepeatScheduler`` (real
+    /// `DispatchSourceTimer` on its background queue) — the one that actually ships, and the
+    /// one ``ManualRepeatScheduler`` does NOT exercise. Asserts the real one-shot→repeating
+    /// handle handoff fires at least twice within a bounded window, and that `keyUp` stops it
+    /// (zero further fires). The repeater's `heldKey`/`handle` are read/reassigned from the
+    /// scheduler's background queue here while `keyDown`/`keyUp` run on the test thread, so
+    /// running this under ThreadSanitizer surfaces any unsynchronised access to that state.
+    /// Uses an `XCTestExpectation` (await fulfillment, not `sleep`).
+    func testDispatchSchedulerFiresAndStopsOnRelease() {
+        // Short cadence so the test is fast but still crosses the real timer twice.
+        let timing = KeyRepeater<String>.Timing(initialDelay: .milliseconds(30), repeatInterval: .milliseconds(20))
+        let scheduler = DispatchRepeatScheduler()
+        let sink = Sink()
+
+        let gotTwo = expectation(description: "at least two fires via the real DispatchSourceTimer")
+        gotTwo.assertForOverFulfill = false
+        let repeater = KeyRepeater<String>(timing: timing, scheduler: scheduler) { key in
+            sink.append(key)
+            if sink.count >= 2 { gotTwo.fulfill() }   // immediate + ≥1 timer fire
+        }
+
+        repeater.keyDown("→")              // immediate fire (1) + arms the initial-delay timer
+        wait(for: [gotTwo], timeout: 2.0)
+        XCTAssertGreaterThanOrEqual(sink.count, 2, "real timer produced repeats")
+
+        repeater.keyUp("→")
+        XCTAssertFalse(repeater.isRepeating)
+        let afterRelease = sink.count
+
+        // No further fires after release. Drain the queue with a flush expectation rather than
+        // a fixed sleep: schedule a marker on the SAME serial queue and wait for it; by the
+        // time it runs, any in-flight timer fire has already been observed.
+        let drained = expectation(description: "queue drained after release")
+        DispatchQueue(label: "rwork.keyrepeat").asyncAfter(deadline: .now() + 0.12) { drained.fulfill() }
+        wait(for: [drained], timeout: 2.0)
+        XCTAssertEqual(sink.count, afterRelease, "release stops the real repeating timer — no fires after keyUp")
+    }
+
     func testSameKeyDownIsIdempotent() {
         let scheduler = ManualRepeatScheduler()
         let sink = Sink()

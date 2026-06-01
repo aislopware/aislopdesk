@@ -16,6 +16,15 @@ import Foundation
 /// (immediate → +350ms → +50ms → +50ms …). No `Task.sleep`, no flakiness.
 ///
 /// The repeater itself holds no SwiftUI/UIKit type, so it compiles and is tested on macOS.
+///
+/// ### Thread-safety
+/// `keyDown`/`keyUp`/`stop` are called from the main thread (`pressesBegan`/`pressesEnded`),
+/// but the production ``DispatchRepeatScheduler`` fires its callbacks on a background serial
+/// queue — and those callbacks read `heldKey` and reassign `handle`. So `heldKey`/`handle` are
+/// guarded by an `NSLock` (the same pattern the handles already use). The lock is held only
+/// around the state read/write; `onFire` and `scheduler.schedule(...)` run *outside* the lock
+/// so a re-entrant callback (a scheduler that fires synchronously, or an `onFire` that calls
+/// back in) can never deadlock.
 public final class KeyRepeater<Key: Hashable & Sendable>: @unchecked Sendable {
     /// The cadence (doc 17 §2.5: initial 350ms, then 50ms / 20Hz).
     public struct Timing: Sendable, Equatable {
@@ -34,6 +43,9 @@ public final class KeyRepeater<Key: Hashable & Sendable>: @unchecked Sendable {
     private let scheduler: RepeatScheduler
     private let onFire: @Sendable (Key) -> Void
 
+    /// Guards `heldKey` + `handle` against the cross-thread access described in the type doc
+    /// (main-thread key events vs. the background-queue scheduler callbacks).
+    private let lock = NSLock()
     /// The key currently held + repeating, if any. Holding a *new* key supersedes the old.
     private var heldKey: Key?
     private var handle: RepeatSchedulerHandle?
@@ -49,10 +61,16 @@ public final class KeyRepeater<Key: Hashable & Sendable>: @unchecked Sendable {
     }
 
     /// Whether a key is currently held + repeating (diagnostics / tests).
-    public var isRepeating: Bool { heldKey != nil }
+    public var isRepeating: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return heldKey != nil
+    }
 
     /// The key currently held, if any.
-    public var currentKey: Key? { heldKey }
+    public var currentKey: Key? {
+        lock.lock(); defer { lock.unlock() }
+        return heldKey
+    }
 
     /// A physical key went down: fire it once now, then schedule the repeat ramp.
     ///
@@ -60,10 +78,15 @@ public final class KeyRepeater<Key: Hashable & Sendable>: @unchecked Sendable {
     /// platform behaviour: holding `→` then also pressing `←` repeats `←`). A `keyDown` for
     /// the *same* held key is idempotent (the timer is already running).
     public func keyDown(_ key: Key) {
-        if heldKey == key { return } // already repeating this key.
-        cancelHandle()
+        lock.lock()
+        if heldKey == key { lock.unlock(); return } // already repeating this key.
+        let old = handle
+        handle = nil
         heldKey = key
-        // Immediate emit (the keypress itself), then the delayed repeat ramp.
+        lock.unlock()
+
+        // Cancel + emit OUTSIDE the lock (cancel / onFire may re-enter).
+        old?.cancel()
         onFire(key)
         scheduleInitial(for: key)
     }
@@ -72,37 +95,67 @@ public final class KeyRepeater<Key: Hashable & Sendable>: @unchecked Sendable {
     /// `keyUp` for a key we are not holding (e.g. a stale event) is ignored so it cannot
     /// cancel an unrelated repeat.
     public func keyUp(_ key: Key) {
-        guard heldKey == key else { return }
+        lock.lock()
+        let matches = (heldKey == key)
+        lock.unlock()
+        guard matches else { return }
         stop()
     }
 
     /// Stops any active repeat (focus loss, disconnect, view teardown). Idempotent.
     public func stop() {
-        cancelHandle()
+        lock.lock()
+        let old = handle
+        handle = nil
         heldKey = nil
+        lock.unlock()
+        old?.cancel()
+    }
+
+    /// Reads the currently-held key under the lock (the scheduler-callback liveness check).
+    private func currentlyHeld() -> Key? {
+        lock.lock(); defer { lock.unlock() }
+        return heldKey
     }
 
     private func scheduleInitial(for key: Key) {
-        handle = scheduler.schedule(after: timing.initialDelay) { [weak self] in
-            guard let self, self.heldKey == key else { return }
+        let h = scheduler.schedule(after: timing.initialDelay) { [weak self] in
+            guard let self, self.currentlyHeld() == key else { return }
             self.onFire(key)
             self.scheduleRepeat(for: key)
         }
+        store(h, ifStillHolding: key)
     }
 
     private func scheduleRepeat(for key: Key) {
-        handle = scheduler.scheduleRepeating(every: timing.repeatInterval) { [weak self] in
-            guard let self, self.heldKey == key else { return }
+        let h = scheduler.scheduleRepeating(every: timing.repeatInterval) { [weak self] in
+            guard let self, self.currentlyHeld() == key else { return }
             self.onFire(key)
+        }
+        store(h, ifStillHolding: key)
+    }
+
+    /// Adopts a freshly-scheduled handle as the live one — but only if `key` is still held.
+    /// If a `keyUp`/`keyDown`(other) raced in between, the new handle is stale: cancel it and
+    /// leave the live `handle` (set by the racer) untouched.
+    private func store(_ newHandle: RepeatSchedulerHandle, ifStillHolding key: Key) {
+        lock.lock()
+        if heldKey == key {
+            handle = newHandle
+            lock.unlock()
+        } else {
+            lock.unlock()
+            newHandle.cancel()
         }
     }
 
-    private func cancelHandle() {
-        handle?.cancel()
+    deinit {
+        lock.lock()
+        let old = handle
         handle = nil
+        lock.unlock()
+        old?.cancel()
     }
-
-    deinit { handle?.cancel() }
 }
 
 // MARK: - Scheduler seam

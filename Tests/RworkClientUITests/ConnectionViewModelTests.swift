@@ -1,7 +1,8 @@
 import XCTest
 import Foundation
-import RworkClient
+@testable import RworkClient
 import RworkHost
+import RworkProtocol
 @testable import RworkClientUI
 
 /// Drives the `@MainActor @Observable` ``ConnectionViewModel`` against a REAL in-process
@@ -56,6 +57,77 @@ final class ConnectionViewModelTests: XCTestCase {
 
         await vm.disconnect()
         XCTAssertEqual(vm.status, .disconnected, "deliberate disconnect → disconnected (no reconnect)")
+    }
+
+    /// END-TO-END consistency across a real `.disconnected` → `.reconnected` cycle delivered
+    /// through `client.events` while BOTH the chrome events loop and the terminal output pump
+    /// are live. Before the multicast/single-consumer fix the two view-models raced for each
+    /// event (a `.disconnected`/`.reconnected` reached only one), so the chrome and terminal
+    /// statuses could diverge. Here we force a hard transport drop (no `bye`, like an iOS TCP
+    /// teardown), let the `ReconnectManager` resume the SAME host session, and assert BOTH the
+    /// chrome `status` and the terminal `connectionStatus` end consistently `.connected`.
+    func testReconnectCycleKeepsChromeAndTerminalConsistent() async throws {
+        let (server, port) = try await startHost()
+        defer { Task { await server.stop() } }
+
+        let terminal = TerminalViewModel()
+        let vm = ConnectionViewModel(
+            terminal: terminal,
+            host: "127.0.0.1",
+            port: port,
+            backoff: .init(initial: .milliseconds(20), maximum: .milliseconds(60), multiplier: 2)
+        )
+        await vm.connect()
+        XCTAssertEqual(vm.status, .connected)
+        guard let client = vm.activeClient else { return XCTFail("no active client") }
+
+        // Drive some output so the terminal model is firmly .connected before the drop.
+        try await client.sendInput(Data("echo PRE_DROP\n".utf8))
+        let pre = await waitUntil { terminal.connectionStatus == .connected && terminal.bytesReceived > 0 }
+        XCTAssertTrue(pre, "terminal reached .connected before the drop")
+
+        // Hard drop (no bye): the inbound stream ends → `.disconnected` → ReconnectManager resumes.
+        await client._forceDropForTesting()
+
+        // The reconnect campaign should restore BOTH statuses to .connected. (We don't assert
+        // the transient .reconnecting — the resume can be fast; we assert the consistent end.)
+        let converged = await waitUntil(timeout: .seconds(10)) {
+            vm.status == .connected && terminal.connectionStatus == .connected
+        }
+        XCTAssertTrue(
+            converged,
+            "chrome + terminal both .connected after resume; chrome=\(vm.status) terminal=\(terminal.connectionStatus)"
+        )
+        // And they must AGREE (the divergence the race produced): never one .reconnecting while
+        // the other is .connected at the converged point.
+        XCTAssertEqual(vm.status, .connected)
+        XCTAssertEqual(terminal.connectionStatus, .connected)
+
+        await vm.disconnect()
+    }
+
+    /// A `.title` event delivered through the live `client.events` stream must reach the
+    /// TERMINAL model (which renders it) even though the chrome events loop is the sole
+    /// consumer — i.e. the chrome forwards every event onward. Before the fix, `observeEvents`
+    /// could swallow the `.title` (it ignored it) so the terminal never saw it.
+    func testTitleReachesTerminalWhileChromeLoopIsLive() async throws {
+        let (server, port) = try await startHost()
+        defer { Task { await server.stop() } }
+
+        let terminal = TerminalViewModel()
+        let vm = ConnectionViewModel(terminal: terminal, host: "127.0.0.1", port: port)
+        await vm.connect()
+        XCTAssertEqual(vm.status, .connected)
+        guard let client = vm.activeClient else { return XCTFail("no active client") }
+
+        // Inject a `.title` through the SAME path the live inbound pump uses, so it is yielded
+        // onto the events broadcast both the chrome loop (forwarder) and nothing else observe.
+        await client._handleInboundForTesting(.title("~/proj — rwork"))
+
+        let sawTitle = await waitUntil { terminal.title == "~/proj — rwork" }
+        XCTAssertTrue(sawTitle, "terminal model received the title via the chrome forward; got \(String(describing: terminal.title))")
+
+        await vm.disconnect()
     }
 
     func testInvalidPortFails() async {

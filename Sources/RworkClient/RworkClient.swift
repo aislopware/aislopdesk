@@ -1,9 +1,6 @@
 import Foundation
 import RworkProtocol
 import RworkTransport
-#if canImport(RworkTerminal)
-import RworkTerminal
-#endif
 
 /// The Rwork client session driver — the real, working PATH 1 client.
 ///
@@ -68,15 +65,25 @@ public actor RworkClient {
 
     private let outputStream: AsyncStream<Data>
     private let outputContinuation: AsyncStream<Data>.Continuation
-    private let eventStream: AsyncStream<Event>
-    private let eventContinuation: AsyncStream<Event>.Continuation
+
+    /// Multicast hub for events: each ``events`` access subscribes a fresh child stream so
+    /// `ReconnectManager` and the view-models can all observe the SAME events concurrently
+    /// without stealing them from one another (a plain `AsyncStream` is single-consumer /
+    /// fan-in; see ``EventBroadcaster``).
+    private let eventBroadcaster = EventBroadcaster<Event>()
 
     /// Raw PTY/VT output bytes from the host, spliced gap-free / dup-free across
     /// reconnects. Finishes when the remote child exits (or the client closes).
     public nonisolated var output: AsyncStream<Data> { outputStream }
 
     /// Title / bell / exit / connection lifecycle events.
-    public nonisolated var events: AsyncStream<Event> { eventStream }
+    ///
+    /// **Each access returns a NEW broadcasting child stream** — every concurrent consumer
+    /// (the reconnect supervisor, the chrome view-model, …) sees *every* event. This is a
+    /// live multicast: a late subscriber sees only events from its subscription point on.
+    /// (It is NOT a single shared `AsyncStream`; that would deliver each event to exactly
+    /// one of the loops, nondeterministically — the bug this replaces.)
+    public nonisolated var events: AsyncStream<Event> { eventBroadcaster.subscribe() }
 
     // MARK: Connection target (remembered for reconnect)
 
@@ -117,9 +124,6 @@ public actor RworkClient {
         var outC: AsyncStream<Data>.Continuation!
         self.outputStream = AsyncStream(bufferingPolicy: .unbounded) { outC = $0 }
         self.outputContinuation = outC
-        var evC: AsyncStream<Event>.Continuation!
-        self.eventStream = AsyncStream(bufferingPolicy: .unbounded) { evC = $0 }
-        self.eventContinuation = evC
     }
 
     /// Attaches a feeder that mirrors every delivered `output` payload to a terminal
@@ -172,7 +176,7 @@ public actor RworkClient {
         if let learnedID { self.sessionID = learnedID }
 
         if returning, let learnedID {
-            eventContinuation.yield(.reconnected(sessionID: learnedID, resumeFromSeq: resumeFromSeq))
+            eventBroadcaster.yield(.reconnected(sessionID: learnedID, resumeFromSeq: resumeFromSeq))
         }
 
         // Re-assert the last known window size on (re)connect so the remote PTY matches
@@ -217,13 +221,13 @@ public actor RworkClient {
         case let .output(seq, bytes):
             deliverOutput(seq: seq, bytes: bytes)
         case let .exit(code):
-            eventContinuation.yield(.exit(code: code))
+            eventBroadcaster.yield(.exit(code: code))
             // The byte stream is over once the child exits.
             outputContinuation.finish()
         case let .title(text):
-            eventContinuation.yield(.title(text))
+            eventBroadcaster.yield(.title(text))
         case .bell:
-            eventContinuation.yield(.bell)
+            eventBroadcaster.yield(.bell)
         default:
             // input/hello/resize/ack/bye/helloAck never arrive on the client inbound
             // (helloAck is consumed inside ClientTransport). Ignore defensively.
@@ -260,7 +264,7 @@ public actor RworkClient {
         guard !closed else { return }
         let reason: String
         if let error { reason = String(describing: error) } else { reason = "stream ended (FIN)" }
-        eventContinuation.yield(.disconnected(reason: reason))
+        eventBroadcaster.yield(.disconnected(reason: reason))
     }
 
     // MARK: Ack coalescing
@@ -330,7 +334,7 @@ public actor RworkClient {
             try? await transport.sendBye()
         }
         await teardownTransport()
-        eventContinuation.yield(.disconnected(reason: "paused (backgrounded)"))
+        eventBroadcaster.yield(.disconnected(reason: "paused (backgrounded)"))
     }
 
     /// App foregrounded: reconnect with the preserved `sessionID` + seq for a byte-exact
@@ -380,6 +384,6 @@ public actor RworkClient {
         if let transport { try? await transport.sendBye() }
         await teardownTransport()
         outputContinuation.finish()
-        eventContinuation.finish()
+        eventBroadcaster.finish()
     }
 }

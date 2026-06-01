@@ -68,31 +68,24 @@ public final class TerminalViewModel {
 
     // MARK: Stream observation
 
-    /// Drains the client's `output` + `events` streams, folding them into observable state.
-    /// Call from a SwiftUI `.task { await model.observe(client: client) }`; it returns when
-    /// both streams finish (client closed / child exited).
+    /// Drains the client's `output` byte stream ONLY, folding each chunk into observable
+    /// state. Call from a SwiftUI `.task { await model.observe(client: client) }`; it returns
+    /// when the output stream finishes (client closed / child exited).
     ///
-    /// The two streams are consumed concurrently (`async let`) so output (high-volume) never
-    /// starves events (low-volume) and vice-versa. Both helpers are `@MainActor`, so feeding
-    /// the `@MainActor` surface is contract-safe. (Two `async let` helpers are used instead of
-    /// a `withTaskGroup` of `@MainActor` closures, which trips the Swift-6 region-isolation
-    /// checker on this toolchain.)
+    /// ### Single events consumer (the race this avoids)
+    /// The view-model does **not** open its own `for await client.events` loop. Events are
+    /// owned by the ``ConnectionViewModel`` (the single UI-layer events consumer), which folds
+    /// the connect/drop signal into the chrome status AND forwards each event here via
+    /// ``handle(_:)``. Two independent loops over the *same* event source would split the
+    /// stream nondeterministically (output is safe because the model is its sole consumer).
     public func observe(client: RworkClient) async {
         connectionStatus = .connecting
-        async let outputDone: Void = pumpOutput(client.output)
-        async let eventsDone: Void = pumpEvents(client.events)
-        _ = await (outputDone, eventsDone)
+        await pumpOutput(client.output)
     }
 
     private func pumpOutput(_ output: AsyncStream<Data>) async {
         for await chunk in output {
             ingestOutput(chunk)
-        }
-    }
-
-    private func pumpEvents(_ events: AsyncStream<RworkClient.Event>) async {
-        for await event in events {
-            handle(event)
         }
     }
 
