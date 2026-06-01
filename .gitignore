@@ -13,3 +13,16 @@ xcuserdata/
 .DS_Store
 
 # NOTE: Package.resolved is intentionally NOT ignored — pin the dependency graph.
+
+# WF-5 libghostty build infra — derived / large artifacts (the SCRIPT is committed;
+# the toolchain, cloned source, and built binary are reproducible from pinned SHAs).
+# NOTE: .gitignore does NOT support inline comments — patterns must stand alone.
+# .toolchain/ = downloaded pinned Zig (~80 MB extracted).
+# .work/      = shallow clone of pinned ghostty fork + Zig caches.
+# *.xcframework/ = assembled XCFramework (built artifact; fork emits "GhosttyKit").
+ThirdParty/ghostty/.toolchain/
+ThirdParty/ghostty/.work/
+ThirdParty/ghostty/build/
+ThirdParty/ghostty/libghostty.xcframework/
+ThirdParty/ghostty/GhosttyKit.xcframework/
+*.xcframework/
