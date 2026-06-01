@@ -162,3 +162,77 @@ over plain TCP inside the WireGuard tunnel.
 
 `WireMessage`, `Channel`, and `RworkError` are `Sendable`; `FrameDecoder` is a non-`Sendable`
 value type by design (it carries the receive buffer for a single connection/channel).
+
+## 8. Channel association & session handshake (WF-2, `RworkTransport`)
+
+> This section documents how the two physical TCP connections of one session are tied
+> together and how the `hello`/`helloAck` handshake runs. It is implemented in
+> `RworkTransport` (`HostTransport` / `ClientTransport` / `ChannelAssociation`). It
+> does **not** change the framing (§2) or the message table (§4); the association
+> preamble is raw bytes the transport peels off *before* the first frame.
+
+### 8.1 Association preamble (per connection)
+
+A session opens **two** TCP connections (§1). To bind them to one logical session,
+each connection sends a tiny fixed preamble as its very first bytes, before any
+length-prefixed `WireMessage` frame:
+
+```
+CONTROL preamble:  [ UInt8 0x01 ]                              (1 byte)
+DATA    preamble:  [ UInt8 0x02 ][ 16 raw sessionID bytes ]    (17 bytes)
+```
+
+The discriminator byte (`0x01` control / `0x02` data) lets the host route a freshly
+accepted connection without parsing a frame. The DATA preamble additionally carries
+the authoritative `sessionID` (the same 16 raw bytes UUID layout used everywhere in
+§3) so the host can attach the data connection to the right session.
+
+### 8.2 Connect ordering (deterministic — no race)
+
+1. **Client** opens the **CONTROL** connection, writes the control preamble (`0x01`),
+   then sends `hello(protocolVersion, sessionID, lastReceivedSeq)`
+   (all-zero `sessionID` = NEW; a non-zero id = resume request).
+2. **Host** reads the control preamble, reads `hello`, validates `protocolVersion`,
+   and **decides** NEW vs RETURNING_CLIENT (it, not the client, is authoritative — see
+   §5 and Eternal Terminal `Connection.cpp`). It replies
+   `helloAck(authoritativeSessionID, resumeFromSeq, returningClient)` on CONTROL:
+   - unknown / all-zero id → mint a fresh id, `resumeFromSeq = 0`, `returningClient = 0`;
+   - known non-zero id → echo it, `resumeFromSeq = hello.lastReceivedSeq`,
+     `returningClient = 1`.
+3. **Client** reads `helloAck`, learns the authoritative `sessionID`, then opens the
+   **DATA** connection and writes the data preamble (`0x02` + that `sessionID`).
+4. **Host** reads the data preamble and associates the DATA connection with the
+   session it minted/resumed in step 2.
+
+Because the DATA connection only opens *after* the client has the authoritative id,
+the host can always associate it — there is no ordering race to resolve.
+
+### 8.3 Reconnect / replay
+
+On a RETURNING_CLIENT (step 2, known id) the host, once the new DATA connection
+associates, **replays** `output` with `seq > hello.lastReceivedSeq` from the
+session's `ReplayBuffer` **in order on the new data channel before live output
+resumes**, then continues streaming. The first live `output` after replay carries
+`highestSeq + 1`, so the client sees a contiguous, gap-free, dup-free seq stream
+across the reconnect. Only `output` is sequenced/replayed; control messages are not.
+
+### 8.4 `RworkTransport` public API (WF-2)
+
+- `enum TransportParameters` — `static func makeTCP() -> NWParameters` (the single
+  canonical params: `TCP_NODELAY` + keepalive, no app crypto, no interface pin).
+- `protocol MessageChannel: Sendable` — `var channel`, `func send(_:) async throws`,
+  `var inbound: AsyncThrowingStream<WireMessage, Error>`.
+- `actor NWMessageChannel: MessageChannel` — one `NWConnection`, drives a
+  `FrameDecoder`, surfaces `State`.
+- `struct ReplayBuffer: Sendable` — pure logic: `append(bytes:) -> Int64`,
+  `ack(upTo:)`, `messages(after:) -> [(seq, bytes)]`, `retainedBytes`,
+  `isClientOnline`, `shouldPauseDrain` (4 MiB offline gate / 64 MiB cap; never drops
+  un-acked data — backpressure via pause instead).
+- `actor HostTransport` — `NWListener`; `start(port:)`, `boundPort`, `sessions_`
+  (`AsyncStream<HostSessionTransport>`), `stop()`.
+- `actor HostSessionTransport` — per-session `ReplayBuffer` owner; `sendOutput(_:)`,
+  `sendControl(_:)`, `sendExit(code:)`, inbound `inboundInput`/`inboundResize`/
+  `inboundAck`, and `drainPauses: AsyncStream<Bool>` (PTY-drain pause/resume).
+- `actor ClientTransport` — `connect(host:port:resume:lastReceivedSeq:)`, merged
+  `inbound`, `sendInput`/`sendResize`/`sendAck`/`sendBye`, `sessionID`/`resumeFromSeq`/
+  `returningClient`.
