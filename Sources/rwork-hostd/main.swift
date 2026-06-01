@@ -3,27 +3,71 @@ import RworkHost
 
 // rwork-hostd — headless Rwork host daemon (PTY + transport).
 //
-// WF-1 ships only the argument-parsing shell. The PTY spawn, transport listener,
-// and relay are wired in WF-3 via HostServer.
+// Wires up HostServer: bind a TCP listener (0.0.0.0 / OS-chosen — no interface pin,
+// per [13]), spawn the user's login shell per session, relay PTY bytes over the dual
+// data/control channels with replay-buffer reconnect, and survive client disconnects.
+// Runs until SIGINT.
 
 let arguments = CommandLine.arguments
 let programName = (arguments.first as NSString?)?.lastPathComponent ?? "rwork-hostd"
 
-func parsePort(_ args: [String]) -> UInt16? {
-    // Accept `--port N` or `-p N`.
+func parseArgs(_ args: [String]) -> (port: UInt16, shell: String?)? {
+    var port: UInt16 = 7420
+    var shell: String?
     var iterator = args.dropFirst().makeIterator()
     while let arg = iterator.next() {
-        if arg == "--port" || arg == "-p" {
-            guard let value = iterator.next(), let port = UInt16(value) else { return nil }
-            return port
+        switch arg {
+        case "--port", "-p":
+            guard let value = iterator.next(), let p = UInt16(value) else { return nil }
+            port = p
+        case "--shell", "-s":
+            guard let value = iterator.next() else { return nil }
+            shell = value
+        case "--help", "-h":
+            return nil
+        default:
+            return nil
         }
     }
-    return nil
+    return (port, shell)
 }
 
-let port = parsePort(arguments) ?? 7420
+guard let parsed = parseArgs(arguments) else {
+    FileHandle.standardError.write(Data(
+        "usage: \(programName) [--port N] [--shell /path/to/shell]\n".utf8))
+    exit(2)
+}
 
-let server = HostServer(port: port)
-_ = server // constructed to prove the type wires up; run() is WF-3.
+let log: @Sendable (String) -> Void = { message in
+    FileHandle.standardError.write(Data("\(programName): \(message)\n".utf8))
+}
 
-print("\(programName): listening config port=\(port) — not yet wired (WF-3)")
+let server = HostServer(port: parsed.port, shellPath: parsed.shell)
+server.onLog = log
+
+// Install a SIGINT handler that stops the server and exits. Use a DispatchSource so
+// the default SIGINT disposition does not kill us mid-shutdown.
+signal(SIGINT, SIG_IGN)
+let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+sigintSource.setEventHandler {
+    log("SIGINT — shutting down")
+    Task {
+        await server.stop()
+        exit(0)
+    }
+}
+sigintSource.resume()
+
+Task {
+    do {
+        try await server.start()
+        let bound = await server.boundPort() ?? parsed.port
+        log("listening on 0.0.0.0:\(bound) (shell=\(server.shellPath))")
+    } catch {
+        log("failed to start: \(error)")
+        exit(1)
+    }
+}
+
+// Keep the process alive for the listener + relay tasks; SIGINT drives exit().
+dispatchMain()
