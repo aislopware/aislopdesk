@@ -216,6 +216,21 @@ resumes**, then continues streaming. The first live `output` after replay carrie
 `highestSeq + 1`, so the client sees a contiguous, gap-free, dup-free seq stream
 across the reconnect. Only `output` is sequenced/replayed; control messages are not.
 
+The rebind is atomic on the host session actor: it swaps the data/control channels
+and closes the old ones. A live `sendOutput` already suspended on the *old* data
+channel when the rebind runs has its in-flight send cancelled by that close (the OS
+reports POSIX `ECANCELED` 89). This is **not** a fatal fault and **not** byte loss —
+the bytes were retained in the `ReplayBuffer` before the send and are only evicted by
+a client `ack`, so they are re-sent by the rebind's replay loop on the new channel.
+The host therefore treats a dead-channel send (channel swapped out, or a typed
+`notConnected` / `.cancelled`/`.failed` state) as "client offline → replay on next
+reconnect", retaining the bytes rather than throwing. **Symmetrically on the client**,
+a DATA or CONTROL channel that finishes — whether by error *or* a clean FIN/cancel
+(the reconnect-race half-close) — terminates the merged `inbound` and surfaces a
+`.disconnected`, which drives the `ReconnectManager`: there is no mid-session clean
+half-close the host intends, so a clean finish is always a disconnect that reconnects
+(never a silent stall).
+
 ### 8.4 `RworkTransport` public API (WF-2)
 
 - `enum TransportParameters` — `static func makeTCP() -> NWParameters` (the single

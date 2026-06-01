@@ -34,6 +34,15 @@ import RworkProtocol
 ///   while the client is offline is bounded *instead* by ``shouldPauseDrain``: when it
 ///   is asserted, the host relay (WF-3) stops reading the PTY, so the kernel PTY buffer
 ///   backpressures the shell and **no output is produced that we'd have to drop**.
+/// - **INVARIANT — dead-channel send = retain, never throw.** A retained entry is only
+///   ever removed by a client ``ack(upTo:)``; a *failed wire send* never evicts it.
+///   ``HostSessionTransport/append(bytes:)`` retains the bytes BEFORE the send, and
+///   advances its "already-sent" high-water mark only on a *successful* send. So if a
+///   live send loses its channel to a concurrent reconnect (the data channel is swapped
+///   out / cancelled mid-flight — POSIX 89), the entry stays retained and is re-sent by
+///   the next ``replay(after:)`` on the rebound channel. This is what lets the host treat
+///   a dead-channel send as "client offline → replay later" instead of a fatal fault
+///   (see ``HostSessionTransport/sendOutput(_:)``), with zero byte loss.
 /// - **Slow-consumer case (client online but acking slowly):** if retained bytes exceed
 ///   `maxBackupBytes` while online, ``shouldPauseDrain`` is asserted *anyway* (see its
 ///   doc) — we still refuse to drop un-acked data; we pause draining until the client

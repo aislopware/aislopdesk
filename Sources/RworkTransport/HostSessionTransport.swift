@@ -103,6 +103,29 @@ public actor HostSessionTransport {
     /// Publishes a drain pause/resume transition if this append crossed the gate. If
     /// the data channel is currently down (between reconnects) the bytes are still
     /// retained — they replay when the client returns.
+    ///
+    /// ## Dead-channel-send invariant (retain, never throw)
+    /// A live send can lose its channel to a concurrent reconnect: while this send is
+    /// suspended inside `NWMessageChannel.send`, a RETURNING_CLIENT
+    /// ``resume(data:control:after:)`` can run on this same actor (only at the `await`
+    /// boundary) and ``swapChannels`` the data channel out, closing the old one. The OS
+    /// then reports the in-flight send as ECANCELED (POSIX 89). The bytes are ALREADY
+    /// retained in the ``ReplayBuffer`` (and stay retained — ``highestSentSeq`` only
+    /// advances on a *successful* send, and the buffer only evicts on a client ack), so
+    /// they replay on the next reconnect. This must therefore NEVER surface as a fatal
+    /// send fault. "Channel is gone" is detected robustly, without depending on a racy
+    /// `currentState` re-read: (a) the channel was swapped out from under us
+    /// (`self.dataChannel !== captured`), or (b) the error is the typed
+    /// ``RworkTransportError/notConnected`` (incl. the ECANCELED classification in
+    /// ``NWMessageChannel/send(_:)``), or (c) the re-read state is already
+    /// `.cancelled`/`.failed`. Only a genuine transient send error on the still-current,
+    /// still-live channel re-throws.
+    ///
+    /// The detection is written inline at the catch site (rather than extracted to a
+    /// shared async helper) deliberately: factoring it into a separate actor-isolated
+    /// `async` method that is awaited from this catch block miscompiles on the current
+    /// toolchain (an `EXC_BAD_INSTRUCTION` on the cooperative pool, surfacing under load
+    /// in `RelayOrderingTests`). Keeping it inline generates correct code.
     @discardableResult
     public func sendOutput(_ bytes: Data) async throws -> Int64 {
         let seq = replay.append(bytes: bytes)
@@ -110,24 +133,33 @@ public actor HostSessionTransport {
         // While a resume replay is in flight we MUST NOT write a live (higher-seq)
         // output ahead of the replayed tail — the data channel must carry output in
         // strictly ascending seq. The bytes are already retained in the ReplayBuffer;
-        // `finishResume()` flushes everything appended during the resume window, in
-        // order, right after the tail. (If the client drops again before that, the
-        // next reconnect replays it anyway.)
+        // `resume()` flushes everything appended during the resume window, in order,
+        // right after the tail. (If the client drops again before that, the next
+        // reconnect replays it anyway.)
         if isResuming { return seq }
         if let dataChannel {
             do {
                 try await dataChannel.send(.output(seq: seq, bytes: bytes))
-                highestSentSeq = max(highestSentSeq, seq)
+                // A concurrent resume may have swapped the channel out *during* the send
+                // above (the send still succeeded on the old, now-stale channel). Only
+                // advance the high-water mark if this is still the current channel — a
+                // stale success must not block the resume flush from re-sending this seq.
+                if self.dataChannel === dataChannel {
+                    highestSentSeq = max(highestSentSeq, seq)
+                }
             } catch {
-                // The freshly-rebound data channel can lose to the reconnect race: it
-                // reaches `.ready` (resume's waitUntilReady returned) but is then driven
-                // to `.cancelled` before/at this first live send (POSIX 89 "operation
-                // canceled"). The bytes are already retained in the ReplayBuffer, so they
-                // replay on the next reconnect — we must NOT surface this as a fatal send
-                // fault. If the channel is genuinely gone, mark the client offline and
-                // drop it so the offline gate engages and the next resume rebinds cleanly;
-                // a real send error on a still-live channel is re-thrown.
-                if await isChannelDown(dataChannel) {
+                // Dead-channel-send invariant (see the doc comment): retain-and-return,
+                // never a fatal throw, when the channel was lost to a concurrent resume
+                // or is otherwise gone.
+                var lost = false
+                if self.dataChannel !== dataChannel {
+                    lost = true                                   // (a) swapped out by resume
+                } else if case RworkTransportError.notConnected = error {
+                    lost = true                                   // (b) typed "gone" (incl. ECANCELED)
+                } else {
+                    lost = await isChannelDown(dataChannel)       // (c) re-read state
+                }
+                if lost {
                     clearDataChannelOffline(dataChannel)
                     return seq
                 }
@@ -187,10 +219,20 @@ public actor HostSessionTransport {
         do {
             try await dataChannel.send(.exit(code: code))
         } catch {
-            // Same reconnect-race handling as live output: if the channel is gone, the
-            // recorded exit code replays after the tail on the next resume — don't surface
-            // a fatal send fault. A real send error on a live channel is re-thrown.
-            if await isChannelDown(dataChannel) {
+            // Same dead-channel-send invariant as live output (see ``sendOutput(_:)``):
+            // if the channel was lost to a concurrent resume or is otherwise gone, the
+            // recorded exit code replays after the tail on the next resume — don't
+            // surface a fatal send fault. A real send error on the still-current, still
+            // live channel is re-thrown. (Detection inline for the same toolchain reason.)
+            var lost = false
+            if self.dataChannel !== dataChannel {
+                lost = true
+            } else if case RworkTransportError.notConnected = error {
+                lost = true
+            } else {
+                lost = await isChannelDown(dataChannel)
+            }
+            if lost {
                 clearDataChannelOffline(dataChannel)
                 return
             }

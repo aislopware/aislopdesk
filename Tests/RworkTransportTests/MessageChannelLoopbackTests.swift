@@ -98,6 +98,37 @@ final class MessageChannelLoopbackTests: XCTestCase {
         XCTAssertEqual(bytes, big, "fragmented large frame must reassemble byte-exact")
     }
 
+    /// A send whose connection is cancelled out from under it (the reconnect
+    /// self-inflicted-cancel) must surface as the typed ``RworkTransportError/notConnected``
+    /// ("channel gone"), NEVER as ``RworkTransportError/sendFailed`` — otherwise the host
+    /// relay's catch cannot tell "client offline, retain + replay" apart from a genuine
+    /// wire fault and would re-throw fatally (the WF-4b reconnect race). We force the race
+    /// by cancelling the channel and then sending: the send observes either the already
+    /// `.cancelled` state (fast-fail `notConnected`) or, if the cancel notification has not
+    /// yet landed, an in-flight ECANCELED completion — BOTH must classify as `notConnected`.
+    func testSendOnCancelledChannelSurfacesNotConnectedNotSendFailed() async throws {
+        for _ in 0..<50 {
+            let (server, client, listener) = try await makeLoopbackPair()
+            // Cancel the underlying connection, then immediately try to send a frame.
+            // Whether the `.cancelled` state has propagated onto the actor yet is exactly
+            // the race the fix targets.
+            await server.close()
+            do {
+                try await server.send(.output(seq: 1, bytes: Data("x".utf8)))
+                // A send may still succeed if it slipped through before cancel took effect;
+                // that is fine (no error to classify).
+            } catch let RworkTransportError.notConnected(reason) {
+                XCTAssertFalse(reason.isEmpty)
+            } catch let RworkTransportError.sendFailed(reason) {
+                XCTFail("a cancelled-channel send must surface notConnected, not sendFailed(\(reason))")
+            } catch {
+                XCTFail("unexpected error kind: \(error)")
+            }
+            await client.close()
+            listener.cancel()
+        }
+    }
+
     func testMixedTrafficBothDirections() async throws {
         let (server, client, listener) = try await makeLoopbackPair()
         defer { listener.cancel() }

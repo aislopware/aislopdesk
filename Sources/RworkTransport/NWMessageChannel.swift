@@ -113,12 +113,35 @@ public actor NWMessageChannel: MessageChannel {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: frame, completion: .contentProcessed { error in
                 if let error {
-                    continuation.resume(throwing: RworkTransportError.sendFailed(String(describing: error)))
+                    // A send completing with ECANCELED (POSIX 89, "Operation canceled")
+                    // means the connection was cancelled out from under this in-flight
+                    // send — i.e. the channel is GONE, not a transient wire fault. This
+                    // races the `.cancelled` stateUpdateHandler notification (the two
+                    // NWConnection callbacks are independent), so the send-completion
+                    // error can arrive BEFORE `state` flips to `.cancelled`. Classifying
+                    // it as `notConnected` (the "channel gone" contract, see the doc
+                    // comment above) lets the host relay treat it as "client offline →
+                    // retain + replay on next reconnect" without a racy `currentState`
+                    // re-read. See the reconnect race in
+                    // ``HostSessionTransport/sendOutput(_:)``.
+                    if Self.isCanceledSendError(error) {
+                        continuation.resume(throwing: RworkTransportError.notConnected(String(describing: error)))
+                    } else {
+                        continuation.resume(throwing: RworkTransportError.sendFailed(String(describing: error)))
+                    }
                 } else {
                     continuation.resume()
                 }
             })
         }
+    }
+
+    /// True if `error` is the POSIX `ECANCELED` (89) that `NWConnection.send` reports
+    /// when the connection is cancelled while a send is in flight — the "channel gone"
+    /// signal, distinct from a genuine transient send fault.
+    private static func isCanceledSendError(_ error: NWError) -> Bool {
+        if case let .posix(code) = error, code == .ECANCELED { return true }
+        return false
     }
 
     /// Closes the connection. The inbound stream finishes; in-flight `send`s may fail.
