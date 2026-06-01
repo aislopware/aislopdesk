@@ -22,6 +22,7 @@ let package = Package(
         .library(name: "RworkTerminal", targets: ["RworkTerminal"]),
         .library(name: "RworkTTY", targets: ["RworkTTY"]),
         .library(name: "RworkInspector", targets: ["RworkInspector"]),
+        .library(name: "RworkClaudeCode", targets: ["RworkClaudeCode"]),
     ],
     targets: [
         // MARK: Libraries
@@ -60,6 +61,14 @@ let package = Package(
         // Read-only: it observes the transcript, it never drives the agent.
         .target(name: "RworkInspector", dependencies: ["RworkProtocol"]),
 
+        // Cross-platform Claude Code integration LOGIC (WF-7): the terminal-mode sniffer
+        // (DECSET/DECRST 1049 + OSC 133, robust to sequences split across chunk
+        // boundaries), the input dedup ring (input-box B1 echo suppression), and the
+        // input-box state machine (A shell / B1 TUI-compose). Pure Swift, no platform
+        // dependency beyond Foundation — builds for macOS + iOS, fixture-tested. The host
+        // launch env + auth resolution live in RworkHost (macOS, the WF-7 seam).
+        .target(name: "RworkClaudeCode", dependencies: ["RworkProtocol"]),
+
         // MARK: Executables
 
         // Headless host daemon (PTY + transport). Sources under Sources/rwork-hostd.
@@ -83,6 +92,13 @@ let package = Package(
             name: "RworkInspectorTests",
             dependencies: ["RworkInspector", "RworkProtocol"],
             exclude: ["Fixtures"]
+        ),
+        // WF-7 logic: env/auth (RworkHost) + mode sniffer / dedup ring / input-box model
+        // (RworkClaudeCode). Byte-sequence + fixture based; the sniffer tests feed the
+        // SAME stream at adversarial split boundaries and assert identical results.
+        .testTarget(
+            name: "RworkClaudeCodeTests",
+            dependencies: ["RworkClaudeCode", "RworkHost", "RworkProtocol"]
         ),
     ]
 )

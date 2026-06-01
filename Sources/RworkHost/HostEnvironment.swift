@@ -7,9 +7,12 @@ import Foundation
 /// **sane, generic** terminal environment so the round-trip / interactive / resize
 /// tests exercise a real shell, without baking in any Claude-specific values.
 ///
-/// // TODO(WF-7): replace the placeholder `TERM=xterm-256color` with
-/// // `xterm-ghostty` (kitty keyboard + DEC2026), add `CLAUDE_CODE_*` env, and own the
-/// // curated-env policy. Do NOT hardcode Claude-specific env here.
+/// WF-7 NOTE: the Claude-Code-specific curated env (`TERM=xterm-ghostty`,
+/// `CLAUDE_CODE_NO_FLICKER=1`, `CLAUDE_CODE_ENTRYPOINT=remote_mobile`) + auth resolution
+/// now live in ``ClaudeCodeProfile`` / ``ClaudeAuthResolver`` (selected via
+/// `HostServer.LaunchMode.claudeCode`). This generic profile stays Claude-agnostic: it
+/// is the env for a plain login shell (WF-3), and deliberately keeps `xterm-256color` as
+/// the safe generic default.
 public enum HostEnvironment {
     /// A curated child environment: inherit a safe allowlist from the parent and layer
     /// the terminal defaults on top. We deliberately do **not** forward the parent's

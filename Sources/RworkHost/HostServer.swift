@@ -39,6 +39,22 @@ public final class HostServer: @unchecked Sendable {
     /// Optional idle TTL for abandoned sessions. `nil` = keep-alive (default).
     public let idleTTL: TimeInterval?
 
+    /// What every new session spawns: a plain login shell (default) or `claude` under
+    /// the curated Claude Code profile. The plain-shell path is unchanged; this is an
+    /// additional option, selected at construction.
+    ///
+    /// // TODO(rwork-hostd): expose this as a `--claude [--xterm256]` flag on the daemon
+    /// // CLI (don't over-build the flag parser here — WF-7 is the launch *logic*).
+    public enum LaunchMode: Sendable, Equatable {
+        /// Plain login shell (the WF-3 path): `[shell] argv0=-shell`, curated generic env.
+        case shell
+        /// Launch `claude` via `[shell, -lc, command]` with the Claude Code profile env.
+        case claudeCode(ClaudeCodeProfile)
+    }
+
+    /// The launch mode for new sessions.
+    public let launchMode: LaunchMode
+
     private let transport = HostTransport()
     private let lock = NSLock()
     private var sessions: [UUID: HostSession] = [:]
@@ -47,10 +63,16 @@ public final class HostServer: @unchecked Sendable {
     /// A hook the daemon can set to log session lifecycle to stderr.
     public var onLog: (@Sendable (String) -> Void)?
 
-    public init(port: UInt16, shellPath: String? = nil, idleTTL: TimeInterval? = nil) {
+    public init(
+        port: UInt16,
+        shellPath: String? = nil,
+        idleTTL: TimeInterval? = nil,
+        launchMode: LaunchMode = .shell
+    ) {
         self.port = port
         self.shellPath = shellPath ?? HostEnvironment.loginShell()
         self.idleTTL = idleTTL
+        self.launchMode = launchMode
     }
 
     /// The port the listener actually bound to (resolved after ``start()``).
@@ -100,11 +122,24 @@ public final class HostServer: @unchecked Sendable {
         let pty = PTYProcess()
         do {
             let argv0 = HostEnvironment.loginArgv0(forShell: shellPath)
-            try pty.spawn(
-                shellPath,
-                environment: HostEnvironment.curated(),
-                argv0: argv0
-            )
+            switch launchMode {
+            case .shell:
+                // WF-3 plain-shell path, unchanged.
+                try pty.spawn(
+                    shellPath,
+                    environment: HostEnvironment.curated(),
+                    argv0: argv0
+                )
+            case .claudeCode(let profile):
+                // Launch `claude` via `[shell, -lc, command]` with the curated profile
+                // env (TERM=xterm-ghostty, NO_FLICKER, ENTRYPOINT=remote_mobile, ...).
+                try pty.spawn(
+                    shellPath,
+                    arguments: profile.loginShellArguments(),
+                    environment: profile.environment(),
+                    argv0: argv0
+                )
+            }
         } catch {
             onLog?("session \(id): shell spawn failed: \(error)")
             // The transport already bound + published this session (live forwarders + open
