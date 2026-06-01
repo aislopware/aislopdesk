@@ -151,10 +151,13 @@ public final class TerminalModeTracker {
                 state = .ground
             } else {
                 // The `ESC` was not an ST terminator. Treat the OSC as terminated by the
-                // stray ESC and re-process this byte as the start of new parsing so a
-                // sequence packed right after an unterminated OSC is not lost.
+                // stray ESC, but the ESC we already consumed may itself introduce a NEW
+                // escape sequence — so re-enter `.escape` (not `.ground`) and classify
+                // this byte as that sequence's introducer. Returning to `.ground` here
+                // would orphan the ESC and let the next marker's introducer (`[`/`]`) be
+                // parsed as plain content, losing the whole following sequence.
                 handleOSC(oscBuffer, into: &events)
-                state = .ground
+                state = .escape
                 step(byte, into: &events)
             }
         }

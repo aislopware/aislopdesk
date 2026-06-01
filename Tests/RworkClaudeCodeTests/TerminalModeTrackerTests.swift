@@ -237,6 +237,63 @@ final class TerminalModeTrackerTests: XCTestCase {
         XCTAssertEqual(t.mode, .altScreen)
     }
 
+    // MARK: Unterminated OSC abutting an ESC-introduced sequence (issue #1)
+
+    func testUnterminatedOSCThenAltScreenEnterNotLost() {
+        // `ESC]133` (no terminator) directly followed by `ESC[?1049h`. The stray ESC ends
+        // the bogus OSC, but it ALSO introduces the alt-screen CSI — that marker must not
+        // be dropped, and the mode must flip to alt-screen.
+        let t = TerminalModeTracker()
+        let bytes = Array("\(ESC)]133".utf8) + Array("\(ESC)[?1049h".utf8)
+        let events = t.consume(bytes)
+        XCTAssertEqual(events, [.enteredAltScreen])
+        XCTAssertEqual(t.mode, .altScreen)
+    }
+
+    func testUnterminatedOSCThenAltScreenEnterSplitConsistent() {
+        // Same input must yield the same events at every chunk boundary.
+        let bytes = Array("\(ESC)]133".utf8) + Array("\(ESC)[?1049h".utf8)
+        let expected: [TerminalModeEvent] = [.enteredAltScreen]
+        for size in 1...bytes.count {
+            XCTAssertEqual(eventsChunked(bytes, size: size), expected, "size \(size)")
+        }
+    }
+
+    func testUnterminatedOSC133AThenValidOSC133B() {
+        // An unterminated `ESC]133;A` immediately followed by a valid `ESC]133;B BEL`.
+        // The stray ESC ends the A-OSC; the following `]133;B` must still be parsed.
+        let t = TerminalModeTracker()
+        let bytes = Array("\(ESC)]133;A".utf8) + Array("\(ESC)]133;B\(BEL)".utf8)
+        XCTAssertEqual(t.consume(bytes), [.promptStart, .commandStart])
+    }
+
+    func testUnterminatedOSC133AThenValidOSC133BSplitConsistent() {
+        let bytes = Array("\(ESC)]133;A".utf8) + Array("\(ESC)]133;B\(BEL)".utf8)
+        let expected: [TerminalModeEvent] = [.promptStart, .commandStart]
+        for size in 1...bytes.count {
+            XCTAssertEqual(eventsChunked(bytes, size: size), expected, "size \(size)")
+        }
+    }
+
+    func testUnterminatedOSCThenTwoByteEscapeThenBEL() {
+        // `ESC]133;A` then `ESC X` (a non-`\`, non-bracket 2-byte escape that we do NOT
+        // track) then a `BEL`. The A-mark fires; the `ESC X` is consumed cleanly and the
+        // trailing BEL is harmless ground content. No spurious or dropped markers.
+        let t = TerminalModeTracker()
+        let bytes = Array("\(ESC)]133;A".utf8) + Array("\(ESC)X".utf8) + Array(BEL.utf8)
+        XCTAssertEqual(t.consume(bytes), [.promptStart])
+        XCTAssertEqual(t.mode, .shellPrompt)
+    }
+
+    func testDoubleEscapeThenBackslashStillTerminatesST() {
+        // Regression: `ESC]133;A` then `ESC ESC \`. The first ESC enters `.oscEscape`;
+        // the second ESC (not `\`) ends the OSC and re-enters `.escape`; the `\` is then a
+        // lone nF-escape final and is consumed cleanly. The A-mark still fires once.
+        let t = TerminalModeTracker()
+        let bytes = Array("\(ESC)]133;A".utf8) + Array("\(ESC)\(ESC)\\".utf8)
+        XCTAssertEqual(t.consume(bytes), [.promptStart])
+    }
+
     // MARK: AsyncStream façade
 
     func testAsyncStreamFacadeYieldsEventsInOrder() async {
