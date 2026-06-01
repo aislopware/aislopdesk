@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "RworkHost", targets: ["RworkHost"]),
         .library(name: "RworkClient", targets: ["RworkClient"]),
         .library(name: "RworkTerminal", targets: ["RworkTerminal"]),
+        .library(name: "RworkTTY", targets: ["RworkTTY"]),
     ],
     targets: [
         // MARK: Libraries
@@ -45,18 +46,25 @@ let package = Package(
         // protocol.
         .target(name: "RworkTerminal", dependencies: ["RworkProtocol"]),
 
+        // Local-terminal raw-mode + termios save/restore + TIOCGWINSZ/TIOCSWINSZ helpers
+        // for the interactive CLI. Split into a library so the save/restore + SIGWINCH
+        // mapping logic is unit-testable (the executable target itself is not importable).
+        .target(name: "RworkTTY"),
+
         // MARK: Executables
 
         // Headless host daemon (PTY + transport). Sources under Sources/rwork-hostd.
         .executableTarget(name: "rwork-hostd", dependencies: ["RworkHost"]),
 
-        // Headless CLI test client. Sources under Sources/rwork-client.
-        .executableTarget(name: "rwork-client", dependencies: ["RworkClient", "RworkTerminal"]),
+        // Interactive remote terminal client. Sources under Sources/rwork-client.
+        .executableTarget(name: "rwork-client", dependencies: ["RworkClient", "RworkTerminal", "RworkTTY"]),
 
         // MARK: Tests
         .testTarget(name: "RworkProtocolTests", dependencies: ["RworkProtocol"]),
         .testTarget(name: "RworkTransportTests", dependencies: ["RworkTransport"]),
         .testTarget(name: "RworkHostTests", dependencies: ["RworkHost"]),
-        .testTarget(name: "RworkClientTests", dependencies: ["RworkClient"]),
+        // RworkClientTests exercises the REAL PATH 1 e2e: a HostServer (RworkHost) +
+        // RworkClient over loopback, so it depends on RworkHost + RworkTTY too.
+        .testTarget(name: "RworkClientTests", dependencies: ["RworkClient", "RworkHost", "RworkTransport", "RworkTerminal", "RworkTTY"]),
     ]
 )
