@@ -61,6 +61,30 @@ final class FrameDecoderTests: XCTestCase {
         }
     }
 
+    func testMaxSizeFramePrefixIsAcceptedNotRejected() throws {
+        // The guard is `payloadLength <= maxFramePayloadLength`, so a prefix EXACTLY
+        // at the cap must be accepted: with no body yet it should wait (return nil),
+        // NOT throw .frameTooLarge. Catches an off-by-one regression to `<`.
+        var frame = Data()
+        frame.appendBE(UInt32(Rwork.maxFramePayloadLength))
+
+        var decoder = FrameDecoder()
+        decoder.append(frame)
+
+        XCTAssertNoThrow(XCTAssertNil(try decoder.nextMessage()))
+    }
+
+    func testLargeMultiKBPayloadRoundTrips() throws {
+        // Exercise large-payload framing well beyond the few-byte bodies elsewhere.
+        let big = Data((0 ..< (256 * 1024)).map { UInt8($0 & 0xFF) }) // 256 KiB
+        let message = WireMessage.output(seq: 99, bytes: big)
+
+        var decoder = FrameDecoder()
+        decoder.append(message.encode())
+        XCTAssertEqual(try decoder.nextMessage(), message)
+        XCTAssertNil(try decoder.nextMessage())
+    }
+
     func testUnknownMessageTypeThrows() {
         // Valid frame: payload length 1, type byte 0xFF (no known message).
         var frame = Data()

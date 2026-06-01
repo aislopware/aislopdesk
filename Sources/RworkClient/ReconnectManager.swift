@@ -11,8 +11,14 @@ import RworkProtocol
 /// Lifecycle hooks (UIKit `didEnterBackground` + `beginBackgroundTask`) belong to
 /// the client app target; this type owns only the retry policy and resume state.
 ///
+/// Sendable today via automatic conformance: a `final class` whose only stored
+/// properties are immutable `let`s of `Sendable` types (`Backoff` and the
+/// `Sendable` `ClientConnection`). When WF-4 adds mutable retry state, the compiler
+/// will then demand proper isolation rather than the warning being pre-suppressed —
+/// so do **not** add `@unchecked Sendable` here.
+///
 /// - Note: Documented seam for WF-4. Bodies are stubs.
-public final class ReconnectManager: @unchecked Sendable {
+public final class ReconnectManager: Sendable {
     /// Exponential-backoff schedule between reconnect attempts.
     public struct Backoff: Sendable, Equatable {
         public var initial: Duration

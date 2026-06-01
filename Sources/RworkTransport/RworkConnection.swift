@@ -11,7 +11,13 @@ import RworkProtocol
 /// - Note: This is a documented seam. WF-2 implements the `NWConnection` wiring,
 ///   the receive loops, and reconnect. Bodies here are minimal stubs so the package
 ///   compiles; they intentionally do not pretend to work.
-public final class RworkConnection: @unchecked Sendable {
+///
+/// Sendable today via automatic conformance: a `final class` whose only stored
+/// properties are immutable `let`s of `Sendable` types (`any MessageChannel` is
+/// `Sendable`). When WF-2 adds the mutable connection state for `connect`/`close`/
+/// `reconnect`, the compiler will then demand an actor or explicit locking instead of
+/// the warning being pre-suppressed — so do **not** add `@unchecked Sendable` here.
+public final class RworkConnection: Sendable {
     /// PTY byte stream: `output`/`exit`/`input`.
     public let data: any MessageChannel
     /// Session lifecycle & sizing: `hello`/`helloAck`/`resize`/`ack`/`bye`/`title`/`bell`.

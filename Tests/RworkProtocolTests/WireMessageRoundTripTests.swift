@@ -122,6 +122,50 @@ final class WireMessageRoundTripTests: XCTestCase {
         XCTAssertEqual(WireMessage.bell.channel, .control)
     }
 
+    // MARK: Decode error paths (complete-but-invalid frames)
+
+    /// A frame whose declared payload length is honest (the whole frame arrives) but
+    /// whose body is shorter than its message type requires must throw `.truncated`
+    /// at decode time — distinct from a partial TCP read, which merely waits.
+    func testCompleteFrameWithShortBodyThrowsTruncated() {
+        // exit (type 2) needs a 4-byte Int32 code; supply only the type byte.
+        var exitFrame = Data()
+        exitFrame.appendBE(UInt32(1))        // payloadLength = 1 (just the type byte)
+        exitFrame.append(2)                  // type = exit, missing 4 code bytes
+        var exitDecoder = FrameDecoder()
+        exitDecoder.append(exitFrame)
+        XCTAssertThrowsError(try exitDecoder.nextMessage()) { error in
+            XCTAssertEqual(error as? RworkError, .truncated)
+        }
+
+        // resize (type 11) needs 8 body bytes (4 × UInt16); supply only 3.
+        let resizeBody = Data([11, 0x00, 0x50, 0x00]) // type + 3 of 8 required bytes
+        var resizeFrame = Data()
+        resizeFrame.appendBE(UInt32(resizeBody.count))
+        resizeFrame.append(resizeBody)
+        var resizeDecoder = FrameDecoder()
+        resizeDecoder.append(resizeFrame)
+        XCTAssertThrowsError(try resizeDecoder.nextMessage()) { error in
+            XCTAssertEqual(error as? RworkError, .truncated)
+        }
+    }
+
+    /// A `title` (type 21) body with the right framing but invalid UTF-8 must throw
+    /// `.malformedBody`, exercising the `String(data:encoding:.utf8)` guard.
+    func testTitleWithInvalidUTF8ThrowsMalformedBody() {
+        let body = Data([21, 0xFF, 0xFE, 0xFD]) // type 21 + invalid UTF-8 bytes
+        var frame = Data()
+        frame.appendBE(UInt32(body.count))
+        frame.append(body)
+        var decoder = FrameDecoder()
+        decoder.append(frame)
+        XCTAssertThrowsError(try decoder.nextMessage()) { error in
+            guard case .malformedBody = (error as? RworkError) else {
+                return XCTFail("expected .malformedBody, got \(error)")
+            }
+        }
+    }
+
     func testFrameLayoutLengthPrefixExcludesPrefixBytes() {
         // output(seq:1, bytes:"abc") => body = [type(1)] + [8-byte seq] + 3 bytes = 12.
         let frame = WireMessage.output(seq: 1, bytes: Data("abc".utf8)).encode()
