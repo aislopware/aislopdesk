@@ -1,0 +1,590 @@
+{
+  "dimensionsResearched": 2,
+  "answer": "## Skills + Custom Slash Commands trong Structured-Event UI (SDK): co support nhu Claude Code TUI khong?\n\n### 1. Tra loi thang\n\n**Co — ca skills va custom slash commands deu chay trong SDK/headless (`claude -p --output-format stream-json` / `query()`), va dieu kien thi de hon ban tuong.**\n\n- **Nuance nghi ngo ban dau bi BAC BO (refuted).** Gia thuyet \"SDK khong load filesystem config (`.claude/`, `CLAUDE.md`, skills, commands) by default, phai opt-in\" la **SAI** theo docs hien tai. Thuc te **nguoc lai**: bo qua `settingSources` thi tuong duong `[\"user\", \"project\", \"local\"]` — SDK load **het** moi thu (skills, CLAUDE.md, commands, hooks, `.mcp.json`) y het CLI. Muon TAT thi moi phai opt-out bang `settingSources: []` (hoac `--bare`). Xac nhan o ca docs va TypeScript SDK type (`sdk.d.ts`: *\"When omitted, all sources are loaded (matches CLI defaults). Pass [] to disable filesystem settings (SDK isolation mode).\"*). [agent-sdk/claude-code-features], [agent-sdk/typescript#settingsource]\n\n- **Skills**: model-invoked tu dong; discover tu `~/.claude/skills/` va `<cwd>/.claude/skills/` (va parent dirs len repo root) khi `settingSources` co `user`/`project` (mac dinh co). Option `skills` mac dinh = enabled (\"When omitted, discovered Skills are enabled and the Skill tool is available, matching CLI behavior\"), nen `skills: 'all'` la **redundant nhung nen set cho ro rang**. Nguoi dung cung co the goi tay `/skill-name`. [agent-sdk/skills]\n\n- **Custom slash commands** (`.claude/commands/*.md`): dispatch **y het TUI** — gui `/cmd-name args` lam prompt string. `$ARGUMENTS` / `$1` / `$2`, bash `!\\`cmd\\``, va `@file` trong command template deu expand. Xuat hien trong `slash_commands` cua message `system/init`. (`.claude/commands/` la format **legacy**; format moi khuyen dung la `.claude/skills/`.) [agent-sdk/slash-commands]\n\n- **Dieu kien chot**: chi can `settingSources` bao gom `project` va/hoac `user` (mac dinh da co), va **`cwd` tro dung project root** (deployment-level concern — quan trong cho remote/iOS). [agent-sdk/skills], [agent-sdk/claude-code-features]\n\n### 2. Bang feature parity\n\n| Feature | SDK support | Cach bat |\n|---|---|---|\n| `settingSources` default | yes | Bo qua = `[\"user\",\"project\",\"local\"]`; `[]` de tat het. [typescript#settingsource] |\n| CLAUDE.md memory (project/user/local) | yes | Auto khi `settingSources` co `project`+`user` (mac dinh). [claude-code-features] |\n| Skills (`.claude/skills/*/SKILL.md`) | yes-with-config | `settingSources` co `user`/`project` + `skills:'all'` (mac dinh enabled). **`allowed-tools` frontmatter trong SKILL.md bi BO QUA trong SDK** — dung `allowedTools` tren `query()`. [agent-sdk/skills] |\n| Custom slash commands (`.claude/commands/*.md`) | yes-with-config | Gui `/cmd args` lam prompt; `settingSources` co `project`/`user`. [agent-sdk/slash-commands] |\n| Bundled skills (`/code-review`, `/batch`, ...) | yes | Auto-load, goi qua `/skill-name`. [commands] |\n| `/compact` | yes | Gui `/compact [hint]`; tra `system/compact_boundary` (Claude Code v2.1.117+). [agent-sdk/slash-commands] |\n| `/clear` | yes | Gui `/clear` (streaming/multi-turn; v2.1.117+). Single-turn `query()` khong tac dung. [agent-sdk/slash-commands] |\n| `/context`, `/usage` | partial | Co trong `slash_commands` init, tra data text/JSON; **grid mau la TUI-only** — render native. [agent-sdk/slash-commands] |\n| Liet ke commands (autocomplete) | yes | Doc `slash_commands` tu message `system/init`. [agent-sdk/slash-commands], [agent-sdk/plugins] |\n| Subagents (programmatic) | yes | `agents:{name:{...}}` + `\"Agent\"` trong `allowedTools`. [agent-sdk/subagents] |\n| Subagents filesystem (`.claude/agents/*.md`) | yes-with-config | `settingSources` co `project`/`user`; programmatic ghi de cung ten. [agent-sdk/subagents] |\n| MCP (programmatic + `.mcp.json`) | yes | `mcpServers:{...}`; `.mcp.json` auto khi `settingSources` co `project`. [agent-sdk/mcp] |\n| Hooks (programmatic + filesystem) | yes | `hooks:{PreToolUse:[...]}`; hoac `settings.json` qua `settingSources`. [agent-sdk/claude-code-features] |\n| Plugins (local) | yes | `plugins:[{type:'local',path}]`; marketplace phai download truoc. Plugin skill namespace `plugin:skill`. [agent-sdk/plugins] |\n| Session resume | yes | Bat `session_id` tu `system/init`, truyen `resume`. [agent-sdk/sessions] |\n| `@`-file-mentions (trong prompt user) | tui-only | Khong expand trong SDK — `@file` di nguyen van toi model. Tu doc file va inject content. [interactive-mode] |\n| `/model`, `/config`, `/agents`, `/permissions`, `/diff`, `/memory`, `/rewind`, `/resume` (picker) | tui-only | Khong dispatch qua SDK — dung option `model`/`allowedTools`/`permissionMode`/... + native UI. [commands], [agent-sdk/slash-commands] |\n| Agent teams (multi-instance coordination) | tui-only | Khong co SDK path. Dung programmatic subagents thay the. [agent-sdk/claude-code-features] |\n\n### 3. Structured iOS UI phai LAM GI de giu skills/slash — va cai gi THUC SU MAT\n\n**Phai lam (de giu parity):**\n1. **Set `settingSources: ['user','project','local']` tuong minh** tren moi `query()` (du la default, viet ro de an toan + chong drift), va `skills: 'all'`. [claude-code-features], [agent-sdk/skills]\n2. **`cwd` tro dung project root** (qua SSH/server process), khong phai sandbox cua app iOS — neu sai thi skills/CLAUDE.md/commands khong load. [claude-code-features]\n3. **Slash expand trong input box**: chi can gui nguyen `/cmd args` lam prompt string — SDK tu expand. Khong can preprocessing rieng. [agent-sdk/slash-commands]\n4. **Autocomplete / command palette**: doc `slash_commands`, `skills`, `plugins` tu message `system/init` luc start session de dung native picker khi user go `/`. [agent-sdk/plugins]\n5. **Built-in TUI-only → native equivalent**: `/model` → model picker (set option `model`); `/permissions` → toggle (set `allowedTools`/`permissionMode`); `/config` → settings sheet; `/context`+`/usage` → usage bar/card (doc token tu messages); `/diff` → render `git diff` (qua Bash tool); `/memory` → native CLAUDE.md editor (ghi file → load lan query sau); `/agents` → list agents config. [commands], [agent-sdk/slash-commands]\n6. **`@`-file-mentions → native file picker** inject content vao prompt string (SDK khong co autocomplete layer). [interactive-mode]\n\n**THUC SU MAT (khong co SDK path):**\n- **Agent teams** (multi-instance peer coordination, shared task list, mailbox) — CLI-only, khong co option SDK nao. Thay the bang programmatic subagents (isolated context, report-back-only; teammates khong nhan tin truc tiep cho nhau). [agent-sdk/claude-code-features], [agent-teams]\n- **`/rewind` checkpoint rollback** — khong co equivalent truc tiep; chi workaround duoc bang session branching (`fork_session`) hoac tu giu message list.\n- **Grid/visual chrome** cua `/context`, `/usage`, `/skills` (token-cost sort) — phai tu render native tu data tho.\n\n### 4. Ket luan cho ta\n\n**Feature parity cho structured iOS UI: DAT DUOC cho phan loi (core agent capabilities), KHONG dat 100% cho phan TUI chrome.**\n\n- **Free out-of-the-box** (vi `settingSources` default = load het): skills, CLAUDE.md, custom slash commands, subagents, hooks, MCP, plugins, session resume, bundled skills, `/compact`, `/clear`. Day chinh la cau hoi cot loi cua ban — **skills + custom slash command CHAY DUOC trong SDK** voi chi phi cau hinh gan nhu bang khong (chi can `cwd` dung + nen set `settingSources`/`skills` tuong minh).\n- **Chi phi them**: ~15-20 native UI equivalent cho cac TUI management command (model picker, permissions, context/usage card, diff viewer, CLAUDE.md editor, session picker, `@`-file picker). Day la **chrome quan ly**, khong phai **nang luc agent** — mat chung khong lam giam kha nang code cua agent.\n- **Mat that su (chap nhan)**: agent teams, `/rewind`, va cac visual grid. Voi parallel work, subagents la thay the hop ly.\n\n**Vi sao desktop raw-PTY van giu 100% feature**: SDK chi expose cai gi co the dispatch khong can interactive terminal; toan bo lop UI tuong tac (picker, dialog, grid, viewer, rewind, agent teams qua tmux/split-pane + keyboard) chi ton tai khi co live terminal. Raw-PTY render TUS that → giu nguyen 100% (ke ca agent teams, interactive pickers, rewind, moi TUI chrome) ma khong phai tai dung lai gi. Do do kien truc **hybrid** la hop ly: structured-event UI cho iOS (toi uu agentic workflow, mat chrome chu khong mat nang luc), raw-PTY cho desktop khi can full fidelity.\n\n---\n\n**Do tin cay & honesty flags:**\n- Cac claim load-bearing (`settingSources` default = all; skills/custom commands chay trong SDK; `@`-mention tui-only; SKILL.md `allowed-tools` bi bo qua) deu **confirmed high-confidence** o docs + TypeScript SDK types (`sdk.d.ts` v0.3.159).\n- **Refuted thang than**: gia thuyet \"SDK khong load filesystem by default\" la SAI — nguoc lai hoan toan.\n- **Uncertain/can test thuc te**: tap chinh xac `slash_commands` trong `system/init` la **version-sensitive** (vi du `/clear` chi co tu v2.1.117+); docs n/ headless co mot note **mau thuan** rang \"user-invoked skills nhu `/code-review` chi co o interactive mode\" trong khi trang slash-commands lai noi custom commands chay qua prompt string — **nen test bang 1 SDK call thuc** de chot list va xac nhan skill invocation qua `/name` trong SDK. `message.skills` co kem token-cost metadata hay khong cung chua xac nhan (anh huong toi UI `/skills`).\n- **Caveat phien ban**: Python SDK tung co bug `--setting-sources` (issue #186, da fix) — kiem tra SDK version moi.\n\nSources (Anthropic Claude Code docs, current 2025/2026): `code.claude.com/docs/en/agent-sdk/claude-code-features`, `/agent-sdk/typescript#settingsource`, `/agent-sdk/overview`, `/agent-sdk/skills`, `/agent-sdk/slash-commands`, `/agent-sdk/subagents`, `/agent-sdk/mcp`, `/agent-sdk/plugins`, `/agent-sdk/sessions`, `/headless`, `/commands`, `/interactive-mode`, `/agent-teams`; package `@anthropic-ai/claude-agent-sdk` `sdk.d.ts` v0.3.159; GitHub `anthropics/claude-agent-sdk-python#186`.",
+  "corpus": [
+    {
+      "dimension": "sdk-feature-parity",
+      "summary": "The Claude Agent SDK (and `claude -p` headless mode) supports the vast majority of Claude Code features — including skills, custom slash commands, subagents, MCP, hooks, plugins, and CLAUDE.md memory — but requires explicit `settingSources` configuration (or relies on a default that IS inclusive, not exclusive). The critical nuance the question anticipated is actually the reverse of what was suspected: by DEFAULT, `query()` loads user, project, and local setting sources (equivalent to `[\"user\", \"project\", \"local\"]`). Passing `settingSources: []` is the opt-OUT. TUI-only features are session-management UI commands that presuppose an interactive terminal: `/model` (picker UI), `/config` (settings UI), `/agents` (manager UI), `/context` (visual grid), `/diff` (interactive viewer), `/permissions` (interactive dialog), and ~30 other terminal-UI commands. Built-in `@`-file-mentions are a TUI autocomplete feature and do NOT expand in SDK/headless — they are an input-UI affordance. Custom slash commands from `.claude/commands/*.md` DO work in SDK/headless by passing the command as the prompt string.",
+      "feature_table": [
+        {
+          "feature": "CLAUDE.md memory (project + user + local)",
+          "sdk_support": "yes-with-config",
+          "how": "Loaded automatically when `settingSources` includes `\"project\"` (project CLAUDE.md at `<cwd>/CLAUDE.md` or `<cwd>/.claude/CLAUDE.md`) and `\"user\"` (user `~/.claude/CLAUDE.md`). Default `query()` includes all three sources, so CLAUDE.md loads by default. Pass `settingSources: []` to suppress. Source: https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "Agent Skills (.claude/skills/*/SKILL.md, model-invoked)",
+          "sdk_support": "yes-with-config",
+          "how": "Discovered from filesystem when `settingSources` includes `\"project\"` or `\"user\"`. Must also set `skills: \"all\"` (or a list, or omit for default-enabled behavior). SDK enables the Skill tool automatically when `skills` is set. SKILL.md `allowed-tools` frontmatter is IGNORED in the SDK — use `allowedTools` on the query instead. Source: https://code.claude.com/docs/en/agent-sdk/skills"
+        },
+        {
+          "feature": "Custom slash commands (.claude/commands/*.md)",
+          "sdk_support": "yes-with-config",
+          "how": "Pass `/commandname args` as the prompt string. Commands appear in the `system/init` message's `slash_commands` array. `$ARGUMENTS` / `$1` / `$2` placeholder expansion works. Subdirectory namespacing supported. `settingSources` must include `\"project\"` or `\"user\"` for filesystem commands to load. Docs note `.claude/commands/` is the legacy format; `.claude/skills/` is preferred for new commands. Source: https://code.claude.com/docs/en/agent-sdk/slash-commands"
+        },
+        {
+          "feature": "Built-in slash command /compact",
+          "sdk_support": "yes",
+          "how": "Send `/compact [instructions]` as the prompt. Returns a `system/compact_boundary` message. Fully supported in SDK. Source: https://code.claude.com/docs/en/agent-sdk/slash-commands"
+        },
+        {
+          "feature": "Built-in slash command /clear",
+          "sdk_support": "yes",
+          "how": "Send `/clear` as the prompt in streaming-input (multi-turn) SDK sessions. Requires Claude Code v2.1.117+. In single-turn `query()` calls it has no practical effect. Source: https://code.claude.com/docs/en/agent-sdk/slash-commands"
+        },
+        {
+          "feature": "Built-in slash command /context (visual context grid)",
+          "sdk_support": "yes",
+          "how": "Appears in `slash_commands` init list and is dispatchable via SDK. Returns context usage info. The visual grid is a text/JSON representation in SDK output."
+        },
+        {
+          "feature": "Built-in slash command /model (model picker UI)",
+          "sdk_support": "tui-only",
+          "how": "The `/model` command opens an interactive picker that requires a terminal. SDK equivalent: set the `model` option on `query()`, or pass `--model` flag in CLI headless mode. Source: https://code.claude.com/docs/en/commands"
+        },
+        {
+          "feature": "Built-in slash command /agents (agent manager UI)",
+          "sdk_support": "tui-only",
+          "how": "Opens an interactive terminal UI for managing subagents. SDK equivalent: define agents programmatically via the `agents` option, or use `.claude/agents/*.md` filesystem definitions. Source: https://code.claude.com/docs/en/commands"
+        },
+        {
+          "feature": "Built-in slash command /config (settings UI)",
+          "sdk_support": "tui-only",
+          "how": "Opens a terminal settings interface. SDK equivalent: use `settings` option on `query()`, or pass `--settings` CLI flag. Source: https://code.claude.com/docs/en/commands"
+        },
+        {
+          "feature": "Built-in slash command /permissions (interactive dialog)",
+          "sdk_support": "tui-only",
+          "how": "Interactive terminal dialog. SDK equivalent: use `allowedTools`, `disallowedTools`, and `permissionMode` options on `query()`. Source: https://code.claude.com/docs/en/commands"
+        },
+        {
+          "feature": "Built-in slash command /diff (interactive diff viewer)",
+          "sdk_support": "tui-only",
+          "how": "Opens an interactive per-turn diff viewer. No SDK equivalent; use Bash tool to run `git diff` in the agent instead. Source: https://code.claude.com/docs/en/commands"
+        },
+        {
+          "feature": "Built-in slash command /memory (CLAUDE.md editor UI)",
+          "sdk_support": "tui-only",
+          "how": "Opens an interactive editor for CLAUDE.md files. SDK equivalent: use `systemPrompt` or `settingSources` + filesystem CLAUDE.md. Source: https://code.claude.com/docs/en/commands"
+        },
+        {
+          "feature": "Built-in slash command /usage",
+          "sdk_support": "partial",
+          "how": "Basic cost/usage info may be returned in SDK but the full interactive tab UI is TUI-only. Cost data is available in the `ResultMessage` metadata fields. Source: https://code.claude.com/docs/en/commands"
+        },
+        {
+          "feature": "Subagents — programmatic (agents option)",
+          "sdk_support": "yes",
+          "how": "Define via `agents: { 'name': AgentDefinition }` on `query()`. Include `\"Agent\"` in `allowedTools` to auto-approve. AgentDefinition supports `description`, `prompt`, `tools`, `model`, `skills`, `memory`, `mcpServers`, `maxTurns`, `permissionMode`. Source: https://code.claude.com/docs/en/agent-sdk/subagents"
+        },
+        {
+          "feature": "Subagents — filesystem (.claude/agents/*.md)",
+          "sdk_support": "yes-with-config",
+          "how": "Loaded at session start when `settingSources` includes `\"project\"` or `\"user\"`. Programmatically defined agents take precedence over filesystem agents with the same name. Source: https://code.claude.com/docs/en/agent-sdk/subagents"
+        },
+        {
+          "feature": "MCP servers (mcpServers option)",
+          "sdk_support": "yes",
+          "how": "Pass `mcpServers: { name: { command, args, env } }` or HTTP/SSE config on `query()`. Use `allowedTools: [\"mcp__servername__*\"]` to auto-approve. MCP tool naming: `mcp__<server>__<tool>`. Source: https://code.claude.com/docs/en/agent-sdk/mcp"
+        },
+        {
+          "feature": "MCP servers (.mcp.json filesystem config)",
+          "sdk_support": "yes-with-config",
+          "how": "`.mcp.json` in project root is loaded when `settingSources` includes `\"project\"` (which is the default). Supported in both SDK and `claude -p` headless. Source: https://code.claude.com/docs/en/agent-sdk/mcp"
+        },
+        {
+          "feature": "Hooks (filesystem hooks in .claude/settings.json)",
+          "sdk_support": "yes-with-config",
+          "how": "Shell-command hooks from `settings.json` are loaded when `settingSources` includes `\"project\"` (default). Fire in main agent and all subagents. Hook types: `command`, `http`, `mcp_tool`, `prompt`, `agent`. Source: https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "Hooks (programmatic callbacks in SDK)",
+          "sdk_support": "yes",
+          "how": "Pass `hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [callbackFn] }] }` to `query()`. Return `{}` to allow, `{ decision: 'block', reason: '...' }` to block. Events: `PreToolUse`, `PostToolUse`, `Stop`, `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `TeammateIdle`, `TaskCompleted` (TypeScript has more than Python). Scoped to main session only (not subagents). Source: https://code.claude.com/docs/en/agent-sdk/overview"
+        },
+        {
+          "feature": "Plugins (filesystem-installed, via plugins option)",
+          "sdk_support": "yes",
+          "how": "Pass `plugins: [{ type: 'local', path: './my-plugin' }]` to `query()`. Only `type: 'local'` is supported in SDK. Plugin skills get `plugin-name:skill-name` namespace in `slash_commands`. CLI-installed plugins in `~/.claude/plugins/` can also be referenced by path. Source: https://code.claude.com/docs/en/agent-sdk/plugins"
+        },
+        {
+          "feature": "Plugin skills (invocable via /plugin-name:skill-name)",
+          "sdk_support": "yes",
+          "how": "Send `/plugin-name:skill-name` as the prompt string. Plugin skills appear in `system/init` `skills` and `slash_commands` arrays with the namespace prefix. Source: https://code.claude.com/docs/en/agent-sdk/plugins"
+        },
+        {
+          "feature": "@-file-mentions (TUI autocomplete, inlines file content)",
+          "sdk_support": "tui-only",
+          "how": "@-file-mentions are a TUI input affordance — typing `@` triggers file-path autocomplete in the interactive terminal. They do NOT expand in SDK/headless mode; the `@filename` text is passed as-is to the model. SDK equivalent: include file contents directly in the prompt string, or use the Read tool. Source: https://code.claude.com/docs/en/interactive-mode (table: `@` → 'File path mention, Trigger file path autocomplete')"
+        },
+        {
+          "feature": "settingSources default behavior",
+          "sdk_support": "yes",
+          "how": "DEFAULT when `settingSources` is OMITTED from `query()` = `[\"user\", \"project\", \"local\"]` (all three). This means CLAUDE.md, skills, hooks, and .mcp.json all load by default. Pass `settingSources: []` to disable all filesystem config. `~/.claude.json` global config and managed policy settings are ALWAYS loaded regardless of this option. Source: https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "Agent teams (/agents CLI multi-instance coordination)",
+          "sdk_support": "tui-only",
+          "how": "Agent teams (coordinating multiple independent Claude Code instances with shared task lists and direct messaging) are a CLI feature. The SDK supports subagents (child sessions spawned via Agent tool) but not the agent-team peer model. Source: https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "--bare mode (fast headless, skips all filesystem config)",
+          "sdk_support": "yes",
+          "how": "CLI: `claude --bare -p 'query'`. Skips auto-discovery of hooks, skills, plugins, MCP servers, auto-memory, and CLAUDE.md. Only flags passed explicitly take effect. Recommended for CI/scripted calls. SDK equivalent: `settingSources: []` plus disabling auto-memory. Source: https://code.claude.com/docs/en/headless"
+        }
+      ],
+      "points": [
+        {
+          "claim": "settingSources defaults to ALL sources (user + project + local), not empty",
+          "detail": "The Anthropic docs state explicitly: 'When you omit settingSources, query() reads the same filesystem settings as the Claude Code CLI: user, project, and local settings, CLAUDE.md files, and .claude/ skills, agents, and commands.' This is the OPPOSITE of what the question suspected — the SDK does NOT strip filesystem config by default. You must pass settingSources: [] to opt OUT. This is load-bearing for iOS app design: out of the box the SDK picks up all skills, CLAUDE.md, hooks, commands, and .mcp.json in the working directory.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+          ]
+        },
+        {
+          "claim": "Skills load under default options; opt-in via settingSources only needed if you've explicitly set it to exclude project/user",
+          "detail": "Skills are discovered from .claude/skills/ (project) and ~/.claude/skills/ (user) whenever the respective setting source is active. With default query() options both are active. If settingSources is set explicitly and omits 'project' or 'user', skills from those directories are not loaded. The skills option on query() additionally filters which discovered skills are enabled: pass 'all', a list of names, or [] to disable all. The Skill tool is auto-added to allowedTools when skills is set.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/skills"
+          ]
+        },
+        {
+          "claim": "Custom slash commands (.claude/commands/*.md) DO work in SDK — pass /commandname as the prompt",
+          "detail": "Custom commands defined as markdown files in .claude/commands/ (legacy) or .claude/skills/ (recommended) appear in the system/init message's slash_commands array and can be invoked by passing '/commandname args' as the prompt string. $ARGUMENTS and positional $1/$2 placeholders expand. The docs explicitly note: 'Custom commands are automatically available through the SDK.' The .claude/commands/ format is described as legacy; new commands should use .claude/skills/ which additionally supports autonomous model-invocation.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/slash-commands"
+          ]
+        },
+        {
+          "claim": "Built-in slash commands: only terminal-UI commands are TUI-only; data/context commands are SDK-dispatchable",
+          "detail": "The docs state: 'Only commands that work without an interactive terminal are dispatchable through the SDK; the system/init message lists the ones available in your session.' The example output shown is ['clear', 'compact', 'context', 'usage']. Commands requiring interactive terminal UI (/model picker, /config settings UI, /agents manager, /diff viewer, /permissions dialog, /memory editor, /rewind, /diff, etc.) are TUI-only. The SDK equivalent for model selection is the model option; for permissions it's allowedTools/permissionMode.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/slash-commands",
+            "https://code.claude.com/docs/en/commands"
+          ]
+        },
+        {
+          "claim": "@-file-mentions are a TUI-only input affordance and do NOT expand in SDK/headless",
+          "detail": "@-mentions in the TUI trigger file-path autocomplete and inline file content into the user message. In SDK/headless mode there is no autocomplete layer, so '@filename' is passed as a literal string to the model. The SDK equivalent is to include file contents directly in the prompt string or rely on the Read tool. This is confirmed by the interactive-mode docs which describe @ as 'File path mention — Trigger file path autocomplete' (an input UI feature, not a protocol feature).",
+          "sources": [
+            "https://code.claude.com/docs/en/interactive-mode"
+          ]
+        },
+        {
+          "claim": "Hooks work in SDK via two parallel mechanisms: filesystem hooks (from settings.json via settingSources) and programmatic callbacks (query() hooks option)",
+          "detail": "Filesystem hooks defined in .claude/settings.json are loaded automatically when settingSources includes 'project' (which is the default). These support command, http, mcp_tool, prompt, and agent hook types, and fire in both main agent AND all subagents. Programmatic hooks (callback functions passed to query()) run in-process and are scoped to the main session only. Both types coexist in the same hook lifecycle. This means existing project hooks work in the SDK with zero extra configuration.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+          ]
+        },
+        {
+          "claim": "Plugins load via the plugins option (type: 'local', path); only local paths are accepted in SDK",
+          "detail": "Pass plugins: [{ type: 'local', path: './my-plugin' }] to query(). The type field must be 'local' — this is the only value the SDK accepts. To use marketplace plugins, download them first and provide the local path. Plugin skills appear namespaced as 'plugin-name:skill-name' in the slash_commands and skills arrays in the system/init message, and can be invoked with '/plugin-name:skill-name'. CLI-installed plugins (in ~/.claude/plugins/) are also reachable by providing their local directory path.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/plugins"
+          ]
+        },
+        {
+          "claim": "Filesystem subagents (.claude/agents/*.md) load via settingSources; programmatic definition via agents option takes precedence",
+          "detail": "Subagents defined as markdown files in .claude/agents/ are loaded at session start when settingSources includes 'project' or 'user'. Programmatically defined agents (via the agents option) take precedence over filesystem agents with the same name. Note that subagents cannot spawn their own subagents (no Agent tool in a subagent's tools). The 'general-purpose' built-in subagent is always available if Agent is in allowedTools.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/subagents"
+          ]
+        },
+        {
+          "claim": "--bare mode is the recommended approach for isolated CI/scripted SDK calls and skips ALL filesystem config",
+          "detail": "The --bare CLI flag (SDK equivalent: settingSources: [] + CLAUDE_CODE_DISABLE_AUTO_MEMORY=1) skips hooks, skills, plugins, MCP servers, auto-memory, and CLAUDE.md discovery. The docs explicitly state: '--bare is the recommended mode for scripted and SDK calls, and will become the default for -p in a future release.' For iOS app building on the SDK, this is important: bare mode gives a clean slate; without it, Claude picks up whatever is configured in the working directory.",
+          "sources": [
+            "https://code.claude.com/docs/en/headless"
+          ]
+        }
+      ],
+      "project_relevance": "Critical for the iOS remote-coding tool architecture decision. The finding that settingSources defaults to ALL sources (not empty) means the structured-event SDK path will automatically inherit the user's skills, CLAUDE.md, commands, hooks, and .mcp.json — giving feature parity with the TUI out of the box for the features that matter most (skills, custom commands, subagents, hooks, MCP, plugins). The only genuine gaps vs TUI are: (1) @-file-mentions autocomplete (must be reimplemented as a native UI affordance in the iOS app that injects file content into the prompt), (2) ~30 terminal-UI management commands (/model picker, /config, /agents manager, /permissions dialog, /diff viewer, etc.) which the native iOS UI can replace with native equivalents, and (3) agent teams (multi-instance peer coordination, CLI-only). For the iOS app: pass settingSources: ['user', 'project'] explicitly to be safe and document it; replace @-mentions with a native file picker that injects content; replace TUI-only commands with native iOS UI controls (model switcher, permissions toggle, etc.).",
+      "claims_to_verify": [
+        "settingSources default = ['user', 'project', 'local'] (not empty) — this is confirmed by the official docs but is the single most load-bearing claim; verify against the TypeScript SDK types in @anthropic-ai/claude-agent-sdk to confirm the type default",
+        "The slash_commands list in system/init accurately reflects which built-in commands are SDK-dispatchable in practice — the docs show ['clear', 'compact', 'context', 'usage'] as an example but this may vary by Claude Code version; test with an actual SDK call to see the full list",
+        "@-file-mentions not expanding in SDK — confirmed by docs describing @ as a TUI autocomplete feature, but worth testing empirically in case the CLI preprocesses @-mentions before passing to the model",
+        "SKILL.md allowed-tools frontmatter is ignored in SDK — stated in skills SDK docs; verify against a real skill with allowed-tools to confirm the SDK truly ignores it",
+        "Filesystem hooks (settings.json) firing in subagents — stated in SDK docs; programmatic hooks do NOT fire in subagents; filesystem hooks do — this asymmetry is worth verifying in practice"
+      ],
+      "open_questions": [
+        "What is the exact set of built-in slash commands returned in system/init slash_commands for a typical SDK session? The docs show ['clear', 'compact', 'context', 'usage'] as an example — is /usage reliably there? Are there others?",
+        "For the iOS app: can you pass a prompt that contains /skillname (user-invoked skill) and have it work in SDK mode, or is skill invocation strictly model-autonomous in SDK? The docs suggest both paths work but the TUI-invoked skills note in headless docs says 'user-invoked skills like /code-review are only available in interactive mode' — this conflicts with the slash-commands SDK page showing custom commands work via prompt string.",
+        "Does the --bare mode CLI flag have a direct SDK equivalent beyond settingSources: [] + CLAUDE_CODE_DISABLE_AUTO_MEMORY=1, or are there other things --bare skips that those two options don't cover?",
+        "MCP prompts (exposed as /mcp__server__prompt commands) — do these appear in the SDK slash_commands list and can they be dispatched via prompt string like custom commands?",
+        "For the iOS structured-event UI: the SDK system/init message includes skills, slash_commands, plugins arrays — can these be used to dynamically build the native command palette / skill picker in the iOS UI?"
+      ],
+      "verifications": [
+        {
+          "claim": "settingSources default = ['user', 'project', 'local'] (not empty) — this is confirmed by the official docs but is the single most load-bearing claim; verify against the TypeScript SDK types in @anthropic-ai/claude-agent-sdk to confirm the type default",
+          "verdict": {
+            "claim": "settingSources default = ['user', 'project', 'local'] (not empty) in the Claude Agent SDK",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "The TypeScript SDK type definition file (sdk.d.ts from npm package @anthropic-ai/claude-agent-sdk v0.3.159, lines 1793–1802) states: \"When omitted, all sources are loaded (matches CLI defaults). Pass [] to disable filesystem settings (SDK isolation mode).\" The official docs at code.claude.com/docs/en/agent-sdk/claude-code-features confirm: \"Omitting settingSources is equivalent to [\"user\", \"project\", \"local\"].\" Both sources agree: the default when settingSources is omitted or undefined is all three sources — equivalent to CLI behavior.",
+            "sources": [
+              "https://code.claude.com/docs/en/agent-sdk/claude-code-features",
+              "https://code.claude.com/docs/en/agent-sdk/overview",
+              "https://code.claude.com/docs/en/headless",
+              "https://code.claude.com/docs/en/agent-sdk/skills",
+              "https://code.claude.com/docs/en/agent-sdk/slash-commands",
+              "https://code.claude.com/docs/en/commands"
+            ],
+            "correction": "The claim is confirmed. No correction needed. However, there are important adjacent nuances documented below that are load-bearing for the iOS use case."
+          }
+        },
+        {
+          "claim": "The slash_commands list in system/init accurately reflects which built-in commands are SDK-dispatchable in practice — the docs show ['clear', 'compact', 'context', 'usage'] as an example but this may vary by Claude Code version; test with an actual SDK call to see the full list",
+          "verdict": {
+            "claim": "The slash_commands list in system/init accurately reflects which built-in commands are SDK-dispatchable in practice — the docs show ['clear', 'compact', 'context', 'usage'] as an example but this may vary by Claude Code version; test with an actual SDK call to see the full list",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "The official Claude Code Agent SDK slash-commands doc (https://code.claude.com/docs/en/agent-sdk/slash-commands) states explicitly: \"Only commands that work without an interactive terminal are dispatchable through the SDK; the system/init message lists the ones available in your session.\" The example output shown is [\"clear\", \"compact\", \"context\", \"usage\"]. The doc also notes that /clear requires Claude Code v2.1.117 or later and is omitted from slash_commands in earlier versions — proving the list is version-sensitive. Custom slash commands (.claude/commands/*.md) and skills (invocable via /name) also appear in the same slash_commands list when loaded. Plugin-provided skills/commands appear namespaced as \"plugin-name:skill-name\". The four built-in SDK commands are: clear (reset context), compact (summarize older messages), context (show context info), usage (show token/usage stats). TUI-only interactive commands (/model, /agents, /config, /workflows) are not in the SDK-dispatchable list — they require a terminal UI and do not appear in slash_commands.",
+            "sources": [
+              "https://code.claude.com/docs/en/agent-sdk/slash-commands",
+              "https://code.claude.com/docs/en/agent-sdk/overview",
+              "https://code.claude.com/docs/en/agent-sdk/claude-code-features",
+              "https://code.claude.com/docs/en/agent-sdk/skills",
+              "https://code.claude.com/docs/en/agent-sdk/plugins"
+            ],
+            "correction": "The claim is confirmed accurate. The slash_commands list in system/init is the authoritative runtime source for what is SDK-dispatchable. It is version-sensitive (/clear added in v2.1.117+) and extends dynamically to include custom commands and skill invocations when settingSources and the plugins option load them. The four built-in SDK commands ['clear', 'compact', 'context', 'usage'] are the example values; custom commands and plugin skills add to this list at runtime. TUI commands (/model, /agents, /config, /workflows) are absent from the SDK list because they require interactive terminal rendering."
+          }
+        },
+        {
+          "claim": "@-file-mentions not expanding in SDK — confirmed by docs describing @ as a TUI autocomplete feature, but worth testing empirically in case the CLI preprocesses @-mentions before passing to the model",
+          "verdict": {
+            "claim": "@-file-mentions are TUI-only autocomplete; they do not expand in SDK/headless (claude -p --output-format stream-json) mode because the CLI does not preprocess @-mentions before passing prompts to the model.",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "## Full Research Findings — SDK vs TUI Feature Parity\n\nAll sources are current (accessed June 2026) from the official Claude Code documentation at [code.claude.com](https://code.claude.com/docs/).\n\n---\n\n### 1. settingSources / filesystem config — DEFAULT BEHAVIOR (REVERSED from the suspected nuance)\n\n**The suspected nuance was wrong.** The docs now say the opposite:\n\n> \"When you omit `settingSources`, `query()` reads the same filesystem settings as the Claude Code CLI: user, project, and local settings, CLAUDE.md files, and `.claude/` skills, agents, and commands.\"\n> — [Use Claude Code features in the SDK](https://code.claude.com/docs/en/agent-sdk/claude-code-features)\n\nOmitting `settingSources` is **equivalent to `[\"user\", \"project\", \"local\"]`**. The default loads everything. To opt **out**, you pass `settingSources: []`.\n\n| Source | What it loads | Location |\n|--------|--------------|----------|\n| `\"project\"` | Project CLAUDE.md, `.claude/rules/*.md`, project skills, project hooks, project `settings.json` | `<cwd>/.claude/` and parent dirs |\n| `\"user\"` | User CLAUDE.md, `~/.claude/rules/*.md`, user skills, user settings | `~/.claude/` |\n| `\"local\"` | CLAUDE.local.md, `.claude/settings.local.json` | `<cwd>/.claude/` and parent dirs |\n\n**Items that load regardless of `settingSources`:** managed policy settings, `~/.claude.json` global config, auto-memory at `~/.claude/projects/<project>/memory/`. ([source](https://code.claude.com/docs/en/agent-sdk/claude-code-features#what-settingsources-does-not-control))\n\nThe CLI also exposes `--setting-sources user,project` as a flag, and `--bare` to skip all discovery.\n\n---\n\n### 2. Skills (.claude/skills/*/SKILL.md)\n\n**Fully supported in SDK/headless.** Skills are discovered from the filesystem via `settingSources` (default includes `\"user\"` and `\"project\"`). Control via the `skills` option:\n- `skills: \"all\"` — enable every discovered skill\n- `skills: [\"name1\", \"name2\"]` — enable only named skills\n- `skills: []` — disable all\n\nThe Skill tool is enabled automatically when `skills` is set; no need to add it to `allowedTools`.\n\n**Important caveat:** The `allowed-tools` frontmatter field in SKILL.md is **not honoured in the SDK** — tool access is controlled by the top-level `allowedTools` option instead. ([source](https://code.claude.com/docs/en/agent-sdk/skills#tool-restrictions))\n\nSkills are also slash-invocable (`/skill-name`) in SDK mode — custom commands discovered from `.claude/commands/*.md` and skills appear in the `slash_commands` list in the `system/init` message.\n\n---\n\n### 3. Custom Slash Commands (.claude/commands/*.md)\n\n**Fully supported in SDK/headless.** Custom commands are loaded when `settingSources` includes `\"project\"` or `\"user\"`. They appear in `message.slash_commands` at session init alongside built-in commands. You invoke them exactly as in TUI: `/command-name [args]`.\n\nFeatures that work in SDK mode:\n- Argument placeholders (`$1`, `$2`, `$ARGUMENTS`)\n- Bash command execution (`!`backtick`` syntax in .md files)\n- `@file` references inside command .md files (these are preprocessed server-side as part of command template expansion)\n- YAML frontmatter (`description`, `argument-hint`, `model`)\n\nThe docs note `.claude/commands/` is the **legacy format**; the recommended format is `.claude/skills/<name>/SKILL.md`. Both continue to work. ([source](https://code.claude.com/docs/en/agent-sdk/slash-commands))\n\n---\n\n### 4. Built-in Slash Commands — TUI-only vs SDK-available\n\nThis is the most nuanced area. The headless docs state:\n\n> \"User-invoked skills like `/code-review` and built-in commands are only available in interactive mode. In `-p` mode, describe the task you want to accomplish instead.\"\n> — [Run Claude Code programmatically](https://code.claude.com/docs/en/headless) (Note box under \"Create a commit\")\n\n**However**, a subset of built-in commands does work in SDK/headless via the `system/init` `slash_commands` list. The docs give a concrete example output: `[\"clear\", \"compact\", \"context\", \"usage\"]`.\n\n| Command | SDK/headless | Notes |\n|---------|-------------|-------|\n| `/compact` | ✅ Yes | Emits `system/compact_boundary` event; documented with full SDK examples |\n| `/clear` | ✅ Yes (v2.1.117+) | Resets conversation context; useful in streaming-input mode |\n| `/context` | ✅ Yes | Listed in example `slash_commands` output |\n| `/usage` | ✅ Yes | Listed in example `slash_commands` output |\n| `/model` | ❌ TUI-only | Opens interactive picker; no equivalent SDK mechanism (use `--model` flag at startup) |\n| `/config` | ❌ TUI-only | Opens settings interface (UI-only) |\n| `/agents` | ❌ TUI-only | Opens agent manager UI |\n| `/background`, `/diff`, `/rewind`, `/tui`, etc. | ❌ TUI-only | Terminal UI features |\n\nThe actual available set is session-dependent and exposed at startup via `message.slash_commands` in `system/init`. ([source](https://code.claude.com/docs/en/agent-sdk/slash-commands))\n\n---\n\n### 5. CLAUDE.md memory\n\n**Fully supported in SDK/headless.** Loaded automatically when `settingSources` includes `\"project\"` (default). All levels (root, parent dirs, child dirs on demand, user, local) are loaded additively. You can also inject context directly via `systemPrompt` option as an alternative. ([source](https://code.claude.com/docs/en/agent-sdk/claude-code-features))\n\n---\n\n### 6. Subagents\n\n**Fully supported in SDK.** Define via the `agents` parameter with `AgentDefinition` / agent object. Include `\"Agent\"` in `allowedTools` to auto-approve invocations. Subagent messages carry `parent_tool_use_id` for tracking.\n\n**Agent teams are CLI-only.** The docs explicitly state: \"Agent teams are a CLI feature where one session acts as the team lead, coordinating work across independent teammates. Not directly configured via SDK options.\" ([source](https://code.claude.com/docs/en/agent-sdk/claude-code-features))\n\n---\n\n### 7. MCP\n\n**Fully supported in SDK.** Pass `mcpServers` (TS) / `mcp_servers` (Python) to `query()`. MCP servers from `.mcp.json` are also loaded when `settingSources` includes `\"project\"`. Use `--strict-mcp-config` CLI flag to load only explicitly-passed servers. ([source](https://code.claude.com/docs/en/agent-sdk/overview))\n\n---\n\n### 8. Hooks\n\n**Fully supported in SDK — two mechanisms:**\n1. **Filesystem hooks** (shell scripts in `settings.json`) — loaded via `settingSources`; run in main agent and all subagents; support `command`, `http`, `mcp_tool`, `prompt`, `agent` types.\n2. **Programmatic hooks** (callbacks in `query()`) — in-process; scoped to main session only; can block/allow tool calls.\n\nBoth run side-by-side. ([source](https://code.claude.com/docs/en/agent-sdk/claude-code-features))\n\n---\n\n### 9. Plugins\n\n**Supported in SDK via `plugins` option programmatically, or `--plugin-dir`/`--plugin-url` CLI flags.** Plugin load events appear in `system/init` and `system/plugin_install` stream-json events. ([source](https://code.claude.com/docs/en/headless))\n\n---\n\n### 10. @-file-mentions — ADVERSARIAL VERIFICATION VERDICT\n\n**Claim to verify:** @-file-mentions are TUI-only autocomplete; they do not expand in SDK/headless mode.\n\n**Evidence:**\n- The [Interactive mode docs](https://code.claude.com/docs/en/interactive-mode) list `@` under \"Quick commands\" / keyboard shortcuts as: **\"File path mention — Trigger file path autocomplete\"** — framed explicitly as a keyboard/TUI interaction.\n- There is zero mention of @-mention expansion in the SDK docs, headless docs, or `claude -p` docs. The SDK prompt is passed as a plain string.\n- The MCP changelog note (\"resources/templates/list is deferred to first @-mention\") refers to MCP resource discovery in interactive sessions, not CLI prompt preprocessing.\n- Custom slash commands' `.md` files use `@filename` syntax for file inclusion, but that is template preprocessing at command-load time (server-side file embedding), not runtime @-mention expansion in user prompts.\n\n**Conclusion: CONFIRMED.** `@path/to/file` typed into a prompt string passed to `claude -p` or the Agent SDK `query()` reaches the model as a literal string, not as expanded file content. The TUI's `@` key triggers autocomplete and inlines the file content before submission; that preprocessing layer does not exist in the SDK path. If your iOS app wants file-content injection equivalent to @-mentions, it must read the file contents programmatically and inject them into the prompt string itself.\n\n---\n\n### 11. `--bare` mode and `stream-json`\n\n`--bare` is the **recommended mode for scripted/SDK calls** and will become the default for `-p` in a future release. It skips auto-discovery of hooks, skills, plugins, MCP servers, auto memory, and CLAUDE.md. Context can then be passed explicitly via flags.\n\n`--output-format stream-json` + `--verbose` + `--include-partial-messages` turns on NDJSON token-level streaming. The `system/init` event is the first event and contains session metadata including `slash_commands`.\n\n---\n\n### 12. Known Bug: --setting-sources flag compatibility (Python SDK)\n\nGitHub [Issue #186](https://github.com/anthropics/claude-agent-sdk-python/issues/186) on `anthropics/claude-agent-sdk-python`: the SDK was unconditionally appending `--setting-sources` to the CLI command even when the value was `None`/empty, causing \"error: unknown option '--setting-sources'\" with newer CLI versions. **This has been fixed** in the CHANGELOG (the flag is now only passed when it has a value). Verify your SDK version is current if encountering this.\n\n---\n\n### Summary Matrix for iOS Structured-Event UI\n\n| Feature | SDK/headless support | How to enable |\n|---------|---------------------|---------------|\n| CLAUDE.md memory | ✅ Full | Default (or `settingSources: [\"user\",\"project\"]`) |\n| Skills (SKILL.md) | ✅ Full | Default + `skills: \"all\"` |\n| Custom slash commands (.claude/commands/) | ✅ Full | Default (legacy format, prefer skills) |\n| Custom skill invocation via `/name` | ✅ Full | Appears in `slash_commands` init list |\n| Built-in /compact, /clear, /context, /usage | ✅ Subset | Listed in `system/init` slash_commands |\n| Built-in /model, /config, /agents, /diff, /rewind | ❌ TUI-only | Use CLI flags at startup instead |\n| Subagents (SDK-defined) | ✅ Full | `agents` parameter |\n| Agent teams | ❌ CLI-only | — |\n| MCP | ✅ Full | `mcpServers` parameter |\n| Hooks (programmatic) | ✅ Full | `hooks` parameter |\n| Hooks (filesystem/settings.json) | ✅ Full | via `settingSources` |\n| Plugins | ✅ Full | `plugins` option or `--plugin-dir` |\n| @-file-mentions (user prompt) | ❌ TUI-only | Inject file contents programmatically |\n| stream-json output | ✅ Full | `--output-format stream-json` |",
+            "sources": [
+              "https://code.claude.com/docs/en/agent-sdk/overview",
+              "https://code.claude.com/docs/en/agent-sdk/claude-code-features",
+              "https://code.claude.com/docs/en/agent-sdk/slash-commands",
+              "https://code.claude.com/docs/en/agent-sdk/skills",
+              "https://code.claude.com/docs/en/headless",
+              "https://code.claude.com/docs/en/cli-reference",
+              "https://code.claude.com/docs/en/commands",
+              "https://code.claude.com/docs/en/interactive-mode",
+              "https://github.com/anthropics/claude-agent-sdk-python/issues/186"
+            ],
+            "correction": "The suspected nuance — that the SDK does NOT load filesystem config by default and you must opt in — is WRONG as of the current docs. The default behaviour is the OPPOSITE: omitting settingSources is equivalent to [\"user\", \"project\", \"local\"], loading everything. Pass settingSources: [] to opt OUT of filesystem config. The --bare CLI flag is the equivalent opt-out for claude -p. Also: agent teams are CLI-only (not supported in SDK), the allowed-tools SKILL.md frontmatter field does not apply in SDK mode (use top-level allowedTools instead), and the @-file-mention claim is confirmed: it is TUI-only autocomplete with no SDK equivalent."
+          }
+        }
+      ]
+    },
+    {
+      "dimension": "structured-ui-implications",
+      "summary": "A structured-event native iOS UI driving Claude Code via the Agent SDK (or claude -p --output-format stream-json) can achieve near-full feature parity with the TUI, but must do explicit opt-in work for nearly every feature that \"just works\" in the interactive terminal. The core SDK is well-equipped: settingSources defaults load all filesystem config automatically, custom slash commands dispatch identically to the TUI, skills are model-invoked and surface as tool-use events, hooks and MCP run natively in SDK. The real gaps are the ~30 built-in interactive/UI-management commands that require a live terminal (model picker, diff viewer, session picker, context visualizer, etc.) — these must each be implemented as native UI equivalents or accepted as missing. Agent teams are explicitly TUI-only and have no SDK path. Everything else is achievable.",
+      "feature_table": [
+        {
+          "feature": "settingSources default behavior",
+          "sdk_support": "yes",
+          "how": "Omitting settingSources is equivalent to ['user', 'project', 'local'] — the SDK loads all filesystem config by default. To disable, pass settingSources: []. Source: docs.claude.com/en/docs/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "CLAUDE.md memory (project + user + local)",
+          "sdk_support": "yes",
+          "how": "Loaded automatically when settingSources includes 'project' (loads <cwd>/CLAUDE.md and parent dirs) and 'user' (loads ~/.claude/CLAUDE.md). Default options load all three sources, so CLAUDE.md is active by default. Source: /en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "Skills (.claude/skills/*/SKILL.md)",
+          "sdk_support": "yes-with-config",
+          "how": "Set settingSources to include 'project' and/or 'user', and set skills: 'all' (or a list of names) on query(). Skills are model-invoked autonomously; the Skill tool is enabled automatically. Project skills load from <cwd>/.claude/skills/ and parent dirs up to repo root. No programmatic API to register skills — must be filesystem artifacts. Source: /en/agent-sdk/skills"
+        },
+        {
+          "feature": "Custom slash commands (.claude/commands/*.md) — legacy format",
+          "sdk_support": "yes",
+          "how": "Dispatch by sending '/cmd-name [args]' as the prompt string. Commands appear in message.slash_commands in the system init message. Argument placeholders ($1, $2, $ARGUMENTS), bash execution (!`cmd`), and @file-mentions all work. The new recommended format is .claude/skills/ — supports both slash invocation (/name) and autonomous invocation. Source: /en/agent-sdk/slash-commands"
+        },
+        {
+          "feature": "Listing available slash commands (for autocomplete UI)",
+          "sdk_support": "yes",
+          "how": "Read message.slash_commands from the system init message (type: 'system', subtype: 'init'). Contains built-in + custom command names. Plugin skills and custom commands appear namespaced (e.g. 'my-plugin:greet'). Source: /en/agent-sdk/slash-commands"
+        },
+        {
+          "feature": "@-file mentions in prompts",
+          "sdk_support": "yes",
+          "how": "Include @path/to/file in the prompt string. Identical behavior to TUI. Source: /en/agent-sdk/slash-commands (confirmed in custom command @file examples)"
+        },
+        {
+          "feature": "Subagents (programmatic via agents parameter)",
+          "sdk_support": "yes",
+          "how": "Pass agents: { 'name': { description, prompt, tools, model, skills, memory, mcpServers, maxTurns } } to query(). Include 'Agent' in allowedTools to auto-approve. Subagents appear as tool_use blocks with name 'Agent' and carry parent_tool_use_id in their messages. Source: /en/agent-sdk/subagents"
+        },
+        {
+          "feature": "Subagents (filesystem-based, .claude/agents/*.md)",
+          "sdk_support": "yes-with-config",
+          "how": "Loaded via settingSources: ['project'] or ['user']. Programmatic definitions take precedence over filesystem ones with the same name. Source: /en/agent-sdk/subagents"
+        },
+        {
+          "feature": "Hooks (programmatic callbacks)",
+          "sdk_support": "yes",
+          "how": "Pass hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [fn] }] } to query(). Callback returns {} (allow) or { decision: 'block', reason: '...' }. Events: PreToolUse, PostToolUse, Stop, SessionStart, SessionEnd, UserPromptSubmit. TypeScript has additional events (TeammateIdle, TaskCompleted). Source: /en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "Hooks (filesystem-based, settings.json shell scripts/http/mcp/prompt/agent)",
+          "sdk_support": "yes-with-config",
+          "how": "Set settingSources: ['project'] to load .claude/settings.json hooks. These run in the main agent and any subagents it spawns. Filesystem hooks support 'command', 'http', 'mcp_tool', 'prompt', and 'agent' hook types. Source: /en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "MCP servers (programmatic)",
+          "sdk_support": "yes",
+          "how": "Pass mcpServers: { 'name': { command, args } } to query(). Works identically to TUI. Source: /en/agent-sdk/overview"
+        },
+        {
+          "feature": "MCP servers (from .mcp.json / settings.json config files)",
+          "sdk_support": "yes-with-config",
+          "how": "Loaded when settingSources includes the relevant source. For programmatic control without filesystem loading, use mcpServers option directly on query(). Source: /en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "Plugins (local, via plugins option)",
+          "sdk_support": "yes",
+          "how": "Pass plugins: [{ type: 'local', path: './my-plugin' }] to query(). Plugin skills, agents, hooks, and MCP servers are all activated. Plugin skills appear namespaced in slash_commands (e.g. 'plugin-name:skill-name'). Source: /en/agent-sdk/plugins"
+        },
+        {
+          "feature": "Plugins (user-installed via CLI, ~/.claude/plugins/)",
+          "sdk_support": "yes-with-config",
+          "how": "Reference by absolute path in the plugins option. CLI-installed plugins live in ~/.claude/plugins/. Source: /en/agent-sdk/plugins"
+        },
+        {
+          "feature": "/compact (context compaction)",
+          "sdk_support": "yes",
+          "how": "Send prompt: '/compact' via query(). Returns system message with subtype 'compact_boundary' and compact_metadata (pre_tokens, trigger). Requires Claude Code v2.1.117+. Also triggered automatically when context is full. Source: /en/agent-sdk/slash-commands"
+        },
+        {
+          "feature": "/clear (reset conversation context)",
+          "sdk_support": "yes",
+          "how": "Send prompt: '/clear' via query(). Most useful in streaming-input / multi-turn SDK mode; in single-call query() it has no practical effect (each call already starts fresh). Requires Claude Code v2.1.117+. Source: /en/agent-sdk/slash-commands"
+        },
+        {
+          "feature": "/context (context usage visualizer)",
+          "sdk_support": "tui-only",
+          "how": "Opens an interactive colored grid in the terminal. No SDK equivalent for the visual display. Implement natively: read token counts from SDK messages and display a native usage bar/card."
+        },
+        {
+          "feature": "/model (model picker with interactive UI)",
+          "sdk_support": "tui-only",
+          "how": "Opens an interactive terminal picker. SDK equivalent: pass model option to query(). Implement natively: a native model picker dropdown that sets the model on the next query() call."
+        },
+        {
+          "feature": "/config / /settings (interactive settings UI)",
+          "sdk_support": "tui-only",
+          "how": "Opens a terminal settings dialog. Implement natively: a settings sheet with theme, model, output-style pickers wired to SDK options."
+        },
+        {
+          "feature": "/agents (subagent manager UI)",
+          "sdk_support": "tui-only",
+          "how": "Opens an interactive agent management dialog. SDK equivalent: programmatic agents parameter + reading message.slash_commands / system init for active agents. Implement natively: a list of configured agents."
+        },
+        {
+          "feature": "/resume / /branch (session resume picker)",
+          "sdk_support": "partial",
+          "how": "Session resume is supported via the resume option on query() (pass session ID). No interactive picker in SDK; the app must maintain its own session list and present a native UI. Source: /en/agent-sdk/sessions"
+        },
+        {
+          "feature": "/diff (interactive diff viewer)",
+          "sdk_support": "tui-only",
+          "how": "Opens a terminal diff viewer. No SDK path. Implement natively: read git diff via Bash tool result and render a native diff card."
+        },
+        {
+          "feature": "/rewind (conversation checkpoint rollback)",
+          "sdk_support": "tui-only",
+          "how": "Interactive conversation checkpoint system in TUI. SDK has no direct equivalent. Partial workaround: use session branching (fork_session option) or maintain your own message list and restart from a prior point."
+        },
+        {
+          "feature": "/permissions (interactive permissions manager)",
+          "sdk_support": "tui-only",
+          "how": "Opens a terminal dialog. SDK equivalent: set allowedTools, permissionMode, and hooks programmatically on query(). Implement natively: a permissions settings screen."
+        },
+        {
+          "feature": "/plan (plan mode)",
+          "sdk_support": "yes",
+          "how": "Set permissionMode: 'plan' on query() options. Equivalent to /plan in TUI. Can also send '/plan description' as a prompt. Source: CLI reference --permission-mode flag"
+        },
+        {
+          "feature": "/memory (CLAUDE.md editor)",
+          "sdk_support": "tui-only",
+          "how": "Opens a TUI editor for CLAUDE.md. Implement natively: allow the user to edit CLAUDE.md content in a native text editor view; changes persist on disk and are loaded in the next query()."
+        },
+        {
+          "feature": "Built-in bundled skills (/code-review, /batch, /debug, /run, /verify, /simplify, /deep-research)",
+          "sdk_support": "yes",
+          "how": "These are skills bundled with Claude Code. They load automatically (no special settingSources needed) and are invocable via '/skill-name' prompt string in SDK mode. They appear in message.slash_commands. Source: /en/commands (marked [Skill] in table)"
+        },
+        {
+          "feature": "Agent teams (multi-instance coordination with shared task list)",
+          "sdk_support": "tui-only",
+          "how": "Explicitly documented as 'a CLI feature' with no SDK path. Requires CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS env var. Teammates communicate via shared task list and direct messaging — none of this is exposed in SDK. For parallel work in SDK, use subagents instead (isolated context, report-back-only). Source: /en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "Auto-memory (~/.claude/projects/<project>/memory/)",
+          "sdk_support": "yes-with-config",
+          "how": "Loaded by default regardless of settingSources. Disable with autoMemoryEnabled: false in settings or CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 env var. Source: /en/agent-sdk/claude-code-features"
+        },
+        {
+          "feature": "Session persistence and resume",
+          "sdk_support": "yes",
+          "how": "Capture session_id from SystemMessage (subtype: 'init'). Pass resume: sessionId on a subsequent query() call. Source: /en/agent-sdk/sessions"
+        },
+        {
+          "feature": "/skills (skill listing UI with token costs)",
+          "sdk_support": "partial",
+          "how": "No SDK UI equivalent. The system init message lists available skills in message.skills. Query 'What skills are available?' to get a textual list. Implement natively: parse message.skills from init and display a native skills list card."
+        },
+        {
+          "feature": "Bare mode (--bare flag for fast startup)",
+          "sdk_support": "yes",
+          "how": "Set env: { CLAUDE_CODE_SIMPLE: '1' } or pass --bare via claude -p. Skips auto-discovery of hooks, skills, plugins, MCP, auto-memory, CLAUDE.md. Use for pure scripted calls that don't need project config. Source: CLI reference"
+        }
+      ],
+      "points": [
+        {
+          "claim": "settingSources default is ALL sources, not empty — filesystem config loads automatically",
+          "detail": "The Agent SDK overview page states: 'With default options the SDK loads these from .claude/ in your working directory and ~/.claude/.' The claude-code-features page is unambiguous: 'Omitting settingSources is equivalent to [\"user\", \"project\", \"local\"].' The web search result that said 'SDK does not load filesystem settings by default' was incorrect. The CORRECT behavior: skills, CLAUDE.md, hooks, commands, and subagent definitions all load by default. Pass settingSources: [] to explicitly disable. This is the single most important verified fact for the native UI design — the structured iOS UI gets all filesystem config for free without any opt-in, as long as the cwd is set correctly.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/overview",
+            "https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+          ]
+        },
+        {
+          "claim": "Custom slash commands dispatch identically in SDK and TUI — send '/cmd-name args' as the prompt string",
+          "detail": "The slash commands SDK doc is explicit: 'Send slash commands by including them in your prompt string, just like regular text.' Custom commands from .claude/commands/*.md and .claude/skills/*/SKILL.md both appear in message.slash_commands from the system init message. Arguments ($1, $2, $ARGUMENTS), bash execution (!`git status`), and @file-mentions in command templates all work in SDK mode. The system init message also lists built-in SDK-available commands like 'clear', 'compact', 'context', 'usage'. A native input box can list available commands by reading this init message at session start.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/slash-commands"
+          ]
+        },
+        {
+          "claim": "Skills are model-invoked and surface as Skill tool_use events in the stream — no special rendering required",
+          "detail": "Skills are autonomous — Claude decides when to invoke them based on the description field matching user intent. The app sees them as tool_use blocks in AssistantMessage content. The SDK docs state: 'Claude autonomously chooses when to use them based on context.' For the structured UI, skills 'just work' once settingSources includes 'project' and 'user' and the skills option is set (or left at default). The user can also invoke them explicitly by typing /skill-name. The SKILL.md allowed-tools frontmatter field does NOT apply when using skills through the SDK; tool access is controlled by allowedTools on query() instead.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/skills"
+          ]
+        },
+        {
+          "claim": "The system init message provides the complete list of available commands and skills for autocomplete",
+          "detail": "On session start, a message with type: 'system', subtype: 'init' is emitted. It contains: slash_commands (array of available command names, both built-in and custom), skills (array of skill names with plugin namespacing like 'plugin:skill-name'), and plugins (array of loaded plugins). The native input box can read this at session start and offer autocomplete when the user types '/'. This is the official SDK API for command discovery — no separate enumeration call needed.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/plugins",
+            "https://code.claude.com/docs/en/agent-sdk/slash-commands"
+          ]
+        },
+        {
+          "claim": "Built-in interactive TUI commands with no SDK dispatch path must each have native equivalents",
+          "detail": "The slash commands doc states: 'Only commands that work without an interactive terminal are dispatchable through the SDK; the system/init message lists the ones available in your session.' The commands listed in the system init example are: ['clear', 'compact', 'context', 'usage']. The full TUI command list contains ~60 commands, the vast majority of which are TUI-UI-management commands: /model (picker), /config (settings dialog), /agents (agent manager), /diff (diff viewer), /rewind (checkpoint), /resume (session picker), /permissions (permissions dialog), /memory (CLAUDE.md editor), /skills (skills lister), /theme, /effort (slider), /hooks (hook viewer), /mcp (MCP manager), /context (context grid), /diff, /copy, /export, /focus, /status, /plugin, /reload-plugins, /reload-skills, /desktop, /background, /batch, /goal, /loop, /schedule, /tasks, /branch, /btw, /rename, /statusline, /tui, /sandbox, /doctor, /debug, /feedback, /insights, /keybindings, etc. Each must be implemented as native UI or accepted as not available on the iOS pane.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/slash-commands",
+            "https://code.claude.com/docs/en/commands"
+          ]
+        },
+        {
+          "claim": "Agent teams are TUI-only with no SDK path whatsoever",
+          "detail": "The claude-code-features page explicitly states: 'Agent teams are a CLI feature where one session acts as the team lead, coordinating work across independent teammates.' The agent-teams page confirms they require CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, use tmux/in-process terminal display, require direct keyboard interaction (Shift+Down to cycle teammates), and their architecture (shared task list, mailbox messaging, split panes) is entirely terminal-UI-bound. No SDK option exposes team creation or management. For parallel work in the structured iOS UI, use programmatic subagents (agents parameter on query()) — they give context isolation and parallelism, but teammates cannot message each other directly.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/claude-code-features",
+            "https://code.claude.com/docs/en/agent-teams"
+          ]
+        },
+        {
+          "claim": "Hooks work in two independent layers in SDK — programmatic callbacks AND filesystem shell-script hooks can coexist",
+          "detail": "The SDK supports two hook types simultaneously: (1) Programmatic hooks: callback functions passed directly to query() via the hooks parameter. These are in-process, can return structured block/allow decisions, and are scoped to the main session only. (2) Filesystem hooks: shell commands / HTTP / MCP / prompt / agent hooks defined in .claude/settings.json, loaded when settingSources includes 'project'. These run in main agent AND any subagents it spawns. If the user has existing hooks configured in their project's settings.json, setting settingSources: ['project'] activates them automatically in the SDK — no extra configuration.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+          ]
+        },
+        {
+          "claim": "The cwd option is critical for project-level config discovery — the iOS app must pass the correct working directory",
+          "detail": "Skills load from <cwd>/.claude/skills/ and every parent directory up to the repository root. CLAUDE.md loads from <cwd> and every parent. Project settings.json and hooks load only from <cwd>/.claude/ with no parent fallback. If the cwd option is not set, it defaults to the process's current directory. For the iOS app driving a remote coding session (e.g., via SSH or a server process), the cwd must be set to the project root, not the iOS app's sandbox directory. This is a deployment-level concern, not an SDK-level one.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/claude-code-features"
+          ]
+        },
+        {
+          "claim": "Plugins from local paths are fully supported in SDK; marketplace/remote plugins require local download first",
+          "detail": "The plugins SDK docs state: 'The type field must be \"local\", the only value the SDK accepts. To use a plugin distributed through a marketplace or remote repository, download it first and provide the local directory path.' CLI-installed plugins live in ~/.claude/plugins/ — reference these by absolute path in the plugins array. Plugin skills appear in slash_commands with namespace prefix (e.g. 'my-plugin:greet') and are invocable via '/plugin-name:skill-name'.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/plugins"
+          ]
+        },
+        {
+          "claim": "Hybrid architecture verdict: desktop TUI retains everything; structured iOS pane needs ~15-20 native UI equivalents for full parity",
+          "detail": "The structured iOS pane achieves full parity on: skills, CLAUDE.md, custom slash commands, hooks, MCP, plugins, subagents, session persistence, @-file mentions, built-in bundled skills (/code-review, /batch, etc.), /compact, /clear. It needs native implementations for: model picker (/model), permission mode switcher, session resume picker (/resume), context usage display (/context), diff viewer (/diff), CLAUDE.md editor (/memory), settings screen (/config), hooks/MCP/agent manager views, skill/plugin lister, and the misc TUI management commands. Agent teams have no path at all. The structured UI is a net positive for most agentic workflows — losing the TUI management chrome, not losing the core agent capabilities.",
+          "sources": [
+            "https://code.claude.com/docs/en/agent-sdk/overview",
+            "https://code.claude.com/docs/en/agent-sdk/claude-code-features",
+            "https://code.claude.com/docs/en/commands"
+          ]
+        }
+      ],
+      "project_relevance": "This research directly answers the design question for the structured-event iOS pane. The key actionable findings: (1) Use settingSources: ['user', 'project', 'local'] explicitly on every query() call to be safe (it is the default, but explicit is clearer). (2) Set skills: 'all' on query() options to enable skill discovery. (3) Read message.slash_commands from the system init message to populate the native autocomplete when user types '/'. (4) For /model, /config, /context, /resume, /memory, /diff, /agents, /permissions — implement native iOS equivalents; these are TUI chrome, not agent capabilities. (5) /compact and /clear dispatch as SDK slash commands. (6) Agent teams: unsupported — for iOS parallel work, use programmatic subagents. (7) Desktop TUI via raw PTY preserves 100% of features including agent teams, interactive pickers, rewind, and all TUI chrome.",
+      "claims_to_verify": [
+        "settingSources default = ['user', 'project', 'local'] — VERIFIED by /en/agent-sdk/claude-code-features: 'Omitting settingSources is equivalent to [\"user\", \"project\", \"local\"]'",
+        "skills option must be set explicitly (skills: 'all') even with correct settingSources — VERIFIED: 'When the skills option on query() is omitted, discovered skills are enabled and the Skill tool is available' — so actually skills also default to enabled. Setting skills: 'all' is redundant but explicit.",
+        "message.slash_commands in system init is the SDK API for command listing — VERIFIED in plugin and slash-command docs",
+        "SKILL.md allowed-tools frontmatter does NOT apply in SDK — VERIFIED: 'The allowed-tools frontmatter field in SKILL.md is only supported when using Claude Code CLI directly. It does not apply when using Skills through the SDK.'",
+        "Agent teams are TUI-only — VERIFIED: 'Agent teams are a CLI feature' in /en/agent-sdk/claude-code-features",
+        "Custom command @file-mentions and !bash-execution work in SDK — stated in slash-command docs but not explicitly confirmed with a 'works in SDK' label; treat as probable but worth testing"
+      ],
+      "open_questions": [
+        "Does the structured iOS pane need its own Claude Code binary running somewhere (locally on macOS via SSH/XPC, or on a remote server)? The Agent SDK bundles a native Claude Code binary for the host platform — this is macOS/Linux/Windows, not iOS. The SDK cannot run natively on iOS; it must run on a server or desktop process that the iOS app controls remotely.",
+        "What is the streaming latency and connection model for driving the Agent SDK from an iOS app? The SDK is a Python/TypeScript library — does the iOS app SSH into a server running the SDK, or use a custom IPC layer?",
+        "For the /rewind (checkpoint) feature: is there any SDK hook that emits checkpoint metadata (file state snapshots) that a native UI could use to implement a rewind card? The TUI docs mention 'per-turn diffs' in the diff viewer but the SDK message stream may not expose this directly.",
+        "Does message.skills in the system init message include token-cost metadata (useful for the /skills UI that shows token count per skill)? The TUI /skills command shows token costs with 't' sort; the SDK init message may or may not carry this.",
+        "The 'prompt' hook type (LLM evaluates a prompt) and 'agent' hook type — are these available in SDK filesystem hooks loaded via settingSources, or are they TUI-only hook types? The docs list them in the filesystem-hook table but don't explicitly confirm SDK availability."
+      ],
+      "verifications": [
+        {
+          "claim": "settingSources default = ['user', 'project', 'local'] — VERIFIED by /en/agent-sdk/claude-code-features: 'Omitting settingSources is equivalent to [\"user\", \"project\", \"local\"]'",
+          "verdict": {
+            "claim": "settingSources default = ['user', 'project', 'local'] — omitting settingSources is equivalent to [\"user\", \"project\", \"local\"]",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "The TypeScript SDK reference at code.claude.com/docs/en/agent-sdk/typescript#settingsource states: \"When settingSources is omitted or undefined: The SDK loads the same filesystem settings as the Claude Code CLI: all three sources (user, project, and local). Managed policy settings are always loaded regardless of this option.\" The Agent SDK overview at code.claude.com/docs/en/agent-sdk/overview also confirms: \"With default options the SDK loads these from .claude/ in your working directory and ~/.claude/. To restrict which sources load, set setting_sources (Python) or settingSources (TypeScript) in your options.\" The Agent SDK skills page further corroborates: \"With default query() options, the SDK loads user and project sources, so skills in ~/.claude/skills/, <cwd>/.claude/skills/, and .claude/skills/ in any parent directory of <cwd> up to the repository root are available.\"",
+            "sources": [
+              "https://code.claude.com/docs/en/agent-sdk/typescript#settingsource",
+              "https://code.claude.com/docs/en/agent-sdk/overview",
+              "https://code.claude.com/docs/en/agent-sdk/skills",
+              "https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts",
+              "https://code.claude.com/docs/en/agent-sdk/slash-commands",
+              "https://code.claude.com/docs/en/skills"
+            ],
+            "correction": "The claim is correct on the default value. One nuance: the doc path cited in the original claim (/en/agent-sdk/claude-code-features) no longer exists under that URL — the canonical source for the settingSources default is now code.claude.com/docs/en/agent-sdk/typescript#settingsource. Also important: the skills page notes that the default loads 'user and project sources' in its description of what skills load by default, not explicitly mentioning 'local' — but the TypeScript reference is unambiguous that all three (user, project, local) are loaded when the option is omitted."
+          }
+        },
+        {
+          "claim": "skills option must be set explicitly (skills: 'all') even with correct settingSources — VERIFIED: 'When the skills option on query() is omitted, discovered skills are enabled and the Skill tool is available' — so actually skills also default to enabled. Setting skills: 'all' is redundant but explicit.",
+          "verdict": {
+            "claim": "skills option must be set explicitly (skills: 'all') even with correct settingSources — verified: 'When the skills option on query() is omitted, discovered skills are enabled and the Skill tool is available' — so actually skills also default to enabled. Setting skills: 'all' is redundant but explicit.",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "The official Agent SDK skills page at code.claude.com/docs/en/agent-sdk/skills states verbatim: \"When omitted, discovered Skills are enabled and the Skill tool is available, matching CLI behavior.\" It also confirms that `skills: 'all'` enables every discovered skill, a list of names enables only those, and `[]` disables all. So the claim that `skills: 'all'` is explicit but redundant is correct — default behavior already enables all discovered skills. However there is one critical nuance: skills are only discovered if `settingSources` includes `'user'` and/or `'project'`. With default options (no explicit `settingSources`) the SDK loads user and project sources, so skills in `~/.claude/skills/`, `.claude/skills/`, and parent directories up to the repo root are available automatically. The catch is that `--bare` mode skips skill discovery entirely regardless of `skills` option.",
+            "sources": [
+              "https://code.claude.com/docs/en/agent-sdk/skills",
+              "https://code.claude.com/docs/en/agent-sdk/overview",
+              "https://code.claude.com/docs/en/headless",
+              "https://code.claude.com/docs/en/agent-sdk/typescript",
+              "https://code.claude.com/docs/en/agent-sdk/slash-commands",
+              "https://code.claude.com/docs/en/commands",
+              "https://code.claude.com/docs/en/cli-reference",
+              "https://code.claude.com/docs/en/skills"
+            ],
+            "correction": "The original claim is confirmed correct. skills: 'all' is indeed redundant when settingSources includes user/project (which is the default). The full picture for a structured-event iOS UI: (1) filesystem config IS loaded by default in SDK/headless — CLAUDE.md, skills, commands, hooks, MCP from .claude/ and ~/.claude/ — no explicit opt-in required; (2) --bare is the escape hatch that strips everything for clean CI scripts; (3) settingSources restricts which files load; (4) built-in TUI-interactive slash commands (/model picker, /config UI, /agents view, /diff viewer, /theme, /scroll-speed, /focus, /tui) have no SDK equivalent and must be replaced by native iOS UI; (5) /compact and /clear DO work in SDK mode — discoverable from system/init message slash_commands array; (6) custom slash commands (.claude/commands/*.md and .claude/skills/*) expand and execute fully in SDK mode; (7) MCP, hooks, subagents, plugins, @-file mentions all work in SDK mode."
+          }
+        },
+        {
+          "claim": "message.slash_commands in system init is the SDK API for command listing — VERIFIED in plugin and slash-command docs",
+          "verdict": {
+            "claim": "message.slash_commands in the system/init message is the SDK API for command listing — verified in plugin and slash-command docs",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "The Claude Agent SDK docs at code.claude.com/docs/en/agent-sdk/slash-commands show explicit TypeScript and Python code examples that read `message.slash_commands` (or `message.data[\"slash_commands\"]` in Python) from the `system/init` message. The plugins SDK page confirms the same field lists both built-in and plugin/skill commands. However, the scope of what slash_commands represents is broader than \"command listing API\" alone — it is specifically the list of non-interactive-terminal commands that are dispatchable through the SDK. The docs explicitly state: \"Only commands that work without an interactive terminal are dispatchable through the SDK; the system/init message lists the ones available in your session.\"\n\nThe confirmed example output for slash_commands is [\"clear\", \"compact\", \"context\", \"usage\"] for a minimal session, and with custom commands present: [\"clear\", \"compact\", \"context\", \"usage\", \"refactor\", \"security-check\"]. Plugin skills also appear there as \"plugin-name:skill-name\". So the claim that message.slash_commands is the API for command listing is confirmed with strong evidence from two separate official doc pages.",
+            "sources": [
+              "https://code.claude.com/docs/en/agent-sdk/slash-commands",
+              "https://code.claude.com/docs/en/agent-sdk/plugins"
+            ],
+            "correction": "The claim is accurate, with one important nuance: slash_commands in the init message lists only the commands that work without an interactive terminal. TUI-only commands (/config, /model, /agents, /diff, /theme, etc.) are not included. The field is also present in the plugins init data and lists plugin-namespaced commands like \"my-plugin:custom-command\" alongside built-ins."
+          }
+        }
+      ]
+    }
+  ]
+}

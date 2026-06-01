@@ -1,0 +1,725 @@
+{
+  "lensesReviewed": 5,
+  "plan": "All findings verified against ground truth. I have enough to confirm:\n- Doc 03: line 96 \"Nếu video dùng QUIC\" dead conditional + redundant double-banner (54 + 74-78).\n- Doc 14: line 192 \"còn treo\" vs line 198 \"ĐÃ GIẢI\" + line 17-22 resolved (stale list); line 55 \"Tôi đánh dấu\" first-person; TERM=xterm-ghostty authoritative (line 13, 75, 168).\n- Doc 16: CoT is \"rỗng/omitted on Claude 4\", redacted_thinking is Claude 3.7 — confirms README line 46 \"CoT redacted trên Opus 4.x\" is wrong.\n- Doc 11: §1.1 corrections + table say default=8, use 2-3; but capture-budget table line 64 still says queueDepth=3 (self-inconsistent); doc 12 line 588 uses queueDepth=5.\n- Doc 07: banner present but body Phase 1=video, ASCII flow line 90 = old ordering.\n- Doc 05: banners + Electron correction present (the doc-12 §3.3.1 \"TODO\" is already done).\n\nI now have full ground-truth confirmation. Let me write the polish plan.\n\n## Markdown Polish Plan — bộ docs `rworkspace/docs` (PaneCast / remote-coding tool)\n\nMọi đường dẫn tuyệt đối. Đã READ/Grep xác minh từng issue dưới đây trên file thực tế (line numbers theo bản hiện tại).\n\n---\n\n## A. Cấu trúc / IA — đề xuất\n\nBộ docs có \"spine\" cũ (01–11 = game-streaming/screen-sharing) + kiến trúc hiện hành (12–16 = terminal-first hybrid) bolt-on qua banner. Reader vào README hoặc doc 01 trước → nhận sai mental model. Đề xuất **light reorg + signposting**, KHÔNG renumber (03/05/10/11/12/13 cross-ref nhau bằng số — renumber sẽ vỡ hàng loạt link).\n\n**A1. Một authoritative overview (read-first thực sự).** README hiện trỏ doc 12 là \"đọc đầu tiên\" nhưng doc 12 là 810 dòng, 5 research-output ghép lại, có 2 TL;DR + heading trùng số + meta-commentary. → Tạo **`00-overview.md`** (1–2 trang) HOẶC viết lại thân README để LÀ overview. Nội dung: hybrid terminal-first; PTY byte-stream qua NetBird P2P; libghostty client renderer; `TERM=xterm-ghostty`; no app-layer crypto (WireGuard + NetBird ACL); OAuth + setup-token / reuse `credentials.json`; input box A+B1 (B2 deferred); read-only inspector + CoT placeholder-only; phase order terminal(1)→persist(2)→iOS(3)→GUI video(4)→security(5). Mỗi quyết định 1 dòng + link tới doc chi tiết. Giữ doc 12 là deep-dive, KHÔNG phải front door.\n\n**A2. Current-vs-historical signposting (README doc table).** Thêm **cột \"Status\"** vào bảng `## Tài liệu` (README dòng 29–46), 3 trạng thái:\n- `CURRENT` → 12, 13, 14, 16 (+ 15 = prior-art reference)\n- `REFERENCE — GUI video-path (Phase 4)` → 01, 02, 03(phần video), 04, 05, 09, 10, 11\n- `SUPERSEDED` → 07\n\nNhóm bảng thành 3 section có header thay vì list phẳng 01→16. Hiện tại 01–11 bị front-load như spine chính.\n\n**A3. Banner standard.** Hiện có 5+ cách viết banner khác nhau (01 \"Cập nhật kiến trúc (re-scope)\", 05/10/11 \"CHỈ áp dụng GUI video-path\", 07 \"Đã được ghi đè\", 09 \"Re-scope (hybrid)\"). → Định nghĩa 3 banner cố định, viết verbatim ở đầu mỗi doc non-current; để legend trong README:\n- `STATUS: SUPERSEDED — xem [N]`\n- `STATUS: REFERENCE — GUI video-path only (Phase 4)`\n- `STATUS: CURRENT`\n\n**A4. Reading order rõ ràng (README §\"Đọc theo vai trò\").** Sửa role-path: bullet \"Sắp code Phase 1 (terminal MVP)\" hiện trỏ **doc 03 (video transport — SAI path)**. Terminal path implementer order đúng: 12 (arch + terminal design + roadmap) → 13 (NetBird) → 14 (Claude Code integration) → 16 (inspector) → 15 (prior-art). GUI-video path: thêm 04 + 09 vào \"[01]+[02]+[05]\".\n\n**A5. Decisions log.** Không có ADR/decisions index; quyết định nằm rải trong blockquote dài (libghostty own-patch, A+B1, CoT placeholder, drop app crypto). → Thêm **`DECISIONS.md`** (hoặc section trong overview): 1 dòng/quyết định + status (chốt/open) + link doc§. Dùng làm change-log để lần re-scope sau update 1 chỗ thay vì re-banner N docs. Đây cũng là \"decisions register\" để chống value-drift (TERM, renderer, local-echo, QUIC, codec default).\n\n**A6. (Tùy chọn, medium-leverage) Split doc 12.** Doc 12 = 4 docs ghép: hybrid arch overview / terminal design §1–6 / GUI video 4:2:0 / roadmap. Có heading trùng số (hai `## 5`, hai `## 6`, hai `## 7`), 2 TL;DR, ToC (dòng 22–25) không khớp heading tree. → Nếu split: `12` (overview + routing + roadmap, read-first) / `12a-terminal-design` / `12b-gui-video`; move roadmap về doc 07. Nếu KHÔNG split: tối thiểu renumber heading cho unique + regenerate ToC. Đây là việc lớn nhất — có thể defer, nhưng phải xử lý heading-trùng-số để anchor ổn định.\n\n---\n\n## B. Issues ưu tiên (dedup qua 4 lens, sort HIGH → LOW)\n\n| # | doc | type | sev | Vấn đề | Fix |\n|---|-----|------|-----|--------|-----|\n| 1 | 12 | contradiction | HIGH | Local-echo / PredictionEngine tự mâu thuẫn trong cùng doc: §3 dòng 372 \"đòn bẩy responsiveness lớn nhất\" + dòng 387 \"hybrid tool **PHẢI** set `DisplayPreference=Always`\" + summary table dòng 496 \"port PredictionEngine, DisplayPreference=Always\" — NHƯNG ranking #11 dòng 688 \"Trên LAN **không cần**\" + roadmap Phase 5 dòng 808 \"~~Speculative local echo~~ — **KHÔNG cần**\" + doc 13 dòng 68/89 \"không predictive local-echo\". | Chốt theo quyết định cuối (drop prediction cho v1, assume P2P). Sửa §3 → đánh dấu `[DEFERRED — Phase 5 / doc 13]`, đổi \"PHẢI\" thành \"optional future lever IF relay phổ biến\". Đổi summary-table dòng 496 → \"deferred (assume P2P; revisit only if relayed)\". Giữ analysis làm reference. |\n| 2 | 08 | contradiction / stale | HIGH | §4 dòng 86 \"❌ Điều khiển qua Internet / NAT traversal (**chỉ LAN**)\" mâu thuẫn trực tiếp với NetBird mesh (doc 13 = remote-over-NAT là mục đích chính; doc 13 §5 dòng 91 correct scope \"Chỉ LAN → NetBird mesh\"). | Bỏ \"chỉ LAN\". Ghi: remote access đi qua NetBird mesh (direct P2P assumed; relayed = degraded, không engineer). Non-goal còn lại = \"app-level NAT traversal / custom relay (delegate cho NetBird)\". Cross-ref doc 13. |\n| 3 | 01 | stale-superseded | HIGH | Banner dòng 3 \"render bằng **SwiftTerm**\". Quyết định cuối đã lật sang libghostty (doc 12 §4 dòng 399 \"verdict LẬT từ SwiftTerm sang libghostty\"). Banner re-scope lại nói sai renderer. | Đổi \"render bằng SwiftTerm\" → \"render bằng **libghostty** (SwiftTerm = fallback)\". |\n| 4 | 13 | stale-superseded | HIGH | §4 dòng 68 \"Terminal = TCP byte-stream + **SwiftTerm**.\" Câu hiện tại (không phải fallback note) trong doc CURRENT → present sai renderer. | Đổi \"+ SwiftTerm\" → \"+ **libghostty** (render client; SwiftTerm fallback)\". Giữ \"không mosh/SSP, không predictive local-echo\". |\n| 5 | 12 | stale-superseded | HIGH | `TERM=xterm-256color` ở 5 chỗ (diagram dòng 73, prose §3.1 dòng 125, env table dòng 314 \"hoặc xterm-ghostty nếu client là Ghostty\", §4 code dòng 439, Do-first dòng 701). Client LÀ libghostty; doc 14 Quyết định 1 (dòng 13/75/168) chốt `TERM=xterm-ghostty`. | Set `xterm-ghostty` làm default cả 5 chỗ. Ghi `xterm-256color` chỉ là fallback-toggle cho paste bug #54700 (doc 14). Thêm caveat: TERM custom → `CLAUDE_CODE_FORCE_SYNC_OUTPUT=1`. |\n| 6 | README | contradiction | HIGH | Dòng 46 \"CoT **redacted** trên Opus 4.x\" — SAI. Doc 16 dòng 25: trên Claude 4 `thinking` **rỗng/omitted** (`display:\"omitted\"`); `redacted_thinking` là **Claude 3.7 only**, KHÔNG phải Claude 4. | Đổi → \"CoT/thinking rỗng (omitted) trên Opus 4.x → inspector render placeholder 'Thinking (not persisted)'. (redacted_thinking là Claude 3.7, không phải Claude 4.)\" |\n| 7 | README | broken-xref | HIGH | §\"Đọc theo vai trò\" dòng 51: \"Sắp code Phase 1 (terminal MVP) → [12] + **[03 transport]**\". Doc 03 là **GUI-video transport** (UDP/QUIC, FEC, keyframe) — sai path cho terminal (terminal = reliable TCP, doc 12 §5 + doc 13). | Đổi → \"[12 §Wire protocol / §2 Transport reliable TCP] + [13 NetBird]\". Bỏ hoặc relabel [03] thành \"video transport, GUI path only\". |\n| 8 | 12 | structure | HIGH | Meta-commentary AI còn sót: dòng 251–263 (\"**Tôi đã viết xong section.** Đây là markdown implementation-ready…\" + recap verdict trùng) và footer dòng 662 (\"File liên quan (đường dẫn tuyệt đối): /Volumes/…\"). Generation artifact, không phải doc content, trong doc flagship. | **Xóa** cả 2 block. Recap verdict (253–261) trùng các correction inline → bỏ hẳn, không relocate. |\n| 9 | 12 | structure | HIGH | Doc 12 = 4 docs ghép, heading trùng số (hai `## 5/6/7`), 2 TL;DR (dòng ~21 + 512), ToC dòng 22–25 không khớp heading tree, anchor `#5-...` fragile (duplicate-slug). | Split (xem A6) hoặc tối thiểu: renumber heading unique + regenerate ToC khớp mọi H2 + bỏ TL;DR thừa. |\n| 10 | 09 | stale-superseded | MED | Banner dòng 3 nói GUI default = \"HEVC 4:2:0 **8-bit** quality-mode (Quality≈0.6); 10-bit hạ optional\" NHƯNG body vẫn nói \"**HEVC Main 10 (10-bit)** … dùng mặc định\" + `EnableLowLatencyRateControl` ở TL;DR dòng 9, §2 dòng 52, §7 \"Quyết định cuối\" dòng 106. §2 item 3 \"Software encode 4:4:4 ultra-text tier\" (dòng 54) vẫn còn dù banner + doc 12 §7.3 dòng 731 nói DROP. | Sửa §7 + TL;DR → \"GUI default = HEVC Main 8-bit 4:2:0 + constant-quality Quality≈0.6 (Apple Silicon); 10-bit = optional; low-latency RC = optional/uncertain, `AllowFrameReordering=false` đủ\". Hạ §2 mục 1 \"10-bit dùng mặc định\" → optional. **Xóa** §2 mục 3 (4:4:4 tier). Cite doc 12 §3.2/§5/§7.3. |\n| 11 | 14 | stale-superseded | MED | \"Open questions còn treo\" dòng 192–197 (4 libghostty question) NHƯNG dòng 198 \"**4 open question trên ĐÃ GIẢI**\", và dòng 17–22 (đầu doc) đã list resolved. Cùng 4 item present vừa open vừa resolved 2 nơi trong cùng doc. | Xóa list \"còn treo\" (192–197) hoặc convert sang past-tense trỏ resolved answers (dòng 17–22). Giữ resolved 1 chỗ (doc 12 §1 là source; doc 14 top = pointer). |\n| 12 | 08 | stale-superseded | MED | R3 dòng 20 \"QUIC datagram + FEC adaptive\" + Q3 dòng 66 \"QUIC datagram tùy chọn cho Wi-Fi\" — QUIC đã bị bỏ (doc 03 §2 + doc 13 §5 dòng 87 \"Bỏ QUIC, plain UDP\"). R8/R9 thiếu GUI-path banner (R1/R2 có). | R3/Q3: thay \"QUIC datagram\" → \"plain UDP over NetBird (QUIC dropped — WireGuard encrypts; doc 13 §5)\". Thêm tag \"GUI video-path only (Phase 4)\" cho R3, R4b, R8, R9. Thêm doc 08 vào bảng corrections doc 13 (dòng 80–91). |\n| 13 | 01 | stale-superseded | MED | §5 Latency Budget (dòng 92–105) \"glass-to-glass ~30–50ms … 60fps\" + §6 \"ProMotion 120Hz\". README + doc 12 §7.3 (dòng 747) chốt 40–80ms, \"120fps/ProMotion: bỏ\", và §7.3 **chỉ thị** split §5 thành terminal-vs-GUI table — chưa thực hiện. | Thực thi chỉ thị doc 12 §7.3: tách §5 → (a) terminal-path ~1–5ms RTT, (b) GUI-path table target 40–80ms, bỏ cột 120fps. Tối thiểu: banner §5-local \"GUI video-path only; target 40–80ms, 120fps dropped — doc 12 §7.3\". |\n| 14 | 12 | contradiction | MED | TLS lặp lại nhiều chỗ cho terminal transport: dòng 213 \"TLS optional trên LAN\", dòng 495 \"TLS 1.3/AES-GCM\", dòng 703 \"TLS optional trên LAN\". Doc 13 (TL;DR #1, §1, §2 dòng 43) chốt **bỏ app-layer crypto** (plain TCP, WireGuard encrypt). Superseded nhưng chưa mark. | Đổi \"TLS optional\" → \"no app-layer TLS — WireGuard encrypts, xem doc 13\". Đồng bộ với Phase 5 dòng 803 (đã đúng). |\n| 15 | 07 | stale-superseded | MED | Banner (dòng 3) defer doc 12 nhưng body vẫn \"Phase 1 = MVP video\" (dòng 27), \"Phase 4 = Polish\", ASCII flow dòng 90 = ordering cũ. Va chạm số với doc 12 (Phase 1 = terminal, Phase 4 = video). Reader vào doc 07 lấy nhầm plan cũ. | Strengthen banner → \"SUPERSEDED — historical GUI-path reference only\". Relabel phase headers → \"GUI Phase 1 (old: video MVP)\" để không va chạm. Hoặc move revised roadmap từ doc 12 §4 VÀO doc 07, giữ phase cũ làm appendix. |\n| 16 | 13 | broken-xref | MED | §5 bảng corrections, row \"[12] **§security**\" — doc 12 không có section tên \"security\"; text quote \"auth+encryption bắt buộc tầng app\" không còn verbatim trong doc 12 (đã defer NetBird ở Phase 5). | Repoint → \"[12] §7 / Phase 5 — Security\", và mark row \"(đã áp dụng vào doc 12)\" thay vì live pointer tới content thiếu. |\n| 17 | 12 | broken-xref | MED | Dòng ~720 cite \"doc 05 **§4.1**\" — doc 05 không có §4.1 (§4 = \"Raise một cửa sổ CỤ THỂ\"; cooperative-activation ở subsection KHÔNG đánh số \"Caveat macOS 14+\", doc 05 dòng 92). | Đổi → \"doc 05 §4 → Caveat macOS 14+ cooperative activation\". |\n| 18 | README | gap | MED | Glossary (dòng 55–66) chỉ có term video-era (NALU, IDR, Glass-to-glass, TCC, AX). Thiếu MỌI term current architecture: PTY, libghostty, NetBird/WireGuard, P2P, TUI, PTF (dùng không expand → chính là chỗ làm typo PTF lọt), setup-token, A+B1, SSP/mosh, JSONL, OSC 133, alt-screen, B2/SDK-pane, CoT. | Thêm glossary block current-arch. Định nghĩa PTY rõ (để PTF đọc ra là lỗi hiển nhiên). Tách video-only term sang sub-section \"GUI video path terms\". |\n| 19 | README/all | gap | MED | Không có DECISIONS.md / ADR index. Quyết định iterative nằm rải trong blockquote dài. | Thêm DECISIONS.md (xem A5). |\n| 20 | 12 | stale / queueDepth | MED | §4 dòng 588 `queueDepth = 5 // giá trị Apple khuyến nghị`. Doc 02 + doc 11 (§1.1 dòng 20, table dòng 198/564) chốt default thực = 8, không có floor 3, 2–3 cho low latency. \"5\" + label \"Apple khuyến nghị\" sai. **Lưu ý:** doc 11 cũng tự mâu thuẫn — table dòng 64 vẫn ghi `queueDepth=3`. | Doc 12: đổi → `queueDepth=3` (hoặc \"2–3 low-latency; 5 chỉ nếu GPU spike\"), bỏ label \"Apple khuyến nghị\", cross-ref doc 11. Doc 11: sửa table dòng 64 `queueDepth=3` → 2 (hoặc note \"default 8, dùng 2\") cho khớp correction của chính nó. |\n| 21 | README | terminology | MED | Status superseded/GUI-only phrasing drift (\"chỉ GUI path\" / \"GUI-path-only\" / \"Phase 4\") khác nhau mỗi bullet → khó scan current vs reference. | Adopt 1 tag thống nhất (badge \"GUI-path only\" ở cột Status, A2) thay vì re-explain mỗi bullet. |\n| 22 | 03 | stale-superseded | LOW | §3 dòng 96 \"**Nếu video dùng QUIC:** mở QUIC reliable stream cho control\" — dead branch sau \"Bỏ QUIC\" (mâu thuẫn correction box dòng 77 \"Plain UDP/TCP\"). | Xóa/strike bullet \"Nếu video dùng QUIC\", giữ TCP-noDelay control channel làm recommendation duy nhất. |\n| 23 | 03 | redundancy | LOW | NetBird corrections nói 2 lần: banner dòng 54 + blockquote CORRECTIONS dòng 74–78 (lặp 4 điểm: wiredEthernet, serviceClass, QUIC, includePeerToPeer). | Gộp thành 1 banner trỏ doc 13 cho full recipe. 1 correction callout/doc. |\n| 24 | 14 | structure | LOW | Dòng 55 first-person \"**Tôi đánh dấu** rõ những claim…\" — giọng LLM authoring, lệch style impersonal. | Reword impersonal: \"Các claim refuted/uncertain được đánh dấu ở từng chỗ load-bearing.\" |\n| 25 | 08 | structure | LOW | Risk ID lộn xộn: R1..R8 rồi **R10 (dòng 48) trước R9 (dòng 52)**; risk ⭐ \"Compositor/vsync tail\" (dòng 41) không có R-number. | Reorder R9 trước R10; gán số cho ⭐ (vd R11) hoặc mark rõ là cross-cutting note. |\n| 26 | 12 | stale-superseded | LOW | Các terminal-design subsection vẫn mô tả seam theo SwiftTerm API (dòng 437 \"Không cần sửa SwiftTerm\", 415 \"thin adapter không sửa SwiftTerm\", 459 scrollback `TerminalOptions.scrollback`, ranking #7 dòng 684 clipboard) như primary path, dù §4 chốt libghostty. Đọc như 2 design song song. | Thêm banner \"[FALLBACK — primary là libghostty, xem §1/§3.1]\" ở các subsection SwiftTerm-API, HOẶC restate theo libghostty (`ghostty_surface_feed_data`/write-callback) với SwiftTerm trong ngoặc fallback. |\n| 27 | 12 | redundancy | LOW | Terminal-path design giải thích 2 lần đầy đủ: §3.1 (dòng 113–162) và §1 (dòng 267–333) — forkpty/openpty/posix_openpt/IUTF8/env-table/DispatchIO/TIOCSWINSZ trùng near-verbatim, sẽ drift độc lập. | Giữ 1 section authoritative (§1 chi tiết), TL;DR table link tới nó; bỏ prose summary §3.1 hoặc collapse §1 vào §3.1. |\n| 28 | 12 | redundancy | LOW | GUI video-path giải thích 2 lần: §3.2 (dòng 164–181) corpus-verdict blockquote + section §1–§8 (dòng 506+). | Section 4:2:0 chuyên = source; §3.2 giảm còn 3 dòng pointer. |\n| 29 | 14/15 | redundancy | LOW | Auth/billing decision split & duplicate: doc 14 Quyết định 2 (dòng 15) + billing dòng 101 vs doc 15 (lesson 2 dòng 30, dòng 54). Cũng: duplicate-prompt dedup (14 dòng 46 / 15 dòng 41), stdin O_NONBLOCK (14 dòng 47 / 15 dòng 39). | Doc 14 = single source auth/billing + B1 dedup (nơi B1 quyết). Doc 15 = chỉ giữ prior-art OBSERVATION + pointer \"→ decision: doc 14\". |\n| 30 | 13/12/03 | redundancy | LOW | NetBird NWParameters recipe (drop crypto / no wiredEthernet / serviceClass moot / drop QUIC / includePeerToPeer=false) nói 3 lần: doc 13 §2 + doc 03 §2+CORRECTIONS + doc 12 Phase 5 dòng 803. | Doc 13 §2 = single source. Doc 03 + doc 12 thay recipe bằng pointer \"→ doc 13 §2\". |\n| 31 | 12/05 | redundancy | LOW | doc 12 §3.3.1 (dòng ~723) \"Bổ sung correction cho doc 05 §1 (Electron)\" đọc như TODO chưa làm — nhưng doc 05 dòng 5 đã có correction này. | Trim doc 12 §3.3.1 thành back-reference \"đã reflect trong doc 05 §1 banner\". |\n| 32 | 14/16 | clarity | LOW | Version pin CC rải rác (14: v2.1.110/129/141/159; 16: v2.1.142+/154) như present-tense fact, không có \"as-of\" baseline. | Thêm header \"as-of: Claude Code v2.1.x, 2026-06\" đầu doc 14 + 16; mark research-preview / undocumented flag = \"verify on target CC version\". |\n| 33 | 16 | gap | LOW | Inspector (differentiator) không xuất hiện trong diagram nào; ASCII hybrid doc 12 (dòng 65–106) chỉ có terminal + GUI-video, thiếu kênh NWConnection thứ 2 (inspector). | Thêm inspector channel (NWConnection #2, JSONL → typed events) vào diagram doc 12 hoặc overview, để cả 3 data path hiện 1 picture. |\n| 34 | README/01/07/12 | terminology | LOW | Codename \"PaneCast\" chỉ docs cũ (README, 01, 04, 06, 07, 12); docs current (13–16) không dùng tên, gọi \"tool của ta\". Tên \"PaneCast\" = screen-casting → encode framing cũ. | Quyết định tên hợp terminal-first hoặc note trong overview \"PaneCast = legacy codename từ screen-sharing era\". |\n\n---\n\n## C. Terminology / typo sweep\n\n**C1. `PTF` → `PTY` (typo, 9 occurrences / 4 files).** PTF không phải acronym thật; đặc biệt hại vì nằm trong docs CURRENT + decision text. Find-replace từng chỗ:\n- `15-prior-art-happy-happier.md`: dòng 29 \"relay PTF\", 43 \"vô hình trong PTF mode\", 46 \"relay raw PTF (`TERM=xterm-ghostty`)\", 52 \"layer structured-event lên trên PTF\" → tất cả `PTF`→`PTY`, `raw PTF`→`raw PTY`.\n- `14-claude-code-integration.md`: dòng 46 \"compose-box LẪN PTF\" (trong block BẮT BUỘC dedup), dòng 217 \"Desktop raw-PTF giữ 100% feature\" (kết luận bold).\n- `16-readonly-inspector.md`: dòng 40 \"spawn `claude` (PTF)\" + \"cạnh PTF byte stream\" (2 chỗ), dòng 60 \"nhất quán với PTF path\".\n- `12-coding-profile.md`: dòng 793 \"trên PTF\" + \"raw-PTF làm fallback\" (2 chỗ).\n\nSau replace: thêm PTY vào glossary README (C4) để typo không tái diễn.\n\n**C2. Renderer terminology — chốt libghostty, fence SwiftTerm.** SwiftTerm xuất hiện làm renderer ở 01 dòng 3 (banner) + 13 dòng 68 (stale, issue #3/#4). Trong doc 12, body terminal-design §1–6 viết SwiftTerm-first dù §4 chốt libghostty → fence toàn bộ SwiftTerm code dưới 1 subsection \"Fallback: SwiftTerm\" (issue #26). Các reference SwiftTerm hợp lệ (citation API Pty.swift/LocalProcess.swift làm prior-art) giữ nguyên — chỉ sửa chỗ SwiftTerm bị nói là **renderer được chọn**.\n\n**C3. `TERM` value — chốt `xterm-ghostty`.** Authoritative = doc 14 Quyết định 1. Sửa 5 chỗ `xterm-256color` trong doc 12 (issue #5); giữ `xterm-256color` chỉ làm fallback-toggle #54700. Doc 15 (dòng 46) đã đúng `xterm-ghostty`.\n\n**C4. Glossary README cần thêm:** PTY (pseudo-terminal), terminal text-path vs GUI video-path, libghostty, NetBird/WireGuard mesh, P2P vs relayed, TUI, alt-screen (DECSET 1049), OSC 52/133/777, kitty keyboard protocol, setup-token, A+B1 (compose-box vs SDK pane), B2/SDK-pane, read-only inspector, CoT, SSP/mosh, JSONL/NDJSON transcript.\n\n**C5. First-person LLM voice → impersonal:** doc 12 dòng 251–263 (xóa, issue #8), doc 14 dòng 55 \"Tôi đánh dấu\" (reword, issue #24).\n\n---\n\n## D. Polish plan theo thứ tự thực thi (cho main agent)\n\n### (1) Structural / overview — làm trước (định khung)\n1. **Xóa** drafting artifact doc 12: dòng 251–263 (block \"Tôi đã viết xong section…\") + dòng 662 (footer \"File liên quan… /Volumes/…\"). [issue #8]\n2. Tạo **`00-overview.md`** (hoặc rewrite thân README) — current-arch overview + consolidated decisions table. [A1]\n3. Tạo **`DECISIONS.md`** — 1 dòng/quyết định + status + link doc§. [A5, #19]\n4. README: thêm **cột Status** + nhóm bảng `## Tài liệu` thành CURRENT / REFERENCE-GUI / SUPERSEDED. [A2, #21]\n5. README: sửa title + dòng 22 \"Độ nét text là ưu tiên #1 → 4:2:0\" → terminal-first framing (text crisp qua PTY/libghostty no-codec; 4:2:0 chỉ cho GUI-mirror demoted). [structure-ia HIGH]\n6. (Optional, defer-able) Split doc 12 / renumber heading trùng số + regenerate ToC. [A6, #9]\n\n### (2) Consistency / staleness fixes\n7. Fix local-echo contradiction doc 12 §3/§496 ↔ #11/Phase5. [#1]\n8. Fix doc 08 §4 \"chỉ LAN\" non-goal → NetBird mesh. [#2]\n9. Fix renderer SwiftTerm→libghostty: doc 01 dòng 3, doc 13 dòng 68. [#3, #4]\n10. Fix TERM=xterm-ghostty trong doc 12 (5 chỗ). [#5]\n11. Fix doc 09 banner-vs-body: TL;DR/§2/§7 → 8-bit quality-mode; xóa §2 mục 3 (4:4:4 tier). [#10]\n12. Fix doc 14 open-questions \"còn treo\" vs \"ĐÃ GIẢI\". [#11]\n13. Fix doc 08 R3/Q3 QUIC→plain UDP; thêm GUI-path tag R3/R4b/R8/R9. [#12]\n14. Fix doc 01 §5 latency budget (split terminal/GUI, 40–80ms, bỏ 120fps) per doc 12 §7.3. [#13]\n15. Fix doc 12 TLS optional → no app-layer TLS (doc 13). [#14]\n16. Fix doc 07 banner + relabel phase (chống va chạm số). [#15]\n17. Fix queueDepth: doc 12 dòng 588 (5→3, bỏ label), doc 11 table dòng 64 (3→2). [#20]\n18. Banner standard 3-state áp dụng các doc non-current. [A3]\n\n### (3) Xref fixes\n19. README dòng 51 terminal-MVP path: bỏ [03], trỏ [12 §wire/§2] + [13]. [#7]\n20. README dòng 46 CoT \"redacted\" → \"rỗng/omitted, redacted là Claude 3.7\". [#6]\n21. README role-path GUI-video: thêm [04]+[09]. [A4]\n22. doc 13 §5 \"[12] §security\" → \"[12] §7/Phase 5\", mark \"(đã áp dụng)\". [#16]\n23. doc 12 \"doc 05 §4.1\" → \"doc 05 §4 Caveat macOS 14+\". [#17]\n24. README index ToC / doc 12 internal ToC khớp heading (nếu không split). [#9]\n\n### (4) Terminology sweep\n25. Find-replace `PTF`→`PTY` 9 chỗ (15, 14, 16, 12). [C1, #18-related]\n26. Mở rộng glossary README current-arch terms (định nghĩa PTY rõ). [C4, #18]\n27. Reword doc 14 dòng 55 first-person → impersonal. [C5, #24]\n28. Codename PaneCast: note legacy trong overview (hoặc rename). [#34]\n\n### (5) Redundancy consolidation\n29. doc 12: collapse terminal-path duplicate §3.1↔§1. [#27]\n30. doc 12: collapse GUI-video duplicate §3.2↔§1-8. [#28]\n31. doc 12: fence SwiftTerm-API seams dưới 1 \"Fallback\" subsection. [#26, C2]\n32. NetBird recipe single-source doc 13; doc 03 + doc 12 → pointer. [#30]\n33. doc 03: gộp banner dòng 54 + CORRECTIONS 74–78; xóa \"Nếu video dùng QUIC\" dòng 96. [#22, #23]\n34. Auth/billing + dedup/O_NONBLOCK single-source doc 14; doc 15 → observation + pointer. [#29]\n35. doc 12 §3.3.1 Electron correction → back-reference (đã done trong doc 05). [#31]\n36. control-plane decision single-source doc 13 §5b; doc 15 collapse items 33/53. [redundancy MED]\n\n### (6) Clarity / gaps\n37. doc 08 risk ID reorder R9 trước R10; số hóa ⭐ risk. [#25]\n38. Thêm inspector channel vào diagram doc 12 / overview (3 data paths). [#33]\n39. as-of version header doc 14 + 16; mark research-preview claims. [#32]\n40. doc 12: consolidate per-window routing UX (terminal-vs-GUI) thành 1 subsection. [completeness LOW]\n\n---\n\nFiles liên quan (tuyệt đối): `/Volumes/Lacie/Workspace/oss/rworkspace/docs/{README,00-overview(new),DECISIONS(new),01-architecture,03-transport-protocol,05-input-window-control,07-roadmap,08-risks-open-questions,09-codec-choice,11-absolute-latency,12-coding-profile,13-netbird-transport,14-claude-code-integration,15-prior-art-happy-happier,16-readonly-inspector}.md`. Highest-leverage 4 việc: (#8 xóa artifact) + (A1/A5 overview+decisions) + (#1/#2 high contradictions) + (C1 PTF sweep).",
+  "issues": [
+    {
+      "lens": "consistency-staleness",
+      "summary": "I read all 17 .md docs (README + 01–16). The doc set has a clear, well-banner'd \"spine\" — README + doc 12 establish the CURRENT terminal-first hybrid (libghostty + NetBird + read-only inspector), and most early docs (01, 03, 05, 07, 08, 09, 10, 11) carry a \"GUI-path-only / superseded\" banner at the top. That banner discipline is good. However the polish gaps cluster in two patterns: (1) FINAL decisions that were settled in the later docs (libghostty over SwiftTerm; TERM=xterm-ghostty; local-echo dropped; QUIC dropped; remote-over-mesh; 8-bit quality-mode codec) are STILL stated with the old value in places that were only banner-patched, not body-reconciled — most damagingly INSIDE the canonical doc 12 itself (TERM, local-echo) and in the cross-reference docs 01/08/09/13. (2) A few summary lines (README, doc 13) restate a decision with wrong/old wording (SwiftTerm; \"CoT redacted\"; \"không predictive local-echo\"). The single highest-severity finding is an internal contradiction within doc 12: §3 mandates porting the mosh PredictionEngine with DisplayPreference=Always as \"the biggest responsiveness lever,\" while the same doc's technique-ranking (#11), roadmap (Phase 5), and doc 13 say local echo is NOT needed and is dropped. The second is doc 08 §4 still listing \"remote/Internet/NAT = non-goal (LAN only)\" which flatly contradicts the NetBird-mesh architecture. TERM value (xterm-256color vs the FINAL xterm-ghostty) drifts across 5 spots in doc 12 vs doc 14/README.",
+      "issues": [
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§3 'Mosh-style predictive local echo' (line ~372 'đòn bẩy responsiveness lớn nhất' + §3.x 'CORRECTION ... dùng DisplayPreference = Always' line ~387-391 + summary table line ~496 'Local echo | port PredictionEngine, DisplayPreference = Always') vs §1 ranking #11 (line ~688 'Trên LAN không cần ... Đòn bẩy biên') and Phase 5 roadmap (line ~808 '~~Speculative local echo~~ — KHÔNG cần')",
+          "type": "contradiction",
+          "severity": "high",
+          "problem": "Doc 12 contradicts itself on the local-echo / PredictionEngine decision. The terminal-design section presents porting mosh's PredictionEngine (with DisplayPreference=Always) as a load-bearing, recommended feature ('the biggest responsiveness lever') and the implementation summary lists it as a decision. But the same doc's technique ranking (#11) and the revised roadmap (Phase 5, struck through) declare predictive echo NOT needed and dropped, because NetBird P2P is assumed (echo benefit only matters on relayed/WAN). A reader cannot tell whether local echo is in or out.",
+          "recommended_fix": "Pick the FINAL decision (per doc 13 §4 + doc 12 roadmap Phase 5: local echo dropped for v1 because P2P is assumed) and make §3 + the summary table consistent with it. Re-frame §3 as 'optional future lever IF relay becomes common (deferred)' with an explicit '[DEFERRED — see Phase 5 / doc 13]' banner, and change the summary-table 'Local echo' row from 'port PredictionEngine, DisplayPreference=Always' to 'deferred (assume P2P; revisit only if relayed).'"
+        },
+        {
+          "doc": "08-risks-open-questions.md",
+          "location": "§4 'Phi mục tiêu' line 86: '❌ Điều khiển qua Internet / NAT traversal (chỉ LAN).'",
+          "type": "stale-superseded",
+          "severity": "high",
+          "problem": "Doc 08 still lists 'remote-over-Internet / NAT traversal = non-goal, LAN only' as a hard scope decision. This directly contradicts the CURRENT architecture: README §Scope and doc 13 describe a NetBird (WireGuard mesh) transport whose entire point is remote/over-NAT access (direct P2P near-LAN, relayed = WAN-like fallback). Doc 13 §5 even lists 'Scope: Chỉ LAN → NetBird mesh' as a correction it is applying — but doc 08 was never updated to match.",
+          "recommended_fix": "Replace the non-goal line with the NetBird reality: remove 'chỉ LAN', state that remote access goes over the NetBird mesh (direct P2P assumed; relayed = degraded, not engineered), and cross-reference doc 13. If a non-goal remains, it is 'app-level NAT traversal / custom relay (delegated to NetBird/WireGuard).'"
+        },
+        {
+          "doc": "01-architecture.md",
+          "location": "Top banner, line 3: '... terminal đi PTY text-path (như SSH/mosh, render bằng SwiftTerm) ...'",
+          "type": "stale-superseded",
+          "severity": "high",
+          "problem": "The doc 01 re-scope banner names SwiftTerm as the terminal renderer. The FINAL decision (doc 12 §4 'SwiftTerm → libghostty (đã chốt)', README, doc 14) flipped the client renderer from SwiftTerm to libghostty, with SwiftTerm demoted to fallback only. A reader entering at doc 01 is told the wrong current renderer in the very banner meant to point them to the current architecture.",
+          "recommended_fix": "Change 'render bằng SwiftTerm' to 'render bằng libghostty (SwiftTerm = fallback)'. Keep the pointer to doc 12."
+        },
+        {
+          "doc": "13-netbird-transport.md",
+          "location": "§4 'Hệ quả: giữ thiết kế ĐƠN GIẢN', line 68: 'Terminal = TCP byte-stream + SwiftTerm. Không mosh/SSP, không predictive local-echo.'",
+          "type": "stale-superseded",
+          "severity": "high",
+          "problem": "Doc 13 states the current terminal stack as 'TCP byte-stream + SwiftTerm.' SwiftTerm is superseded by libghostty (doc 12 §4 final decision). This is a current-tense statement, not a fallback note, so it presents the old renderer as the chosen one. (The 'không predictive local-echo' half is correct and is the source of truth that contradicts doc 12 §3 — see the doc 12 local-echo issue.)",
+          "recommended_fix": "Change 'TCP byte-stream + SwiftTerm' to 'TCP byte-stream + libghostty (xem [12] §4)'. Leave the 'no mosh/SSP, no predictive local-echo' conclusion intact (it is the authoritative decision)."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "TERM value: §2 ASCII diagram (lines 72-73 'TERM= xterm-256color'), §3.1 prose (line 125 'TERM=xterm-256color'), §1.4 env table (line 314 'xterm-256color (hoặc xterm-ghostty nếu client là Ghostty)'), §4 code (line 439 termName: \"xterm-256color\"), 'Do first' checklist (line 701 'TERM=xterm-256color')",
+          "type": "stale-superseded",
+          "severity": "high",
+          "problem": "Doc 12 (the canonical 'read-first' architecture doc) sets TERM=xterm-256color in five places and frames xterm-ghostty as merely conditional ('nếu client là Ghostty'). But the client IS libghostty (chosen in this same doc), and doc 14 §Quyết định 1 makes TERM=xterm-ghostty a FINAL decision (required for kitty keyboard + DEC 2026 auto-detect). So doc 12 ships the wrong/old default TERM everywhere, contradicting its own renderer choice and doc 14.",
+          "recommended_fix": "Set TERM=xterm-ghostty as the default in all five doc-12 locations (diagram, §3.1 prose, env table, §4 snippet, Do-first checklist). Note xterm-256color only as the fallback toggle for the paste bug #54700 (per doc 14). Add the doc-14 caveat that custom/non-allowlisted TERM requires CLAUDE_CODE_FORCE_SYNC_OUTPUT=1."
+        },
+        {
+          "doc": "09-codec-choice.md",
+          "location": "Body vs banner: TL;DR line 9 + §2 line 52 ('HEVC 10-bit ... dùng mặc định') + §7 'Quyết định cuối' line 106 ('HEVC Main 10 (10-bit) ... EnableLowLatencyRateControl') vs the top banner line 3 ('HEVC 4:2:0 8-bit quality-mode (Quality≈0.6); 10-bit hạ xuống optional')",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "Doc 09 got a top banner saying the GUI-path default is now 8-bit 4:2:0 quality-mode (Quality≈0.6) with 10-bit demoted to optional, but the body still states 'HEVC Main 10 (10-bit) ... dùng mặc định' and 'low-latency rate control' as THE final decision in the TL;DR, §2 priority list, and §7 'Quyết định cuối'. The body decision was never reconciled with the banner or with doc 12 §3.2/§5 (which uses Main 8-bit + Quality=0.6 and demotes low-latency RC to 'uncertain, not load-bearing'). Classic superseded-claim-still-phrased-as-current.",
+          "recommended_fix": "Update doc 09 §7 'Quyết định cuối' and TL;DR to: 'GUI path default = HEVC Main (8-bit) 4:2:0 + constant-quality Quality≈0.6 (Apple Silicon); 10-bit = optional tweak; low-latency RC = optional/uncertain for HEVC, not load-bearing (AllowFrameReordering=false suffices).' Demote the §2 '10-bit dùng mặc định' to optional. Cite doc 12 §3.2/§5/§7.3."
+        },
+        {
+          "doc": "08-risks-open-questions.md",
+          "location": "§1 R3 (line 19-20 'QUIC datagram (congestion control) + FEC adaptive 15–20% trên Wi-Fi') and §2 Q3 (line 66 'UDP cho LAN dây; QUIC datagram tùy chọn cho Wi-Fi')",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "Doc 08 R3 and Q3 still recommend QUIC datagram for Wi-Fi as a current mitigation/answer. Doc 03 (banner + §2 'Bỏ QUIC') and doc 13 §5 (correction table: 'QUIC datagram cho Wi-Fi → Bỏ QUIC, plain UDP') explicitly dropped QUIC because WireGuard already provides encryption/congestion. Doc 08's QUIC recommendations have no NetBird banner and contradict the final transport decision. R3/R4b/R8/R9 also lack the GUI-path-only banner that R1/R2 received, even though they are GUI-video-path concerns (Wi-Fi latency budget, 4:2:0 fringing, VRR, CAMetalDisplayLink) that doc 12 says are deferred to Phase 4.",
+          "recommended_fix": "In R3 and Q3, replace 'QUIC datagram' with 'plain UDP over NetBird (QUIC dropped — WireGuard encrypts; see doc 13 §5)'. Add a 'GUI video-path only (Phase 4)' tag to R3, R4b, R8, R9 mirroring the R1/R2 banner, since they don't apply to the terminal-first MVP."
+        },
+        {
+          "doc": "README.md",
+          "location": "Doc index, line 46: '... CoT redacted trên Opus 4.x.'",
+          "type": "contradiction",
+          "severity": "medium",
+          "problem": "README's one-line summary of doc 16 says 'CoT redacted trên Opus 4.x.' Doc 16 §CoT caveat explicitly states the opposite mechanism: on Claude 4 (Opus 4.x) the thinking field is EMPTY / not-persisted (display:\"omitted\"), and that redacted_thinking (the encrypted form) is Claude 3.7 ONLY, NOT Claude 4. 'Redacted' is the wrong term and names a Claude-3.7 feature; the README summary contradicts the doc it indexes.",
+          "recommended_fix": "Change README line 46 to: 'CoT empty/not-persisted on Opus 4.x → placeholder-only (KHÔNG redacted; redacted_thinking là Claude 3.7).' Align wording with doc 16."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§4 'queueDepth = 5 // giá trị Apple khuyến nghị' (line ~588) vs doc 02 line 49/55 and doc 11 §Verified-API (queueDepth default=8, '2 hợp lệ cho latency thấp', '3 là mức bảo thủ')",
+          "type": "stale-superseded",
+          "severity": "low",
+          "problem": "Doc 12 §4 sets queueDepth=5 and calls it 'giá trị Apple khuyến nghị'. Docs 02 and 11 establish (as a corpus correction) that the real default is 8, there is no hard floor of 3, and 2–3 is recommended for low latency. queueDepth=5 isn't a documented Apple recommendation and drifts from the corrected guidance the other docs landed on. Minor because for the GUI path idle-efficiency (not latency) is the goal, but it still reads as a contradictory 'recommended value.'",
+          "recommended_fix": "Change to queueDepth=3 (or note '2–3 for low latency; 5 only if GPU load spikes') and drop the 'giá trị Apple khuyến nghị' label, cross-referencing the doc 11 correction (default=8, no floor of 3)."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Header line 3 '34-agent' vs §3.3-region references and the §'Roadmap' line 738 calling doc 11 the '73-agent' study; also stray drafting artifact lines 251-264 ('Tôi đã viết xong section...')",
+          "type": "structure",
+          "severity": "low",
+          "problem": "Two polish issues in doc 12. (a) Lines 251-264 are leftover authoring meta-commentary ('Tôi đã viết xong section. Đây là markdown implementation-ready ...' plus a bulleted recap of verdicts) embedded in the middle of the document — a drafting artifact, not doc content. (b) The doc opens 'workflow nghiên cứu (34-agent ...)'; this is fine but worth verifying the agent-count provenance is consistent with how it's cited elsewhere. The 251-264 block is the concrete problem.",
+          "recommended_fix": "Delete the lines 251-264 authoring-artifact block (it duplicates content already stated as inline corrections and breaks the reading flow). Keep the agent-count in the header only."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§3 PredictionEngine integration (lines 437 'Seam cho PredictionEngine ... Không cần sửa SwiftTerm', 395 'Seam tích hợp với SwiftTerm rất sạch', §4 'Tích hợp — thin adapter, không sửa SwiftTerm', §5/scrollback line 459, clipboard ranking #7 line 684)",
+          "type": "stale-superseded",
+          "severity": "low",
+          "problem": "Several terminal-design subsections still describe integration seams against SwiftTerm APIs (feed(byteArray:), TerminalViewDelegate.send, sizeChanged, clipboardCopy/clipboardRead, TerminalOptions.scrollback) as the implementation path, even though §4 declares libghostty the chosen renderer and SwiftTerm only a fallback. The libghostty data-path is documented separately in §1/§3.1, so the SwiftTerm-API seams read as a second, parallel 'current' design rather than clearly-marked fallback detail.",
+          "recommended_fix": "Add a short banner at the top of the SwiftTerm-API subsections (PredictionEngine seam, thin-adapter, scrollback, clipboard rank #7) marking them '[FALLBACK PATH — primary is libghostty external-backend, see §1/§3.1]', or restate the seams in libghostty terms (ghostty_surface_feed_data / write-callback / surface resize API) with SwiftTerm as the parenthetical fallback, matching how §1 and the summary table already do it."
+        },
+        {
+          "doc": "01-architecture.md",
+          "location": "§5 Latency Budget (lines 92-105, 'glass-to-glass ~30–50ms ... 60fps') and §6 tech-stack 'ProMotion 120Hz'",
+          "type": "stale-superseded",
+          "severity": "low",
+          "problem": "Doc 01 §5 still states the latency target as '~30–50ms, 60fps' with ProMotion 120Hz levers. README and doc 12 §7 set the current targets at 40–80ms with fps explicitly NOT a goal and '120fps/ProMotion: bỏ'. Doc 12 §7.3 explicitly lists an action item: 'split doc 01 §5 into terminal-path vs GUI-path tables and relax target to 40–80ms, drop the 120fps column.' That reconciliation was never done; doc 01's top banner points to doc 12 but does not flag that the §5 budget numbers are GUI-path-only and superseded.",
+          "recommended_fix": "Either execute doc 12 §7.3's instruction (split §5 into a terminal-path latency note (~1–5ms RTT) + a GUI-path table with target relaxed to 40–80ms, no 120fps), or at minimum add a §5-local banner: 'GUI video-path only; target relaxed to 40–80ms, 120fps dropped — see doc 12 §7.3.'"
+        },
+        {
+          "doc": "03-transport-protocol.md",
+          "location": "§3 control channel: line 96 'Nếu video dùng QUIC: mở QUIC reliable stream cho control ...' and §1 TXT record / packet header all assume the video-path transport",
+          "type": "stale-superseded",
+          "severity": "low",
+          "problem": "Even though doc 03 has a NetBird banner that drops QUIC, §3 still contains a live conditional '- Nếu video dùng QUIC: ...' describing a QUIC reliable control stream as an option. After 'Bỏ QUIC' this branch is dead and mildly contradicts the same doc's own correction box (line 77 'Bỏ QUIC-cho-encryption ... Plain UDP/TCP'). Low severity since it's hedged 'Nếu', but it's residual stale guidance.",
+          "recommended_fix": "Delete or strike the 'Nếu video dùng QUIC' control-channel bullet, leaving the TCP-noDelay control channel as the single recommendation, consistent with the §2 'Bỏ QUIC' correction."
+        },
+        {
+          "doc": "05-input-window-control.md",
+          "location": "§0 'Activate-then-control là mô hình ĐÚNG và gần như DUY NHẤT đáng tin' (line 11) and §1 routing 'Correction (cần test)' (line 5-6)",
+          "type": "redundancy",
+          "severity": "low",
+          "problem": "Doc 05 carries a good GUI-path-only banner. But the Electron-keyboard-accepted / mouse-needs-SkyLight correction appears in three places with slightly different framing: doc 05 §0-banner ('keyboard inject qua CGEventPostToPid được Electron chấp nhận; chỉ mouse bị từ chối'), doc 12 §3.2 input note, and doc 12 §3.3.1 (the doc-05 change list, line 723). The doc-12 §3.3.1 entry reads as an instruction to add a correction that doc 05 already contains — a stale 'TODO' that was already done.",
+          "recommended_fix": "Trim doc 12 §3.3.1's 'Bổ sung correction cho doc 05 §1 (Electron)' bullet to a back-reference ('already reflected in doc 05 §1 banner') so it isn't read as an outstanding edit; keep doc 05 as the single source for the Electron/SkyLight correction."
+        }
+      ],
+      "structural_recommendations": [
+        "Execute the unfinished reconciliation actions that doc 12 §7.3/§3 PRESCRIBES but were never applied to the target docs. Doc 12 explicitly says 'split doc 01 §5 into terminal vs GUI tables, relax to 40–80ms', 'fix doc 09 TL;DR to 8-bit quality-mode', and 'add GUI-path banners'. Several of these edits were only half-done (banner added, body not changed). Treat doc 12 §3/§7.3 as a checklist and verify each prescribed edit actually landed in 01, 05, 09, 11.",
+        "Establish ONE source-of-truth per cross-cutting decision and make every other mention a back-reference instead of a restatement, to stop value drift. Candidates that currently drift: TERM value (canonical = doc 14), renderer = libghostty (canonical = doc 12 §4), local-echo dropped (canonical = doc 13 §4 / doc 12 Phase 5), QUIC dropped + transport (canonical = doc 13 §5), codec GUI default (canonical = doc 12 §3.2/§5). A short 'Decisions register' table in the README (decision → value → owning doc) would let reviewers catch future drift in one place.",
+        "Sweep all 'superseded' early docs for the pattern 'banner added at top, but the body still states the OLD decision as THE final decision.' Confirmed in doc 09 (10-bit default still in TL;DR/§7) and partially doc 01 §5 (latency budget). For each, either reconcile the body to the banner or add an inline '[SUPERSEDED — see doc N]' marker at the specific stale claim, not just the file top.",
+        "Apply the GUI-path-only banner consistently across doc 08's risk list. R1/R2 got the banner; R3 (Wi-Fi/QUIC), R4b (4:2:0 fringing), R8 (VRR fullscreen), R9 (CAMetalDisplayLink macOS 26) are all GUI-video-path Phase-4 concerns that read as live project risks for the terminal-first MVP. Tag them so a reader scoping the MVP doesn't treat video-path risks as blockers.",
+        "Remove authoring/drafting artifacts left inline (doc 12 lines 251-264 'Tôi đã viết xong section...'). Do a pass for similar meta-commentary in the other large research-derived docs (11, 12, 14) where agent-written summaries may have been pasted into the body."
+      ]
+    },
+    {
+      "lens": "crossref-navigation",
+      "summary": "I read all 16 .md docs plus README and traced every inline link, \"see §X\"/\"doc N\" pointer, README index table, the \"Đọc theo vai trò\" reading-order guidance, and section anchors. The good news: all 16 docs are present and the README table lists exactly 16 rows; all referenced research/*.json corpus files exist on disk; and the cross-doc file links (e.g. [12](12-coding-profile.md), [13], [15]) all resolve to existing files. The problems are concentrated in (1) the README/role-based reading order, which still routes a Phase-1 terminal implementer to the GUI-video transport doc (03) and uses a stale/quoted section name with no working anchor for doc 12's roadmap; (2) a factual contradiction between the README index blurb for doc 16 (\"CoT redacted trên Opus 4.x\") and doc 16 itself (CoT is empty/omitted on Claude 4, NOT redacted — redacted_thinking is Claude 3.7 only); (3) several imprecise section-number / named-section pointers (doc 12 → \"05 §4.1\" which doesn't exist as a numbered subsection; doc 13 → \"[12] §security\" which has no section by that name; doc 12's own anchor `#5-cấu-hình...` is ambiguous because doc 12 has duplicated `## 5/6/7` numbering across its three concatenated sub-documents); and (4) inconsistent pointer style — markdown anchors vs prose `§\"Name\"` references — which makes some \"see §X\" pointers non-clickable. Severity-high items mislead a reader implementing the current (terminal-first) architecture or state a flat contradiction; the rest are drift/polish.",
+      "issues": [
+        {
+          "doc": "README.md",
+          "location": "Section \"Đọc theo vai trò\" → bullet \"Sắp code Phase 1 (terminal MVP) → [12 §\"Revised roadmap\"](12-coding-profile.md) + [03 transport](03-transport-protocol.md)\"",
+          "type": "broken-or-stale-xref",
+          "severity": "high",
+          "problem": "A Phase-1 terminal-MVP implementer is pointed at doc 03 for transport. But doc 03 is the GUI-video transport spec (UDP/QUIC datagram, Moonlight-style packet format, FEC, keyframe fragmentation, request-IDR loss handling) — none of which applies to the terminal path. The terminal path uses reliable TCP byte-relay with 1-byte-type+4-byte-len framing, specified in doc 12 §2/§5 (\"Transport — chọn reliable TCP\" / \"Wire protocol cho đường terminal\") and the NetBird model in doc 13. Routing the reader to 03 sends them to the wrong (and explicitly superseded-for-this-path) transport design.",
+          "recommended_fix": "Change the pointer to: \"[12 §Wire protocol cho đường terminal](12-coding-profile.md) + [12 §2 Transport (reliable TCP)] + [13 NetBird transport](13-netbird-transport.md)\". Drop or demote the [03] reference (or relabel it \"[03] — video transport, GUI path only\")."
+        },
+        {
+          "doc": "README.md",
+          "location": "Tài liệu index table, row 16: \"...tool cards / subagent tree / CoT / todos / workflow. Read-only nên né cost B2. CoT redacted trên Opus 4.x.\"",
+          "type": "contradiction",
+          "severity": "high",
+          "problem": "README says CoT is \"redacted trên Opus 4.x\". Doc 16 (the target) says the opposite and is explicit: on Claude 4 the `thinking` field is EMPTY/omitted (`display:\"omitted\"`), and `redacted_thinking` (encrypted) is a Claude 3.7-only thing, NOT Claude 4. The two docs use the same term (\"redacted\") to mean different things, and the README is factually wrong about the current stack. This also clashes with the project's \"CoT = placeholder-only\" decision.",
+          "recommended_fix": "Reword the README cell to match doc 16: \"CoT/thinking rỗng (omitted) trên Claude 4 → inspector chỉ render placeholder 'Thinking (not persisted)'. (redacted_thinking là Claude 3.7, không phải Claude 4.)\""
+        },
+        {
+          "doc": "README.md",
+          "location": "\"Đọc theo vai trò\" → \"[12 §\"Revised roadmap\"](12-coding-profile.md)\" (appears twice: this bullet and the Phase-1 bullet)",
+          "type": "broken-or-stale-xref",
+          "severity": "medium",
+          "problem": "The pointer quotes a section name \"Revised roadmap\" but doc 12's actual heading is \"### 4. Revised phased roadmap (ghi đè 07-roadmap.md)\". More importantly the link has NO #anchor, so it lands the reader at the top of a 100KB+ doc and they must scroll to find §4 of the third sub-document. Two different bullets both rely on this same un-anchored, mis-quoted pointer.",
+          "recommended_fix": "Either add a working anchor (e.g. [12 §4 Revised phased roadmap](12-coding-profile.md#4-revised-phased-roadmap-ghi-đè-07-roadmapmd)) verified against the generated slug, or at minimum correct the quoted name to \"Revised phased roadmap\" so a reader's in-page search (Cmd-F) succeeds."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§3.1-area, line ~720: \"...không caveat macOS 14 cooperative-activation (doc 05 §4.1 — 'FAIL khi trigger bởi timer/network'...)\"",
+          "type": "broken-or-stale-xref",
+          "severity": "medium",
+          "problem": "Cites \"doc 05 §4.1\". Doc 05 has no numbered §4.1; §4 is \"Raise một cửa sổ CỤ THỂ\" and the cooperative-activation material lives in an UNNUMBERED subsection \"### Caveat macOS 14+ cooperative activation\". The quoted phrase (\"FAIL khi trigger bởi timer/network\") does match that subsection, so the pointer is locatable but the §-number is invented and will mislead anyone trusting the numbering.",
+          "recommended_fix": "Change to \"doc 05 §4 → Caveat macOS 14+ cooperative activation\" (reference the real subsection heading rather than a non-existent §4.1)."
+        },
+        {
+          "doc": "13-netbird-transport.md",
+          "location": "§5 \"Corrections cho docs cũ\" table, row: \"[12](12-coding-profile.md) §security | 'auth+encryption bắt buộc tầng app' | Bỏ app crypto...\"",
+          "type": "broken-or-stale-xref",
+          "severity": "medium",
+          "problem": "Points at \"[12] §security\". Doc 12 has no section titled 'security'; the closest matching content is §6 \"App Sandbox\", §7's note that \"'LAN-only' không là security boundary\", and \"Phase 5 — Security & polish\". A reader following the pointer cannot find a §security. Also note the quoted old text \"auth+encryption bắt buộc tầng app\" does not appear verbatim in the current doc 12 (it was already revised to defer to NetBird), so this correction row may be describing an earlier version.",
+          "recommended_fix": "Repoint to the actual location (e.g. \"[12] §7 / Phase 5 — Security\") and either quote text that still exists in doc 12 or mark the row as \"(đã áp dụng vào doc 12)\" so it reads as a historical correction rather than a live pointer to missing content."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Line ~158: \"Các spike codec ở [§5/§6](#5-cấu-hình-videotoolbox-cho-màn-hình-tĩnh) + checklist Phase 0 cuối doc.\"",
+          "type": "broken-or-stale-xref",
+          "severity": "medium",
+          "problem": "Doc 12 concatenates three sub-documents and as a result has DUPLICATE heading numbers: two \"## 5.\", two \"## 6.\", two \"## 7.\" (e.g. \"## 5. Wire protocol cho đường terminal\" at line 201 AND \"## 5. Cấu hình VideoToolbox cho màn hình tĩnh\" at line 598). The text says \"§5/§6\" but the anchor target is only the VideoToolbox §5; the \"§5/§6\" label is ambiguous and a reader scanning for \"§5\" will likely hit the terminal wire-protocol §5 first. Markdown will also generate duplicate-slug anchors (#5-... gets a -1 suffix on the second), so a raw #5-... anchor is fragile.",
+          "recommended_fix": "Disambiguate: cite the GUI sub-doc sections by their full names (\"§ Cấu hình VideoToolbox cho màn hình tĩnh / § Bar chất lượng tối thiểu\") rather than bare §5/§6, and verify the generated anchor slug. Longer-term, renumber the three sub-documents within doc 12 so heading numbers are unique."
+        },
+        {
+          "doc": "07-roadmap.md",
+          "location": "Whole body after the superseded banner — \"Phase 1 — MVP video Mac→Mac\", \"Phase 2 — Input\", \"Phase 3 — iOS\", \"Phase 4 — Polish\"",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "The top banner says the phasing is overridden by doc 12 (terminal = Phase 1, GUI video = Phase 4). But every internal phase label still uses the OLD GUI-video numbering: \"Phase 1 = MVP video\", \"Phase 2 = input\", etc. A reader who clicks a pointer like \"see [07 Phase 1]\" or follows README's \"Phase 1 (terminal MVP)\" will find Phase 1 here described as VIDEO MVP — the exact opposite of the current Phase 1. The numbering collides with doc 12's revised roadmap where Phase 1 = terminal and Phase 4 = video.",
+          "recommended_fix": "Add a one-line mapping at the top of each phase or relabel them \"(GUI-video phasing — superseded; in current roadmap this is Phase 4)\". At minimum, change the Phase headers to e.g. \"Phase V1 (old: video MVP)\" so they don't silently collide with doc 12's terminal-first Phase 1."
+        },
+        {
+          "doc": "14-claude-code-integration.md",
+          "location": "TL;DR + §1.4 + §6a: prose pointers \"Xem §\\\"Ô input ngoài\\\"\", \"xem §\\\"Skills/slash trong SDK\\\"\"; and doc 12 line 793 \"[14 §Skills/slash trong SDK](14-claude-code-integration.md)\"",
+          "type": "broken-or-stale-xref",
+          "severity": "low",
+          "problem": "Doc 14 uses prose-style section references (§\"Ô input ngoài\", §\"Skills/slash trong SDK\") that are not markdown anchors and not exact heading text. The real headings are \"## Ô input ngoài (Warp-style) — thiết kế cho stack ta\" and \"## Skills / slash commands trong SDK (structured-event UI) — feature parity\". They are findable via search but the quoted short-names won't match a Cmd-F, and the cross-doc link from doc 12 has no #anchor so it lands at the top of doc 14.",
+          "recommended_fix": "Standardize on markdown anchors or quote the exact heading text. For the doc 12→14 link, add the verified anchor (#skills--slash-commands-trong-sdk-structured-event-ui--feature-parity)."
+        },
+        {
+          "doc": "README.md",
+          "location": "\"Đọc theo vai trò\" → \"Làm GUI video-path (Phase 4) → [01] + [02] + [05]\"",
+          "type": "gap",
+          "severity": "low",
+          "problem": "The GUI-video reading path lists 01, 02, 05 but omits the two docs most load-bearing for that path's actual decisions: doc 04 (client decode/render) and doc 09 (codec choice / 4:2:0). A reader following this role path to build the video path will miss decode/render and codec guidance. Doc 11 (latency) is also relevant-but-demoted and not mentioned here.",
+          "recommended_fix": "Expand to \"[01] + [02] + [04] + [05] + [09] (codec, 4:2:0) (+ [11] chỉ khi cần floor latency)\" so the GUI-path role has the full set."
+        },
+        {
+          "doc": "README.md",
+          "location": "\"Thuật ngữ\" (glossary) table",
+          "type": "gap",
+          "severity": "low",
+          "problem": "The glossary defines only video-era terms (NALU, IDR/Keyframe, Glass-to-glass latency, TCC, AX). It defines NONE of the terms central to the CURRENT terminal-first architecture that recur across docs 12-16 and the README itself: PTY, libghostty, NetBird/WireGuard, PTF (used in docs 15/16 without expansion), setup-token, A+B1, SSP/mosh, JSONL transcript, B2/SDK-pane. A new reader of the current architecture hits undefined acronyms (especially \"PTF\").",
+          "recommended_fix": "Add glossary rows for PTY, libghostty, NetBird (WireGuard mesh), PTF (PTY/terminal-forwarding raw byte stream), setup-token, SSP (mosh State Sync Protocol), B1/B2 (compose-box vs SDK pane). At minimum define PTF since it is used unexpanded."
+        },
+        {
+          "doc": "README.md",
+          "location": "Tài liệu index table, row 11 + role path \"Lo về tính khả thi / rủi ro → [08] (lưu ý R1/R2 chỉ GUI path)\"",
+          "type": "redundancy",
+          "severity": "low",
+          "problem": "The \"R1/R2 chỉ GUI path\" caveat is correct and consistent with doc 08's banner, so this is fine — but the README's row-11 blurb for doc 11 says \"chỉ áp dụng GUI video-path\" while the role-path bullets elsewhere phrase the same scoping differently each time (\"chỉ GUI path\", \"GUI-path-only\", \"Phase 4\"). The phrasing drift is minor but makes it harder to scan which docs are current vs GUI-only.",
+          "recommended_fix": "Adopt one consistent tag for superseded/GUI-only docs across the README (e.g. a leading \"🟠 GUI-path only\" badge in the index table for docs 01,02,04,05,09,10,11) and reference it once, instead of re-explaining per bullet."
+        }
+      ],
+      "structural_recommendations": [
+        "Add an explicit status badge column to the README index table marking each doc as CURRENT (12,13,14,15,16) vs GUI-PATH-ONLY/SUPERSEDED (01,02,04,05,07,09,10,11) vs SHARED/STILL-VALID (03 discovery bits, 06 permissions, 08 risks). Right now the reader infers status only from each doc's own banner; a single table view would make the terminal-first priority unmistakable and stop role-path bullets from re-explaining scope each time.",
+        "Doc 12 is the de-facto hub (README says 'đọc đầu tiên') yet it is three concatenated sub-documents with duplicate heading numbering (two each of ## 5/6/7) and leftover authoring meta-prose (lines ~250-264: 'Tôi đã viết xong section...'). Split it into 12a (hybrid architecture), 12b (terminal design), 12c (GUI 4:2:0), 12d (roadmap/doc-updates) OR renumber headings to be unique and strip the meta-prose, so anchors are stable and links like #5-... are unambiguous.",
+        "Establish one cross-reference convention and apply it everywhere: file links as [NN](NN-...md), in-doc section links as real markdown #anchors (verified slugs), and stop the mixed prose form §\"Name\"/§4.1. Several pointers (05 §4.1, 12 §security, 12 §5/§6, README §Revised roadmap) are imprecise specifically because there is no single convention.",
+        "Doc 12 §3.3 / §3 (\"Docs thay đổi thế nào\") prescribes edits to docs 01/05/09/11 (add banners, drop 4:4:4 tier, demote latency floor). Most banners now exist, but the prescriptions and the actual banners have drifted (e.g. doc 09 still keeps the 4:4:4 tier in §2/§7/Phase-0 checklist that §3.3 says to DROP). Add a short 'change-applied?' checklist at the end of doc 12 §3 (or a STATUS line in each edited doc) so a reader can tell which prescribed doc-edits are done vs pending, rather than discovering the contradiction by cross-reading.",
+        "Create a single 'Terminal path implementer' entry-point note (could live at top of doc 12 or as a README role bullet) that lists, in order, the docs a Phase-1 terminal build actually needs: 12 (architecture+terminal design+roadmap) → 13 (NetBird) → 14 (Claude Code integration) → 16 (inspector) → 15 (prior art). Today the terminal reading path is scattered and one bullet even sends them to the video transport doc 03."
+      ]
+    },
+    {
+      "lens": "redundancy-consolidation",
+      "summary": "The doc set drifted because each research round was appended as a new self-contained doc (12, 13, 14, 15, 16) that re-explains decisions already covered elsewhere instead of pointing to a single source of truth. The single biggest redundancy problem is INSIDE doc 12 itself: it bundles five separate research outputs (hybrid arch, terminal streaming, GUI video, claude-code roadmap notes, NetBird-era roadmap) into one 811-line file that re-states the same corrections (forkpty/openpty, posix_openpt, IUTF8, sandbox, ttyd framing, mosh local-echo, 4:2:0/4:4:4, idle-skip) two or three times each, and still contains two blocks of orphaned authoring meta-commentary (lines 251-263, 660-662). Cross-doc, the same decisions are duplicated and drifting: (a) \"drop app crypto / drop QUIC / no serviceClass\" lives verbatim in 03, 13, and 12; (b) the local-echo/prediction decision is self-contradictory within 12 and between 12 and 13; (c) the \"control plane needed despite P2P\" + \"duplicate-prompt dedup\" + Claude auth/OAuth + SDK-skills-parity decisions each appear in 2-3 docs; (d) doc 13 declares itself the corrections hub but the actual corrections are scattered as inline banners across 01/02/03/04/05/07/08/09/10. Recommend: (1) split doc 12 into 3-4 focused docs or aggressively de-duplicate its summary-vs-detail sections; (2) designate explicit single sources of truth (13=transport/security, 12=arch+roadmap, 14=claude-code, 16=inspector) and replace re-explanations with pointers; (3) consolidate the scattered correction banners; (4) fix the stale QUIC recommendation in 08/01 and the prediction contradiction in 12. Genuine duplication only is flagged — I did not recommend merging docs that legitimately serve different readers.",
+      "issues": [
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§3.1 'TERMINAL text-path' (lines 113-162) vs the later full section 'Terminal text-streaming (SSH/mosh-class) — thiết kế' §1 (lines 267-333)",
+          "type": "redundancy",
+          "severity": "medium",
+          "problem": "The same terminal-path design is explained twice in full. The forkpty-vs-openpty/posix_spawn correction, the posix_openpt 'not broken' correction, the IUTF8-on-Darwin verification, the shell env-var table (TERM/LANG/COLORTERM/NCURSES_NO_UTF8_ACS/IUTF8/argv0), the DispatchIO 128KB/4ms read loop, and the TIOCSWINSZ resize are all stated once in §3.1 and again, near-verbatim, in §1. They will drift independently (e.g. §3.1 recommends 'openpty() + posix_spawn cho host helper mới', §1.1 says the same with different wording and different source-thread citations).",
+          "recommended_fix": "Keep ONE authoritative terminal-path section. Either delete the §3.1 prose summary and have the TL;DR table link straight to the detailed section, or collapse §1 (267-333) into §3.1. The forkpty/openpty/posix_openpt/IUTF8 corrections should appear exactly once."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§3.2 'GUI video-path' (lines 164-181) vs the later full section 'GUI video path (4:2:0 đủ tốt) — đơn giản hóa' (lines 506-662)",
+          "type": "redundancy",
+          "severity": "medium",
+          "problem": "The GUI-video design is explained twice. The 4:2:0-luma-sharp/4:4:4-dropped rationale, the SCFrameStatus.idle 'verdict: uncertain — only zero if you guard status==.complete' correction, the dirtyRects encode-on-change, the constant-quality Quality≈0.6 Apple-Silicon-only note, the low-latency-HEVC 'uncertain/empirical FFmpeg' note, and HEVC-SCC-absent are all stated in the §3.2 corpus-verify blockquotes AND again in the dedicated §1-§8 section.",
+          "recommended_fix": "Pick the dedicated 4:2:0 section as the single source; reduce §3.2 to a 3-line pointer ('GUI path = ScreenCaptureKit→HEVC 4:2:0, details in §GUI video path below'). Removes ~3 duplicated corpus-verdict blockquotes."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Lines 251-263 ('Tôi đã viết xong section...') and lines 660-662 ('File liên quan (đường dẫn tuyệt đối)...')",
+          "type": "structure",
+          "severity": "high",
+          "problem": "Two blocks of leftover authoring/meta-commentary from the research-agent that produced the section were never stripped. Lines 251-263 are a first-person summary ('Tôi đã viết xong section. Đây là markdown implementation-ready...') that restates the corpus verdicts AGAIN (a fourth copy of the forkpty/posix_openpt/idle/local-echo/IUTF8 verdicts). Lines 660-662 list absolute file paths as if a chat reply. This is not reader-facing documentation and re-duplicates decisions.",
+          "recommended_fix": "Delete both blocks (251-263 and 660-662). The verdict list at 253-261 duplicates the corrections already inline; remove it entirely rather than relocate."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§3 'Mosh-style predictive local echo' (lines 372-395, incl. 'hybrid tool PHẢI set DisplayPreference = Always') and summary table line 496 ('Local echo | port PredictionEngine, DisplayPreference = Always') vs §Roadmap Phase 5 line 808 ('~~Speculative local echo~~ — KHÔNG cần ... không predictive echo')",
+          "type": "contradiction",
+          "severity": "high",
+          "problem": "Within the SAME doc, the terminal-streaming section mandates porting the mosh PredictionEngine with DisplayPreference=Always ('hybrid tool PHẢI set DisplayPreference = Always'), and the implementation-ready summary table repeats that as a decision. But the later NetBird-era roadmap (Phase 5, line 808) strikes it out as not needed, and doc 13 (lines 68, 89) confirms 'no SSP, no predictive local-echo'. A reader of §3 will implement the engine; a reader of §Roadmap will not.",
+          "recommended_fix": "Resolve to the final decision (drop prediction for v1, per NetBird P2P assumption). Edit §3 and the summary table (line 496) to say 'PredictionEngine = deferred/not-for-v1 (see §Roadmap Phase 5 and doc 13); kept here as reference for a future Wi-Fi/relay tier'. Keep the engine analysis but demote it from 'PHẢI'."
+        },
+        {
+          "doc": "08-risks-open-questions.md",
+          "location": "R3 (line 20) 'QUIC datagram (congestion control) + FEC adaptive' and Q3 (line 66) 'Transport mặc định? UDP cho LAN dây; QUIC datagram tùy chọn cho Wi-Fi'",
+          "type": "stale-superseded",
+          "severity": "high",
+          "problem": "Doc 08 still recommends QUIC datagram for Wi-Fi as the default transport answer, but doc 13 §2 and its corrections table (line 87) explicitly DROP QUIC ('Bỏ QUIC — TLS thừa; plain UDP'), and doc 03 was updated to match. Doc 13's correction table covers 03 and 11 but NOT 08, so this stale recommendation was missed. A reader consulting the risk/open-questions doc gets the pre-NetBird answer.",
+          "recommended_fix": "Update R3 and Q3 to reference doc 13: transport = plain UDP/TCP over NetBird, no QUIC; relayed tier is degraded-fallback-only (not engineered). Add 08 to doc 13's corrections table (line 80-91)."
+        },
+        {
+          "doc": "01-architecture.md",
+          "location": "§6 tech-stack table (line 121) 'Transport | NWConnection UDP (LAN) hoặc QUIC datagram (Wi-Fi)' and §6 (line 122) 'Control channel | TCP noDelay hoặc QUIC reliable stream'",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "The architecture tech-stack table still lists QUIC datagram / QUIC reliable stream as transport options, contradicting the NetBird decision (doc 13: drop QUIC) that the doc's own top banner says superseded it. Doc 13's corrections table doesn't list doc 01, so this row is stale.",
+          "recommended_fix": "Either update the row to 'plain UDP video / plain TCP control over NetBird (QUIC dropped — see doc 13)' or add a cell-level note. Add 01 to doc 13's corrections table."
+        },
+        {
+          "doc": "13-netbird-transport.md",
+          "location": "§2 (lines 34-44) and TL;DR items 1-4 (lines 7-10)",
+          "type": "redundancy",
+          "severity": "medium",
+          "problem": "The 'drop app crypto / no .wiredEthernet pin / serviceClass moot / drop QUIC / includePeerToPeer=false' decisions are stated three times: doc 13 TL;DR + §2, doc 03 §2 NWParameters block + its CORRECTIONS blockquote (lines 60-78), and doc 12 Phase 5 line 803-805. Doc 03 even re-derives the rationale ('lý do dùng QUIC chủ yếu là TLS + congestion; TLS thừa') word-for-word identical to doc 13 line 44 and 03 line 57.",
+          "recommended_fix": "Make doc 13 the single source for the NetBird NWParameters recipe. In doc 03, replace the duplicated NWParameters/CORRECTIONS prose with the recipe pointer ('NWParameters recipe + rationale live in doc 13 §2') keeping only what's specific to the packet format. Doc 12 Phase 5 should link doc 13 rather than restate the crypto rationale."
+        },
+        {
+          "doc": "15-prior-art-happy-happier.md",
+          "location": "§'Bài học' item 5 (line 33) + §'3 điểm cần cân nhắc' item 2 (line 53) 'Vẫn cần control plane nhẹ dù P2P' vs 13-netbird-transport.md §5b (lines 93-98)",
+          "type": "redundancy",
+          "severity": "medium",
+          "problem": "The 'P2P does not remove the need for a lightweight control plane (push notification via APNs/FCM direct, host-offline→queue prompt, NetBird mgmt server + APNs may suffice, don't fantasize zero-server)' point is stated three times almost verbatim: doc 15 line 33, doc 15 line 53, and doc 13 §5b lines 95-98. All three cite each other.",
+          "recommended_fix": "Designate doc 13 §5b as the single source for the control-plane decision (it's a transport/infra concern). In doc 15, collapse items 5 and 53 into one bullet that states the prior-art evidence and links '→ control-plane decision: doc 13 §5b'. Avoid having the same conclusion in two places in the SAME doc (15 lines 33 and 53)."
+        },
+        {
+          "doc": "14-claude-code-integration.md",
+          "location": "§'Duplicate prompt dedup' (line 46) vs 15-prior-art-happy-happier.md Pitfall 3 (line 41) and Pitfall 1 stdin O_NONBLOCK (15 line 39 vs 14 line 47)",
+          "type": "redundancy",
+          "severity": "low",
+          "problem": "Two Happy/Happier pitfalls are duplicated between docs 14 and 15: the B1 duplicate-prompt 'dedup ring buffer (text+timestamp)' mandate (14 line 46, 15 line 41) and the stdin O_NONBLOCK / setBlocking(true) fix (14 line 47, 15 line 39). These are prior-art lessons (doc 15's domain) being re-stated as decisions in doc 14.",
+          "recommended_fix": "Keep the actionable B1 mandate in doc 14 (where B1 is decided) but reduce doc 15's versions to a one-line pointer, or vice versa. Pick one home per lesson and link."
+        },
+        {
+          "doc": "14-claude-code-integration.md",
+          "location": "Quyết định 2 (line 15) Auth, and §1.4 billing blockquote (line 101) vs 15-prior-art-happy-happier.md lesson 2 (line 30) + item (line 54)",
+          "type": "redundancy",
+          "severity": "medium",
+          "problem": "The Claude auth decision (reuse ~/.claude/.credentials.json over PKCE; user:inference scope quota uncertainty; setup-token; Agent-SDK-credit billing from 2026-06-15) is split and partially duplicated across doc 14 (line 15 Quyết định 2 + line 101 billing) and doc 15 (line 24 table, line 30 lesson 2, line 54). Doc 15 line 30 explicitly defers to '14' while also stating the conclusion, and doc 14 line 15 'refines from 15' while restating 15's content.",
+          "recommended_fix": "Make doc 14 the single source of truth for the auth/billing decision (it's the Claude-Code-integration doc). Reduce doc 15 to the prior-art OBSERVATION ('happy used PKCE user:inference; happier reused credentials.json') and a single pointer '→ our auth decision: doc 14 Quyết định 2'. Remove the duplicated conclusion from 15 lines 30/54."
+        },
+        {
+          "doc": "14-claude-code-integration.md",
+          "location": "§1.4 'CORRECTION feature parity' blockquote (line 99) + Tier headless --bare note (line 94) vs §'Skills / slash commands trong SDK' (lines 200-217)",
+          "type": "redundancy",
+          "severity": "low",
+          "problem": "The 'don't use --bare; SDK loads .claude/ by default so skills+slash commands work free; cwd must point to project root' decision is stated three times in the same doc: line 94, the line 99 blockquote, and the dedicated §Skills/slash section (200-217). The dedicated section is the natural home.",
+          "recommended_fix": "Keep the dedicated §Skills/slash section as the source; reduce the line 94 and line 99 mentions to a short inline note + pointer ('--bare disables .claude/ — see §Skills/slash'). Avoid repeating the full settingSources explanation twice."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "libghostty external-backend decision: §1 callout (lines 129-160) + ranking table row 2 (line 679) + 'Do first' item 4 (line 704) + Phase 0/1 spikes (lines 766, 779) + summary table (line 497)",
+          "type": "redundancy",
+          "severity": "medium",
+          "problem": "The 'libghostty full surface + self-owned external-backend patch (ref daiimus External.zig / Lakr233), build XCFramework via Zig, pin upstream SHA, wrap behind TerminalRendering' decision is restated in five places within doc 12 with the same reference repos and rationale. While some restatement in a roadmap is expected, the full integration recipe (daiimus External.zig ~470 LOC, Lakr233 InMemoryTerminalSession, zig build -Demit-xcframework, ABI-instability tax) appears in both §1 and the ranking table at near-equal length.",
+          "recommended_fix": "State the full integration recipe ONCE in §1 (lines 129-160). In the ranking table, 'Do first', and Phase rows, reference it ('libghostty external-backend — full recipe §1') rather than re-listing daiimus/Lakr233/Zig each time."
+        },
+        {
+          "doc": "14-claude-code-integration.md",
+          "location": "§'Open questions còn treo' (lines 192-198) then immediately §note (line 198) '4 open question trên ĐÃ GIẢI'",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "Doc 14 lists 4 libghostty open questions (alt-screen, TCP OSC split, parsed-stream-vs-pixels, kitty keyboard) as 'còn treo' (still open) and then immediately notes they are all RESOLVED, pointing to doc 12. The same 4 resolutions also appear at the top of doc 14 itself (lines 17-22 'Open questions libghostty — ĐÃ GIẢI'). So the doc presents the same 4 items as both open (line 192) and resolved (lines 18 and 198), and the resolution is additionally in doc 12 §1 (lines 151-156).",
+          "recommended_fix": "Delete the stale 'còn treo' list (192-197) or convert it to past tense referencing the resolved answers at lines 18-22. Keep the resolved answers in ONE place (doc 12 §1 as source; doc 14 top as a short pointer)."
+        },
+        {
+          "doc": "03-transport-protocol.md",
+          "location": "§2 inline banner (line 54) + CORRECTIONS blockquote (lines 74-78) + §1 Bonjour banner (line 9)",
+          "type": "redundancy",
+          "severity": "low",
+          "problem": "Doc 03 carries the NetBird corrections both as a top-of-section banner (line 54) AND as a separate 'CORRECTIONS (NetBird, từ 13)' blockquote (74-78) that repeats the same four points (drop wiredEthernet pin, serviceClass moot, drop QUIC, keep includePeerToPeer=false). The Bonjour-not-over-mesh point is also stated at line 9 and again referenced. These pile-up callouts say the same thing twice in one doc.",
+          "recommended_fix": "Collapse the line-54 banner and the 74-78 CORRECTIONS blockquote into a single banner that points to doc 13 for the full recipe. One correction callout per doc, not two."
+        },
+        {
+          "doc": "16-readonly-inspector.md",
+          "location": "§'Sync/dedup' (line 44) monotonic seq / lastSeq replay vs 12-coding-profile.md ET sequence catchup (lines 467, 682) and 15 line 31 dedup-by-uuid+monotonic-seq",
+          "type": "redundancy",
+          "severity": "low",
+          "problem": "The 'host assigns monotonic seq, client sends lastSeq → replay on reconnect' pattern is independently described in doc 16 (inspector transport), doc 12 (ET-style terminal reconnect), and doc 15 (happy sessionScanner). These are arguably the SAME reconnect/dedup mechanism applied to two channels (PTY byte stream + inspector JSON stream) multiplexed on the same NetBird tunnel, but each doc re-derives it.",
+          "recommended_fix": "Low priority — these serve different channels so some restatement is fair. But add a cross-pointer: doc 16 §Sync/dedup should note 'same seq/lastSeq reconnect model as the terminal path (doc 12 §Reconnect)' to signal they should stay consistent and avoid divergent implementations."
+        }
+      ],
+      "structural_recommendations": [
+        "Split doc 12 (811 lines, 5 bundled research outputs). It currently contains: (a) hybrid arch overview, (b) a full 'Terminal text-streaming SSH/mosh-class' design, (c) a full 'GUI video path 4:2:0' design, (d) a 'Roadmap & cập nhật docs' section that overrides doc 07 and annotates 05/09/11. Recommend splitting into: 12-coding-profile (arch overview + per-window routing + revised roadmap = the 'read first' doc), 12a-terminal-path-design (the §1-§6 PTY/transport/reconnect detail), 12b-gui-video-simplified (the 4:2:0 section). This eliminates the summary-vs-detail duplication that currently lives inside one file.",
+        "Establish explicit single-source-of-truth ownership and enforce 'link, don't re-explain': transport+security+NetBird = doc 13; overall architecture + roadmap = doc 12; Claude-Code integration (auth, TERM, input box, SDK parity) = doc 14; read-only inspector = doc 16; prior-art evidence (observations only, not decisions) = doc 15. Each decision should be stated once in its owner doc; other docs link to it. Today doc 15 states decisions that belong to 13/14, and the NetBird recipe is restated in 03/12/13.",
+        "Consolidate the scattered 'correction/superseded' banners. Right now corrections pile up as inline ⚠️ banners across 01,02,03,04,05,07,08,09,10 plus correction tables in 10,11,12,13. Recommend a single 'Corrections & supersedance ledger' (extend doc 13's table at lines 80-91 into a project-wide table, or a new short doc) that lists, per old doc, what was superseded and by which current doc. Then thin each old doc's top banner to one line pointing at the ledger. This also forces fixing the gaps where the ledger currently omits docs 01 and 08 (the stale QUIC rows).",
+        "Remove all leftover research-agent authoring artifacts before this counts as a polished set: doc 12 lines 251-263 and 660-662 are first-person chat residue. Grep the whole set for similar 'Tôi đã viết xong', 'File liên quan (đường dẫn tuyệt đối)', and bare verdict-recap lists that duplicate inline corrections.",
+        "De-duplicate the repeated corpus-verdict blockquotes. The same verdicts (forkpty refuted-at-call-site, posix_openpt not-broken, IUTF8 confirmed, idle=zero-only-if-guarded, low-latency-HEVC uncertain-empirical, mosh-local-echo dormant-on-LAN, constant-quality Apple-Silicon-only, HEVC-SCC absent) appear 2-4 times each inside doc 12 alone. State each verdict once, ideally in a compact 'Verified API claims' table (doc 11 already has one such table — point doc 12's prose at it instead of re-stating)."
+      ]
+    },
+    {
+      "lens": "completeness-terminology",
+      "summary": "Reviewed all 17 .md docs (README + 01–16). The biggest reader-facing problems are (1) the \"PTF\" typo for \"PTY\", which appears in 5 files (12, 14, 15, 16 confirmed by grep; total 9 occurrences) and is especially damaging because it lands in the CURRENT-architecture docs and in load-bearing decision text; (2) a stale terminal-renderer terminology split — README + docs 12/14/16 say the chosen client renderer is libghostty (SwiftTerm = fallback only), but 01-architecture.md §banner and 13-netbird-transport.md §4 still state SwiftTerm as THE renderer, and doc 12's entire terminal-design body (§1–6, lines 267–502) is still written SwiftTerm-first with SwiftTerm code/API in every snippet though libghostty is \"đã chốt\"; (3) an inconsistent TERM value (xterm-256color in doc 12 vs xterm-ghostty in docs 14/15) presented without reconciling which is authoritative; (4) completeness gaps for the current architecture — there is NO single authoritative architecture overview reflecting all final decisions (README points to doc 12 as \"đọc đầu tiên\" but doc 12 is a 103k re-scope essay, not a clean overview), NO consolidated decisions-log, and the glossary in README only covers the old GUI-video-path vocabulary and omits every current-architecture term (PTY, terminal path, GUI video path, libghostty, NetBird/WireGuard, P2P, TUI, A+B1, inspector, CoT, setup-token, OSC 133). Also found editorial artifacts left in doc 12 (LLM meta-commentary \"Tôi đã viết xong section…\" lines 251–263, a stray absolute file-path footer line 662, and a \"Tôi đánh dấu…\" first-person line at 14:55), and risk-ID disorder in doc 08 (R10 before R9; one risk has no R-number). Codename \"PaneCast\" is used consistently. Decisions are generally well-rationalized; the few that aren't are listed below.",
+      "issues": [
+        {
+          "doc": "15-prior-art-happy-happier.md",
+          "location": "Lines 29, 43, 46, 52 — e.g. line 46 \"ta relay raw PTF (`TERM=xterm-ghostty`)\"; line 29 \"Cần dù ta relay PTF\"; line 43 \"vô hình trong PTF mode\"; line 52 \"layer structured-event lên trên PTF\"",
+          "type": "typo",
+          "severity": "high",
+          "problem": "\"PTF\" is a typo for \"PTY\" (pseudo-terminal). Doc 15 contains 4 occurrences — the most of any file. It misleads a reader into thinking PTF is a distinct concept/acronym, and it sits in the core differentiator sentences (\"relay raw PTF\", \"PTF mode\").",
+          "recommended_fix": "Replace every \"PTF\"/\"raw-PTF\" with \"PTY\"/\"raw-PTY\". Lines 29, 43, 46 (\"raw PTF\"), 52 (\"trên PTF\")."
+        },
+        {
+          "doc": "14-claude-code-integration.md",
+          "location": "Line 46 \"B1 phơi bày CẢ compose-box LẪN PTF cùng feed prompt\"; line 217 \"Desktop raw-PTF giữ 100% feature\"",
+          "type": "typo",
+          "severity": "high",
+          "problem": "Two \"PTF\" typos for \"PTY\". Line 46 is inside a BẮT BUỘC (mandatory) dedup requirement and line 217 is the bolded conclusion of the SDK-parity section — both load-bearing.",
+          "recommended_fix": "Change \"PTF\" → \"PTY\" and \"raw-PTF\" → \"raw-PTY\"."
+        },
+        {
+          "doc": "16-readonly-inspector.md",
+          "location": "Line 40 \"host spawn `claude` (PTF)\" and \"cạnh PTF byte stream\"; line 60 \"nhất quán với PTF path\"",
+          "type": "typo",
+          "severity": "high",
+          "problem": "Two \"PTF\" typos for \"PTY\" in the data-flow description and in a Quyết định đã chốt (locked decision) bullet about transport consistency.",
+          "recommended_fix": "Change all \"PTF\" → \"PTY\" (line 40 has two occurrences, line 60 one)."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Line 793 \"Cân nhắc layer structured-event lên trên PTF cho iOS … giữ raw-PTF làm fallback\"",
+          "type": "typo",
+          "severity": "high",
+          "problem": "\"PTF\" typo for \"PTY\" appears twice in the Phase 3 roadmap open-question bullet of the authoritative current-architecture doc.",
+          "recommended_fix": "Change \"trên PTF\" → \"trên PTY\" and \"raw-PTF\" → \"raw-PTY\"."
+        },
+        {
+          "doc": "01-architecture.md",
+          "location": "Line 3 banner: \"terminal đi **PTY text-path** (như SSH/mosh, render bằng SwiftTerm)\"",
+          "type": "stale-superseded",
+          "severity": "high",
+          "problem": "States SwiftTerm as the terminal renderer, but doc 12 explicitly flipped the verdict to libghostty (\"verdict LẬT từ SwiftTerm sang libghostty, đã verify 2026\", line 136) with SwiftTerm demoted to fallback only, and README/12/14/16 all say libghostty. A reader hitting doc 01 first (it's the architecture overview) gets the wrong primary renderer.",
+          "recommended_fix": "Change to \"render bằng libghostty (SwiftTerm = fallback)\" to match the locked decision in doc 12."
+        },
+        {
+          "doc": "13-netbird-transport.md",
+          "location": "§4 line 68 \"**Terminal = TCP byte-stream + SwiftTerm.** **Không mosh/SSP**…\"",
+          "type": "stale-superseded",
+          "severity": "high",
+          "problem": "Names SwiftTerm as the terminal renderer in a current-architecture transport doc, contradicting the libghostty decision in doc 12/14/16. Same drift as doc 01.",
+          "recommended_fix": "Change \"+ SwiftTerm\" → \"+ libghostty (render client)\"."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Entire \"Terminal text-streaming\" body §1–6 (lines 267–502), §3.1 (lines 115–162), and summary table line 497 — code snippets and prose are SwiftTerm-first (e.g. line 421 `terminalView.feed(byteArray:)`, line 427 `TerminalViewDelegate`, §3 PredictionEngine \"Seam tích hợp với SwiftTerm\")",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "Doc 12 declares libghostty \"đã chốt\" at line 129/136/399 but the bulk of the implementation design (PTY read loop, integration adapter, scrollback, ligature/threading correction bullets, summary recommendation table) is still authored around SwiftTerm APIs, with libghostty bolted on as overrides. A reader cannot tell which API set is the plan of record without reading the whole 103k file. The §4 heading even uses strikethrough ~~SwiftTerm~~ → libghostty but keeps SwiftTerm body text as the main content.",
+          "recommended_fix": "Re-anchor §1–6 on the libghostty data path (ghostty_surface_feed_data / write-callback / TerminalRendering protocol) as primary, and clearly fence all SwiftTerm-specific snippets/corrections under a single \"Fallback: SwiftTerm\" subsection. At minimum add a one-line note at the top of §1 and §4 that all SwiftTerm code below is fallback-only."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Line 314 TERM table row: \"`xterm-256color` (hoặc `xterm-ghostty` nếu client là Ghostty)\"; line 125 \"`TERM=xterm-256color`\"; line 439; line 701",
+          "type": "contradiction",
+          "severity": "medium",
+          "problem": "Doc 12 sets TERM=xterm-256color as the default (4 places), but doc 14 (Quyết định 1, line 13) and the P0 roadmap (line 168) lock TERM=xterm-ghostty as the decision, and doc 15 line 46 also uses xterm-ghostty. Since libghostty is the chosen client, xterm-ghostty is the authoritative value; doc 12's xterm-256color default is now stale/contradictory.",
+          "recommended_fix": "Make TERM=xterm-ghostty the default in doc 12 (with xterm-256color as the documented fallback/toggle per doc 14's #54700 mitigation), and cross-reference doc 14 Quyết định 1 so there is one authoritative TERM value."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Lines 251–263: \"Tôi đã viết xong section. Đây là markdown implementation-ready…\" plus the bulleted self-summary; also line 662 footer \"File liên quan (đường dẫn tuyệt đối): /Volumes/Lacie/Workspace/oss/rworkspace/docs/02-host-capture-encode.md, …\"",
+          "type": "structure",
+          "severity": "medium",
+          "problem": "Leftover LLM authoring meta-commentary (first-person \"Tôi đã viết xong section\", a recap of corpus verdicts) and an absolute-local-path footer are embedded mid-document. These are generation artifacts, not design content, and break the reader's flow / look unprofessional in the flagship current-architecture doc.",
+          "recommended_fix": "Delete the lines 251–263 meta-commentary block and the line 662 absolute-path footer. If the corpus-verdict recap is wanted, fold it into a proper \"Summary of verified claims\" subsection without first-person narration."
+        },
+        {
+          "doc": "14-claude-code-integration.md",
+          "location": "Line 55: \"Toàn bộ phân tích dưới đây dựa trên corpus đã được adversarial-verified. Tôi đánh dấu rõ những claim…\"",
+          "type": "structure",
+          "severity": "low",
+          "problem": "First-person LLM authoring voice (\"Tôi đánh dấu rõ\") left in the doc body, inconsistent with the impersonal style of the rest of the docs.",
+          "recommended_fix": "Reword to impersonal: \"Các claim đã bị refuted hoặc còn uncertain được đánh dấu rõ ở từng chỗ load-bearing.\""
+        },
+        {
+          "doc": "README.md",
+          "location": "§\"Thuật ngữ\" (lines 55–66) — glossary contains only Host, Client/Viewer, Glass-to-glass latency, IDR/Keyframe, NALU, TCC, AX",
+          "type": "gap",
+          "severity": "medium",
+          "problem": "The glossary covers only old GUI-video-path vocabulary. None of the current-architecture terms that dominate docs 12–16 are defined: PTY, terminal text-path, GUI video-path, libghostty, NetBird, WireGuard, P2P/relayed, TUI, alt-screen, OSC 133, Claude Code, setup-token, A+B1 input box, read-only inspector, CoT, SSP/mosh. A reader entering via the current architecture has no term reference. (This gap is what lets the PTF typo go unnoticed — PTY is never defined.)",
+          "recommended_fix": "Add a current-architecture terminology block defining at least: PTY (pseudo-terminal), terminal text-path vs GUI video-path, libghostty, NetBird/WireGuard mesh, P2P vs relayed, TUI, alt-screen (DECSET 1049), OSC 133, setup-token, A+B1, read-only inspector, CoT. Define PTY explicitly so PTF reads as an obvious error."
+        },
+        {
+          "doc": "README.md",
+          "location": "§\"Đọc theo vai trò\" line 50 and §\"Tài liệu\" line 42 — both route the reader to 12-coding-profile.md as the single \"đọc đầu tiên\" current architecture",
+          "type": "gap",
+          "severity": "medium",
+          "problem": "There is no concise authoritative architecture overview for the CURRENT design. Doc 12 is pointed to as the one-stop overview but it is a 103k-character re-scope essay mixing decisions, corpus verdicts, fallback (SwiftTerm) material, doc-by-doc change instructions, and leftover artifacts — not a clean overview. The final decisions are scattered across 12 (hybrid + PTY + libghostty), 13 (NetBird, drop app crypto), 14 (TERM, OAuth/setup-token, A+B1), 16 (inspector, CoT placeholder). A new reader must reconstruct the architecture from five docs.",
+          "recommended_fix": "Add a short (1–2 page) \"Current architecture overview\" — either a new top doc or a tightened §TL;DR at the front of 12 — that states, in one place: terminal-first hybrid; PTY byte-stream over NetBird P2P; libghostty client renderer; TERM=xterm-ghostty; no app-layer crypto (WireGuard+ACL); OAuth+setup-token; input box A+B1; read-only inspector with CoT=placeholder-only; phase order terminal(1)→persist(2)→iOS(3)→GUI video(4)→security(5). Link out for detail."
+        },
+        {
+          "doc": "README.md / all",
+          "location": "No decisions-log file exists; locked decisions are spread across §\"Quyết định đã chốt\" in 14 and 16, inline [QUYẾT ĐỊNH ĐÃ CHỐT] callouts in 12, the 6-point TL;DR in 13, and Q1–Q8 table in 08",
+          "type": "gap",
+          "severity": "medium",
+          "problem": "There is no single decisions-log / ADR index. The architecture \"EVOLVED a lot\" and decisions were made iteratively, but a reader cannot see the final set of locked decisions and their rationale in one place. Some decisions live only inside long prose blockquotes (e.g. libghostty own-patch, A+B1, CoT placeholder), making it hard to confirm what is final vs exploratory.",
+          "recommended_fix": "Add a DECISIONS.md (or README section) listing each locked decision with a one-line rationale and a link to the doc/section: hybrid terminal-first; libghostty+own external-backend patch; TERM=xterm-ghostty; openpty+posix_spawn; TCP byte relay (no mosh SSP); NetBird (drop app crypto, ACL authz); OAuth subscription + setup-token / reuse credentials.json; input box A+B1 (B2 deferred); read-only inspector; CoT placeholder-only; HEVC 4:2:0 quality-mode for GUI path."
+        },
+        {
+          "doc": "08-risks-open-questions.md",
+          "location": "§1 risk list: order is R1,R2,R3,R4,R4b,R5,R6,R7,(unnumbered ⭐),R8,R10,R9 (lines 7–55)",
+          "type": "structure",
+          "severity": "low",
+          "problem": "Risk IDs are out of order (R10 appears before R9) and the ⭐ \"Compositor/vsync tail\" risk has no R-number while everything else does. Minor but undermines the at-a-glance credibility of the risk register.",
+          "recommended_fix": "Reorder so R9 precedes R10, and give the compositor/vsync-tail item a number (e.g. R11) or explicitly mark it as a cross-cutting note rather than a numbered risk."
+        },
+        {
+          "doc": "08-risks-open-questions.md",
+          "location": "§3 line 88 non-goal \"❌ Điều khiển qua Internet / NAT traversal (chỉ LAN)\" and §1 line 49 R10 (NetBird relayed = WAN fallback), plus line 91 scope row in doc 13",
+          "type": "contradiction",
+          "severity": "medium",
+          "problem": "Doc 08 non-goals still say \"only LAN, no Internet/NAT traversal\", but the current architecture (doc 13) is explicitly NetBird mesh that supports remote/WAN via P2P-with-relay-fallback, and doc 13 §5 line 91 corrects the scope from \"Chỉ LAN\" to \"NetBird mesh: direct (near-LAN) hoặc relayed (WAN-like)\". The doc 08 non-goal contradicts the adopted NetBird scope.",
+          "recommended_fix": "Update doc 08 non-goal to reflect NetBird: remote access IS supported via NetBird mesh; the non-goal is engineering for relayed/high-loss links, not Internet access itself. Align with doc 13 §5."
+        },
+        {
+          "doc": "13-netbird-transport.md",
+          "location": "§5 line 88 correction row: \"[12] §security … '​auth+encryption bắt buộc tầng app' → Bỏ app crypto\"",
+          "type": "broken-or-stale-xref",
+          "severity": "low",
+          "problem": "Doc 13 cites doc 12 §security as stating \"auth+encryption bắt buộc tầng app\", but doc 12's current text (§6 App Sandbox, and Phase 5 line 803) does NOT say app-layer crypto is mandatory — Phase 5 already adopts NetBird and drops app crypto. The correction targets text that no longer exists in doc 12, so the cross-reference is stale.",
+          "recommended_fix": "Either point the correction at the specific older revision, or drop/reword the row since doc 12 already aligns with NetBird (no app crypto). Verify the §security anchor exists in doc 12."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Lines 213, 495, 703: \"TLS optional trên LAN\" / \"TLS 1.3/AES-GCM\" for the terminal transport",
+          "type": "contradiction",
+          "severity": "medium",
+          "problem": "Doc 12 repeatedly says terminal transport should use TLS (optional/1.3) on LAN, but doc 13 (TL;DR #1, §1, §2 line 43) is the authoritative transport decision and says drop app-layer crypto entirely (plain TCP, no TLS) because WireGuard already encrypts. Doc 12's TLS recommendations are superseded but not marked, so a reader sees conflicting transport guidance.",
+          "recommended_fix": "Add a note in doc 12's transport sections that app-layer TLS is superseded by doc 13 (NetBird/WireGuard handles encryption; use plain TCP), or change \"TLS optional\" to \"no app-layer TLS — see doc 13\"."
+        },
+        {
+          "doc": "11-absolute-latency.md",
+          "location": "§\"Budget @60fps — WIRED GigE\" table, Capture row: \"Đặt `minimumFrameInterval`, `queueDepth=3`, skip idle frames\" (and other `queueDepth=3` mentions)",
+          "type": "contradiction",
+          "severity": "low",
+          "problem": "Inside doc 11 the capture-budget table still says queueDepth=3 even though the same doc's own corrections block (lines 20–26) and doc 02 establish that the real default is 8 and 2 is valid for low latency. Self-inconsistent within the doc.",
+          "recommended_fix": "Update the table cell to queueDepth=2 (or 8 default) consistent with the doc's own correction, or annotate \"(see corrections: default is 8, use 2)\"."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§4 line 197 \"Cách user kích hoạt (open question, hướng đề xuất)\" and §3.3/Phase-routing — terminal-vs-GUI window classification",
+          "type": "clarity",
+          "severity": "low",
+          "problem": "The mechanism for how a user routes a given window to terminal-path vs GUI-video-path is left as an open question in multiple places without a single consolidated statement, and the 'integrated terminal inside VS Code' case is flagged but unresolved. A reader looking for the routing UX has to stitch it together.",
+          "recommended_fix": "Consolidate the per-window routing decision (window-picker driven, no auto-detect, embedded-terminal-stays-in-video) into one labeled subsection and reference it from the routing/roadmap sections."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§3.1 line 117 corpus-correction blockquote (forkpty safety) is duplicated almost verbatim at lines 281 and 691; the posix_openpt correction at 119 duplicates 287 and 692",
+          "type": "redundancy",
+          "severity": "low",
+          "problem": "The forkpty-from-Swift safety verdict and the posix_openpt 'not broken' correction are each stated three times in doc 12 (early TL;DR-style blockquote, the detailed §1 design, and the roadmap uncertainty bullets) with near-identical wording. This bloats the 103k doc and risks divergence on edit.",
+          "recommended_fix": "State each correction once in the detailed §1 design and replace the other two with a one-line cross-reference (\"see §1.1 forkpty correction\")."
+        },
+        {
+          "doc": "01-architecture.md",
+          "location": "§5 Latency Budget (lines 92–112): \"glass-to-glass ~30–50ms … 60fps\", ProMotion 120Hz lever",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "Doc 01 still presents 30–50ms @60fps and ProMotion 120Hz as the latency target, but doc 12 §7/§3.3 (lines 740–747) and README explicitly re-scope this: motion-to-photon <16ms and 120fps are DROPPED, GUI-path target loosened to 40–80ms, terminal-path latency = network RTT. Doc 01 has a re-scope banner at the top but the §5 numbers themselves were never updated, so the reader sees superseded targets stated as current.",
+          "recommended_fix": "Per doc 12 §3.3's own instruction, split/relabel doc 01 §5: (a) terminal-path latency ≈ RTT + optional local echo; (b) GUI-video-path target 40–80ms, drop the 120fps column. At minimum annotate the §5 table as \"GUI video-path only; targets loosened — see doc 12 §7\"."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§3.1 line 162 and §5 line 459 scrollback; the recommendation table uses 'libghostty/SwiftTerm' interchangeably for ring-of-lines",
+          "type": "terminology",
+          "severity": "low",
+          "problem": "Scrollback (and several other sections) describe behavior as 'libghostty surface; SwiftTerm Terminal nếu fallback' but then give SwiftTerm-specific API (TerminalOptions.scrollback) as the concrete mechanism, leaving it ambiguous whether libghostty provides client-side scrollback at all. Mixed terminology obscures whether the chosen renderer satisfies the requirement.",
+          "recommended_fix": "State the libghostty scrollback mechanism (or note it as a spike item) as primary, and clearly mark TerminalOptions.scrollback as the SwiftTerm-fallback detail."
+        },
+        {
+          "doc": "16-readonly-inspector.md",
+          "location": "Title/header \"companion cho TUI\" + §\"Data flow\" referencing a \"NWConnection THỨ HAI … multiplex trên cùng NetBird tunnel\"",
+          "type": "gap",
+          "severity": "low",
+          "problem": "The inspector is a major current-architecture component (a stated differentiator) but it is not represented in any architecture diagram — doc 12's hybrid ASCII diagram (lines 65–106) shows only terminal + GUI-video paths, not the second NWConnection inspector channel. A reader of the overview never sees the inspector as part of the system picture.",
+          "recommended_fix": "Add the read-only inspector channel (second NWConnection, JSONL tail → typed events) to the doc 12 hybrid diagram or to the new architecture overview, so all three data paths (terminal, GUI video, inspector) appear in one picture."
+        },
+        {
+          "doc": "07-roadmap.md",
+          "location": "Whole file — \"Phase 0…Phase 4\" video-first ordering, with override banner at line 3 pointing to doc 12",
+          "type": "stale-superseded",
+          "severity": "low",
+          "problem": "Doc 07 is fully superseded by doc 12 §4 'Revised phased roadmap' (terminal=Phase 1, GUI video=Phase 4) and carries a banner saying so, but the body still reads as the live roadmap (Phase 1 = 'MVP video Mac→Mac'). Two roadmaps with reversed phase meanings coexist; a reader who lands on doc 07 can easily mistake the old phases for current.",
+          "recommended_fix": "Strengthen the doc 07 banner to a clear 'SUPERSEDED — historical GUI-path reference only' and relabel its phases (e.g. 'GUI Phase 1') to avoid collision with doc 12's terminal-first Phase 1/Phase 4 numbering."
+        },
+        {
+          "doc": "16-readonly-inspector.md",
+          "location": "§\"Workflow\" line 29 (CC v2.1.154), and version pins scattered across doc 14 (v2.1.110/129/141/159) and doc 16 (v2.1.142+/154)",
+          "type": "clarity",
+          "severity": "low",
+          "problem": "Many precise Claude Code version pins are stated as present-tense facts with a fixed date context (docs are dated 2026-06-01). These will silently go stale and there's no single 'as-of version' note telling the reader the baseline CC version the docs assume. Not wrong today, but a completeness/clarity risk for future readers.",
+          "recommended_fix": "Add an 'as-of: Claude Code v2.1.x, 2026-06' note at the top of docs 14 and 16 so version-specific claims are anchored, and mark the most volatile ones (undocumented flags, research-preview features) as 'verify on target CC version'."
+        }
+      ],
+      "structural_recommendations": [
+        "Create one authoritative CURRENT-ARCHITECTURE OVERVIEW (new short doc, or a tightened front-matter section of doc 12) that states all final decisions in one place: terminal-first hybrid; PTY byte-stream over NetBird P2P; libghostty client renderer; TERM=xterm-ghostty; no app-layer crypto (WireGuard + NetBird ACL); OAuth subscription + setup-token (reuse credentials.json); input box A+B1 (B2 deferred); read-only inspector with CoT placeholder-only; phase order terminal→persist→iOS→GUI video→security. README currently sends readers to the 103k doc 12 as the overview, which it is not.",
+        "Add a DECISIONS.md / ADR index linking each locked decision to its source section with one-line rationale, so the iteratively-made decisions are discoverable without reading all of docs 12–16. Today they are buried in long blockquotes (libghostty own-patch, A+B1, CoT placeholder, drop app crypto).",
+        "Do a global find/replace of PTF→PTY across the repo (9 occurrences in docs 12, 14, 15, 16) and add PTY to the glossary so the typo can't recur unnoticed; PTY is currently never defined anywhere.",
+        "Resolve the libghostty-vs-SwiftTerm renderer terminology once: fix the two stale 'SwiftTerm' renderer claims (01 §banner, 13 §4), and restructure doc 12's terminal-design body so libghostty is primary and all SwiftTerm material is fenced under a single explicit 'Fallback' section. Right now libghostty is 'đã chốt' in callouts but SwiftTerm in the body.",
+        "Reconcile the TERM value: make xterm-ghostty authoritative (per doc 14 Quyết định 1) and update doc 12's four xterm-256color defaults, keeping 256color only as the documented fallback toggle.",
+        "Expand README's glossary to cover the current architecture vocabulary (PTY, terminal/GUI-video paths, libghostty, NetBird/WireGuard, P2P/relayed, TUI, alt-screen, OSC 133, setup-token, A+B1, inspector, CoT) — the existing glossary is GUI-video-path-only.",
+        "Sweep the docs for generation artifacts and stale targets: delete doc 12's LLM meta-commentary (251–263) and absolute-path footer (662), depersonalize doc 14 line 55, fix doc 08 risk-ID ordering (R9/R10) and the unnumbered compositor risk, and update doc 01 §5 latency targets + doc 08 'LAN-only' non-goal to match the NetBird/loosened-latency re-scope.",
+        "Add an 'as-of version/date' header to the Claude-Code-version-heavy docs (14, 16) and mark research-preview / undocumented-flag claims as needing re-verification, to bound future staleness."
+      ]
+    },
+    {
+      "lens": "structure-ia",
+      "summary": "The doc set's information architecture still reflects its origin as a game-streaming/screen-sharing project (docs 01-11), with the current terminal-first coding-hybrid architecture (docs 12-16) bolted on via per-doc \"superseded/GUI-path-only\" banners. The result misleads a new reader at the very first contact point: the README's title, scope table, and non-functional goals are written in the OLD game-streaming-then-coding framing (\"text crispness is priority #1\", \"PaneCast — Low-Latency Per-Window Screen Sharing\"), which directly contradicts doc 12's central decision to DROP text-crispness from the video path and lead with terminal text streaming. There is no single concise authoritative \"read-first\" overview that captures the current architecture + all final decisions: doc 12 is nominated as \"read first\" but is a 103k three-documents-in-one concatenation (two TL;DRs, two near-top-level sections, and leftover AI-generation meta-commentary at lines 251-263), too long and too internally seamed to serve that role. CURRENT vs HISTORICAL is signposted only by inconsistent, ad-hoc banners (5+ different phrasings/emoji conventions across 01/05/07/08/09/10/11), with no grouping in the README doc table and no decisions log. Several stale references remain (doc 01 and doc 13 still say terminal renders with SwiftTerm, superseded by libghostty in doc 12 §4; README terminology glossary contains only video-era terms). Recommended fix is light reorganization plus strong signposting: (1) add a short top-level ARCHITECTURE+DECISIONS overview (or rewrite the README top to BE it) that states the current terminal-first hybrid and links each final decision to its detailed doc; (2) standardize a single banner format and add a CURRENT vs REFERENCE grouping to the README doc table; (3) give an explicit reading order; (4) add a one-line-per-decision decisions log. Avoid mass renumbering.",
+      "issues": [
+        {
+          "doc": "README.md",
+          "location": "Title line 1 + Scope table row \"Use-case\" (line 16) + \"Mục tiêu phi chức năng\" line 22",
+          "type": "contradiction",
+          "severity": "high",
+          "problem": "The README — the first thing a reader sees — still frames the project in the old screen-sharing/text-crispness terms. Title: \"PaneCast — Low-Latency Per-Window Screen Sharing & Remote Control\". Line 22: \"Độ nét text là ưu tiên #1 ... Apple HW encode chỉ 4:2:0 → text màu bị nhòe → cần chiến lược riêng (xem doc 12)\". But the CURRENT architecture (doc 12 §1.2/§7, doc 09 banner) explicitly DROPS text-crispness/4:4:4 as a concern because text goes over the terminal PTY path (rendered crisp by libghostty, never through a codec), and 4:2:0 video is declared \"đủ tốt\". A new reader is told the central problem is exactly the thing the current design says is no longer a problem.",
+          "recommended_fix": "Rewrite the README top to lead with the terminal-first hybrid framing: title should reflect a remote-coding tool (terminal PTY + optional GUI mirror), not screen sharing. Replace \"Độ nét text là ưu tiên #1 → cần chiến lược 4:2:0\" with the current framing: text crispness is achieved by routing terminal/code through the PTY text-path (libghostty, no codec); 4:2:0 video is only for the demoted GUI-mirror path and is accepted as good-enough."
+        },
+        {
+          "doc": "README.md",
+          "location": "Whole file — acts as the de-facto entry point but there is no concise current-architecture/decisions overview",
+          "type": "gap",
+          "severity": "high",
+          "problem": "There is no single authoritative \"read-first\" doc that captures the CURRENT architecture plus all final decisions in one place. README points to doc 12 as \"đọc đầu tiên\", but doc 12 is 103k and is three concatenated documents. The many already-made final decisions (libghostty + own external-backend patch; TERM=xterm-ghostty + CLAUDE_CODE_FORCE_SYNC_OUTPUT; NetBird/no-app-crypto; OAuth + setup-token / reuse credentials.json; input box A+B1; B2 deferred; read-only structured inspector; CoT=placeholder-only; terminal=Phase 1, GUI video=Phase 4) are scattered across 12/13/14/15/16 with no consolidated list.",
+          "recommended_fix": "Create a short (1-2 page) top-level overview — either a new 00-overview.md / ARCHITECTURE.md, or rewrite the README body to BE it. It should: (a) state the current terminal-first hybrid in 3-4 sentences; (b) carry one consolidated decisions table (decision → one line → link to the doc that details it); (c) explicitly mark docs 01-11 as historical/GUI-path reference. Keep doc 12 as the deep dive, not the front door."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Lines 251-263 (\"Tôi đã viết xong section. Đây là markdown implementation-ready ...\") and again the orphan note at lines 661-662",
+          "type": "structure",
+          "severity": "high",
+          "problem": "Doc 12 contains leftover AI-generation meta-commentary addressed to the author, not to the reader: \"Tôi đã viết xong section...\", followed by a recap list of corpus verdicts, then a second such block at the join of the next sub-document. This is a generation artifact, breaks the reading flow, and signals the doc was pasted together from multiple research runs rather than authored as one document.",
+          "recommended_fix": "Delete the meta-commentary blocks (251-263, 661-662). If the verdict recap (forkpty/posix_openpt/feed-safety/etc.) is worth keeping, fold it into a single \"Verified claims summary\" subsection written for the reader."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "Overall structure: H1 line 1 + ToC line 21; then second \"## TL;DR\" at line 512 and the \"## GUI video path ... — đơn giản hóa\" / \"## Roadmap & cập nhật docs\" sections (lines 506, 666)",
+          "type": "structure",
+          "severity": "high",
+          "problem": "Doc 12 is really four documents concatenated under one number: (1) the hybrid coding-profile summary, (2) \"Terminal text-streaming design\", (3) \"GUI video path\" (with its OWN second \"## TL;DR\" at line 512), and (4) \"Roadmap & cập nhật docs\". The top ToC (lines 22-25) only lists four anchors and does not match the actual heading tree; a reader cannot navigate 103k via that ToC. This is the single biggest IA problem because doc 12 is also the nominated read-first doc.",
+          "recommended_fix": "Split doc 12 into its natural parts: keep 12 as the concise hybrid overview (read-first), and move the terminal-streaming design, the GUI-video-path simplification, and the docs-changes/roadmap into separate numbered docs (e.g. 12a/12b or new 17/18, and fold the roadmap into doc 07 since it already supersedes 07). At minimum, fix the ToC to mirror every H2 and remove the duplicate TL;DR."
+        },
+        {
+          "doc": "01-architecture.md",
+          "location": "Banner, line 3: \"terminal đi PTY text-path (như SSH/mosh, render bằng SwiftTerm)\"",
+          "type": "stale-superseded",
+          "severity": "high",
+          "problem": "Doc 01's re-scope banner states the terminal path renders with SwiftTerm. This is stale: doc 12 §4 (line 399) explicitly supersedes SwiftTerm with libghostty as the chosen client emulator (SwiftTerm demoted to fallback). A reader starting at doc 01 gets the wrong terminal-stack decision.",
+          "recommended_fix": "Change \"render bằng SwiftTerm\" to \"render bằng libghostty (SwiftTerm = fallback)\" in the doc 01 banner, or drop the library name and just link to doc 12 §4 for the emulator decision."
+        },
+        {
+          "doc": "13-netbird-transport.md",
+          "location": "§4 \"Hệ quả: giữ thiết kế ĐƠN GIẢN\", line 68: \"Terminal = TCP byte-stream + SwiftTerm.\"",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "Doc 13 still names SwiftTerm as the terminal renderer, contradicting the libghostty decision finalized in doc 12 §4. Doc 13 is in the CURRENT cluster, so this stale reference is more confusing than the same slip in a historical doc.",
+          "recommended_fix": "Replace \"+ SwiftTerm\" with \"+ libghostty\" (or remove the renderer name — it is irrelevant to the transport point being made)."
+        },
+        {
+          "doc": "README.md",
+          "location": "Doc table (lines 29-46) and \"Đọc theo vai trò\" (lines 48-53)",
+          "type": "structure",
+          "severity": "high",
+          "problem": "The doc table lists 01-16 in chronological/numeric order with no visual separation of CURRENT vs HISTORICAL. A new reader sees 01-architecture, 02-host-capture-encode, ... 11-absolute-latency presented as the primary spine, then has to infer from inline stars and a footnote that the real current architecture starts at 12. The numbering order actively front-loads the obsolete game-streaming docs.",
+          "recommended_fix": "Group the doc table into sections with headers: \"CURRENT architecture (read these)\" = README/overview + 12 + 13 + 14 + 16 (+15 prior-art); \"Reference — GUI video path (Phase 4, historical latency research)\" = 01,02,03,04,05,09,10,11; \"Superseded\" = 07 (roadmap, replaced by 12). Add a one-line 'status' column (current / GUI-path-only / superseded)."
+        },
+        {
+          "doc": "README.md",
+          "location": "Banners/markers across the set: compare 01 line 3, 05 line 3, 07 line 3, 08 line 5, 09 line 3, 10 line 3, 11 line 3",
+          "type": "terminology",
+          "severity": "medium",
+          "problem": "The 'this doc is historical / GUI-path-only' status is conveyed by a different banner wording and emoji each time: 01 \"Cập nhật kiến trúc (re-scope)\", 05 \"CHỈ áp dụng cho GUI video-path\", 07 \"Đã được ghi đè\", 09 \"Re-scope (hybrid)\", 10 \"Chỉ áp dụng cho GUI video-path\", 11 \"Floor analysis này CHỈ áp dụng cho GUI video-path\". There is no standard, so a reader cannot tell at a glance whether a doc is fully superseded, partially valid for the GUI path, or just corrected.",
+          "recommended_fix": "Define a 3-state banner standard and apply it verbatim at the top of every non-current doc: STATUS: SUPERSEDED (see X) / STATUS: REFERENCE — GUI video path only (Phase 4) / STATUS: CURRENT. One sentence each, same emoji. Put the legend in the README."
+        },
+        {
+          "doc": "README.md",
+          "location": "Whole set — no decisions log exists",
+          "type": "gap",
+          "severity": "medium",
+          "problem": "Decisions were made iteratively across many research rounds and are buried in the doc that happened to record them (libghostty+own-patch in 12/14; TERM=xterm-ghostty in 14; OAuth+setup-token vs reuse credentials.json in 14/15; input box A+B1, B2 deferred in 14; read-only inspector + CoT=placeholder-only in 16; NetBird no-app-crypto in 13; terminal=Phase1/GUI=Phase4 in 12). A reader cannot get the list of final decisions without reading all of 12-16.",
+          "recommended_fix": "Add a DECISIONS.md (or a section in the overview): one line per decision with status (chốt/open) and a link to the detailed doc+section. e.g. 'Terminal emulator = libghostty + own external-backend patch (fallback SwiftTerm) — see 12 §4'. This doubles as the change-log the project currently lacks."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "§4 video config line 588 (queueDepth = 5) vs 02 line 49 (queueDepth = 3, default 8, 2 valid) vs 11 §1.1/C3 (default 8, use 2-3)",
+          "type": "contradiction",
+          "severity": "medium",
+          "problem": "The CURRENT doc 12 recommends config.queueDepth = 5 (\"giá trị Apple khuyến nghị\") for the GUI video path, while doc 02 and doc 11 (which doc 12 §3.3 says to keep as the GUI-path API reference) say the real default is 8 and recommend 2-3 for low latency. Doc 12 §3.3 line 745 itself repeats \"queueDepth default 8, 2 hợp lệ\". So within the current cluster, doc 12 gives two different queueDepth numbers (5 in the code block, 2 in the keep-list) and contradicts the reference docs it points to.",
+          "recommended_fix": "Reconcile to one recommendation. For the idle-efficiency coding profile, decide whether 5 (higher, fewer drops) or 2-3 (lower latency) is intended and state why; ensure doc 12 §4 code block, doc 12 §3.3 keep-list, doc 02, and doc 11 agree or explicitly note the profile-specific override."
+        },
+        {
+          "doc": "08-risks-open-questions.md",
+          "location": "§1 risk ordering: R10 (line 48) appears before R9 (line 52)",
+          "type": "structure",
+          "severity": "low",
+          "problem": "Risks are listed R1..R8, then R10, then R9 — out of numeric order. R8 was clearly inserted later (it breaks the original severity sort: green R5/R6 then yellow R7, then R8/R10/R9), and R9/R10 were appended in reverse. Minor, but in a risks register the ordering jump makes the reader double-check they didn't miss R9.",
+          "recommended_fix": "Reorder to R9 before R10 (or renumber the late additions). Optionally re-sort the whole list by severity as the header (\"xếp theo mức độ\") promises, since R7/R8/R9/R10 currently violate that sort."
+        },
+        {
+          "doc": "README.md",
+          "location": "\"Thuật ngữ\" glossary (lines 55-66)",
+          "type": "gap",
+          "severity": "medium",
+          "problem": "The glossary contains only video/game-streaming-era terms (Glass-to-glass latency, IDR/Keyframe, NALU, TCC, AX). None of the vocabulary a reader of the CURRENT docs needs is defined: PTY, NetBird/WireGuard mesh, libghostty, alt-screen/1049, kitty keyboard protocol, OSC 52/133/777, JSONL transcript / structured inspector, NDJSON, setup-token/OAuth. The glossary reinforces the impression the project is about video.",
+          "recommended_fix": "Add the terminal-first terms (PTY/forkpty, NetBird mesh, libghostty, alt-screen, kitty keyboard, OSC 52/133, JSONL transcript, NDJSON, setup-token) and either move the video-only terms (NALU, IDR, Glass-to-glass) into a 'GUI video path terms' sub-section or mark them as such."
+        },
+        {
+          "doc": "07-roadmap.md",
+          "location": "Whole doc; banner line 3 defers to \"12 §Revised phased roadmap\"",
+          "type": "stale-superseded",
+          "severity": "medium",
+          "problem": "Doc 07 is wholly superseded by the revised roadmap in doc 12 §4 (lines 751-808), yet it remains a full standalone numbered doc with its own Phase 0-4 that use the OLD ordering (Phase 1 = MVP video, Phase 2 = input injection) which directly conflicts with the current ordering (Phase 1 = terminal, Phase 4 = GUI video). Two roadmaps with conflicting phase numbers exist in the set; a reader who lands on 07 first gets the obsolete plan.",
+          "recommended_fix": "Either (a) replace doc 07's body with the current roadmap (move the revised roadmap OUT of the giant doc 12 INTO doc 07, where a roadmap belongs) and keep the old phases only as an appendix labeled 'historical GUI-path plan'; or (b) reduce doc 07 to a stub that redirects to the canonical roadmap. Do not leave two full conflicting roadmaps."
+        },
+        {
+          "doc": "12-coding-profile.md",
+          "location": "ToC anchors line 22-25 vs actual headings",
+          "type": "broken-or-stale-xref",
+          "severity": "low",
+          "problem": "The in-doc ToC lists 4 anchors (kiến-trúc-hybrid, terminal-text-streaming, gui-video-path, roadmap) but the document has many more H2/H3 sections (TL;DR, §1-§8, two TL;DRs, etc.) and a duplicate-titled section. The anchors also assume GitHub-style slugging of Vietnamese headings with diacritics, which is fragile. Navigation within the largest doc is effectively broken.",
+          "recommended_fix": "If doc 12 is split (recommended), this resolves itself. If kept whole, regenerate the ToC to list every section and verify each anchor resolves; consider plain-ASCII heading anchors."
+        },
+        {
+          "doc": "README.md",
+          "location": "Codename line 3 \"Codename tạm: PaneCast (đổi tự do)\" and inconsistent usage across set",
+          "type": "terminology",
+          "severity": "low",
+          "problem": "The product name \"PaneCast\" appears only in README (3x), 01 (6x), 04, 06, 07, 12 — i.e. only the old game-streaming-era docs use it; none of the current docs (13/14/15/16) name the product, and 14/15/16 refer to 'tool của ta'. The name itself (\"PaneCast\" = pane casting / screen casting) encodes the obsolete screen-sharing framing.",
+          "recommended_fix": "Decide a product name that fits the terminal-first identity (or keep PaneCast deliberately) and use it consistently, or drop the codename entirely until chosen. At minimum note in the overview that 'PaneCast' is the legacy codename from the screen-sharing era."
+        },
+        {
+          "doc": "15-prior-art-happy-happier.md",
+          "location": "Filename/number 15 sits between 14 (claude-code) and 16 (inspector) but is prior-art research, not architecture",
+          "type": "structure",
+          "severity": "low",
+          "problem": "Within the current cluster (12-16), the doc types are mixed: 12 = architecture, 13 = transport, 14 = integration design, 15 = prior-art research, 16 = feature design. 15 is reference material (competitor teardown) interleaved with design docs, with no signposting that it is background rather than a spec.",
+          "recommended_fix": "In the README grouping, label 15 as 'Reference — prior art' distinct from the design docs (12/13/14/16). No renumber needed; just classify it in the doc table."
+        }
+      ],
+      "structural_recommendations": [
+        "Add a short top-level read-first overview (new 00-overview.md / ARCHITECTURE.md, or a rewritten README body) that: states the current terminal-first hybrid in a few sentences, embeds the consolidated decisions table, and points to deep-dive docs. This is the highest-leverage fix — it gives a new reader the correct mental model before they touch any historical doc.",
+        "Group the README doc table into three labeled tiers with a status column: CURRENT (overview + 12,13,14,16, plus 15 as prior-art reference), REFERENCE — GUI video path / Phase 4 (01,02,03,04,05,09,10,11), and SUPERSEDED (07). Stop presenting 01-11 as the primary spine.",
+        "Standardize a single banner format with three states (CURRENT / REFERENCE-GUI-path-only / SUPERSEDED-see-X) and apply it verbatim at the top of every doc; put the legend in the README. Replace the 5+ ad-hoc banner wordings currently in 01/05/07/08/09/10/11.",
+        "Publish a recommended reading order in the README: (1) overview/decisions, (2) 12 hybrid architecture, (3) 13 NetBird transport, (4) 14 Claude Code integration + input box, (5) 16 read-only inspector, (6) 15 prior-art for context; then 'only if working the GUI video path (Phase 4): 01,02,04,05,09,10,11'.",
+        "Add a one-line-per-decision DECISIONS log (or section) linking each finalized decision to the doc/section that details it. Use it as the project's change-log going forward so future re-scopes update one canonical list instead of re-bannering N docs.",
+        "Split the 103k doc 12 into its natural components: a concise hybrid-architecture overview (keep as 12 / promote to read-first), terminal-streaming design, GUI-video-path simplification, and move the revised roadmap into doc 07 (the roadmap's natural home). This removes the duplicate TL;DRs, the broken ToC, and the generation meta-commentary, and makes the read-first doc actually short.",
+        "Sweep stale library references so the whole current cluster agrees on libghostty as the chosen emulator (fix 01 banner and 13 §4 which still say SwiftTerm); and refresh the README glossary with terminal-first vocabulary (PTY, NetBird, libghostty, alt-screen, kitty keyboard, OSC 52/133, JSONL transcript, NDJSON, setup-token), demoting the video-only terms to a clearly-labeled GUI-path subsection.",
+        "Prefer this light reorganization (overview + grouping + banner standard + decisions log + splitting only the one oversized doc) over renumbering 01-16; renumbering would break the many inter-doc links (03/05/10/11 cross-reference each other and 12/13 reference them by number) for little reader benefit."
+      ]
+    }
+  ]
+}

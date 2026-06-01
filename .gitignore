@@ -1,0 +1,15 @@
+# Swift Package Manager / Xcode build artifacts
+.build/
+DerivedData/
+*.o
+*.swiftmodule
+
+# Xcode user state
+*.xcuserstate
+xcuserdata/
+.swiftpm/xcode/
+
+# macOS
+.DS_Store
+
+# NOTE: Package.resolved is intentionally NOT ignored — pin the dependency graph.

@@ -1,0 +1,469 @@
+{
+  "dimensionsResearched": 3,
+  "answer": "Tôi sẽ phân tích các sources đã verify để viết câu trả lời. Tôi không cần thêm research — corpus đã đầy đủ với các adversarial verdicts. Tôi sẽ phản ánh trung thực các verdict refuted/uncertain.\n\n## Đính chính call SwiftTerm-vs-libghostty: iOS embedding ĐÃ proven, nhưng nuance quan trọng\n\n### 1. Đính chính thẳng: libghostty trên iOS render network bytes — ĐÃ proven production\n\nKết luận cũ (\"iOS không first-class\", \"full libghostty assumes it owns the PTY, không có pipe-only mode\") **sai trên thực tế 2026**. Có các app App Store thật đang render **một network byte stream (SSH/mosh) không có local PTY** bằng full libghostty:\n\n- **VVTerm** (App ID 6757482822, open source `vivy-company/vvterm`) — CONFIRMED qua đọc source trực tiếp. Dùng `ghostty_surface_new` trên `GHOSTTY_PLATFORM_IOS` (full surface, không phải vt-only), feed SSH bytes vào bằng `ghostty_surface_feed_data`, nhận keystroke ra qua `ghostty_surface_set_write_callback` với `use_custom_io = true`. Ghostty tự quản Metal/IOSurface layer trên iOS. Đây là proof trực tiếp đúng use-case của ta. [vivy-company/vvterm GhosttyRenderingSetup.swift, Ghostty.Surface.swift]\n- **Echo** (App ID 6758669847, Replay Software) — SSH+mosh client, \"backed by Ghostty… Metal-accelerated rendering\". Closed-source nên integration path cụ thể KHÔNG xác minh được. [replay.software/updates/introducing-echo, HN 47064787]\n- **RootShell** (App ID 6755794662, `kitknox/rootshell`) — \"GPU-accelerated rendering powered by libghostty\", SSH + local terminal trên Apple platforms. [github.com/kitknox/rootshell]\n- **Moshi** (App ID 6757859949, getmoshi.app) — đây chính là \"moshi\" user nhắc tới. v2.2.0 (Feb 2026) thay xterm.js bằng Ghostty engine; v2.5.7 \"upgrade to Ghostty 1.3.1\". Closed-source, KHÔNG disclose integration path (self-build vs SPM). Lưu ý: \"moshi\" không phải một thư viện render — nó là app dùng giao thức Mosh. [getmoshi.app, App Store 6757859949]\n\n**Phải đính chính honest hai claim trong corpus bị verify là sai/yếu:**\n- **Geistty KHÔNG ở trên App Store** (verdict: *refuted*). README của tác giả nói thẳng \"highly unlikely I will ever submit this to the App Store\", repo không có release nào, chỉ TestFlight. Nó là proof-of-concept open-source quý giá về *cơ chế*, nhưng KHÔNG được dùng làm bằng chứng \"shipping App Store app\". [github.com/daiimus/geistty, /releases]\n- **Spectty** (App ID 6759269910) hiện **KHÔNG dùng libghostty** trong production. Nó dùng `VTStateMachine` (Swift parser) + `TerminalMetalRenderer` (custom Metal + CoreText) tự viết — tức là kiến trúc *kiểu* libghostty-vt + own renderer, với đường nâng cấp libghostty được thiết kế sẵn nhưng chưa land. [github.com/ocnc/spectty README]\n\nTóm lại: bằng chứng vững nhất là **VVTerm** (open source, đọc được code, đúng use-case network-bytes). Echo/RootShell/Moshi củng cố momentum nhưng integration path là *claim_to_verify* vì closed-source. Mitchell Hashimoto công khai amplify VVTerm + \"another libghostty terminal for iOS\" — Ghostty author endorse iOS embedding. [x.com/mitchellh/status/2021610956334276844]\n\n### 2. HOW họ làm — và nghĩa gì cho ta\n\n**vt vs full:** Mọi app *thực sự embed libghostty* (VVTerm, Echo, RootShell, Geistty-PoC) đều dùng **full libghostty với GPU/Metal renderer của Ghostty**, KHÔNG dùng libghostty-vt. Không ai tự viết renderer trên libghostty-vt trong production — *trừ* Spectty, vốn lại đang dùng VT state machine tự viết hoàn toàn (clean-room), chưa phải libghostty.\n\n**Cơ chế feed network bytes (điểm kỹ thuật then chốt — đã verify bằng diff source):** upstream `ghostty-org/ghostty` `ghostty_surface_config_s` **KHÔNG có** `backend_type`/`write_callback`/`resize_callback`, và chỉ có exec backend (spawn PTY). Khả năng \"feed external bytes không owning PTY\" là **fork-only**, và tồn tại dưới **hai API shape khác nhau** trong các app shipping:\n- `daiimus/ghostty` branch `ios-external-backend` (Geistty): thêm `GHOSTTY_BACKEND_EXTERNAL` + callbacks vào struct, feed bytes qua `ghostty_surface_write_output()`. [daiimus/ghostty include/ghostty.h L422-469, Geistty Ghostty.swift L1979]\n- `wiedymi/ghostty` branch `custom-io` (VVTerm shipping): dùng `use_custom_io` bool + setter `ghostty_surface_set_write_callback()`, feed bytes qua `ghostty_surface_feed_data()`. [vvterm scripts/build.sh `GHOSTTY_REPO=wiedymi/ghostty GHOSTTY_REF=custom-io`, vendored ghostty.h]\n\n→ **Nghĩa cho ta:** câu hỏi \"full libghostty có hỗ trợ feed external bytes không?\" — **Có, nhưng chỉ với fork đã patch; KHÔNG với upstream main.** Cả VVTerm lẫn Geistty đều tự maintain fork riêng. Ta sẽ phải chọn một fork (hoặc tự patch) — đây là trách nhiệm engineering không tránh được.\n\n**Về `Lakr233/libghostty-spm` — phải đính chính honest:** corpus ban đầu mô tả nó như \"canonical iOS-ready distribution có host-managed-io patch sẵn\", nhưng verify cho thấy **không app SSH network nào trong số được confirm thực sự dùng nó** — VVTerm và Geistty đều self-build từ fork riêng. Quan trọng hơn: bằng chứng vững nhất nói libghostty-spm **build từ upstream `ghostty-org/ghostty` main, KHÔNG có external-backend field** → *không dùng trực tiếp được cho network-only app mà không patch thêm*. Việc nó có sẵn `GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED` là một claim *mâu thuẫn giữa các source và chưa được verify chắc chắn* (đánh dấu **claim_to_verify** — phải tự đọc Package.swift + patch của repo này trước khi tin). libghostty-spm phù hợp cho local-PTY use-case (macOS terminal), chưa chắc cho network client.\n\n**ABI churn:** libghostty **vẫn không có tagged standalone release** tính tới Ghostty 1.3.1 (Mar 2026); team Ghostty nói API signatures \"still in flux\" dù functionality \"extremely stable\". Cách production xử lý: **pin một Ghostty commit SHA cụ thể, build `GhosttyKit.xcframework` từ source (zig build), vendor binary vào repo** (VVTerm pin commit `268a0a9d`; Geistty rebase fork ~94 commit lên Ghostty 1.3.0). Đây là **build-time lock**, không phải runtime risk cho user cuối — nhưng là gánh nặng bảo trì developer thật. [mitchellh.com/writing/libghostty-is-coming, ghostty 1-3-0 release notes]\n\n### 3. Verdict cập nhật: CONDITIONAL FLIP sang libghostty\n\nBa phản đối cũ đều đã đổ phần lớn: \"iOS not first-class\" → sai (proven); \"full libghostty owns PTY\" → sai (external backend giải đúng bài toán); \"no stable tag\" → còn đúng nhưng KHÔNG block production. Nhưng flip **không vô điều kiện** — điều kiện cứng là **đội phải sở hữu được một bước build Zig + pin fork**.\n\n**Flip sang libghostty NẾU:**\n- Terminal *chính là* sản phẩm của ta (remote-coding tool), user là dev chạy Neovim/tmux/lazygit/btop → **VT correctness của Ghostty + GPU/Metal render + ligatures + Kitty graphics protocol** là khác biệt sản phẩm thật. SwiftTerm là CPU-rendered xterm emulator, không có GPU path. [ghostty.org/docs/about]\n- Đội có ≥1 engineer thoải mái với C API + Zig build, chấp nhận pin một fork (`wiedymi/ghostty custom-io` hoặc `daiimus/ghostty ios-external-backend`) và rebuild XCFramework khi bump.\n- Chi phí: ước tính **1–3 engineer-weeks** dựng pipeline ban đầu; sau đó rebuild theo giờ khi update commit pin.\n\n**Giữ SwiftTerm NẾU:**\n- Cần ship nhanh, pure-Swift SPM, không muốn nuôi toolchain Zig/fork.\n- Terminal là feature phụ.\n- SwiftTerm 2025 đã thu hẹp khoảng cách: thêm Kitty graphics, cải thiện CJK/emoji, +58% throughput trên VteBench. Cho coding text thuần không ligature/inline-image, gap correctness đã nhỏ đáng kể. [github.com/migueldeicaza/SwiftTerm/releases]\n\n**Honest framing:** không phải \"libghostty quá khó\" mà là \"**libghostty tốn 1–3 tuần upfront + một build step + một fork phải maintain ABI**\". Với một remote-coding tool nơi terminal là core, đây là lựa chọn dài hạn defensible — và là cái các iOS terminal mới tốt nhất 2025–2026 đã chọn.\n\n### 4. Nếu chọn libghostty — đường đi cụ thể\n\n1. **Full libghostty, KHÔNG vt + own renderer.** Lý do: mọi production app embed full surface để lấy luôn Metal renderer của Ghostty; viết own renderer trên libghostty-vt là chính xác con đường Spectty đang đi và nó *chưa* xong — tốn thêm nhiều tuần render engineering. Chỉ chọn vt + own renderer nếu ta đặc biệt cần kiểm soát render pipeline (ít có lý do cho remote coding).\n2. **Chọn/patch fork có external backend.** Tham chiếu trực tiếp `wiedymi/ghostty custom-io` (API: `use_custom_io` + `ghostty_surface_set_write_callback` + `ghostty_surface_feed_data`) — đây là fork đang chạy production trên App Store qua VVTerm, đáng tin nhất. `daiimus/ghostty ios-external-backend` (`GHOSTTY_BACKEND_EXTERNAL` + `ghostty_surface_write_output`) là tham chiếu kiến trúc rõ ràng nhất (có ARCHITECTURE.md/ADR). Không trông chờ upstream — patch chưa merge vào `ghostty-org/ghostty` main.\n3. **Build & vendor XCFramework, pin SHA.** `zig build -Demit-xcframework=true` (cần Zig 0.14+, Xcode 15+) → slices `ios-arm64`, `ios-arm64-simulator`, `macos`; vendor binary vào repo, pin Ghostty commit SHA. Quản ABI bằng build-time lock; rebuild có chủ đích khi bump (như Moshi \"upgrade to Ghostty 1.3.1\").\n4. **Data path:** network bytes (NetBird/WireGuard TCP) → callback feed-in của surface (`ghostty_surface_feed_data`/`write_output`) → VT parse → Metal render; keystroke ra qua write-callback → gửi ngược về host. Đúng kiến trúc VVTerm. Vì client của ta cũng không có local PTY (host sở hữu PTY), mapping là 1:1.\n5. **Cân nhắc trước khi cam kết** (open questions cần tự verify): (a) `libghostty-spm` có thực sự kèm host-managed/external-backend hay chỉ upstream — **đọc `Package.swift` + thư mục `Patches/` của repo trước**, đừng tin mô tả; (b) shell-integration OSC/prompt-detection của Ghostty hành xử ra sao khi không có local shell qua network; (c) App Store binary-size impact của XCFramework Metal renderer.\n\n**Nếu vẫn giữ SwiftTerm** thì vẫn defensible *không phải* vì libghostty bất khả thi trên iOS (nó khả thi), mà vì: zero fork maintenance, zero Zig toolchain, pure-Swift SPM stable, Day-1 productivity — đánh đổi GPU render + VT-fidelity ở mức Ghostty. Đây là lựa chọn đúng nếu timeline/đội ngũ không kham được build step, hoặc nếu terminal không phải core differentiator.\n\n---\n**Nguồn load-bearing đã verify bằng đọc source:** VVTerm `GhosttyRenderingSetup.swift`/`Ghostty.Surface.swift`/`scripts/build.sh`; Geistty `Ghostty.swift` L1979 + `ARCHITECTURE.md`; diff `daiimus/ghostty` vs `ghostty-org/ghostty` `include/ghostty.h`.\n**Claims chưa verch(verify được (đừng coi là chắc):** integration path của Echo/Moshi/RootShell (closed-source/chưa đọc code); `libghostty-spm` có external-backend hay không; Spectty store ID. **Đã refute:** Geistty on App Store (không có); Spectty hiện dùng libghostty (không — custom renderer).",
+  "corpus": [
+    {
+      "dimension": "ios-apps-survey",
+      "summary": "As of mid-2026, at least six shipping iOS/iPadOS terminal apps demonstrably use libghostty (full surface, not only libghostty-vt) as their renderer, and every confirmed one is an SSH/mosh client that renders a remote network byte stream — exactly the target use-case. The prior claim that \"iOS is not first-class\" is falsified by production App Store evidence. The integration pattern is uniform: full libghostty compiled as a GhosttyKit.xcframework for ios-arm64 + ios-arm64-simulator, surface created with GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED, SSH bytes pumped in via ghostty_surface_feed_data / ghostty_surface_write_buffer, keystrokes received via ghostty_surface_set_write_callback. The libghostty-spm package (Lakr233) wraps this in SPM with versioned SemVer tags (current: storage.1.2.3), adds the host-managed-I/O patch as a Ghostty source patch, iOS Metal rendering fixes, and a Swift UITerminalView — it is an App Store-safe, sandbox-friendly, explicitly supported distribution path. Spectty is the one confirmed app that uses its own Swift VT state machine + custom Metal renderer (libghostty-vt-style architecture) rather than full libghostty, though its README explicitly designs in libghostty as a drop-in upgrade. Moshi switched from xterm.js to Ghostty in v2.2.0 (February 2026), confirming the momentum; its exact integration path (self-built vs libghostty-spm) is unconfirmed from public sources.",
+      "points": [
+        {
+          "claim": "VVTerm (App Store ID 6757482822) — CONFIRMED libghostty full surface, network-bytes use-case solved",
+          "detail": "VVTerm's README states explicitly: 'uses Ghostty for terminal rendering, libssh2/OpenSSL for SSH transport.' The source tree contains Vendor/libghostty/GhosttyKit.xcframework with slices for ios-arm64, ios-arm64-simulator, and macos-arm64_x86_64. The SSH integration uses ghostty_surface_feed_data(surface, ptr, buffer.count) to pump raw SSH bytes into the surface (confirmed in GhosttyTerminalView+macOS.swift:711 with comment 'Feed data immediately – SSH read loop already batches appropriately'). Keystrokes are returned to the SSH channel via ghostty_surface_set_write_callback. This is full libghostty (GPU Metal renderer, VT parser, font rasterization) — not libghostty-vt. VVTerm builds libghostty from source using zig + cmake via scripts/build.sh, vendoring the resulting XCFramework. It is iOS 16.1+ and is live on the App Store. This is a direct proof that feeding a network PTY byte stream into full libghostty on iOS is production-viable.",
+          "sources": [
+            "https://github.com/vivy-company/vvterm/blob/main/README.md",
+            "https://sourcegraph.com/github.com/vivy-company/vvterm/-/blob/VVTerm/GhosttyTerminal/GhosttyTerminalView+macOS.swift?L704-716",
+            "https://sourcegraph.com/github.com/vivy-company/vvterm/-/blob/VVTerm/GhosttyTerminal/Ghostty.Surface.swift?L237-253",
+            "https://apps.apple.com/app/vvterm/id6757482822"
+          ]
+        },
+        {
+          "claim": "Echo (App Store ID 6758669847) — CONFIRMED libghostty full surface, SSH+mosh network client",
+          "detail": "Echo by Replay Software is described on its launch page as 'backed by Ghostty, the blazing-fast terminal emulator built for performance and correctness' and 'Metal-accelerated rendering.' Its HN launch thread (id=47064787) titles it 'Show HN: Echo, an iOS SSH+mosh client built on Ghostty.' The developer states Ghostty's terminal engine 'can be embedded, which meant we could bring that same level of performance and correctness to iOS.' Echo is an SSH + Mosh client, no local shell. It does not publish its source, so the exact integration path (self-built GhosttyKit vs libghostty-spm) is not publicly confirmed. One-time purchase $2.99, iOS + iPadOS.",
+          "sources": [
+            "https://replay.software/updates/introducing-echo",
+            "https://news.ycombinator.com/item?id=47064787",
+            "https://apps.apple.com/us/app/echo-ssh-mosh-client/id6758669847"
+          ]
+        },
+        {
+          "claim": "Geistty — CONFIRMED libghostty full surface (forked ios-external-backend branch), SSH network client",
+          "detail": "Geistty (GitHub: daiimus/geistty) is described as 'Native iOS/iPadOS SSH terminal powered by Ghostty's terminal engine with Metal rendering and tmux control mode.' Its data flow is documented explicitly: 'SSH bytes → ghostty_surface_write_output() → VT parse → Metal render.' The iOS constraint (no fork/exec/PTY) is solved by using Ghostty's External termio backend on an ios-external-backend branch of a forked Ghostty repo, compiled to GhosttyKit.xcframework. This is full libghostty (not libghostty-vt), not libghostty-spm (they build from their own Ghostty fork). The tmux control-mode integration (tmux -CC) is handled natively in Ghostty's Zig code on the client side. Geistty's Sourcegraph listing was not found (possibly private or renamed), but GitHub presence and awesome-libghostty listing confirm it.",
+          "sources": [
+            "https://github.com/daiimus/geistty",
+            "https://github.com/Uzaaft/awesome-libghostty/blob/master/README.md"
+          ]
+        },
+        {
+          "claim": "RootShell (App Store ID 6755794662) — CONFIRMED libghostty full surface, SSH + local terminal, Apple platforms",
+          "detail": "RootShell's README states directly: 'GPU-accelerated rendering powered by libghostty' and 'Metal Accelerated – GPU-accelerated rendering powered by libghostty with buttery smooth scrolling.' It is described as a terminal emulator built for Apple platforms with 'native SSH with post-quantum key exchange, Secure Enclave key storage, VPN tunneling, built-in file browser and native git client.' It covers both SSH remote sessions (network byte stream) and local terminal use. App Store listing ID 6755794662 confirmed.",
+          "sources": [
+            "https://github.com/kitknox/rootshell",
+            "https://apps.apple.com/us/app/rootshell-local-terminal-ssh/id6755794662"
+          ]
+        },
+        {
+          "claim": "Moshi (App Store ID 6757859949) — CONFIRMED switched to Ghostty renderer in v2.2.0 (Feb 2026), SSH+mosh client",
+          "detail": "Moshi by FrontierOne Software adopted Ghostty as its native terminal engine in version 2.2.0 (February 2026), replacing xterm.js ('Ghostty replaces xterm.js — faster rendering, better compatibility'). Subsequent releases include 'upgrade to Ghostty 1.3.1' in v2.5.7 (March 2026). Moshi is an SSH and Mosh client with no local shell, cross-platform (iOS and Android). The exact integration path (self-built GhosttyKit vs libghostty-spm) is not publicly disclosed — Moshi is closed-source. The Android build raises questions about what Ghostty variant is used there; the iOS build is the one confirmed as Ghostty-powered.",
+          "sources": [
+            "https://getmoshi.app/",
+            "https://apps.apple.com/us/app/moshi-ssh-mosh-terminal/id6757859949"
+          ]
+        },
+        {
+          "claim": "Spectty (App Store ID 6759269910) — SSH+mosh iOS client, currently uses its own Swift VT state machine + Metal renderer, libghostty-vt upgrade path designed in",
+          "detail": "Spectty's README is explicit: the current implementation uses VTStateMachine (a Swift xterm/CSI/SGR parser) + TerminalMetalRenderer (custom Metal glyph atlas, CoreText) + KeyEncoder (Swift xterm key sequences). The architecture section 'libghostty Integration' states: 'The architecture is designed so libghostty components can be swapped in incrementally: VT parsing: Replace VTStateMachine with libghostty-vt's terminal state C API ... Rendering: Replace TerminalMetalRenderer with libghostty's Metal rendering C API.' Scripts include build-libghostty-vt.sh for Zig cross-compilation to iOS arm64. So Spectty currently does NOT use libghostty in production — it uses a custom renderer inspired by libghostty with a designed-in migration path. It is an SSH+Mosh client (SwiftNIO SSH + clean-room Mosh implementation). Requires Xcode 26.2+, iOS 18+.",
+          "sources": [
+            "https://sourcegraph.com/github.com/ocnc/spectty/-/blob/README.md",
+            "https://apps.apple.com/app/spectty/id6759269910"
+          ]
+        },
+        {
+          "claim": "libghostty-spm (Lakr233) — the canonical iOS-ready SPM distribution of full libghostty, versioned, patches upstream for host-managed I/O",
+          "detail": "The package at github.com/Lakr233/libghostty-spm distributes a pre-built GhosttyKit.xcframework (macOS 13+, iOS 15+, Mac Catalyst 15+) via SPM binary target with SemVer-tagged releases (current: storage.1.2.3, referenced in Package.swift). It applies a patch (0002-host-managed-io.patch) to upstream Ghostty that adds GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED, ghostty_surface_write_buffer, and ghostty_surface_process_exit to the C API — this is the exact 'pipe external bytes in without owning a PTY' mechanism. The patch also adds iOS Metal rendering fixes (IOSurface +1px tolerance, synchronous present, 64-byte row alignment). The Swift wrapper layer (GhosttyTerminal) includes UITerminalView (UITextInput conformance for iOS keyboard), InMemory I/O backend, display link, and input accessory bar. Its own docs state: 'Use GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED for non-PTY I/O. Never disable sandbox or spawn subprocesses.' This is a documented, tested, App-Sandbox-safe integration path for feeding network bytes into the full libghostty Metal renderer on iOS.",
+          "sources": [
+            "https://github.com/Lakr233/libghostty-spm",
+            "https://sourcegraph.com/github.com/Lakr233/libghostty-spm/-/blob/README.md",
+            "https://sourcegraph.com/github.com/Lakr233/libghostty-spm/-/blob/Patches/ghostty/0002-host-managed-io.patch",
+            "https://sourcegraph.com/github.com/Lakr233/libghostty-spm/-/blob/AGENTS.md"
+          ]
+        },
+        {
+          "claim": "The 'vt-vs-full' dilemma for network-bytes use-case: all confirmed production iOS SSH apps use full libghostty (GPU Metal renderer), not libghostty-vt",
+          "detail": "libghostty-vt is a state-only library (VT parser + terminal grid state, no renderer) — it requires the app to write its own Metal/Core Graphics renderer. All confirmed production apps (VVTerm, Echo, Geistty, RootShell) use full libghostty with the GPU Metal renderer, feeding external bytes via the host-managed backend. The upstream Ghostty codebase does support this via the GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED mode, which is a two-callback bridge: the host calls ghostty_surface_write_buffer/feed_data to push network bytes in, and Ghostty calls the registered write callback to push keyboard bytes out. VVTerm confirms this with ghostty_surface_feed_data() and ghostty_surface_set_write_callback(). The claim that 'full libghostty assumes it owns the PTY and has no pipe-only network-bytes mode' is INCORRECT — the host-managed backend is exactly that mode, and it is confirmed in use in production App Store apps.",
+          "sources": [
+            "https://sourcegraph.com/github.com/vivy-company/vvterm/-/blob/VVTerm/GhosttyTerminal/GhosttyTerminalView+macOS.swift?L704-732",
+            "https://sourcegraph.com/github.com/Lakr233/libghostty-spm/-/blob/docs/architecture.html",
+            "https://sourcegraph.com/github.com/Lakr233/libghostty-spm/-/blob/Patches/ghostty/0002-host-managed-io.patch"
+          ]
+        },
+        {
+          "claim": "ABI churn mitigation: apps either build from source (VVTerm, Geistty) or pin to libghostty-spm SemVer tags (Lakr233 builds a new tagged XCFramework per Ghostty upgrade)",
+          "detail": "The upstream Ghostty project does not guarantee libghostty ABI stability between releases. Apps handle this in two ways: (1) Build from source — VVTerm includes scripts/build.sh that rebuilds GhosttyKit.xcframework from Ghostty source with zig+cmake, pinning a specific Ghostty commit in the Vendor/ directory; Geistty uses a forked Ghostty repo on ios-external-backend branch. (2) Use libghostty-spm — Lakr233 publishes new SemVer-tagged XCFramework releases (storage.1.2.3 currently) when rebuilding against newer Ghostty, and the App author pins to a specific tag in Package.swift. The Moshi changelog shows 'upgrade to Ghostty 1.3.1' as a deliberate version bump, consistent with approach (2). Neither approach exposes end-users to ABI churn — it is a developer build-time concern, not a runtime concern for App Store binaries.",
+          "sources": [
+            "https://sourcegraph.com/github.com/vivy-company/vvterm/-/blob/README.md?L139-160",
+            "https://sourcegraph.com/github.com/Lakr233/libghostty-spm/-/blob/Package.swift",
+            "https://sourcegraph.com/github.com/Lakr233/libghostty-spm/-/blob/AGENTS.md?L110-114"
+          ]
+        },
+        {
+          "claim": "'moshi' confirmed as Moshi: SSH & MOSH Terminal — not a mosh-specific app, not called 'moshi' in official branding, and terminal rendering is Ghostty (not SwiftTerm)",
+          "detail": "The 'moshi' the user mentions is Moshi: SSH & MOSH Terminal (App Store ID 6757859949, getmoshi.app). It is an SSH + Mosh client built for AI coding agents (Claude Code, Codex, etc.). Its v2.2.0 release (February 2026) replaced xterm.js with Ghostty as the native terminal engine. The app is cross-platform (iOS + Android); the iOS path is confirmed Ghostty. It does not use SwiftTerm. It was not originally libghostty-powered — the switch happened in 2026 — so the prior claim may have been evaluated against an earlier version.",
+          "sources": [
+            "https://getmoshi.app/",
+            "https://apps.apple.com/us/app/moshi-ssh-mosh-terminal/id6757859949"
+          ]
+        },
+        {
+          "claim": "Mitchell Hashimoto publicly called out VVTerm and a second iOS libghostty terminal (confirmed via his X post)",
+          "detail": "Mitchell Hashimoto's X post (id=2021610956334276844) names VVTerm and references 'another libghostty based terminal for iOS,' which based on timing and the awesome-libghostty list is likely Echo or Geistty. This is a public endorsement from the Ghostty author that iOS embedding is not only viable but actively celebrated.",
+          "sources": [
+            "https://x.com/mitchellh/status/2021610956334276844"
+          ]
+        }
+      ],
+      "claims_to_verify": [
+        "Geistty (daiimus/geistty) is available on the App Store — the GitHub repo exists and is listed in awesome-libghostty, but no App Store ID was confirmed in this research. Its store status is unverified.",
+        "Moshi iOS uses a self-built GhosttyKit vs libghostty-spm — the Ghostty engine adoption is confirmed but the exact integration path (source build or SPM) is not publicly disclosed.",
+        "Echo's exact integration method (libghostty-spm vs self-built GhosttyKit vs something else) is unconfirmed — the developer has not published source and made no public technical disclosures beyond 'Ghostty's terminal engine.'",
+        "The second iOS libghostty terminal referenced in Hashimoto's X post — not definitively identified as Echo vs Geistty from the tweet alone.",
+        "Moshi Android uses Ghostty — the changelog says Ghostty replaced xterm.js but does not specify whether Android received the same or continues with xterm.js."
+      ],
+      "open_questions": [
+        "Termini (arach/Termini) claims 'libghostty rendering, local PTY, and SSH transports for iOS and macOS' — is it App-Store-shipped or only a library/demo? Unclear from awesome-libghostty listing.",
+        "NeoShell ('shell-first remote workspace on iPad') is listed in awesome-libghostty but its renderer (libghostty vs SwiftTerm) is not confirmed from public sources.",
+        "Does VVTerm use the upstream Ghostty external-backend mechanism or Lakr233's host-managed-io patch? The vendored header shows ghostty_surface_set_write_callback (upstream) + ghostty_surface_feed_data (VVTerm-specific naming vs Lakr233's ghostty_surface_write_buffer) — these may be variant patch names for the same concept, or one is upstream and one is the patch. Deserves a direct code diff comparison.",
+        "How does the libghostty-spm host-managed backend interact with Ghostty's shell integration (OSC sequences, prompt detection) when there is no local shell — do these apps disable shell integration, or does it work transparently over SSH?"
+      ],
+      "verifications": [
+        {
+          "claim": "Geistty (daiimus/geistty) is available on the App Store — the GitHub repo exists and is listed in awesome-libghostty, but no App Store ID was confirmed in this research. Its store status is unverified.",
+          "verdict": {
+            "claim": "Geistty (daiimus/geistty) is available on the App Store — the GitHub repo exists and is listed in awesome-libghostty, but no App Store ID was confirmed in this research. Its store status is unverified.",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "The Geistty README explicitly states: \"It is highly unlikely I will ever submit this to the App Store due to the amount of respect and appreciation I have for real developers.\" No App Store ID, App Store link, or TestFlight public link appears in the repo, the awesome-libghostty listing, any App Store search, or any web search for \"Geistty App Store.\" The repo is tagged v0.1-stable (February 2026) and is described by its author as \"essentially abandonware for the time being.\" Multiple targeted searches — including site:apps.apple.com, broad web searches, and direct GitHub inspection — returned zero App Store hits. The claim under review says its store status is \"unverified,\" which is accurate and consistent with all evidence found. The stronger implicit claim embedded in the framing (\"is available on the App Store\") is refuted: Geistty is not on the App Store and the author has explicitly ruled it out.",
+            "sources": [
+              "https://github.com/daiimus/geistty",
+              "https://github.com/Uzaaft/awesome-libghostty"
+            ],
+            "correction": "The adversarial claim is correctly stated and confirmed as accurate: Geistty has no App Store presence and its store status is unverified/non-existent. The correction for the broader context is: Geistty is a proof-of-concept open-source project explicitly not targeting the App Store. It should not be cited as evidence that libghostty iOS apps are shipping on the App Store. The apps that ARE confirmed on the App Store with libghostty are: VVTerm (App ID 6757482822, confirmed iOS + iPadOS + macOS + visionOS), Echo (App ID 6758669847, confirmed iOS + iPadOS), Hoshi (App ID 6760631255, confirmed iOS), and rootshell (App ID 6755794662, confirmed iOS). Moshi (App ID 6757859949) is also confirmed on the App Store but its renderer is described as \"Ghostty replacing xterm.js\" — likely libghostty but the specific integration level is unconfirmed from public sources. Spectty appears in awesome-libghostty but no App Store ID was locatable in this research."
+          }
+        },
+        {
+          "claim": "Moshi iOS uses a self-built GhosttyKit vs libghostty-spm — the Ghostty engine adoption is confirmed but the exact integration path (source build or SPM) is not publicly disclosed.",
+          "verdict": {
+            "claim": "Moshi iOS uses a self-built GhosttyKit vs libghostty-spm — the Ghostty engine adoption is confirmed but the exact integration path (source build or SPM) is not publicly disclosed.",
+            "verdict": "uncertain",
+            "confidence": "medium",
+            "evidence": "Moshi v2.2.0 (February 22, 2026) is confirmed to have adopted the Ghostty engine as its native rendering backend, replacing xterm.js. The changelog explicitly states \"Native Terminal Engine: Ghostty replaces xterm.js — faster rendering, better compatibility.\" However, Moshi's source code is closed; getmoshi.app docs and the Moshi article pages contain no disclosure of whether they use Lakr233/libghostty-spm or a self-built GhosttyKit XCFramework. The claim that it is a \"self-built GhosttyKit\" is unverifiable from public sources. What IS confirmed: (1) Ghostty engine is used, (2) exact integration path (SPM vs self-built) is undisclosed. The claim is therefore partially right (Ghostty confirmed, undisclosed acknowledged) but the specific \"self-built GhosttyKit\" assertion is speculative.",
+            "sources": [
+              "https://getmoshi.app/articles/best-ios-terminal-app-coding-agent",
+              "https://apps.apple.com/us/app/moshi-ssh-mosh-terminal/id6757859949"
+            ],
+            "correction": "The \"Ghostty engine adoption is confirmed\" part is accurate. The \"self-built GhosttyKit\" specification is an unsupported assertion — it cannot be confirmed or refuted from public sources since Moshi is closed-source. The correct characterization is: Moshi v2.2.0+ uses the Ghostty terminal engine; integration path (source build vs libghostty-spm) is not publicly disclosed."
+          }
+        },
+        {
+          "claim": "Echo's exact integration method (libghostty-spm vs self-built GhosttyKit vs something else) is unconfirmed — the developer has not published source and made no public technical disclosures beyond 'Ghostty's terminal engine.'",
+          "verdict": {
+            "claim": "Echo's exact integration method (libghostty-spm vs self-built GhosttyKit vs something else) is unconfirmed — the developer has not published source and made no public technical disclosures beyond \"Ghostty's terminal engine.\"",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "Every public source for Echo — the Replay Software announcement blog post, both Hacker News threads (id=46957750 and id=47064787), the App Store listing, and third-party write-ups — describes Echo only as \"built on Ghostty's terminal engine\" with Metal-accelerated rendering. No source names libghostty-spm, Lakr233's package, a custom GhosttyKit build, or any specific integration path. The developer (sgottit) participated in HN comments but addressed only user-facing questions (keyboard layout, Secure Enclave, mosh), not architecture. The source is closed; no GitHub repository exists for Echo. This contrasts sharply with Geistty, which is open source and explicitly documents its integration path (daiimus/ghostty fork, ios-external-backend branch, Zig xcframework build, ghostty_surface_write_output C API).",
+            "sources": [
+              "https://replay.software/updates/introducing-echo",
+              "https://news.ycombinator.com/item?id=47064787",
+              "https://news.ycombinator.com/item?id=46957750",
+              "https://apps.apple.com/us/app/echo-ssh-mosh-client/id6758669847",
+              "https://github.com/daiimus/geistty"
+            ],
+            "correction": "No correction needed — the claim is accurate as stated."
+          }
+        }
+      ]
+    },
+    {
+      "dimension": "integration-mechanism",
+      "summary": "iOS apps integrate full libghostty (not libghostty-vt) using Ghostty's own Metal GPU renderer. They use an \"external backend\" mode — a fork-level addition to ghostty_surface_config_s — that disables PTY spawning and instead exposes ghostty_surface_write_output() to feed raw network bytes directly into the surface. None of the shipping apps use libghostty-vt; all use the full surface API with Ghostty's Metal renderer. The Lakr233/libghostty-spm package provides a prebuilt GhosttyKit.xcframework covering iOS arm64, iOS simulator (arm64 + x86_64), macOS, and Mac Catalyst, auto-rebuilt weekly against the latest upstream Ghostty tag. VVTerm and Geistty both use custom Ghostty forks rather than Lakr233's package, building their own xcframeworks to land fork-specific patches (the external-backend field and App Store safety patches). ABI churn is managed by rebuilding against a pinned upstream commit, not by semantic versioning.",
+      "points": [
+        {
+          "claim": "All shipping iOS libghostty apps use the FULL libghostty surface API with Ghostty's own Metal renderer — not libghostty-vt",
+          "detail": "VVTerm, Geistty, Echo, Geistty, Spectty, and Termini all use the full ghostty_surface_t API. The Metal renderer is Ghostty's internal IOSurfaceLayer-based renderer; apps hand it a UIView and Ghostty adds its own CALayer sublayer. None of these apps write a custom renderer — Ghostty's GPU renderer runs on iOS as-is. The libghostty-vt library (terminal state only, no renderer) is not used by any of these apps. This resolves the \"vt vs full\" question: the full API is the production path on iOS.",
+          "sources": [
+            "Geistty/Sources/Ghostty/Ghostty.swift lines 440-462 (github.com/daiimus/geistty): ghostty_surface_new, IOSurfaceLayer sublayer comment",
+            "VVTerm/GhosttyTerminal/Ghostty.App.swift (github.com/vivy-company/vvterm): ghostty_init, ghostty_surface_new with GHOSTTY_PLATFORM_IOS",
+            "awesome-libghostty README (github.com/Uzaaft/awesome-libghostty): lists Echo, Geistty, Spectty, Termini, VVTerm all as full libghostty apps"
+          ]
+        },
+        {
+          "claim": "The external-backend mode is the mechanism for feeding network bytes without spawning a local PTY — it is a fork-level addition to ghostty_surface_config_s, not in upstream Ghostty main",
+          "detail": "Geistty's SurfaceConfiguration.swift reveals a ghostty_backend_type_e field (exec = 0, external = 1) on ghostty_surface_config_s, plus ghostty_write_callback_fn and ghostty_resize_callback_fn fields. These do not appear in the upstream ghostty.h from ghostty-org/ghostty. They exist in the daiimus/ghostty fork (branch ios-external-backend) and the wiedymi/ghostty fork (branch custom-io) used by VVTerm. Setting backendType = .external tells libghostty to skip PTY/exec spawning and instead expose ghostty_surface_write_output() for the caller to push bytes in, and ghostty_write_callback_fn for the library to push user keystrokes out. The SSH data path in Geistty is: NIO-SSH receive → SSHSession.handleReceivedData() → delegate.sshSession(_:didReceiveData:) → SurfaceView.feedData(_:) → ghostty_surface_write_output(surface, ptr, count). This is a complete, proven network-bytes-in path with no local PTY.",
+          "sources": [
+            "Geistty/Sources/Ghostty/Ghostty.SurfaceConfiguration.swift lines 1-65 (github.com/daiimus/geistty): BackendType enum, withCValue with write/resize callbacks, backend_type field",
+            "Geistty/Sources/Ghostty/Ghostty.swift lines 1970-1987 (github.com/daiimus/geistty): feedData() → ghostty_surface_write_output",
+            "Geistty/Sources/Terminal/TerminalContainerView.swift lines 977-1011 (github.com/daiimus/geistty): createDirectSurface(), config.backendType = .external, onWrite→sendInput, onResize→resize",
+            "Geistty/Sources/SSH/SSHSession.swift lines 1458-1545 (github.com/daiimus/geistty): handleReceivedData → delegate.sshSession → surface.feedData",
+            "VVTerm scripts/build.sh lines 8-230 (github.com/vivy-company/vvterm): GHOSTTY_REPO=wiedymi/ghostty, GHOSTTY_REF=custom-io"
+          ]
+        },
+        {
+          "claim": "The upstream ghostty_surface_config_s command field triggers PTY spawning; leaving it null in exec mode runs the default shell — it is unrelated to the external-backend path",
+          "detail": "In upstream ghostty.h (ghostty-org/ghostty), ghostty_surface_config_s has a const char* command field. In Surface.zig, this maps to config.command which feeds termio.Exec.init — the PTY-spawning code path. The command field is a shell command string for local exec mode. In the fork-extended config, backendType overrides this entire IO backend; command is irrelevant when backendType = .external. The upstream API does NOT expose an external-backend mode — this is fork-only functionality. Apps targeting the network-bytes use-case cannot use the stock upstream API without applying the fork patches.",
+          "sources": [
+            "include/ghostty.h (github.com/ghostty-org/ghostty): ghostty_surface_config_s definition — platform_tag, command, env_vars fields",
+            "src/Surface.zig (github.com/ghostty-org/ghostty): termio.Exec.init with command config"
+          ]
+        },
+        {
+          "claim": "Lakr233/libghostty-spm provides an iOS arm64 + simulator (arm64/x86_64) + macOS + Mac Catalyst XCFramework, requiring iOS 15+",
+          "detail": "The Package.swift declares .iOS(.v15), .macOS(.v13), .macCatalyst(.v15). The CI build matrix (build.yml) builds targets: aarch64-ios (iphoneos slice), aarch64-ios-simulator and x86_64-ios-simulator (iphonesimulator slice), aarch64-ios-macabi and x86_64-ios-macabi (maccatalyst), plus macOS. All slices are lipo'd into a single GhosttyKit.xcframework. The package also wraps Swift layers: GhosttyKit (C bridge over libghostty.a), GhosttyTerminal (higher-level terminal view), ShellCraftKit, GhosttyTheme.",
+          "sources": [
+            "github.com/Lakr233/libghostty-spm — Package.swift: .iOS(.v15), binaryTarget url/checksum",
+            "github.com/Lakr233/libghostty-spm — .github/workflows/build.yml lines 150-165: build matrix including aarch64-ios, aarch64-ios-simulator, x86_64-ios-simulator, maccatalyst variants",
+            "github.com/Lakr233/libghostty-spm — Script/build-platform.sh: ios group builds iphoneos and iphonesimulator slices"
+          ]
+        },
+        {
+          "claim": "Lakr233/libghostty-spm manages ABI churn by auto-rebuilding weekly against the latest semver-tagged upstream Ghostty release, using checksum-pinned binary SPM packages",
+          "detail": "The CI runs on a weekly cron (Monday 06:23 UTC). It auto-detects the latest upstream Ghostty tag (via gh api repos/ghostty-org/ghostty/tags), checks out that exact commit by SHA, builds, assembles, and publishes a new GitHub release tagged storage.X.Y.Z. The Package.swift is then updated with the new download URL and SHA-256 checksum, committed, and pushed. Consumers pin by referencing a specific libghostty-spm tag or commit in their Package.resolved — the checksum in Package.swift guarantees binary identity. The current published release (storage.1.2.3) points to a specific XCFramework zip. This is a reasonable ABI management strategy but it means consumers must manually bump their pin each week if they want the latest, or accept the risk of stale Ghostty builds.",
+          "sources": [
+            "github.com/Lakr233/libghostty-spm — .github/workflows/build.yml lines 16-17: cron schedule 23 6 * * 1",
+            "github.com/Lakr233/libghostty-spm — .github/workflows/build.yml lines 62-66: auto-detect latest upstream tag",
+            "github.com/Lakr233/libghostty-spm — Package.swift line 48-49: binaryTarget with url and checksum"
+          ]
+        },
+        {
+          "claim": "VVTerm and Geistty do NOT use Lakr233/libghostty-spm — they build their own xcframeworks from private Ghostty forks containing the external-backend patches",
+          "detail": "VVTerm's build.sh clones github.com/wiedymi/ghostty at branch custom-io, builds GhosttyKit.xcframework with zig build -Demit-xcframework=true, copies the macos/ios/ios-simulator .a files to Vendor/libghostty/, and also applies App Store safety patches (stripping the CGSSetWindowBackgroundBlurRadius private API call). Geistty generates GhosttyKit.xcframework from github.com/daiimus/ghostty branch ios-external-backend and places it in Geistty/Frameworks/ (gitignored). Neither project references Lakr233's SPM package. The Lakr233 package builds from upstream ghostty-org/ghostty main — it does NOT include the external-backend field, so it cannot be used directly for network-only SSH apps without further patching.",
+          "sources": [
+            "VVTerm scripts/build.sh lines 18-21 (github.com/vivy-company/vvterm): GHOSTTY_REPO=wiedymi/ghostty GHOSTTY_REF=custom-io",
+            "github.com/daiimus/geistty README (via WebFetch): GhosttyKit.xcframework from daiimus/ghostty ios-external-backend branch, in Geistty/Frameworks/ gitignored",
+            "github.com/Lakr233/libghostty-spm — build.yml line 178: clones ghostty-org/ghostty (no fork)"
+          ]
+        },
+        {
+          "claim": "The Moshi iOS app is a mosh/SSH terminal but there is no public evidence it uses libghostty — it may use SwiftTerm or another approach",
+          "detail": "Moshi (App Store ID 6757859949, getmoshi.app) is described as a SSH+Mosh terminal for AI coding agents on iOS. The App Store listing and website do not name a terminal rendering library. A search for Moshi in the libghostty ecosystem (awesome-libghostty, Mitchell Hashimoto's posts) returns no mention of Moshi. The existing evidence only confirms VVTerm, Geistty, Echo, Spectty, and Termini as libghostty-based iOS apps. Moshi using SwiftTerm, a private implementation, or libghostty cannot be confirmed from public sources.",
+          "sources": [
+            "https://getmoshi.app/ — no rendering library named",
+            "https://apps.apple.com/us/app/moshi-ssh-mosh-terminal/id6757859949 — no rendering library named",
+            "github.com/Uzaaft/awesome-libghostty — Moshi not listed"
+          ]
+        },
+        {
+          "claim": "The full libghostty surface API does support feeding external network bytes without owning a local PTY, but only via the fork-level external backend extension — not via the standard upstream API",
+          "detail": "This is the key architectural finding: the upstream ghostty_surface_config_s (in ghostty-org/ghostty main) does NOT have a backend_type field or write/resize callbacks. The external-backend functionality that enables network-bytes-only operation is a patch that Geistty (daiimus fork, ios-external-backend branch) and VVTerm (wiedymi fork, custom-io branch) maintain independently. The Geistty author confirmed this is needed because 'iOS can't spawn local shells — no fork, no exec, no PTY.' The question 'does the full libghostty surface API support feeding external bytes without owning a PTY' — the answer is: yes, with forked/patched libghostty; no, with stock upstream libghostty. Both VVTerm and Geistty are on the App Store, proving the patched approach is production-viable and App Store compliant.",
+          "sources": [
+            "include/ghostty.h (github.com/ghostty-org/ghostty): ghostty_surface_config_s — no backend_type, no write_callback, no resize_callback fields",
+            "Geistty/Sources/Ghostty/Ghostty.SurfaceConfiguration.swift (github.com/daiimus/geistty): fork adds backend_type, write_callback, resize_callback to ghostty_surface_config_s",
+            "github.com/daiimus/geistty README (via WebFetch): 'iOS can't spawn local shells — Geistty uses Ghostty External termio backend'",
+            "Mitchell Hashimoto on X (x.com/mitchellh/status/2021610956334276844): confirms VVTerm and another iOS terminal as libghostty-based shipped apps"
+          ]
+        }
+      ],
+      "claims_to_verify": [
+        "The ghostty_write_callback_fn and ghostty_resize_callback_fn fields in ghostty_surface_config_s are fork-only — verify by comparing daiimus/ghostty ios-external-backend branch ghostty.h against ghostty-org/ghostty main ghostty.h. The morph search on upstream ghostty-org/ghostty did not find these symbols, strongly implying they are fork-only, but the Geistty code uses them — confirming the fork.",
+        "VVTerm is live on the App Store (ID 6757482822) using the wiedymi/ghostty custom-io fork — App Store presence confirmed in the question context, build.sh fork details confirmed from source; cross-check the App Store listing to confirm the app is current and not delisted.",
+        "Geistty is on the App Store — the GitHub repo exists and has releases, but public App Store listing status was not directly verified.",
+        "Echo (Replay Software) iOS app uses libghostty — confirmed by HN posts and awesome-libghostty listing but the specific libghostty API variant (fork vs stock, external backend or not) was not confirmed from Echo's source code (which appears to be closed-source).",
+        "Lakr233/libghostty-spm storage.1.2.3 is current — the CI rebuilds weekly but the Package.swift checksum was observed at a specific commit; verify the latest release tag on the repo to confirm currency.",
+        "The external-backend Ghostty fork patches are not in upstream Ghostty main and have not been submitted as a PR to ghostty-org/ghostty — this was inferred from the upstream ghostty.h not containing the symbols; a direct check of open PRs against ghostty-org/ghostty would confirm whether upstreaming is in progress."
+      ],
+      "open_questions": [
+        "Will the external-backend patches be merged into upstream Ghostty? Mitchell Hashimoto's libghostty roadmap aims for a stable public API but the timeline is open. If merged upstream, Lakr233/libghostty-spm would eventually expose the external-backend capability without requiring a private fork.",
+        "Does Lakr233/libghostty-spm plan to include the external-backend patches? Currently it builds from upstream ghostty-org/ghostty main, making it unsuitable for network-only apps without additional patching. The Lakr233 package is well-suited for local-PTY use cases (like muxy, a macOS terminal) but not network clients.",
+        "What is Echo's (Replay Software) exact libghostty integration strategy — do they maintain their own Ghostty fork, or did they negotiate inclusion of the external-backend patches into a shared fork? The app is closed-source so this is unverifiable from public sources.",
+        "How do Geistty and VVTerm handle App Store binary size limits? The GhosttyKit.xcframework with Metal renderer is large. VVTerm's build.sh strips the static libs, but the actual IPA size impact on App Store distribution was not found in public sources.",
+        "Does libghostty-vt have a planned C API stable release? The libghostty.tip.ghostty.org docs carry an explicit 'API not yet stable' warning. If libghostty-vt reaches a stable C API with platform-native renderer hooks, it could become the preferred path for custom-renderer apps, but this is a future question."
+      ],
+      "verifications": [
+        {
+          "claim": "The ghostty_write_callback_fn and ghostty_resize_callback_fn fields in ghostty_surface_config_s are fork-only — verify by comparing daiimus/ghostty ios-external-backend branch ghostty.h against ghostty-org/ghostty main ghostty.h. The morph search on upstream ghostty-org/ghostty did not find these symbols, strongly implying they are fork-only, but the Geistty code uses them — confirming the fork.",
+          "verdict": {
+            "claim": "ghostty_write_callback_fn and ghostty_resize_callback_fn fields in ghostty_surface_config_s are fork-only — not present in upstream ghostty-org/ghostty main ghostty.h, confirmed by comparing daiimus/ghostty ios-external-backend branch ghostty.h against ghostty-org/ghostty main ghostty.h.",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "Direct source comparison of both repos (cloned and read line-by-line):\n\nUPSTREAM ghostty-org/ghostty include/ghostty.h — ghostty_surface_config_s ends at line 480 with these fields: platform_tag, platform, userdata, scale_factor, font_size, working_directory, command, env_vars, env_var_count, initial_input, wait_after_command, context. NO backend_type, NO write_callback, NO resize_callback, NO ghostty_surface_write_output, NO GHOSTTY_BACKEND_EXTERNAL.\n\nDAIIMUS FORK daiimus/ghostty ios-external-backend branch include/ghostty.h — adds to ghostty_surface_config_s at lines 422-469: (1) typedef enum ghostty_backend_type_e { GHOSTTY_BACKEND_EXEC=0, GHOSTTY_BACKEND_EXTERNAL=1 }; (2) typedef void (*ghostty_write_callback_fn)(ghostty_surface_t, const char*, size_t); (3) typedef void (*ghostty_resize_callback_fn)(ghostty_surface_t, uint16_t cols, uint16_t rows, uint32_t width_px, uint32_t height_px); (4) three new fields in the struct: backend_type, write_callback, resize_callback. Also adds ghostty_surface_write_output() at line 1185. These symbols are entirely absent from upstream.\n\nA THIRD FORK (wiedymi/ghostty, branch custom-io, used by VVTerm) uses a different API shape: uses_custom_io bool flag in ghostty_surface_config_s plus a separate ghostty_surface_set_write_callback() function — not the struct-embedded callback pointers of the daiimus fork. VVTerm's vendored ghostty.h commit 268a0a9d is pinned.\n\nGEISTTY confirmation: Geistty's ARCHITECTURE.md (v0.3, March 2026) explicitly lists the fork footprint: 'src/termio/External.zig — External backend (terminal emulation without PTY)', 'ghostty_backend_type_e backend with GHOSTTY_BACKEND_EXTERNAL', 'write_callback + resize_callback in surface config', 'ghostty_surface_write_output()'. ADR-003 states the fork is currently rebased at 94 commits onto Ghostty 1.3.0 as of March 2026.\n\nKEY ADDITIONAL FINDINGS ON SHIPPING APPS:\n\n1. VVTerm (App Store, App ID 6757482822, confirmed shipping) — uses full libghostty (GPU renderer), NOT libghostty-vt. Uses wiedymi/ghostty fork (branch: custom-io), builds GhosttyKit.xcframework from source via build.sh. API shape: use_custom_io bool + ghostty_surface_set_write_callback() post-creation function. Completely independent fork architecture from daiimus. They do NOT use Lakr233/libghostty-spm; they self-build from the wiedymi fork.\n\n2. Geistty (daiimus/geistty, App Store/TestFlight) — uses full libghostty (GPU/Metal renderer) with the daiimus/ghostty ios-external-backend fork. The fork adds GHOSTTY_BACKEND_EXTERNAL with write_callback/resize_callback as struct fields in ghostty_surface_config_s. ghostty_surface_write_output() feeds SSH bytes in. Custom ios-external-backend adds ~15 files including External.zig (379 lines), viewer.zig (~2700 lines for tmux control mode), and tmux C API surface functions.\n\n3. Echo (replay.software/echo, App Store) — confirmed using Ghostty (marketing page states 'Backed by Ghostty'), Metal rendering. Source not public-but confirmed libghostty-based per awesome-libghostty listing.\n\n4. Spectty (ocnc/spectty, App Store ID 6759269910, open source) — does NOT currently use libghostty for VT parsing or rendering. Uses its own VTStateMachine and Metal renderer with CoreText glyph atlas. Has a CGhosttyVT C stub layer explicitly designed to swap in libghostty-vt later ('designed so libghostty components can be swapped in incrementally'). Currently a custom clean-room implementation; inspired by Ghostty but not embedding it.\n\n5. Moshi (getmoshi.app, App Store) — technology stack not disclosed publicly. No evidence of libghostty use. Likely SwiftTerm or custom; unverifiable from available sources.\n\nINTEGRATION MECHANISM — all confirmed libghostty-using iOS apps use FULL libghostty (GPU/Metal renderer), NOT libghostty-vt + custom renderer. Both VVTerm and Geistty render via Ghostty's own Metal pipeline. The fork is the mechanism: iOS cannot fork/exec, so External.zig provides a termio backend that takes bytes via ghostty_surface_write_output() instead of spawning a PTY. The upstream 'full' libghostty does NOT support this — it only supports spawning a local subprocess. The external-byte-feed capability is fork-only in BOTH shipping implementations.\n\nLAKR233/libghostty-spm — listed in awesome-libghostty as 'Prebuilt GhosttyKit.xcframework distributed as a Swift Package for easy integration.' No confirmed iOS SSH client uses it in production; VVTerm self-builds. Geistty self-builds from its own fork. The SPM package appears to track upstream, not a fork, which would mean it lacks the external backend API.\n\nABI CHURN / STABILITY — both VVTerm and Geistty solve the no-tagged-release problem the same way: pin to a specific git SHA (VVTerm: 268a0a9d, Geistty: v0.1-stable tag on their fork + periodic rebases), build from source into a vendored XCFramework, and check that binary into the repo. This is the production pattern: build-time lock, not SPM version pinning.",
+            "sources": [
+              "https://github.com/daiimus/ghostty (branch: ios-external-backend) include/ghostty.h lines 422-469 — fork-only symbols confirmed",
+              "https://github.com/ghostty-org/ghostty include/ghostty.h lines 467-480 — upstream struct ends without backend_type/write_callback/resize_callback",
+              "https://github.com/daiimus/geistty/blob/main/ARCHITECTURE.md — v0.3 March 2026, full layer diagram and fork footprint table",
+              "https://github.com/daiimus/geistty/blob/main/Geistty/GHOSTTY_API.md — API parity table listing ghostty_surface_write_output and write_callback as implemented",
+              "https://github.com/daiimus/geistty/blob/main/docs/decisions/ADR-003-fork-philosophy.md — fork philosophy and March 2026 footprint listing",
+              "https://github.com/vivy-company/vvterm/blob/main/scripts/build.sh — GHOSTTY_REPO=https://github.com/wiedymi/ghostty.git, GHOSTTY_REF=custom-io",
+              "https://github.com/vivy-company/vvterm/blob/main/Vendor/libghostty/include/ghostty.h line 458 — use_custom_io bool field (different fork, different API)",
+              "https://github.com/vivy-company/vvterm/blob/main/VVTerm/GhosttyTerminal/GhosttyTerminalView+iOS.swift line 3791 — ghostty_surface_set_write_callback usage",
+              "https://github.com/ocnc/spectty/blob/main/README.md — clean-room implementation, no current libghostty embedding",
+              "https://github.com/Uzaaft/awesome-libghostty/blob/master/README.md — curated list of libghostty projects including VVTerm, Geistty, Echo, Spectty, remux"
+            ],
+            "correction": "The adversarial claim is confirmed correct but slightly underspecified. The symbols ghostty_write_callback_fn and ghostty_resize_callback_fn as struct fields in ghostty_surface_config_s are fork-only and exist only in the daiimus/ghostty ios-external-backend fork. However, there is a SECOND independent fork (wiedymi/ghostty, branch custom-io, used by VVTerm in production on the App Store) that implements the same capability with a DIFFERENT API: a use_custom_io bool flag in the config struct plus a post-creation ghostty_surface_set_write_callback() setter function rather than struct-embedded callback pointers. Neither API shape exists in upstream ghostty-org/ghostty main. The correct expanded claim is: 'the external/network-byte-feed capability for feeding SSH data to a libghostty surface without owning a PTY is fork-only across all known implementations, but there are two distinct fork API designs in production shipping apps.'\n\nRECOMMENDATION UPDATE — the prior conclusion should flip toward libghostty for a network-PTY-stream client. The use-case (feed external bytes into a GPU-rendering terminal surface) is proven in production by two App Store apps (VVTerm, Geistty) with open source. The required integration path is: (a) pick a fork (daiimus/ghostty ios-external-backend OR wiedymi/ghostty custom-io), (b) build GhosttyKit.xcframework from it via zig build -Demit-xcframework=true, (c) vendor the xcframework in the repo pinned to a specific SHA. The ABI-churn risk is real but managed by both production apps via SHA pinning + self-build. SwiftTerm remains a valid choice for teams that want no fork dependency and a stable SPM package, at the cost of writing a custom Metal/UIKit renderer layer — exactly what Spectty is doing. The 'depends' answer is honest: if you want Ghostty's GPU renderer and correctness without writing your own renderer, the fork path is proven; if you want no fork maintenance burden, write your own renderer on top of libghostty-vt (stable, upstream) or use SwiftTerm."
+          }
+        },
+        {
+          "claim": "VVTerm is live on the App Store (ID 6757482822) using the wiedymi/ghostty custom-io fork — App Store presence confirmed in the question context, build.sh fork details confirmed from source; cross-check the App Store listing to confirm the app is current and not delisted.",
+          "verdict": {
+            "claim": "VVTerm (App Store ID 6757482822) is live on the App Store, built on the wiedymi/ghostty custom-io fork, and proves that iOS embedding of libghostty (feeding SSH/network bytes without a local PTY) works in production — therefore the prior recommendation to avoid libghostty for this use case should be reversed.",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "App Store listing for id6757482822 is live as of June 2026 (version 2.2, updated 4 days ago, available for iPhone/iPad/Mac/Vision). VVTerm's build.sh confirms the wiedymi/ghostty fork at branch \"custom-io\", building a GhosttyKit.xcframework for iOS arm64 (deployment target 16.0), iOS Simulator, and macOS, with flags -Dapp-runtime=none -Demit-xcframework=true. At least three additional iOS SSH apps — Echo (App Store id6758669847), Geistty (github.com/daiimus/geistty), and Spectty — also ship libghostty on iOS. Geistty's fork (daiimus/ghostty, branch ios-external-backend) uses ghostty_surface_write_output() to pipe SSH bytes into the GPU renderer, bypassing the PTY entirely. Upstream ghostty's backend.zig only enumerates the exec backend (PTY-only); the iOS pipe/external-termio capability lives exclusively in community forks. libghostty-vt's terminal.h in upstream ghostty-org does expose ghostty_terminal_vt_write() for feeding external bytes, but the full Metal GPU surface for iOS requires the fork approach used by these apps.",
+            "sources": [
+              "https://apps.apple.com/us/app/vvterm-native-ssh-client/id6757482822",
+              "https://github.com/vivy-company/vvterm",
+              "https://github.com/daiimus/geistty",
+              "https://apps.apple.com/us/app/echo-ssh-mosh-client/id6758669847",
+              "https://github.com/Uzaaft/awesome-libghostty/blob/master/README.md",
+              "https://mitchellh.com/writing/libghostty-is-coming",
+              "https://news.ycombinator.com/item?id=47059654"
+            ],
+            "correction": "The prior conclusion was partially right on ABI stability and \"no tagged release\" but wrong in treating iOS embedding as unproven. The correct picture is more nuanced: iOS embedding IS production-proven, but requires a community fork (wiedymi/ghostty or daiimus/ghostty), not upstream libghostty. The \"vt-vs-full dilemma\" framing was also incomplete — the full GPU surface (via ghostty_surface_write_output) DOES support external network bytes on iOS, but only through the ios-external-backend/custom-io fork branches. Whether to choose libghostty over SwiftTerm therefore depends on: (1) willingness to pin to a fork and absorb ABI churn — the apps do this, VVTerm's GHOSTTY_REF env var lets them track a specific commit; (2) whether you want Ghostty's full Metal GPU renderer (fork required) vs. libghostty-vt with your own Metal renderer (upstream, stable-ish C API, but you write the renderer); (3) SwiftTerm remains the lower-friction option if you want a stable, self-contained Swift dependency with no Zig build toolchain, but it has a weaker VT fidelity story. Given that VVTerm, Echo, and Geistty all ship successfully, \"libghostty is not ready for iOS\" is refuted for teams willing to pin a fork."
+          }
+        },
+        {
+          "claim": "Geistty is on the App Store — the GitHub repo exists and has releases, but public App Store listing status was not directly verified.",
+          "verdict": {
+            "claim": "Geistty is on the App Store — the GitHub repo exists and has releases, but public App Store listing status was not directly verified.",
+            "verdict": "refuted",
+            "confidence": "high",
+            "evidence": "The Geistty GitHub README (github.com/daiimus/geistty) contains an explicit statement: \"It is highly unlikely I will ever submit this to the App Store due to the amount of respect and appreciation I have for real developers.\" The developer describes the project as \"essentially abandonware.\" The GitHub releases page shows zero published releases. A TESTFLIGHT.md file exists in the repo, suggesting the only distribution channel is TestFlight sideloading, not the App Store. App Store search for \"geistty\" returns unrelated apps (brain training \"Geist\", etc.) — no terminal app named Geistty appears. The prior claim also stated it \"has releases\" which is false: the releases page is empty.",
+            "sources": [
+              "https://github.com/daiimus/geistty",
+              "https://github.com/daiimus/geistty/releases",
+              "https://apps.apple.com/us/search?term=geistty"
+            ],
+            "correction": "Geistty is NOT on the App Store and has explicitly stated it will not be submitted. It has NO tagged GitHub releases. Distribution is TestFlight-only (a TESTFLIGHT.md exists in the repo). The app is functional (v0.1-stable state per README) and open-source, but not a shipping commercial product. The claim that \"the GitHub repo has releases\" is also false — the releases page is empty."
+          }
+        }
+      ]
+    },
+    {
+      "dimension": "flip-or-not",
+      "summary": "The recommendation should CONDITIONALLY FLIP to libghostty, but with a hard prerequisite: teams must accept building GhosttyKit.xcframework from source via Zig (or forking Geistty's approach) and pinning to a specific Ghostty commit, because libghostty still has no standalone tagged release as of June 2026. The \"no iOS support\" and \"owns-PTY\" objections in the prior conclusion are now factually wrong — iOS embedding is proven in at least 5 App Store apps, and the External/pipe termio backend explicitly solves the no-local-PTY problem for SSH/network byte streams. The flip is real but conditional on engineering willingness to own a Zig build step. If your team cannot own that build step, SwiftTerm remains the safer path.",
+      "points": [
+        {
+          "claim": "iOS embedding of libghostty is production-proven by at least 5 App Store apps as of early 2026",
+          "detail": "VVTerm (App ID 6757482822, open source at vivy-company/vvterm), Echo (App ID 6758669847, by Replay Software), Geistty (open source at daiimus/geistty), rootshell (App ID 6755794662, open source at kitknox/rootshell), and Spectty all ship on the App Store using libghostty as their rendering engine. Mitchell Hashimoto himself amplified these as examples of libghostty 'blowing up in usage, silently behind so many apps now' (X post, Feb 10 2026). The prior claim that 'iOS is not first-class' was correct at announcement time but is outdated — the community has shipped around it via the pipe/external backend.",
+          "sources": [
+            "https://github.com/vivy-company/vvterm",
+            "https://apps.apple.com/us/app/echo-ssh-mosh-client/id6758669847",
+            "https://github.com/daiimus/geistty",
+            "https://github.com/kitknox/rootshell",
+            "https://x.com/mitchellh/status/2021293092108922979"
+          ]
+        },
+        {
+          "claim": "Moshi does NOT use libghostty — its rendering stack is undisclosed, likely SwiftTerm or custom",
+          "detail": "Moshi (App ID 6757859949, getmoshi.app) is an SSH/Mosh client focused on AI agent use cases. Its website and App Store listing make no mention of Ghostty or libghostty. The SwiftTerm search result surfaces Moshi only in the context of the Mosh protocol, not the libghostty ecosystem. It is not listed in awesome-libghostty. 'Moshi' as a terminal rendering technology is a misnomer — the app uses Mosh (the protocol), not a library called moshi.",
+          "sources": [
+            "https://getmoshi.app/",
+            "https://apps.apple.com/us/app/moshi-ssh-mosh-terminal/id6757859949",
+            "https://github.com/Uzaaft/awesome-libghostty"
+          ]
+        },
+        {
+          "claim": "The 'owns-PTY' objection is solved: the External/pipe termio backend in libghostty explicitly supports network byte streams without a local PTY",
+          "detail": "This is the critical technical pivot. Geistty's README documents the exact data flow: SSH bytes → ghostty_surface_write_output() → VT parse → Metal render. The backend was added specifically because iOS cannot exec() or fork() — so it was designed to accept bytes from any external source, including a TCP/WireGuard network stream. Mitchell Hashimoto confirmed the pipe-based backend approach 'would be accepted' upstream, noting the termio package was 'designed to support alternate input mechanisms... especially so we can support remote instances.' VVTerm uses the same architecture (libssh2/OpenSSL for transport, Ghostty for rendering). This resolves the 'full libghostty assumes it owns the PTY' concern entirely — the External backend is precisely the no-local-PTY network-feed mode.",
+          "sources": [
+            "https://github.com/daiimus/geistty",
+            "https://github.com/ghostty-org/ghostty/discussions/4087",
+            "https://github.com/vivy-company/vvterm"
+          ]
+        },
+        {
+          "claim": "VVTerm, Echo, rootshell, and Spectty use the FULL libghostty (GPU/Metal renderer), not just libghostty-vt (state-only); Geistty is a special case using a full fork",
+          "detail": "VVTerm explicitly lists 'GPU-accelerated terminal rendering via GhosttyKit' and has a GhosttyTerminal/ bridge module. Echo's site says 'backed by Ghostty... Metal-accelerated rendering.' rootshell says 'GPU-accelerated rendering powered by libghostty.' The awesome-libghostty README lists Echo, VVTerm, Termini, and Spectty as 'Full Ghostty' (not vt-only). Geistty is the most transparent: it maintains a custom fork at daiimus/ghostty on the ios-external-backend branch and builds GhosttyKit.xcframework locally via 'zig build -Demit-xcframework=true'. Geistty does NOT use Lakr233/libghostty-spm. The awesome-libghostty list describes libghostty-spm as 'Prebuilt GhosttyKit.xcframework distributed as a Swift Package' — it exists but the shipping apps appear to build from source forks, not from this convenience package.",
+          "sources": [
+            "https://github.com/vivy-company/vvterm",
+            "https://replay.software/echo",
+            "https://github.com/daiimus/geistty",
+            "https://github.com/Uzaaft/awesome-libghostty/blob/master/README.md"
+          ]
+        },
+        {
+          "claim": "ABI churn is real but manageable in practice: developers pin to a Ghostty commit and rebuild, rather than waiting for a tagged libghostty release",
+          "detail": "As of Ghostty 1.3.1 (March 2026), libghostty still has no standalone tagged release. The Ghostty team confirmed: 'We aren't sure yet when we'll tag the first libghostty releases.' API signatures are 'still in flux' though underlying functionality is described as 'extremely stable.' The coder/libghostty-vt-node project explicitly warns: 'libghostty-vt is pre-1.0, so the checked-in bindings are expected to move with the pinned Ghostty source and do not guarantee compatibility.' The practical mitigation used by shipping apps: pin to a specific Ghostty commit, build GhosttyKit.xcframework from that pin, check in the binary or rebuild on CI. Geistty does exactly this. This is non-trivial engineering overhead (requires Zig 0.14+, Xcode 15+, iOS 17+) but is demonstrably tractable for small teams. The Ghostty team has separated libghostty's release cycle from the GUI app cycle, signaling intent to stabilize it independently.",
+          "sources": [
+            "https://ghostty.org/docs/install/release-notes/1-3-0",
+            "https://mitchellh.com/writing/libghostty-is-coming",
+            "https://github.com/coder/libghostty-vt-node",
+            "https://github.com/daiimus/geistty"
+          ]
+        },
+        {
+          "claim": "Render quality advantage of libghostty over SwiftTerm is real and meaningful for daily coding: GPU/Metal rendering, ligatures, Kitty graphics protocol, SIMD parsing, and Ghostty-level VT correctness",
+          "detail": "Ghostty is documented as the only terminal emulator with a Metal renderer that supports ligatures (iTerm uses CPU renderer for ligatures). Kitty graphics protocol is implemented. SIMD-optimized VT parsing is included. SwiftTerm has added Kitty graphics support and improved CJK/emoji handling in 2025, and benchmarks show up to 58% throughput improvement on VteBench. But SwiftTerm is still a CPU-rendered xterm emulator — it does not have a GPU/Metal path. For daily remote coding with Neovim, tmux, lazygit, btop, and TUI apps, the VT correctness advantage of libghostty (battle-tested against the same Ghostty test suite) is meaningful. Ligatures matter if the dev uses a nerd font or programming ligatures. Kitty graphics matters for image rendering in the terminal (e.g., Neovim image plugins). For pure text coding without fancy fonts, SwiftTerm's correctness gap has narrowed substantially in 2025.",
+          "sources": [
+            "https://ghostty.org/docs/about",
+            "https://mitchellh.com/writing/libghostty-is-coming",
+            "https://github.com/migueldeicaza/SwiftTerm/releases"
+          ]
+        },
+        {
+          "claim": "Engineering cost: libghostty path requires owning a Zig build step and commit-pinned XCFramework; SwiftTerm is pure Swift SPM with no build toolchain beyond Xcode",
+          "detail": "libghostty path (as done by Geistty/VVTerm): requires Zig 0.14+, cmake, building GhosttyKit.xcframework from a Ghostty fork (or upstream commit pin), writing a Swift/Zig bridge (GhosttyTerminal/ module), and managing the External termio backend API calls (ghostty_surface_write_output for SSH bytes in, ghostty_surface_key for keystrokes out). Initial setup: estimated 1-3 engineer-weeks for a competent Swift+systems developer who can read Zig. Ongoing: rebuild XCFramework when updating Ghostty commit (hours, not days, once the pipeline is set up). SwiftTerm path: 'swift package add SwiftTerm', implement TerminalViewDelegate for SSH byte feeding, write a UIKit/SwiftUI wrapper. Day 1 productivity, pure Swift, no external toolchain. Ongoing: upgrade SPM package. The correct framing is not 'libghostty is too hard' but 'libghostty costs 1-3 weeks upfront and a build step ongoing.'",
+          "sources": [
+            "https://github.com/daiimus/geistty",
+            "https://github.com/migueldeicaza/SwiftTerm",
+            "https://github.com/vivy-company/vvterm"
+          ]
+        },
+        {
+          "claim": "VERDICT: Flip to libghostty IF (a) render quality and long-term correctness matter for your users and (b) your team can own the Zig build step. Stay SwiftTerm if you need to ship fast or cannot own the build toolchain.",
+          "detail": "The prior conclusion's three objections are now partially or fully resolved: (1) 'No stable tagged release' — still true, but not blocking production (5+ App Store apps prove it); (2) 'iOS not first-class' — resolved via External/pipe backend, proven in production; (3) 'Full libghostty owns the PTY' — resolved; the External backend is exactly the network-bytes-in mode. What remains genuinely risky: no tagged release means API signatures can change on Ghostty commit bumps (breaking your bridge code), and you must maintain a Zig build step. For a remote-coding tool where terminal correctness and render quality are the core product differentiator, libghostty is the defensible long-term choice — it is what the best new iOS terminal apps chose in 2025-2026. For a tool where the terminal is a secondary feature (e.g., embedded in a larger IDE), SwiftTerm is still the pragmatic choice. The condition under which the flip is unambiguous: your product IS the terminal, your users are developers who care about Neovim/tmux/TUI correctness and fonts, and you have at least one engineer comfortable with a C API and a Zig build.",
+          "sources": [
+            "https://github.com/daiimus/geistty",
+            "https://github.com/vivy-company/vvterm",
+            "https://apps.apple.com/us/app/echo-ssh-mosh-client/id6758669847",
+            "https://github.com/migueldeicaza/SwiftTerm",
+            "https://mitchellh.com/writing/libghostty-is-coming"
+          ]
+        }
+      ],
+      "claims_to_verify": [
+        "VVTerm (App ID 6757482822) uses the FULL libghostty GPU/Metal renderer, not libghostty-vt — confirmed by README mentioning GhosttyKit and GPU-accelerated rendering, but the GhosttyTerminal/ source code itself was not directly read.",
+        "Geistty uses ghostty_surface_write_output() as the SSH-bytes-in API call — sourced from Geistty's own README/documentation but the actual Zig/Swift bridge source was not directly verified via code read.",
+        "The awesome-libghostty README classification of Echo/VVTerm/Spectty as 'Full Ghostty' vs Geistty as 'libghostty-vt' appears internally inconsistent with Geistty's own docs claiming Metal GPU rendering; the vt-vs-full classification from that list may be unreliable and should be spot-checked against each repo's actual source.",
+        "Moshi uses an undisclosed stack (not libghostty) — this is an absence-of-evidence conclusion; Moshi could be using a private libghostty integration not mentioned publicly.",
+        "Lakr233/libghostty-spm exists as a prebuilt XCFramework SPM package — confirmed by awesome-libghostty listing but the actual GitHub repo was not found at github.com/Lakr233/libghostty-spm; this repo may be under a different handle or may not exist as a publicly maintained package."
+      ],
+      "open_questions": [
+        "Does Spectty use libghostty-vt (state + custom renderer) or full libghostty (Ghostty's Metal renderer)? Its App Store listing and GitHub presence were not found in sufficient detail.",
+        "What is the exact version pinning strategy used by VVTerm and Echo — do they track Ghostty releases (1.x tags), pin to specific commits, or use Lakr233/libghostty-spm? This determines the ABI churn risk in practice.",
+        "Is the External termio backend now merged into Ghostty main, or does each iOS app maintain it as a fork? Geistty maintains daiimus/ghostty on ios-external-backend; VVTerm builds via scripts/build.sh from their own vendor. If upstream has not merged it, every team must fork — increasing maintenance cost.",
+        "When will libghostty get its first tagged standalone release? The 1.3.0 release notes say 'short-term focus will be on stabilizing and tagging' but give no timeline.",
+        "Does SwiftTerm's 2025 Kitty graphics support and DECSLRM correctness improvements close the gap for the specific TUI apps your users run (Neovim, tmux, lazygit)? A direct VT correctness test against your target TUI apps would definitively answer whether the render quality gap justifies the libghostty build overhead."
+      ],
+      "verifications": [
+        {
+          "claim": "VVTerm (App ID 6757482822) uses the FULL libghostty GPU/Metal renderer, not libghostty-vt — confirmed by README mentioning GhosttyKit and GPU-accelerated rendering, but the GhosttyTerminal/ source code itself was not directly read.",
+          "verdict": {
+            "claim": "VVTerm (App ID 6757482822) uses the FULL libghostty GPU/Metal renderer, not libghostty-vt — confirmed by README mentioning GhosttyKit and GPU-accelerated rendering, but the GhosttyTerminal/ source code itself was not directly read.",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "The GhosttyTerminal/ source was read directly. VVTerm calls ghostty_surface_new (the full surface API, not libghostty-vt) with GHOSTTY_PLATFORM_IOS / GHOSTTY_PLATFORM_MACOS, meaning Ghostty owns the Metal IOSurface layer and GPU rendering pipeline on both platforms. On iOS specifically, GhosttyRenderingSetup.swift line 56 says: \"On iOS, Ghostty handles all Metal layer configuration internally. It creates its own IOSurfaceLayer and adds it as a sublayer of the view's layer.\" VVTerm feeds SSH bytes via ghostty_surface_feed_data (Ghostty.Surface.swift:219) and receives keyboard-to-SSH bytes via ghostty_surface_set_write_callback — the custom I/O callback pattern enabled by surfaceConfig.use_custom_io = true. This is the full GPU renderer with its own Metal/IOSurface pipeline, not libghostty-vt (which provides state only, no renderer). VVTerm vendors its own libghostty XCFramework (Vendor/libghostty/ with a separate ios-arm64, ios-arm64-simulator, and macos slice), compiled from Ghostty commit 268a0a9d761fb19673f05d28042488e2002300f2, not using Lakr233/libghostty-spm.",
+            "sources": [
+              "https://sourcegraph.com/github.com/vivy-company/vvterm@d4ac25f1a3ee3ca761665e7e639f61f4b59e2a91/-/blob/VVTerm/GhosttyTerminal/GhosttyRenderingSetup.swift",
+              "https://sourcegraph.com/github.com/vivy-company/vvterm@d4ac25f1a3ee3ca761665e7e639f61f4b59e2a91/-/blob/VVTerm/GhosttyTerminal/Ghostty.Surface.swift",
+              "https://sourcegraph.com/github.com/vivy-company/vvterm@d4ac25f1a3ee3ca761665e7e639f61f4b59e2a91/-/blob/README.md",
+              "https://github.com/vivy-company/vvterm"
+            ],
+            "correction": "The original caveat (\"GhosttyTerminal/ source code itself was not directly read\") is now resolved. The source was read and confirms: full libghostty GPU/Metal surface (ghostty_surface_new on GHOSTTY_PLATFORM_IOS), not libghostty-vt. The custom I/O pattern (ghostty_surface_feed_data / ghostty_surface_set_write_callback) is exactly how network bytes are fed without owning a local PTY — solving the precise use-case of this question on a shipping App Store app."
+          }
+        },
+        {
+          "claim": "Geistty uses ghostty_surface_write_output() as the SSH-bytes-in API call — sourced from Geistty's own README/documentation but the actual Zig/Swift bridge source was not directly verified via code read.",
+          "verdict": {
+            "claim": "Geistty uses ghostty_surface_write_output() as the SSH-bytes-in API call — sourced from Geistty's own README/documentation but the actual Zig/Swift bridge source was not directly verified via code read.",
+            "verdict": "confirmed",
+            "confidence": "high",
+            "evidence": "Direct source verification from the Geistty public repository (github.com/daiimus/geistty). The Swift source file Geistty/Sources/Ghostty/Ghostty.swift at line 1979 contains the literal call: ghostty_surface_write_output(surface, ptr, UInt(data.count)) inside a feedData(_ data: Data) method. The comment on line 1972 reads: \"This uses ghostty_surface_write_output which feeds data directly to the terminal emulator as if it came from a subprocess/PTY output.\" The README's stated data-flow diagram \"SSH bytes -> ghostty_surface_write_output() -> VT parse -> Metal render\" is an accurate description of the actual Swift implementation. The architecture document (ARCHITECTURE.md) independently confirms the same flow via a Mermaid sequence diagram showing VM -> SV: surfaceView.feedData(data) and SV -> Zig: ghostty_surface_write_output(surface, ptr, len). Cross-references in TmuxWireDiagnostics.swift also mention the bytes \"going to ghostty_surface_write_output()\" confirming the call is on the production SSH-bytes path, not a test path. Geistty does NOT use Lakr233/libghostty-spm; it builds its own GhosttyKit.xcframework from daiimus/ghostty at branch ios-external-backend. The function name ghostty_surface_write_output is specific to Geistty's Ghostty fork — VVTerm's vendored libghostty uses a different name (ghostty_surface_feed_data), and libghostty-spm uses ghostty_surface_write_buffer internally.",
+            "sources": [
+              "https://github.com/daiimus/geistty/blob/main/Geistty/Sources/Ghostty/Ghostty.swift (line 1979 — ghostty_surface_write_output call, verified via git clone)",
+              "https://github.com/daiimus/geistty/blob/main/Geistty/Sources/SSH/TmuxWireDiagnostics.swift (cross-reference confirming production use)",
+              "https://github.com/daiimus/geistty/blob/main/ARCHITECTURE.md (Mermaid sequence diagram, Data Flow: Output Path section)",
+              "https://github.com/daiimus/geistty/blob/main/README.md (data-flow diagram stating 'SSH bytes -> ghostty_surface_write_output()')",
+              "https://github.com/vivy-company/vvterm/blob/main/Vendor/libghostty/include/ghostty.h (line 1090 — ghostty_surface_feed_data, different function name in VVTerm's fork)",
+              "https://github.com/Lakr233/libghostty-spm/blob/main/Sources/GhosttyTerminal/InMemory/InMemoryTerminalSession.swift (ghostty_surface_write_buffer used by libghostty-spm, third distinct variant)"
+            ],
+            "correction": "No correction needed. The claim is confirmed with strong direct source evidence. The prior caveat that \"the actual Zig/Swift bridge source was not directly verified\" is now resolved: the Swift source explicitly calls ghostty_surface_write_output() on the SSH-bytes path. The README description is accurate. The only nuance worth noting is that this function name is specific to Geistty's own Ghostty fork (daiimus/ghostty, branch ios-external-backend) — it is neither the upstream Ghostty function name nor the name used by VVTerm or libghostty-spm, which expose the same capability under different names (ghostty_surface_feed_data and ghostty_surface_write_buffer respectively). The three production iOS apps researched each vendor or fork libghostty independently rather than sharing a single canonical distribution."
+          }
+        },
+        {
+          "claim": "The awesome-libghostty README classification of Echo/VVTerm/Spectty as 'Full Ghostty' vs Geistty as 'libghostty-vt' appears internally inconsistent with Geistty's own docs claiming Metal GPU rendering; the vt-vs-full classification from that list may be unreliable and should be spot-checked against each repo's actual source.",
+          "verdict": {
+            "claim": "The awesome-libghostty README classification of Echo/VVTerm/Spectty as 'Full Ghostty' vs Geistty as 'libghostty-vt' appears internally inconsistent with Geistty's own docs claiming Metal GPU rendering; the vt-vs-full classification from that list may be unreliable and should be spot-checked against each repo's actual source.",
+            "verdict": "uncertain",
+            "confidence": "medium",
+            "evidence": "The adversarial claim as stated cannot be confirmed or refuted because the Uzaaft/awesome-libghostty README does NOT contain a formal vt-vs-full classification table at all. Multiple fetches of the README confirm it groups apps by category (Terminal Apps & Clients, etc.) with inline descriptions only — no column or badge distinguishing \"Full Ghostty\" from \"libghostty-vt\". This makes the premise of the claim (that the list explicitly classified apps in that way) unsupported by the current README. Either the classification existed in an older version and was removed, or the claim was based on a misreading or a fork. The second half of the claim — that Geistty's Metal GPU rendering is inconsistent with being labeled libghostty-vt — is actually WRONG in its underlying assumption: Geistty builds GhosttyKit.xcframework from a custom Ghostty fork (daiimus/ghostty, ios-external-backend branch) that includes Ghostty's full GPU renderer surface, not just the vt state layer. Geistty uses Ghostty's own Metal renderer at 120fps. If anything, Geistty would be \"full renderer\", not vt-only — the claim has the inconsistency backwards. However, the README classification table that would make the alleged inconsistency visible does not currently exist, so the claim cannot be evaluated as stated.",
+            "sources": [
+              "https://github.com/Uzaaft/awesome-libghostty/blob/master/README.md",
+              "https://github.com/daiimus/geistty",
+              "https://github.com/vivy-company/vvterm",
+              "https://libghostty.tip.ghostty.org/"
+            ],
+            "correction": "The awesome-libghostty README does not currently contain a formal vt-vs-full classification table; the premise of the adversarial claim is therefore unverifiable against that source. Regarding the underlying technical substance: Geistty explicitly uses Ghostty's full Metal GPU renderer (not a custom renderer on top of libghostty-vt state), built from a custom fork with an External termio backend. It is therefore a full-renderer integration, not a libghostty-vt-only integration. If any classification system labels Geistty as libghostty-vt, that would be inaccurate — but the current README does not contain such a label."
+          }
+        }
+      ]
+    }
+  ]
+}
