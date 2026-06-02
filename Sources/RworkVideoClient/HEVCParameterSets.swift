@@ -3,10 +3,12 @@ import RworkVideoProtocol
 
 /// Pure HEVC parameter-set extraction from an AVCC/HVCC byte buffer.
 ///
-/// The host (`RworkVideoHost.VideoEncoder`) streams **raw AVCC** — length-prefixed
-/// NAL units, NO out-of-band parameter sets (verified: `VideoEncoder.deliver` emits
-/// the `CMBlockBuffer` bytes verbatim). An HEVC IDR access unit therefore carries
-/// its **VPS (nal type 32) / SPS (33) / PPS (34)** inline, ahead of the coded slice.
+/// The host (`RworkVideoHost.VideoEncoder`) streams **AVCC** — length-prefixed NAL units, no
+/// out-of-band parameter sets. VTCompressionSession keeps the VPS/SPS/PPS in the sample buffer's
+/// FORMAT DESCRIPTION (not inline in the CMBlockBuffer), so `VideoEncoder.deliver` explicitly
+/// PREPENDS them ahead of the coded slice on a keyframe (`hevcParameterSetsAVCC`). An HEVC IDR
+/// access unit therefore carries its **VPS (nal type 32) / SPS (33) / PPS (34)** inline, ahead of
+/// the coded slice — which is what this type pulls back out.
 ///
 /// The client decoder needs a `CMVideoFormatDescription` built from those three
 /// parameter sets (`CMVideoFormatDescriptionCreateFromHEVCParameterSets`) before it

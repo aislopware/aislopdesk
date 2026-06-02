@@ -35,6 +35,13 @@ public final class MetalVideoRenderer {
     /// The layer presented to. Configured for low-latency presentation.
     public let metalLayer: CAMetalLayer
 
+    /// VNC-style zoom (≥1) + normalized pan, applied by CROPPING the sampled texture region
+    /// (so zooming re-samples the source at the drawable's native Retina resolution — it
+    /// reveals real detail, not a magnified blur). Driven by pinch/pan gestures; the frame
+    /// pacer re-presents the last frame each vsync, so changes apply live on a static window.
+    public var zoom: CGFloat = 1
+    public var panNormalized: CGPoint = .zero
+
     public init?(metalLayer: CAMetalLayer) {
         guard let device = metalLayer.device ?? MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
@@ -99,6 +106,33 @@ public final class MetalVideoRenderer {
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDescriptor) else { return }
         encoder.setRenderPipelineState(pipelineState)
+        // ASPECT-FIT: the quad fills the whole drawable unless we shrink it to the video's
+        // aspect ratio, which would otherwise STRETCH (distort) a landscape window into a
+        // portrait layer (and vice-versa). Compute a per-axis scale that letterboxes /
+        // pillarboxes the video inside the drawable; the cleared black background shows in the
+        // bars. Drawable size is in PIXELS, matched by the Retina drawableSize set in the
+        // pipeline's layoutChanged — so both the fit math and the sampling run at native res.
+        var fit = SIMD2<Float>(1, 1)
+        let dw = Double(metalLayer.drawableSize.width), dh = Double(metalLayer.drawableSize.height)
+        if dw > 0, dh > 0, width > 0, height > 0 {
+            let videoAspect = Double(width) / Double(height)
+            let layerAspect = dw / dh
+            if videoAspect > layerAspect {
+                fit.y = Float(layerAspect / videoAspect)   // wider video → bars top/bottom
+            } else {
+                fit.x = Float(videoAspect / layerAspect)   // taller video → bars left/right
+            }
+        }
+        encoder.setVertexBytes(&fit, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
+        // Zoom/pan as a UV crop: invZoom shrinks the sampled UV span (zoom in), pan recenters
+        // it. Clamp pan so the cropped window never runs past the image edges.
+        let z = max(1.0, Float(zoom))
+        let invZoom = 1.0 / z
+        let panLimit = 0.5 * (1.0 - invZoom)
+        let px = min(max(Float(panNormalized.x), -panLimit), panLimit)
+        let py = min(max(Float(panNormalized.y), -panLimit), panLimit)
+        var zoomPan = SIMD4<Float>(invZoom, px, py, 0)
+        encoder.setFragmentBytes(&zoomPan, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
         encoder.setFragmentTexture(lumaTexture, index: 0)
         encoder.setFragmentTexture(chromaTexture, index: 1)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -150,22 +184,27 @@ public final class MetalVideoRenderer {
 
     struct VertexOut { float4 position [[position]]; float2 uv; };
 
-    vertex VertexOut rwork_video_vertex(uint vid [[vertex_id]]) {
-        // Full-screen quad as a triangle strip.
+    vertex VertexOut rwork_video_vertex(uint vid [[vertex_id]],
+                                        constant float2 &fit [[buffer(0)]]) {
+        // Full-screen quad as a triangle strip, scaled by `fit` to preserve the video's
+        // aspect ratio (letterbox/pillarbox) instead of stretching it to the drawable.
         float2 positions[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
         float2 uvs[4]       = { float2(0, 1),  float2(1, 1), float2(0, 0),  float2(1, 0) };
         VertexOut out;
-        out.position = float4(positions[vid], 0, 1);
+        out.position = float4(positions[vid] * fit, 0, 1);
         out.uv = uvs[vid];
         return out;
     }
 
     fragment float4 rwork_video_fragment(VertexOut in [[stage_in]],
                                          texture2d<float> lumaTex [[texture(0)]],
-                                         texture2d<float> chromaTex [[texture(1)]]) {
+                                         texture2d<float> chromaTex [[texture(1)]],
+                                         constant float4 &zoomPan [[buffer(0)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
-        float y = lumaTex.sample(s, in.uv).r;
-        float2 cbcr = chromaTex.sample(s, in.uv).rg;
+        // zoomPan = (invZoom, panX, panY, _): crop the sampled UV around the panned centre.
+        float2 uv = (in.uv - 0.5) * zoomPan.x + 0.5 + float2(zoomPan.y, zoomPan.z);
+        float y = lumaTex.sample(s, uv).r;
+        float2 cbcr = chromaTex.sample(s, uv).rg;
         // BT.709 video-range YCbCr -> RGB.
         float yy = (y - 16.0/255.0) * (255.0/219.0);
         float cb = cbcr.x - 128.0/255.0;

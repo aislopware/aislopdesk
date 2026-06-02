@@ -190,19 +190,64 @@ struct MetalVideoLayerView: UIViewRepresentable {
     }
 }
 
-/// A `UIView` whose `layerClass` is `CAMetalLayer`, owning the client pipeline.
-final class MetalLayerBackedView: UIView {
+/// A `UIView` whose `layerClass` is `CAMetalLayer`, owning the client pipeline. Adds VNC-style
+/// pinch-to-zoom + one-finger pan (+ double-tap to reset) over the remote window.
+final class MetalLayerBackedView: UIView, UIGestureRecognizerDelegate {
     override class var layerClass: AnyClass { CAMetalLayer.self }
     var videoLayer: CAMetalLayer { layer as! CAMetalLayer }
     private let pipeline = VideoWindowPipeline()
 
+    private var zoom: CGFloat = 1
+    private var pan: CGPoint = .zero
+    private var gestureBaseZoom: CGFloat = 1
+    private var gestureBasePan: CGPoint = .zero
+    private var gesturesInstalled = false
+
     func activate(connection: VideoWindowConnection?) {
+        installGesturesIfNeeded()
         pipeline.activate(view: self, videoLayer: videoLayer, connection: connection)
     }
     func deactivate() { pipeline.deactivate() }
 
+    private func installGesturesIfNeeded() {
+        guard !gesturesInstalled else { return }
+        gesturesInstalled = true
+        isUserInteractionEnabled = true
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(onPinch(_:)))
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
+        pan.minimumNumberOfTouches = 1; pan.maximumNumberOfTouches = 2
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(onDoubleTap))
+        doubleTap.numberOfTapsRequired = 2
+        for g in [pinch, pan, doubleTap] as [UIGestureRecognizer] { g.delegate = self; addGestureRecognizer(g) }
+    }
+
+    // Let pinch + pan run together (zoom while dragging).
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+    @objc private func onPinch(_ g: UIPinchGestureRecognizer) {
+        if g.state == .began { gestureBaseZoom = zoom }
+        zoom = min(max(gestureBaseZoom * g.scale, 1), 8)
+        if zoom <= 1.001 { pan = .zero }
+        pipeline.setZoom(zoom, pan: pan)
+    }
+    @objc private func onPan(_ g: UIPanGestureRecognizer) {
+        if g.state == .began { gestureBasePan = pan }
+        let t = g.translation(in: self)
+        let invZoom = 1.0 / zoom
+        pan.x = gestureBasePan.x - (t.x / max(bounds.width, 1)) * invZoom
+        pan.y = gestureBasePan.y - (t.y / max(bounds.height, 1)) * invZoom
+        pipeline.setZoom(zoom, pan: pan)
+    }
+    @objc private func onDoubleTap() {
+        zoom = 1; pan = .zero
+        pipeline.setZoom(zoom, pan: pan)
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        // Render at native Retina resolution: set the layer's contentsScale to the screen
+        // scale so the pipeline's drawableSize (points × contentsScale) is the pixel size.
+        videoLayer.contentsScale = window?.screen.scale ?? traitCollection.displayScale
         pipeline.layoutChanged(layerSize: VideoSize(width: Double(bounds.width), height: Double(bounds.height)))
     }
 }
