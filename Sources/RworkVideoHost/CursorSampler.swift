@@ -20,10 +20,15 @@ public final class CursorSampler: @unchecked Sendable {
     /// Sample rate (doc 17 §3.3: "~120 Hz").
     public static let sampleHz: Double = 120
 
-    /// Emits an encoded cursor update for the side-channel socket to send.
+    /// Emits a cursor position update for the side-channel socket to send (~120 Hz).
     public typealias UpdateHandler = @Sendable (CursorUpdate) -> Void
+    /// Emits a cursor SHAPE bitmap ONCE per newly-seen `shapeID`, out of band, for the
+    /// client to cache and composite (doc 17 §3.3). The orchestrator routes this to the
+    /// cursor socket as a ``CursorShapeMessage``.
+    public typealias ShapeHandler = @Sendable (CursorShapeMessage) -> Void
 
     private let updateHandler: UpdateHandler
+    private let shapeHandler: ShapeHandler?
     private var timer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "rwork.video.cursor", qos: .userInteractive)
 
@@ -36,9 +41,10 @@ public final class CursorSampler: @unchecked Sendable {
     private var shapeIDs: [ObjectIdentifier: UInt16] = [:]
     private var nextShapeID: UInt16 = 0
 
-    public init(windowBoundsCG: VideoRect, updateHandler: @escaping UpdateHandler) {
+    public init(windowBoundsCG: VideoRect, updateHandler: @escaping UpdateHandler, shapeHandler: ShapeHandler? = nil) {
         self.windowBoundsCG = windowBoundsCG
         self.updateHandler = updateHandler
+        self.shapeHandler = shapeHandler
     }
 
     /// Updates the tracked window bounds (call from the geometry watcher).
@@ -79,8 +85,8 @@ public final class CursorSampler: @unchecked Sendable {
         let windowY = cgY - bounds.origin.y
 
         let cursor = NSCursor.current
-        let id = shapeID(for: cursor)
         let hotspot = VideoPoint(x: Double(cursor.hotSpot.x), y: Double(cursor.hotSpot.y))
+        let id = shapeID(for: cursor, hotspot: hotspot)
         let visible = windowX >= 0 && windowY >= 0 && windowX <= bounds.size.width && windowY <= bounds.size.height
 
         let update = CursorUpdate(
@@ -99,15 +105,37 @@ public final class CursorSampler: @unchecked Sendable {
     }
 
     @MainActor
-    private func shapeID(for cursor: NSCursor) -> UInt16 {
+    private func shapeID(for cursor: NSCursor, hotspot: VideoPoint) -> UInt16 {
         let key = ObjectIdentifier(cursor)
         if let id = shapeIDs[key] { return id }
         let id = nextShapeID
         nextShapeID &+= 1
         shapeIDs[key] = id
-        // Production: ship cursor.image TIFF + hotspot once for this new id, out of
-        // band, so the client can cache and composite it (doc 17 §3.3).
+        // OOB cursor-bitmap channel (doc 17 §3.3): the FIRST time a distinct cursor
+        // appears, ship its bitmap + hotspot ONCE so the client caches it by `id` and
+        // composites the pointer itself (`showsCursor` stays false on capture). The
+        // hot per-sample message stays position-only.
+        if let shapeHandler, let message = Self.encodeShape(cursor.image, shapeID: id, hotspot: hotspot) {
+            shapeHandler(message)
+        }
         return id
+    }
+
+    /// Encodes an `NSImage` cursor bitmap as a PNG ``CursorShapeMessage`` for the OOB
+    /// shape channel. Returns `nil` if the image yields no bitmap representation.
+    @MainActor
+    static func encodeShape(_ image: NSImage, shapeID: UInt16, hotspot: VideoPoint) -> CursorShapeMessage? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        return CursorShapeMessage(
+            shapeID: shapeID,
+            size: VideoSize(width: Double(image.size.width), height: Double(image.size.height)),
+            hotspot: hotspot,
+            bitmap: png
+        )
     }
 }
 #endif

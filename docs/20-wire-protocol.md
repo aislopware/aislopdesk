@@ -1,7 +1,14 @@
-# 20 — Rwork wire protocol (PATH 1, terminal)
+# 20 — Rwork wire protocol (PATH 1 terminal + PATH 2 GUI video)
 
-> **STATUS: CURRENT.** Documents the wire format implemented in `Sources/RworkProtocol`
-> (WF-1). This is the architectural contract for the PATH 1 byte pipeline. Binding
+> **STATUS: CURRENT.** §1–8 document the **PATH 1** terminal byte pipeline implemented in
+> `Sources/RworkProtocol` (WF-1) over TCP. **§9 documents the PATH 2 GUI video path** (WF-9):
+> a separate, plain-UDP protocol implemented in `Sources/RworkVideoProtocol` (pure, cross-
+> platform, unit-tested) and driven by `RworkVideoHost` / `RworkVideoClient`. PATH 2 is an
+> entirely distinct protocol from PATH 1 — different transport (UDP vs TCP), different
+> message set, its own version constant — and does **not** share PATH 1's `WireMessage`,
+> `FrameDecoder`, or `Channel`.
+>
+> The PATH 1 description below begins with the original framing contract. Binding
 > decisions it realizes: dual data/control channel + plain TCP + `TCP_NODELAY` + ET-style
 > replay-buffer reconnect ([DECISIONS.md](DECISIONS.md), [17](17-native-feel-synthesis.md) §2,
 > [18](18-risk-resolutions.md) H). The protocol module is **pure Swift, zero platform
@@ -256,3 +263,232 @@ half-close the host intends, so a clean finish is always a disconnect that recon
 - `actor ClientTransport` — `connect(host:port:resume:lastReceivedSeq:)`, merged
   `inbound`, `sendInput`/`sendResize`/`sendAck`/`sendBye`, `sessionID`/`resumeFromSeq`/
   `returningClient`.
+
+---
+
+# PATH 2 — GUI video transport (UDP)
+
+> **STATUS: CURRENT.** Documents the wire format implemented in `Sources/RworkVideoProtocol`
+> (WF-9) and the transport topology realized by `RworkVideoHost.NWVideoDatagramTransport` /
+> `RworkVideoClient.NWVideoClientTransport`. This is the secondary GUI video path (doc 17 §3,
+> doc 18 measured spike config); it is **independent of PATH 1** — its own protocol over plain
+> UDP inside the WireGuard tunnel, with NO TCP, no `WireMessage`, no `FrameDecoder`.
+
+## 9. Path-2 overview
+
+PATH 2 remotes one host GUI window: ScreenCaptureKit per-window capture (NV12) → VideoToolbox
+HEVC encode → UDP datagrams (packetize + FEC) → VTDecompressionSession decode → Metal render,
+with a client-side composited cursor and client→host CGEvent input injection. Everything is
+**datagram-oriented** — there is no stream framing, no length prefix, no replay buffer. Loss is
+absorbed by FEC and, when unrecoverable, by client→host recovery requests (LTR refresh → IDR).
+
+`RworkVideoProtocol.version` is a **`UInt16`, currently `1`**, separate from PATH 1's
+`Rwork.protocolVersion`. There is **no negotiation**: the host accepts a `hello` only when
+`protocolVersion == RworkVideoProtocol.version` (strict, mirroring PATH 1 §4); any other value
+is rejected. All multi-byte integers are **big-endian**, exactly as PATH 1 (§3); the
+sub-pixel geometry/cursor/input fields are big-endian IEEE-754 `Float64`. Each codec serialises
+as `[UInt8 messageType][body…]` and is decoded defensively — a short or inconsistent **single
+datagram** throws `VideoProtocolError.truncated` / `.malformed(_)` and is dropped, never
+crashing the receiver.
+
+## 9.1 Transport topology — two sockets, six logical channels
+
+A session uses **two UDP sockets**, not one:
+
+| Socket | Carries | Framing |
+|--------|---------|---------|
+| **media** | control, video, geometry, input, recovery | each datagram is prefixed with a **1-byte channel tag** (`VideoChannel.rawValue`) |
+| **cursor** | cursor updates + cursor shapes | **bare bytes** (single-purpose socket, no tag) |
+
+The cursor channel is split onto its own socket so pointer latency = RTT, fully decoupled from
+the encode/decode pipeline and from video-burst head-of-line blocking (doc 17 §3.3) — the same
+"don't let bulk traffic delay latency-critical control" rationale as PATH 1's dual TCP (§1).
+
+`VideoChannel` (the 1-byte media-socket tag) — `enum VideoChannel: UInt8`:
+
+| Tag | Channel | Direction | Payload (after the tag byte) |
+|-----|---------|-----------|------------------------------|
+| `0` | `control`  | both | `VideoControlMessage` (§9.2) |
+| `1` | `video`    | host → client | one `FrameFragment` (§9.3) |
+| `2` | `geometry` | host → client | `WindowGeometryMessage` (§9.5) |
+| `3` | `cursor`   | host → client | *(logical id; physically carried on the dedicated cursor socket, untagged — §9.6)* |
+| `4` | `input`    | client → host | `InputEvent` (§9.7) |
+| `5` | `recovery` | client → host | `RecoveryMessage` (§9.8) |
+
+> The `cursor` tag value (`3`) is reserved for completeness/symmetry; cursor datagrams physically
+> travel on the dedicated cursor socket as bare bytes, so they carry no leading channel tag.
+> Client→host recovery messages (§9.8) ride their OWN media-socket channel (`5`), **never** the
+> `input` channel: a `RecoveryMessage`'s leading type byte (1/2/3) overlaps an `InputEvent`'s
+> (mouseMove/Down/Up), so multiplexing them onto `input` would have the host mis-decode a recovery
+> request as a phantom mouse event. The dedicated tag removes that ambiguity (no discriminator byte).
+
+The enum is defined identically (byte-for-byte raw values) in both `RworkVideoHost` and
+`RworkVideoClient`; the client cannot depend on the macOS-only host module, so it carries its
+own copy. *(Candidate to hoist into `RworkVideoProtocol` so one definition is shared.)*
+
+## 9.2 Session bring-up — `VideoControlMessage` (control channel)
+
+PATH 2 has no TCP handshake; a tiny control exchange runs over the UDP **control** channel
+before any media flows. `[UInt8 type][body]`, big-endian:
+
+| Type | Name | Direction | Body |
+|------|------|-----------|------|
+| `1` | `hello`    | client → host | `UInt16 protocolVersion` + `UInt32 requestedWindowID` + `Float64 viewportW` + `Float64 viewportH` |
+| `2` | `helloAck` | host → client | `UInt8 accepted(0/1)` + `UInt32 streamID` + `UInt16 captureWidth` + `UInt16 captureHeight` + `Float64 boundsX` + `boundsY` + `boundsW` + `boundsH` |
+| `3` | `bye`      | either | *(empty)* |
+
+- `hello` announces the client, the host `CGWindowID` it wants to remote, and the client viewport
+  size so the host can size capture/encode to the client surface.
+- `helloAck` confirms (or rejects via `accepted = 0`) and reports the negotiated capture
+  dimensions plus the window's current **CG top-left bounds** — the client's input-mapping origin
+  until the geometry channel updates it.
+- The host starts capture/encode **only on an accepted `hello`**; a duplicate `hello` is re-acked
+  idempotently. Either side sends `bye` for a clean teardown.
+
+## 9.3 Video frame datagrams — `FrameFragment` (video channel)
+
+An encoded HEVC frame (AVCC: length-prefixed NAL units, with the IDR carrying inline VPS/SPS/PPS —
+the client self-configures its `CMVideoFormatDescription` from those parameter sets, no
+out-of-band parameter exchange) is fragmented into datagrams ≤ **1200 bytes**
+(`VideoPacketizer.maxDatagramSize`, doc 17 §3.6 to stay under MTU with WireGuard overhead).
+
+**Fragment header — fixed 15 bytes, big-endian:**
+
+```
+off 0: UInt32 streamSeq    — monotonic per-datagram sequence (loss / ordering)
+off 4: UInt32 frameID      — groups all fragments of one encoded frame
+off 8: UInt16 fragIndex    — 0-based fragment index within the frame
+off10: UInt16 fragCount    — total fragments in the frame (data + parity)
+off12: UInt8  flags        — bit0 keyframe(IDR) | bit1 parity(FEC) | bit2 crisp(Session B)
+off13: UInt16 payloadLen   — payload byte count that follows
+off15: [payloadLen] bytes  — fragment payload (AVCC bytes, or FEC parity)
+```
+
+`streamSeq` is a monotonic per-**datagram** index (every emitted datagram, data and parity alike,
+increments it) — the loss/ordering signal, analogous to PATH 1's per-message `output.seq` but at
+datagram granularity. `frameID` is a monotonic per-**frame** index. `flags` bits:
+`keyframe` (fresh decode anchor / IDR), `parity` (this fragment is FEC parity, not original data),
+`crisp` (the frame came from the on-demand all-intra "crisp" Session-B encoder).
+
+## 9.4 Forward error correction (FEC)
+
+To absorb single-packet loss without a round trip, the packetizer appends **XOR parity**
+fragments per frame (`XORParityFEC`, default `groupSize = 5` ⇒ ~20% parity, the Sunshine/doc-17
+target). Each group of up to 5 data fragments yields one parity fragment = the byte-wise XOR of
+the group, where each member is **length-prefixed (`UInt32` BE)** before XOR so recovery
+reproduces the exact original length even when group members differ in size. Parity fragments
+carry the `parity` flag and share the frame's `frameID`/`fragCount`.
+
+Recovery fills exactly **one** missing data fragment per group (`parity XOR survivors`, then strip
+the length prefix); **two or more** losses in a group are unrecoverable and left as a hole, which
+the client escalates via §9.8 recovery requests. The `FECScheme` protocol lets a Reed-Solomon
+codec replace XOR later without touching the wire header.
+
+## 9.5 Window geometry — `WindowGeometryMessage` (geometry channel)
+
+Host → client window move/resize/title so the client view repositions before the next frame
+(doc 17 §3.8). `[UInt8 type][body]`, big-endian; coordinates are host CG-space **points**:
+
+| Type | Name | Body |
+|------|------|------|
+| `1` | `move`   | `Float64 x` + `Float64 y` (new top-left origin) |
+| `2` | `resize` | `Float64 width` + `Float64 height` |
+| `3` | `bounds` | `Float64 x` + `y` + `width` + `height` (move+resize in one) |
+| `4` | `title`  | remaining bytes = UTF-8 title (non-UTF-8 → `.malformed`) |
+
+## 9.6 Cursor side-channel (dedicated cursor socket)
+
+The host strips the cursor from the captured video (`showsCursor = false`) and streams it
+out-of-band so it composites client-side at RTT latency (doc 17 §3.3). Both messages travel on the
+dedicated cursor socket as **bare bytes**, told apart by their leading type byte
+(`CursorChannelMessage` peeks the first byte to route):
+
+**`CursorUpdate` (type `1`) — hot, position-only, fixed 36 bytes (< 64-byte budget), ~120 Hz:**
+
+```
+off 0: UInt8   type (=1)
+off 1: UInt16  shapeID      — references a shape bitmap the client has cached
+off 3: UInt8   visible (0/1)
+off 4: Float64 x            — host-window-space point
+off12: Float64 y
+off20: Float64 hotspotX
+off28: Float64 hotspotY
+```
+
+**`CursorShapeMessage` (type `2`) — rare bitmap, shipped once per new `shapeID`:**
+
+```
+off 0: UInt8   type (=2)
+off 1: UInt16  shapeID
+off 3: UInt16  width        — points (informational; the PNG is self-describing)
+off 5: UInt16  height
+off 7: Float64 hotspotX
+off15: Float64 hotspotY
+off23: UInt32  bitmapLength
+off27: [bitmapLength] bytes — PNG-encoded cursor image
+```
+
+A single cursor PNG fits comfortably in one 1200-byte datagram, so the shape channel needs no
+fragmentation. The client caches each shape by `shapeID` and composites it at
+`position * videoScale − hotspot`, where `videoScale = layerSize.width / decodedSize.width`.
+
+## 9.7 Input events — `InputEvent` (input channel, client → host)
+
+Client→host input (doc 17 §3.9 / doc 05). Pointer positions are in **normalised window space
+(0..1)** — the client never sends raw pixels, removing all pixel-vs-point ambiguity; the host maps
+normalised → host-window-point via `CoordinateMapping`. Every event carries a `UInt32 tag` =
+the value the host stamps on `eventSourceUserData`, so it filters its own self-injected events out
+of the cursor / geometry watchers and avoids feedback loops (doc 18 §A). `[UInt8 type][body]`,
+big-endian:
+
+| Type | Name | Body (after type byte) |
+|------|------|------------------------|
+| `1` | `mouseMove` | `UInt32 tag` + `Float64 nx` + `ny` |
+| `2` | `mouseDown` | `UInt32 tag` + `UInt8 button` + `UInt8 clickCount` + `UInt8 modifiers` + `Float64 nx` + `ny` |
+| `3` | `mouseUp`   | *(same layout as `mouseDown`)* |
+| `4` | `scroll`    | `UInt32 tag` + `Float64 dx` + `dy` + `Float64 nx` + `ny` |
+| `5` | `key`       | `UInt32 tag` + `UInt16 keyCode` + `UInt8 down(0/1)` + `UInt8 modifiers` |
+| `6` | `text`      | `UInt32 tag` + remaining bytes = UTF-8 text |
+
+`button`: `0` left / `1` right / `2` other. `modifiers` bitmask: `shift 1<<0`, `control 1<<1`,
+`option 1<<2`, `command 1<<3`, `capsLock 1<<4`, `function 1<<5`. `key` is for navigation /
+shortcuts by host virtual keycode; `text` is the robust layout-independent Unicode-insertion path
+(doc 05 §3) — the host attaches the unicode string to the key-**down** only.
+
+## 9.8 Loss recovery — `RecoveryMessage` (client → host)
+
+When the client detects an unrecoverable fragment loss (a frame hole FEC could not fill), it asks
+the host to recover **without** the bandwidth/latency spike of a forced keyframe. Sent on the
+dedicated **`recovery` channel (tag `5`)** of the media socket — never `input` (§9.1). `[UInt8 type]
+[body]`, big-endian:
+
+| Type | Name | Body |
+|------|------|------|
+| `1` | `ack`               | `UInt32 streamSeq` (highest contiguous datagram seq durably received — bounds the host's LTR-pin window) |
+| `2` | `requestLTRRefresh` | `UInt32 fromFrameID` + `UInt32 toFrameID` (the lost frame range) |
+| `3` | `requestIDR`        | *(empty)* |
+
+Recovery **prefers an LTR refresh** (`requestLTRRefresh`): the client names the lost frame range;
+the host invalidates the referenced long-term-reference frame and encodes the next frame against an
+older still-valid LTR (`kVTCompressionPropertyKey_EnableLTR` + `ForceLTRRefresh`). The invalidation
+direction is client→host (doc 17 §3.6). The client's `RecoveryPolicy` escalates to `requestIDR` if no
+decodable frame arrives within ~**2 RTT** of the LTR-refresh request (`idrTimeoutRTTMultiple`,
+default `2.0`; the escalation is driven off the client's loss-detection path against the smoothed
+RTT estimate).
+
+**Host handling (`RecoveryDatagramRouter` → `WindowCapturer.requestKeyframe()`):** the host routes a
+`recovery` datagram to recovery handling (not the input injector). Today both `requestLTRRefresh`
+and `requestIDR` map to a **forced IDR on the next captured frame** — a keyframe is always a correct,
+if heavier, refresh; the dedicated LTR-refresh encode is a future optimisation. An `ack` advances no
+window yet (no retransmit buffer) and is recorded for diagnostics. This re-anchors a loss-recovering
+client immediately rather than waiting for the ~1 s heartbeat IDR.
+
+## 9.9 Errors (`VideoProtocolError`)
+
+| Case | Meaning |
+|------|---------|
+| `truncated` | A datagram ended before a fixed-size field could be read. |
+| `malformed(String)` | A field held an out-of-range value (unknown message type, unknown channel/cursor/button tag, non-UTF-8 title/text); reason string attached. |
+
+A corrupt single datagram is dropped (the error is caught at the receive boundary), never fatal —
+UDP loss is the normal case PATH 2 is built to tolerate.

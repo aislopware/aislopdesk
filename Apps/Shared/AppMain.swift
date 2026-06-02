@@ -1,5 +1,8 @@
 import SwiftUI
 import RworkClientUI
+#if canImport(RworkVideoClient)
+import RworkVideoClient
+#endif
 
 /// The `@main` entry for both Xcode app targets (ClientApp-macOS, ClientApp-iOS).
 ///
@@ -25,6 +28,19 @@ struct ClientAppMain {
         // #if canImport(CGhostty)
         //   TerminalRendererFactory.shared = { model in AnyView(GhosttyTerminalView(model: model)) }
         // #endif
+
+        // PATH 2 (GUI video path, doc 17 §3): register the production remote-GUI-window
+        // view. The cross-platform `RworkClientUI` library cannot reference
+        // `RworkVideoClient.VideoWindowView` directly (it would pull VideoToolbox + Metal
+        // into the headless `swift build`/tests), so the GUI app target — which links
+        // `RworkVideoClient` — injects it here at launch. With no registration the seam
+        // shows the gated `RemoteWindowPlaceholderView`.
+        #if canImport(RworkVideoClient)
+        VideoWindowFactory.shared = { descriptor in
+            AnyView(VideoWindowView(title: descriptor.title))
+        }
+        #endif
+
         RworkClientApp.main()
     }
 }

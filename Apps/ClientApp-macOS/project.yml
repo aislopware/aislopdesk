@@ -31,6 +31,11 @@ targets:
     dependencies:
       - package: Rwork
         product: RworkClientUI
+      # PATH 2 (GUI video path): links the client decode/render/cursor pipeline so
+      # AppMain can register VideoWindowFactory.shared with the real VideoWindowView.
+      # Carries VideoToolbox/Metal — never instantiated in tests, only at GUI launch.
+      - package: Rwork
+        product: RworkVideoClient
     info:
       path: Info.plist
       properties:

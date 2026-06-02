@@ -12,6 +12,9 @@ public enum VideoDecoderError: Error {
     case formatDescriptionFailed(OSStatus)
     case sampleBufferFailed(OSStatus)
     case decodeFailed(OSStatus)
+    /// A non-keyframe arrived before any IDR established the format description, so we
+    /// cannot decode it (the client drops it and waits for / requests a keyframe).
+    case awaitingKeyframe
 }
 
 /// Decodes reassembled HEVC frames with `VTDecompressionSession` (doc 04, doc 18 §F).
@@ -50,8 +53,32 @@ public final class VideoDecoder: @unchecked Sendable {
         }
     }
 
-    /// Sets the format description (from the IDR's parameter sets) and (re)creates
-    /// the session. Must precede the first `decode`. Recreate on resolution change.
+    /// Builds the HEVC `CMVideoFormatDescription` from the VPS/SPS/PPS parameter sets
+    /// the host streams inline ahead of an IDR slice (the host ships raw AVCC, no
+    /// out-of-band parameter sets — see ``HEVCParameterSets``) and (re)creates the
+    /// session. Recreate on a resolution change (a fresh IDR carries fresh sets).
+    public func configure(parameterSets: HEVCParameterSets.ParameterSets) throws {
+        let sets = parameterSets.ordered
+        var formatDescription: CMFormatDescription?
+        let status: OSStatus = sets.withUnsafeParameterSetPointers { pointers, sizes in
+            CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                allocator: kCFAllocatorDefault,
+                parameterSetCount: pointers.count,
+                parameterSetPointers: pointers,
+                parameterSetSizes: sizes,
+                nalUnitHeaderLength: Int32(NALUnit.lengthPrefixSize),
+                extensions: nil,
+                formatDescriptionOut: &formatDescription
+            )
+        }
+        guard status == noErr, let formatDescription else {
+            throw VideoDecoderError.formatDescriptionFailed(status)
+        }
+        try configure(formatDescription: formatDescription)
+    }
+
+    /// Sets the format description and (re)creates the session. Must precede the first
+    /// `decode`. Recreate on resolution change.
     public func configure(formatDescription: CMFormatDescription) throws {
         if let session { VTDecompressionSessionInvalidate(session); self.session = nil }
         self.formatDescription = formatDescription
@@ -78,8 +105,17 @@ public final class VideoDecoder: @unchecked Sendable {
 
     /// Decodes one reassembled AVCC frame synchronously (`decodeFlags = []`,
     /// MEASURED single-frame ~1ms). Hands the resulting NV12 buffer to the renderer.
+    ///
+    /// Self-configuring: a **keyframe** carries its VPS/SPS/PPS inline, so we
+    /// (re)build the format description + session from it before decoding (handling
+    /// the first IDR AND a mid-stream resolution change). A non-keyframe that arrives
+    /// before any IDR cannot be decoded — it throws ``VideoDecoderError/awaitingKeyframe``
+    /// so the caller drops it and requests recovery.
     public func decode(_ frame: ReassembledFrame) throws {
-        guard let session, let formatDescription else { throw VideoDecoderError.sessionCreateFailed(-12903) }
+        if frame.keyframe, let sets = HEVCParameterSets.extract(from: frame.avcc) {
+            try configure(parameterSets: sets)
+        }
+        guard let session, let formatDescription else { throw VideoDecoderError.awaitingKeyframe }
         let sampleBuffer = try makeSampleBuffer(avcc: frame.avcc, formatDescription: formatDescription)
         let handler = decodedFrameHandler
         let status = VTDecompressionSessionDecodeFrame(
@@ -134,6 +170,25 @@ public final class VideoDecoder: @unchecked Sendable {
         )
         guard status == noErr, let sampleBuffer else { throw VideoDecoderError.sampleBufferFailed(status) }
         return sampleBuffer
+    }
+}
+
+private extension Array where Element == Data {
+    /// Exposes parallel base-pointer + size arrays for the parameter-set bytes, valid
+    /// only for the duration of `body` (the pointers reference the `Data`'s storage).
+    /// `CMVideoFormatDescriptionCreateFromHEVCParameterSets` copies the bytes, so the
+    /// scoped lifetime is sufficient.
+    func withUnsafeParameterSetPointers<R>(
+        _ body: ([UnsafePointer<UInt8>], [Int]) -> R
+    ) -> R {
+        func recurse(index: Int, pointers: [UnsafePointer<UInt8>], sizes: [Int]) -> R {
+            if index == count { return body(pointers, sizes) }
+            return self[index].withUnsafeBytes { raw -> R in
+                let base = raw.bindMemory(to: UInt8.self).baseAddress!
+                return recurse(index: index + 1, pointers: pointers + [base], sizes: sizes + [self[index].count])
+            }
+        }
+        return recurse(index: 0, pointers: [], sizes: [])
     }
 }
 #endif

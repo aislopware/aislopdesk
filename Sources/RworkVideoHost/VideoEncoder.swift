@@ -10,7 +10,10 @@ public enum VideoEncoderError: Error {
     case sessionCreateFailed(OSStatus)
     case notHardwareBacked
     case encodeFailed(OSStatus)
-    case propertyFailed(OSStatus)
+    /// A LATENCY-CRITICAL property failed to set. Carries the property key + the
+    /// `OSStatus` so the caller can see exactly which proven low-latency setting did
+    /// not apply (a silent failure here corrupts the measured doc-18 config).
+    case propertyFailed(key: String, status: OSStatus)
 }
 
 /// The two-session HEVC encoder (doc 18 §E — **MEASURED + SOLVED**), built to the
@@ -105,19 +108,25 @@ public final class VideoEncoder: @unchecked Sendable {
         }
         guard status == noErr, let session else { throw VideoEncoderError.sessionCreateFailed(status) }
 
-        // Property keys (via VTSessionSetProperty). EXACT spike config.
-        set(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue)
-        set(session, kVTCompressionPropertyKey_ExpectedFrameRate, 30 as CFNumber)
-        set(session, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue)
-        set(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse) // no B-frames
-        set(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, Int(Int32.max) as CFNumber) // IDR on-demand
-        set(session, kVTCompressionPropertyKey_AverageBitRate, Self.bitrateBitsPerSecond as CFNumber)
+        // Property keys (via VTSessionSetProperty). EXACT spike config. The
+        // LATENCY-CRITICAL keys THROW on failure — a silent failure here corrupts the
+        // proven low-latency config (doc 18 §E). Best-effort keys are set leniently
+        // (logged on failure) since they degrade quality, not the latency contract.
+        try setCritical(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue)
+        set(session, kVTCompressionPropertyKey_ExpectedFrameRate, 30 as CFNumber) // best-effort
+        set(session, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue) // best-effort
+        try setCritical(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse) // no B-frames — latency-critical
+        set(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, Int(Int32.max) as CFNumber) // IDR on-demand (best-effort)
+        // AverageBitRate + DataRateLimits together ARE the low-latency rate-control
+        // contract — both latency-critical.
+        try setCritical(session, kVTCompressionPropertyKey_AverageBitRate, Self.bitrateBitsPerSecond as CFNumber)
         // DataRateLimits = [maxBytes, seconds]; 12 Mbps hard cap (/8 not /4).
-        set(session, kVTCompressionPropertyKey_DataRateLimits, [Self.dataRateMaxBytes, 1.0] as CFArray)
+        try setCritical(session, kVTCompressionPropertyKey_DataRateLimits, [Self.dataRateMaxBytes, 1.0] as CFArray)
         // SpatialAdaptiveQPLevel=Disable — required by the SDK when low-latency is on.
         // kVTQPModulationLevel_Disable (== 0) wrapped as CFNumber (the property is a
-        // CFNumberRef per the SDK header).
-        set(session, kVTCompressionPropertyKey_SpatialAdaptiveQPLevel, kVTQPModulationLevel_Disable as CFNumber)
+        // CFNumberRef per the SDK header). Latency-critical (SDK rejects low-latency
+        // otherwise).
+        try setCritical(session, kVTCompressionPropertyKey_SpatialAdaptiveQPLevel, kVTQPModulationLevel_Disable as CFNumber)
         // ProfileLevel OMITTED for the low-latency session (doc 18 §E).
         // NOTE: do NOT query UsingHardwareAcceleratedVideoEncoder here — it returns
         // -12900 with low-latency on; HW is already gated by Require...=true above.
@@ -210,11 +219,27 @@ public final class VideoEncoder: @unchecked Sendable {
     /// Re-creates both sessions on a window resize (doc 18 §G — recreate on resize).
     /// The caller passes the new dimensions by constructing a fresh `VideoEncoder`.
 
+    /// Sets a LATENCY-CRITICAL property and THROWS ``VideoEncoderError/propertyFailed(key:status:)``
+    /// if it does not apply. Used for the proven low-latency rate-control keys
+    /// (RealTime, AllowFrameReordering, AverageBitRate, DataRateLimits,
+    /// SpatialAdaptiveQPLevel) where a silent failure corrupts the measured config
+    /// (doc 18 §E). The encoder must NOT proceed with a half-applied low-latency config.
+    private func setCritical(_ session: VTCompressionSession, _ key: CFString, _ value: CFTypeRef) throws {
+        let status = VTSessionSetProperty(session, key: key, value: value)
+        guard status == noErr else {
+            log.error("critical VTSessionSetProperty \(key as String) failed: \(status)")
+            throw VideoEncoderError.propertyFailed(key: key as String, status: status)
+        }
+    }
+
+    /// Sets a best-effort property: a failure degrades quality, not the latency
+    /// contract, so it is logged and tolerated (e.g. ExpectedFrameRate). Returns the
+    /// status for callers that care.
     @discardableResult
     private func set(_ session: VTCompressionSession, _ key: CFString, _ value: CFTypeRef) -> OSStatus {
         let status = VTSessionSetProperty(session, key: key, value: value)
         if status != noErr {
-            log.error("VTSessionSetProperty \(key as String) failed: \(status)")
+            log.error("VTSessionSetProperty \(key as String) failed (best-effort, tolerated): \(status)")
         }
         return status
     }

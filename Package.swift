@@ -180,5 +180,24 @@ let package = Package(
         // the host/client video code HANGS without a window-server + TCC session, so
         // it is COMPILED (swift build) + code-reviewed, never executed in a test.
         .testTarget(name: "RworkVideoProtocolTests", dependencies: ["RworkVideoProtocol"]),
+        // WF-9 host orchestrator: ONLY the PURE host-session logic is unit-tested —
+        // the session state machine (hello/helloAck/bye transitions + strict version
+        // check), the input-datagram routing decisions (inject/drop/ignore + raise
+        // latch), and the send-scheduler channel/packet ordering — all against an
+        // in-memory `VideoDatagramTransport` fake. NO SCStream / VTCompressionSession /
+        // CGEvent / live UDP socket is instantiated here (the hang-safety rule): the
+        // capture/encode/inject components are COMPILED + code-reviewed only.
+        .testTarget(name: "RworkVideoHostTests", dependencies: ["RworkVideoHost", "RworkVideoProtocol"]),
+        // WF-9 client orchestrator: ONLY the PURE client-session logic is unit-tested —
+        // the client state machine (hello/helloAck/bye transitions + accept/reject + the
+        // idempotent duplicate ack), the videoScale math (layer/decoded ratio + cursor
+        // placement), the received-datagram routing decisions (control/video/geometry/
+        // ignore/drop), the input-event normalisation (view-space → clamped 0..1), the
+        // HEVC parameter-set extraction (pure NAL walk), and the frame-pacer cap throttle
+        // — all against an in-memory `VideoClientTransport` fake. NO VTDecompressionSession
+        // / Metal / CVDisplayLink / CADisplayLink / live UDP socket is instantiated here
+        // (the hang-safety rule): the decode/render/display-link components are COMPILED +
+        // code-reviewed only.
+        .testTarget(name: "RworkVideoClientTests", dependencies: ["RworkVideoClient", "RworkVideoProtocol"]),
     ]
 )

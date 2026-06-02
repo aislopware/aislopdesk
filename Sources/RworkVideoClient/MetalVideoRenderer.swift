@@ -1,7 +1,6 @@
 #if canImport(Metal) && canImport(QuartzCore)
 import Foundation
 import Metal
-import MetalKit
 import CoreVideo
 import QuartzCore
 import OSLog
@@ -22,6 +21,10 @@ import simd
 ///   ``FramePacer``. On an empty queue it shows the last decoded frame; late frames
 ///   are skipped (doc 17 §3.7).
 /// - Does NOT use `AVSampleBufferDisplayLayer` (adds >=1 frame buffering — doc 18 §F).
+///
+/// `@MainActor`-isolated: it owns + presents to a `CAMetalLayer`, which is main-thread
+/// state. The frame pacer renders through a main-actor hop each vsync.
+@MainActor
 public final class MetalVideoRenderer {
     private let log = Logger(subsystem: "rwork.video.client", category: "MetalVideoRenderer")
     public let device: MTLDevice
@@ -73,8 +76,17 @@ public final class MetalVideoRenderer {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
-        guard let lumaTexture = makeTexture(pixelBuffer, cache: textureCache, planeIndex: 0, pixelFormat: .r8Unorm, width: width, height: height),
-              let chromaTexture = makeTexture(pixelBuffer, cache: textureCache, planeIndex: 1, pixelFormat: .rg8Unorm, width: width / 2, height: height / 2) else {
+        // Keep the CVMetalTexture WRAPPERS (not just the MTLTextures) alive: the
+        // MTLTexture does not retain its parent CVMetalTexture, and the texture's backing
+        // IOSurface is owned by the wrapper + the cache. The GPU samples these textures
+        // ASYNCHRONOUSLY (after `commit()`), so releasing the wrappers at function return
+        // is a use-after-free → green/garbage frames or a GPU fault (classic
+        // CVMetalTextureCache pitfall). We hold both wrappers until the command buffer
+        // completes (see `addCompletedHandler` below).
+        guard let lumaCV = makeTexture(pixelBuffer, cache: textureCache, planeIndex: 0, pixelFormat: .r8Unorm, width: width, height: height),
+              let chromaCV = makeTexture(pixelBuffer, cache: textureCache, planeIndex: 1, pixelFormat: .rg8Unorm, width: width / 2, height: height / 2),
+              let lumaTexture = CVMetalTextureGetTexture(lumaCV),
+              let chromaTexture = CVMetalTextureGetTexture(chromaCV) else {
             return
         }
 
@@ -92,17 +104,42 @@ public final class MetalVideoRenderer {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         commandBuffer.present(drawable)
+        // Pin both CVMetalTexture wrappers (+ the pixel buffer) until the GPU is done
+        // reading them. The completed handler runs on a private Metal thread; capturing
+        // the wrappers there keeps their IOSurfaces valid for the whole async read. The
+        // CV handles are not `Sendable`, so we ferry them in an unchecked-Sendable box —
+        // the handler only RETAINS them (never reads), so crossing the boundary is safe.
+        let pinned = TexturePin(luma: lumaCV, chroma: chromaCV, pixelBuffer: pixelBuffer)
+        commandBuffer.addCompletedHandler { _ in
+            withExtendedLifetime(pinned) {}
+        }
         commandBuffer.commit()
+
+        // Release this frame's recycled texture mappings so the cache's internal
+        // registry does not grow unbounded across frames (the wrappers above keep the
+        // in-flight surfaces alive regardless of the flush).
+        CVMetalTextureCacheFlush(textureCache, 0)
     }
 
-    private func makeTexture(_ pixelBuffer: CVPixelBuffer, cache: CVMetalTextureCache, planeIndex: Int, pixelFormat: MTLPixelFormat, width: Int, height: Int) -> MTLTexture? {
+    private func makeTexture(_ pixelBuffer: CVPixelBuffer, cache: CVMetalTextureCache, planeIndex: Int, pixelFormat: MTLPixelFormat, width: Int, height: Int) -> CVMetalTexture? {
         var cvTexture: CVMetalTexture?
         let status = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault, cache, pixelBuffer, nil,
             pixelFormat, width, height, planeIndex, &cvTexture
         )
         guard status == kCVReturnSuccess, let cvTexture else { return nil }
-        return CVMetalTextureGetTexture(cvTexture)
+        return cvTexture
+    }
+
+    /// Keeps a frame's CVMetalTexture wrappers + source pixel buffer alive across the
+    /// asynchronous GPU read (held by the command buffer's completion handler). The
+    /// handler only retains these immutable CoreVideo handles — never reads or mutates
+    /// them — so ferrying them into the `@Sendable` handler is the documented escape
+    /// hatch for immutable CV handles under strict concurrency.
+    private struct TexturePin: @unchecked Sendable {
+        let luma: CVMetalTexture
+        let chroma: CVMetalTexture
+        let pixelBuffer: CVPixelBuffer
     }
 
     /// Inline Metal shader: full-screen triangle-strip quad + BT.709 NV12 YCbCr→RGB

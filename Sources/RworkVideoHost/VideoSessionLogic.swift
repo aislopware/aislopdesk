@@ -1,0 +1,269 @@
+import Foundation
+import RworkVideoProtocol
+
+// Pure, platform-free session logic for the host video orchestrator. NO
+// ScreenCaptureKit / VideoToolbox / Network — exactly the discipline of
+// RworkVideoProtocol, so this is unit-testable in isolation. The actor in
+// `RworkVideoHostSession.swift` owns the live components and delegates every
+// decision to these pure types.
+
+/// Lifecycle state of a host video session.
+public enum VideoSessionState: Equatable, Sendable {
+    /// Sockets not yet bound; nothing flowing.
+    case idle
+    /// Sockets bound, awaiting the client `hello`.
+    case listening
+    /// `hello` accepted; capture/encode running, media flowing.
+    case streaming
+    /// `stop()` (or `bye`) ran; terminal.
+    case stopped
+}
+
+/// The pure state machine driving a host video session. It validates the client
+/// `hello`, decides the `helloAck`, and gates whether media may flow — with NO live
+/// component. The actor advances it and acts on the returned ``Effect``s.
+public struct VideoSessionStateMachine: Sendable {
+    public private(set) var state: VideoSessionState = .idle
+
+    /// Negotiated capture dimensions, set once the hello is accepted.
+    public private(set) var captureWidth: UInt16 = 0
+    public private(set) var captureHeight: UInt16 = 0
+    /// The window the accepted session is remoting.
+    public private(set) var windowID: UInt32 = 0
+
+    /// The monotonically increasing stream id handed to the client on accept (lets a
+    /// reconnecting client distinguish a fresh session).
+    private var nextStreamID: UInt32
+
+    public init(nextStreamID: UInt32 = 1) {
+        self.nextStreamID = nextStreamID
+    }
+
+    /// Side effects the actor must perform after a transition.
+    public enum Effect: Equatable, Sendable {
+        /// Send this control message back to the client.
+        case sendControl(VideoControlMessage)
+        /// Bring up capture + encode for `windowID` at the negotiated dimensions.
+        case startCapture(windowID: UInt32, width: UInt16, height: UInt16)
+        /// Tear down capture + encode.
+        case stopCapture
+    }
+
+    /// `start()` was called: bind sockets, wait for the client hello.
+    public mutating func start() -> [Effect] {
+        guard state == .idle else { return [] }
+        state = .listening
+        return []
+    }
+
+    /// A control datagram arrived. Returns the effects (helloAck + startCapture on a
+    /// valid hello; stopCapture on bye). An invalid/duplicate hello is rejected.
+    ///
+    /// - Parameters:
+    ///   - message: the decoded control message.
+    ///   - windowBoundsCG: the live window bounds to report in the ack (the actor
+    ///     reads these from the geometry watcher; the pure SM just forwards them).
+    ///   - resolveCaptureSize: maps the client viewport → the capture size the host
+    ///     will actually use (the actor clamps to the real window; in tests this is
+    ///     an identity-ish closure). Returning `nil` rejects the session.
+    public mutating func handleControl(
+        _ message: VideoControlMessage,
+        windowBoundsCG: VideoRect,
+        resolveCaptureSize: (_ requestedWindowID: UInt32, _ viewport: VideoSize) -> (UInt16, UInt16)?
+    ) -> [Effect] {
+        switch message {
+        case .hello(let version, let requestedWindowID, let viewport):
+            // Strict version check — no fallback (doc 20 §4 discipline).
+            guard version == RworkVideoProtocol.version else {
+                return [.sendControl(.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: windowBoundsCG))]
+            }
+            // Only accept a hello while listening; ignore a duplicate once streaming
+            // (idempotent — the client may retransmit the unreliable hello).
+            guard state == .listening else {
+                if state == .streaming, requestedWindowID == windowID {
+                    // Re-ack an in-flight duplicate so a lost ack is recovered, but do
+                    // NOT restart capture.
+                    return [.sendControl(.helloAck(accepted: true, streamID: lastStreamID, captureWidth: captureWidth, captureHeight: captureHeight, windowBoundsCG: windowBoundsCG))]
+                }
+                return []
+            }
+            guard let (w, h) = resolveCaptureSize(requestedWindowID, viewport) else {
+                return [.sendControl(.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: windowBoundsCG))]
+            }
+            let streamID = nextStreamID
+            nextStreamID &+= 1
+            lastStreamID = streamID
+            captureWidth = w
+            captureHeight = h
+            windowID = requestedWindowID
+            state = .streaming
+            return [
+                .sendControl(.helloAck(accepted: true, streamID: streamID, captureWidth: w, captureHeight: h, windowBoundsCG: windowBoundsCG)),
+                .startCapture(windowID: requestedWindowID, width: w, height: h),
+            ]
+        case .bye:
+            guard state == .streaming || state == .listening else { return [] }
+            state = .stopped
+            return [.stopCapture]
+        case .helloAck:
+            // Host never receives a helloAck.
+            return []
+        }
+    }
+
+    /// `stop()` was called locally.
+    public mutating func stop() -> [Effect] {
+        guard state != .stopped else { return [] }
+        let wasStreaming = state == .streaming
+        state = .stopped
+        return wasStreaming ? [.stopCapture] : []
+    }
+
+    /// Whether media (video/geometry/cursor) is allowed to flow right now.
+    public var mediaFlowing: Bool { state == .streaming }
+
+    private var lastStreamID: UInt32 = 0
+}
+
+/// Routes a datagram received on the input channel. Pure decision logic: parse the
+/// ``InputEvent`` and decide whether it should be injected (and any reordering /
+/// gating policy). Kept separate so the routing decision is testable without an
+/// `InputInjector` (which posts real CGEvents).
+public struct InputDatagramRouter: Sendable {
+    public init() {}
+
+    /// The decision for one received input datagram.
+    public enum Decision: Equatable, Sendable {
+        /// Inject this event. `raiseFirst` is true when the window must be raised +
+        /// focused before posting (the first event of an interaction / any pointer
+        /// button-down — doc 18 §A activate-then-control).
+        case inject(InputEvent, raiseFirst: Bool)
+        /// Drop a malformed/undecodable datagram (a corrupt single packet must never
+        /// crash the receiver — same contract as the reassembler).
+        case drop(reason: String)
+        /// Ignore the datagram because the session is not streaming.
+        case ignoreNotStreaming
+    }
+
+    /// Decides what to do with one raw input datagram.
+    ///
+    /// - Parameters:
+    ///   - datagram: the raw input-channel bytes.
+    ///   - mediaFlowing: whether the session is in `.streaming`.
+    ///   - needsRaise: whether the next injected event should raise+focus first. The
+    ///     caller (actor) tracks this: true on the first event, and re-armed after a
+    ///     mouse-up so a fresh click sequence re-raises (a pointer button-down always
+    ///     raises; pure moves/keys/scrolls/text do not, to avoid focus thrash).
+    public func route(datagram: Data, mediaFlowing: Bool, needsRaise: Bool) -> Decision {
+        guard mediaFlowing else { return .ignoreNotStreaming }
+        let event: InputEvent
+        do {
+            event = try InputEvent.decode(datagram)
+        } catch {
+            return .drop(reason: "undecodable input datagram")
+        }
+        let raiseFirst = needsRaise || Self.alwaysRaises(event)
+        return .inject(event, raiseFirst: raiseFirst)
+    }
+
+    /// A pointer button-down always raises+focuses the target first (doc 18 §A); pure
+    /// moves / scrolls / keys / text do not, to avoid yanking focus on every keystroke.
+    public static func alwaysRaises(_ event: InputEvent) -> Bool {
+        if case .mouseDown = event { return true }
+        return false
+    }
+
+    /// After injecting `event`, whether the NEXT event should be forced to raise.
+    /// A mouse-up ends an interaction, so the next event re-raises; otherwise the
+    /// raise latch is cleared once any event has been injected.
+    public static func rearmRaiseAfter(_ event: InputEvent) -> Bool {
+        if case .mouseUp = event { return true }
+        return false
+    }
+}
+
+/// Routes a datagram received on the DEDICATED recovery channel (client→host loss
+/// recovery, doc 17 §3.6). Pure decision logic: decode the ``RecoveryMessage`` and
+/// decide the host action. Kept separate from ``InputDatagramRouter`` because recovery
+/// and input share neither a channel nor a wire grammar — `RecoveryMessage`'s leading
+/// type bytes (1/2/3) overlap `InputEvent`'s, which is exactly why they must NOT share
+/// the `.input` channel. Testable without an encoder/capturer.
+public struct RecoveryDatagramRouter: Sendable {
+    public init() {}
+
+    /// The decision for one received recovery datagram.
+    public enum Decision: Equatable, Sendable {
+        /// Force an IDR keyframe on the next captured frame (requestIDR, or — for now —
+        /// an LTR refresh, which the host satisfies with a forced IDR until the LTR
+        /// encode path lands: a forced IDR is always a correct, if heavier, refresh).
+        case forceKeyframe
+        /// A durable-receipt ack: the host may advance its retransmit/LTR-pin window.
+        /// No live effect yet (no retransmit buffer); recorded for the docs/escalation.
+        case ack(streamSeq: UInt32)
+        /// Drop a malformed/undecodable datagram (a corrupt single packet must never
+        /// crash the receiver — same contract as the reassembler).
+        case drop(reason: String)
+        /// Ignore because the session is not streaming.
+        case ignoreNotStreaming
+    }
+
+    /// Decides what to do with one raw recovery datagram.
+    public func route(datagram: Data, mediaFlowing: Bool) -> Decision {
+        guard mediaFlowing else { return .ignoreNotStreaming }
+        let message: RecoveryMessage
+        do {
+            message = try RecoveryMessage.decode(datagram)
+        } catch {
+            return .drop(reason: "undecodable recovery datagram")
+        }
+        switch message {
+        case .requestIDR, .requestLTRRefresh:
+            // Both map to a forced IDR for now: a keyframe unconditionally re-anchors a
+            // client that lost frames. (The dedicated LTR-refresh encode is a future
+            // optimisation; an IDR is the correct, no-fallback recovery.)
+            return .forceKeyframe
+        case .ack(let streamSeq):
+            return .ack(streamSeq: streamSeq)
+        }
+    }
+}
+
+/// Packet-scheduling policy for the host send loop: turns an encoded frame +
+/// per-stream messages into the ordered list of datagrams to put on each channel.
+/// Pure (no socket) so the ordering is testable. The actor feeds encoder output and
+/// geometry/cursor messages through this and sends the result.
+public struct VideoSendScheduler: Sendable {
+    /// One scheduled datagram: the channel it belongs on and its encoded bytes.
+    public struct Outgoing: Equatable, Sendable {
+        public let channel: VideoChannel
+        public let bytes: Data
+        public init(channel: VideoChannel, bytes: Data) {
+            self.channel = channel
+            self.bytes = bytes
+        }
+    }
+
+    public init() {}
+
+    /// Schedules one encoded frame: packetize → ordered video datagrams. Data
+    /// fragments precede parity (the packetizer already emits them in that order), so
+    /// a client on a lossless link can decode without waiting for parity (doc 17 §3.6).
+    public func scheduleFrame(_ fragments: [FrameFragment]) -> [Outgoing] {
+        fragments.map { Outgoing(channel: .video, bytes: $0.encode()) }
+    }
+
+    /// Schedules a geometry update on the geometry channel.
+    public func scheduleGeometry(_ message: WindowGeometryMessage) -> Outgoing {
+        Outgoing(channel: .geometry, bytes: message.encode())
+    }
+
+    /// Schedules a cursor message (position or shape) on the dedicated cursor socket.
+    public func scheduleCursor(_ message: CursorChannelMessage) -> Outgoing {
+        Outgoing(channel: .cursor, bytes: message.encode())
+    }
+
+    /// Schedules a control message.
+    public func scheduleControl(_ message: VideoControlMessage) -> Outgoing {
+        Outgoing(channel: .control, bytes: message.encode())
+    }
+}

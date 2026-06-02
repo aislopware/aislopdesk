@@ -14,6 +14,11 @@ import RworkVideoProtocol
 /// cursor as a `CALayer` (or Metal quad) on TOP of the decoded frame each vsync.
 /// Result: **pointer latency = RTT**, fully decoupled from encode/decode (doc 17
 /// §3.3). The cursor moves smoothly even while video frames are stale.
+///
+/// `@MainActor`-isolated: it mutates a `CALayer`, which must be touched on the main
+/// thread. The orchestrator actor talks to it through main-actor-hops (the position
+/// path) so the hot cursor update lands on the layer at refresh.
+@MainActor
 public final class ClientCursorCompositor {
     /// The cursor overlay layer (caller adds it above the Metal layer).
     public let cursorLayer: CALayer
@@ -43,7 +48,7 @@ public final class ClientCursorCompositor {
     ///   - videoScale: client-view-points per host-window-point (1.0 when the remote
     ///     window is displayed 1:1). The hotspot is subtracted so the cursor's
     ///     "tip" lands on the reported position.
-    public static func layerFrame(for update: CursorUpdate, videoScale: Double, cursorSize: VideoSize) -> VideoRect {
+    nonisolated public static func layerFrame(for update: CursorUpdate, videoScale: Double, cursorSize: VideoSize) -> VideoRect {
         let x = update.position.x * videoScale - update.hotspot.x
         let y = update.position.y * videoScale - update.hotspot.y
         return VideoRect(x: x, y: y, width: cursorSize.width, height: cursorSize.height)

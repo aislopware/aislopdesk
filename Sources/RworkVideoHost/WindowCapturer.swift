@@ -47,14 +47,41 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     private var lastHeartbeat: TimeInterval = 0
     private var hasEmittedFirstFrame = false
 
+    /// Latched when the client requests a forced IDR (loss recovery, doc 17 §3.6). The
+    /// next delivered frame forces a keyframe and clears it. Guarded because the
+    /// orchestrator actor sets it off the capture queue. Plain `os_unfair_lock`-free:
+    /// an `NSLock` is enough here (set rarely, read once per frame).
+    private let keyframeLock = NSLock()
+    private var pendingForcedKeyframe = false
+
+    /// Requests a forced IDR on the next captured frame (client loss-recovery →
+    /// ``RecoveryMessage/requestIDR``). Thread-safe; called from the orchestrator actor.
+    public func requestKeyframe() {
+        keyframeLock.lock(); pendingForcedKeyframe = true; keyframeLock.unlock()
+    }
+
+    /// Atomically reads + clears the pending-forced-keyframe latch.
+    private func takePendingForcedKeyframe() -> Bool {
+        keyframeLock.lock(); defer { keyframeLock.unlock() }
+        let pending = pendingForcedKeyframe
+        pendingForcedKeyframe = false
+        return pending
+    }
+
     public init(frameHandler: @escaping FrameHandler) {
         self.frameHandler = frameHandler
         super.init()
     }
 
     /// Builds the MEASURED-config `SCStreamConfiguration` for a single window.
-    /// `pointPixelScale` lets a Retina capture request native pixels (default 1.0 =
-    /// point-sized; the host typically captures at the window's backing scale).
+    ///
+    /// `width`/`height` are the window's POINT dimensions. Capture is point-resolution
+    /// by design: the negotiated `captureWidth`/`captureHeight` (the `helloAck`), the
+    /// `SCStreamConfiguration` size, and therefore the decoded `CVPixelBuffer` size all
+    /// agree in points, so the client's `VideoScaleMath` denominator and cursor
+    /// placement stay correct without a separate pixel-scale axis. (On a Retina host
+    /// this means remoted windows render at point resolution, not backing pixels — a
+    /// quality trade chosen for a single, consistent capture-size source of truth.)
     public static func makeConfiguration(width: Int, height: Int) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange // NV12 zero-copy (doc 02 §3.1)
@@ -118,9 +145,10 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
-        // Heartbeat IDR ~1s, plus a forced keyframe on the very first delivered frame.
+        // Heartbeat IDR ~1s, plus a forced keyframe on the very first delivered frame,
+        // plus any client-requested IDR (loss recovery, doc 17 §3.6).
         let now = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1_000_000_000.0
-        var forceKeyframe = false
+        var forceKeyframe = takePendingForcedKeyframe()
         if !hasEmittedFirstFrame {
             forceKeyframe = true
             hasEmittedFirstFrame = true
@@ -129,6 +157,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
             forceKeyframe = true
             lastHeartbeat = now
         }
+        if forceKeyframe { lastHeartbeat = now } // re-anchor cadence on a recovery IDR
 
         // Hand the CVPixelBuffer to the encoder. The pixel buffer is retained by the
         // encoder for the duration of the encode; when this callback returns the

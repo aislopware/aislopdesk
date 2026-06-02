@@ -135,15 +135,21 @@ public final class InputInjector: @unchecked Sendable {
     }
 
     /// Unicode text injection — layout-independent, the robust text path (doc 05 §3).
+    ///
+    /// The unicode string is attached to the **key-DOWN event ONLY**. Attaching it to
+    /// BOTH the down and the up double-inserts the text (the up-event would emit the
+    /// string a second time), so the key-up is posted bare — it just completes the
+    /// keystroke so the target app sees a balanced down/up pair (CGEvent contract).
     private func postText(_ string: String, tag: UInt32) {
         let units = Array(string.utf16)
-        guard let event = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: true) else { return }
+        guard let down = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: true) else { return }
         units.withUnsafeBufferPointer { buffer in
-            event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+            down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
         }
-        stampAndPost(event, tag: tag)
+        stampAndPost(down, tag: tag)
+        // Bare key-up: NO keyboardSetUnicodeString (attaching it here would insert the
+        // text a second time).
         if let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: false) {
-            up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
             stampAndPost(up, tag: tag)
         }
     }
