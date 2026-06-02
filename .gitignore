@@ -1,5 +1,8 @@
 # Swift Package Manager / Xcode build artifacts
 .build/
+# Transient out-of-tree build dirs (e.g. .build-ios-rel/, .build-ios-studio/) —
+# alternate SwiftPM/Xcode output roots; derived artifacts, never committed.
+.build-*/
 DerivedData/
 *.o
 *.swiftmodule
