@@ -11,9 +11,12 @@ import SwiftUI
 /// on compact width. The ONLY size-class adaptation switch in the whole app lives in ``detail`` — it
 /// computes `WorkspaceLayout.isCompact(...)` once and branches:
 /// - **regular** → the full recursive ``PaneTreeView`` (splits, dividers, zoom, multi-pane).
-/// - **compact** → a WF4 placeholder: just the focused leaf full-bleed. The polished
-///   `TabView(.page)` carousel comes in WF6; rendering only the focused leaf here is the correct,
-///   lossless interim (the same tree, projected to one visible pane — docs/22 §4).
+/// - **compact** → the ``PaneCarouselView``: the SAME tree projected to one swipeable leaf at a time
+///   (an always-on zoom — docs/22 §4). The flip is view-only: it swaps the projection without calling
+///   `reconcile()`, dropping focus, or tearing down sessions.
+///
+/// It also publishes its store as the focused scene value (so the menu-bar / iPad ``WorkspaceCommands``
+/// target THIS window — docs/22 §5) and hosts the ⌘K ``CommandPaletteView`` overlay.
 ///
 /// The shell carries the macOS minimum size (`minWidth: 720`, `minHeight: 480`) so the floor lives on
 /// the WINDOW, never on the pane views (docs/22 §3).
@@ -22,8 +25,15 @@ public struct WorkspaceRootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     /// The sidebar's visibility — `.all` (sidebar + detail) by default on regular width. Bound so the
-    /// toolbar's sidebar toggle and the compact collapse both work natively.
+    /// toolbar's sidebar toggle and the compact collapse both work natively. The compact carousel's
+    /// "show tabs" affordance flips this to `.all` to reveal the tab drawer.
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+
+    /// Whether the ⌘K command palette is presented (docs/22 §5). Window-level UI state: the palette is
+    /// overlaid on the whole shell and toggled by the ⌘K chord below — a ⌘-prefixed shortcut, so the
+    /// focused terminal never sees it (the §5 conflict rule). `false` ⇒ the overlay renders an empty,
+    /// zero-cost branch.
+    @State private var showCommandPalette = false
 
     public init(store: WorkspaceStore) {
         self.store = store
@@ -46,6 +56,22 @@ public struct WorkspaceRootView: View {
         #if os(macOS)
         .frame(minWidth: 720, minHeight: 480)
         #endif
+        // Publish the store so the scene-level ``WorkspaceCommands`` (menu bar / iPad ⌘-HUD) resolve
+        // THIS window's store via `@FocusedValue(\.workspaceStore)` — one window today, the key window
+        // automatically with multi-window later (docs/22 §5).
+        .publishingWorkspaceStore(store)
+        // The ⌘K command palette overlay (docs/22 §5): a Spotlight-style floating card with its own
+        // dimming backdrop, top-third placement. An unconditional overlay because the view renders an
+        // empty branch when hidden (zero cost) — and an overlay, not a `.sheet`, so it owns its own
+        // backdrop + placement rather than fighting sheet chrome.
+        .overlay { CommandPaletteView(store: store, isPresented: $showCommandPalette) }
+        // Toggle the palette with ⌘K. A ⌘-prefixed chord ⇒ obeys the §5 conflict rule (the terminal
+        // never receives it). The hidden button keeps the chord scoped to the workspace window.
+        .background {
+            Button("Command Palette") { showCommandPalette.toggle() }
+                .keyboardShortcut("k", modifiers: .command)
+                .hidden()
+        }
     }
 
     // MARK: Detail (the ONE responsive switch — docs/22 §4)
@@ -59,11 +85,15 @@ public struct WorkspaceRootView: View {
             )
 
             Group {
-                if let tab = store.activeTab {
+                if store.activeTab != nil {
                     if compact {
-                        compactDetail(for: tab)
+                        // Compact (iPhone / iPad-compact): the SAME tree projected to one swipeable
+                        // leaf at a time (docs/22 §4). The carousel's "show tabs" reveals the shell
+                        // sidebar by flipping `columnVisibility`. A regular↔compact flip swaps ONLY
+                        // this branch — view-only, no reconcile / focus drop / session teardown.
+                        PaneCarouselView(store: store, onShowTabs: { columnVisibility = .all })
                     } else {
-                        PaneTreeView(node: tab.root, store: store, tab: tab.id)
+                        PaneTreeView(node: store.activeTab!.root, store: store, tab: store.activeTab!.id)
                             .padding(6)
                     }
                 } else {
@@ -73,33 +103,6 @@ public struct WorkspaceRootView: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .background(.background)
-    }
-
-    /// WF4 compact fallback (docs/22 §4): render only the focused leaf full-bleed. The polished
-    /// swipe carousel (`TabView(.page)` bound to `focusedPane`) is WF6 — this interim keeps the tree
-    /// identical and lossless, just projected to one visible pane. Wrapped in `PaneChromeView` so the
-    /// pane controls (split/zoom/close) stay reachable on compact too.
-    @ViewBuilder
-    private func compactDetail(for tab: Tab) -> some View {
-        if let spec = tab.root.spec(for: tab.focusedPane) {
-            let id = tab.focusedPane
-            PaneChromeView(
-                id: id,
-                spec: spec,
-                handle: store.handle(for: id),
-                isFocused: true,
-                isZoomed: tab.zoomedPane == id,
-                store: store
-            ) {
-                PaneLeafView(handle: store.handle(for: id), spec: spec, isFocused: true)
-            }
-            // Stable identity even in the compact projection — a regular↔compact flip must NOT tear
-            // down the live session (docs/22 §4, §9.9).
-            .id(id)
-            .padding(8)
-        } else {
-            emptyState
-        }
     }
 
     private var emptyState: some View {

@@ -73,14 +73,13 @@ struct PaneChromeView<Content: View>: View {
     }
 
     /// The split / zoom / close controls. Compact icon buttons in the native borderless toolbar idiom.
+    /// The split affordances are KIND-pickers (docs/22 WF6 DECISIONS): a plain tap splits with a
+    /// terminal (the common case); the menu offers Claude Code / Remote so the user chooses the new
+    /// pane's KIND before it is created — mirroring the sidebar / detail "New" idiom.
     private var controls: some View {
         HStack(spacing: 2) {
-            chromeButton("rectangle.split.2x1", help: "Split right") {
-                store.split(id, axis: .horizontal, kind: spec.kind)
-            }
-            chromeButton("rectangle.split.1x2", help: "Split down") {
-                store.split(id, axis: .vertical, kind: spec.kind)
-            }
+            splitMenu("rectangle.split.2x1", axis: .horizontal, help: "Split right")
+            splitMenu("rectangle.split.1x2", axis: .vertical, help: "Split down")
             chromeButton(
                 isZoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
                 help: isZoomed ? "Restore" : "Zoom"
@@ -93,6 +92,41 @@ struct PaneChromeView<Content: View>: View {
             }
         }
         .font(.caption)
+    }
+
+    /// A split affordance that picks the new pane's KIND: tap to split with a terminal, or open the
+    /// menu to split with a Claude Code / Remote pane along `axis` (docs/22 WF6 DECISIONS).
+    @ViewBuilder
+    private func splitMenu(_ systemImage: String, axis: SplitAxis, help: String) -> some View {
+        Menu {
+            Button {
+                store.split(id, axis: axis, kind: .terminal)
+            } label: {
+                Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
+            }
+            Button {
+                store.split(id, axis: axis, kind: .claudeCode)
+            } label: {
+                Label("Claude Code", systemImage: PaneLeafView.icon(for: .claudeCode))
+            }
+            Button {
+                store.split(id, axis: axis, kind: .remoteGUI)
+            } label: {
+                Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
+            }
+        } label: {
+            Image(systemName: systemImage)
+                .frame(width: 18, height: 18)
+        } primaryAction: {
+            store.split(id, axis: axis, kind: .terminal)
+        }
+        .menuIndicator(.hidden)
+        #if os(macOS)
+        .menuStyle(.borderlessButton)
+        #endif
+        .fixedSize()
+        .foregroundStyle(.secondary)
+        .help(help)
     }
 
     @ViewBuilder

@@ -35,6 +35,10 @@ struct PaneLeafView: View {
     let spec: PaneSpec
     /// Whether this leaf is the focused pane of its tab (drives focus affordance + content dim).
     let isFocused: Bool
+    /// The single-focus arbiter for the iOS multi-visible (iPad-regular) path (docs/22 §7). Passed by
+    /// the regular ``PaneTreeView`` so each visible terminal host routes first-responder through it;
+    /// `nil` on the compact single-host carousel (no race to coordinate).
+    var focusCoordinator: PaneFocusCoordinator? = nil
 
     /// The concrete live session, when this is a production handle (the only thing that owns the
     /// proven per-session objects). `nil` for a faked handle / not-yet-materialized leaf.
@@ -57,9 +61,9 @@ struct PaneLeafView: View {
     private func content(for live: LivePaneSession) -> some View {
         switch live.kind {
         case .terminal:
-            TerminalPaneView(live: live)
+            TerminalPaneView(live: live, spec: spec, focusCoordinator: focusCoordinator)
         case .claudeCode:
-            ClaudeCodePaneView(live: live)
+            ClaudeCodePaneView(live: live, spec: spec, focusCoordinator: focusCoordinator)
         case .remoteGUI:
             RemoteGUIPaneView(live: live)
         }
@@ -124,13 +128,80 @@ struct PaneLeafView: View {
 /// ``TerminalViewModel`` + the per-pane ``InputBarView`` bound to the SAME connection's live client,
 /// composed exactly as the retired `ClientRootView` did for a single session (docs/22 §7).
 ///
-/// Owns the connect-on-appear + the `RWORK_AUTOTYPE` OUT-path proof seam (both keyed off the
+/// ### New-pane empty state (docs/22 WF6 DECISIONS — new-pane connection flow)
+/// A freshly user-created pane has NO explicit endpoint (`spec.endpoint == nil` — `store.split` /
+/// `addTab` build an unconfigured spec). While such a pane is still disconnected it shows the proven
+/// ``ConnectionView`` (host/port + Connect) bound to its own ``ConnectionViewModel`` — the user dials
+/// in. Once connected it swaps to the terminal composite. A pane that DOES carry an explicit endpoint
+/// (a restored/configured pane, or the automation seam) skips the form and AUTO-connects on appear —
+/// we never blindly auto-dial a default for a user-created pane.
+///
+/// Owns the (gated) connect-on-appear + the `RWORK_AUTOTYPE` OUT-path proof seam (both keyed off the
 /// `LivePaneSession`'s own `connection`). Used directly for `.terminal` and embedded by
 /// ``ClaudeCodePaneView`` for `.claudeCode`.
 private struct TerminalContentView: View {
     let live: LivePaneSession
+    /// The pure intent — read for `spec.endpoint` to decide auto-connect vs. the connect form.
+    let spec: PaneSpec
+    /// The single-focus arbiter forwarded to the iOS ``InputBarView`` → ``TerminalInputHost`` so the
+    /// host registers under this pane's id (docs/22 §7). `nil` ⇒ direct-claim (compact / macOS).
+    var focusCoordinator: PaneFocusCoordinator? = nil
+
+    /// Whether this pane carries an explicit endpoint (restored / configured / automation). Only such
+    /// a pane auto-connects on appear; a fresh user pane shows the connect form first.
+    private var hasExplicitEndpoint: Bool { spec.endpoint != nil }
 
     var body: some View {
+        Group {
+            if showConnectForm {
+                connectForm
+            } else {
+                terminalComposite
+            }
+        }
+        // Lazy connect ONCE on appear (docs/22 §6) — but ONLY for a pane with an explicit endpoint.
+        // A fresh user pane (no endpoint) waits for the user's Connect in the form. Not connected on
+        // disappear — the session survives tab switches in the store registry. Re-entrancy-safe:
+        // `connect()` tears down a prior session first, but we only call it from a fresh idle pane.
+        .task { await connectIfNeeded() }
+    }
+
+    /// Show the connect form when this pane has no explicit endpoint AND is not yet live — i.e. a
+    /// fresh user-created pane awaiting host/port. Once it connects (or while connecting/reconnecting)
+    /// the terminal composite is shown instead. A pane with an explicit endpoint never shows the form
+    /// (it auto-connects).
+    private var showConnectForm: Bool {
+        guard !hasExplicitEndpoint, let connection = live.connection else { return false }
+        switch connection.status {
+        case .disconnected, .failed: return true
+        case .connecting, .connected, .reconnecting: return false
+        }
+    }
+
+    /// The new-pane empty state: the proven ``ConnectionView`` (host/port + Connect) over this pane's
+    /// own ``ConnectionViewModel``. Centered so it reads as an empty state, not a toolbar.
+    @ViewBuilder
+    private var connectForm: some View {
+        if let connection = live.connection {
+            VStack(spacing: 12) {
+                Image(systemName: PaneLeafView.icon(for: spec.kind))
+                    .font(.system(size: 30, weight: .regular))
+                    .foregroundStyle(.secondary)
+                Text("Connect to a host")
+                    .font(.headline)
+                ConnectionView(model: connection)
+                    .frame(maxWidth: 420)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
+        } else {
+            Color.clear
+        }
+    }
+
+    /// The proven terminal composite (renderer + input bar), shown once the pane is connecting/live or
+    /// when it carries an explicit endpoint.
+    private var terminalComposite: some View {
         VStack(spacing: 0) {
             if let terminalModel = live.terminalModel {
                 TerminalScreenView(model: terminalModel)
@@ -142,19 +213,23 @@ private struct TerminalContentView: View {
                 Divider()
                 // The input bar binds the SAME connection's live client (nil while disconnected, so
                 // the bar disables send). The proven OUT path: bar → client.sendInput → ordered drain.
-                InputBarView(model: inputBar, client: live.connection?.activeClient)
+                // The pane id + coordinator drive the iOS first-responder arbiter (docs/22 §7).
+                InputBarView(
+                    model: inputBar,
+                    client: live.connection?.activeClient,
+                    paneID: live.id,
+                    focusCoordinator: focusCoordinator
+                )
             }
         }
-        // Lazy connect ONCE on appear (docs/22 §6). Not connected on disappear — the session survives
-        // tab switches in the store registry. Re-entrancy-safe: `connect()` tears down a prior session
-        // first, but we only call it from a fresh idle pane (`status == .disconnected`).
-        .task { await connectIfNeeded() }
     }
 
-    /// Triggers the connection's lazy `connect()` for a fresh idle pane, then runs the
-    /// `RWORK_AUTOTYPE` OUT-path proof if this is the automation target (tab0/pane0).
+    /// Triggers the connection's lazy `connect()` for a fresh idle pane that carries an EXPLICIT
+    /// endpoint, then runs the `RWORK_AUTOTYPE` OUT-path proof if this is the automation target
+    /// (tab0/pane0). A pane with no explicit endpoint is NOT auto-dialed — the user drives Connect via
+    /// the form (docs/22 WF6 DECISIONS).
     private func connectIfNeeded() async {
-        guard let connection = live.connection else { return }
+        guard hasExplicitEndpoint, let connection = live.connection else { return }
         // Only connect a freshly-materialized idle pane; never re-dial a live/connecting one (a tab
         // switch re-runs `.task`, and `.id(PaneID)` keeps this view stable across reshapes).
         if connection.status == .disconnected {
@@ -186,7 +261,9 @@ private struct TerminalContentView: View {
 /// A `.terminal` leaf: the terminal composition, full-bleed.
 private struct TerminalPaneView: View {
     let live: LivePaneSession
-    var body: some View { TerminalContentView(live: live) }
+    let spec: PaneSpec
+    var focusCoordinator: PaneFocusCoordinator? = nil
+    var body: some View { TerminalContentView(live: live, spec: spec, focusCoordinator: focusCoordinator) }
 }
 
 // MARK: - Claude Code composition (terminal + toggleable inspector)
@@ -199,6 +276,11 @@ private struct TerminalPaneView: View {
 /// - **iOS**: terminal full-bleed, inspector as a bottom sheet.
 private struct ClaudeCodePaneView: View {
     let live: LivePaneSession
+    /// The pure intent — forwarded to ``TerminalContentView`` so a fresh Claude Code pane shows the
+    /// connect form until it is dialed in (docs/22 WF6 new-pane connection flow).
+    let spec: PaneSpec
+    /// The single-focus arbiter forwarded to the embedded terminal composition (docs/22 §7).
+    var focusCoordinator: PaneFocusCoordinator? = nil
     /// Per-pane VIEW state: whether the inspector is shown. Local to this leaf — lost on a true
     /// session swap (a new `PaneID`), preserved across reshape/zoom/focus (stable `.id`).
     @State private var showInspector = false
@@ -220,7 +302,7 @@ private struct ClaudeCodePaneView: View {
     private var content: some View {
         #if os(macOS)
         HStack(spacing: 0) {
-            TerminalContentView(live: live)
+            TerminalContentView(live: live, spec: spec, focusCoordinator: focusCoordinator)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if showInspector, let model = live.inspector {
                 Divider()
@@ -229,7 +311,7 @@ private struct ClaudeCodePaneView: View {
             }
         }
         #else
-        TerminalContentView(live: live)
+        TerminalContentView(live: live, spec: spec, focusCoordinator: focusCoordinator)
             .sheet(isPresented: $showInspector) {
                 if let model = live.inspector {
                     InspectorPanel(model: model)
