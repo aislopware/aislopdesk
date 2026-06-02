@@ -126,9 +126,22 @@ final class VideoWindowPipeline {
     /// and re-places the cursor overlay.
     func layoutChanged(layerSize: VideoSize) {
         self.layerSize = layerSize
-        renderer?.metalLayer.drawableSize = CGSize(width: layerSize.width, height: layerSize.height)
+        // `layerSize` is in POINTS (the cursor/videoScale denominator stays in points). The
+        // Metal DRAWABLE, however, must be sized in PIXELS — drawableSize = points ×
+        // contentsScale — or the layer renders at 1× and the display upscales it to the Retina
+        // screen, which looks badly BLURRED (the bug: drawableSize was set to the point size).
+        if let layer = renderer?.metalLayer {
+            let scale = layer.contentsScale > 0 ? layer.contentsScale : 1
+            layer.drawableSize = CGSize(width: layerSize.width * scale, height: layerSize.height * scale)
+        }
         guard let session else { return }
         Task { await session.setLayerSize(layerSize) }
+    }
+
+    /// VNC-style zoom/pan, forwarded to the renderer (applied as a UV crop next vsync).
+    func setZoom(_ zoom: CGFloat, pan: CGPoint) {
+        renderer?.zoom = zoom
+        renderer?.panNormalized = pan
     }
 
     // MARK: Input forwarding
