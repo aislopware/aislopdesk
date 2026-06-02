@@ -190,13 +190,27 @@ public final class HostServer: @unchecked Sendable {
         // Tear the expired sessions down: remove from the map + offline marks, shut the
         // session (stop forwarders, terminate child, close master fd), and drop the
         // transport (release its channels/forwarder tasks).
+        var actuallyReaped: [UUID] = []
         for id in reaped {
+            // TOCTOU guard: re-probe liveness immediately before teardown. A
+            // RETURNING_CLIENT reconnect is handled entirely inside the `HostTransport`
+            // actor (`associateData` → `resume` → `setClientOnline(true)`), which does NOT
+            // touch `HostServer.sessions`/`offlineSince` — the two maps share no lock. So a
+            // client can come back online in the window between the probe loop above and
+            // this teardown; without re-checking, the reaper would kill the
+            // freshly-reconnected session. If it is back online, clear the stale offline
+            // mark and skip the kill.
+            if let session = live[id], await session.transport.clientOnline {
+                _ = markOnlineOrAgeOffline(id: id, online: true, now: now)  // clears offlineSince[id]
+                continue
+            }
             let session = removeSessionForReap(id)
             session?.shutdown()
             await transport.dropSession(id)
             onLog?("session \(id): reaped (client offline > \(idleTTL)s idleTTL)")
+            actuallyReaped.append(id)
         }
-        return reaped
+        return actuallyReaped
     }
 
     /// Sync snapshot of the live sessions (keeps `NSLock` out of the async reaper).

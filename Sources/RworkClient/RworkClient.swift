@@ -191,6 +191,21 @@ public actor RworkClient {
 
         if returning, let learnedID {
             eventBroadcaster.yield(.reconnected(sessionID: learnedID, resumeFromSeq: resumeFromSeq))
+        } else {
+            // The host did NOT recognize our resume id and minted a BRAND-NEW session (the
+            // old one was forgotten — host restarted, idle-TTL reaped, or this is a first
+            // connect): its `output` restarts at seq 1. Our dedup / ack high-water marks
+            // belong to the OLD session, so they MUST be reset here, before the pumps start.
+            // Otherwise:
+            //   • `deliverOutput` would drop every fresh `output` with seq <= the stale
+            //     `highestSeqFed`, silently swallowing the new session's start until its seq
+            //     passed the old high-water mark; and
+            //   • the ack ticker would send `ack(stale highestContiguousSeq)` on the fresh
+            //     session, releasing replay-buffer entries 1..N the client never received.
+            // (On a first connect these are already 0, so the reset is a harmless no-op.)
+            highestSeqFed = 0
+            highestContiguousSeq = 0
+            ackPending = false
         }
 
         // Re-assert the last known window size on (re)connect so the remote PTY matches

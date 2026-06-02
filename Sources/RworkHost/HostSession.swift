@@ -50,19 +50,26 @@ public final class HostSession: @unchecked Sendable {
     private var drainTask: Task<Void, Never>?
     private var exitTask: Task<Void, Never>?
     private var outputTask: Task<Void, Never>?
-    private var outputContinuation: AsyncStream<OutputChunk>.Continuation?
+    private var outputContinuation: AsyncStream<OutputItem>.Continuation?
     private var readLoop: PTYReadLoop?
     private var started = false
 
-    /// One PTY read chunk plus the CONTROL messages (`.title`/`.bell`) the
-    /// ``HostTitleBellSniffer`` detected in it. The raw `bytes` are ALWAYS forwarded to
-    /// the client unchanged (non-destructive sniffing — see ``HostTitleBellSniffer``); the
-    /// `control` messages are sent on the control channel alongside. Carrying both through
-    /// the SAME ordered FIFO keeps a chunk's control messages ordered relative to the
-    /// output that produced them, on the one sequential awaiter.
-    private struct OutputChunk: Sendable {
-        let bytes: Data
-        let control: [WireMessage]
+    /// One item on the single ordered output FIFO drained by `outputTask`.
+    ///
+    /// - `.chunk`: a PTY read chunk plus the CONTROL messages (`.title`/`.bell`) the
+    ///   ``HostTitleBellSniffer`` detected in it. The raw `bytes` are ALWAYS forwarded to the
+    ///   client unchanged (non-destructive sniffing); the `control` messages are sent on the
+    ///   control channel alongside, AFTER the bytes that carried them.
+    /// - `.exit`: the child's exit code, enqueued by `exitTask` once the reaper reports the
+    ///   child gone. Routing it through THIS FIFO (rather than an independent task) sequences
+    ///   `exit` after every output chunk already queued — so the child's final output tail is
+    ///   sent before the exit marker that finishes the client's byte stream (fixes the race
+    ///   where an independent exit send could truncate the tail).
+    ///
+    /// Carrying everything on one sequential awaiter is what preserves read order end to end.
+    private enum OutputItem: Sendable {
+        case chunk(bytes: Data, control: [WireMessage])
+        case exit(code: Int32)
     }
 
     /// Builds a session around an already-spawned PTY and an already-bound transport.
@@ -92,29 +99,38 @@ public final class HostSession: @unchecked Sendable {
         // NOT preserve order: independent tasks hop onto the actor in scheduler order, not
         // creation order — that corrupts both the live stream and the replayed tail. See
         // the WF-3 review.)
-        var continuationOut: AsyncStream<OutputChunk>.Continuation!
-        let outputStream = AsyncStream<OutputChunk>(bufferingPolicy: .unbounded) { continuationOut = $0 }
+        var continuationOut: AsyncStream<OutputItem>.Continuation!
+        let outputStream = AsyncStream<OutputItem>(bufferingPolicy: .unbounded) { continuationOut = $0 }
         let continuation = continuationOut!
         self.outputContinuation = continuation
         outputTask = Task {
-            for await chunk in outputStream {
-                // `sendOutput` itself handles channel death: if the data channel is gone
-                // (cancelled/failed — e.g. the reconnect race) it retains the bytes for
-                // replay AND flips the client offline (engaging the ReplayBuffer offline
-                // gate) instead of throwing, so a transient channel hiccup no longer
-                // silently relies on a future reconnect — the gate backpressures the PTY
-                // and the next resume replays the tail. The `try?` therefore only swallows
-                // a genuine transient send error on a still-live channel (the bytes stay
-                // retained and replay on reconnect either way).
-                _ = try? await transport.sendOutput(chunk.bytes)
-                // CONTROL: emit the title/bell the sniffer found in this chunk on the
-                // (head-of-line-independent) control channel, AFTER the output bytes that
-                // carried them, on this same sequential awaiter so they stay in read order.
-                // `sendControl` is not sequenced/replayed; a dead control channel just
-                // throws and is swallowed (the bytes themselves already went out / are
-                // retained — a missed title/bell is cosmetic, not a correctness loss).
-                for message in chunk.control {
-                    try? await transport.sendControl(message)
+            for await item in outputStream {
+                switch item {
+                case let .chunk(bytes, control):
+                    // `sendOutput` itself handles channel death: if the data channel is gone
+                    // (cancelled/failed — e.g. the reconnect race) it retains the bytes for
+                    // replay AND flips the client offline (engaging the ReplayBuffer offline
+                    // gate) instead of throwing, so a transient channel hiccup no longer
+                    // silently relies on a future reconnect — the gate backpressures the PTY
+                    // and the next resume replays the tail. The `try?` therefore only swallows
+                    // a genuine transient send error on a still-live channel (the bytes stay
+                    // retained and replay on reconnect either way).
+                    _ = try? await transport.sendOutput(bytes)
+                    // CONTROL: emit the title/bell the sniffer found in this chunk on the
+                    // (head-of-line-independent) control channel, AFTER the output bytes that
+                    // carried them, on this same sequential awaiter so they stay in read order.
+                    // `sendControl` is not sequenced/replayed; a dead control channel just
+                    // throws and is swallowed (the bytes themselves already went out / are
+                    // retained — a missed title/bell is cosmetic, not a correctness loss).
+                    for message in control {
+                        try? await transport.sendControl(message)
+                    }
+                case let .exit(code):
+                    // Enqueued by `exitTask` once the reaper reports the child gone. Because
+                    // it travels this one ordered FIFO, every output chunk queued before the
+                    // child exited is sent FIRST — so the exit marker (which finishes the
+                    // client's byte stream) never truncates the child's final output tail.
+                    try? await transport.sendExit(code: code)
                 }
             }
         }
@@ -128,11 +144,14 @@ public final class HostSession: @unchecked Sendable {
             fd: masterFD,
             onChunk: { chunk in
                 let control = sniffer.observe(chunk)
-                continuation.yield(OutputChunk(bytes: chunk, control: control))
+                continuation.yield(.chunk(bytes: chunk, control: control))
             },
             onEOF: {
-                // EOF on the master: child closed its tty. The reaper Task surfaces the
-                // real exit code; nothing to do here (we don't synthesize an exit).
+                // EOF/EIO on the master: the child closed its tty. We do NOT drive exit from
+                // here — a blocking `read()` on a PTY master does not reliably surface EOF/EIO
+                // promptly on macOS (it can stay parked), so the exit signal MUST come from
+                // the reaper (`waitForExit`), not the read loop. The FIFO is finished by
+                // `shutdown()`; nothing to do here.
             }
         )
         self.readLoop = readLoop
@@ -170,13 +189,18 @@ public final class HostSession: @unchecked Sendable {
             for await _ in transport.inboundAck { /* release handled in transport */ }
         }
 
-        // EXIT: when the child exits, surface `exit(code:)` on the data channel so the
-        // client's byte stream terminates cleanly. `sendExit` records the code so a client
-        // that was offline when the shell exited still receives the exit marker after the
-        // replayed output tail on reconnect (resume() re-sends it) — no zombie session.
+        // EXIT: the reaper (`waitForExit`, resumed off a dedicated waitpid thread) is the
+        // RELIABLE child-gone signal — unlike the read loop's EOF, which a blocking PTY
+        // `read()` may not surface promptly on macOS. We then ENQUEUE the exit into the SAME
+        // ordered output FIFO instead of sending it from here directly: the single sequential
+        // consumer drains every output chunk queued before the child exited and sends them
+        // FIRST, so the exit marker (which finishes the client's byte stream) never races
+        // ahead of and truncates the child's final output tail. `sendExit` records the code so
+        // a client that was offline when the shell exited still gets the exit marker after the
+        // replayed output tail on reconnect — no zombie session.
         exitTask = Task {
             let code = await pty.waitForExit()
-            try? await transport.sendExit(code: code)
+            continuation.yield(.exit(code: code))
         }
     }
 
