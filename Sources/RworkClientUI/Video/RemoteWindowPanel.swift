@@ -78,12 +78,26 @@ public final class RemoteWindowModel {
 ///
 /// When no window is active it shows the connect form; when active it shows
 /// ``VideoWindowFactory/make(_:)`` (the app-injected `VideoWindowView`, or the gated
-/// placeholder if no factory was registered) plus a Close button.
+/// placeholder if no factory was registered) plus — when ``showCloseButton`` is `true` — a
+/// Close row.
+///
+/// ### `showCloseButton` (WF5, docs/22 §7)
+/// Inside the workspace a `.remoteGUI` leaf is wrapped in ``PaneChromeView``, whose header
+/// already owns the per-pane close affordance, so the panel's own Close row is redundant and
+/// `showCloseButton` defaults to `false`. Any standalone caller (a sheet, a preview) that wants
+/// the inline Close passes `showCloseButton: true`. The SwiftUI dismantle →
+/// ``VideoWindowPipeline`` `deactivate()` backstop is unaffected — it lives in the
+/// `VideoWindowView` the factory makes, NOT in this Close row, so hiding the row never strands a
+/// live decode pipeline.
 public struct RemoteWindowPanel: View {
     @Bindable private var model: RemoteWindowModel
+    /// Whether to draw the inline Close row beneath the live video (docs/22 §7). Default `false`:
+    /// in the workspace the pane chrome owns close.
+    private let showCloseButton: Bool
 
-    public init(model: RemoteWindowModel) {
+    public init(model: RemoteWindowModel, showCloseButton: Bool = false) {
         _model = Bindable(model)
+        self.showCloseButton = showCloseButton
     }
 
     public var body: some View {
@@ -91,15 +105,17 @@ public struct RemoteWindowPanel: View {
             if let descriptor = model.active {
                 VideoWindowFactory.make(descriptor)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                HStack {
-                    Text(descriptor.title)
-                        .font(.system(.caption, design: .monospaced))
-                        .lineLimit(1)
-                    Spacer()
-                    Button("Close", role: .destructive) { model.close() }
+                if showCloseButton {
+                    HStack {
+                        Text(descriptor.title)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                        Spacer()
+                        Button("Close", role: .destructive) { model.close() }
+                    }
+                    .padding(8)
+                    .background(.ultraThinMaterial)
                 }
-                .padding(8)
-                .background(.ultraThinMaterial)
             } else {
                 entryForm
             }
