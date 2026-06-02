@@ -1,80 +1,92 @@
 #if canImport(SwiftUI)
 import SwiftUI
+import RworkClient
+import RworkInspector
 
 /// The Rwork client app scene, shared by both Xcode app targets (ClientApp-macOS,
 /// ClientApp-iOS). The app targets reference this as their `@main` entry — see the
 /// `project.yml`s under `Apps/`.
 ///
-/// It wires the view-models once and hands them to ``ClientRootView``. Platform chrome is
-/// branched with `#if os(macOS)` / `#if os(iOS)`:
-/// - macOS: a `WindowGroup` plus the standard commands; the window is resizable.
-/// - iOS: a `WindowGroup` and the app handles background/foreground via the scene phase to
-///   drive the client `pause()`/`resume()` byte-exact-resume seam (doc 17 §2.5).
+/// It owns ONE ``WorkspaceStore`` (docs/22 §7 app-shell): the single `@MainActor @Observable`
+/// source of truth for the whole workspace (the tree of intent + the table of liveness), built with
+/// the production `makeSession` factory (``LivePaneSession/make(_:makeClient:makeInspector:)`` via
+/// ``WorkspaceStore/liveMakeSession(makeClient:makeInspector:)``). `body` is just
+/// ``WorkspaceRootView``.
 ///
-/// The terminal renderer is the gated seam: in the app target, register a
-/// ``TerminalRendererFactory/shared`` factory that builds the libghostty
-/// `GhosttyTerminalView` once the xcframework is present; until then the BUILD-STATUS
-/// placeholder shows. The library compiles and runs without it.
+/// Platform chrome is branched with `#if os(macOS)` / `#if os(iOS)`:
+/// - macOS: a resizable `WindowGroup`; scene phase is informational only.
+/// - iOS: scene phase drives the AWAITED `pause()`/`resume()` fan-out over EVERY session
+///   (`store.pauseAll()` / `store.resumeAll()`) so no socket is stranded across background.
+///
+/// The terminal renderer + video factories are the gated seams, registered once in
+/// `Apps/Shared/AppMain.swift` (UNCHANGED) — this shell never imports `CGhostty`/`RworkVideoClient`.
 public struct RworkClientApp: App {
-    @State private var terminal = TerminalViewModel()
-    @State private var connection: ConnectionViewModel
+    /// The single workspace store. Built ONCE in ``init()`` (no `@State` double-init: we construct the
+    /// store eagerly and seed the `@State` backing with it, never reassigning).
+    @State private var store: WorkspaceStore
     @Environment(\.scenePhase) private var scenePhase
 
     public init() {
-        let terminal = TerminalViewModel()
-        _terminal = State(initialValue: terminal)
-        _connection = State(initialValue: ConnectionViewModel(terminal: terminal))
+        // Build the store exactly once with the production session factory. `makeInspector` returns
+        // `nil` for now: the read-only inspector second channel (NWConnection #2) needs an endpoint →
+        // `ByteChannel` bridge that does not exist yet (`InspectorClient` is `init(channel:)` only) —
+        // it is the genuinely-missing app-glue WF5 wires (docs/22 §7). Returning `nil` is the correct
+        // interim: a Claude Code pane shows its terminal with no live inspector until then.
+        let store = WorkspaceStore(
+            restoring: WorkspacePersistence().load(),
+            makeSession: WorkspaceStore.liveMakeSession(
+                makeClient: { RworkClient() },
+                makeInspector: { _ in nil }
+            ),
+            liveVideoCap: 2
+        )
+        // Automation seams (docs/22 §7): only when the env vars are present do we let the bootstrap
+        // REPLACE the restored workspace with the autoconnect/video shape (it resets to the default
+        // workspace otherwise, which would discard a real user's restored tabs). The env-var names are
+        // unchanged so `check-macos.sh` / `check-video.sh` keep working; the actual connect / autotype
+        // / video-open TRIGGER stays in the view layer (WF5).
+        if Self.hasAutomationEnvironment() {
+            store.bootstrapFromEnvironment()
+        }
+        _store = State(initialValue: store)
     }
 
     public var body: some Scene {
         WindowGroup {
-            ClientRootView(connection: connection)
+            WorkspaceRootView(store: store)
                 .onChange(of: scenePhase) { _, phase in
                     handleScenePhase(phase)
                 }
-                .task { await autoConnectIfRequested() }
         }
         #if os(macOS)
         .windowResizability(.contentSize)
         #endif
     }
 
-    /// Automation seam: if `RWORK_AUTOCONNECT_HOST` + `RWORK_AUTOCONNECT_PORT` are present in
-    /// the environment, fill the form and connect on launch. This lets `scripts/check-macos.sh
-    /// --connect` drive a real end-to-end render check (a host daemon ↔ this GUI, glyphs on the
-    /// Metal layer) WITHOUT fragile SwiftUI accessibility automation. Both vars unset in normal
-    /// use, so a production launch is unaffected; runs once when the root scene first appears.
-    private func autoConnectIfRequested() async {
-        let env = ProcessInfo.processInfo.environment
-        guard let host = env["RWORK_AUTOCONNECT_HOST"], !host.isEmpty,
-              let port = env["RWORK_AUTOCONNECT_PORT"], !port.isEmpty else { return }
-        connection.host = host
-        connection.port = port
-        await connection.connect()
-
-        // OUT-path proof seam: if `RWORK_AUTOTYPE` is set, after the shell prompt settles push
-        // the command bytes through the REAL OUT path — `terminalModel.sendInput` → `inputSink`
-        // → the ordered drain in `ConnectionViewModel` → `RworkClient.sendInput` → host PTY.
-        // That is the EXACT keystroke→host chain `GhosttyTerminalView` drives from
-        // `GhosttySurface.onWrite`, so a typed command actually executes on the host and renders
-        // back. `scripts/check-macos.sh --connect` uses this to assert the round trip (a
-        // host-side marker file with a COMPUTED value + the rendered output), not just a live
-        // TCP socket. Unset in normal use, so a production launch is unaffected.
-        if case .connected = connection.status, let cmd = env["RWORK_AUTOTYPE"], !cmd.isEmpty {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)   // let the remote prompt come up
-            connection.terminalModel.sendInput(Data((cmd + "\n").utf8))
-        }
+    /// Whether any of the automation env vars (`RWORK_AUTOCONNECT_*` / `RWORK_VIDEO_AUTOCONNECT_*`)
+    /// are set. Gates the bootstrap so a normal launch restores the persisted workspace untouched.
+    private static func hasAutomationEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        let keys = [
+            "RWORK_AUTOCONNECT_HOST",
+            "RWORK_VIDEO_AUTOCONNECT_HOST",
+        ]
+        return keys.contains { (env[$0]?.isEmpty == false) }
     }
 
-    /// Drives the iOS lifecycle seam: background → `pause()` (host retains the tail),
-    /// foreground → `resume()` (byte-exact). On macOS scene phase is informational only.
+    /// Drives the iOS lifecycle seam over EVERY session (docs/22 §4 the single, AWAITED fan-out):
+    /// background → `pauseAll()` (each connection's host retains the tail; each inspector channel is
+    /// closed), then persist the tree; foreground → `resumeAll()` (byte-exact + inspector re-tail).
+    /// On macOS scene phase is informational only.
     private func handleScenePhase(_ phase: ScenePhase) {
         #if os(iOS)
         switch phase {
         case .background:
-            Task { await connection.pause() }
+            Task {
+                await store.pauseAll()
+                try? WorkspacePersistence().save(store.workspace)
+            }
         case .active:
-            Task { await connection.resume() }
+            Task { await store.resumeAll() }
         default:
             break
         }
