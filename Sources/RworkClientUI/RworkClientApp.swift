@@ -36,13 +36,18 @@ public struct RworkClientApp: App {
         // FOLD is what is wired + unit-tested (via `LoopbackByteChannel`), and real-network inspector
         // serving is a hardware followup. We pass it explicitly (rather than relying on the default) so
         // the wiring is auditable here at the one app-glue site.
+        // One persistence handle: it loads the restored tree here AND backs the store's debounced
+        // save-on-mutation (docs/22 §6). The same default file URL on both sides so a debounced write
+        // and the next launch's load agree.
+        let persistence = WorkspacePersistence()
         let store = WorkspaceStore(
-            restoring: WorkspacePersistence().load(),
+            restoring: persistence.load(),
             makeSession: WorkspaceStore.liveMakeSession(
                 makeClient: { RworkClient() },
                 makeInspector: WorkspaceStore.liveMakeInspector
             ),
-            liveVideoCap: 2
+            liveVideoCap: 2,
+            persistence: persistence
         )
         // Automation seams (docs/22 §7): only when the env vars are present do we let the bootstrap
         // REPLACE the restored workspace with the autoconnect/video shape (it resets to the default
@@ -62,6 +67,14 @@ public struct RworkClientApp: App {
                     handleScenePhase(phase)
                 }
         }
+        // The native command surface (docs/22 §5): a Pane + Tab menu on macOS, the hardware-keyboard
+        // ⌘-hold HUD on iPadOS — both driven by the SAME ⌘/⌥-prefixed shortcuts as
+        // `CommandInterpreter.defaultBindings`, so plain keys + Ctrl-letters still flow to the focused
+        // terminal (the §5 conflict rule). Each item resolves the key scene's store via
+        // `@FocusedValue(\.workspaceStore)`, which `WorkspaceRootView` publishes. The ⌘K command
+        // palette is a window-level affordance owned inside `WorkspaceRootView` (it needs view-tree
+        // state + an overlay), so it is wired there, not here.
+        .commands { WorkspaceCommands() }
         #if os(macOS)
         .windowResizability(.contentSize)
         #endif
@@ -87,7 +100,9 @@ public struct RworkClientApp: App {
         case .background:
             Task {
                 await store.pauseAll()
-                try? WorkspacePersistence().save(store.workspace)
+                // Flush the tree NOW (cancelling any in-flight debounced save) through the store's
+                // configured persistence — docs/22 §6 save-on-background.
+                store.saveImmediately()
             }
         case .active:
             Task { await store.resumeAll() }

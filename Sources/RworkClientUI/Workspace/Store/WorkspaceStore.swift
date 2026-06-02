@@ -45,6 +45,23 @@ public final class WorkspaceStore {
     /// per-device-class — see followups.)
     public let liveVideoCap: Int
 
+    /// Where the value tree is persisted (docs/22 §6). Injectable so tests point at a temp dir and a
+    /// store built with `nil` persistence (the default for the FakePaneSession test seam) never
+    /// touches disk. The app passes a real ``WorkspacePersistence``.
+    private let persistence: WorkspacePersistence?
+
+    /// How long to coalesce a burst of mutations before writing the tree (docs/22 §6 "debounced on
+    /// mutation"). One write per quiet period, not one per keystroke-driven split/resize.
+    private let saveDebounce: Duration
+
+    /// The pending debounced-save task. Cancelled + replaced on each mutation so only the last
+    /// mutation in a burst actually writes; cancel-safe (a cancelled sleep simply returns).
+    private var saveTask: Task<Void, Never>?
+
+    /// Suppresses the debounced save during construction (the initial `reconcile()` would otherwise
+    /// re-write a just-loaded file with identical bytes). Flipped off once init completes.
+    private var savingEnabled = false
+
     /// In-flight teardown tasks spawned by ``reconcile()`` (teardown is `async`; reconcile is called
     /// inline by synchronous mutations). Tracked so tests — and a deliberate shutdown — can `await`
     /// every orphaned session's `teardown()` to actually complete via ``quiesce()``. The registry
@@ -57,6 +74,15 @@ public final class WorkspaceStore {
     /// solves a multi-pane layout — `.next`/`.previous` still work via the pre-order cycle fallback).
     private var lastSolvedLayout: SolvedLayout?
 
+    /// The single-focus arbiter for the iOS multi-visible (iPad-regular) input path (docs/22 §7). One
+    /// per workspace, created alongside the store. The regular `PaneTreeView` leaves route their
+    /// ``TerminalInputHost`` first-responder through this so a stale async `becomeFirstResponder`
+    /// callback can never win (resign-before-become + generation reject). Compact mode mounts exactly
+    /// one host and skips it. Cross-platform-compilable (the UIKit calls inside are `#if os(iOS)`), so
+    /// the macOS build is unaffected. Exposed so the view layer can drive `focus(_:)` on a focus
+    /// change.
+    public let focusCoordinator = PaneFocusCoordinator()
+
     // MARK: Init
 
     /// - Parameters:
@@ -65,15 +91,24 @@ public final class WorkspaceStore {
     ///   - makeSession: the session factory seam (production: `LivePaneSession.make`; tests:
     ///     `{ FakePaneSession($0) }`).
     ///   - liveVideoCap: concurrent live-video ceiling (default 2).
+    ///   - persistence: where to debounce-save the tree after mutations (docs/22 §6). `nil` (the
+    ///     default) ⇒ no disk writes, so the pure/fake test seam never touches the filesystem; the app
+    ///     passes a real ``WorkspacePersistence``.
+    ///   - saveDebounce: the mutation-coalescing window before a write (default 600ms).
     public init(
         restoring: Workspace? = nil,
         makeSession: @escaping @MainActor (PaneSpec) -> any PaneSessionHandle,
-        liveVideoCap: Int = 2
+        liveVideoCap: Int = 2,
+        persistence: WorkspacePersistence? = nil,
+        saveDebounce: Duration = .milliseconds(600)
     ) {
         self.workspace = restoring ?? .defaultWorkspace()
         self.makeSession = makeSession
         self.liveVideoCap = liveVideoCap
+        self.persistence = persistence
+        self.saveDebounce = saveDebounce
         reconcile()   // materialize idle sessions for the restored/default leaves
+        savingEnabled = true   // arm debounced saves only AFTER the restore reconcile
     }
 
     // MARK: - Accessors
@@ -433,6 +468,70 @@ public final class WorkspaceStore {
         for (id, handle) in registry {
             (handle as? LivePaneSession)?.isAutotypeTarget = (id == autotypeTarget)
         }
+
+        // 4. Keep the iOS first-responder arbiter's intent tracking the active tab's focused pane
+        //    (docs/22 §7). Every mutation funnels through reconcile, so this is the single site that
+        //    drives `focus(_:)`. The coordinator resolves it against whatever host is currently
+        //    registered (a not-yet-mounted host re-claims itself in `register`), and rejects stale
+        //    async callbacks by generation. A no-op on the compact single-host path / macOS.
+        syncFocusCoordinator()
+
+        // 5. Debounced persistence of the value tree (docs/22 §6). Every mutation funnels through
+        //    reconcile, so this single site coalesces a burst of mutations into one write.
+        scheduleSave()
+    }
+
+    /// Points the ``focusCoordinator`` at the active tab's focused pane. Called at the end of every
+    /// reconcile so the iPad-regular input focus follows the tree's intent. Only calls `focus(_:)`
+    /// when the target actually changed, so a no-op reconcile (selectTab / setFractions) does not
+    /// re-mint a generation needlessly.
+    private func syncFocusCoordinator() {
+        guard let focused = workspace.activeTab?.focusedPane else { return }
+        if focusCoordinator.focusedPane != focused {
+            focusCoordinator.focus(focused)
+        }
+    }
+
+    // MARK: - Persistence (debounced; cancel-safe)
+
+    /// Schedules a debounced save of the value tree (docs/22 §6). Cancels any pending save and starts
+    /// a fresh one, so a burst of mutations writes exactly once after the quiet period. Cancel-safe: a
+    /// superseded task's `Task.sleep` throws `CancellationError`, which the `try?` swallows before any
+    /// write. A no-op until `savingEnabled` (set after the init reconcile) and when no `persistence`
+    /// is configured (the fake/test seam never touches disk).
+    private func scheduleSave() {
+        guard savingEnabled, let persistence else { return }
+        saveTask?.cancel()
+        // Snapshot the (Sendable, value-typed) workspace now so the write reflects this mutation.
+        let snapshot = workspace
+        let debounce = saveDebounce
+        saveTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: debounce)
+            } catch {
+                return   // superseded by a newer mutation (cancelled) — that one will write.
+            }
+            // The encode + atomic write is pure value IO; run it off the main actor so a large tree
+            // doesn't hitch the UI. A failed save keeps the previous good file (best-effort).
+            await Self.write(snapshot, to: persistence)
+            await MainActor.run { [weak self] in self?.saveTask = nil }
+        }
+    }
+
+    /// Writes `workspace` synchronously NOW (the scenePhase-background path — docs/22 §6), cancelling
+    /// any in-flight debounced save first so the two never race. Best-effort: a thrown error is
+    /// swallowed (the previous good file is kept). A no-op when no `persistence` is configured.
+    public func saveImmediately() {
+        guard let persistence else { return }
+        saveTask?.cancel()
+        saveTask = nil
+        try? persistence.save(workspace)
+    }
+
+    /// The off-main-actor write used by the debounced path (`nonisolated` so the detached sleep task
+    /// can call it without hopping back to the main actor for the IO).
+    private nonisolated static func write(_ workspace: Workspace, to persistence: WorkspacePersistence) async {
+        try? persistence.save(workspace)
     }
 
     // MARK: - Tree lookups

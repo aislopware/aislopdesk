@@ -123,7 +123,15 @@ struct PaneTreeView: View {
             isZoomed: activeTab?.zoomedPane == id,
             store: store
         ) {
-            PaneLeafView(handle: store.handle(for: id), spec: spec, isFocused: store.isFocused(id))
+            // The regular tree can show MULTIPLE terminal hosts at once (iPad-regular), so each routes
+            // first-responder through the store's `focusCoordinator` (resign-before-become + generation
+            // reject — docs/22 §7). The compact carousel mounts ONE host and passes nil (no race).
+            PaneLeafView(
+                handle: store.handle(for: id),
+                spec: spec,
+                isFocused: store.isFocused(id),
+                focusCoordinator: store.focusCoordinator
+            )
         }
         // STABLE identity: PaneID, NOT structural position — a reshape never rewires a live session.
         .id(id)

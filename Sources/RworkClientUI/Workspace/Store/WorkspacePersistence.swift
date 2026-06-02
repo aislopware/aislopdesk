@@ -17,7 +17,11 @@ import Foundation
 /// ### Failure policy
 /// Any failure to read OR decode (missing file, corrupt JSON, unknown `schemaVersion`) falls back to
 /// ``Workspace/defaultWorkspace()`` rather than crashing — a corrupt store must never brick launch.
-public struct WorkspacePersistence {
+/// `@unchecked Sendable`: the only stored properties are a `URL` (value type, Sendable) and a
+/// `FileManager` that is read-only here and documented thread-safe for these file operations, so a
+/// `WorkspacePersistence` value can cross actor boundaries for the store's off-main-actor debounced
+/// write (docs/22 §6) without data-race risk.
+public struct WorkspacePersistence: @unchecked Sendable {
     /// The file the workspace is written to / read from. Defaults to
     /// `Application Support/Rwork/workspace.json` (the app container on iOS).
     public let fileURL: URL
