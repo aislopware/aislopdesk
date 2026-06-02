@@ -25,6 +25,12 @@ public struct RworkClientApp: App {
     /// store eagerly and seed the `@State` backing with it, never reassigning).
     @State private var store: WorkspaceStore
     @Environment(\.scenePhase) private var scenePhase
+    /// Serializes the iOS background/foreground lifecycle transitions so the LAST phase observed is the
+    /// LAST applied: each `handleScenePhase` chains its work behind the previous transition's, so a
+    /// rapid background→foreground flip applies `pauseAll` then `resumeAll` IN ORDER (the app ends
+    /// resumed while visible) and the save can't race the resume. `@State`'s setter is nonmutating, so
+    /// the handler need not become `mutating`.
+    @State private var lifecycleTask: Task<Void, Never>?
 
     public init() {
         // Build the store exactly once with the production session factory. `makeInspector` is now the
@@ -36,12 +42,16 @@ public struct RworkClientApp: App {
         // FOLD is what is wired + unit-tested (via `LoopbackByteChannel`), and real-network inspector
         // serving is a hardware followup. We pass it explicitly (rather than relying on the default) so
         // the wiring is auditable here at the one app-glue site.
-        // One persistence handle: it loads the restored tree here AND backs the store's debounced
-        // save-on-mutation (docs/22 §6). The same default file URL on both sides so a debounced write
-        // and the next launch's load agree.
-        let persistence = WorkspacePersistence()
+        // Automation runs against the real, un-isolated Application Support dir (check-macos.sh /
+        // check-video.sh launch the bundle binary directly). Build the bootstrap store WITHOUT a
+        // persistence handle so the throwaway autoconnect/video shape can never overwrite the
+        // developer's real workspace.json. A normal launch keeps the one persistence handle that both
+        // loads the restored tree AND backs the debounced save-on-mutation (docs/22 §6) — the same
+        // default file URL on both sides so a debounced write and the next launch's load agree.
+        let isAutomation = Self.hasAutomationEnvironment()
+        let persistence: WorkspacePersistence? = isAutomation ? nil : WorkspacePersistence()
         let store = WorkspaceStore(
-            restoring: persistence.load(),
+            restoring: persistence?.load(),   // nil in automation ⇒ bootstrap replaces it anyway
             makeSession: WorkspaceStore.liveMakeSession(
                 makeClient: { RworkClient() },
                 makeInspector: WorkspaceStore.liveMakeInspector
@@ -50,11 +60,12 @@ public struct RworkClientApp: App {
             persistence: persistence
         )
         // Automation seams (docs/22 §7): only when the env vars are present do we let the bootstrap
-        // REPLACE the restored workspace with the autoconnect/video shape (it resets to the default
-        // workspace otherwise, which would discard a real user's restored tabs). The env-var names are
-        // unchanged so `check-macos.sh` / `check-video.sh` keep working; the actual connect / autotype
-        // / video-open TRIGGER stays in the view layer (WF5).
-        if Self.hasAutomationEnvironment() {
+        // REPLACE the restored workspace with the autoconnect/video shape (a normal launch restores the
+        // persisted tree untouched). With nil persistence above, the bootstrap reconcile's
+        // scheduleSave() is a no-op, so no disk write occurs for the ephemeral automation run. The
+        // env-var names are unchanged so `check-macos.sh` / `check-video.sh` keep working; the actual
+        // connect / autotype / video-open TRIGGER stays in the view layer (WF5).
+        if isAutomation {
             store.bootstrapFromEnvironment()
         }
         _store = State(initialValue: store)
@@ -96,18 +107,26 @@ public struct RworkClientApp: App {
     /// On macOS scene phase is informational only.
     private func handleScenePhase(_ phase: ScenePhase) {
         #if os(iOS)
-        switch phase {
-        case .background:
-            Task {
+        // Chain behind the previous transition so a queued resume can't start until the preceding pause
+        // has fully completed (and vice-versa). The new Task is @MainActor-isolated (inherits from this
+        // @MainActor handler) exactly like the two it replaces, capturing the same non-Sendable
+        // @MainActor store — so it stays Swift 6 strict-concurrency clean. `default: break` lives INSIDE
+        // the chained task so even a no-op phase flushes the chain ordering.
+        let prev = lifecycleTask
+        lifecycleTask = Task {
+            await prev?.value
+            switch phase {
+            case .background:
                 await store.pauseAll()
                 // Flush the tree NOW (cancelling any in-flight debounced save) through the store's
-                // configured persistence — docs/22 §6 save-on-background.
+                // configured persistence — docs/22 §6 save-on-background. Inside the serialized pause
+                // step, so the save can't race a resume.
                 store.saveImmediately()
+            case .active:
+                await store.resumeAll()
+            default:
+                break
             }
-        case .active:
-            Task { await store.resumeAll() }
-        default:
-            break
         }
         #endif
     }

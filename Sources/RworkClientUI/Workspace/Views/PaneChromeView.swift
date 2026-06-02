@@ -53,6 +53,7 @@ struct PaneChromeView<Content: View>: View {
             Image(systemName: PaneLeafView.icon(for: spec.kind))
                 .font(.caption)
                 .foregroundStyle(isFocused ? Color.accentColor : .secondary)
+                .accessibilityHidden(true)   // decorative — the title Text carries the row's label
 
             if let dot = statusColor {
                 Circle().fill(dot).frame(width: 7, height: 7)
@@ -127,6 +128,7 @@ struct PaneChromeView<Content: View>: View {
         .fixedSize()
         .foregroundStyle(.secondary)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     @ViewBuilder
@@ -143,6 +145,7 @@ struct PaneChromeView<Content: View>: View {
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     // MARK: Status dot

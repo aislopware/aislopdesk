@@ -58,6 +58,13 @@ public final class WorkspaceStore {
     /// mutation in a burst actually writes; cancel-safe (a cancelled sleep simply returns).
     private var saveTask: Task<Void, Never>?
 
+    /// A monotonic save-generation guard (mirrors the ``FocusGenerationGuard`` idiom). Each
+    /// `scheduleSave()` bumps it and captures the value; the task's trailing `saveTask = nil` clears
+    /// the handle ONLY if it is still the current generation — so a superseded (but already-past-sleep)
+    /// prior task can't nil out the newest handle and strand it uncancellable. Pure MainActor Int
+    /// bookkeeping (no new concurrency / Sendable surface).
+    private var saveGeneration = 0
+
     /// Suppresses the debounced save during construction (the initial `reconcile()` would otherwise
     /// re-write a just-loaded file with identical bytes). Flipped off once init completes.
     private var savingEnabled = false
@@ -67,7 +74,14 @@ public final class WorkspaceStore {
     /// every orphaned session's `teardown()` to actually complete via ``quiesce()``. The registry
     /// invariant (`keys == leafIDs`) holds the instant reconcile returns (orphans are removed
     /// synchronously); `quiesce()` only waits for the *cleanup* of those already-removed sessions.
-    private var teardownTasks: [Task<Void, Never>] = []
+    ///
+    /// Keyed by a monotonic id (not an array) so each task can self-prune its own entry on completion
+    /// without the task-captures-itself chicken-and-egg — freeing the handle promptly rather than only
+    /// on the next orphaning reconcile. Every site (the reconcile insert, the self-remove, the
+    /// `quiesce()` drain) runs on `@MainActor`, so the bookkeeping is serialized with no data race.
+    private var teardownTasks: [Int: Task<Void, Never>] = [:]
+    /// The next teardown-task id (monotonic, wraps harmlessly).
+    private var nextTeardownID = 0
 
     /// The last layout the view solved, cached so geometric ``move(_:)`` can resolve a neighbour
     /// without the store knowing the view's size. `nil` until the view reports one (compact mode never
@@ -353,9 +367,11 @@ public final class WorkspaceStore {
     public func quiesce() async {
         let tasks = teardownTasks
         teardownTasks.removeAll()
-        for task in tasks {
+        for task in tasks.values {
             await task.value
         }
+        // A task that completes AFTER this snapshot tries to removeValue on the already-cleared dict —
+        // a harmless no-op, so quiesce remains idempotent and still blocks until completion.
     }
 
     // MARK: - Bootstrap from environment (automation seams)
@@ -414,10 +430,13 @@ public final class WorkspaceStore {
     ///   `Set(registry.keys) == Set(workspace.tabs.flatMap { $0.root.allLeafIDs() })`
     ///
     /// Steps, in order:
-    /// 1. **Teardown orphans first** — for every registry key NOT in the current leaf set, `await`
-    ///    `teardown()` (proven `ConnectionViewModel` disconnect order + inspector close + video stop)
-    ///    then remove it. Teardown is awaited *before* materializing so a same-tick close+reopen of a
-    ///    different pane cannot transiently exceed resource ceilings.
+    /// 1. **Orphan removal (synchronous) + teardown (async, launched not awaited)** — for every
+    ///    registry key NOT in the current leaf set, the entry is removed from the registry
+    ///    SYNCHRONOUSLY (so the invariant `keys == leafIDs` holds the instant reconcile returns), and
+    ///    its `teardown()` (proven `ConnectionViewModel` disconnect order + inspector close + video
+    ///    stop) is LAUNCHED in an ordered, tracked `Task` that completes shortly AFTER materialize — it
+    ///    is **not** awaited before materialization. The task is awaitable via ``quiesce()`` but never
+    ///    awaited inline (reconcile is synchronous; see below).
     /// 2. **Materialize new leaves** — for every leaf id NOT yet in the registry, build the session
     ///    via `makeSession(spec)`, `adopt(id:)` so its identity is the leaf's, and register it. New
     ///    sessions are IDLE (lazy connect; video not activated — the cap is enforced at activation).
@@ -425,10 +444,14 @@ public final class WorkspaceStore {
     /// A projection flip (compact ↔ regular) does NOT call this — it is a view-only change; the tree
     /// (hence the leaf set) is unchanged, so even if called it would be a no-op (docs/22 §4, §9.9).
     ///
-    /// Because teardown is `async` and reconcile is synchronous (called inline by each mutation), the
-    /// teardown is launched as an AWAITED detached step kept ordered: we capture the orphans, remove
-    /// them from the registry synchronously (so the observable registry never shows a stale session),
-    /// and drive their `teardown()` in one awaited task. See the note below for the ordering guarantee.
+    /// NOTE — same-tick close+reopen and the video ceiling: because step-1 teardown is launched (not
+    /// awaited) before step-2 materialize, a same-tick close of one `.remoteGUI` pane and open of
+    /// another could transiently overlap their live video stacks while the first is still tearing down.
+    /// That ceiling protection is NOT yet provided here; it is tracked as a followup and requires both
+    /// routing video activation through ``activateVideo(_:)`` AND making admission aware of in-flight
+    /// orphan teardown (e.g. counting still-tearing-down `.remoteGUI` sessions). reconcile staying
+    /// synchronous is deliberate — it is called inline by every mutation method and from `init` — so
+    /// awaiting teardown before materialize would ripple `async` through the whole mutation surface.
     private func reconcile() {
         let leafIDs = allLeafIDs()
         let leafSet = Set(leafIDs)
@@ -441,15 +464,20 @@ public final class WorkspaceStore {
             registry.removeValue(forKey: orphan.id)
         }
         if !orphans.isEmpty {
-            // Teardown in a dedicated task, in registry-removal order, each awaited (no fire-and-forget
-            // races: this single task serializes the disconnect order across the orphaned sessions).
-            // The task is tracked in `teardownTasks` so `quiesce()` can await the cleanup to finish.
-            let task = Task { @MainActor in
+            // Teardown in a dedicated task, in registry-removal order, each awaited inside the task (no
+            // fire-and-forget races: this single task serializes the disconnect order across the
+            // orphaned sessions). The task is tracked in `teardownTasks` so `quiesce()` can await the
+            // cleanup to finish, and self-prunes its own entry on completion (id-keyed) so a completed
+            // teardown frees its handle promptly. NOTE: the task is launched here, NOT awaited inline —
+            // reconcile is synchronous (see the doc-comment's same-tick ceiling note).
+            let id = nextTeardownID
+            nextTeardownID &+= 1
+            teardownTasks[id] = Task { @MainActor in
                 for orphan in orphans {
                     await orphan.teardown()
                 }
+                self.teardownTasks.removeValue(forKey: id)
             }
-            teardownTasks.append(task)
         }
 
         // 2. New leaves: materialize an idle session for each, binding its identity to the leaf id.
@@ -505,6 +533,8 @@ public final class WorkspaceStore {
         // Snapshot the (Sendable, value-typed) workspace now so the write reflects this mutation.
         let snapshot = workspace
         let debounce = saveDebounce
+        saveGeneration &+= 1
+        let generation = saveGeneration
         saveTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: debounce)
@@ -514,7 +544,12 @@ public final class WorkspaceStore {
             // The encode + atomic write is pure value IO; run it off the main actor so a large tree
             // doesn't hitch the UI. A failed save keeps the previous good file (best-effort).
             await Self.write(snapshot, to: persistence)
-            await MainActor.run { [weak self] in self?.saveTask = nil }
+            // Clear the handle ONLY if this is still the current generation — a superseded prior task
+            // (one that raced past the sleep before being cancelled) must not nil the newest handle.
+            await MainActor.run { [weak self] in
+                guard let self, self.saveGeneration == generation else { return }
+                self.saveTask = nil
+            }
         }
     }
 
@@ -523,6 +558,9 @@ public final class WorkspaceStore {
     /// swallowed (the previous good file is kept). A no-op when no `persistence` is configured.
     public func saveImmediately() {
         guard let persistence else { return }
+        // Bump the generation so any in-flight (already-past-sleep) debounced task reliably loses the
+        // trailing-clear guard and cannot resurrect/nil the handle after this explicit save.
+        saveGeneration &+= 1
         saveTask?.cancel()
         saveTask = nil
         try? persistence.save(workspace)

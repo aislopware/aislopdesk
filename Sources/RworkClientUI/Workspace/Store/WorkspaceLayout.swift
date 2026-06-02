@@ -11,8 +11,12 @@ import CoreGraphics
 /// `@Environment(\.horizontalSizeClass)` + the detail width and branches exactly once on the result.
 public enum WorkspaceLayout {
     /// The width below which a regular layout collapses to compact when no size class is available
-    /// (macOS has no `horizontalSizeClass`). 700pt is the §4 breakpoint.
-    public static let compactWidthThreshold: CGFloat = 700
+    /// (macOS has no `horizontalSizeClass`). This is a DETAIL-area width (the NavigationSplitView
+    /// detail column), NOT the whole window: at the 720pt window floor the detail is ~500pt (720 minus
+    /// the ~220 ideal sidebar), so the threshold sits a hair below that (460) — the macOS minimum
+    /// window resolves REGULAR, and only a truly phone-narrow detail falls back to compact. On iOS the
+    /// PRIMARY signal is `horizontalSizeClass` (the first term below), independent of this width gate.
+    public static let compactWidthThreshold: CGFloat = 460
 
     /// Whether to use the compact projection.
     ///

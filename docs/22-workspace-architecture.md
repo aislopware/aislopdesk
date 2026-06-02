@@ -194,7 +194,6 @@ public struct Workspace: Codable, Sendable, Equatable {
 ### 2.1 Geometry (pure, the focus/divider source of truth)
 
 ```swift
-public struct PaneFrame: Sendable, Equatable { public let id: PaneID; public let rect: CGRect }
 public struct DividerHandle: Sendable, Equatable {            // one per gap between siblings
     public let path: [Int]; public let index: Int            // addresses split node + which divider
     public let axis: SplitAxis; public let rect: CGRect
@@ -223,7 +222,8 @@ public struct CompactPage: Sendable, Equatable { public let id: PaneID; public l
 public enum CompactLayoutResolver {
     public static func pages(for tab: Tab) -> [CompactPage]                 // = root.allLeafIDs() projected
     public static func selectedIndex(for tab: Tab) -> Int                   // index of focusedPane
-    public static func focus(after current: PaneID, swipe dir: FocusDirection, in tab: Tab) -> PaneID?
+    // swipe → next focus is owned by the carousel's TabView selection binding + store.move (no
+    // parallel resolver seam).
 }
 ```
 
@@ -351,8 +351,10 @@ struct PaneTreeView: View {
 ## 4. Responsive desktop ↔ mobile
 
 The breakpoint is `@Environment(\.horizontalSizeClass)` as the PRIMARY signal, with a width fallback
-for macOS (no size class): `isCompact = (hSizeClass == .compact) || (width < 700)`. Computed once in
-`WorkspaceRootView`; it is the ONLY adaptation switch in the app.
+for macOS (no size class): `isCompact = (hSizeClass == .compact) || (width < compactWidthThreshold)`,
+where `compactWidthThreshold == 460` is a DETAIL-area width (so the macOS minimum window's ~500pt
+detail resolves regular). Computed once in `WorkspaceRootView`; it is the ONLY adaptation switch in
+the app.
 
 ```swift
 struct WorkspaceRootView: View {
@@ -363,7 +365,7 @@ struct WorkspaceRootView: View {
             TabSidebarView(store: store)                  // native source-list rail
         } detail: {
             GeometryReader { geo in
-                let compact = (hSizeClass == .compact) || (geo.size.width < 700)
+                let compact = (hSizeClass == .compact) || (geo.size.width < WorkspaceLayout.compactWidthThreshold)
                 if compact { PaneCarouselView(store: store) }   // single mounted leaf, pure projection
                 else       { PaneTreeView(node: activeRoot, path: [], store: store, tab: activeTabID) }
             }
@@ -582,7 +584,7 @@ No new `HostServer` instance is created.
 - `Tab.swift` — `Tab`, `TabID`, `PaneID`, `SplitAxis`, `FocusDirection`.
 - `Workspace.swift` — `Workspace` + tab-level pure ops.
 - `PaneNode+Codable.swift` — hand-written discriminated Codable + schemaVersion.
-- `LayoutSolver.swift` — `SolvedLayout`, `PaneFrame`, `DividerHandle`, `LayoutSolver.solve`.
+- `LayoutSolver.swift` — `SolvedLayout`, `DividerHandle`, `LayoutSolver.solve`.
 - `FocusResolver.swift` — geometric neighbor + cycle.
 - `CompactLayoutResolver.swift` — pages / selectedIndex / swipe focus.
 

@@ -397,6 +397,13 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         // Sanity-pin the projection helper so the "flip" is real, then report each layout to the store.
         XCTAssertTrue(WorkspaceLayout.isCompact(horizontalSizeClassCompact: true, width: 400), "narrow → compact")
         XCTAssertFalse(WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, width: 1200), "wide → regular")
+        // The breakpoint is a DETAIL-area width: the macOS minimum window's detail (~500pt with the
+        // ideal sidebar) must resolve REGULAR, not compact — the threshold (460) sits below it.
+        XCTAssertFalse(WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, width: 500),
+                       "macOS min-window detail (~500pt) → regular")
+        // The size-class path is unchanged: an iPhone-class detail is compact regardless of width.
+        XCTAssertTrue(WorkspaceLayout.isCompact(horizontalSizeClassCompact: true, width: 500),
+                      "size-class compact → compact even at 500pt")
 
         // A regular-mode solved layout, then a compact-mode (empty-frames) one — the view→store report.
         let leaves = store.activeTab!.root.allLeafIDs()

@@ -100,7 +100,7 @@ public extension PaneNode {
                 fractions: Self.even(2)
             )
 
-        case let .split(myAxis, children, _):
+        case let .split(myAxis, children, myFractions):
             // Is `target` a DIRECT leaf child of this split, AND does this split's axis match
             // the requested axis? Then flatten: insert the sibling right after `target`.
             if myAxis == axis,
@@ -116,7 +116,7 @@ public extension PaneNode {
             }
             var newChildren = children
             newChildren[recurseIndex] = children[recurseIndex].splitting(target, axis: axis, newLeaf: newLeaf)
-            return .split(myAxis, children: newChildren, fractions: Self.evenedKeepingCount(self))
+            return .split(myAxis, children: newChildren, fractions: myFractions)
         }
     }
 
@@ -219,14 +219,6 @@ extension PaneNode {
     static func even(_ count: Int) -> [Double] {
         precondition(count > 0)
         return Array(repeating: 1.0 / Double(count), count: count)
-    }
-
-    /// The current fractions of a split, used unchanged when only a descendant changed. (A split
-    /// keeps its own fractions when a recursion rewrote a child; this surfaces them so callers
-    /// don't re-even a row that did not change arity.)
-    static func evenedKeepingCount(_ node: PaneNode) -> [Double] {
-        if case let .split(_, _, fractions) = node { return fractions }
-        return []
     }
 
     /// Builds a split from the surviving `children`/`fractions` after a removal, applying the

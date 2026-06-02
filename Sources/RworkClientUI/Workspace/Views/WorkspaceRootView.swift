@@ -24,9 +24,10 @@ public struct WorkspaceRootView: View {
     @Bindable var store: WorkspaceStore
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    /// The sidebar's visibility — `.all` (sidebar + detail) by default on regular width. Bound so the
-    /// toolbar's sidebar toggle and the compact collapse both work natively. The compact carousel's
-    /// "show tabs" affordance flips this to `.all` to reveal the tab drawer.
+    /// The sidebar's visibility — `.automatic` by default (the system shows sidebar + detail on regular
+    /// width and collapses on compact). Bound so the toolbar's sidebar toggle and the compact collapse
+    /// both work natively. The compact carousel's "show tabs" affordance flips this to `.all` to reveal
+    /// the tab drawer.
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     /// Whether the ⌘K command palette is presented (docs/22 §5). Window-level UI state: the palette is

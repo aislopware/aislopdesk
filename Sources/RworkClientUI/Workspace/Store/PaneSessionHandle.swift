@@ -39,8 +39,11 @@ public protocol PaneSessionHandle: AnyObject, Identifiable {
     var isVideoActive: Bool { get }
 
     /// Requests this session activate (`true`) or deactivate (`false`) its live video stack. A no-op
-    /// for non-`.remoteGUI` kinds. The store calls this when admitting/evicting a video pane against
-    /// the cap; the view layer calls it on appear/disappear. Idempotent.
+    /// for non-`.remoteGUI` kinds. Idempotent. STORE-INTERNAL in practice: the view layer routes
+    /// appear/disappear through ``WorkspaceStore/activateVideo(_:)`` / ``WorkspaceStore/deactivateVideo(_:)``
+    /// so `liveVideoCap` is consulted — the store is the admit/evict authority against the cap. (It
+    /// cannot be made fully private: it is part of this protocol and the store + pause/resume call it;
+    /// but the view no longer calls it directly except on the no-store preview fallback.)
     func setVideoActive(_ active: Bool)
 
     // MARK: Lifecycle (the single fan-out points)

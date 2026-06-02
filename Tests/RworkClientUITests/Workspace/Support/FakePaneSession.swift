@@ -42,6 +42,11 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     /// The video-activation flag the cap tests assert against (only meaningful for `.remoteGUI`).
     private(set) var isVideoActive: Bool = false
 
+    /// Mirrors ``LivePaneSession``: a `.remoteGUI` pane that was video-active before `pause()` is
+    /// remembered so `resume()` re-activates it. Guarded to `.remoteGUI` so the unconditional-flip cap
+    /// tests (which never call pause/resume) are unaffected.
+    private var wasVideoActiveBeforePause = false
+
     // MARK: Init
 
     /// Builds a fake session from `spec` (the store-injected shape). Mints a placeholder id; the store
@@ -73,11 +78,23 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     func pause() async {
         pauseCount += 1
         events.append(.pause)
+        // Mirror LivePaneSession: suspend live video and remember it for resume (.remoteGUI only).
+        if isVideoActive {
+            wasVideoActiveBeforePause = true
+            isVideoActive = false
+            events.append(.videoActive(false))
+        }
     }
 
     func resume() async {
         resumeCount += 1
         events.append(.resume)
+        // Mirror LivePaneSession: re-activate video that was active before pause (.remoteGUI only).
+        if kind == .remoteGUI, wasVideoActiveBeforePause {
+            wasVideoActiveBeforePause = false
+            isVideoActive = true
+            events.append(.videoActive(true))
+        }
     }
 
     func teardown() async {

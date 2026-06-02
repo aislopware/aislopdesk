@@ -39,6 +39,11 @@ struct PaneLeafView: View {
     /// the regular ``PaneTreeView`` so each visible terminal host routes first-responder through it;
     /// `nil` on the compact single-host carousel (no race to coordinate).
     var focusCoordinator: PaneFocusCoordinator? = nil
+    /// The store, threaded so a `.remoteGUI` leaf routes video activation through
+    /// ``WorkspaceStore/activateVideo(_:)`` (the cap-enforcing seam). Optional so faked-handle /
+    /// preview paths still construct a leaf; when `nil` the remote-GUI leaf falls back to direct
+    /// activation (no cap — only the no-store preview case).
+    var store: WorkspaceStore? = nil
 
     /// The concrete live session, when this is a production handle (the only thing that owns the
     /// proven per-session objects). `nil` for a faked handle / not-yet-materialized leaf.
@@ -65,7 +70,7 @@ struct PaneLeafView: View {
         case .claudeCode:
             ClaudeCodePaneView(live: live, spec: spec, focusCoordinator: focusCoordinator)
         case .remoteGUI:
-            RemoteGUIPaneView(live: live)
+            RemoteGUIPaneView(live: live, store: store)
         }
     }
 
@@ -337,6 +342,7 @@ private struct ClaudeCodePaneView: View {
             }
             .buttonStyle(.borderless)
             .help(showInspector ? "Hide inspector" : "Show inspector")
+            .accessibilityLabel(showInspector ? "Hide inspector" : "Show inspector")
             .disabled(live.inspector == nil)
         }
         .padding(.horizontal, 8)
@@ -350,21 +356,69 @@ private struct ClaudeCodePaneView: View {
 /// A `.remoteGUI` leaf: the live ``RemoteWindowPanel`` with the pane-chrome owning close
 /// (`showCloseButton: false`). Video decode activates on appear / deactivates on disappear so a
 /// hidden / torn-down pane holds no decode stack (docs/22 §7 the video resource ceiling).
+///
+/// Activation is routed through ``WorkspaceStore/activateVideo(_:)`` so the `liveVideoCap` is actually
+/// enforced at runtime (the store self-excludes this pane + counts other active video panes). When the
+/// cap is saturated, `activateVideo` returns `false` and this leaf renders a gated placeholder instead
+/// of opening a decode stack — so a cap-saturated pane never silently exceeds the ceiling. Without a
+/// store (preview / faked path) it falls back to direct, un-capped activation.
 private struct RemoteGUIPaneView: View {
     let live: LivePaneSession
+    /// The cap-enforcing store. `nil` only on the no-store preview path.
+    var store: WorkspaceStore?
+    /// Whether this pane was admitted to hold live video (the store said yes, or the no-store fallback
+    /// activated it). When `false` the pane is over-cap and shows the gated placeholder.
+    @State private var admitted = false
 
     var body: some View {
         Group {
-            if let model = live.remoteWindow {
+            if admitted, let model = live.remoteWindow {
                 RemoteWindowPanel(model: model, showCloseButton: false)
+            } else if !admitted {
+                gatedPlaceholder
             } else {
                 Color.clear
             }
         }
-        // Activate on appear (decode only the on-screen pane), deactivate on disappear (battery). The
-        // session mirrors `isVideoActive`; the store reads that flag to enforce `liveVideoCap`.
-        .onAppear { live.setVideoActive(true) }
-        .onDisappear { live.setVideoActive(false) }
+        // Activate on appear (decode only the on-screen pane), deactivate on disappear (battery).
+        // Routed through the store so `liveVideoCap` is enforced; the no-store preview path activates
+        // directly. The store reads `isVideoActive` to count concurrent live video panes.
+        .onAppear {
+            if let store {
+                admitted = store.activateVideo(live.id)
+            } else {
+                live.setVideoActive(true)
+                admitted = live.isVideoActive
+            }
+        }
+        .onDisappear {
+            if let store {
+                store.deactivateVideo(live.id)
+            } else {
+                live.setVideoActive(false)
+            }
+            admitted = false
+        }
+    }
+
+    /// Shown when the cap is saturated: the pane is on-screen but NOT decoding (no UDP / VTDecompress /
+    /// CADisplayLink). Mirrors the leaf placeholder style with a cap caption.
+    private var gatedPlaceholder: some View {
+        ZStack {
+            Rectangle().fill(.background)
+            VStack(spacing: 10) {
+                Image(systemName: "pause.rectangle")
+                    .font(.system(size: 34, weight: .regular))
+                    .foregroundStyle(.secondary)
+                Text("Video paused")
+                    .font(.headline)
+                Text("too many live windows")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }
 #endif

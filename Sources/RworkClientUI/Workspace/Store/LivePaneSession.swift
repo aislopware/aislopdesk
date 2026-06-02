@@ -52,6 +52,13 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// The live inspector second-channel client. Set when the inspector is subscribed; nilled on
     /// pause/teardown. Private so callers go through the lifecycle methods.
     private var inspectorClient: InspectorClient?
+    /// The detached re-subscribe task spawned by ``resume()``. Tracked + cancelled by `pause()` /
+    /// `teardown()` so a re-subscribe that loses the race against a same-turn teardown is cancelled and
+    /// closes the socket it just built — defusing the "T builds a client after teardown" window. The
+    /// detachment is load-bearing: `subscribeInspector()` ends in `await model.consume(...)`, which only
+    /// returns when the stream closes, so it can NEVER be awaited inline by `resume()` (that would hang
+    /// the scenePhase foreground fan-out). It is tracked + cancellable, not awaited.
+    private var inspectorTask: Task<Void, Never>?
 
     /// The remote-GUI (video) model for a `.remoteGUI` pane. `nil` for other kinds.
     public let remoteWindow: RemoteWindowModel?
@@ -71,6 +78,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// See ``PaneSessionHandle/isVideoActive``. Mirrors whether the `remoteWindow` has an active
     /// descriptor; always `false` for non-`.remoteGUI` panes.
     public private(set) var isVideoActive: Bool = false
+
+    /// Whether this `.remoteGUI` pane's video was active when ``pause()`` suspended it, so ``resume()``
+    /// can re-open exactly the set that was admitted before background. Cap-safe WITHOUT consulting the
+    /// store: resume re-opens at most what already satisfied `liveVideoCap`, so it cannot exceed it.
+    private var wasVideoActiveBeforePause = false
 
     // MARK: Automation seam (RWORK_AUTOTYPE)
 
@@ -223,8 +235,18 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         guard kind == .claudeCode, let model = inspector else { return }
         guard inspectorClient == nil else { return }
         guard let endpoint = inspectorEndpoint, let client = makeInspector?(endpoint) else { return }
+        // Cancelled before we stored anything (e.g. pause()/teardown() fired between resume's spawn and
+        // here) — close the just-built client so its lazily-opened socket is never stranded.
+        if Task.isCancelled { await client.close(); return }
         inspectorClient = client
         try? await client.subscribe(fromSeq: 0)
+        // Torn down WHILE we were subscribing: drop our reference (if still ours) and close — this is
+        // the window that actually defuses "a re-subscribe builds a live client after teardown".
+        if Task.isCancelled {
+            if inspectorClient === client { inspectorClient = nil }
+            await client.close()
+            return
+        }
         // Fold the live stream. `consume` returns when the stream finishes (transport closed, e.g. by
         // a `pause()` that closed the client) — at which point we drop the dangling reference so a
         // later `resume()` can rebuild.
@@ -256,9 +278,20 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     ///   stream, which unblocks the `consume` loop in ``subscribeInspector()`` (it then nils the ref).
     public func pause() async {
         await connection?.pause()
+        // Cancel any in-flight re-subscribe BEFORE closing the client so a re-check sees cancellation.
+        inspectorTask?.cancel()
+        inspectorTask = nil
         if let client = inspectorClient {
             await client.close()
             inspectorClient = nil
+        }
+        // Suspend live video too (docs/22 §4 fan-out): iOS would kill the app for stranding the
+        // 2-UDP / VTDecompression / CADisplayLink stack across background. setVideoActive(false) closes
+        // the remote window (RemoteWindowPanel reacts to model.active == nil → pipeline.deactivate()).
+        // Remember it was active so resume() can re-open at most the set that was already admitted.
+        if isVideoActive {
+            wasVideoActiveBeforePause = true
+            setVideoActive(false)
         }
     }
 
@@ -269,8 +302,19 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     ///   fold then proceeds in the background `subscribeInspector()` loop.
     public func resume() async {
         await connection?.resume()
+        // Restore live video for a `.remoteGUI` pane that was active before pause (cap-safe: re-opens
+        // at most the set already admitted, so it cannot exceed liveVideoCap — no store consult needed).
+        if kind == .remoteGUI, wasVideoActiveBeforePause {
+            wasVideoActiveBeforePause = false
+            setVideoActive(true)
+        }
         if kind == .claudeCode, inspector != nil, inspectorClient == nil {
-            Task { [weak self] in await self?.subscribeInspector() }
+            // Track + cancel a prior re-subscribe before spawning a fresh one, so a teardown/pause that
+            // arrives in the same main-actor turn can cancel this (the subscribeInspector() cancellation
+            // re-checks then close the just-built client). NOT awaited — the fold blocks until the
+            // stream closes, so awaiting here would hang the scenePhase foreground fan-out.
+            inspectorTask?.cancel()
+            inspectorTask = Task { [weak self] in await self?.subscribeInspector() }
         }
     }
 
@@ -281,6 +325,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// - closes any live video window (stops the orchestrator).
     public func teardown() async {
         await connection?.disconnect()
+        // Cancel any in-flight re-subscribe BEFORE closing the client so a re-check sees cancellation
+        // and closes the just-built client itself — this closes the "T builds a client after teardown"
+        // window.
+        inspectorTask?.cancel()
+        inspectorTask = nil
         if let client = inspectorClient {
             await client.close()
             inspectorClient = nil
