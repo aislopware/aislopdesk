@@ -77,7 +77,7 @@ public final class NWVideoClientTransport: VideoClientTransport, @unchecked Send
     }
 
     private func receiveMedia(on conn: NWConnection, onMedia: @escaping @Sendable (VideoChannel, Data) -> Void) {
-        conn.receiveMessage { [weak self] data, _, isComplete, error in
+        conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, data.count >= 1 {
                 let tag = data[data.startIndex]
@@ -85,17 +85,23 @@ public final class NWVideoClientTransport: VideoClientTransport, @unchecked Send
                     onMedia(channel, Data(data[(data.startIndex + 1)...]))
                 }
             }
-            if error == nil && !isComplete {
+            // UDP: `receiveMessage` delivers EVERY datagram with `isComplete == true` (each
+            // datagram IS a complete message), so re-arming only on `!isComplete` stops the
+            // loop dead after the FIRST datagram — we'd get the helloAck and then never one
+            // video fragment (the window stays blank). Keep receiving as long as there is no
+            // error; the loop ends when the connection errors or is cancelled.
+            if error == nil {
                 self.receiveMedia(on: conn, onMedia: onMedia)
             }
         }
     }
 
     private func receiveCursor(on conn: NWConnection, onCursor: @escaping @Sendable (Data) -> Void) {
-        conn.receiveMessage { [weak self] data, _, isComplete, error in
+        conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, !data.isEmpty { onCursor(data) }
-            if error == nil && !isComplete {
+            // Same UDP re-arm fix as receiveMedia (isComplete is always true per datagram).
+            if error == nil {
                 self.receiveCursor(on: conn, onCursor: onCursor)
             }
         }
