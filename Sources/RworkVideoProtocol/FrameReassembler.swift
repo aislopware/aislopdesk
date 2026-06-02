@@ -69,8 +69,22 @@ public struct FrameReassembler {
     /// AND surface older drops. Each maps to one request-recovery signal.
     private var droppedQueue: [UInt32] = []
 
-    public init(fec: FECScheme? = nil) {
+    /// How many frameIDs past the loss frontier a frame stays eligible for FEC when
+    /// the ONLY thing missing is parity that could still fill its (single-per-group)
+    /// data holes. The packetizer emits parity LAST within a frame, so on a
+    /// reordering UDP network frame N's parity commonly arrives just AFTER frame
+    /// N+1's data begins (doc 17 §3.6). Without this grace, frame N would be swept
+    /// the instant N+1's first data fragment advanced the frontier — turning a
+    /// fully-recoverable single loss into a drop — and the late parity would then be
+    /// `.stale` and useless. The window is small (bounded buffering) but covers the
+    /// realistic "parity reordered past the next frame" case. A frame that is hopeless
+    /// for a reason FEC parity CANNOT fix (>=2 data losses in a group, or any missing
+    /// data with no FEC) is still swept immediately, regardless of the grace.
+    private let fecReorderGrace: Int
+
+    public init(fec: FECScheme? = nil, fecReorderGrace: Int = 2) {
         self.fec = fec
+        self.fecReorderGrace = max(0, fecReorderGrace)
     }
 
     /// Pops the next unrecoverably-lost frameID detected during prior ``ingest(_:)``
@@ -140,17 +154,57 @@ public struct FrameReassembler {
 
     /// Retires every pending frame strictly older than the loss frontier that can no
     /// longer complete, queueing each as a drop.
+    ///
+    /// A frame whose ONLY obstacle is FEC parity that has not yet arrived (every
+    /// missing-data group has exactly one hole, repairable once its parity lands) is
+    /// granted a bounded ``fecReorderGrace`` window past the frontier before being
+    /// swept — because the packetizer emits parity LAST, so on a reordering network it
+    /// commonly arrives just after the next frame's data (doc 17 §3.6). A frame that is
+    /// hopeless for a reason parity cannot fix is swept immediately.
     private mutating func sweepHopelessFrames() {
         guard let frontier = highestSeenFrameID else { return }
         let hopeless = pending.keys.filter { fid in
             // fid is strictly OLDER than the frontier: frontier - fid > 0.
-            frontier.distanceWrapped(from: fid) > 0 && !canEventuallyComplete(fid)
+            let age = frontier.distanceWrapped(from: fid)
+            guard age > 0, !canEventuallyComplete(fid) else { return false }
+            // Hole(s) only fillable by not-yet-arrived parity → keep within the grace
+            // window so reordered parity (emitted last) still has a chance to land.
+            if awaitingRecoverableParity(fid), age <= fecReorderGrace { return false }
+            return true
         }
         // Drop oldest-first for deterministic recovery-signal ordering.
         for fid in hopeless.sorted(by: { $0.distanceWrapped(from: $1) < 0 }) {
             retire(fid, completed: false)
             droppedQueue.append(fid)
         }
+    }
+
+    /// True when `frameID`'s only obstacle to completion is FEC parity that has not
+    /// yet arrived: it has an FEC scheme, every group with a missing data fragment is
+    /// missing exactly ONE (XOR-recoverable) and that group's parity has not been
+    /// ingested yet. Such a frame is NOT permanently hopeless — its late, reordered
+    /// parity could still complete it — so the sweep grants it the reorder grace.
+    private func awaitingRecoverableParity(_ frameID: UInt32) -> Bool {
+        guard let entry = pending[frameID], let fec else { return false }
+        let dataCount = resolvedDataCount(entry)
+        guard dataCount > 0 else { return false }
+        var index = 0
+        var groupIndex = 0
+        let parityBase = dataCount
+        var sawRepairableHole = false
+        while index < dataCount {
+            let upper = min(index + fec.groupSize, dataCount)
+            let missing = (index ..< upper).filter { entry.data[UInt16($0)] == nil }.count
+            if missing >= 2 { return false } // not parity-repairable: permanently hopeless
+            if missing == 1 {
+                // A single hole repairable IFF its parity is still outstanding.
+                if entry.parity[parityBase + groupIndex] != nil { return false }
+                sawRepairableHole = true
+            }
+            index += fec.groupSize
+            groupIndex += 1
+        }
+        return sawRepairableHole
     }
 
     /// Attempts to finish a specific frame; emits `.completed` when whole.

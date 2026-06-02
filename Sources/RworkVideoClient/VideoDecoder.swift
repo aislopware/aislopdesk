@@ -97,19 +97,38 @@ public final class VideoDecoder: @unchecked Sendable {
 
     /// Wraps AVCC bytes (length-prefixed NAL units — see RworkVideoProtocol.NALUnit)
     /// in a `CMSampleBuffer` against the running format description.
+    ///
+    /// Core Media OWNS the backing bytes: the block buffer is allocated with
+    /// `kCFAllocatorDefault` + `memoryBlock: nil` (so it allocates `dataLength` bytes
+    /// itself), then the AVCC bytes are COPIED in via `CMBlockBufferReplaceDataBytes`.
+    /// We deliberately do NOT use `kCFAllocatorNull` over a local `NSMutableData`'s
+    /// pointer — that only references the raw bytes without retaining them, a latent
+    /// use-after-free if the local is freed (or its lifetime shortened by the optimizer)
+    /// while the returned `CMSampleBuffer` still points at them. Copying makes the
+    /// buffer self-contained and correct regardless of sync/async decode.
     private func makeSampleBuffer(avcc: Data, formatDescription: CMFormatDescription) throws -> CMSampleBuffer {
+        let dataLength = avcc.count
         var blockBuffer: CMBlockBuffer?
-        let mutableData = NSMutableData(data: avcc)
         var status = CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault, memoryBlock: mutableData.mutableBytes,
-            blockLength: mutableData.length, blockAllocator: kCFAllocatorNull,
-            customBlockSource: nil, offsetToData: 0, dataLength: mutableData.length,
-            flags: 0, blockBufferOut: &blockBuffer
+            allocator: kCFAllocatorDefault, memoryBlock: nil,
+            blockLength: dataLength, blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil, offsetToData: 0, dataLength: dataLength,
+            flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &blockBuffer
         )
         guard status == noErr, let blockBuffer else { throw VideoDecoderError.sampleBufferFailed(status) }
 
+        // Copy the AVCC bytes into the block buffer's own (Core Media-owned) storage.
+        status = avcc.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return noErr } // empty frame: nothing to copy
+            return CMBlockBufferReplaceDataBytes(
+                with: base, blockBuffer: blockBuffer,
+                offsetIntoDestination: 0, dataLength: dataLength
+            )
+        }
+        guard status == noErr else { throw VideoDecoderError.sampleBufferFailed(status) }
+
         var sampleBuffer: CMSampleBuffer?
-        var sampleSize = mutableData.length
+        var sampleSize = dataLength
         status = CMSampleBufferCreateReady(
             allocator: kCFAllocatorDefault, dataBuffer: blockBuffer,
             formatDescription: formatDescription, sampleCount: 1,
