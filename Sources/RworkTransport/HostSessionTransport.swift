@@ -264,6 +264,13 @@ public actor HostSessionTransport {
     /// The highest seq assigned so far.
     public var highestSeq: Int64 { replay.highestSeq }
 
+    /// Whether the client is currently considered online (a data channel is bound and
+    /// healthy). Flips to `false` when a channel fails / FINs / `bye` arrives, and back to
+    /// `true` on `bind`/`resume`. The owner (``HostServer``) reads this to drive the
+    /// `idleTTL` reaper: a session whose client has been offline longer than the TTL is
+    /// torn down.
+    public var clientOnline: Bool { replay.isClientOnline }
+
     /// The bound data channel's current state, or `nil` if no data channel is bound.
     /// Internal (not public): used by transport tests to poll for `.ready` before the
     /// first post-resume send so the assertion does not race the loopback teardown churn.

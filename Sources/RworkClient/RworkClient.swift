@@ -113,6 +113,15 @@ public actor RworkClient {
     private var ackPending = false
     private var closed = false
     private var paused = false
+
+    /// Set while we are deliberately replacing the transport (reconnect entry / pause).
+    /// `teardownTransport()` closes the OLD transport, which finishes the OLD inbound
+    /// stream and lands the old pump in ``handleStreamEnded(error:)`` with `nil` — a
+    /// SELF-INFLICTED end, not a real drop. This flag lets `handleStreamEnded` suppress
+    /// that spurious `.disconnected` (mirror of the `closed` guard), so `ReconnectManager`
+    /// does not queue a redundant reconnect campaign. The real drop path
+    /// (``_forceDropForTesting()`` / transport failing on its own) leaves this `false`.
+    private var tearingDown = false
     private var lastSentResize: (cols: UInt16, rows: UInt16, px: UInt16, py: UInt16)?
 
     /// Optional terminal renderer fed the inbound output (libghostty seam / headless).
@@ -146,12 +155,17 @@ public actor RworkClient {
         port: UInt16,
         handshakeTimeout: Duration = .seconds(10)
     ) async throws {
-        guard !closed else { throw ClientError.notImplemented("connect after close") }
+        guard !closed else { throw ClientError.invalidState("connect after close") }
         self.host = host
         self.port = port
 
-        // Tear down any prior transport (reconnect path) so we never double-pump.
+        // Tear down any prior transport (reconnect path) so we never double-pump. Guard the
+        // teardown so the old inbound pump's self-inflicted stream-end (the OLD transport
+        // closing finishes the OLD inbound stream) does NOT surface a spurious `.disconnected`
+        // that would make ReconnectManager queue a redundant reconnect campaign.
+        tearingDown = true
         await teardownTransport()
+        tearingDown = false
 
         let transport = ClientTransport()
         let resume = sessionID ?? WireMessage.newSessionID
@@ -259,9 +273,11 @@ public actor RworkClient {
     }
 
     private func handleStreamEnded(error: Error?) {
-        // Surface a disconnect (unless we are closing on purpose). ReconnectManager
-        // watches `events` / observes the thrown connect error to drive reconnect.
-        guard !closed else { return }
+        // Surface a disconnect (unless we are closing on purpose, or we ourselves are
+        // tearing the old transport down to reconnect — in which case this end is
+        // self-inflicted and a real `.disconnected` would queue a redundant reconnect).
+        // ReconnectManager watches `events` / observes the thrown connect error.
+        guard !closed, !tearingDown else { return }
         let reason: String
         if let error { reason = String(describing: error) } else { reason = "stream ended (FIN)" }
         eventBroadcaster.yield(.disconnected(reason: reason))
@@ -309,14 +325,14 @@ public actor RworkClient {
 
     /// Sends raw keystroke/paste bytes as `input`.
     public func sendInput(_ bytes: Data) async throws {
-        guard let transport else { throw ClientError.notImplemented("sendInput before connect") }
+        guard let transport else { throw ClientError.invalidState("sendInput before connect") }
         try await transport.sendInput(bytes)
     }
 
     /// Sends a `resize`, remembering it so it is re-asserted after a reconnect.
     public func sendResize(cols: UInt16, rows: UInt16, pxWidth: UInt16 = 0, pxHeight: UInt16 = 0) async throws {
         lastSentResize = (cols, rows, pxWidth, pxHeight)
-        guard let transport else { throw ClientError.notImplemented("sendResize before connect") }
+        guard let transport else { throw ClientError.invalidState("sendResize before connect") }
         try await transport.sendResize(cols: cols, rows: rows, pxWidth: pxWidth, pxHeight: pxHeight)
     }
 
@@ -333,7 +349,11 @@ public actor RworkClient {
         if let transport {
             try? await transport.sendBye()
         }
+        // Guard the teardown so the old inbound pump's self-inflicted end does not add a
+        // spurious `.disconnected` on top of the explicit "paused" one we yield below.
+        tearingDown = true
         await teardownTransport()
+        tearingDown = false
         eventBroadcaster.yield(.disconnected(reason: "paused (backgrounded)"))
     }
 
@@ -342,7 +362,7 @@ public actor RworkClient {
     public func resume() async throws {
         guard paused, !closed else { return }
         paused = false
-        guard let host, let port else { throw ClientError.notImplemented("resume before first connect") }
+        guard let host, let port else { throw ClientError.invalidState("resume before first connect") }
         try await connect(host: host, port: port)
     }
 
@@ -367,12 +387,19 @@ public actor RworkClient {
     /// reconnect can replace them. Cancels the inbound + ack tasks and closes the
     /// transport (which cancels its forwarders and the underlying NWConnections).
     private func teardownTransport() async {
+        let oldInbound = inboundTask
         inboundTask?.cancel()
         ackTask?.cancel()
         inboundTask = nil
         ackTask = nil
         await transport?.close()
         transport = nil
+        // Drain the old inbound pump to completion. `close()` above finished the old
+        // inbound stream, so the pump is unwinding into `handleStreamEnded(error: nil)`.
+        // Awaiting its `.value` here guarantees that self-inflicted end is fully processed
+        // BEFORE the caller clears `tearingDown` — so its `.disconnected` is suppressed
+        // deterministically (not by timing). The task never throws (`Task<Void, Never>`).
+        await oldInbound?.value
     }
 
     /// Permanently closes the client: tears down the transport and finishes the

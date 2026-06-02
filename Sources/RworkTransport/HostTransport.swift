@@ -33,17 +33,54 @@ public actor HostTransport {
         let control: NWMessageChannel
         let lastReceivedSeq: Int64
         let returningClient: Bool
+        /// Monotonic timestamp (``ContinuousClock``) at which the control handshake
+        /// completed and this entry was created. The reaper expires it once
+        /// `now - createdAt > pendingDataTimeout`.
+        let createdAt: ContinuousClock.Instant
     }
     private var pending: [UUID: PendingControl] = [:]
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "rwork.host.listener")
 
+    /// Bounded wait for the whole accept→handshake sequence on a single connection,
+    /// symmetric with the client's `handshakeTimeout`. Without it, a connection that
+    /// stalls mid-handshake (never sends its preamble / hello) parks a detached
+    /// `handshake()` Task and its `NWConnection` forever.
+    let handshakeTimeout: Duration
+
+    /// How long a half-open handshake (CONTROL completed, DATA never associated) may
+    /// linger before the reaper closes its control channel and drops the pending entry.
+    /// Guards the iOS-background / NetBird-flap case where the DATA connection never
+    /// arrives after `helloAck`. Injectable (tiny values) so tests drive it without
+    /// wall-clock sleeps; default 15s.
+    let pendingDataTimeout: Duration
+
+    /// Clock used for pending-entry expiry. Injectable so a test can stamp + drive the
+    /// reaper deterministically; production uses the real ``ContinuousClock``.
+    private let clock: ContinuousClock
+
     // New sessions are published here for the owner (WF-3) to attach a PTY to.
     private let sessionStream: AsyncStream<HostSessionTransport>
     private let sessionContinuation: AsyncStream<HostSessionTransport>.Continuation
 
-    public init() {
+    /// Background task that periodically expires stale pending handshakes (started by
+    /// ``start(port:)``, cancelled by ``stop()``). The deterministic test path calls
+    /// ``reapExpiredPending(now:)`` directly instead of relying on this timer.
+    private var reaperTask: Task<Void, Never>?
+
+    /// - Parameters:
+    ///   - handshakeTimeout: bound on the per-connection accept→handshake sequence
+    ///     (default 10s, matching the client).
+    ///   - pendingDataTimeout: bound on a CONTROL-only (half-open) handshake waiting for
+    ///     its DATA channel (default 15s).
+    public init(
+        handshakeTimeout: Duration = .seconds(10),
+        pendingDataTimeout: Duration = .seconds(15)
+    ) {
+        self.handshakeTimeout = handshakeTimeout
+        self.pendingDataTimeout = pendingDataTimeout
+        self.clock = ContinuousClock()
         var continuation: AsyncStream<HostSessionTransport>.Continuation!
         self.sessionStream = AsyncStream { continuation = $0 }
         self.sessionContinuation = continuation
@@ -95,14 +132,47 @@ public actor HostTransport {
             listener.start(queue: queue)
         }
         boundPort = resolvedPort
+
+        // Start the background reaper that periodically expires half-open handshakes
+        // (CONTROL completed, DATA never associated). It ticks at a fraction of the
+        // timeout so an abandoned pending entry never lingers much past the bound. Tests
+        // inject a tiny `pendingDataTimeout` and/or drive `reapExpiredPending(now:)`
+        // directly, so they never wait on this wall-clock timer.
+        startReaper()
     }
 
-    /// Stops the listener. Existing sessions keep their channels until closed.
+    /// Stops the listener and the reaper. Existing sessions keep their channels until
+    /// closed.
     public func stop() {
+        reaperTask?.cancel()
+        reaperTask = nil
         listener?.cancel()
         listener = nil
         sessionContinuation.finish()
     }
+
+    /// Launches the periodic reaper loop. Idempotent (a prior task is cancelled first).
+    private func startReaper() {
+        reaperTask?.cancel()
+        // Tick at a quarter of the timeout (clamped to a small floor) so expiry latency
+        // is bounded without busy-spinning.
+        let tick = max(pendingDataTimeout / 4, .milliseconds(50))
+        reaperTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: tick)
+                } catch {
+                    return // cancelled
+                }
+                guard let self else { return }
+                await self.reapExpiredPending(now: self.clockNow())
+            }
+        }
+    }
+
+    /// The current monotonic instant from the (production) clock. Isolated read so the
+    /// reaper task can stamp `now` for ``reapExpiredPending(now:)``.
+    private func clockNow() -> ContinuousClock.Instant { clock.now }
 
     /// Drops a session from the map and tears down its channels + forwarder tasks.
     ///
@@ -116,13 +186,72 @@ public actor HostTransport {
         await session.close()
     }
 
+    // MARK: Half-open pending reaper
+
+    /// Expires every pending (CONTROL-only) handshake whose DATA channel has not
+    /// associated within ``pendingDataTimeout`` as measured from its `createdAt`. For
+    /// each expired entry: remove it from `pending` and close its control channel so the
+    /// leaked `NWMessageChannel` + connection are released.
+    ///
+    /// Driven by the background reaper task in production; called directly by tests with
+    /// a synthesized `now` so the behaviour is verified WITHOUT any wall-clock sleep.
+    /// `internal` (not `public`) — it is a test/seam hook, not part of the daemon API.
+    func reapExpiredPending(now: ContinuousClock.Instant) {
+        let expired = pending.filter { now - $0.value.createdAt > pendingDataTimeout }
+        guard !expired.isEmpty else { return }
+        for (id, entry) in expired {
+            pending[id] = nil
+            // Close on a detached actor-hop: `close()` cancels the NWConnection, which is
+            // fine to fire-and-forget here (the entry is already removed, so no double
+            // close, and a returning-client reuse can no longer race it).
+            Task { await entry.control.close() }
+        }
+    }
+
+    /// Test seam: the number of half-open handshakes currently awaiting their DATA
+    /// channel. Lets a test assert the pending map empties after a reap.
+    func pendingCount() -> Int { pending.count }
+
+    /// Test seam: whether a specific id is still pending (DATA not yet associated).
+    func isPending(_ id: UUID) -> Bool { pending[id] != nil }
+
+    /// Test seam: a monotonic instant guaranteed to be past every current pending
+    /// entry's expiry deadline. A test passes this to ``reapExpiredPending(now:)`` to
+    /// force expiry deterministically — no wall-clock sleep, no guessing `createdAt`.
+    func instantPastAllPendingDeadlines() -> ContinuousClock.Instant {
+        // Every pending entry was created at <= clock.now; advancing well past the
+        // timeout from *now* therefore exceeds `createdAt + pendingDataTimeout` for all.
+        clock.now.advanced(by: pendingDataTimeout + pendingDataTimeout)
+    }
+
+    /// Test seam: the current monotonic instant from the actor's clock — a value strictly
+    /// AT-OR-AFTER every current pending entry's `createdAt`. A test passes this to
+    /// ``reapExpiredPending(now:)`` to assert a young entry is NOT reaped before its
+    /// deadline.
+    func instantNowForTest() -> ContinuousClock.Instant { clock.now }
+
     // MARK: Accept + handshake
 
     private func acceptConnection(_ connection: NWConnection) {
-        // Each new connection is handshaked independently; failures are isolated.
+        // Each new connection is handshaked independently; failures are isolated. The
+        // whole sequence is bounded by `handshakeTimeout` (symmetric with the client):
+        // a connection that opens but stalls before/within the handshake (never sends a
+        // preamble or hello) must not park this Task + its NWConnection forever. We race
+        // the handshake against a single sleep; whichever finishes first wins, and on a
+        // timeout (or any error) we cancel the connection so nothing leaks.
         Task {
             do {
-                try await self.handshake(connection)
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        try await self.handshake(connection)
+                    }
+                    group.addTask {
+                        try await Task.sleep(for: self.handshakeTimeout)
+                        throw RworkTransportError.timedOut("host handshake")
+                    }
+                    try await group.next()
+                    group.cancelAll()
+                }
             } catch {
                 connection.cancel()
             }
@@ -189,7 +318,8 @@ public actor HostTransport {
         pending[authoritativeID] = PendingControl(
             control: control,
             lastReceivedSeq: lastReceivedSeq,
-            returningClient: isReturning
+            returningClient: isReturning,
+            createdAt: clock.now
         )
     }
 

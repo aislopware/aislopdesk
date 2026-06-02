@@ -11,30 +11,9 @@ import RworkHost
 let arguments = CommandLine.arguments
 let programName = (arguments.first as NSString?)?.lastPathComponent ?? "rwork-hostd"
 
-func parseArgs(_ args: [String]) -> (port: UInt16, shell: String?)? {
-    var port: UInt16 = 7420
-    var shell: String?
-    var iterator = args.dropFirst().makeIterator()
-    while let arg = iterator.next() {
-        switch arg {
-        case "--port", "-p":
-            guard let value = iterator.next(), let p = UInt16(value) else { return nil }
-            port = p
-        case "--shell", "-s":
-            guard let value = iterator.next() else { return nil }
-            shell = value
-        case "--help", "-h":
-            return nil
-        default:
-            return nil
-        }
-    }
-    return (port, shell)
-}
-
-guard let parsed = parseArgs(arguments) else {
+guard let parsed = HostdArguments.parse(arguments) else {
     FileHandle.standardError.write(Data(
-        "usage: \(programName) [--port N] [--shell /path/to/shell]\n".utf8))
+        (HostdArguments.usage(programName: programName) + "\n").utf8))
     exit(2)
 }
 
@@ -42,7 +21,11 @@ let log: @Sendable (String) -> Void = { message in
     FileHandle.standardError.write(Data("\(programName): \(message)\n".utf8))
 }
 
-let server = HostServer(port: parsed.port, shellPath: parsed.shell)
+let server = HostServer(
+    port: parsed.port,
+    shellPath: parsed.shell,
+    launchMode: parsed.launchMode
+)
 server.onLog = log
 
 // Install a SIGINT handler that stops the server and exits. Use a DispatchSource so
@@ -62,7 +45,14 @@ Task {
     do {
         try await server.start()
         let bound = await server.boundPort() ?? parsed.port
-        log("listening on 0.0.0.0:\(bound) (shell=\(server.shellPath))")
+        let mode: String
+        switch parsed.launchMode {
+        case .shell:
+            mode = "shell"
+        case let .claudeCode(profile):
+            mode = "claude (TERM=\(profile.term.rawValue))"
+        }
+        log("listening on 0.0.0.0:\(bound) (shell=\(server.shellPath), mode=\(mode))")
     } catch {
         log("failed to start: \(error)")
         exit(1)

@@ -6,23 +6,6 @@ import RworkProtocol
 /// reconnect / dedup are exercised by the e2e tests in this target.
 final class RworkClientSmokeTests: XCTestCase {
 
-    func testClientConnectionStartsUnconnected() {
-        let connection = ClientConnection()
-        XCTAssertNil(connection.sessionID)
-        XCTAssertNil(connection.connection)
-        XCTAssertEqual(connection.lastReceivedSeq, 0)
-    }
-
-    func testNoteReceivedOutputAdvancesContiguously() {
-        let connection = ClientConnection()
-        connection.noteReceivedOutput(seq: 1)
-        connection.noteReceivedOutput(seq: 2)
-        XCTAssertEqual(connection.lastReceivedSeq, 2)
-        // A gap (skip to 4) must not advance the contiguous counter.
-        connection.noteReceivedOutput(seq: 4)
-        XCTAssertEqual(connection.lastReceivedSeq, 2)
-    }
-
     func testRworkClientStartsUnconnected() async {
         let client = RworkClient()
         let sid = await client.sessionID

@@ -2,23 +2,34 @@ import Foundation
 
 /// Builds the curated environment for a spawned login shell.
 ///
-/// WF-7 owns the Claude-Code-specific environment (`TERM=xterm-ghostty`,
-/// `CLAUDE_CODE_NO_FLICKER=1`, `claude setup-token` reuse, etc.). For WF-3 we pass a
-/// **sane, generic** terminal environment so the round-trip / interactive / resize
-/// tests exercise a real shell, without baking in any Claude-specific values.
+/// WF-7 owns the Claude-Code-specific environment (`CLAUDE_CODE_NO_FLICKER=1`,
+/// `CLAUDE_CODE_ENTRYPOINT=remote_mobile`, `claude setup-token` reuse, etc.) in
+/// ``ClaudeCodeProfile`` / ``ClaudeAuthResolver`` (selected via
+/// `HostServer.LaunchMode.claudeCode`). This generic profile is the env for a plain
+/// login shell (WF-3) and stays Claude-agnostic.
 ///
-/// WF-7 NOTE: the Claude-Code-specific curated env (`TERM=xterm-ghostty`,
-/// `CLAUDE_CODE_NO_FLICKER=1`, `CLAUDE_CODE_ENTRYPOINT=remote_mobile`) + auth resolution
-/// now live in ``ClaudeCodeProfile`` / ``ClaudeAuthResolver`` (selected via
-/// `HostServer.LaunchMode.claudeCode`). This generic profile stays Claude-agnostic: it
-/// is the env for a plain login shell (WF-3), and deliberately keeps `xterm-256color` as
-/// the safe generic default.
+/// TERM is shared: the client renders with libghostty, so the plain-shell path now
+/// advertises the SAME `TERM=xterm-ghostty` as the Claude Code path
+/// (``ClaudeCodeProfile/Term/ghostty``) — there is one source of truth, not a divergent
+/// `xterm-256color` default. `curated(term:)` takes the value so callers can pick the
+/// documented `.xterm256` fallback (#54700) symmetrically with the profile toggle.
 public enum HostEnvironment {
+    /// The default `TERM` for a spawned shell. Single source of truth shared with
+    /// ``ClaudeCodeProfile`` (its `.ghostty` raw value): the client renders with
+    /// libghostty, so a plain shell advertises the native ghostty TERM too.
+    public static let defaultTerm = ClaudeCodeProfile.Term.ghostty.rawValue
+
     /// A curated child environment: inherit a safe allowlist from the parent and layer
     /// the terminal defaults on top. We deliberately do **not** forward the parent's
     /// `PATH` blindly ([12] §1.4) — we set a conservative default the child's login
     /// shell will re-derive from its profile anyway.
-    public static func curated(parent: [String: String] = ProcessInfo.processInfo.environment)
+    ///
+    /// - Parameter term: the `TERM` to advertise. Defaults to ``defaultTerm``
+    ///   (`xterm-ghostty`), matching what the libghostty client renders.
+    public static func curated(
+        parent: [String: String] = ProcessInfo.processInfo.environment,
+        term: String = HostEnvironment.defaultTerm
+    )
         -> [String: String]
     {
         var env: [String: String] = [:]
@@ -30,7 +41,7 @@ public enum HostEnvironment {
 
         // Terminal defaults (UTF-8 end-to-end; [12] §1.4).
         if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
-        env["TERM"] = "xterm-256color" // TODO(WF-7): xterm-ghostty
+        env["TERM"] = term
         env["COLORTERM"] = "truecolor"
         env["NCURSES_NO_UTF8_ACS"] = "1"
 

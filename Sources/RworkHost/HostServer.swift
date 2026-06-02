@@ -28,7 +28,18 @@ import RworkTransport
 /// optional `idleTTL` may be set to reap sessions whose client has been offline longer
 /// than the TTL; when `nil` (default) sessions live until the shell exits or `stop()`.
 ///
-/// `@unchecked Sendable`: mutable state (`sessions`, `acceptTask`) is guarded by `lock`.
+/// When `idleTTL != nil` a background reaper polls each live session's
+/// ``HostSessionTransport/clientOnline``. The first time a session is seen offline its
+/// offline-since instant is recorded; once `now - offlineSince > idleTTL` the session is
+/// fully torn down — ``HostSession/shutdown()`` (stop forwarders, terminate the child,
+/// close the master fd) plus dropping its transport (release the channels/forwarders).
+/// A session that comes back online (reconnect) clears its offline mark, so it is never
+/// reaped while a client is attached. The reaper is deterministically testable:
+/// ``reapIdleSessions(now:)`` is the reap-now entry point a test drives with a
+/// synthesized `now` (no wall-clock sleeps).
+///
+/// `@unchecked Sendable`: mutable state (`sessions`, `acceptTask`, `offlineSince`,
+/// `reaperTask`) is guarded by `lock`.
 public final class HostServer: @unchecked Sendable {
     /// Requested TCP port (`0` lets the OS pick; read the result from ``boundPort()``).
     public let port: UInt16
@@ -41,10 +52,8 @@ public final class HostServer: @unchecked Sendable {
 
     /// What every new session spawns: a plain login shell (default) or `claude` under
     /// the curated Claude Code profile. The plain-shell path is unchanged; this is an
-    /// additional option, selected at construction.
-    ///
-    /// // TODO(rwork-hostd): expose this as a `--claude [--xterm256]` flag on the daemon
-    /// // CLI (don't over-build the flag parser here — WF-7 is the launch *logic*).
+    /// additional option, selected at construction. The daemon CLI selects it via the
+    /// `--claude [--xterm256]` flags (see `rwork-hostd/main.swift`).
     public enum LaunchMode: Sendable, Equatable {
         /// Plain login shell (the WF-3 path): `[shell] argv0=-shell`, curated generic env.
         case shell
@@ -55,10 +64,24 @@ public final class HostServer: @unchecked Sendable {
     /// The launch mode for new sessions.
     public let launchMode: LaunchMode
 
-    private let transport = HostTransport()
+    /// How often the idle reaper polls session liveness when `idleTTL != nil`. Injectable
+    /// so a daemon can tune it (and the background-timer cost stays bounded); tests drive
+    /// ``reapIdleSessions(now:)`` directly instead of waiting on this. Defaults to a
+    /// fraction of the TTL at ``start()``-time if not overridden.
+    private let reapInterval: TimeInterval?
+
+    /// Clock for the idle reaper. Injectable point is ``reapIdleSessions(now:)``; the
+    /// background timer reads ``clockNow()``.
+    private let clock = ContinuousClock()
+
+    private let transport: HostTransport
     private let lock = NSLock()
     private var sessions: [UUID: HostSession] = [:]
+    /// For each session currently observed offline, the instant it was FIRST seen
+    /// offline. Cleared when the session is seen online again. Guarded by `lock`.
+    private var offlineSince: [UUID: ContinuousClock.Instant] = [:]
     private var acceptTask: Task<Void, Never>?
+    private var reaperTask: Task<Void, Never>?
 
     /// A hook the daemon can set to log session lifecycle to stderr.
     public var onLog: (@Sendable (String) -> Void)?
@@ -67,12 +90,15 @@ public final class HostServer: @unchecked Sendable {
         port: UInt16,
         shellPath: String? = nil,
         idleTTL: TimeInterval? = nil,
-        launchMode: LaunchMode = .shell
+        launchMode: LaunchMode = .shell,
+        reapInterval: TimeInterval? = nil
     ) {
         self.port = port
         self.shellPath = shellPath ?? HostEnvironment.loginShell()
         self.idleTTL = idleTTL
         self.launchMode = launchMode
+        self.reapInterval = reapInterval
+        self.transport = HostTransport()
     }
 
     /// The port the listener actually bound to (resolved after ``start()``).
@@ -90,14 +116,120 @@ public final class HostServer: @unchecked Sendable {
                 self?.handleNewSession(sessionTransport)
             }
         }
+        startIdleReaperIfNeeded()
     }
 
     /// Stops the listener and shuts down every live session.
     public func stop() async {
         acceptTask?.cancel()
+        cancelReaperTask()
         await transport.stop()
         let live = drainSessions()
         for session in live { session.shutdown() }
+    }
+
+    /// Cancels the idle-reaper task under the lock (sync helper — keeps `NSLock` out of
+    /// the async ``stop()``).
+    private func cancelReaperTask() {
+        lock.lock(); defer { lock.unlock() }
+        reaperTask?.cancel()
+        reaperTask = nil
+    }
+
+    // MARK: Idle reaper (idleTTL)
+
+    /// Launches the background idle reaper when `idleTTL` is set. The reaper polls each
+    /// live session's online state on an interval and tears down any session whose client
+    /// has been offline longer than `idleTTL`. No-op when `idleTTL == nil` (keep-alive).
+    private func startIdleReaperIfNeeded() {
+        guard let idleTTL else { return }
+        // Poll fast relative to the TTL so reap latency is bounded; clamp to a small floor.
+        let interval = reapInterval ?? max(idleTTL / 4, 0.05)
+        let nanos = UInt64((interval * 1_000_000_000).rounded())
+        lock.lock()
+        reaperTask?.cancel()
+        reaperTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: nanos)
+                } catch {
+                    return // cancelled
+                }
+                guard let self else { return }
+                await self.reapIdleSessions(now: self.clock.now)
+            }
+        }
+        lock.unlock()
+    }
+
+    /// Reap-now entry point: tears down every live session whose client has been offline
+    /// longer than `idleTTL`, measured against `now`. Updates the per-session
+    /// offline-since marks (recording a fresh offline, clearing one that came back
+    /// online). No-op when `idleTTL == nil`.
+    ///
+    /// Deterministically testable: a test passes a synthesized `now` (e.g. the offline
+    /// mark + TTL + ε) so the reap fires WITHOUT any wall-clock sleep. Returns the ids it
+    /// reaped (for assertions / logging).
+    @discardableResult
+    public func reapIdleSessions(now: ContinuousClock.Instant) async -> [UUID] {
+        guard let idleTTL else { return [] }
+        let ttl: Duration = .seconds(idleTTL)
+
+        // Snapshot the live sessions (sync helper — no NSLock across an await).
+        let live = snapshotSessions()
+
+        // Probe each session's online state off-lock (actor hop), then decide.
+        var reaped: [UUID] = []
+        for (id, session) in live {
+            let online = await session.transport.clientOnline
+            if markOnlineOrAgeOffline(id: id, online: online, now: now) > ttl {
+                reaped.append(id)
+            }
+        }
+
+        // Tear the expired sessions down: remove from the map + offline marks, shut the
+        // session (stop forwarders, terminate child, close master fd), and drop the
+        // transport (release its channels/forwarder tasks).
+        for id in reaped {
+            let session = removeSessionForReap(id)
+            session?.shutdown()
+            await transport.dropSession(id)
+            onLog?("session \(id): reaped (client offline > \(idleTTL)s idleTTL)")
+        }
+        return reaped
+    }
+
+    /// Sync snapshot of the live sessions (keeps `NSLock` out of the async reaper).
+    private func snapshotSessions() -> [UUID: HostSession] {
+        lock.lock(); defer { lock.unlock() }
+        return sessions
+    }
+
+    /// Sync lock-guarded offline bookkeeping for one session. If `online`, clears any
+    /// offline mark and returns `.zero` (never reapable). Otherwise records the
+    /// first-seen-offline instant (`now`) if new and returns the offline age (`now -
+    /// since`), which the caller compares against the TTL.
+    private func markOnlineOrAgeOffline(id: UUID, online: Bool, now: ContinuousClock.Instant) -> Duration {
+        lock.lock(); defer { lock.unlock() }
+        if online {
+            offlineSince[id] = nil
+            return .zero
+        }
+        let since: ContinuousClock.Instant
+        if let existing = offlineSince[id] {
+            since = existing
+        } else {
+            offlineSince[id] = now
+            since = now
+        }
+        return now - since
+    }
+
+    /// Sync lock-guarded removal of a session being reaped (drops its offline mark too).
+    private func removeSessionForReap(_ id: UUID) -> HostSession? {
+        lock.lock(); defer { lock.unlock() }
+        offlineSince[id] = nil
+        return sessions.removeValue(forKey: id)
     }
 
     /// Synchronously removes and returns every live session (no `await` across the
@@ -113,6 +245,14 @@ public final class HostServer: @unchecked Sendable {
     public func liveSessionIDs() -> [UUID] {
         lock.lock(); defer { lock.unlock() }
         return Array(sessions.keys)
+    }
+
+    /// Test seam: inserts an already-built ``HostSession`` into the live map without a
+    /// real client connection, so the idle reaper can be exercised deterministically
+    /// (the production path goes through ``start()`` + a live `HostTransport`). `internal`
+    /// — not part of the daemon API.
+    func _insertSessionForTest(_ session: HostSession) {
+        lock.lock(); sessions[session.sessionID] = session; lock.unlock()
     }
 
     // MARK: New session
@@ -168,6 +308,7 @@ public final class HostServer: @unchecked Sendable {
     private func removeSession(_ id: UUID) {
         lock.lock()
         let session = sessions.removeValue(forKey: id)
+        offlineSince[id] = nil // drop any idle-reaper bookkeeping for the gone session.
         lock.unlock()
         session?.shutdown()
     }

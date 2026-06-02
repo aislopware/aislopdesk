@@ -131,6 +131,6 @@ public final class ReconnectManager: Sendable {
                 delay = backoff.next(after: delay)
             }
         }
-        throw lastError ?? ClientError.notImplemented("reconnect exhausted")
+        throw lastError ?? ClientError.reconnectExhausted
     }
 }
