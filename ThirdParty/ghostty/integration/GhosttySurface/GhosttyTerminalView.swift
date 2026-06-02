@@ -117,8 +117,13 @@ final class GhosttyApp {
         runtime.userdata = nil
         runtime.supports_selection_clipboard = false
         runtime.wakeup_cb = { _ in
-            // libghostty asks to be ticked on the main loop. We tick the shared app.
-            MainActor.assumeIsolated {
+            // libghostty asks to be ticked on its main loop. THIS IS A CROSS-THREAD
+            // SIGNAL by design — on macOS it fires from libghostty's `renderer` thread
+            // (renderer.Thread.drawFrame → apprt.surface.Mailbox.push → here), so it is
+            // NOT on the main actor. `ghosttyOnMainActor` hops to main (or runs sync if
+            // already there); a bare `MainActor.assumeIsolated` here TRAPS off-main
+            // (dispatch_assert_queue → EXC_BREAKPOINT) — the macOS launch crash.
+            ghosttyOnMainActor {
                 ghostty_app_tick(GhosttyApp.shared.app)
             }
         }
