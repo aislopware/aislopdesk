@@ -66,9 +66,18 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
             if self.stopped { self.lock.unlock(); conn.cancel(); return }   // accept-after-stop
             if self.mediaConn == nil { self.mediaConn = conn; self.lock.unlock() }
             else { self.lock.unlock(); conn.cancel(); return }
-            // Clear the slot when this connection dies so a reconnecting client (process
-            // restart, path flap, new source port) can RE-PIN — without this the dead
-            // connection wedges the slot forever and every reconnect is silently refused.
+            // Clear the slot when this connection FAILS/CANCELS so a reconnecting client can
+            // RE-PIN — without this the dead connection wedged the slot forever and every
+            // reconnect was silently refused until daemon restart. RESIDUALS (follow-up):
+            // (1) UDP has no FIN, so a client that restarts with a NEW source port does NOT
+            //     promptly fail the OLD flow — the slot stays pinned until the path actually
+            //     errors or an idle timeout fires, so an immediate same-window port-change
+            //     reconnect is still refused in the interim. A proper fix needs a client
+            //     identity in `hello` so the host can adopt the newest flow safely.
+            // (2) Clearing the socket slot does NOT reset the VideoSessionStateMachine (still
+            //     `.streaming`), so a re-pinned client is re-acked with the old streamID and no
+            //     fresh IDR; it resumes via the existing client-driven IDR recovery (.recovery
+            //     channel → requestIDR → capturer.requestKeyframe), not via an SM reset.
             self.installResetHandler(on: conn, isMedia: true)
             conn.start(queue: self.queue)
             self.receiveMedia(on: conn, onReceive: onReceive)
