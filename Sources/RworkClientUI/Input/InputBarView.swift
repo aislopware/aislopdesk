@@ -19,24 +19,40 @@ public struct InputBarView: View {
     public var body: some View {
         HStack(spacing: 8) {
             modeBadge
-            TextField(placeholder, text: $model.compose, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...4)
-                #if os(iOS)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                #endif
-                .onSubmit { send() }
+            composeField
+            #if os(macOS)
+            // macOS sends the composed line on the paperplane / Enter. On iOS the
+            // `TerminalInputHost` streams keystrokes directly (text + keys → `sendInput`), so
+            // there is no separate compose buffer to flush with a button.
             Button {
                 send()
             } label: {
                 Image(systemName: "paperplane.fill")
             }
             .disabled(client == nil || model.compose.isEmpty)
+            #endif
         }
         .padding(8)
     }
 
+    @ViewBuilder
+    private var composeField: some View {
+        #if os(iOS)
+        // iOS native-feel input surface: the `TerminalInputHost` `UIResponder` assembles the four
+        // table-stakes components (KeyRepeater / KeyboardAccessoryBar / IMEProxyTextView /
+        // FloatingCursorController) and routes every keystroke straight to `RworkClient.sendInput`.
+        TerminalInputHost(model: model, client: client)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
+        #else
+        TextField(placeholder, text: $model.compose, axis: .vertical)
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(1...4)
+            .onSubmit { send() }
+        #endif
+    }
+
+    #if os(macOS)
     private func send() {
         guard let client else { return }
         Task { await model.submit(over: client) }
@@ -50,6 +66,7 @@ public struct InputBarView: View {
             return "compose (TUI)"
         }
     }
+    #endif
 
     private var modeBadge: some View {
         Text(model.affordance == .shellCommand ? "A" : "B1")

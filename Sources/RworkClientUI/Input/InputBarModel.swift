@@ -76,13 +76,29 @@ public final class InputBarModel {
         try? await client.sendInput(bytes)
     }
 
-    /// Sends a raw byte sequence (e.g. an accessory-bar Ctrl/Esc/Tab/arrow, or a
-    /// floating-cursor arrow run) over `client`, recording it for dedup in B1.
-    public func sendRaw(_ bytes: [UInt8], over client: RworkClient) async {
+    /// Sends a raw byte sequence over `client`.
+    ///
+    /// `record` controls whether the bytes enter the B1 echo-dedup ring. The ring exists to
+    /// suppress the PTY's **echo** of input the user typed — so it must only ever hold bytes the
+    /// PTY will actually echo back (printable / committed-IME text). Control sequences (arrows,
+    /// Esc, Tab, Ctrl/Alt codes, floating-cursor `ESC[C`/`ESC[D`) are **not** echoed by the PTY;
+    /// recording them would leave them stuck in `pending`, where they could later spuriously match
+    /// and swallow a legitimate TUI redraw (e.g. a real `CUF` `ESC[C`). So control sends pass
+    /// `record: false`; only ``sendText(_:over:)`` records.
+    public func sendRaw(_ bytes: [UInt8], over client: RworkClient, record: Bool = false) async {
         let data = Data(bytes)
-        if affordance == .tuiCompose {
+        if record, affordance == .tuiCompose {
             box.recordComposeSent(data)
         }
         try? await client.sendInput(data)
+    }
+
+    /// Sends committed IME / printable `text` (post-composition) over `client` as its UTF-8
+    /// bytes, recording it for dedup in B1. Unlike ``submit(over:)`` this appends **no** Enter:
+    /// the iOS host streams text as it is composed and routes Return as a separate key, matching
+    /// `ghostty_surface_text` (text) vs `ghostty_surface_key` (Enter) on the real surface.
+    public func sendText(_ text: String, over client: RworkClient) async {
+        guard !text.isEmpty else { return }
+        await sendRaw(Array(text.utf8), over: client, record: true)
     }
 }

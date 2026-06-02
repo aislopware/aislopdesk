@@ -1,23 +1,45 @@
 #if os(iOS)
 import UIKit
 
-/// A hidden `UITextView` dedicated to IME / marked-text (CJK) composition (doc 17 §2.5).
+/// The IME / hardware-key first-responder surface (doc 17 §2.5).
 ///
-/// Why a *separate, hidden* text view and not `UITextInput` on the key-receiving view: the
-/// responder order between a view that handles `pressesBegan` and one that implements
-/// `UITextInput` is **undefined**, which breaks multi-stage CJK input (Claude Code has
-/// Japanese users). So we give IME its own dedicated proxy: ordinary printable text + CJK
-/// composition flow through here → ``onText`` → bytes; `Ctrl`/`Alt`+letter and special keys
-/// are routed straight to key encoding by the owner (see ``InputRouting``) and never reach
-/// this view.
+/// This is the **single** text first responder, so the responder order is never ambiguous: a
+/// `UITextView` already implements `UITextInput`, and CJK marked-text composition flows through
+/// the marked-text machinery (`setMarkedText`/`textViewDidChange`), **not** `pressesBegan`. We
+/// therefore put the hardware-key overrides (`pressesBegan`/`pressesEnded`) **on this same view**
+/// — that is the only view that actually receives `UIPress` events while it is first responder.
 ///
-/// The proxy is zero-size + clear + offscreen-ish but first-responder-capable, so iOS routes
-/// the system keyboard's composed text to it. We clear its text after each commit so it
-/// behaves like a pure byte funnel, never accumulating a document.
+/// The split is by *kind of key*, decided by ``InputRouting``:
+/// - **Special keys** (arrows / Esc / Tab / Return / Delete) and **Ctrl/Alt+letter** are
+///   intercepted here in `pressesBegan`, routed to the owner's key-encoding path
+///   (``onKeyPress``/``onKeyRelease`` → `KeyRepeater` → bytes), and **consumed** (we do not call
+///   `super` for them), so the text system never inserts a newline, moves the caret, or deletes.
+/// - **Ordinary printable text + CJK composition** falls through to `super`, lands in the text
+///   document, and is surfaced via ``onText`` → bytes (`ghostty_surface_text` in the real
+///   surface). We clear the document after each commit so the view is a pure byte funnel.
+///
+/// The view is alpha-0.01 + clear + first-responder-capable, so iOS routes the system keyboard's
+/// composed text to it without showing a document.
 public final class IMEProxyTextView: UITextView, UITextViewDelegate {
     /// Fires with each committed text run (post-IME-composition). The owner encodes it to
     /// bytes (`ghostty_surface_text` in the real surface) and sends via `RworkClient.sendInput`.
     public var onText: ((String) -> Void)?
+
+    /// A special / modifier key (the key-encoding path) went down. The owner feeds it into its
+    /// ``KeyRepeater`` for auto-repeat. These presses are **consumed** here (not passed to the
+    /// text system), so e.g. Return never inserts `\n` and arrows never move a caret.
+    public var onKeyPress: ((InputRouting.KeyPress) -> Void)?
+    /// A previously-pressed key-encoding key went up. The owner stops repeating it.
+    public var onKeyRelease: ((InputRouting.KeyPress) -> Void)?
+
+    /// Floating-cursor hooks (doc 17 §2.5): the spacebar long-press floating cursor is delivered
+    /// by iOS to the text-input first responder, which is this view. The owner wires these to a
+    /// ``FloatingCursorController`` so the horizontal travel becomes ← / → arrow bytes. We do not
+    /// move a real caret (there is no document here), so we forward the points without calling
+    /// `super`'s caret manipulation.
+    public var onFloatingCursorBegin: ((CGPoint) -> Void)?
+    public var onFloatingCursorUpdate: ((CGPoint) -> Void)?
+    public var onFloatingCursorEnd: (() -> Void)?
 
     public init() {
         super.init(frame: .zero, textContainer: nil)
@@ -57,14 +79,105 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
         textView.text = ""
     }
 
-    /// Backspace at the start of the (empty) document: route a Delete byte rather than a
-    /// no-op. The owner handles the actual key encoding; here we just surface it as text "".
+    /// The **software** keyboard's Backspace key does not generate `UIPress` events — it calls
+    /// `deleteBackward()` directly. The document is always empty (we clear after each commit), so
+    /// we surface it as a single Delete key press on the key-encoding path (→ DEL byte), the
+    /// same authoritative path a hardware Backspace takes. We never call `super` (there is no
+    /// document to mutate), so DEL is emitted exactly once.
     public override func deleteBackward() {
-        if (text ?? "").isEmpty {
-            onText?("\u{7F}")   // DEL — the owner may special-case; kept simple here
-        } else {
-            super.deleteBackward()
+        onKeyPress?(InputRouting.KeyPress(characters: "\u{7F}", isSpecial: true))
+    }
+
+    // MARK: Hardware keyboard (pressesBegan/Ended → InputRouting → owner's KeyRepeater)
+    //
+    // This view is the first responder, so it (not any ancestor) receives `UIPress` events.
+    // Key-encoding presses are intercepted + consumed here; everything else (plain printable,
+    // CJK composition triggers) falls through to `super` so the text system runs normally.
+
+    public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var unhandled = Set<UIPress>()
+        for press in presses {
+            guard let key = press.key,
+                  let classified = Self.classify(key),
+                  InputRouting.routesToKeyEncoding(classified) else {
+                unhandled.insert(press)
+                continue
+            }
+            onKeyPress?(classified)
         }
+        if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
+    }
+
+    public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var unhandled = Set<UIPress>()
+        for press in presses {
+            guard let key = press.key,
+                  let classified = Self.classify(key),
+                  InputRouting.routesToKeyEncoding(classified) else {
+                unhandled.insert(press)
+                continue
+            }
+            onKeyRelease?(classified)
+        }
+        if !unhandled.isEmpty { super.pressesEnded(unhandled, with: event) }
+    }
+
+    public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // Release every key-encoding press we may have been repeating; pass the rest on.
+        var unhandled = Set<UIPress>()
+        for press in presses {
+            guard let key = press.key,
+                  let classified = Self.classify(key),
+                  InputRouting.routesToKeyEncoding(classified) else {
+                unhandled.insert(press)
+                continue
+            }
+            onKeyRelease?(classified)
+        }
+        if !unhandled.isEmpty { super.pressesCancelled(unhandled, with: event) }
+    }
+
+    /// Maps a UIKit `UIKey` into the platform-agnostic ``InputRouting/KeyPress``. Returns `nil`
+    /// for a bare modifier press (no usable key) so it is left to `super`.
+    static func classify(_ key: UIKey) -> InputRouting.KeyPress? {
+        InputRouting.KeyPress(
+            characters: key.characters,
+            charactersIgnoringModifiers: key.charactersIgnoringModifiers,
+            control: key.modifierFlags.contains(.control),
+            option: key.modifierFlags.contains(.alternate),
+            command: key.modifierFlags.contains(.command),
+            isSpecial: Self.isSpecial(key)
+        )
+    }
+
+    /// True for the non-printable special keys (arrows, Esc, Tab, Return, Delete) that take the
+    /// key-encoding path. Recognised by `UIKeyboardHIDUsage`.
+    private static func isSpecial(_ key: UIKey) -> Bool {
+        switch key.keyCode {
+        case .keyboardEscape, .keyboardTab, .keyboardReturnOrEnter, .keyboardReturn,
+             .keyboardDeleteOrBackspace, .keyboardDeleteForward,
+             .keyboardLeftArrow, .keyboardRightArrow, .keyboardUpArrow, .keyboardDownArrow:
+            return true
+        default:
+            return false
+        }
+    }
+
+    // MARK: Floating cursor (UITextInput)
+
+    /// iOS streams these while the user long-presses the spacebar and drags. We surface the
+    /// points to the owner's ``FloatingCursorController`` (delta → arrow bytes) instead of moving
+    /// a non-existent caret, so we deliberately do not call `super`.
+    public override func beginFloatingCursor(at point: CGPoint) {
+        onFloatingCursorBegin?(point)
+    }
+
+    public override func updateFloatingCursor(at point: CGPoint) {
+        onFloatingCursorUpdate?(point)
+    }
+
+    public override func endFloatingCursor() {
+        onFloatingCursorEnd?()
     }
 }
 #endif

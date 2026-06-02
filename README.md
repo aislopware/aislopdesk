@@ -76,8 +76,23 @@ the core libraries, CLIs, and tests. These commands are real and work today over
 
 ```sh
 swift build          # builds every target incl. both executables
-swift test           # 278 tests, 0 failures (~18s), warning-clean
+swift test           # 381 tests, 0 failures (~18s), warning-clean
 ```
+
+### iOS typecheck
+
+`swift build` on macOS compiles the **macOS slice only** — it never type-checks the
+`#if os(iOS)` sources (the UIKit input host + the four native-feel table-stakes in
+`Sources/RworkClientUI/iOS/`), so they can rot silently. Build them with an explicit
+iOS-Simulator (unsigned) build:
+
+```sh
+scripts/check-ios.sh   # iOS-triple build of ClientApp-iOS (+ RworkClientUI); fails non-zero on error
+```
+
+This requires Xcode and runs `xcodebuild -project Apps/ClientApp-iOS/ClientApp-iOS.xcodeproj
+-scheme ClientApp-iOS -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+build`. Run it whenever you touch `#if os(iOS)` code.
 
 ### Run the host daemon (`rwork-hostd`)
 

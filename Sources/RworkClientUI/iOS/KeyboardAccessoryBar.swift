@@ -100,8 +100,9 @@ public final class KeyboardAccessoryBar: UIInputView {
     }
 
     /// Pure mapping of a letter to its ASCII control code (Ctrl-A = 1 … Ctrl-Z = 26). Returns
-    /// the original byte for non-letters.
-    public static func controlCode(for scalar: UnicodeScalar) -> [UInt8] {
+    /// the original byte for non-letters. `nonisolated` because it touches no UIKit state — the
+    /// hardware-key encoder calls it from the key-repeat scheduler's background queue.
+    public nonisolated static func controlCode(for scalar: UnicodeScalar) -> [UInt8] {
         let v = scalar.value
         if v >= 0x61, v <= 0x7A { return [UInt8(v - 0x60)] }        // a-z
         if v >= 0x41, v <= 0x5A { return [UInt8(v - 0x40)] }        // A-Z

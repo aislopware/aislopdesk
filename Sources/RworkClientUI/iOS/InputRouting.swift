@@ -19,7 +19,7 @@ import Foundation
 /// unit-tested on macOS.
 public enum InputRouting {
     /// A physical key press the router must classify, described platform-agnostically.
-    public struct KeyPress: Sendable, Equatable {
+    public struct KeyPress: Sendable, Equatable, Hashable {
         /// The committed characters for the press (UIKit `UIKey.characters`), if any.
         public var characters: String
         /// `characters` ignoring modifiers (UIKit `UIKey.charactersIgnoringModifiers`).
