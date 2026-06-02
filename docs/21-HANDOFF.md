@@ -11,15 +11,27 @@
 
 ## Headline
 
-- **278 tests pass, 0 failures**, warning-clean, stable across **3/3** full `swift test`
-  runs (~17.8s each) on Swift 6.3.2 / Xcode 26.5 / arm64 / macOS 26.5.
-- **22 SwiftPM targets** (12 libraries + 2 executables + 8 test targets), ~17.6k Swift LOC.
+- **409 tests pass, 0 failures**, warning-clean, on Swift 6.3.2 / Xcode 26.5 / arm64 /
+  macOS 26.5 (~23s full suite). OS floor raised to **macOS 26 / iOS 26** (dead `@available`
+  + old-OS compat stripped, `42c75cd`).
+- **24 SwiftPM targets** (12 libraries + 2 executables + 10 test targets), ~23.6k Swift LOC
+  (Sources + Tests + the ghostty integration binding).
 - **PATH 1 (terminal) is a working end-to-end system** today over TCP (loopback or NetBird):
-  `rwork-hostd` + `rwork-client` echo + byte-exact reconnect, proven with real components
-  and real shipped binaries.
+  `rwork-hostd` (+ `--claude`/`--xterm256`) + `rwork-client` echo + byte-exact reconnect,
+  proven with real components and the real shipped binaries — now hardened with a handshake
+  timeout + half-open reaper, an idle-TTL session reaper, `TERM=xterm-ghostty`, and a
+  host-side OSC/BEL title/bell sniffer.
+- **PATH 2 (GUI video) and the iOS input responder host COMPILE + are reviewed, not run.**
+  PATH 2's live decode pipeline is **not even started in the app** — the registered
+  `VideoWindowFactory` builds `VideoWindowView(title:)` with a `nil` connection, so no host
+  endpoint is wired and the orchestrator never comes up (see the explicit note below). The
+  iOS responder host compiles via `scripts/check-ios.sh`; its on-device interaction is
+  unverified.
 - **One external blocker:** the libghostty xcframework cannot compile on this macOS-26.5 host
-  (Zig ↔ SDK pincer). Everything else is either tested headlessly or compiled+reviewed and
-  gated only on hardware/TCC/a device.
+  (Zig ↔ SDK pincer), so the libghostty renderer (`GhosttyTerminalView` + the
+  `#if canImport(CGhostty)` factory registration) is **written + reviewed but compiled by NO
+  build here**. Everything else is either tested headlessly or compiled+reviewed and gated
+  only on hardware/TCC/a device.
 
 ## Per-layer status
 
@@ -30,30 +42,50 @@
 | Wire protocol — framing, dual-channel `WireMessage`, streaming `FrameDecoder`, BE/Int64 seq, decode error paths | `RworkProtocol` | 32 (cumulative) | `c4a8ce9`, review `2e7eddb` |
 | Transport — `TCP_NODELAY` dual channel, pure `ReplayBuffer` (never-drop, 4 MiB gate / 64 MiB cap), server-decides handshake, association preamble, atomic resume+replay | `RworkTransport` | 63 (cumulative) | `4f77686`, review `66bd20a` |
 | **Reconnect hardening** — fixed the resume-rebind race: dead-channel send is `ECANCELED`→`notConnected`→**retain-not-throw** (bytes re-sent from replay buffer), gate on new-channel readiness, client clean-FIN→reconnect. Verified `HandshakeReconnectTests` **100/100** consecutive. | `RworkTransport` | 96 (cumulative) | `4288535` |
-| Host PTY — `openpty`+`posix_spawn(SETSID)` (controlling-tty implicit, no `TIOCSCTTY`), no-buffer relay (ordered FIFO, QoS user-interactive), `TIOCSWINSZ`, exit reaper, fd hygiene, **session survives client disconnect**, **host-side OSC/BEL title/bell sniffer** (`HostTitleBellSniffer`, non-destructive observer on the output relay — **now the producer of wire types 21/22**) | `RworkHost` | 74 → 81 (cumulative) | `4f837bb`, review `1dae0e3` |
+| Host PTY — `openpty`+`posix_spawn(SETSID)` (controlling-tty implicit, no `TIOCSCTTY`), no-buffer relay (ordered FIFO, QoS user-interactive), `TIOCSWINSZ`, exit reaper, fd hygiene, **session survives client disconnect** | `RworkHost` | 74 → 81 (cumulative) | `4f837bb`, review `1dae0e3` |
+| **Host title/bell sniffer** — `HostTitleBellSniffer`: a non-destructive, streaming, byte-at-a-time OSC/BEL state machine wired into `HostSession`'s output relay; **now the PRODUCER of wire types 21/22** (`title` ← OSC 0/2 with BEL- or ST-terminator disambiguation + dedup; `bell` ← a standalone BEL outside any escape), bounded OSC buffer with resync, chunk-split-safe. Raw bytes forwarded to the client unchanged. | `RworkHost` | +326 sniffer unit tests + 44 client E2E (in the cumulative total) | `4d14431` |
+| **PATH 1 hardening** — `rwork-hostd --claude` selects the curated `ClaudeCodeProfile` launch (`--xterm256` flips `TERM` to `xterm-256color`, the #54700 fallback; default `xterm-ghostty`); host **handshake timeout + reaper** for orphaned half-open control channels; **idle-TTL session reaper** (tears down shell/fd/forwarders for long-offline clients); plain-shell `TERM` unified to `xterm-ghostty`; deleted the orphan `ClientConnection`; renamed misused `ClientError.notImplemented` → `invalidState`/`reconnectExhausted`; suppressed the self-inflicted `.disconnected` during intentional reconnect teardown (double-disconnect fix). | `RworkHost`, `RworkClient`, `RworkTransport`, `rwork-hostd` | `IdleReaperTests` (RworkHostTests), `HostHalfOpenReaperTests` (RworkTransportTests), `RworkReconnectSuppressionTests` (RworkClientTests) | `1a7336a` |
 | E2E byte pipeline + interactive CLI — `RworkClient` (gap-free/dup-free output, capped-backoff reconnect, iOS pause/resume), `RworkTTY` raw-mode save/restore, `rwork-client` (raw relay, `Ctrl-]` disconnect, `--no-raw` pipe). **Crown-jewel e2e uses REAL components:** in-process echo over loopback; **byte-exact reconnect resume** (force-drop → reconnect → reconstructed stream == `1..2000` once each, in order); subprocess e2e launches the actual shipped `rwork-hostd` + `rwork-client`. | `RworkClient`, `RworkTTY`, `rwork-hostd`, `rwork-client` | 93 (cumulative) | `d268f9b`, review `2d50f49` |
 | Read-only inspector — tolerant JSONL parse (unknown/malformed never crash), typed event taxonomy, tool-card pairing (out-of-order/missing/error + dedup), append-follow tailer (`LineAccumulator` holds partial line / resets on truncation), subagent tree, 2nd-channel (`NWConnection #2`) JSON transport, SwiftUI views (logic-free) | `RworkInspector` | 128 (cumulative; +32) | `7d08b5a`, review `569ff45` |
 | Claude Code integration **logic** — curated launch env (forced/inherited disjoint sets), **stat-only** auth resolver (cannot read the credential file by construction), terminal-mode sniffer (split-robust at every chunk size), input dedup ring (hold-and-confirm), input-box A/B1 model | `RworkClaudeCode`, `RworkHost` (env/auth seam) | 181 (cumulative; +53) | `465fb19`, review `c1fda4d` |
 | Client-UI logic — `TerminalViewModel`/`ConnectionViewModel`/`InputBarModel` state transitions, **events multicast fix** (`EventBroadcaster` tee — three concurrent consumers no longer steal events), iOS table-stakes pure logic (key-repeat cadence via injected scheduler, floating-cursor delta→arrow, accessory-bar decision, IME routing). `ConnectionViewModel` driven against a **real in-process HostServer + RworkClient over loopback**. KeyRepeater race fixed + **TSan-clean**. | `RworkClientUI` | 228 → 231 (cumulative; +41 / +3) | `bbff449`, review `517eb45` |
-| Video protocol — packetize/reassemble (single/multi-fragment, reorder, dup), **fragment-loss → drop + recovery signalled**, **FEC real single-loss recovery** (XOR parity, byte-exact across differently-sized fragments), cursor codec (<64 B), coordinate mapping (multi-monitor Cocoa-flip + Retina), window-geometry + input-event codecs, NALU defensive parse | `RworkVideoProtocol` | 275 (cumulative; +44) | `1db2f5b`, review `51a8cab` |
+| Video protocol — packetize/reassemble (single/multi-fragment, reorder, dup), **fragment-loss → drop + recovery signalled**, **FEC real single-loss recovery** (XOR parity, byte-exact across differently-sized fragments), cursor codec (<64 B), coordinate mapping (multi-monitor Cocoa-flip + Retina), window-geometry + input-event codecs, NALU defensive parse, cursor-shape + video-control codecs | `RworkVideoProtocol` | 275 (cumulative; +44) | `1db2f5b`, review `51a8cab` |
+| **Video orchestration PURE logic** — host/client session state machines, datagram routers (input/recovery/received), video send scheduler, frame-pacer newest-wins, HEVC parameter-set parse, video-scale math. **These are the only PATH 2 tests** — they exercise NO `SCStream`/`VTCompressionSession`/`VTDecompressionSession`/Metal device/socket (hang-safety rule; verified by grep of `Tests/`). | `RworkVideoHostTests`, `RworkVideoClientTests` | new pure-logic targets (in the cumulative total) | `cb6b6b9` |
 
-All counts are cumulative full-suite totals at that workflow's completion. The final suite is
-**278** (the +3 over WF-9's 275 are the small consolidation/stability deltas absorbed by the
-existing suites — re-verified 3/3 in WF-10).
+All counts are cumulative full-suite totals at that workflow's completion; the **final suite
+is 409 tests, 0 failures** (the growth over WF-9's 275 is this session's PATH 1 hardening
+suites — half-open reaper, idle reaper, reconnect-suppression — the 326-test title/bell
+sniffer suite, the 44 title/bell client E2E tests, and the PATH 2 pure-logic orchestration
+targets). Re-verified clean.
 
 ### COMPILED + reviewed but NOT RUN (and why)
 
-These targets build cleanly (`swift build`, including the iOS triple) and were code-reviewed,
-but are **deliberately never executed in a test** — they require a window-server + TCC session
-or a real device/simulator that a headless run does not have.
+These targets build cleanly (`swift build`, including the iOS triple via
+`scripts/check-ios.sh`) and were code-reviewed, but are **deliberately never executed in a
+test** — they require a window-server + TCC session or a real device/simulator that a
+headless run does not have. **None of this is claimed to "work"; it COMPILES + is reviewed.**
 
 | Layer | Target | Why not run |
 |-------|--------|-------------|
-| GUI **capture + HW encode** + input injection | `RworkVideoHost` | `SCStream` capture **and** `VTCompressionSession` HW encode **HANG** without a window-server + Screen-Recording TCC session — measured in [`research/spikes/vtbench/RESULTS.md`](research/spikes/vtbench/RESULTS.md) ("encode HW VideoToolbox **TREO khi chạy qua SSH**"). No test imports ScreenCaptureKit/VideoToolbox/Metal (verified by grep of `Tests/`). |
-| GUI **decode + Metal render** + client cursor | `RworkVideoClient` | Decode is MEASURED-safe (~0.9–1.1 ms synchronous), but to honour the same hang-safety rule no `VTDecompressionSession`/Metal device is instantiated in tests. |
-| SwiftUI / Metal terminal + video **views** | `RworkClientUI` (`GhosttyTerminalView`, `VideoWindowView`), `RworkVideoClient` (`MetalVideoRenderer`) | Render seams; need a GUI app target + (terminal) the libghostty xcframework. Logic behind them is tested; the views themselves only lay out. |
-| iOS UIKit **table-stakes** wrappers | `RworkClientUI` (`KeyRepeater` host, `KeyboardAccessoryBar`, `IMEProxyTextView`, `FloatingCursorController`) | Logic is pure + macOS-unit-tested + iOS-triple-typechecked, but the `UIResponder`/`UIView` glue (presses→repeater, `inputAccessoryView` host, IME consumer, floating-cursor caller) needs a device/simulator — it is iOS-only view glue, not unit-testable on macOS. **Integration PENDING.** |
-| libghostty terminal renderer | `GhosttySurface` + **`GhosttyTerminalView`** (both under `ThirdParty/ghostty/integration/GhosttySurface/`) + the `TerminalRendererFactory.shared` registration in `Apps/Shared/AppMain.swift` | Needs the xcframework — the one external blocker below. All renderer code is gated `#if canImport(CGhostty)`, wired into no `Package.swift` target by design, so the headless core never depends on it. Verified by **review** against the binding (it cannot be compiled on this host). See **"Activating the libghostty renderer"** below for the exact remaining steps. |
+| GUI **capture + HW encode** + input injection + UDP transport | `RworkVideoHost` (`WindowCapturer`, `VideoEncoder` 2-session, `InputInjector`, `CursorSampler`, `NWVideoDatagramTransport`, `RworkVideoHostSession` orchestrator) | `SCStream` capture **and** `VTCompressionSession` HW encode **HANG** without a window-server + Screen-Recording TCC session — measured in [`research/spikes/vtbench/RESULTS.md`](research/spikes/vtbench/RESULTS.md) ("encode HW VideoToolbox **TREO khi chạy qua SSH**"). Only the host **pure logic** (session state machine, datagram routers, send scheduler) is tested; no test imports ScreenCaptureKit/VideoToolbox/Metal (verified by grep of `Tests/`). |
+| GUI **decode + Metal render** + client cursor + UDP transport + display-link pacing | `RworkVideoClient` (`VideoDecoder`, `MetalVideoRenderer`, `ClientCursorCompositor`, `FramePacer` CVDisplayLink/CADisplayLink, `NWVideoClientTransport`, `RworkVideoClientSession` orchestrator) | Decode is MEASURED-safe (~0.9–1.1 ms synchronous), but to honour the same hang-safety rule no `VTDecompressionSession`/Metal device/display link is instantiated in tests — only the client pure logic (frame-pacer newest-wins, reassembly pacing, scale math, parameter-set parse) is. |
+| SwiftUI / Metal terminal + video **views** | `ThirdParty/ghostty/integration` (`GhosttyTerminalView`), `RworkVideoClient` (`VideoWindowView`, `MetalVideoRenderer`); `RworkClientUI` holds only the `TerminalRenderingView` seam + `BuildStatusPlaceholderView` | Render seams; need a GUI app target + (terminal) the libghostty xcframework. Logic behind them is tested; the views themselves only lay out. **The live PATH 2 pipeline is not even started in the app** — see the deferred-gate note directly below. |
+| iOS **input responder host** + UIKit table-stakes wrappers | `RworkClientUI` (`TerminalInputHost` — the `UIResponder`/`UIViewRepresentable` that assembles `KeyRepeater` + `KeyboardAccessoryBar` + `IMEProxyTextView` + `FloatingCursorController` and routes to `RworkClient.sendInput`; `InputBarView` uses it on iOS, macOS path unchanged) | The responder host **compiles for iOS via `scripts/check-ios.sh`** and is code-reviewed, but its on-device interaction — key-repeat cadence under real `pressesBegan`/`pressesEnded`, IME multi-stage composition, the floating-cursor gesture — is **unverified**: it is iOS-only `UIResponder`/`UIView` glue, not unit-testable on macOS, and has not been run on a simulator/device. The underlying logic (repeater cadence, cursor delta→arrow, accessory decision, IME routing) IS pure + macOS-unit-tested. |
+| libghostty terminal renderer | `GhosttySurface` + **`GhosttyTerminalView`** (both under `ThirdParty/ghostty/integration/GhosttySurface/`) + the `#if canImport(CGhostty)` `TerminalRendererFactory.shared` registration in `Apps/Shared/AppMain.swift` | Needs the xcframework — the one external blocker below. This is **GATED / UNCOMPILED on this host**: all renderer code is gated `#if canImport(CGhostty)` and wired into no `Package.swift` target by design, so NO build on this macOS-26.5 host compiles it. Verified by **review** against the binding only. See **"Activating the libghostty renderer"** below for the exact remaining steps. |
+
+> **Deferred live-connection gate (PATH 2 — honest, load-bearing).** The app registers the
+> video seam in `Apps/Shared/AppMain.swift` as
+> `VideoWindowFactory.shared = { descriptor in AnyView(VideoWindowView(title: descriptor.title)) }`.
+> `VideoWindowView(title:)` is the **title-only** initializer, which sets `connection = nil`
+> (`Sources/RworkVideoClient/VideoWindowView.swift`). With a `nil` connection the backing
+> `MetalVideoLayerView` builds the Metal chrome but **does not bring up the
+> `RworkVideoClientSession` orchestrator** — no UDP sockets open, no decoder, no display link,
+> no live decode. The live path is the **other** initializer
+> `VideoWindowView(title:connection:)`, which **no app code calls yet** because a host endpoint
+> (`VideoWindowConnection` host/ports/windowID) is not wired into the app. So PATH 2 is
+> end-to-end **compiled + reviewed**, but the live decode pipeline is **not started in the app**
+> until that host endpoint is wired — by design, since starting it needs a real capturing host
+> + device + TCC.
 
 ## The one external blocker — libghostty xcframework
 
@@ -67,7 +99,10 @@ by a Zig ↔ SDK pincer (both jaws characterized empirically):
    availability layout; `--sysroot`/`-lc` don't help).
 2. **Zig 0.16.0** (the only Zig that links the 26.5 SDK here) is **rejected by the fork's
    `build.zig`** — a hard `requireZig` version gate **and** `std.process.EnvMap` was
-   removed/renamed after 0.15.2 so `src/build/Config.zig` no longer compiles.
+   removed/renamed after 0.15.2 so `src/build/Config.zig` no longer compiles. Porting the
+   fork forward to 0.16 is **not a small patch**: 0.16 lands the `std.Io` reader/writer
+   rewrite that ripples through ghostty's I/O layer — an **upstream-scale** migration, not a
+   shim, so we do **not** attempt it inline.
 
 **Precise path to resolve** (any one):
 - Run `ThirdParty/ghostty/build-libghostty.sh` on a host with a **≤ 15.x SDK** (an Xcode 16
@@ -176,24 +211,35 @@ To make `#if canImport(CGhostty)` flip **true** and ship the renderer:
 3. **Wire `GhosttySurface` into the macOS client app** via
    `RworkClientUI.TerminalRendererFactory.shared` (see `Apps/Shared/AppMain.swift`) so the
    client renders with libghostty instead of the build-status placeholder.
-4. **Grant TCC for the GUI video path** on the host: **Screen Recording** (capture),
+4. **Wire a `VideoWindowConnection` host endpoint into the app** so the live PATH 2 pipeline
+   starts. Today `AppMain` registers `VideoWindowView(title:)` (nil connection — chrome only).
+   Switch the factory to `VideoWindowView(title:connection:)` with a real
+   `VideoWindowConnection(host:mediaPort:cursorPort:windowID:)` so the
+   `RworkVideoClientSession` orchestrator actually comes up. Until this is done the live decode
+   pipeline never starts in the app.
+5. **Grant TCC for the GUI video path** on the host: **Screen Recording** (capture),
    **Accessibility** + **Post Event** (input injection). Then exercise `RworkVideoHost`
    capture/encode → `RworkVideoClient` decode/render for a GUI window. (Run capture/encode
    from a real GUI session, **not** SSH — they hang without a window-server session.)
-5. **Run the iOS client on a device/simulator** to exercise the UIKit input layer
-   (`KeyRepeater` / `KeyboardAccessoryBar` / `IMEProxyTextView` / `FloatingCursorController`)
-   that is currently logic-only.
+6. **Run the iOS client on a device/simulator** to exercise the input responder host
+   (`TerminalInputHost`) and the table-stakes it assembles (`KeyRepeater` /
+   `KeyboardAccessoryBar` / `IMEProxyTextView` / `FloatingCursorController`). The host is wired
+   and iOS-triple-compiles (`scripts/check-ios.sh`) but its on-device key-repeat / IME /
+   floating-cursor interaction is unverified.
 
 ## Recommended next steps (priority-ordered)
 
 1. **Finish the libghostty build** on a ≤ 15.x-SDK host or CI (unblocks the only hard
-   dependency).
+   dependency) — the `#if canImport(CGhostty)` renderer is compiled by no build until then.
 2. **Wire the renderer into the client app** (`TerminalRendererFactory.shared = GhosttyTerminalView`).
 3. **Real 2-machine terminal test over NetBird** (host ↔ M2 Pro client): interactive shell +
-   Claude Code + reconnect — this validates the entire PATH 1 on hardware.
-4. **GUI video path live test** (PATH 2): grant TCC, run capture/encode/decode/render for one
-   GUI window from a real GUI session.
-5. **iOS device pass** for the UIKit table-stakes glue.
+   `rwork-hostd --claude` (Claude Code) + reconnect — this validates the entire PATH 1 on
+   hardware.
+4. **Wire a PATH 2 host endpoint** (`VideoWindowView(title:connection:)`) so the live decode
+   pipeline starts, then **GUI video path live test:** grant TCC, run
+   capture/encode/decode/render for one GUI window from a real GUI session.
+5. **iOS device pass** to verify the `TerminalInputHost` responder + the table-stakes it
+   assembles (key-repeat / IME / floating-cursor) interact correctly on-device.
 
 ## Honest known caveats (from the reviews / build log)
 
@@ -207,14 +253,24 @@ To make `#if canImport(CGhostty)` flip **true** and ship the renderer:
 - **Auth is stat-only.** `ClaudeAuthResolver` takes a `(String)->Bool` existence predicate and
   has **no capability** to open/log/transmit `~/.claude/.credentials.json`; the spawned
   `claude` inherits it via `HOME`.
-- **iOS UIKit table-stakes are logic-complete but not integrated** — no owning `UIResponder`
-  routes presses to `KeyRepeater`, hosts the accessory bar, embeds the IME proxy, or drives
-  the floating cursor yet. Follow-up view glue.
-- **GUI video path is built to MEASURED spike configs, never executed.** The host capture +
-  HW encode + the decoder/Metal renderer are compiled + reviewed only; SCKit/VideoToolbox hang
-  headlessly (RESULTS.md). The 2-session encoder (Session A low-latency-RC live 12 Mbps /
-  Session B `Quality=1.0` all-intra crisp — there is no `Lossless` HEVC key, it returns
-  `-12900`) matches the spikes exactly.
+- **iOS input responder host is wired but on-device-unverified.** `TerminalInputHost` (the
+  `UIResponder`/`UIViewRepresentable` introduced in `fa79874`) now owns the integration: it
+  routes `pressesBegan`/`pressesEnded` to `KeyRepeater`, hosts the `KeyboardAccessoryBar`,
+  embeds the `IMEProxyTextView`, drives the `FloatingCursorController`, and sends to
+  `RworkClient.sendInput`; `InputBarView` uses it on iOS (macOS path unchanged). It
+  **compiles for iOS** via `scripts/check-ios.sh` and is reviewed, but key-repeat cadence under
+  real presses, IME composition, and the floating-cursor gesture are **not yet run on a
+  simulator/device** — that on-device pass is the remaining gap, not the wiring.
+- **GUI video path is built to MEASURED spike configs, never executed — and not even started
+  in the app.** The host capture + HW encode + the decoder/Metal renderer + the host/client
+  UDP orchestrators (`RworkVideoHostSession` / `RworkVideoClientSession`) + display-link pacing
+  are compiled + reviewed only; SCKit/VideoToolbox hang headlessly (RESULTS.md). The 2-session
+  encoder (Session A low-latency-RC live 12 Mbps / Session B `Quality=1.0` all-intra crisp —
+  there is no `Lossless` HEVC key, it returns `-12900`) matches the spikes exactly. **The live
+  client pipeline does not run in the app**: `VideoWindowFactory` registers
+  `VideoWindowView(title:)` with a `nil` connection (chrome only); the live
+  `VideoWindowView(title:connection:)` orchestrator path is unwired pending a host endpoint
+  (see the deferred-gate note in the COMPILED-not-run section).
 - **`TERM=xterm-ghostty` carries the known multi-line-paste risk (#54700)** — mitigated by a
   first-class `.xterm256` toggle (`xterm-256color`, drops DEC 2026), not removed.
 - **macOS-26 multi-NALU watch-item is downgraded, not ignored** — steady state emits 1 NALU
@@ -230,8 +286,11 @@ To make `#if canImport(CGhostty)` flip **true** and ship the renderer:
 ## Build & verify
 
 ```sh
-swift build                              # all 22 targets incl. both executables
-swift test                               # 278 tests, 0 failures (~18s), warning-clean
-.build/release/rwork-hostd --port 7420   # host (after swift build -c release)
+swift build                                   # all 24 targets incl. both executables
+swift test                                    # 409 tests, 0 failures (~23s), warning-clean
+scripts/check-ios.sh                          # iOS-triple typecheck of the #if os(iOS) sources
+.build/release/rwork-hostd --port 7420        # host (after swift build -c release)
+.build/release/rwork-hostd --port 7420 --claude              # launch Claude Code (xterm-ghostty)
+.build/release/rwork-hostd --port 7420 --claude --xterm256   # Claude Code, xterm-256color fallback
 .build/release/rwork-client --host <h> --port 7420   # interactive client; Ctrl-] to disconnect
 ```

@@ -51,20 +51,20 @@ and no second rendering path (a deliberate "build the best thing, keep no plan B
 |--------|------|------|
 | `RworkProtocol`     | lib  | Wire format: framing, `MessageType`, `Int64` seq, hello/ack. Pure Swift, **zero platform dep** (no `Network`/`Darwin`) → builds macOS + iOS. |
 | `RworkTransport`    | lib  | `NWConnection` + `TCP_NODELAY`, dual data/control channels, ET-style `ReplayBuffer` (4 MiB offline gate / 64 MiB cap), reconnect handshake. |
-| `RworkHost`         | lib  | macOS host: PTY (`openpty` + `posix_spawn` createSession), session manager, no-buffer PTY↔transport relay, `TIOCSWINSZ` resize, Claude Code launch env + stat-only auth resolve. |
+| `RworkHost`         | lib  | macOS host: PTY (`openpty` + `posix_spawn` createSession), session manager, no-buffer PTY↔transport relay, `TIOCSWINSZ` resize, Claude Code launch env (`--claude`/`--xterm256`) + stat-only auth resolve, idle-TTL session reaper, host-side OSC/BEL title/bell sniffer. |
 | `RworkClient`       | lib  | Shared client: connection manager, reconnect (capped backoff), input encoding, gap-free/dup-free output stream, iOS pause/resume seam. |
 | `RworkTerminal`     | lib  | `TerminalSurface` protocol + `HeadlessTerminalSurface`. The libghostty-backed `GhosttySurface` lives in the GUI app target and conforms to the same seam. |
 | `RworkTTY`          | lib  | Local raw-mode termios save/restore + `TIOCGWINSZ`/`TIOCSWINSZ` for the interactive CLI (split out so it is unit-testable). |
 | `RworkInspector`    | lib  | Read-only structured inspector: tolerant JSONL transcript tailer + hooks, typed `InspectorEvent` model (tool cards / subagent tree / todos / thinking-placeholder), second-channel transport + SwiftUI views. |
 | `RworkClaudeCode`   | lib  | Cross-platform Claude Code integration logic: terminal-mode sniffer (DECSET/DECRST 1049 + OSC 133, split-robust), input dedup ring, input-box A/B1 state machine. |
-| `RworkClientUI`     | lib  | Cross-platform SwiftUI client: views + `@Observable` view-models binding Client/Inspector/ClaudeCode/Terminal; iOS UIKit native-feel table-stakes (key-repeat, floating cursor, accessory bar, IME routing). |
+| `RworkClientUI`     | lib  | Cross-platform SwiftUI client: views + `@Observable` view-models binding Client/Inspector/ClaudeCode/Terminal; iOS UIKit native-feel table-stakes (key-repeat, floating cursor, accessory bar, IME routing) + the `TerminalInputHost` `UIResponder` that assembles them (compiles for iOS, on-device interaction unverified). |
 | `RworkVideoProtocol`| lib  | PATH 2 pure wire format: UDP packetizer/reassembler + loss detect, FEC (XOR parity), cursor side-channel, window geometry, coordinate mapping, input-event codec. Zero platform dep → macOS + iOS. |
-| `RworkVideoHost`    | lib  | PATH 2 macOS-only capture + encode + input injection (ScreenCaptureKit / VideoToolbox 2-session / CGEvent). Compiled + reviewed. |
-| `RworkVideoClient`  | lib  | PATH 2 macOS + iOS decode + Metal render + client-side cursor (VTDecompression / Metal / CADisplayLink). Compiled + reviewed. |
-| `rwork-hostd`       | exec | Headless host daemon (PTY + transport). |
+| `RworkVideoHost`    | lib  | PATH 2 macOS-only capture + encode + input injection + UDP transport + host session orchestrator (ScreenCaptureKit / VideoToolbox 2-session / CGEvent / `NWVideoDatagramTransport`). Compiled + reviewed; pure logic tested, GUI pipeline not run. |
+| `RworkVideoClient`  | lib  | PATH 2 macOS + iOS decode + Metal render + client-side cursor + UDP transport + display-link pacing + client session orchestrator (VTDecompression / Metal / CVDisplayLink·CADisplayLink). Compiled + reviewed; pure logic tested, GUI pipeline not run. |
+| `rwork-hostd`       | exec | Headless host daemon (PTY + transport; `--claude`/`--xterm256` launch modes). |
 | `rwork-client`      | exec | Interactive remote terminal client. |
 
-12 libraries + 2 executables + 8 test targets = **22 SwiftPM targets**, ~17.6k Swift LOC.
+12 libraries + 2 executables + 10 test targets = **24 SwiftPM targets**, ~23.6k Swift LOC.
 
 ## Quickstart
 
@@ -76,7 +76,7 @@ the core libraries, CLIs, and tests. These commands are real and work today over
 
 ```sh
 swift build          # builds every target incl. both executables
-swift test           # 381 tests, 0 failures (~18s), warning-clean
+swift test           # 409 tests, 0 failures (~23s), warning-clean
 ```
 
 ### iOS typecheck
@@ -98,13 +98,23 @@ build`. Run it whenever you touch `#if os(iOS)` code.
 
 ```sh
 swift build -c release
-.build/release/rwork-hostd --port 7420            # or .build/debug/rwork-hostd after `swift build`
+.build/release/rwork-hostd --port 7420                     # plain login shell (TERM=xterm-ghostty)
+.build/release/rwork-hostd --port 7420 --claude            # launch Claude Code under the curated env
+.build/release/rwork-hostd --port 7420 --claude --xterm256 # Claude Code, TERM=xterm-256color fallback
 ```
 
 `rwork-hostd` binds `0.0.0.0` (the port you pass, or an OS-chosen one), spawns a login shell
 per new session, logs to stderr, and runs until `SIGINT`. The session **survives a client
 disconnect** — the daemon never kills the shell on channel failure; a returning client
-resumes byte-exact from the replay buffer.
+resumes byte-exact from the replay buffer. A long-offline client is eventually torn down by
+the idle-TTL reaper, and half-open handshakes are reaped on timeout.
+
+| Flag | Meaning |
+|------|---------|
+| `--port`, `-p` | TCP port to bind (omit → OS-chosen, logged to stderr). |
+| `--shell`      | Login shell to spawn (default: the user's). |
+| `--claude`     | Launch `claude` under the curated `ClaudeCodeProfile` env (`TERM=xterm-ghostty`, `COLORTERM`, `CLAUDE_CODE_NO_FLICKER`, …) instead of a plain shell. |
+| `--xterm256`   | With `--claude`, advertise `TERM=xterm-256color` (the multi-line-paste #54700 fallback) instead of `xterm-ghostty`. No-op without `--claude`. |
 
 ### Run the interactive client (`rwork-client`)
 
@@ -139,22 +149,25 @@ script is never truncated.
 
 ## libghostty renderer status
 
-The libghostty integration is **ready** — the `GhosttySurface` Swift binding (conforming to
-`RworkTerminal.TerminalSurface`), the SwiftUI host **`GhosttyTerminalView`** (the Metal-backed
-`NSViewRepresentable`/`UIViewRepresentable` that owns the surface, both in
-`ThirdParty/ghostty/integration/GhosttySurface/`), the `TerminalRendererFactory.shared`
-registration in `Apps/Shared/AppMain.swift` (gated `#if canImport(CGhostty)`), the C module map
-/ vendored header, and an idempotent build script (`ThirdParty/ghostty/build-libghostty.sh`) are
-all committed. The renderer code is **gated `#if canImport(CGhostty)`** so it is inert (compiles
-to nothing) in every build on this host — it is verified by **review** against the binding, not
-by compilation. What is **not done** is the xcframework compile, which is blocked **on this
-macOS-26.5 host** by a Zig ↔ SDK pincer:
+The libghostty integration is **written + reviewed but compiled by NO build on this host** —
+the `GhosttySurface` Swift binding (conforming to `RworkTerminal.TerminalSurface`), the SwiftUI
+host **`GhosttyTerminalView`** (the Metal-backed `NSViewRepresentable`/`UIViewRepresentable`
+that owns the surface, both in `ThirdParty/ghostty/integration/GhosttySurface/`), the
+`TerminalRendererFactory.shared` registration in `Apps/Shared/AppMain.swift` (gated
+`#if canImport(CGhostty)`), the C module map / vendored header, and an idempotent build script
+(`ThirdParty/ghostty/build-libghostty.sh`) are all committed. The renderer code is **gated
+`#if canImport(CGhostty)`** so it is inert (compiles to nothing) in every build on this
+macOS-26.5 host — it is verified by **review** against the binding, **not by compilation**.
+What is **not done** is the xcframework compile, which is blocked **on this macOS-26.5 host**
+by a Zig ↔ SDK pincer:
 
 - pinned **Zig 0.15.2** (the fork's required version) **cannot link the macOS 26.5 SDK**
   (undefined `__availability_version_check` / `_abort` / `_bzero` — 0.15.2 predates the
   26.x libSystem layout);
 - **Zig 0.16.0** (the only Zig that links the 26.5 SDK here) is **rejected by the fork's
-  `build.zig`** (hard version gate + a removed `std.process.EnvMap`).
+  `build.zig`** (hard version gate + a removed `std.process.EnvMap`); porting the fork to 0.16
+  is an **upstream-scale** job (the `std.Io` reader/writer rewrite ripples through ghostty's
+  I/O layer), not a shim.
 
 To finish, run `ThirdParty/ghostty/build-libghostty.sh` on a host with a **≤ 15.x SDK**
 (Xcode 16 Command Line Tools, or a CI runner), **or** bump the fork pin to a SHA whose
@@ -177,10 +190,10 @@ the `xcodegen generate` step, and how `#if canImport(CGhostty)` flips true are d
 | `RworkClient` + interactive `rwork-client` (full PATH 1 e2e) | ✅ done, real loopback + subprocess e2e |
 | `RworkInspector` (JSONL tailer + event model + 2nd channel) | ✅ done, fixture-tested |
 | `RworkClaudeCode` integration logic (env / sniffer / dedup) | ✅ done, byte-sequence tested |
-| `RworkClientUI` (SwiftUI + iOS table-stakes logic) | ✅ macOS-tested; iOS UIKit glue ⚠️ needs a device |
+| `RworkClientUI` (SwiftUI + iOS table-stakes logic) | ✅ macOS-tested; iOS responder host `TerminalInputHost` ⚠️ compiles (`scripts/check-ios.sh`) + reviewed, on-device interaction unverified |
 | `RworkVideoProtocol` (PATH 2 pure codec/FEC/mapping) | ✅ done, unit tested |
-| `RworkVideoHost` / `RworkVideoClient` (capture/encode/decode/render) | ⚠️ compiled + reviewed; **not run** (SCKit/VideoToolbox hang without a window-server + TCC session) |
-| `GhosttySurface` / libghostty renderer | ⛔ blocked on the xcframework build (see above) |
+| `RworkVideoHost` / `RworkVideoClient` (capture/encode/decode/render + orchestrators) | ⚠️ compiled + reviewed; pure logic tested, **GUI pipeline not run** (SCKit/VideoToolbox hang without a window-server + TCC); the live decode pipeline is **not started in the app** — the registered `VideoWindowView(title:)` has a `nil` connection (see handoff) |
+| `GhosttyTerminalView` / libghostty renderer | ⛔ written + reviewed but **compiled by NO build on this host**; gated `#if canImport(CGhostty)`, blocked on the xcframework build (see above) |
 
 For the full per-layer status with test counts, commit hashes, the verify-on-hardware
 checklist, and known caveats, see [`docs/21-HANDOFF.md`](docs/21-HANDOFF.md).

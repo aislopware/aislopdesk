@@ -359,9 +359,12 @@ before any media flows. `[UInt8 type][body]`, big-endian:
 
 - `hello` announces the client, the host `CGWindowID` it wants to remote, and the client viewport
   size so the host can size capture/encode to the client surface.
-- `helloAck` confirms (or rejects via `accepted = 0`) and reports the negotiated capture
+- `helloAck` confirms (or rejects via `accepted = 0`) and reports the **host-decided** capture
   dimensions plus the window's current **CG top-left bounds** — the client's input-mapping origin
-  until the geometry channel updates it.
+  until the geometry channel updates it. ("Negotiated" elsewhere in the code/comments means this
+  single host-decides-and-reports step — the host sizes capture to the client viewport and reports
+  it back — **not** a two-way negotiation; the protocol version itself is strictly non-negotiated,
+  per §9 line 307 / §4.)
 - The host starts capture/encode **only on an accepted `hello`**; a duplicate `hello` is re-acked
   idempotently. Either side sends `bye` for a clean teardown.
 
