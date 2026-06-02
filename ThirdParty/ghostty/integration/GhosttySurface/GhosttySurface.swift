@@ -76,7 +76,7 @@ import CGhostty            // the clang module over include/ghostty.h (link "gho
 ///
 /// `@MainActor` enforces the doc-18-§C main-thread contract at the type level.
 @MainActor
-public final class GhosttySurface: TerminalSurface {
+public final class GhosttySurface: @MainActor TerminalSurface {
 
     // MARK: Stored state
 
@@ -205,10 +205,12 @@ public final class GhosttySurface: TerminalSurface {
         }
     }
 
-    deinit {
-        // deinit of a @MainActor class runs on the main actor in Swift 6 when the
-        // last reference is released on main (the GUI owns it on main). Free here as
-        // a safety net; `close()` is the explicit path.
+    // `isolated deinit` (Swift 6.2+) guarantees the body runs on this type's actor
+    // (the main actor), so it may touch the @MainActor-isolated `surface` (a
+    // non-Sendable `ghostty_surface_t?`). Without it, Swift 6 strict concurrency
+    // rejects accessing `surface` from a nonisolated deinit. `close()` remains the
+    // explicit teardown path; this is the safety net.
+    isolated deinit {
         if let s = surface {
             ghostty_surface_free(s)
         }
@@ -231,7 +233,8 @@ public final class GhosttySurface: TerminalSurface {
         bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress else { return }
             let cptr = base.assumingMemoryBound(to: CChar.self)
-            ghostty_surface_write_output(s, cptr, bytes.count)   // header 1185
+            // header 1185 takes `uintptr_t` (imported as Swift `UInt`).
+            ghostty_surface_write_output(s, cptr, UInt(bytes.count))   // header 1185
         }
         // Coalescing redraw (VVTerm `scheduleCustomIORedraw` pattern). The render is
         // already triggered by write_output; refresh+draw force the next frame. Both
@@ -313,7 +316,8 @@ public final class GhosttySurface: TerminalSurface {
         copy.withUTF8 { buf in
             guard let base = buf.baseAddress else { return }
             base.withMemoryRebound(to: CChar.self, capacity: buf.count) { cptr in
-                ghostty_surface_text(surf, cptr, buf.count)   // header 1184
+                // header 1184 takes `uintptr_t` (imported as Swift `UInt`).
+                ghostty_surface_text(surf, cptr, UInt(buf.count))   // header 1184
             }
         }
     }

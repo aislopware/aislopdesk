@@ -225,16 +225,17 @@ final class GhosttyLayerBackedView: NSView {
                 platformView: Unmanaged.passUnretained(self).toOpaque(),
                 cols: 80,
                 rows: 24,
-                contentScale: window?.backingScaleFactor ?? 2.0
+                // backingScaleFactor is CGFloat; GhosttySurface.contentScale is Double.
+                contentScale: Double(window?.backingScaleFactor ?? 2.0)
             )
             // OUT path: encoded keystrokes from libghostty. The connection layer (which
             // holds the live RworkClient) reads `model.surface?.onWrite` to bridge to
             // `RworkClient.sendInput`. Documented remaining seam (file header + doc 21).
-            s.onWrite = { [weak self] _ in
-                _ = self // bytes are consumed by the connection-layer bridge via model.surface.onWrite
+            s.onWrite = { (_: Data) in
+                // bytes are consumed by the connection-layer bridge via model.surface.onWrite
             }
             // Grid changes (font reflow) → host TIOCSWINSZ via the same bridge.
-            s.onResize = { _, _ in }
+            s.onResize = { (_: UInt16, _: UInt16) in }
             self.surface = s
         }
         // The model's ingestOutput(_:) feeds inbound bytes into surface.feed(_:).
@@ -289,7 +290,7 @@ final class GhosttyLayerBackedView: NSView {
         key.composing = false
         // `text` is a borrowed const char* for the keypress duration; bind the chars.
         if let chars = event.characters, !chars.isEmpty {
-            var copy = chars
+            let copy = chars
             copy.withCString { cstr in
                 key.text = cstr
                 _ = surface?.key(key)
@@ -386,10 +387,10 @@ final class GhosttyLayerBackedView: UIView {
                 rows: 24,
                 contentScale: Double(scale)
             )
-            s.onWrite = { [weak self] _ in
-                _ = self // consumed by the connection-layer bridge via model.surface.onWrite
+            s.onWrite = { (_: Data) in
+                // consumed by the connection-layer bridge via model.surface.onWrite
             }
-            s.onResize = { _, _ in }
+            s.onResize = { (_: UInt16, _: UInt16) in }
             self.surface = s
         }
         model.surface = surface

@@ -32,3 +32,7 @@ ThirdParty/ghostty/build/
 ThirdParty/ghostty/libghostty.xcframework/
 ThirdParty/ghostty/GhosttyKit.xcframework/
 *.xcframework/
+# Defensive: any *.xcframework* sibling (e.g. a "*.xcframework.incomplete-bak" repair
+# backup left by an artifact-rebuild step). The "*.xcframework/" pattern above only
+# matches the exact ".xcframework/" directory boundary, not ".xcframework.<suffix>".
+ThirdParty/ghostty/*.xcframework*

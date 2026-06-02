@@ -27,11 +27,18 @@
   endpoint is wired and the orchestrator never comes up (see the explicit note below). The
   iOS responder host compiles via `scripts/check-ios.sh`; its on-device interaction is
   unverified.
-- **One external blocker:** the libghostty xcframework cannot compile on this macOS-26.5 host
-  (Zig ↔ SDK pincer), so the libghostty renderer (`GhosttyTerminalView` + the
-  `#if canImport(CGhostty)` factory registration) is **written + reviewed but compiled by NO
-  build here**. Everything else is either tested headlessly or compiled+reviewed and gated
-  only on hardware/TCC/a device.
+- **Former external blocker RESOLVED on this host.** A working **macos-arm64
+  `libghostty.xcframework` was built ON this macOS-26.5 host** by `ThirdParty/ghostty/build-libghostty.sh`
+  (the Zig ↔ SDK pincer is broken by an xcrun PATH-shim that pins macOS SDK detection to
+  MacOSX15.sdk; see the recipe below). With that artifact, the libghostty renderer
+  (`GhosttyTerminalView` + `GhosttySurface` + the `#if canImport(CGhostty)` factory
+  registration) now **COMPILES + LINKS** into the macOS app (`** BUILD SUCCEEDED **`, all
+  `ghostty_*` C-ABI symbols resolved as defined `T` symbols in the shipped binary). The only
+  thing left for the renderer is a **runtime GUI smoke-test on a desktop session**; the
+  **iOS slice still needs an iOS ≤ 18 SDK** (the macos-arm64 slice does not cover iOS). The
+  64 MB xcframework is **gitignored** (regenerable from the script), so the committed default
+  macOS app stays placeholder-based and builds WITHOUT the artifact; run
+  `scripts/enable-macos-renderer.sh` to wire it in on demand.
 
 ## Per-layer status
 
@@ -71,7 +78,7 @@ headless run does not have. **None of this is claimed to "work"; it COMPILES + i
 | GUI **decode + Metal render** + client cursor + UDP transport + display-link pacing | `RworkVideoClient` (`VideoDecoder`, `MetalVideoRenderer`, `ClientCursorCompositor`, `FramePacer` CVDisplayLink/CADisplayLink, `NWVideoClientTransport`, `RworkVideoClientSession` orchestrator) | Decode is MEASURED-safe (~0.9–1.1 ms synchronous), but to honour the same hang-safety rule no `VTDecompressionSession`/Metal device/display link is instantiated in tests — only the client pure logic (frame-pacer newest-wins, reassembly pacing, scale math, parameter-set parse) is. |
 | SwiftUI / Metal terminal + video **views** | `ThirdParty/ghostty/integration` (`GhosttyTerminalView`), `RworkVideoClient` (`VideoWindowView`, `MetalVideoRenderer`); `RworkClientUI` holds only the `TerminalRenderingView` seam + `BuildStatusPlaceholderView` | Render seams; need a GUI app target + (terminal) the libghostty xcframework. Logic behind them is tested; the views themselves only lay out. **The live PATH 2 pipeline is not even started in the app** — see the deferred-gate note directly below. |
 | iOS **input responder host** + UIKit table-stakes wrappers | `RworkClientUI` (`TerminalInputHost` — the `UIResponder`/`UIViewRepresentable` that assembles `KeyRepeater` + `KeyboardAccessoryBar` + `IMEProxyTextView` + `FloatingCursorController` and routes to `RworkClient.sendInput`; `InputBarView` uses it on iOS, macOS path unchanged) | The responder host **compiles for iOS via `scripts/check-ios.sh`** and is code-reviewed, but its on-device interaction — key-repeat cadence under real `pressesBegan`/`pressesEnded`, IME multi-stage composition, the floating-cursor gesture — is **unverified**: it is iOS-only `UIResponder`/`UIView` glue, not unit-testable on macOS, and has not been run on a simulator/device. The underlying logic (repeater cadence, cursor delta→arrow, accessory decision, IME routing) IS pure + macOS-unit-tested. |
-| libghostty terminal renderer | `GhosttySurface` + **`GhosttyTerminalView`** (both under `ThirdParty/ghostty/integration/GhosttySurface/`) + the `#if canImport(CGhostty)` `TerminalRendererFactory.shared` registration in `Apps/Shared/AppMain.swift` | Needs the xcframework — the one external blocker below. This is **GATED / UNCOMPILED on this host**: all renderer code is gated `#if canImport(CGhostty)` and wired into no `Package.swift` target by design, so NO build on this macOS-26.5 host compiles it. Verified by **review** against the binding only. See **"Activating the libghostty renderer"** below for the exact remaining steps. |
+| libghostty terminal renderer | `GhosttySurface` + **`GhosttyTerminalView`** (both under `ThirdParty/ghostty/integration/GhosttySurface/`) + the `#if canImport(CGhostty)` `TerminalRendererFactory.shared` registration in `Apps/Shared/AppMain.swift` | **COMPILES + LINKS on macOS; runtime GUI test pending.** The macos-arm64 `libghostty.xcframework` was built on THIS macOS-26.5 host (`build-libghostty.sh`), and with it the macOS app target compiles `GhosttySurface.swift` + `GhosttyTerminalView.swift` + the gated `AppMain` registration and **links** the `ghostty_*` C-ABI (`** BUILD SUCCEEDED **`; symbols defined `T` in the binary). The renderer code is still gated `#if canImport(CGhostty)` and is in **no `Package.swift` target** by design — the headless `swift build`/`swift test` never see it, and the committed `project.yml` is placeholder; run `scripts/enable-macos-renderer.sh` (needs the gitignored xcframework) to wire it in. Remaining: a **runtime GUI smoke-test** on a desktop session, plus the **iOS slice** (needs an iOS ≤ 18 SDK). See **"Activating the libghostty renderer"** below. |
 
 > **Deferred live-connection gate (PATH 2 — honest, load-bearing).** The app registers the
 > video seam in `Apps/Shared/AppMain.swift` as
@@ -87,10 +94,11 @@ headless run does not have. **None of this is claimed to "work"; it COMPILES + i
 > until that host endpoint is wired — by design, since starting it needs a real capturing host
 > + device + TCC.
 
-## The one external blocker — libghostty xcframework
+## The former external blocker — libghostty xcframework (RESOLVED on this host)
 
-The renderer binding is done; the **xcframework compile is blocked on this macOS-26.5 host**
-by a Zig ↔ SDK pincer (both jaws characterized empirically):
+The renderer binding is done **and the macos-arm64 xcframework now builds on this macOS-26.5
+host.** The Zig ↔ SDK pincer that originally blocked it is real (both jaws characterized
+empirically):
 
 1. Pinned **Zig 0.15.2** (the fork `daiimus/ghostty @ ios-external-backend`,
    SHA `21c717340b62349d67124446c2447bf38796540b`, requires 0.15.2) **cannot link the
@@ -100,26 +108,57 @@ by a Zig ↔ SDK pincer (both jaws characterized empirically):
 2. **Zig 0.16.0** (the only Zig that links the 26.5 SDK here) is **rejected by the fork's
    `build.zig`** — a hard `requireZig` version gate **and** `std.process.EnvMap` was
    removed/renamed after 0.15.2 so `src/build/Config.zig` no longer compiles. Porting the
-   fork forward to 0.16 is **not a small patch**: 0.16 lands the `std.Io` reader/writer
-   rewrite that ripples through ghostty's I/O layer — an **upstream-scale** migration, not a
-   shim, so we do **not** attempt it inline.
+   fork forward to 0.16 is **not a small patch**.
 
-**Precise path to resolve** (any one):
-- Run `ThirdParty/ghostty/build-libghostty.sh` on a host with a **≤ 15.x SDK** (an Xcode 16
-  Command Line Tools install, or a CI runner image) that Zig 0.15.2 supports; **or**
-- a future Zig that supports **both** the macOS 26.x SDK and the fork's `build.zig` (bump the
-  `ZIG_*` pins in the script, re-verify the header symbols); **or**
-- bump the **fork pin** to a daiimus/own SHA whose `build.zig` accepts a macOS-26-capable Zig
-  (re-confirm the external-IO symbols `ghostty_surface_write_output` etc. after the bump).
+**It was resolved on THIS host** by `ThirdParty/ghostty/build-libghostty.sh` without changing
+the Zig pin or the fork SHA. The proven recipe (all four caveats documented in the script
+header):
 
-The script preflights this exact condition (a libSystem link smoke test) and fails fast with
-the actionable message. Full detail: [`../ThirdParty/ghostty/README.md`](../ThirdParty/ghostty/README.md).
+1. **xcrun PATH-shim — THE LEVER.** The build.zig runner compiles natively against whatever
+   `xcrun --sdk macosx --show-sdk-path` returns. A generated shim on `PATH` rewrites ONLY the
+   macosx `--show-sdk-path` / `--show-sdk-version` queries to **`/Library/Developer/CommandLineTools/SDKs/MacOSX15.sdk`**
+   (≤ 15.x — what Zig 0.15.2 supports); iOS/sim/tvOS/watchOS queries pass through. `SDKROOT`/`--sysroot`
+   alone do NOT work; the shim is the only lever that does.
+2. **Metal Toolchain** required (`xcodebuild -downloadComponent MetalToolchain`) — the fork
+   compiles Metal shaders; the script preflights `xcrun --sdk macosx --find metal`.
+3. **Xcode-26.5 `libtool -static` BYPASS.** It silently drops the Zig root object
+   (`libghostty_zcu.o`, which carries all ~123 `ghostty_*` symbols; warns "not 8-byte
+   aligned") → the fork's own emitted `GhosttyKit.xcframework` is DEFECTIVE. The script instead
+   harvests the GOOD intermediate libtool archives plus the loose Zig-cache C/C++ dependency
+   objects, `chmod`s them (Zig stores members mode 0000), re-archives with `ar qc` + `ranlib`,
+   and wraps with `xcodebuild -create-xcframework`. (The `zig build` exit code is expected-nonzero —
+   it fails later at the app-bundle CpResource stage — so the script does not trust it.)
+4. **iOS slice** still needs an **iOS ≤ 18 SDK** + the shim extended to answer
+   iphoneos/iphonesimulator queries (`XCFRAMEWORK_TARGET=universal`). Not built here; default
+   target is `native` (macos-arm64 only).
+
+Full detail: [`../ThirdParty/ghostty/README.md`](../ThirdParty/ghostty/README.md) and the
+`build-libghostty.sh` header. **Alternative paths** (if the shim host is unavailable): a future
+Zig that supports both the macOS 26.x SDK and the fork's `build.zig`, or bumping the fork pin to
+a SHA whose `build.zig` accepts a macOS-26-capable Zig (re-confirm `ghostty_surface_write_output`
+etc. after either).
 
 ## Activating the libghostty renderer (exact remaining steps)
 
-The renderer is **code-complete and gated** — every line is inside `#if canImport(CGhostty)`,
-so it compiles to nothing on this macOS-26.5 host and is verified by **review** against the
-binding, not by compilation. Three pieces are already committed and need NO further edits:
+The renderer is **code-complete, gated, and now COMPILES + LINKS on this macOS-26.5 host** once
+the xcframework exists. Every line is inside `#if canImport(CGhostty)`, so by default (no
+artifact, placeholder `project.yml`) it compiles to nothing and the headless `swift build`/`swift test`
+never see it. **The one-command path** for a developer who has built the xcframework:
+
+```sh
+bash ThirdParty/ghostty/build-libghostty.sh        # produces the (gitignored) xcframework
+bash scripts/enable-macos-renderer.sh              # injects the wiring into project.yml + xcodegen
+# build: xcodebuild -project Apps/ClientApp-macOS/ClientApp-macOS.xcodeproj -scheme ClientApp-macOS \
+#          -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+# restore placeholder state afterwards:
+#   git checkout -- Apps/ClientApp-macOS/project.yml && xcodegen generate --spec Apps/ClientApp-macOS/project.yml
+```
+
+`scripts/enable-macos-renderer.sh` is idempotent and reproduces EXACTLY the wiring described in
+the manual steps below (it preflights the xcframework + the macos-arm64 slice and fails with the
+build command if absent). The manual steps remain documented for reference / the iOS target.
+
+Three pieces are already committed and need NO further edits:
 
 - `ThirdParty/ghostty/integration/GhosttySurface/GhosttySurface.swift` — the `@MainActor`
   `TerminalSurface` binding over the C ABI (EXTERNAL backend; `feed`/`key`/`text`/`setSize`).
