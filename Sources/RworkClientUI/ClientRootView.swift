@@ -13,19 +13,23 @@ import RworkInspector
 public struct ClientRootView: View {
     @State private var connection: ConnectionViewModel
     @State private var input: InputBarModel
+    @State private var remoteWindow: RemoteWindowModel
     private let inspectorModel: InspectorViewModel
     private let inspectorClient: InspectorClient?
 
     @State private var showInspector = false
+    @State private var showRemoteWindow = false
 
     public init(
         connection: ConnectionViewModel,
         input: InputBarModel = InputBarModel(),
+        remoteWindow: RemoteWindowModel = RemoteWindowModel(),
         inspectorModel: InspectorViewModel = InspectorViewModel(),
         inspectorClient: InspectorClient? = nil
     ) {
         _connection = State(initialValue: connection)
         _input = State(initialValue: input)
+        _remoteWindow = State(initialValue: remoteWindow)
         self.inspectorModel = inspectorModel
         self.inspectorClient = inspectorClient
     }
@@ -41,6 +45,16 @@ public struct ClientRootView: View {
         #if os(macOS)
         .frame(minWidth: 720, minHeight: 480)
         #endif
+        // PATH 2 (secondary): a remote GUI window opens in a sheet so the terminal stays
+        // primary. The panel hosts the endpoint form + the live VideoWindowFactory view.
+        .sheet(isPresented: $showRemoteWindow) {
+            RemoteWindowPanel(model: remoteWindow)
+                #if os(macOS)
+                .frame(minWidth: 640, minHeight: 480)
+                #else
+                .presentationDetents([.large])
+                #endif
+        }
     }
 
     @ViewBuilder
@@ -55,11 +69,11 @@ public struct ClientRootView: View {
                     .frame(minWidth: 280, maxWidth: 420)
             }
         }
-        .toolbar { inspectorToggle }
+        .toolbar { inspectorToggle; remoteWindowToggle }
         #else
         // iOS: terminal full-bleed, inspector as a bottom sheet (doc 16 tab/bottom-sheet).
         terminal
-            .toolbar { inspectorToggle }
+            .toolbar { inspectorToggle; remoteWindowToggle }
             .sheet(isPresented: $showInspector) {
                 inspector
                     .presentationDetents([.medium, .large])
@@ -82,6 +96,17 @@ public struct ClientRootView: View {
                 showInspector.toggle()
             } label: {
                 Label("Inspector", systemImage: showInspector ? "sidebar.right" : "sidebar.squares.right")
+            }
+        }
+    }
+
+    /// Opens the PATH 2 remote-GUI-window sheet (endpoint form + live video view).
+    private var remoteWindowToggle: some ToolbarContent {
+        ToolbarItem {
+            Button {
+                showRemoteWindow.toggle()
+            } label: {
+                Label("Remote window", systemImage: "macwindow.on.rectangle")
             }
         }
     }

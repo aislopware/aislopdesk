@@ -65,6 +65,15 @@ public final class ConnectionViewModel {
     /// `.disconnected` event is not mis-read as a drop to reconnect.
     private var deliberatelyClosed = false
 
+    /// Serial OUT path (renderer → host). Keystrokes + resizes funnel through ONE ordered
+    /// stream drained by ONE task, so a fast burst (typing / multi-segment paste / an escape
+    /// sequence split across writes) reaches the host PTY IN ORDER. A per-event
+    /// `Task { await client.sendInput }` does NOT preserve order — independent unstructured
+    /// tasks race on the reentrant `RworkClient` actor and can deliver B before A.
+    private enum OutEvent: Sendable { case input(Data); case resize(cols: UInt16, rows: UInt16) }
+    private var outContinuation: AsyncStream<OutEvent>.Continuation?
+    private var outDrainTask: Task<Void, Never>?
+
     public init(
         terminal: TerminalViewModel,
         host: String = "127.0.0.1",
@@ -110,6 +119,24 @@ public final class ConnectionViewModel {
 
         let client = makeClient()
         self.client = client
+
+        // OUT path (renderer → host): the terminal model's `sendInput`/`sendResize` (driven
+        // by `GhosttyTerminalView`'s onWrite/onResize) yield into ONE ordered stream; a single
+        // drain task awaits the client SEQUENTIALLY so bytes/resizes are never reordered.
+        // Captures `weak client` so a torn-down client is never targeted; `teardown()` finishes
+        // the stream + cancels the drain + nils the sinks.
+        let (outStream, outCont) = AsyncStream<OutEvent>.makeStream()
+        outContinuation = outCont
+        outDrainTask = Task { [weak client] in
+            for await event in outStream {
+                switch event {
+                case let .input(data):          try? await client?.sendInput(data)
+                case let .resize(cols, rows):   try? await client?.sendResize(cols: cols, rows: rows)
+                }
+            }
+        }
+        terminal.inputSink = { [weak self] data in self?.outContinuation?.yield(.input(data)) }
+        terminal.resizeSink = { [weak self] cols, rows in self?.outContinuation?.yield(.resize(cols: cols, rows: rows)) }
 
         // Single UI-layer events loop (chrome status + forward to the terminal model).
         observeEvents(client)
@@ -201,6 +228,14 @@ public final class ConnectionViewModel {
         supervisorTask = nil
         observeTask = nil
         outputTask = nil
+        // Drop the OUT-path sinks + tear down the serial drain before releasing the client
+        // so the renderer cannot route keystrokes/resizes into a closed client.
+        terminal.inputSink = nil
+        terminal.resizeSink = nil
+        outContinuation?.finish()
+        outContinuation = nil
+        outDrainTask?.cancel()
+        outDrainTask = nil
         await client?.close()
         client = nil
         reconnect = nil

@@ -47,7 +47,20 @@ struct ClientAppMain {
         // shows the gated `RemoteWindowPlaceholderView`.
         #if canImport(RworkVideoClient)
         VideoWindowFactory.shared = { descriptor in
-            AnyView(VideoWindowView(title: descriptor.title))
+            // LIVE path when the descriptor carries a full endpoint (host + media/cursor
+            // ports), entered via the Remote-window panel: build the VideoWindowConnection
+            // and the orchestrator-backed VideoWindowView(title:connection:). Otherwise the
+            // chrome-only initializer (no live decode) — the seam's preview/placeholder path.
+            if descriptor.hasEndpoint {
+                let connection = VideoWindowConnection(
+                    host: descriptor.host,
+                    mediaPort: descriptor.mediaPort,
+                    cursorPort: descriptor.cursorPort,
+                    windowID: descriptor.windowID
+                )
+                return AnyView(VideoWindowView(title: descriptor.title, connection: connection))
+            }
+            return AnyView(VideoWindowView(title: descriptor.title))
         }
         #endif
 

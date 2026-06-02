@@ -9,6 +9,25 @@
 > [`20-wire-protocol.md`](20-wire-protocol.md); the architecture + decisions are
 > [`00-overview.md`](00-overview.md) / [`DECISIONS.md`](DECISIONS.md).
 
+> **SESSION UPDATE (2026-06-02, cont.) — what changed since the autonomous build:**
+> - **libghostty renderer LINKS on macOS AND iOS** (both app targets, 0 undefined symbols),
+>   built entirely on this 26.5 host against the 26.5 SDKs — **no iOS ≤18 SDK needed.** The
+>   former "iOS needs an old SDK" caveat was WRONG (a static-lib slice has no link step). The
+>   universal recipe (complete dep-closure re-merge) is folded into `build-libghostty.sh`;
+>   activate with `scripts/enable-macos-renderer.sh` / `scripts/enable-ios-renderer.sh`.
+>   See [[libghostty-zig-sdk-blocker]] + the libghostty section below.
+> - **Terminal OUT path is WIRED**: `GhosttySurface.onWrite`/`onResize` → `TerminalViewModel`
+>   `sendInput`/`sendResize` → an ORDERED serial drain in `ConnectionViewModel` →
+>   `RworkClient.sendInput`/`sendResize`. So the GUI terminal is interactive (typing + resize),
+>   not just a read-only render. (Was the documented "remaining seam".)
+> - **PATH 2 now has BOTH ends**: a new host daemon **`rwork-videohostd`** (enumerate windows,
+>   serve one via `RworkVideoHostSession`) + a client **Remote-window panel** (endpoint form →
+>   `VideoWindowView(title:connection:)`), and `AppMain` registers the LIVE factory. The live
+>   decode still needs a GUI+TCC host + device to RUN, but the wiring is no longer a stub.
+> - **423 tests, 0 failures** (was 409); adversarial review run → 7 findings fixed (ordered OUT
+>   path, coalesced resize, macOS video tracking-area/first-responder, distinct-port validation,
+>   daemon Holder lock, single-client connection pinning, port-0 arg guard).
+
 ## Headline
 
 - **409 tests pass, 0 failures**, warning-clean, on Swift 6.3.2 / Xcode 26.5 / arm64 /

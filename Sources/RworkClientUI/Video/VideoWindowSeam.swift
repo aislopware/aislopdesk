@@ -29,10 +29,35 @@ public struct RemoteWindowDescriptor: Sendable, Equatable {
     public var title: String
     /// A stable identifier for the remote window (host CGWindowID).
     public var windowID: UInt32
+    /// The host's NetBird-routable address (or hostname). Empty ⇒ no live endpoint
+    /// (the factory then builds the chrome-only / placeholder view).
+    public var host: String
+    /// The host media UDP port (control/video/geometry/input). `0` ⇒ no endpoint.
+    public var mediaPort: UInt16
+    /// The host dedicated cursor UDP port. `0` ⇒ no endpoint.
+    public var cursorPort: UInt16
 
-    public init(title: String, windowID: UInt32) {
+    public init(
+        title: String,
+        windowID: UInt32,
+        host: String = "",
+        mediaPort: UInt16 = 0,
+        cursorPort: UInt16 = 0
+    ) {
         self.title = title
         self.windowID = windowID
+        self.host = host
+        self.mediaPort = mediaPort
+        self.cursorPort = cursorPort
+    }
+
+    /// True when the descriptor carries a complete live endpoint (host + two DISTINCT ports).
+    /// The app's `VideoWindowFactory` uses this to choose the LIVE `VideoWindowView`
+    /// (orchestrator comes up) vs. the chrome-only placeholder. The media + cursor sockets
+    /// must be distinct ports (PATH 2 opens two separate UDP connections).
+    public var hasEndpoint: Bool {
+        !host.trimmingCharacters(in: .whitespaces).isEmpty
+            && mediaPort != 0 && cursorPort != 0 && mediaPort != cursorPort
     }
 }
 

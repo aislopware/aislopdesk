@@ -139,6 +139,12 @@ let package = Package(
         // Interactive remote terminal client. Sources under Sources/rwork-client.
         .executableTarget(name: "rwork-client", dependencies: ["RworkClient", "RworkTerminal", "RworkTTY"]),
 
+        // GUI video path (PATH 2) host daemon: enumerate shareable windows, bind the UDP
+        // media+cursor sockets, run `RworkVideoHostSession`. macOS-only at runtime
+        // (ScreenCaptureKit/VideoToolbox); the `main.swift` is `#if os(macOS)`-gated with a
+        // clear non-macOS error. COMPILED + reviewed; live behaviour is GUI+TCC-gated.
+        .executableTarget(name: "rwork-videohostd", dependencies: ["RworkVideoHost", "RworkVideoProtocol"]),
+
         // MARK: Tests
         .testTarget(name: "RworkProtocolTests", dependencies: ["RworkProtocol"]),
         .testTarget(name: "RworkTransportTests", dependencies: ["RworkTransport"]),

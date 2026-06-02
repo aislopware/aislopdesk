@@ -62,8 +62,48 @@ public final class TerminalViewModel {
     /// placeholder case; the app target sets it to a libghostty ``GhosttySurface``.
     public weak var surface: (any TerminalSurface)?
 
+    /// OUT path sink: the encoded keystroke/escape bytes libghostty emits from the
+    /// renderer's `key`/`text` events (`GhosttySurface.onWrite`). The ``ConnectionViewModel``
+    /// sets this on connect to forward to the live ``RworkClient/sendInput(_:)`` and clears
+    /// it on teardown; while `nil` (disconnected) keystrokes are dropped — there is no host
+    /// to receive them. The renderer routes `onWrite` here via ``sendInput(_:)``, so the
+    /// view-attach timing and the connect timing are decoupled (whichever happens first, the
+    /// closure reads the latest sink at call time). `@ObservationIgnored`: wiring, not view
+    /// state — mutating it must not invalidate the SwiftUI views.
+    @ObservationIgnored public var inputSink: ((Data) -> Void)?
+
+    /// OUT path sink for grid resizes (cols/rows) the renderer derives from layout
+    /// (`GhosttySurface.onResize`). Same lifecycle as ``inputSink``: set on connect to
+    /// forward to ``RworkClient/sendResize(cols:rows:pxWidth:pxHeight:)`` (→ host
+    /// `TIOCSWINSZ`), cleared on teardown.
+    @ObservationIgnored public var resizeSink: ((UInt16, UInt16) -> Void)?
+
+    /// Last grid size forwarded, so a duplicate resize (libghostty emits `onResize` both from
+    /// `setSize` directly AND from its own `resize_callback` for the same layout pass) is
+    /// coalesced and not sent twice.
+    @ObservationIgnored private var lastSentSize: (cols: UInt16, rows: UInt16)?
+
     public init(surface: (any TerminalSurface)? = nil) {
         self.surface = surface
+    }
+
+    // MARK: OUT path (renderer → host)
+
+    /// Routes terminal OUT bytes (keystrokes libghostty encoded) to the live client.
+    /// A no-op while disconnected (``inputSink`` is `nil`). Called on the main actor by
+    /// the renderer's `GhosttySurface.onWrite` bridge.
+    public func sendInput(_ data: Data) {
+        inputSink?(data)
+    }
+
+    /// Mirrors a grid resize to the host (`TIOCSWINSZ`). A no-op while disconnected.
+    /// Called on the main actor by the renderer's `GhosttySurface.onResize` bridge.
+    /// Coalesces consecutive duplicates (same cols/rows) so libghostty's double-emit per
+    /// layout pass forwards at most one resize.
+    public func sendResize(cols: UInt16, rows: UInt16) {
+        if let last = lastSentSize, last.cols == cols, last.rows == rows { return }
+        lastSentSize = (cols, rows)
+        resizeSink?(cols, rows)
     }
 
     // MARK: Stream observation
@@ -138,5 +178,6 @@ public final class TerminalViewModel {
         bytesReceived = 0
         bellPending = false
         lastResumeSeq = 0
+        lastSentSize = nil   // a fresh session must re-assert its grid size
     }
 }

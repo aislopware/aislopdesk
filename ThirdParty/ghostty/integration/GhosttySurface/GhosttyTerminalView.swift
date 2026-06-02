@@ -50,12 +50,14 @@
 //    • ghostty_input_mods_e {NONE,SHIFT,CTRL,ALT,SUPER,…}— 100
 //
 //  NOTE on the OUT path (keystrokes → host PTY stdin): the surface emits encoded
-//  bytes via `onWrite`. This view forwards them to the model through a documented
-//  seam (`TerminalViewModel.surface.onWrite`). The bridge `onWrite → RworkClient
-//  .sendInput(_:)` is owned by the connection layer that holds the live client (the
-//  `GhosttyTerminalView` is handed only the model by the factory closure). That
-//  bridge is the SAME not-yet-wired seam doc 21 lists for the iOS table-stakes — it
-//  is called out as a remaining step here and in docs/21-HANDOFF.md, NOT invented.
+//  bytes via `onWrite`. This view routes them to `TerminalViewModel.sendInput(_:)`
+//  (and grid resizes via `onResize` → `sendResize`). The model funnels them through
+//  its `inputSink`/`resizeSink`, which the connection layer (`ConnectionViewModel`,
+//  which holds the live `RworkClient`) points at `RworkClient.sendInput`/`sendResize`
+//  on connect and clears on teardown. Going through the MODEL (not `model.surface
+//  .onWrite` directly) decouples view-attach timing from connect timing — whichever
+//  happens first, the sink is read at call time. NOW WIRED (was the remaining seam in
+//  docs/21-HANDOFF.md).
 //
 //  ─────────────────────────────────────────────────────────────────────────────
 //  THREADING (doc 18 §C — libghostty calls are main-thread-only)
@@ -228,14 +230,17 @@ final class GhosttyLayerBackedView: NSView {
                 // backingScaleFactor is CGFloat; GhosttySurface.contentScale is Double.
                 contentScale: Double(window?.backingScaleFactor ?? 2.0)
             )
-            // OUT path: encoded keystrokes from libghostty. The connection layer (which
-            // holds the live RworkClient) reads `model.surface?.onWrite` to bridge to
-            // `RworkClient.sendInput`. Documented remaining seam (file header + doc 21).
-            s.onWrite = { (_: Data) in
-                // bytes are consumed by the connection-layer bridge via model.surface.onWrite
+            // OUT path: encoded keystrokes from libghostty → the model's input sink, which
+            // the ConnectionViewModel points at the live `RworkClient.sendInput`. onWrite is
+            // invoked synchronously on the main actor (GhosttySurface is @MainActor), so the
+            // call into the @MainActor model is in-isolation.
+            s.onWrite = { [weak model] (data: Data) in
+                model?.sendInput(data)
             }
-            // Grid changes (font reflow) → host TIOCSWINSZ via the same bridge.
-            s.onResize = { (_: UInt16, _: UInt16) in }
+            // Grid changes (font reflow) → model resize sink → host TIOCSWINSZ.
+            s.onResize = { [weak model] (cols: UInt16, rows: UInt16) in
+                model?.sendResize(cols: cols, rows: rows)
+            }
             self.surface = s
         }
         // The model's ingestOutput(_:) feeds inbound bytes into surface.feed(_:).
@@ -387,10 +392,16 @@ final class GhosttyLayerBackedView: UIView {
                 rows: 24,
                 contentScale: Double(scale)
             )
-            s.onWrite = { (_: Data) in
-                // consumed by the connection-layer bridge via model.surface.onWrite
+            // OUT path: libghostty-encoded keystrokes → model sink → live RworkClient.
+            // On iOS the physical-key/IME forwarding is owned by `TerminalInputHost`
+            // (doc 17 §2.5), but routing onWrite here too is harmless+correct: it carries
+            // whatever the surface itself encodes, and the model sink is the single funnel.
+            s.onWrite = { [weak model] (data: Data) in
+                model?.sendInput(data)
             }
-            s.onResize = { (_: UInt16, _: UInt16) in }
+            s.onResize = { [weak model] (cols: UInt16, rows: UInt16) in
+                model?.sendResize(cols: cols, rows: rows)
+            }
             self.surface = s
         }
         model.surface = surface

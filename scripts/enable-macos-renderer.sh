@@ -43,10 +43,13 @@ if [[ ! -d "$XCFRAMEWORK" ]]; then
   echo "         bash ThirdParty/ghostty/build-libghostty.sh" >&2
   exit 1
 fi
-if [[ ! -d "$XCFRAMEWORK/macos-arm64" ]]; then
-  echo "ERROR: $XCFRAMEWORK has no macos-arm64 slice." >&2
+# Accept either the native single slice (macos-arm64) or the universal build's macOS slice
+# (macos-arm64_x86_64) — the app pins ARCHS=arm64 and both carry an arm64 slice.
+if [[ ! -d "$XCFRAMEWORK/macos-arm64" && ! -d "$XCFRAMEWORK/macos-arm64_x86_64" ]]; then
+  echo "ERROR: $XCFRAMEWORK has no macOS arm64 slice (macos-arm64 or macos-arm64_x86_64)." >&2
   echo "       The macOS app pins ARCHS=arm64 and needs that slice. Rebuild the xcframework:" >&2
-  echo "         bash ThirdParty/ghostty/build-libghostty.sh" >&2
+  echo "         bash ThirdParty/ghostty/build-libghostty.sh                 # native (macos only)" >&2
+  echo "         XCFRAMEWORK_TARGET=universal bash ThirdParty/ghostty/build-libghostty.sh  # + iOS" >&2
   exit 1
 fi
 
@@ -95,7 +98,8 @@ dep_block = (
     "        product: RworkVideoClient\n"
     "      # PATH 1 (libghostty renderer): the libghostty static binary (the link-time\n"
     "      # `ghostty` C-ABI symbols) packaged as an xcframework, built ON this macOS-26.5 host\n"
-    "      # by ThirdParty/ghostty/build-libghostty.sh (macos-arm64 slice; no iOS slice yet).\n"
+    "      # by ThirdParty/ghostty/build-libghostty.sh. The universal build also ships iOS\n"
+    "      # slices (see scripts/enable-ios-renderer.sh); this macOS target links the macOS slice.\n"
     "      - framework: ../../ThirdParty/ghostty/libghostty.xcframework\n"
     "        embed: true\n"
 )

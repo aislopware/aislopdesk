@@ -50,13 +50,28 @@ final class ConnectionViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.sessionID)
         XCTAssertNotNil(vm.activeClient)
 
-        // Drive a shell echo; the terminal model should flip to .connected and count bytes.
-        try await vm.activeClient?.sendInput(Data("echo RWORK_UI_OK\n".utf8))
+        // OUT-path wiring: connect() must arm the renderer→host sinks on the terminal model
+        // (the SAME funnel GhosttyTerminalView's onWrite/onResize bridge uses).
+        XCTAssertNotNil(terminal.inputSink, "connect() wires the OUT-path input sink")
+        XCTAssertNotNil(terminal.resizeSink, "connect() wires the OUT-path resize sink")
+
+        // Drive a shell echo THROUGH the model funnel (terminal.sendInput → inputSink →
+        // client.sendInput → host PTY), not the client directly — this exercises the renderer
+        // OUT seam end-to-end. The host echoes it back as output.
+        terminal.sendInput(Data("echo RWORK_UI_OK\n".utf8))
         let sawOutput = await waitUntil { terminal.bytesReceived > 0 && terminal.connectionStatus == .connected }
         XCTAssertTrue(sawOutput, "terminal model received output and is connected; bytes=\(terminal.bytesReceived)")
 
+        // Drive a grid resize through the model funnel; the session must stay healthy
+        // (host maps it to TIOCSWINSZ on the control channel).
+        terminal.sendResize(cols: 132, rows: 43)
+        let stillConnected = await waitUntil { vm.status == .connected }
+        XCTAssertTrue(stillConnected, "session healthy after a model-funnelled resize")
+
         await vm.disconnect()
         XCTAssertEqual(vm.status, .disconnected, "deliberate disconnect → disconnected (no reconnect)")
+        XCTAssertNil(terminal.inputSink, "disconnect() clears the OUT-path input sink")
+        XCTAssertNil(terminal.resizeSink, "disconnect() clears the OUT-path resize sink")
     }
 
     /// END-TO-END consistency across a real `.disconnected` → `.reconnected` cycle delivered

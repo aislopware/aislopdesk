@@ -77,6 +77,61 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(model.bytesReceived, 3)
     }
 
+    func testSendInputRoutesThroughInputSinkInOrder() {
+        let model = TerminalViewModel()
+        var captured = Data()
+        model.inputSink = { captured.append($0) }
+        model.sendInput(Data([0x61, 0x62]))
+        model.sendInput(Data([0x63]))
+        XCTAssertEqual(captured, Data([0x61, 0x62, 0x63]), "sendInput funnels through inputSink, in order")
+    }
+
+    func testSendInputWithoutSinkIsNoOp() {
+        let model = TerminalViewModel()
+        // Disconnected (no inputSink): keystrokes are dropped, never crash.
+        model.sendInput(Data([0x61]))
+        XCTAssertNil(model.inputSink)
+    }
+
+    func testSendResizeRoutesThroughResizeSink() {
+        let model = TerminalViewModel()
+        var captured: [(cols: UInt16, rows: UInt16)] = []
+        model.resizeSink = { captured.append((cols: $0, rows: $1)) }
+        model.sendResize(cols: 120, rows: 40)
+        XCTAssertEqual(captured.count, 1)
+        XCTAssertEqual(captured.first?.cols, 120)
+        XCTAssertEqual(captured.first?.rows, 40)
+    }
+
+    func testSendResizeWithoutSinkIsNoOp() {
+        let model = TerminalViewModel()
+        model.sendResize(cols: 80, rows: 24)
+        XCTAssertNil(model.resizeSink)
+    }
+
+    func testSendResizeCoalescesConsecutiveDuplicates() {
+        let model = TerminalViewModel()
+        var calls: [(cols: UInt16, rows: UInt16)] = []
+        model.resizeSink = { calls.append((cols: $0, rows: $1)) }
+        model.sendResize(cols: 80, rows: 24)
+        model.sendResize(cols: 80, rows: 24)   // duplicate (libghostty double-emits) → coalesced
+        model.sendResize(cols: 100, rows: 30)  // changed → forwarded
+        model.sendResize(cols: 100, rows: 30)  // duplicate → coalesced
+        XCTAssertEqual(calls.count, 2, "consecutive duplicate resizes are coalesced")
+        XCTAssertEqual(calls.first?.cols, 80)
+        XCTAssertEqual(calls.last?.cols, 100)
+    }
+
+    func testResetReArmsResize() {
+        let model = TerminalViewModel()
+        var calls = 0
+        model.resizeSink = { _, _ in calls += 1 }
+        model.sendResize(cols: 80, rows: 24)
+        model.reset()                          // a fresh session must re-assert its grid size
+        model.sendResize(cols: 80, rows: 24)
+        XCTAssertEqual(calls, 2, "reset re-arms coalescing so the same size re-sends on reconnect")
+    }
+
     func testResetClearsState() {
         let model = TerminalViewModel()
         model.handle(.title("x"))

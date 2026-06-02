@@ -138,6 +138,27 @@ final class MetalLayerBackedView: NSView {
     }
     override var acceptsFirstResponder: Bool { true }
 
+    /// AppKit only delivers `mouseMoved` when a tracking area requests it, and
+    /// `acceptsFirstResponder` alone does NOT focus a bare layer-backed view inside a
+    /// SwiftUI sheet — so without these two the cursor-follow + keyboard input paths are
+    /// dead. Install/refresh a tracking area for the visible bounds, and grab first
+    /// responder when the view enters a window.
+    private var trackingArea: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { window?.makeFirstResponder(self) }
+    }
+
     static func modifiers(_ flags: NSEvent.ModifierFlags) -> InputModifiers {
         var m: InputModifiers = []
         if flags.contains(.shift) { m.insert(.shift) }

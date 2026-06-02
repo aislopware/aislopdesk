@@ -60,12 +60,16 @@
 #       We extract both, re-archive with ar/ranlib (chmod first — Zig stores members
 #       mode 0000; the B-set is prefixed `zig_` to avoid base64.o/compiler_rt.o
 #       name collisions with the A-set), then `xcodebuild -create-xcframework`.
-#   (4) iOS slice needs an iOS <= 18 SDK.
-#       XCFRAMEWORK_TARGET=universal adds ios-arm64 device + sim. The same toolchain<->SDK
-#       constraint applies: Zig 0.15.2 needs an iOS SDK <= 18.x (and the shim must be
-#       extended to answer iphoneos/iphonesimulator --show-sdk-path). On a host with only
-#       the 26.x iOS SDK the universal target will NOT link. Build the iOS slice on a host
-#       (or CI image) carrying an iOS <= 18 SDK. Default target is `native` (macOS arm64).
+#   (4) iOS slice builds against the host's 26.5 iOS SDK — NO iOS<=18 SDK needed.
+#       XCFRAMEWORK_TARGET=universal adds ios-arm64 device + ios-arm64 simulator. The
+#       caveat-#1 SDK-link wall is a LINK-time failure; an xcframework slice is a STATIC
+#       ARCHIVE with NO final link step, so Zig 0.15.2 cross-compiles iOS objects against
+#       the installed iOS 26.5 SDK cleanly (proven on this host — all 3 slices compiled,
+#       every ghostty_* C-API symbol present after the per-slice re-merge). The shim is
+#       NOT extended for iphoneos: iOS queries pass through to the real 26.5 SDK on purpose.
+#       The macosx shim (caveat #1) is STILL needed — the build.zig RUNNER links natively.
+#       (Earlier belief that iOS needed an SDK<=18 was wrong: that was inferred from the
+#       macOS *executable* link wall and never tested for a static iOS slice.)
 #
 # USAGE:
 #   ThirdParty/ghostty/build-libghostty.sh            # macOS arm64 native slice (fast first cut)
@@ -340,82 +344,208 @@ fi
 [ "${BUILD_RC}" -eq 0 ] && log "zig build exited 0." || log "zig build exited ${BUILD_RC} (expected — app-bundle stage; harvesting libtool archives, caveat #3)."
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. ASSEMBLE the static library OURSELVES (the libtool-symbol-drop bypass, caveat #3).
+# 4. ASSEMBLE the static library/-ies OURSELVES (the libtool-symbol-drop bypass,
+#    caveat #3). Xcode-26.5 `libtool -static` drops the Zig root object
+#    (libghostty_zcu.o — carries ALL ghostty_* C-API symbols) from EVERY emitted
+#    slice, so the fork's GhosttyKit.xcframework slices are DEFECTIVE (only 4
+#    ghostty_* symbols, no ghostty_surface_write_output). We re-merge each slice's
+#    deps archive with its matching Zig root harvested from .zig-cache.
 #
-#    Source A (deps): macos/build/ReleaseLocal/libghostty-fat.a — the C/C++ dependency
-#      objects (freetype, png, sentry, oniguruma, simdutf, imgui, glslang, …). The Zig
-#      root object is NOT here.
-#    Source B (zig):  .zig-cache/o/<hash>/libghostty.a — the handful of Zig objects,
-#      including libghostty_zcu.o which carries ALL ghostty_* C-API symbols. We must
-#      identify it by content (it is the ONLY zig-cache archive whose nm shows
-#      ghostty_surface_write_output), then prefix its members `zig_` to avoid
-#      base64.o / compiler_rt.o / codepoint_width.o name collisions with Source A.
+#    NATIVE target  → one macos-arm64 slice:
+#      Source A (deps): macos/build/ReleaseLocal/libghostty-fat.a (C/C++ deps).
+#      Source B (zig):  the .zig-cache/o/<hash>/libghostty.a that DEFINES the C-API
+#                       canary (identified by content).
+#    UNIVERSAL target → macos-arm64 + ios-arm64 + ios-arm64-simulator (arm64-only;
+#      Intel macOS is EOL here, the app pins ARCHS=arm64). Each slice is the COMPLETE
+#      dependency closure: GhosttyKit <slice> deps + the platform-matched Zig root +
+#      EVERY standalone per-dependency lib (libdcimgui/libfreetype/libglslang/…/libmacos)
+#      that the fork's per-slice libtool merge DROPS. (The emitted GhosttyKit slices ship
+#      only ~142 of ~280 objects → 653 undefined symbols at app-link without the re-add.)
+#      Zig roots are classified by the Mach-O platform of libghostty_zcu.o (otool
+#      LC_BUILD_VERSION: 1=macOS, 2=iOS device, 7=iOS simulator); dep libs are picked
+#      platform-matched-or-portable so create-xcframework sees one platform per slice.
+#      The iOS slices build against the host's iOS 26.5 SDK: a STATIC archive has no final
+#      link step, so the 26.x-SDK link wall that blocks macOS *executables* (caveat #1) does
+#      NOT apply — VALIDATED: both macOS and iOS app targets compile + LINK the renderer
+#      (no iOS<=18 SDK needed; caveat #4 is obsolete).
 #
-#    Zig stores .a members mode 0000 → we chmod 0644 before re-archiving or ar/ranlib
-#    cannot read them. Final archive = A-members + zig_-prefixed B-members, ar qc + ranlib.
+#    Zig stores .a members mode 0000 → chmod u+rw before ar/ranlib. Zig-root members
+#    are `zig_`-prefixed to avoid base64.o/compiler_rt.o/codepoint_width.o collisions
+#    with the deps members. Final archives = deps + zig_-prefixed root, ar qc + ranlib.
 # ─────────────────────────────────────────────────────────────────────────────
-SRC_A="$(find "${SRC_DIR}/macos/build" -name 'libghostty-fat.a' -type f 2>/dev/null | head -1 || true)"
-[ -n "${SRC_A}" ] || fail "dependency archive (macos/build/.../libghostty-fat.a) not found — the libtool step did not run. Most likely the Metal Toolchain is missing (caveat #2) or the SDK shim is not on PATH. Re-check the build output above."
-log "source A (deps): ${SRC_A}"
+GK="${SRC_DIR}/macos/GhosttyKit.xcframework"        # the fork's emitted xcframework
+ZC="${SRC_DIR}/.zig-cache"
+HARVEST="${WORK_DIR}/harvest"
+rm -rf "${HARVEST}" "${OUT_DIR}"; mkdir -p "${HARVEST}" "${OUT_DIR}"
 
-# Locate Source B by CONTENT: the zig-cache libghostty.a that actually exposes the C API.
-SRC_B=""
-while IFS= read -r cand; do
-    [ -n "${cand}" ] || continue
-    if nm "${cand}" 2>/dev/null | grep -q "ghostty_surface_write_output"; then
-        SRC_B="${cand}"; break
+# Re-merge one thin static lib = (deps members) + (zig-root members, zig_-prefixed).
+#   merge_thin <out.a> <deps-archive> <deps-arch|''> <root-archive> <root-arch|''>
+merge_thin() {
+    local out="$1" deps="$2" deps_arch="$3" root="$4" root_arch="$5"
+    local d depsthin rootthin m
+    d="${HARVEST}/build-$(basename "${out}" .a)"
+    rm -rf "${d}"; mkdir -p "${d}/deps" "${d}/root"
+    depsthin="${deps}"
+    [ -n "${deps_arch}" ] && { depsthin="${d}/deps.a"; lipo "${deps}" -thin "${deps_arch}" -output "${depsthin}"; }
+    ( cd "${d}/deps" && ar x "${depsthin}" && rm -f __.SYMDEF '__.SYMDEF SORTED' )
+    chmod -R u+rw "${d}/deps"
+    rootthin="${root}"
+    [ -n "${root_arch}" ] && { rootthin="${d}/root.a"; lipo "${root}" -thin "${root_arch}" -output "${rootthin}"; }
+    ( cd "${d}/root" && ar x "${rootthin}" && rm -f __.SYMDEF '__.SYMDEF SORTED' )
+    chmod -R u+rw "${d}/root"
+    for m in "${d}/root"/*.o; do [ -e "${m}" ] || continue; mv "${m}" "${d}/root/zig_$(basename "${m}")"; done
+    rm -f "${out}"
+    ar qc "${out}" "${d}/deps"/*.o "${d}/root"/zig_*.o
+    ranlib "${out}"
+}
+
+# Mach-O platform number (LC_BUILD_VERSION) of an archive's libghostty_zcu.o for <arch>.
+root_platform() {  # <archive> <arch>
+    local a="$1" arch="$2" tmp thin
+    tmp="${HARVEST}/cls-$$-${RANDOM}"; rm -rf "${tmp}"; mkdir -p "${tmp}"
+    thin="${a}"
+    if [ "$(lipo -archs "${a}" 2>/dev/null | wc -w)" -gt 1 ]; then
+        thin="${tmp}/thin.a"; lipo "${a}" -thin "${arch}" -output "${thin}" 2>/dev/null || { rm -rf "${tmp}"; return 1; }
     fi
-done <<< "$(find "${SRC_DIR}/.zig-cache" -name 'libghostty.a' -type f 2>/dev/null)"
-[ -n "${SRC_B}" ] || fail "Zig root archive (.zig-cache/o/*/libghostty.a exposing ghostty_surface_write_output) not found — the Zig compilation unit did not build (wrong SHA, or build aborted before the Zig step)."
-log "source B (zig root, has C API): ${SRC_B}"
+    ( cd "${tmp}" && ar x "${thin}" libghostty_zcu.o 2>/dev/null ) || true
+    [ -f "${tmp}/libghostty_zcu.o" ] || { rm -rf "${tmp}"; return 1; }
+    chmod u+rw "${tmp}/libghostty_zcu.o"
+    otool -l "${tmp}/libghostty_zcu.o" 2>/dev/null | awk '/LC_BUILD_VERSION/{f=1} f&&/platform/{print $2; exit}'
+    rm -rf "${tmp}"
+}
 
-# Fresh scratch every run (idempotent).
-rm -rf "${ASSEMBLE_DIR}" "${OUT_DIR}"
-A_DIR="${ASSEMBLE_DIR}/a"; B_DIR="${ASSEMBLE_DIR}/b"
-mkdir -p "${A_DIR}" "${B_DIR}" "${OUT_DIR}"
+# Platform of an arbitrary archive = its first stamped object's platform (blank = portable
+# / unstamped). Zig stores members mode 0000 → chmod before otool.
+arch_plat() {  # <archive>
+    local a="$1" tmp o p; tmp="${HARVEST}/ap-$$-${RANDOM}"; rm -rf "${tmp}"; mkdir -p "${tmp}"
+    ( cd "${tmp}" && ar x "${a}" 2>/dev/null ) || true; chmod -R u+rw "${tmp}" 2>/dev/null || true
+    p=""
+    for o in "${tmp}"/*.o; do
+        [ -e "${o}" ] || continue
+        p="$(otool -l "${o}" 2>/dev/null | awk '/LC_BUILD_VERSION/{f=1} f&&/platform/{print $2; exit}')"
+        [ -n "${p}" ] && break
+    done
+    rm -rf "${tmp}"; printf '%s' "${p}"
+}
 
-log "extracting + chmod dependency objects (Source A)"
-( cd "${A_DIR}" && ar x "${SRC_A}" && rm -f __.SYMDEF '__.SYMDEF SORTED' )
-chmod -R u+rw "${A_DIR}"
+# Pick the arm64 copy of <libname> that is platform <want> OR portable (unstamped). The fork
+# builds each dep 4–5× (per target); the C/C++ deps are mostly unstamped + portable, but some
+# (sentry/breakpad/macos) carry a platform stamp and MUST match the slice or create-xcframework
+# rejects the slice as "multiple platforms".
+pick_for_plat() {  # <libname-without-.a> <want-platform>
+    local name="$1" want="$2" a p
+    while IFS= read -r a; do
+        [ "$(lipo -archs "${a}" 2>/dev/null | awk '{print $1}')" = arm64 ] || continue
+        p="$(arch_plat "${a}")"
+        { [ -z "${p}" ] || [ "${p}" = "${want}" ]; } && { printf '%s' "${a}"; return; }
+    done < <(find "${ZC}" -name "${name}.a" 2>/dev/null)
+}
 
-log "extracting + chmod + zig_-prefixing Zig objects (Source B)"
-( cd "${B_DIR}" && ar x "${SRC_B}" && rm -f __.SYMDEF '__.SYMDEF SORTED' )
-chmod -R u+rw "${B_DIR}"
-for f in "${B_DIR}"/*.o; do
-    base="$(basename "${f}")"
-    case "${base}" in zig_*) : ;; *) mv "${f}" "${B_DIR}/zig_${base}" ;; esac
-done
+# Extract <archive> into <objdir>, skipping object basenames already present, with <prefix>.
+add_archive() {  # <archive> <objdir> <prefix>
+    local arch="$1" dir="$2" prefix="$3" ex o b
+    ex="${HARVEST}/x-$$-${RANDOM}"; rm -rf "${ex}"; mkdir -p "${ex}"
+    ( cd "${ex}" && ar x "${arch}" 2>/dev/null && rm -f __.SYMDEF '__.SYMDEF SORTED' ); chmod -R u+rw "${ex}" 2>/dev/null || true
+    for o in "${ex}"/*.o; do
+        [ -e "${o}" ] || continue
+        b="${prefix}$(basename "${o}")"; [ -e "${dir}/${b}" ] && continue
+        mv "${o}" "${dir}/${b}"
+    done
+    rm -rf "${ex}"
+}
 
-FINAL_FAT="${OUT_DIR}/libghostty-fat.a"
-log "re-archiving with ar qc + ranlib -> ${FINAL_FAT}"
-rm -f "${FINAL_FAT}"
-# Pass objects explicitly (not a glob in args) so member order is deterministic-ish.
-# ar qc appends; ranlib (re)builds the symbol table libtool would have written.
-ar qc "${FINAL_FAT}" "${A_DIR}"/*.o "${B_DIR}"/*.o
-ranlib "${FINAL_FAT}"
+# The standalone per-dependency libs the fork's per-slice libtool merge DROPS (it ships only
+# ~142 of ~280 objects, so e.g. ALL of imgui/freetype/glslang/oniguruma/sentry are missing →
+# 653 undefined symbols at app-link). We re-add them platform-matched. NOT libghostty/-fat
+# (those ARE the slice). libmacos = ghostty's Apple-platform C shim (os_log etc.), built
+# per-platform despite the name (its iOS copy carries zig_os_log_with_type for iOS).
+DEP_LIBS="libdcimgui libfreetype libglslang libintl liboniguruma libsentry libsimdutf libspirv_cross libpng libhighway libutfcpp libz libbreakpad libmacos"
 
-MEMBER_COUNT="$(ar t "${FINAL_FAT}" 2>/dev/null | grep -vc '__.SYMDEF' || true)"
-log "assembled fat archive: ${MEMBER_COUNT} members"
+# Build one COMPLETE slice = GhosttyKit <gkslice> deps (apprt; wins on basename dups) +
+# <zigroot> + every platform-<want> (or portable) standalone dep lib. Optional <thinarch>
+# thins a fat GhosttyKit deps archive first. ar qc + ranlib (NO lipo — a lipo'd fat static
+# archive's per-arch TOC breaks ld's lazy cross-member resolution; slices stay thin arm64).
+build_slice() {  # <out.a> <zigroot> <gkslice> <want-platform> [thinarch]
+    local out="$1" root="$2" gkslice="$3" want="$4" thinarch="${5:-}" dir d gkdeps a
+    dir="${HARVEST}/obj-$(basename "${out}" .a)"; rm -rf "${dir}"; mkdir -p "${dir}"
+    gkdeps="$(ls "${GK}/${gkslice}/"libghostty*.a 2>/dev/null | head -1)"
+    [ -n "${gkdeps}" ] || fail "GhosttyKit slice deps not found: ${GK}/${gkslice}/libghostty*.a"
+    if [ -n "${thinarch}" ] && [ "$(lipo -archs "${gkdeps}" 2>/dev/null | wc -w)" -gt 1 ]; then
+        lipo "${gkdeps}" -thin "${thinarch}" -output "${HARVEST}/gkthin-$(basename "${out}")"
+        gkdeps="${HARVEST}/gkthin-$(basename "${out}")"
+    fi
+    add_archive "${gkdeps}" "${dir}" ""
+    add_archive "${root}" "${dir}" "zigroot_"
+    for d in ${DEP_LIBS}; do
+        a="$(pick_for_plat "${d}" "${want}")"
+        [ -n "${a}" ] && add_archive "${a}" "${dir}" "${d}__" || log "  WARN: no platform-${want}/portable ${d} (link may be incomplete)"
+    done
+    rm -f "${out}"; ar qc "${out}" "${dir}"/*.o; ranlib "${out}"
+}
 
-# Stage Headers from the source include/ tree (umbrella ghostty.h + module.modulemap
-# + the ghostty/vt/* subtree the modulemap references). This mirrors what the fork's
-# own xcframework ships.
-HDR_STAGE="${OUT_DIR}/Headers"
-rm -rf "${HDR_STAGE}"; mkdir -p "${HDR_STAGE}"
-cp -R "${SRC_DIR}/include/." "${HDR_STAGE}/"
-[ -f "${HDR_STAGE}/ghostty.h" ] || fail "staged Headers missing ghostty.h (source include/ layout changed?)."
-[ -f "${HDR_STAGE}/module.modulemap" ] || fail "staged Headers missing module.modulemap (source include/ layout changed?)."
+CREATE_ARGS=()
+if [ "${XCFRAMEWORK_TARGET}" = "universal" ]; then
+    [ -d "${GK}" ] || fail "fork emit ${GK} not found — the universal zig build did not emit GhosttyKit.xcframework (Metal Toolchain missing, or SDK shim not on PATH?)."
+    # Classify the arm64 Zig roots (those that DEFINE the C-API canary) by Mach-O platform:
+    # 1=macOS, 2=iOS device, 7=iOS simulator. (pipefail-safe count; `grep -q` would SIGPIPE nm.)
+    ROOT_MAC=""; ROOT_IOS_DEV=""; ROOT_IOS_SIM=""
+    while IFS= read -r a; do
+        [ "$(nm "${a}" 2>/dev/null | grep -c " _ghostty_surface_write_output\$" || true)" -gt 0 ] || continue
+        [ "$(lipo -archs "${a}" 2>/dev/null | awk '{print $1}')" = arm64 ] || continue
+        case "$(root_platform "${a}" arm64)" in
+            1) [ -z "${ROOT_MAC}" ]     && ROOT_MAC="${a}" ;;
+            2) [ -z "${ROOT_IOS_DEV}" ] && ROOT_IOS_DEV="${a}" ;;
+            7) [ -z "${ROOT_IOS_SIM}" ] && ROOT_IOS_SIM="${a}" ;;
+        esac
+    done < <(find "${ZC}" -name 'libghostty.a' 2>/dev/null)
+    for v in ROOT_MAC ROOT_IOS_DEV ROOT_IOS_SIM; do
+        eval "rp=\${$v}"; [ -n "${rp}" ] || fail "universal harvest: could not resolve Zig root for ${v} (classify by platform failed)."
+    done
+    log "universal Zig roots resolved (macos arm64, ios-arm64 device, ios-arm64 simulator)"
+    # Each slice = GhosttyKit deps + zig root + ALL platform-matched standalone dep libs.
+    # arm64-only macOS (Intel macOS is EOL for this project; the app pins ARCHS=arm64).
+    build_slice "${HARVEST}/macos-arm64.a"         "${ROOT_MAC}"     "macos-arm64_x86_64"  1 arm64
+    build_slice "${HARVEST}/ios-arm64.a"           "${ROOT_IOS_DEV}" "ios-arm64"           2
+    build_slice "${HARVEST}/ios-arm64-simulator.a" "${ROOT_IOS_SIM}" "ios-arm64-simulator" 7
+    CREATE_ARGS=(
+        -library "${HARVEST}/macos-arm64.a"         -headers "${GK}/macos-arm64_x86_64/Headers"
+        -library "${HARVEST}/ios-arm64.a"           -headers "${GK}/ios-arm64/Headers"
+        -library "${HARVEST}/ios-arm64-simulator.a" -headers "${GK}/ios-arm64-simulator/Headers"
+    )
+    MEMBER_COUNT="universal (macos-arm64 + ios-arm64 + ios-arm64-simulator, complete dep closure)"
+else
+    # NATIVE: the proven single macos-arm64 slice (Source A deps + Source B zig root).
+    SRC_A="$(find "${SRC_DIR}/macos/build" -name 'libghostty-fat.a' -type f 2>/dev/null | head -1 || true)"
+    [ -n "${SRC_A}" ] || fail "dependency archive (macos/build/.../libghostty-fat.a) not found — the libtool step did not run. Most likely the Metal Toolchain is missing (caveat #2) or the SDK shim is not on PATH. Re-check the build output above."
+    log "source A (deps): ${SRC_A}"
+    SRC_B=""
+    while IFS= read -r cand; do
+        [ -n "${cand}" ] || continue
+        if nm "${cand}" 2>/dev/null | grep -q "ghostty_surface_write_output"; then
+            SRC_B="${cand}"; break
+        fi
+    done <<< "$(find "${SRC_DIR}/.zig-cache" -name 'libghostty.a' -type f 2>/dev/null)"
+    [ -n "${SRC_B}" ] || fail "Zig root archive (.zig-cache/o/*/libghostty.a exposing ghostty_surface_write_output) not found — the Zig compilation unit did not build (wrong SHA, or build aborted before the Zig step)."
+    log "source B (zig root, has C API): ${SRC_B}"
+    FINAL_FAT="${OUT_DIR}/libghostty-fat.a"
+    merge_thin "${FINAL_FAT}" "${SRC_A}" "" "${SRC_B}" ""
+    MEMBER_COUNT="$(ar t "${FINAL_FAT}" 2>/dev/null | grep -vc '__.SYMDEF' || true)"
+    log "assembled fat archive: ${MEMBER_COUNT} members"
+    # Stage Headers from the source include/ tree (umbrella ghostty.h + module.modulemap
+    # + the ghostty/vt/* subtree the modulemap references).
+    HDR_STAGE="${OUT_DIR}/Headers"
+    rm -rf "${HDR_STAGE}"; mkdir -p "${HDR_STAGE}"
+    cp -R "${SRC_DIR}/include/." "${HDR_STAGE}/"
+    [ -f "${HDR_STAGE}/ghostty.h" ] || fail "staged Headers missing ghostty.h (source include/ layout changed?)."
+    [ -f "${HDR_STAGE}/module.modulemap" ] || fail "staged Headers missing module.modulemap (source include/ layout changed?)."
+    CREATE_ARGS=( -library "${FINAL_FAT}" -headers "${HDR_STAGE}" )
+fi
 
-log "wrapping with xcodebuild -create-xcframework"
+log "wrapping with xcodebuild -create-xcframework (${MEMBER_COUNT})"
 rm -rf "${OUT_XCFRAMEWORK}"
-xcodebuild -create-xcframework \
-    -library "${FINAL_FAT}" -headers "${HDR_STAGE}" \
-    -output "${OUT_XCFRAMEWORK}" >/dev/null \
+xcodebuild -create-xcframework "${CREATE_ARGS[@]}" -output "${OUT_XCFRAMEWORK}" >/dev/null \
     || fail "xcodebuild -create-xcframework failed (see output)."
 log "assembled: ${OUT_XCFRAMEWORK}"
-
-# Also keep a copy of the assembled fat archive next to the staged out for debugging.
-cp "${FINAL_FAT}" "${OUT_DIR}/libghostty-fat.a" 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Verify the external-IO symbols in the FINAL ASSEMBLED library (caveat #3 check).

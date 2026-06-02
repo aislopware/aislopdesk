@@ -55,7 +55,12 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
         let media = try NWListener(using: params, on: mediaPort)
         media.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
-            self.lock.lock(); self.mediaConn = conn; self.lock.unlock()
+            // Pin to the FIRST accepted client; reject later source endpoints so a stray/extra
+            // inbound datagram never clobbers the streaming connection (the state machine + the
+            // single-client model assume one peer).
+            self.lock.lock()
+            if self.mediaConn == nil { self.mediaConn = conn; self.lock.unlock() }
+            else { self.lock.unlock(); conn.cancel(); return }
             conn.start(queue: self.queue)
             self.receiveMedia(on: conn, onReceive: onReceive)
         }
@@ -65,7 +70,9 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
         let cursor = try NWListener(using: params, on: cursorPort)
         cursor.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
-            self.lock.lock(); self.cursorConn = conn; self.lock.unlock()
+            self.lock.lock()
+            if self.cursorConn == nil { self.cursorConn = conn; self.lock.unlock() }
+            else { self.lock.unlock(); conn.cancel(); return }
             conn.start(queue: self.queue)
             self.receiveCursor(on: conn, onReceive: onReceive)
         }
