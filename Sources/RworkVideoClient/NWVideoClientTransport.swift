@@ -58,6 +58,21 @@ public final class NWVideoClientTransport: VideoClientTransport, @unchecked Send
         cursor.start(queue: queue)
         receiveMedia(on: media, onMedia: onMedia)
         receiveCursor(on: cursor, onCursor: onCursor)
+
+        // PRIME the cursor side-channel. The host binds the cursor port with an `NWListener`,
+        // which only ACCEPTS (and pins) a flow once an inbound datagram arrives from us — but
+        // the client is otherwise receive-only on cursor (`send` refuses the cursor channel).
+        // Without this prime the host never learns our cursor endpoint, so its `cursorConn`
+        // stays nil and NOT ONE cursor update is ever delivered (the side-channel is silently
+        // dead). One non-empty datagram is enough to pin the flow; the host ignores inbound
+        // `.cursor` payloads (`RworkVideoHostSession.receive` drops them), so the content is
+        // irrelevant — send a 1-byte keepalive. (Over WireGuard the path is stable, so a
+        // single prime suffices; a periodic keepalive could be added if a real NAT path needs
+        // to keep the host→client mapping open.)
+        cursor.send(content: Data([0x00]), completion: .contentProcessed { [weak self] error in
+            if let error { self?.log.error("cursor prime send failed: \(String(describing: error))") }
+        })
+
         log.info("NWVideoClientTransport connected media=\(String(describing: self.mediaEndpoint)) cursor=\(String(describing: self.cursorEndpoint))")
     }
 

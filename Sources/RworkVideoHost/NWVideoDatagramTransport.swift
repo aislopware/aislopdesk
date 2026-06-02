@@ -42,6 +42,10 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
     private let lock = NSLock()
     private var mediaConn: NWConnection?
     private var cursorConn: NWConnection?
+    /// Set true inside ``stop()`` (under `lock`). Guards the accept-after-stop race: a
+    /// connection the `NWListener` accepts concurrently with `stop()` must be cancelled,
+    /// not stored+started (else it leaks — `stop()` already niled the slots).
+    private var stopped = false
 
     public init(mediaPort: UInt16, cursorPort: UInt16) {
         self.mediaPort = NWEndpoint.Port(rawValue: mediaPort)!
@@ -59,8 +63,13 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
             // inbound datagram never clobbers the streaming connection (the state machine + the
             // single-client model assume one peer).
             self.lock.lock()
+            if self.stopped { self.lock.unlock(); conn.cancel(); return }   // accept-after-stop
             if self.mediaConn == nil { self.mediaConn = conn; self.lock.unlock() }
             else { self.lock.unlock(); conn.cancel(); return }
+            // Clear the slot when this connection dies so a reconnecting client (process
+            // restart, path flap, new source port) can RE-PIN — without this the dead
+            // connection wedges the slot forever and every reconnect is silently refused.
+            self.installResetHandler(on: conn, isMedia: true)
             conn.start(queue: self.queue)
             self.receiveMedia(on: conn, onReceive: onReceive)
         }
@@ -71,8 +80,10 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
         cursor.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
             self.lock.lock()
+            if self.stopped { self.lock.unlock(); conn.cancel(); return }   // accept-after-stop
             if self.cursorConn == nil { self.cursorConn = conn; self.lock.unlock() }
             else { self.lock.unlock(); conn.cancel(); return }
+            self.installResetHandler(on: conn, isMedia: false)
             conn.start(queue: self.queue)
             self.receiveCursor(on: conn, onReceive: onReceive)
         }
@@ -80,6 +91,29 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
         self.cursorListener = cursor
 
         log.info("NWVideoDatagramTransport listening media=\(self.mediaPort.rawValue) cursor=\(self.cursorPort.rawValue)")
+    }
+
+    /// Installs a `stateUpdateHandler` that clears the pinned slot when `conn` fails or is
+    /// cancelled, so the listener's `newConnectionHandler` can re-pin a reconnecting client.
+    /// Must be set BEFORE `conn.start(...)` so no early transition is missed. Only clears the
+    /// slot if it still holds THIS connection (identity check) — never clobbers a peer that
+    /// re-pinned in the meantime.
+    private func installResetHandler(on conn: NWConnection, isMedia: Bool) {
+        conn.stateUpdateHandler = { [weak self, weak conn] state in
+            guard let self, let conn else { return }
+            switch state {
+            case .failed, .cancelled:
+                self.lock.lock()
+                if isMedia {
+                    if self.mediaConn === conn { self.mediaConn = nil }
+                } else {
+                    if self.cursorConn === conn { self.cursorConn = nil }
+                }
+                self.lock.unlock()
+            default:
+                break
+            }
+        }
     }
 
     private func receiveMedia(on conn: NWConnection, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
@@ -130,6 +164,10 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
         mediaListener?.cancel(); mediaListener = nil
         cursorListener?.cancel(); cursorListener = nil
         lock.withLock {
+            // Mark stopped FIRST so a connection the listener accepts concurrently with this
+            // teardown is cancelled by `newConnectionHandler` instead of being stored after
+            // we nil the slots (which would leak it).
+            stopped = true
             mediaConn?.cancel(); mediaConn = nil
             cursorConn?.cancel(); cursorConn = nil
         }
