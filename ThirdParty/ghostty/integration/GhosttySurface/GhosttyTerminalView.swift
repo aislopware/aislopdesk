@@ -206,6 +206,15 @@ struct GhosttyMetalLayerView: NSViewRepresentable {
 /// A layer-backed `NSView` whose backing layer is a `CAMetalLayer`. It owns the
 /// `GhosttySurface` (libghostty renders into the layer) for its lifetime and forwards
 /// AppKit key/text/resize events into the surface.
+///
+/// NO `CADisplayLink` here, unlike the iOS sibling — this asymmetry is DELIBERATE, not a
+/// missing feature. On macOS libghostty runs its own live `renderer` thread (the very thread
+/// whose `wakeup_cb` fires off-main — see `ghosttyOnMainActor`), which self-paces draws and
+/// runs the cursor-blink / animation timers on its own libxev loop; `wakeup_cb → ghostty_app_tick`
+/// covers app-level wakeups. The iOS `CADisplayLink` + `draw_now` exist only because the iOS
+/// Simulator's renderer-thread libxev `wakeup` is not pumped (paired with the sync-updateframe
+/// libghostty patch); driving a 60 fps tick here would just contend with the live renderer
+/// thread for no benefit. Verified at runtime: macOS renders glyphs/colors/cursor with no tick.
 final class GhosttyLayerBackedView: NSView {
     let metalLayer = CAMetalLayer()
 
