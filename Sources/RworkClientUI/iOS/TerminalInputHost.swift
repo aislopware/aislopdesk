@@ -60,6 +60,7 @@ public struct TerminalInputHost: UIViewRepresentable {
 
     public static func dismantleUIView(_ uiView: TerminalInputResponderView, coordinator: Coordinator) {
         uiView.teardown()
+        coordinator.teardown()
     }
 
     /// Owns the per-instance send glue: turns the components' byte/text callbacks into
@@ -69,26 +70,61 @@ public struct TerminalInputHost: UIViewRepresentable {
         let model: InputBarModel
         var client: RworkClient?
 
+        /// One ordered outbound item (a raw key sequence or composed text).
+        private enum Outbound { case raw([UInt8]); case text(String) }
+
+        /// Single serial outbound queue + ONE drain task. The component callbacks ENQUEUE
+        /// synchronously (on the main actor, in true call order); the drain awaits each send
+        /// sequentially. This is the fix for the reordering bug: previously every key/text
+        /// callback spawned its OWN `Task { await model.send… }`, and two rapid events
+        /// (two fast keypresses, a paste split into segments, IME commits back-to-back) race
+        /// onto the `RworkClient` actor in SCHEDULER order, not creation order — so they
+        /// could swap, corrupting the typed byte order on the host PTY AND desyncing the B1
+        /// echo-dedup ring (`recordComposeSent` ran out of order). The single drain restores
+        /// FIFO order, mirroring the `ConnectionViewModel` OUT-path serial drain.
+        private let outbound: AsyncStream<Outbound>
+        private let outboundContinuation: AsyncStream<Outbound>.Continuation
+        private var drainTask: Task<Void, Never>?
+
         init(model: InputBarModel, client: RworkClient?) {
             self.model = model
             self.client = client
+            var cont: AsyncStream<Outbound>.Continuation!
+            self.outbound = AsyncStream(bufferingPolicy: .unbounded) { cont = $0 }
+            self.outboundContinuation = cont
+            startDrain()
+        }
+
+        private func startDrain() {
+            // Capture the stream value (not `self`) so the task does not retain the
+            // coordinator; re-check `self` per item. When the coordinator deallocs, dropping
+            // `outboundContinuation` finishes the stream and the drain exits.
+            let stream = outbound
+            drainTask = Task { [weak self] in
+                for await item in stream {
+                    guard let self else { return }
+                    // Read the LIVE client at send time — it changes across reconnects
+                    // (`updateUIView` updates it). A nil client just drops the item.
+                    guard let client = self.client else { continue }
+                    switch item {
+                    case .raw(let bytes): await self.model.sendRaw(bytes, over: client)
+                    case .text(let text): await self.model.sendText(text, over: client)
+                    }
+                }
+            }
         }
 
         func attach(to view: TerminalInputResponderView) {
-            view.onKeyBytes = { [weak self] bytes in self?.sendRaw(bytes) }
-            view.onText = { [weak self] text in self?.sendText(text) }
+            view.onKeyBytes = { [weak self] bytes in self?.outboundContinuation.yield(.raw(bytes)) }
+            view.onText = { [weak self] text in self?.outboundContinuation.yield(.text(text)) }
         }
 
-        private func sendRaw(_ bytes: [UInt8]) {
-            guard let client else { return }
-            let model = model
-            Task { await model.sendRaw(bytes, over: client) }
-        }
-
-        private func sendText(_ text: String) {
-            guard let client else { return }
-            let model = model
-            Task { await model.sendText(text, over: client) }
+        /// Stops the drain (called on SwiftUI dismantle). Finishing the continuation ends the
+        /// `for await` so the drain task completes; cancelling is belt-and-suspenders.
+        func teardown() {
+            outboundContinuation.finish()
+            drainTask?.cancel()
+            drainTask = nil
         }
     }
 }
