@@ -102,6 +102,43 @@ final class ScenePhaseFanOutTests: XCTestCase {
         XCTAssertEqual(claude.resumeCount, 1, "the claudeCode pane is resumed too")
     }
 
+    // MARK: - Video suspend/restore across the fan-out (docs/22 §4)
+
+    /// A `.remoteGUI` pane that is video-active when the app backgrounds must have its video SUSPENDED
+    /// by `pauseAll()` (iOS kills an app that strands the UDP/VTDecompress/CADisplayLink stack) and
+    /// RESTORED by `resumeAll()`. The restore re-opens at most the set that was already admitted, so it
+    /// cannot exceed `liveVideoCap`. Driven through `FakePaneSession`, which mirrors the contract.
+    func testVideoPaneSuspendsOnPauseAndRestoresOnResume() async {
+        let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
+        let root = store.activeTab!.focusedPane
+        store.split(root, axis: .horizontal, kind: .remoteGUI)
+        let videoID = store.activeTab!.focusedPane          // the new remoteGUI leaf is focused
+        XCTAssertTrue(store.activateVideo(videoID), "video pane admitted under the cap")
+        let video = store.handle(for: videoID) as! FakePaneSession
+        XCTAssertTrue(video.isVideoActive, "active before background")
+
+        await store.pauseAll()
+        XCTAssertFalse(video.isVideoActive, "pauseAll suspended the video stack (no stranded socket)")
+
+        await store.resumeAll()
+        XCTAssertTrue(video.isVideoActive, "resumeAll restored the video that was active before pause")
+    }
+
+    /// A `.remoteGUI` pane that was NOT video-active at background stays inactive after resume — the
+    /// restore re-opens only what was admitted, never spuriously activating an idle video pane.
+    func testInactiveVideoPaneStaysInactiveAcrossFanOut() async {
+        let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
+        let root = store.activeTab!.focusedPane
+        store.split(root, axis: .horizontal, kind: .remoteGUI)
+        let videoID = store.activeTab!.focusedPane
+        let video = store.handle(for: videoID) as! FakePaneSession
+        XCTAssertFalse(video.isVideoActive, "never activated")
+
+        await store.pauseAll()
+        await store.resumeAll()
+        XCTAssertFalse(video.isVideoActive, "an idle video pane is not spuriously activated by resume")
+    }
+
     func testFanOutCoversEverySessionAcrossAllTabsNotJustTheActiveTab() async {
         // Tab 1 is active after the fixture build; tab 0's two panes are on an INACTIVE tab. pauseAll
         // must still reach them (background pauses the whole app, not just the visible tab).

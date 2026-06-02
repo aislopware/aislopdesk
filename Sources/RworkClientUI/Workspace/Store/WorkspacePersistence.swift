@@ -84,8 +84,10 @@ public struct WorkspacePersistence: @unchecked Sendable {
         guard let decoded = try? JSONDecoder().decode(Workspace.self, from: data) else {
             return .defaultWorkspace()
         }
-        // A file written by a newer build (higher schema) is not safely interpretable here.
-        guard decoded.schemaVersion <= Workspace.currentSchemaVersion else {
+        // Any version other than currentSchemaVersion is not safely interpretable here (a newer
+        // build's higher schema, or an older payload that would need migration). Until a
+        // migrate(from:to:) seam exists (a documented followup), fall back to the default.
+        guard decoded.schemaVersion == Workspace.currentSchemaVersion else {
             return .defaultWorkspace()
         }
         return decoded

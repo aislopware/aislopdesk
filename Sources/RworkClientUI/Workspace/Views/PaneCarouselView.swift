@@ -97,11 +97,16 @@ struct PaneCarouselView: View {
                 isZoomed: tab.zoomedPane == page.id,
                 store: store
             ) {
-                PaneLeafView(handle: store.handle(for: page.id), spec: spec, isFocused: true)
+                PaneLeafView(handle: store.handle(for: page.id), spec: spec, isFocused: true, store: store)
             }
             // Stable identity across swipes / reshape / a regular↔compact flip (docs/22 §4, §7): never
             // tear down or rewire the live session backing this page.
             .id(page.id)
+            #if os(macOS)
+            // macOS `.automatic` TabView needs a per-page label to render a real tab bar instead of
+            // blank buttons. iOS uses `.page` style (ignores `.tabItem`), so this is macOS-scoped.
+            .tabItem { Text(spec.title) }
+            #endif
         }
     }
 
@@ -119,6 +124,7 @@ struct PaneCarouselView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Show tabs")
+                .accessibilityLabel("Show tabs")
             }
 
             Text(tab.name)
@@ -136,16 +142,18 @@ struct PaneCarouselView: View {
 
             Spacer(minLength: 8)
 
-            // Prev / next page on macOS (no swipe) and as an explicit affordance on iOS too.
+            // Prev / next page on macOS (no swipe) and as an explicit affordance on iOS too. These
+            // wrap (like ⌘]/⌘[ and the carousel selection binding) — never disabled at the ends, so
+            // the chevron's affordance can't contradict the keyboard's wrap semantics.
             if pages.count > 1 {
                 Button { store.move(.previous) } label: { Image(systemName: "chevron.left") }
                     .buttonStyle(.borderless)
-                    .disabled(CompactLayoutResolver.selectedIndex(for: tab) == 0)
                     .help("Previous pane")
+                    .accessibilityLabel("Previous pane")
                 Button { store.move(.next) } label: { Image(systemName: "chevron.right") }
                     .buttonStyle(.borderless)
-                    .disabled(CompactLayoutResolver.selectedIndex(for: tab) == pages.count - 1)
                     .help("Next pane")
+                    .accessibilityLabel("Next pane")
             }
 
             addMenu(for: tab)
@@ -186,6 +194,7 @@ struct PaneCarouselView: View {
         #endif
         .fixedSize()
         .help("Add pane")
+        .accessibilityLabel("Add pane")
     }
 
     // MARK: Empty state

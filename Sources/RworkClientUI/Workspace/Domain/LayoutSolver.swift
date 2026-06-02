@@ -3,17 +3,6 @@ import CoreGraphics
 
 // MARK: - Solved geometry types
 
-/// A single pane's resolved on-screen rectangle. (A thin id+rect pair; the solver also returns a
-/// `[PaneID: CGRect]` map directly, but this struct is handy for ordered iteration / tests.)
-public struct PaneFrame: Sendable, Equatable {
-    public let id: PaneID
-    public let rect: CGRect
-    public init(id: PaneID, rect: CGRect) {
-        self.id = id
-        self.rect = rect
-    }
-}
-
 /// One draggable divider between two adjacent siblings of a split.
 ///
 /// `path` addresses the split node from the root (the sequence of child indices), and `index` is
@@ -149,9 +138,9 @@ public enum LayoutSolver {
         guard fractions.count == count, count > 0 else {
             return Array(repeating: 1.0 / Double(max(count, 1)), count: count)
         }
-        let total = fractions.reduce(0, +)
-        guard total > 1e-9 else { return Array(repeating: 1.0 / Double(count), count: count) }
-        return fractions.map { $0 / total }
+        // On this path arity matches (count > 0), so delegate to the model's canonical normalizer —
+        // one source of truth for the epsilon + even-fallback kernel (PaneNode.normalized).
+        return PaneNode.normalized(fractions)
     }
 
     /// Computes each child's length along the split axis: the divider gaps are reserved first,

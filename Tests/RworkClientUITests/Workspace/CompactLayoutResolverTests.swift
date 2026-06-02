@@ -2,16 +2,15 @@ import XCTest
 @testable import RworkClientUI
 
 /// Tests for ``CompactLayoutResolver`` — the pure **compact projection** (docs/22 §1.3, §2.2, §4)
-/// that flattens the SAME tree of intent into an ordered, swipeable page list and resolves
-/// swipe → next focus. The phone layout must be a lossless *view of the same model*: page order
-/// equals the desktop pre-order leaf order, and the carousel stops at its ends (no wrap), so a
-/// size-class flip never reorders or drops a pane.
+/// that flattens the SAME tree of intent into an ordered, swipeable page list. The phone layout must
+/// be a lossless *view of the same model*: page order equals the desktop pre-order leaf order, so a
+/// size-class flip never reorders or drops a pane. (Swipe → next focus is owned end-to-end by the
+/// carousel's `TabView` selection binding + `store.move`, the shipped/tested paging path — the
+/// resolver no longer carries a parallel `focus(after:swipe:in:)` seam.)
 ///
 /// Contract under test (read from `CompactLayoutResolver`):
 /// - `pages(for:)` order == `tab.root.allLeafIDs()` (pre-order), carrying each leaf's kind+title.
 /// - `selectedIndex(for:)` == the focused pane's index, or `0` if the focused pane is absent.
-/// - `focus(after:swipe:in:)` advances/retreats one page WITHOUT wrap (nil at the boundary, and
-///   nil if `current` is not a leaf). `.next/.right/.down` = forward; `.previous/.left/.up` = back.
 final class CompactLayoutResolverTests: XCTestCase {
 
     // MARK: - Fixtures
@@ -92,55 +91,5 @@ final class CompactLayoutResolverTests: XCTestCase {
         let a = PaneID(), b = PaneID(), c = PaneID(), ghost = PaneID()
         let tab = threeLeafTab(focused: ghost, a: a, b: b, c: c)
         XCTAssertEqual(CompactLayoutResolver.selectedIndex(for: tab), 0, "absent focus → page 0 (defensive)")
-    }
-
-    // MARK: - focus(after:swipe:): forward / back, NO wrap
-
-    /// Forward directions (.next/.right/.down) advance one page; they all collapse to the same
-    /// linear step since the compact layout is one-dimensional.
-    func testSwipeForwardAdvancesOnePage() {
-        let a = PaneID(), b = PaneID(), c = PaneID()
-        let tab = threeLeafTab(focused: a, a: a, b: b, c: c)
-
-        for dir: FocusDirection in [.next, .right, .down] {
-            XCTAssertEqual(CompactLayoutResolver.focus(after: a, swipe: dir, in: tab), b, "forward (\(dir)) A→B")
-            XCTAssertEqual(CompactLayoutResolver.focus(after: b, swipe: dir, in: tab), c, "forward (\(dir)) B→C")
-        }
-    }
-
-    /// Backward directions (.previous/.left/.up) retreat one page.
-    func testSwipeBackwardRetreatsOnePage() {
-        let a = PaneID(), b = PaneID(), c = PaneID()
-        let tab = threeLeafTab(focused: c, a: a, b: b, c: c)
-
-        for dir: FocusDirection in [.previous, .left, .up] {
-            XCTAssertEqual(CompactLayoutResolver.focus(after: c, swipe: dir, in: tab), b, "back (\(dir)) C→B")
-            XCTAssertEqual(CompactLayoutResolver.focus(after: b, swipe: dir, in: tab), a, "back (\(dir)) B→A")
-        }
-    }
-
-    /// The carousel stops at its ends — forward off the last page and backward off the first page
-    /// both return nil (no wrap), so the caller can leave focus where it is.
-    func testSwipeDoesNotWrapAtBoundaries() {
-        let a = PaneID(), b = PaneID(), c = PaneID()
-        let tab = threeLeafTab(focused: a, a: a, b: b, c: c)
-
-        XCTAssertNil(CompactLayoutResolver.focus(after: c, swipe: .next, in: tab), "forward off the last page → nil")
-        XCTAssertNil(CompactLayoutResolver.focus(after: a, swipe: .previous, in: tab), "back off the first page → nil")
-    }
-
-    /// `focus(after:)` returns nil when `current` is not a leaf in the tab.
-    func testSwipeFromUnknownCurrentReturnsNil() {
-        let a = PaneID(), b = PaneID(), c = PaneID(), ghost = PaneID()
-        let tab = threeLeafTab(focused: a, a: a, b: b, c: c)
-        XCTAssertNil(CompactLayoutResolver.focus(after: ghost, swipe: .next, in: tab), "unknown current → nil")
-    }
-
-    /// On a single-page tab, any swipe is a boundary in both directions → nil.
-    func testSwipeOnSingleLeafIsAlwaysNil() {
-        let only = PaneID()
-        let tab = Tab(name: "Solo", root: leaf(only, .terminal, "Term"), focusedPane: only)
-        XCTAssertNil(CompactLayoutResolver.focus(after: only, swipe: .next, in: tab))
-        XCTAssertNil(CompactLayoutResolver.focus(after: only, swipe: .previous, in: tab))
     }
 }

@@ -122,7 +122,7 @@ public extension Workspace {
         return selecting(tabs[zeroBased].id)
     }
 
-    /// Activates the next / previous tab with wrap (⌃⇥ / ⌃⇧⌥⇥), returning the new workspace.
+    /// Activates the next / previous tab with wrap (⌃⇥ / ⌃⇧⇥), returning the new workspace.
     /// A no-op when there are fewer than two tabs or no active tab.
     func selectingAdjacent(forward: Bool) -> Workspace {
         guard tabs.count > 1, let current = activeTabID, let currentIndex = index(of: current) else { return self }

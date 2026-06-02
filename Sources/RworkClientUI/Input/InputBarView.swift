@@ -59,7 +59,10 @@ public struct InputBarView: View {
             model: model,
             client: client,
             paneID: paneID ?? PaneID(),
-            coordinator: focusCoordinator
+            // Never register a coordinator under an ephemeral (no-paneID) key: a coordinator only
+            // makes sense with a STABLE paneID. A mis-wired caller (coordinator but nil paneID)
+            // degrades to the compact direct-claim path instead of an unstable registration.
+            coordinator: paneID == nil ? nil : focusCoordinator
         )
             .frame(maxWidth: .infinity, minHeight: 36)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))

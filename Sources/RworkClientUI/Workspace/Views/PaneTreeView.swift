@@ -130,7 +130,8 @@ struct PaneTreeView: View {
                 handle: store.handle(for: id),
                 spec: spec,
                 isFocused: store.isFocused(id),
-                focusCoordinator: store.focusCoordinator
+                focusCoordinator: store.focusCoordinator,
+                store: store
             )
         }
         // STABLE identity: PaneID, NOT structural position — a reshape never rewires a live session.

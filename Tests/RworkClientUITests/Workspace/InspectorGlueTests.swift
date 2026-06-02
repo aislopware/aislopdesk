@@ -311,6 +311,42 @@ final class InspectorGlueTests: XCTestCase {
         await source.close()
     }
 
+    /// Resume re-spawns a detached re-subscribe; a teardown in the SAME main-actor turn (before the
+    /// re-subscribe task gets to run) must cancel it so the re-subscribe closes the just-built client
+    /// rather than leaving a live consumer after teardown (the "T builds a client after teardown"
+    /// window — fix: tracked + cancellable `inspectorTask` + cancellation re-checks in
+    /// `subscribeInspector()`). We assert the session does not fold events after teardown and that the
+    /// loopback host channel ends finished (the client was closed).
+    func testResumeThenTeardownInSameTurnCancelsResubscribeAndClosesClient() async throws {
+        let (hostCh, clientCh) = LoopbackByteChannel.pair()
+        let source = InspectorSource(channel: hostCh)
+
+        let session = LivePaneSession.make(
+            PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
+            makeClient: { RworkClient() },
+            makeInspector: { _ in InspectorClient(channel: clientCh) }
+        )
+        let vm = try XCTUnwrap(session.inspector)
+
+        // resume() spawns the detached re-subscribe; teardown() in the SAME turn must cancel it BEFORE
+        // it stores/uses a client, so no live consumer lingers. (No `await Task.yield()` between them —
+        // that is the race window being closed.)
+        await session.resume()
+        await session.teardown()
+
+        // Give the cancelled re-subscribe task a chance to run its cancellation branch (close + return).
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        // An event sent now must NOT be folded — the session is torn down, no live consumer remains.
+        try? await source.send(.toolCard(sampleCard(id: "post", status: .pending)))
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertTrue(vm.toolCards.isEmpty, "no card folds after teardown — the re-subscribe was cancelled")
+
+        await source.close()
+    }
+
     /// A non-`.claudeCode` session (`.terminal`) owns NO inspector and `subscribeInspector()` is a
     /// no-op (it must never reach for a second channel) — the terminal pane has only PATH 1.
     func testTerminalSessionHasNoInspectorAndSubscribeIsNoOp() async throws {

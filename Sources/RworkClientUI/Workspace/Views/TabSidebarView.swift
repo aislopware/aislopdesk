@@ -51,6 +51,7 @@ struct TabSidebarView: View {
             Image(systemName: PaneLeafView.icon(for: dominantKind(of: tab)))
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
+                .accessibilityHidden(true)   // decorative — the tab name Text carries the row's label
 
             if renamingTab == tab.id {
                 TextField("Tab name", text: $draftName)
