@@ -55,6 +55,31 @@ public struct ClientRootView: View {
                 .presentationDetents([.large])
                 #endif
         }
+        .task { autoOpenRemoteWindowIfRequested() }
+    }
+
+    /// Automation seam (PATH 2): if `RWORK_VIDEO_AUTOCONNECT_HOST` + media/cursor ports +
+    /// window id are present in the environment, fill the Remote-window form and open the live
+    /// `VideoWindowView` on launch — the counterpart to `RworkClientApp`'s terminal
+    /// `RWORK_AUTOCONNECT`. This lets `scripts/check-video.sh` drive a real end-to-end video
+    /// check (rwork-videohostd capture/encode → this app decode/Metal-render) WITHOUT fragile
+    /// SwiftUI automation of the endpoint form. All vars unset in normal use, so a production
+    /// launch is unaffected; runs once when the root scene first appears.
+    private func autoOpenRemoteWindowIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+        guard let host = env["RWORK_VIDEO_AUTOCONNECT_HOST"], !host.isEmpty,
+              let media = env["RWORK_VIDEO_AUTOCONNECT_MEDIA_PORT"], !media.isEmpty,
+              let cursor = env["RWORK_VIDEO_AUTOCONNECT_CURSOR_PORT"], !cursor.isEmpty,
+              let wid = env["RWORK_VIDEO_AUTOCONNECT_WINDOW_ID"], !wid.isEmpty else { return }
+        remoteWindow.host = host
+        remoteWindow.mediaPort = media
+        remoteWindow.cursorPort = cursor
+        remoteWindow.windowID = wid
+        if let title = env["RWORK_VIDEO_AUTOCONNECT_TITLE"], !title.isEmpty {
+            remoteWindow.title = title
+        }
+        remoteWindow.open()
+        showRemoteWindow = true
     }
 
     @ViewBuilder

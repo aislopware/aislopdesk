@@ -19,7 +19,10 @@
 #                RworkClientApp.autoConnectIfRequested), then assert the TCP session is
 #                ESTABLISHED and the app survived, and screenshot the connected terminal so the
 #                glyphs libghostty rendered (shell/Starship prompt, ANSI colours, nerd-font
-#                icons) can be visually confirmed.
+#                icons) can be visually confirmed. ALSO drives the OUT path: RWORK_AUTOTYPE makes
+#                the app auto-type a command through the real keystroke→host chain, and the gate
+#                asserts the remote shell EXECUTED it (a COMPUTED marker 42 written to a
+#                loopback file) — so this proves type→exec→render, not just a live socket.
 #
 # EXIT: non-zero if the build fails, the app dies within the settle window (a launch/connect
 # crash), or (--connect) no client↔host session is established.
@@ -110,6 +113,17 @@ if [[ "$CONNECT" == "1" ]]; then
     echo "==> FAIL: rwork-hostd did not stay up; log:" >&2; cat "$HOSTD_LOG" >&2; exit 1
   fi
   echo "==> hostd up (pid $HOSTD_PID)"
+
+  # OUT-path proof setup: a unique marker whose COMPUTED value (42) appears ONLY if the
+  # remote shell actually EXECUTED the typed command — not if it merely echoed the literal
+  # keystrokes. The app's RWORK_AUTOTYPE seam pushes this through the real OUT path
+  # (terminal.sendInput → ordered drain → RworkClient.sendInput → host PTY). \$((6*7)) is
+  # escaped so THIS shell passes it literally; the REMOTE zsh computes 42 and writes the file.
+  OUT_NONCE="$$_${RANDOM}"
+  OUT_PROOF="$WORK/out-proof-$OUT_NONCE.txt"
+  OUT_EXPECT="RWORK_OUT_${OUT_NONCE}_42_END"
+  rm -f "$OUT_PROOF"
+  AUTOTYPE="echo RWORK_OUT_${OUT_NONCE}_\$((6*7))_END > '$OUT_PROOF'; echo RWORK_OUT_${OUT_NONCE}_\$((6*7))_END"
 fi
 
 # ── 3. Launch + poll for the macOS process ──────────────────────────────────────────────────
@@ -117,7 +131,7 @@ pkill -f "$APP_PROC_PAT" 2>/dev/null || true
 if [[ "$CONNECT" == "1" ]]; then
   # Launch the bundle's binary DIRECTLY (not via `open`) so the auto-connect env vars are
   # inherited — LaunchServices does not forward the shell environment.
-  RWORK_AUTOCONNECT_HOST=127.0.0.1 RWORK_AUTOCONNECT_PORT="$CONNECT_PORT" "$APP_BIN" >/dev/null 2>&1 &
+  RWORK_AUTOCONNECT_HOST=127.0.0.1 RWORK_AUTOCONNECT_PORT="$CONNECT_PORT" RWORK_AUTOTYPE="$AUTOTYPE" "$APP_BIN" >/dev/null 2>&1 &
 else
   open "$APP"
 fi
@@ -148,6 +162,25 @@ if [[ "$CONNECT" == "1" ]]; then
     echo "==> client↔host session ESTABLISHED on :$CONNECT_PORT ✅"
   else
     echo "==> FAIL: no ESTABLISHED session on :$CONNECT_PORT (auto-connect did not land)" >&2
+    echo "--- hostd log ---" >&2; cat "$HOSTD_LOG" >&2
+    exit 1
+  fi
+
+  # ── 4c. (--connect) assert the host shell EXECUTED a typed command (the OUT path) ──────────
+  # ESTABLISHED only proves a live socket. This proves the round trip: the app auto-typed a
+  # command through the real OUT path, the host PTY ran it, and the shell COMPUTED 42 (so this
+  # is execution, not a literal-keystroke echo). The remote shell wrote the marker to a file on
+  # this same (loopback) host, which we now read — a deterministic, machine-checked assertion.
+  echo "==> waiting for OUT-path proof (auto-typed command must EXECUTE on the host)…"
+  OUT_OK=0
+  for _ in $(seq 1 24); do
+    [[ -f "$OUT_PROOF" ]] && grep -q "$OUT_EXPECT" "$OUT_PROOF" 2>/dev/null && { OUT_OK=1; break; }
+    sleep 0.5
+  done
+  if [[ "$OUT_OK" == "1" ]]; then
+    echo "==> OUT-path PROVEN: keystrokes → host PTY → shell EXECUTED (computed 42 → $OUT_EXPECT) ✅"
+  else
+    echo "==> FAIL: auto-typed command never executed on host (no $OUT_EXPECT in $OUT_PROOF)" >&2
     echo "--- hostd log ---" >&2; cat "$HOSTD_LOG" >&2
     exit 1
   fi
