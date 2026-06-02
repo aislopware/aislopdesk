@@ -32,10 +32,25 @@ public struct RworkClientApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     handleScenePhase(phase)
                 }
+                .task { await autoConnectIfRequested() }
         }
         #if os(macOS)
         .windowResizability(.contentSize)
         #endif
+    }
+
+    /// Automation seam: if `RWORK_AUTOCONNECT_HOST` + `RWORK_AUTOCONNECT_PORT` are present in
+    /// the environment, fill the form and connect on launch. This lets `scripts/check-macos.sh
+    /// --connect` drive a real end-to-end render check (a host daemon ↔ this GUI, glyphs on the
+    /// Metal layer) WITHOUT fragile SwiftUI accessibility automation. Both vars unset in normal
+    /// use, so a production launch is unaffected; runs once when the root scene first appears.
+    private func autoConnectIfRequested() async {
+        let env = ProcessInfo.processInfo.environment
+        guard let host = env["RWORK_AUTOCONNECT_HOST"], !host.isEmpty,
+              let port = env["RWORK_AUTOCONNECT_PORT"], !port.isEmpty else { return }
+        connection.host = host
+        connection.port = port
+        await connection.connect()
     }
 
     /// Drives the iOS lifecycle seam: background → `pause()` (host retains the tail),
