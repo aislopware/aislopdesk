@@ -51,6 +51,19 @@ public struct RworkClientApp: App {
         connection.host = host
         connection.port = port
         await connection.connect()
+
+        // OUT-path proof seam: if `RWORK_AUTOTYPE` is set, after the shell prompt settles push
+        // the command bytes through the REAL OUT path — `terminalModel.sendInput` → `inputSink`
+        // → the ordered drain in `ConnectionViewModel` → `RworkClient.sendInput` → host PTY.
+        // That is the EXACT keystroke→host chain `GhosttyTerminalView` drives from
+        // `GhosttySurface.onWrite`, so a typed command actually executes on the host and renders
+        // back. `scripts/check-macos.sh --connect` uses this to assert the round trip (a
+        // host-side marker file with a COMPUTED value + the rendered output), not just a live
+        // TCP socket. Unset in normal use, so a production launch is unaffected.
+        if case .connected = connection.status, let cmd = env["RWORK_AUTOTYPE"], !cmd.isEmpty {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)   // let the remote prompt come up
+            connection.terminalModel.sendInput(Data((cmd + "\n").utf8))
+        }
     }
 
     /// Drives the iOS lifecycle seam: background → `pause()` (host retains the tail),

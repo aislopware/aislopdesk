@@ -32,6 +32,18 @@ import RworkVideoProtocol
 public actor RworkVideoClientSession {
     private let log = Logger(subsystem: "rwork.video.client", category: "RworkVideoClientSession")
 
+    /// Opt-in stderr diagnostics (`RWORK_VIDEO_DEBUG=1`) — the client counterpart to the host's,
+    /// so `scripts/check-video.sh` can see whether media datagrams arrive, frames reassemble, and
+    /// decode succeeds (OSLog `.info` is not persisted; a white client window is otherwise opaque).
+    /// No-op in production.
+    private static let debugStderr = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil
+    private var dbgMediaCount = 0
+    private var dbgDecodeCount = 0
+    nonisolated private func dbg(_ message: @autoclosure () -> String) {
+        guard Self.debugStderr else { return }
+        FileHandle.standardError.write(Data("Rwork[video.client]: \(message())\n".utf8))
+    }
+
     /// GUI hand-off seams. The renderer / cursor compositor / display link are all
     /// `@MainActor`-isolated (they touch `CAMetalLayer` / `CALayer` / a view's
     /// display link), so the actor never holds them directly; it calls these
@@ -147,6 +159,10 @@ public actor RworkVideoClientSession {
     // MARK: Inbound media routing
 
     private func receiveMedia(channel: VideoChannel, data: Data) async {
+        dbgMediaCount += 1
+        if dbgMediaCount == 1 || dbgMediaCount % 30 == 0 {
+            dbg("media datagram #\(dbgMediaCount) received (channel=\(channel), \(data.count)B, mediaFlowing=\(stateMachine.mediaFlowing))")
+        }
         switch router.route(channel: channel, data: data, mediaFlowing: stateMachine.mediaFlowing) {
         case .control(let message):
             for effect in stateMachine.handleControl(message) { await apply(effect) }
@@ -156,6 +172,7 @@ public actor RworkVideoClientSession {
             applyGeometry(message)
         case .drop(let reason):
             log.error("dropping media datagram: \(reason)")
+            dbg("media datagram DROPPED: \(reason)")
         case .ignore:
             break
         }
@@ -164,6 +181,7 @@ public actor RworkVideoClientSession {
     private func ingestVideo(_ fragment: FrameFragment) {
         let result = reassembler.ingest(fragment)
         if case .completed(let frame) = result {
+            dbg("frame reassembled (keyframe=\(frame.keyframe)) → decoding")
             decode(frame)
         }
         // Drain any frames the reassembler declared unrecoverably lost and signal
@@ -204,13 +222,19 @@ public actor RworkVideoClientSession {
             // The decoded NV12 size becomes the cursor-scale denominator.
             updateDecodedSize(from: frame)
             try decoder.decode(frame)
+            dbgDecodeCount += 1
+            if dbgDecodeCount == 1 || dbgDecodeCount % 15 == 0 {
+                dbg("DECODED frame #\(dbgDecodeCount) (keyframe=\(frame.keyframe)) → submitted to pacer/render")
+            }
             // A successful keyframe clears any in-flight recovery wait.
             if frame.keyframe { lastRecoveryRequestTime = nil }
         } catch VideoDecoderError.awaitingKeyframe {
             // A delta arrived before the first IDR — drop it and ask for a keyframe.
+            dbg("decode: awaiting keyframe (delta dropped) → requesting IDR")
             requestIDR()
         } catch {
             log.error("decode failed: \(String(describing: error))")
+            dbg("DECODE FAILED: \(String(describing: error))")
         }
     }
 
