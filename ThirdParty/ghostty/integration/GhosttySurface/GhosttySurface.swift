@@ -62,6 +62,36 @@ import RworkTerminal       // TerminalSurface protocol (the renderer seam)
 import RworkProtocol       // not strictly needed here; kept for parity with the seam
 import CGhostty            // the clang module over include/ghostty.h (link "ghostty")
 
+/// Run a `@MainActor` `body` in response to a libghostty C callback that may fire on
+/// **any** thread.
+///
+/// libghostty invokes `wakeup_cb` / `write_callback` / `resize_callback` from whatever
+/// thread reaches them — it makes NO main-thread guarantee at the C boundary. On iOS the
+/// draw/tick path is main-thread-driven (CADisplayLink + the `sync-updateframe` patch), so
+/// these callbacks happen to land on main; a bare `MainActor.assumeIsolated` survived there
+/// by luck. On **macOS** libghostty runs a dedicated **`renderer`** thread (plus a libxev
+/// `io` thread): `wakeup_cb` is fired from that renderer thread
+/// (`renderer.Thread.drawFrame` → `apprt.surface.Mailbox.push` → here), so a bare
+/// `MainActor.assumeIsolated` TRAPS — `dispatch_assert_queue` → `EXC_BREAKPOINT` ~3 s after
+/// launch. This helper is the fix: the macOS launch crash and the latent off-main hazard in
+/// the write/resize data-path callbacks.
+///
+/// Contract: if already on the main thread, run **synchronously** — this preserves the
+/// in-isolation, FIFO-ordered semantics the key-encode / `feed()` write path depends on
+/// (doc 18 §C: keep write_output → refresh → draw synchronous, no suspension). Otherwise
+/// hop to the main queue asynchronously. Either way `body` runs on the main actor.
+///
+/// ⚠️ Callers MUST copy any C-owned buffer (e.g. `Data(bytes:count:)`) BEFORE calling this:
+/// on the async path the body outlives the C callback's stack frame.
+@inline(__always)
+func ghosttyOnMainActor(_ body: @escaping @MainActor () -> Void) {
+    if Thread.isMainThread {
+        MainActor.assumeIsolated(body)
+    } else {
+        DispatchQueue.main.async { MainActor.assumeIsolated(body) }
+    }
+}
+
 /// libghostty-backed ``TerminalSurface`` — Rwork's only renderer.
 ///
 /// Wraps a `ghostty_surface_t` (header line 31, opaque `void*`) configured for the
@@ -165,9 +195,11 @@ public final class GhosttySurface: @MainActor TerminalSurface {
             guard let cSurface, let dataPtr, len > 0,
                   let ud = ghostty_surface_userdata(cSurface) else { return }
             let me = Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
-            let bytes = Data(bytes: dataPtr, count: len)
-            // Already on the main thread (encoder fires synchronously on main).
-            MainActor.assumeIsolated {
+            let bytes = Data(bytes: dataPtr, count: len)   // copied before any main hop
+            // Usually fired synchronously on main (the key encoder runs on main); but
+            // libghostty makes no thread guarantee, so route through ghosttyOnMainActor:
+            // synchronous when already on main (the common, ordered case), else hop to main.
+            ghosttyOnMainActor {
                 me.onWrite?(bytes)
             }
         }
@@ -178,7 +210,7 @@ public final class GhosttySurface: @MainActor TerminalSurface {
         config.resize_callback = { (cSurface, newCols, newRows, _, _) in
             guard let cSurface, let ud = ghostty_surface_userdata(cSurface) else { return }
             let me = Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
-            MainActor.assumeIsolated {
+            ghosttyOnMainActor {
                 me.cols = newCols
                 me.rows = newRows
                 // The GUI coordinator observes (cols,rows) to emit a `resize`
