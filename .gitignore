@@ -4,6 +4,13 @@ DerivedData/
 *.o
 *.swiftmodule
 
+# Local work / tooling dirs (transient — never committed).
+# /.work/ = repo-root scratch: build logs, the iOS DerivedData (-derivedDataPath .work/ios-dd),
+#           xcframework backups, etc. (ThirdParty/ghostty/.work/ is ignored separately below.)
+# .claude/ = Claude Code session state (scheduled_tasks.lock, etc.).
+/.work/
+.claude/
+
 # Xcode user state
 *.xcuserstate
 xcuserdata/
