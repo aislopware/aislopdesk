@@ -126,7 +126,7 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
     }
 
     private func receiveMedia(on conn: NWConnection, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
-        conn.receiveMessage { [weak self] data, _, isComplete, error in
+        conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, data.count >= 1 {
                 let tag = data[data.startIndex]
@@ -134,17 +134,21 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
                     onReceive(channel, Data(data[(data.startIndex + 1)...]))
                 }
             }
-            if error == nil && !isComplete {
+            // UDP: every datagram completes (`isComplete == true`), so re-arming only on
+            // `!isComplete` would stop after the client's first datagram (the hello) — the host
+            // would then never receive input / recovery requests. Re-arm on any non-error.
+            if error == nil {
                 self.receiveMedia(on: conn, onReceive: onReceive)
             }
         }
     }
 
     private func receiveCursor(on conn: NWConnection, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
-        conn.receiveMessage { [weak self] data, _, isComplete, error in
+        conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, !data.isEmpty { onReceive(.cursor, data) }
-            if error == nil && !isComplete {
+            // Same UDP re-arm fix as receiveMedia.
+            if error == nil {
                 self.receiveCursor(on: conn, onReceive: onReceive)
             }
         }
