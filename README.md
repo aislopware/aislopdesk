@@ -140,9 +140,15 @@ script is never truncated.
 ## libghostty renderer status
 
 The libghostty integration is **ready** — the `GhosttySurface` Swift binding (conforming to
-`RworkTerminal.TerminalSurface`), the C module map / vendored header, and an idempotent build
-script (`ThirdParty/ghostty/build-libghostty.sh`) are all committed. What is **not done** is
-the xcframework compile, which is blocked **on this macOS-26.5 host** by a Zig ↔ SDK pincer:
+`RworkTerminal.TerminalSurface`), the SwiftUI host **`GhosttyTerminalView`** (the Metal-backed
+`NSViewRepresentable`/`UIViewRepresentable` that owns the surface, both in
+`ThirdParty/ghostty/integration/GhosttySurface/`), the `TerminalRendererFactory.shared`
+registration in `Apps/Shared/AppMain.swift` (gated `#if canImport(CGhostty)`), the C module map
+/ vendored header, and an idempotent build script (`ThirdParty/ghostty/build-libghostty.sh`) are
+all committed. The renderer code is **gated `#if canImport(CGhostty)`** so it is inert (compiles
+to nothing) in every build on this host — it is verified by **review** against the binding, not
+by compilation. What is **not done** is the xcframework compile, which is blocked **on this
+macOS-26.5 host** by a Zig ↔ SDK pincer:
 
 - pinned **Zig 0.15.2** (the fork's required version) **cannot link the macOS 26.5 SDK**
   (undefined `__availability_version_check` / `_abort` / `_bzero` — 0.15.2 predates the
@@ -156,6 +162,11 @@ To finish, run `ThirdParty/ghostty/build-libghostty.sh` on a host with a **≤ 1
 then the GUI client shows a clearly-labelled **build-status placeholder** — it is **not** a
 substitute VT renderer (libghostty-only policy). Full story:
 [`ThirdParty/ghostty/README.md`](ThirdParty/ghostty/README.md).
+
+Once the xcframework exists, the **exact** files to add to each `Apps/*/project.yml`
+(the xcframework, the `CGhostty` module map, `GhosttySurface.swift` + `GhosttyTerminalView.swift`),
+the `xcodegen generate` step, and how `#if canImport(CGhostty)` flips true are documented in
+[`docs/21-HANDOFF.md`](docs/21-HANDOFF.md) → **"Activating the libghostty renderer"**.
 
 ## Status
 

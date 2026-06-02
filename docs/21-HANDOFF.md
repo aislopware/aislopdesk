@@ -53,7 +53,7 @@ or a real device/simulator that a headless run does not have.
 | GUI **decode + Metal render** + client cursor | `RworkVideoClient` | Decode is MEASURED-safe (~0.9–1.1 ms synchronous), but to honour the same hang-safety rule no `VTDecompressionSession`/Metal device is instantiated in tests. |
 | SwiftUI / Metal terminal + video **views** | `RworkClientUI` (`GhosttyTerminalView`, `VideoWindowView`), `RworkVideoClient` (`MetalVideoRenderer`) | Render seams; need a GUI app target + (terminal) the libghostty xcframework. Logic behind them is tested; the views themselves only lay out. |
 | iOS UIKit **table-stakes** wrappers | `RworkClientUI` (`KeyRepeater` host, `KeyboardAccessoryBar`, `IMEProxyTextView`, `FloatingCursorController`) | Logic is pure + macOS-unit-tested + iOS-triple-typechecked, but the `UIResponder`/`UIView` glue (presses→repeater, `inputAccessoryView` host, IME consumer, floating-cursor caller) needs a device/simulator — it is iOS-only view glue, not unit-testable on macOS. **Integration PENDING.** |
-| libghostty terminal renderer | `GhosttySurface` (under `ThirdParty/ghostty/integration/`) | Needs the xcframework — the one external blocker below. Wired into no `Package.swift` target by design, so the headless core never depends on it. |
+| libghostty terminal renderer | `GhosttySurface` + **`GhosttyTerminalView`** (both under `ThirdParty/ghostty/integration/GhosttySurface/`) + the `TerminalRendererFactory.shared` registration in `Apps/Shared/AppMain.swift` | Needs the xcframework — the one external blocker below. All renderer code is gated `#if canImport(CGhostty)`, wired into no `Package.swift` target by design, so the headless core never depends on it. Verified by **review** against the binding (it cannot be compiled on this host). See **"Activating the libghostty renderer"** below for the exact remaining steps. |
 
 ## The one external blocker — libghostty xcframework
 
@@ -79,6 +79,90 @@ by a Zig ↔ SDK pincer (both jaws characterized empirically):
 
 The script preflights this exact condition (a libSystem link smoke test) and fails fast with
 the actionable message. Full detail: [`../ThirdParty/ghostty/README.md`](../ThirdParty/ghostty/README.md).
+
+## Activating the libghostty renderer (exact remaining steps)
+
+The renderer is **code-complete and gated** — every line is inside `#if canImport(CGhostty)`,
+so it compiles to nothing on this macOS-26.5 host and is verified by **review** against the
+binding, not by compilation. Three pieces are already committed and need NO further edits:
+
+- `ThirdParty/ghostty/integration/GhosttySurface/GhosttySurface.swift` — the `@MainActor`
+  `TerminalSurface` binding over the C ABI (EXTERNAL backend; `feed`/`key`/`text`/`setSize`).
+- `ThirdParty/ghostty/integration/GhosttySurface/GhosttyTerminalView.swift` — the SwiftUI host:
+  a `TerminalRenderingView` conformer whose body is a Metal-backed
+  `NSViewRepresentable`/`UIViewRepresentable` (`CAMetalLayer`) that owns a `GhosttySurface`,
+  attaches it to `model.surface` (so `TerminalViewModel.ingestOutput` feeds it), forwards
+  AppKit key/text/resize into the surface, and owns the process-wide `ghostty_app_t`
+  (`GhosttyApp.shared`).
+- `Apps/Shared/AppMain.swift` — the gated registration
+  `#if canImport(CGhostty) TerminalRendererFactory.shared = { model in AnyView(GhosttyTerminalView(model: model)) } #endif`.
+
+To make `#if canImport(CGhostty)` flip **true** and ship the renderer:
+
+1. **Build the xcframework** on a host with a ≤ 15.x SDK / CI:
+   `ThirdParty/ghostty/build-libghostty.sh` (UNCHANGED) → produces
+   `ThirdParty/ghostty/libghostty.xcframework`. Do this FIRST — until the file exists,
+   step 2 would make `xcodegen` fail (it resolves framework paths at generate time).
+
+2. **Add four things to BOTH `Apps/ClientApp-macOS/project.yml` and
+   `Apps/ClientApp-iOS/project.yml`** (do NOT add them now — the xcframework is absent, so
+   `xcodegen` would error). Each app target's `dependencies:` / `sources:` gains:
+
+   ```yaml
+   targets:
+     ClientApp-macOS:        # (and ClientApp-iOS)
+       sources:
+         - path: ../Shared
+         # The gated renderer host + binding (joins THIS target, not a package target —
+         # they are NOT members of any Package.swift target and need the CGhostty module):
+         - path: ../../ThirdParty/ghostty/integration/GhosttySurface
+       dependencies:
+         - package: Rwork
+           product: RworkClientUI
+         - package: Rwork
+           product: RworkVideoClient
+         # The libghostty binary + the CGhostty clang module (the module map over ghostty.h):
+         - framework: ../../ThirdParty/ghostty/libghostty.xcframework
+           embed: true
+       settings:
+         base:
+           # Point the Swift importer at the CGhostty module map so `import CGhostty` resolves:
+           SWIFT_INCLUDE_PATHS: $(SRCROOT)/../../ThirdParty/ghostty/integration/CGhostty
+           # (or add the directory as a clang module-map search path / a header search path)
+   ```
+
+   - The **xcframework** (`libghostty.xcframework`) — the link-time `ghostty` symbols.
+   - The **`CGhostty` module map** (`ThirdParty/ghostty/integration/CGhostty/module.modulemap`
+     + its vendored `ghostty.h`) — exposes the C ABI as the `CGhostty` clang module
+     (`import CGhostty`). Wire it via `SWIFT_INCLUDE_PATHS` / a module-map search path.
+   - **`GhosttySurface.swift`** — added to the target's sources (the
+     `integration/GhosttySurface` directory carries both Swift files).
+   - **`GhosttyTerminalView.swift`** — added by the SAME `sources:` entry (it lives in that
+     directory next to `GhosttySurface.swift`).
+
+3. **Regenerate the Xcode projects** from the specs:
+
+   ```sh
+   xcodegen generate --spec Apps/ClientApp-macOS/project.yml
+   xcodegen generate --spec Apps/ClientApp-iOS/project.yml
+   ```
+
+4. **`#if canImport(CGhostty)` now flips true.** The app target sees the `CGhostty` module, so
+   `GhosttySurface.swift` + `GhosttyTerminalView.swift` compile into it and `AppMain.main()`
+   registers `TerminalRendererFactory.shared` with the real `GhosttyTerminalView`. The
+   `TerminalScreenView` seam (`TerminalRendererFactory.make(model:)`) then returns the
+   libghostty renderer instead of the `BuildStatusPlaceholderView`. The headless `swift build` /
+   `swift test` are unaffected (they never see the app target, the xcframework, or `CGhostty`).
+
+5. **Remaining wiring seam (small, documented honest gap).** The renderer's OUT path —
+   encoded keystrokes that libghostty emits via `GhosttySurface.onWrite` — must be bridged to
+   `RworkClient.sendInput(_:)`. The `GhosttyTerminalView` is handed only the `TerminalViewModel`
+   by the factory closure (the model has no input sink and does not hold the live client), so
+   the connection layer that owns the `RworkClient` sets `model.surface?.onWrite = { bytes in
+   Task { try? await client.sendInput(bytes) } }` after attach. This is the SAME
+   not-yet-integrated seam as the iOS UIKit table-stakes (see "Honest known caveats"). The IN
+   path (host output → pixels) and resize are already wired: `TerminalViewModel.ingestOutput`
+   calls `surface.feed`, and the view's `layout()`/`layoutSubviews()` call `surface.setSize`.
 
 ## How to verify it works for real on hardware
 

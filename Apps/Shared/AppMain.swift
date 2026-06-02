@@ -25,9 +25,19 @@ import RworkVideoClient
 @main
 struct ClientAppMain {
     static func main() {
-        // #if canImport(CGhostty)
-        //   TerminalRendererFactory.shared = { model in AnyView(GhosttyTerminalView(model: model)) }
-        // #endif
+        // PATH 1 (terminal, libghostty-only): register the production renderer. The
+        // cross-platform `RworkClientUI` library cannot reference `GhosttyTerminalView`
+        // (it would force linking `libghostty.xcframework` + the `CGhostty` clang module
+        // into the headless `swift build`/tests), so the GUI app target injects it here.
+        //
+        // GATED on `#if canImport(CGhostty)`: the `CGhostty` module exists only once the
+        // xcframework is built and added to this app target (see the wiring notes above +
+        // docs/21-HANDOFF.md). Until then this block compiles to NOTHING and the seam
+        // shows the gated `BuildStatusPlaceholderView` (libghostty-only policy — no
+        // fallback VT renderer).
+        #if canImport(CGhostty)
+        TerminalRendererFactory.shared = { model in AnyView(GhosttyTerminalView(model: model)) }
+        #endif
 
         // PATH 2 (GUI video path, doc 17 §3): register the production remote-GUI-window
         // view. The cross-platform `RworkClientUI` library cannot reference
