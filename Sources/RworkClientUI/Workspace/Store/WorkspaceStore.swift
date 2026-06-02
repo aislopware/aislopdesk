@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import Network
 import RworkClient
 import RworkInspector
 
@@ -423,6 +424,15 @@ public final class WorkspaceStore {
             (handle as? PaneSessionIDAdopting)?.adopt(id: id)
             registry[id] = handle
         }
+
+        // 3. Mark the `RWORK_AUTOTYPE` target (docs/22 §7): the first leaf of the first tab. The store
+        //    owns the tree, so it is the authority on "tab0/pane0"; the terminal leaf reads this flag
+        //    after connect to fire the OUT-path proof. Recomputed every reconcile so the flag follows
+        //    the tree (a reshape never strands it on a stale pane).
+        let autotypeTarget = workspace.tabs.first?.root.allLeafIDs().first
+        for (id, handle) in registry {
+            (handle as? LivePaneSession)?.isAutotypeTarget = (id == autotypeTarget)
+        }
     }
 
     // MARK: - Tree lookups
@@ -479,13 +489,62 @@ public extension WorkspaceStore {
     ///   - makeClient: the `@Sendable () -> RworkClient` the proven `ConnectionViewModel` uses.
     ///   - makeInspector: builds the read-only `InspectorClient` for a `.claudeCode` endpoint, or
     ///     `nil` when no second channel is available (e.g. the descriptor cannot be built headless).
+    ///     Defaults to ``liveMakeInspector(_:)`` — a lazily-connecting NWConnection #2 client (see
+    ///     that function for the unproven-host guardrail).
     static func liveMakeSession(
         makeClient: @escaping @Sendable () -> RworkClient = { RworkClient() },
-        makeInspector: @escaping @MainActor (Endpoint) -> InspectorClient? = { _ in nil }
+        makeInspector: @escaping @MainActor (Endpoint) -> InspectorClient? = liveMakeInspector
     ) -> @MainActor (PaneSpec) -> any PaneSessionHandle {
         { spec in
             LivePaneSession.make(spec, makeClient: makeClient, makeInspector: makeInspector)
         }
+    }
+
+    /// The wire-protocol convention for a pane's inspector second channel (docs/16, docs/20 §0): the
+    /// inspector's NWConnection #2 rides the **same NetBird tunnel** beside the terminal PTY, on the
+    /// terminal port **+ 1**. Documented + isolated here so it is the single place to revise if the
+    /// host ever advertises a distinct inspector port. Saturates at `UInt16.max` (a terminal on the
+    /// top port has no room above it — the inspector is then unavailable, handled by the `nil` path).
+    static let inspectorPortOffset: UInt16 = 1
+
+    /// The inspector port for a terminal ``Endpoint`` (the `+ inspectorPortOffset` convention above),
+    /// or `nil` when there is no room above the terminal port.
+    static func inspectorPort(for endpoint: Endpoint) -> UInt16? {
+        let (sum, overflow) = endpoint.port.addingReportingOverflow(inspectorPortOffset)
+        return overflow ? nil : sum
+    }
+
+    /// Builds the production read-only ``InspectorClient`` for a `.claudeCode` pane's `endpoint`.
+    ///
+    /// ### Guardrail (docs/22 §7 + the WF5 brief): the LIVE network inspector path is NOT runtime-proven
+    /// The terminal byte-pipeline (PATH 1) is proven; the structured inspector second channel
+    /// (NWConnection #2) is wired here cleanly but **no host-side inspector serving / port is
+    /// established yet** — there is no `rwork-hostd` inspector daemon to invent. So this returns a
+    /// *ready, lazily-connecting* client rather than eagerly dialing: it stands up an
+    /// ``NWByteChannel`` over a fresh `NWConnection` to `host:inspectorPort` (the
+    /// ``inspectorPort(for:)`` convention) but does NOT `start()` it here — the channel connects on the
+    /// first `send`/`subscribe`, which is driven by ``LivePaneSession/subscribeInspector()`` (the
+    /// leaf's `.task` on appear, WF5). Against a host that does not yet serve the inspector port the
+    /// connection simply never completes its handshake and the fold yields no cards — the terminal is
+    /// unaffected. The FOLD logic itself is fully unit-testable in-process via
+    /// `LoopbackByteChannel.pair()` + ``InspectorClient/init(channel:)`` (docs/22 §8), independent of
+    /// this network builder. Real-network inspector serving is recorded as a hardware followup.
+    ///
+    /// Returns `nil` only when no inspector port can be derived (terminal on the top port).
+    @MainActor
+    static func liveMakeInspector(_ endpoint: Endpoint) -> InspectorClient? {
+        guard let port = inspectorPort(for: endpoint),
+              let nwPort = NWEndpoint.Port(rawValue: port) else { return nil }
+        let connection = NWConnection(
+            host: NWEndpoint.Host(endpoint.host),
+            port: nwPort,
+            using: NWByteChannel.parameters()
+        )
+        // The channel connects lazily: NWByteChannel.start() is idempotent and is triggered by the
+        // first send (the `subscribe(fromSeq:)` in LivePaneSession.subscribeInspector). We do not
+        // start it here so an idle / never-appeared claudeCode pane opens no socket.
+        let channel = NWByteChannel(connection: connection)
+        return InspectorClient(channel: channel)
     }
 }
 

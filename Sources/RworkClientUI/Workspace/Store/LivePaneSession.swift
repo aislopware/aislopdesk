@@ -72,6 +72,15 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// descriptor; always `false` for non-`.remoteGUI` panes.
     public private(set) var isVideoActive: Bool = false
 
+    // MARK: Automation seam (RWORK_AUTOTYPE)
+
+    /// Whether this session is the `RWORK_AUTOTYPE` OUT-path-proof target — the first leaf of the
+    /// first tab (docs/22 §7). Set by the store's `reconcile()` (the store owns the tree, so it is the
+    /// authority on "tab0/pane0"); read by the terminal leaf's `.task` after connect to push the
+    /// command bytes through the REAL OUT path so `scripts/check-macos.sh --connect` keeps proving
+    /// type→exec→render. Defaults `false`; the seam fires for exactly one session.
+    public internal(set) var isAutotypeTarget: Bool = false
+
     // MARK: Passthrough
 
     /// The terminal model the leaf view renders, or `nil` for a `.remoteGUI` pane. A convenience over

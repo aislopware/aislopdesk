@@ -27,16 +27,20 @@ public struct RworkClientApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     public init() {
-        // Build the store exactly once with the production session factory. `makeInspector` returns
-        // `nil` for now: the read-only inspector second channel (NWConnection #2) needs an endpoint →
-        // `ByteChannel` bridge that does not exist yet (`InspectorClient` is `init(channel:)` only) —
-        // it is the genuinely-missing app-glue WF5 wires (docs/22 §7). Returning `nil` is the correct
-        // interim: a Claude Code pane shows its terminal with no live inspector until then.
+        // Build the store exactly once with the production session factory. `makeInspector` is now the
+        // live builder (`WorkspaceStore.liveMakeInspector`): a `.claudeCode` pane's read-only inspector
+        // second channel (NWConnection #2) is an `NWByteChannel` → `InspectorClient` over the
+        // terminal-port+1 convention (docs/16, docs/20, docs/22 §7), connected LAZILY on appear. The
+        // GUARDRAIL holds: the host does not yet serve an inspector port, so the channel simply never
+        // completes its handshake against today's `rwork-hostd` and the terminal is unaffected — the
+        // FOLD is what is wired + unit-tested (via `LoopbackByteChannel`), and real-network inspector
+        // serving is a hardware followup. We pass it explicitly (rather than relying on the default) so
+        // the wiring is auditable here at the one app-glue site.
         let store = WorkspaceStore(
             restoring: WorkspacePersistence().load(),
             makeSession: WorkspaceStore.liveMakeSession(
                 makeClient: { RworkClient() },
-                makeInspector: { _ in nil }
+                makeInspector: WorkspaceStore.liveMakeInspector
             ),
             liveVideoCap: 2
         )
