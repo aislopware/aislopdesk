@@ -129,27 +129,23 @@ final class MetalLayerBackedView: NSView {
     override func scrollWheel(with event: NSEvent) {
         pipeline.scroll(dx: Double(event.scrollingDeltaX), dy: Double(event.scrollingDeltaY), viewPoint: viewPoint(event))
     }
-    // Printable text and the keycode path are MUTUALLY EXCLUSIVE per keypress: the host
-    // injects a char from BOTH `.key` (CGEvent virtualKey) AND `.text` (keyboardSetUnicodeString),
-    // so sending both duplicates every character. Route plain printable text through the
-    // layout-independent `.text` path; route special keys (arrows/return/tab/esc/fn) and
-    // ⌘/⌃ shortcuts through the keycode `.key` path.
-    private static func isPlainText(_ event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) { return false }
-        guard let first = event.characters?.unicodeScalars.first else { return false }
-        return first.value >= 0x20 && first.value != 0x7F   // printable, not a control char / DEL
-    }
+    // ALL keys (printable + special) go through the layout-level keycode `.key` path so
+    // the HOST's keyboard layout + input method (e.g. OpenKey/xkey Telex) interpret and
+    // COMPOSE them server-side — exactly like Parsec/VNC/Screen-Sharing "scancode mode".
+    // The old `.text` path posted a virtualKey-0 CGEvent + keyboardSetUnicodeString, which
+    // is invisible to an IME's keycode-driven composer (OpenKey reads only the virtual
+    // keycode + shift/caps flag, never the event's Unicode string), so the pre-baked glyph
+    // rode straight through and Vietnamese never composed (`tieesng` inserted literally).
+    // Forwarding the real keycode + modifier flags lets the host IME compose normally.
+    //
+    // We send ONLY `.key` per keypress (never `.key` + `.text` together) — sending both was
+    // the old duplicate-character bug, because the host injects a char from EACH path.
+    // The `.text` / pipeline.text(...) / host `postText` plumbing stays in place (now unused
+    // by live typing) for future layout-independent input such as clipboard paste.
     override func keyDown(with event: NSEvent) {
-        if Self.isPlainText(event), let chars = event.characters {
-            pipeline.text(chars)                                 // atomic down+up on the host
-        } else {
-            pipeline.key(keyCode: event.keyCode, down: true, modifiers: mods(event))
-        }
+        pipeline.key(keyCode: event.keyCode, down: true, modifiers: mods(event))
     }
     override func keyUp(with event: NSEvent) {
-        // `.text` is injected atomically (down+up) on the host, so a plain-text keypress needs
-        // no separate key-up; only the keycode path has a paired release.
-        if Self.isPlainText(event) { return }
         pipeline.key(keyCode: event.keyCode, down: false, modifiers: mods(event))
     }
     // Modifier press/release. Without this, ⌘/⇧/⌃/⌥ are NEVER sent as discrete key
