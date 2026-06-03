@@ -54,18 +54,36 @@ public actor RworkVideoClientSession {
     public struct GUIHooks: Sendable {
         /// Hand a freshly decoded NV12 buffer to the (pipeline-owned) frame pacer.
         public var submitDecodedFrame: @Sendable (CVImageBuffer) -> Void
-        /// Place the cursor overlay (position scaled by videoScale, minus hotspot).
-        public var applyCursor: @Sendable (CursorUpdate, Double) -> Void
+        /// Place the cursor overlay through the aspect-fit + zoom/pan render transform
+        /// (the same geometry the input encoder inverts) so the overlay tracks where a
+        /// click actually lands.
+        public var applyCursor: @Sendable (CursorUpdate, CursorPlacement) -> Void
         /// Register a cursor shape bitmap for its shapeID (shipped rarely, OOB).
         public var registerCursorShape: @Sendable (CGImage, UInt16) -> Void
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
-            applyCursor: @escaping @Sendable (CursorUpdate, Double) -> Void,
+            applyCursor: @escaping @Sendable (CursorUpdate, CursorPlacement) -> Void,
             registerCursorShape: @escaping @Sendable (CGImage, UInt16) -> Void
         ) {
             self.submitDecodedFrame = submitDecodedFrame
             self.applyCursor = applyCursor
             self.registerCursorShape = registerCursorShape
+        }
+    }
+
+    /// The display geometry the cursor overlay needs to place itself through the same
+    /// render transform the video uses (aspect-fit + zoom/pan). Passed across the
+    /// main-actor hop so the compositor never reaches back into the actor for state.
+    public struct CursorPlacement: Sendable {
+        public var viewSize: VideoSize
+        public var videoNativeSize: VideoSize
+        public var zoom: Double
+        public var pan: VideoPoint
+        public init(viewSize: VideoSize, videoNativeSize: VideoSize, zoom: Double, pan: VideoPoint) {
+            self.viewSize = viewSize
+            self.videoNativeSize = videoNativeSize
+            self.zoom = zoom
+            self.pan = pan
         }
     }
 
@@ -85,6 +103,13 @@ public actor RworkVideoClientSession {
     /// is the host's window-point size; the layer size is the on-screen point size.
     private var decodedSize: VideoSize = VideoSize(width: 0, height: 0)
     private var layerSize: VideoSize = VideoSize(width: 0, height: 0)
+    /// The current VNC-style zoom (≥1) + normalized pan applied by the renderer (iOS
+    /// pinch/pan; always (1, .zero) on macOS). Stored here so the input encoder inverts
+    /// the EXACT SAME transform the renderer applies — otherwise a click while zoomed
+    /// would land at the un-zoomed source position. Kept in lock-step with the renderer
+    /// via ``setZoom(_:pan:)`` (the pipeline calls both on every gesture).
+    private var zoom: Double = 1
+    private var pan: VideoPoint = VideoPoint(x: 0, y: 0)
     /// The most recent host cursor position, re-applied whenever the scale changes so
     /// a layout/resize re-places the overlay without waiting for the next cursor packet.
     private var lastCursorUpdate: CursorUpdate?
@@ -151,6 +176,16 @@ public actor RworkVideoClientSession {
     /// re-applies the last cursor update so the overlay tracks the new layout.
     public func setLayerSize(_ size: VideoSize) {
         layerSize = size
+        reapplyCursor()
+    }
+
+    /// Stores the current VNC-style zoom/pan (iOS pinch/pan gestures) so the input
+    /// encoder inverts — and the cursor overlay re-applies — the EXACT SAME transform the
+    /// renderer applies. The pipeline calls this in lock-step with `renderer.zoom/pan`.
+    /// `zoom` is clamped ≥1; on macOS this stays (1, .zero).
+    public func setZoom(_ zoom: Double, pan: VideoPoint) {
+        self.zoom = max(1, zoom)
+        self.pan = pan
         reapplyCursor()
     }
 
@@ -291,7 +326,11 @@ public actor RworkVideoClientSession {
     }
 
     private func applyCursor(_ update: CursorUpdate) {
-        gui.applyCursor(update, videoScale) // hops to the main actor inside the hook
+        // Hand the overlay the full display geometry so it places itself through the same
+        // aspect-fit + zoom/pan transform the input encoder inverts (hops to the main
+        // actor inside the hook).
+        let placement = CursorPlacement(viewSize: layerSize, videoNativeSize: decodedSize, zoom: zoom, pan: pan)
+        gui.applyCursor(update, placement)
     }
 
     private func reapplyCursor() {
@@ -320,21 +359,24 @@ public actor RworkVideoClientSession {
         transport.send(event.encode(), on: .input)
     }
 
-    /// Convenience: normalise + send a pointer move in the layer's view space.
+    /// Convenience: normalise + send a pointer move in the layer's view space. The
+    /// normalisation inverts the renderer's aspect-fit + zoom/pan transform using the
+    /// negotiated `decodedSize` (host-window points) and the live `zoom`/`pan`, so a click
+    /// lands on the host pixel under the cursor on screen.
     public func sendMouseMove(viewPoint: VideoPoint) {
-        sendInput(inputEncoder.mouseMove(viewPoint: viewPoint, layerSize: layerSize))
+        sendInput(inputEncoder.mouseMove(viewPoint: viewPoint, layerSize: layerSize, videoNativeSize: decodedSize, zoom: zoom, pan: pan))
     }
 
     public func sendMouseDown(button: MouseButton, viewPoint: VideoPoint, clickCount: UInt8, modifiers: InputModifiers) {
-        sendInput(inputEncoder.mouseDown(button: button, viewPoint: viewPoint, layerSize: layerSize, clickCount: clickCount, modifiers: modifiers))
+        sendInput(inputEncoder.mouseDown(button: button, viewPoint: viewPoint, layerSize: layerSize, videoNativeSize: decodedSize, clickCount: clickCount, modifiers: modifiers, zoom: zoom, pan: pan))
     }
 
     public func sendMouseUp(button: MouseButton, viewPoint: VideoPoint, clickCount: UInt8, modifiers: InputModifiers) {
-        sendInput(inputEncoder.mouseUp(button: button, viewPoint: viewPoint, layerSize: layerSize, clickCount: clickCount, modifiers: modifiers))
+        sendInput(inputEncoder.mouseUp(button: button, viewPoint: viewPoint, layerSize: layerSize, videoNativeSize: decodedSize, clickCount: clickCount, modifiers: modifiers, zoom: zoom, pan: pan))
     }
 
     public func sendScroll(dx: Double, dy: Double, viewPoint: VideoPoint) {
-        sendInput(inputEncoder.scroll(dx: dx, dy: dy, viewPoint: viewPoint, layerSize: layerSize))
+        sendInput(inputEncoder.scroll(dx: dx, dy: dy, viewPoint: viewPoint, layerSize: layerSize, videoNativeSize: decodedSize, zoom: zoom, pan: pan))
     }
 
     public func sendKey(keyCode: UInt16, down: Bool, modifiers: InputModifiers) {

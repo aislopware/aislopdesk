@@ -129,12 +129,41 @@ final class MetalLayerBackedView: NSView {
     override func scrollWheel(with event: NSEvent) {
         pipeline.scroll(dx: Double(event.scrollingDeltaX), dy: Double(event.scrollingDeltaY), viewPoint: viewPoint(event))
     }
+    // Printable text and the keycode path are MUTUALLY EXCLUSIVE per keypress: the host
+    // injects a char from BOTH `.key` (CGEvent virtualKey) AND `.text` (keyboardSetUnicodeString),
+    // so sending both duplicates every character. Route plain printable text through the
+    // layout-independent `.text` path; route special keys (arrows/return/tab/esc/fn) and
+    // ⌘/⌃ shortcuts through the keycode `.key` path.
+    private static func isPlainText(_ event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control) { return false }
+        guard let first = event.characters?.unicodeScalars.first else { return false }
+        return first.value >= 0x20 && first.value != 0x7F   // printable, not a control char / DEL
+    }
     override func keyDown(with event: NSEvent) {
-        pipeline.key(keyCode: event.keyCode, down: true, modifiers: mods(event))
-        if let chars = event.characters, !chars.isEmpty { pipeline.text(chars) }
+        if Self.isPlainText(event), let chars = event.characters {
+            pipeline.text(chars)                                 // atomic down+up on the host
+        } else {
+            pipeline.key(keyCode: event.keyCode, down: true, modifiers: mods(event))
+        }
     }
     override func keyUp(with event: NSEvent) {
+        // `.text` is injected atomically (down+up) on the host, so a plain-text keypress needs
+        // no separate key-up; only the keycode path has a paired release.
+        if Self.isPlainText(event) { return }
         pipeline.key(keyCode: event.keyCode, down: false, modifiers: mods(event))
+    }
+    // Modifier press/release. Without this, ⌘/⇧/⌃/⌥ are NEVER sent as discrete key
+    // events — they only ride as per-event flags on key/mouse events. On the host
+    // `postKey` posts a CGEvent whose flags come from those per-event mods, but the
+    // shared `CGEventSource(stateID:.hidSystemState)` LATCHES modifier state: a ⌘ flag
+    // injected on (say) Delete with no matching modifier KEY-UP stays latched and
+    // corrupts every later `.text` insertion (e.g. ⌘+Delete then a stuck ⌘ turns the
+    // next Return into a newline-with-⌘). Emitting the real modifier key-up here posts a
+    // CGEvent that clears the latched flag. (`pipeline.key` already carries
+    // keyCode+down+modifiers — no protocol change.)
+    override func flagsChanged(with event: NSEvent) {
+        guard let down = Self.modifierDown(keyCode: event.keyCode, flags: event.modifierFlags) else { return }
+        pipeline.key(keyCode: event.keyCode, down: down, modifiers: mods(event))
     }
     override var acceptsFirstResponder: Bool { true }
 
@@ -168,6 +197,24 @@ final class MetalLayerBackedView: NSView {
         if flags.contains(.capsLock) { m.insert(.capsLock) }
         if flags.contains(.function) { m.insert(.function) }
         return m
+    }
+
+    /// Pure: decide whether a `flagsChanged` keyCode is a modifier press (`down`) or a
+    /// release. `flagsChanged` fires for BOTH edges with the same keyCode; the only way
+    /// to tell them apart is to ask whether the corresponding modifier is still present
+    /// in `flags` after the event. Returns `nil` for a keyCode that is not a known
+    /// modifier (so the caller sends nothing). Factored out so the keyCode→modifier-mask
+    /// mapping is unit-testable without an `NSEvent`.
+    static func modifierDown(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool? {
+        switch Int(keyCode) {
+        case 55, 54: return flags.contains(.command)   // ⌘ left / right
+        case 56, 60: return flags.contains(.shift)     // ⇧ left / right
+        case 59, 62: return flags.contains(.control)   // ⌃ left / right
+        case 58, 61: return flags.contains(.option)    // ⌥ left / right
+        case 57:     return flags.contains(.capsLock)  // ⇪
+        case 63:     return flags.contains(.function)  // fn
+        default:     return nil
+        }
     }
 }
 

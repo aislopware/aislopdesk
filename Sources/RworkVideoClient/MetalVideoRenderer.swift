@@ -5,6 +5,7 @@ import CoreVideo
 import QuartzCore
 import OSLog
 import simd
+import RworkVideoProtocol
 
 /// Zero-copy NV12 → RGB Metal renderer for decoded frames (doc 04, doc 17 §3.7).
 ///
@@ -115,13 +116,17 @@ public final class MetalVideoRenderer {
         var fit = SIMD2<Float>(1, 1)
         let dw = Double(metalLayer.drawableSize.width), dh = Double(metalLayer.drawableSize.height)
         if dw > 0, dh > 0, width > 0, height > 0 {
-            let videoAspect = Double(width) / Double(height)
-            let layerAspect = dw / dh
-            if videoAspect > layerAspect {
-                fit.y = Float(layerAspect / videoAspect)   // wider video → bars top/bottom
-            } else {
-                fit.x = Float(videoAspect / layerAspect)   // taller video → bars left/right
-            }
+            // Derive `fit` from the SAME `displayedVideoRect` the input encoder + cursor
+            // overlay invert, so render-forward and input-inverse can never drift (doc 17
+            // §3.7). Computed in PIXELS here (drawableSize, video pixel size); the input
+            // path computes in POINTS — aspect ratio is scale-invariant so the fit is
+            // identical either way. `fit` is the quad's per-axis half-extent scale =
+            // displayed extent / full extent.
+            let r = AspectFit.displayedVideoRect(
+                viewSize: VideoSize(width: dw, height: dh),
+                videoNativeSize: VideoSize(width: Double(width), height: Double(height)))
+            fit.x = Float(r.size.width / dw)
+            fit.y = Float(r.size.height / dh)
         }
         encoder.setVertexBytes(&fit, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
         // Zoom/pan as a UV crop: invZoom shrinks the sampled UV span (zoom in), pan recenters
