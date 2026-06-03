@@ -232,6 +232,21 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
             cursorConn?.cancel(); cursorConn = nil
         }
     }
+
+    public func resetClientFlow() {
+        lock.withLock {
+            // Do NOT re-open the slot after a full stop() — `stopped` stays true so a late
+            // accept is still rejected (the listeners are already cancelled anyway).
+            guard !stopped else { return }
+            // Cancel + nil the pinned per-client flows so `newConnectionHandler` re-pins the
+            // next client. Cancelling schedules each connection's `.cancelled` state on its own
+            // queue (not synchronously here), so it cannot re-enter this lock; the state handler
+            // then finds the slot already nil (=== check) and only marks the flow dead, ending
+            // its receive loop. The LISTENERS are untouched, so the next hello is accepted.
+            mediaConn?.cancel(); mediaConn = nil
+            cursorConn?.cancel(); cursorConn = nil
+        }
+    }
 }
 
 /// Pure re-arm decision for a UDP `receiveMessage` loop (BUG-L) — the host-side mirror

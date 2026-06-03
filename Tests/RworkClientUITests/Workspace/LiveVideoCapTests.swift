@@ -544,6 +544,31 @@ final class LiveVideoCapTests: XCTestCase {
         await store.quiesce()
     }
 
+    /// VIDEO-UI-1 (audit): closing an active video pane bumps the promotion generation TWICE — once
+    /// at CLOSE time (the slot is still counted via `tearingDownVideo`) AND again when the async
+    /// teardown COMPLETES and the slot genuinely frees. The completion-site re-bump is the fix:
+    /// without it, a same-tick gated reopen (refused at close because the slot was still counted)
+    /// is never re-nudged when the slot actually frees, so it stays stuck on the "Video paused"
+    /// placeholder until an unrelated event happens to nudge it.
+    func testTeardownCompletionRebumpsPromotionGenerationWhenSlotFrees() async {
+        let (store, ids) = makeStoreWithRemoteGUILeaves(3, cap: 2)
+        XCTAssertTrue(store.activateVideo(ids[0]))
+        XCTAssertTrue(store.activateVideo(ids[1]))
+        XCTAssertFalse(store.activateVideo(ids[2]), "gated while two are live")
+
+        let before = store.videoPromotionGeneration
+        store.closePane(ids[0])     // active video pane → close-time bump (slot STILL counted)
+        let afterClose = store.videoPromotionGeneration
+        XCTAssertEqual(afterClose, before + 1, "close-time nudge while the slot is still held by tearingDownVideo")
+
+        await store.quiesce()       // teardown completes → slot frees → completion-site nudge (the fix)
+        XCTAssertEqual(store.videoPromotionGeneration, afterClose + 1,
+                       "teardown completion re-nudges so the gated pane re-attempts when the slot ACTUALLY frees")
+
+        // The slot is genuinely free now — the previously-gated pane admits.
+        XCTAssertTrue(store.activateVideo(ids[2]), "the freed slot admits the previously-gated pane")
+    }
+
     // MARK: - BUG-A / F1: the display distinguishes unconfigured / free-slot / cap-saturated
 
     /// The PURE display decision (``RemoteGUIDisplay/resolve(admitted:configured:hasFreeSlot:)``)

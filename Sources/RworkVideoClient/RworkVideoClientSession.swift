@@ -327,6 +327,15 @@ public actor RworkVideoClientSession {
         } catch {
             log.error("decode failed: \(String(describing: error))")
             dbg("DECODE FAILED: \(String(describing: error))")
+            // VIDEO-CLIENT-1: a hard decode failure (corrupt-but-complete AVCC / decoder
+            // malfunction — e.g. an FEC mis-recovery that passes the length check, or
+            // VTDecompressionSession returning kVTVideoDecoderMalfunctionErr) is NOT surfaced by
+            // the fragment-level reassembler — it reported the frame `.completed`, so the
+            // loss-driven recovery never armed. Re-anchor the stream by requesting an IDR, exactly
+            // like the `awaitingKeyframe` path above; otherwise the pacer re-presents the last good
+            // frame indefinitely (especially once the host window goes static and stops producing
+            // frames). Idempotent on the host — the escalation tracker dedups duplicate requests.
+            requestIDR()
         }
     }
 

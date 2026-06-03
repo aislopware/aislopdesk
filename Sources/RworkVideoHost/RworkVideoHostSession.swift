@@ -241,6 +241,13 @@ public actor RworkVideoHostSession {
             return (w, h)
         }
         for effect in effects { await apply(effect) }
+        // CONCURRENCY-HOST-1: a clean `bye` re-arms the session to `.listening` and tears down
+        // capture (above), but the pinned UDP flow slot stays pinned (UDP has no FIN) — so a
+        // reconnecting client's fresh hello (a new source port ⇒ a new 4-tuple) was silently
+        // refused at the listener until the daemon restarted. Free the flow now so the next
+        // client can re-pin and reconnect WITHOUT a daemon restart. (A crash WITHOUT a bye still
+        // relies on an idle-timeout reaper — documented follow-up in docs/25 §4.)
+        if case .bye = message { transport.resetClientFlow() }
     }
 
     private func handleInput(_ data: Data) async {
