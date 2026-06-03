@@ -114,9 +114,11 @@ public actor InspectorClient {
 /// `CodecError.frameTooLarge` is different: it is thrown from the *length-prefix* read,
 /// before any bytes are consumed, so the byte stream is framing-desynced and every
 /// subsequent read is garbage. That is genuinely unrecoverable in-band, so we finish the
-/// stream (throwing) — the client side then ends its feed and resubscribes
-/// (`subscribe(fromSeq:)`), getting a clean framed stream from the host's replay log
-/// rather than dying silently and permanently.
+/// stream (throwing) and the feed simply ends. There is no in-session live resubscribe
+/// today — automatic in-band reconnect is deferred to PIECE C. Recovery happens on the
+/// next iOS pause/resume cycle: ``LivePaneSession`` resume calls `subscribeInspector`,
+/// which opens a fresh connection and `subscribe(fromSeq:)`s from 0, getting a clean
+/// framed stream from the host's replay log.
 private func decodeStream(
     _ inbound: AsyncThrowingStream<Data, Error>
 ) -> AsyncThrowingStream<InspectorWireMessage, Error> {

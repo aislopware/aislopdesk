@@ -77,8 +77,11 @@ public final class InspectorViewModel {
                 apply(event)
             }
         } catch {
-            // Read-only viewer: a transport error just ends the feed; the host glue
-            // reconnects (subscribe(fromSeq:)) and a fresh stream resumes here.
+            // Read-only viewer: a transport error (e.g. a true framing desync,
+            // InspectorChannel `frameTooLarge`) just ends the feed. There is no in-session
+            // live resubscribe today — that is deferred to PIECE C. The feed resumes on the
+            // next iOS pause/resume cycle, when LivePaneSession.resume → subscribeInspector
+            // opens a fresh connection and subscribes(fromSeq: 0) from the host replay log.
         }
     }
 

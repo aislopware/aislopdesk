@@ -23,11 +23,14 @@ import RworkInspector
 /// ## Per-connection protocol (gated on subscribe)
 /// The serve task reads `source.controls()` and does NOTHING until the **first**
 /// `.subscribe(fromSeq:)` arrives (the stream does not start on connect — it starts on
-/// subscribe). It then `for await event in replayLog.subscribe(fromSeq:)` — a full (or
-/// resumed) replay followed by the live tail — sending each event to the client, plus a
-/// periodic keep-alive so a quiet workflow run still reads as alive. When the channel
-/// closes (client gone / cancel) the subscription stream finishes and the source is
-/// closed.
+/// subscribe). It then pumps `replayLog.subscribe(fromSeq:)` — a full (or resumed) replay
+/// followed by the live tail — sending each event to the client, plus a periodic
+/// keep-alive so a quiet workflow run still reads as alive. The replay-log subscription
+/// does NOT finish on a client disconnect (only on host shutdown / cancellation), so the
+/// serve task ALSO drains the same inbound control stream concurrently as a disconnect
+/// observer: when the client goes away (inbound finishes/fails) the drain returns, the
+/// pump is cancelled, the replay-log subscriber is detached, the keep-alive timer stops,
+/// and the source is closed — no per-client task / timer / subscriber leak.
 ///
 /// ## Replay-then-live (resolves BUG-B)
 /// The client always subscribes `fromSeq: 0` (full replay then live); the `fromSeq` is
@@ -199,17 +202,40 @@ public final class InspectorServer: @unchecked Sendable {
 
     /// The per-connection protocol: gate on the first `.subscribe(fromSeq:)`, then pump
     /// `replayLog.subscribe(fromSeq:)` (replay-then-live) to the client with a periodic
-    /// keep-alive. Closes the source and detaches the connection on exit.
+    /// keep-alive — while concurrently observing the client's disconnect on the SAME
+    /// inbound control stream. Closes the source and detaches the connection on exit.
+    ///
+    /// ## Disconnect observation (no per-client task / keep-alive / subscriber leak)
+    /// The replay-log subscription only finishes on host shutdown (`markFinished`) or task
+    /// cancellation — never on a client disconnect. So the event pump alone would run
+    /// forever after the peer goes away (the keep-alive timer firing into a dead channel,
+    /// the replay-log subscriber never detached). We therefore run the pump AND an
+    /// inbound-drain of `controls` concurrently (the established
+    /// `HostSessionTransport.makeForwarder` `for try await … in channel.inbound` idiom):
+    /// when the peer finishes/fails its inbound (real client FIN — `NWByteChannel`
+    /// `finishInbound`/`failInbound` — or test channel `close`), the drain returns and we
+    /// cancel the group. Cancelling tears down the pump's `replayLog.subscribe` stream,
+    /// firing its `onTermination → removeSubscriber`, and the trailing `keepAlive.cancel()`
+    /// stops the timer. The pump itself returns (cancelling the group) when the replay
+    /// stream finishes (host shutdown) or a `source.send` throws (a failed send to a dead
+    /// channel must end the loop — not be swallowed).
+    ///
+    /// The SAME `controls` stream is used for the subscribe gate and the disconnect drain
+    /// — `channel.inbound` is a single-continuation `AsyncThrowingStream`, so it must be
+    /// iterated by exactly one consumer; re-deriving a second `controls()` would race that
+    /// one stream and desync framing.
     private func serve(channel: ByteChannel, id: UUID) async {
         let source = InspectorSource(channel: channel)
         defer { detach(id: id, source: source) }
 
+        let controls = await source.controls()
+
         // Gate: do nothing until the client subscribes. Read controls until the first
         // .subscribe(fromSeq:) (ignore anything else — the client only ever sends
-        // subscribe; an unknown/malformed control is skipped by decodeStream, BUG-G).
+        // subscribe; an unknown/malformed control is skipped by decodeStream, BUG-G). A
+        // throw or a clean finish here means the connection died before any subscribe.
         var fromSeq: Int64?
         do {
-            let controls = await source.controls()
             controlLoop: for try await message in controls {
                 if case let .subscribe(seq) = message {
                     fromSeq = seq
@@ -217,7 +243,6 @@ public final class InspectorServer: @unchecked Sendable {
                 }
             }
         } catch {
-            // Control channel failed before any subscribe — connection is dead.
             return
         }
 
@@ -227,8 +252,8 @@ public final class InspectorServer: @unchecked Sendable {
         // tail on one stream (snapshot-then-attach atomic — no gap).
         let events = await replayLog.subscribe(fromSeq: fromSeq)
 
-        // Periodic keep-alive so a quiet run still reads as alive. Cancelled when the
-        // event pump exits (the channel closed / task cancelled).
+        // Periodic keep-alive so a quiet run still reads as alive. Cancelled (below) when
+        // serve returns — i.e. the pump or the disconnect-drain ended.
         let keepAlive = Task { [keepAliveInterval] in
             while !Task.isCancelled {
                 do {
@@ -241,9 +266,36 @@ public final class InspectorServer: @unchecked Sendable {
         }
         defer { keepAlive.cancel() }
 
-        for await event in events {
-            if Task.isCancelled { break }
-            try? await source.send(event)
+        // Pump events to the client AND drain the rest of the control stream concurrently;
+        // when EITHER child returns (replay stream finished / a send failed, OR the client
+        // disconnected — inbound finished/threw), cancel the group so the other unwinds.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await event in events {
+                    if Task.isCancelled { break }
+                    do {
+                        try await source.send(event)
+                    } catch {
+                        // A failed send to a dead channel ends the pump (do not swallow).
+                        break
+                    }
+                }
+            }
+            group.addTask {
+                // Disconnect observer: drain remaining controls on the same stream until
+                // it finishes (client FIN) or throws (transport failure). Either ends it.
+                // (`channel.inbound` is single-continuation; the gate's iterator was
+                // dropped at `break`, so this fresh one continues pulling the next bytes —
+                // no second `controls()`, no framing race.)
+                do {
+                    for try await _ in controls {}
+                } catch {
+                    // Transport failure also means the client is gone.
+                }
+            }
+            // First child to finish (pump done OR client gone) tears down the rest.
+            await group.next()
+            group.cancelAll()
         }
     }
 
