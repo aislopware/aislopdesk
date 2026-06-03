@@ -294,18 +294,114 @@ final class WorkspacePersistenceTests: XCTestCase {
         XCTAssertEqual(restored.tabs.count, 2)
     }
 
+    // MARK: - 6. Schema migration seam (forward-migrate, never discard)
+
+    /// `migrate(from:to:)` with `from == to` is the identity — a current-version value is returned
+    /// unchanged (the v1-today fast path), not re-minted or normalized away. This is the property
+    /// `load()` relies on to keep every existing payload byte-stable across the new seam.
+    func testMigrationIdentityForCurrentVersion() {
+        let original = Workspace.defaultWorkspace().adding(kind: .claudeCode, title: "agent")
+        let migrated = WorkspaceSchemaMigration.migrate(original, from: Workspace.currentSchemaVersion)
+        XCTAssertEqual(migrated, original, "from == to is the identity migration")
+    }
+
+    /// A payload written by a *newer* build (schemaVersion above what we ship) cannot be interpreted
+    /// here: `migrate` returns `nil` so the caller can fall back to the default rather than guess.
+    func testMigrationRejectsNewerThanCurrent() {
+        var future = Workspace.defaultWorkspace()
+        future.schemaVersion = Workspace.currentSchemaVersion + 1
+        let migrated = WorkspaceSchemaMigration.migrate(future, from: future.schemaVersion)
+        XCTAssertNil(migrated, "a future schemaVersion is un-migratable → nil")
+    }
+
+    /// An older version with **no step** in the upgrade chain to bridge the gap is un-migratable:
+    /// `migrate` returns `nil`. Probed below the seeded v0 step (a negative source version has no
+    /// `n → n+1` entry), so the gap branch is exercised without depending on a future bump.
+    func testMigrationRejectsUnknownGap() {
+        // currentSchemaVersion is 1 and only the v0→v1 step is seeded. A source version of -1 has no
+        // `-1 → 0` step, so the chain -1 → 0 → 1 hits a gap immediately.
+        var ancient = Workspace.defaultWorkspace()
+        ancient.schemaVersion = -1
+        let migrated = WorkspaceSchemaMigration.migrate(ancient, from: ancient.schemaVersion)
+        XCTAssertNil(migrated, "a gap in the upgrade chain is un-migratable → nil")
+    }
+
+    /// A v0 payload is **upgraded, not discarded**: `migrate(from: 0)` runs the seeded v0→v1 step and
+    /// returns a current-version value. The step normalizes a missing/dangling `activeTabID` to the
+    /// first tab, and the result is stamped to `currentSchemaVersion`.
+    func testSimulatedV0UpgradesToV1() {
+        // A v0-shaped value: real tabs, but activeTabID nil (the invariant v1 enforces) and the old
+        // version stamp.
+        let tab = Tab.make(kind: .terminal, title: "Terminal")
+        var v0 = Workspace(schemaVersion: 0, tabs: [tab], activeTabID: nil)
+        v0.schemaVersion = 0 // explicit: this is a v0 payload
+
+        guard let migrated = WorkspaceSchemaMigration.migrate(v0, from: 0) else {
+            return XCTFail("v0 must upgrade to v1, not be discarded")
+        }
+        XCTAssertEqual(migrated.schemaVersion, Workspace.currentSchemaVersion, "result is stamped to current")
+        XCTAssertEqual(migrated.activeTabID, tab.id, "v0→v1 normalizes a missing activeTabID to the first tab")
+        XCTAssertEqual(migrated.tabs, v0.tabs, "the tabs themselves are carried through unchanged")
+    }
+
+    // MARK: - 7. Real load() through the migration seam (end-to-end on disk)
+
+    /// A current-version payload written to a temp file is restored **verbatim** by the real
+    /// `WorkspacePersistence.load()` — the v1 → identity passthrough preserves all existing behaviour
+    /// across the new migration seam (no re-mint, no normalization of a value that is already valid).
+    func testLoadCurrentVersionPayloadIsRestoredVerbatimViaRealLoad() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("workspace.json")
+        let persistence = WorkspacePersistence(fileURL: url)
+
+        let original = Workspace.defaultWorkspace().adding(kind: .claudeCode, title: "agent")
+        try persistence.save(original)
+
+        let loaded = persistence.load()
+        XCTAssertEqual(loaded, original, "a current-version payload loads verbatim through the migrate seam")
+        XCTAssertEqual(loaded.tabs.count, 2)
+    }
+
+    /// A future-version payload on disk falls back to the default via the real `load()`: the value
+    /// decodes (schemaVersion is a plain Int) but `migrate` returns `nil`, and `load()` substitutes
+    /// ``Workspace/defaultWorkspace()``. Asserted by SHAPE (defaults mint fresh UUIDs).
+    func testLoadFutureVersionPayloadFallsBackViaRealLoad() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("workspace.json")
+        let persistence = WorkspacePersistence(fileURL: url)
+
+        var future = Workspace.defaultWorkspace()
+        future.schemaVersion = Workspace.currentSchemaVersion + 99
+        try persistence.save(future)
+
+        let loaded = persistence.load()
+        assertIsDefaultWorkspaceShape(loaded, "future schemaVersion on disk → default via real load()")
+    }
+
+    /// Creates a unique temp directory for an on-disk round-trip, registering a teardown that removes
+    /// it. Keeps the real-`load()` tests hermetic (a fresh dir per test, no shared default location).
+    private func makeTempDir(file: StaticString = #filePath, line: UInt = #line) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WorkspacePersistenceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
     // MARK: - Local store-fallback seam (mirrors the WorkspaceStore loader, later WF)
 
     /// The decode-with-fallback the store will own, reproduced here so WF2 can assert the policy
-    /// without the store existing yet: decode → reject unknown schema versions → default on any
-    /// failure. Pure & synchronous.
+    /// without the store existing yet: decode → forward-migrate to this build's schema → default on
+    /// any failure (un-migratable / future version, or a decode throw). Routed through the SAME
+    /// ``WorkspaceSchemaMigration`` seam production uses, so this mirror stays faithful to `load()`
+    /// (an older payload now upgrades instead of being discarded). Pure & synchronous.
     private func decodeOrDefault(_ data: Data) -> Workspace {
         do {
             let candidate = try decoder.decode(Workspace.self, from: data)
-            guard candidate.schemaVersion == Workspace.currentSchemaVersion else {
+            guard let migrated = WorkspaceSchemaMigration.migrate(candidate, from: candidate.schemaVersion) else {
                 return .defaultWorkspace()
             }
-            return candidate
+            return migrated
         } catch {
             return .defaultWorkspace()
         }
