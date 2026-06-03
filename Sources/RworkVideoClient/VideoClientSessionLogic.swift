@@ -200,12 +200,39 @@ public struct InputEventEncoder: Sendable {
     }
 
     /// Normalises a point in the layer's view space (origin top-left, +Y down, the
-    /// same orientation the host's window space uses) to 0..1, clamped to the window
-    /// so an out-of-bounds drag does not send coordinates the host would reject.
-    public static func normalize(viewPoint: VideoPoint, layerSize: VideoSize) -> VideoPoint {
-        let nx = layerSize.width > 0 ? viewPoint.x / layerSize.width : 0
-        let ny = layerSize.height > 0 ? viewPoint.y / layerSize.height : 0
-        return VideoPoint(x: min(max(nx, 0), 1), y: min(max(ny, 0), 1))
+    /// same orientation the host's window space uses) to 0..1, clamped to the window so
+    /// an out-of-bounds drag does not send coordinates the host would reject.
+    ///
+    /// This is the EXACT INVERSE of the render transform (doc 17 §3.7), so a click lands
+    /// on the host pixel that is under the cursor on screen:
+    ///   1. The renderer ASPECT-FITS the video into a centred sub-rect of the layer
+    ///      (``AspectFit/displayedVideoRect(viewSize:videoNativeSize:)``) — letterbox /
+    ///      pillarbox. We first map the view point into that displayed rect's 0..1 span.
+    ///   2. The renderer then CROPS for zoom/pan (fragment shader
+    ///      `uv = (uv-0.5)*invZoom + 0.5 + pan`). We apply the same crop forward so the
+    ///      source coordinate matches what the user sees. On macOS `zoom==1`, `pan==.zero`
+    ///      so this term is inert and the result is just the letterbox-corrected `u/v`.
+    /// The pan is clamped IDENTICALLY to the renderer (`panLimit = 0.5·(1-invZoom)`) so
+    /// the inverse can never diverge from the forward transform.
+    public static func normalize(
+        viewPoint: VideoPoint,
+        layerSize: VideoSize,
+        videoNativeSize: VideoSize,
+        zoom: Double = 1,
+        pan: VideoPoint = VideoPoint(x: 0, y: 0)
+    ) -> VideoPoint {
+        let r = AspectFit.displayedVideoRect(viewSize: layerSize, videoNativeSize: videoNativeSize)
+        // 0..1 over the DISPLAYED (un-zoomed) video rect; degenerate rect → 0.
+        let u = r.size.width > 0 ? (viewPoint.x - r.origin.x) / r.size.width : 0
+        let v = r.size.height > 0 ? (viewPoint.y - r.origin.y) / r.size.height : 0
+        // Apply the renderer's zoom/pan crop forward (inert when zoom == 1).
+        let invZoom = 1 / max(1, zoom)
+        let panLimit = 0.5 * (1 - invZoom)
+        let px = min(max(pan.x, -panLimit), panLimit)
+        let py = min(max(pan.y, -panLimit), panLimit)
+        let sx = (u - 0.5) * invZoom + 0.5 + px
+        let sy = (v - 0.5) * invZoom + 0.5 + py
+        return VideoPoint(x: min(max(sx, 0), 1), y: min(max(sy, 0), 1))
     }
 
     /// The tag the next emitted event will carry (for tests).
@@ -217,20 +244,20 @@ public struct InputEventEncoder: Sendable {
         return tag
     }
 
-    public mutating func mouseMove(viewPoint: VideoPoint, layerSize: VideoSize) -> InputEvent {
-        .mouseMove(normalized: Self.normalize(viewPoint: viewPoint, layerSize: layerSize), tag: takeTag())
+    public mutating func mouseMove(viewPoint: VideoPoint, layerSize: VideoSize, videoNativeSize: VideoSize, zoom: Double = 1, pan: VideoPoint = VideoPoint(x: 0, y: 0)) -> InputEvent {
+        .mouseMove(normalized: Self.normalize(viewPoint: viewPoint, layerSize: layerSize, videoNativeSize: videoNativeSize, zoom: zoom, pan: pan), tag: takeTag())
     }
 
-    public mutating func mouseDown(button: MouseButton, viewPoint: VideoPoint, layerSize: VideoSize, clickCount: UInt8, modifiers: InputModifiers) -> InputEvent {
-        .mouseDown(button: button, normalized: Self.normalize(viewPoint: viewPoint, layerSize: layerSize), clickCount: clickCount, modifiers: modifiers, tag: takeTag())
+    public mutating func mouseDown(button: MouseButton, viewPoint: VideoPoint, layerSize: VideoSize, videoNativeSize: VideoSize, clickCount: UInt8, modifiers: InputModifiers, zoom: Double = 1, pan: VideoPoint = VideoPoint(x: 0, y: 0)) -> InputEvent {
+        .mouseDown(button: button, normalized: Self.normalize(viewPoint: viewPoint, layerSize: layerSize, videoNativeSize: videoNativeSize, zoom: zoom, pan: pan), clickCount: clickCount, modifiers: modifiers, tag: takeTag())
     }
 
-    public mutating func mouseUp(button: MouseButton, viewPoint: VideoPoint, layerSize: VideoSize, clickCount: UInt8, modifiers: InputModifiers) -> InputEvent {
-        .mouseUp(button: button, normalized: Self.normalize(viewPoint: viewPoint, layerSize: layerSize), clickCount: clickCount, modifiers: modifiers, tag: takeTag())
+    public mutating func mouseUp(button: MouseButton, viewPoint: VideoPoint, layerSize: VideoSize, videoNativeSize: VideoSize, clickCount: UInt8, modifiers: InputModifiers, zoom: Double = 1, pan: VideoPoint = VideoPoint(x: 0, y: 0)) -> InputEvent {
+        .mouseUp(button: button, normalized: Self.normalize(viewPoint: viewPoint, layerSize: layerSize, videoNativeSize: videoNativeSize, zoom: zoom, pan: pan), clickCount: clickCount, modifiers: modifiers, tag: takeTag())
     }
 
-    public mutating func scroll(dx: Double, dy: Double, viewPoint: VideoPoint, layerSize: VideoSize) -> InputEvent {
-        .scroll(dx: dx, dy: dy, normalized: Self.normalize(viewPoint: viewPoint, layerSize: layerSize), tag: takeTag())
+    public mutating func scroll(dx: Double, dy: Double, viewPoint: VideoPoint, layerSize: VideoSize, videoNativeSize: VideoSize, zoom: Double = 1, pan: VideoPoint = VideoPoint(x: 0, y: 0)) -> InputEvent {
+        .scroll(dx: dx, dy: dy, normalized: Self.normalize(viewPoint: viewPoint, layerSize: layerSize, videoNativeSize: videoNativeSize, zoom: zoom, pan: pan), tag: takeTag())
     }
 
     public mutating func key(keyCode: UInt16, down: Bool, modifiers: InputModifiers) -> InputEvent {

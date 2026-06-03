@@ -1,0 +1,164 @@
+import XCTest
+@testable import RworkVideoClient
+import RworkVideoProtocol
+
+/// PURE pointer-mapping correctness (doc 17 §3.7). The input encoder's `normalize` must
+/// be the EXACT inverse of the renderer's aspect-fit + zoom/pan transform, so a click
+/// lands on the host pixel under the on-screen cursor. Also pins the renderer's `fit`
+/// formula to `displayedVideoRect` so render-forward and input-inverse can never drift.
+final class PointerMappingTests: XCTestCase {
+
+    // MARK: normalize, zoom == 1, letterboxed (the macOS case)
+
+    func testNormalizeLetterboxedCornersMapToZeroAndOne() {
+        // View 1600x1000, video 1920x1080 → displayed rect (0,50,1600,900).
+        let view = VideoSize(width: 1600, height: 1000)
+        let video = VideoSize(width: 1920, height: 1080)
+        // Top-left of the displayed video (0,50) → (0,0).
+        let tl = InputEventEncoder.normalize(viewPoint: VideoPoint(x: 0, y: 50), layerSize: view, videoNativeSize: video)
+        XCTAssertEqual(tl.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(tl.y, 0, accuracy: 1e-9)
+        // Bottom-right of the displayed video (1600,950) → (1,1).
+        let br = InputEventEncoder.normalize(viewPoint: VideoPoint(x: 1600, y: 950), layerSize: view, videoNativeSize: video)
+        XCTAssertEqual(br.x, 1, accuracy: 1e-9)
+        XCTAssertEqual(br.y, 1, accuracy: 1e-9)
+    }
+
+    func testNormalizeCenterIsHalfHalf() {
+        let n = InputEventEncoder.normalize(viewPoint: VideoPoint(x: 800, y: 500), layerSize: VideoSize(width: 1600, height: 1000), videoNativeSize: VideoSize(width: 1920, height: 1080))
+        XCTAssertEqual(n.x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(n.y, 0.5, accuracy: 1e-9)
+    }
+
+    func testNormalizeClickInsideLetterboxBarClampsToEdge() {
+        // A click in the top black bar (y=10, above the displayed rect's y=50) clamps to 0;
+        // x at the left edge stays 0.
+        let inBar = InputEventEncoder.normalize(viewPoint: VideoPoint(x: 0, y: 10), layerSize: VideoSize(width: 1600, height: 1000), videoNativeSize: VideoSize(width: 1920, height: 1080))
+        XCTAssertEqual(inBar.y, 0, accuracy: 1e-9)
+        // A click in the bottom bar (y=990, below y=950) clamps to 1.
+        let inBottomBar = InputEventEncoder.normalize(viewPoint: VideoPoint(x: 1600, y: 990), layerSize: VideoSize(width: 1600, height: 1000), videoNativeSize: VideoSize(width: 1920, height: 1080))
+        XCTAssertEqual(inBottomBar.y, 1, accuracy: 1e-9)
+    }
+
+    func testNormalizePillarboxBarsClampHorizontally() {
+        // View 1600x1000, video 1000x1000 → displayed rect (300,0,1000,1000); a click at
+        // x=100 (left bar) clamps to 0, x=1500 (right bar) clamps to 1.
+        let view = VideoSize(width: 1600, height: 1000)
+        let video = VideoSize(width: 1000, height: 1000)
+        XCTAssertEqual(InputEventEncoder.normalize(viewPoint: VideoPoint(x: 100, y: 500), layerSize: view, videoNativeSize: video).x, 0, accuracy: 1e-9)
+        XCTAssertEqual(InputEventEncoder.normalize(viewPoint: VideoPoint(x: 1500, y: 500), layerSize: view, videoNativeSize: video).x, 1, accuracy: 1e-9)
+    }
+
+    // MARK: zoom > 1 + pan (iOS): render-forward then input-inverse must be identity
+
+    func testZoomPanRoundTripIsIdentity() {
+        let view = VideoSize(width: 1600, height: 1000)
+        let video = VideoSize(width: 1920, height: 1080)
+        let zoom = 2.5
+        let pan = VideoPoint(x: 0.1, y: -0.05)
+        // Take several known host points (within the cropped-visible region for this pan so
+        // the inverse is not clamped), push each through the FORWARD transform to a view
+        // point, then through the INVERSE (normalize) back to a normalized source point, and
+        // assert it equals the original source 0..1.
+        let hostPoints = [VideoPoint(x: 960, y: 540), VideoPoint(x: 1100, y: 600), VideoPoint(x: 820, y: 480)]
+        for host in hostPoints {
+            let vp = AspectFit.viewPoint(forHostPoint: host, viewSize: view, videoNativeSize: video, zoom: zoom, pan: pan)
+            let back = InputEventEncoder.normalize(viewPoint: vp, layerSize: view, videoNativeSize: video, zoom: zoom, pan: pan)
+            // The original normalized source = host / videoNativeSize.
+            XCTAssertEqual(back.x, host.x / video.width, accuracy: 1e-6)
+            XCTAssertEqual(back.y, host.y / video.height, accuracy: 1e-6)
+        }
+    }
+
+    // MARK: cursor overlay tracks where clicks land (2d)
+
+    func testCursorOverlayLandsInsideLetterboxedDisplayedRect() {
+        // Host cursor at the window center (960,540) on a letterboxed layer must place the
+        // overlay tip at the displayed-rect center (800,500) — minus the hotspot — i.e. the
+        // SAME place a click at that view point maps back from (round-trip consistency).
+        let view = VideoSize(width: 1600, height: 1000)
+        let video = VideoSize(width: 1920, height: 1080)
+        let update = CursorUpdate(position: VideoPoint(x: 960, y: 540), shapeID: 1, hotspot: VideoPoint(x: 0, y: 0), visible: true)
+        let frame = ClientCursorCompositor.layerFrame(for: update, viewSize: view, videoNativeSize: video, zoom: 1, pan: VideoPoint(x: 0, y: 0), cursorSize: VideoSize(width: 16, height: 16))
+        XCTAssertEqual(frame.origin.x, 800, accuracy: 1e-9)
+        XCTAssertEqual(frame.origin.y, 500, accuracy: 1e-9)
+        // And a click at the overlay tip maps back to the host cursor's normalized source.
+        let back = InputEventEncoder.normalize(viewPoint: VideoPoint(x: 800, y: 500), layerSize: view, videoNativeSize: video)
+        XCTAssertEqual(back.x, 960 / video.width, accuracy: 1e-9)
+        XCTAssertEqual(back.y, 540 / video.height, accuracy: 1e-9)
+    }
+
+    func testCursorOverlayHotspotScaledByDisplayedRect() {
+        // View 800x600 displaying a 1600x1200 video (equal aspect, scale 0.5): a 4-point
+        // host hotspot becomes 2 view points; position (400,400) → view (200,200) minus 2.
+        let view = VideoSize(width: 800, height: 600)
+        let video = VideoSize(width: 1600, height: 1200)
+        let update = CursorUpdate(position: VideoPoint(x: 400, y: 400), shapeID: 1, hotspot: VideoPoint(x: 4, y: 4), visible: true)
+        let frame = ClientCursorCompositor.layerFrame(for: update, viewSize: view, videoNativeSize: video, zoom: 1, pan: VideoPoint(x: 0, y: 0), cursorSize: VideoSize(width: 24, height: 24))
+        XCTAssertEqual(frame.origin.x, 198, accuracy: 1e-9)   // 400*0.5 - 4*0.5
+        XCTAssertEqual(frame.origin.y, 198, accuracy: 1e-9)
+    }
+
+    // MARK: renderer fit == displayedVideoRect-derived fit (2e — drift guard)
+
+    func testRendererFitFormulaEqualsDisplayedVideoRect() {
+        // The renderer's pre-refactor fit formula (letterbox/pillarbox quad scale) MUST
+        // equal the fit derived from displayedVideoRect for any (view, video) pair —
+        // otherwise the rendered image and the input/cursor mapping diverge.
+        let cases: [(VideoSize, VideoSize)] = [
+            (VideoSize(width: 1600, height: 1000), VideoSize(width: 1920, height: 1080)), // wider video
+            (VideoSize(width: 1600, height: 1000), VideoSize(width: 1000, height: 1000)), // taller/narrower video
+            (VideoSize(width: 800, height: 600),   VideoSize(width: 1600, height: 1200)), // equal aspect
+            (VideoSize(width: 1080, height: 1920), VideoSize(width: 1920, height: 1080)), // portrait layer, landscape video
+        ]
+        for (view, video) in cases {
+            // Reference: the renderer's original aspect-comparison formula.
+            var fx = 1.0, fy = 1.0
+            let videoAspect = video.width / video.height
+            let viewAspect = view.width / view.height
+            if videoAspect > viewAspect { fy = viewAspect / videoAspect } else { fx = videoAspect / viewAspect }
+            // Derived from displayedVideoRect (what the renderer now computes).
+            let r = AspectFit.displayedVideoRect(viewSize: view, videoNativeSize: video)
+            XCTAssertEqual(r.size.width / view.width, fx, accuracy: 1e-9, "fit.x mismatch for \(view)/\(video)")
+            XCTAssertEqual(r.size.height / view.height, fy, accuracy: 1e-9, "fit.y mismatch for \(view)/\(video)")
+        }
+    }
+}
+
+#if os(macOS)
+import AppKit
+
+/// PURE keyCode → modifier-mask + press/release detection for `flagsChanged`. Without
+/// this seam the host never receives a modifier KEY-UP, so a ⌘ flag latched on the
+/// shared CGEventSource stays stuck and corrupts later text insertion (the Cmd+Delete
+/// → "enter" bug).
+final class FlagsChangedModifierTests: XCTestCase {
+
+    func testLeftCommandKeyCodeWithCommandFlagIsDown() {
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 55, flags: [.command]), true)
+    }
+    func testRightCommandKeyCodeWithoutCommandFlagIsUp() {
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 54, flags: []), false)
+    }
+    func testShiftKeyCodes() {
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 56, flags: [.shift]), true)
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 60, flags: []), false)
+    }
+    func testControlOptionFnCapsLock() {
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 59, flags: [.control]), true)
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 58, flags: [.option]), true)
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 63, flags: [.function]), true)
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 57, flags: [.capsLock]), true)
+    }
+    func testNonModifierKeyCodeReturnsNil() {
+        XCTAssertNil(MetalLayerBackedView.modifierDown(keyCode: 0, flags: [.command]))   // 'a'
+        XCTAssertNil(MetalLayerBackedView.modifierDown(keyCode: 36, flags: []))          // return
+    }
+    func testDownDetectionDependsOnFlagPresenceNotKeyCode() {
+        // The same ⌘ keyCode (55) yields down=true when ⌘ is present and down=false when
+        // absent — that flag check is the only way to tell the press edge from the release.
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 55, flags: [.command]), true)
+        XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 55, flags: []), false)
+    }
+}
+#endif

@@ -83,8 +83,10 @@ final class VideoWindowPipeline {
                 // is internally locked, so the main hop only re-presents at vsync.
                 pacer.submit(buffer)
             },
-            applyCursor: { [weak compositor] update, scale in
-                Task { @MainActor in compositor?.apply(update, videoScale: scale) }
+            applyCursor: { [weak compositor] update, placement in
+                Task { @MainActor in
+                    compositor?.apply(update, viewSize: placement.viewSize, videoNativeSize: placement.videoNativeSize, zoom: placement.zoom, pan: placement.pan)
+                }
             },
             registerCursorShape: { [weak compositor] image, shapeID in
                 let box = UnsafeTransfer(image)
@@ -138,10 +140,18 @@ final class VideoWindowPipeline {
         Task { await session.setLayerSize(layerSize) }
     }
 
-    /// VNC-style zoom/pan, forwarded to the renderer (applied as a UV crop next vsync).
+    /// VNC-style zoom/pan, forwarded to the renderer (applied as a UV crop next vsync)
+    /// AND to the session, so the input encoder inverts — and the cursor overlay tracks —
+    /// the EXACT SAME transform. Both must move together or a click while zoomed lands at
+    /// the un-zoomed source position.
     func setZoom(_ zoom: CGFloat, pan: CGPoint) {
         renderer?.zoom = zoom
         renderer?.panNormalized = pan
+        if let session {
+            let z = Double(zoom)
+            let p = VideoPoint(x: Double(pan.x), y: Double(pan.y))
+            Task { await session.setZoom(z, pan: p) }
+        }
     }
 
     // MARK: Input forwarding

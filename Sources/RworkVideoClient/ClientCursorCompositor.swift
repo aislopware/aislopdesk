@@ -54,17 +54,66 @@ public final class ClientCursorCompositor {
         return VideoRect(x: x, y: y, width: cursorSize.width, height: cursorSize.height)
     }
 
+    /// Aspect-fit + zoom/pan-correct cursor placement: maps the host-space cursor through
+    /// the EXACT FORWARD render transform (``AspectFit/viewPoint(forHostPoint:viewSize:videoNativeSize:zoom:pan:)``)
+    /// so the overlay tracks the same displayed pixel a click lands on. The hotspot (in
+    /// host-window points) is scaled by the displayed-rect's per-point scale before being
+    /// subtracted, so the cursor "tip" stays on the reported position at any zoom. Pure.
+    ///
+    /// Supersedes the scalar ``layerFrame(for:videoScale:cursorSize:)`` (which assumed the
+    /// video fills the layer from origin) on the live path; the scalar form is retained as
+    /// the underlying math primitive + for the 1:1 fast case.
+    nonisolated public static func layerFrame(
+        for update: CursorUpdate,
+        viewSize: VideoSize,
+        videoNativeSize: VideoSize,
+        zoom: Double,
+        pan: VideoPoint,
+        cursorSize: VideoSize
+    ) -> VideoRect {
+        let tip = AspectFit.viewPoint(forHostPoint: update.position, viewSize: viewSize, videoNativeSize: videoNativeSize, zoom: zoom, pan: pan)
+        // The hotspot is reported in host-window points; scale it into view points by the
+        // displayed-rect's effective per-source-point scale (× zoom for the crop).
+        let r = AspectFit.displayedVideoRect(viewSize: viewSize, videoNativeSize: videoNativeSize)
+        let scaleX = videoNativeSize.width > 0 ? (r.size.width / videoNativeSize.width) * max(1, zoom) : 1
+        let scaleY = videoNativeSize.height > 0 ? (r.size.height / videoNativeSize.height) * max(1, zoom) : 1
+        return VideoRect(
+            x: tip.x - update.hotspot.x * scaleX,
+            y: tip.y - update.hotspot.y * scaleY,
+            width: cursorSize.width, height: cursorSize.height)
+    }
+
     /// Applies a cursor update to the overlay layer at display-refresh.
     public func apply(_ update: CursorUpdate, videoScale: Double) {
-        cursorLayer.isHidden = !update.visible
+        let size = applyShape(update)
         guard update.visible else { return }
+        let frame = Self.layerFrame(for: update, videoScale: videoScale, cursorSize: size)
+        setLayerFrame(frame)
+    }
+
+    /// Aspect-fit + zoom/pan-correct apply: places the overlay through the same forward
+    /// render transform the input encoder inverts, so the cursor tracks where clicks land
+    /// even when the video is letterboxed or (on iOS) zoomed/panned.
+    public func apply(_ update: CursorUpdate, viewSize: VideoSize, videoNativeSize: VideoSize, zoom: Double, pan: VideoPoint) {
+        let size = applyShape(update)
+        guard update.visible else { return }
+        let frame = Self.layerFrame(for: update, viewSize: viewSize, videoNativeSize: videoNativeSize, zoom: zoom, pan: pan, cursorSize: size)
+        setLayerFrame(frame)
+    }
+
+    /// Updates visibility + swaps the cached shape bitmap if the shapeID changed; returns
+    /// the current cursor bitmap size (points). Shared by both `apply` overloads.
+    private func applyShape(_ update: CursorUpdate) -> VideoSize {
+        cursorLayer.isHidden = !update.visible
         if currentShapeID != update.shapeID, let image = shapeCache[update.shapeID] {
             cursorLayer.contents = image
             cursorLayer.bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
             currentShapeID = update.shapeID
         }
-        let size = VideoSize(width: cursorLayer.bounds.width, height: cursorLayer.bounds.height)
-        let frame = Self.layerFrame(for: update, videoScale: videoScale, cursorSize: size)
+        return VideoSize(width: cursorLayer.bounds.width, height: cursorLayer.bounds.height)
+    }
+
+    private func setLayerFrame(_ frame: VideoRect) {
         // No implicit animation — the cursor must track at refresh, not tween.
         CATransaction.begin()
         CATransaction.setDisableActions(true)

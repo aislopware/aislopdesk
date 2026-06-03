@@ -45,6 +45,83 @@ public struct VideoRect: Equatable, Sendable {
     }
 }
 
+/// Aspect-fit geometry — the **single source of truth** for where the decoded video is
+/// actually drawn inside the layer (doc 17 §3.7). The Metal renderer ASPECT-FITS the
+/// frame (letterbox/pillarbox) so the video occupies only a centred sub-rect of the
+/// layer; both the renderer (`fit` quad scale) and the input/cursor mapping derive their
+/// geometry from this one function so render-forward and input-inverse can never drift.
+///
+/// Pure + platform-free (lives in the protocol leaf) so it is unit-testable in isolation
+/// and usable from both `RworkVideoClient` (renderer + input encoder + cursor compositor).
+public enum AspectFit {
+    /// The rect (origin + size) the displayed video occupies inside a `viewSize` layer,
+    /// preserving the video's native aspect ratio (centred, with letterbox/pillarbox
+    /// bars filling the remainder).
+    ///
+    /// MUST match `MetalVideoRenderer`'s `fit`-branch exactly: the renderer computes the
+    /// same comparison in PIXELS (drawableSize × video pixel size), but aspect ratio is
+    /// scale-invariant, so the rect is identical whether measured in points or pixels.
+    ///
+    /// - Parameters:
+    ///   - viewSize: the layer's size (points, or pixels — scale-invariant).
+    ///   - videoNativeSize: the decoded video's native size (same unit family).
+    /// - Returns: the centred displayed-video rect. Falls back to the full `viewSize`
+    ///   rect for any non-positive dimension (degenerate input is placed sensibly).
+    public static func displayedVideoRect(viewSize: VideoSize, videoNativeSize: VideoSize) -> VideoRect {
+        let vw = videoNativeSize.width, vh = videoNativeSize.height
+        let Vw = viewSize.width, Vh = viewSize.height
+        guard vw > 0, vh > 0, Vw > 0, Vh > 0 else {
+            return VideoRect(x: 0, y: 0, width: max(0, Vw), height: max(0, Vh))
+        }
+        let videoAspect = vw / vh
+        let viewAspect = Vw / Vh
+        let w: Double, h: Double
+        if videoAspect > viewAspect {
+            // Wider video → full width, bars top/bottom (matches renderer fit.y branch).
+            w = Vw
+            h = Vw / videoAspect
+        } else {
+            // Taller (or equal) video → full height, bars left/right (renderer fit.x branch).
+            w = Vh * videoAspect
+            h = Vh
+        }
+        let ox = (Vw - w) / 2
+        let oy = (Vh - h) / 2
+        return VideoRect(x: ox, y: oy, width: w, height: h)
+    }
+
+    /// FORWARD render transform: maps a host-window-space point (points) to where it is
+    /// drawn in the layer's view space (points). This is the exact inverse of
+    /// ``RworkVideoClient/InputEventEncoder/normalize(viewPoint:layerSize:videoNativeSize:zoom:pan:)``
+    /// and the renderer's aspect-fit + zoom/pan crop, used to place the local cursor
+    /// overlay where clicks actually land (doc 17 §3.3 / §3.7).
+    ///
+    /// 1. host point → source 0..1 (`hostPoint / videoNativeSize`).
+    /// 2. invert the renderer's crop (`uv = (in.uv-0.5)·invZoom + 0.5 + pan`):
+    ///    `displayUV = (sourceUV - 0.5 - pan)·zoom + 0.5`.
+    /// 3. displayUV → view point inside the aspect-fit displayed rect.
+    /// Pan is clamped identically to the renderer (`panLimit = 0.5·(1-invZoom)`).
+    public static func viewPoint(
+        forHostPoint hostPoint: VideoPoint,
+        viewSize: VideoSize,
+        videoNativeSize: VideoSize,
+        zoom: Double = 1,
+        pan: VideoPoint = VideoPoint(x: 0, y: 0)
+    ) -> VideoPoint {
+        let su = videoNativeSize.width > 0 ? hostPoint.x / videoNativeSize.width : 0
+        let sv = videoNativeSize.height > 0 ? hostPoint.y / videoNativeSize.height : 0
+        let z = max(1, zoom)
+        let invZoom = 1 / z
+        let panLimit = 0.5 * (1 - invZoom)
+        let px = min(max(pan.x, -panLimit), panLimit)
+        let py = min(max(pan.y, -panLimit), panLimit)
+        let du = (su - 0.5 - px) * z + 0.5
+        let dv = (sv - 0.5 - py) * z + 0.5
+        let r = displayedVideoRect(viewSize: viewSize, videoNativeSize: videoNativeSize)
+        return VideoPoint(x: r.origin.x + du * r.size.width, y: r.origin.y + dv * r.size.height)
+    }
+}
+
 #if canImport(CoreGraphics)
 extension VideoPoint {
     public init(_ p: CGPoint) { self.init(x: Double(p.x), y: Double(p.y)) }

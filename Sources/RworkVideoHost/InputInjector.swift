@@ -164,10 +164,17 @@ public final class InputInjector: @unchecked Sendable {
         units.withUnsafeBufferPointer { buffer in
             down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
         }
+        // Force a MODIFIER-FREE insertion. A plain-text keystroke must never inherit a
+        // latched/residual modifier from the shared `.hidSystemState` source — e.g. a ⌘
+        // left stuck after ⌘+Delete would turn this insertion into a ⌘-modified keystroke
+        // (Return → newline-with-⌘, etc.). `postKey` already sets `flags` explicitly; only
+        // `postText` left them at the source default, so clear them here on both edges.
+        down.flags = []
         stampAndPost(down, tag: tag)
         // Bare key-up: NO keyboardSetUnicodeString (attaching it here would insert the
-        // text a second time).
+        // text a second time). Also modifier-free, matching the down.
         if let up = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: false) {
+            up.flags = []
             stampAndPost(up, tag: tag)
         }
     }
