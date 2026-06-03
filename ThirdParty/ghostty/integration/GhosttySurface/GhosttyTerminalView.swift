@@ -257,15 +257,22 @@ final class GhosttyLayerBackedView: NSView {
             }
             self.surface = s
         }
-        // The model's ingestOutput(_:) feeds inbound bytes into surface.feed(_:).
-        model.surface = surface
+        // The model's ingestOutput(_:) feeds inbound bytes into surface.feed(_:). Go through
+        // attachSurface(_:) (not `model.surface = surface`) so the model can REPLAY its retained
+        // byte-ring into this surface: a tab switch / compact flip dismantled the prior
+        // representable (detach() closed the old surface) and rebuilt this one EMPTY, but the
+        // host never re-sends the scrollback — replay repaints it. attachSurface is a no-op
+        // replay when the instance is unchanged (SwiftUI's idempotent update re-attach).
+        if let surface {
+            model.attachSurface(surface)
+        }
         surface?.setFocus(true)
     }
 
     func detach() {
         surface?.close()
         surface = nil
-        model?.surface = nil
+        model?.detachSurface()
     }
 
     deinit {
@@ -425,7 +432,13 @@ final class GhosttyLayerBackedView: UIView {
             }
             self.surface = s
         }
-        model.surface = surface
+        // attachSurface(_:) (not `model.surface = surface`) so the model REPLAYS its retained
+        // byte-ring into a rebuilt surface — the iOS compact-carousel flip dismantles + rebuilds
+        // the representable EMPTY while the connection (and host scrollback) is untouched. No-op
+        // replay when the instance is unchanged.
+        if let surface {
+            model.attachSurface(surface)
+        }
         surface?.setFocus(true)
 
         // Start the render-thread pacing tick (idempotent). 60 fps is plenty for a
@@ -448,7 +461,7 @@ final class GhosttyLayerBackedView: UIView {
         displayLink = nil
         surface?.close()
         surface = nil
-        model?.surface = nil
+        model?.detachSurface()
     }
 
     override func layoutSubviews() {
