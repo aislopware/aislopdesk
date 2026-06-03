@@ -102,9 +102,16 @@ public struct VideoSessionStateMachine: Sendable {
                 .startCapture(windowID: requestedWindowID, width: w, height: h),
             ]
         case .bye:
+            // A client bye re-arms the session so a fresh hello can reconnect
+            // WITHOUT a daemon restart (#8). Return to .listening (re-armable) and
+            // stop capture only if it was actually streaming. The accept path mints
+            // a fresh streamID + re-resolves capture size on the next hello, so a
+            // re-accepted session is fully re-initialised. (Local stop() — which also
+            // closes the UDP sockets — stays terminal .stopped, NOT re-armable.)
+            let wasStreaming = state == .streaming
             guard state == .streaming || state == .listening else { return [] }
-            state = .stopped
-            return [.stopCapture]
+            state = .listening
+            return wasStreaming ? [.stopCapture] : []
         case .helloAck:
             // Host never receives a helloAck.
             return []
