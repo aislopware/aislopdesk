@@ -1,5 +1,8 @@
 import XCTest
 @testable import RworkClientUI
+#if canImport(SwiftUI)
+import SwiftUI
+#endif
 
 /// The ``CommandInterpreter`` is the pure chord → ``WorkspaceCommand`` mapping (docs/22 §5): the
 /// single tested core that the macOS menu bar, the iPad `UIKeyCommand` layer, and the compact
@@ -13,9 +16,9 @@ import XCTest
 /// - **Unbound chords fall through** (`feed` returns `nil`) — the §5 conflict rule that lets plain
 ///   keys reach the focused terminal untouched.
 /// - **Rebinding works** — both by mutating `bindings` and by injecting a custom table at init.
-/// - **The virtual-clock seam is wired but inert** — `feed` does not currently schedule, so a
-///   `ManualRepeatScheduler` advanced past any window leaves the mapping unchanged (the seam exists
-///   for parity with ``KeyRepeater`` for future timed/chorded intents).
+/// - **The SwiftUI bridge round-trips** — every default chord derives the native
+///   `KeyboardShortcut` the menu bar applies (`KeyChord+SwiftUI`), so the menu and the interpreter
+///   share one source of truth and the §5 ⌘/⌥-prefix conflict rule survives the translation.
 ///
 /// `CommandInterpreter` is `@MainActor`, so the whole suite is `@MainActor` (still synchronous —
 /// no async, no client, no store).
@@ -152,25 +155,86 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertFalse(CommandInterpreter.defaultBindings.isEmpty, "mutating an instance does not corrupt the static default")
     }
 
-    // MARK: - The injected clock seam (parity, currently inert)
+    // MARK: - SwiftUI bridge (KeyChord → KeyboardShortcut) — one source of truth
 
-    /// The interpreter accepts a `RepeatScheduler` for parity with ``KeyRepeater`` (future timed /
-    /// chorded intents), but the current pure mapping does not schedule. Advancing the injected
-    /// virtual clock past any plausible window must therefore change nothing — `feed` stays a pure
-    /// function of the chord. This both documents the seam and guards against an accidental
-    /// time-dependence creeping into the mapping.
-    func testInjectedClockDoesNotAffectMappingAndArmsNoTimers() {
-        let scheduler = ManualRepeatScheduler()
-        let interpreter = CommandInterpreter(clock: scheduler)
-
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "d", [.command])), .splitHorizontal)
-        XCTAssertEqual(scheduler.pendingCount, 0, "feed schedules nothing on the injected clock")
-
-        // Advance virtual time well past any prefix/timeout window — mapping is unchanged.
-        scheduler.advance(by: .seconds(10))
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "d", [.command])), .splitHorizontal, "mapping is time-independent")
-        XCTAssertEqual(scheduler.pendingCount, 0, "still no armed timers after advancing the clock")
+    #if canImport(SwiftUI)
+    /// Every shipped default chord derives a native `KeyboardShortcut` whose key + modifiers match
+    /// the chord exactly. This is the load-bearing fact behind ``WorkspaceCommands`` deriving its
+    /// menu shortcuts from ``CommandInterpreter/defaultBindings`` instead of re-declaring them: if
+    /// the adapter dropped or garbled any chord, the menu would silently lose / misbind a shortcut.
+    func testKeyChordAdapterRoundTripsEveryDefaultBinding() {
+        for (chord, _) in CommandInterpreter.defaultBindings {
+            let shortcut = chord.shortcut
+            XCTAssertEqual(
+                shortcut.key, chord.key.keyEquivalent,
+                "chord \(chord) must derive a shortcut with the matching key equivalent"
+            )
+            XCTAssertEqual(
+                shortcut.modifiers, chord.modifiers.eventModifiers,
+                "chord \(chord) must derive a shortcut with the matching modifiers"
+            )
+        }
     }
+
+    /// Each ``KeyChord/Modifiers`` flag maps to its native `EventModifiers` counterpart, and the set
+    /// is the union of present flags — a composed chord (⌥⌘) yields both, an empty set yields none.
+    func testAdapterModifierMapMatchesEachFlag() {
+        XCTAssertEqual(KeyChord.Modifiers([]).eventModifiers, [])
+        XCTAssertEqual(KeyChord.Modifiers([.shift]).eventModifiers, .shift)
+        XCTAssertEqual(KeyChord.Modifiers([.control]).eventModifiers, .control)
+        XCTAssertEqual(KeyChord.Modifiers([.option]).eventModifiers, .option)
+        XCTAssertEqual(KeyChord.Modifiers([.command]).eventModifiers, .command)
+        XCTAssertEqual(
+            KeyChord.Modifiers([.option, .command]).eventModifiers,
+            [.option, .command],
+            "composed modifier sets union their native flags"
+        )
+        XCTAssertEqual(
+            KeyChord.Modifiers([.shift, .control, .option, .command]).eventModifiers,
+            [.shift, .control, .option, .command]
+        )
+    }
+
+    /// The named (non-printable) keys the workspace binds map to their SwiftUI `KeyEquivalent`
+    /// constants, and a printable character passes through unchanged.
+    func testAdapterNamedKeysMapToNativeEquivalents() {
+        XCTAssertEqual(KeyChord.Key.tab.keyEquivalent, .tab)
+        XCTAssertEqual(KeyChord.Key.return.keyEquivalent, .return)
+        XCTAssertEqual(KeyChord.Key.leftArrow.keyEquivalent, .leftArrow)
+        XCTAssertEqual(KeyChord.Key.rightArrow.keyEquivalent, .rightArrow)
+        XCTAssertEqual(KeyChord.Key.upArrow.keyEquivalent, .upArrow)
+        XCTAssertEqual(KeyChord.Key.downArrow.keyEquivalent, .downArrow)
+        XCTAssertEqual(KeyChord.Key.character("d").keyEquivalent, KeyEquivalent("d"))
+        XCTAssertEqual(KeyChord.Key.character("]").keyEquivalent, KeyEquivalent("]"))
+    }
+
+    /// The §5 conflict rule, expressed through the adapter (docs/22 §5, lines 431–434): the focused
+    /// terminal must keep receiving raw bytes, so no derived shortcut may steal a key the shell
+    /// needs. Pinned against the DERIVED (native) shortcuts, not just the chords, because the menu
+    /// bar binds the translated `KeyboardShortcut`:
+    ///
+    ///  1. **No bare key.** Every shortcut carries at least one modifier — a plain key is never a
+    ///     workspace chord, so it always reaches the terminal.
+    ///  2. **No Ctrl-letter.** Any shortcut on a *printable character* carries ⌘ or ⌥ (never
+    ///     Ctrl-only), because Ctrl+letter is a terminal control code (`^C`, `^D`, …) the shell
+    ///     owns. The two Ctrl-prefixed bindings the table does ship (⌃⇥ / ⌃⇧⇥) are on the *Tab* key,
+    ///     which is not a printable letter and so does not collide with terminal control input.
+    func testAdapterPreservesConflictRule() {
+        for (chord, _) in CommandInterpreter.defaultBindings {
+            let mods = chord.shortcut.modifiers
+            XCTAssertFalse(
+                mods.isEmpty,
+                "no workspace shortcut may be a bare key (chord \(chord)) — plain keys belong to the terminal"
+            )
+            if case .character = chord.key {
+                XCTAssertTrue(
+                    mods.contains(.command) || mods.contains(.option),
+                    "a character shortcut must carry ⌘ or ⌥ (chord \(chord)) so Ctrl-letters reach the terminal as control codes"
+                )
+            }
+        }
+    }
+    #endif
 
     // MARK: - WorkspaceCommand value semantics (associated values compare)
 
