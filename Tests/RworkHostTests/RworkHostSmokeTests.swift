@@ -105,4 +105,36 @@ final class RworkHostSmokeTests: XCTestCase {
         XCTAssertEqual(parsed.shell, "/bin/bash")
         XCTAssertEqual(parsed.launchMode, .claudeCode(ClaudeCodeProfile(term: .ghostty)))
     }
+
+    // MARK: --inspector / --transcript (inspector server)
+
+    func testParseDefaultsDisableInspector() throws {
+        let parsed = try XCTUnwrap(HostdArguments.parse(["rwork-hostd"]))
+        XCTAssertFalse(parsed.inspectorEnabled)
+        XCTAssertNil(parsed.transcriptPath)
+    }
+
+    func testParseClaudeAutoEnablesInspector() throws {
+        // --claude implies the inspector (it observes a claude session).
+        let parsed = try XCTUnwrap(HostdArguments.parse(["rwork-hostd", "--claude"]))
+        XCTAssertTrue(parsed.inspectorEnabled, "--claude auto-enables the inspector")
+    }
+
+    func testParseExplicitInspectorFlag() throws {
+        let parsed = try XCTUnwrap(HostdArguments.parse(["rwork-hostd", "--inspector"]))
+        XCTAssertTrue(parsed.inspectorEnabled)
+        XCTAssertEqual(parsed.launchMode, .shell, "--inspector alone does not change launch mode")
+    }
+
+    func testParseTranscriptPathImpliesInspector() throws {
+        let parsed = try XCTUnwrap(
+            HostdArguments.parse(["rwork-hostd", "--transcript", "/tmp/session.jsonl"])
+        )
+        XCTAssertEqual(parsed.transcriptPath, "/tmp/session.jsonl")
+        XCTAssertTrue(parsed.inspectorEnabled, "--transcript implies --inspector")
+    }
+
+    func testParseTranscriptMissingValueReturnsNil() {
+        XCTAssertNil(HostdArguments.parse(["rwork-hostd", "--transcript"]))
+    }
 }
