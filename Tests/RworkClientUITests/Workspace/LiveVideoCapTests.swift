@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 @testable import RworkClientUI
 
 // MARK: - LiveVideoCapTests
@@ -247,10 +248,11 @@ final class LiveVideoCapTests: XCTestCase {
 
     // MARK: - closing an ACTIVE video pane frees its slot (teardown path)
 
-    /// Closing a pane that holds a live video slot removes it from the registry synchronously (so it
-    /// no longer counts against the cap) and tears its session down asynchronously. After
-    /// `quiesce()` the orphan's `teardown()` has run; a previously-gated pane can now activate
-    /// because the closed pane's slot is free.
+    /// Closing a pane that holds a live video slot removes it from the registry synchronously and tears
+    /// its session down asynchronously. The closed pane's video stack is NOT released until its
+    /// `teardown()` completes, so the cap keeps counting it (via `tearingDownVideo`, ITEM #3) until then:
+    /// the previously-gated pane can only activate AFTER `quiesce()` confirms the teardown ran and the
+    /// slot is genuinely free.
     func testClosingActiveVideoPaneFreesSlot() async {
         let (store, ids) = makeStoreWithRemoteGUILeaves(3, cap: 2)
         XCTAssertTrue(store.activateVideo(ids[0]))
@@ -268,16 +270,174 @@ final class LiveVideoCapTests: XCTestCase {
                        Set(store.activeTab!.root.allLeafIDs()),
                        "registry keys == leaf ids the instant closePane returns")
 
-        // Its slot is freed immediately for the cap (it no longer counts), so the gated pane admits.
-        XCTAssertTrue(store.activateVideo(ids[2]), "the closed pane's slot frees the gated pane")
-
-        // The async teardown completes only after quiesce().
+        // The async teardown completes only after quiesce(); only THEN is the closed pane's video stack
+        // actually released, freeing the slot for the previously-gated pane (ITEM #3 — the cap counts
+        // in-flight teardown, so a same-tick reopen cannot overlap two live stacks).
         await store.quiesce()
         XCTAssertEqual(closed.teardownCount, 1, "the closed video session was torn down exactly once")
         XCTAssertEqual(closed.events.last, .teardown)
 
+        // With the slot genuinely freed, the gated pane admits.
+        XCTAssertTrue(store.activateVideo(ids[2]), "the freed slot admits the previously-gated pane")
+
         // Final live set: ids[1] (still live) + ids[2] (newly admitted).
         let activeIDs = Set(store.allSessions.filter { $0.isVideoActive }.map { $0.id })
         XCTAssertEqual(activeIDs, Set([ids[1], ids[2]]))
+    }
+
+    // MARK: - BUG-D: a superseded debounced save is skipped via the saveGeneration guard
+
+    /// BUG-D — `saveImmediately()` (and a newer `scheduleSave`) must reliably win over an in-flight
+    /// debounced write that has raced PAST its `Task.sleep`: `Task.cancel()` cannot stop a task already
+    /// inside the write, so the debounced path re-checks `saveGeneration` ON THE MAIN ACTOR right before
+    /// writing and SKIPS if superseded. This asserts that exact generation-guard logic through the
+    /// `saveGeneration` seam — the SAME predicate (``WorkspaceStore/isCurrentSaveGeneration(_:)``) the
+    /// production write path consults — so no stale snapshot can win the last atomic rename. No real
+    /// file race is needed: the supersession decision is a pure MainActor `Int` compare.
+    func testSupersededDebouncedSaveIsSkippedByGenerationGuard() {
+        // A store backed by a temp-file persistence (so the generation actually bumps) with a LONG
+        // debounce, so the scheduled save parks in its sleep and never fires during the test.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rwork-bugd-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("workspace.json", isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: tmp.deletingLastPathComponent()) }
+        let persistence = WorkspacePersistence(fileURL: tmp)
+        let store = WorkspaceStore(
+            restoring: nil,
+            makeSession: { FakePaneSession($0) },
+            liveVideoCap: 2,
+            persistence: persistence,
+            saveDebounce: .seconds(3600)   // effectively never fires during the test
+        )
+
+        // A mutation schedules a debounced save: it bumps the generation and CAPTURES it (gen0). The
+        // task parks on its hour-long sleep, so its write has NOT run.
+        store.addTab(kind: .terminal)
+        let gen0 = store.saveGeneration
+        XCTAssertGreaterThan(gen0, 0, "scheduleSave bumped the generation for the just-scheduled write")
+        XCTAssertTrue(store.isCurrentSaveGeneration(gen0),
+                      "the just-scheduled debounced write is the current generation — it would write")
+
+        // saveImmediately() bumps the generation again (and writes synchronously NOW). The earlier
+        // debounced task's captured gen0 is now STALE.
+        store.saveImmediately()
+        let genAfterImmediate = store.saveGeneration
+        XCTAssertGreaterThan(genAfterImmediate, gen0, "saveImmediately bumped the generation past the debounced one")
+
+        // THE GUARD: were the gen0 debounced task to wake and reach its pre-write re-check now, the
+        // predicate the production path consults reports it superseded — so it SKIPS the write and the
+        // saveImmediately() snapshot keeps the file. (A stale rename can never win.)
+        XCTAssertFalse(store.isCurrentSaveGeneration(gen0),
+                       "the superseded debounced write is no longer current — it will skip its write")
+        XCTAssertTrue(store.isCurrentSaveGeneration(genAfterImmediate),
+                      "only the latest generation is current")
+
+        // saveImmediately wrote synchronously: the file exists and decodes to the current tree shape.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path),
+                      "saveImmediately() wrote the file synchronously, winning over the parked debounced save")
+        let onDisk = persistence.load()
+        XCTAssertEqual(onDisk.tabs.count, store.workspace.tabs.count,
+                       "the file reflects the saveImmediately() snapshot (2 tabs), not a stale one")
+
+        // A fresh mutation schedules another debounced save, bumping the generation once more — and the
+        // prior, now-superseded gen0 is STILL not current (the guard is monotone).
+        store.addTab(kind: .terminal)
+        XCTAssertGreaterThan(store.saveGeneration, genAfterImmediate, "a new mutation bumps the generation again")
+        XCTAssertFalse(store.isCurrentSaveGeneration(gen0), "an old generation never becomes current again")
+    }
+
+    // MARK: - same-tick close+reopen does NOT exceed the ceiling (ITEM #3)
+
+    /// The load-bearing ITEM #3 case: a `.remoteGUI` pane that closed while video-active keeps its slot
+    /// occupied until its teardown ACTUALLY releases the video stack. We hold the teardown suspended on
+    /// the opt-in `FakeTeardownGate`, so the closed pane is gone from the registry but still tearing
+    /// down — and a new pane opened the same tick must NOT be admitted (its stack would overlap the
+    /// not-yet-released one, breaching the 2-pane ceiling). Only after the gate releases and `quiesce()`
+    /// confirms the release does the slot free.
+    func testSameTickCloseReopenDoesNotExceedCeiling() async {
+        // cap=2, two remoteGUI leaves both live.
+        let (store, ids) = makeStoreWithRemoteGUILeaves(2, cap: 2)
+        let gate = FakeTeardownGate()
+        // Install the blocking gate on the pane we will close, so its teardown parks in flight.
+        fake(store.handle(for: ids[0])).teardownGate = gate
+
+        XCTAssertTrue(store.activateVideo(ids[0]))
+        XCTAssertTrue(store.activateVideo(ids[1]), "cap=2 saturated by two live video panes")
+
+        // Close ids[0] (a non-last leaf → the tab survives). Its teardown will park on the gate, so its
+        // video stack is NOT yet released — `tearingDownVideo` holds its id.
+        store.closePane(ids[0])
+        XCTAssertNil(store.handle(for: ids[0]), "closed pane gone from the registry synchronously")
+
+        // Same tick, open a replacement remoteGUI pane (split the survivor). It materializes idle.
+        store.split(ids[1], axis: .horizontal, kind: .remoteGUI)
+        let reopened = store.activeTab!.root.allLeafIDs().first { $0 != ids[1] }!
+
+        // The replacement must be GATED: ids[1] is live (1) + ids[0] still tearing down (1) = the cap of
+        // 2 is still occupied. Admitting it would transiently run THREE video stacks.
+        XCTAssertFalse(store.activateVideo(reopened),
+                       "same-tick reopen gated — the closing pane's stack is not released yet")
+
+        // Release the teardown and drain. Now ids[0]'s stack is gone; the slot frees.
+        gate.release()
+        await store.quiesce()
+
+        XCTAssertTrue(store.activateVideo(reopened),
+                      "once the closed pane's teardown released its stack, the reopened pane admits")
+        let activeIDs = Set(store.allSessions.filter { $0.isVideoActive }.map { $0.id })
+        XCTAssertEqual(activeIDs, Set([ids[1], reopened]), "exactly cap=2 live; no overlap ever exceeded it")
+    }
+
+    /// An in-flight teardown of a NON-active (never video-activated) `.remoteGUI` pane must NOT gate the
+    /// cap: it was never holding a video stack, so `reconcile()` does not record it in
+    /// `tearingDownVideo`, and a same-tick reopen activates immediately even while its teardown is
+    /// parked. (The cap counts only stacks that were genuinely live.)
+    func testInFlightTeardownOfNonActiveVideoPaneDoesNotGate() async {
+        let (store, ids) = makeStoreWithRemoteGUILeaves(2, cap: 2)
+        let gate = FakeTeardownGate()
+        fake(store.handle(for: ids[0])).teardownGate = gate
+
+        // ids[0] is materialized IDLE — never activated, so it holds NO video stack.
+        XCTAssertFalse(store.handle(for: ids[0])!.isVideoActive)
+        XCTAssertTrue(store.activateVideo(ids[1]), "only ids[1] is live (1 of 2)")
+
+        // Close the idle ids[0]; its teardown parks on the gate.
+        store.closePane(ids[0])
+        XCTAssertNil(store.handle(for: ids[0]))
+
+        // Open a replacement. Because the closing pane was NEVER video-active, it is not counted in
+        // flight — so with only ids[1] live (1 of 2) the reopened pane admits right now.
+        store.split(ids[1], axis: .horizontal, kind: .remoteGUI)
+        let reopened = store.activeTab!.root.allLeafIDs().first { $0 != ids[1] }!
+        XCTAssertTrue(store.activateVideo(reopened),
+                      "an in-flight teardown of a NON-active pane does not occupy a cap slot")
+
+        gate.release()
+        await store.quiesce()
+        let activeIDs = Set(store.allSessions.filter { $0.isVideoActive }.map { $0.id })
+        XCTAssertEqual(activeIDs, Set([ids[1], reopened]))
+    }
+
+    /// `quiesce()` clears the in-flight video accounting defensively: after it returns, no
+    /// `.remoteGUI` stack can still be tearing down, so a fresh activation sees a fully-free cap (ITEM
+    /// #3). Proven by closing a live video pane, draining, and confirming a new pane admits up to the
+    /// full cap again with zero phantom in-flight slots stranded.
+    func testQuiesceClearsInFlightVideoAccounting() async {
+        let (store, ids) = makeStoreWithRemoteGUILeaves(2, cap: 1)   // cap=1 so any phantom slot would bite
+        let gate = FakeTeardownGate()
+        fake(store.handle(for: ids[0])).teardownGate = gate
+
+        XCTAssertTrue(store.activateVideo(ids[0]), "the single slot admits ids[0]")
+        XCTAssertFalse(store.activateVideo(ids[1]), "cap=1 saturated")
+
+        store.closePane(ids[0])     // ids[0] was active → recorded in tearingDownVideo, parked on the gate
+        XCTAssertFalse(store.activateVideo(ids[1]),
+                       "still gated — the closing pane's stack is in flight and counts against cap=1")
+
+        gate.release()
+        await store.quiesce()       // drains teardown AND defensively clears tearingDownVideo
+
+        // The single slot is genuinely free again — no stranded in-flight accounting.
+        XCTAssertTrue(store.activateVideo(ids[1]), "after quiesce the cap-1 slot is fully free")
     }
 }
