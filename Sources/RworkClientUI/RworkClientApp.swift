@@ -2,6 +2,9 @@
 import SwiftUI
 import RworkClient
 import RworkInspector
+#if os(iOS)
+import UIKit   // UIDevice.current.userInterfaceIdiom — the per-device live-video cap signal at init
+#endif
 
 /// The Rwork client app scene, shared by both Xcode app targets (ClientApp-macOS,
 /// ClientApp-iOS). The app targets reference this as their `@main` entry — see the
@@ -50,13 +53,26 @@ public struct RworkClientApp: App {
         // default file URL on both sides so a debounced write and the next launch's load agree.
         let isAutomation = Self.hasAutomationEnvironment()
         let persistence: WorkspacePersistence? = isAutomation ? nil : WorkspacePersistence()
+        // Per-device live-video ceiling (docs/22 §7, ITEM #5): the safe concurrent `.remoteGUI` count
+        // scales with the host's decode/compositing headroom. macOS → the mac tier; iOS resolves the
+        // pad-vs-phone tier from the idiom (the horizontal size class is not known yet at init, so a
+        // pad-in-slide-over still starts at the pad cap — the activation gate is what bites, and the
+        // view can re-tighten via VideoCapPolicy.cap(isMac:…) once it knows the size class).
+        #if os(macOS)
+        let liveVideoCap = VideoCapPolicy.cap(for: .mac)
+        #elseif os(iOS)
+        let isPad = UIDevice.current.userInterfaceIdiom == .pad
+        let liveVideoCap = VideoCapPolicy.cap(for: isPad ? .pad : .phone)
+        #else
+        let liveVideoCap = VideoCapPolicy.cap(for: .phone)
+        #endif
         let store = WorkspaceStore(
             restoring: persistence?.load(),   // nil in automation ⇒ bootstrap replaces it anyway
             makeSession: WorkspaceStore.liveMakeSession(
                 makeClient: { RworkClient() },
                 makeInspector: WorkspaceStore.liveMakeInspector
             ),
-            liveVideoCap: 2,
+            liveVideoCap: liveVideoCap,
             persistence: persistence
         )
         // Automation seams (docs/22 §7): only when the env vars are present do we let the bootstrap

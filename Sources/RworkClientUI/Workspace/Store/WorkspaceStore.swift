@@ -41,8 +41,9 @@ public final class WorkspaceStore {
     private let makeSession: @MainActor (PaneSpec) -> any PaneSessionHandle
 
     /// Maximum number of `.remoteGUI` panes that may hold a LIVE video stack at once (docs/22 §7 the
-    /// 2N-UDP / N-VTDecompression / N-CVDisplayLink ceiling). Injectable; default 2. (Not yet
-    /// per-device-class — see followups.)
+    /// 2N-UDP / N-VTDecompression / N-CVDisplayLink ceiling). Injectable; default 2. The app now resolves
+    /// it per device class via ``VideoCapPolicy`` (phone 1 / pad 2 / mac 3, ITEM #5); the store keeps the
+    /// plain `Int` shape and is agnostic to how the number was chosen.
     public let liveVideoCap: Int
 
     /// Where the value tree is persisted (docs/22 §6). Injectable so tests point at a temp dir and a
@@ -59,11 +60,22 @@ public final class WorkspaceStore {
     private var saveTask: Task<Void, Never>?
 
     /// A monotonic save-generation guard (mirrors the ``FocusGenerationGuard`` idiom). Each
-    /// `scheduleSave()` bumps it and captures the value; the task's trailing `saveTask = nil` clears
-    /// the handle ONLY if it is still the current generation — so a superseded (but already-past-sleep)
-    /// prior task can't nil out the newest handle and strand it uncancellable. Pure MainActor Int
-    /// bookkeeping (no new concurrency / Sendable surface).
-    private var saveGeneration = 0
+    /// `scheduleSave()` bumps it and captures the value; the debounced write re-checks it on a MainActor
+    /// hop BEFORE writing and skips if superseded (BUG-D), and the trailing `saveTask = nil` clears the
+    /// handle ONLY if it is still the current generation — so a superseded (but already-past-sleep) prior
+    /// task can neither clobber the file with a stale snapshot NOR nil out the newest handle and strand
+    /// it uncancellable. Pure MainActor Int bookkeeping (no new concurrency / Sendable surface).
+    /// `internal private(set)` so only the store bumps it, but the generation-guard logic is observable
+    /// to the `@testable` BUG-D test via ``isCurrentSaveGeneration(_:)``.
+    private(set) var saveGeneration = 0
+
+    /// The pure generation-guard predicate the debounced write consults before writing (BUG-D): a
+    /// captured `generation` is still current iff it equals the live ``saveGeneration``. Mirrors
+    /// `FocusGenerationGuard.isCurrent(_:)`. Factored out so the production write path and the test
+    /// assert the EXACT SAME logic (not a re-implementation). MainActor-isolated; pure read.
+    func isCurrentSaveGeneration(_ generation: Int) -> Bool {
+        saveGeneration == generation
+    }
 
     /// Suppresses the debounced save during construction (the initial `reconcile()` would otherwise
     /// re-write a just-loaded file with identical bytes). Flipped off once init completes.
@@ -82,6 +94,17 @@ public final class WorkspaceStore {
     private var teardownTasks: [Int: Task<Void, Never>] = [:]
     /// The next teardown-task id (monotonic, wraps harmlessly).
     private var nextTeardownID = 0
+
+    /// The ids of `.remoteGUI` panes whose video stack is STILL tearing down (orphaned by a reconcile,
+    /// removed from the registry, but their async `teardown()` — which stops the UDP / VTDecompression /
+    /// CVDisplayLink stack — has not yet completed). This is what protects the ``liveVideoCap`` ceiling
+    /// across a same-tick close+reopen (docs/22 §7, ITEM #3): a pane that is gone from the registry but
+    /// still holding its video resources must keep counting against the cap until those resources are
+    /// actually released. `reconcile()` inserts an orphan's id here (reading `isVideoActive` BEFORE
+    /// teardown nils it); the orphan's teardown task removes it after the `await`. ``activateVideo(_:)``
+    /// adds `tearingDownVideo.count` to the live count, and ``quiesce()`` defensively clears it. Every
+    /// site runs on `@MainActor`, serialized with the `teardownTasks` self-prune — no data race.
+    private var tearingDownVideo: Set<PaneID> = []
 
     /// The last layout the view solved, cached so geometric ``move(_:)`` can resolve a neighbour
     /// without the store knowing the view's size. `nil` until the view reports one (compact mode never
@@ -310,7 +333,14 @@ public final class WorkspaceStore {
         guard let handle = registry[id], handle.kind == .remoteGUI else { return false }
         if handle.isVideoActive { return true }
         let activeOthers = registry.values.filter { $0.kind == .remoteGUI && $0.isVideoActive && $0.id != id }.count
-        guard activeOthers < liveVideoCap else { return false }
+        // Count panes whose video stack is still TEARING DOWN against the cap too (ITEM #3): an orphan
+        // closed this same tick is already gone from the registry but its UDP / VTDecompression /
+        // CVDisplayLink stack is not released until its async teardown completes, so admitting a new
+        // pane before then would transiently overlap two live stacks and breach the resource ceiling.
+        // `tearingDownVideo` excludes `id` by construction (an in-flight-teardown id is not in the
+        // registry, so it can never equal a live pane's id).
+        let inFlight = tearingDownVideo.count
+        guard activeOthers + inFlight < liveVideoCap else { return false }
         handle.setVideoActive(true)
         return handle.isVideoActive
     }
@@ -364,14 +394,26 @@ public final class WorkspaceStore {
     /// removed synchronously); this is for callers that must observe the *cleanup* having finished —
     /// app shutdown, and the reconcile/teardown-ordering tests (docs/22 §8). Idempotent; after it
     /// returns, no teardown is pending.
+    ///
+    /// LOOPS to a fixpoint (BUG-J): a teardown task awaits on the main actor, so a `reconcile()` that
+    /// runs DURING one of these awaits (e.g. a mutation interleaved by the awaiting suspension) can
+    /// insert a brand-new teardown task into `teardownTasks` after we snapshot it. A single
+    /// snapshot-clear-await pass would drop that newcomer; instead we re-snapshot until the dict is
+    /// empty, so every task — including ones spawned mid-drain — is awaited. Each pass clears its own
+    /// snapshot's keys; a task that self-prunes after we cleared is a harmless no-op removeValue.
     public func quiesce() async {
-        let tasks = teardownTasks
-        teardownTasks.removeAll()
-        for task in tasks.values {
-            await task.value
+        while !teardownTasks.isEmpty {
+            let tasks = teardownTasks
+            teardownTasks.removeAll()
+            for task in tasks.values {
+                await task.value
+            }
         }
-        // A task that completes AFTER this snapshot tries to removeValue on the already-cleared dict —
-        // a harmless no-op, so quiesce remains idempotent and still blocks until completion.
+        // Defensive: after every teardown has completed, no `.remoteGUI` stack can still be tearing
+        // down, so the in-flight video accounting must be empty. Clear it so a dropped self-remove (a
+        // task whose `tearingDownVideo.remove` somehow did not run) can never strand a phantom slot
+        // against the cap (ITEM #3).
+        tearingDownVideo.removeAll()
     }
 
     // MARK: - Bootstrap from environment (automation seams)
@@ -444,12 +486,14 @@ public final class WorkspaceStore {
     /// A projection flip (compact ↔ regular) does NOT call this — it is a view-only change; the tree
     /// (hence the leaf set) is unchanged, so even if called it would be a no-op (docs/22 §4, §9.9).
     ///
-    /// NOTE — same-tick close+reopen and the video ceiling: because step-1 teardown is launched (not
-    /// awaited) before step-2 materialize, a same-tick close of one `.remoteGUI` pane and open of
-    /// another could transiently overlap their live video stacks while the first is still tearing down.
-    /// That ceiling protection is NOT yet provided here; it is tracked as a followup and requires both
-    /// routing video activation through ``activateVideo(_:)`` AND making admission aware of in-flight
-    /// orphan teardown (e.g. counting still-tearing-down `.remoteGUI` sessions). reconcile staying
+    /// NOTE — same-tick close+reopen and the video ceiling (ITEM #3): because step-1 teardown is
+    /// launched (not awaited) before step-2 materialize, a same-tick close of one `.remoteGUI` pane and
+    /// open of another would transiently overlap their live video stacks while the first is still
+    /// tearing down. The ceiling IS now protected without making reconcile `async`: step-1 records an
+    /// orphan whose `isVideoActive` was true into `tearingDownVideo` (reading the flag BEFORE teardown
+    /// nils it), the orphan's teardown task removes it after the `await`, and ``activateVideo(_:)``
+    /// counts `tearingDownVideo.count` as occupied slots — so a new pane cannot be admitted until the
+    /// orphan's UDP / VTDecompression / CVDisplayLink stack is actually released. reconcile staying
     /// synchronous is deliberate — it is called inline by every mutation method and from `init` — so
     /// awaiting teardown before materialize would ripple `async` through the whole mutation surface.
     private func reconcile() {
@@ -462,6 +506,12 @@ public final class WorkspaceStore {
         let orphans = registry.filter { !leafSet.contains($0.key) }.map(\.value)
         for orphan in orphans {
             registry.removeValue(forKey: orphan.id)
+            // Hold the cap slot for an orphan that is STILL holding a live video stack (ITEM #3). Read
+            // `isVideoActive` NOW, before the async teardown nils it, and record the id so
+            // `activateVideo` keeps counting it until its teardown task actually releases the resources.
+            if orphan.kind == .remoteGUI && orphan.isVideoActive {
+                tearingDownVideo.insert(orphan.id)
+            }
         }
         if !orphans.isEmpty {
             // Teardown in a dedicated task, in registry-removal order, each awaited inside the task (no
@@ -475,6 +525,10 @@ public final class WorkspaceStore {
             teardownTasks[id] = Task { @MainActor in
                 for orphan in orphans {
                     await orphan.teardown()
+                    // The orphan's video resources are now released — stop counting it against the cap
+                    // (ITEM #3). Serialized on the main actor with `activateVideo`'s read, so a
+                    // same-tick reopen sees the slot freed only after the real release.
+                    self.tearingDownVideo.remove(orphan.id)
                 }
                 self.teardownTasks.removeValue(forKey: id)
             }
@@ -527,6 +581,14 @@ public final class WorkspaceStore {
     /// superseded task's `Task.sleep` throws `CancellationError`, which the `try?` swallows before any
     /// write. A no-op until `savingEnabled` (set after the init reconcile) and when no `persistence`
     /// is configured (the fake/test seam never touches disk).
+    ///
+    /// BUG-D — the write re-checks `saveGeneration` on a MainActor hop IMMEDIATELY before writing and
+    /// SKIPS if superseded. `Task.cancel()` does not interrupt a task already PAST its sleep and inside
+    /// `Self.write`, so without this guard a debounced write could race `saveImmediately()` (or a newer
+    /// debounced write) and let a stale snapshot win the last atomic rename. The generation re-check
+    /// makes the supersession decision on the main actor — where every `saveGeneration` bump happens —
+    /// so `saveImmediately()` (which bumps the generation under cancel) reliably wins: any in-flight
+    /// debounced task whose generation no longer matches simply returns without writing.
     private func scheduleSave() {
         guard savingEnabled, let persistence else { return }
         saveTask?.cancel()
@@ -541,6 +603,14 @@ public final class WorkspaceStore {
             } catch {
                 return   // superseded by a newer mutation (cancelled) — that one will write.
             }
+            // Re-check supersession ON THE MAIN ACTOR right before writing (BUG-D): if a newer
+            // scheduleSave bumped the generation, or saveImmediately() bumped+cancelled, this stale
+            // task must not write — the winner already did / will. Decided on the main actor so it is
+            // serialized with every saveGeneration mutation; no stale snapshot can win the rename.
+            let stillCurrent = await MainActor.run { [weak self] in
+                self?.isCurrentSaveGeneration(generation) ?? false
+            }
+            guard stillCurrent else { return }
             // The encode + atomic write is pure value IO; run it off the main actor so a large tree
             // doesn't hitch the UI. A failed save keeps the previous good file (best-effort).
             await Self.write(snapshot, to: persistence)

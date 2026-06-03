@@ -459,4 +459,117 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
                            "orphan a\(i) recorded only adopt-then-teardown (no spurious lifecycle calls)")
         }
     }
+
+    // MARK: - in-flight video-cap accounting does not perturb the registry invariant (ITEM #3)
+
+    /// The ITEM #3 in-flight-teardown video accounting (`tearingDownVideo`) is a SEPARATE bookkeeping
+    /// set from the registry: closing a live `.remoteGUI` pane removes its key from the registry
+    /// SYNCHRONOUSLY (the invariant `registry.keys == allLeafIDs()` holds the instant `closePane`
+    /// returns) even while its teardown — and hence its in-flight cap slot — is still parked. The cap
+    /// accounting must never leak into or perturb the registry/leaf-set invariant.
+    func testInFlightVideoAccountingDoesNotPerturbRegistryInvariant() async {
+        // A single remoteGUI tab grown to two leaves (no stray terminal tab to muddy the invariant).
+        let rootID = PaneID()
+        let spec = PaneSpec(kind: .remoteGUI, title: "Remote window")
+        let tab = Tab(name: "Remote window", root: .leaf(rootID, spec), focusedPane: rootID)
+        let store = makeStore(restoring: Workspace(tabs: [tab], activeTabID: tab.id))
+        let first = store.activeTab!.root.allLeafIDs()[0]
+        store.split(first, axis: .horizontal, kind: .remoteGUI)
+        let ids = store.activeTab!.root.allLeafIDs()
+        XCTAssertEqual(ids.count, 2)
+        assertInvariant(store, "two remoteGUI leaves")
+
+        // Park the close-victim's teardown so its in-flight cap slot is held across the assertions.
+        let gate = FakeTeardownGate()
+        fake(store, ids[0])!.teardownGate = gate
+        XCTAssertTrue(store.activateVideo(ids[0]), "ids[0] holds a live video stack")
+
+        store.closePane(ids[0])
+
+        // The registry invariant holds SYNCHRONOUSLY even though ids[0]'s teardown (and its in-flight
+        // cap slot) is still parked: the registry excludes the orphan the instant closePane returns.
+        XCTAssertNil(store.handle(for: ids[0]), "orphan removed from the registry synchronously")
+        assertInvariant(store, "registry invariant holds while teardown (and its cap slot) is in flight")
+
+        // Release + drain: the invariant still holds, and now no teardown / in-flight slot is pending.
+        gate.release()
+        await store.quiesce()
+        assertInvariant(store, "registry invariant holds after the in-flight teardown completes")
+        XCTAssertEqual(fake(store, ids[1])!.teardownCount, 0, "the survivor was never torn down")
+    }
+
+    // MARK: - quiesce awaits a teardown task spawned DURING its own drain (BUG-J)
+
+    /// BUG-J: a teardown task spawned by a `reconcile()` that runs WHILE `quiesce()` is awaiting an
+    /// earlier teardown must still be awaited — `quiesce()` loops to a fixpoint rather than snapshotting
+    /// once. We park the first close's teardown on a gate, start `quiesce()` (it suspends awaiting that
+    /// task), then — while it is suspended — close a SECOND pane (spawning a new teardown task), release
+    /// the gate, and confirm BOTH teardowns completed once `quiesce()` returns. A single-snapshot drain
+    /// would have dropped the second task.
+    func testQuiesceAwaitsTeardownSpawnedDuringDrain() async {
+        // Three terminal leaves in one tab so we can close two of them independently and keep a survivor.
+        let a0 = PaneID(), a1 = PaneID(), a2 = PaneID()
+        let tab = Tab(
+            name: "A",
+            root: .split(.horizontal,
+                         children: [.leaf(a0, PaneSpec(kind: .terminal, title: "a0")),
+                                    .leaf(a1, PaneSpec(kind: .terminal, title: "a1")),
+                                    .leaf(a2, PaneSpec(kind: .terminal, title: "a2"))],
+                         fractions: [1.0 / 3, 1.0 / 3, 1.0 / 3]),
+            focusedPane: a0
+        )
+        let store = makeStore(restoring: Workspace(tabs: [tab], activeTabID: tab.id))
+        let gate0 = FakeTeardownGate()
+        let h0 = fake(store, a0)!
+        let h1 = fake(store, a1)!
+        h0.teardownGate = gate0    // the first close's teardown will park here
+
+        // First close → spawns teardown task #1, which parks on gate0.
+        store.closePane(a0)
+        XCTAssertNil(store.handle(for: a0))
+
+        // Start quiesce; it will suspend awaiting task #1 (parked on gate0). Run it as a child task so
+        // the test body can interleave a second close while quiesce is mid-drain.
+        let quiesced = Task { @MainActor in await store.quiesce() }
+
+        // Wait until task #1's teardown body has actually entered (and parked on) the gate, so quiesce is
+        // genuinely suspended mid-drain before we spawn the second teardown (no fixed-sleep race).
+        let entered = await waitUntil { gate0.waiterCount == 1 }
+        XCTAssertTrue(entered, "the first teardown parked on the gate — quiesce is suspended mid-drain")
+
+        // While quiesce is suspended, close a SECOND pane → spawns teardown task #2 (no gate → it will
+        // complete immediately once it runs). With a single-snapshot drain this task would be dropped.
+        store.closePane(a1)
+        XCTAssertNil(store.handle(for: a1))
+
+        // Release the first teardown; quiesce's loop must now re-check teardownTasks, find task #2, and
+        // await it too before returning.
+        gate0.release()
+        await quiesced.value
+
+        XCTAssertEqual(h0.teardownCount, 1, "the gated first teardown ran exactly once")
+        XCTAssertEqual(h1.teardownCount, 1,
+                       "the teardown spawned DURING quiesce's drain was still awaited (BUG-J fixpoint loop)")
+        // After the fixpoint loop, nothing is pending: a second quiesce is a no-op.
+        await store.quiesce()
+        XCTAssertEqual(h0.teardownCount, 1)
+        XCTAssertEqual(h1.teardownCount, 1)
+        XCTAssertEqual(fake(store, a2)?.teardownCount, 0, "the survivor was never torn down")
+    }
+
+    // MARK: - Helpers
+
+    /// Polls a `@MainActor` predicate until true or the deadline passes (avoids fixed sleeps). Mirrors
+    /// the `waitUntil` used by `ScenePhaseFanOutTests` / the connection tests.
+    private func waitUntil(
+        timeout: Duration = .seconds(5),
+        _ predicate: @MainActor () -> Bool
+    ) async -> Bool {
+        let start = ContinuousClock.now
+        while ContinuousClock.now - start < timeout {
+            if predicate() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return predicate()
+    }
 }
