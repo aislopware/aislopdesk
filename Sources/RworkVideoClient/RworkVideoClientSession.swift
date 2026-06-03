@@ -89,9 +89,13 @@ public actor RworkVideoClientSession {
     /// a layout/resize re-places the overlay without waiting for the next cursor packet.
     private var lastCursorUpdate: CursorUpdate?
 
-    /// Recovery bookkeeping: when we last sent an LTR-refresh request (host time
-    /// seconds), cleared once a keyframe decodes. Polled by ``shouldEscalateToIDR()``.
-    private var lastRecoveryRequestTime: Double?
+    /// Recovery bookkeeping: tracks the time of the FIRST outstanding LTR-refresh
+    /// request in the current recovery episode (host time seconds), cleared once a
+    /// keyframe decodes. Polled by ``shouldEscalateToIDR()``. The "first request"
+    /// (not "last request") semantics are the BUG-H fix: under sustained loss the old
+    /// code reset this on EVERY dropped frame, so 2·RTT never elapsed and the
+    /// guaranteed-recovery forced IDR never fired (``LTREscalationTracker``).
+    private var escalation = LTREscalationTracker()
     /// Smoothed RTT estimate gating the 2·RTT IDR-escalation timeout. 50 ms default
     /// until ``updateRTTEstimate(_:)`` feeds a measurement.
     private var rttEstimate: TimeInterval = 0.05
@@ -199,12 +203,11 @@ public actor RworkVideoClientSession {
     }
 
     /// Whether a forced-IDR escalation is due: an LTR refresh is already outstanding
-    /// (`lastRecoveryRequestTime` set, not yet cleared by a keyframe) and at least
-    /// 2·RTT has elapsed since it (``RecoveryPolicy/shouldEscalateToIDR``).
+    /// (the recovery episode is armed, not yet cleared by a keyframe) and at least
+    /// 2·RTT has elapsed since the FIRST request of the episode
+    /// (``LTREscalationTracker/shouldEscalate(now:rtt:policy:)``).
     private func shouldEscalateToIDR() -> Bool {
-        guard let requestedAt = lastRecoveryRequestTime else { return false }
-        let elapsed = FramePacer.currentHostTimeSeconds() - requestedAt
-        return recoveryPolicy.shouldEscalateToIDR(elapsedSinceRequest: elapsed, rtt: rttEstimate)
+        escalation.shouldEscalate(now: FramePacer.currentHostTimeSeconds(), rtt: rttEstimate, policy: recoveryPolicy)
     }
 
     /// Updates the smoothed RTT estimate that gates the IDR-escalation timeout. Fed by
@@ -226,8 +229,9 @@ public actor RworkVideoClientSession {
             if dbgDecodeCount == 1 || dbgDecodeCount % 15 == 0 {
                 dbg("DECODED frame #\(dbgDecodeCount) (keyframe=\(frame.keyframe)) → submitted to pacer/render")
             }
-            // A successful keyframe clears any in-flight recovery wait.
-            if frame.keyframe { lastRecoveryRequestTime = nil }
+            // A successful keyframe ends the recovery episode and disarms the clock,
+            // so the next loss starts a fresh 2·RTT escalation window.
+            if frame.keyframe { escalation.keyframeDecoded() }
         } catch VideoDecoderError.awaitingKeyframe {
             // A delta arrived before the first IDR — drop it and ask for a keyframe.
             dbg("decode: awaiting keyframe (delta dropped) → requesting IDR")
@@ -344,12 +348,18 @@ public actor RworkVideoClientSession {
         // RecoveryMessage (type bytes 1/2/3) as a phantom InputEvent.
         let message = recoveryPolicy.initialRequest(lostFrom: lostFrameID, lostTo: lostFrameID)
         transport.send(message.encode(), on: .recovery)
-        lastRecoveryRequestTime = FramePacer.currentHostTimeSeconds()
+        // Arm the escalation clock on the FIRST request of the episode only; a request
+        // sent for each subsequent dropped frame does NOT move it (BUG-H fix), so the
+        // 2·RTT window measured from the first request can actually elapse.
+        escalation.noteRequestSent(now: FramePacer.currentHostTimeSeconds())
     }
 
     private func requestIDR() {
         transport.send(RecoveryMessage.requestIDR.encode(), on: .recovery)
-        lastRecoveryRequestTime = FramePacer.currentHostTimeSeconds()
+        // A forced IDR is still a recovery request: arm the clock if this is the first
+        // request of the episode (e.g. an awaiting-keyframe delta drop), but keep the
+        // original first-request time if recovery was already outstanding.
+        escalation.noteRequestSent(now: FramePacer.currentHostTimeSeconds())
     }
 
     // MARK: Effects
@@ -387,6 +397,55 @@ public actor RworkVideoClientSession {
         guard !data.isEmpty,
               let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+}
+
+/// Tracks the **first** outstanding LTR-refresh request so the 2·RTT IDR escalation
+/// can actually fire under sustained loss (doc 17 §3.6). Pure value type — no
+/// transport / wall-clock; the actor passes `now` in — so the escalation timing is
+/// unit-testable without a socket or `VTDecompressionSession`.
+///
+/// The bug this fixes (BUG-H): the client detects loss once per dropped frame and, on
+/// every detection, was resetting the "when did I last ask for recovery" clock
+/// (`lastRecoveryRequestTime = now` in `requestRecovery`). Under sustained loss that
+/// clock never reached 2·RTT, so the guaranteed-recovery forced IDR never fired and
+/// the stream could starve forever on a degraded path.
+///
+/// The fix: the recovery clock is the time of the FIRST request in the current
+/// recovery episode. It is armed only when entering recovery (no request outstanding),
+/// NOT rearmed on each subsequent loss, and cleared only when a keyframe decodes and
+/// ends the episode.
+public struct LTREscalationTracker: Sendable, Equatable {
+    /// Host time (seconds) of the first request in the current recovery episode, or
+    /// `nil` when no recovery is outstanding. Cleared by ``keyframeDecoded()``.
+    public private(set) var firstRequestTime: TimeInterval?
+
+    public init() {}
+
+    /// Whether a recovery episode is currently outstanding (a request was sent and no
+    /// keyframe has cleared it yet).
+    public var hasOutstandingRequest: Bool { firstRequestTime != nil }
+
+    /// Records that a recovery request is being sent at host time `now`. Arms the clock
+    /// ONLY when entering recovery (no request outstanding); a request sent while one is
+    /// already outstanding does NOT move the clock — that is the BUG-H fix (the old code
+    /// reset the clock on every dropped frame, so 2·RTT never elapsed).
+    public mutating func noteRequestSent(now: TimeInterval) {
+        if firstRequestTime == nil { firstRequestTime = now }
+    }
+
+    /// Whether to escalate to a forced IDR right now: a request is outstanding and at
+    /// least `2·RTT` (per `policy`) has elapsed since the FIRST request. Pure — does not
+    /// mutate; the caller decides whether to act.
+    public func shouldEscalate(now: TimeInterval, rtt: TimeInterval, policy: RecoveryPolicy) -> Bool {
+        guard let firstRequestTime else { return false }
+        return policy.shouldEscalateToIDR(elapsedSinceRequest: now - firstRequestTime, rtt: rtt)
+    }
+
+    /// A keyframe (LTR refresh or forced IDR) decoded — the recovery episode is over,
+    /// so disarm the clock. The next loss starts a fresh episode and re-arms it.
+    public mutating func keyframeDecoded() {
+        firstRequestTime = nil
     }
 }
 #endif

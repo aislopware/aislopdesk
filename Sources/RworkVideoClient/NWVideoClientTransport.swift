@@ -33,6 +33,20 @@ public final class NWVideoClientTransport: VideoClientTransport, @unchecked Send
     private var mediaConn: NWConnection?
     private var cursorConn: NWConnection?
 
+    /// Per-connection liveness, flipped to `false` by the connection's
+    /// `stateUpdateHandler` when it reaches `.failed`/`.cancelled`. The receive loops
+    /// consult it via ``UDPReceiveLoopPolicy`` so a TRANSIENT per-datagram receive error
+    /// (e.g. ICMP port-unreachable surfaced as ECONNREFUSED while the connection stays
+    /// `.ready`) re-arms the loop instead of ending it forever (BUG-L). A truly dead
+    /// socket flips the flag, which stops the loop. Reference type so the closure and the
+    /// state handler share one cell; `@unchecked Sendable` via the internal `NSLock`.
+    private final class Liveness: @unchecked Sendable {
+        private let lock = NSLock()
+        private var alive = true
+        var isAlive: Bool { lock.withLock { alive } }
+        func markDead() { lock.withLock { alive = false } }
+    }
+
     /// - Parameters:
     ///   - host: the host's NetBird-routable address (or hostname).
     ///   - mediaPort: the host media UDP port (control/video/geometry/input).
@@ -54,10 +68,29 @@ public final class NWVideoClientTransport: VideoClientTransport, @unchecked Send
         let cursor = NWConnection(to: cursorEndpoint, using: params)
         lock.withLock { mediaConn = media; cursorConn = cursor }
 
+        // One liveness cell per connection: its state handler flips it dead on
+        // `.failed`/`.cancelled` so the receive loops stop only on a genuinely dead
+        // socket, not on a transient per-datagram error (BUG-L). Installed BEFORE
+        // `start(...)` so no early fatal transition is missed.
+        let mediaLive = Liveness()
+        let cursorLive = Liveness()
+        media.stateUpdateHandler = { state in
+            switch state {
+            case .failed, .cancelled: mediaLive.markDead()
+            default: break
+            }
+        }
+        cursor.stateUpdateHandler = { state in
+            switch state {
+            case .failed, .cancelled: cursorLive.markDead()
+            default: break
+            }
+        }
+
         media.start(queue: queue)
         cursor.start(queue: queue)
-        receiveMedia(on: media, onMedia: onMedia)
-        receiveCursor(on: cursor, onCursor: onCursor)
+        receiveMedia(on: media, live: mediaLive, onMedia: onMedia)
+        receiveCursor(on: cursor, live: cursorLive, onCursor: onCursor)
 
         // PRIME the cursor side-channel. The host binds the cursor port with an `NWListener`,
         // which only ACCEPTS (and pins) a flow once an inbound datagram arrives from us — but
@@ -76,7 +109,7 @@ public final class NWVideoClientTransport: VideoClientTransport, @unchecked Send
         log.info("NWVideoClientTransport connected media=\(String(describing: self.mediaEndpoint)) cursor=\(String(describing: self.cursorEndpoint))")
     }
 
-    private func receiveMedia(on conn: NWConnection, onMedia: @escaping @Sendable (VideoChannel, Data) -> Void) {
+    private func receiveMedia(on conn: NWConnection, live: Liveness, onMedia: @escaping @Sendable (VideoChannel, Data) -> Void) {
         conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, data.count >= 1 {
@@ -86,23 +119,29 @@ public final class NWVideoClientTransport: VideoClientTransport, @unchecked Send
                 }
             }
             // UDP: `receiveMessage` delivers EVERY datagram with `isComplete == true` (each
-            // datagram IS a complete message), so re-arming only on `!isComplete` stops the
-            // loop dead after the FIRST datagram — we'd get the helloAck and then never one
-            // video fragment (the window stays blank). Keep receiving as long as there is no
-            // error; the loop ends when the connection errors or is cancelled.
-            if error == nil {
-                self.receiveMedia(on: conn, onMedia: onMedia)
+            // datagram IS a complete message), so re-arming only on `!isComplete` would stop
+            // the loop dead after the FIRST datagram. We ALSO must not stop on a transient
+            // per-datagram error: an ICMP port-unreachable (ECONNREFUSED) surfaces here as a
+            // receive error while the connection stays `.ready`, and the old `if error == nil`
+            // ended the loop forever — the client silently stopped receiving all video
+            // (BUG-L). Re-arm unless the connection is genuinely dead (its state handler
+            // flipped `live`); a dead socket is stopped by that path, not by the error here.
+            if let error { self.log.error("media receive error (transient, re-arming if alive): \(String(describing: error))") }
+            if UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: live.isAlive) {
+                self.receiveMedia(on: conn, live: live, onMedia: onMedia)
             }
         }
     }
 
-    private func receiveCursor(on conn: NWConnection, onCursor: @escaping @Sendable (Data) -> Void) {
+    private func receiveCursor(on conn: NWConnection, live: Liveness, onCursor: @escaping @Sendable (Data) -> Void) {
         conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, !data.isEmpty { onCursor(data) }
-            // Same UDP re-arm fix as receiveMedia (isComplete is always true per datagram).
-            if error == nil {
-                self.receiveCursor(on: conn, onCursor: onCursor)
+            // Same transient-error survival as receiveMedia (BUG-L): re-arm on a per-datagram
+            // error, stop only when the connection's state handler marks it dead.
+            if let error { self.log.error("cursor receive error (transient, re-arming if alive): \(String(describing: error))") }
+            if UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: live.isAlive) {
+                self.receiveCursor(on: conn, live: live, onCursor: onCursor)
             }
         }
     }
@@ -126,6 +165,25 @@ public final class NWVideoClientTransport: VideoClientTransport, @unchecked Send
             mediaConn?.cancel(); mediaConn = nil
             cursorConn?.cancel(); cursorConn = nil
         }
+    }
+}
+
+/// Pure re-arm decision for a UDP `receiveMessage` loop (BUG-L).
+///
+/// The receive loop must keep itself armed across TRANSIENT per-datagram errors (an
+/// ICMP port-unreachable surfaces as a receive error even while the `NWConnection`
+/// stays `.ready`) and stop ONLY when the connection is genuinely dead. The liveness
+/// signal comes from the connection's `stateUpdateHandler` (`.failed`/`.cancelled`),
+/// not from the per-receive error — so the decision is purely "is the connection still
+/// alive?", which is unit-testable without a socket. (The host's
+/// `NWVideoDatagramTransport` carries its own identical copy: the two transports live
+/// in separate modules and each owns its policy, the wire/behaviour contract being the
+/// agreement rather than a shared Swift type.)
+public enum UDPReceiveLoopPolicy {
+    /// Re-arm the receive loop iff the connection is still alive. A per-datagram error
+    /// does NOT stop the loop; only a dead connection does.
+    public static func shouldRearm(connectionIsAlive: Bool) -> Bool {
+        connectionIsAlive
     }
 }
 #endif
