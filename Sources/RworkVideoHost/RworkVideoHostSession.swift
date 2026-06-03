@@ -280,14 +280,31 @@ public actor RworkVideoHostSession {
     }
 
     private func teardownLiveComponents() async {
-        await capturer?.stop()
-        cursorSampler?.stop()
-        geometryWatcher?.stop()
-        capturer = nil
-        encoder = nil
-        cursorSampler = nil
-        geometryWatcher = nil
-        injector = nil
+        // Compare-and-clear (race guard, F2). `#8` made `bye → .listening` re-armable, so a
+        // bye's stopCapture (this teardown) can now overlap a reconnect hello's startCapture:
+        // `await capturer?.stop()` (a slow SCStream stopCapture) is a suspension point across
+        // which a newer `startLiveComponents` can install FRESH capturer/encoder/etc. Snapshot
+        // the instances this teardown owns at entry, stop the slow source, then clear each ref
+        // ONLY if it is still the one we snapshotted — a stale teardown that resumes after a
+        // newer start must not nil the new components (which would wedge the actor
+        // streaming-but-dead: mediaFlowing true per SM, but every live component nil → no
+        // frames ever). The synchronous `stop()`s are safe to call on the snapshots; only the
+        // ref-clearing is gated on identity.
+        let staleCapturer = capturer
+        let staleEncoder = encoder
+        let staleCursorSampler = cursorSampler
+        let staleGeometryWatcher = geometryWatcher
+        let staleInjector = injector
+
+        await staleCapturer?.stop()
+        staleCursorSampler?.stop()
+        staleGeometryWatcher?.stop()
+
+        if capturer === staleCapturer { capturer = nil }
+        if encoder === staleEncoder { encoder = nil }
+        if cursorSampler === staleCursorSampler { cursorSampler = nil }
+        if geometryWatcher === staleGeometryWatcher { geometryWatcher = nil }
+        if injector === staleInjector { injector = nil }
     }
 
     // MARK: Component callbacks
