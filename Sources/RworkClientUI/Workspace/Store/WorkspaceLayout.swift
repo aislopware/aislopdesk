@@ -18,6 +18,15 @@ public enum WorkspaceLayout {
     /// PRIMARY signal is `horizontalSizeClass` (the first term below), independent of this width gate.
     public static let compactWidthThreshold: CGFloat = 460
 
+    /// The width below which a regular layout collapses to compact when the breakpoint is measured
+    /// against the OUTER WINDOW rather than the detail column (the macOS path — ITEM #6). The whole
+    /// window is the right signal there: the detail GeometryReader can transiently report a half-laid
+    /// NavigationSplitView width during a resize, so keying on `view.window?.frame.width` is steadier.
+    /// Set just below the 720pt macOS minimum-window floor (`minWidth: 720` in `WorkspaceRootView`) so
+    /// the floor window resolves REGULAR and only a genuinely sub-floor window (a future
+    /// smaller-min platform, or a transient pre-constraint frame) falls back to compact.
+    public static let compactWindowWidthThreshold: CGFloat = 680
+
     /// Whether to use the compact projection.
     ///
     /// - Parameters:
@@ -30,6 +39,29 @@ public enum WorkspaceLayout {
     ///   the macOS / narrow-window fallback.
     public static func isCompact(horizontalSizeClassCompact: Bool, width: CGFloat) -> Bool {
         horizontalSizeClassCompact || width < compactWidthThreshold
+    }
+
+    /// The OUTER-WINDOW-aware overload (ITEM #6): resolve the breakpoint against the whole window's
+    /// width when it is known (macOS), falling back to the detail-column width when it is not.
+    ///
+    /// `horizontalSizeClass` stays the PRIMARY signal (iOS keeps its size-class-driven decision
+    /// unchanged — iOS passes `windowWidth: nil`, so this reduces to the detail-width gate against the
+    /// window threshold only when the size class is regular). On macOS — no size class — the window
+    /// width is the steadier geometry: the detail GeometryReader can momentarily report a partially
+    /// laid-out width mid-resize, while the `NSWindow` frame is authoritative.
+    ///
+    /// - Parameters:
+    ///   - horizontalSizeClassCompact: as above — the primary, short-circuiting signal.
+    ///   - detailWidth: the detail GeometryReader width (the fallback geometry).
+    ///   - windowWidth: the outer window's width when measurable (macOS), else `nil`.
+    /// - Returns: compact iff the size class is compact OR the resolved width
+    ///   (`windowWidth ?? detailWidth`) is below ``compactWindowWidthThreshold``.
+    public static func isCompact(
+        horizontalSizeClassCompact: Bool,
+        detailWidth: CGFloat,
+        windowWidth: CGFloat?
+    ) -> Bool {
+        horizontalSizeClassCompact || (windowWidth ?? detailWidth) < compactWindowWidthThreshold
     }
 }
 
