@@ -47,7 +47,19 @@ public struct VideoSessionStateMachine: Sendable {
         case startCapture(windowID: UInt32, width: UInt16, height: UInt16)
         /// Tear down capture + encode.
         case stopCapture
+        /// Re-size the LIVE capture/encode of the streaming window to the clamped
+        /// dimensions for the request carrying `epoch`. The actor performs the AX
+        /// resize + `SCStream.updateConfiguration` + encoder reconfigure (a later
+        /// hardware-gated stage) and replies with `resizeAck`. Does NOT mint a new
+        /// streamID — the session is the same, only the capture geometry changes.
+        case resizeCapture(width: UInt16, height: UInt16, epoch: UInt32)
     }
+
+    /// The highest resize epoch already APPLIED for the current streaming session, so a
+    /// stale/duplicate `resizeRequest` (UDP may reorder/duplicate) is dropped. Reset
+    /// implicitly per session via ``SizeNegotiation/isStaleEpoch(_:lastApplied:)``;
+    /// 0 ⇒ none applied yet (the first request, epoch ≥ 1, always wins).
+    public private(set) var lastResizeEpoch: UInt32 = 0
 
     /// `start()` was called: bind sockets, wait for the client hello.
     public mutating func start() -> [Effect] {
@@ -66,10 +78,17 @@ public struct VideoSessionStateMachine: Sendable {
     ///   - resolveCaptureSize: maps the client viewport → the capture size the host
     ///     will actually use (the actor clamps to the real window; in tests this is
     ///     an identity-ish closure). Returning `nil` rejects the session.
+    ///   - resolveResizeSize: maps an in-session `resizeRequest`'s desired size (for the
+    ///     streaming `windowID`) → the clamped capture size the host will adopt (the actor
+    ///     runs ``SizeNegotiation/clamp(desired:min:max:)`` against the live window
+    ///     min/max). Returning `nil` rejects the resize (window gone / out of policy), so
+    ///     capture stays at its current size. Defaulted so the existing hello/bye call
+    ///     sites are unchanged.
     public mutating func handleControl(
         _ message: VideoControlMessage,
         windowBoundsCG: VideoRect,
-        resolveCaptureSize: (_ requestedWindowID: UInt32, _ viewport: VideoSize) -> (UInt16, UInt16)?
+        resolveCaptureSize: (_ requestedWindowID: UInt32, _ viewport: VideoSize) -> (UInt16, UInt16)?,
+        resolveResizeSize: (_ windowID: UInt32, _ desired: VideoSize) -> (UInt16, UInt16)? = { _, _ in nil }
     ) -> [Effect] {
         switch message {
         case .hello(let version, let requestedWindowID, let viewport):
@@ -112,8 +131,26 @@ public struct VideoSessionStateMachine: Sendable {
             guard state == .streaming || state == .listening else { return [] }
             state = .listening
             return wasStreaming ? [.stopCapture] : []
-        case .helloAck:
-            // Host never receives a helloAck.
+        case .resizeRequest(let desired, let epoch):
+            // In-session resize: accept ONLY while streaming. A request that arrives while
+            // listening/stopped (no live capture) is ignored — there is nothing to re-size.
+            // A stale/dup epoch (≤ the last applied) is dropped so a UDP reorder/retransmit
+            // cannot shrink-then-grow the capture out of order; a burst coalesces to the
+            // highest-epoch (settled) request.
+            guard state == .streaming else { return [] }
+            guard !SizeNegotiation.isStaleEpoch(epoch, lastApplied: lastResizeEpoch) else { return [] }
+            // The closure clamps `desired` against the LIVE window (min/max) for the
+            // session's `windowID`; `nil` ⇒ wrong/gone window or out-of-policy → reject
+            // (capture stays put, epoch NOT advanced so a later valid request still wins).
+            guard let (w, h) = resolveResizeSize(windowID, desired) else { return [] }
+            lastResizeEpoch = epoch
+            captureWidth = w
+            captureHeight = h
+            // Same session (same streamID, same window) — only the capture geometry
+            // changes. The actor performs the live resize and sends the resizeAck.
+            return [.resizeCapture(width: w, height: h, epoch: epoch)]
+        case .helloAck, .resizeAck:
+            // Host never receives a helloAck/resizeAck — defensive no-op.
             return []
         }
     }
@@ -130,6 +167,48 @@ public struct VideoSessionStateMachine: Sendable {
     public var mediaFlowing: Bool { state == .streaming }
 
     private var lastStreamID: UInt32 = 0
+}
+
+/// Pure host-side size negotiation for the in-session resize feature (the platform-free
+/// mirror of the `resolveCaptureSize` clamp in `RworkVideoHostSession`): turns a client
+/// `resizeRequest`'s desired size into the UInt16 capture dimensions the host will adopt,
+/// clamped to the host's allowed `min`/`max` window size and rounded to a UInt16-safe int
+/// that is NEVER zero (a zero-dimension SCStream/encoder config is invalid). No
+/// ScreenCaptureKit / AX — exactly the discipline of ``VideoSessionStateMachine``, so the
+/// clamp + epoch ordering are unit-testable in isolation.
+public enum SizeNegotiation {
+    /// Clamps `desired` into `[min, max]` per axis and rounds to a UInt16-safe, non-zero
+    /// integer. Identity (within rounding) when `desired` is already inside the bounds.
+    ///
+    /// Mirrors the actor's hello clamp (`UInt16(max(1, min(Double(UInt16.max), v.rounded())))`)
+    /// but bounded by the host's min/max policy rather than a single window size. The min
+    /// itself is floored at 1 and the max ceilinged at `UInt16.max` so a degenerate
+    /// (zero / out-of-range) policy can never yield 0 or overflow.
+    public static func clamp(desired: VideoSize, min minSize: VideoSize, max maxSize: VideoSize) -> (UInt16, UInt16) {
+        (clampAxis(desired.width, min: minSize.width, max: maxSize.width),
+         clampAxis(desired.height, min: minSize.height, max: maxSize.height))
+    }
+
+    private static func clampAxis(_ value: Double, min lo: Double, max hi: Double) -> UInt16 {
+        // Floor the lower bound at 1 and ceiling the upper at UInt16.max, then order them
+        // (a swapped/degenerate policy must still clamp into a valid window).
+        let loC = Swift.max(1.0, Swift.min(lo.rounded(), Double(UInt16.max)))
+        let hiC = Swift.max(1.0, Swift.min(hi.rounded(), Double(UInt16.max)))
+        let lower = Swift.min(loC, hiC)
+        let upper = Swift.max(loC, hiC)
+        // NaN/non-finite desired collapses to the lower bound (never 0, never a trap).
+        let v = value.isFinite ? value.rounded() : lower
+        let clamped = Swift.min(Swift.max(v, lower), upper)
+        return UInt16(clamped)
+    }
+
+    /// Whether `epoch` is stale relative to the last APPLIED epoch — a value `<=`
+    /// `lastApplied` (a duplicate or out-of-order/older request) must be ignored so a UDP
+    /// reorder/retransmit cannot un-settle the coalesced size. The first request of a
+    /// session (any `epoch >= 1` against `lastApplied == 0`) is therefore NOT stale.
+    public static func isStaleEpoch(_ epoch: UInt32, lastApplied: UInt32) -> Bool {
+        epoch <= lastApplied
+    }
 }
 
 /// Routes a datagram received on the input channel. Pure decision logic: parse the

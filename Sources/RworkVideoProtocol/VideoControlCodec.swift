@@ -21,14 +21,26 @@ import Foundation
 /// only the exact version (no fallback, mirroring PATH 1's strict version check,
 /// doc 20 §4).
 ///
+/// In-session resize (the host-window-resize feature, additive after the original
+/// hello/helloAck/bye trio): when the client surface settles to a new size, the client
+/// sends `resizeRequest(desired, epoch)` on the control channel; the host clamps it to
+/// the live window min/max and re-sizes capture/encode, then confirms the size it
+/// actually adopted with `resizeAck(captureWidth, captureHeight, epoch)`. `epoch` is a
+/// client-minted monotonic counter so a stale request (one whose epoch ≤ the
+/// last-applied) is ignored — coalescing a burst to the settled size. `desired` is
+/// Float64 w/h (the viewport precision); the ack reports UInt16 w/h (the same capture-
+/// size wire `helloAck` uses).
+///
 /// Wire layout (big-endian), `[UInt8 type][body]`:
 /// ```
-/// type 1 hello:    UInt16 protocolVersion | UInt32 requestedWindowID
-///                  | Float64 viewportW | Float64 viewportH
-/// type 2 helloAck: UInt8 accepted(0/1) | UInt32 streamID
-///                  | UInt16 captureWidth | UInt16 captureHeight
-///                  | Float64 boundsX | boundsY | boundsW | boundsH
-/// type 3 bye:      (no body)
+/// type 1 hello:         UInt16 protocolVersion | UInt32 requestedWindowID
+///                       | Float64 viewportW | Float64 viewportH
+/// type 2 helloAck:      UInt8 accepted(0/1) | UInt32 streamID
+///                       | UInt16 captureWidth | UInt16 captureHeight
+///                       | Float64 boundsX | boundsY | boundsW | boundsH
+/// type 3 bye:           (no body)
+/// type 4 resizeRequest: Float64 desiredW | Float64 desiredH | UInt32 epoch
+/// type 5 resizeAck:     UInt16 captureWidth | UInt16 captureHeight | UInt32 epoch
 /// ```
 public enum VideoControlMessage: Equatable, Sendable {
     /// Client → host: open a session for `requestedWindowID`, sized to `viewport`.
@@ -38,12 +50,20 @@ public enum VideoControlMessage: Equatable, Sendable {
     case helloAck(accepted: Bool, streamID: UInt32, captureWidth: UInt16, captureHeight: UInt16, windowBoundsCG: VideoRect)
     /// Either side: clean session teardown.
     case bye
+    /// Client → host: the client surface settled to `desired` (points); please re-size
+    /// capture to it. `epoch` is a monotonic counter so the host can drop a stale request.
+    case resizeRequest(desired: VideoSize, epoch: UInt32)
+    /// Host → client: capture was re-sized to `captureWidth`×`captureHeight` for the
+    /// request carrying `epoch` (the client re-bases its aspect-fit denominator on it).
+    case resizeAck(captureWidth: UInt16, captureHeight: UInt16, epoch: UInt32)
 
     public var messageType: UInt8 {
         switch self {
         case .hello: return 1
         case .helloAck: return 2
         case .bye: return 3
+        case .resizeRequest: return 4
+        case .resizeAck: return 5
         }
     }
 
@@ -67,6 +87,14 @@ public enum VideoControlMessage: Equatable, Sendable {
             out.appendBE(bounds.size.height)
         case .bye:
             break
+        case .resizeRequest(let desired, let epoch):
+            out.appendBE(desired.width)
+            out.appendBE(desired.height)
+            out.appendBE(epoch)
+        case .resizeAck(let w, let h, let epoch):
+            out.appendBE(w)
+            out.appendBE(h)
+            out.appendBE(epoch)
         }
         return out
     }
@@ -94,6 +122,16 @@ public enum VideoControlMessage: Equatable, Sendable {
                              windowBoundsCG: VideoRect(x: bx, y: by, width: bw, height: bh))
         case 3:
             return .bye
+        case 4:
+            let w = try reader.readFloat64()
+            let h = try reader.readFloat64()
+            let epoch = try reader.readUInt32()
+            return .resizeRequest(desired: VideoSize(width: w, height: h), epoch: epoch)
+        case 5:
+            let w = try reader.readUInt16()
+            let h = try reader.readUInt16()
+            let epoch = try reader.readUInt32()
+            return .resizeAck(captureWidth: w, captureHeight: h, epoch: epoch)
         default:
             throw VideoProtocolError.malformed("unknown video control message type \(type)")
         }

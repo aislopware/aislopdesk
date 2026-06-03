@@ -88,8 +88,16 @@ public struct VideoClientStateMachine: Sendable {
             guard state == .streaming || state == .connecting else { return [] }
             state = .stopped
             return [.stopDecodePipeline]
-        case .hello:
-            // The client never receives a hello.
+        case .resizeAck:
+            // STAGE 0 — defensive no-op. A `resizeAck` confirms the host adopted a new
+            // capture size, after which the client must re-base its aspect-fit denominator
+            // (`decodedSize`) on it. That re-base + the `resizeRequest` debounce that
+            // triggers it are a later HARDWARE-GATED stage; the client never sends a
+            // `resizeRequest` yet, so the host never sends a `resizeAck` on the fixed-size
+            // path. Intentionally inert here to keep Stage 0 additive + byte-identical.
+            return []
+        case .hello, .resizeRequest:
+            // The client never receives a hello / resizeRequest — defensive no-op.
             return []
         }
     }
@@ -129,6 +137,78 @@ public enum VideoScaleMath {
     public static func videoScale(layerSize: VideoSize, decodedSize: VideoSize) -> Double {
         guard decodedSize.width > 0 else { return 1.0 }
         return layerSize.width / decodedSize.width
+    }
+}
+
+/// Pure client-side debounce for the in-session resize feature (the platform-free mirror
+/// of ``LTREscalationTracker``'s pass-`now`-in discipline): the host view fires a layout
+/// callback on EVERY frame of a live window-drag, but the host should re-size capture only
+/// once per settled size — a flood of `resizeRequest`s mid-drag would thrash the
+/// AX-resize + SCStream reconfigure and pump epochs needlessly. This coalesces a burst to
+/// the size the surface SETTLES on: while the layer is still changing it `.hold`s; once it
+/// has been QUIET for `settleInterval` (and differs from the last requested size by at
+/// least `minDelta` on some axis) it emits `.request(settled)` exactly once. No timer / no
+/// Network — the caller passes the layer size + elapsed-since-last-change in — so the
+/// coalescing is unit-testable in isolation. The epoch counter is minted here so each
+/// emitted request carries a monotonic, host-droppable epoch.
+public struct ResizeDebounce: Sendable, Equatable {
+    /// The size of the last request the client actually EMITTED (`nil` ⇒ none yet — the
+    /// session is still at its hello-negotiated capture size). A new settled size is
+    /// compared against this to drop sub-`minDelta` jitter.
+    public private(set) var lastRequested: VideoSize?
+    /// The monotonic epoch of the last emitted request (0 ⇒ none emitted yet). The next
+    /// emitted request carries `lastEpoch + 1`.
+    public private(set) var lastEpoch: UInt32 = 0
+
+    /// Minimum per-axis change (points) below which a new settled size is treated as
+    /// jitter and dropped (no request) — prevents a 1px layout wobble re-sizing capture.
+    public let minDelta: Double
+    /// How long the layer size must be UNCHANGED before the burst is considered settled
+    /// and a request fires (seconds, elapsed-since-last-change passed in by the caller).
+    public let settleInterval: TimeInterval
+
+    public init(minDelta: Double = 8, settleInterval: TimeInterval = 0.2) {
+        self.minDelta = minDelta
+        self.settleInterval = settleInterval
+    }
+
+    /// The debounce decision for one layer-size sample.
+    public enum Decision: Equatable, Sendable {
+        /// The size has settled and differs enough — emit a `resizeRequest` for this size.
+        case request(VideoSize)
+        /// Still mid-burst (not yet quiet), or the settled size is within `minDelta` of the
+        /// last request — do nothing.
+        case hold
+    }
+
+    /// Decides whether `layerSize` should trigger a resize request, given how long the
+    /// layer has been at this size (`elapsedSinceLastChange`, passed in by the caller —
+    /// the actor measures it, exactly like ``LTREscalationTracker`` takes `now`). Pure
+    /// query: it does NOT mutate — call ``noteRequested(_:)`` after acting on `.request`.
+    public func decide(layerSize: VideoSize, elapsedSinceLastChange: TimeInterval) -> Decision {
+        // Still settling: the layer changed too recently to be the final size — coalesce.
+        guard elapsedSinceLastChange >= settleInterval else { return .hold }
+        // Quiet long enough — is this a meaningful change vs the last request we emitted?
+        guard changedEnough(from: lastRequested, to: layerSize) else { return .hold }
+        return .request(layerSize)
+    }
+
+    /// Records that a request for `size` was emitted: stores it as the new baseline and
+    /// advances the epoch. Returns the epoch the emitted request must carry. Call this
+    /// ONLY after acting on a `.request(size)` decision (mirrors
+    /// ``LTREscalationTracker/noteRequestSent(now:)`` being a separate mutator).
+    @discardableResult
+    public mutating func noteRequested(_ size: VideoSize) -> UInt32 {
+        lastRequested = size
+        lastEpoch &+= 1
+        return lastEpoch
+    }
+
+    /// Whether `to` differs from `from` by at least `minDelta` on some axis. A `nil`
+    /// baseline (no request yet) always counts as changed (the first settle always fires).
+    private func changedEnough(from: VideoSize?, to: VideoSize) -> Bool {
+        guard let from else { return true }
+        return abs(to.width - from.width) >= minDelta || abs(to.height - from.height) >= minDelta
     }
 }
 

@@ -345,6 +345,18 @@ public actor RworkVideoHostSession {
         case .stopCapture:
             dbg("effect stopCapture")
             await teardownLiveComponents()
+        case .resizeCapture(let width, let height, let epoch):
+            // STAGE 0 — INERT no-op. The pure state machine has accepted + clamped the
+            // in-session resize, but the live re-size is a later HARDWARE-GATED stage.
+            // No client sends a `resizeRequest` yet, so this effect is never produced in
+            // the fixed-size path; when it lands it must:
+            //   TODO(resize-stage): AX-resize the target window to width×height, then
+            //   `SCStream.updateConfiguration` + reconfigure the VTCompressionSession to
+            //   the new dimensions, and only THEN send `resizeAck(width,height,epoch)` so
+            //   the client re-bases its aspect-fit denominator on a frame it will actually
+            //   receive at the new size. Intentionally NOT wired here to keep Stage 0
+            //   additive + byte-identical on the existing path.
+            dbg("effect resizeCapture \(width)x\(height) epoch=\(epoch) — INERT (Stage 0; AX/SCStream resize deferred)")
         }
     }
 
