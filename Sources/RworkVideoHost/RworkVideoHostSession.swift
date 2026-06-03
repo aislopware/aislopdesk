@@ -268,12 +268,42 @@ public actor RworkVideoHostSession {
         let captureWindow = window
         do {
             nonisolated(unsafe) let w = captureWindow
+            // ⚠️ Suspension point (symmetric to F2's `teardownLiveComponents`). `capturer.start`
+            // brings up the SCStream (`stream.startCapture()` + `addStreamOutput`/`delegate:self`),
+            // and the SCStream framework then RETAINS `capturer` for as long as the stream runs.
+            // A `bye`/`hello`/`bye` storm can run a teardown (and even a newer start) WHILE we are
+            // suspended here: that teardown snapshots our fresh refs, stops them (no-op — the
+            // stream/timers are not up yet), and nils them. If we then blindly resume and start
+            // the SCStream/timers + leave our refs installed, we (a) clobber the actor's current
+            // refs and (b) orphan THIS stream + its timers (frames are dropped by the mediaFlowing
+            // gate, but the SCStream + VTCompressionSession + drag/cursor timers leak until process
+            // exit). So guard the post-await start on identity: only proceed if `self.capturer` is
+            // still the instance THIS invocation installed.
             try await capturer.start(window: w, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
             dbg("SCStream capture started (\(pixelWidth)x\(pixelHeight) px @\(captureScale)×, \(width)x\(height) pt) — awaiting frames")
         } catch {
             log.error("capturer start failed: \(String(describing: error))")
             dbg("SCStream capture START FAILED: \(String(describing: error))")
         }
+
+        // Identity guard (symmetric to teardown's compare-and-clear). If a superseding
+        // teardown/start ran while we were suspended in `capturer.start`, `self.capturer`
+        // no longer points at the instance we installed. In that case DON'T start the
+        // geometry/cursor timers and DON'T leave this now-live SCStream running: stop the
+        // local instances we just created and return WITHOUT touching the actor's current
+        // refs (the superseding teardown already nil'd ours; a newer start owns whatever is
+        // installed now). All 5 component types are `final class`, so `===` is valid.
+        guard self.capturer === capturer else {
+            dbg("startLiveComponents superseded during capturer.start — tearing down orphaned instances")
+            await capturer.stop()      // async: stops the SCStream we just brought up (stream = nil)
+            cursorSampler.stop()
+            geometryWatcher.stop()
+            // `encoder`/`injector` are inert until the (now-skipped) capture/input path drives
+            // them; releasing the locals lets them deinit (VideoEncoder.deinit invalidates its
+            // VTCompressionSessions). Do not clear actor refs — a superseding start owns them.
+            return
+        }
+
         geometryWatcher.startDragPolling()
         cursorSampler.start()
         log.info("live capture/encode/geometry/cursor running")
