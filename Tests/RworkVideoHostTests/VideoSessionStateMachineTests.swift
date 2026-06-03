@@ -86,9 +86,113 @@ final class VideoSessionStateMachineTests: XCTestCase {
         _ = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
 
         let effects = sm.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
-        XCTAssertEqual(sm.state, .stopped)
+        // Bye re-arms (intended behavior change for #8): state returns to .listening
+        // — NOT terminal .stopped — so a fresh hello can reconnect. Capture still tears
+        // down because it was streaming.
+        XCTAssertEqual(sm.state, .listening)
         XCTAssertFalse(sm.mediaFlowing)
         XCTAssertEqual(effects, [.stopCapture])
+    }
+
+    func testByeReturnsToListeningNotStopped() {
+        var sm = VideoSessionStateMachine()
+        _ = sm.start()
+        let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 42, viewport: VideoSize(width: 800, height: 600))
+        _ = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        XCTAssertEqual(sm.state, .streaming)
+
+        _ = sm.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        XCTAssertEqual(sm.state, .listening, "bye must re-arm to .listening, not go terminal")
+        XCTAssertFalse(sm.mediaFlowing)
+    }
+
+    func testHelloAfterByeReArmsCaptureWithFreshStreamID() {
+        var sm = VideoSessionStateMachine(nextStreamID: 5)
+        _ = sm.start()
+        let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 42, viewport: VideoSize(width: 800, height: 600))
+        let first = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        guard case .sendControl(.helloAck(_, let firstStreamID, _, _, _)) = first[0] else { return XCTFail("expected first ack") }
+        XCTAssertEqual(firstStreamID, 5)
+
+        // Client says bye, then reconnects with a fresh hello — no daemon restart.
+        _ = sm.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        XCTAssertEqual(sm.state, .listening)
+
+        let reconnect = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        XCTAssertEqual(sm.state, .streaming)
+        XCTAssertTrue(sm.mediaFlowing)
+        XCTAssertEqual(sm.windowID, 42)
+        XCTAssertEqual(sm.captureWidth, 800)
+        XCTAssertEqual(sm.captureHeight, 600)
+
+        // Ack (with an ADVANCED streamID) first, then a fresh startCapture.
+        XCTAssertEqual(reconnect.count, 2)
+        guard case .sendControl(.helloAck(let accepted, let streamID, let w, let h, _)) = reconnect[0] else { return XCTFail("expected reconnect ack") }
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(streamID, 6, "the second hello mints a fresh, advanced streamID")
+        XCTAssertEqual(w, 800)
+        XCTAssertEqual(h, 600)
+        XCTAssertEqual(reconnect[1], .startCapture(windowID: 42, width: 800, height: 600))
+    }
+
+    func testByeWhileListeningIsIdempotentNoStopCapture() {
+        var sm = VideoSessionStateMachine()
+        _ = sm.start()
+        XCTAssertEqual(sm.state, .listening)
+
+        // A bye arriving while merely listening (no stream up) re-arms harmlessly: no
+        // stopCapture (nothing was running) and state stays .listening.
+        let effects = sm.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        XCTAssertEqual(sm.state, .listening)
+        XCTAssertTrue(effects.isEmpty, "no capture was running, so no stopCapture")
+        XCTAssertFalse(sm.mediaFlowing)
+    }
+
+    func testByeWhileIdleStaysIdleNoEffects() {
+        var sm = VideoSessionStateMachine()
+        // No start() — sockets not bound; a bye must not transition or emit anything.
+        let effects = sm.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        XCTAssertEqual(sm.state, .idle)
+        XCTAssertTrue(effects.isEmpty)
+        XCTAssertFalse(sm.mediaFlowing)
+    }
+
+    func testLocalStopRemainsTerminalAfterFix() {
+        var sm = VideoSessionStateMachine()
+        _ = sm.start()
+        let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 42, viewport: VideoSize(width: 800, height: 600))
+        _ = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+
+        // Local stop() closes the UDP sockets — it MUST stay terminal (.stopped), unlike
+        // a client bye. A hello after a local stop is rejected (no re-arm).
+        XCTAssertEqual(sm.stop(), [.stopCapture])
+        XCTAssertEqual(sm.state, .stopped)
+        let afterStop = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        XCTAssertEqual(sm.state, .stopped, "local stop() is terminal — a hello must not re-arm it")
+        XCTAssertTrue(afterStop.isEmpty)
+        XCTAssertFalse(sm.mediaFlowing)
+    }
+
+    func testMultipleByeHelloCyclesEachGetFreshStreamID() {
+        var sm = VideoSessionStateMachine(nextStreamID: 1)
+        _ = sm.start()
+        let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 42, viewport: VideoSize(width: 800, height: 600))
+
+        var seenStreamIDs: [UInt32] = []
+        for _ in 0..<4 {
+            let accept = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+            XCTAssertEqual(sm.state, .streaming)
+            guard case .sendControl(.helloAck(let accepted, let streamID, _, _, _)) = accept[0] else { return XCTFail("expected ack") }
+            XCTAssertTrue(accepted)
+            seenStreamIDs.append(streamID)
+            XCTAssertEqual(accept[1], .startCapture(windowID: 42, width: 800, height: 600))
+
+            _ = sm.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+            XCTAssertEqual(sm.state, .listening)
+        }
+
+        // Every reconnect cycle minted a fresh, monotonically advancing streamID.
+        XCTAssertEqual(seenStreamIDs, [1, 2, 3, 4])
     }
 
     func testStopWhileStreamingEmitsStopCapture() {
