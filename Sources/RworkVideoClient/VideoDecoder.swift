@@ -41,6 +41,13 @@ public final class VideoDecoder: @unchecked Sendable {
 
     private var session: VTDecompressionSession?
     private var formatDescription: CMFormatDescription?
+    /// The parameter sets the running ``session`` was configured from, cached so a
+    /// byte-identical keyframe (the ~1s heartbeat IDR, every forced-recovery IDR) does
+    /// NOT tear down + recreate the `VTDecompressionSession` (BUG-I): teardown/warmup
+    /// every second stalled an otherwise-healthy stream. Reconfigure only when the
+    /// extracted sets actually DIFFER (a real resolution / SPS change). `nil` until the
+    /// first keyframe configures the session.
+    private var currentParameterSets: HEVCParameterSets.ParameterSets?
 
     public init(decodedFrameHandler: @escaping DecodedFrameHandler) {
         self.decodedFrameHandler = decodedFrameHandler
@@ -75,6 +82,22 @@ public final class VideoDecoder: @unchecked Sendable {
             throw VideoDecoderError.formatDescriptionFailed(status)
         }
         try configure(formatDescription: formatDescription)
+        // Cache the sets the live session is now built from so a byte-identical keyframe
+        // can reuse the session instead of recreating it (BUG-I). Set AFTER a successful
+        // configure so a throw leaves the cache matching the still-running session.
+        currentParameterSets = parameterSets
+    }
+
+    /// Whether a keyframe's parameter sets require rebuilding the decode session: there
+    /// is no session yet, or the incoming sets differ byte-for-byte from the ones the
+    /// running session was built from. Pure (only compares `Equatable` value types) so
+    /// the "identical IDR does not reconfigure" decision is unit-testable with ZERO
+    /// VideoToolbox dependency. The session-reuse fix for BUG-I.
+    public static func needsReconfigure(
+        current: HEVCParameterSets.ParameterSets?,
+        incoming: HEVCParameterSets.ParameterSets
+    ) -> Bool {
+        current != incoming
     }
 
     /// Sets the format description and (re)creates the session. Must precede the first
@@ -82,6 +105,11 @@ public final class VideoDecoder: @unchecked Sendable {
     public func configure(formatDescription: CMFormatDescription) throws {
         if let session { VTDecompressionSessionInvalidate(session); self.session = nil }
         self.formatDescription = formatDescription
+        // This path builds the session from a raw format description, not parameter
+        // sets, so drop any cached sets — a later identical-sets keyframe must rebuild
+        // rather than wrongly reuse a session that wasn't built from those sets. The
+        // `configure(parameterSets:)` path re-populates the cache after this returns.
+        currentParameterSets = nil
 
         let imageBufferAttributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, // NV12 (doc 04)
@@ -113,7 +141,14 @@ public final class VideoDecoder: @unchecked Sendable {
     /// so the caller drops it and requests recovery.
     public func decode(_ frame: ReassembledFrame) throws {
         if frame.keyframe, let sets = HEVCParameterSets.extract(from: frame.avcc) {
-            try configure(parameterSets: sets)
+            // Only rebuild the VTDecompressionSession when the parameter sets actually
+            // changed (BUG-I). The heartbeat IDR (~1×/sec) and every forced-recovery IDR
+            // carry byte-identical VPS/SPS/PPS on a steady stream — recreating the
+            // session for each one caused a teardown/warmup stall once a second. A
+            // matching keyframe keeps the existing session and just decodes below.
+            if Self.needsReconfigure(current: currentParameterSets, incoming: sets) {
+                try configure(parameterSets: sets)
+            }
         }
         guard let session, let formatDescription else { throw VideoDecoderError.awaitingKeyframe }
         let sampleBuffer = try makeSampleBuffer(avcc: frame.avcc, formatDescription: formatDescription)

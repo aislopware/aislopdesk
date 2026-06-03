@@ -42,6 +42,21 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
     private let lock = NSLock()
     private var mediaConn: NWConnection?
     private var cursorConn: NWConnection?
+
+    /// Per-connection liveness, flipped to `false` by the connection's state handler at
+    /// `.failed`/`.cancelled`. The receive loops consult it via ``UDPReceiveLoopPolicy``
+    /// so a TRANSIENT per-datagram receive error (e.g. ICMP port-unreachable surfaced as
+    /// ECONNREFUSED while the flow stays `.ready`) re-arms the loop instead of ending it
+    /// forever (BUG-L) — without it the host stopped receiving the client's input /
+    /// recovery requests on a single transient error. A truly dead flow flips the flag,
+    /// which stops the loop. Reference type so the closures share one cell;
+    /// `@unchecked Sendable` via the internal `NSLock`.
+    private final class Liveness: @unchecked Sendable {
+        private let lock = NSLock()
+        private var alive = true
+        var isAlive: Bool { lock.withLock { alive } }
+        func markDead() { lock.withLock { alive = false } }
+    }
     /// Set true inside ``stop()`` (under `lock`). Guards the accept-after-stop race: a
     /// connection the `NWListener` accepts concurrently with `stop()` must be cancelled,
     /// not stored+started (else it leaks — `stop()` already niled the slots).
@@ -78,9 +93,10 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
             //     `.streaming`), so a re-pinned client is re-acked with the old streamID and no
             //     fresh IDR; it resumes via the existing client-driven IDR recovery (.recovery
             //     channel → requestIDR → capturer.requestKeyframe), not via an SM reset.
-            self.installResetHandler(on: conn, isMedia: true)
+            let live = Liveness()
+            self.installResetHandler(on: conn, isMedia: true, live: live)
             conn.start(queue: self.queue)
-            self.receiveMedia(on: conn, onReceive: onReceive)
+            self.receiveMedia(on: conn, live: live, onReceive: onReceive)
         }
         media.start(queue: queue)
         self.mediaListener = media
@@ -92,9 +108,10 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
             if self.stopped { self.lock.unlock(); conn.cancel(); return }   // accept-after-stop
             if self.cursorConn == nil { self.cursorConn = conn; self.lock.unlock() }
             else { self.lock.unlock(); conn.cancel(); return }
-            self.installResetHandler(on: conn, isMedia: false)
+            let live = Liveness()
+            self.installResetHandler(on: conn, isMedia: false, live: live)
             conn.start(queue: self.queue)
-            self.receiveCursor(on: conn, onReceive: onReceive)
+            self.receiveCursor(on: conn, live: live, onReceive: onReceive)
         }
         cursor.start(queue: queue)
         self.cursorListener = cursor
@@ -107,11 +124,15 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
     /// Must be set BEFORE `conn.start(...)` so no early transition is missed. Only clears the
     /// slot if it still holds THIS connection (identity check) — never clobbers a peer that
     /// re-pinned in the meantime.
-    private func installResetHandler(on conn: NWConnection, isMedia: Bool) {
+    private func installResetHandler(on conn: NWConnection, isMedia: Bool, live: Liveness) {
         conn.stateUpdateHandler = { [weak self, weak conn] state in
             guard let self, let conn else { return }
             switch state {
             case .failed, .cancelled:
+                // Mark the flow dead so its receive loop stops re-arming (BUG-L): the
+                // receive loop survives transient per-datagram errors and relies on THIS
+                // path to end it when the connection is genuinely gone.
+                live.markDead()
                 self.lock.lock()
                 if isMedia {
                     if self.mediaConn === conn { self.mediaConn = nil }
@@ -125,7 +146,7 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
         }
     }
 
-    private func receiveMedia(on conn: NWConnection, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
+    private func receiveMedia(on conn: NWConnection, live: Liveness, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
         conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, data.count >= 1 {
@@ -135,21 +156,28 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
                 }
             }
             // UDP: every datagram completes (`isComplete == true`), so re-arming only on
-            // `!isComplete` would stop after the client's first datagram (the hello) — the host
-            // would then never receive input / recovery requests. Re-arm on any non-error.
-            if error == nil {
-                self.receiveMedia(on: conn, onReceive: onReceive)
+            // `!isComplete` would stop after the client's first datagram (the hello). We ALSO
+            // must survive a TRANSIENT per-datagram error: an ICMP port-unreachable
+            // (ECONNREFUSED) surfaces here as a receive error while the flow stays `.ready`,
+            // and the old `if error == nil` ended the loop forever — the host then silently
+            // stopped receiving the client's input / recovery requests (BUG-L). Re-arm unless
+            // the flow is genuinely dead (its state handler flipped `live`).
+            if let error { self.log.error("media receive error (transient, re-arming if alive): \(String(describing: error))") }
+            if UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: live.isAlive) {
+                self.receiveMedia(on: conn, live: live, onReceive: onReceive)
             }
         }
     }
 
-    private func receiveCursor(on conn: NWConnection, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
+    private func receiveCursor(on conn: NWConnection, live: Liveness, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
         conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, !data.isEmpty { onReceive(.cursor, data) }
-            // Same UDP re-arm fix as receiveMedia.
-            if error == nil {
-                self.receiveCursor(on: conn, onReceive: onReceive)
+            // Same transient-error survival as receiveMedia (BUG-L): re-arm on a per-datagram
+            // error, stop only when the flow's state handler marks it dead.
+            if let error { self.log.error("cursor receive error (transient, re-arming if alive): \(String(describing: error))") }
+            if UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: live.isAlive) {
+                self.receiveCursor(on: conn, live: live, onReceive: onReceive)
             }
         }
     }
@@ -184,6 +212,24 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
             mediaConn?.cancel(); mediaConn = nil
             cursorConn?.cancel(); cursorConn = nil
         }
+    }
+}
+
+/// Pure re-arm decision for a UDP `receiveMessage` loop (BUG-L) — the host-side mirror
+/// of the client's `RworkVideoClient.UDPReceiveLoopPolicy`.
+///
+/// The receive loop must keep itself armed across TRANSIENT per-datagram errors (an
+/// ICMP port-unreachable surfaces as a receive error even while the flow stays
+/// `.ready`) and stop ONLY when the flow is genuinely dead. The liveness signal comes
+/// from the connection's state handler (`.failed`/`.cancelled`), not from the
+/// per-receive error — so the decision is purely "is the flow still alive?", which is
+/// unit-testable without a socket. (Client + host live in separate modules and each
+/// owns an identical copy; the behaviour contract is the agreement, not a shared type.)
+public enum UDPReceiveLoopPolicy {
+    /// Re-arm the receive loop iff the flow is still alive. A per-datagram error does
+    /// NOT stop the loop; only a dead flow does.
+    public static func shouldRearm(connectionIsAlive: Bool) -> Bool {
+        connectionIsAlive
     }
 }
 #endif
