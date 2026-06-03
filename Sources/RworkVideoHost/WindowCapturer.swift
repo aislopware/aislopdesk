@@ -140,7 +140,18 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
             return
         }
         guard status == .complete else {
-            // .idle / .blank / .suspended / .started → nothing new to encode.
+            // .idle / .blank / .suspended / .started → no NEW pixels to encode, so skip.
+            // ⚠️ KNOWN BUG (VIDEO-HOST-1, audit — see docs/25 §4): on a STATIC window only
+            // `.idle` frames arrive, so the forced-keyframe latch (`takePendingForcedKeyframe`)
+            // AND the ~1s heartbeat IDR — BOTH below this guard — never run. A client that
+            // requests loss-recovery (or joins) while the host window is unchanging then gets no
+            // IDR and freezes on the last good frame (or stays blank) until the window changes.
+            // CORRECT FIX: retain the last `.complete` CVPixelBuffer and, on a timer serialized
+            // on `frameQueue`, re-encode it as a forced IDR when `pendingForcedKeyframe` is
+            // latched or the heartbeat interval elapsed with no `.complete` frame. NOT done here:
+            // it depends on SCStream IOSurface / queue-depth runtime behaviour that cannot be
+            // verified headlessly (a wrong retain could stall capture or re-encode a recycled
+            // surface), so it must be brought up with the Mac Studio (real GUI + TCC) in the loop.
             return
         }
 

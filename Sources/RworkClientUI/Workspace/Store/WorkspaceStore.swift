@@ -578,7 +578,15 @@ public final class WorkspaceStore {
                     // The orphan's video resources are now released — stop counting it against the cap
                     // (ITEM #3). Serialized on the main actor with `activateVideo`'s read, so a
                     // same-tick reopen sees the slot freed only after the real release.
-                    self.tearingDownVideo.remove(orphan.id)
+                    if self.tearingDownVideo.remove(orphan.id) != nil {
+                        // COMPLETION-SITE nudge (VIDEO-UI-1): the close-time bump (`reconcile`, above)
+                        // fired while this slot was STILL counted against the cap, so a same-tick gated
+                        // reopen was refused and is now parked on the "Video paused" placeholder.
+                        // Removing the id here is the instant the slot ACTUALLY frees — nudge again so
+                        // that gated on-screen pane re-attempts admission now, instead of waiting for an
+                        // unrelated event (another deactivate / re-appear) to happen to nudge it.
+                        self.videoPromotionGeneration &+= 1
+                    }
                 }
                 self.teardownTasks.removeValue(forKey: id)
             }
