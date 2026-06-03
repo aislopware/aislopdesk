@@ -66,17 +66,45 @@ final class WorkspaceLayoutTests: XCTestCase {
         )
     }
 
-    /// With no window width (always on iOS; on macOS before the window attaches) the breakpoint falls
-    /// back to the DETAIL width — still resolved against the WINDOW threshold (the overload's only
-    /// threshold). A nil window therefore degrades to a detail-vs-window-threshold gate.
-    func testWindowWidthNilFallsBackToDetailWidth() {
+    /// F6 — with no window width (always on iOS; on macOS before the `NSWindow` reader fires) the
+    /// breakpoint falls back to the DETAIL width compared against the DETAIL threshold (460), NOT the
+    /// window threshold (680). Collapsing both into `(windowWidth ?? detailWidth) < 680` was the bug: it
+    /// showed a one-frame compact carousel for the macOS floor window's ~500pt detail before the window
+    /// reader fired, and silently moved the iPad-regular detail fallback from 460 to 680.
+    func testWindowWidthNilFallsBackToDetailThreshold() {
+        // The macOS floor window's ~500pt detail (before the NSWindow reader fires) must be REGULAR —
+        // 500 >= 460, so no one-frame compact carousel.
         XCTAssertFalse(
-            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 700, windowWidth: nil),
-            "nil window → detail 700 (>= 680) resolves regular"
-        )
-        XCTAssertTrue(
             WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 500, windowWidth: nil),
-            "nil window → detail 500 (< 680) resolves compact"
+            "nil window → detail 500 (>= 460) resolves regular (no one-frame compact flash on macOS launch)"
+        )
+        // A genuinely phone-narrow detail still collapses via the 460 detail threshold.
+        XCTAssertTrue(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 400, windowWidth: nil),
+            "nil window → detail 400 (< 460) resolves compact"
+        )
+        // The nil-window fallback uses the DETAIL threshold (460), not the window threshold (680): a
+        // detail between the two thresholds is REGULAR (it would wrongly be compact under the old
+        // collapsed gate).
+        XCTAssertFalse(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 600, windowWidth: nil),
+            "nil window → detail 600 resolves against the 460 detail threshold ⇒ regular (not the 680 window one)"
+        )
+    }
+
+    /// F6 — the window path and the detail-fallback path each use their OWN threshold: a known window
+    /// width below 680 is compact; a known window width at/above 680 is regular EVEN with a narrow
+    /// transient detail; and the two thresholds are not conflated.
+    func testWindowAndDetailPathsUseDistinctThresholds() {
+        // windowWidth 600 (< 680) → compact, regardless of detail.
+        XCTAssertTrue(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 600, windowWidth: 600),
+            "window 600 (< 680) → compact"
+        )
+        // windowWidth 720 (>= 680) with a transient narrow 300pt detail → regular (the window wins).
+        XCTAssertFalse(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 300, windowWidth: 720),
+            "window 720 (>= 680) → regular even with a transient narrow detail (300)"
         )
     }
 

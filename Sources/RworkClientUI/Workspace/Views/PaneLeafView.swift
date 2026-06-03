@@ -353,24 +353,34 @@ private struct ClaudeCodePaneView: View {
 
 // MARK: - Remote GUI composition (video)
 
-/// The three things a `.remoteGUI` leaf can show, decided PURELY from (admitted, configured) so the
-/// branch is unit-testable without a SwiftUI render (BUG-A).
+/// The three things a `.remoteGUI` leaf can show, decided PURELY from
+/// `(admitted, configured, hasFreeSlot)` so the branch is unit-testable without a SwiftUI render
+/// (BUG-A + the F1 regression fix).
 enum RemoteGUIDisplay: Equatable {
     /// The live ``RemoteWindowPanel`` (admitted to a cap slot — its decode stack may run).
     case live
-    /// The ``RemoteWindowPanel`` entry FORM: the model is not yet configured (no host/port), so there is
-    /// nothing to gate yet — the user must dial it in. Holds NO decode stack (`model.active == nil`).
+    /// The ``RemoteWindowPanel`` entry FORM: either the model is not yet configured (no host/port — the
+    /// user must dial it in), OR it just became configured while a cap slot IS free (so admission is
+    /// about to be auto-attempted and flip the pane to `.live` — the form must NOT vanish before then).
+    /// Holds NO decode stack (`model.active == nil`).
     case entryForm
-    /// The cap-saturated placeholder: the model IS configured but no slot is free, so admission was
-    /// refused specifically by ``WorkspaceStore/liveVideoCap`` (BUG-A — distinct from `.entryForm`).
+    /// The cap-saturated placeholder: the model IS configured AND no slot is free, so admission was
+    /// refused specifically because ``WorkspaceStore/liveVideoCap`` is saturated (BUG-A — distinct from
+    /// the unconfigured / free-slot `.entryForm`).
     case gated
 
-    /// The PURE display decision (BUG-A) — `admitted` ⇒ `.live`; otherwise an unconfigured model ⇒
-    /// `.entryForm` (let the user dial in), a configured-but-refused model ⇒ `.gated` (cap-saturated).
-    /// Free of any SwiftUI / store state so it is unit-tested directly.
-    static func resolve(admitted: Bool, configured: Bool) -> RemoteGUIDisplay {
+    /// The PURE display decision (BUG-A + F1) — free of any SwiftUI / store state so it is unit-tested
+    /// directly:
+    /// - `admitted` ⇒ `.live`;
+    /// - else NOT configured ⇒ `.entryForm` (let the user dial in — never gate an unconfigured pane);
+    /// - else configured AND a slot IS free ⇒ `.entryForm` (the form stays until the reactive retry
+    ///   admits the now-configured pane and flips `admitted` true — F1: the form must not disappear
+    ///   the instant the endpoint becomes valid);
+    /// - else (configured AND no free slot) ⇒ `.gated` (admission was genuinely refused by the cap).
+    static func resolve(admitted: Bool, configured: Bool, hasFreeSlot: Bool) -> RemoteGUIDisplay {
         if admitted { return .live }
-        return configured ? .gated : .entryForm
+        guard configured else { return .entryForm }
+        return hasFreeSlot ? .entryForm : .gated
     }
 }
 
@@ -382,7 +392,7 @@ enum RemoteGUIDisplay: Equatable {
 /// enforced at runtime (the store self-excludes this pane + counts other active video panes). Without a
 /// store (preview / faked path) it falls back to direct, un-capped activation.
 ///
-/// ### Two reasons admission can be `false` (BUG-A)
+/// ### Two reasons admission can be `false` (BUG-A) + the F1 regression fix
 /// `activateVideo` (and direct activation) can decline for two very different reasons, which this view
 /// MUST distinguish — otherwise an unconfigured pane is stuck forever on a wrong "too many windows"
 /// placeholder with no way to enter host/port:
@@ -393,11 +403,24 @@ enum RemoteGUIDisplay: Equatable {
 /// - the model **is configured** (`canOpen == true`) but the cap is saturated ⇒ show the gated
 ///   placeholder (and re-attempt when a slot frees, ITEM #2).
 ///
-/// ### Reactive auto-promote (ITEM #2)
-/// The store cannot flip a pane's liveness itself — admission is view-driven. When a slot frees the
-/// store bumps ``WorkspaceStore/videoPromotionGeneration``; this view observes it via `.onChange` and
-/// re-attempts admission through `activateVideo` (still cap-checked), so a previously-gated on-screen
-/// pane promotes itself the moment a slot opens.
+/// The store's `false` alone cannot tell those apart (`activateVideo` returns `false` for both). So the
+/// display is decided by ``RemoteGUIDisplay/resolve(admitted:configured:hasFreeSlot:)`` fed BOTH
+/// `configured` (the model's `canOpen`) and `hasFreeSlot` (the store's pure
+/// ``WorkspaceStore/hasFreeVideoSlot(for:)`` read mirroring the admission guard): a configured pane with
+/// a slot still FREE keeps showing the entry form (F1 — the form must not vanish the instant the
+/// endpoint becomes valid), and only a configured pane refused because the cap is genuinely saturated
+/// shows `.gated`.
+///
+/// ### Reactive admission (ITEM #2 + F1)
+/// The store cannot flip a pane's liveness itself — admission is view-driven. Two reactive re-attempts:
+/// - **F1 — became configured**: a fresh pane's `.onAppear` ran while `canOpen` was still false, so it
+///   never admitted. When the user finishes typing a valid endpoint `configured` flips true; this view
+///   observes it via `.onChange(of: configured)` and re-runs `activate()` (→ `activateVideo`, still
+///   cap-checked) so a configured pane with a free slot goes live without a manual nudge.
+/// - **ITEM #2 — a slot freed**: when a slot frees the store bumps
+///   ``WorkspaceStore/videoPromotionGeneration``; this view observes it via `.onChange` and re-attempts
+///   admission through `activateVideo`, so a previously-gated on-screen pane promotes itself the moment
+///   a slot opens.
 private struct RemoteGUIPaneView: View {
     let live: LivePaneSession
     /// The cap-enforcing store. `nil` only on the no-store preview path.
@@ -408,19 +431,30 @@ private struct RemoteGUIPaneView: View {
     @State private var admitted = false
 
     /// Whether the remote-window model parses to a complete endpoint (host/port/window all valid). A
-    /// fresh user-created `.remoteGUI` pane is NOT configured (empty fields → `canOpen == false`).
+    /// fresh user-created `.remoteGUI` pane is NOT configured (empty fields → `canOpen == false`). This
+    /// reads the `@Observable` ``RemoteWindowModel`` fields, so it re-evaluates on the keystroke that
+    /// completes a valid endpoint — which drives the F1 reactive retry below.
     private var configured: Bool { live.remoteWindow?.canOpen == true }
+
+    /// Whether the store currently has a free live-video slot for THIS pane (mirrors `activateVideo`'s
+    /// guard with no mutation). The no-store preview path has no cap, so it is always free there. Fed
+    /// into ``RemoteGUIDisplay/resolve(admitted:configured:hasFreeSlot:)`` so a configured-but-unadmitted
+    /// pane shows the entry form while a slot is free (F1 — the form must stay until the retry admits it)
+    /// and only the gated placeholder once the cap is genuinely saturated.
+    private var hasFreeSlot: Bool { store?.hasFreeVideoSlot(for: live.id) ?? true }
 
     var body: some View {
         Group {
             if let model = live.remoteWindow {
-                switch RemoteGUIDisplay.resolve(admitted: admitted, configured: configured) {
+                switch RemoteGUIDisplay.resolve(admitted: admitted, configured: configured, hasFreeSlot: hasFreeSlot) {
                 case .live:
                     RemoteWindowPanel(model: model, showCloseButton: false)
                 case .entryForm:
-                    // Not yet configured: render the panel so its entry FORM shows (model.active == nil
-                    // ⇒ no decode stack). The user dials in host/port here, then admission is attempted
-                    // on appear / via the promotion nudge once they open it (BUG-A).
+                    // Not yet configured (or configured with a slot still free): render the panel so its
+                    // entry FORM shows (model.active == nil ⇒ no decode stack). The user dials in
+                    // host/port here; admission is attempted on appear and reactively the instant the
+                    // endpoint becomes valid (the `configured` .onChange below), so the form does NOT
+                    // vanish before the pane goes live (BUG-A / F1).
                     RemoteWindowPanel(model: model, showCloseButton: false)
                 case .gated:
                     gatedPlaceholder
@@ -440,6 +474,15 @@ private struct RemoteGUIPaneView: View {
                 live.setVideoActive(false)
             }
             admitted = false
+        }
+        // F1 — a fresh pane's .onAppear ran while the model was still UNconfigured (`canOpen == false`),
+        // so `activate()` never admitted it and there was no re-attempt once the user finished typing a
+        // valid endpoint. Re-attempt admission the instant the model becomes configured: the keystroke
+        // that flips `canOpen` true flips `configured`, and this re-runs `activate()` (→ `activateVideo`,
+        // still cap-checked). If a slot is free the pane goes live; if not it falls to the gated
+        // placeholder — correct, because now admission was genuinely refused by the cap.
+        .onChange(of: configured) { _, nowConfigured in
+            if nowConfigured { activate() }
         }
         // ITEM #2 — when the store nudges `videoPromotionGeneration` (a slot freed), an on-screen pane
         // that was previously gated re-attempts admission. Cap-safe: the retry flows through
