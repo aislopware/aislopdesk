@@ -15,21 +15,22 @@ import RworkHost
 /// `seq > lastReceivedSeq`; the client dedups by seq. We then reconstruct the full
 /// concatenated output and assert every line appears exactly once, in order — proving
 /// session survival + host replay + client-side dedup together.
-final class RworkReconnectE2ETests: XCTestCase {
+///
+/// Reparented onto ``HostServerE2ECase`` (ITEM #10): bring-up + the awaited
+/// `server.stop()` / `client.close()` teardown live in the base class, and the per-test
+/// ceiling (`perTestTimeAllowance`) sits above this suite's 30s inner reconnect-resume
+/// timeout so a genuinely hung resume FAILS instead of wedging the shared test process.
+final class RworkReconnectE2ETests: HostServerE2ECase {
 
     private static let lineCount = 2000
 
-    func testReconnectByteExactResume() async throws {
-        let server = HostServer(port: 0, shellPath: "/bin/sh")
-        try await server.start()
-        guard let port = await server.boundPort() else {
-            await server.stop()
-            throw XCTSkip("host did not bind a port")
-        }
-        defer { Task { await server.stop() } }
+    /// Reconnect-resume is the slowest suite (a 30s inner wait for all 2000 lines after a
+    /// forced drop + replay). 90s clears that with margin yet still kills a hung resume.
+    override var perTestTimeAllowance: TimeInterval { 90 }
 
-        let client = RworkClient(ackInterval: .milliseconds(20))
-        try await client.connect(host: "127.0.0.1", port: port)
+    func testReconnectByteExactResume() async throws {
+        let (_, port) = try await startHost()
+        let client = try await connectedClient(toPort: port, ackInterval: .milliseconds(20))
 
         // Collect EVERY output byte across the whole session (survives the force-drop:
         // the surfaced `output` stream stays open; only the transport is replaced).
