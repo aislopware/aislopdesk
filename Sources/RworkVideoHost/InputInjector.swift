@@ -35,12 +35,28 @@ public final class InputInjector: @unchecked Sendable {
     private let boundsLock = NSLock()
     /// The CGEventSource whose `userData` we stamp = self-inject filter tag.
     private let eventSource: CGEventSource?
+    /// Which mouse button (if any) is currently held. A move that arrives while a button
+    /// is down must be posted as a `*MouseDragged` event (the type macOS requires for
+    /// drag/selection) rather than `.mouseMoved`, which selection engines ignore. Guarded
+    /// by `buttonLock`: `inject()` is called serially from the host actor, but this type is
+    /// `@unchecked Sendable`, so the mutable state takes an explicit lock.
+    private var heldButton: MouseButton?
+    private let buttonLock = NSLock()
 
     public init(pid: pid_t, windowID: CGWindowID, windowBoundsCG: VideoRect) {
         self.pid = pid
         self.windowID = windowID
         self.windowBoundsCG = windowBoundsCG
         self.eventSource = CGEventSource(stateID: .hidSystemState)
+        if let eventSource {
+            // Default local-events suppression interval is 0.25s: after a posted (or warped)
+            // event, subsequent synthetic events landing inside that window can be eaten —
+            // exactly why a click right after a warp-move sometimes "didn't take". Zero it so
+            // injected events are never suppressed. (CGEventSource header; the free
+            // `CGEventSourceSetLocalEventsSuppressionInterval` is obsoleted, this property
+            // is the modern equivalent.)
+            eventSource.localEventsSuppressionInterval = 0
+        }
     }
 
     public func updateWindowBounds(_ bounds: VideoRect) {
@@ -99,18 +115,43 @@ public final class InputInjector: @unchecked Sendable {
         CoordinateMapping.windowPoint(normalized: normalized, windowBounds: bounds).cgPoint
     }
 
+    /// Warp the cursor to an absolute point, then immediately re-associate the mouse and
+    /// cursor so the warp's transient disassociation (which can swallow the next synthetic
+    /// event) is cancelled. Together with the suppression interval = 0 set in `init`, this
+    /// makes warp-then-post safe so absolute positioning never eats the following event.
+    private func warp(to pt: CGPoint) {
+        CGWarpMouseCursorPosition(pt)
+        CGAssociateMouseAndMouseCursorPosition(boolean_t(1))   // re-associate (true)
+    }
+
     private func postMouseMove(normalized: VideoPoint, tag: UInt32) {
         let pt = target(normalized)
-        // Absolute move: warp the cursor, then post a moved event so apps reading
-        // deltas see it (doc 05 §1).
-        CGWarpMouseCursorPosition(pt)
-        if let event = CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) {
+        // Absolute move: warp the cursor, then post the move so apps reading deltas see it
+        // (doc 05 §1). If a button is held, this move is part of a drag → post the MATCHING
+        // `*MouseDragged` event, which is what selection/drag engines consume between
+        // mouseDown and mouseUp; a bare `.mouseMoved` mid-gesture is ignored (and can
+        // collapse a selection), which broke drag-select ("bôi không được").
+        warp(to: pt)
+        buttonLock.lock(); let held = heldButton; buttonLock.unlock()
+        let type: CGEventType
+        let cgButton: CGMouseButton
+        switch held {
+        case .left:  type = .leftMouseDragged;  cgButton = .left
+        case .right: type = .rightMouseDragged; cgButton = .right
+        case .other: type = .otherMouseDragged; cgButton = .center
+        case nil:    type = .mouseMoved;        cgButton = .left   // button ignored for moved
+        }
+        if let event = CGEvent(mouseEventSource: eventSource, mouseType: type, mouseCursorPosition: pt, mouseButton: cgButton) {
             stampAndPost(event, tag: tag)
         }
     }
 
     private func postMouseButton(button: MouseButton, normalized: VideoPoint, down: Bool, clickCount: UInt8, modifiers: InputModifiers, tag: UInt32) {
         let pt = target(normalized)
+        // Warp before posting so a tap with no preceding move still lands at `pt` and the
+        // visible cursor agrees with where the click registers. Safe now that the
+        // suppression interval is 0 and `warp` re-associates the cursor.
+        warp(to: pt)
         let (cgButton, downType, upType): (CGMouseButton, CGEventType, CGEventType)
         switch button {
         case .left: (cgButton, downType, upType) = (.left, .leftMouseDown, .leftMouseUp)
@@ -118,8 +159,16 @@ public final class InputInjector: @unchecked Sendable {
         case .other: (cgButton, downType, upType) = (.center, .otherMouseDown, .otherMouseUp)
         }
         guard let event = CGEvent(mouseEventSource: eventSource, mouseType: down ? downType : upType, mouseCursorPosition: pt, mouseButton: cgButton) else { return }
-        if clickCount >= 2 { event.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount)) }
+        // A single click needs clickState = 1 to register reliably (focus / insertion point);
+        // 2 = double, 3 = triple. It MUST be set on BOTH the down and the up edge with the
+        // SAME value — a freshly-created CGEvent does not reliably carry clickState = 1, so
+        // clicks "didn't take" or landed wrong. (`mouseEventClickState`; Apple forum 685901.)
+        event.setIntegerValueField(.mouseEventClickState, value: Int64(max(1, Int(clickCount))))
         event.flags = cgFlags(modifiers)
+        // Track held-button state so an intervening move posts the matching `*MouseDragged`.
+        // Set it BEFORE posting so a move racing right behind a down sees the button as held
+        // (calls are serial from the actor; in-function ordering is the only concern).
+        buttonLock.lock(); heldButton = down ? button : nil; buttonLock.unlock()
         stampAndPost(event, tag: tag)
     }
 
