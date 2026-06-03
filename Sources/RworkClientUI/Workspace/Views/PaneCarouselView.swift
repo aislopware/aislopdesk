@@ -15,9 +15,17 @@ import SwiftUI
 /// reading it returns the focused leaf, writing it (a swipe / a dot tap) routes through
 /// `store.focus(_:)`. Focus is therefore the single source of truth for "which page is showing" in
 /// both directions — a programmatic `move(.next)` slides the carousel, and a user swipe updates
-/// focus, with no stray `@State` to drift. Compact mounts exactly ONE host (the visible page), which
-/// structurally sidesteps the iOS two-first-responder race (docs/22 §4); the `PaneFocusCoordinator`
-/// is only needed on the multi-visible iPad-regular path.
+/// focus, with no stray `@State` to drift.
+///
+/// ### First-responder arbitration (BUG-E)
+/// A `.page` `TabView` keeps adjacent pages ALIVE during a swipe, so compact can mount more than one
+/// ``TerminalInputHost`` at a time — the old "compact mounts exactly one host, so pass no coordinator"
+/// assumption did not hold mid-swipe, letting two hosts each fire an un-tokened
+/// `becomeFirstResponder()`. Each page now routes its host through the SAME ``PaneFocusCoordinator``
+/// the regular tree uses (`store.focusCoordinator`): the store drives `focus(focusedPane)` through
+/// `syncFocusCoordinator` on every reconcile, so only the focused page's host claims first responder
+/// (resign-before-become + generation reject — docs/22 §7), and two simultaneously-mounted pages
+/// cannot fight.
 ///
 /// ### Identity is load-bearing (docs/22 §7, §11.2)
 /// Each page carries `.id(PaneID)` so SwiftUI keys each leaf host by its stable pane identity — a
@@ -97,7 +105,21 @@ struct PaneCarouselView: View {
                 isZoomed: tab.zoomedPane == page.id,
                 store: store
             ) {
-                PaneLeafView(handle: store.handle(for: page.id), spec: spec, isFocused: true, store: store)
+                // BUG-E: a `.page` `TabView` keeps the adjacent pages ALIVE during a swipe, so the
+                // carousel can mount >1 ``TerminalInputHost`` at once — the "single mounted host"
+                // assumption that justified passing no coordinator does not hold mid-swipe. Route
+                // first-responder through the SAME ``PaneFocusCoordinator`` the regular tree uses so
+                // the multi-host arbitration (resign-before-become + generation reject — docs/22 §7)
+                // applies in compact too: only the host for the focused page (the store drives
+                // `focus(focusedPane)` via `syncFocusCoordinator`) ever claims first responder, so two
+                // simultaneously-mounted hosts can't fight.
+                PaneLeafView(
+                    handle: store.handle(for: page.id),
+                    spec: spec,
+                    isFocused: true,
+                    focusCoordinator: store.focusCoordinator,
+                    store: store
+                )
             }
             // Stable identity across swipes / reshape / a regular↔compact flip (docs/22 §4, §7): never
             // tear down or rewire the live session backing this page.

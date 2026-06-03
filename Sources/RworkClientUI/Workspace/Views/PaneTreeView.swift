@@ -63,29 +63,46 @@ struct PaneTreeView: View {
     private var rootBody: some View {
         if let zoomed = activeTab?.zoomedPane, node.spec(for: zoomed) != nil {
             // Zoom: render only the zoomed leaf full-bleed. Same `.id`, so the live session survives.
+            // BUG-F: STILL report the layout — but a SINGLE-LEAF one for the zoomed pane. Previously the
+            // reporter was attached only in the non-zoomed branch, so a zoomed tab kept the pre-zoom
+            // multi-pane frames cached as `lastSolvedLayout`; `move(.left/.right/.up/.down)` and
+            // `closePane`'s `neighbourForRefocus` then resolved against rects for panes that aren't on
+            // screen, jumping focus to an off-screen pane. A single-leaf layout makes the geometric
+            // resolvers see exactly what the user sees (one pane → no directional neighbour; `.next`/
+            // `.previous` fall back to the pre-order cycle since the focused frame is the only one).
             leafView(id: zoomed, spec: node.spec(for: zoomed)!)
                 .padding(4)
+                .background(layoutReporter(forZoomed: zoomed))
         } else {
             nodeBody
-                .background(layoutReporter)
+                .background(layoutReporter())
         }
     }
 
     /// A zero-cost background that solves the layout for the rendered size and feeds it to the store
     /// (geometric focus source of truth). `.onChange` keeps it current across resizes/reshapes; the
-    /// solve is pure and cheap (docs/22 §2.1).
-    private var layoutReporter: some View {
+    /// solve is pure and cheap (docs/22 §2.1). When `zoomed` is non-nil it reports a SINGLE-LEAF layout
+    /// for that pane (BUG-F) so the zoomed projection's `lastSolvedLayout` matches what is on screen.
+    private func layoutReporter(forZoomed zoomed: PaneID? = nil) -> some View {
         GeometryReader { geo in
             Color.clear
-                .onAppear { reportLayout(size: geo.size) }
-                .onChange(of: geo.size) { _, newSize in reportLayout(size: newSize) }
-                .onChange(of: node) { _, _ in reportLayout(size: geo.size) }
+                .onAppear { reportLayout(size: geo.size, zoomed: zoomed) }
+                .onChange(of: geo.size) { _, newSize in reportLayout(size: newSize, zoomed: zoomed) }
+                .onChange(of: node) { _, _ in reportLayout(size: geo.size, zoomed: zoomed) }
         }
     }
 
-    private func reportLayout(size: CGSize) {
+    private func reportLayout(size: CGSize, zoomed: PaneID?) {
         guard size.width > 0, size.height > 0 else { return }
-        store.updateSolvedLayout(LayoutSolver.solve(node, in: size, minLeaf: Self.minLeaf))
+        if let zoomed {
+            // The zoomed leaf fills the rendered rect; no dividers. Geometric moves then see one pane.
+            store.updateSolvedLayout(SolvedLayout(
+                frames: [zoomed: CGRect(origin: .zero, size: size)],
+                dividers: []
+            ))
+        } else {
+            store.updateSolvedLayout(LayoutSolver.solve(node, in: size, minLeaf: Self.minLeaf))
+        }
     }
 
     // MARK: Recursion

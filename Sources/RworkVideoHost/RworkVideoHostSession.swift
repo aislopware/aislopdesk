@@ -268,26 +268,73 @@ public actor RworkVideoHostSession {
         let captureWindow = window
         do {
             nonisolated(unsafe) let w = captureWindow
+            // ⚠️ Suspension point (symmetric to F2's `teardownLiveComponents`). `capturer.start`
+            // brings up the SCStream (`stream.startCapture()` + `addStreamOutput`/`delegate:self`),
+            // and the SCStream framework then RETAINS `capturer` for as long as the stream runs.
+            // A `bye`/`hello`/`bye` storm can run a teardown (and even a newer start) WHILE we are
+            // suspended here: that teardown snapshots our fresh refs, stops them (no-op — the
+            // stream/timers are not up yet), and nils them. If we then blindly resume and start
+            // the SCStream/timers + leave our refs installed, we (a) clobber the actor's current
+            // refs and (b) orphan THIS stream + its timers (frames are dropped by the mediaFlowing
+            // gate, but the SCStream + VTCompressionSession + drag/cursor timers leak until process
+            // exit). So guard the post-await start on identity: only proceed if `self.capturer` is
+            // still the instance THIS invocation installed.
             try await capturer.start(window: w, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
             dbg("SCStream capture started (\(pixelWidth)x\(pixelHeight) px @\(captureScale)×, \(width)x\(height) pt) — awaiting frames")
         } catch {
             log.error("capturer start failed: \(String(describing: error))")
             dbg("SCStream capture START FAILED: \(String(describing: error))")
         }
+
+        // Identity guard (symmetric to teardown's compare-and-clear). If a superseding
+        // teardown/start ran while we were suspended in `capturer.start`, `self.capturer`
+        // no longer points at the instance we installed. In that case DON'T start the
+        // geometry/cursor timers and DON'T leave this now-live SCStream running: stop the
+        // local instances we just created and return WITHOUT touching the actor's current
+        // refs (the superseding teardown already nil'd ours; a newer start owns whatever is
+        // installed now). All 5 component types are `final class`, so `===` is valid.
+        guard self.capturer === capturer else {
+            dbg("startLiveComponents superseded during capturer.start — tearing down orphaned instances")
+            await capturer.stop()      // async: stops the SCStream we just brought up (stream = nil)
+            cursorSampler.stop()
+            geometryWatcher.stop()
+            // `encoder`/`injector` are inert until the (now-skipped) capture/input path drives
+            // them; releasing the locals lets them deinit (VideoEncoder.deinit invalidates its
+            // VTCompressionSessions). Do not clear actor refs — a superseding start owns them.
+            return
+        }
+
         geometryWatcher.startDragPolling()
         cursorSampler.start()
         log.info("live capture/encode/geometry/cursor running")
     }
 
     private func teardownLiveComponents() async {
-        await capturer?.stop()
-        cursorSampler?.stop()
-        geometryWatcher?.stop()
-        capturer = nil
-        encoder = nil
-        cursorSampler = nil
-        geometryWatcher = nil
-        injector = nil
+        // Compare-and-clear (race guard, F2). `#8` made `bye → .listening` re-armable, so a
+        // bye's stopCapture (this teardown) can now overlap a reconnect hello's startCapture:
+        // `await capturer?.stop()` (a slow SCStream stopCapture) is a suspension point across
+        // which a newer `startLiveComponents` can install FRESH capturer/encoder/etc. Snapshot
+        // the instances this teardown owns at entry, stop the slow source, then clear each ref
+        // ONLY if it is still the one we snapshotted — a stale teardown that resumes after a
+        // newer start must not nil the new components (which would wedge the actor
+        // streaming-but-dead: mediaFlowing true per SM, but every live component nil → no
+        // frames ever). The synchronous `stop()`s are safe to call on the snapshots; only the
+        // ref-clearing is gated on identity.
+        let staleCapturer = capturer
+        let staleEncoder = encoder
+        let staleCursorSampler = cursorSampler
+        let staleGeometryWatcher = geometryWatcher
+        let staleInjector = injector
+
+        await staleCapturer?.stop()
+        staleCursorSampler?.stop()
+        staleGeometryWatcher?.stop()
+
+        if capturer === staleCapturer { capturer = nil }
+        if encoder === staleEncoder { encoder = nil }
+        if cursorSampler === staleCursorSampler { cursorSampler = nil }
+        if geometryWatcher === staleGeometryWatcher { geometryWatcher = nil }
+        if injector === staleInjector { injector = nil }
     }
 
     // MARK: Component callbacks

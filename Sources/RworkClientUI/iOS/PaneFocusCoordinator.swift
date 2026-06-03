@@ -132,6 +132,27 @@ public final class PaneFocusCoordinator {
         scheduleBecome(incoming, id: id, token: token)
     }
 
+    /// Re-asserts first responder for `id` even when the bookkeeping already records it as focused
+    /// (BUG-K). `focus(_:)` short-circuits a redundant re-claim via `syncFocusCoordinator`'s
+    /// `focusedPane != focused` guard; but on a TAB SWITCH the new tab's host can register while the
+    /// coordinator's `focusedPane` still equals the new id from a prior life (or be (re)mounted without
+    /// holding UIKit first responder), so a guarded `focus(_:)` would skip the claim and the new tab's
+    /// terminal never takes the keyboard. This forces a fresh generation + re-claim regardless of the
+    /// current bookkeeping; the ``FocusGenerationGuard`` token semantics are unchanged (still minted by
+    /// `begin()`, still reject a superseded async callback), so a later `focus(_:)` still wins.
+    public func reassertFocus(_ id: PaneID) {
+        let token = guardState.begin()
+        if let outgoing = focusedPane, outgoing != id {
+            hosts[outgoing]?.value?.resignFocus()
+        }
+        focusedPane = id
+        guard let incoming = hosts[id]?.value else {
+            // The host hasn't mounted yet; it will re-claim itself in `register` (focusedPane == id).
+            return
+        }
+        scheduleBecome(incoming, id: id, token: token)
+    }
+
     /// Schedules the deferred `become`, re-validating the generation token at fire time so a
     /// superseded request is dropped. On iOS this hops the main runloop (matching UIKit's async
     /// first-responder honouring + ``TerminalInputHost``'s own `DispatchQueue.main.async` claim);
