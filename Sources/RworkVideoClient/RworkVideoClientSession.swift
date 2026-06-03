@@ -196,6 +196,11 @@ public actor RworkVideoClientSession {
         while let lost = reassembler.nextDroppedFrame() {
             if shouldEscalateToIDR() {
                 requestIDR()
+                // Re-anchor the escalation clock so the NEXT dropped frame in this same loss
+                // episode does not re-fire the escalation (and resend a redundant requestIDR)
+                // until another 2·RTT elapses (F7). Ordinary requestRecovery still must NOT
+                // move the first-request clock (BUG-H) — only a fired escalation re-arms it.
+                escalation.noteEscalated(now: FramePacer.currentHostTimeSeconds())
             } else {
                 requestRecovery(lostFrameID: lost)
             }
@@ -446,6 +451,22 @@ public struct LTREscalationTracker: Sendable, Equatable {
     /// so disarm the clock. The next loss starts a fresh episode and re-arms it.
     public mutating func keyframeDecoded() {
         firstRequestTime = nil
+    }
+
+    /// Re-anchor the clock to `now` AFTER a forced-IDR escalation actually fired (F7).
+    /// Once ``shouldEscalate(now:rtt:policy:)`` returns true, every SUBSEQUENT dropped
+    /// frame in the same loss episode would otherwise keep returning true (the first
+    /// request is still ≥ 2·RTT old) and the drain loop would resend a redundant
+    /// `requestIDR` per dropped frame. Re-anchoring `firstRequestTime = now` gates the
+    /// NEXT escalation to one-per-2·RTT — a single forced IDR per escalation window
+    /// instead of a burst.
+    ///
+    /// This is DISTINCT from ``noteRequestSent(now:)``: an ordinary recovery request must
+    /// NOT move the first-request clock (BUG-H — that is what let the 2·RTT window elapse
+    /// in the first place). Only a fired escalation re-arms it. The episode is still
+    /// cleared by ``keyframeDecoded()`` when recovery actually lands.
+    public mutating func noteEscalated(now: TimeInterval) {
+        firstRequestTime = now
     }
 }
 #endif
