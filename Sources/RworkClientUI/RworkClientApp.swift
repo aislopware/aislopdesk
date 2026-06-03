@@ -54,10 +54,12 @@ public struct RworkClientApp: App {
         let isAutomation = Self.hasAutomationEnvironment()
         let persistence: WorkspacePersistence? = isAutomation ? nil : WorkspacePersistence()
         // Per-device live-video ceiling (docs/22 §7, ITEM #5): the safe concurrent `.remoteGUI` count
-        // scales with the host's decode/compositing headroom. macOS → the mac tier; iOS resolves the
-        // pad-vs-phone tier from the idiom (the horizontal size class is not known yet at init, so a
-        // pad-in-slide-over still starts at the pad cap — the activation gate is what bites, and the
-        // view can re-tighten via VideoCapPolicy.cap(isMac:…) once it knows the size class).
+        // scales with the host's decode/compositing headroom. RESOLVED ONCE here at launch (per-device,
+        // not live-resizing): `WorkspaceStore.liveVideoCap` is an immutable `let`, so nothing re-tightens
+        // it after init. macOS → the mac tier; iOS resolves the pad-vs-phone tier from the idiom. The
+        // horizontal size class is not known yet at init, so an iPad keeps its launch (pad) cap even if
+        // it later enters compact slide-over — the documented design: the cap is the per-device resource
+        // ceiling, and the per-pane activation gate (`activateVideo`) is what actually bites at runtime.
         #if os(macOS)
         let liveVideoCap = VideoCapPolicy.cap(for: .mac)
         #elseif os(iOS)

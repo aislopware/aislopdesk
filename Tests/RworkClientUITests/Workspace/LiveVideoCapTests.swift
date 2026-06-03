@@ -292,65 +292,83 @@ final class LiveVideoCapTests: XCTestCase {
         XCTAssertEqual(activeIDs, Set([ids[1], ids[2]]))
     }
 
-    // MARK: - BUG-D: a superseded debounced save is skipped via the saveGeneration guard
+    // MARK: - BUG-D / F5: a superseded debounced save never wins the on-disk rename
 
-    /// BUG-D — `saveImmediately()` (and a newer `scheduleSave`) must reliably win over an in-flight
+    /// BUG-D / F5 — `saveImmediately()` (and a newer `scheduleSave`) must reliably win over an in-flight
     /// debounced write that has raced PAST its `Task.sleep`: `Task.cancel()` cannot stop a task already
-    /// inside the write, so the debounced path re-checks `saveGeneration` ON THE MAIN ACTOR right before
-    /// writing and SKIPS if superseded. This asserts that exact generation-guard logic through the
-    /// `saveGeneration` seam — the SAME predicate (``WorkspaceStore/isCurrentSaveGeneration(_:)``) the
-    /// production write path consults — so no stale snapshot can win the last atomic rename. No real
-    /// file race is needed: the supersession decision is a pure MainActor `Int` compare.
-    func testSupersededDebouncedSaveIsSkippedByGenerationGuard() {
-        // A store backed by a temp-file persistence (so the generation actually bumps) with a LONG
-        // debounce, so the scheduled save parks in its sleep and never fires during the test.
+    /// past its sleep, so the debounced path now re-checks `saveGeneration` AND writes the snapshot in
+    /// ONE main-actor critical section (`await MainActor.run`) — the guard and the rename never release
+    /// the actor between them, so a stale snapshot can never interleave and win the last rename.
+    ///
+    /// The pure-predicate assertions stay (they pin the SAME ``WorkspaceStore/isCurrentSaveGeneration(_:)``
+    /// the production path consults), AND we strengthen it (F5): a SHORT debounce, so the parked task
+    /// actually FIRES past its sleep WHILE a superseding `saveImmediately()` (then a newer
+    /// `scheduleSave`) runs, then we assert the ON-DISK tree equals the NEWEST snapshot — not the stale
+    /// one — by tab count.
+    func testSupersededDebouncedSaveIsSkippedByGenerationGuard() async {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("rwork-bugd-\(UUID().uuidString)", isDirectory: true)
             .appendingPathComponent("workspace.json", isDirectory: false)
         defer { try? FileManager.default.removeItem(at: tmp.deletingLastPathComponent()) }
         let persistence = WorkspacePersistence(fileURL: tmp)
         let store = WorkspaceStore(
-            restoring: nil,
+            restoring: nil,                       // default workspace: exactly 1 tab
             makeSession: { FakePaneSession($0) },
             liveVideoCap: 2,
             persistence: persistence,
-            saveDebounce: .seconds(3600)   // effectively never fires during the test
+            saveDebounce: .milliseconds(40)       // SHORT — the parked task WILL fire during the test
         )
+        XCTAssertEqual(store.workspace.tabs.count, 1, "default workspace starts at one tab")
 
-        // A mutation schedules a debounced save: it bumps the generation and CAPTURES it (gen0). The
-        // task parks on its hour-long sleep, so its write has NOT run.
+        // STALE snapshot: a mutation schedules a debounced save capturing the 2-tab tree (gen0). The
+        // task parks on its short 40ms sleep — its write has NOT run yet.
         store.addTab(kind: .terminal)
         let gen0 = store.saveGeneration
-        XCTAssertGreaterThan(gen0, 0, "scheduleSave bumped the generation for the just-scheduled write")
-        XCTAssertTrue(store.isCurrentSaveGeneration(gen0),
-                      "the just-scheduled debounced write is the current generation — it would write")
+        let staleTabCount = store.workspace.tabs.count   // 2 — must NEVER be the final on-disk shape
+        XCTAssertEqual(staleTabCount, 2)
+        XCTAssertTrue(store.isCurrentSaveGeneration(gen0), "the just-scheduled debounced write would write")
 
-        // saveImmediately() bumps the generation again (and writes synchronously NOW). The earlier
-        // debounced task's captured gen0 is now STALE.
+        // NEWEST snapshot: a second mutation (3 tabs) then a synchronous `saveImmediately()`. The
+        // immediate write bumps the generation and writes the 3-tab tree NOW; the parked gen0 task is
+        // now STALE. (saveImmediately cancels the pending task too, but the guard — not the cancel — is
+        // what makes the result correct even if the task already raced past its sleep.)
+        store.addTab(kind: .terminal)
         store.saveImmediately()
+        let newestTabCount = store.workspace.tabs.count  // 3 — the snapshot that must win on disk
+        XCTAssertEqual(newestTabCount, 3)
         let genAfterImmediate = store.saveGeneration
         XCTAssertGreaterThan(genAfterImmediate, gen0, "saveImmediately bumped the generation past the debounced one")
 
-        // THE GUARD: were the gen0 debounced task to wake and reach its pre-write re-check now, the
-        // predicate the production path consults reports it superseded — so it SKIPS the write and the
-        // saveImmediately() snapshot keeps the file. (A stale rename can never win.)
+        // The PURE generation-guard predicate (the production write path consults the very same one):
+        // the stale gen0 is superseded; only the newest generation is current.
         XCTAssertFalse(store.isCurrentSaveGeneration(gen0),
                        "the superseded debounced write is no longer current — it will skip its write")
-        XCTAssertTrue(store.isCurrentSaveGeneration(genAfterImmediate),
-                      "only the latest generation is current")
+        XCTAssertTrue(store.isCurrentSaveGeneration(genAfterImmediate), "only the latest generation is current")
 
-        // saveImmediately wrote synchronously: the file exists and decodes to the current tree shape.
-        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path),
-                      "saveImmediately() wrote the file synchronously, winning over the parked debounced save")
+        // Let the parked gen0 debounced task actually WAKE past its 40ms sleep and reach its critical
+        // section while we are superseded — well past the debounce so it genuinely fires (not merely
+        // cancelled). Its main-actor guard finds gen0 stale and SKIPS the write, so the 3-tab newest
+        // snapshot stays on disk; a stale 2-tab rename can never win.
+        try? await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tmp.path), "the file exists")
         let onDisk = persistence.load()
-        XCTAssertEqual(onDisk.tabs.count, store.workspace.tabs.count,
-                       "the file reflects the saveImmediately() snapshot (2 tabs), not a stale one")
+        XCTAssertEqual(onDisk.tabs.count, newestTabCount,
+                       "the ON-DISK tree is the NEWEST snapshot (3 tabs), never the stale debounced one")
+        XCTAssertNotEqual(onDisk.tabs.count, staleTabCount,
+                          "the superseded 2-tab debounced snapshot never won the rename")
 
-        // A fresh mutation schedules another debounced save, bumping the generation once more — and the
-        // prior, now-superseded gen0 is STILL not current (the guard is monotone).
+        // A fresh mutation now schedules another short-debounce save (the NEWEST again, 4 tabs); let it
+        // fire to its completion. The on-disk tree follows the newest write, and the long-superseded
+        // gen0 is still never current (the guard is monotone).
         store.addTab(kind: .terminal)
+        let finalTabCount = store.workspace.tabs.count   // 4
         XCTAssertGreaterThan(store.saveGeneration, genAfterImmediate, "a new mutation bumps the generation again")
         XCTAssertFalse(store.isCurrentSaveGeneration(gen0), "an old generation never becomes current again")
+
+        try? await Task.sleep(for: .milliseconds(200))   // let the latest debounced save complete
+        XCTAssertEqual(persistence.load().tabs.count, finalTabCount,
+                       "the latest debounced save wrote the newest 4-tab tree to disk")
     }
 
     // MARK: - same-tick close+reopen does NOT exceed the ceiling (ITEM #3)
@@ -526,26 +544,38 @@ final class LiveVideoCapTests: XCTestCase {
         await store.quiesce()
     }
 
-    // MARK: - BUG-A: an unconfigured remote pane shows the entry form, not the cap placeholder
+    // MARK: - BUG-A / F1: the display distinguishes unconfigured / free-slot / cap-saturated
 
-    /// The PURE display decision (``RemoteGUIDisplay/resolve(admitted:configured:)``) distinguishes the
-    /// two false-activation reasons (BUG-A): an admitted pane is `.live`; an UNconfigured one shows the
-    /// `.entryForm` (so the user can enter host/port); only a CONFIGURED-but-refused pane shows `.gated`
-    /// (the cap-saturated placeholder).
-    func testRemoteGUIDisplayResolvesEntryFormWhenUnconfigured() {
-        // Admitted always wins (live video), regardless of configured state.
-        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: true, configured: true), .live)
-        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: true, configured: false), .live)
-        // Not admitted + not configured ⇒ entry form (BUG-A: no host/port yet, nothing to gate).
-        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: false, configured: false), .entryForm)
-        // Not admitted + configured ⇒ the cap-saturated placeholder.
-        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: false, configured: true), .gated)
+    /// The PURE display decision (``RemoteGUIDisplay/resolve(admitted:configured:hasFreeSlot:)``)
+    /// distinguishes the three states (BUG-A + the F1 regression fix): an admitted pane is `.live`; an
+    /// UNconfigured one shows the `.entryForm` (so the user can enter host/port); a CONFIGURED pane with
+    /// a free slot ALSO shows the `.entryForm` (the form must stay until the reactive retry admits it —
+    /// F1); only a CONFIGURED pane refused because the cap is SATURATED shows `.gated`.
+    func testRemoteGUIDisplayResolveMatrix() {
+        // Admitted always wins (live video), regardless of configured / slot state.
+        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: true, configured: true, hasFreeSlot: false), .live)
+        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: true, configured: false, hasFreeSlot: true), .live)
+
+        // Not admitted + NOT configured ⇒ entry form, whether or not a slot is free (BUG-A: no host/port
+        // yet, nothing to gate — never gate a merely-unconfigured pane).
+        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: false, configured: false, hasFreeSlot: true), .entryForm)
+        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: false, configured: false, hasFreeSlot: false), .entryForm)
+
+        // Not admitted + configured + a slot IS FREE ⇒ STILL the entry form (F1): the form must not
+        // vanish the instant the endpoint becomes valid; the reactive retry will admit it and flip it
+        // to `.live`.
+        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: false, configured: true, hasFreeSlot: true), .entryForm)
+
+        // Not admitted + configured + NO free slot ⇒ the cap-saturated placeholder (the only `.gated`).
+        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: false, configured: true, hasFreeSlot: false), .gated)
     }
 
     /// A fresh `.remoteGUI` pane created with no video endpoint (New Tab/split → Remote Window) has an
     /// UNconfigured ``RemoteWindowModel`` (`canOpen == false`), so even when the cap is saturated its
     /// display resolves to `.entryForm` — NOT `.gated`. This is the BUG-A invariant: an unconfigured pane
-    /// can always reach its host/port form (it was previously stuck forever on the cap placeholder).
+    /// can always reach its host/port form (it was previously stuck forever on the cap placeholder). Once
+    /// it becomes configured the display depends on whether a slot is free (F1): free ⇒ still the form
+    /// (the retry admits it), saturated ⇒ the gated placeholder.
     func testUnconfiguredRemoteGUIPaneIsNotCapGatedInDisplay() {
         // Build a live (production) remoteGUI session with no video endpoint, mirroring Tab.make/split.
         let session = WorkspaceStore.liveMakeSession()(PaneSpec(kind: .remoteGUI, title: "Remote window"))
@@ -553,19 +583,64 @@ final class LiveVideoCapTests: XCTestCase {
         XCTAssertNotNil(live.remoteWindow, "a remoteGUI session always has a RemoteWindowModel")
         XCTAssertFalse(live.remoteWindow!.canOpen, "a fresh unconfigured model cannot open (empty fields)")
 
-        // Even un-admitted (cap saturated, activateVideo would return false), the display is the entry
-        // form because the model is not configured — never the cap placeholder.
-        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: false, configured: live.remoteWindow!.canOpen),
-                       .entryForm)
+        // Even un-admitted with NO free slot (cap saturated), the display is the entry form because the
+        // model is not configured — never the cap placeholder.
+        XCTAssertEqual(
+            RemoteGUIDisplay.resolve(admitted: false, configured: live.remoteWindow!.canOpen, hasFreeSlot: false),
+            .entryForm
+        )
 
-        // Once the user dials in a valid endpoint, the model becomes configured, so an un-admitted pane
-        // would now correctly show the cap placeholder (cap is the real reason it cannot decode).
+        // Dial in a valid endpoint. The model becomes configured.
         live.remoteWindow!.host = "host.example"
         live.remoteWindow!.mediaPort = "9000"
         live.remoteWindow!.cursorPort = "9001"
         live.remoteWindow!.windowID = "42"
         XCTAssertTrue(live.remoteWindow!.canOpen, "a fully-entered model can open")
-        XCTAssertEqual(RemoteGUIDisplay.resolve(admitted: false, configured: live.remoteWindow!.canOpen),
-                       .gated)
+
+        // Configured + a slot still FREE ⇒ the form stays (F1 — the reactive retry will admit it). The
+        // form does NOT vanish the instant the endpoint becomes valid.
+        XCTAssertEqual(
+            RemoteGUIDisplay.resolve(admitted: false, configured: live.remoteWindow!.canOpen, hasFreeSlot: true),
+            .entryForm
+        )
+
+        // Configured + NO free slot ⇒ now correctly the cap placeholder (the cap is the real reason it
+        // cannot decode).
+        XCTAssertEqual(
+            RemoteGUIDisplay.resolve(admitted: false, configured: live.remoteWindow!.canOpen, hasFreeSlot: false),
+            .gated
+        )
+    }
+
+    // MARK: - F1: hasFreeVideoSlot mirrors the activateVideo guard (the cap-vs-config discriminator)
+
+    /// ``WorkspaceStore/hasFreeVideoSlot(for:)`` is the pure READ the view feeds into the display
+    /// decision (F1) — it must agree EXACTLY with what an ``WorkspaceStore/activateVideo(_:)`` attempt
+    /// this same tick would decide: free until the cap saturates with OTHER live panes, then not; and it
+    /// self-excludes `id` so an already-active pane still sees its own slot as free.
+    func testHasFreeVideoSlotMirrorsActivateGuard() {
+        let (store, ids) = makeStoreWithRemoteGUILeaves(3, cap: 2)
+
+        // All idle ⇒ every pane sees a free slot.
+        XCTAssertTrue(store.hasFreeVideoSlot(for: ids[0]))
+        XCTAssertTrue(store.hasFreeVideoSlot(for: ids[2]))
+
+        XCTAssertTrue(store.activateVideo(ids[0]))
+        // One live (1 of 2): a free slot still exists for the others.
+        XCTAssertTrue(store.hasFreeVideoSlot(for: ids[1]))
+
+        XCTAssertTrue(store.activateVideo(ids[1]))
+        // Cap saturated by two OTHER live panes ⇒ no free slot for the third (matches activateVideo's
+        // refusal below).
+        XCTAssertFalse(store.hasFreeVideoSlot(for: ids[2]))
+        XCTAssertFalse(store.activateVideo(ids[2]), "the read agreed: activateVideo also refuses")
+
+        // Self-exclusion: an ALREADY-active pane sees its own slot as free (it occupies it itself), so
+        // the display never gates a pane that is in fact live.
+        XCTAssertTrue(store.hasFreeVideoSlot(for: ids[0]), "self-exclusion — an active pane's own slot reads free")
+
+        // Freeing a slot makes the read flip back to free for the gated pane.
+        store.deactivateVideo(ids[0])
+        XCTAssertTrue(store.hasFreeVideoSlot(for: ids[2]), "a freed slot reads as free again")
     }
 }

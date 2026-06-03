@@ -344,6 +344,24 @@ public final class WorkspaceStore {
     public func activateVideo(_ id: PaneID) -> Bool {
         guard let handle = registry[id], handle.kind == .remoteGUI else { return false }
         if handle.isVideoActive { return true }
+        guard hasFreeVideoSlot(for: id) else { return false }
+        handle.setVideoActive(true)
+        return handle.isVideoActive
+    }
+
+    /// Whether a live-video slot is currently free FOR pane `id` — a pure READ that mirrors the exact
+    /// admission guard ``activateVideo(_:)`` uses, with NO mutation (BUG-A). The view layer consults
+    /// this to tell the two false-activation reasons apart: a `.remoteGUI` pane whose `activateVideo`
+    /// would refuse because the cap is **saturated** (→ the gated placeholder) versus one that is merely
+    /// **unconfigured** (→ the entry form so the user can still dial in). It self-excludes `id` exactly
+    /// as `activateVideo` does (an already-active pane sees its own slot as free), and counts the
+    /// in-flight `tearingDownVideo` stacks against the cap so the answer agrees with what an admission
+    /// attempt this same tick would actually decide.
+    ///
+    /// `@Observable` reads of `registry` make this reactive — but the view layer ALSO re-attempts via
+    /// the explicit ``videoPromotionGeneration`` nudge on slot-freeing events, so this read need not be
+    /// the only liveness trigger; it is the cap-vs-config discriminator for the display decision.
+    public func hasFreeVideoSlot(for id: PaneID) -> Bool {
         let activeOthers = registry.values.filter { $0.kind == .remoteGUI && $0.isVideoActive && $0.id != id }.count
         // Count panes whose video stack is still TEARING DOWN against the cap too (ITEM #3): an orphan
         // closed this same tick is already gone from the registry but its UDP / VTDecompression /
@@ -352,9 +370,7 @@ public final class WorkspaceStore {
         // `tearingDownVideo` excludes `id` by construction (an in-flight-teardown id is not in the
         // registry, so it can never equal a live pane's id).
         let inFlight = tearingDownVideo.count
-        guard activeOthers + inFlight < liveVideoCap else { return false }
-        handle.setVideoActive(true)
-        return handle.isVideoActive
+        return activeOthers + inFlight < liveVideoCap
     }
 
     /// Deactivates live video for pane `id` (the view's `.onDisappear`), freeing a cap slot.
@@ -625,13 +641,14 @@ public final class WorkspaceStore {
     /// write. A no-op until `savingEnabled` (set after the init reconcile) and when no `persistence`
     /// is configured (the fake/test seam never touches disk).
     ///
-    /// BUG-D — the write re-checks `saveGeneration` on a MainActor hop IMMEDIATELY before writing and
-    /// SKIPS if superseded. `Task.cancel()` does not interrupt a task already PAST its sleep and inside
-    /// `Self.write`, so without this guard a debounced write could race `saveImmediately()` (or a newer
-    /// debounced write) and let a stale snapshot win the last atomic rename. The generation re-check
-    /// makes the supersession decision on the main actor — where every `saveGeneration` bump happens —
-    /// so `saveImmediately()` (which bumps the generation under cancel) reliably wins: any in-flight
-    /// debounced task whose generation no longer matches simply returns without writing.
+    /// BUG-D / F5 — the supersession re-check AND the atomic write happen together inside ONE
+    /// `await MainActor.run` (see the body), never releasing the actor between the guard and the rename.
+    /// `Task.cancel()` does not interrupt a task already PAST its sleep, so without this single critical
+    /// section a debounced write could race `saveImmediately()` (or a newer debounced write) and let a
+    /// stale snapshot win the last atomic rename. Deciding supersession AND writing on the main actor —
+    /// where every `saveGeneration` bump and `saveImmediately()`'s own write happen — serializes the
+    /// renames so `saveImmediately()` (which bumps the generation under cancel) reliably wins: any
+    /// in-flight debounced task whose generation no longer matches simply returns without writing.
     private func scheduleSave() {
         guard savingEnabled, let persistence else { return }
         saveTask?.cancel()
@@ -646,21 +663,20 @@ public final class WorkspaceStore {
             } catch {
                 return   // superseded by a newer mutation (cancelled) — that one will write.
             }
-            // Re-check supersession ON THE MAIN ACTOR right before writing (BUG-D): if a newer
-            // scheduleSave bumped the generation, or saveImmediately() bumped+cancelled, this stale
-            // task must not write — the winner already did / will. Decided on the main actor so it is
-            // serialized with every saveGeneration mutation; no stale snapshot can win the rename.
-            let stillCurrent = await MainActor.run { [weak self] in
-                self?.isCurrentSaveGeneration(generation) ?? false
-            }
-            guard stillCurrent else { return }
-            // The encode + atomic write is pure value IO; run it off the main actor so a large tree
-            // doesn't hitch the UI. A failed save keeps the previous good file (best-effort).
-            await Self.write(snapshot, to: persistence)
-            // Clear the handle ONLY if this is still the current generation — a superseded prior task
-            // (one that raced past the sleep before being cancelled) must not nil the newest handle.
+            // BUG-D / F5 — the supersession re-check AND the atomic write are ONE main-actor critical
+            // section: re-check `saveGeneration` and, only if still current, write the snapshot — all
+            // inside a single `await MainActor.run` that never releases the actor between the guard and
+            // the rename. This matches `saveImmediately()` (which also writes on the main actor under a
+            // bumped generation), so the two RENAMES serialize on the main actor and a stale snapshot's
+            // rename can never interleave between a newer write's guard and rename. `Task.cancel()`
+            // cannot stop a task already past its sleep, so the generation guard — decided on the actor
+            // where every `saveGeneration` mutation happens — is what makes `saveImmediately()` / a newer
+            // debounced write reliably win. Encoding the small layout tree on the main actor is
+            // acceptable; the clear of the (now-current) handle happens in the same block.
             await MainActor.run { [weak self] in
-                guard let self, self.saveGeneration == generation else { return }
+                guard let self, self.isCurrentSaveGeneration(generation) else { return }
+                // A failed save keeps the previous good file (best-effort).
+                try? persistence.save(snapshot)
                 self.saveTask = nil
             }
         }
@@ -676,12 +692,6 @@ public final class WorkspaceStore {
         saveGeneration &+= 1
         saveTask?.cancel()
         saveTask = nil
-        try? persistence.save(workspace)
-    }
-
-    /// The off-main-actor write used by the debounced path (`nonisolated` so the detached sleep task
-    /// can call it without hopping back to the main actor for the IO).
-    private nonisolated static func write(_ workspace: Workspace, to persistence: WorkspacePersistence) async {
         try? persistence.save(workspace)
     }
 

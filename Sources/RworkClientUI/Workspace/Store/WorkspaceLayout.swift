@@ -45,23 +45,38 @@ public enum WorkspaceLayout {
     /// width when it is known (macOS), falling back to the detail-column width when it is not.
     ///
     /// `horizontalSizeClass` stays the PRIMARY signal (iOS keeps its size-class-driven decision
-    /// unchanged — iOS passes `windowWidth: nil`, so this reduces to the detail-width gate against the
-    /// window threshold only when the size class is regular). On macOS — no size class — the window
-    /// width is the steadier geometry: the detail GeometryReader can momentarily report a partially
-    /// laid-out width mid-resize, while the `NSWindow` frame is authoritative.
+    /// unchanged — iOS passes `windowWidth: nil`, so this reduces to the detail-width gate). On macOS —
+    /// no size class — the window width is the steadier geometry: the detail GeometryReader can
+    /// momentarily report a partially laid-out width mid-resize, while the `NSWindow` frame is
+    /// authoritative.
+    ///
+    /// Each geometry is compared against ITS OWN threshold (ITEM #6 / F6 — branch on presence, do NOT
+    /// collapse with `windowWidth ?? detailWidth`):
+    /// - when `windowWidth` is known → compare the WHOLE WINDOW against ``compactWindowWidthThreshold``
+    ///   (680, just below the 720 macOS floor) — the floor window resolves regular;
+    /// - when `windowWidth` is `nil` (iOS always; macOS before the `NSWindow` reader fires) → fall back
+    ///   to the DETAIL width against ``compactWidthThreshold`` (460). Collapsing both into one
+    ///   `(windowWidth ?? detailWidth) < 680` is wrong: it would compare the ~500pt detail of the macOS
+    ///   floor window against 680 (a one-frame compact carousel before the window reader fires) and
+    ///   silently move the iPad-regular detail fallback from 460 to 680.
     ///
     /// - Parameters:
     ///   - horizontalSizeClassCompact: as above — the primary, short-circuiting signal.
-    ///   - detailWidth: the detail GeometryReader width (the fallback geometry).
+    ///   - detailWidth: the detail GeometryReader width (the `nil`-window fallback geometry).
     ///   - windowWidth: the outer window's width when measurable (macOS), else `nil`.
-    /// - Returns: compact iff the size class is compact OR the resolved width
-    ///   (`windowWidth ?? detailWidth`) is below ``compactWindowWidthThreshold``.
+    /// - Returns: compact iff the size class is compact, OR (window known) the window width is below
+    ///   ``compactWindowWidthThreshold``, OR (no window) the detail width is below
+    ///   ``compactWidthThreshold``.
     public static func isCompact(
         horizontalSizeClassCompact: Bool,
         detailWidth: CGFloat,
         windowWidth: CGFloat?
     ) -> Bool {
-        horizontalSizeClassCompact || (windowWidth ?? detailWidth) < compactWindowWidthThreshold
+        if let windowWidth {
+            return horizontalSizeClassCompact || windowWidth < compactWindowWidthThreshold
+        } else {
+            return horizontalSizeClassCompact || detailWidth < compactWidthThreshold
+        }
     }
 }
 
