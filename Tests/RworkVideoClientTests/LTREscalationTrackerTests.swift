@@ -77,5 +77,57 @@ final class LTREscalationTrackerTests: XCTestCase {
         tracker.noteRequestSent(now: 0.10)   // escalation → forced IDR request
         XCTAssertEqual(tracker.firstRequestTime, 0)
     }
+
+    // MARK: F7 — coalesce post-escalation IDR requests
+
+    /// After a forced-IDR escalation FIRES, the drain loop calls `noteEscalated(now:)`
+    /// to re-anchor the clock. A second escalation must then NOT fire again until another
+    /// full 2·RTT has elapsed — otherwise every subsequent dropped frame in the same loss
+    /// episode resends a redundant `requestIDR` (F7).
+    func testEscalationCoalescesUntilAnotherTwoRTTElapses() {
+        var tracker = LTREscalationTracker()
+        tracker.noteRequestSent(now: 0)                                       // first LTR request, t=0
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.10, rtt: rtt, policy: policy))  // 2·RTT → escalate
+
+        // The drain loop re-anchors at the escalation time.
+        tracker.noteEscalated(now: 0.10)
+        XCTAssertEqual(tracker.firstRequestTime, 0.10)
+
+        // The very next dropped frame (10 ms later) must NOT re-escalate — the OLD code
+        // kept returning true here and spammed requestIDR per dropped frame.
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.11, rtt: rtt, policy: policy))
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.19, rtt: rtt, policy: policy)) // <2·RTT from re-anchor
+
+        // Only after another full 2·RTT from the re-anchor (t=0.10 + 0.10 = 0.20) may a
+        // second escalation fire.
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.20, rtt: rtt, policy: policy))
+    }
+
+    /// F7 must NOT break BUG-H: an ORDINARY recovery request (`noteRequestSent`) still
+    /// does not move the first-request clock, so the FIRST escalation under sustained
+    /// loss still fires 2·RTT after the first request.
+    func testOrdinaryLossStillEscalatesTheFirstTime() {
+        var tracker = LTREscalationTracker()
+        tracker.noteRequestSent(now: 0)
+        // Repeated ordinary requests must not push the clock (BUG-H invariant preserved).
+        tracker.noteRequestSent(now: 0.03)
+        tracker.noteRequestSent(now: 0.06)
+        XCTAssertEqual(tracker.firstRequestTime, 0)
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.09, rtt: rtt, policy: policy)) // <2·RTT
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.10, rtt: rtt, policy: policy))  // first escalation fires
+    }
+
+    /// A keyframe decode after an escalation still ends the episode (re-anchoring does
+    /// not wedge the clock armed).
+    func testKeyframeAfterEscalationStillClearsEpisode() {
+        var tracker = LTREscalationTracker()
+        tracker.noteRequestSent(now: 0)
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.10, rtt: rtt, policy: policy))
+        tracker.noteEscalated(now: 0.10)
+        tracker.keyframeDecoded()
+        XCTAssertFalse(tracker.hasOutstandingRequest)
+        XCTAssertNil(tracker.firstRequestTime)
+        XCTAssertFalse(tracker.shouldEscalate(now: 1.0, rtt: rtt, policy: policy))
+    }
 }
 #endif

@@ -146,7 +146,7 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
         }
     }
 
-    private func receiveMedia(on conn: NWConnection, live: Liveness, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
+    private func receiveMedia(on conn: NWConnection, live: Liveness, consecutiveErrors: Int = 0, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
         conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, data.count >= 1 {
@@ -162,22 +162,41 @@ public final class NWVideoDatagramTransport: VideoDatagramTransport, @unchecked 
             // and the old `if error == nil` ended the loop forever — the host then silently
             // stopped receiving the client's input / recovery requests (BUG-L). Re-arm unless
             // the flow is genuinely dead (its state handler flipped `live`).
-            if let error { self.log.error("media receive error (transient, re-arming if alive): \(String(describing: error))") }
-            if UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: live.isAlive) {
-                self.receiveMedia(on: conn, live: live, onReceive: onReceive)
+            guard UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: live.isAlive) else { return }
+            if let error {
+                // A SUSTAINED per-datagram error (ECONNREFUSED on every `receiveMessage` while
+                // the flow stays `.ready`) would re-arm with zero delay every time → 100% CPU
+                // busy-loop (F3). Back off with a small capped delay that grows with the
+                // consecutive-error count; reset to immediate re-arm on the first good datagram.
+                self.log.error("media receive error (transient, backing off + re-arming if alive): \(String(describing: error))")
+                let next = consecutiveErrors + 1
+                self.queue.asyncAfter(deadline: .now() + UDPReceiveLoopPolicy.nextBackoff(consecutiveErrors: next)) { [weak self] in
+                    guard let self, live.isAlive else { return }
+                    self.receiveMedia(on: conn, live: live, consecutiveErrors: next, onReceive: onReceive)
+                }
+            } else {
+                self.receiveMedia(on: conn, live: live, consecutiveErrors: 0, onReceive: onReceive)
             }
         }
     }
 
-    private func receiveCursor(on conn: NWConnection, live: Liveness, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
+    private func receiveCursor(on conn: NWConnection, live: Liveness, consecutiveErrors: Int = 0, onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
         conn.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, !data.isEmpty { onReceive(.cursor, data) }
             // Same transient-error survival as receiveMedia (BUG-L): re-arm on a per-datagram
-            // error, stop only when the flow's state handler marks it dead.
-            if let error { self.log.error("cursor receive error (transient, re-arming if alive): \(String(describing: error))") }
-            if UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: live.isAlive) {
-                self.receiveCursor(on: conn, live: live, onReceive: onReceive)
+            // error, stop only when the flow's state handler marks it dead. Same
+            // consecutive-error backoff as receiveMedia so a sustained error does not spin (F3).
+            guard UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: live.isAlive) else { return }
+            if let error {
+                self.log.error("cursor receive error (transient, backing off + re-arming if alive): \(String(describing: error))")
+                let next = consecutiveErrors + 1
+                self.queue.asyncAfter(deadline: .now() + UDPReceiveLoopPolicy.nextBackoff(consecutiveErrors: next)) { [weak self] in
+                    guard let self, live.isAlive else { return }
+                    self.receiveCursor(on: conn, live: live, consecutiveErrors: next, onReceive: onReceive)
+                }
+            } else {
+                self.receiveCursor(on: conn, live: live, consecutiveErrors: 0, onReceive: onReceive)
             }
         }
     }
@@ -230,6 +249,31 @@ public enum UDPReceiveLoopPolicy {
     /// NOT stop the loop; only a dead flow does.
     public static func shouldRearm(connectionIsAlive: Bool) -> Bool {
         connectionIsAlive
+    }
+
+    /// Smallest re-arm delay after the first consecutive error (5 ms).
+    static let baseBackoff: TimeInterval = 0.005
+    /// Capped re-arm delay so a long ECONNREFUSED storm settles at ~250 ms, not a spin.
+    static let maxBackoff: TimeInterval = 0.25
+
+    /// The delay before re-arming the UDP `receiveMessage` loop after an ERROR-bearing
+    /// completion, given how many errors have arrived back-to-back without an
+    /// intervening good datagram (F3) — the host-side mirror of the client's policy. The
+    /// BUG-L fix re-arms on a transient error, but a SUSTAINED error (an ICMP
+    /// port-unreachable delivered as ECONNREFUSED on every `receiveMessage` while the
+    /// flow stays `.ready`) re-armed with ZERO delay → 100% CPU busy-loop. Exponential
+    /// growth from `baseBackoff` (×2 per consecutive error), capped at `maxBackoff`. The
+    /// loop RESETS `consecutiveErrors` to 0 on the first error-free datagram, so
+    /// `nextBackoff(0)` is 0 (immediate re-arm — the normal hot path is never delayed).
+    /// Pure + unit-testable (no socket / clock).
+    ///
+    /// - Parameter consecutiveErrors: number of back-to-back errors INCLUDING the one
+    ///   just observed (0 ⇒ no error, immediate re-arm).
+    public static func nextBackoff(consecutiveErrors: Int) -> TimeInterval {
+        guard consecutiveErrors > 0 else { return 0 }
+        let exponent = min(consecutiveErrors - 1, 16) // 2^16 · 5ms ≫ 250ms cap
+        let scaled = baseBackoff * Double(1 << exponent)
+        return min(scaled, maxBackoff)
     }
 }
 #endif
