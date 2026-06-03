@@ -140,6 +140,81 @@ final class InspectorServerTests: XCTestCase {
         XCTAssertNil(early, "no events flow before the client subscribes (stream is gated)")
     }
 
+    /// Regression (F4): on a real client disconnect the serve task must RETURN (not run
+    /// forever), so the replay-log subscriber is detached and the keep-alive stops. The
+    /// replay-log subscription itself only finishes on host shutdown / cancellation — so
+    /// before the fix, closing the client left the event pump and keep-alive timer running
+    /// and the subscriber attached forever (per-client memory + work leak). Here we
+    /// subscribe (subscriber attaches), close the CLIENT end, and assert the serve task
+    /// returns and `subscriberCount` returns to 0.
+    func testClientDisconnectEndsServeAndDetachesSubscriber() async throws {
+        let replayLog = InspectorReplayLog()
+
+        let server = InspectorServer(
+            terminalPort: 7420,
+            replayLog: replayLog,
+            keepAliveInterval: .milliseconds(20) // fast keep-alives (so a leak would keep firing)
+        )
+
+        let (hostChannel, clientChannel) = LoopbackByteChannel.pair()
+        let client = InspectorClient(channel: clientChannel)
+
+        // The serve task; `serve(channel:)` RETURNS when the connection ends. We await it
+        // (with a timeout) after closing the client to prove it does not run forever.
+        let serveTask = Task { await server.serve(channel: hostChannel) }
+        defer { serveTask.cancel() }
+
+        // Subscribe → the host attaches a live replay-log subscriber.
+        try await client.subscribe(fromSeq: 0)
+
+        // Wait until the subscriber is actually attached (the serve task hops onto the
+        // replay-log actor asynchronously after reading the subscribe control).
+        try await waitUntil("subscriber attaches") {
+            await replayLog.subscriberCount == 1
+        }
+
+        // Simulate a real client disconnect: NWByteChannel finishes its inbound on FIN;
+        // the loopback equivalent is closing the client end (finishes the host's inbound).
+        await client.close()
+
+        // The serve task must RETURN promptly (disconnect observed). Timeout → fail.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { await serveTask.value }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                throw XCTSkip("serve task did not return after client disconnect (leak)")
+            }
+            _ = try await group.next()
+            group.cancelAll()
+        }
+
+        // Subscriber detached (onTermination → removeSubscriber fired on pump teardown).
+        // (removeSubscriber hops back onto the replay-log actor from the stream's
+        // onTermination, so poll until it settles rather than reading once.)
+        try await waitUntil("subscriber detaches") {
+            await replayLog.subscriberCount == 0
+        }
+        let finalCount = await replayLog.subscriberCount
+        XCTAssertEqual(
+            finalCount, 0,
+            "serve must detach the replay-log subscriber on client disconnect"
+        )
+    }
+
+    /// Polls `condition` every 5ms up to ~2s; fails the test if it never becomes true.
+    private func waitUntil(
+        _ what: String,
+        _ condition: () async -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        for _ in 0..<400 {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("timed out waiting for: \(what)", file: file, line: line)
+    }
+
     /// Sanity: the inspector port is `terminalPort + 1`.
     func testInspectorPortIsTerminalPortPlusOne() {
         let server = InspectorServer(terminalPort: 7420, replayLog: InspectorReplayLog())
