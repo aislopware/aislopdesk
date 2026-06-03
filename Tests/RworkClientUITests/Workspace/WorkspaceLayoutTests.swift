@@ -1,0 +1,236 @@
+import XCTest
+import CoreGraphics
+@testable import RworkClientUI
+
+/// Pins the pure responsive-breakpoint helpers in ``WorkspaceLayout`` (docs/22 §4, ITEM #6) and the
+/// focus glue they cooperate with (BUG-F geometric-move-while-zoomed, BUG-K tab-switch focus reclaim).
+///
+/// All of it is synchronously testable with zero SwiftUI:
+/// - the breakpoint functions are pure;
+/// - the geometric-move contract is exercised through the ``WorkspaceStore`` `updateSolvedLayout`
+///   seam (the only view→store geometry report) with the ``FakePaneSession`` factory — never a real
+///   client / `HostServer`;
+/// - ``PaneFocusCoordinator`` compiles + runs on macOS (its UIKit calls are `#if os(iOS)`; on macOS
+///   `become`/`resign` claim synchronously through the injected ``FocusableInputHost`` fake), so the
+///   tab-switch reclaim logic is unit-reachable here without a device.
+@MainActor
+final class WorkspaceLayoutTests: XCTestCase {
+
+    // MARK: - ITEM #6: the EXISTING detail-width breakpoint stays byte-for-byte (4 regressions)
+
+    /// The original `isCompact(...:width:)` signature + the 460 detail threshold are load-bearing and
+    /// must not drift (other call sites + the reconcile suite assert against them).
+    func testDetailWidthBreakpointRegressions() {
+        XCTAssertEqual(WorkspaceLayout.compactWidthThreshold, 460, "detail-width threshold pinned")
+        // size-class compact → compact regardless of width.
+        XCTAssertTrue(WorkspaceLayout.isCompact(horizontalSizeClassCompact: true, width: 1200))
+        // wide detail → regular.
+        XCTAssertFalse(WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, width: 1200))
+        // macOS min-window detail (~500pt) → regular (below-ideal-sidebar still resolves the full tree).
+        XCTAssertFalse(WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, width: 500))
+        // genuinely phone-narrow detail → compact via the width fallback.
+        XCTAssertTrue(WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, width: 400))
+    }
+
+    // MARK: - ITEM #6: the OUTER-WINDOW overload
+
+    /// When a window width is supplied it is the geometry the breakpoint resolves against (NOT the
+    /// detail width): a window above the window threshold → regular even if the detail column passed in
+    /// is narrow (the mid-resize hazard the window reader exists to defuse).
+    func testWindowWidthFallbackResolvesAgainstWindowThreshold() {
+        XCTAssertEqual(WorkspaceLayout.compactWindowWidthThreshold, 680, "window threshold pinned (< 720 floor)")
+        // A full-floor window (720) is REGULAR even though the detail GeometryReader momentarily reports
+        // a sub-threshold 300pt mid-resize — the window width wins.
+        XCTAssertFalse(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 300, windowWidth: 720),
+            "window 720 (>= 680) resolves regular regardless of a transient narrow detail width"
+        )
+        // The window width, not the detail width, is the one compared: a wide detail can't rescue a
+        // sub-threshold window.
+        XCTAssertTrue(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 5000, windowWidth: 600),
+            "window 600 (< 680) resolves compact even with a wide detail width"
+        )
+    }
+
+    /// A window below the window threshold collapses to compact (a future sub-floor platform, or a
+    /// transient pre-constraint frame).
+    func testWindowWidthBelowWindowThresholdCollapses() {
+        XCTAssertTrue(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 679, windowWidth: 679),
+            "window just below 680 → compact"
+        )
+        XCTAssertFalse(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 680, windowWidth: 680),
+            "window exactly at the threshold → regular (strict <)"
+        )
+    }
+
+    /// With no window width (always on iOS; on macOS before the window attaches) the breakpoint falls
+    /// back to the DETAIL width — still resolved against the WINDOW threshold (the overload's only
+    /// threshold). A nil window therefore degrades to a detail-vs-window-threshold gate.
+    func testWindowWidthNilFallsBackToDetailWidth() {
+        XCTAssertFalse(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 700, windowWidth: nil),
+            "nil window → detail 700 (>= 680) resolves regular"
+        )
+        XCTAssertTrue(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: false, detailWidth: 500, windowWidth: nil),
+            "nil window → detail 500 (< 680) resolves compact"
+        )
+    }
+
+    /// The size class stays the PRIMARY signal in the overload too: a compact size class forces compact
+    /// regardless of however wide the window/detail is (the iOS path is unchanged).
+    func testSizeClassStillPrimaryOverWindowWidth() {
+        XCTAssertTrue(
+            WorkspaceLayout.isCompact(horizontalSizeClassCompact: true, detailWidth: 5000, windowWidth: 5000),
+            "size-class compact wins over an arbitrarily wide window"
+        )
+    }
+
+    // MARK: - BUG-F: a zoomed tab's geometric move resolves against the on-screen single leaf
+
+    /// Fixtures: a 3-leaf horizontal row in one tab, materialized through the fake seam.
+    private func makeThreeLeafStore() -> (WorkspaceStore, [PaneID]) {
+        let a0 = PaneID(), a1 = PaneID(), a2 = PaneID()
+        let tab = Tab(
+            name: "A",
+            root: .split(.horizontal,
+                         children: [.leaf(a0, PaneSpec(kind: .terminal, title: "a0")),
+                                    .leaf(a1, PaneSpec(kind: .terminal, title: "a1")),
+                                    .leaf(a2, PaneSpec(kind: .terminal, title: "a2"))],
+                         fractions: [1.0 / 3, 1.0 / 3, 1.0 / 3]),
+            focusedPane: a1
+        )
+        let store = WorkspaceStore(
+            restoring: Workspace(tabs: [tab], activeTabID: tab.id),
+            makeSession: { FakePaneSession($0) }
+        )
+        return (store, [a0, a1, a2])
+    }
+
+    /// A 3-pane row laid out left→right. The pre-zoom multi-pane layout makes `move(.left)` from the
+    /// middle pane land on the left pane — the regular-tree behaviour.
+    func testDirectionalMoveUsesReportedMultiPaneLayout() {
+        let (store, ids) = makeThreeLeafStore()
+        store.updateSolvedLayout(SolvedLayout(
+            frames: [
+                ids[0]: CGRect(x: 0, y: 0, width: 100, height: 100),
+                ids[1]: CGRect(x: 100, y: 0, width: 100, height: 100),
+                ids[2]: CGRect(x: 200, y: 0, width: 100, height: 100),
+            ],
+            dividers: []
+        ))
+        XCTAssertEqual(store.activeTab?.focusedPane, ids[1], "focused on the middle pane")
+        store.move(.left)
+        XCTAssertEqual(store.activeTab?.focusedPane, ids[0], "move(.left) lands on the left neighbour")
+    }
+
+    /// BUG-F: while a pane is ZOOMED the view reports a SINGLE-LEAF layout (the zoomed pane fills the
+    /// rect). A directional move then has no neighbour on screen and must NOT jump to an off-screen
+    /// pane that only exists in the stale pre-zoom rects — focus stays put.
+    func testZoomedSingleLeafLayoutSuppressesDirectionalMoveToOffscreenPane() {
+        let (store, ids) = makeThreeLeafStore()
+        // Pre-zoom multi-pane layout (what the regular tree reported before zoom).
+        store.updateSolvedLayout(SolvedLayout(
+            frames: [
+                ids[0]: CGRect(x: 0, y: 0, width: 100, height: 100),
+                ids[1]: CGRect(x: 100, y: 0, width: 100, height: 100),
+                ids[2]: CGRect(x: 200, y: 0, width: 100, height: 100),
+            ],
+            dividers: []
+        ))
+        // Zoom the focused (middle) pane. The FIX has PaneTreeView's zoomed branch report a single-leaf
+        // layout; simulate that report through the same store seam the view uses.
+        store.toggleZoom()
+        XCTAssertEqual(store.activeTab?.zoomedPane, ids[1], "middle pane is zoomed")
+        store.updateSolvedLayout(SolvedLayout(
+            frames: [ids[1]: CGRect(x: 0, y: 0, width: 300, height: 100)],
+            dividers: []
+        ))
+
+        // A directional move finds no neighbour in the single-leaf layout → focus is unchanged (no jump
+        // to the off-screen left/right pane the stale multi-pane rects would have offered).
+        store.move(.left)
+        XCTAssertEqual(store.activeTab?.focusedPane, ids[1], "move(.left) while zoomed does not jump off-screen")
+        store.move(.right)
+        XCTAssertEqual(store.activeTab?.focusedPane, ids[1], "move(.right) while zoomed does not jump off-screen")
+    }
+
+    /// BUG-F downstream: closing the zoomed pane refocuses a TREE neighbour (pre-order), not a stale
+    /// geometric rect. With a single-leaf layout reported, `neighbourForRefocus` falls through to the
+    /// tree's pre-order successor/predecessor — a real surviving pane.
+    func testCloseZoomedPaneRefocusesSurvivingTreeNeighbour() async {
+        let (store, ids) = makeThreeLeafStore()
+        store.toggleZoom()    // zoom the middle pane (ids[1])
+        store.updateSolvedLayout(SolvedLayout(
+            frames: [ids[1]: CGRect(x: 0, y: 0, width: 300, height: 100)],
+            dividers: []
+        ))
+        store.closePane(ids[1])
+        let survivors = store.activeTab?.root.allLeafIDs() ?? []
+        XCTAssertEqual(survivors.count, 2, "closing one of three leaves leaves two")
+        XCTAssertNotNil(store.activeTab?.focusedPane)
+        XCTAssertTrue(survivors.contains(store.activeTab!.focusedPane),
+                      "refocus lands on a surviving pane, not the closed/zoomed one")
+        await store.quiesce()
+    }
+
+    // MARK: - BUG-K: a tab switch forces the new tab's focused terminal to re-claim first responder
+
+    /// A minimal fake first-responder host so the coordinator's claim/resign logic is assertable on
+    /// macOS (the real UIKit path is `#if os(iOS)`; on macOS `become`/`resign` run synchronously).
+    private final class FakeHost: PaneFocusCoordinator.FocusableInputHost {
+        private(set) var becomeCount = 0
+        private(set) var resignCount = 0
+        var isFirstResponder = false
+        @discardableResult func resignFocus() -> Bool { resignCount += 1; isFirstResponder = false; return true }
+        @discardableResult func becomeFocus() -> Bool { becomeCount += 1; isFirstResponder = true; return true }
+    }
+
+    /// `reassertFocus(_:)` claims first responder for the target even when the coordinator already
+    /// records it as focused — the case `focus(_:)`'s caller-side guard would skip on a tab switch.
+    func testReassertFocusClaimsEvenWhenAlreadyBookkeptFocused() {
+        let coordinator = PaneFocusCoordinator()
+        let pane = PaneID()
+        let host = FakeHost()
+        coordinator.register(host, for: pane)
+
+        // First focus claims once.
+        coordinator.focus(pane)
+        XCTAssertEqual(host.becomeCount, 1, "initial focus claimed first responder")
+        XCTAssertEqual(coordinator.focusedPane, pane)
+
+        // A guarded re-focus to the SAME pane is what the store's same-tab path would do — but the
+        // store skips it (focusedPane == focused). The tab-switch path instead calls reassertFocus,
+        // which claims AGAIN despite the matching bookkeeping (BUG-K).
+        coordinator.reassertFocus(pane)
+        XCTAssertEqual(host.becomeCount, 2, "reassertFocus re-claims even though pane was already focused")
+        XCTAssertEqual(coordinator.focusedPane, pane)
+    }
+
+    /// End-to-end through the store seam: switching to a tab whose focused terminal host is registered
+    /// re-claims first responder, even though the coordinator's bookkeeping already named that pane
+    /// (the BUG-K race shape). Two single-leaf tabs; we register hosts for both and drive selectTab.
+    func testTabSwitchReassertsFocusForNewTabHost() {
+        let pA = PaneID(), pB = PaneID()
+        let tabA = Tab(name: "A", root: .leaf(pA, PaneSpec(kind: .terminal, title: "A")), focusedPane: pA)
+        let tabB = Tab(name: "B", root: .leaf(pB, PaneSpec(kind: .terminal, title: "B")), focusedPane: pB)
+        let store = WorkspaceStore(
+            restoring: Workspace(tabs: [tabA, tabB], activeTabID: tabA.id),
+            makeSession: { FakePaneSession($0) }
+        )
+        let hostA = FakeHost(), hostB = FakeHost()
+        store.focusCoordinator.register(hostA, for: pA)
+        store.focusCoordinator.register(hostB, for: pB)
+
+        // The init reconcile already reasserted focus to tab A's pane (first sync = "tab switched"
+        // from nil). Snapshot B's claim count, then switch tabs.
+        let bBefore = hostB.becomeCount
+        store.selectTab(tabB.id)
+        XCTAssertEqual(store.activeTab?.id, tabB.id)
+        XCTAssertGreaterThan(hostB.becomeCount, bBefore, "switching to tab B re-claims its focused terminal (BUG-K)")
+        XCTAssertEqual(store.focusCoordinator.focusedPane, pB, "coordinator intent follows the new active tab")
+    }
+}

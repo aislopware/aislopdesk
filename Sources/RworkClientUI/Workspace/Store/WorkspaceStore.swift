@@ -589,13 +589,30 @@ public final class WorkspaceStore {
         scheduleSave()
     }
 
+    /// The active tab the last ``syncFocusCoordinator()`` resolved against. Lets that sync detect a TAB
+    /// SWITCH (BUG-K) — distinct from a same-tab focus change — so it can FORCE a re-claim of the new
+    /// tab's focused terminal even when the coordinator's bookkeeping already names that pane.
+    private var lastSyncedActiveTab: TabID?
+
     /// Points the ``focusCoordinator`` at the active tab's focused pane. Called at the end of every
-    /// reconcile so the iPad-regular input focus follows the tree's intent. Only calls `focus(_:)`
-    /// when the target actually changed, so a no-op reconcile (selectTab / setFractions) does not
-    /// re-mint a generation needlessly.
+    /// reconcile so the iPad-regular input focus follows the tree's intent.
+    ///
+    /// Two paths:
+    /// - **Same tab, focus moved** → guarded `focus(_:)`: only re-mints a generation when the target
+    ///   actually changed, so a no-op reconcile (selectTab-of-active / setFractions) does not churn.
+    /// - **Tab switched** (BUG-K) → `reassertFocus(_:)`: forces a fresh generation + re-claim of the new
+    ///   tab's focused terminal REGARDLESS of the coordinator's `focusedPane` bookkeeping. On a tab
+    ///   switch the new tab's host can register while `focusedPane` still names that same pane from a
+    ///   prior life, so the guarded path would skip the claim and the new tab's terminal would never
+    ///   take the keyboard. The guard is the wrong tool across a tab boundary, so we bypass it there.
     private func syncFocusCoordinator() {
+        let activeTab = workspace.activeTabID
+        let tabSwitched = activeTab != lastSyncedActiveTab
+        lastSyncedActiveTab = activeTab
         guard let focused = workspace.activeTab?.focusedPane else { return }
-        if focusCoordinator.focusedPane != focused {
+        if tabSwitched {
+            focusCoordinator.reassertFocus(focused)
+        } else if focusCoordinator.focusedPane != focused {
             focusCoordinator.focus(focused)
         }
     }
