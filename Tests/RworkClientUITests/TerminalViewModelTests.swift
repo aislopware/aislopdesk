@@ -143,4 +143,126 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertFalse(model.bellPending)
         XCTAssertEqual(model.connectionStatus, .idle)
     }
+
+    // MARK: Replay byte-ring (surface-rebuild survival)
+
+    /// A surface seam that records EACH `feed(_:)` as a separate element, so a replay's chunk
+    /// boundaries + ordering (and the DECSTR prefix) are observable — `CapturingSurface` in
+    /// `testOutputFeedsSurface` concatenates, which would hide them.
+    private final class RecordingSurface: TerminalSurface, @unchecked Sendable {
+        var feeds: [Data] = []
+        func feed(_ bytes: Data) { feeds.append(bytes) }
+        func setSize(cols: UInt16, rows: UInt16) {}
+        func handleInput(_ bytes: Data) {}
+        var onWrite: ((Data) -> Void)?
+    }
+
+    /// DECSTR — Soft Terminal Reset (`ESC [ ! p`), the replay prefix.
+    private static let decstr = Data([0x1B, 0x5B, 0x21, 0x70])
+
+    func testRingRetainsFedChunksUpToBound() {
+        let model = TerminalViewModel()
+        model.maxRingBytes = 1024
+        model.ingestOutput(Data("aaa".utf8))
+        model.ingestOutput(Data("bbbb".utf8))
+        // Nothing evicted: under the bound. ringByteCount tracks the exact sum.
+        XCTAssertEqual(model.ringByteCount, 7)
+    }
+
+    func testRingEvictsOldestWholeChunksOverBound() {
+        let model = TerminalViewModel()
+        model.maxRingBytes = 10
+        model.ingestOutput(Data("aaaa".utf8))  // 4  → ring=[aaaa] (4)
+        model.ingestOutput(Data("bbbb".utf8))  // +4 → ring=[aaaa,bbbb] (8)
+        model.ingestOutput(Data("cccc".utf8))  // +4 → 12 > 10 → evict "aaaa" → ring=[bbbb,cccc] (8)
+        XCTAssertEqual(model.ringByteCount, 8, "evicted exactly the oldest WHOLE chunk to get back under bound")
+
+        // Attach a fresh surface and confirm the evicted chunk is gone, the surviving two replay
+        // (in FIFO order) after the DECSTR prefix.
+        let surface = RecordingSurface()
+        model.attachSurface(surface)
+        XCTAssertEqual(surface.feeds, [Self.decstr, Data("bbbb".utf8), Data("cccc".utf8)])
+    }
+
+    func testAttachSurfaceReplaysRingInFIFOOrderWithDecstrPrefix() {
+        let model = TerminalViewModel()
+        model.ingestOutput(Data("one".utf8))
+        model.ingestOutput(Data("two".utf8))
+        model.ingestOutput(Data("three".utf8))
+
+        let surface = RecordingSurface()
+        model.attachSurface(surface)
+        // First a DECSTR soft reset, then every retained chunk in the order it arrived.
+        XCTAssertEqual(
+            surface.feeds,
+            [Self.decstr, Data("one".utf8), Data("two".utf8), Data("three".utf8)],
+            "replay = DECSTR prefix then ring chunks in FIFO order"
+        )
+    }
+
+    func testReAttachAfterDetachReplaysPriorOutput() {
+        let model = TerminalViewModel()
+        // First surface receives live output, then the representable is dismantled.
+        let first = RecordingSurface()
+        model.attachSurface(first)              // empty ring → no replay
+        XCTAssertTrue(first.feeds.isEmpty)
+        model.ingestOutput(Data("live".utf8))   // fed live to `first`
+        XCTAssertEqual(first.feeds, [Data("live".utf8)])
+        model.detachSurface()
+
+        // Tab re-appears: a BRAND-NEW empty surface must be repainted from the ring.
+        let second = RecordingSurface()
+        model.attachSurface(second)
+        XCTAssertEqual(
+            second.feeds,
+            [Self.decstr, Data("live".utf8)],
+            "a rebuilt surface replays the prior output the host did not re-send"
+        )
+    }
+
+    func testAttachingSameSurfaceInstanceDoesNotReplay() {
+        let model = TerminalViewModel()
+        let surface = RecordingSurface()
+        model.attachSurface(surface)
+        model.ingestOutput(Data("x".utf8))     // fed live
+        XCTAssertEqual(surface.feeds, [Data("x".utf8)])
+
+        // Idempotent re-attach (SwiftUI updateNSView/updateUIView) of the SAME instance: the
+        // bytes are already on screen — replaying would double them.
+        model.attachSurface(surface)
+        XCTAssertEqual(surface.feeds, [Data("x".utf8)], "same instance re-attach does not replay")
+    }
+
+    func testEmptyRingAttachFeedsNothing() {
+        let model = TerminalViewModel()
+        let surface = RecordingSurface()
+        model.attachSurface(surface)
+        XCTAssertTrue(surface.feeds.isEmpty, "no retained output → attach feeds nothing (not even DECSTR)")
+    }
+
+    func testResetClearsRing() {
+        let model = TerminalViewModel()
+        model.ingestOutput(Data("abc".utf8))
+        XCTAssertEqual(model.ringByteCount, 3)
+        model.reset()
+        XCTAssertEqual(model.ringByteCount, 0, "reset clears the byte count")
+
+        // And a post-reset attach replays nothing (the ring is empty).
+        let surface = RecordingSurface()
+        model.attachSurface(surface)
+        XCTAssertTrue(surface.feeds.isEmpty, "reset cleared the ring → no replay")
+    }
+
+    func testLiveAttachStillFeedsNewChunks() {
+        let model = TerminalViewModel()
+        let surface = RecordingSurface()
+        model.attachSurface(surface)            // empty ring → no replay
+        model.ingestOutput(Data("a".utf8))
+        model.ingestOutput(Data("b".utf8))
+        XCTAssertEqual(
+            surface.feeds,
+            [Data("a".utf8), Data("b".utf8)],
+            "after attach, live output still feeds straight through to the surface"
+        )
+    }
 }

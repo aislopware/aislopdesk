@@ -11,11 +11,13 @@ import SwiftUI
 /// compact on-screen affordances emit.
 ///
 /// ### The conflict rule, expressed in shortcuts (load-bearing — docs/22 §5)
-/// Every shortcut here is ⌘- or ⌥-prefixed, mirroring ``CommandInterpreter/defaultBindings`` exactly.
-/// That is what lets plain keys and Ctrl-letters fall through to the focused terminal untouched
-/// (`TerminalInputHost.encode` returns `nil` for ⌘/⌥ combos): the menu bar claims a chord only when
-/// it carries ⌘ or ⌥, so the shell keeps every bare key. Focus-move is ⌥⌘+arrows specifically
-/// because the plain arrows belong to the shell. There is no bare-key shortcut anywhere in this file.
+/// Every shortcut here is ⌘- or ⌥-prefixed, mirroring ``CommandInterpreter/defaultBindings`` exactly
+/// — because each item *derives* its shortcut from that table rather than re-declaring the chord by
+/// hand (one source of truth). That is what lets plain keys and Ctrl-letters fall through to the
+/// focused terminal untouched (`TerminalInputHost.encode` returns `nil` for ⌘/⌥ combos): the menu
+/// bar claims a chord only when it carries ⌘ or ⌥, so the shell keeps every bare key. Focus-move is
+/// ⌥⌘+arrows specifically because the plain arrows belong to the shell. There is no bare-key shortcut
+/// anywhere in this file.
 ///
 /// ### One surface, two platforms
 /// On macOS this renders as menu-bar menus. On iPadOS the same `Commands` drive the hardware-keyboard
@@ -50,35 +52,24 @@ public struct WorkspaceCommands: Commands {
     @ViewBuilder
     private var paneMenu: some View {
         commandButton("Split Horizontally", .splitHorizontal)
-            .keyboardShortcut("d", modifiers: .command)
         commandButton("Split Vertically", .splitVertical)
-            .keyboardShortcut("d", modifiers: [.command, .shift])
 
         Divider()
 
         commandButton("Focus Left", .focus(.left))
-            .keyboardShortcut(.leftArrow, modifiers: [.option, .command])
         commandButton("Focus Right", .focus(.right))
-            .keyboardShortcut(.rightArrow, modifiers: [.option, .command])
         commandButton("Focus Up", .focus(.up))
-            .keyboardShortcut(.upArrow, modifiers: [.option, .command])
         commandButton("Focus Down", .focus(.down))
-            .keyboardShortcut(.downArrow, modifiers: [.option, .command])
 
         Divider()
 
         commandButton("Cycle Forward", .cycleFocus(forward: true))
-            .keyboardShortcut("]", modifiers: .command)
         commandButton("Cycle Back", .cycleFocus(forward: false))
-            .keyboardShortcut("[", modifiers: .command)
 
         Divider()
 
         commandButton("Zoom Pane", .toggleZoom)
-            // ⇧⌘↩ — the zoom toggle. `.return` is the named key equivalent.
-            .keyboardShortcut(.return, modifiers: [.command, .shift])
         commandButton("Close Pane", .closePane)
-            .keyboardShortcut("w", modifiers: .command)
     }
 
     // MARK: - Tab menu
@@ -86,44 +77,64 @@ public struct WorkspaceCommands: Commands {
     @ViewBuilder
     private var tabMenu: some View {
         commandButton("New Tab", .newTab)
-            .keyboardShortcut("t", modifiers: .command)
         commandButton("Rename Tab…", .renameTab)
-            .keyboardShortcut("r", modifiers: .command)
 
         Divider()
 
         commandButton("Next Tab", .nextTab)
-            .keyboardShortcut(.tab, modifiers: .control)
         commandButton("Previous Tab", .prevTab)
-            .keyboardShortcut(.tab, modifiers: [.control, .shift])
 
         Divider()
 
-        // Select tab ⌘1…⌘9 (1-based menu position; ⌘9 = last by store convention). The digit key is
-        // a `KeyEquivalent` from its Character.
+        // Select tab ⌘1…⌘9 (1-based menu position; ⌘9 = last by store convention).
         ForEach(1...9, id: \.self) { position in
             commandButton("Select Tab \(position)", .selectTab(position))
-                .keyboardShortcut(
-                    KeyEquivalent(Character(String(position))),
-                    modifiers: .command
-                )
         }
 
         Divider()
 
         commandButton("Close Tab", .closeTab)
-            .keyboardShortcut("w", modifiers: [.command, .shift])
     }
 
     // MARK: - Item builder
 
     /// A menu `Button` that applies `command` to the focused store, disabled when no store is key.
+    /// The keyboard shortcut is *derived* from ``CommandInterpreter/defaultBindings`` — the same
+    /// reverse-lookup `CommandPaletteView.shortcutHint` uses — rather than hand-declared, so the menu
+    /// and the interpreter can never drift apart. A command with no default chord simply gets no
+    /// shortcut (the `nil` case is handled by ``OptionalShortcut``).
     @ViewBuilder
     private func commandButton(_ title: String, _ command: WorkspaceCommand) -> some View {
         Button(title) {
             if let store { apply(command, to: store) }
         }
         .disabled(store == nil)
+        .modifier(OptionalShortcut(Self.shortcut(for: command)))
+    }
+
+    /// Reverse-looks-up the default chord bound to `command` and converts it to a native
+    /// `KeyboardShortcut`; `nil` when `command` has no default binding.
+    private static func shortcut(for command: WorkspaceCommand) -> KeyboardShortcut? {
+        CommandInterpreter.defaultBindings.first { $0.value == command }?.key.shortcut
+    }
+}
+
+// MARK: - Optional shortcut
+
+/// Applies a `KeyboardShortcut` only when one is present — `.keyboardShortcut(_:)` has no nil-taking
+/// overload, so this `ViewModifier` branches on the optional. Lets ``WorkspaceCommands`` derive every
+/// shortcut from the bindings table while gracefully handling a command that has no default chord.
+private struct OptionalShortcut: ViewModifier {
+    let shortcut: KeyboardShortcut?
+
+    init(_ shortcut: KeyboardShortcut?) { self.shortcut = shortcut }
+
+    func body(content: Content) -> some View {
+        if let shortcut {
+            content.keyboardShortcut(shortcut)
+        } else {
+            content
+        }
     }
 }
 #endif

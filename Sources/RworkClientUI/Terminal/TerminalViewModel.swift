@@ -83,6 +83,37 @@ public final class TerminalViewModel {
     /// coalesced and not sent twice.
     @ObservationIgnored private var lastSentSize: (cols: UInt16, rows: UInt16)?
 
+    // MARK: Replay byte-ring (surface-rebuild survival)
+
+    /// Bounded FIFO of the COMPLETE `output` chunks fed to the surface, kept so a
+    /// REBUILT surface can be repainted from scratch. SwiftUI dismantles the terminal
+    /// representable when its tab/pane goes off-screen (tab switch, compact carousel flip)
+    /// → ``detachSurface()`` closes the live `GhosttySurface`; on re-appear ``attachSurface(_:)``
+    /// receives a BRAND-NEW empty surface. The *connection never dropped*, so the host does NOT
+    /// re-send the scrollback — without this ring the prior screen would be lost. On attach of a
+    /// different surface instance we replay the ring (see ``attachSurface(_:)``).
+    ///
+    /// Each element is one whole wire `output` payload; eviction drops WHOLE oldest chunks
+    /// (never splits a `Data`) so a replayed chunk is always a complete prefix-aligned slice the
+    /// VT parser can consume. `@ObservationIgnored`: replay buffer, not view state — mutating it
+    /// must not invalidate SwiftUI.
+    ///
+    /// LIMITATION: replay is a naive re-feed of the retained raw bytes, prefixed with a DECSTR
+    /// soft reset. It restores the *main-screen* scrollback faithfully for the common case, but
+    /// it is NOT a true VT snapshot: if the oldest still-relevant state was already EVICTED past
+    /// `maxRingBytes`, or the retained window STRADDLES an escape sequence whose opening bytes
+    /// were evicted, or the host had switched to the ALT screen (vim/less) at the ring boundary,
+    /// the replayed frame can differ from the live screen until the next host output corrects it.
+    /// The soft reset bounds the damage (cursor/SGR/charset back to defaults) but cannot
+    /// reconstruct alt-screen contents the host never re-sends.
+    @ObservationIgnored private var ring: [Data] = []
+    /// Running total of `ring`'s byte count (sum of `chunk.count`), kept incrementally so
+    /// eviction is O(evicted) not O(n) per ingest.
+    @ObservationIgnored private(set) var ringByteCount: Int = 0
+    /// Soft cap on the replay ring; whole oldest chunks are evicted once exceeded. ~256 KB is a
+    /// generous several-screens scrollback while staying small enough to replay synchronously.
+    @ObservationIgnored var maxRingBytes: Int = 256 * 1024
+
     public init(surface: (any TerminalSurface)? = nil) {
         self.surface = surface
     }
@@ -131,12 +162,61 @@ public final class TerminalViewModel {
 
     /// Folds one `output` chunk: feed the renderer + bump telemetry. The first byte flips
     /// `.connecting`/`.reconnecting` → `.connected` (we are receiving from the host).
+    ///
+    /// Order matters: the chunk is retained in the replay ring (evicting whole oldest chunks to
+    /// stay under ``maxRingBytes``) BEFORE it is fed to the surface, so the ring is always a
+    /// superset/peer of what the live surface has seen — a same-tick rebuild + replay reproduces
+    /// the current screen.
     public func ingestOutput(_ chunk: Data) {
         if connectionStatus == .connecting || connectionStatus == .reconnecting {
             connectionStatus = .connected
         }
         bytesReceived += chunk.count
+
+        // Retain a WHOLE copy in the bounded replay ring, then evict whole oldest chunks until
+        // we are back under the cap (never split a Data — a partial chunk could cut an escape
+        // sequence and corrupt the replay).
+        ring.append(chunk)
+        ringByteCount += chunk.count
+        while ringByteCount > maxRingBytes, ring.count > 1 {
+            ringByteCount -= ring.removeFirst().count
+        }
+
         surface?.feed(chunk)
+    }
+
+    // MARK: Surface attach / detach (replay across rebuild)
+
+    /// DECSTR — Soft Terminal Reset (`ESC [ ! p`). Prefixed to a replay so a freshly-built
+    /// surface starts from a known state (default SGR/charset/origin-mode, cursor home) before
+    /// the retained bytes repaint over it. A soft (not hard `ESC c`) reset preserves the
+    /// scrollback the replayed bytes are about to redraw.
+    private static let decstrSoftReset = Data([0x1B, 0x5B, 0x21, 0x70])
+
+    /// Attaches a renderer surface and, if this is a *different* instance than the one currently
+    /// held and the replay ring is non-empty, REPLAYS the retained output so a rebuilt surface
+    /// (tab switch / compact flip dismantled + recreated the representable) shows the prior
+    /// screen even though the host did not re-send it.
+    ///
+    /// Replay is fully synchronous (DECSTR soft reset, then every retained chunk in FIFO order)
+    /// to honor the surface main-thread no-`await` contract ([18 §C] — `feed`/`refresh`/`draw`
+    /// must not be interleaved with suspension). Attaching the SAME instance again (idempotent
+    /// SwiftUI `updateNSView`/`updateUIView` re-attach) does NOT replay — the bytes are already
+    /// on screen; re-feeding would duplicate them.
+    public func attachSurface(_ surface: any TerminalSurface) {
+        let isDifferentInstance = (self.surface !== surface)
+        self.surface = surface
+        guard isDifferentInstance, !ring.isEmpty else { return }
+        surface.feed(Self.decstrSoftReset)
+        for chunk in ring {
+            surface.feed(chunk)
+        }
+    }
+
+    /// Detaches the renderer surface (the representable was dismantled). Drops the `weak`
+    /// reference; the retained replay ring is KEPT so the next ``attachSurface(_:)`` can repaint.
+    public func detachSurface() {
+        surface = nil
     }
 
     /// Folds one `RworkClient.Event` into observable state.
@@ -171,7 +251,8 @@ public final class TerminalViewModel {
         bellPending = false
     }
 
-    /// Resets to idle (a fresh connect target). Keeps no stale title / byte count.
+    /// Resets to idle (a fresh connect target). Keeps no stale title / byte count, and clears
+    /// the replay ring — a fresh session must not repaint the previous session's scrollback.
     public func reset() {
         connectionStatus = .idle
         title = nil
@@ -179,5 +260,7 @@ public final class TerminalViewModel {
         bellPending = false
         lastResumeSeq = 0
         lastSentSize = nil   // a fresh session must re-assert its grid size
+        ring.removeAll()     // stale scrollback must not survive into a new session
+        ringByteCount = 0
     }
 }

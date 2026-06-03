@@ -145,6 +145,41 @@ final class ConnectionViewModelTests: XCTestCase {
         await vm.disconnect()
     }
 
+    /// BUG-C: `resume()` on a never-connected pane (`client == nil`) must be a NO-OP — it must
+    /// NOT report `.connected`. `WorkspaceStore.resumeAll()` fans `resume()` out to every
+    /// materialized session on foreground, including idle panes still showing the connect form;
+    /// the old code unconditionally set `.connected` after `try await client?.resume()` (a silent
+    /// nil on the optional chain), so an idle pane falsely went `.connected`, hiding the connect
+    /// form over a dead terminal. NO HostServer: this is the pure `client == nil` path.
+    func testResumeWithoutClientStaysDisconnected() async {
+        let terminal = TerminalViewModel()
+        let vm = ConnectionViewModel(terminal: terminal, host: "127.0.0.1", port: 7420)
+        XCTAssertEqual(vm.status, .disconnected)
+        XCTAssertNil(vm.activeClient, "precondition: never connected")
+
+        await vm.resume()
+
+        XCTAssertEqual(vm.status, .disconnected, "resume() on a never-connected pane must not fake .connected")
+        XCTAssertNil(vm.activeClient, "resume() must not conjure a client")
+    }
+
+    /// BUG-C corollary: a `.failed` pane (e.g. earlier connect failure) that is later resumed
+    /// must also not be whitewashed to `.connected` while it has no live client.
+    func testResumeAfterFailedConnectDoesNotFakeConnected() async {
+        let terminal = TerminalViewModel()
+        // Unparseable port → connect() fails, client stays nil, status becomes .failed.
+        let vm = ConnectionViewModel(terminal: terminal, host: "127.0.0.1", port: 7420)
+        vm.port = "not-a-port"
+        await vm.connect()
+        if case .failed = vm.status {} else { return XCTFail("expected .failed precondition, got \(vm.status)") }
+        XCTAssertNil(vm.activeClient)
+
+        await vm.resume()
+        if case .failed = vm.status {} else {
+            XCTFail("resume() on a failed/never-live pane must not become .connected, got \(vm.status)")
+        }
+    }
+
     func testInvalidPortFails() async {
         let terminal = TerminalViewModel()
         let vm = ConnectionViewModel(terminal: terminal, host: "127.0.0.1", port: 7420)

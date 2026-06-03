@@ -73,10 +73,7 @@ public struct KeyChord: Hashable, Sendable {
 // MARK: - The interpreter
 
 /// Maps key chords to ``WorkspaceCommand``s against a rebindable table (docs/22 §5). `@MainActor`
-/// because it is owned by the UI and may later coordinate timed multi-key intents through the
-/// injected clock — which is the same virtual-clock seam (``RepeatScheduler``) the
-/// ``KeyRepeater`` uses, so timing-dependent behaviour is assertable with
-/// ``ManualRepeatScheduler`` (docs/22 §5, §8 `CommandInterpreterTests`).
+/// because it is owned by the UI.
 ///
 /// Per the WF2 scope this owns ONLY the pure chord → command mapping. It does **not** apply a
 /// command to a store (the store does not exist yet); `apply(_:to:)` lives with the store in a
@@ -87,20 +84,11 @@ public final class CommandInterpreter {
     /// to ``defaultBindings``.
     public var bindings: [KeyChord: WorkspaceCommand]
 
-    /// The injected clock seam. Held for parity with the ``KeyRepeater`` design (timed/chorded
-    /// intents) and to keep the interpreter deterministically testable; the current pure mapping
-    /// does not schedule, so it is retained but unused by ``feed(_:)``.
-    private let clock: any RepeatScheduler
-
     /// - Parameters:
-    ///   - clock: the scheduler seam (production: ``DispatchRepeatScheduler``; tests:
-    ///     ``ManualRepeatScheduler``).
     ///   - bindings: the initial chord table (defaults to ``defaultBindings``).
     public init(
-        clock: any RepeatScheduler = DispatchRepeatScheduler(),
         bindings: [KeyChord: WorkspaceCommand] = CommandInterpreter.defaultBindings
     ) {
-        self.clock = clock
         self.bindings = bindings
     }
 

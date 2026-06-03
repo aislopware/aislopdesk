@@ -102,6 +102,23 @@ public actor InspectorClient {
 
 /// Wraps a raw byte stream in an ``InspectorFrameDecoder`` and yields whole messages.
 /// Shared by both ends.
+///
+/// **Resilience (BUG-G).** A single bad *payload* must not kill the whole inspector for
+/// the session. ``InspectorFrameDecoder/nextMessage()`` removes a frame's bytes from the
+/// buffer *before* decoding its payload, so a `CodecError.malformedBody` (a future /
+/// corrupt event JSON) or `.unknownType` (a tag this build does not know) is recoverable:
+/// the frame boundary is intact, the next frame still decodes. We therefore **log +
+/// continue** on those two, draining the rest of the current chunk and resuming the live
+/// stream — the inspector survives one rogue event.
+///
+/// `CodecError.frameTooLarge` is different: it is thrown from the *length-prefix* read,
+/// before any bytes are consumed, so the byte stream is framing-desynced and every
+/// subsequent read is garbage. That is genuinely unrecoverable in-band, so we finish the
+/// stream (throwing) and the feed simply ends. There is no in-session live resubscribe
+/// today — automatic in-band reconnect is deferred to PIECE C. Recovery happens on the
+/// next iOS pause/resume cycle: ``LivePaneSession`` resume calls `subscribeInspector`,
+/// which opens a fresh connection and `subscribe(fromSeq:)`s from 0, getting a clean
+/// framed stream from the host's replay log.
 private func decodeStream(
     _ inbound: AsyncThrowingStream<Data, Error>
 ) -> AsyncThrowingStream<InspectorWireMessage, Error> {
@@ -111,8 +128,27 @@ private func decodeStream(
             do {
                 for try await chunk in inbound {
                     decoder.append(chunk)
-                    while let message = try decoder.nextMessage() {
-                        continuation.yield(message)
+                    // Drain every complete frame currently buffered, skipping individually
+                    // bad payloads but propagating a framing desync (frameTooLarge).
+                    drain: while true {
+                        do {
+                            guard let message = try decoder.nextMessage() else { break drain }
+                            continuation.yield(message)
+                        } catch let error as InspectorCodec.CodecError {
+                            switch error {
+                            case .malformedBody, .unknownType, .truncated:
+                                // Recoverable: the frame was already consumed (its bytes
+                                // removed before decode), so the boundary is intact. Skip
+                                // this one message and keep decoding the next frame.
+                                // (`.truncated` here means a short/garbled body inside an
+                                // otherwise well-framed payload — same in-band recovery.)
+                                continue drain
+                            case .frameTooLarge:
+                                // Framing desync (bad length prefix, no bytes consumed):
+                                // unrecoverable in-band — finish so the client resubscribes.
+                                throw error
+                            }
+                        }
                     }
                 }
                 continuation.finish()

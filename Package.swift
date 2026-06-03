@@ -45,7 +45,10 @@ let package = Package(
 
         // macOS host: PTY (openpty + posix_spawn createSession), session mgr,
         // no-buffer PTY<->transport relay, TIOCSWINSZ resize. (Implemented in WF-3.)
-        .target(name: "RworkHost", dependencies: ["RworkTransport", "RworkProtocol"]),
+        // Also hosts the inspector's second-connection server (InspectorServer):
+        // RworkHost depends on RworkInspector for the wire types + replay log. This is
+        // acyclic — RworkInspector depends ONLY on RworkProtocol, never on RworkHost.
+        .target(name: "RworkHost", dependencies: ["RworkTransport", "RworkProtocol", "RworkInspector"]),
 
         // Shared client: connection mgr, reconnect, input encoding. (WF-4.)
         .target(name: "RworkClient", dependencies: ["RworkTransport", "RworkProtocol"]),
@@ -148,7 +151,7 @@ let package = Package(
         // MARK: Tests
         .testTarget(name: "RworkProtocolTests", dependencies: ["RworkProtocol"]),
         .testTarget(name: "RworkTransportTests", dependencies: ["RworkTransport"]),
-        .testTarget(name: "RworkHostTests", dependencies: ["RworkHost"]),
+        .testTarget(name: "RworkHostTests", dependencies: ["RworkHost", "RworkInspector"]),
         // RworkClientTests exercises the REAL PATH 1 e2e: a HostServer (RworkHost) +
         // RworkClient over loopback, so it depends on RworkHost + RworkTTY too.
         .testTarget(name: "RworkClientTests", dependencies: ["RworkClient", "RworkHost", "RworkTransport", "RworkTerminal", "RworkTTY"]),
