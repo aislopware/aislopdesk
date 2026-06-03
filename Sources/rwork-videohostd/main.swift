@@ -199,8 +199,19 @@ Task {
         let title = (window.title?.isEmpty == false) ? window.title! : "(untitled)"
         let wid = window.windowID
 
+        // Clamp captureScale to the host display's backing scale. ScreenCaptureKit captures a
+        // window whose backing is 1× into a LARGER (e.g. 2×) output buffer by placing the content
+        // 1:1 in the TOP-LEFT + black padding — it does NOT upscale. A client then faithfully
+        // renders that half/quarter-filled buffer → the video appears "in one corner" ("nhỏ 1
+        // góc"). Requesting more scale than the host display has buys no real detail anyway, so
+        // cap it. (A 2× host display will allow --scale 2 for crisp text.)
+        let displayScale = await MainActor.run { NSScreen.main?.backingScaleFactor ?? 1.0 }
+        let effectiveScale = min(args.scale, displayScale)
+        if effectiveScale < args.scale {
+            log("clamping --scale \(args.scale) → \(effectiveScale) (host display backing scale; SCK pads, not upscales)")
+        }
         let transport = NWVideoDatagramTransport(mediaPort: args.mediaPort, cursorPort: args.cursorPort)
-        let session = RworkVideoHostSession(window: window, transport: transport, captureScale: args.scale, bitrate: args.bitrateMbps * 1_000_000)
+        let session = RworkVideoHostSession(window: window, transport: transport, captureScale: effectiveScale, bitrate: args.bitrateMbps * 1_000_000)
         holder.set(session)
         try await session.start()
 
