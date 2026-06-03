@@ -10,10 +10,24 @@ import RworkClient
 public struct InputBarView: View {
     @Bindable private var model: InputBarModel
     private let client: RworkClient?
+    /// The pane this input surface backs — forwarded to the iOS ``TerminalInputHost`` so the
+    /// ``PaneFocusCoordinator`` can register/resolve first-responder for the right pane (docs/22 §7).
+    /// `nil` falls back to a fresh id (no coordination — the compact single-host path is unaffected).
+    private let paneID: PaneID?
+    /// The single-focus arbiter for the multi-visible iPad-regular path (docs/22 §7). `nil` ⇒ no
+    /// coordination (compact / macOS), preserving the pre-WF6 direct-claim behaviour.
+    private let focusCoordinator: PaneFocusCoordinator?
 
-    public init(model: InputBarModel, client: RworkClient?) {
+    public init(
+        model: InputBarModel,
+        client: RworkClient?,
+        paneID: PaneID? = nil,
+        focusCoordinator: PaneFocusCoordinator? = nil
+    ) {
         _model = Bindable(model)
         self.client = client
+        self.paneID = paneID
+        self.focusCoordinator = focusCoordinator
     }
 
     public var body: some View {
@@ -41,7 +55,15 @@ public struct InputBarView: View {
         // iOS native-feel input surface: the `TerminalInputHost` `UIResponder` assembles the four
         // table-stakes components (KeyRepeater / KeyboardAccessoryBar / IMEProxyTextView /
         // FloatingCursorController) and routes every keystroke straight to `RworkClient.sendInput`.
-        TerminalInputHost(model: model, client: client)
+        TerminalInputHost(
+            model: model,
+            client: client,
+            paneID: paneID ?? PaneID(),
+            // Never register a coordinator under an ephemeral (no-paneID) key: a coordinator only
+            // makes sense with a STABLE paneID. A mis-wired caller (coordinator but nil paneID)
+            // degrades to the compact direct-claim path instead of an unstable registration.
+            coordinator: paneID == nil ? nil : focusCoordinator
+        )
             .frame(maxWidth: .infinity, minHeight: 36)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
         #else

@@ -35,21 +35,45 @@ import RworkClient
 public struct TerminalInputHost: UIViewRepresentable {
     private let model: InputBarModel
     private let client: RworkClient?
+    /// The pane this input surface backs (docs/22 §7). The key the ``PaneFocusCoordinator`` registers
+    /// this host under so a focus change can resign-before-become the right surface.
+    private let paneID: PaneID
+    /// The single-focus arbiter for the multi-visible iPad-regular path (docs/22 §7). `nil` ⇒ compact
+    /// (one mounted host): no race to coordinate, so the host claims first responder directly on
+    /// appear, exactly as before.
+    private let coordinator: PaneFocusCoordinator?
 
-    public init(model: InputBarModel, client: RworkClient?) {
+    public init(
+        model: InputBarModel,
+        client: RworkClient?,
+        paneID: PaneID,
+        coordinator: PaneFocusCoordinator? = nil
+    ) {
         self.model = model
         self.client = client
+        self.paneID = paneID
+        self.coordinator = coordinator
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(model: model, client: client)
+        Coordinator(model: model, client: client, paneID: paneID, focusCoordinator: coordinator)
     }
 
     public func makeUIView(context: Context) -> TerminalInputResponderView {
         let view = TerminalInputResponderView()
         context.coordinator.attach(to: view)
-        // Become first responder so the software/hardware keyboard targets this surface.
-        DispatchQueue.main.async { _ = view.becomeFirstResponder() }
+        if let focus = context.coordinator.focusCoordinator {
+            // iPad-regular (multi-visible): route first-responder through the coordinator so a stale
+            // async becomeFirstResponder can never win the race (resign-before-become + generation
+            // reject — docs/22 §7). The coordinator drives the actual `becomeFocus()`; we do NOT also
+            // issue an un-tokened `becomeFirstResponder()` here (that would race the coordinator).
+            let adapter = context.coordinator.makeFocusAdapter(for: view)
+            focus.register(adapter, for: context.coordinator.paneID)
+        } else {
+            // Compact (single mounted host): no race — claim first responder directly so the
+            // software/hardware keyboard targets this surface (the pre-WF6 behaviour, preserved).
+            DispatchQueue.main.async { _ = view.becomeFirstResponder() }
+        }
         return view
     }
 
@@ -59,6 +83,9 @@ public struct TerminalInputHost: UIViewRepresentable {
     }
 
     public static func dismantleUIView(_ uiView: TerminalInputResponderView, coordinator: Coordinator) {
+        // Unregister BEFORE teardown so the focus coordinator drops the (about-to-die) host and never
+        // resurrects it from a scheduled become (docs/22 §7).
+        coordinator.focusCoordinator?.unregister(coordinator.paneID)
         uiView.teardown()
         coordinator.teardown()
     }
@@ -69,6 +96,14 @@ public struct TerminalInputHost: UIViewRepresentable {
     public final class Coordinator {
         let model: InputBarModel
         var client: RworkClient?
+        /// The pane this host backs (the coordinator registration key — docs/22 §7).
+        let paneID: PaneID
+        /// The single-focus arbiter, or `nil` on the compact single-host path.
+        let focusCoordinator: PaneFocusCoordinator?
+        /// The focus adapter over the responder view. RETAINED here because the coordinator's registry
+        /// holds it weakly (so a dismantled host can't be resurrected); the Coordinator's lifetime is
+        /// the host's, so this is the right owner.
+        private var focusAdapter: FocusInputHostAdapter?
 
         /// One ordered outbound item (a raw key sequence or composed text).
         private enum Outbound { case raw([UInt8]); case text(String) }
@@ -86,13 +121,29 @@ public struct TerminalInputHost: UIViewRepresentable {
         private let outboundContinuation: AsyncStream<Outbound>.Continuation
         private var drainTask: Task<Void, Never>?
 
-        init(model: InputBarModel, client: RworkClient?) {
+        init(
+            model: InputBarModel,
+            client: RworkClient?,
+            paneID: PaneID,
+            focusCoordinator: PaneFocusCoordinator?
+        ) {
             self.model = model
             self.client = client
+            self.paneID = paneID
+            self.focusCoordinator = focusCoordinator
             var cont: AsyncStream<Outbound>.Continuation!
             self.outbound = AsyncStream(bufferingPolicy: .unbounded) { cont = $0 }
             self.outboundContinuation = cont
             startDrain()
+        }
+
+        /// Builds (and retains) the ``FocusInputHostAdapter`` over `view` for the focus coordinator.
+        /// Called once from `makeUIView`; the coordinator holds the returned adapter weakly, so this
+        /// Coordinator is its strong owner for the host's lifetime.
+        func makeFocusAdapter(for view: TerminalInputResponderView) -> FocusInputHostAdapter {
+            let adapter = FocusInputHostAdapter(view: view)
+            focusAdapter = adapter
+            return adapter
         }
 
         private func startDrain() {
@@ -291,6 +342,34 @@ public final class TerminalInputResponderView: UIView {
         case UIKeyCommand.inputRightArrow: return KeyboardAccessoryBar.Key.right.bytes
         default: return nil
         }
+    }
+}
+
+// MARK: - Focus adapter (the PaneFocusCoordinator seam)
+
+/// A thin adapter that lets the ``PaneFocusCoordinator`` drive a ``TerminalInputResponderView``'s
+/// first-responder status WITHOUT importing the coordinator into the byte pipeline (docs/22 §7 — the
+/// adapter approach). It forwards `resignFocus()`/`becomeFocus()` to the view's
+/// `resignFirstResponder()`/`becomeFirstResponder()` (both already overridden to forward to the IME
+/// proxy). The view is held **weakly** so a dismantled host is never resurrected or leaked — the
+/// coordinator's registry also boxes the adapter weakly, and the `TerminalInputHost.Coordinator`
+/// retains it for the host's lifetime.
+@MainActor
+public final class FocusInputHostAdapter: PaneFocusCoordinator.FocusableInputHost {
+    private weak var view: TerminalInputResponderView?
+
+    init(view: TerminalInputResponderView) {
+        self.view = view
+    }
+
+    @discardableResult
+    public func resignFocus() -> Bool {
+        view?.resignFirstResponder() ?? false
+    }
+
+    @discardableResult
+    public func becomeFocus() -> Bool {
+        view?.becomeFirstResponder() ?? false
     }
 }
 #endif
