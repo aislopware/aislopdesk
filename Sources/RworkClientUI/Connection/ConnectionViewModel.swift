@@ -175,10 +175,24 @@ public final class ConnectionViewModel {
     }
 
     /// iOS lifecycle: app foregrounded → byte-exact resume.
+    ///
+    /// A no-op for a pane that was never connected. `WorkspaceStore.resumeAll()` fans `resume()`
+    /// out to EVERY materialized session on foreground — including idle panes still showing the
+    /// connect form (`client == nil`). The old code unconditionally set `status = .connected`
+    /// after `try await client?.resume()`, and with `client == nil` the optional chain is a
+    /// silent nil (no throw), so an idle pane FALSELY reported `.connected` → `PaneLeafView` hid
+    /// the connect form, stranding a dead empty terminal. Guard on a live client, and only
+    /// re-assert `.connected` when the pane was actually in a connected-ish state before the
+    /// pause (so a `.failed`/`.disconnected` client is not whitewashed to `.connected`).
     public func resume() async {
+        guard let client else { return }
+        // Capture the pre-resume state: pause() does not change `status`, so a connection that
+        // was live (or mid-reconnect) before backgrounding is still `.connected`/`.reconnecting`.
+        // Only such a pane should snap back to `.connected`; a never-up client must not.
+        let wasLive = (status == .connected || status == .reconnecting)
         do {
-            try await client?.resume()
-            status = .connected
+            try await client.resume()
+            if wasLive { status = .connected }
         } catch {
             status = .failed(String(describing: error))
         }
