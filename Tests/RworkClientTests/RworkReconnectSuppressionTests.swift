@@ -19,19 +19,20 @@ import RworkHost
 /// This test drives the real supervising loop over loopback TCP, forces exactly ONE drop,
 /// and asserts EXACTLY ONE reconnect campaign runs — i.e. no spurious extra `.disconnected`
 /// reached the consumer and no redundant second campaign was queued.
-final class RworkReconnectSuppressionTests: XCTestCase {
+///
+/// Reparented onto ``HostServerE2ECase`` (ITEM #10): bring-up + the awaited
+/// `server.stop()` / `client.close()` teardown live in the base class, and the per-test
+/// ceiling sits above this suite's 15s inner waits so a hung supervisor FAILS instead of
+/// wedging the shared test process.
+final class RworkReconnectSuppressionTests: HostServerE2ECase {
+
+    /// Inner waits cap at 15s plus a 500ms spurious-campaign window; 60s clears that with
+    /// margin yet still kills a genuinely hung supervising loop.
+    override var perTestTimeAllowance: TimeInterval { 60 }
 
     func testSingleDropRunsExactlyOneReconnectCampaign() async throws {
-        let server = HostServer(port: 0, shellPath: "/bin/sh")
-        try await server.start()
-        guard let port = await server.boundPort() else {
-            await server.stop()
-            throw XCTSkip("host did not bind a port")
-        }
-        defer { Task { await server.stop() } }
-
-        let client = RworkClient(ackInterval: .milliseconds(20))
-        try await client.connect(host: "127.0.0.1", port: port)
+        let (_, port) = try await startHost()
+        let client = try await connectedClient(toPort: port, ackInterval: .milliseconds(20))
 
         // Count reconnect campaigns started by the supervising loop. `start()` logs
         // "reconnect: transport dropped" exactly once at the head of each campaign, so the
@@ -91,16 +92,8 @@ final class RworkReconnectSuppressionTests: XCTestCase {
     /// live-transport replacement. Removing the `!tearingDown` clause makes this fail with
     /// exactly one spurious `.disconnected`.
     func testLiveTransportReplacementSurfacesNoDisconnect() async throws {
-        let server = HostServer(port: 0, shellPath: "/bin/sh")
-        try await server.start()
-        guard let port = await server.boundPort() else {
-            await server.stop()
-            throw XCTSkip("host did not bind a port")
-        }
-        defer { Task { await server.stop() } }
-
-        let client = RworkClient(ackInterval: .milliseconds(20))
-        try await client.connect(host: "127.0.0.1", port: port)
+        let (_, port) = try await startHost()
+        let client = try await connectedClient(toPort: port, ackInterval: .milliseconds(20))
 
         // Keep the surfaced output stream drained so the session stays live.
         let drain = Task { for await _ in client.output {} }

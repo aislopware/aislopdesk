@@ -8,19 +8,15 @@ import RworkHost
 /// PATH 1 end-to-end tests using the REAL components: a ``HostServer`` (RworkHost,
 /// spawning `/bin/sh` in a real PTY) and a ``RworkClient`` (built on the real
 /// ``ClientTransport``) over a 127.0.0.1 ephemeral-port TCP connection.
-final class RworkClientE2ETests: XCTestCase {
+///
+/// Reparented onto ``HostServerE2ECase`` (ITEM #10): `startHost()` / the timeout helper +
+/// the awaited `server.stop()` / `client.close()` teardown now live in the base class, so a
+/// hung test FAILS under the per-test ceiling instead of wedging the shared test process.
+final class RworkClientE2ETests: HostServerE2ECase {
 
-    /// Starts a HostServer on an ephemeral loopback port spawning `/bin/sh`, returns it
-    /// plus the bound port. Caller must `await server.stop()`.
-    private func startHost(shell: String = "/bin/sh") async throws -> (server: HostServer, port: UInt16) {
-        let server = HostServer(port: 0, shellPath: shell)
-        try await server.start()
-        guard let port = await server.boundPort() else {
-            await server.stop()
-            throw XCTSkip("host did not bind a port")
-        }
-        return (server, port)
-    }
+    /// Echo + sniffer assertions finish in well under a minute; a 60s ceiling sits above the
+    /// largest inner timeout (10s) yet still kills a genuinely hung body.
+    override var perTestTimeAllowance: TimeInterval { 60 }
 
     /// Collects bytes from the client's `output` stream until `needle` appears or the
     /// deadline passes. Returns the accumulated string (may be empty on timeout).
@@ -56,11 +52,8 @@ final class RworkClientE2ETests: XCTestCase {
     // MARK: - E2E echo over loopback
 
     func testEchoRoundTripAndExit() async throws {
-        let (server, port) = try await startHost()
-        defer { Task { await server.stop() } }
-
-        let client = RworkClient()
-        try await client.connect(host: "127.0.0.1", port: port)
+        let (_, port) = try await startHost()
+        let client = try await connectedClient(toPort: port)
 
         // Drive a known echo + an exit; assert both surface.
         try await client.sendInput(Data("echo rwork-e2e-OK\n".utf8))
@@ -90,11 +83,8 @@ final class RworkClientE2ETests: XCTestCase {
     /// This is the path the audit found dead — `sendControl` had zero callers; the sniffer
     /// is now its caller, wired into `HostSession`'s output relay.
     func testTitleAndBellSurfaceEndToEnd() async throws {
-        let (server, port) = try await startHost()
-        defer { Task { await server.stop() } }
-
-        let client = RworkClient()
-        try await client.connect(host: "127.0.0.1", port: port)
+        let (_, port) = try await startHost()
+        let client = try await connectedClient(toPort: port)
 
         // Collect title/bell events as they arrive.
         let titleSeen = Task { () -> String? in
@@ -129,11 +119,8 @@ final class RworkClientE2ETests: XCTestCase {
     // MARK: - Ack correctness: never ack an unreceived seq; ack releases retained bytes
 
     func testClientNeverAcksUnreceivedSeq() async throws {
-        let (server, port) = try await startHost()
-        defer { Task { await server.stop() } }
-
-        let client = RworkClient(ackInterval: .milliseconds(20))
-        try await client.connect(host: "127.0.0.1", port: port)
+        let (_, port) = try await startHost()
+        let client = try await connectedClient(toPort: port, ackInterval: .milliseconds(20))
 
         // Receive some output.
         try await client.sendInput(Data("echo ack-probe\n".utf8))
@@ -186,17 +173,17 @@ final class RworkClientE2ETests: XCTestCase {
         return 0
     }
 
+    // The `withTimeout(_:_:)` helper that these tests call now lives on the
+    // ``HostServerE2ECase`` base class (ITEM #10), so it is shared by all three E2E suites.
+
     // MARK: - End-to-end ack drains the host's retained buffer through the wire
 
     func testEndToEndAckDrainsHostBufferViaTransport() async throws {
         // Drive the full ClientTransport ↔ HostSessionTransport handshake is covered by
         // the reconnect e2e; here we assert the client's periodic ack reaches the host by
         // checking the client advances + flushes without ever exceeding what it received.
-        let (server, port) = try await startHost()
-        defer { Task { await server.stop() } }
-
-        let client = RworkClient(ackInterval: .milliseconds(20))
-        try await client.connect(host: "127.0.0.1", port: port)
+        let (_, port) = try await startHost()
+        let client = try await connectedClient(toPort: port, ackInterval: .milliseconds(20))
         try await client.sendInput(Data("echo drain-check\n".utf8))
         _ = await awaitOutput(containing: "drain-check", from: client)
 
@@ -205,18 +192,5 @@ final class RworkClientE2ETests: XCTestCase {
         let contiguous = await client.highestContiguousSeq
         XCTAssertGreaterThan(contiguous, 0)
         await client.close()
-    }
-
-    // MARK: - Helpers
-
-    /// Runs `body`, returning its value, or `nil` if it does not finish within `timeout`.
-    private func withTimeout<T: Sendable>(_ timeout: Duration, _ body: @escaping @Sendable () async -> T?) async -> T? {
-        await withTaskGroup(of: T?.self) { group in
-            group.addTask { await body() }
-            group.addTask { try? await Task.sleep(for: timeout); return nil }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
     }
 }
