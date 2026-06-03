@@ -74,9 +74,20 @@ public struct WorkspacePersistence: @unchecked Sendable {
 
     // MARK: Load
 
-    /// Reads + decodes the workspace, applying the failure policy: any read/decode failure OR a
-    /// future/unknown `schemaVersion` yields ``Workspace/defaultWorkspace()`` (docs/22 §6). Never
-    /// throws — launch must always get a usable workspace.
+    /// Reads + decodes the workspace, then forward-migrates it to this build's schema (docs/22 §6).
+    /// Never throws — launch must always get a usable workspace:
+    /// - A read failure (missing file) → ``Workspace/defaultWorkspace()``.
+    /// - A decode failure (corrupt JSON, an unknown discriminator) → ``Workspace/defaultWorkspace()``.
+    /// - An *older* payload → upgraded in place by ``WorkspaceSchemaMigration`` (an older store is
+    ///   migrated forward, no longer discarded on the first schema bump).
+    /// - A *future* / un-migratable version → ``WorkspaceSchemaMigration/migrate(_:from:to:)`` returns
+    ///   `nil` and we fall back to the default (a build cannot interpret a newer shape).
+    ///
+    /// Because migration runs on the *already-decoded* value, it only covers schema changes that are
+    /// still parseable by today's `Codable`. A future **v2 that reshapes the wire format** (so the v1
+    /// decoder can no longer parse it) would fail the `decode` above and fall back to default; handling
+    /// it would need a pre-decode raw-JSON branch here (peek `schemaVersion` off the raw object, run a
+    /// JSON→JSON upgrade, then decode). That is out of scope — see ``WorkspaceSchemaMigration``.
     public func load() -> Workspace {
         guard let data = try? Data(contentsOf: fileURL) else {
             return .defaultWorkspace()
@@ -84,12 +95,11 @@ public struct WorkspacePersistence: @unchecked Sendable {
         guard let decoded = try? JSONDecoder().decode(Workspace.self, from: data) else {
             return .defaultWorkspace()
         }
-        // Any version other than currentSchemaVersion is not safely interpretable here (a newer
-        // build's higher schema, or an older payload that would need migration). Until a
-        // migrate(from:to:) seam exists (a documented followup), fall back to the default.
-        guard decoded.schemaVersion == Workspace.currentSchemaVersion else {
+        // Forward-migrate the decoded value to this build's schema. A future/un-migratable version
+        // (migrate → nil) falls back to the default; v1-today is an identity passthrough.
+        guard let migrated = WorkspaceSchemaMigration.migrate(decoded, from: decoded.schemaVersion) else {
             return .defaultWorkspace()
         }
-        return decoded
+        return migrated
     }
 }
