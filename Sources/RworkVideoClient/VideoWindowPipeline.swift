@@ -33,6 +33,18 @@ final class VideoWindowPipeline {
     private var activeConnection: VideoWindowConnection?
     private var layerSize: VideoSize = VideoSize(width: 0, height: 0)
 
+    /// Client half of the input-latency fix: coalesce high-rate pointer motion to one send per
+    /// display-refresh interval (most-recent-wins), so a 60-120 Hz trackpad does not spawn a Task
+    /// per event and flood the wire + the session actor's mailbox. `pendingMotionSend` holds the
+    /// latest deferred move/drag; `motionPump` flushes it every `motionInterval`; any button /
+    /// scroll / key / text flushes it FIRST so a move that physically preceded a click is never
+    /// sent after it (noVNC `_flushMouseMoveTimer` / TigerVNC `pointerEventInterval`). The host
+    /// additionally coalesces whatever still arrives, so this is a bandwidth/CPU optimisation
+    /// layered on a correctness fix that already holds host-side.
+    private var pendingMotionSend: (() -> Void)?
+    private var motionPump: Task<Void, Never>?
+    private var motionInterval: TimeInterval = 1.0 / 30.0
+
     #if os(macOS)
     typealias HostView = NSView
     #elseif canImport(UIKit)
@@ -107,10 +119,15 @@ final class VideoWindowPipeline {
         Task { try? await session.start() }
         let initialSize = layerSize
         Task { await session.setLayerSize(initialSize) }
+
+        // Drive the motion-coalescing pump at the same cadence as the video frame cap.
+        motionInterval = 1.0 / max(1, maxFrameRate)
+        startMotionPump()
     }
 
     /// Tears the pipeline + display link + sockets down (called on disappear/dismantle).
     func deactivate() {
+        stopMotionPump()
         pacer?.stop()
         if let session {
             Task { await session.stop() }
@@ -179,31 +196,65 @@ final class VideoWindowPipeline {
 
     func mouseMove(_ viewPoint: VideoPoint) {
         guard let session else { return }
-        Task { await session.sendMouseMove(viewPoint: viewPoint) }
+        // Coalesce: defer to the motion pump (most-recent-wins) instead of a Task per event.
+        pendingMotionSend = { Task { await session.sendMouseMove(viewPoint: viewPoint) } }
     }
     func mouseDrag(_ button: MouseButton, _ viewPoint: VideoPoint, _ clickCount: UInt8, _ modifiers: InputModifiers) {
         guard let session else { return }
-        Task { await session.sendMouseDrag(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
+        pendingMotionSend = { Task { await session.sendMouseDrag(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) } }
     }
     func mouseDown(_ button: MouseButton, _ viewPoint: VideoPoint, _ clickCount: UInt8, _ modifiers: InputModifiers) {
         guard let session else { return }
+        flushPendingMotion()   // a move that preceded this click must reach the host first
         Task { await session.sendMouseDown(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
     }
     func mouseUp(_ button: MouseButton, _ viewPoint: VideoPoint, _ clickCount: UInt8, _ modifiers: InputModifiers) {
         guard let session else { return }
+        flushPendingMotion()   // the final drag sample must precede the release edge
         Task { await session.sendMouseUp(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
     }
     func scroll(dx: Double, dy: Double, viewPoint: VideoPoint) {
         guard let session else { return }
+        flushPendingMotion()
         Task { await session.sendScroll(dx: dx, dy: dy, viewPoint: viewPoint) }
     }
     func key(keyCode: UInt16, down: Bool, modifiers: InputModifiers) {
         guard let session else { return }
+        flushPendingMotion()
         Task { await session.sendKey(keyCode: keyCode, down: down, modifiers: modifiers) }
     }
     func text(_ string: String) {
         guard let session else { return }
+        flushPendingMotion()
         Task { await session.sendText(string) }
+    }
+
+    // MARK: Motion pump (client-side coalescing)
+
+    /// Starts the @MainActor pump that flushes the latest deferred pointer motion every
+    /// `motionInterval`. Idle ticks are a no-op (nothing pending). Restarted on each activate.
+    private func startMotionPump() {
+        motionPump?.cancel()
+        let interval = motionInterval
+        motionPump = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                self?.flushPendingMotion()
+            }
+        }
+    }
+
+    private func stopMotionPump() {
+        motionPump?.cancel()
+        motionPump = nil
+        pendingMotionSend = nil
+    }
+
+    /// Send the latest deferred pointer motion now (most-recent-wins), if any.
+    private func flushPendingMotion() {
+        guard let send = pendingMotionSend else { return }
+        pendingMotionSend = nil
+        send()
     }
 }
 
