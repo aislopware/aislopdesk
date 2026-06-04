@@ -83,6 +83,12 @@ public final class HostServer: @unchecked Sendable {
     private var acceptTask: Task<Void, Never>?
     private var reaperTask: Task<Void, Never>?
 
+    /// TCP-mux (RWORK_TCP_MUX) relay: consumes shared mux connections and spawns a PTY per channel.
+    /// `nil`/idle when the gate is OFF — the OFF path never constructs or touches it.
+    private var muxAcceptTask: Task<Void, Never>?
+    /// Live per-channel mux sessions, keyed by `channelID`, guarded by `lock`. Empty when OFF.
+    private var muxSessions: [UInt32: MuxChannelSession] = [:]
+
     /// A hook the daemon can set to log session lifecycle to stderr.
     public var onLog: (@Sendable (String) -> Void)?
 
@@ -116,16 +122,37 @@ public final class HostServer: @unchecked Sendable {
                 self?.handleNewSession(sessionTransport)
             }
         }
+        // TCP-mux gate (RWORK_TCP_MUX): only consume shared mux connections when the host
+        // transport's gate is ON. With it OFF, `muxConnections_` never yields (the handshake
+        // rejects mux preambles), so this loop idles forever harmlessly — the OFF path spawns
+        // PTYs exclusively through the unchanged `handleNewSession` above.
+        let muxStream = transport.muxConnections_
+        muxAcceptTask = Task { [weak self] in
+            for await muxConnection in muxStream {
+                await self?.handleNewMuxConnection(muxConnection)
+            }
+        }
         startIdleReaperIfNeeded()
     }
 
     /// Stops the listener and shuts down every live session.
     public func stop() async {
         acceptTask?.cancel()
+        muxAcceptTask?.cancel()
         cancelReaperTask()
         await transport.stop()
         let live = drainSessions()
         for session in live { session.shutdown() }
+        let liveMux = drainMuxSessions()
+        for session in liveMux { session.shutdown() }
+    }
+
+    /// Synchronously removes and returns every live mux channel session (no `await` across the lock).
+    private func drainMuxSessions() -> [MuxChannelSession] {
+        lock.lock(); defer { lock.unlock() }
+        let live = Array(muxSessions.values)
+        muxSessions.removeAll()
+        return live
     }
 
     /// Cancels the idle-reaper task under the lock (sync helper — keeps `NSLock` out of
@@ -323,6 +350,61 @@ public final class HostServer: @unchecked Sendable {
         lock.lock()
         let session = sessions.removeValue(forKey: id)
         offlineSince[id] = nil // drop any idle-reaper bookkeeping for the gone session.
+        lock.unlock()
+        session?.shutdown()
+    }
+
+    // MARK: New mux connection / channel (TCP-mux S1 — gated, never reached when OFF)
+
+    /// Installs the per-channel-open handler on a freshly-accepted shared mux connection. Every
+    /// `channelOpen` the client sends on this connection mints a PTY + per-channel relay and acks.
+    private func handleNewMuxConnection(_ connection: MuxNWConnection) async {
+        await connection.setHostOpenHandler { [weak self] open in
+            // Hop off the mux actor's executor: spawning a PTY + locking the session map is the
+            // owner's (HostServer) job. The sub-channels are already registered on `connection`.
+            guard let self else { return }
+            self.spawnMuxChannel(open, on: connection)
+        }
+        onLog?("mux connection accepted (shared)")
+    }
+
+    /// Spawns a shell + per-channel relay for one peer-initiated channel, registers it, and acks the
+    /// open. Mirrors ``handleNewSession``'s spawn logic exactly (same launch mode / env / argv0).
+    private func spawnMuxChannel(_ open: MuxChannelOpen, on connection: MuxNWConnection) {
+        let pty = PTYProcess()
+        do {
+            let argv0 = HostEnvironment.loginArgv0(forShell: shellPath)
+            switch launchMode {
+            case .shell:
+                try pty.spawn(shellPath, environment: HostEnvironment.curated(), argv0: argv0)
+            case .claudeCode(let profile):
+                try pty.spawn(
+                    shellPath,
+                    arguments: profile.loginShellArguments(),
+                    environment: profile.environment(),
+                    argv0: argv0
+                )
+            }
+        } catch {
+            onLog?("mux channel \(open.channelID): shell spawn failed: \(error)")
+            // Refuse the channel so the client's router marks it dead and never routes data to it.
+            Task { await connection.sendOpenAck(open.channelID, accepted: false) }
+            return
+        }
+
+        let session = MuxChannelSession(channelID: open.channelID, pty: pty, data: open.data, control: open.control)
+        session.onExit = { [weak self] channelID in self?.removeMuxSession(channelID) }
+        lock.lock()
+        muxSessions[open.channelID] = session
+        lock.unlock()
+        session.startRelay()
+        Task { await connection.sendOpenAck(open.channelID, accepted: true) }
+        onLog?("mux channel \(open.channelID): shell \(shellPath) (pid \(pty.pid)) attached")
+    }
+
+    private func removeMuxSession(_ channelID: UInt32) {
+        lock.lock()
+        let session = muxSessions.removeValue(forKey: channelID)
         lock.unlock()
         session?.shutdown()
     }
