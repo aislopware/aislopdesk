@@ -130,9 +130,9 @@ final class VideoWindowPipeline {
                     compositor?.apply(update, viewSize: placement.viewSize, videoNativeSize: placement.videoNativeSize, zoom: placement.zoom, pan: placement.pan, mode: placement.mode)
                 }
             },
-            registerCursorShape: { [weak compositor] image, shapeID in
+            registerCursorShape: { [weak compositor] image, logicalSize, shapeID in
                 let box = UnsafeTransfer(image)
-                Task { @MainActor in compositor?.registerShape(box.value, for: shapeID) }
+                Task { @MainActor in compositor?.registerShape(box.value, logicalSize: logicalSize, for: shapeID) }
             }
         )
 

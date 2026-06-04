@@ -357,7 +357,11 @@ public actor HostTransport {
         let data = isControl ? existing?.data : link
         if let control, let data {
             pendingMux[connectionID] = nil
-            let mux = MuxNWConnection(role: .host, controlLink: control, dataLink: data)
+            // Carry the wire `connectionID` onto the shared connection so the mux relay owner can
+            // namespace its per-channel sessions by (connectionID, channelID) — see
+            // `HostServer.muxSessions` / `MuxSessionKey`. Two distinct clients each allocate
+            // channelID 1 for their first pane, so a channelID-only key cross-resolved sessions.
+            let mux = MuxNWConnection(role: .host, controlLink: control, dataLink: data, connectionID: connectionID)
             Task {
                 await mux.start()
                 muxConnectionContinuation.yield(mux)

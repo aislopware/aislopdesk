@@ -86,8 +86,16 @@ public final class HostServer: @unchecked Sendable {
     /// TCP-mux (RWORK_TCP_MUX) relay: consumes shared mux connections and spawns a PTY per channel.
     /// `nil`/idle when the gate is OFF — the OFF path never constructs or touches it.
     private var muxAcceptTask: Task<Void, Never>?
-    /// Live per-channel mux sessions, keyed by `channelID`, guarded by `lock`. Empty when OFF.
-    private var muxSessions: [UInt32: MuxChannelSession] = [:]
+    /// Live per-channel mux sessions, keyed by `(connectionID, channelID)`, guarded by `lock`.
+    /// Empty when OFF.
+    ///
+    /// ⚠️ The key is the COMPOSITE, not `channelID` alone: every distinct client connection
+    /// allocates `channelID` 1 for its first pane (``ChannelTable/allocate()`` starts at 1 per
+    /// connection), so a channelID-only key made connection B's `channelOpen(1)` silently
+    /// OVERWRITE connection A's live session at `1` (orphaning A's PTY/master-fd), and made A's
+    /// close-hook `removeMuxSession(1)` shut DOWN B's live pane — cross-shutting a different
+    /// client. Namespacing by the per-connection identity gives each connection its own keyspace.
+    private var muxSessions: [MuxSessionKey: MuxChannelSession] = [:]
 
     /// A hook the daemon can set to log session lifecycle to stderr.
     public var onLog: (@Sendable (String) -> Void)?
@@ -358,12 +366,19 @@ public final class HostServer: @unchecked Sendable {
 
     /// Installs the per-channel-open handler on a freshly-accepted shared mux connection. Every
     /// `channelOpen` the client sends on this connection mints a PTY + per-channel relay and acks.
+    ///
+    /// Both handlers CAPTURE this connection's stable `connectionID`, so `spawnMuxChannel` /
+    /// `removeMuxSession` only ever touch the OWNING connection's sessions in the composite-keyed
+    /// `muxSessions` map. Without the capture, a `channelID`-only key let one connection's
+    /// close-hook resolve (and shut) a DIFFERENT connection's live session, because every
+    /// connection allocates `channelID` 1 for its first pane.
     private func handleNewMuxConnection(_ connection: MuxNWConnection) async {
+        let connectionID = connection.connectionID
         await connection.setHostOpenHandler { [weak self] open in
             // Hop off the mux actor's executor: spawning a PTY + locking the session map is the
             // owner's (HostServer) job. The sub-channels are already registered on `connection`.
             guard let self else { return }
-            self.spawnMuxChannel(open, on: connection)
+            self.spawnMuxChannel(open, on: connection, connectionID: connectionID)
         }
         // FIX #2: a clean peer `channelClose` must tear the channel's PTY + master fd down. S1 has
         // NO per-channel reconnect/resume, so a closed channel's shell must NOT be kept alive — the
@@ -372,14 +387,15 @@ public final class HostServer: @unchecked Sendable {
         // `sessions`, never `muxSessions`). `removeMuxSession` is idempotent with the `onExit` path,
         // so a close that races the child's own exit is harmless (whichever runs first wins).
         await connection.setHostCloseHandler { [weak self] channelID in
-            self?.removeMuxSession(channelID)
+            self?.removeMuxSession(MuxSessionKey(connectionID: connectionID, channelID: channelID))
         }
-        onLog?("mux connection accepted (shared)")
+        onLog?("mux connection \(connectionID) accepted (shared)")
     }
 
     /// Spawns a shell + per-channel relay for one peer-initiated channel, registers it, and acks the
     /// open. Mirrors ``handleNewSession``'s spawn logic exactly (same launch mode / env / argv0).
-    private func spawnMuxChannel(_ open: MuxChannelOpen, on connection: MuxNWConnection) {
+    private func spawnMuxChannel(_ open: MuxChannelOpen, on connection: MuxNWConnection, connectionID: UUID) {
+        let key = MuxSessionKey(connectionID: connectionID, channelID: open.channelID)
         let pty = PTYProcess()
         do {
             let argv0 = HostEnvironment.loginArgv0(forShell: shellPath)
@@ -395,26 +411,37 @@ public final class HostServer: @unchecked Sendable {
                 )
             }
         } catch {
-            onLog?("mux channel \(open.channelID): shell spawn failed: \(error)")
+            onLog?("mux channel \(open.channelID) (conn \(connectionID)): shell spawn failed: \(error)")
             // Refuse the channel so the client's router marks it dead and never routes data to it.
             Task { await connection.sendOpenAck(open.channelID, accepted: false) }
             return
         }
 
         let session = MuxChannelSession(channelID: open.channelID, pty: pty, data: open.data, control: open.control)
-        session.onExit = { [weak self] channelID in self?.removeMuxSession(channelID) }
+        // The shell-exit reaper closes over the SAME composite key so it only removes THIS
+        // connection's session (idempotent with the peer-close `setHostCloseHandler` path).
+        session.onExit = { [weak self] _ in self?.removeMuxSession(key) }
         lock.lock()
-        muxSessions[open.channelID] = session
+        muxSessions[key] = session
         lock.unlock()
         session.startRelay()
         Task { await connection.sendOpenAck(open.channelID, accepted: true) }
-        onLog?("mux channel \(open.channelID): shell \(shellPath) (pid \(pty.pid)) attached")
+        onLog?("mux channel \(open.channelID) (conn \(connectionID)): shell \(shellPath) (pid \(pty.pid)) attached")
     }
 
-    private func removeMuxSession(_ channelID: UInt32) {
+    private func removeMuxSession(_ key: MuxSessionKey) {
         lock.lock()
-        let session = muxSessions.removeValue(forKey: channelID)
+        let session = muxSessions.removeValue(forKey: key)
         lock.unlock()
         session?.shutdown()
     }
+}
+
+/// Composite key namespacing a host mux channel session by its owning connection AND its
+/// channelID. The connectionID alone is insufficient (one connection has many channels) and the
+/// channelID alone is insufficient (every connection allocates channelID 1 first) — only the pair
+/// uniquely identifies one pane's session across multiple simultaneous client connections.
+struct MuxSessionKey: Hashable {
+    let connectionID: UUID
+    let channelID: UInt32
 }

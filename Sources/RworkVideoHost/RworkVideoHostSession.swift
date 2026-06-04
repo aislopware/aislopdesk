@@ -100,6 +100,22 @@ public actor RworkVideoHostSession {
     private var inboundWakeup: AsyncStream<Void>.Continuation?
     private var inboundConsumer: Task<Void, Never>?
 
+    /// Ordered encoder-OUTPUT pump (the encoder-reorder fix — the last instance of the recurring
+    /// unstructured-`Task`-ordering class). `VideoEncoder` is RealTime + AllowFrameReordering=false,
+    /// so its VT output callback fires in STRICT encode order on a serial queue. The prior shape —
+    /// `Task { await self.onEncodedFrame(...) }` per frame — raced those frames onto the actor with
+    /// NO FIFO guarantee across separately-created Tasks, so frame N+1 could be packetized (and get
+    /// a LOWER frameID/streamSeq) before frame N → the client saw a delta before its IDR →
+    /// awaitingKeyframe drop + a needless requestIDR. The VT callback now APPENDS to this
+    /// lock-protected FIFO synchronously (carrying encode order end-to-end) and signals; a SINGLE
+    /// consumer task drains it and `await`s ``onEncodedFrame(avcc:keyframe:crisp:)`` IN ORDER, so
+    /// `packetizer.packetize` assigns frameID/streamSeq in encode order. ONE ordered hop, not one
+    /// detached Task per frame. Shared across resize (the queue/consumer are the actor's, created
+    /// once in ``start()``); every encoder-callback site feeds the SAME queue.
+    private var encodedQueue: EncodedFrameQueue?
+    private var encodedWakeup: AsyncStream<Void>.Continuation?
+    private var encodedConsumer: Task<Void, Never>?
+
     /// - Parameters:
     ///   - window: the desktop-independent window to remote.
     ///   - transport: the UDP datagram transport (production: ``NWVideoDatagramTransport``).
@@ -149,6 +165,26 @@ public actor RworkVideoHostSession {
                 wakeup.yield()
             }
         }
+
+        // Ordered encoder-OUTPUT pump (FIX C). Mirrors the inbound pump: a lock-protected FIFO the
+        // VT serial callback appends to (preserving strict encode order) + a coalesced wakeup; a
+        // single consumer drains and awaits `onEncodedFrame` IN ORDER so frameID/streamSeq are
+        // assigned in encode order, not actor-processing order.
+        let eq = EncodedFrameQueue()
+        let (eWakeups, eWakeup) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        encodedQueue = eq
+        encodedWakeup = eWakeup
+        encodedConsumer = Task { [weak self] in
+            for await _ in eWakeups {
+                guard let self else { break }
+                let batch = eq.drainAll()
+                // Process IN ORDER (the FIFO carried encode order from the serial VT callback).
+                for frame in batch {
+                    await self.onEncodedFrame(avcc: frame.avcc, keyframe: frame.keyframe, crisp: frame.crisp)
+                }
+            }
+        }
+
         log.info("video host session listening for client hello")
     }
 
@@ -160,6 +196,12 @@ public actor RworkVideoHostSession {
         inboundConsumer?.cancel()
         inboundConsumer = nil
         inboundQueue = nil
+        // End the ordered encoder-output pump too (no buffered frame packetizes mid-teardown).
+        encodedWakeup?.finish()
+        encodedWakeup = nil
+        encodedConsumer?.cancel()
+        encodedConsumer = nil
+        encodedQueue = nil
         for effect in stateMachine.stop() { await apply(effect) }
         await teardownLiveComponents()
         await transport.stop()
@@ -376,6 +418,12 @@ public actor RworkVideoHostSession {
         case .ack(let streamSeq):
             // No retransmit/LTR-pin window to advance yet; record for diagnostics.
             log.debug("recovery ack streamSeq=\(streamSeq, privacy: .public)")
+        case .reshipCursorShape(let shapeID):
+            // FIX B self-heal: the client lost this shape's one-shot bitmap (or it never fit
+            // one datagram). Re-emit it through the SAME shape handler so it rides the cursor
+            // socket again as a `CursorShapeMessage`; the client cache re-insert is idempotent.
+            dbg("recovery requestCursorShape \(shapeID) — re-shipping cursor shape")
+            cursorSampler?.reshipShape(shapeID)
         case .drop(let reason):
             log.error("dropping recovery datagram: \(reason)")
         case .ignoreNotStreaming:
@@ -470,10 +518,7 @@ public actor RworkVideoHostSession {
 
         // b. Build the NEW encoder FIRST (off the live path). If creation throws, abort and keep
         //    the OLD encoder running — degrade to no-resize, never to a dead session.
-        let newEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate) { [weak self] avcc, keyframe, mode in
-            guard let self else { return }
-            Task { await self.onEncodedFrame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp) }
-        }
+        let newEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate, outputHandler: makeEncoderOutputHandler())
         do {
             try newEncoder.createLiveSession()
             try newEncoder.createCrispSession()
@@ -624,10 +669,7 @@ public actor RworkVideoHostSession {
         let pixelWidth = max(1, Int((points.width * captureScale).rounded()))
         let pixelHeight = max(1, Int((points.height * captureScale).rounded()))
 
-        let rebuiltEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate) { [weak self] avcc, keyframe, mode in
-            guard let self else { return }
-            Task { await self.onEncodedFrame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp) }
-        }
+        let rebuiltEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate, outputHandler: makeEncoderOutputHandler())
         do {
             try rebuiltEncoder.createLiveSession()
             try rebuiltEncoder.createCrispSession()
@@ -682,10 +724,7 @@ public actor RworkVideoHostSession {
         let pixelHeight = max(1, Int((Double(height) * captureScale).rounded()))
 
         // Encoder: the EXACT doc-18 2-session HEVC config (created inside VideoEncoder).
-        let encoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate) { [weak self] avcc, keyframe, mode in
-            guard let self else { return }
-            Task { await self.onEncodedFrame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp) }
-        }
+        let encoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate, outputHandler: makeEncoderOutputHandler())
         do {
             try encoder.createLiveSession()
             try encoder.createCrispSession()
@@ -812,6 +851,23 @@ public actor RworkVideoHostSession {
 
     // MARK: Component callbacks
 
+    /// Builds the encoder's `@Sendable` output handler (FIX C). The VT serial callback APPENDS the
+    /// encoded frame to the ordered FIFO and signals the single consumer — it does NOT spawn a
+    /// per-frame `Task` (which would race onto the actor and scramble frameID/streamSeq). Snapshots
+    /// the actor's queue + wakeup once at build time (both created in ``start()`` before any
+    /// encoder, and stable across resize), so the hot callback never hops back to the actor just to
+    /// enqueue. A frame that arrives after teardown (`encodedWakeup.finish()`) is dropped by the
+    /// `.bufferingNewest(1)` stream being finished — symmetric to the old `mediaFlowing` drop.
+    private func makeEncoderOutputHandler() -> VideoEncoder.OutputHandler {
+        let queue = encodedQueue
+        let wakeup = encodedWakeup
+        return { avcc, keyframe, mode in
+            // Enqueue THEN signal (no lost wakeup): the consumer always drains after the last append.
+            queue?.append(EncodedFrameQueue.Frame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp))
+            wakeup?.yield()
+        }
+    }
+
     private func onEncodedFrame(avcc: Data, keyframe: Bool, crisp: Bool) {
         guard stateMachine.mediaFlowing else {
             dbg("encoded frame DROPPED (mediaFlowing=false)")
@@ -882,6 +938,41 @@ private final class InboundQueue: @unchecked Sendable {
     /// Atomically take and clear the whole backlog (arrival order). An empty result means a
     /// coalesced wakeup whose datagrams an earlier drain already consumed.
     func drainAll() -> [(VideoChannel, Data)] {
+        lock.lock(); defer { lock.unlock() }
+        let out = items
+        items = []
+        return out
+    }
+}
+
+/// Lock-protected FIFO of ENCODED frames feeding the host's single ordered consumer (FIX C). The
+/// encoder's VT output callback fires in STRICT encode order on a serial queue and APPENDS here
+/// synchronously (no actor hop — so encode order is carried end-to-end); the single consumer task
+/// drains the backlog IN ORDER and awaits `onEncodedFrame` one at a time, so the packetizer
+/// assigns frameID/streamSeq in encode order. Replaces the prior `Task`-per-frame fan-out, which
+/// gave no FIFO guarantee across separately-created Tasks targeting the actor (frame N+1 could be
+/// processed before frame N → a delta packetized before its IDR).
+final class EncodedFrameQueue: @unchecked Sendable {
+    /// One encoded frame: the AVCC bytes + keyframe/crisp flags the packetizer needs.
+    struct Frame: Sendable {
+        let avcc: Data
+        let keyframe: Bool
+        let crisp: Bool
+    }
+
+    private let lock = NSLock()
+    private var items: [Frame] = []
+
+    init() {}
+
+    /// Append one encoded frame. Called on the VT serial output queue; O(1), never blocks.
+    func append(_ frame: Frame) {
+        lock.lock(); items.append(frame); lock.unlock()
+    }
+
+    /// Atomically take and clear the whole backlog (encode order preserved). An empty result means
+    /// a coalesced wakeup whose frames an earlier drain already consumed.
+    func drainAll() -> [Frame] {
         lock.lock(); defer { lock.unlock() }
         let out = items
         items = []
