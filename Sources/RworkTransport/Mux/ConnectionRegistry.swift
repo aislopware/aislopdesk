@@ -11,11 +11,11 @@ import Foundation
 /// subtlest required behaviour, spec §4 / §8.3).
 ///
 /// ## `@MainActor` + synchronous query
-/// `WorkspaceStore.reconcile()` materializes sessions synchronously and inline, so the gate
-/// decision (mux vs today) must be queryable without an `await`. The pool is `@MainActor` and its
-/// `isEnabled` flag + endpoint bookkeeping are plain main-actor reads. Acquiring/releasing a
-/// channel IS async (it opens/closes sockets), but that happens later inside
-/// `MuxClientTransport.connect/close`, never on `reconcile`'s synchronous path.
+/// `WorkspaceStore.reconcile()` materializes sessions synchronously and inline, so the pool's
+/// endpoint bookkeeping must be queryable without an `await`. The pool is `@MainActor` and its
+/// endpoint bookkeeping are plain main-actor reads. Acquiring/releasing a channel IS async (it
+/// opens/closes sockets), but that happens later inside `MuxClientTransport.connect/close`, never on
+/// `reconcile`'s synchronous path.
 ///
 /// ## Headless-testable
 /// The physical ``MuxNWConnection`` is built via an injected `makeConnection` factory, so the
@@ -49,29 +49,12 @@ public final class ConnectionRegistry {
     /// the receive loops). Injected so tests substitute an in-memory connection.
     private let makeConnection: @MainActor (_ host: String, _ port: UInt16) async throws -> MuxNWConnection
 
-    /// Whether the `RWORK_TCP_MUX` gate is ON. Read synchronously at construction sites to pick the
-    /// transport. Resolved ONCE from the environment (or injected by a test) — never re-read on the
-    /// hot path, so the OFF path never even consults the pool.
-    public let isEnabled: Bool
-
     /// - Parameters:
-    ///   - isEnabled: the resolved `RWORK_TCP_MUX` gate (default reads the process environment).
     ///   - makeConnection: factory for a fresh shared connection (production: real NWConnections).
     public init(
-        isEnabled: Bool = ConnectionRegistry.muxEnabledFromEnvironment(),
         makeConnection: @escaping @MainActor (String, UInt16) async throws -> MuxNWConnection
     ) {
-        self.isEnabled = isEnabled
         self.makeConnection = makeConnection
-    }
-
-    /// The `RWORK_TCP_MUX` gate value from `env` (ON iff `"1"`/`"true"`/`"yes"`, case-insensitive).
-    /// Default OFF — an unset var leaves the OFF path byte-identical to today.
-    public static func muxEnabledFromEnvironment(
-        _ env: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Bool {
-        guard let raw = env["RWORK_TCP_MUX"]?.lowercased() else { return false }
-        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
     }
 
     /// The canonical pool key for an endpoint.

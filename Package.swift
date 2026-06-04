@@ -140,7 +140,7 @@ let package = Package(
         .executableTarget(name: "rwork-hostd", dependencies: ["RworkHost"]),
 
         // Interactive remote terminal client. Sources under Sources/rwork-client.
-        .executableTarget(name: "rwork-client", dependencies: ["RworkClient", "RworkTerminal", "RworkTTY"]),
+        .executableTarget(name: "rwork-client", dependencies: ["RworkClient", "RworkTransport", "RworkTerminal", "RworkTTY"]),
 
         // GUI video path (PATH 2) host daemon: enumerate shareable windows, bind the UDP
         // media+cursor sockets, run `RworkVideoHostSession`. macOS-only at runtime

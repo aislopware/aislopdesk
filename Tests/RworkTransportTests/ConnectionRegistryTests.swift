@@ -13,9 +13,9 @@ final class ConnectionRegistryTests: XCTestCase {
     /// Builds a registry whose `makeConnection` returns a fresh in-memory client connection (paired
     /// with an auto-accepting host) per endpoint. Returns the registry; `created` counts how many
     /// distinct shared connections the factory actually built (to assert reuse).
-    private func makeRegistry(enabled: Bool = true) -> (ConnectionRegistry, created: @Sendable () -> Int) {
+    private func makeRegistry() -> (ConnectionRegistry, created: @Sendable () -> Int) {
         let counter = Counter()
-        let registry = ConnectionRegistry(isEnabled: enabled) { _, _ in
+        let registry = ConnectionRegistry { _, _ in
             counter.bump()
             let (clientControl, hostControl) = InMemoryMuxLink.pair()
             let (clientData, hostData) = InMemoryMuxLink.pair()
@@ -66,15 +66,6 @@ final class ConnectionRegistryTests: XCTestCase {
         await registry.release(host: "h", port: 1, channelID: b.channelID)
         XCTAssertEqual(registry.sharedConnectionCount, 0, "the LAST channel closing tears the shared connection down")
         XCTAssertEqual(registry.channelCount(host: "h", port: 1), 0)
-    }
-
-    func testGateOffStillParsesEnvironment() {
-        XCTAssertFalse(ConnectionRegistry.muxEnabledFromEnvironment([:]), "unset → OFF (byte-identical today)")
-        XCTAssertTrue(ConnectionRegistry.muxEnabledFromEnvironment(["RWORK_TCP_MUX": "1"]))
-        XCTAssertTrue(ConnectionRegistry.muxEnabledFromEnvironment(["RWORK_TCP_MUX": "true"]))
-        XCTAssertTrue(ConnectionRegistry.muxEnabledFromEnvironment(["RWORK_TCP_MUX": "ON"]))
-        XCTAssertFalse(ConnectionRegistry.muxEnabledFromEnvironment(["RWORK_TCP_MUX": "0"]))
-        XCTAssertFalse(ConnectionRegistry.muxEnabledFromEnvironment(["RWORK_TCP_MUX": ""]))
     }
 }
 

@@ -72,19 +72,13 @@ public struct RworkClientApp: App {
         #else
         let liveVideoCap = VideoCapPolicy.cap(for: .phone)
         #endif
-        // TCP-mux gate (RWORK_TCP_MUX, default OFF): build the per-host shared-connection pool ONLY
-        // when the env flag is set. With the flag unset this is `nil`, so `liveMakeSession` keeps the
-        // exact `{ RworkClient() }` factory — the OFF path is byte-identical (no pool, no shared
-        // object). Both ends must agree on the flag: the host's decoder selection is gated on the
-        // same `RWORK_TCP_MUX`, and the wire (mux preamble + envelope framing) is incompatible across
-        // the boundary, so there is no mixed-mode handshake.
-        let muxRegistry: ConnectionRegistry? = ConnectionRegistry.muxEnabledFromEnvironment()
-            ? ConnectionRegistry(makeConnection: LiveMuxConnectionFactory.makeConnection)
-            : nil
+        // Per-host shared-connection pool (TCP-mux): EVERY pane rides one shared `MuxNWConnection`
+        // per host, each as a logical channel. The wire is mux preamble + envelope framing — the
+        // only terminal wire.
+        let muxRegistry = ConnectionRegistry(makeConnection: LiveMuxConnectionFactory.makeConnection)
         let store = WorkspaceStore(
             restoring: persistence?.load(),   // nil in automation ⇒ bootstrap replaces it anyway
             makeSession: WorkspaceStore.liveMakeSession(
-                makeClient: { RworkClient() },
                 makeInspector: WorkspaceStore.liveMakeInspector,
                 muxRegistry: muxRegistry
             ),
