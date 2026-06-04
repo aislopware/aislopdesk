@@ -92,6 +92,42 @@ final class VideoMuxRouterReadmitTests: XCTestCase {
             .dropNoStamp)
     }
 
+    // MARK: - FIX #4b: draining state (reaper holds the lane through teardown)
+
+    func testDrainingLaneDropsEverythingIncludingHello() {
+        // While a lane is draining (reaper stopping its session), EVERY datagram drops — a hello must
+        // NOT re-admit yet (that would re-mint onto a dying session / the late endDrain would kill it).
+        var router = VideoMuxRouter()
+        router.admit(1)
+        router.beginDrain(1)
+        XCTAssertTrue(router.isDraining(1))
+        XCTAssertFalse(router.isAdmitted(1), "beginDrain stops routing the lane")
+        XCTAssertEqual(router.route(channelID: 1, channel: .video, bytesCount: 100), .dropDraining)
+        let helloWhileDraining = router.route(channelID: 1, channel: .control, bytesCount: 8)
+        XCTAssertEqual(helloWhileDraining, .dropDraining)
+        XCTAssertEqual(
+            VideoMuxRouter.bootstrapAction(for: helloWhileDraining, channel: .control, payloadIsHello: true),
+            .dropNoStamp, "a hello racing the teardown drops — no false accept, no premature re-mint")
+    }
+
+    func testEndDrainTransitionsToRetiredThenHelloReadmits() {
+        // After the session is stopped, endDrain moves draining → retired, where FIX #2's hello
+        // re-admit applies — so the reconnecting client's NEXT hello cleanly re-mints.
+        var router = VideoMuxRouter()
+        router.admit(2)
+        router.beginDrain(2)
+        router.endDrain(2)
+        XCTAssertFalse(router.isDraining(2))
+        XCTAssertEqual(router.route(channelID: 2, channel: .video, bytesCount: 100), .dropRetired,
+                       "after endDrain the lane is retired (stale old-gen still drops)")
+        let hello = router.route(channelID: 2, channel: .control, bytesCount: 8)
+        XCTAssertEqual(
+            VideoMuxRouter.bootstrapAction(for: hello, channel: .control, payloadIsHello: true),
+            .bootstrapDeliver, "a fresh hello after endDrain re-admits the lane")
+        router.admit(2)
+        XCTAssertEqual(router.route(channelID: 2, channel: .video, bytesCount: 100), .route(channelID: 2))
+    }
+
     func testHelloReadmitClearsRetiredMarkEndToEnd() {
         // The full FIX #2 chain at the router level: retire an id → it `.dropRetired`s → the daemon's
         // mint path calls `admit` (driven by the bootstrapDeliver), which clears the retired mark →

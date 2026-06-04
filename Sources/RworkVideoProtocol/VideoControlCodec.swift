@@ -123,25 +123,25 @@ public enum VideoControlMessage: Equatable, Sendable {
         case 1:
             let version = try reader.readUInt16()
             let windowID = try reader.readUInt32()
-            let w = try reader.readFloat64()
-            let h = try reader.readFloat64()
+            let w = try reader.readFiniteFloat64("hello.viewport.w")
+            let h = try reader.readFiniteFloat64("hello.viewport.h")
             return .hello(protocolVersion: version, requestedWindowID: windowID, viewport: VideoSize(width: w, height: h))
         case 2:
             let accepted = try reader.readUInt8() != 0
             let streamID = try reader.readUInt32()
             let cw = try reader.readUInt16()
             let ch = try reader.readUInt16()
-            let bx = try reader.readFloat64()
-            let by = try reader.readFloat64()
-            let bw = try reader.readFloat64()
-            let bh = try reader.readFloat64()
+            let bx = try reader.readFiniteFloat64("helloAck.bounds.x")
+            let by = try reader.readFiniteFloat64("helloAck.bounds.y")
+            let bw = try reader.readFiniteFloat64("helloAck.bounds.w")
+            let bh = try reader.readFiniteFloat64("helloAck.bounds.h")
             return .helloAck(accepted: accepted, streamID: streamID, captureWidth: cw, captureHeight: ch,
                              windowBoundsCG: VideoRect(x: bx, y: by, width: bw, height: bh))
         case 3:
             return .bye
         case 4:
-            let w = try reader.readFloat64()
-            let h = try reader.readFloat64()
+            let w = try reader.readFiniteFloat64("resizeRequest.w")
+            let h = try reader.readFiniteFloat64("resizeRequest.h")
             let epoch = try reader.readUInt32()
             return .resizeRequest(desired: VideoSize(width: w, height: h), epoch: epoch)
         case 5:

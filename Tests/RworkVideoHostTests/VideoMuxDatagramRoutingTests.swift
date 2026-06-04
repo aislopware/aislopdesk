@@ -61,7 +61,7 @@ final class VideoMuxDatagramRoutingTests: XCTestCase {
             switch decision {
             case .route: deliver = true
             case .rejectUnadmitted: deliver = (decodedChannel == .control)   // bootstrap: the first hello
-            case .dropRetired, .drop: deliver = false
+            case .dropRetired, .dropDraining, .drop: deliver = false
             }
             if deliver {
                 table.sink(decodedID)?(decodedChannel, Data(rest[(rest.startIndex + 1)...]))

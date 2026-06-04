@@ -115,10 +115,17 @@ public final class ClientCursorCompositor {
     }
 
     private func setLayerFrame(_ frame: VideoRect) {
+        // Belt-and-suspenders: assigning a CALayer frame with a non-finite (NaN/±inf) component
+        // raises an uncaught CALayerInvalidGeometry exception that kills the process. The codec now
+        // rejects non-finite wire floats (readFiniteFloat64), so a malformed cursor datagram is
+        // dropped upstream; this guard also covers any NaN that could arise from degenerate
+        // aspect-fit math (e.g. a zero video/view dimension) — skip the update rather than crash.
+        let r = frame.cgRect
+        guard r.origin.x.isFinite, r.origin.y.isFinite, r.size.width.isFinite, r.size.height.isFinite else { return }
         // No implicit animation — the cursor must track at refresh, not tween.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        cursorLayer.frame = frame.cgRect
+        cursorLayer.frame = r
         CATransaction.commit()
     }
 }

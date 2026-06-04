@@ -171,19 +171,37 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         log.info("NWVideoMuxDatagramTransport listening media=\(self.mediaPort.rawValue) cursor=\(self.cursorPort.rawValue) (shared mux flow)")
     }
 
-    /// One reaper scan (on `queue`): for each dead lane the decider reports, `retire` the lane
-    /// (router + conn-table + the reaper record) and notify the daemon to STOP its session (the
-    /// `retireAndStop` gap — `retire` alone only forgets the sink, leaking capture/encode). The
-    /// session stop is the only async hop; it carries no datagram so it cannot reorder input. A
-    /// concurrent reconnect under the same channelID is safe: it arrives under a FRESH generation
-    /// in `VideoMuxRouter`, and `forget` clears the stale record so the new lane starts clean.
+    /// One reaper scan (on `queue`): for each dead lane the decider reports, hold the lane in a
+    /// DRAINING state, STOP its session, then free the lane LAST — mirroring the single-pin
+    /// "hold the slot pinned through teardown" discipline (audit FIX #4b). The earlier code retired
+    /// the router lane SYNCHRONOUSLY first and stopped the session in a deferred Task, so a reconnect
+    /// hello racing that window routed `.dropRetired` → re-admit-bootstrap → was delivered to the OLD,
+    /// still-registered sink → a false accepted-ack from a dying session (client stuck on a dead
+    /// stream). Now: `beginDrain` synchronously (a reconnect during teardown drops via `.dropDraining`
+    /// — NOT delivered to the old sink, NOT prematurely re-minted); `forget` the reaper record so the
+    /// next tick does not re-schedule; then in the deferred Task stop the session (`onReapLane` →
+    /// `registry.retireAndStop` — unregister sink + SCStream/encoder teardown) and only AFTER that
+    /// `endDrain` (draining → retired, where a fresh hello may now cleanly re-admit) + drop the
+    /// conn-table. The session stop is the only async hop; it carries no datagram so it cannot reorder
+    /// input.
     private func runReaperTick() {
         let due: [UInt32] = lock.withLock { idleReaper?.reap(now: Self.nowSeconds()) ?? [] }
         guard !due.isEmpty else { return }
+        lock.withLock {
+            for channelID in due {
+                muxRouter.beginDrain(channelID)   // hold the lane — a racing reconnect now `.dropDraining`s
+                idleReaper?.forget(id: channelID) // no re-schedule on the next tick
+            }
+        }
         for channelID in due {
-            retire(channelID)                 // clears router/conn-table + forgets the reaper record
-            if let onReapLane {
-                Task { await onReapLane(channelID) }   // registry.retireAndStop — stops the session
+            Task { [weak self] in
+                await self?.onReapLane?(channelID)   // registry.retireAndStop — unregister sink + stop session
+                guard let self else { return }
+                self.lock.withLock {
+                    self.muxRouter.endDrain(channelID)             // draining → retired (a hello may now re-admit)
+                    self.channelMediaConn.removeValue(forKey: channelID)
+                    self.channelCursorConn.removeValue(forKey: channelID)
+                }
             }
         }
     }
@@ -295,8 +313,11 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
                 case .dropNoStamp:
                     return false
                 }
-            case .drop:
-                return false   // benign (empty datagram) — never fatal, never a sibling teardown
+            case .dropDraining, .drop:
+                // Draining: the lane is mid-teardown (reaper stopping its session) — drop EVEN a hello
+                // until `endDrain` (no false accept to the dying sink, no premature re-mint). `.drop`:
+                // an empty datagram. Both benign — never fatal, never a sibling teardown.
+                return false
             }
         }
         guard deliver else { return }
