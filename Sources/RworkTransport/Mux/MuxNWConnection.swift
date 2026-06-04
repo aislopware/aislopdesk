@@ -45,6 +45,17 @@ public actor MuxNWConnection {
     private let controlLink: any MuxByteLink
     private let dataLink: any MuxByteLink
 
+    /// Whether per-channel credit flow control (`RWORK_TCP_MUX_FLOW`, S2) is ON. Read ONCE at the
+    /// construction site (alongside `RWORK_TCP_MUX`) and threaded here. OFF → infinite window: the
+    /// DATA sub-channel never blocks, an inbound `windowAdjust` is a benign no-op, and no
+    /// `windowAdjust` is ever emitted — byte-identical to S1.
+    ///
+    /// ⚠️ BOTH ENDS MUST AGREE (FIX #4): the gate IS the contract, there is no on-wire negotiation.
+    /// A mismatch FAILS CLOSED INTO A SILENT HANG — a flow-ON sender talking to a flow-OFF receiver
+    /// never gets a `windowAdjust`, so its window drains once and the channel parks forever. See
+    /// ``RworkProtocol/MuxFlowControl/flowEnabledFromEnvironment(_:)`` for the full footgun note.
+    private let flowControl: Bool
+
     /// One decoder + router per link (the pure demux core). Distinct decoders because each link is
     /// an independent byte stream; the router's channel table is shared per link so a channel's
     /// open/close lifecycle on a link is tracked independently of the other link.
@@ -60,14 +71,27 @@ public actor MuxNWConnection {
     private var controlChannels: [UInt32: MuxSubChannel] = [:]
     private var dataChannels: [UInt32: MuxSubChannel] = [:]
 
+    /// Per-channel RECEIVE accounting on the DATA link (S2): tracks bytes delivered upward and
+    /// decides when to emit a `windowAdjust` back to the sender (half-window threshold). Only the
+    /// DATA link is flow-controlled; the CONTROL link carries small frames and is never gated. Empty
+    /// when flow control is OFF.
+    private var dataReceiveWindows: [UInt32: ReceiveWindowAccountant] = [:]
+
     private var receiveTasks: [Task<Void, Never>] = []
     private var closed = false
 
-    public init(role: Role, controlLink: any MuxByteLink, dataLink: any MuxByteLink, connectionID: UUID = UUID()) {
+    public init(
+        role: Role,
+        controlLink: any MuxByteLink,
+        dataLink: any MuxByteLink,
+        connectionID: UUID = UUID(),
+        flowControl: Bool = false
+    ) {
         self.role = role
         self.controlLink = controlLink
         self.dataLink = dataLink
         self.connectionID = connectionID
+        self.flowControl = flowControl
     }
 
     /// Starts the receive loops on both links. Idempotent-safe to call once.
@@ -128,6 +152,10 @@ public actor MuxNWConnection {
         try? await controlLink.send(close)
         dataTable.localClose(id)
         controlTable.localClose(id)
+        // S2 CLEANUP (foot-gun #2): drop the channel's receive-window accounting and finish the
+        // sub-channels. `finish()` wakes any sender parked on an exhausted send window (it throws),
+        // so a close while the window is full never leaks a suspended task or half-open credit state.
+        dataReceiveWindows.removeValue(forKey: id)
         if let ch = dataChannels.removeValue(forKey: id) { await ch.finish() }
         if let ch = controlChannels.removeValue(forKey: id) { await ch.finish() }
     }
@@ -152,6 +180,7 @@ public actor MuxNWConnection {
         for ch in controlChannels.values { await ch.finish() }
         dataChannels.removeAll()
         controlChannels.removeAll()
+        dataReceiveWindows.removeAll()
     }
 
     // MARK: - Internals
@@ -163,14 +192,20 @@ public actor MuxNWConnection {
     private func registerChannels(id: UInt32) -> (data: MuxSubChannel, control: MuxSubChannel) {
         let dataLink = self.dataLink
         let controlLink = self.controlLink
-        let dataCh = MuxSubChannel(channelID: id, channel: .data) { channelID, inner in
+        // DATA sub-channel carries the per-channel SEND window (S2) when flow control is ON; the
+        // CONTROL sub-channel is ALWAYS flow-OFF (infinite window) so resize/ack/bye/keepalive never
+        // block behind a full data window (foot-gun #1/#3).
+        let dataCh = MuxSubChannel(channelID: id, channel: .data, flowControl: flowControl) { channelID, inner in
             try await dataLink.send(MuxEnvelopeCodec.encode(.channelData(channelID: channelID, payload: inner)))
         }
-        let controlCh = MuxSubChannel(channelID: id, channel: .control) { channelID, inner in
+        let controlCh = MuxSubChannel(channelID: id, channel: .control, flowControl: false) { channelID, inner in
             try await controlLink.send(MuxEnvelopeCodec.encode(.channelData(channelID: channelID, payload: inner)))
         }
         dataChannels[id] = dataCh
         controlChannels[id] = controlCh
+        if flowControl {
+            dataReceiveWindows[id] = ReceiveWindowAccountant(initialWindow: MuxFlowControl.initialWindowBytes)
+        }
         return (dataCh, controlCh)
     }
 
@@ -225,6 +260,23 @@ public actor MuxNWConnection {
             decision = MuxRoutingCore.route(frame, in: &dataTable)
         }
 
+        // S2 windowAdjust RECEIPT (FIX #2): a peer grant replenishes THIS channel's DATA send window
+        // (matched by channelID regardless of which link it arrived on — FIX #2 routes grants via the
+        // CONTROL link so they are never starved behind a flooded DATA link) and wakes any sender
+        // parked on an exhausted window. A credit grant is NEVER a lifecycle event, so RETURN before
+        // the decision switch: MuxRoutingCore reports a windowAdjust as `.lifecycle(state ?? .closed)`
+        // PURELY informationally (it does NOT mutate the table), and on the CONTROL link a grant for a
+        // channel not (yet/any longer) `.open` in the control table would otherwise be mis-read as a
+        // peer close and destructively finish the sub-channel. Unconditional of `flowControl` so a
+        // stray grant from a flow-ON peer to a flow-OFF receiver (gate mismatch) is an inert no-op,
+        // never a channel kill. (No-op grant when flow is OFF — `grantCredit` short-circuits / skipped.)
+        if case let .windowAdjust(id, bytesToAdd) = frame {
+            if flowControl, let dataCh = dataChannels[id] {
+                await dataCh.grantCredit(Int(bytesToAdd))
+            }
+            return
+        }
+
         // The HOST is the responder: a peer-initiated `channelOpen` on the DATA link registers the
         // channel pair so subsequent data routes. (The router already advanced the table; we mirror
         // it into the dispatch tables here, allocating the sub-channels.)
@@ -250,7 +302,24 @@ public actor MuxNWConnection {
             if let target {
                 // Await INLINE (no Task) so this frame is fully delivered before the next frame on
                 // this link is routed — per-channel order = wire order.
-                await target.deliver(payload: payload)
+                let consumed = await target.deliver(payload: payload)
+                // S2 RECEIVER emit (FIX #2): account the consumed DATA bytes; once the half-window
+                // threshold is crossed, grant the accumulated credit back to the sender via a
+                // windowAdjust. The grant is written on the CONTROL link, NOT the DATA link it just
+                // drained: under a sustained BIDIRECTIONAL flood the DATA link is full in both
+                // directions, so emitting the grant INLINE on the DATA receive loop would block the
+                // ONLY task draining inbound DATA on a write that cannot complete until the peer
+                // drains — and the peer is symmetrically stuck → classic credit deadlock. The
+                // CONTROL sub-channel is flow-OFF / small-frame / fast-draining (its whole reason for
+                // existing — the data/control split), so the grant always gets out. The receipt side
+                // applies a windowAdjust to channel X regardless of which link it arrived on (it
+                // matches on channelID, see the receipt block above), so routing it via CONTROL is
+                // transparent. Still INLINE on this actor so the grant decision cannot be reordered
+                // against the delivery that triggered it. No-op when flow is OFF (no accountant).
+                if flowControl, link == .data, let grant = dataReceiveWindows[channelID]?.consume(consumed), grant > 0 {
+                    let adjust = MuxEnvelopeCodec.encode(.windowAdjust(channelID: channelID, bytesToAdd: UInt32(grant)))
+                    try? await controlLink.send(adjust)
+                }
             }
         case let .lifecycle(channelID, newState):
             if newState == .closed || newState == .halfClosed {
@@ -258,6 +327,7 @@ public actor MuxNWConnection {
                 // Await inline so a close never overtakes an earlier deliver (dropping the tail).
                 let target = (link == .control) ? controlChannels.removeValue(forKey: channelID)
                                                  : dataChannels.removeValue(forKey: channelID)
+                if link == .data { dataReceiveWindows.removeValue(forKey: channelID) } // S2: drop credit state
                 if let target { await target.finish() }
                 // FIX #2: drive the host relay shutdown for a PEER channelClose. S1 has NO
                 // per-channel reconnect/resume, so a cleanly-closed channel's shell must NOT
@@ -301,6 +371,17 @@ public actor MuxNWConnection {
         try? await dataLink.send(frame)
     }
 
+    /// Test seam: emits a `windowAdjust` for `channelID` on the CONTROL link — matching the FIX #2
+    /// production emit path (the grant rides CONTROL so it is never starved behind a flooded DATA
+    /// link). The receiver-emit path (``route``) sends these organically as it consumes data; this
+    /// lets a test inject an explicit grant without driving a full echo loop. The receipt side
+    /// applies the grant to the DATA send window regardless of arrival link (FIX #2). No-op (still
+    /// byte-safe) when flow control is OFF, but only called by flow-on tests.
+    func grantWindowForTest(channelID: UInt32, bytesToAdd: UInt32) async {
+        let frame = MuxEnvelopeCodec.encode(.windowAdjust(channelID: channelID, bytesToAdd: bytesToAdd))
+        try? await controlLink.send(frame)
+    }
+
     private func finishLink(_ link: Link, error: Error?) async {
         let channels = (link == .control) ? controlChannels : dataChannels
         for ch in channels.values {
@@ -318,6 +399,10 @@ public actor MuxNWConnection {
         if role == .host, link == .data, let hostCloseHandler {
             for id in channels.keys { hostCloseHandler(id) }
         }
+        // S2: the whole DATA link is gone — drop every channel's receive-window accounting. (The
+        // send windows are torn down via each sub-channel's `finish()` above, which also wakes any
+        // parked sender so the link drop never leaks a suspended task.)
+        if link == .data { dataReceiveWindows.removeAll() }
     }
 }
 

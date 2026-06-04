@@ -97,6 +97,12 @@ public final class HostServer: @unchecked Sendable {
     /// client. Namespacing by the per-connection identity gives each connection its own keyspace.
     private var muxSessions: [MuxSessionKey: MuxChannelSession] = [:]
 
+    /// Whether per-channel credit flow control (`RWORK_TCP_MUX_FLOW`, S2) is ON. Resolved ONCE at
+    /// construction (alongside the `RWORK_TCP_MUX` gate the transport reads), and threaded into each
+    /// ``MuxChannelSession`` so its output queue is BOUNDED + the PTY read pauses under a flood. OFF
+    /// → unbounded queue, no pausing (byte-identical to S1).
+    private let flowControlEnabled: Bool
+
     /// A hook the daemon can set to log session lifecycle to stderr.
     public var onLog: (@Sendable (String) -> Void)?
 
@@ -105,13 +111,15 @@ public final class HostServer: @unchecked Sendable {
         shellPath: String? = nil,
         idleTTL: TimeInterval? = nil,
         launchMode: LaunchMode = .shell,
-        reapInterval: TimeInterval? = nil
+        reapInterval: TimeInterval? = nil,
+        flowControlEnabled: Bool = MuxFlowControl.flowEnabledFromEnvironment()
     ) {
         self.port = port
         self.shellPath = shellPath ?? HostEnvironment.loginShell()
         self.idleTTL = idleTTL
         self.launchMode = launchMode
         self.reapInterval = reapInterval
+        self.flowControlEnabled = flowControlEnabled
         self.transport = HostTransport()
     }
 
@@ -417,7 +425,13 @@ public final class HostServer: @unchecked Sendable {
             return
         }
 
-        let session = MuxChannelSession(channelID: open.channelID, pty: pty, data: open.data, control: open.control)
+        let session = MuxChannelSession(
+            channelID: open.channelID,
+            pty: pty,
+            data: open.data,
+            control: open.control,
+            flowControl: flowControlEnabled
+        )
         // The shell-exit reaper closes over the SAME composite key so it only removes THIS
         // connection's session (idempotent with the peer-close `setHostCloseHandler` path).
         session.onExit = { [weak self] _ in self?.removeMuxSession(key) }

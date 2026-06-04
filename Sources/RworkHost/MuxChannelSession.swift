@@ -24,13 +24,27 @@ import RworkTransport
 ///   beyond release; S1 has no per-channel reconnect replay so it just keeps the buffer bounded).
 /// - EXIT: the reaper enqueues `exit(code:)` on the same FIFO so it follows the final output tail.
 ///
-/// `@unchecked Sendable`: mutable state is touched under `taskLock`; the PTY/channels are
-/// themselves thread-safe.
+/// ### Bounded output queue (S2, sub-gated by `RWORK_TCP_MUX_FLOW`)
+/// When `flowControl` is ON, the DATA sub-channel's send window already SUSPENDS the output drain
+/// when a flooding channel runs out of credit — but without an upstream bound that just moves the
+/// unboundedness one hop: the `PTYReadLoop` would keep buffering the whole `yes` flood into the
+/// FIFO in memory. So the queue is BOUNDED by a ``RworkProtocol/BoundedQueuePolicy`` (byte
+/// high-water mark): when enqueued-not-yet-sent bytes cross the bound, the ``PTYReadLoop`` is
+/// PAUSED (its `NSCondition` gate stops issuing `read()`, so the kernel PTY buffer fills and
+/// backpressures the shell — the real fix for the flood); it RESUMES when the drain brings the
+/// queue back under the bound. With `flowControl` OFF the queue is unbounded and the read loop is
+/// never paused by this path — byte-identical to S1.
+///
+/// `@unchecked Sendable`: mutable state is touched under `taskLock` / `replayLock` / the
+/// ``PausableQueueGate``'s own lock; the PTY/channels are themselves thread-safe.
 final class MuxChannelSession: @unchecked Sendable {
     let channelID: UInt32
     let pty: PTYProcess
     private let data: MuxSubChannel
     private let control: MuxSubChannel
+    /// Whether per-channel flow control (`RWORK_TCP_MUX_FLOW`) is ON. OFF → unbounded FIFO + no
+    /// read-loop pausing (S1 behaviour). Read once at the construction site and passed in.
+    private let flowControl: Bool
 
     private let taskLock = NSLock()
     private var replay = ReplayBuffer()
@@ -42,6 +56,13 @@ final class MuxChannelSession: @unchecked Sendable {
     private var outputContinuation: AsyncStream<OutputItem>.Continuation?
     private var readLoop: PTYReadLoop?
     private var started = false
+
+    /// S2 bounded-queue backpressure GATE: fuses the ``BoundedQueuePolicy`` accounting with the
+    /// read-loop pause/resume action ATOMICALLY under one lock (FIX #3 — see ``PausableQueueGate``).
+    /// Built in ``startRelay()`` once the `readLoop` exists (so the gate can drive it). `nil` until
+    /// then / when `flowControl` is OFF (the FIFO stays unbounded — S1, no pausing).
+    private var outputGate: PausableQueueGate?
+
     /// Called once when the child exits so the owner can drop this channel from its map.
     var onExit: (@Sendable (UInt32) -> Void)?
 
@@ -50,11 +71,12 @@ final class MuxChannelSession: @unchecked Sendable {
         case exit(code: Int32)
     }
 
-    init(channelID: UInt32, pty: PTYProcess, data: MuxSubChannel, control: MuxSubChannel) {
+    init(channelID: UInt32, pty: PTYProcess, data: MuxSubChannel, control: MuxSubChannel, flowControl: Bool = false) {
         self.channelID = channelID
         self.pty = pty
         self.data = data
         self.control = control
+        self.flowControl = flowControl
     }
 
     func startRelay() {
@@ -78,7 +100,11 @@ final class MuxChannelSession: @unchecked Sendable {
                 switch item {
                 case let .chunk(bytes, controlMessages):
                     let seq = self.nextSeq(for: bytes)
+                    // `data.send` SUSPENDS on the per-channel credit window when flow is ON (S2), so
+                    // a flooding channel naturally slows here. After the write is accepted we
+                    // dequeue the bytes and resume the read loop if the FIFO drained below the bound.
                     try? await data.send(.output(seq: seq, bytes: bytes))
+                    self.dequeueOutput(bytes.count)
                     for message in controlMessages {
                         try? await control.send(message)
                     }
@@ -91,13 +117,24 @@ final class MuxChannelSession: @unchecked Sendable {
         let sniffer = HostTitleBellSniffer()
         let readLoop = PTYReadLoop(
             fd: masterFD,
-            onChunk: { chunk in
+            onChunk: { [weak self] chunk in
                 let controlMsgs = sniffer.observe(chunk)
+                // S2: account the chunk in the bounded queue BEFORE enqueueing; if it pushes the
+                // FIFO to/over the bound, PAUSE the read loop so the kernel PTY buffer fills and
+                // backpressures the shell (the real flood fix). No-op when flow is OFF (unbounded).
+                self?.enqueueOutput(chunk.count)
                 continuation.yield(.chunk(bytes: chunk, control: controlMsgs))
             },
             onEOF: { /* exit is reaper-driven, like HostSession */ }
         )
         self.readLoop = readLoop
+        // S2 (FIX #3): build the bounded-queue gate now that the read loop exists, so pause/resume is
+        // applied ATOMICALLY with the accounting (no lost-wakeup freeze). OFF → no gate (unbounded).
+        if flowControl {
+            self.outputGate = PausableQueueGate(capacity: MuxFlowControl.hostQueueCapacityBytes) { paused in
+                readLoop.setPaused(paused)
+            }
+        }
         readLoop.start()
 
         // INPUT: the DATA sub-channel carries `input`.
@@ -149,6 +186,24 @@ final class MuxChannelSession: @unchecked Sendable {
         taskLock.unlock()
         pty.terminate()
         pty.closeMaster()
+    }
+
+    // MARK: - S2 bounded-output-queue backpressure (lock-guarded; the value type is not Sendable)
+
+    /// Accounts `count` enqueued output bytes; pauses the read loop if the FIFO crossed the bound.
+    /// No-op when flow control is OFF (the FIFO stays unbounded — S1). FIX #3: the accounting + the
+    /// pause action are applied ATOMICALLY inside ``PausableQueueGate`` (under one lock) so a
+    /// concurrent ``dequeueOutput(_:)`` can never interleave a stale resume after this pause and leave
+    /// the loop frozen below capacity.
+    private func enqueueOutput(_ count: Int) {
+        outputGate?.enqueue(count)
+    }
+
+    /// Accounts `count` sent output bytes; resumes a paused read loop if the FIFO drained below the
+    /// bound. No-op when flow control is OFF. FIX #3: atomic with the accounting (see
+    /// ``PausableQueueGate``).
+    private func dequeueOutput(_ count: Int) {
+        outputGate?.dequeue(count)
     }
 
     // MARK: - Per-channel replay bookkeeping (lock-guarded; the value type is not Sendable)

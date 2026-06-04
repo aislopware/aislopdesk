@@ -95,7 +95,10 @@ public enum LiveMuxConnectionFactory {
         let connection = MuxNWConnection(
             role: .client,
             controlLink: NWMuxByteLink(connection: controlConn, label: "control"),
-            dataLink: NWMuxByteLink(connection: dataConn, label: "data")
+            dataLink: NWMuxByteLink(connection: dataConn, label: "data"),
+            // S2 sub-gate: read `RWORK_TCP_MUX_FLOW` ONCE here (alongside `RWORK_TCP_MUX`, which the
+            // registry already checked before calling this factory). OFF → infinite window (S1).
+            flowControl: MuxFlowControl.flowEnabledFromEnvironment()
         )
         await connection.start()
         return connection
