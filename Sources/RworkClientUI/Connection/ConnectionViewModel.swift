@@ -79,7 +79,7 @@ public final class ConnectionViewModel {
         host: String = "127.0.0.1",
         port: UInt16 = 7420,
         backoff: ReconnectManager.Backoff = .init(),
-        makeClient: @escaping @Sendable () -> RworkClient = { RworkClient() }
+        makeClient: @escaping @Sendable () -> RworkClient
     ) {
         self.terminal = terminal
         self.host = host

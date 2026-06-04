@@ -4,8 +4,8 @@ import RworkTransport
 
 /// The Rwork client session driver — the real, working PATH 1 client.
 ///
-/// `RworkClient` owns a single ``ClientTransport`` (WF-2) and turns its merged
-/// host→client ``ClientTransport/inbound`` stream into the three things a UI/CLI
+/// `RworkClient` owns a single ``ClientTransporting`` and turns its merged
+/// host→client ``ClientTransporting/inbound`` stream into the three things a UI/CLI
 /// cares about:
 ///
 /// - **output bytes** — exposed as an `AsyncStream<Data>` (``output``) *and* fed to an
@@ -107,11 +107,9 @@ public actor RworkClient {
     // MARK: Internals
 
     private let ackInterval: Duration
-    /// Factory for the session transport, injected so a pane can be backed by the
-    /// today-shaped one-TCP-pair ``ClientTransport`` (the default) OR — behind the
-    /// `RWORK_TCP_MUX` gate, supplied by ``WorkspaceStore/liveMakeSession`` — a logical channel
-    /// over a shared ``MuxNWConnection``. Defaulting to `{ ClientTransport() }` keeps the OFF
-    /// path byte-identical: the client allocates the exact same concrete transport it always did.
+    /// Factory for the session transport, injected so a pane is backed by a logical channel over a
+    /// shared ``MuxNWConnection`` (a `MuxClientTransport`, supplied by
+    /// ``WorkspaceStore/liveMakeSession`` bound to the per-host ``ConnectionRegistry``).
     private let makeTransport: @Sendable () -> any ClientTransporting
     private var transport: (any ClientTransporting)?
     private var inboundTask: Task<Void, Never>?
@@ -136,13 +134,12 @@ public actor RworkClient {
 
     /// - Parameters:
     ///   - ackInterval: how often the coalesced ack ticker may flush (correctness-independent).
-    ///   - makeTransport: the session-transport factory. Defaults to `{ ClientTransport() }` so a
-    ///     plain `RworkClient()` is byte-identical to before (the OFF path). The TCP-mux ON path
-    ///     injects a factory that vends a logical channel over a shared connection — gated solely
-    ///     at the `WorkspaceStore.liveMakeSession` construction site, never on the hot path.
+    ///   - makeTransport: the session-transport factory. Vends a logical channel over a shared
+    ///     ``MuxNWConnection`` (a `MuxClientTransport`) — wired at the
+    ///     `WorkspaceStore.liveMakeSession` construction site, never on the hot path.
     public init(
         ackInterval: Duration = RworkClient.defaultAckInterval,
-        makeTransport: @escaping @Sendable () -> any ClientTransporting = { ClientTransport() }
+        makeTransport: @escaping @Sendable () -> any ClientTransporting
     ) {
         self.ackInterval = ackInterval
         self.makeTransport = makeTransport
@@ -253,7 +250,7 @@ public actor RworkClient {
 
     /// Test-only seam: drive one inbound `WireMessage` through the exact same handling
     /// path the live inbound pump uses (dedup + contiguous tracking + surface/event
-    /// fan-out), without standing up a real ``ClientTransport``. `internal`, reached via
+    /// fan-out), without standing up a real transport. `internal`, reached via
     /// `@testable import` — this is the only way to prove the client-side dedup high-water
     /// mark independent of host replay behavior (the host always keys replay off
     /// `lastReceivedSeq`, so an e2e never feeds an already-fed seq).
@@ -274,8 +271,8 @@ public actor RworkClient {
         case .bell:
             eventBroadcaster.yield(.bell)
         default:
-            // input/hello/resize/ack/bye/helloAck never arrive on the client inbound
-            // (helloAck is consumed inside ClientTransport). Ignore defensively.
+            // input/hello/resize/ack/bye/helloAck never arrive on the client inbound.
+            // Ignore defensively.
             break
         }
     }

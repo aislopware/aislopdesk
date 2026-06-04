@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import RworkProtocol
+import RworkTransport
 @testable import RworkClient
 
 /// Focused unit test for the client-side dedup high-water mark
@@ -15,7 +16,14 @@ import RworkProtocol
 final class RworkClientDedupTests: XCTestCase {
 
     func testDeliverOutputDropsAlreadyFedSeqs() async throws {
-        let client = RworkClient()
+        // Inert transport factory: this test drives inbound via `_handleInboundForTesting` and never
+        // `connect()`s, so the factory is never invoked.
+        let client = RworkClient(makeTransport: {
+            MuxClientTransport(
+                acquire: { _, _, _, _ in throw RworkTransportError.notConnected("inert test transport") },
+                release: { _, _, _ in }
+            )
+        })
 
         // Collect the surfaced output bytes.
         let sink = ByteSink()

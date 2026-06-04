@@ -3,10 +3,9 @@ import RworkProtocol
 
 /// One logical Rwork channel multiplexed over a shared physical mux connection.
 ///
-/// A `MuxSubChannel` is the mux-layer analogue of ``NWMessageChannel``: it conforms to the
-/// SAME ``MessageChannel`` protocol (so ``MuxClientTransport`` / a host relay can drive it
-/// exactly like a real one-TCP-pair channel), but instead of owning an `NWConnection` it is
-/// backed by:
+/// A `MuxSubChannel` conforms to the ``MessageChannel`` protocol (so ``MuxClientTransport`` / a
+/// host relay can drive it exactly like a framed channel), but instead of owning an `NWConnection`
+/// it is backed by:
 /// - a `channelID` (its logical address on the shared connection), and
 /// - a `muxSend` closure — given the channel's framed ``WireMessage`` bytes, the owner wraps
 ///   them in a `.channelData` mux envelope and writes them on the shared physical connection.
@@ -24,20 +23,19 @@ import RworkProtocol
 /// layer never parses the inner bytes — see ``MuxEnvelopeCodec``. This nesting is what lets the
 /// existing per-channel `FrameDecoder` work unchanged inside the mux.
 ///
-/// ### Flow control (S2, sub-gated by `RWORK_TCP_MUX_FLOW`)
-/// When `flowControl` is ON, the DATA sub-channel carries a per-channel SSH-style send window
-/// (``FlowCreditPolicy``): ``send(_:)`` debits the wire byte-count of each frame and, when the
-/// window is exhausted, SUSPENDS (await a continuation) until a peer `windowAdjust` calls
-/// ``grantCredit(_:)`` — so one flooding channel cannot monopolise the shared socket and starve
-/// a sibling. The CONTROL sub-channel is built with flow OFF (infinite window) so resize / ack /
-/// bye / keepalive NEVER block behind a full data window (foot-gun #1/#3). With `flowControl`
-/// OFF the window is infinite and ``send`` never blocks — byte-identical to S1.
+/// ### Flow control (always on for DATA)
+/// The DATA sub-channel carries a per-channel SSH-style send window (``FlowCreditPolicy``):
+/// ``send(_:)`` debits the wire byte-count of each frame and, when the window is exhausted,
+/// SUSPENDS (await a continuation) until a peer `windowAdjust` calls ``grantCredit(_:)`` — so one
+/// flooding channel cannot monopolise the shared socket and starve a sibling. The CONTROL
+/// sub-channel is built with an INFINITE window (`sendWindowBytes: nil`) so resize / ack / bye /
+/// keepalive NEVER block behind a full data window (foot-gun #1/#3).
 ///
 /// All mutable state (the decoder, the inbound continuation, the credit window) lives inside
 /// this `actor`.
 public actor MuxSubChannel: MessageChannel {
-    /// Which logical channel kind this carries (advisory — framing is identical, mirroring
-    /// ``NWMessageChannel``). The mux carries data + control over the SAME physical pair.
+    /// Which logical channel kind this carries (advisory — framing is identical). The mux carries
+    /// data + control over the SAME physical pair.
     public nonisolated let channel: Channel
 
     /// This channel's logical id on the shared mux connection (odd = client-allocated).
@@ -48,15 +46,15 @@ public actor MuxSubChannel: MessageChannel {
     private let muxSend: @Sendable (_ channelID: UInt32, _ innerFrame: Data) async throws -> Void
 
     /// Per-channel streaming frame decoder. Lives inside the actor (not `Sendable`) — one per
-    /// logical channel, exactly as ``NWMessageChannel`` owns one per physical connection.
+    /// logical channel.
     private var decoder = FrameDecoder()
 
     private let inboundStream: AsyncThrowingStream<WireMessage, Error>
     private let inboundContinuation: AsyncThrowingStream<WireMessage, Error>.Continuation
 
-    // MARK: Flow control (S2 — only armed when flowControl is ON)
+    // MARK: Flow control (DATA armed; CONTROL infinite)
 
-    /// The per-channel SEND window. `nil` when flow control is OFF (S1: infinite window, no
+    /// The per-channel SEND window. `nil` for an INFINITE window (the CONTROL sub-channel: no
     /// gating). Wraps the pure ``FlowCreditPolicy`` decider — the actor only owns the suspension.
     private var sendWindow: FlowCreditPolicy?
     /// Senders parked because the window was exhausted, in FIFO order. Resumed (oldest first) when
@@ -68,32 +66,33 @@ public actor MuxSubChannel: MessageChannel {
     /// channel: an `actor` does NOT hold isolation across the credit-park suspension, so without this
     /// a second concurrently-issued `send` could interleave its `.channelData` chunks mid-frame and
     /// corrupt the receiver's per-channel `FrameDecoder` reassembly. `send` takes this FIFO gate
-    /// before emitting any chunk and hands it off when the whole frame is on the wire. Only the flow-ON
-    /// path chunks/parks, so the OFF (S1) path never touches it.
+    /// before emitting any chunk and hands it off when the whole frame is on the wire. Only the armed
+    /// (DATA) window path chunks/parks; the infinite-window CONTROL channel returns early and never
+    /// touches the gate.
     private var sendActive = false
     private var sendGateWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// - Parameters:
     ///   - channelID: the logical channel id on the shared connection.
     ///   - channel: the advisory ``Channel`` kind (data/control).
-    ///   - flowControl: when `true`, arm the per-channel send window (S2). The owner passes ON
-    ///     for the DATA sub-channel and OFF for the CONTROL sub-channel so control frames never
-    ///     block behind a full data window. Defaults to OFF (S1 infinite-window behaviour).
     ///   - muxSend: writes this channel's framed bytes out, wrapped in a `.channelData` envelope.
+    ///
+    /// Arms the per-channel send window with ``MuxFlowControl/initialWindowBytes`` — the DATA
+    /// sub-channel path. The CONTROL sub-channel (infinite window, never gated) uses the
+    /// designated init below with `sendWindowBytes: nil`.
     public init(
         channelID: UInt32,
         channel: Channel,
-        flowControl: Bool = false,
         muxSend: @escaping @Sendable (_ channelID: UInt32, _ innerFrame: Data) async throws -> Void
     ) {
         self.init(channelID: channelID, channel: channel,
-                  sendWindowBytes: flowControl ? MuxFlowControl.initialWindowBytes : nil,
+                  sendWindowBytes: MuxFlowControl.initialWindowBytes,
                   muxSend: muxSend)
     }
 
-    /// Designated init taking an explicit send-window size (`nil` = flow OFF / infinite window).
-    /// Tests use this to seed a SMALL window so the suspend/wake path is exercised without pushing
-    /// 256 KiB of bytes. Production callers use the `flowControl:` convenience above.
+    /// Designated init taking an explicit send-window size (`nil` = infinite window, never gated).
+    /// The CONTROL sub-channel uses `nil`; tests use this to seed a SMALL window so the
+    /// suspend/wake path is exercised without pushing 256 KiB of bytes.
     init(
         channelID: UInt32,
         channel: Channel,
@@ -115,10 +114,10 @@ public actor MuxSubChannel: MessageChannel {
     /// in a `.channelData` envelope for this channel. Suspends until the write is accepted; throws
     /// on a write failure or a closed shared connection.
     ///
-    /// ### Flow OFF (S1, byte-identical)
+    /// ### Infinite window (CONTROL sub-channel)
     /// The whole framed ``WireMessage`` is written as ONE `.channelData` envelope, never blocking.
     ///
-    /// ### Flow ON (S2)
+    /// ### Armed window (DATA sub-channel)
     /// The framed bytes are CHUNKED across the per-channel send window (yamux / RFC 9113 §5.2
     /// DATA-across-windows): each iteration consumes `min(remaining, bytesLeftInFrame)` credit — a
     /// PARTIAL consume that is ALWAYS `.allowed` (≤ remaining) — and writes that sub-slice as its
@@ -140,13 +139,13 @@ public actor MuxSubChannel: MessageChannel {
     /// followed by more) — the receiver's half-reassembled frame is discarded with its decoder on close.
     public func send(_ message: WireMessage) async throws {
         let framed = message.encode()
-        // Flow OFF → infinite window: write the WHOLE frame as ONE .channelData (S1-identical). No
-        // gate (the OFF path emits one envelope per send, never chunks → no interleave to prevent).
+        // Infinite window (CONTROL sub-channel): write the WHOLE frame as ONE .channelData. No gate
+        // (one envelope per send, never chunks → no interleave to prevent).
         guard sendWindow != nil else {
             try await muxSend(channelID, framed)
             return
         }
-        // Flow ON → take the per-channel send gate so a concurrent send waits its turn (FIFO) instead
+        // Armed window (DATA): take the per-channel send gate so a concurrent send waits its turn (FIFO) instead
         // of interleaving its chunks with ours mid-frame. `acquireSendGate` throws if the channel
         // finished while waiting; the `defer` (registered only AFTER a successful acquire) hands the
         // gate to the next waiter on completion OR on a mid-chunk throw.

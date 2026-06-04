@@ -1,11 +1,11 @@
 import Foundation
 import RworkProtocol
 
-/// A bidirectional, framed transport for ``WireMessage`` over one TCP connection.
+/// A bidirectional, framed transport for ``WireMessage``.
 ///
-/// One channel maps to one ``Channel`` (data or control). The concrete
-/// implementation, ``NWMessageChannel``, wraps an `NWConnection` whose parameters
-/// come from ``TransportParameters/makeTCP()`` (so `TCP_NODELAY` is always set).
+/// One channel maps to one ``Channel`` (data or control). The conformer is
+/// ``MuxSubChannel`` — one logical channel multiplexed over a shared ``MuxNWConnection`` (whose
+/// physical links use ``TransportParameters/makeTCP()``, so `TCP_NODELAY` is always set).
 ///
 /// Sending is an `async` call; receiving is an `AsyncThrowingStream` so the receive
 /// loop can `for try await` decoded messages produced by a per-channel
