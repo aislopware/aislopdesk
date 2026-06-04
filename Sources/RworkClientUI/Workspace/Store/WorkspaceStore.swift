@@ -3,6 +3,7 @@ import CoreGraphics
 import Network
 import RworkClient
 import RworkInspector
+import RworkTransport
 
 // MARK: - WorkspaceStore (the one @MainActor @Observable owner)
 
@@ -769,10 +770,50 @@ public extension WorkspaceStore {
     ///     that function for the unproven-host guardrail).
     static func liveMakeSession(
         makeClient: @escaping @Sendable () -> RworkClient = { RworkClient() },
-        makeInspector: @escaping @MainActor (Endpoint) -> InspectorClient? = liveMakeInspector
+        makeInspector: @escaping @MainActor (Endpoint) -> InspectorClient? = liveMakeInspector,
+        muxRegistry: ConnectionRegistry? = nil
     ) -> @MainActor (PaneSpec) -> any PaneSessionHandle {
-        { spec in
-            LivePaneSession.make(spec, makeClient: makeClient, makeInspector: makeInspector)
+        // TCP-mux gate (RWORK_TCP_MUX): when a registry is supplied AND enabled, SWAP the client
+        // factory for one that backs each `RworkClient` with a logical channel over the per-host
+        // shared `MuxNWConnection` (refcounted by the registry) instead of a private one-TCP-pair
+        // `ClientTransport`. The OFF path is byte-identical: with `muxRegistry == nil` (or the gate
+        // unset) `effectiveMakeClient` is the caller's `{ RworkClient() }` UNCHANGED — the closure
+        // is the exact same value, so the construction site behaves precisely as before. This is the
+        // SOLE client-side gate; nothing on the per-message path or downstream (ConnectionViewModel,
+        // LivePaneSession, reconcile) is touched.
+        let effectiveMakeClient: @Sendable () -> RworkClient
+        if let muxRegistry, muxRegistry.isEnabled {
+            effectiveMakeClient = muxBackedClientFactory(registry: muxRegistry)
+        } else {
+            effectiveMakeClient = makeClient
+        }
+        return { spec in
+            LivePaneSession.make(spec, makeClient: effectiveMakeClient, makeInspector: makeInspector)
+        }
+    }
+
+    /// Builds a `@Sendable () -> RworkClient` whose clients route over the shared mux connection
+    /// pooled by `registry`. Each `RworkClient` is constructed with an injected `makeTransport` that
+    /// vends a fresh `MuxClientTransport` bound to the registry's acquire/release — so the channel is
+    /// opened on the shared connection at `connect()` and released (refcount--) at `close()`, with
+    /// the shared transport torn down only when the LAST pane's channel goes. The registry is
+    /// `@MainActor`; the transport's acquire/release closures hop onto the main actor to call it.
+    private static func muxBackedClientFactory(
+        registry: ConnectionRegistry
+    ) -> @Sendable () -> RworkClient {
+        { @Sendable in
+            RworkClient(makeTransport: {
+                MuxClientTransport(
+                    acquire: { host, port, sessionID, lastReceivedSeq in
+                        try await registry.acquire(
+                            host: host, port: port, sessionID: sessionID, lastReceivedSeq: lastReceivedSeq
+                        )
+                    },
+                    release: { host, port, channelID in
+                        await registry.release(host: host, port: port, channelID: channelID)
+                    }
+                )
+            })
         }
     }
 
