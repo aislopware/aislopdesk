@@ -52,7 +52,11 @@ final class VideoWindowPipeline {
     /// sent after it (noVNC `_flushMouseMoveTimer` / TigerVNC `pointerEventInterval`). The host
     /// additionally coalesces whatever still arrives, so this is a bandwidth/CPU optimisation
     /// layered on a correctness fix that already holds host-side.
-    private var pendingMotionSend: (() -> Void)?
+    /// The latest deferred move/drag as an `async` action (the actual `session.sendMouseMove/Drag`
+    /// await), NOT a fire-and-forget `Task`. Storing the bare async work lets a button event fold
+    /// the flush + the button into ONE ordered hop (`takePendingMotion()`), while the motion pump
+    /// still fire-and-forgets it on its own tick (`flushPendingMotion()`).
+    private var pendingMotionSend: (@Sendable () async -> Void)?
     private var motionPump: Task<Void, Never>?
     private var motionInterval: TimeInterval = 1.0 / 30.0
 
@@ -222,37 +226,44 @@ final class VideoWindowPipeline {
 
     func mouseMove(_ viewPoint: VideoPoint) {
         guard let session else { return }
-        // Coalesce: defer to the motion pump (most-recent-wins) instead of a Task per event.
-        pendingMotionSend = { Task { await session.sendMouseMove(viewPoint: viewPoint) } }
+        // Coalesce: defer to the motion pump (most-recent-wins) instead of a Task per event. Stored
+        // as the bare async send so a following button can fold it into one ordered hop.
+        pendingMotionSend = { await session.sendMouseMove(viewPoint: viewPoint) }
     }
     func mouseDrag(_ button: MouseButton, _ viewPoint: VideoPoint, _ clickCount: UInt8, _ modifiers: InputModifiers) {
         guard let session else { return }
-        pendingMotionSend = { Task { await session.sendMouseDrag(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) } }
+        pendingMotionSend = { await session.sendMouseDrag(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
     }
     func mouseDown(_ button: MouseButton, _ viewPoint: VideoPoint, _ clickCount: UInt8, _ modifiers: InputModifiers) {
         guard let session else { return }
-        flushPendingMotion()   // a move that preceded this click must reach the host first
-        Task { await session.sendMouseDown(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
+        // Fold the pending-motion flush + the button into ONE ordered actor hop so a move that is
+        // STILL PENDING at click time cannot be sent AFTER the click: two separate Tasks race onto
+        // the actor with no FIFO; one Task that awaits the move then the button preserves order.
+        // (Residual: if the ~motionInterval pump tick already took the move as its own fire-and-forget
+        // Task just before this click, the two can still race — best-effort. Strictly narrower than the
+        // pre-fix per-click race, and the host re-coalesces inbound by arrival order.)
+        let flush = takePendingMotion()   // captured at call time (most-recent-wins); nil ⇒ no move
+        Task { await flush?(); await session.sendMouseDown(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
     }
     func mouseUp(_ button: MouseButton, _ viewPoint: VideoPoint, _ clickCount: UInt8, _ modifiers: InputModifiers) {
         guard let session else { return }
-        flushPendingMotion()   // the final drag sample must precede the release edge
-        Task { await session.sendMouseUp(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
+        let flush = takePendingMotion()   // the final drag sample must precede the release edge
+        Task { await flush?(); await session.sendMouseUp(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
     }
     func scroll(dx: Double, dy: Double, viewPoint: VideoPoint) {
         guard let session else { return }
-        flushPendingMotion()
-        Task { await session.sendScroll(dx: dx, dy: dy, viewPoint: viewPoint) }
+        let flush = takePendingMotion()
+        Task { await flush?(); await session.sendScroll(dx: dx, dy: dy, viewPoint: viewPoint) }
     }
     func key(keyCode: UInt16, down: Bool, modifiers: InputModifiers) {
         guard let session else { return }
-        flushPendingMotion()
-        Task { await session.sendKey(keyCode: keyCode, down: down, modifiers: modifiers) }
+        let flush = takePendingMotion()
+        Task { await flush?(); await session.sendKey(keyCode: keyCode, down: down, modifiers: modifiers) }
     }
     func text(_ string: String) {
         guard let session else { return }
-        flushPendingMotion()
-        Task { await session.sendText(string) }
+        let flush = takePendingMotion()
+        Task { await flush?(); await session.sendText(string) }
     }
 
     // MARK: Motion pump (client-side coalescing)
@@ -276,11 +287,21 @@ final class VideoWindowPipeline {
         pendingMotionSend = nil
     }
 
-    /// Send the latest deferred pointer motion now (most-recent-wins), if any.
+    /// Send the latest deferred pointer motion now (most-recent-wins), if any. Used by the motion
+    /// pump's own tick, where there is no following event to order against — fire-and-forget a Task.
     private func flushPendingMotion() {
-        guard let send = pendingMotionSend else { return }
+        guard let send = takePendingMotion() else { return }
+        Task { await send() }
+    }
+
+    /// Hand back (and clear) the latest deferred pointer motion as a bare async action, WITHOUT
+    /// sending it. The caller (a button/scroll/key/text event) awaits this BEFORE its own send in
+    /// the SAME Task, so the flushed move and the button reach the actor in physical order — the
+    /// single-ordered-hop invariant the inbound path also follows (no Task-per-item race).
+    private func takePendingMotion() -> (@Sendable () async -> Void)? {
+        guard let send = pendingMotionSend else { return nil }
         pendingMotionSend = nil
-        send()
+        return send
     }
 }
 
