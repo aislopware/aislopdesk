@@ -13,14 +13,6 @@ final class RworkHostSmokeTests: XCTestCase {
         XCTAssertEqual(pty.pid, -1)
     }
 
-    func testHostSessionExposesStableID() {
-        let id = UUID()
-        let transport = HostSessionTransport(sessionID: id)
-        let session = HostSession(sessionID: id, pty: PTYProcess(), transport: transport)
-        XCTAssertEqual(session.sessionID, id)
-        XCTAssertEqual(session.transport.sessionID, id)
-    }
-
     func testHostServerHoldsPortAndStartsEmpty() {
         let server = HostServer(port: 7420)
         XCTAssertEqual(server.port, 7420)

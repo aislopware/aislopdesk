@@ -33,11 +33,12 @@ public enum VideoChannel: UInt8, Sendable, CaseIterable {
 /// Seam over the UDP transport the host orchestrator sends datagrams on and receives
 /// client datagrams from.
 ///
-/// This protocol is the **hang-safe test seam**: the production conformer
-/// (``NWVideoDatagramTransport``) opens real `NWListener`/`NWConnection` `.udp`
-/// sockets and is NEVER instantiated in a test; the orchestrator's pure logic is
-/// exercised against an in-memory fake that records sent datagrams and feeds
-/// synthetic received ones (mirroring the RworkTransport `MessageChannel` discipline).
+/// This protocol is the **hang-safe test seam**: the production conformer is a
+/// ``VideoMuxChannelTransport`` lane over the shared ``NWVideoMuxDatagramTransport``, which
+/// opens real `NWListener`/`NWConnection` `.udp` sockets and is NEVER instantiated in a test;
+/// the orchestrator's pure logic is exercised against an in-memory fake that records sent
+/// datagrams and feeds synthetic received ones (mirroring the RworkTransport `MessageChannel`
+/// discipline).
 public protocol VideoDatagramTransport: Sendable {
     /// Begins listening for the client (binds the media + cursor sockets) and starts
     /// delivering received datagrams to `onReceive`. `onReceive` is called for every

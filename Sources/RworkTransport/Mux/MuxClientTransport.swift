@@ -2,22 +2,21 @@ import Foundation
 import RworkProtocol
 
 /// A ``ClientTransporting`` backed by one logical channel on a SHARED ``MuxNWConnection`` — the
-/// per-pane transport vended (behind the `RWORK_TCP_MUX` gate) to ``RworkClient/RworkClient`` in
-/// place of the today-shaped one-TCP-pair ``ClientTransport``.
+/// per-pane terminal transport vended to ``RworkClient/RworkClient``.
 ///
-/// This is the "channel facade": from `RworkClient`'s point of view it has the IDENTICAL surface
-/// as `ClientTransport` (it conforms to the same ``ClientTransporting`` protocol), so nothing
-/// upstream — `RworkClient`, `ConnectionViewModel`, `LivePaneSession`, `reconcile` — changes. The
-/// difference is entirely below: `connect()` acquires the shared connection for `(host,port)` from
-/// the ``ConnectionRegistry`` and opens ONE channel on it; `sendInput` rides the channel's DATA
-/// sub-channel, `sendResize`/`sendAck`/`sendBye` ride its CONTROL sub-channel, and `inbound` merges
-/// both — exactly the data/control split `ClientTransport` presents over two physical sockets.
+/// This is the "channel facade": from `RworkClient`'s point of view it presents the
+/// ``ClientTransporting`` protocol surface, so nothing upstream — `RworkClient`,
+/// `ConnectionViewModel`, `LivePaneSession`, `reconcile` — knows about the mux layer. `connect()`
+/// acquires the shared connection for `(host,port)` from the ``ConnectionRegistry`` and opens ONE
+/// channel on it; `sendInput` rides the channel's DATA sub-channel, `sendResize`/`sendAck`/`sendBye`
+/// ride its CONTROL sub-channel, and `inbound` merges both — a data/control split over two physical
+/// sockets shared by every pane on the host.
 ///
-/// ### Session identity (S1)
+/// ### Session identity
 /// The mux `channelOpen` carries the resume `sessionID` + `lastReceivedSeq` directly, so the
-/// channel IS the session — there is no separate hello/helloAck handshake on the shared link. S1
-/// treats the presented `sessionID` as authoritative (a fresh UUID for a new pane, the preserved
-/// id on reconnect); per-channel returning-client replay over mux is a later stage.
+/// channel IS the session — there is no separate hello/helloAck handshake on the shared link. The
+/// presented `sessionID` is authoritative (a fresh UUID for a new pane, the preserved id on
+/// reconnect); per-channel returning-client replay over mux is a later stage.
 ///
 /// All mutable state lives inside this `actor`. The shared connection is acquired/released through
 /// the (`@MainActor`) ``ConnectionRegistry``, hopped to from `connect`/`close`.

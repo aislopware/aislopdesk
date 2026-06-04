@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import RworkTransport
 @testable import RworkClientUI
 
 // MARK: - LiveVideoCapTests
@@ -651,7 +652,11 @@ final class LiveVideoCapTests: XCTestCase {
     /// (the retry admits it), saturated ⇒ the gated placeholder.
     func testUnconfiguredRemoteGUIPaneIsNotCapGatedInDisplay() {
         // Build a live (production) remoteGUI session with no video endpoint, mirroring Tab.make/split.
-        let session = WorkspaceStore.liveMakeSession()(PaneSpec(kind: .remoteGUI, title: "Remote window"))
+        // The mux registry's factory is never invoked for a .remoteGUI pane (it has no terminal client).
+        let registry = ConnectionRegistry { _, _ in
+            throw RworkTransportError.invalidState("remoteGUI pane never builds a terminal mux connection")
+        }
+        let session = WorkspaceStore.liveMakeSession(muxRegistry: registry)(PaneSpec(kind: .remoteGUI, title: "Remote window"))
         let live = session as! LivePaneSession
         XCTAssertNotNil(live.remoteWindow, "a remoteGUI session always has a RemoteWindowModel")
         XCTAssertFalse(live.remoteWindow!.canOpen, "a fresh unconfigured model cannot open (empty fields)")

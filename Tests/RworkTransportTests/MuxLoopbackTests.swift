@@ -10,13 +10,13 @@ import RworkProtocol
 final class MuxLoopbackTests: XCTestCase {
 
     /// Wires a client + host shared connection over in-memory CONTROL + DATA links, with the host
-    /// auto-accepting + echoing every peer-opened channel. Returns both ends. `flowControl` arms the
-    /// S2 per-channel credit windows on BOTH ends (the gate is the contract — both must agree).
-    private func makeLoopback(flowControl: Bool = false) async -> (client: MuxNWConnection, host: MuxNWConnection) {
+    /// auto-accepting + echoing every peer-opened channel. Returns both ends. Per-channel credit
+    /// flow control is always on (DATA armed, CONTROL infinite).
+    private func makeLoopback() async -> (client: MuxNWConnection, host: MuxNWConnection) {
         let (clientControl, hostControl) = InMemoryMuxLink.pair()
         let (clientData, hostData) = InMemoryMuxLink.pair()
-        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData, flowControl: flowControl)
-        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData, flowControl: flowControl)
+        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData)
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData)
         // Host: on a peer channelOpen, ack it and ECHO every inbound DATA WireMessage straight back
         // on the SAME channel's data sub-channel (so the client can observe per-channel routing).
         await host.setHostOpenHandler { open in
@@ -195,7 +195,7 @@ final class MuxLoopbackTests: XCTestCase {
         XCTAssertNotEqual(chA.data.channelID, chB.data.channelID)
     }
 
-    // MARK: - S2: per-channel credit flow control (RWORK_TCP_MUX_FLOW)
+    // MARK: - Per-channel credit flow control (always on)
 
     /// HEADLINE S2 PROPERTY: a channel flooding the shared connection does NOT starve a sibling
     /// channel's small "keystroke", AND ordering within the flooded channel is preserved, AND the
@@ -208,7 +208,7 @@ final class MuxLoopbackTests: XCTestCase {
     /// as the host's windowAdjusts grant credit); channel B sends ONE small keystroke. We assert B's
     /// echo arrives promptly (no starvation) AND every one of A's frames arrives in EXACT send order.
     func testFloodDoesNotStarveSiblingAndPreservesOrder() async throws {
-        let (client, _) = await makeLoopback(flowControl: true)
+        let (client, _) = await makeLoopback()
         let chA = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
         let chB = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
 
@@ -253,8 +253,8 @@ final class MuxLoopbackTests: XCTestCase {
     func testReceivedWindowAdjustWakesSuspendedSender() async throws {
         let (clientControl, hostControl) = InMemoryMuxLink.pair()
         let (clientData, hostData) = InMemoryMuxLink.pair()
-        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData, flowControl: true)
-        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData, flowControl: true)
+        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData)
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData)
         // Host accepts opens but NEVER reads/echoes — so the only credit the client can ever get is
         // the explicit windowAdjust we inject below.
         await host.setHostOpenHandler { open in Task { await host.sendOpenAck(open.channelID, accepted: true) } }
@@ -305,8 +305,8 @@ final class MuxLoopbackTests: XCTestCase {
         let (clientData, hostDataRaw) = InMemoryMuxLink.pair()
         let hostControl = RecordingMuxLink(wrapping: hostControlRaw)
         let hostData = RecordingMuxLink(wrapping: hostDataRaw)
-        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData, flowControl: true)
-        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData, flowControl: true)
+        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData)
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData)
         // Host: ack the open and DRAIN the inbound flood (no echo) — draining is what makes the host
         // cross the half-window threshold and EMIT windowAdjust grants, which the spy records.
         await host.setHostOpenHandler { open in
@@ -346,8 +346,8 @@ final class MuxLoopbackTests: XCTestCase {
     func testBlockingLinkFloodCompletesWhenGrantRidesControl() async throws {
         let (clientControl, hostControl) = BlockingMuxLink.pair(capacity: 64) // CONTROL: open, fast
         let (clientData, hostData) = BlockingMuxLink.pair(capacity: 8)        // DATA: client→host open
-        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData, flowControl: true)
-        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData, flowControl: true)
+        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData)
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData)
         await host.setHostOpenHandler { open in
             Task {
                 await host.sendOpenAck(open.channelID, accepted: true)

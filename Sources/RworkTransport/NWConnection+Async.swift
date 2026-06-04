@@ -5,7 +5,7 @@ import RworkProtocol
 /// Async bridges over the raw `NWConnection` callback API, used only during the
 /// pre-framing association/handshake phase (reading the fixed-size preamble and
 /// writing raw preamble bytes). Once the preamble is consumed, the connection is
-/// handed to ``NWMessageChannel`` which owns all further I/O.
+/// handed to ``NWMuxByteLink`` which owns all further I/O.
 extension NWConnection {
     /// Starts the connection on `queue` and suspends until it reaches `.ready`.
     /// Throws ``RworkTransportError/connectionFailed(_:)`` if it fails/cancels first.
@@ -13,9 +13,9 @@ extension NWConnection {
     /// Cancellation-aware: an unreachable/refused endpoint parks `NWConnection` in
     /// `.waiting` indefinitely (waitForConnectivity), which is NOT a terminal state, so
     /// without this the readiness continuation would never resume. If the awaiting task
-    /// is cancelled (e.g. `ClientTransport.connect`'s handshake-timeout fires), we cancel
-    /// the underlying connection — which drives it to `.cancelled` — and resume the
-    /// continuation, so the continuation is never leaked and the socket is torn down.
+    /// is cancelled (e.g. a handshake-timeout fires), we cancel the underlying connection —
+    /// which drives it to `.cancelled` — and resume the continuation, so the continuation
+    /// is never leaked and the socket is torn down.
     func startAndWaitReady(on queue: DispatchQueue) async throws {
         // A small box so the state handler and the continuation share completion state
         // without racing: only the first terminal transition resumes.
@@ -61,7 +61,7 @@ extension NWConnection {
             // turns into a thrown error (if it hasn't already resumed).
             cancel()
         }
-        // Detach the temporary handler; NWMessageChannel installs its own.
+        // Detach the temporary handler; NWMuxByteLink installs its own.
         stateUpdateHandler = nil
     }
 

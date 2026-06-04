@@ -29,7 +29,7 @@ final class VideoConnectionRegistryTests: XCTestCase {
     }
 
     private func makeRegistry(_ track: @escaping (FakeFlow) -> Void = { _ in }) -> VideoConnectionRegistry {
-        VideoConnectionRegistry(isEnabled: true) { _, _, _ in
+        VideoConnectionRegistry { _, _, _ in
             let flow = FakeFlow()
             track(flow)
             return flow

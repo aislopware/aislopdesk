@@ -6,8 +6,8 @@ import RworkProtocol
 /// shared ``MuxNWConnection`` (one such link is the CONTROL socket, one the DATA socket).
 ///
 /// It is a thin raw-byte adapter: it does NOT frame or decode (the ``MuxFrameDecoder`` inside
-/// ``MuxNWConnection`` owns that). It just writes raw bytes and surfaces inbound chunks — the same
-/// receive-loop shape as ``NWMessageChannel`` but one level lower (no `WireMessage` framing here).
+/// ``MuxNWConnection`` owns that). It just writes raw bytes and surfaces inbound chunks — a
+/// receive-loop over an `NWConnection` at the raw-byte level (no `WireMessage` framing here).
 ///
 /// All mutable state (the inbound continuation) is set up at init; the receive loop re-arms itself
 /// via the `NWConnection` callback (no actor needed — the continuation is `Sendable` and the
@@ -70,11 +70,7 @@ public final class NWMuxByteLink: MuxByteLink, @unchecked Sendable {
 /// Builds the production shared ``MuxNWConnection`` for an endpoint: opens the CONTROL + DATA
 /// `NWConnection`s, writes the mux preamble on each, wraps them as ``NWMuxByteLink``s, and starts
 /// the receive loops. This is the `makeConnection` factory the production ``ConnectionRegistry``
-/// injects (the gate is checked by the registry before this is ever called).
-///
-/// Both ends MUST agree on `RWORK_TCP_MUX` (spec constraint #2): the wire here (mux preamble +
-/// envelope framing) is incompatible with the today preamble/framing, so a mixed-mode pairing is
-/// unsupported by design — there is no negotiation, the flag is the contract.
+/// injects.
 public enum LiveMuxConnectionFactory {
     @MainActor
     public static func makeConnection(host: String, port: UInt16) async throws -> MuxNWConnection {
@@ -95,10 +91,7 @@ public enum LiveMuxConnectionFactory {
         let connection = MuxNWConnection(
             role: .client,
             controlLink: NWMuxByteLink(connection: controlConn, label: "control"),
-            dataLink: NWMuxByteLink(connection: dataConn, label: "data"),
-            // S2 sub-gate: read `RWORK_TCP_MUX_FLOW` ONCE here (alongside `RWORK_TCP_MUX`, which the
-            // registry already checked before calling this factory). OFF → infinite window (S1).
-            flowControl: MuxFlowControl.flowEnabledFromEnvironment()
+            dataLink: NWMuxByteLink(connection: dataConn, label: "data")
         )
         await connection.start()
         return connection

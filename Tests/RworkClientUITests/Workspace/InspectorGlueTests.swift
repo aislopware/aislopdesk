@@ -1,7 +1,19 @@
 import XCTest
 import RworkClient
 import RworkInspector
+import RworkTransport
 @testable import RworkClientUI
+
+/// An `RworkClient` whose transport factory is inert (never invoked — these `.claudeCode` panes are
+/// never connected: the inspector fold is driven over an in-process loopback channel, no socket).
+@Sendable private func makeUnconnectedClient() -> RworkClient {
+    RworkClient(makeTransport: {
+        MuxClientTransport(
+            acquire: { _, _, _, _ in throw RworkTransportError.notConnected("inert test transport") },
+            release: { _, _, _ in }
+        )
+    })
+}
 
 /// WF5 — Inspector pane-content glue.
 ///
@@ -220,7 +232,7 @@ final class InspectorGlueTests: XCTestCase {
         // The store's makeInspector seam: hand the session a loopback-backed client (no network).
         let session = LivePaneSession.make(
             PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
-            makeClient: { RworkClient() },                     // never connected (lazy; no socket)
+            makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) }
         )
 
@@ -252,7 +264,7 @@ final class InspectorGlueTests: XCTestCase {
 
         let session = LivePaneSession.make(
             PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
-            makeClient: { RworkClient() },
+            makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) }
         )
 
@@ -283,7 +295,7 @@ final class InspectorGlueTests: XCTestCase {
         var clientHandedOut = 0
         let session = LivePaneSession.make(
             PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
-            makeClient: { RworkClient() },
+            makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in
                 clientHandedOut += 1
                 return InspectorClient(channel: clientCh)
@@ -323,7 +335,7 @@ final class InspectorGlueTests: XCTestCase {
 
         let session = LivePaneSession.make(
             PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
-            makeClient: { RworkClient() },
+            makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) }
         )
         let vm = try XCTUnwrap(session.inspector)
@@ -353,7 +365,7 @@ final class InspectorGlueTests: XCTestCase {
         var makeInspectorCalled = false
         let session = LivePaneSession.make(
             PaneSpec(kind: .terminal, title: "term", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
-            makeClient: { RworkClient() },
+            makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in
                 makeInspectorCalled = true
                 return nil

@@ -211,7 +211,7 @@ public final class InspectorServer: @unchecked Sendable {
     /// forever after the peer goes away (the keep-alive timer firing into a dead channel,
     /// the replay-log subscriber never detached). We therefore run the pump AND an
     /// inbound-drain of `controls` concurrently (the established
-    /// `HostSessionTransport.makeForwarder` `for try await … in channel.inbound` idiom):
+    /// `for try await … in channel.inbound` forwarder idiom):
     /// when the peer finishes/fails its inbound (real client FIN — `NWByteChannel`
     /// `finishInbound`/`failInbound` — or test channel `close`), the drain returns and we
     /// cancel the group. Cancelling tears down the pump's `replayLog.subscribe` stream,
