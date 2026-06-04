@@ -54,7 +54,13 @@ public actor RworkVideoHostSession {
     /// OFF the byte path is identical to today: `resolveResizeSize` returns nil (the SM emits
     /// no `.resizeCapture`), so `apply(.resizeCapture)` stays the inert no-op and no `resizeAck`
     /// is ever sent. PATH A (AX resize of the REAL host window) only runs when this is set.
-    static let resizeEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_RESIZE"] == "1"
+    static let resizeEnabled: Bool = {
+        // Match the sibling RWORK_VIDEO_* gates' truthiness (1/true/yes/on, case-insensitive) so
+        // `=true` is not silently OFF while the other gates would be ON (audit consistency fix). `=1`
+        // (the documented form) still works; this only ADDS the missing truthy spellings.
+        let raw = ProcessInfo.processInfo.environment["RWORK_VIDEO_RESIZE"]?.lowercased()
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }()
     private var encodedFrameCount = 0
     nonisolated private func dbg(_ message: @autoclosure () -> String) {
         guard Self.debugStderr else { return }
