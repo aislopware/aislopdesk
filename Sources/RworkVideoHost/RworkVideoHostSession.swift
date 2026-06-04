@@ -50,6 +50,11 @@ public actor RworkVideoHostSession {
     /// with a monotonic sequence number (NOT sampled), so a loopback run can read the exact
     /// injected ORDER — the ground truth for the reorder fix. No-op in production.
     private static let inputTrace = ProcessInfo.processInfo.environment["RWORK_INPUT_TRACE"] != nil
+    /// In-session host-window-resize feature gate (`RWORK_VIDEO_RESIZE=1`, default OFF). When
+    /// OFF the byte path is identical to today: `resolveResizeSize` returns nil (the SM emits
+    /// no `.resizeCapture`), so `apply(.resizeCapture)` stays the inert no-op and no `resizeAck`
+    /// is ever sent. PATH A (AX resize of the REAL host window) only runs when this is set.
+    static let resizeEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_RESIZE"] == "1"
     private var encodedFrameCount = 0
     nonisolated private func dbg(_ message: @autoclosure () -> String) {
         guard Self.debugStderr else { return }
@@ -231,7 +236,7 @@ public actor RworkVideoHostSession {
         }
         dbg("control received: \(String(describing: message)) (window=\(window.windowID))")
         let bounds = currentWindowBoundsCG()
-        let effects = stateMachine.handleControl(message, windowBoundsCG: bounds) { [window] requestedWindowID, viewport in
+        let effects = stateMachine.handleControl(message, windowBoundsCG: bounds, resolveCaptureSize: { [window] requestedWindowID, viewport in
             // Accept only the window this session was created for; size the capture to
             // the real window backing store (clamp the requested viewport to it).
             guard requestedWindowID == UInt32(window.windowID) else { return nil }
@@ -239,7 +244,20 @@ public actor RworkVideoHostSession {
             let h = UInt16(max(1, min(Double(UInt16.max), window.frame.height.rounded())))
             _ = viewport // viewport informs client-side scaling; host captures native window pixels.
             return (w, h)
-        }
+        }, resolveResizeSize: { [window] requestedWindowID, desired in
+            // GATE: with `RWORK_VIDEO_RESIZE` OFF, reject every resize (the SM then emits no
+            // `.resizeCapture`) so the path stays byte-identical to the fixed-size build.
+            guard Self.resizeEnabled else { return nil }
+            // Accept only the session's window; sanity-clamp the desired POINT size into a
+            // valid, non-zero, UInt16-safe range. This is a POLICY pre-clamp only — the AX
+            // read-back in `apply(.resizeCapture)` is the AUTHORITATIVE achieved size (the
+            // window may further clamp to its own min/max). Min 1×1; max ceilinged at the
+            // UInt16 wire limit (the clamp already enforces it).
+            guard requestedWindowID == UInt32(window.windowID) else { return nil }
+            return SizeNegotiation.clamp(desired: desired,
+                                         min: VideoSize(width: 1, height: 1),
+                                         max: VideoSize(width: Double(UInt16.max), height: Double(UInt16.max)))
+        })
         for effect in effects { await apply(effect) }
         // CONCURRENCY-HOST-1: a clean `bye` re-arms the session to `.listening` and tears down
         // capture (above), but the pinned UDP flow slot stays pinned (UDP has no FIN) — so a
@@ -353,18 +371,139 @@ public actor RworkVideoHostSession {
             dbg("effect stopCapture")
             await teardownLiveComponents()
         case .resizeCapture(let width, let height, let epoch):
-            // STAGE 0 — INERT no-op. The pure state machine has accepted + clamped the
-            // in-session resize, but the live re-size is a later HARDWARE-GATED stage.
-            // No client sends a `resizeRequest` yet, so this effect is never produced in
-            // the fixed-size path; when it lands it must:
-            //   TODO(resize-stage): AX-resize the target window to width×height, then
-            //   `SCStream.updateConfiguration` + reconfigure the VTCompressionSession to
-            //   the new dimensions, and only THEN send `resizeAck(width,height,epoch)` so
-            //   the client re-bases its aspect-fit denominator on a frame it will actually
-            //   receive at the new size. Intentionally NOT wired here to keep Stage 0
-            //   additive + byte-identical on the existing path.
-            dbg("effect resizeCapture \(width)x\(height) epoch=\(epoch) — INERT (Stage 0; AX/SCStream resize deferred)")
+            await applyResize(width: width, height: height, epoch: epoch)
         }
+    }
+
+    // MARK: In-session resize (PATH A — AX window resize; env-gated RWORK_VIDEO_RESIZE)
+
+    /// Performs the live in-session resize for a `.resizeCapture` effect (the SM already
+    /// clamped + epoch-gated the request). PATH A: resize the REAL host window via the
+    /// Accessibility API, read back the ACHIEVED size, rebuild the encoder + capturer at the
+    /// achieved PIXEL size, and only THEN send `resizeAck(achieved, epoch)`. Abort cleanly
+    /// (keep the old encoder running, send NO ack) on any AX/encoder failure — never crash.
+    ///
+    /// Ordering (industry drain→recreate→forceIDR + the spec's option 4b):
+    ///   a. AX-resize the window; read back the achieved POINT size (window may self-clamp).
+    ///   b. Build the NEW encoder (createLive + createCrisp) FIRST; abort if it throws.
+    ///   c. Drain the OLD encoder (`completeFrames`) so no in-flight output is dropped, then
+    ///      stop the OLD capturer and start a NEW one at the achieved pixel size — the new
+    ///      capturer forces an IDR on its first delivered frame (`hasEmittedFirstFrame`), so
+    ///      the fresh VPS/SPS/PPS rides that IDR and the client decoder auto-reconfigures.
+    ///   d. Send `resizeAck` LAST — after the new capturer/encoder is live. NOTE: `start()` only
+    ///      kicks off the SCStream; it does NOT await the first delivered frame, so the ack MAY
+    ///      reach the client just BEFORE the first new-size IDR. That is SAFE: the client
+    ///      frame-GATES adoption (re-bases `decodedSize` only when a decoded buffer at the new
+    ///      size actually arrives — `noteDecoded` / ``ResizeAdoption``), NOT on ack receipt.
+    ///      Correctness rests on the client gate, not on send ordering.
+    private func applyResize(width: UInt16, height: UInt16, epoch: UInt32) async {
+        guard Self.resizeEnabled else {
+            // Defence-in-depth: the SM only emits `.resizeCapture` when `resolveResizeSize`
+            // returned non-nil, which the gate already blocks when OFF. Stay inert regardless.
+            dbg("effect resizeCapture \(width)x\(height) epoch=\(epoch) — INERT (RWORK_VIDEO_RESIZE off)")
+            return
+        }
+        // Must still be streaming with a live capturer/encoder to resize (a bye/stop could have
+        // raced in before this effect ran). If not, drop the resize (no ack).
+        guard stateMachine.mediaFlowing, let oldCapturer = capturer, let oldEncoder = encoder else {
+            dbg("resizeCapture \(width)x\(height) epoch=\(epoch) — not streaming / no live components; dropped")
+            return
+        }
+
+        // a. AX-resize the REAL window to the requested POINT size; read back the ACHIEVED size.
+        //    `geometryWatcher` owns the windowID/pid + the frame-matching AX lookup. If the
+        //    window can't be resized (fixed-size/sheet → kAXErrorAttributeUnsupported, or a hung
+        //    app → kAXErrorCannotComplete) we ABORT: keep the old encoder, send no ack.
+        guard let watcher = geometryWatcher else {
+            dbg("resizeCapture epoch=\(epoch) — no geometry watcher; dropped")
+            return
+        }
+        let requestedPoints = VideoSize(width: Double(width), height: Double(height))
+        guard let achievedPoints = await MainActor.run(body: { watcher.resizeWindow(toPoints: requestedPoints) }) else {
+            log.error("AX window resize unavailable/failed — keeping current capture size")
+            dbg("resizeCapture epoch=\(epoch) — AX resize failed/unsupported; ABORTED (encoder unchanged)")
+            return
+        }
+        // The main-actor hop above is a suspension point — re-check identity so a superseding
+        // bye/stop teardown (which nils + tears down our refs) cannot make us resize a dead session.
+        guard stateMachine.mediaFlowing, capturer === oldCapturer, encoder === oldEncoder else {
+            dbg("resizeCapture epoch=\(epoch) — session superseded during AX resize; aborted")
+            return
+        }
+
+        let achievedWidth = UInt16(max(1, min(Double(UInt16.max), achievedPoints.width.rounded())))
+        let achievedHeight = UInt16(max(1, min(Double(UInt16.max), achievedPoints.height.rounded())))
+        let pixelWidth = max(1, Int((Double(achievedWidth) * captureScale).rounded()))
+        let pixelHeight = max(1, Int((Double(achievedHeight) * captureScale).rounded()))
+
+        // b. Build the NEW encoder FIRST (off the live path). If creation throws, abort and keep
+        //    the OLD encoder running — degrade to no-resize, never to a dead session.
+        let newEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate) { [weak self] avcc, keyframe, mode in
+            guard let self else { return }
+            Task { await self.onEncodedFrame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp) }
+        }
+        do {
+            try newEncoder.createLiveSession()
+            try newEncoder.createCrispSession()
+        } catch {
+            log.error("resize encoder create failed: \(String(describing: error)) — keeping old encoder")
+            dbg("resizeCapture epoch=\(epoch) — new encoder create FAILED; ABORTED (old encoder kept)")
+            // ⚠️ LOW residual: the AX window resize at (a) already happened, but the OLD capturer
+            // (still running, not yet stopped) keeps its old config — so the resized window content
+            // is scaled into the old buffer until the next successful action. A best-effort
+            // AX-resize-back rollback is deferred (the failure path can't be exercised headlessly;
+            // bring it up with the Mac Studio in the loop rather than ship an unverified rollback).
+            return
+        }
+
+        // c. Build the NEW capturer bound to the new encoder (option 4b — stop the old capturer,
+        //    start a fresh one at the achieved pixel size). A new capturer ⇒ hasEmittedFirstFrame
+        //    false ⇒ forced IDR on its first frame for free, and avoids the per-frame
+        //    encoder-ref swap race entirely.
+        let logCallback = log
+        let newCapturer = WindowCapturer { pixelBuffer, pts, forceKeyframe in
+            do {
+                try newEncoder.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+            } catch {
+                logCallback.error("live encode (post-resize) failed: \(String(describing: error))")
+            }
+        }
+
+        // Stop the OLD capturer first (no frames into the dead encoder), then drain the OLD
+        // encoder so any already-encoded output is flushed before it is released.
+        await oldCapturer.stop()
+        oldEncoder.completeFrames()
+
+        // Install the new components, then bring the new SCStream up at the achieved pixel size.
+        self.encoder = newEncoder
+        self.capturer = newCapturer
+        let captureWindow = window
+        do {
+            nonisolated(unsafe) let w = captureWindow
+            try await newCapturer.start(window: w, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+            dbg("resize: new SCStream started (\(pixelWidth)x\(pixelHeight) px @\(captureScale)×, \(achievedWidth)x\(achievedHeight) pt) epoch=\(epoch)")
+        } catch {
+            log.error("resize capturer start failed: \(String(describing: error))")
+            dbg("resizeCapture epoch=\(epoch) — new capturer START FAILED")
+            // The old capturer is already stopped; without a live new stream there are no frames.
+            // Do NOT send an ack (no new-size IDR will arrive). The heartbeat path can recover on
+            // the next successful action; leave the (started-attempt) encoder/capturer installed.
+            return
+        }
+        // Identity guard (symmetric to `startLiveComponents`): a superseding teardown/start during
+        // `newCapturer.start` means our refs are no longer installed — tear down the orphan stream
+        // and do NOT ack (a newer owner is live).
+        guard self.capturer === newCapturer else {
+            dbg("resize superseded during capturer.start — tearing down orphaned new stream")
+            await newCapturer.stop()
+            return
+        }
+
+        // d. Ack LAST — after the new stream is up. The ack may race slightly ahead of the first
+        //    new-size IDR (start() does not await the first frame); this is SAFE because the
+        //    client adopts the new size only when a matching decoded buffer arrives (frame-gated
+        //    `noteDecoded` / `ResizeAdoption`), not on ack receipt.
+        await apply(.sendControl(.resizeAck(captureWidth: achievedWidth, captureHeight: achievedHeight, epoch: epoch)))
     }
 
     // MARK: Live component bring-up (GUI only)

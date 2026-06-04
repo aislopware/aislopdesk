@@ -91,6 +91,33 @@ final class ResizeStateMachineTests: XCTestCase {
                        [.resizeCapture(width: 1920, height: 1080, epoch: 6)])
     }
 
+    func testResizeEpochResetsOnFreshHelloAccept() {
+        // A reconnecting client mints its own epochs from 1 again (its ResizeDebounce is
+        // per-connection). If lastResizeEpoch carried over from the prior session, the new
+        // session's first resizes would all look stale and silently drop. Verify a fresh
+        // hello-accept re-arms lastResizeEpoch to 0 so the new session's epoch-1 request wins.
+        var sm = streamingMachine()
+        // Drive the first session's epoch high.
+        let high = VideoControlMessage.resizeRequest(desired: VideoSize(width: 1920, height: 1080), epoch: 9)
+        XCTAssertEqual(sm.handleControl(high, windowBoundsCG: bounds, resolveCaptureSize: acceptAll, resolveResizeSize: resolveResize),
+                       [.resizeCapture(width: 1920, height: 1080, epoch: 9)])
+        XCTAssertEqual(sm.lastResizeEpoch, 9)
+
+        // Client disconnects + reconnects (bye → fresh hello).
+        _ = sm.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: acceptAll, resolveResizeSize: resolveResize)
+        let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: windowID, viewport: VideoSize(width: 800, height: 600))
+        _ = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll, resolveResizeSize: resolveResize)
+        XCTAssertEqual(sm.state, .streaming)
+        XCTAssertEqual(sm.lastResizeEpoch, 0, "a fresh hello-accept re-arms lastResizeEpoch to 0")
+
+        // The reconnected client's FIRST resize (epoch 1, < the old 9) must now WIN, not drop.
+        let firstAfterReconnect = VideoControlMessage.resizeRequest(desired: VideoSize(width: 1280, height: 800), epoch: 1)
+        XCTAssertEqual(sm.handleControl(firstAfterReconnect, windowBoundsCG: bounds, resolveCaptureSize: acceptAll, resolveResizeSize: resolveResize),
+                       [.resizeCapture(width: 1280, height: 800, epoch: 1)],
+                       "the reconnected session's epoch-1 resize is NOT treated as stale")
+        XCTAssertEqual(sm.lastResizeEpoch, 1)
+    }
+
     func testResizeIgnoredWhileListening() {
         var sm = VideoSessionStateMachine()
         _ = sm.start()

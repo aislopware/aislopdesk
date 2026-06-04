@@ -115,6 +115,12 @@ public struct VideoSessionStateMachine: Sendable {
             captureWidth = w
             captureHeight = h
             windowID = requestedWindowID
+            // Reset the resize epoch for the FRESH session. A reconnecting client mints its
+            // own epochs from 1 again (its `ResizeDebounce` is per-connection), so a stale
+            // `lastResizeEpoch` carried over from the PRIOR session (e.g. left at 7) would make
+            // every epoch of the new session look stale (≤ 7) and silently drop its first
+            // resizes. Re-arm to 0 here so the new session's first request (epoch ≥ 1) wins.
+            lastResizeEpoch = 0
             state = .streaming
             return [
                 .sendControl(.helloAck(accepted: true, streamID: streamID, captureWidth: w, captureHeight: h, windowBoundsCG: windowBoundsCG)),
