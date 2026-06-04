@@ -32,6 +32,13 @@ public struct VideoMuxRouter: Sendable {
     /// The highest channelID ever retired (wrap-aware high-water mark), so the retired
     /// set can be pruned of ids too far below it to ever still have an in-flight datagram.
     private var highestRetired: UInt32?
+    /// Lanes mid-teardown by the reaper: `beginDrain`-ed, awaiting `session.stop()`, not yet
+    /// `retired`. While draining, EVERY datagram (including a `hello`) drops — so a reconnect that
+    /// races the async teardown is neither delivered to the dying session's still-registered sink (a
+    /// false accept) nor prematurely re-minted (which the later `endDrain`/retire would then kill).
+    /// `endDrain` transitions draining → retired, after which FIX #2's hello-re-admit applies. Mirrors
+    /// the single-pin "hold the lane pinned through teardown, free it LAST" discipline (audit FIX #4b).
+    private var draining: Set<UInt32> = []
 
     /// FIX #4: bound the `retired` set exactly like ``FrameReassembler`` bounds its retired
     /// frame ids (cap at 512, prune to within 256 of the high-water mark). The client allocator
@@ -56,6 +63,9 @@ public struct VideoMuxRouter: Sendable {
         /// The `channelID` was retired by a reconnect/teardown — drop the in-flight
         /// datagram so a previous generation's bytes never reach the new session.
         case dropRetired
+        /// The `channelID` is mid-teardown (the reaper is stopping its session) — drop EVERY
+        /// datagram (incl. a hello) until ``endDrain`` transitions it to `retired`.
+        case dropDraining
         /// Drop for another reason (e.g. an empty/zero-byte datagram). `reason` is a
         /// short human-readable explanation (never a fatal condition).
         case drop(reason: String)
@@ -66,6 +76,7 @@ public struct VideoMuxRouter: Sendable {
     public mutating func admit(_ channelID: UInt32) {
         admitted.insert(channelID)
         retired.remove(channelID)
+        draining.remove(channelID)
     }
 
     /// Retires `channelID` (reconnect/teardown): it stops being admitted and any
@@ -84,8 +95,25 @@ public struct VideoMuxRouter: Sendable {
         }
     }
 
+    /// Begin tearing a lane down on the reaper path: stop routing it and HOLD it (draining) so a
+    /// reconnect racing the async `session.stop()` drops cleanly rather than hitting the dying
+    /// session's still-registered sink or re-minting early. Pair with ``endDrain`` once stopped.
+    public mutating func beginDrain(_ channelID: UInt32) {
+        admitted.remove(channelID)
+        draining.insert(channelID)
+    }
+
+    /// Finish a reaper teardown: the session is stopped, so move the lane draining → retired (where a
+    /// fresh `hello` may now re-admit it, FIX #2). Idempotent if the lane was not draining.
+    public mutating func endDrain(_ channelID: UInt32) {
+        draining.remove(channelID)
+        retire(channelID)
+    }
+
     /// Whether `channelID` is currently an admitted (routable) lane.
     public func isAdmitted(_ channelID: UInt32) -> Bool { admitted.contains(channelID) }
+    /// Whether `channelID` is currently draining (reaper teardown in flight).
+    public func isDraining(_ channelID: UInt32) -> Bool { draining.contains(channelID) }
 
     /// Decides what to do with one received datagram on `channel` carrying `channelID`.
     ///
@@ -99,6 +127,7 @@ public struct VideoMuxRouter: Sendable {
         _ = channel
         guard bytesCount > 0 else { return .drop(reason: "empty datagram") }
         if admitted.contains(channelID) { return .route(channelID: channelID) }
+        if draining.contains(channelID) { return .dropDraining }
         if retired.contains(channelID) { return .dropRetired }
         return .rejectUnadmitted
     }
@@ -131,8 +160,9 @@ public struct VideoMuxRouter: Sendable {
             // Both the never-seen and the retired (cross-process reuse) cases admit ONLY a hello on
             // the control channel; everything else drops without a stamp.
             return (channel == .control && payloadIsHello) ? .bootstrapDeliver : .dropNoStamp
-        case .route, .drop:
-            // `.route` is handled on the live path; `.drop` (empty datagram) never bootstraps.
+        case .dropDraining, .route, .drop:
+            // A draining lane is mid-teardown — drop EVEN a hello (no false accept, no premature
+            // re-mint). `.route` is the live path; `.drop` (empty datagram) never bootstraps.
             return .dropNoStamp
         }
     }

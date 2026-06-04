@@ -550,7 +550,8 @@ public actor RworkVideoHostSession {
             // If the rollback/restart itself fails, log + leave the (dead) refs cleared rather than
             // crash. Do NOT send an ack (no new-size stream came up).
             await rollBackWindow(toPoints: preResizePoints, watcher: watcher, epoch: epoch)
-            await restartOldSizeCapture(points: preResizePoints, epoch: epoch)
+            await restartOldSizeCapture(points: preResizePoints, epoch: epoch,
+                                        deadCapturer: newCapturer, deadEncoder: newEncoder)
             return
         }
         // Identity guard (symmetric to `startLiveComponents`): a superseding teardown/start during
@@ -600,17 +601,21 @@ public actor RworkVideoHostSession {
     /// refs + log rather than leave a dead capturer installed (no crash). Symmetric to the
     /// startLiveComponents post-await identity guard: if a superseding owner installed its own
     /// capturer while we were suspended, tear down our orphan and leave theirs.
-    private func restartOldSizeCapture(points: VideoSize, epoch: UInt32) async {
-        // FIX #5 (review): we reached here THROUGH `rollBackWindow`'s `await MainActor.run`
-        // suspension, across which a `bye`/reap/`stop()` teardown can run (handleReap / stop() are
-        // SEPARATE Tasks from the serial inbound consumer). If the session was torn down during that
-        // suspension, `teardownLiveComponents` already nil'd the dead refs and the SM is
-        // `.listening`/`.stopped` — rebuilding now would resurrect a LIVE SCStream on a dead session
-        // (the F2 streaming-but-dead orphan leak this whole file guards against). Bail. The post-start
-        // identity guard below cannot catch this ordering because the teardown ran BEFORE we install
-        // `rebuiltCapturer`, so mediaFlowing is the authoritative liveness check here.
-        guard stateMachine.mediaFlowing else {
-            dbg("resizeCapture epoch=\(epoch) — session torn down during rollback; skip recovery restart")
+    private func restartOldSizeCapture(points: VideoSize, epoch: UInt32,
+                                       deadCapturer: WindowCapturer, deadEncoder: VideoEncoder) async {
+        // FIX #5 (review + confirm-dry audit): we reached here THROUGH `rollBackWindow`'s
+        // `await MainActor.run` suspension, across which EITHER (a) a `bye`/reap/`stop()` teardown
+        // ran on a separate Task (→ mediaFlowing false, refs nil'd) OR (b) a NEWER resize installed
+        // its OWN live capturer/encoder (→ mediaFlowing STAYS true). A bare mediaFlowing check
+        // catches (a) but NOT (b). So also require the dead refs we are recovering to STILL be the
+        // installed ones AND this epoch to still be newest — mirroring the install-site FIX #1/#8
+        // guard. If a newer owner is live, bail: clearing/rebuilding would orphan ITS SCStream (the
+        // F2 streaming-but-dead leak). The failed dead refs are locals that deinit cleanly on return
+        // (the failed capturer has no SCStream; deadEncoder.deinit invalidates its VTCompressionSessions).
+        guard stateMachine.mediaFlowing,
+              capturer === deadCapturer, encoder === deadEncoder,
+              epoch >= stateMachine.lastResizeEpoch else {
+            dbg("resizeCapture epoch=\(epoch) — superseded/torn-down during rollback; skip recovery restart")
             return
         }
         // Drop the dead refs the failed resize left installed before rebuilding.

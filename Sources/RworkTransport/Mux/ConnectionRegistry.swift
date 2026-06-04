@@ -27,6 +27,13 @@ public final class ConnectionRegistry {
     private struct Entry {
         let connection: MuxNWConnection
         var channelIDs: Set<UInt32> = []
+        /// In-flight `acquire`s that hold this shared connection but have not yet inserted their
+        /// channelID (they are suspended in `openChannel`). A `release` that empties `channelIDs`
+        /// must NOT tear the connection down while one of these is mid-flight, else the acquiring
+        /// pane is stranded with a channel on a closed connection. Reserved BEFORE `openChannel`,
+        /// cleared after (success or throw) — the subsequent-acquire analogue of the `building`
+        /// coalescer's first-acquire TOCTOU guard.
+        var pendingAcquires: Int = 0
     }
 
     /// Keyed by the canonical `host:port` string. One entry == one shared physical connection.
@@ -92,6 +99,10 @@ public final class ConnectionRegistry {
     ) async throws -> MuxAcquisition {
         let key = Self.key(host, port)
         let connection = try await sharedConnection(host: host, port: port, key: key)
+        // Reserve a refcount slot BEFORE the openChannel suspension so a concurrent last-channel
+        // `release` cannot tear this connection down while we are mid-open (release checks
+        // pendingAcquires). Mirrors the post-await in-place mutation discipline below.
+        entries[key]?.pendingAcquires += 1
         let pair: (data: MuxSubChannel, control: MuxSubChannel)
         do {
             pair = try await connection.openChannel(
@@ -100,16 +111,18 @@ public final class ConnectionRegistry {
                 channelClass: 0
             )
         } catch {
+            entries[key]?.pendingAcquires -= 1
             // openChannel only throws when the shared link is already dead (the send failed) — so the
-            // whole connection is unusable. If no OTHER channel is live on this endpoint, drop the
-            // dead connection + entry so the next acquire builds a fresh one instead of reusing a
-            // corpse (leak-on-throw). A surviving sibling channel keeps the entry.
-            if entries[key]?.channelIDs.isEmpty ?? true {
+            // whole connection is unusable. If no OTHER channel is live AND no other acquire is in
+            // flight on this endpoint, drop the dead connection + entry so the next acquire builds a
+            // fresh one instead of reusing a corpse (leak-on-throw). A surviving sibling/pending keeps it.
+            if (entries[key]?.channelIDs.isEmpty ?? true) && (entries[key]?.pendingAcquires ?? 0) == 0 {
                 entries.removeValue(forKey: key)
                 await connection.close()
             }
             throw error
         }
+        entries[key]?.pendingAcquires -= 1
         entries[key]?.channelIDs.insert(pair.data.channelID)
         return MuxAcquisition(channelID: pair.data.channelID, data: pair.data, control: pair.control)
     }
@@ -140,14 +153,22 @@ public final class ConnectionRegistry {
     /// the connection survives exactly as long as at least one pane rides it.
     public func release(host: String, port: UInt16, channelID: UInt32) async {
         let key = Self.key(host, port)
-        guard var entry = entries[key] else { return }
-        await entry.connection.closeChannel(channelID)
-        entry.channelIDs.remove(channelID)
-        if entry.channelIDs.isEmpty {
+        // Capture ONLY the connection (a stable reference). Do NOT snapshot the value-type `Entry`:
+        // `closeChannel` suspends (a real NWConnection write) and this type is @MainActor (reentrant
+        // across the await), so a concurrent release/acquire can mutate `entries[key]` while we are
+        // suspended. Writing back a pre-await Entry snapshot would clobber that sibling change (lost
+        // update) — leaking the shared connection forever (a sibling release's removal is lost), or
+        // tearing down a connection a concurrent acquire just opened a channel on (an unrelated pane
+        // disconnects a live one). Mutate the LIVE entry AFTER the await, mirroring `acquire`.
+        guard let connection = entries[key]?.connection else { return }
+        await connection.closeChannel(channelID)
+        guard entries[key] != nil else { return }   // a concurrent release already tore the entry down
+        entries[key]?.channelIDs.remove(channelID)
+        // Tear down only when the LAST channel is gone AND no acquire is mid-open (pendingAcquires),
+        // so an in-flight acquire's channel is never stranded on a just-closed connection.
+        if entries[key]?.channelIDs.isEmpty == true && (entries[key]?.pendingAcquires ?? 0) == 0 {
             entries.removeValue(forKey: key)
-            await entry.connection.close()
-        } else {
-            entries[key] = entry
+            await connection.close()
         }
     }
 }

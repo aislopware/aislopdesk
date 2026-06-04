@@ -50,7 +50,7 @@ final class VideoMuxReadmitRoutingTests: XCTestCase {
                 case .dropNoStamp:
                     deliver = false
                 }
-            case .drop:
+            case .dropDraining, .drop:
                 deliver = false
             }
             if deliver { delivered.append((decodedID, decodedChannel, p)) }
