@@ -145,10 +145,27 @@ public actor VideoMuxSessionRegistry {
     /// Drops a lane's session bookkeeping (the lane retired itself via its transport, which already
     /// unregistered its sink). Clears the mint mark + session map so a reconnect re-mints. Sibling
     /// lanes are untouched. Idempotent.
+    ///
+    /// ⚠️ Does NOT call `session.stop()` — historically this was the clean-bye path where the lane
+    /// transport had already torn itself down. For the crash-without-bye reaper (and a clean
+    /// last-lane close) use ``retireAndStop(_:)``, which also STOPS the session so capture actually
+    /// stops; otherwise the minted ``RworkVideoHostSession`` keeps its SCStream/encoder running with
+    /// no client (the CONCURRENCY-HOST-1 mux leak).
     public func retire(_ channelID: UInt32) {
         sinkTable.unregister(channelID)
         minting.remove(channelID)
         sessions.removeValue(forKey: channelID)
+    }
+
+    /// CONCURRENCY-HOST-1 crash-without-bye (mux analogue): retire the lane bookkeeping AND stop its
+    /// session so capture/encode actually stops — the gap ``retire(_:)`` leaves (it only forgets the
+    /// sink). This is the async hop the transport's reaper drives via `onReapLane`. Snapshots the
+    /// session BEFORE `retire` clears the map, then awaits its `stop()` (stops the SCStream /
+    /// VTCompressionSession / timers). Idempotent — a no-op `stop()` on an already-gone session.
+    public func retireAndStop(_ channelID: UInt32) async {
+        let session = sessions[channelID]
+        retire(channelID)                 // sink unregister + minting/sessions map clear
+        await session?.stop()             // stops SCStream / VTCompressionSession / timers
     }
 
     /// Stops every live session (daemon shutdown). The shared transport is cancelled separately.

@@ -80,7 +80,7 @@ Adversarial sweep (find → **refute** → synthesize, 23 agents) across input /
 | ID | Sev | Status | What |
 |----|-----|--------|------|
 | VIDEO-UI-1 | high | **fixed + tested** | Same-tick close+reopen stuck on "Video paused" — teardown freed the cap slot without re-bumping `videoPromotionGeneration`. Fix: bump at the teardown-completion site (gated on an actual release) + regression test. |
-| CONCURRENCY-HOST-1 | high | **fixed** (runtime hardware-pending) | **Reconnect after a clean `bye` silently refused** until daemon restart (pinned UDP flow slot never cleared — UDP has no FIN). *This is the root of the chronic "restart the host before each client launch."* Fix: `VideoDatagramTransport.resetClientFlow()`, called on `bye`. **Crash-without-bye still needs an idle-timeout reaper (follow-up).** |
+| CONCURRENCY-HOST-1 | high | **fixed** + **crash-without-bye gated fix landed (Session 3)** | **Reconnect after a clean `bye` silently refused** until daemon restart (pinned UDP flow slot never cleared — UDP has no FIN). *This is the root of the chronic "restart the host before each client launch."* Fix: `VideoDatagramTransport.resetClientFlow()`, called on `bye`. **Crash-without-`bye` residual NOW FIXED** (env-gated `RWORK_VIDEO_KEEPALIVE`, default OFF): client keepalive (5 s) + host idle-timeout reaper (30 s = 6×) via the pure `IdleReapDecider` with the **never-reap-without-keepalive** safety rule (a flow that never sent a keepalive is never reaped → a one-sided gate degrades to today). Covers single-pin (`handleReap` mirrors the bye path: teardown → `resetClientFlow` LAST, so a reconnect can't be torn down mid-teardown) AND mux (`retireAndStop` stops the leaked minted session). Hardware bring-up pending. |
 | VIDEO-CLIENT-1 | med | **fixed** | Hard decode failure only logged → pacer froze on the last good frame. Fix: `requestIDR()` in the generic decode catch (mirrors `awaitingKeyframe`). |
 | VIDEO-HOST-1 | high | **gated fix landed (Session 3), hardware bring-up pending** | Client-recovery + ~1s heartbeat IDR never fire on a **static** window (both below `guard status == .complete`; only `.idle` frames arrive) → a recovering/joining client freezes until the window changes. Fix (env-gated `RWORK_VIDEO_STATICIDR`, default OFF): cache a deep **COPY** of the last `.complete` `CVPixelBuffer` + a `frameQueue`-serialized heartbeat timer that re-encodes it as a forced IDR, driven by a pure `StaticIDRDecider`. Research confirmed SCStream delivers only `.idle`/no-surface for a static window, so the host MUST cache (COPY not retain — `queueDepth=3` would starve the pool); synthetic PTS is a monotonic 90 kHz counter, color attachments propagated. OFF byte-identical; ON path needs Mac Studio bring-up (SCStream IOSurface/queue-depth interaction unobservable headlessly). See `StaticIDRGate` / `StaticIDRDecider` / `WindowCapturer.copyPixelBuffer`. |
 
@@ -88,7 +88,7 @@ VIDEO-HOST-1 + VIDEO-CLIENT-1 **compound**: a single bad decode on a then-static
 
 **Top remaining follow-ups (need the Mac Studio):**
 1. VIDEO-HOST-1 — **gated fix landed (Session 3, `RWORK_VIDEO_STATICIDR`)**; needs Mac Studio bring-up (verify the synthetic IDR recovers a frozen client within ~1.5s and never stalls capture or shifts color).
-2. CONCURRENCY-HOST-1 residual — idle-timeout reaper for a crash-without-`bye` (the `bye` reset only covers clean disconnects; a lost `bye` datagram or a crash still wedges the slot until the path errors).
+2. CONCURRENCY-HOST-1 residual — **gated fix landed (Session 3, `RWORK_VIDEO_KEEPALIVE`)**; needs Mac Studio bring-up (`kill -9` the client, confirm the host reclaims the slot in ≤35 s and a fresh hello reconnects with no daemon restart; confirm a live-but-quiet viewer is never reaped).
 3. Resize Stage 0 latent note: `VideoSessionStateMachine.lastResizeEpoch` is not reset on a fresh `hello`-accept — reset it when the resize wiring (Stage 1+) lands, else a reconnected session would treat a low epoch as stale.
 
 ---
@@ -112,6 +112,7 @@ All on `feat/video-overnight` (not pushed). Each feature: ultracode research→d
 | TCP mux S1 | `566af72` | `RWORK_TCP_MUX` | macOS+iOS build, 71 tests (loopback + ordering guard + refcount + OFF-identity) |
 | UDP mux S3 | `6184915` | `RWORK_VIDEO_MUX` | macOS+iOS build, 47 tests (routing + registry + OFF-identity) |
 | VIDEO-HOST-1 static-window IDR (Session 3) | _this session_ | `RWORK_VIDEO_STATICIDR` | macOS+iOS build, 13 `StaticIDRDeciderTests` + 4 `StaticIDRGateTests` (pure decider/gate/PTS; the COPY+timer+SCStream interaction is hardware-only) |
+| CONCURRENCY-HOST-1 crash-without-bye reaper (Session 3) | _this session_ | `RWORK_VIDEO_KEEPALIVE` (both ends) | macOS+iOS build, 9 `IdleReapDeciderTests` + 4 `KeepaliveGateTests` + 4 `KeepaliveCodecTests` (pure decider/gate/codec; reaper timing + true crash recovery hardware-only) |
 
 ### Resize PATH A test (`RWORK_VIDEO_RESIZE=1` on Rwork.app + rwork-videohostd)
 1. The host needs the **Accessibility** TCC grant (it already does for input). Stream a window.
@@ -139,7 +140,14 @@ All on `feat/video-overnight` (not pushed). Each feature: ultracode research→d
 4. **No color/PTS glitch**: confirm the synthetic IDR frame matches the surrounding live frames (no tone shift — color attachments propagated) and the client never logs a VT monotonic-PTS error on the first synthetic after a live burst.
 5. **OFF parity**: with the flag unset, behaviour is byte-identical to today (no timer, no copy) — a static window still freezes a late joiner (the bug), confirming the gate is the only thing that changes.
 
+### Crash-without-bye reaper test (`RWORK_VIDEO_KEEPALIVE=1` on BOTH ends)
+1. Stream a window; confirm normal operation (the client now also sends one 2-byte keepalive every 5 s on the media control channel).
+2. **Crash recovery (the headline fix):** `kill -9` the client (NO `bye`). Within ≤35 s (idle 30 s + one 5 s tick) the host log shows the flow reaped — single-pin: `resetClientFlow` + capture stopped; mux: the lane retired AND its minted session stopped (capture/encoder actually stop, not just sink-forget). Relaunch the client → it reconnects with **no daemon restart** (the chronic pain is gone).
+3. **Never reap a live-but-quiet viewer:** keep a client connected but idle (no input, static screen) for >60 s. It must NOT be reaped — its 5 s keepalives keep `lastInbound` fresh. (Kill the keepalive only, e.g. older client, → host degrades to today's no-reap, never a false kill.)
+4. **One-sided gate safety:** host ON + client OFF → no keepalives ever sent → nothing reaped (today's behavior). Client ON + host OFF → old host drops the type-6 keepalive as `.malformed`, no crash.
+5. **OFF parity:** flag unset on both → byte-identical to today (no keepalive task, no reaper timer, no stamping); a crashed client still wedges the slot (the bug), confirming the gate is the only thing that changes.
+
 ### New residuals from this session's adversarial reviews (documented, not shipped blind)
 - **Recurring bug class (fixed both mux stages):** unstructured-Task-per-frame loses FIFO ordering → scrambled terminal bytes / mouseUp-before-mouseDown. Fixed by inline delivery on the serial receive path; guarded by `testSingleChannelFloodPreservesOrder`.
-- **Deferred:** per-channel flow control S2; **crash-without-bye idle reaper under mux** (analogue of CONCURRENCY-HOST-1; capture keeps running — needs UDP-liveness timing, noted at `NWVideoMuxDatagramTransport.installResetHandler`); resize AX-rollback on rare encoder/capturer failure; rapid-double-resize adoption edge; channelID UInt32 wrap.
+- **Deferred:** per-channel flow control S2; resize AX-rollback on rare encoder/capturer failure; rapid-double-resize adoption edge; channelID UInt32 wrap; **cross-process channelID-reuse staying `dropRetired` after a reap** (pre-existing mux router semantics — a client *process* restart whose `nextChannelID` collides with a host-retired channelID is hard-dropped forever; in-process reconnect uses a fresh monotonic channelID so is unaffected — reviewer-flagged, out of scope for the reaper fix).
 - **VIDEO-HOST-1 (static-window IDR freeze):** **gated fix landed Session 3** (`RWORK_VIDEO_STATICIDR`, default OFF) — see the table + recipe above; Mac Studio bring-up pending. No longer the untouched item.

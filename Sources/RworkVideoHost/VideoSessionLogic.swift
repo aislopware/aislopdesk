@@ -158,6 +158,11 @@ public struct VideoSessionStateMachine: Sendable {
         case .helloAck, .resizeAck:
             // Host never receives a helloAck/resizeAck — defensive no-op.
             return []
+        case .keepalive:
+            // A liveness keepalive (CONCURRENCY-HOST-1) carries NO state-machine semantics — its
+            // only effect is the transport-level `lastInbound` stamp the reaper reads. The SM does
+            // not touch capture/stream state for it: defensive no-op (no effects).
+            return []
         }
     }
 

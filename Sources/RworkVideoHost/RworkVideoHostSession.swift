@@ -268,6 +268,32 @@ public actor RworkVideoHostSession {
         if case .bye = message { transport.resetClientFlow() }
     }
 
+    /// CONCURRENCY-HOST-1 crash-without-bye reaper hook (`RWORK_VIDEO_KEEPALIVE`). Handles a reaped
+    /// (crashed / lost-bye) client EXACTLY like a clean `bye`: run the SM's bye effects (which
+    /// include `.stopCapture` → the identity-guarded `teardownLiveComponents`), then free the pinned
+    /// UDP flow LAST via `resetClientFlow()` — byte-for-byte the same order as `handleControl`'s bye
+    /// branch (line ~268).
+    ///
+    /// Why this order, and why `runReaperTick` deliberately does NOT free the slot first: the slot
+    /// MUST stay pinned for the whole teardown. If the transport freed it before this async teardown
+    /// (the earlier design), a reconnecting client could be accepted DURING the `await capturer.stop()`
+    /// suspension and then have its FRESH capture torn down — the streaming-but-dead F2 wedge the
+    /// reviewer caught. Keeping the pin until the very end means a reconnect is refused at the
+    /// listener until teardown finishes AND the SM is `.listening`, so handleReap can never demote
+    /// or tear down a newer client: the race is eliminated by construction, identical to the proven
+    /// clean-bye path. There is deliberately NO second unconditional `teardownLiveComponents` — the
+    /// SM `.bye` effect already tore down (identity-guarded); a redundant call re-opened the race.
+    /// Wired as `Task { await session.handleReap() }` from `transport.onReap` (the only new async
+    /// work; inbound delivery stays inline). No-op when the gate is OFF (onReap is never set/called).
+    /// Reaper TIMING is [MS-confirm]; the STRUCTURE mirrors the unit-tested clean-bye semantics.
+    public func handleReap() async {
+        let bounds = currentWindowBoundsCG()
+        for effect in stateMachine.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: { _, _ in nil }, resolveResizeSize: { _, _ in nil }) {
+            await apply(effect)
+        }
+        transport.resetClientFlow()
+    }
+
     private func handleInput(_ data: Data) async {
         let decision = router.route(datagram: data, mediaFlowing: stateMachine.mediaFlowing, needsRaise: inputNeedsRaise)
         switch decision {

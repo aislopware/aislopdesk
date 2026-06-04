@@ -156,6 +156,18 @@ public actor RworkVideoClientSession {
     /// `decodedSize` keeps its existing one-shot capture-pinned behaviour — byte-identical to
     /// the fixed-size build.
     private static let resizeEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_RESIZE"] == "1"
+    /// Liveness-keepalive feature gate (`RWORK_VIDEO_KEEPALIVE`, default OFF — the shared
+    /// ``KeepaliveGate``). With it OFF the client never constructs ``keepaliveTask`` and never
+    /// emits a `keepalive` datagram, so the path is byte-identical to today. With it ON a slow
+    /// (5 s) actor-owned timer sends a zero-body `keepalive` on the control channel while
+    /// streaming, so the host's idle-timeout reaper can tell a quiet-but-alive client from a
+    /// crashed one (CONCURRENCY-HOST-1 crash-without-bye). Read ONCE at construction.
+    private static let keepaliveEnabled = KeepaliveGate.enabledFromEnvironment()
+    /// The self-owned keepalive timer (NOT the 33 ms `motionPump` in `VideoWindowPipeline` —
+    /// that is far too fast + main-actor-bound). A separate, slow, actor-owned `Task`; cancelled
+    /// in ``stop()``. ⚠️ Timer firing is [MS-confirm] (real-clock glue); the reap DECISION it
+    /// feeds is covered by `IdleReapDeciderTests`. Nil unless the gate is ON.
+    private var keepaliveTask: Task<Void, Never>?
     /// Client-side debounce coalescing a burst of layout callbacks (one per drag frame) to the
     /// SETTLED surface size — one `resizeRequest` per settled size, monotonic epoch.
     private var resizeDebounce = ResizeDebounce()
@@ -228,15 +240,42 @@ public actor RworkVideoClientSession {
             Task { await self.receiveCursor(data) }
         }
         for effect in stateMachine.start() { await apply(effect) }
+        if Self.keepaliveEnabled { startKeepalive() }
         log.info("video client session started; hello sent")
     }
 
     /// Sends a best-effort `bye`, tears the pipeline + sockets down.
     public func stop() async {
+        keepaliveTask?.cancel(); keepaliveTask = nil
         resizeSettleTask?.cancel(); resizeSettleTask = nil
         for effect in stateMachine.stop() { await apply(effect) }
         await transport.stop()
         log.info("video client session stopped")
+    }
+
+    // MARK: Liveness keepalive (CONCURRENCY-HOST-1 crash-without-bye; RWORK_VIDEO_KEEPALIVE)
+
+    /// Starts the slow (``KeepaliveGate/keepaliveInterval``, 5 s) actor-owned keepalive timer.
+    /// Each tick sends a zero-body `keepalive` on the control channel WHILE STREAMING so the
+    /// host's idle-timeout reaper can distinguish a quiet-but-alive client from a crashed one.
+    /// Cancels any prior task (idempotent re-arm). Gated by ``keepaliveEnabled``.
+    private func startKeepalive() {
+        keepaliveTask?.cancel()
+        keepaliveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(KeepaliveGate.keepaliveInterval * 1_000_000_000))
+                guard let self else { return }
+                await self.sendKeepaliveIfStreaming()
+            }
+        }
+    }
+
+    /// Sends one `keepalive` iff the session is streaming (mirrors the resize-debounce gate). A
+    /// pre-stream / torn-down session sends nothing — the heartbeat only matters while a flow is
+    /// live. On mux the lane transport stamps the channelID automatically (no surface change).
+    private func sendKeepaliveIfStreaming() {
+        guard stateMachine.mediaFlowing else { return }
+        transport.send(VideoControlMessage.keepalive.encode(), on: .control)
     }
 
     // MARK: Layout (called by the host view each layout pass)
