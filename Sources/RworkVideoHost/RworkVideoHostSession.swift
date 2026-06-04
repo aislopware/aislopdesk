@@ -444,6 +444,12 @@ public actor RworkVideoHostSession {
             dbg("resizeCapture epoch=\(epoch) — no geometry watcher; dropped")
             return
         }
+        // FIX #5: snapshot the ACHIEVED point size BEFORE the AX resize so any abort AFTER the
+        // window has already moved can roll the window back to it (window/capture aspect must
+        // agree again) and, for the dead-capturer case, rebuild an old-size capturer so frames
+        // resume. `currentWindowBoundsCG()` reads the live window via the watcher and itself falls
+        // back to the window's creation frame if the live read fails — never nil.
+        let preResizePoints: VideoSize = currentWindowBoundsCG().size
         let requestedPoints = VideoSize(width: Double(width), height: Double(height))
         guard let achievedPoints = await MainActor.run(body: { watcher.resizeWindow(toPoints: requestedPoints) }) else {
             log.error("AX window resize unavailable/failed — keeping current capture size")
@@ -474,11 +480,13 @@ public actor RworkVideoHostSession {
         } catch {
             log.error("resize encoder create failed: \(String(describing: error)) — keeping old encoder")
             dbg("resizeCapture epoch=\(epoch) — new encoder create FAILED; ABORTED (old encoder kept)")
-            // ⚠️ LOW residual: the AX window resize at (a) already happened, but the OLD capturer
-            // (still running, not yet stopped) keeps its old config — so the resized window content
-            // is scaled into the old buffer until the next successful action. A best-effort
-            // AX-resize-back rollback is deferred (the failure path can't be exercised headlessly;
-            // bring it up with the Mac Studio in the loop rather than ship an unverified rollback).
+            // FIX #5: the AX window resize at (a) already happened, but the OLD capturer is still
+            // running at the OLD pixel config — so the (now bigger/smaller) window content is scaled
+            // into the old buffer → a distorted stream with no ack. Roll the AX window BACK to the
+            // pre-resize point size so the running old capture matches the window aspect again. The
+            // old encoder/capturer are untouched (still installed + live); only the window geometry
+            // is restored. (See the SM re-ack-lies residual note at the function tail.)
+            await rollBackWindow(toPoints: preResizePoints, watcher: watcher, epoch: epoch)
             return
         }
 
@@ -500,6 +508,26 @@ public actor RworkVideoHostSession {
         await oldCapturer.stop()
         oldEncoder.completeFrames()
 
+        // FIX #1: `oldCapturer.stop()` is an UNGUARDED suspension point. A `bye`/`stop` teardown
+        // (or a newer resize) can run while we are suspended. The only prior post-await guard runs
+        // AFTER we install `self.capturer = newCapturer`, so it could never catch a teardown that
+        // ran DURING this suspension (it would compare newCapturer to itself). Re-assert the
+        // supersede guard HERE, before installing: if the session was torn down OR our refs were
+        // swapped, simply return. `newCapturer` is NOT started yet (no SCStream to stop) and both
+        // locals deinit on return (VideoEncoder.deinit invalidates its VTCompressionSessions), so
+        // we install nothing and send no ack. Mirrors the pre-AX recheck + startLiveComponents'
+        // post-await identity guard.
+        //
+        // FIX #8 (rapid-double-resize epoch race, RWORK_INPUT_UNORDERED legacy seam): a newer
+        // resize request can commit a higher `lastResizeEpoch` in the SM while we are suspended.
+        // Only the NEWEST epoch may install — abort a stale one (re-read the SM under actor
+        // isolation: `epoch >= stateMachine.lastResizeEpoch`).
+        guard stateMachine.mediaFlowing, capturer === oldCapturer, encoder === oldEncoder,
+              epoch >= stateMachine.lastResizeEpoch else {
+            dbg("resizeCapture epoch=\(epoch) — superseded/stale during oldCapturer.stop (lastEpoch=\(stateMachine.lastResizeEpoch)); aborting install")
+            return
+        }
+
         // Install the new components, then bring the new SCStream up at the achieved pixel size.
         self.encoder = newEncoder
         self.capturer = newCapturer
@@ -511,9 +539,18 @@ public actor RworkVideoHostSession {
         } catch {
             log.error("resize capturer start failed: \(String(describing: error))")
             dbg("resizeCapture epoch=\(epoch) — new capturer START FAILED")
-            // The old capturer is already stopped; without a live new stream there are no frames.
-            // Do NOT send an ack (no new-size IDR will arrive). The heartbeat path can recover on
-            // the next successful action; leave the (started-attempt) encoder/capturer installed.
+            // FIX #5: the OLD capturer is already stopped and the NEW SCStream.start threw, so the
+            // installed `self.capturer` is a DEAD stream (stream == nil) — no frames will EVER come
+            // again. requestIDR / the heartbeat path is a no-op on a dead capturer (the prior claim
+            // that "the heartbeat path can recover" is FALSE here). Recover explicitly:
+            //   (a) roll the AX window BACK to the pre-resize point size so window/capture aspect
+            //       agree again, then
+            //   (b) REBUILD an old-size capturer + encoder (like startLiveComponents, at the OLD
+            //       pixel size) and start it so frames resume.
+            // If the rollback/restart itself fails, log + leave the (dead) refs cleared rather than
+            // crash. Do NOT send an ack (no new-size stream came up).
+            await rollBackWindow(toPoints: preResizePoints, watcher: watcher, epoch: epoch)
+            await restartOldSizeCapture(points: preResizePoints, epoch: epoch)
             return
         }
         // Identity guard (symmetric to `startLiveComponents`): a superseding teardown/start during
@@ -529,7 +566,104 @@ public actor RworkVideoHostSession {
         //    new-size IDR (start() does not await the first frame); this is SAFE because the
         //    client adopts the new size only when a matching decoded buffer arrives (frame-gated
         //    `noteDecoded` / `ResizeAdoption`), not on ack receipt.
+        //
+        // ⚠️ KNOWN RESIDUAL (re-ack-lies edge, FIX #5): the SM commits captureWidth/captureHeight/
+        // lastResizeEpoch SYNCHRONOUSLY before this effect runs (VideoSessionLogic.swift ~L152). On
+        // a failed-then-rolled-back resize above we restore the WINDOW + capture to the OLD size but
+        // we do NOT correct the SM, so the SM still reports the REQUESTED size; a duplicate-hello
+        // re-ack would then echo the requested (not actual) size in `helloAck`. We deliberately do
+        // NOT touch the SM here — a blind SM rollback risks an epoch/size desync that is riskier
+        // than this cosmetic re-ack edge (a real resize re-issues anyway). Left as a documented
+        // residual to revisit with the Mac Studio in the loop (failure paths aren't headless-exercisable).
         await apply(.sendControl(.resizeAck(captureWidth: achievedWidth, captureHeight: achievedHeight, epoch: epoch)))
+    }
+
+    /// FIX #5 rollback: re-issue the AX window resize back to `points` so the (still-running OR
+    /// about-to-be-rebuilt) old-size capture matches the window aspect again after a resize abort
+    /// that happened AFTER the window was already moved. Best-effort: a failed roll-back is logged,
+    /// never fatal (a beachballing/fixed-size app may refuse — the next successful resize corrects it).
+    private func rollBackWindow(toPoints points: VideoSize, watcher: WindowGeometryWatcher, epoch: UInt32) async {
+        let rolled = await MainActor.run { watcher.resizeWindow(toPoints: points) }
+        if rolled == nil {
+            log.error("resize rollback: AX window resize-back to \(points.width)x\(points.height)pt failed")
+            dbg("resizeCapture epoch=\(epoch) — AX rollback FAILED (window left at requested size)")
+        } else {
+            dbg("resizeCapture epoch=\(epoch) — AX window rolled back to \(Int(points.width))x\(Int(points.height))pt")
+        }
+    }
+
+    /// FIX #5 recovery: after a capturer-start abort left a DEAD capturer (old stopped, new failed
+    /// to start), rebuild an OLD-size capturer + encoder (the same wiring as ``startLiveComponents``,
+    /// at the pre-resize pixel size) and start it so frames RESUME — `requestIDR`/heartbeat cannot
+    /// revive a stream whose `start()` threw. Reuses the EXISTING geometry/cursor/injector (those
+    /// were never torn down by the resize). If the rebuild's own `start()` throws, clear the dead
+    /// refs + log rather than leave a dead capturer installed (no crash). Symmetric to the
+    /// startLiveComponents post-await identity guard: if a superseding owner installed its own
+    /// capturer while we were suspended, tear down our orphan and leave theirs.
+    private func restartOldSizeCapture(points: VideoSize, epoch: UInt32) async {
+        // FIX #5 (review): we reached here THROUGH `rollBackWindow`'s `await MainActor.run`
+        // suspension, across which a `bye`/reap/`stop()` teardown can run (handleReap / stop() are
+        // SEPARATE Tasks from the serial inbound consumer). If the session was torn down during that
+        // suspension, `teardownLiveComponents` already nil'd the dead refs and the SM is
+        // `.listening`/`.stopped` — rebuilding now would resurrect a LIVE SCStream on a dead session
+        // (the F2 streaming-but-dead orphan leak this whole file guards against). Bail. The post-start
+        // identity guard below cannot catch this ordering because the teardown ran BEFORE we install
+        // `rebuiltCapturer`, so mediaFlowing is the authoritative liveness check here.
+        guard stateMachine.mediaFlowing else {
+            dbg("resizeCapture epoch=\(epoch) — session torn down during rollback; skip recovery restart")
+            return
+        }
+        // Drop the dead refs the failed resize left installed before rebuilding.
+        self.encoder = nil
+        self.capturer = nil
+        let pixelWidth = max(1, Int((points.width * captureScale).rounded()))
+        let pixelHeight = max(1, Int((points.height * captureScale).rounded()))
+
+        let rebuiltEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate) { [weak self] avcc, keyframe, mode in
+            guard let self else { return }
+            Task { await self.onEncodedFrame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp) }
+        }
+        do {
+            try rebuiltEncoder.createLiveSession()
+            try rebuiltEncoder.createCrispSession()
+        } catch {
+            log.error("resize recovery: old-size encoder rebuild failed: \(String(describing: error)) — capture stays down")
+            dbg("resizeCapture epoch=\(epoch) — old-size encoder rebuild FAILED; capture remains down")
+            return
+        }
+
+        let logCallback = log
+        let rebuiltCapturer = WindowCapturer { pixelBuffer, pts, forceKeyframe in
+            do {
+                try rebuiltEncoder.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+            } catch {
+                logCallback.error("live encode (post-resize recovery) failed: \(String(describing: error))")
+            }
+        }
+        self.encoder = rebuiltEncoder
+        self.capturer = rebuiltCapturer
+        let captureWindow = window
+        do {
+            nonisolated(unsafe) let w = captureWindow
+            try await rebuiltCapturer.start(window: w, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+            dbg("resizeCapture epoch=\(epoch) — recovered: old-size capture restarted (\(pixelWidth)x\(pixelHeight) px)")
+        } catch {
+            log.error("resize recovery: old-size capturer start failed: \(String(describing: error)) — capture stays down")
+            dbg("resizeCapture epoch=\(epoch) — old-size capturer restart FAILED; capture remains down")
+            if capturer === rebuiltCapturer { capturer = nil }
+            if encoder === rebuiltEncoder { encoder = nil }
+            return
+        }
+        // Identity + liveness guard: a superseding teardown/start during the rebuilt `start` means
+        // our refs are no longer installed OR the session was torn down — tear down the orphan stream
+        // and clear if still ours. `mediaFlowing` is the authoritative "session still alive" signal
+        // (a teardown sets the SM to .listening/.stopped before niling refs).
+        guard capturer === rebuiltCapturer, stateMachine.mediaFlowing else {
+            dbg("resizeCapture epoch=\(epoch) — recovery superseded/torn-down during start; tearing down orphan")
+            await rebuiltCapturer.stop()
+            if capturer === rebuiltCapturer { capturer = nil; encoder = nil }
+            return
+        }
     }
 
     // MARK: Live component bring-up (GUI only)

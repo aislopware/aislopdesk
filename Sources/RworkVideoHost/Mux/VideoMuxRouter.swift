@@ -29,6 +29,19 @@ public struct VideoMuxRouter: Sendable {
     /// Lanes retired by a reconnect/teardown. Their in-flight datagrams are dropped
     /// (reconnect-generation safety) rather than rejected or misrouted.
     private var retired: Set<UInt32> = []
+    /// The highest channelID ever retired (wrap-aware high-water mark), so the retired
+    /// set can be pruned of ids too far below it to ever still have an in-flight datagram.
+    private var highestRetired: UInt32?
+
+    /// FIX #4: bound the `retired` set exactly like ``FrameReassembler`` bounds its retired
+    /// frame ids (cap at 512, prune to within 256 of the high-water mark). The client allocator
+    /// is monotonic so a retired id is otherwise never re-admitted ⇒ one entry per pane/reconnect
+    /// leaks for the daemon lifetime. channelIDs are monotonic, so an id far BELOW the high-water
+    /// mark can have no in-flight datagram left — dropping it from `retired` is safe: it falls back
+    /// to ``Decision/rejectUnadmitted`` (a clean drop for an unknown lane), and with FIX #2 a fresh
+    /// hello for such an id still re-admits cleanly.
+    static let retiredCap = 512
+    static let retiredPruneWindow: Int = 256
 
     public init() {}
 
@@ -60,6 +73,15 @@ public struct VideoMuxRouter: Sendable {
     public mutating func retire(_ channelID: UInt32) {
         admitted.remove(channelID)
         retired.insert(channelID)
+        // Track the wrap-aware high-water mark, then bound the set (FIX #4).
+        if let high = highestRetired {
+            if channelID.distanceWrapped(from: high) > 0 { highestRetired = channelID }
+        } else {
+            highestRetired = channelID
+        }
+        if retired.count > Self.retiredCap, let high = highestRetired {
+            retired = retired.filter { high.distanceWrapped(from: $0) <= Self.retiredPruneWindow }
+        }
     }
 
     /// Whether `channelID` is currently an admitted (routable) lane.
@@ -79,5 +101,39 @@ public struct VideoMuxRouter: Sendable {
         if admitted.contains(channelID) { return .route(channelID: channelID) }
         if retired.contains(channelID) { return .dropRetired }
         return .rejectUnadmitted
+    }
+
+    /// What the transport's bootstrap arm should do with a NOT-yet-admitted datagram (the lane is
+    /// unadmitted OR retired), given the router's ``route`` decision, the channel it arrived on, and
+    /// whether its payload decoded as a `hello`. PURE (the hello-peek itself is done once by the
+    /// caller and passed in as `payloadIsHello`) so it is unit-testable without a socket — the
+    /// "decider beside the actor" pattern.
+    ///
+    /// - FIX #2: a RETIRED channelID re-admits ONLY when its `.control` datagram is an actual hello
+    ///   (cross-process channelID reuse after a client restart — the dead old process has no
+    ///   in-flight old-gen datagrams left, so an explicit hello is a safe re-admission). A non-hello
+    ///   for a retired id still drops (reconnect-generation safety: stale old-gen video/input must
+    ///   never reach a survivor).
+    /// - FIX #6: an UNADMITTED (`.rejectUnadmitted`) lane bootstraps (and the transport stamps its
+    ///   reply flow) ONLY when its first `.control` datagram is a hello — a stray/adversarial
+    ///   non-hello control datagram drops WITHOUT the transport remembering its flow (which would
+    ///   otherwise leak `channelMediaConn` for never-helloed ids).
+    public enum BootstrapAction: Equatable, Sendable {
+        /// Remember the lane's reply flow and deliver the datagram to the registry (it mints/admits).
+        case bootstrapDeliver
+        /// Drop without touching any flow bookkeeping (stray/retired non-hello, or non-control).
+        case dropNoStamp
+    }
+
+    public static func bootstrapAction(for decision: Decision, channel: VideoChannel, payloadIsHello: Bool) -> BootstrapAction {
+        switch decision {
+        case .rejectUnadmitted, .dropRetired:
+            // Both the never-seen and the retired (cross-process reuse) cases admit ONLY a hello on
+            // the control channel; everything else drops without a stamp.
+            return (channel == .control && payloadIsHello) ? .bootstrapDeliver : .dropNoStamp
+        case .route, .drop:
+            // `.route` is handled on the live path; `.drop` (empty datagram) never bootstraps.
+            return .dropNoStamp
+        }
     }
 }

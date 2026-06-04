@@ -243,18 +243,29 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     ///
     /// **Bootstrap exception (the first hello).** A lane is only `admit`ted once the daemon's session
     /// registry mints its session — but the very FIRST hello for a never-seen channelID arrives BEFORE
-    /// that, so it is not yet admitted. A `.control` datagram for an UNADMITTED (never-retired) lane is
-    /// therefore still delivered to `onReceive` so the registry can mint on the hello; the registry's
-    /// own `decide` drops a non-hello unbound control datagram. A RETIRED lane is always hard-dropped
-    /// (reconnect-generation safety — a stale frame must never reach a survivor), and a non-control
-    /// unadmitted datagram (a stray video/input for an unknown lane) is dropped.
+    /// that, so it is not yet admitted. A HELLO `.control` datagram for an UNADMITTED lane is therefore
+    /// still delivered to `onReceive` so the registry can mint on the hello.
+    ///
+    /// **FIX #2 (cross-process channelID reuse).** A retired channelID can collide with a restarted
+    /// client's fresh channelID (the client allocator resets to 1 per process). A retired lane is
+    /// hard-dropped for everything EXCEPT a real `hello` `.control` datagram, which RE-ADMITS it
+    /// (delivered to the registry, which mints + `admit`s → clears the retired mark). Safe because the
+    /// dead old process has no in-flight old-gen datagrams left; only an explicit hello re-admits, so
+    /// stale old-gen video/input still drops (reconnect-generation safety preserved).
+    ///
+    /// **FIX #6 (stray-control leak).** The reply flow (`channelMediaConn`) is remembered ONLY for a
+    /// channelID whose first unadmitted/retired control datagram actually decodes as a `hello` — a
+    /// non-hello stray/adversarial control datagram drops WITHOUT touching `channelMediaConn` (which
+    /// would otherwise grow unboundedly for never-helloed ids). The hello-peek is done ONCE here and
+    /// fed to the PURE ``VideoMuxRouter/bootstrapAction(for:channel:payloadIsHello:)`` decider.
     private func routeMedia(_ data: Data, on conn: NWConnection, onReceive: @escaping @Sendable (UInt32, VideoChannel, Data) -> Void) {
         guard let (channelID, rest) = try? VideoMuxHeaderCodec.decode(data), rest.count >= 1 else { return }
         let tag = rest[rest.startIndex]
         guard let channel = VideoChannel(rawValue: tag) else { return }
         let payload = Data(rest[(rest.startIndex + 1)...])
         let deliver: Bool = lock.withLock {
-            switch muxRouter.route(channelID: channelID, channel: channel, bytesCount: data.count) {
+            let decision = muxRouter.route(channelID: channelID, channel: channel, bytesCount: data.count)
+            switch decision {
             case .route:
                 channelMediaConn[channelID] = conn
                 // Stamp liveness for the ADMITTED lane only (inline, no actor hop, under the route
@@ -268,25 +279,38 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
                     idleReaper?.noteInbound(id: channelID, now: Self.nowSeconds(), isKeepalive: isKA)
                 }
                 return true
-            case .rejectUnadmitted:
-                // Bootstrap: let an unadmitted CONTROL datagram (the hello) through to the registry,
-                // which mints the lane; remember the flow so the helloAck can reply. Anything else is
-                // a stray for an unknown lane — drop. Deliberately do NOT stamp the reaper here: an
-                // unadmitted lane has no session to reap, and stamping a never-minted channelID would
-                // grow the decider's flow map for stray/adversarial channelIDs that never admit
-                // (reviewer finding). A lane takes its first liveness stamp on its first ADMITTED
-                // datagram (the `.route` arm), which is all the reaper needs.
-                if channel == .control {
+            case .rejectUnadmitted, .dropRetired:
+                // Bootstrap (FIX #2 + #6): peek-decode the payload ONCE and only re-admit/deliver +
+                // remember the reply flow for an actual hello on the control channel. A non-hello
+                // (stray, or a stale old-gen datagram for a retired id) drops WITHOUT a stamp.
+                // Deliberately do NOT stamp the reaper here: an un-minted lane has no session to
+                // reap, and stamping a never-admitted channelID would grow the decider's flow map
+                // for stray/adversarial ids. A lane takes its first liveness stamp on its first
+                // ADMITTED datagram (the `.route` arm).
+                let isHello = Self.payloadIsHello(channel: channel, payload: payload)
+                switch VideoMuxRouter.bootstrapAction(for: decision, channel: channel, payloadIsHello: isHello) {
+                case .bootstrapDeliver:
                     channelMediaConn[channelID] = conn
                     return true
+                case .dropNoStamp:
+                    return false
                 }
-                return false
-            case .dropRetired, .drop:
-                return false   // benign — never fatal, never a sibling teardown
+            case .drop:
+                return false   // benign (empty datagram) — never fatal, never a sibling teardown
             }
         }
         guard deliver else { return }
         onReceive(channelID, channel, payload)
+    }
+
+    /// One-shot peek: does a control-channel payload decode as a `hello`? Only the control channel is
+    /// ever a hello, so non-control payloads short-circuit without a decode. Shared by FIX #2 (retired
+    /// re-admit) and FIX #6 (stray-control leak) so the decode happens at most once per datagram.
+    private static func payloadIsHello(channel: VideoChannel, payload: Data) -> Bool {
+        guard channel == .control,
+              let msg = try? VideoControlMessage.decode(payload),
+              case .hello = msg else { return false }
+        return true
     }
 
     private func receiveCursor(on conn: NWConnection, live: Liveness, consecutiveErrors: Int = 0, onReceive: @escaping @Sendable (UInt32, VideoChannel, Data) -> Void) {

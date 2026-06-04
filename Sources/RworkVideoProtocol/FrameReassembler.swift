@@ -308,8 +308,9 @@ public struct FrameReassembler {
 extension UInt32 {
     /// Signed wrap-aware distance `self - other` interpreted in a 32-bit sequence
     /// space (handles the `frameID`/`streamSeq` wrap at 2^32). Positive ⇒ `self` is
-    /// "ahead of" `other`.
-    func distanceWrapped(from other: UInt32) -> Int {
+    /// "ahead of" `other`. Public so the host's ``VideoMuxRouter`` can bound its retired
+    /// channelID set with the SAME wrap-aware high-water-mark prune (FIX #4).
+    public func distanceWrapped(from other: UInt32) -> Int {
         Int(Int32(bitPattern: self &- other))
     }
 }

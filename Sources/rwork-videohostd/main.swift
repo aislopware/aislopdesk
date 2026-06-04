@@ -261,6 +261,12 @@ Task {
                 guard let w = live.first(where: { $0.windowID == requestedWindowID }) else {
                     throw VideoHostdError.muxNoWindow(requestedWindowID: requestedWindowID)
                 }
+                // ⚠️ FIX #7 (UN-coded, documented limitation — needs RWORK_VIDEO_MUX +
+                // RWORK_VIDEO_RESIZE both ON AND two panes naming the SAME windowID): each lane mints
+                // its OWN session bound to this `windowID`. Two lanes on one windowID would each AX-
+                // resize the SAME real window on a resizeRequest, so concurrent resizes can fight
+                // (last write wins, capture/window aspect can briefly disagree). This atypical config
+                // is out of scope here; the resize-fight is not coded against (see docs/25).
                 let lane = VideoMuxChannelTransport(
                     channelID: channelID,
                     shared: mux,
