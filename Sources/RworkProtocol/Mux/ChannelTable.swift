@@ -58,6 +58,18 @@ public struct ChannelTable: Sendable, Equatable {
         }
     }
 
+    /// Records that the responder REFUSED our channel-open (it replied
+    /// ``MuxFrame/channelOpenAck`` with `accepted: false`). A refused channel never
+    /// opened, so there is NO half-close handshake — the locally-allocated `idle` id
+    /// goes straight to ``ChannelState/closed`` (retained, never reused, like any closed
+    /// id). A no-op for an id that is already open/closing/closed or was never allocated
+    /// (a stray refusal for an unknown id creates no entry). Returns the resulting state.
+    @discardableResult
+    public mutating func reject(_ id: UInt32) -> ChannelState {
+        if states[id] == .idle { states[id] = .closed }
+        return states[id] ?? .closed
+    }
+
     /// Records that THIS side sent `CHANNEL_CLOSE` on `id` and returns the resulting
     /// state. `open`/`idle` → ``ChannelState/halfClosed``; an already ``halfClosed``
     /// channel (peer closed first) → ``ChannelState/closed`` (both sides done).
