@@ -9,17 +9,15 @@ import Foundation
 /// ## SAFETY — the never-reap-without-keepalive rule (RFC 7675 §5.1 / RFC 9000 §10.1.2 /
 /// WireGuard / mosh)
 /// A flow is reaped ONLY once it has PROVEN it speaks keepalive (`sawKeepalive == true`).
-/// A flow that has NEVER delivered a keepalive (gate-OFF client, legacy client) is NEVER
-/// eligible — ``reap(now:)`` skips it unconditionally. This single rule is what makes a
-/// one-sided gate safe: a host with the gate ON but a client with it OFF degrades to today's
-/// exact no-reap behaviour, because no flow ever proves keepalive. It is a property of the
-/// per-flow record, not of the timer.
+/// A flow that has NEVER delivered a keepalive (a legacy client that never sends one) is NEVER
+/// eligible — ``reap(now:)`` skips it unconditionally, so such a client degrades to no-reap
+/// behaviour. It is a property of the per-flow record, not of the timer.
 ///
 /// `sawKeepalive` is **sticky**: once true it never resets to false for the life of that flow
 /// record — a live client that sends one keepalive then goes truly silent because it crashed is
-/// exactly the case we want to reap. Identity is `FlowID` (``SinglePin`` for the single-pin
-/// transport, the `UInt32` channelID for mux), so a reconnect under a FRESH channelID gets a
-/// fresh record (`sawKeepalive == false` again — see ``forget(id:)``).
+/// exactly the case we want to reap. Identity is `FlowID` (the `UInt32` channelID for the mux
+/// lanes), so a reconnect under a FRESH channelID gets a fresh record (`sawKeepalive == false`
+/// again — see ``forget(id:)``).
 public struct IdleReapDecider<FlowID: Hashable & Sendable>: Sendable {
     public struct Record: Sendable, Equatable {
         /// Host time (seconds, monotonic) of the most recent inbound datagram of ANY kind.
@@ -66,9 +64,3 @@ public struct IdleReapDecider<FlowID: Hashable & Sendable>: Sendable {
     public func record(_ id: FlowID) -> Record? { flows[id] }
 }
 
-/// The single-flow identity for the single-pin ``NWVideoDatagramTransport`` (exactly one
-/// client at a time). A 1-element type so ``IdleReapDecider`` can key the one flow.
-public struct SinglePin: Hashable, Sendable {
-    public static let pin = SinglePin()
-    public init() {}
-}

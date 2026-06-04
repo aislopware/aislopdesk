@@ -4,22 +4,18 @@ import Network
 import OSLog
 import RworkVideoProtocol
 
-/// The MUX (Stage S3) sibling of ``NWVideoDatagramTransport``: ONE physical UDP flow
-/// (media + cursor sockets) shared across N client video channels, demultiplexed by a
-/// `UInt32` channelID prefix (``VideoMuxHeaderCodec``) instead of the single-slot
-/// client pin.
+/// The host UDP video transport: ONE physical UDP flow (media + cursor sockets) shared
+/// across N client video channels, demultiplexed by a `UInt32` channelID prefix
+/// (``VideoMuxHeaderCodec``). This is the only video wire — one flow per host, N panes.
 ///
-/// ⚠️ **GATED + WIRE-INCOMPATIBLE.** This type is used ONLY when `RWORK_VIDEO_MUX` is
-/// ON (both ends must agree, ``VideoMuxGate``). The wire here is the 4-byte channelID
-/// prefix in FRONT of the existing 1-byte channel tag + payload:
+/// The wire is the 4-byte channelID prefix in FRONT of the existing 1-byte channel tag +
+/// payload:
 /// ```
 ///   [UInt32 BE channelID][UInt8 channelTag][payload...]   (media socket)
 ///   [UInt32 BE channelID][payload...]                     (cursor socket)
 /// ```
-/// A client that did NOT enable the gate writes the OFF framing (`[tag][payload]`),
-/// which this transport parses as a stray channelID and routes through
-/// ``VideoMuxRouter`` — which rejects the unadmitted lane (a clean DROP, never a crash
-/// or a corrupt inject). That is the mixed-version "fail cleanly" contract.
+/// An unrecognized lane is routed through ``VideoMuxRouter`` — which rejects the
+/// unadmitted lane (a clean DROP, never a crash or a corrupt inject).
 ///
 /// ## Per-channel loss isolation (RTP semantics)
 /// A lost datagram, or one channel's `retire`, only affects THAT channelID — sibling
@@ -29,9 +25,9 @@ import RworkVideoProtocol
 ///
 /// ## HANG / SOCKET SAFETY
 /// Opens real `NWListener`/`NWConnection` `.udp` flows — COMPILED + code-reviewed,
-/// NEVER instantiated in a test (like ``NWVideoDatagramTransport``). The pure routing
-/// it drives (``VideoMuxRouter``) and the per-channel framing (``VideoMuxHeaderCodec``)
-/// ARE unit-tested in isolation; an in-memory routing harness covers the dispatch.
+/// NEVER instantiated in a test. The pure routing it drives (``VideoMuxRouter``) and the
+/// per-channel framing (``VideoMuxHeaderCodec``) ARE unit-tested in isolation; an
+/// in-memory routing harness covers the dispatch.
 public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     private static func mediaSocket(for channel: VideoChannel) -> Bool { channel != .cursor }
 
@@ -44,15 +40,14 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     private var cursorListener: NWListener?
 
     /// All accepted client flows (UDP "connections" the listener pins per source endpoint).
-    /// Under mux MANY clients legitimately share the listener, so — unlike the single-slot
-    /// `NWVideoDatagramTransport` — every accepted flow is kept; demux happens per-datagram by
-    /// channelID. Keyed by an opaque token so a failed flow removes only itself.
+    /// MANY clients legitimately share the listener, so every accepted flow is kept; demux happens
+    /// per-datagram by channelID. Keyed by an opaque token so a failed flow removes only itself.
     private let lock = NSLock()
     private var mediaConns: [ObjectIdentifier: NWConnection] = [:]
     private var cursorConns: [ObjectIdentifier: NWConnection] = [:]
     /// channelID → the cursor flow that primed it, so a per-channel cursor datagram is sent back
     /// on the SAME flow the client opened (the host learns a cursor endpoint only from an inbound
-    /// prime, exactly as in the OFF path). Media replies pick the flow that last carried the lane.
+    /// prime). Media replies pick the flow that last carried the lane.
     private var channelMediaConn: [UInt32: NWConnection] = [:]
     private var channelCursorConn: [UInt32: NWConnection] = [:]
     /// The reconnect-generation-safe admit/retire/route table (PURE; unit-tested).
@@ -69,7 +64,7 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     /// Called per reaped lane (the symmetric of a `bye`'s lane retire + capture teardown — the gap
     /// the residual at the `installResetHandler` comment described). Set by the daemon to
     /// `registry.retireAndStop(channelID)` so the minted session's SCStream/encoder actually stops,
-    /// not just the sink forgotten. The ONLY new async work; nil (uncalled) on the OFF path.
+    /// not just the sink forgotten. nil (uncalled) until the daemon sets it.
     public var onReapLane: (@Sendable (UInt32) async -> Void)?
 
     /// Monotonic host time (seconds) for the reaper — ``DispatchTime`` uptime so an NTP step /

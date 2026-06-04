@@ -37,15 +37,10 @@ extension NWVideoMuxClientFlow: VideoMuxClientFlowing {}
 ///
 /// ## `@MainActor` + synchronous query
 /// ``VideoWindowPipeline`` constructs the per-pane transport synchronously on `activate`,
-/// so the gate decision (mux vs today) must be queryable without an `await`. The pool is
-/// `@MainActor`; `isEnabled` + endpoint bookkeeping are plain main-actor reads. Acquiring
-/// / releasing a lane is synchronous bookkeeping (the flow's own socket ops are async
-/// inside `Network.framework`), so it fits the synchronous construction site.
-///
-/// ## OFF path never consults it
-/// When the gate is OFF the app passes `nil` for the registry, so ``VideoWindowPipeline``
-/// builds a per-pane ``NWVideoClientTransport`` exactly as today — the pool is never
-/// constructed, never queried, byte-identical to the proven device-real iOS video cell.
+/// so endpoint bookkeeping must be queryable without an `await`. The pool is `@MainActor`;
+/// endpoint bookkeeping are plain main-actor reads. Acquiring / releasing a lane is
+/// synchronous bookkeeping (the flow's own socket ops are async inside `Network.framework`),
+/// so it fits the synchronous construction site.
 @MainActor
 public final class VideoConnectionRegistry {
     private struct Entry {
@@ -62,15 +57,9 @@ public final class VideoConnectionRegistry {
     /// Builds a fresh shared flow for an endpoint. Injected so tests substitute an in-memory flow.
     private let makeFlow: @MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16) -> VideoMuxClientFlowing
 
-    /// Whether the `RWORK_VIDEO_MUX` gate is ON. Read synchronously at the construction site to pick
-    /// the transport. Resolved ONCE (env or injected); the OFF path never even consults the pool.
-    public let isEnabled: Bool
-
     public init(
-        isEnabled: Bool = VideoMuxGate.enabledFromEnvironment(),
         makeFlow: @escaping @MainActor (String, UInt16, UInt16) -> VideoMuxClientFlowing
     ) {
-        self.isEnabled = isEnabled
         self.makeFlow = makeFlow
     }
 
@@ -137,21 +126,18 @@ public struct VideoMuxAcquisition: Sendable {
 
 @MainActor
 public enum VideoMuxInstaller {
-    /// Installs the PRODUCTION shared-flow registry on the video pipeline IFF `RWORK_VIDEO_MUX` is
-    /// ON — the one app-glue site (called from `Apps/Shared/AppMain.swift`, the GUI target that links
-    /// `RworkVideoClient`). With the gate OFF this is a no-op, so the pipeline's `sharedRegistry`
-    /// stays `nil` and every pane builds the today-shaped per-pane ``NWVideoClientTransport``
-    /// (byte-identical to the proven device-real iOS video cell). Idempotent.
+    /// Installs the PRODUCTION shared-flow registry on the video pipeline — the one app-glue site
+    /// (called from `Apps/Shared/AppMain.swift`, the GUI target that links `RworkVideoClient`). Every
+    /// pane then vends its lane from this per-host shared UDP flow (one flow per host, N panes).
+    /// Idempotent.
     ///
-    /// The production flow factory builds real ``NWVideoMuxClientFlow``s; both ends must agree on the
-    /// gate (the 15↔19-byte wire is incompatible across the boundary).
-    public static func installIfEnabled() {
-        guard VideoMuxGate.enabledFromEnvironment() else { return }
-        VideoWindowPipeline.sharedRegistry = VideoConnectionRegistry(isEnabled: true) { host, mediaPort, cursorPort in
+    /// The production flow factory builds real ``NWVideoMuxClientFlow``s — the only video wire there is.
+    public static func install() {
+        VideoWindowPipeline.sharedRegistry = VideoConnectionRegistry { host, mediaPort, cursorPort in
             #if canImport(Network)
             return NWVideoMuxClientFlow(host: host, mediaPort: mediaPort, cursorPort: cursorPort)
             #else
-            fatalError("RWORK_VIDEO_MUX requires Network.framework")
+            fatalError("the GUI video mux path requires Network.framework")
             #endif
         }
     }

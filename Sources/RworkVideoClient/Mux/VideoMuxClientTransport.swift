@@ -3,17 +3,16 @@ import Foundation
 import RworkVideoProtocol
 
 /// A per-pane ``VideoClientTransport`` backed by ONE channelID lane on a SHARED video
-/// flow (Stage S3) — the channelID-stamping facade vended (behind `RWORK_VIDEO_MUX`) to
-/// ``RworkVideoClientSession`` in place of the today-shaped one-flow-per-pane
-/// ``NWVideoClientTransport``.
+/// flow — the channelID-stamping facade vended to ``RworkVideoClientSession``. This is
+/// the only client video transport (one flow per host, N panes).
 ///
-/// From the session's point of view it has the IDENTICAL surface as
-/// ``NWVideoClientTransport`` (same ``VideoClientTransport`` protocol), so nothing
-/// upstream — ``RworkVideoClientSession``, the orchestrator's hello/input/recovery
-/// sends — changes. The difference is entirely below: `start` acquires a lane on the
-/// shared flow for `(host, ports)` from the ``VideoConnectionRegistry`` and wires this
-/// lane's inbound sink; `send` stamps this lane's `channelID`; `stop` releases the lane
-/// (refcount--), tearing the shared flow down only when this was the last pane on the host.
+/// From the session's point of view it is just a ``VideoClientTransport`` (the session is
+/// transport-agnostic via that protocol), so nothing upstream — ``RworkVideoClientSession``,
+/// the orchestrator's hello/input/recovery sends — knows about the shared flow. The
+/// difference is entirely below: `start` acquires a lane on the shared flow for `(host, ports)`
+/// from the ``VideoConnectionRegistry`` and wires this lane's inbound sink; `send` stamps this
+/// lane's `channelID`; `stop` releases the lane (refcount--), tearing the shared flow down only
+/// when this was the last pane on the host.
 ///
 /// `@unchecked Sendable`: it holds immutable bindings + delegates all shared mutable state
 /// to the (`@MainActor`) registry and the internally-locked shared flow.

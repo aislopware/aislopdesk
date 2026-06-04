@@ -203,7 +203,7 @@ public actor RworkVideoClientSession {
     /// - Parameters:
     ///   - requestedWindowID: the host CGWindowID to remote.
     ///   - viewport: the client surface size sent in the hello.
-    ///   - transport: the UDP transport (production: ``NWVideoClientTransport``).
+    ///   - transport: the UDP transport (production: ``VideoMuxClientTransport``).
     ///   - gui: the main-actor GUI hand-off seams (submit-frame / cursor / shape).
     ///   - fec: FEC scheme matching the host (default 20% XOR parity).
     public init(
