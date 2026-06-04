@@ -82,12 +82,12 @@ Adversarial sweep (find → **refute** → synthesize, 23 agents) across input /
 | VIDEO-UI-1 | high | **fixed + tested** | Same-tick close+reopen stuck on "Video paused" — teardown freed the cap slot without re-bumping `videoPromotionGeneration`. Fix: bump at the teardown-completion site (gated on an actual release) + regression test. |
 | CONCURRENCY-HOST-1 | high | **fixed** (runtime hardware-pending) | **Reconnect after a clean `bye` silently refused** until daemon restart (pinned UDP flow slot never cleared — UDP has no FIN). *This is the root of the chronic "restart the host before each client launch."* Fix: `VideoDatagramTransport.resetClientFlow()`, called on `bye`. **Crash-without-bye still needs an idle-timeout reaper (follow-up).** |
 | VIDEO-CLIENT-1 | med | **fixed** | Hard decode failure only logged → pacer froze on the last good frame. Fix: `requestIDR()` in the generic decode catch (mirrors `awaitingKeyframe`). |
-| VIDEO-HOST-1 | high | **documented, not shipped** | Client-recovery + ~1s heartbeat IDR never fire on a **static** window (both below `guard status == .complete`; only `.idle` frames arrive) → a recovering/joining client freezes until the window changes. Correct fix = retain the last `CVPixelBuffer` + timer re-encode a forced IDR, but it depends on SCStream IOSurface/queue-depth runtime behaviour that can't be verified headlessly (a wrong retain could stall capture / emit a stale surface). Documented at `WindowCapturer.swift:142` + here for hardware-in-the-loop. |
+| VIDEO-HOST-1 | high | **gated fix landed (Session 3), hardware bring-up pending** | Client-recovery + ~1s heartbeat IDR never fire on a **static** window (both below `guard status == .complete`; only `.idle` frames arrive) → a recovering/joining client freezes until the window changes. Fix (env-gated `RWORK_VIDEO_STATICIDR`, default OFF): cache a deep **COPY** of the last `.complete` `CVPixelBuffer` + a `frameQueue`-serialized heartbeat timer that re-encodes it as a forced IDR, driven by a pure `StaticIDRDecider`. Research confirmed SCStream delivers only `.idle`/no-surface for a static window, so the host MUST cache (COPY not retain — `queueDepth=3` would starve the pool); synthetic PTS is a monotonic 90 kHz counter, color attachments propagated. OFF byte-identical; ON path needs Mac Studio bring-up (SCStream IOSurface/queue-depth interaction unobservable headlessly). See `StaticIDRGate` / `StaticIDRDecider` / `WindowCapturer.copyPixelBuffer`. |
 
 VIDEO-HOST-1 + VIDEO-CLIENT-1 **compound**: a single bad decode on a then-static window = indefinite freeze with input still live. Fix both together when bringing up VIDEO-HOST-1 on hardware.
 
 **Top remaining follow-ups (need the Mac Studio):**
-1. VIDEO-HOST-1 — forced/heartbeat IDR on a static window (retain-last-buffer + timer).
+1. VIDEO-HOST-1 — **gated fix landed (Session 3, `RWORK_VIDEO_STATICIDR`)**; needs Mac Studio bring-up (verify the synthetic IDR recovers a frozen client within ~1.5s and never stalls capture or shifts color).
 2. CONCURRENCY-HOST-1 residual — idle-timeout reaper for a crash-without-`bye` (the `bye` reset only covers clean disconnects; a lost `bye` datagram or a crash still wedges the slot until the path errors).
 3. Resize Stage 0 latent note: `VideoSessionStateMachine.lastResizeEpoch` is not reset on a fresh `hello`-accept — reset it when the resize wiring (Stage 1+) lands, else a reconnected session would treat a low epoch as stale.
 
@@ -111,6 +111,7 @@ All on `feat/video-overnight` (not pushed). Each feature: ultracode research→d
 | Mux Stage-0 accepted-flag fix | `cc636b9` | — (always on) | 56 mux tests |
 | TCP mux S1 | `566af72` | `RWORK_TCP_MUX` | macOS+iOS build, 71 tests (loopback + ordering guard + refcount + OFF-identity) |
 | UDP mux S3 | `6184915` | `RWORK_VIDEO_MUX` | macOS+iOS build, 47 tests (routing + registry + OFF-identity) |
+| VIDEO-HOST-1 static-window IDR (Session 3) | _this session_ | `RWORK_VIDEO_STATICIDR` | macOS+iOS build, 13 `StaticIDRDeciderTests` + 4 `StaticIDRGateTests` (pure decider/gate/PTS; the COPY+timer+SCStream interaction is hardware-only) |
 
 ### Resize PATH A test (`RWORK_VIDEO_RESIZE=1` on Rwork.app + rwork-videohostd)
 1. The host needs the **Accessibility** TCC grant (it already does for input). Stream a window.
@@ -131,7 +132,14 @@ All on `feat/video-overnight` (not pushed). Each feature: ultracode research→d
 3. **Per-channel loss isolation**: induce loss on one lane — only it shows decode gaps; the sibling NEVER tears down.
 4. **OFF parity**: re-run the proven device-real iOS video cell with the flag OFF — unchanged (15-byte header).
 
+### Static-window IDR test (`RWORK_VIDEO_STATICIDR=1` on rwork-videohostd)
+1. Stream a window, then leave it **completely static** (no pixel changes) for >2s.
+2. Connect a **second** client (or force a client recovery / drop+rejoin) while the window stays static. Expect: the joining/recovering client decodes a fresh frame within ~1.5s (the half-cadence heartbeat) instead of freezing on blank/last-good — the synthetic forced IDR fired from the cached buffer.
+3. **No capture stall**: keep it ON through sustained static + live bursts for >60s; watch the host log for SCStream `.suspended` / `-3821` (would mean the copy/queueDepth interaction starved the pool — should NOT happen, we COPY not retain).
+4. **No color/PTS glitch**: confirm the synthetic IDR frame matches the surrounding live frames (no tone shift — color attachments propagated) and the client never logs a VT monotonic-PTS error on the first synthetic after a live burst.
+5. **OFF parity**: with the flag unset, behaviour is byte-identical to today (no timer, no copy) — a static window still freezes a late joiner (the bug), confirming the gate is the only thing that changes.
+
 ### New residuals from this session's adversarial reviews (documented, not shipped blind)
 - **Recurring bug class (fixed both mux stages):** unstructured-Task-per-frame loses FIFO ordering → scrambled terminal bytes / mouseUp-before-mouseDown. Fixed by inline delivery on the serial receive path; guarded by `testSingleChannelFloodPreservesOrder`.
 - **Deferred:** per-channel flow control S2; **crash-without-bye idle reaper under mux** (analogue of CONCURRENCY-HOST-1; capture keeps running — needs UDP-liveness timing, noted at `NWVideoMuxDatagramTransport.installResetHandler`); resize AX-rollback on rare encoder/capturer failure; rapid-double-resize adoption edge; channelID UInt32 wrap.
-- **Still open:** VIDEO-HOST-1 (static-window IDR freeze) — the one untouched audit item.
+- **VIDEO-HOST-1 (static-window IDR freeze):** **gated fix landed Session 3** (`RWORK_VIDEO_STATICIDR`, default OFF) — see the table + recipe above; Mac Studio bring-up pending. No longer the untouched item.

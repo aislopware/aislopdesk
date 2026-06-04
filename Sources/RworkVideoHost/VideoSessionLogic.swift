@@ -441,6 +441,72 @@ public struct RecoveryDatagramRouter: Sendable {
     }
 }
 
+/// Pure decider for the static-window forced-IDR heartbeat (VIDEO-HOST-1). Holds the
+/// cadence anchors and answers: "given the clock and what was last encoded, should the
+/// frameQueue timer re-encode the cached buffer as a forced IDR right now?". No I/O — the
+/// caller owns the retained buffer, the timer, and the encode. Mutating methods are called
+/// only on the capture `frameQueue` (single-threaded), so plain `var` state is safe.
+///
+/// Why this lives beside ``RecoveryDatagramRouter`` / ``InputMotionCoalescer``: it is the
+/// "decider beside the actor" discipline — the policy is pure and headlessly unit-testable
+/// (injected `now`), while the side effects (retain, timer, encode) stay thin in
+/// `WindowCapturer`. The capture path calls ``onCompleteFrame(now:)`` on every real frame;
+/// the timer calls ``shouldReencode(now:forcedLatched:hasRetainedBuffer:)`` then
+/// ``recordSynthetic(now:)`` when it fires.
+public struct StaticIDRDecider: Sendable, Equatable {
+    /// Heartbeat cadence (seconds). Mirrors `WindowCapturer.heartbeatIDRInterval` (1.0).
+    public let heartbeat: TimeInterval
+    /// Quiet window (seconds): suppress a synthetic re-encode if a REAL `.complete` frame
+    /// was encoded within this window — a live screen drives IDRs through the normal path,
+    /// so the timer must not double-emit. Default = heartbeat (one cadence).
+    public let quietWindow: TimeInterval
+
+    /// Uptime seconds of the last REAL `.complete`-frame encode (live path). 0 = none yet.
+    public private(set) var lastCompleteEncode: TimeInterval = 0
+    /// Uptime seconds of the last SYNTHETIC (timer-driven cached) re-encode. 0 = none yet.
+    public private(set) var lastSyntheticEncode: TimeInterval = 0
+
+    public init(heartbeat: TimeInterval, quietWindow: TimeInterval? = nil) {
+        self.heartbeat = heartbeat
+        self.quietWindow = quietWindow ?? heartbeat
+    }
+
+    /// The capture path encoded a REAL frame at `now`. Re-anchors the live clock so the
+    /// timer stays quiet while the screen is live, and a heartbeat measures from the last
+    /// real frame.
+    public mutating func onCompleteFrame(now: TimeInterval) {
+        lastCompleteEncode = now
+    }
+
+    /// The timer fired a synthetic re-encode at `now`. Re-anchor the synthetic clock.
+    public mutating func recordSynthetic(now: TimeInterval) {
+        lastSyntheticEncode = now
+    }
+
+    /// Decision for a frameQueue timer tick. PURE (no mutation).
+    /// - `forcedLatched`: a client recovery/keyframe request is pending (drained by caller).
+    /// - `hasRetainedBuffer`: a cached `.complete` pixel buffer exists to re-encode.
+    /// Returns true iff the caller should re-encode the cached buffer as a forced IDR.
+    public func shouldReencode(now: TimeInterval, forcedLatched: Bool, hasRetainedBuffer: Bool) -> Bool {
+        // No cached pixels ⇒ nothing to re-encode (e.g. before the first ever .complete frame).
+        guard hasRetainedBuffer else { return false }
+        // A real frame within the quiet window ⇒ the live path is (or just was) driving the
+        // stream; let it own the cadence, don't double-emit. (A recovery request while live is
+        // already serviced faster by the live `.complete` latch drain — the timer is the
+        // fallback only when the live path has gone quiet, so the quiet window gates forced too.)
+        let sinceComplete = now - lastCompleteEncode
+        if lastCompleteEncode != 0 && sinceComplete < quietWindow { return false }
+        // Recovery request always wins once the live path is quiet (latency-critical: a client
+        // is frozen). Fire regardless of heartbeat phase.
+        if forcedLatched { return true }
+        // Otherwise: heartbeat. Fire iff a full interval elapsed since the LAST emission of
+        // ANY kind (real or synthetic) — so cadence is measured from whatever last anchored.
+        let lastEmission = max(lastCompleteEncode, lastSyntheticEncode)
+        if lastEmission == 0 { return true } // armed, never emitted, buffer present ⇒ fire now
+        return (now - lastEmission) >= heartbeat
+    }
+}
+
 /// Packet-scheduling policy for the host send loop: turns an encoded frame +
 /// per-stream messages into the ordered list of datagrams to put on each channel.
 /// Pure (no socket) so the ordering is testable. The actor feeds encoder output and
