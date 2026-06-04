@@ -45,6 +45,17 @@ public final class WorkspaceStore {
     /// 2N-UDP / N-VTDecompression / N-CVDisplayLink ceiling). Injectable; default 2. The app now resolves
     /// it per device class via ``VideoCapPolicy`` (phone 1 / pad 2 / mac 3, ITEM #5); the store keeps the
     /// plain `Int` shape and is agnostic to how the number was chosen.
+    ///
+    /// ### UDP-mux (RWORK_VIDEO_MUX, Stage S3) interaction — cap is intentionally UNCHANGED
+    /// With the gate ON, same-host video panes SHARE one UDP flow (2 sockets/host instead of 2N), but
+    /// each pane STILL owns its own `VTDecompressionSession` + `CVDisplayLink` + Metal renderer — those
+    /// are NOT shared, only the UDP socket is. The dominant, scarce resources the cap exists to bound
+    /// (decode + composite, the "N-VTDecompression / N-CVDisplayLink" part of the ceiling) remain
+    /// strictly per-pane, so the per-pane cap stays CORRECT (it can never under-count live decoders).
+    /// The only term that weakens under mux is "2N-UDP" → "2-per-host", which only makes the cap more
+    /// conservative, never wrong. So the cap is kept per-pane (a per-host socket count would loosen
+    /// admission for no decode/composite headroom gain). The OFF path's cap behaviour is byte-identical
+    /// either way — this is a documentation note, not a behavioural change.
     public let liveVideoCap: Int
 
     /// A monotonic nudge the view layer observes to RE-ATTEMPT video admission for gated panes (ITEM

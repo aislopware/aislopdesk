@@ -120,4 +120,43 @@ final class VideoMuxHeaderCodecTests: XCTestCase {
             XCTAssertEqual(error as? VideoProtocolError, .truncated)
         }
     }
+
+    // MARK: RWORK_VIDEO_MUX gate (shared client+host parse, spec §5 / constraint #2)
+
+    func testGateUnsetIsOff() {
+        // The load-bearing OFF default: an unset var leaves both ends on the 15-byte path.
+        XCTAssertFalse(VideoMuxGate.enabledFromEnvironment([:]))
+    }
+
+    func testGateTruthyVocabularyMatchesTCPSide() {
+        for on in ["1", "true", "TRUE", "yes", "On"] {
+            XCTAssertTrue(VideoMuxGate.enabledFromEnvironment(["RWORK_VIDEO_MUX": on]), "\(on) → ON")
+        }
+        for off in ["0", "false", "no", "off", ""] {
+            XCTAssertFalse(VideoMuxGate.enabledFromEnvironment(["RWORK_VIDEO_MUX": off]), "\(off) → OFF")
+        }
+    }
+
+    // MARK: OFF-path framing tripwire (constraint #1 byte-identity)
+
+    func testOffPathFrameFragmentHeaderStaysFifteenBytes() {
+        // The OFF path emits the unchanged 15-byte FrameFragmentHeader. If this size ever drifts, an
+        // OFF-path receiver would misframe — the 19↔15 wire-break would have leaked into the OFF
+        // path. Pinning it here guards the byte-identity invariant.
+        XCTAssertEqual(FrameFragmentHeader.size, 15)
+        XCTAssertEqual(MuxFrameFragmentHeader.size, FrameFragmentHeader.size + VideoMuxHeaderCodec.channelIDLength)
+    }
+
+    func testMuxMediaFramingPrefixesChannelIDBeforeTheTodayTagAndPayload() throws {
+        // The mux MEDIA framing both transports use is `[UInt32 channelID][UInt8 tag][payload]` — the
+        // channelID PREFIXES the today wire (`[tag][payload]`), so stripping the 4-byte channelID
+        // yields the exact OFF-path bytes. This is what makes a single-pane mux run decode-identical
+        // to today once the channelID is peeled off (and what a mixed-version OFF receiver misframes).
+        let tag: UInt8 = 1 // video
+        let inner = Data([tag]) + Data([0xAA, 0xBB, 0xCC])
+        let framed = VideoMuxHeaderCodec.encode(channelID: 0x00000007, payload: inner)
+        let (channelID, rest) = try VideoMuxHeaderCodec.decode(framed)
+        XCTAssertEqual(channelID, 7)
+        XCTAssertEqual(rest, inner, "peeling the channelID yields the byte-identical today [tag][payload]")
+    }
 }
