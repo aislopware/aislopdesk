@@ -55,6 +55,11 @@ public struct VideoClientStateMachine: Sendable {
         case startDecodePipeline(captureSize: VideoSize, windowBoundsCG: VideoRect)
         /// Tear the decode pipeline down.
         case stopDecodePipeline
+        /// The host acked an in-session resize: it adopted `size` as the new capture size.
+        /// The actor stages it as the PENDING capture size and adopts it as the aspect-fit
+        /// denominator (`decodedSize`) only once a decoded `CVPixelBuffer` actually arrives at
+        /// that size (in-flight old-size frames may still be in the queue after the ack).
+        case updateCaptureSize(VideoSize)
     }
 
     /// `start()` was called: send the hello, move to `.connecting`.
@@ -88,14 +93,17 @@ public struct VideoClientStateMachine: Sendable {
             guard state == .streaming || state == .connecting else { return [] }
             state = .stopped
             return [.stopDecodePipeline]
-        case .resizeAck:
-            // STAGE 0 — defensive no-op. A `resizeAck` confirms the host adopted a new
-            // capture size, after which the client must re-base its aspect-fit denominator
-            // (`decodedSize`) on it. That re-base + the `resizeRequest` debounce that
-            // triggers it are a later HARDWARE-GATED stage; the client never sends a
-            // `resizeRequest` yet, so the host never sends a `resizeAck` on the fixed-size
-            // path. Intentionally inert here to keep Stage 0 additive + byte-identical.
-            return []
+        case .resizeAck(let cw, let ch, _):
+            // The host adopted a new capture size for an in-session resize. Stage it as the
+            // pending capture size; the actor adopts it as the aspect-fit denominator only when
+            // a decoded CVPixelBuffer actually arrives at that size (frame-gated — in-flight
+            // old-size frames may still be queued after the ack). Acted on ONLY while streaming
+            // (a stray/late ack after teardown is inert). The epoch is the host's echo of the
+            // request that won; the actor does not re-validate it (the host already dropped
+            // stale epochs). With `RWORK_VIDEO_RESIZE` OFF the host never sends a resizeAck, so
+            // this branch is never reached on the fixed-size path.
+            guard state == .streaming else { return [] }
+            return [.updateCaptureSize(VideoSize(width: Double(cw), height: Double(ch)))]
         case .hello, .resizeRequest:
             // The client never receives a hello / resizeRequest — defensive no-op.
             return []
@@ -137,6 +145,39 @@ public enum VideoScaleMath {
     public static func videoScale(layerSize: VideoSize, decodedSize: VideoSize) -> Double {
         guard decodedSize.width > 0 else { return 1.0 }
         return layerSize.width / decodedSize.width
+    }
+}
+
+/// Pure frame-gated resize-adoption decision (the client mirror of the host's
+/// ``SizeNegotiation``): after the host acks an in-session resize, the client must adopt the new
+/// size as its aspect-fit denominator (``decodedSize``) ONLY when a decoded `CVPixelBuffer` at
+/// the new size actually arrives — an in-flight OLD-size frame queued behind the ack must NOT
+/// trip adoption early (it would briefly mis-scale the cursor / `videoScale`). Two gates, both
+/// required; pure so the gating is unit-testable without a `VTDecompressionSession`.
+public enum ResizeAdoption {
+    /// Whether the just-decoded buffer is the genuinely-NEW size (adopt) rather than an
+    /// in-flight old-size frame (reject).
+    ///
+    /// - `pending`: the acked target size (host window POINTS).
+    /// - `decoded`: the just-decoded buffer dims (PIXELS = points × captureScale).
+    /// - `previousDecoded`: the prior decoded buffer dims (`nil` ⇒ first frame).
+    ///
+    /// Gate 1 — ASPECT: the decoded aspect matches the acked aspect. Rejects an old frame when
+    /// the resize CHANGED the aspect (the common freeform-drag case).
+    /// Gate 2 — MAGNITUDE: the decoded pixel size actually CHANGED from the previous decoded
+    /// frame. Rejects an old frame when the resize PRESERVED the aspect (a proportional resize),
+    /// where the aspect gate alone would adopt on the first identical-aspect old frame. The
+    /// client can't exact-match pixels↔points (no captureScale client-side), but the first
+    /// genuinely-new-size frame is the first whose dims differ from the steady old size.
+    ///
+    /// ⚠️ Residual: a rapid double-resize WITHIN the in-flight window can adopt the latest
+    /// `pending` on an intermediate-size frame (both gates pass: aspect matches + dims changed,
+    /// but to the intermediate size, not the final one). Rare; self-heals on the next IDR.
+    public static func shouldAdopt(pending: VideoSize, decoded: VideoSize, previousDecoded: VideoSize?) -> Bool {
+        guard pending.width > 0, pending.height > 0, decoded.width > 0, decoded.height > 0 else { return false }
+        let aspectMatches = abs(pending.width / pending.height - decoded.width / decoded.height) < 0.02
+        let sizeChanged = previousDecoded.map { abs(decoded.width - $0.width) >= 1 || abs(decoded.height - $0.height) >= 1 } ?? true
+        return aspectMatches && sizeChanged
     }
 }
 
