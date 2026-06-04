@@ -418,6 +418,11 @@ public struct RecoveryDatagramRouter: Sendable {
         /// A durable-receipt ack: the host may advance its retransmit/LTR-pin window.
         /// No live effect yet (no retransmit buffer); recorded for the docs/escalation.
         case ack(streamSeq: UInt32)
+        /// Re-ship the cursor SHAPE bitmap for `shapeID` (FIX B self-heal): the client is
+        /// missing it (its one-shot shape datagram was lost / over-MTU). The actor asks the
+        /// ``CursorSampler`` to re-emit that shape on the cursor socket; the client cache
+        /// re-insert is idempotent.
+        case reshipCursorShape(shapeID: UInt16)
         /// Drop a malformed/undecodable datagram (a corrupt single packet must never
         /// crash the receiver — same contract as the reassembler).
         case drop(reason: String)
@@ -442,6 +447,8 @@ public struct RecoveryDatagramRouter: Sendable {
             return .forceKeyframe
         case .ack(let streamSeq):
             return .ack(streamSeq: streamSeq)
+        case .requestCursorShape(let shapeID):
+            return .reshipCursorShape(shapeID: shapeID)
         }
     }
 }

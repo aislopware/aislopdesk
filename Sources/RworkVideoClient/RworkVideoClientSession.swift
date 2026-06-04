@@ -88,11 +88,11 @@ public actor RworkVideoClientSession {
         /// click actually lands.
         public var applyCursor: @Sendable (CursorUpdate, CursorPlacement) -> Void
         /// Register a cursor shape bitmap for its shapeID (shipped rarely, OOB).
-        public var registerCursorShape: @Sendable (CGImage, UInt16) -> Void
+        public var registerCursorShape: @Sendable (CGImage, VideoSize, UInt16) -> Void
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
             applyCursor: @escaping @Sendable (CursorUpdate, CursorPlacement) -> Void,
-            registerCursorShape: @escaping @Sendable (CGImage, UInt16) -> Void
+            registerCursorShape: @escaping @Sendable (CGImage, VideoSize, UInt16) -> Void
         ) {
             self.submitDecodedFrame = submitDecodedFrame
             self.applyCursor = applyCursor
@@ -150,6 +150,11 @@ public actor RworkVideoClientSession {
     /// The most recent host cursor position, re-applied whenever the scale changes so
     /// a layout/resize re-places the overlay without waiting for the next cursor packet.
     private var lastCursorUpdate: CursorUpdate?
+    /// FIX B cursor-shape self-heal: decides when to re-request a shape bitmap the client is
+    /// missing (its one-shot shipment was lost / over-MTU). A position update referencing an
+    /// unknown shapeID triggers a `requestCursorShape` on the recovery channel; the decision is
+    /// debounced per id so the ~120 Hz position stream cannot flood the channel. Pure type.
+    private var shapeRequests = CursorShapeRequestTracker()
 
     /// In-session host-window-resize feature gate (`RWORK_VIDEO_RESIZE=1`, default OFF). With
     /// it OFF the client never sends a `resizeRequest` (so the host never resizes / acks) and
@@ -558,10 +563,24 @@ public actor RworkVideoClientSession {
         switch message {
         case .update(let update):
             lastCursorUpdate = update
+            // FIX B self-heal: a position update referencing a shapeID we never cached means its
+            // one-shot bitmap was lost (or never fit one datagram). Re-request it on the recovery
+            // channel (debounced per id) so the overlay can recover instead of staying wrong/
+            // invisible for the whole session. The applyCursor below is unchanged — it simply
+            // keeps the prior bitmap until the re-shipped one arrives.
+            maybeRequestCursorShape(update.shapeID)
             applyCursor(update)
         case .shape(let shape):
             registerCursorShape(shape)
         }
+    }
+
+    /// Sends a `requestCursorShape(shapeID)` on the recovery channel iff the shape is missing and
+    /// not recently requested (``CursorShapeRequestTracker``). No-op once the shape is cached.
+    private func maybeRequestCursorShape(_ shapeID: UInt16) {
+        guard shapeRequests.shouldRequest(shapeID: shapeID, now: FramePacer.currentHostTimeSeconds()) else { return }
+        dbg("cursor shape \(shapeID) missing — requesting re-ship on recovery channel")
+        transport.send(RecoveryMessage.requestCursorShape(shapeID: shapeID).encode(), on: .recovery)
     }
 
     private func applyCursor(_ update: CursorUpdate) {
@@ -581,9 +600,14 @@ public actor RworkVideoClientSession {
         // decode is cheap + safe (no window-server); only the layer wiring is GUI.
         guard let image = Self.decodePNG(shape.bitmap) else {
             log.error("failed to decode cursor shape \(shape.shapeID) PNG")
-            return
+            return   // do NOT mark arrived — leave the id re-requestable so a decode failure self-heals (review).
         }
-        gui.registerCursorShape(image, shape.shapeID)
+        // Mark arrived only AFTER a successful decode — the tracker then stops re-requesting.
+        shapeRequests.noteShapeArrived(shape.shapeID)
+        // Pass the LOGICAL point size so the overlay renders at the cursor's true size regardless of
+        // the bitmap's pixel resolution (a Retina or MTU-downscaled bitmap is scaled to fit), rather
+        // than rendering at the raw bitmap pixel dimensions (FIX B review).
+        gui.registerCursorShape(image, shape.size, shape.shapeID)
         // Re-apply the last position so the newly-registered shape shows immediately.
         reapplyCursor()
     }

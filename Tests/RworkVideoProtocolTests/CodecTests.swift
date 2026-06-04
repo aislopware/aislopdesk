@@ -161,6 +161,8 @@ final class CodecTests: XCTestCase {
             .ack(streamSeq: .max),
             .requestLTRRefresh(fromFrameID: 10, toFrameID: 14),
             .requestIDR,
+            .requestCursorShape(shapeID: 0),
+            .requestCursorShape(shapeID: .max),
         ]
         for message in cases {
             XCTAssertEqual(try RecoveryMessage.decode(message.encode()), message)

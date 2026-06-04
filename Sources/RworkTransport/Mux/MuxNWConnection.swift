@@ -32,6 +32,15 @@ public actor MuxNWConnection {
     /// Whether this end allocates channel ids (client/odd) or only registers peer ids (host).
     public enum Role: Sendable { case client, host }
 
+    /// Stable per-connection identity (the wire `connectionID` that paired the CONTROL+DATA
+    /// sockets — see ``HostTransport/associateMux``). The host owner namespaces its per-channel
+    /// sessions by `(connectionID, channelID)` so that two DISTINCT client connections — which
+    /// each allocate `channelID` 1 for their first pane — never collide in one channelID-only map
+    /// (which made one connection's close-hook resolve a DIFFERENT connection's live session, and
+    /// silently overwrote/orphaned the first connection's session on the second's open). Defaults
+    /// to a fresh UUID for the client side / any caller that does not pair on a wire connectionID.
+    public nonisolated let connectionID: UUID
+
     private let role: Role
     private let controlLink: any MuxByteLink
     private let dataLink: any MuxByteLink
@@ -54,10 +63,11 @@ public actor MuxNWConnection {
     private var receiveTasks: [Task<Void, Never>] = []
     private var closed = false
 
-    public init(role: Role, controlLink: any MuxByteLink, dataLink: any MuxByteLink) {
+    public init(role: Role, controlLink: any MuxByteLink, dataLink: any MuxByteLink, connectionID: UUID = UUID()) {
         self.role = role
         self.controlLink = controlLink
         self.dataLink = dataLink
+        self.connectionID = connectionID
     }
 
     /// Starts the receive loops on both links. Idempotent-safe to call once.

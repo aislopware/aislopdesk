@@ -397,3 +397,59 @@ public struct InputEventEncoder: Sendable {
         .text(string, tag: takeTag())
     }
 }
+
+/// Pure decider for the cursor-shape SELF-HEAL (FIX B). A cursor shape bitmap is shipped over
+/// the cursor socket ONCE per `shapeID`; a lost (or over-MTU, IP-fragment-lost) shape would
+/// otherwise leave the overlay permanently wrong/invisible for the whole session — the host
+/// strips the real cursor, so this overlay is the ONLY cursor the user sees.
+///
+/// When a cursor POSITION update references a `shapeID` the client has NOT cached, the client
+/// re-requests that shape on the EXISTING recovery channel (mirroring `requestIDR`). This type
+/// decides WHETHER to send such a request: only for an UNKNOWN id, and at most once per
+/// `reRequestInterval` so a steady stream of position updates referencing a still-missing id
+/// (the host's re-ship may itself be lost) does not flood the recovery channel. `noteShapeArrived`
+/// marks an id cached (idempotent re-insert) so its position updates stop triggering requests.
+///
+/// Pure value type — no transport, no clock (the caller passes `now`) — so the decision is
+/// headlessly unit-testable without a socket or a `CALayer`.
+public struct CursorShapeRequestTracker: Sendable, Equatable {
+    /// Shape ids the client has received the bitmap for (cached) — their position updates never
+    /// re-request. A received shape is recorded here even if it arrived before any position update.
+    private var knownShapeIDs: Set<UInt16> = []
+    /// Host time (seconds) of the last re-request PER missing shapeID, so a still-missing id is
+    /// re-requested at most once per ``reRequestInterval`` instead of on every ~120 Hz position
+    /// update. Cleared for an id once its shape arrives.
+    private var lastRequested: [UInt16: TimeInterval] = [:]
+
+    /// Minimum spacing between re-requests for the SAME missing shapeID (seconds). A few × RTT:
+    /// long enough that one re-ship has time to arrive, short enough to self-heal promptly.
+    public let reRequestInterval: TimeInterval
+
+    public init(reRequestInterval: TimeInterval = 0.5) {
+        self.reRequestInterval = reRequestInterval
+    }
+
+    /// A cursor shape bitmap arrived for `shapeID` — mark it cached (idempotent) and stop
+    /// re-requesting it.
+    public mutating func noteShapeArrived(_ shapeID: UInt16) {
+        knownShapeIDs.insert(shapeID)
+        lastRequested[shapeID] = nil
+    }
+
+    /// Whether the id is already cached (no request needed). Test/diagnostics seam.
+    public func isKnown(_ shapeID: UInt16) -> Bool { knownShapeIDs.contains(shapeID) }
+
+    /// A cursor POSITION update referenced `shapeID` at host time `now`. Returns `true` iff the
+    /// client should SEND a `requestCursorShape(shapeID)` now: the id is unknown AND no request
+    /// for it was sent within ``reRequestInterval``. Records the request time when it returns
+    /// `true` (so it is the query+mutator the caller acts on), so the next ~120 Hz update for the
+    /// same still-missing id does not immediately re-fire.
+    public mutating func shouldRequest(shapeID: UInt16, now: TimeInterval) -> Bool {
+        guard !knownShapeIDs.contains(shapeID) else { return false }
+        if let last = lastRequested[shapeID], now - last < reRequestInterval {
+            return false
+        }
+        lastRequested[shapeID] = now
+        return true
+    }
+}
