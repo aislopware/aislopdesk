@@ -102,6 +102,25 @@ final class MuxRouterTests: XCTestCase {
         XCTAssertTrue(router.isOpen(1))
     }
 
+    func testOpenAckRejectedDoesNotOpenChannel() {
+        var router = MuxRouter()
+        // Client allocated id 1 and is awaiting the host's ack; the host REFUSES it.
+        let id = router.allocateChannel()
+        XCTAssertEqual(id, 1)
+        let decision = router.route(.channelOpenAck(channelID: id, accepted: false))
+        // A refusal must mark the channel dead (.closed), NOT open it (the bug).
+        guard case .lifecycle(1, .closed) = decision else {
+            return XCTFail("a refused openAck must close the channel, got \(decision)")
+        }
+        XCTAssertFalse(router.isOpen(1), "a refused channel must never be open")
+        // ...and data for the refused channel is dropped, never delivered.
+        guard case .dropUnknownChannel(1, _) = router.route(.channelData(channelID: 1, payload: Data("refused".utf8))) else {
+            return XCTFail("data for a refused channel must be dropped")
+        }
+        // The id is retained (monotonic allocator never reuses it): the next allocation is 3.
+        XCTAssertEqual(router.allocateChannel(), 3)
+    }
+
     func testWindowAdjustReportsLifecycleWithoutChangingOpenState() {
         var router = MuxRouter()
         open(1, in: &router)

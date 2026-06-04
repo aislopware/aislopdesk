@@ -33,11 +33,26 @@ enum MuxRoutingCore {
             }
             return .deliverData(channelID: id, payload: payload)
 
-        case .channelOpen, .channelOpenAck:
-            // Register / confirm the channel as open. open() is a no-op for a
-            // closing/closed id, so a late open cannot resurrect a dead channel.
+        case .channelOpen:
+            // Responder registers the peer-initiated channel as open. open() is a no-op
+            // for a closing/closed id, so a late open cannot resurrect a dead channel.
             table.open(id)
             let state = table.state(of: id) ?? .open
+            return .lifecycle(channelID: id, newState: state)
+
+        case let .channelOpenAck(_, accepted):
+            // The responder ACCEPTED or REFUSED the open we initiated. ONLY an accept
+            // advances the channel to .open; a refusal marks it dead via reject() — never
+            // route data to a refused channel (the original bug routed data to a channel
+            // the host had refused). The IO layer reads the resulting state to either
+            // complete or FAIL the openChannel() caller.
+            let state: ChannelState
+            if accepted {
+                table.open(id)
+                state = table.state(of: id) ?? .open
+            } else {
+                state = table.reject(id)
+            }
             return .lifecycle(channelID: id, newState: state)
 
         case .channelClose:
