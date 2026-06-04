@@ -46,16 +46,15 @@ public final class WorkspaceStore {
     /// it per device class via ``VideoCapPolicy`` (phone 1 / pad 2 / mac 3, ITEM #5); the store keeps the
     /// plain `Int` shape and is agnostic to how the number was chosen.
     ///
-    /// ### UDP-mux (RWORK_VIDEO_MUX, Stage S3) interaction — cap is intentionally UNCHANGED
-    /// With the gate ON, same-host video panes SHARE one UDP flow (2 sockets/host instead of 2N), but
-    /// each pane STILL owns its own `VTDecompressionSession` + `CVDisplayLink` + Metal renderer — those
-    /// are NOT shared, only the UDP socket is. The dominant, scarce resources the cap exists to bound
-    /// (decode + composite, the "N-VTDecompression / N-CVDisplayLink" part of the ceiling) remain
-    /// strictly per-pane, so the per-pane cap stays CORRECT (it can never under-count live decoders).
-    /// The only term that weakens under mux is "2N-UDP" → "2-per-host", which only makes the cap more
-    /// conservative, never wrong. So the cap is kept per-pane (a per-host socket count would loosen
-    /// admission for no decode/composite headroom gain). The OFF path's cap behaviour is byte-identical
-    /// either way — this is a documentation note, not a behavioural change.
+    /// ### UDP-mux interaction — cap is intentionally per-pane
+    /// Same-host video panes SHARE one UDP flow (2 sockets/host instead of 2N), but each pane STILL owns
+    /// its own `VTDecompressionSession` + `CVDisplayLink` + Metal renderer — those are NOT shared, only
+    /// the UDP socket is. The dominant, scarce resources the cap exists to bound (decode + composite, the
+    /// "N-VTDecompression / N-CVDisplayLink" part of the ceiling) remain strictly per-pane, so the
+    /// per-pane cap stays CORRECT (it can never under-count live decoders). The only term that weakens
+    /// under mux is "2N-UDP" → "2-per-host", which only makes the cap more conservative, never wrong. So
+    /// the cap is kept per-pane (a per-host socket count would loosen admission for no decode/composite
+    /// headroom gain).
     public let liveVideoCap: Int
 
     /// A monotonic nudge the view layer observes to RE-ATTEMPT video admission for gated panes (ITEM
@@ -800,35 +799,26 @@ public final class WorkspaceStore {
 // MARK: - Production session factory
 
 public extension WorkspaceStore {
-    /// The production `makeSession` factory: wires ``LivePaneSession`` with the threaded `makeClient`
-    /// and an inspector builder. The app passes `WorkspaceStore.liveMakeSession(...)` as `makeSession`
-    /// so tests can substitute `{ FakePaneSession($0) }` instead (docs/22 §0).
+    /// The production `makeSession` factory: wires ``LivePaneSession`` with a mux-backed client
+    /// factory and an inspector builder. The app passes `WorkspaceStore.liveMakeSession(...)` as
+    /// `makeSession` so tests can substitute `{ FakePaneSession($0) }` instead (docs/22 §0).
     ///
     /// - Parameters:
-    ///   - makeClient: the `@Sendable () -> RworkClient` the proven `ConnectionViewModel` uses.
     ///   - makeInspector: builds the read-only `InspectorClient` for a `.claudeCode` endpoint, or
     ///     `nil` when no second channel is available (e.g. the descriptor cannot be built headless).
     ///     Defaults to ``liveMakeInspector(_:)`` — a lazily-connecting NWConnection #2 client (see
     ///     that function for the unproven-host guardrail).
+    ///   - muxRegistry: the per-host shared-connection pool. Every `RworkClient` is backed by a
+    ///     logical channel over the per-host shared `MuxNWConnection` (refcounted by the registry).
     static func liveMakeSession(
-        makeClient: @escaping @Sendable () -> RworkClient = { RworkClient() },
         makeInspector: @escaping @MainActor (Endpoint) -> InspectorClient? = liveMakeInspector,
-        muxRegistry: ConnectionRegistry? = nil
+        muxRegistry: ConnectionRegistry
     ) -> @MainActor (PaneSpec) -> any PaneSessionHandle {
-        // TCP-mux gate (RWORK_TCP_MUX): when a registry is supplied AND enabled, SWAP the client
-        // factory for one that backs each `RworkClient` with a logical channel over the per-host
-        // shared `MuxNWConnection` (refcounted by the registry) instead of a private one-TCP-pair
-        // `ClientTransport`. The OFF path is byte-identical: with `muxRegistry == nil` (or the gate
-        // unset) `effectiveMakeClient` is the caller's `{ RworkClient() }` UNCHANGED — the closure
-        // is the exact same value, so the construction site behaves precisely as before. This is the
-        // SOLE client-side gate; nothing on the per-message path or downstream (ConnectionViewModel,
-        // LivePaneSession, reconcile) is touched.
-        let effectiveMakeClient: @Sendable () -> RworkClient
-        if let muxRegistry, muxRegistry.isEnabled {
-            effectiveMakeClient = muxBackedClientFactory(registry: muxRegistry)
-        } else {
-            effectiveMakeClient = makeClient
-        }
+        // Every pane is backed by a logical channel over the per-host shared `MuxNWConnection`
+        // (refcounted by the registry). This is the SOLE client-side construction site; nothing on
+        // the per-message path or downstream (ConnectionViewModel, LivePaneSession, reconcile) is
+        // touched.
+        let effectiveMakeClient = muxBackedClientFactory(registry: muxRegistry)
         return { spec in
             LivePaneSession.make(spec, makeClient: effectiveMakeClient, makeInspector: makeInspector)
         }

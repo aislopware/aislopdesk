@@ -167,8 +167,8 @@ final class PTYProcessTests: XCTestCase {
     func testMasterFDClosedOnShutdownNoFDLeak() throws {
         // FD-hygiene regression: each successful spawn opens one PTY master fd; before the
         // fix it was never closed (no deinit, terminate()/shutdown() did not close it), so
-        // a long-running daemon leaked one fd per session and eventually hit EMFILE. Spawn
-        // + drive a full HostSession relay + shutdown N times and assert the open-fd delta
+        // a long-running daemon leaked one fd per channel and eventually hit EMFILE. Spawn
+        // + drive a full MuxChannelSession relay + shutdown N times and assert the open-fd delta
         // is ~0 (we allow tiny slack for transient runtime fds, but a per-spawn leak would
         // show ~N).
         let n = 40
@@ -176,8 +176,14 @@ final class PTYProcessTests: XCTestCase {
         for _ in 0..<n {
             let pty = PTYProcess()
             try pty.spawn("/bin/sh", arguments: ["-c", "printf hi; exit 0"], environment: curatedEnv())
-            let transport = HostSessionTransport(sessionID: UUID())
-            let session = HostSession(sessionID: transport.sessionID, pty: pty, transport: transport)
+            // Inert in-memory sub-channels: the relay writes output into them (the muxSend sink is a
+            // no-op) — we only exercise the PTY spawn → relay → shutdown fd hygiene, not the wire.
+            // ⚠️ Keep the PTY output well UNDER MuxFlowControl.initialWindowBytes (256 KiB): the DATA
+            // sub-channel arms a send window and there is NO grant source here, so a >window workload
+            // would park the relay's send forever (hang). `printf hi` (2 bytes) is safe.
+            let data = MuxSubChannel(channelID: 1, channel: .data) { _, _ in }
+            let control = MuxSubChannel(channelID: 1, channel: .control) { _, _ in }
+            let session = MuxChannelSession(channelID: 1, pty: pty, data: data, control: control)
             session.startRelay()
             _ = readUntil(fd: pty.masterFD, needle: "\u{04}", timeout: 1) // drain to EOF
             session.shutdown()

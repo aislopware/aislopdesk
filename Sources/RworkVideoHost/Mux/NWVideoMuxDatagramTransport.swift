@@ -4,22 +4,18 @@ import Network
 import OSLog
 import RworkVideoProtocol
 
-/// The MUX (Stage S3) sibling of ``NWVideoDatagramTransport``: ONE physical UDP flow
-/// (media + cursor sockets) shared across N client video channels, demultiplexed by a
-/// `UInt32` channelID prefix (``VideoMuxHeaderCodec``) instead of the single-slot
-/// client pin.
+/// The host UDP video transport: ONE physical UDP flow (media + cursor sockets) shared
+/// across N client video channels, demultiplexed by a `UInt32` channelID prefix
+/// (``VideoMuxHeaderCodec``). This is the only video wire — one flow per host, N panes.
 ///
-/// ⚠️ **GATED + WIRE-INCOMPATIBLE.** This type is used ONLY when `RWORK_VIDEO_MUX` is
-/// ON (both ends must agree, ``VideoMuxGate``). The wire here is the 4-byte channelID
-/// prefix in FRONT of the existing 1-byte channel tag + payload:
+/// The wire is the 4-byte channelID prefix in FRONT of the existing 1-byte channel tag +
+/// payload:
 /// ```
 ///   [UInt32 BE channelID][UInt8 channelTag][payload...]   (media socket)
 ///   [UInt32 BE channelID][payload...]                     (cursor socket)
 /// ```
-/// A client that did NOT enable the gate writes the OFF framing (`[tag][payload]`),
-/// which this transport parses as a stray channelID and routes through
-/// ``VideoMuxRouter`` — which rejects the unadmitted lane (a clean DROP, never a crash
-/// or a corrupt inject). That is the mixed-version "fail cleanly" contract.
+/// An unrecognized lane is routed through ``VideoMuxRouter`` — which rejects the
+/// unadmitted lane (a clean DROP, never a crash or a corrupt inject).
 ///
 /// ## Per-channel loss isolation (RTP semantics)
 /// A lost datagram, or one channel's `retire`, only affects THAT channelID — sibling
@@ -29,9 +25,9 @@ import RworkVideoProtocol
 ///
 /// ## HANG / SOCKET SAFETY
 /// Opens real `NWListener`/`NWConnection` `.udp` flows — COMPILED + code-reviewed,
-/// NEVER instantiated in a test (like ``NWVideoDatagramTransport``). The pure routing
-/// it drives (``VideoMuxRouter``) and the per-channel framing (``VideoMuxHeaderCodec``)
-/// ARE unit-tested in isolation; an in-memory routing harness covers the dispatch.
+/// NEVER instantiated in a test. The pure routing it drives (``VideoMuxRouter``) and the
+/// per-channel framing (``VideoMuxHeaderCodec``) ARE unit-tested in isolation; an
+/// in-memory routing harness covers the dispatch.
 public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     private static func mediaSocket(for channel: VideoChannel) -> Bool { channel != .cursor }
 
@@ -44,33 +40,31 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     private var cursorListener: NWListener?
 
     /// All accepted client flows (UDP "connections" the listener pins per source endpoint).
-    /// Under mux MANY clients legitimately share the listener, so — unlike the single-slot
-    /// `NWVideoDatagramTransport` — every accepted flow is kept; demux happens per-datagram by
-    /// channelID. Keyed by an opaque token so a failed flow removes only itself.
+    /// MANY clients legitimately share the listener, so every accepted flow is kept; demux happens
+    /// per-datagram by channelID. Keyed by an opaque token so a failed flow removes only itself.
     private let lock = NSLock()
     private var mediaConns: [ObjectIdentifier: NWConnection] = [:]
     private var cursorConns: [ObjectIdentifier: NWConnection] = [:]
     /// channelID → the cursor flow that primed it, so a per-channel cursor datagram is sent back
     /// on the SAME flow the client opened (the host learns a cursor endpoint only from an inbound
-    /// prime, exactly as in the OFF path). Media replies pick the flow that last carried the lane.
+    /// prime). Media replies pick the flow that last carried the lane.
     private var channelMediaConn: [UInt32: NWConnection] = [:]
     private var channelCursorConn: [UInt32: NWConnection] = [:]
     /// The reconnect-generation-safe admit/retire/route table (PURE; unit-tested).
     private var muxRouter = VideoMuxRouter()
     private var stopped = false
 
-    /// CONCURRENCY-HOST-1 mux analogue (`RWORK_VIDEO_KEEPALIVE`): the per-lane idle-timeout reaper.
-    /// NON-nil ONLY when the host gate is ON. Keyed by channelID (each lane its own record), so a
-    /// crashed lane is reaped independently of its siblings — the per-channel loss-isolation
-    /// posture. Skipped on a `nil` check on the OFF path (byte-identical). Guarded by `lock`.
-    private var idleReaper: IdleReapDecider<UInt32>?
-    /// The coarse reaper scan timer (``KeepaliveGate/reaperTick``), on `queue`. Nil unless the gate
-    /// is ON; cancelled under `lock` in ``stop()``.
+    /// CONCURRENCY-HOST-1 mux analogue (always on): the per-lane idle-timeout reaper. Keyed by
+    /// channelID (each lane its own record), so a crashed lane is reaped independently of its
+    /// siblings — the per-channel loss-isolation posture. Guarded by `lock`.
+    private var idleReaper = IdleReapDecider<UInt32>(idleTimeout: KeepaliveTiming.idleTimeout)
+    /// The coarse reaper scan timer (``KeepaliveTiming/reaperTick``), on `queue`; cancelled under
+    /// `lock` in ``stop()``.
     private var reaperTimer: DispatchSourceTimer?
     /// Called per reaped lane (the symmetric of a `bye`'s lane retire + capture teardown — the gap
     /// the residual at the `installResetHandler` comment described). Set by the daemon to
     /// `registry.retireAndStop(channelID)` so the minted session's SCStream/encoder actually stops,
-    /// not just the sink forgotten. The ONLY new async work; nil (uncalled) on the OFF path.
+    /// not just the sink forgotten. nil (uncalled) until the daemon sets it.
     public var onReapLane: (@Sendable (UInt32) async -> Void)?
 
     /// Monotonic host time (seconds) for the reaper — ``DispatchTime`` uptime so an NTP step /
@@ -86,16 +80,9 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         func markDead() { lock.withLock { alive = false } }
     }
 
-    public convenience init(mediaPort: UInt16, cursorPort: UInt16) {
-        self.init(mediaPort: mediaPort, cursorPort: cursorPort, idleTimeout: nil)
-    }
-
-    /// - Parameter idleTimeout: when non-nil (the `RWORK_VIDEO_KEEPALIVE` host gate is ON), the
-    ///   per-lane crash-without-bye reaper is constructed + armed; nil ⇒ OFF, byte-identical.
-    public init(mediaPort: UInt16, cursorPort: UInt16, idleTimeout: TimeInterval?) {
+    public init(mediaPort: UInt16, cursorPort: UInt16) {
         self.mediaPort = NWEndpoint.Port(rawValue: mediaPort)!
         self.cursorPort = NWEndpoint.Port(rawValue: cursorPort)!
-        if let idleTimeout { self.idleReaper = IdleReapDecider<UInt32>(idleTimeout: idleTimeout) }
     }
 
     // MARK: - Admission (driven by the daemon's session registry on hello / bye)
@@ -113,8 +100,8 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
             channelMediaConn.removeValue(forKey: channelID)
             channelCursorConn.removeValue(forKey: channelID)
             // Forget the reaper record too (clean bye OR reaper-driven) so a reconnect under the
-            // same channelID starts a FRESH record. No-op on the OFF path (idleReaper == nil).
-            idleReaper?.forget(id: channelID)
+            // same channelID starts a FRESH record.
+            idleReaper.forget(id: channelID)
         }
     }
 
@@ -158,15 +145,13 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         cursor.start(queue: queue)
         self.cursorListener = cursor
 
-        // CONCURRENCY-HOST-1 mux analogue: arm the per-lane idle-timeout reaper ONLY when the gate
-        // constructed a decider. On `queue` (serial receive queue). The OFF path never enters here.
-        if idleReaper != nil {
-            let timer = DispatchSource.makeTimerSource(queue: queue)
-            timer.schedule(deadline: .now() + KeepaliveGate.reaperTick, repeating: KeepaliveGate.reaperTick)
-            timer.setEventHandler { [weak self] in self?.runReaperTick() }
-            lock.withLock { reaperTimer = timer }
-            timer.resume()
-        }
+        // CONCURRENCY-HOST-1 mux analogue: arm the per-lane idle-timeout reaper. On `queue` (serial
+        // receive queue).
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + KeepaliveTiming.reaperTick, repeating: KeepaliveTiming.reaperTick)
+        timer.setEventHandler { [weak self] in self?.runReaperTick() }
+        lock.withLock { reaperTimer = timer }
+        timer.resume()
 
         log.info("NWVideoMuxDatagramTransport listening media=\(self.mediaPort.rawValue) cursor=\(self.cursorPort.rawValue) (shared mux flow)")
     }
@@ -185,12 +170,12 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     /// conn-table. The session stop is the only async hop; it carries no datagram so it cannot reorder
     /// input.
     private func runReaperTick() {
-        let due: [UInt32] = lock.withLock { idleReaper?.reap(now: Self.nowSeconds()) ?? [] }
+        let due: [UInt32] = lock.withLock { idleReaper.reap(now: Self.nowSeconds()) }
         guard !due.isEmpty else { return }
         lock.withLock {
             for channelID in due {
                 muxRouter.beginDrain(channelID)   // hold the lane — a racing reconnect now `.dropDraining`s
-                idleReaper?.forget(id: channelID) // no re-schedule on the next tick
+                idleReaper.forget(id: channelID)  // no re-schedule on the next tick
             }
         }
         for channelID in due {
@@ -206,15 +191,14 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         }
     }
 
-    // CONCURRENCY-HOST-1 mux analogue (now ADDRESSED behind `RWORK_VIDEO_KEEPALIVE`): a client that
-    // vanishes WITHOUT a bye (crash, or last-lane close racing the fire-and-forget bye egress) leaves
-    // its host session minted + its SCStream capture/encode RUNNING (bye → stopCapture never fires).
-    // This `.failed`/`.cancelled` handler only forgets the flow's socket bookkeeping — it does NOT
-    // retire the channelIDs nor stop their sessions (UDP has no FIN, so a vanished peer rarely fails
-    // the flow at all). The idle-timeout reaper (gate ON) closes that gap: a lane that proves keepalive
-    // then goes silent for `idleTimeout` is `retire`d + its session stopped via `onReapLane`
-    // (registry.retireAndStop). With the gate OFF this stays the pre-existing residual (degrades to
-    // today), since the reaper's timing/socket glue is [MS-confirm] on the Mac Studio, not headless.
+    // CONCURRENCY-HOST-1 mux analogue: a client that vanishes WITHOUT a bye (crash, or last-lane
+    // close racing the fire-and-forget bye egress) leaves its host session minted + its SCStream
+    // capture/encode RUNNING (bye → stopCapture never fires). This `.failed`/`.cancelled` handler
+    // only forgets the flow's socket bookkeeping — it does NOT retire the channelIDs nor stop their
+    // sessions (UDP has no FIN, so a vanished peer rarely fails the flow at all). The idle-timeout
+    // reaper closes that gap: a lane that proves keepalive then goes silent for `idleTimeout` is
+    // `retire`d + its session stopped via `onReapLane` (registry.retireAndStop). The reaper's
+    // timing/socket glue is [MS-confirm] on the Mac Studio, not headless.
     private func installResetHandler(on conn: NWConnection, isMedia: Bool, live: Liveness) {
         conn.stateUpdateHandler = { [weak self, weak conn] state in
             guard let self, let conn else { return }
@@ -288,14 +272,10 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
                 channelMediaConn[channelID] = conn
                 // Stamp liveness for the ADMITTED lane only (inline, no actor hop, under the route
                 // lock). The keepalive peek (a keepalive is a control datagram whose type byte == 6;
-                // `rest` is [tag][type][...], so the type byte is at startIndex+1) is computed ONLY
-                // when a decider exists, so the OFF path does NO extra work — symmetric with the
-                // single-pin transport's gated stamp (reviewer finding: the bare `let isKA` was
-                // evaluated for every datagram even on the OFF path).
-                if idleReaper != nil {
-                    let isKA = channel == .control && rest.count >= 2 && rest[rest.startIndex + 1] == 6
-                    idleReaper?.noteInbound(id: channelID, now: Self.nowSeconds(), isKeepalive: isKA)
-                }
+                // `rest` is [tag][type][...], so the type byte is at startIndex+1) — symmetric with
+                // the single-pin transport's stamp.
+                let isKA = channel == .control && rest.count >= 2 && rest[rest.startIndex + 1] == 6
+                idleReaper.noteInbound(id: channelID, now: Self.nowSeconds(), isKeepalive: isKA)
                 return true
             case .rejectUnadmitted, .dropRetired:
                 // Bootstrap (FIX #2 + #6): peek-decode the payload ONCE and only re-admit/deliver +

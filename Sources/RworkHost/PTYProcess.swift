@@ -33,7 +33,7 @@ import RworkProtocol
 ///
 /// The relay (PTY ⇄ transport) is no-buffer with a `USER_INTERACTIVE` QoS read loop
 /// (no intermediate ring buffer — the NoMachine NX lesson); that lives in
-/// ``HostSession`` (the ``PTYReadLoop`` it owns).
+/// ``MuxChannelSession`` (the ``PTYReadLoop`` it owns).
 ///
 /// All access to the (immutable-after-spawn) `masterFD` / `pid` is safe to share; the
 /// only mutable state is the one-shot exit plumbing, guarded by an `NSLock`.
@@ -221,7 +221,7 @@ public final class PTYProcess: @unchecked Sendable {
     /// is held open for the life of the session (the host reads child output / writes
     /// input through it). It is **not** closed by ``terminate()`` (which only signals the
     /// child) so the relay can still drain the child's final output before EOF. The owner
-    /// (``HostSession/shutdown()``) calls this **after stopping the read loop** so no
+    /// (``MuxChannelSession/shutdown()``) calls this **after stopping the read loop** so no
     /// concurrent `read()` can race the close; a `deinit` safety net catches any path
     /// that forgot. Idempotent.
     ///

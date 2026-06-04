@@ -36,13 +36,11 @@ import RworkProtocol
 ///   backpressures the shell and **no output is produced that we'd have to drop**.
 /// - **INVARIANT — dead-channel send = retain, never throw.** A retained entry is only
 ///   ever removed by a client ``ack(upTo:)``; a *failed wire send* never evicts it.
-///   ``HostSessionTransport/append(bytes:)`` retains the bytes BEFORE the send, and
-///   advances its "already-sent" high-water mark only on a *successful* send. So if a
-///   live send loses its channel to a concurrent reconnect (the data channel is swapped
-///   out / cancelled mid-flight — POSIX 89), the entry stays retained and is re-sent by
-///   the next ``replay(after:)`` on the rebound channel. This is what lets the host treat
-///   a dead-channel send as "client offline → replay later" instead of a fatal fault
-///   (see ``HostSessionTransport/sendOutput(_:)``), with zero byte loss.
+///   The host relay retains the bytes (via ``append(bytes:)``) BEFORE the send. So if a
+///   live send loses its channel (the data channel is cancelled mid-flight — POSIX 89),
+///   the entry stays retained and is re-sent by the next ``replay(after:)``. This is what
+///   lets the host treat a dead-channel send as "client offline → replay later" instead of
+///   a fatal fault, with zero byte loss.
 /// - **Slow-consumer case (client online but acking slowly):** if retained bytes exceed
 ///   `maxBackupBytes` while online, ``shouldPauseDrain`` is asserted *anyway* (see its
 ///   doc) — we still refuse to drop un-acked data; we pause draining until the client
@@ -53,11 +51,10 @@ import RworkProtocol
 ///   Do not reintroduce ET's libsodium secretbox / nonce-reset layer here
 ///   ([18](../../docs/18-risk-resolutions.md) §H).
 ///
-/// `ReplayBuffer` is a `Sendable` value type. The owning transport actor holds it as
-/// stored state and mutates it under the actor's isolation; the derived
-/// ``shouldPauseDrain`` signal is published to the host relay by that actor (see
-/// `HostSessionTransport`). Keeping the buffer a pure value type is what makes its
-/// invariants exhaustively testable without standing up a socket.
+/// `ReplayBuffer` is a `Sendable` value type. The owning host relay holds it as stored state
+/// and mutates it under a lock / actor isolation; the derived ``shouldPauseDrain`` signal drives
+/// the PTY read-loop pause. Keeping the buffer a pure value type is what makes its invariants
+/// exhaustively testable without standing up a socket.
 public struct ReplayBuffer: Sendable {
     /// Retained-byte ceiling: 64 MiB (ET `MAX_BACKUP_BYTES`).
     public static let maxBackupBytes = 64 * 1024 * 1024

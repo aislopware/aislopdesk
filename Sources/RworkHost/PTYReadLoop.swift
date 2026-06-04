@@ -7,8 +7,8 @@ import Foundation
 /// buffer in the system is the transport's `ReplayBuffer`).
 ///
 /// ## Backpressure / drain-pause gate (the load-bearing contract)
-/// The transport asserts a pause when the client is offline **and** the replay backlog
-/// has reached 4 MiB (`HostSessionTransport.drainPauses` / `ReplayBuffer.shouldPauseDrain`).
+/// The relay asserts a pause when the per-channel output queue crosses the bounded-queue
+/// high-water mark (`MuxChannelSession`'s ``PausableQueueGate`` / `BoundedQueuePolicy`).
 /// When paused, this loop **stops issuing `read()`** on the master fd. Because nothing
 /// drains the master, the kernel PTY buffer fills and **backpressures the shell** — no
 /// output is produced that we would have to drop (the never-drop invariant). When the
@@ -65,8 +65,8 @@ public final class PTYReadLoop: @unchecked Sendable {
         queue.async { [weak self] in self?.runLoop() }
     }
 
-    /// Pauses (`true`) or resumes (`false`) the read loop. Driven by
-    /// `HostSessionTransport.drainPauses`. Resuming wakes a blocked loop.
+    /// Pauses (`true`) or resumes (`false`) the read loop. Driven by `MuxChannelSession`'s
+    /// ``PausableQueueGate``. Resuming wakes a blocked loop.
     public func setPaused(_ value: Bool) {
         gate.lock()
         paused = value
