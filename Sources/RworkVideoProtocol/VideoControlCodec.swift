@@ -41,7 +41,17 @@ import Foundation
 /// type 3 bye:           (no body)
 /// type 4 resizeRequest: Float64 desiredW | Float64 desiredH | UInt32 epoch
 /// type 5 resizeAck:     UInt16 captureWidth | UInt16 captureHeight | UInt32 epoch
+/// type 6 keepalive:     (no body)
 /// ```
+///
+/// Liveness keepalive (additive after the resize pair — CONCURRENCY-HOST-1 crash-without-bye,
+/// `RWORK_VIDEO_KEEPALIVE`): the client sends a zero-body `keepalive` on the control channel
+/// every few seconds while streaming so the host's idle-timeout reaper can tell a live-but-quiet
+/// client (still alive, just not interacting) from a crashed one (truly silent → reapable). It is
+/// wire-safe in BOTH directions: a peer that does not recognise type 6 hits the decoder's `default`
+/// arm, which THROWS `.malformed` — both consumers catch-and-DROP it (the host's `handleControl`,
+/// the client's `ReceivedDatagramRouter`), never crash. A keepalive is meant to be inert to a peer
+/// that doesn't speak it; only a NEW host stamps it as liveness.
 public enum VideoControlMessage: Equatable, Sendable {
     /// Client → host: open a session for `requestedWindowID`, sized to `viewport`.
     case hello(protocolVersion: UInt16, requestedWindowID: UInt32, viewport: VideoSize)
@@ -56,6 +66,10 @@ public enum VideoControlMessage: Equatable, Sendable {
     /// Host → client: capture was re-sized to `captureWidth`×`captureHeight` for the
     /// request carrying `epoch` (the client re-bases its aspect-fit denominator on it).
     case resizeAck(captureWidth: UInt16, captureHeight: UInt16, epoch: UInt32)
+    /// Client → host: a zero-body liveness heartbeat (`RWORK_VIDEO_KEEPALIVE`). Sent every few
+    /// seconds while streaming so the host's idle-timeout reaper distinguishes a quiet-but-alive
+    /// client from a crashed one. Inert to a peer that does not recognise type 6 (it drops it).
+    case keepalive
 
     public var messageType: UInt8 {
         switch self {
@@ -64,6 +78,7 @@ public enum VideoControlMessage: Equatable, Sendable {
         case .bye: return 3
         case .resizeRequest: return 4
         case .resizeAck: return 5
+        case .keepalive: return 6
         }
     }
 
@@ -95,6 +110,8 @@ public enum VideoControlMessage: Equatable, Sendable {
             out.appendBE(w)
             out.appendBE(h)
             out.appendBE(epoch)
+        case .keepalive:
+            break
         }
         return out
     }
@@ -132,6 +149,8 @@ public enum VideoControlMessage: Equatable, Sendable {
             let h = try reader.readUInt16()
             let epoch = try reader.readUInt32()
             return .resizeAck(captureWidth: w, captureHeight: h, epoch: epoch)
+        case 6:
+            return .keepalive
         default:
             throw VideoProtocolError.malformed("unknown video control message type \(type)")
         }

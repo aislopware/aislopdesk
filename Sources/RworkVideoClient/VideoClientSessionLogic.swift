@@ -104,8 +104,9 @@ public struct VideoClientStateMachine: Sendable {
             // this branch is never reached on the fixed-size path.
             guard state == .streaming else { return [] }
             return [.updateCaptureSize(VideoSize(width: Double(cw), height: Double(ch)))]
-        case .hello, .resizeRequest:
-            // The client never receives a hello / resizeRequest — defensive no-op.
+        case .hello, .resizeRequest, .keepalive:
+            // The client never receives a hello / resizeRequest / keepalive (all client→host) —
+            // defensive no-op.
             return []
         }
     }

@@ -59,8 +59,9 @@ final class ResizeControlCodecTests: XCTestCase {
     }
 
     func testUnknownControlTypeStillRejected() {
-        // The new cases must not have widened the accepted type set beyond 1..5.
-        XCTAssertThrowsError(try VideoControlMessage.decode(Data([6])))
+        // The accepted type set is 1..6 (type 6 is the keepalive added for CONCURRENCY-HOST-1);
+        // anything beyond MUST still be rejected as malformed.
+        XCTAssertThrowsError(try VideoControlMessage.decode(Data([7])))
         XCTAssertThrowsError(try VideoControlMessage.decode(Data([99])))
     }
 
