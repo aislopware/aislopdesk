@@ -165,3 +165,28 @@ All on `feat/video-overnight` (not pushed). Each feature: ultracode research→d
 - **Session 3 cross-feature audit (8 confirmed findings) — all FIXED:** applyResize streaming-but-dead wedge (post-suspension supersede+epoch guard, symmetric to handleReap); applyResize fail-after-AX → unrecoverable freeze (AX-rollback + old-size capture restart, itself race-guarded); cross-process channelID-reuse `dropRetired` reconnect-blocker (a retired lane re-admits on a real hello); `VideoMuxRouter.retired` unbounded growth (wrap-aware 512/256 cap, like FrameReassembler); client flush-motion-before-click ordering (flush+button folded into one ordered Task); mux unadmitted-lane `channelMediaConn` leak (stamp only on a hello). New pure tests: `VideoMuxRouterReadmitTests` (6), `VideoMuxReadmitRoutingTests` (5).
 - **Deferred (LOW, documented not shipped):** per-channel flow control S2 (infinite window for now); channelID `UInt32` wrap (theoretical, 4-billion-lane); **FIX #7 — the SAME host windowID opened in two mux panes with BOTH `RWORK_VIDEO_MUX` + `RWORK_VIDEO_RESIZE` ON makes the two lanes AX-resize-fight the one real window** (out of the mux design's intended one-window-per-pane scope; the loser adopts a mismatched denominator until a pane closes; a real fix needs per-windowID session arbitration — commented at the mux mint site).
 - **VIDEO-HOST-1 (static-window IDR freeze):** **gated fix landed Session 3** (`RWORK_VIDEO_STATICIDR`, default OFF) — see the table + recipe above; Mac Studio bring-up pending. No longer the untouched item.
+
+---
+
+## Greenfield un-gate — COMPLETE (WF-A + WF-B + WF-C), branch `refactor/ungate-features`
+
+Directive: *"app này là greenfield, nên không gate để ẩn feature nào đi cả. Lỗi thì fix, không được nữa thì đập bỏ."* All six runtime feature gates are removed (not flagged off) and every dead OFF/non-mux path deleted. Only debug/test/autoconnect seams remain (`RWORK_VIDEO_DEBUG`, `RWORK_INPUT_TRACE`, `RWORK_VIDEO_INJECT_TO_PID`, `RWORK_AUTOTYPE`, `RWORK_*AUTOCONNECT_*`).
+
+| WF | Commit | Un-gated (now always-on) | Deleted |
+|----|--------|--------------------------|---------|
+| A | `9359688` | static-window forced IDR, crash-without-bye keepalive + reaper, in-session resize | `StaticIDRGate`, `KeepaliveGate` (+OFF tests), legacy `RWORK_INPUT_UNORDERED` path; kept constants → `KeepaliveTiming` |
+| B | `3edd631` | UDP video mux | `NWVideoDatagramTransport` (host single-pin), `NWVideoClientTransport` (client single-flow), `VideoMuxGate`, `SinglePin`, OFF-path tests |
+| C | `26e577b` | TCP mux + S2 credit flow control (sole terminal connectivity) | `ClientTransport`, `NWMessageChannel`, `HostSession`, `HostSessionTransport`, `RworkConnection`, the non-mux host accept/handshake + `sessions` map + idle reaper |
+
+WF-C migration: `rwork-client` CLI now builds a process-wide `@MainActor ConnectionRegistry` (`CLIMux`) and injects `MuxClientTransport` — the dev CLI speaks the same mux wire as the GUI app against the now mux-only host. `RworkClient.makeTransport` is required (no `ClientTransport` default). `ClientTransporting` (the protocol) is kept; `MuxClientTransport` conforms.
+
+### Bug found+fixed during WF-C verification: open-before-handler race (`MuxNWConnection`)
+`HostTransport.associateMux` starts the host receive loops and yields the connection BEFORE `HostServer.handleNewMuxConnection` installs `hostOpenHandler`. The client sends `channelOpen` during `connect` **without waiting for an ack** (S1 by design), so that frame is routinely already TCP-buffered when the loop starts → `route()` read a nil handler and **dropped the open** (channel registered, but no PTY spawn and no ack → the pane silently never came up; the client then hung on output). Fix: `MuxNWConnection` buffers opens that arrive before the handler attaches (`pendingHostOpens`) and replays them in arrival order on `setHostOpenHandler`. Both paths are actor-isolated, so no ordering loses or duplicates an open. **This race was invisible to the in-memory loopback tests** (which set the handler before driving the connection) — it only surfaced over real sockets via `SubprocessE2ETests`, the headless-runnable mux-terminal E2E (launches the shipped `rwork-hostd` + `rwork-client`, pipes `echo` through, asserts the round-trip).
+
+### Verification (headless, Mac Studio)
+- `SubprocessE2ETests` PASS — `SHIPPED_OK` round-trips over the mux terminal, remote shell exits 0.
+- `RworkTransportTests` 61/0, `PTYProcessTests` 9/0, `RworkClientUITests` 276/0, `swift build` green, iOS triple typecheck BUILD SUCCEEDED.
+- grep: zero refs in `Sources/` to any deleted non-mux type; zero `RWORK_TCP_MUX*` / `RWORK_VIDEO_MUX` / `RWORK_VIDEO_STATICIDR` / `RWORK_VIDEO_KEEPALIVE` / `RWORK_VIDEO_RESIZE` reads.
+
+### Still hardware-pending before merging `refactor/ungate-features` → `main`
+`main` keeps the gated version as the safe fallback. The un-gate branch is headless-green but the *runtime* of the now-unconditional features still needs a real GUI/HW session: PATH-2 video mux multi-pane, in-session resize, static-IDR late-joiner, crash-without-bye reaper, and a multi-pane GUI terminal over the single shared TCP mux. Bring these up on the Mac Studio (GUI unlocked) / iPhone-over-NetBird before merging.
