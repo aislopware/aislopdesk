@@ -62,12 +62,10 @@ struct ClientAppMain {
             }
             return AnyView(VideoWindowView(title: descriptor.title))
         }
-        // UDP-mux (RWORK_VIDEO_MUX, default OFF): install the per-host shared-flow registry on the
-        // video pipeline IFF the env flag is set. No-op when OFF, so the pipeline keeps the
-        // byte-identical per-pane transport. Both ends must agree on the flag (the host's
-        // `rwork-videohostd` reads the same `RWORK_VIDEO_MUX`); the 15↔19-byte wire is incompatible
-        // across the boundary, so a mixed pair misframes → the host drops the unadmitted lane.
-        MainActor.assumeIsolated { VideoMuxInstaller.installIfEnabled() }
+        // UDP-mux: install the per-host shared-flow registry on the video pipeline. Panes targeting the
+        // same host share ONE UDP flow (one flow per host, N panes); the host's `rwork-videohostd`
+        // speaks the matching 19-byte channelID-prefixed wire — the only video wire there is now.
+        MainActor.assumeIsolated { VideoMuxInstaller.install() }
         #endif
 
         RworkClientApp.main()

@@ -100,12 +100,4 @@ final class IdleReapDeciderTests: XCTestCase {
         d.noteInbound(id: 7, now: 12.5, isKeepalive: false)
         XCTAssertEqual(d.record(7), IdleReapDecider<Int>.Record(lastInbound: 12.5, sawKeepalive: false))
     }
-
-    // 9. SinglePin keys exactly one flow (the single-pin transport's identity type).
-    func testSinglePinIdentity() {
-        var d = IdleReapDecider<SinglePin>(idleTimeout: idleTimeout)
-        d.noteInbound(id: .pin, now: 0, isKeepalive: true)
-        XCTAssertEqual(d.reap(now: 30), [.pin])
-        XCTAssertEqual(SinglePin.pin, SinglePin(), "SinglePin is a 1-element identity")
-    }
 }

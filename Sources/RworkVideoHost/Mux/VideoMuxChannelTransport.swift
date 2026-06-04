@@ -4,11 +4,11 @@ import RworkVideoProtocol
 
 /// A per-channel ``VideoDatagramTransport`` view over the ONE shared
 /// ``NWVideoMuxDatagramTransport`` — the seam that lets an UNCHANGED
-/// ``RworkVideoHostSession`` ride a single lane of the shared UDP flow (Stage S3).
+/// ``RworkVideoHostSession`` ride a single lane of the shared UDP flow.
 ///
 /// One of these is minted per client video channel (per `channelID`) by the daemon's
-/// session registry. From the session's point of view it has the IDENTICAL surface as
-/// ``NWVideoDatagramTransport`` (it conforms to the same ``VideoDatagramTransport``);
+/// session registry. From the session's point of view it is just a plain
+/// ``VideoDatagramTransport`` (the session is transport-agnostic via that protocol);
 /// the difference is entirely below:
 /// - `send` stamps THIS lane's `channelID` via the shared transport (which prefixes the
 ///   datagram with the channelID, see ``NWVideoMuxDatagramTransport/send(_:on:channelID:)``).

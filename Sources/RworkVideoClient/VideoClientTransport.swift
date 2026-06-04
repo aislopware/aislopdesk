@@ -35,11 +35,12 @@ public enum VideoChannel: UInt8, Sendable, CaseIterable {
 ///
 /// This protocol is the **hang-safe test seam**, the exact mirror of the host's
 /// `RworkVideoHost.VideoDatagramTransport`. The production conformer
-/// (``NWVideoClientTransport``) opens real `NWConnection` `.udp` flows and is NEVER
-/// instantiated in a test; the orchestrator's pure logic is exercised against an
-/// in-memory fake that records sent datagrams and feeds synthetic received ones.
+/// (``VideoMuxClientTransport``, a lane on the shared ``NWVideoMuxClientFlow``) opens real
+/// `NWConnection` `.udp` flows and is NEVER instantiated in a test; the orchestrator's pure
+/// logic is exercised against an in-memory fake that records sent datagrams and feeds
+/// synthetic received ones.
 ///
-/// Channel discipline (must match the host's `NWVideoDatagramTransport`):
+/// Channel discipline (must match the host's shared video flow):
 /// - The **media** socket multiplexes control / video / geometry / input with a
 ///   1-byte ``RworkVideoProtocol/VideoChannel`` tag prefix. The client SENDS control
 ///   + input and RECEIVES control / video / geometry there.

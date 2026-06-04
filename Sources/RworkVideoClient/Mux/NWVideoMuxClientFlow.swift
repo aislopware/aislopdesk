@@ -4,15 +4,12 @@ import Network
 import OSLog
 import RworkVideoProtocol
 
-/// The CLIENT half of the shared UDP flow (Stage S3): ONE media + ONE cursor
-/// `NWConnection` to a host, shared across all of that host's video panes and
-/// demultiplexed by a `UInt32` channelID (``VideoMuxHeaderCodec``).
+/// The CLIENT half of the shared UDP flow: ONE media + ONE cursor `NWConnection` to a
+/// host, shared across all of that host's video panes and demultiplexed by a `UInt32`
+/// channelID (``VideoMuxHeaderCodec``).
 ///
-/// This is the mirror of the host's ``NWVideoMuxDatagramTransport`` — and the
-/// channelID-stamping sibling of the today-shaped ``NWVideoClientTransport``. It is
-/// used ONLY when `RWORK_VIDEO_MUX` is ON (both ends must agree, ``VideoMuxGate``); the
-/// OFF path keeps the byte-identical 15-byte / single-flow ``NWVideoClientTransport``
-/// per pane.
+/// This is the mirror of the host's ``NWVideoMuxDatagramTransport`` — one flow per host,
+/// N panes, the only video wire there is.
 ///
 /// ## Wire (must match the host)
 /// ```
@@ -25,8 +22,8 @@ import RworkVideoProtocol
 ///
 /// ## HANG / SOCKET SAFETY
 /// Opens real `NWConnection` `.udp` flows — COMPILED + reviewed, NEVER instantiated in
-/// a test (like ``NWVideoClientTransport``). The pure framing it drives
-/// (``VideoMuxHeaderCodec``) + the registry's refcount logic ARE unit-tested.
+/// a test. The pure framing it drives (``VideoMuxHeaderCodec``) + the registry's refcount
+/// logic ARE unit-tested.
 ///
 /// `@unchecked Sendable` via the internal `NSLock` guarding the lane sink tables.
 public final class NWVideoMuxClientFlow: @unchecked Sendable {
@@ -95,8 +92,8 @@ public final class NWVideoMuxClientFlow: @unchecked Sendable {
             cursorSinks[channelID] = onCursor
         }
         // PRIME the cursor side-channel for this lane so the host learns the lane's cursor flow
-        // (the host accepts a cursor flow only on an inbound datagram; under mux the prime is
-        // channelID-prefixed so the host binds it to the right lane). Mirrors NWVideoClientTransport.
+        // (the host accepts a cursor flow only on an inbound datagram; the prime is channelID-prefixed
+        // so the host binds it to the right lane).
         lock.lock(); let cursor = cursorConn; lock.unlock()
         let prime = VideoMuxHeaderCodec.encode(channelID: channelID, payload: Data([0x00]))
         cursor?.send(content: prime, completion: .contentProcessed { [weak self] error in
@@ -118,7 +115,7 @@ public final class NWVideoMuxClientFlow: @unchecked Sendable {
 
     public func send(_ datagram: Data, on channel: VideoChannel, channelID: UInt32) {
         // The client sends on the media socket only (control + input). A stray cursor send is
-        // dropped defensively, exactly like NWVideoClientTransport.
+        // dropped defensively.
         guard Self.mediaSocket(for: channel) else { return }
         lock.lock(); let conn = mediaConn; lock.unlock()
         guard let conn else { return }

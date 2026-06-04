@@ -105,7 +105,7 @@ public actor RworkVideoHostSession {
 
     /// - Parameters:
     ///   - window: the desktop-independent window to remote.
-    ///   - transport: the UDP datagram transport (production: ``NWVideoDatagramTransport``).
+    ///   - transport: the UDP datagram transport (production: a ``VideoMuxChannelTransport`` lane on the shared ``NWVideoMuxDatagramTransport``).
     ///   - fec: optional FEC scheme for the video packetizer (default 20% XOR parity).
     public init(window: SCWindow, transport: any VideoDatagramTransport, fec: FECScheme? = XORParityFEC(), captureScale: Double = 2.0, bitrate: Int = VideoEncoder.bitrateBitsPerSecond) {
         self.window = window
