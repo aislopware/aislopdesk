@@ -98,3 +98,40 @@ VIDEO-HOST-1 + VIDEO-CLIENT-1 **compound**: a single bad decode on a then-static
 1. **Mouse delay** — fast move + 3-finger drag-select; confirm live tracking, no multi-second lag.
 2. **(opt-in) connection mux** — once S1/S3 land: `RWORK_TCP_MUX=1` two terminal panes share one TCP; `RWORK_VIDEO_MUX=1` two remote-GUI panes share one UDP pair; A/B vs OFF.
 3. **(opt-in) resize** — once Stage 1/2 land: `RWORK_VIDEO_RESIZE=1`, resize the pane, watch the host window + capture follow, click-after-resize lands correctly; test an AX-refusing app.
+
+---
+
+## Session 2 (2026-06-04) — resize + connection mux WIRED (was foundation-only); runtime [MS-confirm]
+
+All on `feat/video-overnight` (not pushed). Each feature: ultracode research→design→implement→adversarial-review; every "green" below is my own `swift build` / `swift test --filter` / `scripts/check-ios.sh` run, not agent-reported. OFF paths proven byte-identical. **Both ends must set the same flag** (the mux wires are NOT backward-compatible). Runtime (AX resize / encoder rebuild / host TCP relay / live UDP+HW-HEVC / settle-timer firing) cannot be verified headlessly — that is what this checklist is for.
+
+| Feature | Commit | Flag (default OFF) | Headless proof |
+|---|---|---|---|
+| Resize host window PATH A | `e202c34` | `RWORK_VIDEO_RESIZE` | macOS+iOS build, 75 tests (incl. `ResizeAdoptionTests`) |
+| Mux Stage-0 accepted-flag fix | `cc636b9` | — (always on) | 56 mux tests |
+| TCP mux S1 | `566af72` | `RWORK_TCP_MUX` | macOS+iOS build, 71 tests (loopback + ordering guard + refcount + OFF-identity) |
+| UDP mux S3 | `6184915` | `RWORK_VIDEO_MUX` | macOS+iOS build, 47 tests (routing + registry + OFF-identity) |
+
+### Resize PATH A test (`RWORK_VIDEO_RESIZE=1` on Rwork.app + rwork-videohostd)
+1. The host needs the **Accessibility** TCC grant (it already does for input). Stream a window.
+2. Drag the client pane to a clearly different size. Expect: after ~200ms quiet, **exactly one** `resizeRequest` logged (debounce; NOT one per drag frame — if it never fires on a clean drag-end, the settle-timer regressed).
+3. Host log: `resizeCapture WxH epoch=N` → the **real host window physically resizes** (AX) → encoder rebuilds at the achieved size → forced IDR → `resizeAck`.
+4. Client adopts the new size only when a matching-dimension frame lands; cursor + aspect-fit stay aligned (move mouse, confirm pointer lands on the right pixel).
+5. Resize an **AX-refusing** window (fixed-size/sheet) → clean abort (no ack, old encoder kept), NOT a crash. Static-window-after-resize → watch for the VIDEO-HOST-1 freeze (still open).
+
+### TCP mux S1 test (`RWORK_TCP_MUX=1` on both ends; host BEFORE client)
+1. Open 2+ terminal/claude panes to the **same** host. `lsof -nP -iTCP -a -c rwork-hostd` → exactly **one CONTROL + one DATA** pair (not 2N). Type→exec→render in each independently.
+2. **No HOL**: flood pane A (`yes | head -c 50M`) while typing in pane B — B stays responsive. (NOTE: S1 ships infinite-window + no CLSCTRL priority queue, so this may reveal the S2 need.)
+3. **Pane close = channel close**: close one pane; the shared TCP stays up, other panes keep working.
+4. **Reconnect doesn't drop shared**: drop/restart one pane — the shared transport other panes ride must survive.
+
+### UDP mux S3 test (`RWORK_VIDEO_MUX=1` on both ends)
+1. Open 2+ video panes (DIFFERENT windows) to the same host. `lsof -nP -iUDP -c rwork-videohostd` → **one media + one cursor** socket-pair (not 2N). Each pane renders its own window.
+2. **bye retires only one lane**: close one video pane; the shared flow stays up, the other pane keeps streaming with no glitch.
+3. **Per-channel loss isolation**: induce loss on one lane — only it shows decode gaps; the sibling NEVER tears down.
+4. **OFF parity**: re-run the proven device-real iOS video cell with the flag OFF — unchanged (15-byte header).
+
+### New residuals from this session's adversarial reviews (documented, not shipped blind)
+- **Recurring bug class (fixed both mux stages):** unstructured-Task-per-frame loses FIFO ordering → scrambled terminal bytes / mouseUp-before-mouseDown. Fixed by inline delivery on the serial receive path; guarded by `testSingleChannelFloodPreservesOrder`.
+- **Deferred:** per-channel flow control S2; **crash-without-bye idle reaper under mux** (analogue of CONCURRENCY-HOST-1; capture keeps running — needs UDP-liveness timing, noted at `NWVideoMuxDatagramTransport.installResetHandler`); resize AX-rollback on rare encoder/capturer failure; rapid-double-resize adoption edge; channelID UInt32 wrap.
+- **Still open:** VIDEO-HOST-1 (static-window IDR freeze) — the one untouched audit item.
