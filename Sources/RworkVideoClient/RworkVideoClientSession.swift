@@ -160,7 +160,13 @@ public actor RworkVideoClientSession {
     /// it OFF the client never sends a `resizeRequest` (so the host never resizes / acks) and
     /// `decodedSize` keeps its existing one-shot capture-pinned behaviour — byte-identical to
     /// the fixed-size build.
-    private static let resizeEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_RESIZE"] == "1"
+    private static let resizeEnabled: Bool = {
+        // Match the sibling RWORK_VIDEO_* gates' truthiness (1/true/yes/on, case-insensitive); both
+        // ends must agree on the gate, so the client uses the same vocabulary as the host. `=1` (the
+        // documented form) still works — this only ADDS the missing truthy spellings.
+        let raw = ProcessInfo.processInfo.environment["RWORK_VIDEO_RESIZE"]?.lowercased()
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }()
     /// Liveness-keepalive feature gate (`RWORK_VIDEO_KEEPALIVE`, default OFF — the shared
     /// ``KeepaliveGate``). With it OFF the client never constructs ``keepaliveTask`` and never
     /// emits a `keepalive` datagram, so the path is byte-identical to today. With it ON a slow
