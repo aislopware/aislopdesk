@@ -361,7 +361,16 @@ public actor HostTransport {
             // namespace its per-channel sessions by (connectionID, channelID) — see
             // `HostServer.muxSessions` / `MuxSessionKey`. Two distinct clients each allocate
             // channelID 1 for their first pane, so a channelID-only key cross-resolved sessions.
-            let mux = MuxNWConnection(role: .host, controlLink: control, dataLink: data, connectionID: connectionID)
+            // S2 sub-gate: the host reads `RWORK_TCP_MUX_FLOW` ONCE here (alongside the
+            // `RWORK_TCP_MUX` gate the handshake already enforced to reach this mux path). BOTH ends
+            // must agree; OFF → infinite window (byte-identical to S1).
+            let mux = MuxNWConnection(
+                role: .host,
+                controlLink: control,
+                dataLink: data,
+                connectionID: connectionID,
+                flowControl: MuxFlowControl.flowEnabledFromEnvironment()
+            )
             Task {
                 await mux.start()
                 muxConnectionContinuation.yield(mux)

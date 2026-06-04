@@ -10,12 +10,13 @@ import RworkProtocol
 final class MuxLoopbackTests: XCTestCase {
 
     /// Wires a client + host shared connection over in-memory CONTROL + DATA links, with the host
-    /// auto-accepting + echoing every peer-opened channel. Returns both ends.
-    private func makeLoopback() async -> (client: MuxNWConnection, host: MuxNWConnection) {
+    /// auto-accepting + echoing every peer-opened channel. Returns both ends. `flowControl` arms the
+    /// S2 per-channel credit windows on BOTH ends (the gate is the contract — both must agree).
+    private func makeLoopback(flowControl: Bool = false) async -> (client: MuxNWConnection, host: MuxNWConnection) {
         let (clientControl, hostControl) = InMemoryMuxLink.pair()
         let (clientData, hostData) = InMemoryMuxLink.pair()
-        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData)
-        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData)
+        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData, flowControl: flowControl)
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData, flowControl: flowControl)
         // Host: on a peer channelOpen, ack it and ECHO every inbound DATA WireMessage straight back
         // on the SAME channel's data sub-channel (so the client can observe per-channel routing).
         await host.setHostOpenHandler { open in
@@ -193,4 +194,201 @@ final class MuxLoopbackTests: XCTestCase {
                        "host close hook must fire exactly once, for the closed channel only (not the live sibling B)")
         XCTAssertNotEqual(chA.data.channelID, chB.data.channelID)
     }
+
+    // MARK: - S2: per-channel credit flow control (RWORK_TCP_MUX_FLOW)
+
+    /// HEADLINE S2 PROPERTY: a channel flooding the shared connection does NOT starve a sibling
+    /// channel's small "keystroke", AND ordering within the flooded channel is preserved, AND the
+    /// closed credit loop (receiver emits windowAdjust → sender's suspended window wakes) keeps the
+    /// flood flowing rather than deadlocking.
+    ///
+    /// Headless: a real client + host `MuxNWConnection` over in-memory links with flow control ON.
+    /// The host echoes each input back as output on the SAME channel. Channel A floods MANY frames
+    /// (far exceeding the 256 KiB window, so A's sender MUST suspend on the window and only proceed
+    /// as the host's windowAdjusts grant credit); channel B sends ONE small keystroke. We assert B's
+    /// echo arrives promptly (no starvation) AND every one of A's frames arrives in EXACT send order.
+    func testFloodDoesNotStarveSiblingAndPreservesOrder() async throws {
+        let (client, _) = await makeLoopback(flowControl: true)
+        let chA = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+        let chB = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+
+        // A floods enough total bytes to overflow the 256 KiB window several times over, forcing the
+        // suspend/grant credit cycle. Each frame's payload encodes its index so we can verify order.
+        let floodCount = 80
+        let chunk = String(repeating: "x", count: 8 * 1024) // 8 KiB/frame ⇒ ~640 KiB total ≫ window
+        async let aOut = Self.collect(chA.data, count: floodCount, timeout: .seconds(10))
+        async let bOut = Self.collect(chB.data, count: 1, timeout: .seconds(10))
+        try await Task.sleep(for: .milliseconds(50)) // host registers + acks both opens
+
+        // Launch A's flood as a detached task so B's single keystroke can interleave even while A's
+        // sender is parked on its window — the anti-starvation property.
+        let flood = Task {
+            for i in 0..<floodCount {
+                try? await chA.data.send(.input(Data("\(i):\(chunk)".utf8)))
+            }
+        }
+        // B's keystroke: must get its echo back promptly even though A is mid-flood.
+        try await chB.data.send(.input(Data("B-keystroke".utf8)))
+
+        let bMessages = await bOut
+        XCTAssertEqual(bMessages.count, 1, "sibling B's keystroke echo must arrive despite A's flood (no starvation)")
+        guard case let .output(_, bBytes) = bMessages.first else { return XCTFail("B: expected output, got \(bMessages)") }
+        XCTAssertEqual(bBytes, Data("B-keystroke".utf8), "B must receive ONLY its own bytes")
+
+        let aMessages = await aOut
+        _ = await flood.value
+        XCTAssertEqual(aMessages.count, floodCount, "all of A's flooded frames must arrive (credit loop keeps it flowing, no deadlock)")
+        let indices = aMessages.compactMap { msg -> Int? in
+            guard case let .output(_, bytes) = msg, let s = String(data: bytes, encoding: .utf8),
+                  let colon = s.firstIndex(of: ":") else { return nil }
+            return Int(s[s.startIndex..<colon])
+        }
+        XCTAssertEqual(indices, Array(0..<floodCount), "flooded frames must arrive in EXACT send order")
+    }
+
+    /// A received `windowAdjust` must WAKE a sender suspended on an exhausted window. Here we drive
+    /// the receipt end-to-end: the client floods until its send window is exhausted (the host does
+    /// NOT echo, so no organic grant), then we inject a windowAdjust from the host side and confirm
+    /// the previously-stuck flood completes.
+    func testReceivedWindowAdjustWakesSuspendedSender() async throws {
+        let (clientControl, hostControl) = InMemoryMuxLink.pair()
+        let (clientData, hostData) = InMemoryMuxLink.pair()
+        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData, flowControl: true)
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData, flowControl: true)
+        // Host accepts opens but NEVER reads/echoes — so the only credit the client can ever get is
+        // the explicit windowAdjust we inject below.
+        await host.setHostOpenHandler { open in Task { await host.sendOpenAck(open.channelID, accepted: true) } }
+        await client.start()
+        await host.start()
+
+        let ch = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Flood > 256 KiB so the client's send window is guaranteed to exhaust and the task parks.
+        let done = expectation(description: "flood completes after the injected grant")
+        let bigFrame = Data(repeating: 0x79, count: 64 * 1024) // 64 KiB
+        let flood = Task {
+            for _ in 0..<8 { try? await ch.data.send(.input(bigFrame)) } // 512 KiB ≫ 256 KiB window
+            done.fulfill()
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        // The flood must still be parked (window exhausted) — fulfilling would mean no backpressure.
+        // We cannot assert "not fulfilled" directly; instead we inject grants and assert completion.
+        // Inject generous windowAdjust grants from the host onto the client's DATA link.
+        for _ in 0..<8 {
+            await host.grantWindowForTest(channelID: ch.data.channelID, bytesToAdd: 64 * 1024)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await fulfillment(of: [done], timeout: 5)
+        _ = await flood.value
+    }
+
+    // MARK: - FIX #2: windowAdjust grant rides the CONTROL link, not the flooded DATA link
+
+    /// FIX #2 (bidirectional-flood deadlock): the receiver must NOT emit its windowAdjust grant on
+    /// the DATA link — under a sustained flood that link is congested, so emitting the grant there
+    /// INLINE on the DATA receive loop blocks the only task draining inbound DATA on a write that
+    /// cannot complete; the peer is symmetrically stuck → credit deadlock. The grant must ride the
+    /// (fast-draining, flow-OFF) CONTROL link instead.
+    ///
+    /// We prove the property STRUCTURALLY (and WITHOUT risking a deadlock-hang in the test process):
+    /// a ``RecordingMuxLink`` spy wraps BOTH the host's CONTROL and DATA links and classifies every
+    /// frame written, counting `windowAdjust` frames per link. A client floods > 256 KiB on one
+    /// channel so the host's ``ReceiveWindowAccountant`` crosses the half-window threshold and emits
+    /// grants. We assert: at least one `windowAdjust` was written on the CONTROL link, and ZERO on
+    /// the DATA link — i.e. the grant rides CONTROL (FIX #2), so it can never be starved behind a
+    /// flooded DATA link. (The under-the-hood non-blocking ``InMemoryMuxLink`` keeps the test bounded
+    /// — it can never deadlock — while the spy gives the exact per-link routing assertion the
+    /// blocking-link deadlock repro only shows indirectly.)
+    func testWindowAdjustGrantRidesControlLinkNotDataLink() async throws {
+        let (clientControl, hostControlRaw) = InMemoryMuxLink.pair()
+        let (clientData, hostDataRaw) = InMemoryMuxLink.pair()
+        let hostControl = RecordingMuxLink(wrapping: hostControlRaw)
+        let hostData = RecordingMuxLink(wrapping: hostDataRaw)
+        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData, flowControl: true)
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData, flowControl: true)
+        // Host: ack the open and DRAIN the inbound flood (no echo) — draining is what makes the host
+        // cross the half-window threshold and EMIT windowAdjust grants, which the spy records.
+        await host.setHostOpenHandler { open in
+            Task {
+                await host.sendOpenAck(open.channelID, accepted: true)
+                do { for try await _ in open.data.inbound { } } catch { }
+            }
+        }
+        await client.start()
+        await host.start()
+
+        let ch = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+        try await Task.sleep(for: .milliseconds(80)) // host registers + acks the open
+
+        // Flood > 256 KiB so the host crosses the half-window threshold (multiple times) and grants.
+        let chunk = Data(repeating: 0x79, count: 8 * 1024) // 8 KiB/frame
+        for _ in 0..<64 { try await ch.data.send(.input(chunk)) } // ~512 KiB ⇒ several grants
+        // Give the host receive loop time to drain + emit its grants on the CONTROL link.
+        try await Task.sleep(for: .milliseconds(200))
+
+        let controlGrants = hostControl.windowAdjustCount
+        let dataGrants = hostData.windowAdjustCount
+        XCTAssertGreaterThan(controlGrants, 0,
+                             "the host must emit windowAdjust grants on the CONTROL link (FIX #2)")
+        XCTAssertEqual(dataGrants, 0,
+                       "NO windowAdjust may be emitted on the flooded DATA link (would deadlock under a bidirectional flood)")
+    }
+
+    /// FIX #2 blocking-link variant: drive the flood over BLOCKING links (``BlockingMuxLink``) whose
+    /// DATA-link `send` actually backpressures (suspends) — the real shape the deadlock arises in,
+    /// which the non-blocking ``InMemoryMuxLink`` cannot exhibit. The host's outbound DATA direction
+    /// is GATED SHUT, so the only way its windowAdjust grants can reach the client (and replenish the
+    /// client's exhausted send window so the flood can complete) is via the CONTROL link (FIX #2). We
+    /// assert the flood COMPLETES — but bound the wait with a racing timeout sentinel that ALWAYS
+    /// returns, so a regression (grant on the gated DATA link) FAILS the assertion rather than hanging
+    /// the test process.
+    func testBlockingLinkFloodCompletesWhenGrantRidesControl() async throws {
+        let (clientControl, hostControl) = BlockingMuxLink.pair(capacity: 64) // CONTROL: open, fast
+        let (clientData, hostData) = BlockingMuxLink.pair(capacity: 8)        // DATA: client→host open
+        let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData, flowControl: true)
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData, flowControl: true)
+        await host.setHostOpenHandler { open in
+            Task {
+                await host.sendOpenAck(open.channelID, accepted: true)
+                do { for try await _ in open.data.inbound { } } catch { }
+            }
+        }
+        await client.start()
+        await host.start()
+
+        let ch = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+        try await Task.sleep(for: .milliseconds(80)) // host registers + acks the open (on DATA)
+        // Shut the host's outbound DATA: a grant emitted there would park forever; on CONTROL it flows.
+        hostData.setOutboundGateClosed(true)
+
+        let chunk = Data(repeating: 0x79, count: 8 * 1024) // 8 KiB/frame ⇒ ~512 KiB ≫ 256 KiB window
+        // Run the flood in a DETACHED task whose completion flips a flag, and POLL for that flag with
+        // a bounded budget. We never `await` the flood task's value, so even a regression (grant on
+        // the gated DATA link → flood parks forever in a non-cancellable continuation) FAILS the
+        // assertion at the budget instead of hanging the test process.
+        let completedFlag = BoolFlagBox(false)
+        let flood = Task {
+            for _ in 0..<64 { try? await ch.data.send(.input(chunk)) }
+            completedFlag.set(true)
+        }
+        var completed = false
+        for _ in 0..<120 { // up to ~6 s
+            try await Task.sleep(for: .milliseconds(50))
+            if completedFlag.get() { completed = true; break }
+        }
+        flood.cancel() // best-effort; a parked send is not cancellable, but we never await it.
+        XCTAssertTrue(completed,
+                      "the flood must complete — host grants reached the client via CONTROL despite the gated DATA link (FIX #2)")
+    }
+}
+
+/// A tiny thread-safe boolean box for the detached-flood completion poll (avoids awaiting a possibly-
+/// parked task) — a plain `NSLock`-guarded flag.
+private final class BoolFlagBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool
+    init(_ initial: Bool) { self.value = initial }
+    func get() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set(_ v: Bool) { lock.lock(); value = v; lock.unlock() }
 }

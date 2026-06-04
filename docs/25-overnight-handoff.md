@@ -123,9 +123,16 @@ All on `feat/video-overnight` (not pushed). Each feature: ultracode research→d
 
 ### TCP mux S1 test (`RWORK_TCP_MUX=1` on both ends; host BEFORE client)
 1. Open 2+ terminal/claude panes to the **same** host. `lsof -nP -iTCP -a -c rwork-hostd` → exactly **one CONTROL + one DATA** pair (not 2N). Type→exec→render in each independently.
-2. **No HOL**: flood pane A (`yes | head -c 50M`) while typing in pane B — B stays responsive. (NOTE: S1 ships infinite-window + no CLSCTRL priority queue, so this may reveal the S2 need.)
+2. **No HOL**: flood pane A (`yes | head -c 50M`) while typing in pane B — B stays responsive. (NOTE: S1 ships infinite-window + no CLSCTRL priority queue, so this may reveal the S2 need — see the S2 flow-control recipe below.)
 3. **Pane close = channel close**: close one pane; the shared TCP stays up, other panes keep working.
 4. **Reconnect doesn't drop shared**: drop/restart one pane — the shared transport other panes ride must survive.
+
+### TCP mux S2 flow control (`RWORK_TCP_MUX_FLOW=1` — **⚠️ MUST MATCH ON BOTH ENDS, same as `RWORK_TCP_MUX`**)
+> **⚠️ BOTH-ENDS CONTRACT (footgun).** `RWORK_TCP_MUX_FLOW` is read independently at each end and there is **NO on-wire negotiation** — the gate IS the contract. **A MISMATCH FAILS CLOSED INTO A SILENT HANG**: if the **sender** has flow ON but the **receiver** OFF, the receiver never emits a `windowAdjust`, so the sender's per-channel 256 KiB window drains exactly once and then **the channel PARKS PERMANENTLY** — the symptom is "a pane works for ~one screenful (~256 KiB) then goes dead, with every later keystroke frozen." Set it **identically on the host daemon and every client**, or leave it unset on both. (Same discipline as `RWORK_TCP_MUX`.) This is sub-gated UNDER `RWORK_TCP_MUX` — flow control only applies when the mux itself is ON.
+1. **No starvation under a real flood**: with both ends ON, flood pane A (`yes | head -c 50M`) while typing in pane B — B's keystrokes stay responsive (A's 256 KiB window throttles it so it can't monopolise the shared DATA link). This is the HOL fix step #2 above exposes.
+2. **Oversized paste does not freeze the pane** (FIX #1): paste a **> 256 KiB** blob into a pane (one `.input` frame larger than the whole window). It must transmit fully (chunked across the window) and **subsequent keystrokes on that pane must still work** — not a permanent park.
+3. **Bidirectional flood does not deadlock** (FIX #2): flood A→host AND drive a large host→A output simultaneously; both directions keep flowing (the `windowAdjust` grant rides the CONTROL link, never starved behind the flooded DATA link).
+4. **OFF parity**: unset on both ends → byte-identical to S1 (one `.channelData` per WireMessage, sender never blocks, host queue unbounded).
 
 ### UDP mux S3 test (`RWORK_VIDEO_MUX=1` on both ends)
 1. Open 2+ video panes (DIFFERENT windows) to the same host. `lsof -nP -iUDP -c rwork-videohostd` → **one media + one cursor** socket-pair (not 2N). Each pane renders its own window.
