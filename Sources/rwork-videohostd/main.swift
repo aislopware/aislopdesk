@@ -88,8 +88,12 @@ struct VideoHostdArguments {
             }
             i += 1
         }
-        // Must either list, or name a window.
-        if !a.list && a.windowID == nil && a.windowTitle == nil { return nil }
+        // Must either list, or name a window — UNLESS UDP-mux (RWORK_VIDEO_MUX) is ON, in which case
+        // the daemon mints a per-channel session from EACH client hello's own windowID (the §2
+        // asymmetry: two panes watch different windows over one shared flow), so no fixed window arg
+        // is required (one may still be passed to validate at --list time).
+        let muxOn = VideoMuxGate.enabledFromEnvironment()
+        if !a.list && a.windowID == nil && a.windowTitle == nil && !muxOn { return nil }
         // Two DISTINCT non-zero UDP ports (NWEndpoint.Port rejects 0; the sockets must differ).
         if a.mediaPort == 0 || a.cursorPort == 0 || a.mediaPort == a.cursorPort { return nil }
         return a
@@ -109,7 +113,7 @@ guard let args = VideoHostdArguments.parse(argv) else {
     exit(2)
 }
 
-func log(_ message: String) {
+@Sendable func log(_ message: String) {
     FileHandle.standardError.write(Data("\(program): \(message)\n".utf8))
 }
 
@@ -123,7 +127,7 @@ func log(_ message: String) {
 NSApplication.shared.setActivationPolicy(.accessory)
 
 /// Fetches the shareable, on-screen windows (excluding desktop chrome).
-func shareableWindows() async throws -> [SCWindow] {
+@Sendable func shareableWindows() async throws -> [SCWindow] {
     let content = try await SCShareableContent.excludingDesktopWindows(
         false, onScreenWindowsOnly: true)
     // Stable, readable order: by owning app then window id.
@@ -152,14 +156,24 @@ func pick(_ windows: [SCWindow], _ args: VideoHostdArguments) -> SCWindow? {
     return nil
 }
 
-// The session is held for the process lifetime; SIGINT drives the orderly stop. Set by the
-// bring-up Task, read by the SIGINT Task — different threads, so a lock guards the shared var
-// (the `@unchecked Sendable` would otherwise hide a real data race).
+// What is held for the process lifetime; SIGINT drives the orderly stop. Set by the bring-up
+// Task, read by the SIGINT Task — different threads, so a lock guards the shared vars (the
+// `@unchecked Sendable` would otherwise hide a real data race). In the OFF (single-window) path
+// only `session` is set; in the UDP-mux (RWORK_VIDEO_MUX) path the `registry` + shared `mux`
+// transport are set instead (N sessions, one per channel/window, over the one shared flow).
 final class Holder: @unchecked Sendable {
     private let lock = NSLock()
     private var session: RworkVideoHostSession?
+    private var registry: VideoMuxSessionRegistry?
+    private var mux: NWVideoMuxDatagramTransport?
     func set(_ s: RworkVideoHostSession) { lock.lock(); session = s; lock.unlock() }
+    func setMux(_ r: VideoMuxSessionRegistry, _ m: NWVideoMuxDatagramTransport) { lock.lock(); registry = r; mux = m; lock.unlock() }
     func current() -> RworkVideoHostSession? { lock.lock(); defer { lock.unlock() }; return session }
+    func currentMux() -> (VideoMuxSessionRegistry, NWVideoMuxDatagramTransport)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let registry, let mux else { return nil }
+        return (registry, mux)
+    }
 }
 let holder = Holder()
 
@@ -168,11 +182,38 @@ let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 sigint.setEventHandler {
     log("SIGINT — shutting down")
     Task {
-        await holder.current()?.stop()
+        if let (registry, mux) = holder.currentMux() {
+            await registry.stopAll()
+            await mux.stop()
+        } else {
+            await holder.current()?.stop()
+        }
         exit(0)
     }
 }
 sigint.resume()
+
+/// Daemon-side errors surfaced from the UDP-mux mint factory (a thrown error drops the triggering
+/// datagram; the lane is never created, sibling lanes are untouched).
+enum VideoHostdError: Error, CustomStringConvertible {
+    case muxNoWindow(requestedWindowID: UInt32)
+    var description: String {
+        switch self {
+        case .muxNoWindow(let id): return "no shareable window matched hello requestedWindowID=\(id)"
+        }
+    }
+}
+
+/// Breaks the registry↔lane-transport capture cycle: the lane's `onRetire` hook needs to call the
+/// (actor) registry's `retire`, but the lane is built INSIDE the registry's mint closure. This box
+/// is captured by the lane synchronously and `bind`-ed to the registry the line after it is built.
+/// `@unchecked Sendable` via the `NSLock`; the bound closure hops to the actor itself.
+final class MuxRetireBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var retireFn: (@Sendable (UInt32) -> Void)?
+    func bind(_ fn: @escaping @Sendable (UInt32) -> Void) { lock.withLock { retireFn = fn } }
+    func retire(_ id: UInt32) { let fn = lock.withLock { retireFn }; fn?(id) }
+}
 
 Task {
     do {
@@ -186,6 +227,66 @@ Task {
                 for w in windows { log(describe(w)) }
             }
             exit(0)
+        }
+
+        // ── UDP-mux (RWORK_VIDEO_MUX) bring-up: ONE shared UDP flow, N sessions (one per channel/
+        // window). Each client video pane sends its OWN hello (its own windowID); the daemon mints/
+        // looks-up the session by channelID (`VideoMuxSessionRegistry`). The §2 asymmetry — two panes
+        // watching DIFFERENT windows on the same host — is served by minting a fresh session per
+        // hello's requestedWindowID. A `bye` retires ONLY the closing lane; sibling lanes survive.
+        if VideoMuxGate.enabledFromEnvironment() {
+            let displayScale = await MainActor.run { NSScreen.main?.backingScaleFactor ?? 1.0 }
+            let effectiveScale = min(args.scale, displayScale)
+            let bitrate = args.bitrateMbps * 1_000_000
+            let mediaPort = args.mediaPort, cursorPort = args.cursorPort
+
+            let mux = NWVideoMuxDatagramTransport(mediaPort: mediaPort, cursorPort: cursorPort)
+            // One shared sink table both the registry (reads on dispatch) and the per-lane transports
+            // (register synchronously inside session.start) use, so the triggering hello is delivered
+            // the moment a lane is minted. The lane's retire hook is bound after the registry exists.
+            let sinkTable = VideoMuxSinkTable()
+            let retireBox = MuxRetireBox()
+            // The session registry mints a session per new channel's hello. The lane transport
+            // (`VideoMuxChannelTransport`) wires the session's sink into the shared sink table.
+            let registry = VideoMuxSessionRegistry(sinkTable: sinkTable, forgetLane: { id in mux.retire(id) }) { channelID, hello in
+                guard case .hello(_, let requestedWindowID, _) = hello else {
+                    throw VideoHostdError.muxNoWindow(requestedWindowID: 0)
+                }
+                // Re-enumerate live windows for THIS hello (a pane may open long after launch).
+                let live = try await shareableWindows()
+                guard let w = live.first(where: { $0.windowID == requestedWindowID }) else {
+                    throw VideoHostdError.muxNoWindow(requestedWindowID: requestedWindowID)
+                }
+                let lane = VideoMuxChannelTransport(
+                    channelID: channelID,
+                    shared: mux,
+                    sinkTable: sinkTable,
+                    onRetire: { id in retireBox.retire(id) }
+                )
+                let session = RworkVideoHostSession(window: w, transport: lane, captureScale: effectiveScale, bitrate: bitrate)
+                try await session.start()
+                log("mux: minted session chan=\(channelID) window-id=\(requestedWindowID) over shared flow")
+                return session
+            }
+            retireBox.bind { id in Task { await registry.retire(id) } }
+            holder.setMux(registry, mux)
+            try await mux.start { channelID, channel, data in
+                // ORDERING (mirrors the OFF InboundQueue discipline): an ADMITTED lane's sink
+                // appends to its session's serial inbound queue SYNCHRONOUSLY, in arrival order, on
+                // the transport's serial receive queue — so a mouseUp can never overtake its
+                // preceding mouseDown/mouseDrag (InputButtonBalance + down/up pairing are
+                // load-bearing; video tolerates reorder, INPUT does not). Spawning a Task per
+                // datagram loses arrival order (no FIFO guarantee across Tasks hitting the actor).
+                // Only the FIRST hello for a not-yet-minted lane needs the async mint hop.
+                if let sink = sinkTable.sink(channelID) {
+                    sink(channel, data)
+                } else {
+                    Task { await registry.dispatch(channelID: channelID, channel: channel, data: data) }
+                }
+            }
+            log("UDP-mux: serving SHARED flow on media:\(mediaPort) cursor:\(cursorPort) — N panes, one flow, per-hello windows")
+            log("client: set RWORK_VIDEO_MUX on the Rwork app too (both ends must agree); each pane's hello picks its window")
+            return
         }
 
         guard let window = pick(windows, args) else {

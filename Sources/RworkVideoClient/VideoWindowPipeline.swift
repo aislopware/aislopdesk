@@ -26,6 +26,17 @@ import UIKit
 final class VideoWindowPipeline {
     private let log = Logger(subsystem: "rwork.video.client", category: "VideoWindowPipeline")
 
+    /// UDP-mux (Stage S3) injection point. `nil` ⇒ the OFF path: every pane builds its OWN
+    /// ``NWVideoClientTransport`` (15-byte header, one UDP flow per pane) — byte-identical to the
+    /// proven device-real iOS video cell. The app sets this ONCE at launch IFF `RWORK_VIDEO_MUX` is
+    /// ON (``VideoMuxGate``), so panes targeting the SAME host share ONE UDP flow via per-channelID
+    /// lanes (``VideoConnectionRegistry``). Read SOLELY at the per-pane transport construction site in
+    /// ``activate(view:videoLayer:connection:maxFrameRate:)`` — the gate lives at construction only,
+    /// so the OFF path never branches on it. The host's `NWVideoDatagramTransport` is gated on the
+    /// SAME env var; the 15↔19-byte wire is incompatible across the boundary, so both ends must agree
+    /// (a mixed pair misframes → the host's `VideoMuxRouter` rejects the unadmitted lane → clean drop).
+    static var sharedRegistry: VideoConnectionRegistry?
+
     private var renderer: MetalVideoRenderer?
     private var compositor: ClientCursorCompositor?
     private var pacer: FramePacer?
@@ -82,7 +93,22 @@ final class VideoWindowPipeline {
         // Initial viewport from the current layer size (≥1 so the hello carries a
         // sane size even before the first layout pass).
         let viewport = VideoSize(width: max(1, layerSize.width), height: max(1, layerSize.height))
-        let transport = NWVideoClientTransport(host: connection.host, mediaPort: connection.mediaPort, cursorPort: connection.cursorPort)
+        // UDP-mux gate (RWORK_VIDEO_MUX, default OFF): when a shared registry is injected AND enabled,
+        // vend a per-channelID lane on the host's ONE shared UDP flow (`VideoMuxClientTransport`);
+        // otherwise build the today-shaped per-pane `NWVideoClientTransport` (15-byte header, one flow
+        // per pane) — the OFF path is byte-identical (no registry consulted, no shared object). Both
+        // ends must agree on the flag; the wire is incompatible across the boundary.
+        let transport: any VideoClientTransport
+        if let registry = Self.sharedRegistry, registry.isEnabled {
+            let host = connection.host, mediaPort = connection.mediaPort, cursorPort = connection.cursorPort
+            transport = VideoMuxClientTransport(
+                host: host, mediaPort: mediaPort, cursorPort: cursorPort,
+                acquire: { await registry.acquire(host: host, mediaPort: mediaPort, cursorPort: cursorPort) },
+                release: { channelID in await registry.release(host: host, mediaPort: mediaPort, cursorPort: cursorPort, channelID: channelID) }
+            )
+        } else {
+            transport = NWVideoClientTransport(host: connection.host, mediaPort: connection.mediaPort, cursorPort: connection.cursorPort)
+        }
 
         // GUI hooks: each hops to the main actor to touch the (main-confined) pacer /
         // compositor. The orchestrator actor calls these from its own executor.
