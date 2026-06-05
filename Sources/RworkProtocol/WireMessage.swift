@@ -77,6 +77,24 @@ public enum WireMessage: Equatable, Sendable {
     /// Terminal bell (empty body).
     case bell
 
+    /// Per-command semantic status, derived host-side from OSC 133 C/D marks the shell
+    /// emits (FinalTerm/iTerm2 shell-integration). Drives the client's per-pane RUNNING vs
+    /// IDLE indicator + the long-command completion notification. Rides the CONTROL channel
+    /// (like `title`/`bell`) so a flood of PTY `output` on the DATA channel cannot delay a
+    /// `running`/`idle` status — the whole point of the two-channel design.
+    case commandStatus(CommandStatus)
+
+    /// The semantic state of the foreground command in a pane's shell (from OSC 133).
+    public enum CommandStatus: Equatable, Sendable {
+        /// OSC 133;C — a command began executing (preexec). The pane is RUNNING.
+        case running
+        /// OSC 133;D — the command finished (precmd of the next prompt). The pane is IDLE
+        /// again. `exitCode` is the command's `$?` (nil if the shell did not report one);
+        /// `durationMS` is the host-measured C→D wall-clock time, used for the long-command
+        /// notification threshold.
+        case idle(exitCode: Int32?, durationMS: UInt32)
+    }
+
     /// The on-wire message-type byte (`UInt8`) for this case.
     public var messageType: UInt8 {
         switch self {
@@ -90,6 +108,7 @@ public enum WireMessage: Equatable, Sendable {
         case .helloAck: return 20
         case .title: return 21
         case .bell: return 22
+        case .commandStatus: return 23
         }
     }
 
@@ -98,7 +117,7 @@ public enum WireMessage: Equatable, Sendable {
         switch self {
         case .output, .exit, .input:
             return .data
-        case .hello, .resize, .ack, .bye, .helloAck, .title, .bell:
+        case .hello, .resize, .ack, .bye, .helloAck, .title, .bell, .commandStatus:
             return .control
         }
     }

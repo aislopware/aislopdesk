@@ -61,6 +61,52 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(model.lastResumeSeq, 42)
     }
 
+    // MARK: OSC 133 shell activity (WF11)
+
+    func testCommandStatusRunningSetsRunningActivity() {
+        let model = TerminalViewModel()
+        XCTAssertEqual(model.shellActivity, .idle, "a fresh model is idle")
+        model.handle(.commandStatus(.running))
+        XCTAssertEqual(model.shellActivity, .running)
+        XCTAssertNil(model.lastCommand, "lastCommand is only set when a command FINISHES")
+    }
+
+    func testCommandStatusIdleClearsRunningAndRecordsLastCommand() {
+        let model = TerminalViewModel()
+        model.handle(.commandStatus(.running))
+        model.handle(.commandStatus(.idle(exitCode: 0, durationMS: 12_000)))
+        XCTAssertEqual(model.shellActivity, .idle)
+        XCTAssertEqual(model.lastCommand?.exitCode, 0)
+        XCTAssertEqual(model.lastCommand?.durationMS, 12_000)
+    }
+
+    func testCommandStatusIdlePreservesNilExit() {
+        let model = TerminalViewModel()
+        model.handle(.commandStatus(.running))
+        model.handle(.commandStatus(.idle(exitCode: nil, durationMS: 300)))
+        XCTAssertEqual(model.shellActivity, .idle)
+        XCTAssertNil(model.lastCommand?.exitCode ?? nil)
+        XCTAssertEqual(model.lastCommand?.durationMS, 300)
+    }
+
+    func testMarkReconnectingClearsStaleRunningActivity() {
+        let model = TerminalViewModel()
+        model.handle(.commandStatus(.running))
+        XCTAssertEqual(model.shellActivity, .running)
+        // A drop mid-command must not leave the indicator stuck running across the reconnect.
+        model.markReconnecting()
+        XCTAssertEqual(model.shellActivity, .idle)
+    }
+
+    func testResetClearsShellActivityAndLastCommand() {
+        let model = TerminalViewModel()
+        model.handle(.commandStatus(.running))
+        model.handle(.commandStatus(.idle(exitCode: 1, durationMS: 5_000)))
+        model.reset()
+        XCTAssertEqual(model.shellActivity, .idle)
+        XCTAssertNil(model.lastCommand)
+    }
+
     func testOutputFeedsSurface() {
         final class CapturingSurface: TerminalSurface, @unchecked Sendable {
             var fed = Data()

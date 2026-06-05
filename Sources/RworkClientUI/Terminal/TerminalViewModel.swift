@@ -41,6 +41,12 @@ public final class TerminalViewModel {
         public var isLive: Bool { self == .connected }
     }
 
+    /// Per-pane SHELL activity (OSC 133), ORTHOGONAL to ``ConnectionStatus``: a pane is
+    /// `.connected` AND either `.idle` (at the prompt) or `.running` (a command is executing).
+    /// Kept as a separate flag — not folded into ``ConnectionStatus`` — so the connection colour
+    /// (green) and the running cue (amber pulse) can both show at once.
+    public enum ShellActivity: Sendable, Equatable { case idle; case running }
+
     // MARK: Observable state
 
     /// The connection lifecycle (drives the status chrome + placeholder telemetry).
@@ -55,6 +61,13 @@ public final class TerminalViewModel {
     public private(set) var lastResumeSeq: Int64 = 0
     /// Set when the remote rang the bell since the last clear (the view can flash).
     public private(set) var bellPending: Bool = false
+    /// Shell activity (OSC 133): `.running` while a command executes, `.idle` at the prompt.
+    /// Drives the pane's running indicator. Independent of ``connectionStatus``.
+    public private(set) var shellActivity: ShellActivity = .idle
+    /// The most recently FINISHED command (OSC 133;D): its exit code (nil if not reported) and
+    /// the host-measured duration in ms. Used by the header/tooltip + the long-command
+    /// notification trigger. `nil` until the first command completes.
+    public private(set) var lastCommand: (exitCode: Int32?, durationMS: UInt32)?
 
     // MARK: Wiring
 
@@ -215,8 +228,21 @@ public final class TerminalViewModel {
 
     /// Detaches the renderer surface (the representable was dismantled). Drops the `weak`
     /// reference; the retained replay ring is KEPT so the next ``attachSurface(_:)`` can repaint.
-    public func detachSurface() {
-        surface = nil
+    ///
+    /// IDENTITY-GATED: only clears `self.surface` when `surface` IS the one we are currently feeding.
+    /// SwiftUI can build the terminal representable more than once (a sizing/identity pass), so an
+    /// OLDER surface can be dismantled AFTER a NEWER one already attached and became `self.surface`.
+    /// A blind `self.surface = nil` there would stop feeding the LIVE (on-screen) surface — it then
+    /// freezes on its initial replay while all new host output is silently dropped (the exact
+    /// "renders the prompt then never repaints" bug, reproduced on a Mac Studio). Passing the
+    /// detaching surface lets us clear ONLY when it matches. Called with no argument (legacy/tests)
+    /// it clears unconditionally, preserving prior behavior.
+    public func detachSurface(_ surface: (any TerminalSurface)? = nil) {
+        if let surface {
+            if self.surface === surface { self.surface = nil }
+        } else {
+            self.surface = nil
+        }
     }
 
     /// Folds one `RworkClient.Event` into observable state.
@@ -226,6 +252,14 @@ public final class TerminalViewModel {
             title = text
         case .bell:
             bellPending = true
+        case let .commandStatus(status):
+            switch status {
+            case .running:
+                shellActivity = .running
+            case let .idle(exitCode, durationMS):
+                shellActivity = .idle
+                lastCommand = (exitCode, durationMS)
+            }
         case let .exit(code):
             connectionStatus = .exited(code: code)
         case let .disconnected(reason):
@@ -244,6 +278,10 @@ public final class TerminalViewModel {
     /// than a bare "disconnected"). Called by the ConnectionViewModel on a non-deliberate drop.
     public func markReconnecting() {
         connectionStatus = .reconnecting
+        // A drop leaves a stale OSC 133 running state we can never get a matching `D` for
+        // (the C→D pair would straddle the disconnect); clear to idle so the indicator does
+        // not get stuck "running" across a reconnect.
+        shellActivity = .idle
     }
 
     /// Clears the pending-bell flag once the view has flashed.
@@ -258,6 +296,8 @@ public final class TerminalViewModel {
         title = nil
         bytesReceived = 0
         bellPending = false
+        shellActivity = .idle  // a fresh session is idle until its first command runs
+        lastCommand = nil
         lastResumeSeq = 0
         lastSentSize = nil   // a fresh session must re-assert its grid size
         ring.removeAll()     // stale scrollback must not survive into a new session

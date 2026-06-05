@@ -62,9 +62,12 @@ public extension Workspace {
 public extension Workspace {
     /// Appends a fresh single-leaf tab of `kind` and makes it active, returning the new
     /// workspace. The new tab's `TabID` is minted here.
-    func adding(kind: PaneKind, title: String) -> Workspace {
+    ///
+    /// - Parameter endpoint: pre-fill the leaf's endpoint (connect-once inheritance). `nil` (the
+    ///   default) leaves the pane in the unconfigured state so existing callers are unaffected.
+    func adding(kind: PaneKind, title: String, endpoint: Endpoint? = nil) -> Workspace {
         var copy = self
-        let tab = Tab.make(kind: kind, title: title)
+        let tab = Tab.make(kind: kind, title: title, endpoint: endpoint)
         copy.tabs.append(tab)
         copy.activeTabID = tab.id
         return copy

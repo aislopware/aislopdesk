@@ -62,6 +62,14 @@ import RworkTerminal       // TerminalSurface protocol (the renderer seam)
 import RworkProtocol       // not strictly needed here; kept for parity with the seam
 import CGhostty            // the clang module over include/ghostty.h (link "ghostty")
 
+/// TEMPORARY render-path tracer, gated on the `RWORK_RENDER_DEBUG` env var. Used to diagnose
+/// the macOS blank-glyph issue (terminal connected + fed bytes but no text painted). Writes to
+/// stderr so a `Rwork.app/Contents/MacOS/Rwork` launch captures it. Remove once resolved.
+let kRenderDebug = ProcessInfo.processInfo.environment["RWORK_RENDER_DEBUG"] != nil
+@inline(__always) func rdbg(_ msg: @autoclosure () -> String) {
+    if kRenderDebug { FileHandle.standardError.write(Data(("[RDBG] " + msg() + "\n").utf8)) }
+}
+
 /// Run a `@MainActor` `body` in response to a libghostty C callback that may fire on
 /// **any** thread.
 ///
@@ -223,11 +231,18 @@ public final class GhosttySurface: @MainActor TerminalSurface {
         // ghostty_surface_new (header 1158). Must be on main thread. The config
         // already carries `userdata = self` so the C callbacks above can recover us.
         self.surface = ghostty_surface_new(app, &config)
+        rdbg("init: surface=\(self.surface != nil) scale=\(contentScale) cols=\(cols) rows=\(rows)")
     }
 
     /// Optional grid-resize observer (libghostty → host `TIOCSWINSZ`). The GUI
     /// coordinator sets this to emit a `resize` WireMessage.
     public var onResize: ((UInt16, UInt16) -> Void)?
+
+    /// Fired after each ``feed(_:)``. The embedding view sets this to request a present from its
+    /// GATED display-link (`draw_now`). This dirty signal is what lets the renderer present new
+    /// content WITHOUT a free-running per-frame `draw_now` — which kept libghostty's renderer libxev
+    /// loop permanently kicked and busy-spinning at ~100% CPU.
+    public var onContentChanged: (() -> Void)?
 
     /// Frees the surface (header 1160). Idempotent. Must run on the main thread.
     public func close() {
@@ -260,8 +275,14 @@ public final class GhosttySurface: @MainActor TerminalSurface {
     /// surface; `@MainActor` serializes all calls. We keep the
     /// write_output → refresh → draw trio SYNCHRONOUS (no `await` between them) to
     /// avoid the doc-18-§C actor-suspension-escape hazard.
+    private var feedCount = 0
     public func feed(_ bytes: Data) {
-        guard let s = surface, !bytes.isEmpty else { return }
+        guard let s = surface, !bytes.isEmpty else {
+            rdbg("feed SKIPPED surface=\(surface != nil) empty=\(bytes.isEmpty)")
+            return
+        }
+        feedCount += 1
+        if kRenderDebug, feedCount <= 6 || feedCount % 50 == 0 { rdbg("feed #\(feedCount) \(bytes.count)B") }
         bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress else { return }
             let cptr = base.assumingMemoryBound(to: CChar.self)
@@ -271,8 +292,15 @@ public final class GhosttySurface: @MainActor TerminalSurface {
         // Coalescing redraw (VVTerm `scheduleCustomIORedraw` pattern). The render is
         // already triggered by write_output; refresh+draw force the next frame. Both
         // are main-thread-only (doc 18 §C).
-        ghostty_surface_refresh(s)   // header 1167
-        ghostty_surface_draw(s)      // header 1168
+        // Only REFRESH here (wakes the renderer thread → `updateFrame`, rebuilding cells from the
+        // just-written state). Do NOT call `ghostty_surface_draw`: its present runs in THIS
+        // MainActor-async (output-pump) context, where the implicit CATransaction never commits — it
+        // sets the layer contents but they never appear on screen. The present is driven by the
+        // view's gated tick via `layer.setNeedsDisplay()` → libghostty's IOSurfaceLayer `display`
+        // callback, the SAME path a window RESIZE uses (you observed resize DOES repaint), which runs
+        // INSIDE a CA commit so the new frame actually shows.
+        ghostty_surface_refresh(s)   // header 1167 → renderer thread updateFrame (rebuild cells)
+        onContentChanged?()          // dirty signal → the view's gated tick triggers the display present
     }
 
     // MARK: TerminalSurface — Resize
@@ -302,6 +330,19 @@ public final class GhosttySurface: @MainActor TerminalSurface {
         onResize?(cols, rows)
     }
 
+    /// The ACTUAL pixel extent of the rendered surface (`ghostty_surface_size`, header 1175 →
+    /// `width_px`/`height_px`). libghostty rounds the surface DOWN to whole cells, so this is usually
+    /// a few px SMALLER than the last ``setPixelSize(widthPx:heightPx:)``. The embedding MUST size the
+    /// hosted `IOSurfaceLayer` to THIS extent — libghostty's size-checked async present
+    /// (`IOSurfaceLayer.setSurface`) DISCARDS any frame whose IOSurface size != layer.bounds ×
+    /// contentsScale, which otherwise freezes live repaint on the first (sync-presented) frame.
+    public var renderedPixelSize: (width: UInt32, height: UInt32)? {
+        guard let s = surface else { return nil }
+        let sz = ghostty_surface_size(s)
+        guard sz.width_px > 0, sz.height_px > 0 else { return nil }
+        return (sz.width_px, sz.height_px)
+    }
+
     /// Sets the surface size in ACTUAL layer PIXELS (the GUI layout path).
     ///
     /// libghostty sizes in pixels (`ghostty_surface_set_size`, header 1174) and derives
@@ -312,7 +353,11 @@ public final class GhosttySurface: @MainActor TerminalSurface {
     /// drivers — using it from layout double-applies the cell size and oversizes the
     /// surface, which prevents the Metal layer from presenting.)
     public func setPixelSize(widthPx: UInt32, heightPx: UInt32) {
-        guard let s = surface, widthPx > 0, heightPx > 0 else { return }
+        guard let s = surface, widthPx > 0, heightPx > 0 else {
+            rdbg("setPixelSize SKIPPED w=\(widthPx) h=\(heightPx) surface=\(surface != nil)")
+            return
+        }
+        rdbg("setPixelSize \(widthPx)x\(heightPx)")
         ghostty_surface_set_size(s, widthPx, heightPx)   // header 1174
     }
 
