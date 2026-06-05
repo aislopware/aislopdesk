@@ -230,8 +230,16 @@ public final class WorkspaceStore {
     // MARK: - Tab mutations (pure op → reconcile)
 
     /// Appends a fresh single-leaf tab of `kind` and activates it.
+    ///
+    /// Connect-once: if the active pane already has a non-nil endpoint AND the new `kind` is
+    /// `.terminal` or `.claudeCode`, the endpoint is inherited so the new pane auto-connects over
+    /// the shared mux without the user re-typing host:port. `.remoteGUI` panes use a
+    /// ``VideoEndpoint`` (a different field) and are never pre-filled here.
     public func addTab(kind: PaneKind) {
-        workspace = workspace.adding(kind: kind, title: defaultTitle(for: kind))
+        let inherited: Endpoint? = (kind == .terminal || kind == .claudeCode)
+            ? activePaneEndpoint
+            : nil
+        workspace = workspace.adding(kind: kind, title: defaultTitle(for: kind), endpoint: inherited)
         reconcile()
     }
 
@@ -265,10 +273,18 @@ public final class WorkspaceStore {
     /// Splits leaf `id` along `axis`, adding a new leaf of `kind` as a sibling, and focuses the new
     /// leaf. Applies to whichever tab owns `id` (almost always the active tab). Reconcile materializes
     /// the one new session.
+    ///
+    /// Connect-once: the new leaf inherits the endpoint of the pane being split (falling back to the
+    /// active pane's endpoint) when the new `kind` is `.terminal` or `.claudeCode`. `.remoteGUI`
+    /// never inherits (it uses a ``VideoEndpoint``, a distinct field). A nil source endpoint produces
+    /// a nil-endpoint new pane (no change from the old behavior).
     public func split(_ id: PaneID, axis: SplitAxis, kind: PaneKind) {
         guard let tabID = tabID(owning: id) else { return }
         let newLeafID = PaneID()
-        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        let inherited: Endpoint? = (kind == .terminal || kind == .claudeCode)
+            ? (spec(for: id)?.endpoint ?? activePaneEndpoint)
+            : nil
+        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind), endpoint: inherited)
         workspace = workspace.updatingTab(tabID) { tab in
             tab.root = tab.root.splitting(id, axis: axis, newLeaf: (newLeafID, spec))
             // Focus the new leaf if the split actually created it (it exists in the new tree).
@@ -356,6 +372,19 @@ public final class WorkspaceStore {
             t.root = t.root.settingFractions(at: path, to: fractions)
         }
         reconcile()
+    }
+
+    // MARK: - Reconnect (palette / recovery)
+
+    /// Re-dials pane `id`'s connection — the recovery path for a `.failed` / `.unreachable` / dropped
+    /// terminal pane (the command palette's "Reconnect Pane"). `ConnectionViewModel.connect()` already
+    /// tears down the prior session and re-dials the stored `host`/`port`, so it is correct from ANY
+    /// non-connected state; a no-op for a pane with no live connection (a `.remoteGUI` / faked handle).
+    /// The connect runs in a detached `Task` (the store mutation surface stays synchronous), exactly as
+    /// the leaf's connect-on-appear does.
+    public func reconnect(_ id: PaneID) {
+        guard let connection = (registry[id] as? LivePaneSession)?.connection else { return }
+        Task { await connection.connect() }
     }
 
     // MARK: - Spec mutation (rename / fill endpoint)
@@ -763,6 +792,14 @@ public final class WorkspaceStore {
         return nil
     }
 
+    /// The endpoint of the active tab's focused pane, or `nil` when there is no active tab,
+    /// no focused pane, or the focused pane has no endpoint (never connected / remoteGUI).
+    /// Used by connect-once inheritance so a new tab / split inherits the current host.
+    private var activePaneEndpoint: Endpoint? {
+        guard let focused = workspace.activeTab?.focusedPane else { return nil }
+        return spec(for: focused)?.endpoint
+    }
+
     /// The id of the tab whose root contains leaf `id`, or `nil`.
     private func tabID(owning id: PaneID) -> TabID? {
         workspace.tabs.first { $0.root.contains(id) }?.id
@@ -945,6 +982,13 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
         // The store exposes `renameTab(_:_:)` for the committed value; there is nothing to do here
         // until the field commits, so this is a deliberate no-op at the command layer.
         break
+    case .reconnectPane:
+        // Re-dial the active tab's focused pane (recovers a `.failed` / `.unreachable` / dropped pane
+        // from the palette). A no-op when there is no focused pane or it has no live connection
+        // (e.g. a `.remoteGUI` pane / faked handle).
+        if let pane = store.activeTab?.focusedPane {
+            store.reconnect(pane)
+        }
     }
 }
 

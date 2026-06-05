@@ -20,6 +20,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case cycleFocus(forward: Bool) // ⌘] (forward) / ⌘[ (back)
     case toggleZoom                // ⇧⌘↩
     case renameTab                 // ⌘R
+    case reconnectPane             // (palette-only — no default chord) re-dial the focused pane
 }
 
 // MARK: - Key chords

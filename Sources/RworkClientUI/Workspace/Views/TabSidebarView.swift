@@ -53,6 +53,11 @@ struct TabSidebarView: View {
                 .frame(width: 18)
                 .accessibilityHidden(true)   // decorative — the tab name Text carries the row's label
 
+            // Tab-level aggregate status dot (research B1): the most salient connection state across
+            // the tab's panes, so a single reconnecting/unreachable pane is visible on the rail even
+            // when siblings are connected. No dot for an all-video / unconnected tab (`.none`).
+            PaneStatusDot(status: tabStatus(tab))
+
             if renamingTab == tab.id {
                 TextField("Tab name", text: $draftName)
                     .textFieldStyle(.plain)
@@ -143,6 +148,20 @@ struct TabSidebarView: View {
             store.renameTab(tab.id, trimmed)
         }
         renamingTab = nil
+    }
+
+    // MARK: Tab-level status (the row dot)
+
+    /// The aggregate connection status for `tab`'s rail dot: the most salient state across its leaves,
+    /// resolved live from the store registry so a reconnecting / unreachable pane surfaces on the rail
+    /// even when its siblings are green (the at-a-glance point of the sidebar). Pure fold in
+    /// ``PaneConnectionStatus/fold(_:)`` — view-free testable; a `.remoteGUI` / unmaterialized leaf
+    /// contributes `.none`.
+    private func tabStatus(_ tab: Tab) -> PaneConnectionStatus {
+        let statuses = tab.root.allLeafIDs().map { id -> ConnectionViewModel.Status? in
+            (store.handle(for: id) as? LivePaneSession)?.connection?.status
+        }
+        return PaneConnectionStatus.fold(statuses)
     }
 
     // MARK: Dominant kind (the row glyph)

@@ -55,14 +55,27 @@ struct PaneChromeView<Content: View>: View {
                 .foregroundStyle(isFocused ? Color.accentColor : .secondary)
                 .accessibilityHidden(true)   // decorative — the title Text carries the row's label
 
-            if let dot = statusColor {
-                Circle().fill(dot).frame(width: 7, height: 7)
-            }
+            let status = connectionStatus
+            PaneStatusDot(status: status, running: isRunning)
 
             Text(spec.title)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(isFocused ? .primary : .secondary)
                 .lineLimit(1)
+
+            // Reconnecting/unreachable detail beside the dot so "connecting forever" reads as a clear
+            // "Reconnecting (n) — retrying in Ns" / "Unreachable" (surfacing the WF3 timeout + backoff).
+            statusDetail(status)
+
+            // A "running…" affordance while an OSC 133 command executes on this pane — the iconic
+            // modern-terminal activity cue, beside the title. Hidden at the idle prompt.
+            if isRunning {
+                Text("running…")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .accessibilityLabel(Text("command running"))
+            }
 
             Spacer(minLength: 8)
 
@@ -150,15 +163,56 @@ struct PaneChromeView<Content: View>: View {
 
     // MARK: Status dot
 
-    /// The header status dot colour, mirrored from the live connection (production handle only).
-    private var statusColor: Color? {
-        switch (handle as? LivePaneSession)?.connection?.status {
-        case .connected: return .green
-        case .connecting, .reconnecting: return .yellow
-        case .failed: return .red
-        case .disconnected: return .secondary
-        case .none: return nil      // video pane / faked handle — no PATH-1 connection
+    /// The header status presentation, derived once from the live connection (production handle only).
+    /// A `.remoteGUI` / faked handle has no PATH-1 connection ⇒ `.none` ⇒ no dot.
+    private var connectionStatus: PaneConnectionStatus {
+        PaneConnectionStatus.from((handle as? LivePaneSession)?.connection?.status)
+    }
+
+    /// Whether an OSC 133 command is currently executing in this pane's shell (production handle
+    /// only). Drives the amber running ring on the dot + the "running…" header label. A faked /
+    /// non-terminal handle reports idle.
+    private var isRunning: Bool {
+        (handle as? LivePaneSession)?.terminalModel?.shellActivity == .running
+    }
+
+    /// The compact status detail shown beside the title for the in-flight / terminal states. For a
+    /// reconnecting pane with a known next-retry instant it ticks a live "retrying in Ns" countdown via
+    /// a `TimelineView` (refreshed once a second, no store mutation); otherwise it shows the static
+    /// label. Hidden entirely for the steady connected/idle states so the header stays clean.
+    @ViewBuilder
+    private func statusDetail(_ status: PaneConnectionStatus) -> some View {
+        switch status.phase {
+        case .reconnecting:
+            if let nextRetry = status.nextRetry {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(reconnectLabel(status, now: context.date, nextRetry: nextRetry))
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
+            } else {
+                Text(status.label)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            }
+        case .unreachable, .failed:
+            Text(status.label)
+                .font(.caption2)
+                .foregroundStyle(.red)
+                .lineLimit(1)
+        default:
+            EmptyView()
         }
+    }
+
+    /// "Reconnecting (n) — retrying in Ns" once a countdown is known; clamps the remaining seconds at 0
+    /// and collapses to "Reconnecting (n)…" when the deadline has passed (the attempt is firing now).
+    private func reconnectLabel(_ status: PaneConnectionStatus, now: Date, nextRetry: Date) -> String {
+        let remaining = Int(nextRetry.timeIntervalSince(now).rounded(.up))
+        guard remaining > 0 else { return status.label }
+        return "\(status.label) retrying in \(remaining)s"
     }
 }
 #endif
