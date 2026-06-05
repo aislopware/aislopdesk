@@ -220,6 +220,12 @@ struct CommandPaletteView: View {
             apply(command, to: store)
         case let .tab(id):
             store.selectTab(id)
+        case let .pane(paneID, tabID):
+            // Jump focus to a specific pane: activate its owning tab FIRST (so the pane is on-screen),
+            // then focus it. `store.focus` resolves the owning tab internally but does not activate it,
+            // so the explicit `selectTab` is what makes a cross-tab jump land.
+            store.selectTab(tabID)
+            store.focus(paneID)
         }
         dismiss()
     }
@@ -251,7 +257,7 @@ struct CommandPaletteView: View {
     /// need to cache). An empty query shows the full catalog in catalog order; a non-empty query keeps
     /// only fuzzy-subsequence matches, ranked best-first.
     private var entries: [Entry] {
-        let all = commandEntries + tabEntries
+        let all = commandEntries + tabEntries + paneEntries
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return all }
 
@@ -300,6 +306,38 @@ struct CommandPaletteView: View {
         }
     }
 
+    /// One "jump to pane" entry per leaf of every MULTI-pane tab (a single-leaf tab is already fully
+    /// represented by its tab entry, so per-pane entries there would be noise). Selecting one activates
+    /// the owning tab and focuses the pane. Built live from the tree so it tracks splits/closes.
+    private var paneEntries: [Entry] {
+        Self.buildPaneEntries(tabs: store.workspace.tabs)
+    }
+
+    /// Pure builder for the per-pane jump entries (factored out so it is unit-testable without a view):
+    /// for each tab with >1 leaf, one entry per leaf titled by the pane's `spec.title`, subtitled by the
+    /// owning tab, carrying BOTH the `PaneID` and its owning `TabID` so the run handler can activate the
+    /// tab then focus the pane. `@MainActor` because the pane glyph (`PaneLeafView.icon`) is
+    /// main-actor-isolated (inferred from `View`); the view's `paneEntries` and the `@MainActor` test
+    /// suite are the only callers.
+    @MainActor static func buildPaneEntries(tabs: [Tab]) -> [Entry] {
+        var entries: [Entry] = []
+        for tab in tabs where tab.root.leafCount > 1 {
+            for id in tab.root.allLeafIDs() {
+                guard let spec = tab.root.spec(for: id) else { continue }
+                entries.append(
+                    Entry(
+                        id: "pane.\(id.raw.uuidString)",
+                        kind: .pane(id, tab.id),
+                        title: spec.title,
+                        subtitle: "Pane in \(tab.name)",
+                        symbol: PaneLeafView.icon(for: spec.kind)
+                    )
+                )
+            }
+        }
+        return entries
+    }
+
     // MARK: - Fuzzy matching (case-insensitive subsequence)
 
     /// Scores `query` against `text` as a case-insensitive subsequence match, or `nil` if `query`'s
@@ -343,6 +381,9 @@ struct CommandPaletteView: View {
         enum Kind {
             case command(WorkspaceCommand)
             case tab(TabID)
+            /// Jump focus to a specific pane: carries the pane id AND its owning tab id so the run
+            /// handler activates the tab then focuses the pane (a cross-tab jump).
+            case pane(PaneID, TabID)
         }
 
         let id: String
@@ -397,6 +438,7 @@ struct CommandPaletteView: View {
         CatalogItem(command: .splitVertical, title: "Split Down", symbol: "rectangle.split.1x2"),
         CatalogItem(command: .toggleZoom, title: "Toggle Zoom", symbol: "arrow.up.left.and.arrow.down.right"),
         CatalogItem(command: .closePane, title: "Close Pane", symbol: "xmark"),
+        CatalogItem(command: .reconnectPane, title: "Reconnect Pane", symbol: "arrow.clockwise"),
         CatalogItem(command: .newTab, title: "New Tab", symbol: "plus"),
         CatalogItem(command: .closeTab, title: "Close Tab", symbol: "xmark.rectangle"),
         CatalogItem(command: .renameTab, title: "Rename Tab", symbol: "pencil"),

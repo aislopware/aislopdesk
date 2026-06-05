@@ -100,6 +100,36 @@ final class WireMessageRoundTripTests: XCTestCase {
         XCTAssertEqual(try roundTrip(.bell), .bell)
     }
 
+    func testCommandStatusRoundTrip() throws {
+        let cases: [WireMessage] = [
+            .commandStatus(.running),
+            .commandStatus(.idle(exitCode: 0, durationMS: 12_000)),
+            .commandStatus(.idle(exitCode: 1, durationMS: 300)),
+            .commandStatus(.idle(exitCode: 130, durationMS: 0)),
+            .commandStatus(.idle(exitCode: -1, durationMS: 1)),          // negative exit preserved
+            .commandStatus(.idle(exitCode: Int32.min, durationMS: UInt32.max)), // boundary
+            .commandStatus(.idle(exitCode: nil, durationMS: 5_000)),     // unreported exit (nil)
+        ]
+        for message in cases {
+            XCTAssertEqual(try roundTrip(message), message)
+        }
+    }
+
+    /// A `commandStatus` (type 23) frame with an unknown tag byte must throw `.malformedBody`.
+    func testCommandStatusInvalidTagThrowsMalformedBody() {
+        let body = Data([23, 0x09]) // type 23 + bogus tag 9 (only 0=running / 1=idle valid)
+        var frame = Data()
+        frame.appendBE(UInt32(body.count))
+        frame.append(body)
+        var decoder = FrameDecoder()
+        decoder.append(frame)
+        XCTAssertThrowsError(try decoder.nextMessage()) { error in
+            guard case .malformedBody = (error as? RworkError) else {
+                return XCTFail("expected .malformedBody, got \(error)")
+            }
+        }
+    }
+
     func testMessageTypeBytesMatchContract() {
         XCTAssertEqual(WireMessage.output(seq: 1, bytes: Data()).messageType, 1)
         XCTAssertEqual(WireMessage.exit(code: 0).messageType, 2)
@@ -111,6 +141,8 @@ final class WireMessageRoundTripTests: XCTestCase {
         XCTAssertEqual(WireMessage.helloAck(sessionID: UUID(), resumeFromSeq: 0, returningClient: false).messageType, 20)
         XCTAssertEqual(WireMessage.title("").messageType, 21)
         XCTAssertEqual(WireMessage.bell.messageType, 22)
+        XCTAssertEqual(WireMessage.commandStatus(.running).messageType, 23)
+        XCTAssertEqual(WireMessage.commandStatus(.idle(exitCode: 0, durationMS: 0)).messageType, 23)
     }
 
     func testChannelAssignment() {
@@ -120,6 +152,7 @@ final class WireMessageRoundTripTests: XCTestCase {
         XCTAssertEqual(WireMessage.hello(protocolVersion: 1, sessionID: UUID(), lastReceivedSeq: 0).channel, .control)
         XCTAssertEqual(WireMessage.bye.channel, .control)
         XCTAssertEqual(WireMessage.bell.channel, .control)
+        XCTAssertEqual(WireMessage.commandStatus(.running).channel, .control)
     }
 
     // MARK: Decode error paths (complete-but-invalid frames)

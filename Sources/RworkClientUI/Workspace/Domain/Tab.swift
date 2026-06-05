@@ -39,9 +39,13 @@ public extension Tab {
     /// Builds a single-leaf tab for `kind`, minting the leaf's ``PaneID`` and pointing focus at
     /// it. The convenience entry point for "new tab" and the default-workspace factory: the tree
     /// starts as one leaf, focused, not zoomed.
-    static func make(kind: PaneKind, title: String) -> Tab {
+    ///
+    /// - Parameter endpoint: pre-fill the leaf's ``PaneSpec/endpoint`` (connect-once inheritance).
+    ///   Only meaningful for `.terminal` / `.claudeCode` kinds; `nil` (the default) leaves the
+    ///   pane in the unconfigured "show form" state. Existing callers that omit it are unaffected.
+    static func make(kind: PaneKind, title: String, endpoint: Endpoint? = nil) -> Tab {
         let paneID = PaneID()
-        let spec = PaneSpec(kind: kind, title: title)
+        let spec = PaneSpec(kind: kind, title: title, endpoint: endpoint)
         return Tab(
             name: title,
             root: .leaf(paneID, spec),

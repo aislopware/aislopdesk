@@ -97,6 +97,27 @@ final class GhosttyApp {
 
     let app: ghostty_app_t
 
+    // Coalescing state for `wakeup_cb`. `nonisolated` because `requestAppTick` is invoked from
+    // libghostty's OFF-main libxev threads (`renderer`/`io`).
+    nonisolated(unsafe) private static var tickScheduled = false
+    nonisolated private static let tickLock = NSLock()
+
+    /// Schedules AT MOST ONE pending `ghostty_app_tick` on the main thread, collapsing a burst of
+    /// high-rate `wakeup_cb` signals. Without this, the external-backend libxev loops (which can
+    /// busy-tick) fire `wakeup_cb` thousands of times/sec; one `DispatchQueue.main.async` per signal
+    /// floods the main queue and STARVES the MainActor — SwiftUI stops updating and the async connect
+    /// never runs (pane stuck at "idle" while CPU spins). Coalescing keeps the main thread free.
+    nonisolated static func requestAppTick() {
+        tickLock.lock()
+        if tickScheduled { tickLock.unlock(); return }
+        tickScheduled = true
+        tickLock.unlock()
+        DispatchQueue.main.async {
+            tickLock.lock(); tickScheduled = false; tickLock.unlock()
+            MainActor.assumeIsolated { ghostty_app_tick(GhosttyApp.shared.app) }
+        }
+    }
+
     private init() {
         // 1. ghostty_init (header 1117): once per process, before any config/app.
         //    Signature is `int ghostty_init(uintptr_t, char**)` — argc/argv; we pass
@@ -117,15 +138,13 @@ final class GhosttyApp {
         runtime.userdata = nil
         runtime.supports_selection_clipboard = false
         runtime.wakeup_cb = { _ in
-            // libghostty asks to be ticked on its main loop. THIS IS A CROSS-THREAD
-            // SIGNAL by design — on macOS it fires from libghostty's `renderer` thread
-            // (renderer.Thread.drawFrame → apprt.surface.Mailbox.push → here), so it is
-            // NOT on the main actor. `ghosttyOnMainActor` hops to main (or runs sync if
-            // already there); a bare `MainActor.assumeIsolated` here TRAPS off-main
-            // (dispatch_assert_queue → EXC_BREAKPOINT) — the macOS launch crash.
-            ghosttyOnMainActor {
-                ghostty_app_tick(GhosttyApp.shared.app)
-            }
+            // libghostty asks to be ticked on its main loop. THIS IS A CROSS-THREAD SIGNAL by design
+            // — on macOS it fires from libghostty's `renderer`/`io` libxev threads, NOT the main
+            // actor. COALESCED via `requestAppTick`: those external-backend loops can fire this at a
+            // very high rate, and scheduling a `ghostty_app_tick` per signal floods the main queue and
+            // STARVES the MainActor (SwiftUI + the async connect → pane hung at "idle" while CPU spun).
+            // (A bare `MainActor.assumeIsolated` here would TRAP off-main — the historical launch crash.)
+            GhosttyApp.requestAppTick()
         }
         // action_cb returns whether the action was handled; the viewer handles none
         // of the app-level actions (split/new-window/etc.) — return false.
@@ -190,12 +209,20 @@ struct GhosttyMetalLayerView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> GhosttyLayerBackedView {
         let view = GhosttyLayerBackedView()
-        view.attach(model: model)
+        // Do NOT create the surface here. SwiftUI builds the representable for an off-window
+        // probe/sizing pass too; creating the libghostty surface in that throwaway view spawns a
+        // SECOND set of renderer/io threads (the 100%-CPU spin) and a duplicate surface
+        // (detach-clobber). Just remember the model — the surface is created lazily once the view
+        // enters a real window (`viewDidMoveToWindow`), so EXACTLY ONE surface exists per pane.
+        view.model = model
         return view
     }
 
     func updateNSView(_ nsView: GhosttyLayerBackedView, context: Context) {
-        nsView.attach(model: model)
+        nsView.model = model
+        // Attach only on-window (idempotent). The off-window probe view never reaches here with a
+        // window set, so it never calls `ghostty_surface_new`.
+        if nsView.window != nil { nsView.attach(model: model) }
     }
 
     static func dismantleNSView(_ nsView: GhosttyLayerBackedView, coordinator: ()) {
@@ -203,76 +230,196 @@ struct GhosttyMetalLayerView: NSViewRepresentable {
     }
 }
 
-/// A layer-backed `NSView` whose backing layer is a `CAMetalLayer`. It owns the
-/// `GhosttySurface` (libghostty renders into the layer) for its lifetime and forwards
-/// AppKit key/text/resize events into the surface.
+/// A LAYER-HOSTING `NSView` for libghostty's macOS renderer.
 ///
-/// NO `CADisplayLink` here, unlike the iOS sibling — this asymmetry is DELIBERATE, not a
-/// missing feature. On macOS libghostty runs its own live `renderer` thread (the very thread
-/// whose `wakeup_cb` fires off-main — see `ghosttyOnMainActor`), which self-paces draws and
-/// runs the cursor-blink / animation timers on its own libxev loop; `wakeup_cb → ghostty_app_tick`
-/// covers app-level wakeups. The iOS `CADisplayLink` + `draw_now` exist only because the iOS
-/// Simulator's renderer-thread libxev `wakeup` is not pumped (paired with the sync-updateframe
-/// libghostty patch); driving a 60 fps tick here would just contend with the live renderer
-/// thread for no benefit. Verified at runtime: macOS renders glyphs/colors/cursor with no tick.
+/// CRITICAL — how libghostty presents on macOS (read from `renderer/Metal.zig`): libghostty
+/// creates its OWN `IOSurfaceLayer` and installs it as THIS view's `layer` via the layer-HOSTING
+/// pattern — `info.view.setProperty("layer", <IOSurfaceLayer>)` THEN `wantsLayer = true`. It does
+/// NOT render into a `CAMetalLayer` / `nextDrawable`. Therefore this view must be a PLAIN,
+/// initially layer-less `NSView` and must let libghostty own the `layer` slot.
+///
+/// A previous version force-installed its OWN `CAMetalLayer` (assigning `layer` + overriding
+/// `makeBackingLayer`). That `CAMetalLayer` won the view's `layer` slot, so libghostty's
+/// `IOSurfaceLayer` was never in the view hierarchy and never displayed — the terminal painted
+/// BLANK even though `feed` delivered bytes and `draw_now` ticked (libghostty WAS rendering, into
+/// an orphaned off-screen layer). Confirmed by a live Mac Studio repro + reading `Metal.zig`.
+///
+/// A `CADisplayLink` drives `ghostty_surface_draw_now` each display tick (see `renderDisplayLink`),
+/// MIRRORING the iOS sibling, so the renderer thread flushes its lazily-rasterized glyphs. The
+/// hosted layer's frame + contentsScale are sized in `layout()` (a layer-hosting view does not get
+/// its hosted layer auto-resized to the view bounds).
 final class GhosttyLayerBackedView: NSView {
-    let metalLayer = CAMetalLayer()
-
     /// Strong owner of the surface. `TerminalViewModel.surface` is `weak`, so the view
     /// is the lifetime owner (the GUI owns it on main; `detach()`/`deinit` free it).
     private var surface: GhosttySurface?
-    private weak var model: TerminalViewModel?
+    weak var model: TerminalViewModel?
+
+    /// Drives libghostty's renderer thread via `ghostty_surface_draw_now`. GATED on `presentTicks`:
+    /// it presents only when there is something new, NOT every display frame. An UNCONDITIONAL
+    /// per-tick `draw_now` kept the renderer thread's `draw_now` mach-port permanently ready, so its
+    /// libxev loop busy-spun in `kqueue.Loop.tick` at ~100% CPU — flooding the main thread and
+    /// starving the async connect (pane stuck "idle"). Gating lets the loop block in `kevent()` when
+    /// idle → CPU ~0. (Verified by profiling on a Mac Studio.)
+    private var renderDisplayLink: CADisplayLink?
+
+    /// Frames still owed to the renderer (set by `requestPresent`, drained by `renderTick`). Counts
+    /// a few — not 1 — so the renderer thread's LAZY glyph rasterization flushes over the next ticks
+    /// after new content arrives.
+    private var presentTicks = 0
+
+    /// Pending work items of the post-resize "settle present burst" (see `scheduleSettlePresentBurst`).
+    /// Held so a CONTINUOUS drag coalesces to ONE burst: each new `layout()` cancels the prior array
+    /// before scheduling, so only the LAST settle's burst survives. A FIXED, finite array → the burst
+    /// is provably bounded and self-terminating (it never reschedules itself).
+    private var settleItems: [DispatchWorkItem] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        layer = metalLayer
+        // Do NOT set `wantsLayer`, assign a `layer`, or override `makeBackingLayer`: libghostty
+        // installs its OWN `IOSurfaceLayer` as this view's layer (layer-hosting) during
+        // `ghostty_surface_new` (in `attach`). Pre-installing a layer here fights that and the
+        // terminal renders blank (the lesson of the orphaned-CAMetalLayer bug above).
     }
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
-    override func makeBackingLayer() -> CALayer { metalLayer }
 
-    /// Idempotent: builds the surface on first call, then attaches it to the model.
+    /// Ask for the next few display ticks to present (drain new content / flush lazy glyphs).
+    func requestPresent(_ ticks: Int = 3) {
+        if kRenderDebug { rdbg("requestPresent(\(ticks)) [was \(presentTicks)]") }
+        presentTicks = max(presentTicks, ticks)
+    }
+
+    /// Post-resize REPAINT-RESIDUAL fix (idle-prompt-prefix-blank-after-resize).
+    ///
+    /// After a resize SETTLES, the host applies the coalesced `TIOCSWINSZ` → `SIGWINCH` → zsh and
+    /// libghostty's IO thread reflows the local grid; the renderer thread rebuilds the cells and
+    /// presents them via the ASYNC path (`drawFrame(false)` → `setSurface`), which is size-discarded
+    /// if the rendered IOSurface no longer matches `layer.bounds × scale`. Meanwhile the only
+    /// size-UNCONDITIONAL present — the gated `renderTick` → `setSurfaceSync` — has already drained its
+    /// ≤3 `presentTicks` (within ~3 display frames), so it is asleep by the time (i) the renderer
+    /// thread's reflow frame completes and (ii) zsh's redraw bytes arrive ~1 RTT later. Result: the
+    /// idle editing-prompt prefix stays BLANK until the next content event re-arms a present.
+    ///
+    /// FIX: after the LAST layout, keep the sync-present path alive for a BOUNDED window by injecting a
+    /// FIXED, finite series of `requestPresent` ticks spaced over ~400ms, so those late frames/bytes get
+    /// painted, THEN it stops. Each new `layout()` cancels the prior burst first, so a long continuous
+    /// drag coalesces to exactly ONE burst that starts only after the drag settles.
+    ///
+    /// PROVABLY BOUNDED / cannot busy-spin: the schedule is a HARD-CODED array (≤ `kSettleBurstMs.count`
+    /// work items), each item does a single `requestPresent(2)` and NOTHING reschedules — after the last
+    /// item fires, no further work is posted. `renderTick` keeps its `guard presentTicks > 0` gate
+    /// untouched, so between/after the ≤2-tick bursts the renderer's libxev loop blocks in `kevent()`
+    /// and CPU returns to ~0. Total extra work per settle ≤ `kSettleBurstMs.count × 2` presents.
+    private static let kSettleBurstMs: [Int] = [50, 120, 200, 300, 400]
+
+    private func scheduleSettlePresentBurst() {
+        // Coalesce a continuous drag to ONE burst: drop any burst scheduled by an earlier layout pass
+        // so only the LAST (settled) layout's burst runs.
+        for item in settleItems { item.cancel() }
+        settleItems.removeAll(keepingCapacity: true)
+        for ms in Self.kSettleBurstMs {
+            let item = DispatchWorkItem { [weak self] in self?.requestPresent(2) }
+            settleItems.append(item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ms), execute: item)
+        }
+    }
+
+    /// libghostty installs its layer + spawns its renderer/io threads inside `ghostty_surface_new`,
+    /// so the surface is created ONLY once the view is in a real window — never for SwiftUI's
+    /// off-window probe pass (which would spawn a duplicate surface + thread set that busy-spins).
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            if let model { attach(model: model) }
+            startRenderTickIfNeeded()
+            requestPresent(8)   // prime the initial glyph flush
+            // AUTO-FOCUS the terminal. CRITICAL for live repaint: an UNFOCUSED libghostty surface
+            // idles its renderer loop (no cursor-blink/animation wakeups) so it stops presenting and
+            // the screen FREEZES on the last frame — confirmed on hardware (a focused surface
+            // repaints, an unfocused one does not). Focusing also routes keystrokes straight to
+            // libghostty's encoder (`keyDown` → `surface.key`). Deferred so the window is key first.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window else { return }
+                window.makeFirstResponder(self)
+            }
+        } else {
+            renderDisplayLink?.invalidate()   // off-window: stop ticking so a detached view never spins
+            renderDisplayLink = nil
+        }
+    }
+
+    /// Idempotent: builds the surface on first call (only when on-window), then attaches it to the
+    /// model. Safe to call repeatedly from `updateNSView` / `viewDidMoveToWindow`.
     func attach(model: TerminalViewModel) {
         self.model = model
+        guard window != nil else { return }   // never spawn a surface for the off-window probe view
         if surface == nil {
             let s = GhosttySurface(
                 app: GhosttyApp.shared.app,
                 platformView: Unmanaged.passUnretained(self).toOpaque(),
                 cols: 80,
                 rows: 24,
-                // backingScaleFactor is CGFloat; GhosttySurface.contentScale is Double.
                 contentScale: Double(window?.backingScaleFactor ?? 2.0)
             )
-            // OUT path: encoded keystrokes from libghostty → the model's input sink, which
-            // the ConnectionViewModel points at the live `RworkClient.sendInput`. onWrite is
-            // invoked synchronously on the main actor (GhosttySurface is @MainActor), so the
-            // call into the @MainActor model is in-isolation.
-            s.onWrite = { [weak model] (data: Data) in
-                model?.sendInput(data)
-            }
+            // OUT path: encoded keystrokes → model input sink → live RworkClient.sendInput.
+            s.onWrite = { [weak model] (data: Data) in model?.sendInput(data) }
             // Grid changes (font reflow) → model resize sink → host TIOCSWINSZ.
-            s.onResize = { [weak model] (cols: UInt16, rows: UInt16) in
-                model?.sendResize(cols: cols, rows: rows)
-            }
+            s.onResize = { [weak model] (cols: UInt16, rows: UInt16) in model?.sendResize(cols: cols, rows: rows) }
+            // New inbound bytes were fed → ask the gated tick to present. This is the dirty signal
+            // that REPLACES a free-running per-frame `draw_now` (the spin source). Without it the
+            // gated tick would never present live output.
+            s.onContentChanged = { [weak self] in self?.requestPresent() }
             self.surface = s
         }
-        // The model's ingestOutput(_:) feeds inbound bytes into surface.feed(_:). Go through
-        // attachSurface(_:) (not `model.surface = surface`) so the model can REPLAY its retained
-        // byte-ring into this surface: a tab switch / compact flip dismantled the prior
-        // representable (detach() closed the old surface) and rebuilt this one EMPTY, but the
-        // host never re-sends the scrollback — replay repaints it. attachSurface is a no-op
-        // replay when the instance is unchanged (SwiftUI's idempotent update re-attach).
-        if let surface {
-            model.attachSurface(surface)
-        }
+        // attachSurface(_:) (not `model.surface = surface`) so the model REPLAYS its retained byte
+        // ring into a rebuilt surface (tab switch / reshape). No-op replay when unchanged.
+        if let surface { model.attachSurface(surface) }
         surface?.setFocus(true)
+        requestPresent(8)   // flush whatever the replay just fed
+    }
+
+    private func startRenderTickIfNeeded() {
+        guard renderDisplayLink == nil, window != nil,
+              ProcessInfo.processInfo.environment["RWORK_NO_TICK"] == nil else { return }
+        let link = displayLink(target: self, selector: #selector(renderTick))
+        link.add(to: .main, forMode: .common)
+        renderDisplayLink = link
+    }
+
+    @objc private func renderTick() {
+        // GATED present. Idle → return WITHOUT presenting, so the renderer thread's libxev loop
+        // blocks in `kevent()` and CPU drops to ~0 (the cure for the 100% spin). After new content
+        // (`requestPresent` from feed / attach-replay / layout) present for a few ticks so the
+        // renderer thread's lazily-rasterized glyphs flush.
+        //
+        // Drive libghostty's IOSurfaceLayer `display` callback → `drawFrame(true)` → `present(sync)`
+        // → `setSurfaceSync`, INSIDE a CA commit so the new contents ACTUALLY appear. This is the
+        // SAME present path a window RESIZE uses (`needsDisplayOnBoundsChange`) — the only path
+        // observed to update the screen on real hardware. `feed`'s `refresh` already rebuilt the cells
+        // on the renderer thread, so the `drawFrame(true)` invoked here renders the FRESH frame. Runs
+        // on the runloop (display-link tick); GATED on `presentTicks` so idle is a cheap no-op (no
+        // 100%-CPU spin, no MainActor starvation). `displayIfNeeded()` forces the `display` synchronously
+        // this tick rather than waiting for the next CA pass.
+        guard presentTicks > 0 else { return }
+        if kRenderDebug { rdbg("renderTick DISPLAY (ticks=\(presentTicks))") }
+        presentTicks -= 1
+        layer?.setNeedsDisplay()
+        layer?.displayIfNeeded()
     }
 
     func detach() {
-        surface?.close()
+        renderDisplayLink?.invalidate()
+        renderDisplayLink = nil
+        // Cancel any pending settle-present burst so a torn-down view never fires `requestPresent`.
+        for item in settleItems { item.cancel() }
+        settleItems.removeAll(keepingCapacity: true)
+        let detaching = surface
         surface = nil
-        model?.detachSurface()
+        detaching?.close()
+        // Pass the detaching surface so the model clears its `surface` ONLY if this is the surface it
+        // currently feeds. A stale duplicate view's detach must NOT nil the live (on-screen) surface
+        // — that froze the visible terminal on its initial replay while new output was dropped.
+        model?.detachSurface(detaching)
     }
 
     deinit {
@@ -284,21 +431,48 @@ final class GhosttyLayerBackedView: NSView {
 
     override func layout() {
         super.layout()
-        // Convert the layer's pixel size → cols/rows using a conservative cell size.
-        // libghostty re-measures the true cell size after first draw (GhosttySurface
-        // .setSize reads ghostty_surface_size); the seed here just keeps the grid sane.
         let scale = window?.backingScaleFactor ?? 2.0
-        metalLayer.contentsScale = scale
-        // Pass ACTUAL layer pixels; libghostty derives the grid from its measured cell
-        // metrics and fires resize_callback → onResize (host TIOCSWINSZ). Do NOT route
-        // through setSize(cols:rows:) here — that double-applies the cell size (seed 8×16
-        // → measured 29×63) and oversizes the surface ~3.6×, so the Metal layer never
-        // presents.
+        // Pass ACTUAL pixel extent; libghostty derives the grid from its measured cell metrics, rounds
+        // the surface to whole cells, and fires resize_callback → onResize (host TIOCSWINSZ).
         let pxW = UInt32(max(1, Int((bounds.width * scale).rounded())))
         let pxH = UInt32(max(1, Int((bounds.height * scale).rounded())))
         surface?.setContentScale(Double(scale))
         surface?.setPixelSize(widthPx: pxW, heightPx: pxH)
+        // Size libghostty's HOSTED `IOSurfaceLayer` to the RAW VIEW BOUNDS (points) — NOT the
+        // cell-rounded `renderedPixelSize` read-back. libghostty treats `layer.bounds × contentsScale`
+        // as its SINGLE size-of-truth: `surfaceSize()` (renderer/Metal.zig) recomputes width/height
+        // from it at the head of every `drawFrame`, and its async present's discard guard
+        // (IOSurfaceLayer.zig) compares the rendered IOSurface against that same product. A
+        // layer-hosting view does NOT auto-size its hosted layer, so the embedding must set it.
+        //
+        // RESIZE-CORRUPTION FIX ("vỡ"): sizing the layer to `renderedPixelSize/scale` made
+        // layer.bounds a few px SMALLER than the view during a drag-resize, and each continuous
+        // layout() wrote a DIFFERENT wrong size. The gated renderTick presents via the SYNC path
+        // (`displayIfNeeded` → IOSurfaceLayer `display` → `setSurfaceSync`), which has NO size check,
+        // so a frame rendered against the stale layer.bounds was shown unconditionally; with
+        // contentsGravity = topLeft + clipsToBounds, the size-mismatched IOSurface anchored top-left
+        // and the uncovered/over-extended edge tore (the "vỡ"). Pinning layer.bounds == view.bounds
+        // makes drawFrame render an IOSurface that EXACTLY matches the layer, so the sync present lands
+        // a correct frame and any late async frame from a prior size is correctly discarded. This
+        // mirrors the iOS sublayer (sized to raw bounds, layoutSubviews) and upstream ghostty (which
+        // never sets layer.frame). The initial-attach present still lands: bounds×scale == pxW/pxH that
+        // was just handed to setPixelSize, so libghostty's IOSurface matches the layer on first frame
+        // too (cell rounding only affects grid cols/rows, not screen.width/height = the raw input).
+        if let hosted = layer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            hosted.frame = CGRect(origin: .zero, size: bounds.size)
+            hosted.contentsScale = scale
+            CATransaction.commit()
+        }
+        rdbg("macOS layout bounds=\(Int(bounds.width))x\(Int(bounds.height)) scale=\(scale) px=\(pxW)x\(pxH) rendered=\(surface?.renderedPixelSize.map { "\($0.width)x\($0.height)" } ?? "nil")")
         surface?.redraw()
+        requestPresent()   // a layout/resize changed the grid → present the reflowed frame
+        // BOUNDED settle burst: keep the sync-present path alive for ~400ms after the LAST layout so a
+        // late renderer-thread reflow frame / late host (zsh) redraw bytes get painted even though the
+        // initial `requestPresent()` ticks drain within a few display frames. Finite + self-terminating
+        // (see `scheduleSettlePresentBurst`); a continuous drag coalesces to one burst.
+        scheduleSettlePresentBurst()
     }
 
     // MARK: Input forwarding → libghostty encoder
@@ -459,9 +633,12 @@ final class GhosttyLayerBackedView: UIView {
     func detach() {
         displayLink?.invalidate()
         displayLink = nil
-        surface?.close()
+        let detaching = surface
         surface = nil
-        model?.detachSurface()
+        detaching?.close()
+        // Identity-gated detach (see the macOS sibling): a stale duplicate view's detach must not nil
+        // the live surface the model is still feeding.
+        model?.detachSurface(detaching)
     }
 
     override func layoutSubviews() {

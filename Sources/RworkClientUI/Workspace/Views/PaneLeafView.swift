@@ -1,5 +1,6 @@
 #if canImport(SwiftUI)
 import SwiftUI
+import Foundation
 import RworkInspector
 
 // MARK: - PaneLeafView (WF5 — the real content seams per kind)
@@ -178,7 +179,7 @@ private struct TerminalContentView: View {
     private var showConnectForm: Bool {
         guard !hasExplicitEndpoint, let connection = live.connection else { return false }
         switch connection.status {
-        case .disconnected, .failed: return true
+        case .disconnected, .failed, .unreachable: return true
         case .connecting, .connected, .reconnecting: return false
         }
     }
@@ -207,24 +208,18 @@ private struct TerminalContentView: View {
     /// The proven terminal composite (renderer + input bar), shown once the pane is connecting/live or
     /// when it carries an explicit endpoint.
     private var terminalComposite: some View {
-        VStack(spacing: 0) {
+        // The GUI "shell command" input bar was REMOVED (user request): you type DIRECTLY into the
+        // terminal — `GhosttyLayerBackedView.keyDown` → `surface.key` → host PTY, the natural terminal
+        // UX. This ALSO fixes live repaint: the input bar grabbed keyboard focus, which UNFOCUSED the
+        // libghostty surface (`resignFirstResponder` → `setFocus(false)`), idling its renderer loop so
+        // the screen froze. With the terminal full-bleed + auto-focused it stays focused and repaints.
+        // (iOS soft-keyboard input is handled separately by TerminalInputHost, not this bar.)
+        Group {
             if let terminalModel = live.terminalModel {
                 TerminalScreenView(model: terminalModel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Color.clear
-            }
-            if let inputBar = live.inputBar {
-                Divider()
-                // The input bar binds the SAME connection's live client (nil while disconnected, so
-                // the bar disables send). The proven OUT path: bar → client.sendInput → ordered drain.
-                // The pane id + coordinator drive the iOS first-responder arbiter (docs/22 §7).
-                InputBarView(
-                    model: inputBar,
-                    client: live.connection?.activeClient,
-                    paneID: live.id,
-                    focusCoordinator: focusCoordinator
-                )
             }
         }
     }
@@ -234,11 +229,34 @@ private struct TerminalContentView: View {
     /// (tab0/pane0). A pane with no explicit endpoint is NOT auto-dialed — the user drives Connect via
     /// the form (docs/22 WF6 DECISIONS).
     private func connectIfNeeded() async {
-        guard hasExplicitEndpoint, let connection = live.connection else { return }
+        func clog(_ m: @autoclosure () -> String) {
+            if ProcessInfo.processInfo.environment["RWORK_RENDER_DEBUG"] != nil {
+                FileHandle.standardError.write(Data("[CONN] \(m())\n".utf8))
+            }
+        }
+        guard hasExplicitEndpoint else { clog("no explicit endpoint → return"); return }
+        // The pane's `connection` (its `ConnectionViewModel`) is materialized by the store's
+        // reconcile, which can RACE this `.task`: when the view wins, `live.connection` is still nil.
+        // The old code (`guard ... let connection else { return }`) gave up immediately, so an
+        // explicit-endpoint pane that lost the race was stranded at "idle" forever and never
+        // auto-connected. Wait briefly for the session to materialize (no-op when already ready).
+        var connection = live.connection
+        var spins = 0
+        while connection == nil, spins < 100 {           // up to ~2s
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            if Task.isCancelled { return }
+            connection = live.connection
+            spins += 1
+        }
+        guard let connection else { clog("connection nil after \(spins) spins → return"); return }
+        clog("ready after \(spins) spins, status=\(String(describing: connection.status))")
         // Only connect a freshly-materialized idle pane; never re-dial a live/connecting one (a tab
         // switch re-runs `.task`, and `.id(PaneID)` keeps this view stable across reshapes).
         if connection.status == .disconnected {
             await connection.connect()
+            clog("connect() returned, status=\(String(describing: connection.status))")
+        } else {
+            clog("status \(String(describing: connection.status)) ≠ .disconnected → not dialing")
         }
         await runAutotypeIfRequested(connection: connection)
     }
