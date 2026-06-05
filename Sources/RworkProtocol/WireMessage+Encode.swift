@@ -54,6 +54,20 @@ extension WireMessage {
 
         case .bell:
             break // empty body
+
+        case let .commandStatus(status):
+            // Tag byte discriminates the two cases; `.idle`'s body is FIXED-SIZE (no
+            // length-prefix needed) — a presence flag + a manual BE Int32 exit + a BE
+            // UInt32 duration, matching the manual-binary style (never JSON/Codable).
+            switch status {
+            case .running:
+                body.append(0)
+            case let .idle(exitCode, durationMS):
+                body.append(1)
+                body.append(exitCode != nil ? 1 : 0)   // hasExit
+                body.appendBE(exitCode ?? 0)            // Int32 BE (0 when absent)
+                body.appendBE(durationMS)               // UInt32 BE
+            }
         }
 
         // Frame = 4-byte BE length prefix (covers type + body) + the payload.

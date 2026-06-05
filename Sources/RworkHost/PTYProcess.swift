@@ -6,27 +6,44 @@ import RworkProtocol
 ///
 /// ## Spawn strategy (`DECISIONS.md` / [12] Part B §1.1)
 /// `openpty()` allocates the master/slave pair with an initial `termios` (sane
-/// cooked-mode defaults + `IUTF8`) and an initial `winsize`. The child is then
-/// launched with **`posix_spawn`** (never `forkpty` — running the Swift/ObjC runtime
-/// in a forked child before `exec` is unsafe; `DECISIONS.md` Host PTY):
+/// cooked-mode defaults + `IUTF8`) and an initial `winsize`. The child is then launched
+/// with **`fork()` + `login_tty(slave)` + `execve`** (NOT `posix_spawn`, and NOT `forkpty`).
+/// The forked child runs ONLY raw libc/syscalls before `execve` — `login_tty`, `close`,
+/// `execve`, `_exit` — with NO Swift/ObjC runtime work (no allocation/ARC), so it honours the
+/// `DECISIONS.md` Host-PTY caveat that ruled out `forkpty` (running the Swift runtime in a
+/// forked child is what is unsafe — bare pre-exec syscalls are not). In the child:
 ///
-/// - `posix_spawn_file_actions_adddup2` redirects the SLAVE fd onto child
-///   stdin(0)/stdout(1)/stderr(2);
-/// - `posix_spawn_file_actions_addclose` closes the MASTER fd in the child (the child
-///   must never hold the master, or its EOF would never arrive on read);
-/// - `posix_spawnattr_setflags(POSIX_SPAWN_SETSID)` makes the child a new **session
-///   leader** (`createSession = true`).
+/// - `login_tty(slave)` bundles `setsid()` + `ioctl(slave, TIOCSCTTY, 0)` (claim the
+///   controlling terminal) + `dup2(slave → 0/1/2)` + `close(slave)` — this is what gives the
+///   shell job control + `SIGWINCH` (see the controlling-terminal section below);
+/// - `close(master)` — the child must never hold the master, or its EOF would never arrive on
+///   the parent's read;
+/// - `execve(path, argv, envp)` — argv/envp are materialised in the PARENT before `fork`.
 ///
-/// ### Controlling terminal (the load-bearing, silently-broken part)
-/// On macOS, a session leader acquires its controlling terminal the first time it
-/// `open()`s a tty that is not already some session's controlling terminal **without
-/// `O_NOCTTY`**. Because `POSIX_SPAWN_SETSID` makes the child a fresh session leader
-/// *and* the very first fd the spawned program opens is the slave (it is dup2'd onto
-/// fd 0/1/2 before any user code runs), the slave becomes the controlling terminal
-/// automatically — no explicit `TIOCSCTTY` ioctl is needed. This is verified
-/// empirically by `RworkHostTests.testControllingTTY` (`tty` prints `/dev/ttys*`, not
-/// "not a tty"; `stty size` reflects the openpty winsize; `TIOCSWINSZ` + `SIGWINCH`
-/// reflow works). See the WF-3 build-log note for the empirical finding.
+/// (The earlier `posix_spawn(POSIX_SPAWN_SETSID)` path was replaced in WF10 — it could not run
+/// `TIOCSCTTY` in the child and left interactive zsh ctty-less; see below.)
+///
+/// ### Controlling terminal (the load-bearing part — `fork`+`login_tty`, not `posix_spawn`)
+/// On macOS a session leader acquires its controlling terminal only when it `open()`s a
+/// tty WITHOUT `O_NOCTTY` *after* `setsid`. A `posix_spawn(POSIX_SPAWN_SETSID)` child only
+/// **`dup2`s** the already-open slave onto fd 0/1/2 — it never `open()`s the tty itself —
+/// so for some programs the slave never becomes the controlling terminal. Empirically
+/// (WF10, macOS 26.5.1) a `posix_spawn`ed **interactive zsh** ends up with NO ctty
+/// (`ps` shows `TTY=??`, `TPGID=0`): job control and — the visible symptom — `SIGWINCH`
+/// delivery are both broken, so a `TIOCSWINSZ` on the master delivers no resize signal and
+/// the post-resize prompt blanks with zero reprint bytes. (`/bin/sh -c …` happened to
+/// acquire it, which is why the old `testControllingTTY` over `/bin/sh` passed while the
+/// live interactive shell was broken.)
+///
+/// The fix: spawn via `fork()` and have the child call **`login_tty(slave)`**, which atomically
+/// `setsid()`s, `ioctl(slave, TIOCSCTTY, 0)`s (explicitly claiming the controlling terminal),
+/// then `dup2`s the slave onto fd 0/1/2 and closes it — then the child `close()`s the master
+/// and `execve`s. The window between `fork` and `execve` runs ONLY raw libc/syscalls
+/// (`login_tty`, `close`, `execve`, `_exit`) — NO Swift runtime / ARC / allocation — so it
+/// honours the `DECISIONS.md` "no Swift runtime in a forked child" constraint that ruled out
+/// `forkpty`. All C strings (path, argv, envp) are built in the PARENT before `fork`.
+/// Verified by `RworkHostTests.testControllingTTY` over **interactive zsh** (`tty </dev/tty`
+/// resolves; `stty size` reflects the openpty winsize; `TIOCSWINSZ` + `SIGWINCH` reflow works).
 ///
 /// `setBlocking(true)` clears `O_NONBLOCK` on the master FD around spawn — a
 /// non-blocking master breaks the blocking read relay (Happy #301).
@@ -102,30 +119,10 @@ public final class PTYProcess: @unchecked Sendable {
         // posix_openpt EINVAL caveat from [12] §1.1.
         PTYProcess.setBlocking(master)
 
-        // Build file actions: child gets the slave on 0/1/2 and never holds the master.
-        var actions = posix_spawn_file_actions_t(nil as OpaquePointer?)
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_adddup2(&actions, slave, 0)
-        posix_spawn_file_actions_adddup2(&actions, slave, 1)
-        posix_spawn_file_actions_adddup2(&actions, slave, 2)
-        // Close the original slave fd in the child once it has been dup2'd (it may be
-        // >2). Then close the master in the child — the child must not hold it.
-        if slave > 2 {
-            posix_spawn_file_actions_addclose(&actions, slave)
-        }
-        posix_spawn_file_actions_addclose(&actions, master)
-
-        // POSIX_SPAWN_SETSID: new session leader. The first uncontrolled tty the child
-        // opens without O_NOCTTY (the dup2'd slave) becomes its controlling terminal —
-        // so job control + SIGWINCH work. Verified empirically (testControllingTTY).
-        var attr = posix_spawnattr_t(nil as OpaquePointer?)
-        posix_spawnattr_init(&attr)
-        defer { posix_spawnattr_destroy(&attr) }
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
-
-        // argv: argv[0] then the rest. All C strings are built here in the PARENT
-        // (no Swift runtime work in the child — posix_spawn execs immediately).
+        // --- Build ALL C strings in the PARENT, before fork() ---
+        // The forked child must do NO Swift-runtime work (no allocation/ARC) before execve,
+        // so path/argv/envp are fully materialised here. `path` is held by `pathDup`; argv/envp
+        // are NULL-terminated arrays of strdup'd C strings. All freed in the parent's defer.
         let argv0Value = argv0 ?? executable
         let argvStrings = [argv0Value] + arguments
         var argv: [UnsafeMutablePointer<CChar>?] = argvStrings.map { strdup($0) }
@@ -136,22 +133,48 @@ public final class PTYProcess: @unchecked Sendable {
         var envp: [UnsafeMutablePointer<CChar>?] = envStrings.map { strdup($0) }
         envp.append(nil)
 
+        let pathDup = strdup(executable)
+
         defer {
             for p in argv where p != nil { free(p) }
             for p in envp where p != nil { free(p) }
+            free(pathDup)
         }
 
-        var childPID: pid_t = 0
-        let rc = executable.withCString { path in
-            posix_spawn(&childPID, path, &actions, &attr, argv, envp)
+        // fork(), NOT posix_spawn: posix_spawn cannot run TIOCSCTTY in the child, and a
+        // POSIX_SPAWN_SETSID child that only dup2s the slave does not reliably acquire the
+        // controlling terminal (interactive zsh ends up ctty-less → no SIGWINCH; see the
+        // type doc). The child below claims the ctty explicitly via login_tty.
+        //
+        // Swift's Darwin overlay marks `fork()` unavailable, so we resolve the raw libc symbol
+        // once via `dlsym` and call it through a C function pointer. This is the literal libc
+        // `fork(2)`; it has the same single-threaded-child semantics. The child does NO
+        // Swift-runtime work before `execve` (only `login_tty`/`close`/`execve`/`_exit`), so
+        // running in a forked child is safe here (the `DECISIONS.md` forkpty caveat is about
+        // running the Swift/ObjC runtime in the child, which we do not).
+        let childPID = PTYProcess.rawFork()
+        if childPID == 0 {
+            // ===== CHILD: raw syscalls only, no Swift runtime. =====
+            // login_tty(slave) atomically: setsid(); ioctl(slave, TIOCSCTTY, 0);
+            // dup2(slave → 0,1,2); close(slave) if >2. This is what makes the slave the
+            // controlling terminal (so SIGWINCH / job control reach the shell).
+            if login_tty(slave) != 0 { _exit(127) }
+            // The child must never hold the master, or its EOF would never arrive on read.
+            close(master)
+            _ = execve(pathDup, argv, envp)
+            // execve only returns on failure.
+            _exit(127)
         }
 
-        // Parent closes the slave unconditionally — the parent only uses the master.
+        // ===== PARENT =====
+        // Parent uses only the master; close the slave unconditionally.
         close(slave)
 
-        guard rc == 0 else {
+        guard childPID > 0 else {
+            // fork() failed: errno set; reclaim the master.
+            let err = errno
             close(master)
-            throw HostError.posix(rc)
+            throw HostError.posix(err)
         }
 
         self.masterFD = master
@@ -196,6 +219,22 @@ public final class PTYProcess: @unchecked Sendable {
         }
     }
 
+    // MARK: rawFork
+
+    /// `fork(2)` resolved at runtime, because Swift's Darwin overlay marks `fork()` *unavailable*
+    /// (it discourages forking from the Swift runtime in general). We need the real syscall for the
+    /// `login_tty` controlling-terminal acquisition (see ``spawn(_:arguments:environment:argv0:cols:rows:)``);
+    /// the child does no Swift-runtime work before `execve`, so this specific use is safe. Resolved once
+    /// via `dlsym(RTLD_DEFAULT, "fork")` and cached.
+    private typealias ForkFn = @convention(c) () -> pid_t
+    private static let rawForkFn: ForkFn = {
+        guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2 /* RTLD_DEFAULT */), "fork") else {
+            fatalError("PTYProcess: could not resolve fork(2)")
+        }
+        return unsafeBitCast(sym, to: ForkFn.self)
+    }()
+    private static func rawFork() -> pid_t { rawForkFn() }
+
     // MARK: Resize
 
     /// Applies a terminal size to the PTY via `TIOCSWINSZ` (driven by `resize`). The
@@ -213,6 +252,39 @@ public final class PTYProcess: @unchecked Sendable {
     public func terminate() {
         guard pid > 0 else { return }
         kill(pid, SIGTERM)
+    }
+
+    /// Sends `SIGKILL` to the child — the un-ignorable escalation when a `SIGTERM` did not
+    /// take (a child that blocks/ignores `SIGTERM`, or a foreground job holding the slave
+    /// open). Used by ``MuxChannelSession/shutdown()`` as the fallback so the parked
+    /// `read()` on the master is GUARANTEED to return (slave closes on the child's death →
+    /// master EOFs/EIOs) and a subsequent ``closeMaster()`` cannot block. A no-op once the
+    /// child is reaped (`pid` is immutable-after-spawn, but the kernel just drops a signal
+    /// to a dead-and-reaped pid).
+    public func forceTerminate() {
+        guard pid > 0 else { return }
+        kill(pid, SIGKILL)
+    }
+
+    /// Blocks the CALLER until the child has been reaped (the detached reaper observed its
+    /// exit and recorded a code) or `timeout` elapses, whichever comes first. Synchronous,
+    /// poll-based — ``MuxChannelSession/shutdown()`` is not `async` and so cannot
+    /// `await waitForExit()` inline, but it must still let the parked `read()` drain before
+    /// closing the master. This does NOT itself call `waitpid` (the detached reaper from
+    /// ``startReaper(pid:)`` owns that); it only WAITS for that reaper's result to land,
+    /// polling the one-shot ``waitExitCode()`` peek.
+    ///
+    /// - Returns: `true` if the child was observed exited within the window, `false` on
+    ///   timeout (caller then escalates to ``forceTerminate()``).
+    @discardableResult
+    public func waitUntilExited(timeout: TimeInterval, step: TimeInterval = 0.005) -> Bool {
+        if waitExitCode() != nil { return true }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if waitExitCode() != nil { return true }
+            Thread.sleep(forTimeInterval: step)
+        }
+        return waitExitCode() != nil
     }
 
     /// Closes the PTY master fd exactly once and marks it `-1`.
