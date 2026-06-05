@@ -56,7 +56,7 @@ public struct ConnectionView: View {
             Button("Disconnect", role: .destructive) {
                 Task { await model.disconnect() }
             }
-        case .disconnected, .failed:
+        case .disconnected, .failed, .unreachable:
             Button("Connect") {
                 Task { await model.connect() }
             }
@@ -75,9 +75,10 @@ public struct ConnectionView: View {
     private var badgeColor: Color {
         switch model.status {
         case .connected: return .green
-        case .connecting, .reconnecting: return .yellow
+        case .connecting: return .yellow
+        case .reconnecting: return .orange
         case .disconnected: return .secondary
-        case .failed: return .red
+        case .failed, .unreachable: return .red
         }
     }
 }
