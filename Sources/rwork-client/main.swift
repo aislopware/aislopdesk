@@ -295,10 +295,20 @@ Task {
         for await event in client.events {
             switch event {
             case let .title(t):
-                stderrLine("title: \(t)")
+                // In interactive raw mode the host's OSC title rides the output stream and the
+                // local terminal sets the window/tab title directly — echoing it to stderr only
+                // smears the rendered screen. Surface it only in non-interactive (pipe/scripting)
+                // mode, where stderr is separate and the title is useful diagnostic output.
+                if !interactive { stderrLine("title: \(t)") }
             case .bell:
                 // Forward the bell to the local terminal.
                 writeAll(fd: STDOUT_FILENO, Data([0x07]))
+            case .commandStatus:
+                // OSC 133 command status is a GUI-client affordance (per-pane running/idle dot +
+                // long-command notification). In raw-mode interactive CLI the OSC 133 marks ride
+                // the output stream and the local terminal renders them natively, so the structured
+                // control event is a no-op here.
+                break
             case let .exit(code):
                 exitState.setExit(code)
                 stderrLine("remote shell exited (code \(code))")

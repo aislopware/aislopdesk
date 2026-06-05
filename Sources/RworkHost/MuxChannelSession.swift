@@ -52,6 +52,26 @@ final class MuxChannelSession: @unchecked Sendable {
     /// Built in ``startRelay()`` once the `readLoop` exists (so the gate can drive it). `nil` until then.
     private var outputGate: PausableQueueGate?
 
+    // MARK: - Resize micro-debounce (latest-wins backstop)
+
+    /// One-frame (default) settle window for the inline resize micro-debounce. Injected so a test
+    /// drives the deadline deterministically (the `StaticIDRDecider` `now`-injection discipline) —
+    /// `.zero` in tests applies the LATEST size on the next runloop turn with no wall-clock sleep.
+    private let resizeDebounce: Duration
+    /// Guards the resize-debounce state below. The state is touched from THREE contexts — the serial
+    /// `controlTask`, the debounce `Task` when it fires, and `shutdown()` — so unlike the
+    /// single-writer `controlTask`-only fields it needs a lock (the codebase's `taskLock`/`replayLock`
+    /// discipline). Held only around O(1) field reads/writes + the inline `setWindowSize` ioctl.
+    private let resizeLock = NSLock()
+    /// The latest pending winsize awaiting a debounced apply; `nil` when nothing is pending.
+    private var pendingResize: (cols: UInt16, rows: UInt16, px: UInt16, py: UInt16)?
+    /// The in-flight debounce task (cancel-replace, à la `WorkspaceStore.scheduleSave`).
+    private var resizeDebounceTask: Task<Void, Never>?
+    /// Generation guard: `scheduleResize` bumps it; a debounce task PAST its sleep re-checks it and
+    /// bails if a newer resize superseded it. `Task.cancel()` cannot interrupt a task already past
+    /// its `sleep`, so the generation — not cancellation alone — is what makes the LATEST size win.
+    private var resizeGeneration: UInt64 = 0
+
     /// Called once when the child exits so the owner can drop this channel from its map.
     var onExit: (@Sendable (UInt32) -> Void)?
 
@@ -60,11 +80,20 @@ final class MuxChannelSession: @unchecked Sendable {
         case exit(code: Int32)
     }
 
-    init(channelID: UInt32, pty: PTYProcess, data: MuxSubChannel, control: MuxSubChannel) {
+    /// - Parameter resizeDebounce: the latest-wins settle window for `TIOCSWINSZ` applies (default
+    ///   ~one frame). See ``scheduleResize(cols:rows:px:py:)`` for WHY a host-side debounce exists.
+    init(
+        channelID: UInt32,
+        pty: PTYProcess,
+        data: MuxSubChannel,
+        control: MuxSubChannel,
+        resizeDebounce: Duration = .milliseconds(16)
+    ) {
         self.channelID = channelID
         self.pty = pty
         self.data = data
         self.control = control
+        self.resizeDebounce = resizeDebounce
     }
 
     func startRelay() {
@@ -103,10 +132,14 @@ final class MuxChannelSession: @unchecked Sendable {
         }
 
         let sniffer = HostTitleBellSniffer()
+        let cmdSniffer = HostCommandStatusSniffer()
         let readLoop = PTYReadLoop(
             fd: masterFD,
             onChunk: { [weak self] chunk in
-                let controlMsgs = sniffer.observe(chunk)
+                // Two non-destructive sniffers over the SAME chunk: title/bell + OSC 133
+                // command status. Both only OBSERVE; the bytes are forwarded unchanged below.
+                var controlMsgs = sniffer.observe(chunk)
+                controlMsgs += cmdSniffer.observe(chunk)
                 // Account the chunk in the bounded queue BEFORE enqueueing; if it pushes the FIFO
                 // to/over the bound, PAUSE the read loop so the kernel PTY buffer fills and
                 // backpressures the shell (the real flood fix).
@@ -135,21 +168,38 @@ final class MuxChannelSession: @unchecked Sendable {
         }
 
         // CONTROL: resize / bye / ack on the CONTROL sub-channel.
+        //
+        // RESIZE backstop (defense-in-depth): a fast client drag can deliver ~100 distinct `.resize`
+        // (the client coalescer is the PRIMARY converger, but an older/replayed/slow client may not
+        // coalesce). Applying each `TIOCSWINSZ` immediately fires zsh's SIGWINCH handler at every
+        // INTERMEDIATE size; its incremental prompt-redraw math then desyncs against a size that keeps
+        // changing → orphaned cursor / misaligned prompt that only a fresh prompt heals. A LOCAL
+        // terminal never hits this because the KERNEL coalesces SIGWINCH (the app reads the latest
+        // size once). So we restore that: latest-wins micro-debounce on this SERIAL loop — overwrite
+        // `pendingResize`, cancel+re-arm ONE debounce task that applies the LATEST size once after a
+        // one-frame settle. INLINE on the serial loop (no Task-per-resize → no reorder hazard); the
+        // ioctl itself (microseconds) stays inline — only the FREQUENCY of distinct applies is bounded.
         controlTask = Task {
             do {
                 for try await message in control.inbound {
                     switch message {
                     case let .resize(cols, rows, px, py):
-                        pty.setWindowSize(cols: cols, rows: rows, pxWidth: px, pxHeight: py)
+                        self.scheduleResize(cols: cols, rows: rows, px: px, py: py)
                     case let .ack(seq):
+                        // A non-resize control message: FLUSH any pending size FIRST so the serial
+                        // loop's ordering contract holds (a size that arrived before this ack lands
+                        // before the ack's effects) and no settled size is stranded.
+                        self.flushPendingResize()
                         self.acknowledge(upTo: seq)
                     case .bye:
-                        break // client leaving cleanly; keep-alive shell survives for resume.
+                        self.flushPendingResize() // client leaving cleanly: never strand a size at teardown.
                     default:
-                        break
+                        self.flushPendingResize()
                     }
                 }
             } catch { /* control gone */ }
+            // Channel closed: apply any settled-but-undebounced final size before the loop ends.
+            self.flushPendingResize()
         }
 
         let id = channelID
@@ -160,6 +210,27 @@ final class MuxChannelSession: @unchecked Sendable {
         }
     }
 
+    /// Tears this channel down FOR GOOD and releases its PTY + master fd.
+    ///
+    /// ⚠️ DESTROY-ONLY. At S1 every caller of `shutdown()` is a genuine end-of-session:
+    /// `HostServer.stop()` (daemon stopping) and `HostServer.removeMuxSession()` — itself
+    /// reached only from the child's own exit, a peer `channelClose`, or a whole-link drop
+    /// (peer crash / TCP reset). S1 has NO per-channel reconnect/resume, so none of those is
+    /// keep-alive: the shell MUST die here, or the PTY + master fd leak on every disconnect.
+    /// WHEN PER-CHANNEL RESUME LANDS, a resume-able disconnect must route to a NEW `detach()`
+    /// that stops the read loop + closes the master WITHOUT killing the child — it must NOT
+    /// come through here (this path SIGKILLs the shell).
+    ///
+    /// ### Why the child is killed BEFORE `closeMaster()` (the latent-hang fix)
+    /// `closeMaster()` → `close(masterFD)` BLOCKS on macOS while the `PTYReadLoop` is parked
+    /// inside an in-flight kernel `read()` on that same fd. `readLoop?.stop()` signals the
+    /// loop's `NSCondition` gate but CANNOT interrupt a `read()` already in the kernel — that
+    /// read only returns when the slave closes, i.e. when the child dies. For a self-exiting
+    /// child the reader is already at EOF, but an INTERACTIVE shell (`/bin/sh` awaiting input)
+    /// never exits on its own, so without killing it `close()` hangs FOREVER. So: `terminate()`
+    /// (SIGTERM) → bounded wait for the reaper → `forceTerminate()` (SIGKILL) if it did not
+    /// take → short re-wait. Once the child is dead the slave closes, the parked `read()`
+    /// returns EOF/EIO, the loop exits, and `closeMaster()` is non-blocking.
     func shutdown() {
         taskLock.lock()
         readLoop?.stop()
@@ -167,11 +238,64 @@ final class MuxChannelSession: @unchecked Sendable {
         outputContinuation = nil
         inputTask?.cancel()
         controlTask?.cancel()
+        resizeDebounceTask?.cancel()
         exitTask?.cancel()
         outputTask?.cancel()
         taskLock.unlock()
+        // DESTROY-path child termination (see the doc comment): SIGTERM, then a bounded wait
+        // for the reaper to observe the exit; if the child blocked/ignored SIGTERM (or a
+        // foreground job kept the slave open), escalate to SIGKILL and re-wait briefly. This
+        // GUARANTEES the parked read() returns before close(masterFD), so close() never hangs.
         pty.terminate()
+        if !pty.waitUntilExited(timeout: 0.25) {
+            pty.forceTerminate()
+            pty.waitUntilExited(timeout: 0.25)
+        }
         pty.closeMaster()
+    }
+
+    // MARK: - Resize micro-debounce (latest-wins; restores kernel SIGWINCH-coalescing for any client)
+
+    /// Buffers `pendingResize` to the LATEST size and (cancel-)re-arms a single debounce task that
+    /// applies it once after `resizeDebounce`. Because each `.resize` RE-ARMS (never blocks) the task,
+    /// the debounce ALWAYS fires after the LAST resize → the latest size always lands (trailing-edge
+    /// guarantee). A generation guard makes a task already past its sleep bail if superseded — the
+    /// exact `WorkspaceStore.scheduleSave` cancel-replace+generation pattern.
+    private func scheduleResize(cols: UInt16, rows: UInt16, px: UInt16, py: UInt16) {
+        resizeLock.lock()
+        pendingResize = (cols, rows, px, py)
+        resizeGeneration &+= 1
+        let generation = resizeGeneration
+        resizeDebounceTask?.cancel()
+        let debounce = resizeDebounce
+        resizeDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: debounce)
+            } catch {
+                return // superseded (cancelled) before firing — the re-armed task applies the latest.
+            }
+            guard let self else { return }
+            // Past the sleep: `Task.cancel()` no longer helps, so the generation guard decides. Apply
+            // only if still the latest scheduled resize (checked under the lock, atomic with the ioctl).
+            self.flushPendingResize(ifGeneration: generation)
+        }
+        resizeLock.unlock()
+    }
+
+    /// Applies the buffered `pendingResize` (if any) via `TIOCSWINSZ` exactly once and clears it. The
+    /// single inline `setWindowSize` (microseconds) under `resizeLock`. Idempotent: a no-op when
+    /// nothing is pending, so the flush-on-ack / flush-on-bye / flush-on-close paths can all call it.
+    ///
+    /// - Parameter ifGeneration: when non-nil (the debounce-fire path), apply only if it still matches
+    ///   `resizeGeneration` — a stale already-past-sleep task must not apply an old size. The flush
+    ///   paths (ack/bye/close) pass `nil` to apply UNCONDITIONALLY (they must never strand a size).
+    private func flushPendingResize(ifGeneration generation: UInt64? = nil) {
+        resizeLock.lock()
+        if let generation, resizeGeneration != generation { resizeLock.unlock(); return }
+        guard let r = pendingResize else { resizeLock.unlock(); return }
+        pendingResize = nil
+        resizeLock.unlock()
+        pty.setWindowSize(cols: r.cols, rows: r.rows, pxWidth: r.px, pxHeight: r.py)
     }
 
     // MARK: - Bounded-output-queue backpressure (lock-guarded; the value type is not Sendable)

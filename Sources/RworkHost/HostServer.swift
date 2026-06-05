@@ -56,6 +56,19 @@ public final class HostServer: @unchecked Sendable {
     /// A hook the daemon can set to log session lifecycle to stderr.
     public var onLog: (@Sendable (String) -> Void)?
 
+    /// An optional hook called with the current count of distinct client *connections* (one
+    /// shared TCP mux connection per client, regardless of how many panes/channels ride it —
+    /// the same semantics as ``liveSessionIDs()``). Fired whenever a channel is added or
+    /// removed (so the count rises on the first channel of a new connection and falls to 0
+    /// when the last channel of the last connection goes away), and reset to 0 on ``stop()``.
+    ///
+    /// Purely observational and ADDITIVE: it defaults to `nil`, so the headless `rwork-hostd`
+    /// daemon (which never sets it) is byte-identical. It exists for the menu-bar host app,
+    /// which surfaces a live "N client(s) connected" line without polling. The closure is
+    /// `@Sendable` and may be invoked off the main actor (from the lock-guarded spawn/remove
+    /// paths) — the app hops to its actor before touching UI state.
+    public var onConnectionCountChanged: (@Sendable (Int) -> Void)?
+
     public init(
         port: UInt16,
         shellPath: String? = nil,
@@ -94,10 +107,25 @@ public final class HostServer: @unchecked Sendable {
 
     /// Synchronously removes and returns every live mux channel session (no `await` across the lock).
     private func drainMuxSessions() -> [MuxChannelSession] {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         let live = Array(muxSessions.values)
         muxSessions.removeAll()
+        lock.unlock()
+        // The map is now empty → report 0 distinct client connections (the `stop()` path).
+        onConnectionCountChanged?(0)
         return live
+    }
+
+    /// Snapshots the count of distinct client *connections* carrying channels (one shared mux
+    /// connection per client, matching ``liveSessionIDs()``) under the lock, then fires the
+    /// optional `onConnectionCountChanged` hook outside the lock. No-op when the hook is unset
+    /// (the headless daemon path) — but the cheap lock/count is skipped entirely in that case.
+    private func emitConnectionCount() {
+        guard let hook = onConnectionCountChanged else { return }
+        lock.lock()
+        let count = Set(muxSessions.keys.map(\.connectionID)).count
+        lock.unlock()
+        hook(count)
     }
 
     /// Snapshot of the live connection ids carrying channels (diagnostics / tests).
@@ -144,7 +172,18 @@ public final class HostServer: @unchecked Sendable {
             let argv0 = HostEnvironment.loginArgv0(forShell: shellPath)
             switch launchMode {
             case .shell:
-                try pty.spawn(shellPath, environment: HostEnvironment.curated(), argv0: argv0)
+                // WF4: layer the zsh shell-integration shim (a generated ZDOTDIR) so the
+                // interactive shell reprints its prompt after a resize. Opt-out via
+                // RWORK_SHELL_INTEGRATION=0; non-zsh shells are left untouched. The shim sources
+                // the user's real startup files, so their env / prompt is preserved.
+                var env = HostEnvironment.curated()
+                if let overrides = ShellIntegration.makeEnvironmentOverrides(
+                    parent: ProcessInfo.processInfo.environment,
+                    shellPath: shellPath
+                ) {
+                    for (key, value) in overrides { env[key] = value }
+                }
+                try pty.spawn(shellPath, environment: env, argv0: argv0)
             case .claudeCode(let profile):
                 try pty.spawn(
                     shellPath,
@@ -172,6 +211,7 @@ public final class HostServer: @unchecked Sendable {
         lock.lock()
         muxSessions[key] = session
         lock.unlock()
+        emitConnectionCount()
         session.startRelay()
         Task { await connection.sendOpenAck(open.channelID, accepted: true) }
         onLog?("mux channel \(open.channelID) (conn \(connectionID)): shell \(shellPath) (pid \(pty.pid)) attached")
@@ -181,6 +221,10 @@ public final class HostServer: @unchecked Sendable {
         lock.lock()
         let session = muxSessions.removeValue(forKey: key)
         lock.unlock()
+        // Only re-count when a session was actually removed (the path is idempotent with the
+        // peer-close / child-exit race, so a second remove of the same key is a no-op and must
+        // not re-emit an unchanged count).
+        if session != nil { emitConnectionCount() }
         session?.shutdown()
     }
 }

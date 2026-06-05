@@ -72,28 +72,85 @@ public final class NWMuxByteLink: MuxByteLink, @unchecked Sendable {
 /// the receive loops. This is the `makeConnection` factory the production ``ConnectionRegistry``
 /// injects.
 public enum LiveMuxConnectionFactory {
+    /// Wall-clock ceiling on the whole socket-establishment + preamble sequence. A dead/unreachable
+    /// host parks `NWConnection` in `.waiting` (waitForConnectivity) FOREVER — never a terminal state
+    /// — so without this the connect hangs and the UI is stuck at "connecting" indefinitely. Matches
+    /// the client's default `handshakeTimeout` (`RworkClient.connect`, `.seconds(10)`).
+    public static let connectTimeout: Duration = .seconds(10)
+
     @MainActor
     public static func makeConnection(host: String, port: UInt16) async throws -> MuxNWConnection {
-        let endpointPort = NWEndpoint.Port(rawValue: port) ?? .any
-        let endpointHost = NWEndpoint.Host(host)
+        try await makeConnection(host: host, port: port, timeout: connectTimeout)
+    }
 
-        // One connectionID pairs the two physical sockets into one shared connection on the host.
-        let connectionID = UUID()
+    /// Timeout-bounded variant. The whole control+data establishment + preamble write runs inside one
+    /// `withMuxConnectTimeout`: if it does not finish within `timeout`, the work branch is CANCELLED.
+    /// `startAndWaitReady` is cancellation-aware — cancellation calls `NWConnection.cancel()`, driving
+    /// the socket to `.cancelled` (so it is torn down, not leaked) and unblocking the awaiter — so the
+    /// timeout is clean and the dead-host case surfaces a thrown ``RworkTransportError/timedOut(_:)``
+    /// instead of hanging. This is the "transport-level handshake deadline" the client UI asks for; it
+    /// does NOT wrap `RworkClient.connect` in a task group (which deadlocked the cooperative pool — see
+    /// `ConnectionViewModel.connect`), only the inner NWConnection establishment.
+    @MainActor
+    static func makeConnection(host: String, port: UInt16, timeout: Duration) async throws -> MuxNWConnection {
+        try await withMuxConnectTimeout(timeout, host: host, port: port) {
+            let endpointPort = NWEndpoint.Port(rawValue: port) ?? .any
+            let endpointHost = NWEndpoint.Host(host)
 
-        let controlConn = NWConnection(host: endpointHost, port: endpointPort, using: TransportParameters.makeTCP())
-        try await controlConn.startAndWaitReady(on: DispatchQueue(label: "rwork.mux.control.ready"))
-        try await controlConn.sendRaw(ChannelAssociation.muxControlPreamble(connectionID: connectionID))
+            // One connectionID pairs the two physical sockets into one shared connection on the host.
+            let connectionID = UUID()
 
-        let dataConn = NWConnection(host: endpointHost, port: endpointPort, using: TransportParameters.makeTCP())
-        try await dataConn.startAndWaitReady(on: DispatchQueue(label: "rwork.mux.data.ready"))
-        try await dataConn.sendRaw(ChannelAssociation.muxDataPreamble(connectionID: connectionID))
+            let controlConn = NWConnection(host: endpointHost, port: endpointPort, using: TransportParameters.makeTCP())
+            try await controlConn.startAndWaitReady(on: DispatchQueue(label: "rwork.mux.control.ready"))
+            try await controlConn.sendRaw(ChannelAssociation.muxControlPreamble(connectionID: connectionID))
 
-        let connection = MuxNWConnection(
-            role: .client,
-            controlLink: NWMuxByteLink(connection: controlConn, label: "control"),
-            dataLink: NWMuxByteLink(connection: dataConn, label: "data")
-        )
-        await connection.start()
-        return connection
+            let dataConn = NWConnection(host: endpointHost, port: endpointPort, using: TransportParameters.makeTCP())
+            try await dataConn.startAndWaitReady(on: DispatchQueue(label: "rwork.mux.data.ready"))
+            try await dataConn.sendRaw(ChannelAssociation.muxDataPreamble(connectionID: connectionID))
+
+            let connection = MuxNWConnection(
+                role: .client,
+                controlLink: NWMuxByteLink(connection: controlConn, label: "control"),
+                dataLink: NWMuxByteLink(connection: dataConn, label: "data")
+            )
+            await connection.start()
+            return connection
+        }
+    }
+}
+
+/// Races `body` against a `Task.sleep(timeout)`; whichever finishes first wins and the loser is
+/// CANCELLED. On timeout, throws ``RworkTransportError/timedOut(_:)``; the cancelled `body`'s
+/// in-flight `startAndWaitReady` cancels its `NWConnection`, so the socket is torn down (no leak).
+///
+/// This is the structured-race equivalent of `Tests/.../withTestTimeout`, in the transport target so
+/// production can bound the dead-host connect. It races the SOCKET ESTABLISHMENT (a child of THIS
+/// task group) — NOT the higher-level `RworkClient.connect` — so it does not reintroduce the
+/// `ConnectionViewModel` deadlock (which came from wrapping `client.connect` itself).
+private func withMuxConnectTimeout(
+    _ timeout: Duration,
+    host: String,
+    port: UInt16,
+    _ body: @escaping @Sendable () async throws -> MuxNWConnection
+) async throws -> MuxNWConnection {
+    try await withThrowingTaskGroup(of: MuxNWConnection?.self) { group in
+        group.addTask { try await body() }
+        group.addTask {
+            try? await Task.sleep(for: timeout)
+            return nil   // timer branch: a `nil` result signals "timed out"
+        }
+        defer { group.cancelAll() }
+        // The FIRST branch to finish decides the outcome. If the connect won it returns a real
+        // connection; if the timer won (or the connect returned nil — impossible for `body`) it is
+        // `nil` ⇒ timeout. Either way `cancelAll()` (deferred) cancels the loser, so a still-pending
+        // `startAndWaitReady` cancels its NWConnection and the socket is reclaimed.
+        while let result = try await group.next() {
+            if let connection = result { return connection }   // connect branch won
+            // Timer branch won first → bounded timeout. (The deferred cancelAll tears down the connect.)
+            throw RworkTransportError.timedOut("connect to \(host):\(port) exceeded \(timeout)")
+        }
+        // Group drained without a connection (connect branch threw and timer was cancelled): the thrown
+        // error already propagated out of `group.next()`. Defensive fallback only.
+        throw RworkTransportError.timedOut("connect to \(host):\(port) exceeded \(timeout)")
     }
 }

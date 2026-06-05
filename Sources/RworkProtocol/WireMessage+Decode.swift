@@ -69,6 +69,20 @@ extension WireMessage {
         case 22: // bell
             return .bell
 
+        case 23: // commandStatus
+            let tag = try reader.readUInt8()
+            switch tag {
+            case 0:
+                return .commandStatus(.running)
+            case 1:
+                let hasExit = try reader.readUInt8()
+                let exitRaw = try reader.readInt32()
+                let durationMS = try reader.readUInt32()
+                return .commandStatus(.idle(exitCode: hasExit != 0 ? exitRaw : nil, durationMS: durationMS))
+            default:
+                throw RworkError.malformedBody("commandStatus: invalid tag \(tag)")
+            }
+
         default:
             throw RworkError.unknownMessageType(type)
         }
