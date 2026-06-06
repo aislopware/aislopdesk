@@ -48,6 +48,15 @@ final class InputMechanicsTests: XCTestCase {
         XCTAssertEqual(m.accumulated, 0)
     }
 
+    func testFloatingCursorNonFiniteDeltaIsIgnored() {
+        var m = FloatingCursorMapping()
+        XCTAssertEqual(m.feed(deltaX: .nan), [])
+        XCTAssertEqual(m.feed(deltaX: .infinity), [])
+        XCTAssertEqual(m.feed(deltaX: -.infinity), [])
+        XCTAssertEqual(m.accumulated, 0, accuracy: 0.0001, "non-finite deltas never poison the accumulator")
+        XCTAssertEqual(m.feed(deltaX: 6), [.right], "a finite delta after a non-finite one still works")
+    }
+
     func testFloatingCursorByteEncoding() {
         XCTAssertEqual(FloatingCursorMapping.bytes(for: .right), [0x1B, 0x5B, 0x43]) // ESC [ C
         XCTAssertEqual(FloatingCursorMapping.bytes(for: .left), [0x1B, 0x5B, 0x44])  // ESC [ D
@@ -108,5 +117,121 @@ final class InputMechanicsTests: XCTestCase {
         // Command-combos are app shortcuts, not IME text.
         let press = InputRouting.KeyPress(characters: "c", command: true)
         XCTAssertEqual(InputRouting.route(press), .keyEncoding)
+    }
+
+    // MARK: KeyEncoding — the platform-agnostic terminal byte mapping (the headless-testable core of
+    // the iOS key path; the UIKit `TerminalInputResponderView` forwards to it). R12 #3 / #5 / #6.
+
+    // #3 — Ctrl maps the full C0 control range, not just letters.
+
+    func testControlCodeMapsLetters() {
+        XCTAssertEqual(KeyEncoding.controlCode(for: "a"), [0x01])
+        XCTAssertEqual(KeyEncoding.controlCode(for: "c"), [0x03])
+        XCTAssertEqual(KeyEncoding.controlCode(for: "C"), [0x03])  // case-insensitive
+        XCTAssertEqual(KeyEncoding.controlCode(for: "z"), [0x1A])
+    }
+
+    func testControlCodeMapsC0SymbolRange() {
+        XCTAssertEqual(KeyEncoding.controlCode(for: "["), [0x1B])   // Ctrl-[ = ESC (the headline fix)
+        XCTAssertEqual(KeyEncoding.controlCode(for: "\\"), [0x1C])
+        XCTAssertEqual(KeyEncoding.controlCode(for: "]"), [0x1D])
+        XCTAssertEqual(KeyEncoding.controlCode(for: "^"), [0x1E])
+        XCTAssertEqual(KeyEncoding.controlCode(for: "_"), [0x1F])
+        XCTAssertEqual(KeyEncoding.controlCode(for: "@"), [0x00])
+        XCTAssertEqual(KeyEncoding.controlCode(for: " "), [0x00])   // Ctrl-Space = NUL
+        XCTAssertEqual(KeyEncoding.controlCode(for: "?"), [0x7F])   // Ctrl-? = DEL
+    }
+
+    func testEncodeCtrlBracketSendsESC() {
+        // The full encode path: Ctrl+[ (charactersIgnoringModifiers "[", not a special key) → ESC.
+        let press = InputRouting.KeyPress(
+            characters: "[", charactersIgnoringModifiers: "[", control: true, isSpecial: false)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x1B])
+    }
+
+    // #5 — Option + special key applies the xterm meta/ESC prefix (was dropped → bare key).
+
+    func testOptionBackspaceEmitsMetaDEL() {
+        let press = InputRouting.KeyPress(characters: "\u{7F}", option: true, isSpecial: true)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x1B, 0x7F])    // ESC + DEL = delete-previous-word
+    }
+
+    func testPlainBackspaceEmitsBareDEL() {
+        let press = InputRouting.KeyPress(characters: "\u{7F}", isSpecial: true)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x7F])          // non-regression of the plain path
+    }
+
+    func testOptionReturnEmitsMetaCR() {
+        let press = InputRouting.KeyPress(characters: "\r", option: true, isSpecial: true)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x1B, 0x0D])
+    }
+
+    // #6 — Shift+Tab is back-tab (CBT, ESC [ Z); plain Tab stays forward TAB.
+
+    func testShiftTabEncodesBackTab() {
+        let press = InputRouting.KeyPress(characters: "\t", shift: true, isSpecial: true)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x1B, 0x5B, 0x5A])
+    }
+
+    func testPlainTabStillForwardTab() {
+        let press = InputRouting.KeyPress(characters: "\t", isSpecial: true)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x09])
+    }
+
+    // Regression guards on the letter / meta / command / arrow-injection paths.
+
+    func testEncodeAltLetterMetaPrefix() {
+        let press = InputRouting.KeyPress(characters: "∫", charactersIgnoringModifiers: "b", option: true)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x1B, 0x62])    // ESC b
+    }
+
+    func testEncodeCommandComboSendsNothing() {
+        let press = InputRouting.KeyPress(characters: "c", command: true)
+        XCTAssertNil(KeyEncoding.encode(press))
+    }
+
+    // R13 #5 — Ctrl+Option+letter keeps the meta/ESC prefix (was dropping Option → bare Ctrl code).
+
+    func testEncodeCtrlOptionLetterMetaControlPrefix() {
+        let press = InputRouting.KeyPress(
+            characters: "", charactersIgnoringModifiers: "b", control: true, option: true)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x1B, 0x02])   // ESC + Ctrl-B (meta + control code)
+    }
+
+    func testEncodeCtrlOnlyLetterStillBareControlCode() {
+        let press = InputRouting.KeyPress(characters: "", charactersIgnoringModifiers: "c", control: true)
+        XCTAssertEqual(KeyEncoding.encode(press), [0x03])         // non-regression: bare Ctrl-C
+    }
+
+    // R13 #6 — accessory-bar Ctrl fold for soft-keyboard text (was a dead no-op → Ctrl-C impossible).
+
+    func testFoldArmedControlFoldsFirstScalar() {
+        let folded = KeyEncoding.foldArmedControl("c", armed: true)
+        XCTAssertEqual(folded?.controlBytes, [0x03])   // Ctrl-C
+        XCTAssertEqual(folded?.rest, "")
+    }
+
+    func testFoldArmedControlSplitsRest() {
+        let folded = KeyEncoding.foldArmedControl("cat", armed: true)
+        XCTAssertEqual(folded?.controlBytes, [0x03])   // Ctrl-C folds the first scalar…
+        XCTAssertEqual(folded?.rest, "at")             // …the remainder stays plain text
+    }
+
+    func testFoldArmedControlNotArmedOrEmptyIsNil() {
+        XCTAssertNil(KeyEncoding.foldArmedControl("c", armed: false), "unarmed → pass the text through")
+        XCTAssertNil(KeyEncoding.foldArmedControl("", armed: true), "empty commit → nothing to fold")
+    }
+
+    func testEncodeArrowFallbackInjected() {
+        // The arrow keys are resolved by the iOS layer (UIKit constants) and injected; an empty
+        // `characters` special falls through to `arrowFallback`, then takes the Option meta prefix.
+        let up = InputRouting.KeyPress(characters: "", charactersIgnoringModifiers: "UP", isSpecial: true)
+        let fallback: (InputRouting.KeyPress) -> [UInt8]? = {
+            $0.charactersIgnoringModifiers == "UP" ? [0x1B, 0x5B, 0x41] : nil
+        }
+        XCTAssertEqual(KeyEncoding.encode(up, arrowFallback: fallback), [0x1B, 0x5B, 0x41])
+        let optUp = InputRouting.KeyPress(
+            characters: "", charactersIgnoringModifiers: "UP", option: true, isSpecial: true)
+        XCTAssertEqual(KeyEncoding.encode(optUp, arrowFallback: fallback), [0x1B, 0x1B, 0x5B, 0x41])
     }
 }

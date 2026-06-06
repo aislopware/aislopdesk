@@ -60,7 +60,82 @@ final class RworkClientDedupTests: XCTestCase {
         await client.close()
     }
 
+    /// Audit finding #3 regression: on a real reconnect the mux host mints a BRAND-NEW shell whose
+    /// output restarts at seq 1 (no per-channel resume). `RworkClient.connect` must RESET the dedup
+    /// high-water marks on every (re)connect — otherwise the fresh shell's seq-1 output is silently
+    /// dropped as a "duplicate" against the dead session's stale `highestSeqFed`. The bug was that the
+    /// reset was gated behind `!returningClient`, but `returningClient` is computed client-side as
+    /// `resume != newSessionID` → ALWAYS true on reconnect → the reset was skipped exactly when needed.
+    func testReconnectResetsDedupSoFreshShellOutputIsNotDropped() async throws {
+        // A fresh fake per connect, replicating MuxClientTransport's identity logic faithfully:
+        // returningClient = (resume != newSessionID), sessionID minted on a fresh resume.
+        let client = RworkClient(makeTransport: { FakeTransport() })
+
+        let sink = ByteSink()
+        let pump = Task { for await chunk in client.output { sink.append(chunk) } }
+
+        // ── Phase 1: first connect (fresh session) — drive seq 1,2,3 → high-water = 3.
+        try await client.connect(host: "h", port: 1)
+        for seq in [1, 2, 3] as [Int64] {
+            await client._handleInboundForTesting(.output(seq: seq, bytes: Data("\(seq)".utf8)))
+        }
+        let afterPhase1 = await client.highestContiguousSeq
+        XCTAssertEqual(afterPhase1, 3, "phase-1 delivered seq 1..3")
+
+        // ── Phase 2: reconnect. client.sessionID is preserved → the fake reports returningClient=true
+        // (exactly the real mux path). The fresh shell then emits seq 1 again.
+        try await client.connect(host: "h", port: 1)
+        await client._handleInboundForTesting(.output(seq: 1, bytes: Data("F".utf8)))
+
+        let afterReconnect = await client.highestContiguousSeq
+        XCTAssertEqual(
+            afterReconnect, 1,
+            "reconnect must RESET the dedup high-water so the fresh shell's seq-1 output is accepted "
+            + "(without the fix it stays 3 and seq-1 is dropped as a stale duplicate)"
+        )
+
+        try await waitUntil(timeout: .seconds(5)) { sink.bytes == Data("123F".utf8) }
+        XCTAssertEqual(sink.bytes, Data("123F".utf8),
+                       "the fresh shell's seq-1 byte 'F' is delivered after reconnect, not swallowed")
+
+        pump.cancel()
+        await client.close()
+    }
+
     // MARK: - Helpers
+
+    /// Minimal `ClientTransporting` stub that mirrors `MuxClientTransport`'s session-identity rules
+    /// (mint a UUID on a new resume; `returningClient = resume != newSessionID`) so `RworkClient.connect`
+    /// exercises its real reconnect branch. Inbound is an inert stream — the test drives `output`
+    /// through `_handleInboundForTesting` directly.
+    private actor FakeTransport: ClientTransporting {
+        private var _sessionID: UUID?
+        private var _resumeFromSeq: Int64 = 0
+        private var _returningClient = false
+        var sessionID: UUID? { _sessionID }
+        var resumeFromSeq: Int64 { _resumeFromSeq }
+        var returningClient: Bool { _returningClient }
+
+        private let continuation: AsyncThrowingStream<WireMessage, Error>.Continuation
+        nonisolated let inbound: AsyncThrowingStream<WireMessage, Error>
+
+        init() {
+            var c: AsyncThrowingStream<WireMessage, Error>.Continuation!
+            inbound = AsyncThrowingStream { c = $0 }
+            continuation = c
+        }
+
+        func connect(host: String, port: UInt16, resume: UUID, lastReceivedSeq: Int64, handshakeTimeout: Duration) async throws {
+            _sessionID = (resume == WireMessage.newSessionID) ? UUID() : resume
+            _resumeFromSeq = lastReceivedSeq
+            _returningClient = (resume != WireMessage.newSessionID)
+        }
+        func sendInput(_ bytes: Data) async throws {}
+        func sendResize(cols: UInt16, rows: UInt16, pxWidth: UInt16, pxHeight: UInt16) async throws {}
+        func sendAck(seq: Int64) async throws {}
+        func sendBye() async throws {}
+        func close() async { continuation.finish() }
+    }
 
     private final class ByteSink: @unchecked Sendable {
         private let lock = NSLock()

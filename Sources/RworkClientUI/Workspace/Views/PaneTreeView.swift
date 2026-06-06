@@ -155,10 +155,28 @@ struct PaneTreeView: View {
         .id(id)
         .contentShape(Rectangle())
         .onTapGesture { store.focus(id) }
+        // CLICK-TO-FOCUS for the terminal BODY: the libghostty NSView now installs `mouseDown` (for
+        // text selection / mouse reporting), which CONSUMES the click before `.onTapGesture` can see
+        // it — so a click on the terminal body would no longer focus the pane. Wire the renderer's
+        // `onRequestFocus` (called at the top of `mouseDown`) to the SAME `store.focus(id)` so a body
+        // click transfers workspace focus exactly as the tap gesture does (chrome + keyboard follow).
+        // Idempotent re-assignment on each appear; `id`/`store` are stable so the closure is correct.
+        .onAppear { wireFocusOnClick(for: id) }
         .padding(2)
     }
 
     // MARK: Helpers
+
+    /// Points the leaf's terminal renderer at `store.focus(id)` so a click on the terminal BODY focuses
+    /// the pane (the libghostty NSView's `mouseDown` consumes the tap gesture — see the leaf comment).
+    /// Reaches the model through the live session handle; a faked/preview handle or a `.remoteGUI` leaf
+    /// has no `terminalModel`, so this is a no-op there. Captures only `store` + `id` (both stable), so
+    /// the closure stays correct across reshapes.
+    private func wireFocusOnClick(for id: PaneID) {
+        guard let live = store.handle(for: id) as? LivePaneSession,
+              let model = live.terminalModel else { return }
+        model.onRequestFocus = { [weak store] in store?.focus(id) }
+    }
 
     /// The active tab (read for zoom/focus). `nil` only transiently during teardown.
     private var activeTab: Tab? {

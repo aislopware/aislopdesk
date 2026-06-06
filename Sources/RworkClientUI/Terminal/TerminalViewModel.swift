@@ -96,6 +96,15 @@ public final class TerminalViewModel {
     /// coalesced and not sent twice.
     @ObservationIgnored private var lastSentSize: (cols: UInt16, rows: UInt16)?
 
+    /// Click-to-focus hook (macOS). The terminal NSView (`GhosttyLayerBackedView`) now installs
+    /// `mouseDown`, which CONSUMES the click that the pane's `.onTapGesture { store.focus(id) }`
+    /// used to receive — so a body click would start a libghostty selection but NOT make the pane
+    /// the workspace-focused one (no focus ring, keyboard stuck on the old pane). The renderer calls
+    /// this at the TOP of `mouseDown`; the leaf wires it to `store.focus(paneID)` so the click ALSO
+    /// transfers workspace focus. `@ObservationIgnored`: wiring, not view state. Nil for headless /
+    /// preview callers (no store), where it is simply never invoked.
+    @ObservationIgnored public var onRequestFocus: (() -> Void)?
+
     // MARK: Replay byte-ring (surface-rebuild survival)
 
     /// Bounded FIFO of the COMPLETE `output` chunks fed to the surface, kept so a
@@ -126,6 +135,20 @@ public final class TerminalViewModel {
     /// Soft cap on the replay ring; whole oldest chunks are evicted once exceeded. ~256 KB is a
     /// generous several-screens scrollback while staying small enough to replay synchronously.
     @ObservationIgnored var maxRingBytes: Int = 256 * 1024
+
+    /// Set when a reconnect campaign begins (``markReconnecting``); consumed by the NEXT
+    /// ``ingestOutput`` to wipe the dead session's screen before the fresh shell paints.
+    ///
+    /// The mux transport has NO server-side resume — a real drop kills the host shell and the
+    /// reconnect spawns a BRAND-NEW one whose output restarts at seq 1 (see `RworkClient.connect`).
+    /// Without this, the fresh shell's prompt is fed on top of the previous session's still-resident
+    /// framebuffer + scrollback (the "old screen with a new prompt grafted on" artifact). We cannot
+    /// key the wipe off `connectionStatus` because the `.reconnected` EVENT (a separate stream) flips
+    /// it to `.connected` and could race the first output; a flag set on the reconnect boundary and
+    /// consumed in the OUTPUT path is order-deterministic (both run on the main actor, and the wipe
+    /// happens inline immediately before the first fresh chunk is fed). `@ObservationIgnored`: control
+    /// flag, not view state.
+    @ObservationIgnored private var pendingFreshSessionReset = false
 
     public init(surface: (any TerminalSurface)? = nil) {
         self.surface = surface
@@ -181,6 +204,17 @@ public final class TerminalViewModel {
     /// superset/peer of what the live surface has seen — a same-tick rebuild + replay reproduces
     /// the current screen.
     public func ingestOutput(_ chunk: Data) {
+        // FRESH-SESSION WIPE: the first output after a reconnect belongs to a brand-new host shell
+        // (the mux path never resumes). Hard-reset the live surface and drop the dead session's
+        // replay ring BEFORE this chunk paints, so the user sees a clean shell instead of the old
+        // framebuffer with a new prompt grafted on. Inline here (not on the `.reconnected` event) so
+        // the wipe is strictly ordered before the fresh bytes — no cross-stream race.
+        if pendingFreshSessionReset {
+            pendingFreshSessionReset = false
+            ring.removeAll()
+            ringByteCount = 0
+            surface?.feed(Self.risHardReset)
+        }
         if connectionStatus == .connecting || connectionStatus == .reconnecting {
             connectionStatus = .connected
         }
@@ -205,6 +239,12 @@ public final class TerminalViewModel {
     /// the retained bytes repaint over it. A soft (not hard `ESC c`) reset preserves the
     /// scrollback the replayed bytes are about to redraw.
     private static let decstrSoftReset = Data([0x1B, 0x5B, 0x21, 0x70])
+
+    /// RIS — Reset to Initial State (`ESC c`). A HARD reset: clears the screen + scrollback and
+    /// returns the emulator to power-on defaults. Fed to the surface on a fresh-session reconnect so
+    /// the dead session's framebuffer is gone before the new shell paints (unlike the soft reset used
+    /// for replay, which deliberately preserves scrollback the replay is about to redraw).
+    private static let risHardReset = Data([0x1B, 0x63])
 
     /// Attaches a renderer surface and, if this is a *different* instance than the one currently
     /// held and the replay ring is non-empty, REPLAYS the retained output so a rebuilt surface
@@ -262,11 +302,19 @@ public final class TerminalViewModel {
             }
         case let .exit(code):
             connectionStatus = .exited(code: code)
+            // The shell died mid-"command" (e.g. `exit` itself emits OSC 133;C but never a
+            // matching ;D), so the running indicator would otherwise stay stuck on "running…" on a
+            // dead pane (HW-confirmed). Clear it — a terminated shell runs nothing. (Mirrors
+            // `markReconnecting`, which already clears this stale state on a drop.)
+            shellActivity = .idle
         case let .disconnected(reason):
             // A drop while we still want to be connected reads as "reconnecting" (the
             // ReconnectManager is retrying); the ConnectionViewModel owns the authoritative
             // "user asked to disconnect" distinction.
             connectionStatus = .disconnected(reason: reason)
+            // Same stale-OSC-133 guard as the exit/reconnect paths: a drop straddling a C→D pair
+            // would otherwise pin the indicator on "running…" across the disconnect.
+            shellActivity = .idle
         case let .reconnected(sessionID, resumeFromSeq):
             self.sessionID = sessionID
             self.lastResumeSeq = resumeFromSeq
@@ -282,6 +330,9 @@ public final class TerminalViewModel {
         // (the C→D pair would straddle the disconnect); clear to idle so the indicator does
         // not get stuck "running" across a reconnect.
         shellActivity = .idle
+        // The reconnect will bring a FRESH host shell (no mux resume) — arm the one-shot wipe so the
+        // next output clears the dead session's screen/scrollback before painting the new prompt.
+        pendingFreshSessionReset = true
     }
 
     /// Clears the pending-bell flag once the view has flashed.
@@ -302,5 +353,6 @@ public final class TerminalViewModel {
         lastSentSize = nil   // a fresh session must re-assert its grid size
         ring.removeAll()     // stale scrollback must not survive into a new session
         ringByteCount = 0
+        pendingFreshSessionReset = false  // deliberate connect already starts clean; no pending wipe
     }
 }

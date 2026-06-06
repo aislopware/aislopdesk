@@ -21,4 +21,11 @@ public enum MuxFlowControl {
     /// the host buffers at most ~one window beyond what is in flight before it PAUSES the PTY
     /// read — the real fix for the flood (backpressure to the producer, not buffer-the-world).
     public static let hostQueueCapacityBytes = 256 * 1024
+
+    /// Max number of LIVE logical channels (panes) one physical connection may hold open at once
+    /// (R6 #6). A hostile/buggy peer can otherwise spam distinct `channelOpen` ids and make the host
+    /// `openpty()`+`fork()` a shell per id without bound — a fork-bomb that exhausts fds/processes/RAM.
+    /// The host refuses a NEW channel past this cap. 256 is far above any real multi-pane session (a
+    /// few dozen panes), so legitimate use never approaches it.
+    public static let maxChannelsPerConnection = 256
 }

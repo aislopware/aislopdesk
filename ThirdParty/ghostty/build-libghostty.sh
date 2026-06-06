@@ -547,9 +547,19 @@ else
     SRC_B=""
     while IFS= read -r cand; do
         [ -n "${cand}" ] || continue
-        if nm "${cand}" 2>/dev/null | grep -q "ghostty_surface_write_output"; then
-            SRC_B="${cand}"; break
-        fi
+        # pipefail-safe: `grep -q` closes the pipe on first match → SIGPIPE (141) to nm
+        # → with `set -o pipefail` the pipeline returns non-zero and the match is LOST
+        # (the universal path above documents the same hazard). Use `grep -c … || true`
+        # so nm's whole output is consumed and only the COUNT decides the match.
+        [ "$(nm "${cand}" 2>/dev/null | grep -c "ghostty_surface_write_output" || true)" -gt 0 ] || continue
+        # Must be the arm64 macOS root (LC_BUILD_VERSION platform 1). The local .zig-cache
+        # can ALSO hold STALE iOS-device(2)/iOS-sim(7) roots from a prior universal build;
+        # picking one of those makes the assembled fat archive multi-platform and
+        # `create-xcframework` rejects it ("binaries with multiple platforms"). Mirror the
+        # universal path's platform classification so the native slice is unambiguous.
+        [ "$(lipo -archs "${cand}" 2>/dev/null | awk '{print $1}')" = arm64 ] || continue
+        [ "$(root_platform "${cand}" arm64)" = "1" ] || continue
+        SRC_B="${cand}"; break
     done <<< "$(find "${SRC_DIR}/.zig-cache" -name 'libghostty.a' -type f 2>/dev/null)"
     [ -n "${SRC_B}" ] || fail "Zig root archive (.zig-cache/o/*/libghostty.a exposing ghostty_surface_write_output) not found — the Zig compilation unit did not build (wrong SHA, or build aborted before the Zig step)."
     log "source B (zig root, has C API): ${SRC_B}"
@@ -598,7 +608,9 @@ while IFS= read -r lib; do
     log "  lipo -archs: $(lipo -archs "${lib}" 2>/dev/null || echo '?')"
     MISSING=()
     for sym in "${REQUIRED_SYMS[@]}"; do
-        nm -gU "${lib}" 2>/dev/null | grep -q " _${sym}\$" || MISSING+=("${sym}")
+        # pipefail-safe (grep -q SIGPIPEs nm → pipeline non-zero under `set -o pipefail`
+        # → false "missing"). Consume all of nm via grep -c and decide on the COUNT.
+        [ "$(nm -gU "${lib}" 2>/dev/null | grep -c " _${sym}\$" || true)" -gt 0 ] || MISSING+=("${sym}")
     done
     if [ "${#MISSING[@]}" -eq 0 ]; then
         log "  ✔ all ${#REQUIRED_SYMS[@]} required external-IO symbols present"

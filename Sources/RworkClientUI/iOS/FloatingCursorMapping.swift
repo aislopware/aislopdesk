@@ -43,6 +43,10 @@ public struct FloatingCursorMapping: Sendable, Equatable {
     /// small drags sums correctly. Returns e.g. `[]` for a 4pt nudge, `[.right]` for +6pt,
     /// `[.left, .left]` for −12pt (two whole 5pt steps; 2pt remainder retained).
     public mutating func feed(deltaX: Double) -> [Arrow] {
+        // A non-finite delta (NaN / ±Infinity from a hostile or degenerate UITextInput point) would
+        // poison `accumulated` — +Infinity makes `accumulated >= threshold` loop forever (Inf − threshold
+        // = Inf), NaN wedges it permanently. Drop it, keeping the accumulator clean (R13).
+        guard deltaX.isFinite else { return [] }
         accumulated += deltaX
         var arrows: [Arrow] = []
         // Emit one arrow per whole threshold crossed, preserving sign + remainder.

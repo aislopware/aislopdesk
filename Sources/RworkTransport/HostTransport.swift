@@ -53,6 +53,12 @@ public actor HostTransport {
     }
     private var pendingMux: [UUID: PendingMuxLink] = [:]
 
+    /// Set by ``stop()`` (R9 #5). After stop, an in-flight handshake that completes a mux pair must NOT
+    /// be yielded (the stream is finished → the mux + its 2 sockets would leak, unseen by
+    /// `HostServer.drainMuxConnections`), and a newly-arrived first link must NOT be parked in
+    /// `pendingMux` (already drained). `associateMux` closes such links immediately instead.
+    private var stopped = false
+
     /// Background task that periodically expires stale pending half-pairs (started by
     /// ``start(port:)``, cancelled by ``stop()``). The deterministic test path calls
     /// ``reapExpiredPending(now:)`` directly instead of relying on this timer.
@@ -84,7 +90,31 @@ public actor HostTransport {
 
     /// Starts listening on `port` (use `0` for an OS-assigned ephemeral port; read the
     /// result from ``boundPort``). Suspends until the listener is `.ready`.
-    public func start(port: UInt16) async throws {
+    ///
+    /// - Parameters:
+    ///   - readinessTimeout: a bound on reaching `.ready` (R15 #3). `NWListener` can park in
+    ///     `.waiting` (no network at login, DHCP not yet up) and never resolve; without a bound the
+    ///     `withCheckedThrowingContinuation` below would suspend `start()` forever, wedging the host
+    ///     (the menu-bar app's Start spinner never clears, every escape control disabled). On expiry
+    ///     `start()` throws ``RworkTransportError/timedOut(_:)`` so the caller can recover. 10s is far
+    ///     beyond a real local bind (milliseconds), so it never false-positives the healthy path.
+    ///   - onListenerFailed: surfaced when the listener fails AFTER it became ready (R15 #2) — a
+    ///     post-bind interface drop / socket error. The continuation resolves on the FIRST
+    ///     ready/failed, so a LATER failure otherwise vanishes and a long-lived host keeps showing
+    ///     "running" while silently accepting nothing. Additive + defaulted nil: the headless daemon
+    ///     is unaffected. A deliberate `stop()` (`.cancelled`) is NOT a failure and never fires it.
+    public func start(
+        port: UInt16,
+        readinessTimeout: Duration = .seconds(10),
+        onListenerFailed: (@Sendable (RworkTransportError) -> Void)? = nil
+    ) async throws {
+        // NOTE (R10 self-audit): do NOT reset `stopped` here. A `HostTransport` is SINGLE-USE — `stop()`
+        // permanently `finish()`es `muxConnectionContinuation`, so even a fresh listener after stop would
+        // yield accepted muxes into a dead stream (the relay owner never sees them → leak). Resetting
+        // `stopped` would falsely advertise restart support and ACCEPT-then-leak instead of refusing.
+        // Production restarts by building a FRESH `HostTransport` per Start (`HostServer.init`), so the
+        // single-use invariant holds; a reused instance stays `stopped` and `associateMux` refuses
+        // (fail-safe: closes the connection rather than orphaning it).
         let nwPort = NWEndpoint.Port(rawValue: port) ?? .any
         let listener = try NWListener(using: TransportParameters.makeTCP(), on: nwPort)
         self.listener = listener
@@ -98,23 +128,68 @@ public actor HostTransport {
         // actor synchronously *before* start() returns — no separate Task race.
         let resolvedPort: UInt16 = try await withCheckedThrowingContinuation { continuation in
             let box = ReadyBox()
+            // R15 #3: bound the wait for `.ready`. A listener stuck in `.waiting` (no network at login,
+            // DHCP not up) would otherwise never resume this continuation. The timer resume-throws; it
+            // is cancelled the instant a terminal state (ready/failed/cancelled) resolves the box.
+            let timeoutTask = Task {
+                try? await Task.sleep(for: readinessTimeout)
+                guard !Task.isCancelled else { return }
+                box.tryResume {
+                    continuation.resume(throwing: RworkTransportError.timedOut("listener readiness"))
+                }
+            }
             listener.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
+                    timeoutTask.cancel()
                     let portValue = listener.port?.rawValue ?? port
                     box.tryResume { continuation.resume(returning: portValue) }
                 case let .failed(error):
-                    box.tryResume {
-                        continuation.resume(throwing: RworkTransportError.listenerFailed(String(describing: error)))
+                    timeoutTask.cancel()
+                    let err = RworkTransportError.listenerFailed(String(describing: error))
+                    if box.hasResumed {
+                        // R15 #2: the continuation already resolved on `.ready` — this is a POST-bind
+                        // failure (interface drop / socket error). Surface it as a health signal so a
+                        // long-lived host can re-classify "running" → "failed" instead of silently
+                        // accepting nothing. (Resuming again here would be a no-op via the box anyway.)
+                        onListenerFailed?(err)
+                    } else {
+                        box.tryResume { continuation.resume(throwing: err) }
                     }
                 case .cancelled:
-                    // A cancel during startup (e.g. stop() raced start()) is terminal —
-                    // resume the continuation so start() does not hang on a dead listener.
+                    // A cancel during startup (e.g. stop() raced start()) is terminal — resume the
+                    // continuation so start() does not hang on a dead listener. A POST-ready `.cancelled`
+                    // is the DELIBERATE stop() path (`listener.cancel()`) → the box no-ops the resume and
+                    // we do NOT fire onListenerFailed (it is not a failure).
+                    timeoutTask.cancel()
                     box.tryResume {
                         continuation.resume(throwing: RworkTransportError.listenerFailed("cancelled during start"))
                     }
+                case let .waiting(error):
+                    // `.waiting` is normally the framework's RETRYABLE "no usable network path yet" state
+                    // (DHCP not up, Wi-Fi joining); it auto-recovers to `.ready` once a path appears, so we
+                    // keep waiting — the readiness timeout bounds a genuinely stuck transient. The ONE
+                    // exception is a bind conflict: on some OS versions an already-in-use port surfaces as a
+                    // STUCK `.waiting(.posix(.EADDRINUSE))` that never reaches `.failed` and never
+                    // auto-recovers (another process owns the port). For that single errno, resolve NOW as a
+                    // port-in-use failure instead of burning the full readiness timeout and then
+                    // mis-reporting a generic "timed out". On the common macOS path the `.waiting` flash
+                    // carries ENETDOWN (not EADDRINUSE) and the real `.failed(EADDRINUSE)` lands right after,
+                    // so this branch no-ops there and `.failed` handles it. (Pure decision in
+                    // `RworkTransportError.waitingErrnoIsFatalBindConflict`, unit-tested.)
+                    if case let .posix(code) = error,
+                       RworkTransportError.waitingErrnoIsFatalBindConflict(code.rawValue) {
+                        timeoutTask.cancel()
+                        let err = RworkTransportError.listenerFailed(String(describing: error))
+                        if box.hasResumed {
+                            onListenerFailed?(err)   // post-ready stuck-waiting bind conflict (rare): health signal
+                        } else {
+                            box.tryResume { continuation.resume(throwing: err) }
+                        }
+                    }
+                    // Any other waiting errno: keep waiting; the readiness timeout bounds it.
                 default:
-                    break
+                    break   // .setup (and any future state): keep waiting; the readiness timeout bounds it
                 }
             }
             listener.start(queue: queue)
@@ -130,10 +205,20 @@ public actor HostTransport {
 
     /// Stops the listener and the reaper. Existing connections keep their channels until closed.
     public func stop() {
+        stopped = true
         reaperTask?.cancel()
         reaperTask = nil
         listener?.cancel()
         listener = nil
+        // R9 #5: drain + close every half-paired link parked in pendingMux. Otherwise a client whose
+        // CONTROL socket arrived but whose DATA never did (a Start→Stop before DATA, or a NetBird flap)
+        // abandons a live NWConnection on every cycle → fd exhaustion on the long-lived menu-bar host
+        // (the pre-pairing analogue of the R5 rank-3 accepted-connection leak).
+        for (id, entry) in pendingMux {
+            pendingMux[id] = nil
+            if let control = entry.control { Task { await control.close() } }
+            if let data = entry.data { Task { await data.close() } }
+        }
         muxConnectionContinuation.finish()
     }
 
@@ -255,6 +340,16 @@ public actor HostTransport {
     /// the second completes the pair.
     private func associateMux(_ connection: NWConnection, connectionID: UUID, isControl: Bool) {
         let link = NWMuxByteLink(connection: connection, label: isControl ? "host.control" : "host.data")
+        // R9 #5: after stop(), do NOT pair (yielding to the finished stream leaks the mux's 2 sockets)
+        // or park (pendingMux is drained). Close this just-arrived link + any half-pair immediately.
+        guard !stopped else {
+            Task { await link.close() }
+            if let existing = pendingMux.removeValue(forKey: connectionID) {
+                if let control = existing.control { Task { await control.close() } }
+                if let data = existing.data { Task { await data.close() } }
+            }
+            return
+        }
         let existing = pendingMux[connectionID]
         let control = isControl ? link : existing?.control
         let data = isControl ? existing?.data : link
@@ -272,11 +367,63 @@ public actor HostTransport {
             )
             Task {
                 await mux.start()
-                muxConnectionContinuation.yield(mux)
+                // R11 (completes R9 #5): the `guard !stopped` above only rejects a link that ARRIVES
+                // after stop(). A pair that PASSED the guard still spawns this Task, and stop() can run
+                // during the `await mux.start()` suspension — finishing the stream. A yield into a
+                // finished AsyncStream is silently dropped (`.terminated`), orphaning this fully-started
+                // mux and its TWO live sockets (never seen by `HostServer.drainMuxConnections`, never
+                // closed → fd leak per Start→Stop race). Detect the terminated stream and close the mux.
+                if case .terminated = muxConnectionContinuation.yield(mux) {
+                    await mux.close()
+                }
             }
         } else {
-            pendingMux[connectionID] = PendingMuxLink(control: control, data: data, createdAt: clock.now)
+            // A same-side duplicate preamble (e.g. two CONTROL sockets for one connectionID before the
+            // DATA peer arrives) must NOT silently overwrite the parked half-pair: the previously-parked
+            // NWMuxByteLink owns a live NWConnection/fd that the reaper only ever sees via the CURRENT map
+            // entry, so the displaced link would leak its fd — and a peer re-sending the same side
+            // repeatedly leaks one per duplicate AND restamps createdAt, pushing the reaper deadline out.
+            // The pure, unit-tested ``MuxPairing`` decides whether this re-park displaces a same-side
+            // half; if so close it, and preserve the original createdAt so the reaper deadline cannot be
+            // deferred (R12 #2). On the genuine first arrival (existing == nil) nothing is displaced and
+            // createdAt falls through to now.
+            let decision = MuxPairing.decide(
+                existingHasControl: existing?.control != nil,
+                existingHasData: existing?.data != nil,
+                isControl: isControl)
+            if decision.closesDisplacedSameSide, let replaced = isControl ? existing?.control : existing?.data {
+                Task { await replaced.close() }
+            }
+            pendingMux[connectionID] = PendingMuxLink(
+                control: control, data: data, createdAt: existing?.createdAt ?? clock.now)
         }
+    }
+}
+
+/// The pure pairing decision for a just-arrived mux half-link, given the currently-parked half (if
+/// any) and which side arrived. Extracted so the duplicate-same-side fd-leak guard (R12 #2) is
+/// unit-testable without a real `NWConnection`: the two physical mux sockets (CONTROL + DATA) sharing
+/// one connectionID pair into one ``MuxNWConnection``; the first to arrive parks, the second completes
+/// the pair. A SECOND socket for a side that is ALREADY parked (two CONTROLs, or two DATAs, before the
+/// opposite peer shows) must NOT silently overwrite the parked half — the displaced link owns a live
+/// fd the reaper only sees via the current map entry, so it must be closed.
+enum MuxPairing {
+    struct Decision: Equatable {
+        /// Both sides are now present — build the shared connection.
+        var paired: Bool
+        /// A re-park is displacing an already-parked SAME-SIDE half that must be `close()`d.
+        var closesDisplacedSameSide: Bool
+    }
+
+    static func decide(existingHasControl: Bool, existingHasData: Bool, isControl: Bool) -> Decision {
+        let controlPresent = isControl ? true : existingHasControl
+        let dataPresent = isControl ? existingHasData : true
+        if controlPresent && dataPresent {
+            return Decision(paired: true, closesDisplacedSameSide: false)
+        }
+        // Re-park: the half on the arriving side displaces whatever was already parked on that side.
+        let displacedPresent = isControl ? existingHasControl : existingHasData
+        return Decision(paired: false, closesDisplacedSameSide: displacedPresent)
     }
 }
 
@@ -291,6 +438,10 @@ final class ReadyBox: @unchecked Sendable {
         resumed = true
         body()
     }
+    /// Whether the continuation has already been resumed. The listener handler reads this to tell a
+    /// POST-ready `.failed` (start() already returned → surface a health signal) from a pre-ready one
+    /// (resume start() throwing).
+    var hasResumed: Bool { lock.lock(); defer { lock.unlock() }; return resumed }
 }
 
 extension UUID {

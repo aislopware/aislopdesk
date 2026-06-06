@@ -72,6 +72,25 @@ final class KeyRepeaterTests: XCTestCase {
         XCTAssertEqual(scheduler.pendingCount, 0, "no timer left armed after release")
     }
 
+    /// R10: the software-keyboard Backspace one-shot — a `keyDown` IMMEDIATELY followed by its `keyUp`
+    /// (before the 350ms initial delay) must fire EXACTLY ONCE and leave NO armed timer. This is the
+    /// semantics `IMEProxyTextView.deleteBackward()` relies on to avoid a 20Hz DEL flood (a software
+    /// Backspace has no paired `UIPress` release, so it emits the press+release pair itself).
+    func testKeyDownThenImmediateKeyUpFiresExactlyOnce() {
+        let scheduler = ManualRepeatScheduler()
+        let sink = Sink()
+        let repeater = KeyRepeater<String>(scheduler: scheduler) { sink.append($0) }
+
+        repeater.keyDown("\u{7F}")   // fires one DEL synchronously + arms the 350ms timer
+        repeater.keyUp("\u{7F}")     // immediate release cancels the timer before it can repeat
+        XCTAssertEqual(sink.all, ["\u{7F}"], "exactly one DEL fired")
+        XCTAssertFalse(repeater.isRepeating)
+        XCTAssertEqual(scheduler.pendingCount, 0, "no timer left armed → no 20Hz DEL flood")
+
+        scheduler.advance(by: .seconds(10))
+        XCTAssertEqual(sink.count, 1, "a one-shot stays one — never repeats")
+    }
+
     func testKeyUpForUnheldKeyIsIgnored() {
         let scheduler = ManualRepeatScheduler()
         let sink = Sink()

@@ -82,6 +82,19 @@ extension PaneNode: Codable {
                     )
                 )
             }
+            // Structural sanity #2 (R8 #6): a split must have ≥ 2 children. Every in-operation tree op
+            // maintains this (collapse() folds a 1-child split into its child), so a 0/1-child split can
+            // only come from a corrupt/old persisted tree — and it would later trip `collapsing()`'s
+            // `precondition(!children.isEmpty)` and CRASH the app. Reject it here so the store's
+            // decode-failure fallback (default workspace) fires instead.
+            guard children.count >= 2 else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: container.codingPath,
+                        debugDescription: "PaneNode.split: a split must have >= 2 children, got \(children.count)"
+                    )
+                )
+            }
             self = .split(axis, children: children, fractions: fractions)
         }
     }

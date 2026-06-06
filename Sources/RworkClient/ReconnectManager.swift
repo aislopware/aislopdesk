@@ -6,9 +6,11 @@ import RworkProtocol
 /// iOS tears down TCP a few seconds after backgrounding, and any network blip can drop
 /// the connection mid-session. On a drop this manager re-`connect`s the same
 /// ``RworkClient`` — which presents the preserved `sessionID` + `highestContiguousSeq`
-/// in the new hello, so the host's ``ReplayBuffer`` replays the missing tail and the
-/// resume is **byte-exact** (no tmux). The client dedups the replayed tail by seq, so
-/// the splice is gap-free and dup-free.
+/// in the new channelOpen. On the CURRENT mux path the host does NOT resume that session: it
+/// spawns a fresh shell (the ssh model), so the reconnect is a fast re-grab of a NEW shell, not a
+/// byte-exact resume — see the reconnect note on ``RworkClient`` for the full story (and the
+/// designed-but-unimplemented host-side replay that would make it byte-exact). The client's seq
+/// dedup still guarantees a gap-free, dup-free splice should a host ever replay a tail.
 ///
 /// ### Policy
 /// - **Trigger:** a `RworkClient.Event.disconnected` (transport FIN/failure) that is not
@@ -122,9 +124,18 @@ public final class ReconnectManager: Sendable {
         return Task {
             for await event in events {
                 guard case let .disconnected(reason) = event else { continue }
-                // A deliberate pause/close also yields `.disconnected`; only reconnect if
-                // the client still wants to be connected (not paused, not closed).
-                if await client.isPaused { continue }
+                // Only reconnect if the client still WANTS to be connected. The two deliberate-shutdown
+                // paths are asymmetric: `pause()` yields its own `.disconnected` (and sets `paused`),
+                // while `close()` sets `closed` and finishes the stream WITHOUT yielding `.disconnected`.
+                // So a REAL drop's `.disconnected`, yielded just before `close()`, can sit BUFFERED in
+                // this subscription ahead of the finish and be popped here AFTER the client is closed —
+                // gating on `isPaused` alone would then launch a doomed `connect`-after-close campaign.
+                // Check `isClosed` too so a closed (or paused) client never triggers a reconnect.
+                // (Two awaits, not `||` with an autoclosure: an actor-isolated read can't sit in the
+                // short-circuit operand's nonisolated autoclosure.)
+                let paused = await client.isPaused
+                let closed = await client.isClosed
+                if paused || closed { continue }
                 onLog?("reconnect: transport dropped (\(reason)) — retrying")
                 await Self.reconnectLoop(
                     client: client, host: host, port: port, backoff: backoff,
@@ -157,8 +168,16 @@ public final class ReconnectManager: Sendable {
         var delay = backoff.initial
         var attempt = 0
         while !Task.isCancelled {
-            // If the app paused mid-campaign, stop retrying — resume() will reconnect.
-            if await client.isPaused { return }
+            // Stop retrying if the client no longer wants to be connected. `isPaused`: the app paused
+            // mid-campaign — resume() will reconnect. `isClosed`: the client was permanently closed
+            // (either before this campaign began — a buffered drop popped after close — or DURING it,
+            // e.g. the user closed the pane mid-reconnect). Either way every `connect` would throw
+            // `invalidState("connect after close")`, so without this guard the loop burns the full
+            // maxReconnectAttempts of doomed retries and fires a spurious `onGaveUp` against a dead client.
+            // (Two awaits, not `||`: an actor-isolated read can't sit in a short-circuit autoclosure.)
+            let paused = await client.isPaused
+            let closed = await client.isClosed
+            if paused || closed { return }
             attempt += 1
             // Cap: stop after maxReconnectAttempts so a permanently-gone host does not
             // keep the pane stuck in "reconnecting" forever. Surface a log line so

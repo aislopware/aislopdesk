@@ -41,6 +41,12 @@ struct TabSidebarView: View {
         #endif
         .safeAreaInset(edge: .bottom) { footer }
         .navigationTitle("Workspace")
+        // The ⌘R / menu / palette "Rename Tab" entry points cannot open this inline field directly (it
+        // is local `@State`), so they nudge `store.renameTabRequest`; observe it here and begin renaming
+        // the active tab — the same flow a double-click / context-menu "Rename" starts.
+        .onChange(of: store.renameTabRequest) { _, _ in
+            if let active = store.activeTab { beginRename(active) }
+        }
     }
 
     // MARK: Row

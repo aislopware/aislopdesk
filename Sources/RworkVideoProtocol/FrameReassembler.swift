@@ -91,6 +91,13 @@ public struct FrameReassembler {
     /// data with no FEC) is still swept immediately, regardless of the grace.
     private let fecReorderGrace: Int
 
+    /// Upper bound on a frame's declared fragment count (R7 #6 hostile-input). `fragCount` is a
+    /// peer-controlled `UInt16` (≤ 65535); a real frame is at most a few thousand fragments (a ~2 MB
+    /// keyframe at ~1.2 KB/fragment ≈ 1700 data + parity). 8192 covers a ~10 MB frame with generous
+    /// headroom, so a crafted larger value can only be hostile — reject it BEFORE `assemble` /
+    /// `invertedDataCount` allocate/iterate a `dataCount`-sized array per frame (an alloc+CPU DoS lever).
+    static let maxFragmentsPerFrame = 8192
+
     public init(fec: FECScheme? = nil, fecReorderGrace: Int = 2) {
         self.fec = fec
         self.fecReorderGrace = max(0, fecReorderGrace)
@@ -111,6 +118,18 @@ public struct FrameReassembler {
     @discardableResult
     public mutating func ingest(_ fragment: FrameFragment) -> ReassemblyResult {
         let frameID = fragment.header.frameID
+
+        // R7 #6 (hostile input — UDP video has no auth beyond the mesh): reject an implausible fragment
+        // header BEFORE allocating any per-frame buffer. A crafted huge `fragCount` makes `assemble` /
+        // `invertedDataCount` build/iterate a `dataCount`-sized array per frame (alloc+CPU DoS), and a
+        // `fragIndex >= fragCount` can never complete the frame (wedge + dict churn). Every legitimate
+        // fragment satisfies `0 < fragCount <= maxFragmentsPerFrame` and `fragIndex < fragCount` (parity
+        // ids are `dataCount + groupOrder < fragCount`). Drop the bad fragment as `.stale` (ignored).
+        guard fragment.header.fragCount > 0,
+              Int(fragment.header.fragCount) <= Self.maxFragmentsPerFrame,
+              fragment.header.fragIndex < fragment.header.fragCount else {
+            return .stale
+        }
 
         if retired.contains(frameID) { return .stale }
         if let retiredHigh = highestRetiredFrameID, frameID.distanceWrapped(from: retiredHigh) <= 0, !pending.keys.contains(frameID) {

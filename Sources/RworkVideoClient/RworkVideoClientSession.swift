@@ -394,26 +394,43 @@ public actor RworkVideoClientSession {
 
     private func ingestVideo(_ fragment: FrameFragment) {
         let result = reassembler.ingest(fragment)
-        if case .completed(let frame) = result {
+        switch result {
+        case .completed(let frame):
             dbg("frame reassembled (keyframe=\(frame.keyframe)) → decoding")
             decode(frame)
+        case .dropped(let lost):
+            // R7 #3: when the INGESTED fragment's OWN frame becomes hopeless, `ingest()` returns
+            // `.dropped(frameID:)` directly AND has already POPPED that id off its dropped queue — so the
+            // drain loop below would MISS it. The prior code ignored this return entirely, so for the
+            // reorder-then-loss interleaving (a newer frame's fragment advances the frontier, then an
+            // older frame's last data fragment arrives and is hopeless) lost-frame recovery (LTR refresh /
+            // IDR) NEVER fired — the stream stalled on the last good frame until an unrelated re-anchor.
+            // Route it through the same recovery decision as the drain.
+            signalRecovery(lostFrameID: lost)
+        case .incomplete, .stale:
+            break
         }
-        // Drain any frames the reassembler declared unrecoverably lost and signal
-        // recovery. First loss → prefer an LTR refresh; if an LTR refresh is already in
-        // flight and no decodable frame has cleared it within 2·RTT, ESCALATE to a
-        // forced IDR (doc 17 §3.6). The escalation is driven right here off the
-        // loss-detection path — there is no separate timer.
+        // Drain any OTHER (older) frames the reassembler declared unrecoverably lost during this ingest.
         while let lost = reassembler.nextDroppedFrame() {
-            if shouldEscalateToIDR() {
-                requestIDR()
-                // Re-anchor the escalation clock so the NEXT dropped frame in this same loss
-                // episode does not re-fire the escalation (and resend a redundant requestIDR)
-                // until another 2·RTT elapses (F7). Ordinary requestRecovery still must NOT
-                // move the first-request clock (BUG-H) — only a fired escalation re-arms it.
-                escalation.noteEscalated(now: FramePacer.currentHostTimeSeconds())
-            } else {
-                requestRecovery(lostFrameID: lost)
-            }
+            signalRecovery(lostFrameID: lost)
+        }
+    }
+
+    /// Signals recovery for one unrecoverably-lost frame. First loss → prefer an LTR refresh; if an LTR
+    /// refresh is already in flight and no decodable frame has cleared it within 2·RTT, ESCALATE to a
+    /// forced IDR (doc 17 §3.6). Driven off the loss-detection path — there is no separate timer. Shared
+    /// by BOTH the `.dropped` return and the `nextDroppedFrame()` drain so neither path can silently
+    /// swallow a loss (R7 #3).
+    private func signalRecovery(lostFrameID lost: UInt32) {
+        if shouldEscalateToIDR() {
+            requestIDR()
+            // Re-anchor the escalation clock so the NEXT dropped frame in this same loss episode does
+            // not re-fire the escalation (and resend a redundant requestIDR) until another 2·RTT elapses
+            // (F7). Ordinary requestRecovery still must NOT move the first-request clock (BUG-H) — only a
+            // fired escalation re-arms it.
+            escalation.noteEscalated(now: FramePacer.currentHostTimeSeconds())
+        } else {
+            requestRecovery(lostFrameID: lost)
         }
     }
 

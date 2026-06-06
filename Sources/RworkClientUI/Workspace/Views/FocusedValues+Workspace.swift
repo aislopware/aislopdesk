@@ -32,6 +32,27 @@ extension FocusedValues {
         get { self[WorkspaceStoreKey.self] }
         set { self[WorkspaceStoreKey.self] = newValue }
     }
+
+    /// Key for the focused scene's command-palette toggle.
+    private struct CommandPaletteToggleKey: FocusedValueKey {
+        typealias Value = CommandPaletteToggle
+    }
+
+    /// The key scene's command-palette toggle, or `nil` when no workspace window is key. The palette's
+    /// open/close is view-`@State` in ``WorkspaceRootView`` (not store state), so the menu-bar
+    /// "Command Palette" item reaches it through this focused value rather than `apply(_:to:)`.
+    var commandPaletteToggle: CommandPaletteToggle? {
+        get { self[CommandPaletteToggleKey.self] }
+        set { self[CommandPaletteToggleKey.self] = newValue }
+    }
+}
+
+/// A tiny wrapper around the key window's command-palette toggle action, published as a focused scene
+/// value so the scene-level ``WorkspaceCommands`` can open the palette (which lives as `@State` in the
+/// view tree). A reference-free closure box — not `Equatable`/`Sendable`, which `FocusedValueKey` does
+/// not require.
+struct CommandPaletteToggle {
+    let toggle: () -> Void
 }
 
 // MARK: - Root-view convenience

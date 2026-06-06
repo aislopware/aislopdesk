@@ -252,17 +252,24 @@ final class MetalLayerBackedView: NSView {
     }
     private func mods(_ event: NSEvent) -> InputModifiers { Self.modifiers(event.modifierFlags) }
 
+    /// Clamps `NSEvent.clickCount` (an unbounded `Int` — AppKit keeps incrementing it for consecutive
+    /// in-place clicks within the double-click interval) into the wire `UInt8`. `UInt8(clamping:)`
+    /// saturates at 255 instead of the trapping `UInt8(Int)` that would crash the client on a 256th rapid
+    /// click; identical for every real 1/2/3-click, and the host only uses it as a click-state hint
+    /// (`max(1, Int(clickCount))`), so saturating is harmless (R14).
+    nonisolated static func clampClickCount(_ n: Int) -> UInt8 { UInt8(clamping: n) }
+
     override func mouseMoved(with event: NSEvent) { pipeline.mouseMove(viewPoint(event)) }
     // A drag (a button is HELD) is a DISTINCT NSView callback from a hover `mouseMoved`, so the
     // client KNOWS which button is down and forwards an explicit `.mouseDrag`; the host posts
     // the matching `*MouseDragged` STATELESSLY — no host-side held-button guess. (No local
     // gesture interception here — that is what previously left the remote button stuck.)
-    override func mouseDragged(with event: NSEvent) { pipeline.mouseDrag(.left, viewPoint(event), UInt8(event.clickCount), mods(event)) }
-    override func rightMouseDragged(with event: NSEvent) { pipeline.mouseDrag(.right, viewPoint(event), UInt8(event.clickCount), mods(event)) }
-    override func mouseDown(with event: NSEvent) { pipeline.mouseDown(.left, viewPoint(event), UInt8(event.clickCount), mods(event)) }
-    override func mouseUp(with event: NSEvent) { pipeline.mouseUp(.left, viewPoint(event), UInt8(event.clickCount), mods(event)) }
-    override func rightMouseDown(with event: NSEvent) { pipeline.mouseDown(.right, viewPoint(event), UInt8(event.clickCount), mods(event)) }
-    override func rightMouseUp(with event: NSEvent) { pipeline.mouseUp(.right, viewPoint(event), UInt8(event.clickCount), mods(event)) }
+    override func mouseDragged(with event: NSEvent) { pipeline.mouseDrag(.left, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
+    override func rightMouseDragged(with event: NSEvent) { pipeline.mouseDrag(.right, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
+    override func mouseDown(with event: NSEvent) { pipeline.mouseDown(.left, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
+    override func mouseUp(with event: NSEvent) { pipeline.mouseUp(.left, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
+    override func rightMouseDown(with event: NSEvent) { pipeline.mouseDown(.right, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
+    override func rightMouseUp(with event: NSEvent) { pipeline.mouseUp(.right, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
     override func scrollWheel(with event: NSEvent) {
         // Zoomed in → two-finger scroll PANS the local view (reach the off-screen crop). At 1×
         // it forwards as a remote scroll (the renderer clamps panLimit to 0 at 1× anyway, so a

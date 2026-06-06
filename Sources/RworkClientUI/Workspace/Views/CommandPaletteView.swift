@@ -301,7 +301,9 @@ struct CommandPaletteView: View {
                 title: tab.name,
                 subtitle: "Switch to tab",
                 symbol: "rectangle.stack",
-                shortcutHint: index < 9 ? Self.shortcutHint(for: .selectTab(index + 1)) : nil
+                shortcutHint: index < 9 ? Self.shortcutHint(for: .selectTab(index + 1)) : nil,
+                // Match the menu-bar "Select Tab N" phrasing so ⌘K finds the right tab by position.
+                keywords: index < 9 ? "select tab \(index + 1)" : nil
             )
         }
     }
@@ -392,11 +394,14 @@ struct CommandPaletteView: View {
         let subtitle: String?
         let symbol: String
         let shortcutHint: String?
+        /// Extra, non-displayed match terms folded into ``searchText`` (e.g. "select tab 3" so the
+        /// menu-learned phrasing finds a tab not literally named "3"). Never rendered.
+        let keywords: String?
 
-        /// The text the fuzzy filter matches against (title + subtitle, so "tab" also surfaces tab
-        /// rows even when the user types the action word rather than the tab name).
+        /// The text the fuzzy filter matches against (title + subtitle + keywords, so "tab" / "select
+        /// tab 3" also surface tab rows even when the user types the action word, not the tab name).
         var searchText: String {
-            subtitle.map { "\(title) \($0)" } ?? title
+            [title, subtitle, keywords].compactMap { $0 }.joined(separator: " ")
         }
 
         init(
@@ -405,7 +410,8 @@ struct CommandPaletteView: View {
             title: String,
             subtitle: String? = nil,
             symbol: String,
-            shortcutHint: String? = nil
+            shortcutHint: String? = nil,
+            keywords: String? = nil
         ) {
             self.id = id
             self.kind = kind
@@ -413,6 +419,7 @@ struct CommandPaletteView: View {
             self.subtitle = subtitle
             self.symbol = symbol
             self.shortcutHint = shortcutHint
+            self.keywords = keywords
         }
     }
 

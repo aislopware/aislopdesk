@@ -311,4 +311,21 @@ final class TerminalModeTrackerTests: XCTestCase {
         collected = await consumer.value
         XCTAssertEqual(collected, [.promptStart, .enteredAltScreen, .exitedAltScreen])
     }
+
+    /// R9 #4 (security): a DCS/SOS/PM/APC string body is opaque — an `ESC[?1049h` (alt-screen) embedded in
+    /// one must NOT flip the tracked mode (else a malicious program could force the input box's mode). A
+    /// REAL alt-screen sequence after the swallowed string still works (clean resync), and the spoof stays
+    /// split-boundary-equivalent.
+    func testStringSequencesDoNotFlipModeFromEmbeddedCSI() {
+        let t = TerminalModeTracker()
+        // `ESC P` (DCS) … embedded `ESC[?1049h` … `ESC \` (ST) → swallowed; mode unchanged.
+        let dcsSpoof = Array("\(ESC)P\(ESC)[?1049h\(ESC)\\".utf8)
+        XCTAssertEqual(t.consume(dcsSpoof), [], "an alt-screen CSI embedded in a DCS string must not enter alt-screen")
+        XCTAssertEqual(t.mode, .shellPrompt, "mode unchanged by the opaque string body")
+        // A REAL alt-screen enter after the swallowed string still fires.
+        XCTAssertEqual(t.consume(Array("\(ESC)[?1049h".utf8)), [.enteredAltScreen])
+        XCTAssertEqual(t.mode, .altScreen)
+        // Split-boundary equivalence holds for the spoof sequence too (the crown-jewel invariant).
+        XCTAssertEqual(eventsChunked(dcsSpoof, size: 1), [], "byte-at-a-time produces the same (empty) result")
+    }
 }

@@ -61,4 +61,28 @@ final class SubagentTreeTests: XCTestCase {
         XCTAssertEqual(tree[0].children.count, 1)
         XCTAssertEqual(tree[0].children[0].node.id, "child")
     }
+
+    /// R11 (HIGH crash): a malformed subagent whose id is the EMPTY STRING groups under the same
+    /// `""` root key that real top-level nodes use, so `build("")` would recurse into `build("")`
+    /// forever → unbounded @MainActor stack growth → SIGSEGV from one bad id in tolerant input.
+    /// The fix drops empty-id nodes from rendering AND threads a `visited` set, so this must
+    /// terminate and surface only the real node.
+    func testEmptyIdSubagentDoesNotRecurseInfinitely() {
+        let vm = InspectorViewModel()
+        vm.apply(.subagentUpdated(SubagentNode(id: "", agentType: "phantom")))
+        vm.apply(.subagentUpdated(SubagentNode(id: "real", agentType: "lead")))
+        let tree = vm.subagentTree   // must NOT stack-overflow
+        XCTAssertEqual(tree.map(\.node.id), ["real"], "empty-id node dropped; real node rendered; build terminates")
+    }
+
+    /// R11: a self-parent (`id == parentID`) groups the node under its OWN id, so it is unreachable
+    /// from the `""` root — an orphan that renders nowhere. The load-bearing property is that building
+    /// the tree TERMINATES (no stack overflow / hang) on this malformed input, not that the phantom
+    /// node appears. (The `visited` guard additionally bounds any reachable cycle.)
+    func testSelfParentSubagentDoesNotRecurseInfinitely() {
+        let vm = InspectorViewModel()
+        vm.apply(.subagentUpdated(SubagentNode(id: "loop", parentID: "loop", agentType: "worker")))
+        let tree = vm.subagentTree   // must NOT stack-overflow / hang
+        XCTAssertTrue(tree.isEmpty, "a self-parented (id==parentID) node is an unreachable orphan, not a phantom root")
+    }
 }

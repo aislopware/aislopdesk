@@ -69,6 +69,20 @@ public final class WorkspaceStore {
     /// new concurrency / Sendable surface).
     public private(set) var videoPromotionGeneration: Int = 0
 
+    /// Generation nudge that asks the sidebar to open the inline rename field on the ACTIVE tab. The
+    /// rename UI is view `@State` (``TabSidebarView``), so the ⌘R / menu / palette "Rename Tab" entry
+    /// points cannot open it directly — they bump this, and the sidebar observes it via `.onChange`.
+    /// Same plain-`Int` MainActor bookkeeping as ``videoPromotionGeneration`` (no `@Published`; the
+    /// store is `@Observable`). Bumped only when there IS an active tab to rename.
+    public private(set) var renameTabRequest: Int = 0
+
+    /// Requests the sidebar open the inline rename on the active tab (the command-layer entry point for
+    /// "Rename Tab"). No-op when no tab is active. See ``renameTabRequest``.
+    public func requestRenameActiveTab() {
+        guard activeTab != nil else { return }
+        renameTabRequest &+= 1
+    }
+
     /// Where the value tree is persisted (docs/22 §6). Injectable so tests point at a temp dir and a
     /// store built with `nil` persistence (the default for the FakePaneSession test seam) never
     /// touches disk. The app passes a real ``WorkspacePersistence``.
@@ -383,8 +397,26 @@ public final class WorkspaceStore {
     /// The connect runs in a detached `Task` (the store mutation surface stays synchronous), exactly as
     /// the leaf's connect-on-appear does.
     public func reconnect(_ id: PaneID) {
-        guard let connection = (registry[id] as? LivePaneSession)?.connection else { return }
-        Task { await connection.connect() }
+        guard let handle = registry[id], let connection = (handle as? LivePaneSession)?.connection else { return }
+        // R16 WS-1: re-check on the MainActor, right before dialing, that the pane is STILL backed by the
+        // SAME handle. The guard above resolves synchronously, but the dial runs in a detached Task; if
+        // `closePane(id)` / `closeTab` runs in the interim, reconcile() removes the handle and tears its
+        // connection down (deliberatelyClosed = true). Without this re-check the captured `connection`'s
+        // `connect()` would CLEAR deliberatelyClosed and open a fresh socket for a pane that no longer
+        // exists — a live, supervised, reconnecting zombie connection stranded for a closed pane.
+        Task { @MainActor [weak self] in
+            guard let self, self.paneStillRegistered(id, as: handle) else { return }
+            await connection.connect()
+        }
+    }
+
+    /// Whether pane `id` is STILL backed by `handle` in the registry (reference identity). The re-check
+    /// the detached ``reconnect(_:)`` Task does before dialing, so a pane removed from the registry
+    /// (by a `closePane`/`closeTab` reconcile) between the synchronous resolve and the Task running is
+    /// not revived. Internal — a test seam, not part of the public store API.
+    func paneStillRegistered(_ id: PaneID, as handle: any PaneSessionHandle) -> Bool {
+        guard let current = registry[id] else { return false }
+        return current === handle
     }
 
     // MARK: - Spec mutation (rename / fill endpoint)
@@ -805,6 +837,14 @@ public final class WorkspaceStore {
         workspace.tabs.first { $0.root.contains(id) }?.id
     }
 
+    /// Whether `id` is the SOLE leaf of its tab — so closing it closes the whole tab (and, if it is
+    /// the only tab, empties the workspace). Lets the pane chrome label the close button honestly
+    /// ("Close tab" vs "Close pane") instead of silently destroying more than the word implies.
+    public func isOnlyLeaf(_ id: PaneID) -> Bool {
+        guard let tab = workspace.tabs.first(where: { $0.root.contains(id) }) else { return false }
+        return tab.root.allLeafIDs().count == 1
+    }
+
     /// A neighbour to refocus on after closing `id`, resolved geometrically against the last solved
     /// layout if available, else the pre-order predecessor/successor in the tab. Best-effort.
     private func neighbourForRefocus(of id: PaneID, inTab tabID: TabID) -> PaneID? {
@@ -978,10 +1018,11 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
     case .toggleZoom:
         store.toggleZoom()
     case .renameTab:
-        // The rename itself is a UI affordance (an inline text field); the command only marks intent.
-        // The store exposes `renameTab(_:_:)` for the committed value; there is nothing to do here
-        // until the field commits, so this is a deliberate no-op at the command layer.
-        break
+        // The rename UI is an inline text field (view `@State` in TabSidebarView), so the command layer
+        // cannot open it directly — it nudges `renameTabRequest`, which the sidebar observes via
+        // `.onChange` to begin renaming the active tab. (Previously a dead no-op, so ⌘R / the menu / the
+        // palette "Rename Tab" did nothing — only a double-click / context menu opened the field.)
+        store.requestRenameActiveTab()
     case .reconnectPane:
         // Re-dial the active tab's focused pane (recovers a `.failed` / `.unreachable` / dropped pane
         // from the palette). A no-op when there is no focused pane or it has no live connection

@@ -35,7 +35,16 @@ public enum HostEnvironment {
         var env: [String: String] = [:]
 
         // Mirror identity / locale-ish vars from the parent when present.
-        for key in ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM_PROGRAM"] {
+        //
+        // TERMINFO / TERMINFO_DIRS are mirrored (R8 #2) because the host's terminfo PROBE
+        // (``TerminfoResolver/searchDirectories``) honours them when deciding whether `xterm-ghostty`
+        // resolves. If the operator launched the host from a shell whose TERMINFO points at a
+        // non-standard dir holding the ghostty entry (Nix / Homebrew / per-user install), the probe says
+        // "resolvable" and we advertise `TERM=xterm-ghostty` — but a child that did NOT inherit those vars
+        // would have its ncurses search only the default dirs and FAIL to find the entry, so every TUI
+        // degrades. Forwarding them makes the child's ncurses search the SAME dirs the probe used (only
+        // forwarded when present), so a "resolvable" verdict is actually honoured.
+        for key in ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM_PROGRAM", "TERMINFO", "TERMINFO_DIRS"] {
             if let value = parent[key] { env[key] = value }
         }
 

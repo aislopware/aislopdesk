@@ -51,6 +51,12 @@ public enum InspectorEvent: Sendable, Equatable, Codable {
     /// show "N unrecognised lines" rather than silently losing data when the schema
     /// evolves.
     case unknownLine(raw: String)
+
+    /// The replay log dropped `droppedCount` oldest events (its retention window overflowed) BEFORE
+    /// the prefix this subscriber asked for (R17 INSP-WIRE-1). Emitted FIRST on such a replay so the
+    /// client renders "N earlier steps dropped" instead of silently starting mid-transcript and
+    /// believing it has the complete history.
+    case historyTruncated(droppedCount: Int)
 }
 
 // MARK: - Tool cards

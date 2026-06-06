@@ -185,4 +185,18 @@ final class HostCommandStatusSnifferTests: XCTestCase {
         XCTAssertEqual(sniffer.observe(osc133("D;1")),
                        [.commandStatus(.idle(exitCode: 1, durationMS: 7_000))])
     }
+
+    /// R9 #4 (security): a `133;C/D` mark embedded inside a DCS/APC string body must NOT produce a phantom
+    /// command-status — a conformant terminal swallows the string. So a hostile remote program cannot fake
+    /// a running/idle badge (with an attacker-chosen exit code + duration).
+    func testStringSequencesSwallowEmbeddedCommandStatus() {
+        let clock = TestClock()
+        let sniffer = HostCommandStatusSniffer(clock: clock.date)
+        // `ESC P` (DCS) … embedded `ESC]133;C BEL` … `ESC \` (ST) → swallowed, no phantom .running.
+        let dcsSpoof = bytes("\u{1B}P\u{1B}]133;C\u{07}\u{1B}\\")
+        XCTAssertEqual(sniffer.observe(dcsSpoof), [], "an OSC 133 embedded in a DCS string must not fire a status")
+        // A REAL 133;C after the swallowed string still fires (clean resync).
+        XCTAssertEqual(sniffer.observe(osc133("C")), [.commandStatus(.running)],
+                       "a real mark after the swallowed string still fires")
+    }
 }

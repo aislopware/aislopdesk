@@ -84,8 +84,9 @@ public struct TerminalInputHost: UIViewRepresentable {
 
     public static func dismantleUIView(_ uiView: TerminalInputResponderView, coordinator: Coordinator) {
         // Unregister BEFORE teardown so the focus coordinator drops the (about-to-die) host and never
-        // resurrects it from a scheduled become (docs/22 §7).
-        coordinator.focusCoordinator?.unregister(coordinator.paneID)
+        // resurrects it from a scheduled become (docs/22 §7). By IDENTITY, not paneID, so a NEW host that
+        // already re-registered under the same paneID (make-before-dismantle) is not clobbered (R13 #8).
+        coordinator.unregisterFromCoordinator()
         uiView.teardown()
         coordinator.teardown()
     }
@@ -144,6 +145,17 @@ public struct TerminalInputHost: UIViewRepresentable {
             let adapter = FocusInputHostAdapter(view: view)
             focusAdapter = adapter
             return adapter
+        }
+
+        /// Identity-unregisters this host from the focus coordinator on dismantle. Removing by IDENTITY
+        /// (this Coordinator's retained adapter) — not by paneID — means a make-before-dismantle flip,
+        /// where a NEW host already re-registered under the same paneID, does not clobber the live new
+        /// host or drop its focus (R13 #8). The compact path built no adapter (and has no coordinator),
+        /// so it falls back to the paneID unregister.
+        func unregisterFromCoordinator() {
+            guard let focusCoordinator else { return }
+            if let focusAdapter { focusCoordinator.unregister(host: focusAdapter) }
+            else { focusCoordinator.unregister(paneID) }
         }
 
         private func startDrain() {
@@ -243,7 +255,7 @@ public final class TerminalInputResponderView: UIView {
         // It is also the only view that receives `UIPress` events, so the key-encoding presses
         // it intercepts are fed into the repeater here (special keys + Ctrl/Alt combos).
         addSubview(proxy)
-        proxy.onText = { [weak self] text in self?.onText?(text) }
+        proxy.onText = { [weak self] text in self?.handleProxyText(text) }
         proxy.onKeyPress = { [weak self] press in self?.repeater.keyDown(RepeatKey(press)) }
         proxy.onKeyRelease = { [weak self] press in self?.repeater.keyUp(RepeatKey(press)) }
         proxy.onFloatingCursorBegin = { [weak self] point in self?.floatingCursor.begin(at: point) }
@@ -264,6 +276,23 @@ public final class TerminalInputResponderView: UIView {
                            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         center.addObserver(self, selector: #selector(keyboardWillHide(_:)),
                            name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    /// Soft-keyboard committed text (post-IME). If the accessory bar is visible and its Ctrl is ARMED,
+    /// fold the FIRST scalar into its control code and send it RAW (non-recorded — the PTY never echoes a
+    /// control byte), consuming the one-shot arm; any remaining text flows as normal recorded text.
+    /// Without this the accessory Ctrl button was a dead no-op for soft-keyboard letters — Ctrl-C from a
+    /// pure soft keyboard was impossible, the exact case the bar exists to solve (R13 #6). Gating on
+    /// `accessoryVisible` first avoids touching (and lazily building) the bar on the hardware-keyboard
+    /// path, where Ctrl+letter is handled by the key encoder instead.
+    private func handleProxyText(_ text: String) {
+        if accessoryVisible, let folded = KeyEncoding.foldArmedControl(text, armed: accessoryBar.controlArmed) {
+            accessoryBar.consumeControlArm()
+            onKeyBytes?(folded.controlBytes)
+            if !folded.rest.isEmpty { onText?(folded.rest) }
+            return
+        }
+        onText?(text)
     }
 
     /// Tears down notifications + repeater (called on SwiftUI dismantle). The repeater's `stop()`
@@ -318,6 +347,11 @@ public final class TerminalInputResponderView: UIView {
     private func setAccessory(visible: Bool) {
         guard visible != accessoryVisible else { return }
         accessoryVisible = visible
+        // Clear a stale Ctrl arm on hide: a one-shot arm set but never spent (keyboard dismissed before
+        // the letter) would otherwise persist on this lazy instance and silently Ctrl-fold the FIRST
+        // letter of the next soft-keyboard session (UI/UX pass-3 #4). The bar is already instantiated
+        // here (it was visible to be hidden).
+        if !visible { accessoryBar.consumeControlArm() }
         // Reloading input views re-queries `inputAccessoryView` so the bar attaches/detaches.
         proxy.reloadInputViews()
         reloadInputViews()
@@ -326,35 +360,18 @@ public final class TerminalInputResponderView: UIView {
     // MARK: Key encoding (the proxy classifies; this host encodes each repeater fire)
 
     /// Encodes a classified key-path press into the raw terminal bytes for `sendInput`. Returns
-    /// `nil` for a press that carries nothing to send (e.g. a bare modifier).
+    /// `nil` for a press that carries nothing to send (e.g. a bare modifier). The platform-agnostic,
+    /// headless-testable ``KeyEncoding`` does the work (control codes, the `characters`-keyed specials
+    /// Esc/Tab/Shift+Tab/CR/DEL, and the Option/meta prefix); the arrow keys — whose identity is the
+    /// opaque UIKit `UIKeyCommand.input*Arrow` constants — are resolved here and injected.
     nonisolated static func encode(_ press: InputRouting.KeyPress) -> [UInt8]? {
-        if press.isSpecial, let bytes = specialBytes(for: press) { return bytes }
-        // Ctrl/Alt + letter: fold to a control code (Ctrl-C → 0x03) or ESC-prefix (Alt-b).
-        let base = press.charactersIgnoringModifiers
-        guard let scalar = base.unicodeScalars.first else { return nil }
-        if press.control {
-            return KeyboardAccessoryBar.controlCode(for: scalar)
-        }
-        if press.option {
-            // Meta/Alt: ESC prefix + the base letter (the xterm metaSendsEscape convention).
-            return [0x1B] + Array(base.utf8)
-        }
-        // A Command-combo is an app shortcut, not terminal input — nothing to send.
-        return nil
+        KeyEncoding.encode(press, arrowFallback: arrowBytes)
     }
 
-    /// Byte sequence for a special key. Arrows/Esc/Tab reuse the accessory bar's verified table;
-    /// Return → CR, Delete → DEL.
-    private nonisolated static func specialBytes(for press: InputRouting.KeyPress) -> [UInt8]? {
-        // Disambiguate the special keys by their committed characters where unambiguous.
-        switch press.characters {
-        case "\u{1B}": return KeyboardAccessoryBar.Key.escape.bytes
-        case "\t":     return KeyboardAccessoryBar.Key.tab.bytes
-        case "\r", "\n": return [0x0D]               // CR (Enter)
-        case "\u{7F}", "\u{08}": return [0x7F]        // DEL (Backspace)
-        default: break
-        }
-        // Arrows have empty `characters`; fall back to the ignoring-modifiers cursor sequences.
+    /// Resolves the arrow keys — the one special-key class whose identity is a UIKit constant, so it
+    /// cannot live in the platform-agnostic ``KeyEncoding``. Reuses the accessory bar's verified
+    /// cursor byte table.
+    private nonisolated static func arrowBytes(_ press: InputRouting.KeyPress) -> [UInt8]? {
         switch press.charactersIgnoringModifiers {
         case UIKeyCommand.inputUpArrow:    return KeyboardAccessoryBar.Key.up.bytes
         case UIKeyCommand.inputDownArrow:  return KeyboardAccessoryBar.Key.down.bytes

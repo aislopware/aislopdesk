@@ -238,6 +238,29 @@ final class WorkspacePersistenceTests: XCTestCase {
         }
     }
 
+    /// R8 #6: a split with ONE child has MATCHING arity (1 == 1) but violates the ≥2-children invariant
+    /// every in-operation tree op maintains — left unchecked it would later trip `collapsing()`'s
+    /// `precondition(!children.isEmpty)` and CRASH on the next close. The decoder must reject it so the
+    /// store's decode-failure fallback (default workspace) fires.
+    func testSingletonSplitThrowsDataCorrupted() {
+        let json = """
+        {
+          "type": "split",
+          "axis": "horizontal",
+          "children": [
+            { "type": "leaf", "id": { "raw": "\(UUID().uuidString)" },
+              "spec": { "kind": "terminal", "title": "lonely" } }
+          ],
+          "fractions": [1.0]
+        }
+        """
+        XCTAssertThrowsError(try decoder.decode(PaneNode.self, from: Data(json.utf8))) { error in
+            guard case DecodingError.dataCorrupted = error else {
+                return XCTFail("expected DecodingError.dataCorrupted, got \(error)")
+            }
+        }
+    }
+
     /// An unknown `"type"` discriminator value throws (the enum is closed; an unrecognized tag is
     /// corruption, decode-fail loudly).
     func testUnknownNodeTypeThrows() {
@@ -376,6 +399,93 @@ final class WorkspacePersistenceTests: XCTestCase {
 
         let loaded = persistence.load()
         assertIsDefaultWorkspaceShape(loaded, "future schemaVersion on disk → default via real load()")
+    }
+
+    /// R13 #9 → UI/UX pass-3 #5: a corrupt persisted tree with a DUPLICATE leaf PaneID across tabs would
+    /// collapse two panes onto one shared session (the registry is keyed 1:1 by PaneID). `load()` now
+    /// RE-MINTS the duplicates in place — preserving the user's tabs/splits/endpoints — instead of nuking
+    /// the whole workspace to a default (the original R13 behavior, which lost the layout).
+    func testLoadDedupesDuplicateLeafPaneIDsPreservingLayout() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("workspace.json")
+        let persistence = WorkspacePersistence(fileURL: url)
+
+        let shared = PaneID()   // the SAME leaf id in two different tabs
+        let t1 = Tab(name: "A", root: .leaf(shared, PaneSpec(kind: .terminal, title: "A")), focusedPane: shared)
+        let t2 = Tab(name: "B", root: .leaf(shared, PaneSpec(kind: .terminal, title: "B")), focusedPane: shared)
+        try persistence.save(Workspace(tabs: [t1, t2], activeTabID: t1.id))
+
+        let loaded = persistence.load()
+        XCTAssertEqual(loaded.tabs.count, 2, "the user's tabs are PRESERVED, not reset (R13 nuke → pass-3 re-mint)")
+        let ids = loaded.tabs.flatMap { $0.root.allLeafIDs() }
+        XCTAssertEqual(Set(ids).count, ids.count, "duplicate leaf ids are re-minted to be globally unique")
+        for tab in loaded.tabs {
+            XCTAssertTrue(tab.root.contains(tab.focusedPane), "each tab's focus points at a real (re-minted) leaf")
+        }
+    }
+
+    /// UI/UX pass-3 #2: an unrestorable file (decode / migrate failure) is COPIED ASIDE to a `.corrupt`
+    /// sidecar before `load()` returns the default — so the user's bytes survive the next `save()`'s atomic
+    /// overwrite (worst case: a downgrade that would otherwise nuke a newer, perfectly-good layout).
+    func testLoadCopiesUnrestorableFileAsideBeforeReset() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("workspace.json")
+        let persistence = WorkspacePersistence(fileURL: url)
+        var future = Workspace.defaultWorkspace()
+        future.schemaVersion = Workspace.currentSchemaVersion + 99
+        try persistence.save(future)
+
+        assertIsDefaultWorkspaceShape(persistence.load(), "a future-version file → default")
+        let backup = url.appendingPathExtension("corrupt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path),
+                      "the unrestorable file is copied aside, not silently destroyed")
+    }
+
+    /// A normal (restorable) load writes NO `.corrupt` sidecar.
+    func testLoadDoesNotBackUpAGoodFile() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("workspace.json")
+        let persistence = WorkspacePersistence(fileURL: url)
+        try persistence.save(Workspace.defaultWorkspace().adding(kind: .claudeCode, title: "x"))
+
+        _ = persistence.load()
+        let backup = url.appendingPathExtension("corrupt")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path), "a good load writes no backup")
+    }
+
+    /// R13 #13: a current-schema (v1) payload whose `activeTabID` dangles (points at a tab that does not
+    /// exist) is repaired on load so the detail pane is never blank — repointed at the first tab.
+    func testLoadRepairsDanglingActiveTabID() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("workspace.json")
+        let persistence = WorkspacePersistence(fileURL: url)
+
+        var corrupt = Workspace.defaultWorkspace().adding(kind: .claudeCode, title: "agent")
+        corrupt.activeTabID = TabID()   // dangling — not any tab's id
+        try persistence.save(corrupt)
+
+        let loaded = persistence.load()
+        XCTAssertNotNil(loaded.activeTab, "a dangling activeTabID is repaired so the detail pane isn't blank")
+        XCTAssertEqual(loaded.activeTabID, loaded.tabs.first?.id, "repointed at the first tab")
+        XCTAssertEqual(loaded.tabs.count, corrupt.tabs.count, "the tabs themselves are preserved")
+    }
+
+    /// R13: a restored tab whose `focusedPane` dangles (points at a leaf not in its tree) is repaired on
+    /// load to the tab's first leaf, so keyboard focus is never pinned to a ghost pane (completes the
+    /// dangling-activeTabID repair for the focus dimension).
+    func testLoadRepairsDanglingFocusedPane() throws {
+        let dir = try makeTempDir()
+        let url = dir.appendingPathComponent("workspace.json")
+        let persistence = WorkspacePersistence(fileURL: url)
+
+        let realLeaf = PaneID()
+        let ghost = PaneID()   // a pane id not present in the tree
+        let tab = Tab(name: "A", root: .leaf(realLeaf, PaneSpec(kind: .terminal, title: "A")), focusedPane: ghost)
+        try persistence.save(Workspace(tabs: [tab], activeTabID: tab.id))
+
+        let loaded = persistence.load()
+        XCTAssertEqual(loaded.tabs.first?.focusedPane, realLeaf,
+                       "a dangling focusedPane is repaired to the tab's first leaf")
     }
 
     /// Creates a unique temp directory for an on-disk round-trip, registering a teardown that removes
