@@ -20,7 +20,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case cycleFocus(forward: Bool) // ⌘] (forward) / ⌘[ (back)
     case toggleZoom                // ⇧⌘↩
     case renameTab                 // ⌘R
-    case reconnectPane             // (palette-only — no default chord) re-dial the focused pane
+    case reconnectPane             // ⇧⌘R — re-dial the focused pane (primary failure recovery)
 }
 
 // MARK: - Key chords
@@ -143,6 +143,10 @@ public extension CommandInterpreter {
 
         // Rename tab: ⌘R.
         map[KeyChord(character: "r", [.command])] = .renameTab
+
+        // Reconnect the focused pane: ⇧⌘R. The primary failure-recovery command was palette-only;
+        // a chord makes it learnable and surfaces its glyph in the menu + palette automatically.
+        map[KeyChord(character: "r", [.command, .shift])] = .reconnectPane
 
         return map
     }

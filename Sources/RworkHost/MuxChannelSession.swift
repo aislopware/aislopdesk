@@ -36,8 +36,14 @@ final class MuxChannelSession: @unchecked Sendable {
     private let data: MuxSubChannel
     private let control: MuxSubChannel
 
+    /// The per-session ZDOTDIR shim directory (R8 #3), if the zsh shell-integration shim was installed
+    /// for this pane. Deleted in ``shutdown()`` once the child has exited — the shell read its rc files
+    /// at exec time, so the dir is safe to remove on teardown. Without this, every opened pane leaked one
+    /// `rwork-zdotdir-*` dir + 4 files into the temp dir for the host's (long-lived) lifetime.
+    private let shimDir: URL?
+
     private let taskLock = NSLock()
-    private var replay = ReplayBuffer()
+    private var replay: ReplayBuffer
     private let replayLock = NSLock()
     private var inputTask: Task<Void, Never>?
     private var controlTask: Task<Void, Never>?
@@ -46,6 +52,21 @@ final class MuxChannelSession: @unchecked Sendable {
     private var outputContinuation: AsyncStream<OutputItem>.Continuation?
     private var readLoop: PTYReadLoop?
     private var started = false
+
+    /// EOF latch (R5 rank 5): set true by ``PTYReadLoop``'s `onEOF` once the read loop has drained the
+    /// master to EOF — which, per the read-loop contract, happens only AFTER every buffered output chunk
+    /// has been yielded into the FIFO. The exit task awaits this before yielding `.exit`, so the
+    /// reaper-driven exit can never overtake the final output tail on the shared FIFO (which would
+    /// truncate the client's last screen). Guarded by `eofLock`.
+    private let eofLock = NSLock()
+    private var eofReached = false
+
+    /// Set true once the drain has actually SENT the `.exit(code:)` frame on the DATA channel (R13 #7).
+    /// The exit task awaits this between yielding `.exit` and calling `onExit` (which triggers teardown),
+    /// so `shutdown()` can never cancel the drain before the buffered exit code reaches the wire. Guarded
+    /// by `exitSentLock`.
+    private let exitSentLock = NSLock()
+    private var exitSent = false
 
     /// Bounded-queue backpressure GATE: fuses the ``BoundedQueuePolicy`` accounting with the
     /// read-loop pause/resume action ATOMICALLY under one lock (FIX #3 — see ``PausableQueueGate``).
@@ -87,13 +108,17 @@ final class MuxChannelSession: @unchecked Sendable {
         pty: PTYProcess,
         data: MuxSubChannel,
         control: MuxSubChannel,
-        resizeDebounce: Duration = .milliseconds(16)
+        resizeDebounce: Duration = .milliseconds(16),
+        replay: ReplayBuffer = ReplayBuffer(),
+        shimDir: URL? = nil
     ) {
         self.channelID = channelID
         self.pty = pty
         self.data = data
         self.control = control
         self.resizeDebounce = resizeDebounce
+        self.replay = replay
+        self.shimDir = shimDir
     }
 
     func startRelay() {
@@ -127,6 +152,7 @@ final class MuxChannelSession: @unchecked Sendable {
                     }
                 case let .exit(code):
                     try? await data.send(.exit(code: code))
+                    self.signalExitSent()   // R13 #7: release the exit task's await so onExit can run
                 }
             }
         }
@@ -146,7 +172,7 @@ final class MuxChannelSession: @unchecked Sendable {
                 self?.enqueueOutput(chunk.count)
                 continuation.yield(.chunk(bytes: chunk, control: controlMsgs))
             },
-            onEOF: { /* exit is reaper-driven (waitpid), not EOF-gated */ }
+            onEOF: { [weak self] in self?.signalEOFReached() }
         )
         self.readLoop = readLoop
         // FIX #3: build the bounded-queue gate now that the read loop exists, so pause/resume is
@@ -157,7 +183,7 @@ final class MuxChannelSession: @unchecked Sendable {
         readLoop.start()
 
         // INPUT: the DATA sub-channel carries `input`.
-        inputTask = Task.detached {
+        inputTask = Task.detached { [weak self] in
             do {
                 for try await message in data.inbound {
                     if case let .input(bytes) = message {
@@ -165,6 +191,10 @@ final class MuxChannelSession: @unchecked Sendable {
                     }
                 }
             } catch { /* channel gone — the daemon keeps the shell alive (keep-alive) */ }
+            // The DATA channel ended (clean close or drop): the client is no longer reachable on this
+            // channel, so engage the ReplayBuffer's 4 MiB offline gate for the window before teardown
+            // (R5 rank 2). Harmless if the session is already being shut down (gate-pause is idempotent).
+            self?.setClientOnline(false)
         }
 
         // CONTROL: resize / bye / ack on the CONTROL sub-channel.
@@ -205,7 +235,19 @@ final class MuxChannelSession: @unchecked Sendable {
         let id = channelID
         exitTask = Task { [weak self] in
             let code = await pty.waitForExit()
+            // R5 rank 5: gate the exit yield on the read loop having drained the master to EOF, so the
+            // FINAL output tail is enqueued AHEAD of `.exit` on the shared FIFO. `onEOF` is called by
+            // PTYReadLoop only AFTER it has yielded every buffered chunk, so awaiting the EOF latch here
+            // guarantees `.exit` follows the last `.chunk` (the FIFO + single sequential drain preserve
+            // that order on the wire). Bounded so a wedged/paused read never hangs exit delivery forever.
+            await self?.awaitEOFOrTimeout()
             continuation.yield(.exit(code: code))
+            // R13 #7: wait until the drain actually SENT `.exit` on the wire before firing onExit (which
+            // triggers shutdown → outputTask.cancel()). Otherwise teardown can cancel the drain before
+            // the buffered exit code is flushed, dropping the clean exit status. Bounded + cancellation-
+            // aware (shutdown cancels this task), so a dead client / torn-down pane never hangs. Ordering
+            // is preserved: `.exit` still follows the tail chunks on the FIFO (the EOF latch above).
+            await self?.awaitExitSentOrTimeout()
             self?.onExit?(id)
         }
     }
@@ -238,7 +280,6 @@ final class MuxChannelSession: @unchecked Sendable {
         outputContinuation = nil
         inputTask?.cancel()
         controlTask?.cancel()
-        resizeDebounceTask?.cancel()
         exitTask?.cancel()
         // `outputTask.cancel()` now GENUINELY unblocks a drain parked on an exhausted DATA credit
         // window: `MuxSubChannel.awaitChunkCredit`'s park is cancellation-aware, so a cancelled sender
@@ -248,6 +289,22 @@ final class MuxChannelSession: @unchecked Sendable {
         // host accumulating one per affected channel on every Start/Stop).
         outputTask?.cancel()
         taskLock.unlock()
+        // R13 #1: `resizeDebounceTask` is owned by `resizeLock` (scheduleResize / flushPendingResize),
+        // NOT `taskLock`. Cancelling it under taskLock (the old code) raced scheduleResize's store under
+        // resizeLock — two disjoint mutexes guarding one ARC `Task` reference = a data race (torn read /
+        // ARC over-release / missed cancel). Read+nil under its own lock, then cancel outside the lock,
+        // matching flushPendingResize's discipline (locks are never nested in this file → no deadlock).
+        resizeLock.lock()
+        let resizeTask = resizeDebounceTask
+        resizeDebounceTask = nil
+        resizeLock.unlock()
+        resizeTask?.cancel()
+        // R5 rank 5: release the exit task's EOF gate (it is also cancelled above, but signalling makes
+        // it return promptly rather than polling to its timeout) so teardown never lingers on the latch.
+        signalEOFReached()
+        // R13 #7: likewise release the exit-sent latch so a torn-down exit task returns at once instead
+        // of polling to its timeout (mirrors the EOF latch above; the cancel above also unblocks it).
+        signalExitSent()
         // DESTROY-path child termination (see the doc comment): SIGTERM, then a bounded wait
         // for the reaper to observe the exit; if the child blocked/ignored SIGTERM (or a
         // foreground job kept the slave open), escalate to SIGKILL and re-wait briefly. This
@@ -258,6 +315,9 @@ final class MuxChannelSession: @unchecked Sendable {
             pty.waitUntilExited(timeout: 0.25)
         }
         pty.closeMaster()
+        // R8 #3: the child has exited, so its ZDOTDIR shim dir is no longer needed — delete it so the
+        // host's temp dir does not accumulate one `rwork-zdotdir-*` dir per opened pane forever.
+        if let shimDir { try? FileManager.default.removeItem(at: shimDir) }
     }
 
     /// A serial-safe BACKGROUND queue for the blocking ``shutdown()`` work, kept OFF the cooperative
@@ -351,14 +411,106 @@ final class MuxChannelSession: @unchecked Sendable {
     // MARK: - Per-channel replay bookkeeping (lock-guarded; the value type is not Sendable)
 
     private func nextSeq(for bytes: Data) -> Int64 {
-        replayLock.lock(); defer { replayLock.unlock() }
-        return replay.append(bytes: bytes)
+        replayLock.lock()
+        let seq = replay.append(bytes: bytes)
+        let shouldPause = replay.shouldPauseDrain
+        replayLock.unlock()
+        // R5 rank 2: the retained-byte cap is no longer dead. Appending may push retained bytes over
+        // the 64 MiB cap (or the 4 MiB offline gate); feed that into the read-loop pause so the kernel
+        // PTY buffer backpressures the shell instead of the host buffering the un-acked stream
+        // unboundedly. OR-composed with the bounded-queue source inside the gate (resume only when both
+        // clear). The lock is released BEFORE touching the gate to keep the lock order replayLock→gate.
+        updateReplayBackpressure(shouldPause)
+        return seq
     }
 
     private func acknowledge(upTo seq: Int64) {
-        replayLock.lock(); defer { replayLock.unlock() }
+        replayLock.lock()
         replay.ack(upTo: seq)
+        let shouldPause = replay.shouldPauseDrain
+        replayLock.unlock()
+        // An ack releases retained entries → retained bytes drop → the replay-pause may clear, resuming
+        // the read loop (if the bounded queue is also below bound). This is the drain side of the cap.
+        updateReplayBackpressure(shouldPause)
     }
+
+    /// Marks the client online/offline for the offline (4 MiB) gate, then recomputes backpressure. In
+    /// S1 a channel-gone usually tears the whole session down moments later, but wiring this keeps the
+    /// offline gate honest for the brief window and for when per-channel resume lands.
+    private func setClientOnline(_ online: Bool) {
+        replayLock.lock()
+        replay.isClientOnline = online
+        let shouldPause = replay.shouldPauseDrain
+        replayLock.unlock()
+        updateReplayBackpressure(shouldPause)
+    }
+
+    /// Forwards the ReplayBuffer's drain signal to the output gate's replay-pause source. `nil` gate
+    /// (flow control off / before `startRelay`) is a no-op.
+    private func updateReplayBackpressure(_ shouldPause: Bool) {
+        outputGate?.setReplayPause(shouldPause)
+    }
+
+    // MARK: - Exit ordering: EOF latch (R5 rank 5)
+
+    /// Marks the read loop as having drained the master to EOF (called from `onEOF`, and from
+    /// ``shutdown()`` so a torn-down exit task never waits the full timeout).
+    private func signalEOFReached() { eofLock.lock(); eofReached = true; eofLock.unlock() }
+
+    private func isEOFReached() -> Bool { eofLock.lock(); defer { eofLock.unlock() }; return eofReached }
+
+    /// Awaits the read loop reaching EOF (so the final tail is fully enqueued) OR a bounded timeout —
+    /// whichever first — before the exit task yields `.exit`. Polling (2 ms granularity): the exit task
+    /// runs once per pane, so the cost is negligible, and polling avoids a cancellation-leaked
+    /// continuation. Returns promptly on cancellation (``shutdown()`` cancels the exit task).
+    private func awaitEOFOrTimeout(_ timeout: Duration = .seconds(2)) async {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if isEOFReached() || Task.isCancelled { return }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    private func signalExitSent() { exitSentLock.lock(); exitSent = true; exitSentLock.unlock() }
+
+    private func isExitSent() -> Bool { exitSentLock.lock(); defer { exitSentLock.unlock() }; return exitSent }
+
+    /// Awaits the drain having SENT `.exit` on the wire (or a bounded timeout / cancellation) before the
+    /// exit task fires `onExit` (R13 #7). Mirrors ``awaitEOFOrTimeout`` (2 ms poll, runs once per pane).
+    /// A dead client whose credit never arrives times out — the code can't be delivered to it anyway —
+    /// and ``shutdown()`` cancels the exit task so a torn-down pane returns at once.
+    private func awaitExitSentOrTimeout(_ timeout: Duration = .seconds(2)) async {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if isExitSent() || Task.isCancelled { return }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    // MARK: - Test seams (replay-backpressure wiring, R5 rank 2)
+    // These drive the append/ack/online glue against a real ``PausableQueueGate`` WITHOUT a PTY or
+    // read loop, so the "retained ≥ cap → pause; ack → resume" wiring is provable headlessly. Reached
+    // via `@testable import`; never used in production.
+
+    /// Installs a gate to receive the replay-pause signal (production builds it in ``startRelay()``).
+    func _installGateForTesting(_ gate: PausableQueueGate) { outputGate = gate }
+    /// Drives the real ``nextSeq(for:)`` glue (append + recompute + gate). Returns the assigned seq.
+    @discardableResult func _appendForTesting(_ bytes: Data) -> Int64 { nextSeq(for: bytes) }
+    /// Drives the real ``acknowledge(upTo:)`` glue (ack + recompute + gate).
+    func _ackForTesting(upTo seq: Int64) { acknowledge(upTo: seq) }
+    /// Drives the real ``setClientOnline(_:)`` glue (offline-gate side).
+    func _setClientOnlineForTesting(_ online: Bool) { setClientOnline(online) }
+
+    /// Exit-ordering EOF latch seams (R5 rank 5).
+    func _signalEOFForTesting() { signalEOFReached() }
+    func _isEOFReachedForTesting() -> Bool { isEOFReached() }
+    func _awaitEOFForTesting(timeout: Duration) async { await awaitEOFOrTimeout(timeout) }
+
+    /// Exit-sent latch seams (R13 #7) — the drain signals once `.exit` is on the wire; the exit task
+    /// awaits it before firing onExit so teardown can't cancel the drain before the exit code is sent.
+    func _signalExitSentForTesting() { signalExitSent() }
+    func _isExitSentForTesting() -> Bool { isExitSent() }
+    func _awaitExitSentForTesting(timeout: Duration) async { await awaitExitSentOrTimeout(timeout) }
 
     private static func writeAll(fd: Int32, data: Data) {
         #if canImport(Darwin)

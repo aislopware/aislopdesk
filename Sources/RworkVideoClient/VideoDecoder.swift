@@ -185,6 +185,16 @@ public final class VideoDecoder: @unchecked Sendable {
     /// before any IDR cannot be decoded — it throws ``VideoDecoderError/awaitingKeyframe``
     /// so the caller drops it and requests recovery.
     public func decode(_ frame: ReassembledFrame) throws {
+        // R15 #9: triage a ZERO-byte frame BEFORE building a (degenerate, zero-length) CMSampleBuffer.
+        // Submitting an empty sample buffer to VTDecompressionSessionDecodeFrame fails the decode and
+        // drives the caller's hard-failure recovery (invalidateSession + IDR) — a needless session
+        // teardown + visible stall for what is really a corrupt/empty fragment. An empty delta is
+        // dropped cheaply; an empty keyframe re-anchors via `awaitingKeyframe` (no session rebuild).
+        switch FrameDecodability.classify(keyframe: frame.keyframe, byteCount: frame.avcc.count) {
+        case .decodable:       break
+        case .dropSilently:    return
+        case .requestKeyframe: throw VideoDecoderError.awaitingKeyframe
+        }
         if frame.keyframe, let sets = HEVCParameterSets.extract(from: frame.avcc) {
             // Only rebuild the VTDecompressionSession when the parameter sets actually
             // changed (BUG-I). The heartbeat IDR (~1×/sec) and every forced-recovery IDR

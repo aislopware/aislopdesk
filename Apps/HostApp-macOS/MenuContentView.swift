@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RworkTransport   // PortValidation (R16 HOSTVIEW-1)
 
 /// The body of the menu-bar popover (research §C4 / §C1).
 ///
@@ -19,6 +20,14 @@ struct MenuContentView: View {
     /// Drives the periodic TCC re-check while the popover is open.
     private let tccTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
+    /// A destructive action awaiting confirmation because clients are connected (stop / quit kills their
+    /// live shells). `nil` = no pending confirmation. The 0-client case bypasses this (one-click).
+    @State private var pendingDestruction: DestructiveAction?
+
+    /// Whether at least one client is connected (so stop/quit needs confirmation). `clientCount` is `nil`
+    /// while "listening but not observed" — treat that as no confirmed clients (one-click).
+    private var hasConnectedClients: Bool { (controller.clientCount ?? 0) > 0 }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -35,6 +44,66 @@ struct MenuContentView: View {
         .frame(width: 300)
         .onAppear { tccRefreshTick &+= 1 }
         .onReceive(tccTimer) { _ in tccRefreshTick &+= 1 }
+        // Guard stop/quit when clients are connected — the confirm button (NOT the originating button)
+        // performs the action, so the dialog actually intercepts. 0-client paths never reach here.
+        .confirmationDialog(
+            pendingDestruction?.title ?? "",
+            isPresented: Binding(get: { pendingDestruction != nil },
+                                 set: { if !$0 { pendingDestruction = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDestruction
+        ) { action in
+            Button(action.confirmLabel, role: .destructive) {
+                switch action {
+                case .stopHost: controller.stop()
+                case .quit: NSApplication.shared.terminate(nil)
+                }
+                pendingDestruction = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDestruction = nil }
+        } message: { action in
+            // R16 HOSTVIEW-3: render from the count CAPTURED when the dialog was armed, not live state.
+            // If the last client drops (or the host self-stops via a listener failure) while the dialog
+            // is open, live state flips to "Listening" (0 clients), producing the self-contradictory
+            // "Listening — they will be disconnected." The snapshot keeps the justification consistent.
+            Text("\(Self.clientCountPhrase(action.clientCount)) — they will be disconnected.")
+        }
+    }
+
+    /// A stop/quit action that needs a connected-client confirmation. Carries the client count CAPTURED
+    /// at arm time (R16 HOSTVIEW-3) so the dialog message cannot drift to a stale/contradictory value.
+    private enum DestructiveAction: Identifiable {
+        case stopHost(clientCount: Int)
+        case quit(clientCount: Int)
+        /// Identifies the dialog KIND (independent of the captured count).
+        var id: Int {
+            switch self {
+            case .stopHost: return 0
+            case .quit: return 1
+            }
+        }
+        var clientCount: Int {
+            switch self {
+            case let .stopHost(c), let .quit(c): return c
+            }
+        }
+        var title: String {
+            switch self {
+            case .stopHost: return "Stop the host?"
+            case .quit: return "Quit Rwork Host?"
+            }
+        }
+        var confirmLabel: String {
+            switch self {
+            case .stopHost: return "Stop Host"
+            case .quit: return "Quit"
+            }
+        }
+    }
+
+    /// "1 client connected" / "N clients connected" from a fixed count (the dialog snapshot).
+    private static func clientCountPhrase(_ count: Int) -> String {
+        count == 1 ? "1 client connected" : "\(count) clients connected"
     }
 
     // MARK: Header / status
@@ -49,7 +118,8 @@ struct MenuContentView: View {
                     .font(.headline)
                 Text(statusText)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    // A failed start is an error, not idle chatter — colour it red so it reads as one.
+                    .foregroundStyle(isFailed ? Color.red : Color.secondary)
             }
             Spacer()
         }
@@ -58,16 +128,22 @@ struct MenuContentView: View {
     private var statusColor: Color {
         switch controller.state {
         case .running: return .green
-        case .starting: return .yellow
+        case .starting, .stopping: return .yellow
         case .stopped: return .secondary
         case .failed: return .red
         }
+    }
+
+    private var isFailed: Bool {
+        if case .failed = controller.state { return true }
+        return false
     }
 
     private var statusText: String {
         switch controller.state {
         case let .running(boundPort): return "Running on :\(boundPort)"
         case .starting: return "Starting…"
+        case .stopping: return "Stopping…"
         case .stopped: return "Stopped"
         case let .failed(message): return "Failed: \(message)"
         }
@@ -75,14 +151,28 @@ struct MenuContentView: View {
 
     // MARK: Port
 
+    /// R16 HOSTVIEW-1: whether the entered port is a usable TCP port (`0`…`65535`, `0` = OS-assigned).
+    /// Gates the Start button so a negative / out-of-range value can never be silently coerced into a
+    /// bound port (the old `UInt16(clamping: max(0, port))` mapped `-5 → 0` and `99999 → 65535`,
+    /// desyncing the displayed/persisted value from the port actually bound).
+    private var portIsValid: Bool { PortValidation.isValid(port) }
+
     private var portField: some View {
-        HStack {
-            Text("Port")
-                .frame(width: 56, alignment: .leading)
-            TextField("7779", value: $port, format: .number.grouping(.never))
-                .textFieldStyle(.roundedBorder)
-                .disabled(controller.isRunning || controller.isBusy)
-                .help(controller.isRunning ? "Stop the host to change the port." : "TCP port to listen on (0 = OS-assigned).")
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Port")
+                    .frame(width: 56, alignment: .leading)
+                TextField("7779", value: $port, format: .number.grouping(.never))
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(controller.isRunning || controller.isBusy)
+                    .help(controller.isRunning ? "Stop the host to change the port." : "TCP port to listen on (0 = OS-assigned, max 65535).")
+            }
+            // Non-color + color feedback that the field is out of range, with Start disabled below.
+            if !controller.isRunning && !portIsValid {
+                Text("Enter a port between 0 and 65535.")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
         }
     }
 
@@ -101,14 +191,25 @@ struct MenuContentView: View {
         .controlSize(.large)
         .buttonStyle(.borderedProminent)
         .tint(controller.isRunning ? .red : .accentColor)
-        .disabled(controller.isBusy)
+        // Disable while busy (starting/stopping) OR, when not running, while the port is out of range
+        // (R16 HOSTVIEW-1) so an invalid value can never be coerced into a bound port.
+        .disabled(controller.isBusy || (!controller.isRunning && !portIsValid))
     }
 
     private func toggle() {
         if controller.isRunning {
-            controller.stop()
+            // Confirm before tearing down live client shells; one-click when nobody is connected. The
+            // count is SNAPSHOTTED into the action (R16 HOSTVIEW-3) so the dialog message can't drift.
+            if hasConnectedClients {
+                pendingDestruction = .stopHost(clientCount: controller.clientCount ?? 0)
+            } else {
+                controller.stop()
+            }
         } else {
-            controller.start(port: UInt16(clamping: max(0, port)))
+            // Start ONLY on a valid port (R16 HOSTVIEW-1); the button is disabled otherwise, so this is
+            // belt-and-suspenders against a coerced bind.
+            guard let boundPort = PortValidation.port(port) else { return }
+            controller.start(port: boundPort)
         }
     }
 
@@ -151,7 +252,13 @@ struct MenuContentView: View {
 
     private var quitButton: some View {
         Button(role: .destructive) {
-            NSApplication.shared.terminate(nil)
+            // Confirm before quitting if it would disconnect live clients; one-click otherwise. Snapshot
+            // the count into the action (R16 HOSTVIEW-3) so the dialog message stays consistent.
+            if hasConnectedClients {
+                pendingDestruction = .quit(clientCount: controller.clientCount ?? 0)
+            } else {
+                NSApplication.shared.terminate(nil)
+            }
         } label: {
             Text("Quit Rwork Host")
                 .frame(maxWidth: .infinity)

@@ -19,24 +19,119 @@ public struct InspectorPane: View {
         VStack(alignment: .leading, spacing: 0) {
             SessionHeaderView(session: model.session, workflow: model.workflow)
             Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ThinkingIndicatorView(marker: model.lastThinking, count: model.thinkingCount)
-                    if !model.todos.isEmpty {
-                        TodoListView(todos: model.todos)
-                    }
-                    ToolCardListView(title: "Tool calls", cards: model.toolCards)
-                    if !model.subagentTree.isEmpty {
-                        SubagentTreeView(roots: model.subagentTree)
-                    }
-                    if model.unknownLineCount > 0 {
-                        Text("\(model.unknownLineCount) unrecognised transcript line(s)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding()
+            if model.feedState != .live {
+                FeedStateBannerView(state: model.feedState)
             }
+            ScrollView {
+                if !model.hasRenderableActivity {
+                    InspectorEmptyStateView(feedState: model.feedState)
+                        .padding(.top, 48)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ThinkingIndicatorView(marker: model.lastThinking, count: model.thinkingCount)
+                        if !model.todos.isEmpty {
+                            TodoListView(todos: model.todos)
+                        }
+                        if model.evictedToolCardCount > 0 {
+                            // The drop-oldest cap truncated the START of a long session's timeline —
+                            // disclose it instead of silently losing the early steps (UI/UX pass-3 #9).
+                            Label("\(model.evictedToolCardCount) earlier steps hidden",
+                                  systemImage: "clock.arrow.circlepath")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .accessibilityLabel("\(model.evictedToolCardCount) earlier tool calls hidden to bound memory")
+                        }
+                        if model.droppedReplayEventCount > 0 {
+                            // The HOST replay log dropped the oldest events (retention overflow) before
+                            // the prefix we subscribed from — the timeline starts mid-transcript, so
+                            // disclose it rather than presenting a truncated history as complete (R17 INSP-WIRE-1).
+                            Label("\(model.droppedReplayEventCount) earlier steps dropped before this point",
+                                  systemImage: "scissors")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .accessibilityLabel("\(model.droppedReplayEventCount) earlier inspector events dropped by the host retention limit")
+                        }
+                        ToolCardListView(title: "Tool calls", cards: model.toolCards)
+                        if !model.subagentTree.isEmpty {
+                            SubagentTreeView(roots: model.subagentTree)
+                        }
+                        if model.unknownLineCount > 0 {
+                            UnknownLinesView(count: model.unknownLineCount, lines: model.recentUnknownLines)
+                        }
+                    }
+                    .padding()
+                }
+            }
+        }
+    }
+}
+
+/// Centered placeholder shown while the timeline has no renderable activity yet — so the on-demand
+/// panel reads as "waiting", not "broken/empty void".
+struct InspectorEmptyStateView: View {
+    let feedState: InspectorViewModel.FeedState
+
+    var body: some View {
+        VStack(spacing: 10) {
+            if feedState == .live {
+                ProgressView()
+                Text("Waiting for session activity…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                Image(systemName: "wifi.slash")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text(feedState == .failed ? "Inspector feed ended unexpectedly" : "No session activity")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// A thin banner shown when the feed is no longer live, so frozen cards don't masquerade as current.
+struct FeedStateBannerView: View {
+    let state: InspectorViewModel.FeedState
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: state == .failed ? "exclamationmark.triangle.fill" : "pause.circle.fill")
+            Text(state == .failed ? "Feed disconnected — showing last received state" : "Feed ended — showing final state")
+                .font(.caption)
+            Spacer()
+        }
+        .foregroundStyle(state == .failed ? Color.orange : Color.secondary)
+        .padding(.horizontal)
+        .padding(.vertical, 5)
+        .background(.background.secondary)
+    }
+}
+
+/// Turns the bare unrecognised-line COUNT into an inspectable disclosure (the recent raw lines), so
+/// a schema-evolution alarm becomes debuggable instead of a dead end. The count stays the true total.
+struct UnknownLinesView: View {
+    let count: Int
+    let lines: [String]
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        } label: {
+            Text("\(count) unrecognised transcript line(s)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -210,7 +305,9 @@ struct SubagentNodeView: View {
             .padding(.top, 4)
         } label: {
             HStack {
-                Image(systemName: node.node.status == .running ? "circle.dotted" : "checkmark.circle")
+                // Use the same in-progress glyph the todo list uses (both already `.blue`) so "running"
+                // reads consistently across the inspector.
+                Image(systemName: node.node.status == .running ? "arrow.triangle.2.circlepath" : "checkmark.circle")
                     .foregroundStyle(node.node.status == .running ? .blue : .green)
                 Text(node.node.agentType ?? node.node.id).font(.callout.bold())
                 if let description = node.node.description {

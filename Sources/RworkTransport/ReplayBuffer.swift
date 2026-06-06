@@ -105,7 +105,19 @@ public struct ReplayBuffer: Sendable {
     /// (`false`). Drives the offline gate via ``shouldPauseDrain``.
     public var isClientOnline: Bool = true
 
-    public init() {}
+    /// The effective caps for THIS buffer. Default to the ET constants
+    /// (``maxBackupBytes`` / ``offlineGateBytes``); injectable so the relay's read-loop-pause wiring can
+    /// be integration-tested at a tiny cap (no 64 MiB allocation) and so a deployment could tune them.
+    public let maxBackupBytesCap: Int
+    public let offlineGateBytesCap: Int
+
+    public init(
+        maxBackupBytes: Int = ReplayBuffer.maxBackupBytes,
+        offlineGateBytes: Int = ReplayBuffer.offlineGateBytes
+    ) {
+        self.maxBackupBytesCap = max(0, maxBackupBytes)
+        self.offlineGateBytesCap = max(0, offlineGateBytes)
+    }
 
     // MARK: Derived signals
 
@@ -123,8 +135,8 @@ public struct ReplayBuffer: Sendable {
     /// that we would otherwise have to drop. This is the mechanism that bounds memory
     /// while honoring the never-drop invariant.
     public var shouldPauseDrain: Bool {
-        if retainedBytes >= Self.maxBackupBytes { return true }
-        if !isClientOnline && retainedBytes >= Self.offlineGateBytes { return true }
+        if retainedBytes >= maxBackupBytesCap { return true }
+        if !isClientOnline && retainedBytes >= offlineGateBytesCap { return true }
         return false
     }
 

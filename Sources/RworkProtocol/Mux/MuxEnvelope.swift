@@ -94,34 +94,43 @@ public enum MuxEnvelopeCodec {
     /// `muxFrameLength` counts `channelID` + `muxType` + `body` and excludes the
     /// 4-byte prefix — exactly what ``MuxFrameDecoder`` expects.
     public static func encode(_ frame: MuxFrame) -> Data {
-        // Inner = [channelID][muxType][body]; the prefix length counts this whole run.
-        var inner = Data()
-        inner.appendBE(frame.channelID)
-        inner.append(frame.muxType.rawValue)
+        // Build the whole envelope in ONE buffer: a 4-byte muxFrameLength placeholder, then the inner
+        // run [channelID][muxType][body…], then BACK-PATCH the prefix. This avoids the intermediate
+        // `inner` Data and the extra whole-payload copy it forced — the up-to-128 KiB `.channelData`
+        // payload under a flood was previously memcpy'd into `inner` and then again into `frameData`.
+        var out = Data()
+        out.append(contentsOf: [0, 0, 0, 0]) // muxFrameLength placeholder (back-patched below)
+        out.appendBE(frame.channelID)
+        out.append(frame.muxType.rawValue)
 
         switch frame {
         case let .channelOpen(_, sessionID, lastReceivedSeq, channelClass):
-            inner.append(sessionID.dataBytes)
-            inner.appendBE(lastReceivedSeq)
-            inner.append(channelClass)
+            out.append(sessionID.dataBytes)
+            out.appendBE(lastReceivedSeq)
+            out.append(channelClass)
 
         case let .channelOpenAck(_, accepted):
-            inner.append(accepted ? 1 : 0)
+            out.append(accepted ? 1 : 0)
 
         case let .channelData(_, payload):
-            inner.append(payload) // opaque — carried verbatim
+            out.append(payload) // opaque — carried verbatim
 
         case .channelClose:
             break // empty body
 
         case let .windowAdjust(_, bytesToAdd):
-            inner.appendBE(bytesToAdd)
+            out.appendBE(bytesToAdd)
         }
 
-        var frameData = Data(capacity: prefixLength + inner.count)
-        frameData.appendBE(UInt32(inner.count))
-        frameData.append(inner)
-        return frameData
+        // muxFrameLength counts the inner run [channelID][muxType][body] — everything after the 4-byte
+        // prefix — exactly the value the old `UInt32(inner.count)` carried.
+        let innerLength = UInt32(out.count - prefixLength)
+        let s = out.startIndex
+        out[s]     = UInt8(truncatingIfNeeded: innerLength >> 24)
+        out[s + 1] = UInt8(truncatingIfNeeded: innerLength >> 16)
+        out[s + 2] = UInt8(truncatingIfNeeded: innerLength >> 8)
+        out[s + 3] = UInt8(truncatingIfNeeded: innerLength)
+        return out
     }
 
     /// Decodes a frame from a **complete inner run** (`[channelID][muxType][body...]`,

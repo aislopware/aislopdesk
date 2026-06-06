@@ -195,5 +195,17 @@ final class FlagsChangedModifierTests: XCTestCase {
         XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 55, flags: [.command]), true)
         XCTAssertEqual(MetalLayerBackedView.modifierDown(keyCode: 55, flags: []), false)
     }
+
+    /// R14: `MetalLayerBackedView.clampClickCount` saturates `NSEvent.clickCount` (an unbounded Int) into the
+    /// wire UInt8 instead of the trapping `UInt8(Int)` that crashed the client on a 256th rapid in-place
+    /// click. Byte-identical for the real 1/2/3-click range.
+    func testClampClickCountSaturatesInsteadOfTrapping() {
+        XCTAssertEqual(MetalLayerBackedView.clampClickCount(0), 0)
+        XCTAssertEqual(MetalLayerBackedView.clampClickCount(1), 1)
+        XCTAssertEqual(MetalLayerBackedView.clampClickCount(3), 3)
+        XCTAssertEqual(MetalLayerBackedView.clampClickCount(255), 255)
+        XCTAssertEqual(MetalLayerBackedView.clampClickCount(256), 255)        // would have trapped pre-R14
+        XCTAssertEqual(MetalLayerBackedView.clampClickCount(100_000), 255)
+    }
 }
 #endif

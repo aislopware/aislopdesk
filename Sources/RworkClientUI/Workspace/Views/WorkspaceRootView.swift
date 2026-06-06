@@ -77,13 +77,12 @@ public struct WorkspaceRootView: View {
         // empty branch when hidden (zero cost) — and an overlay, not a `.sheet`, so it owns its own
         // backdrop + placement rather than fighting sheet chrome.
         .overlay { CommandPaletteView(store: store, isPresented: $showCommandPalette) }
-        // Toggle the palette with ⌘K. A ⌘-prefixed chord ⇒ obeys the §5 conflict rule (the terminal
-        // never receives it). The hidden button keeps the chord scoped to the workspace window.
-        .background {
-            Button("Command Palette") { showCommandPalette.toggle() }
-                .keyboardShortcut("k", modifiers: .command)
-                .hidden()
-        }
+        // Toggle the palette with ⌘K. The chord lives on the VISIBLE menu-bar "Command Palette" item
+        // (``WorkspaceCommands``) — discoverable + scene-targeted — reached through this focused-scene
+        // value rather than a hidden background button. A ⌘-prefixed chord obeys the §5 conflict rule
+        // (the terminal never receives it), and `focusedSceneValue` keeps it reachable while a pane has
+        // keyboard focus (exactly like `\.workspaceStore`).
+        .focusedSceneValue(\.commandPaletteToggle, CommandPaletteToggle { showCommandPalette.toggle() })
     }
 
     // MARK: Detail (the ONE responsive switch — docs/22 §4)

@@ -18,22 +18,61 @@ import Foundation
 /// - **missing result**: a card with no result stays `pending` forever (no crash);
 /// - `is_error == true` ⇒ `.errored`.
 public struct EventBuilder {
+    /// Cap on the dedup ring (``processedKeys``). One line ≈ one entry; this covers any
+    /// realistic Claude Code transcript so the truncation/rotation *full re-read* (the
+    /// tailer resets its offset to 0 and re-feeds the whole file) still dedups, while
+    /// bounding memory on a pathologically long/adversarial session. See the dedup note.
+    static let processedKeyCap = 100_000
+
+    /// Cap on each held-out-of-order ``pendingResults`` map. A `tool_result` whose
+    /// `tool_use` never arrives (truncated/corrupt transcript, or an adversarial feed of
+    /// orphan results) would otherwise be retained forever; we evict oldest past the cap.
+    static let pendingResultCap = 4_096
+
+    /// Cap on the number of distinct SUBAGENT ids retained (R17 INSP-LEAK-1, the host analogue of the
+    /// client's R13 #4 ``InspectorViewModel`` agent cap). The per-subagent maps below (`subagents`,
+    /// `subagentOpenCards`, `subagentPendingResults`, `subagentPendingResultOrder`) are keyed by
+    /// agentID and were never evicted on the agentID DIMENSION — so a long session (or an adversarial
+    /// transcript declaring many distinct subagent ids) grew them for the host's whole lifetime. Once
+    /// past ``maxAgents`` the oldest agents are dropped to ``agentRetainTarget`` in one batch, removing
+    /// all of their per-agent state together.
+    static let maxAgents = 2_000
+    static let agentRetainTarget = 1_500
+
     /// Dedup keys already processed (doc 16 `processedMessageKeys`). Keyed by line
     /// uuid (main) or `sidechain:<agentID>:<uuid>` so a re-read tail never double-emits.
+    ///
+    /// Bounded as an **insertion-ordered ring**: ``processedKeyOrder`` records insertion
+    /// order so the oldest key can be evicted once the set passes ``processedKeyCap``.
+    /// The cap is large enough to span any real transcript, so the only re-read that
+    /// matters (truncation → full re-read from offset 0) still dedups every line.
     private var processedKeys: Set<String> = []
+    private var processedKeyOrder: [String] = []
 
     /// Open tool cards by id (main session). Used to apply a later `tool_result`.
+    /// A card is **dropped** the moment it reaches a terminal status (`.completed` /
+    /// `.errored`) — no later result can change it, so retaining it only leaks memory.
     private var openCards: [String: ToolCard] = [:]
 
     /// `tool_result`s that arrived before their `tool_use` (out-of-order), keyed by id.
+    /// Bounded by ``pendingResultCap`` (insertion-ordered eviction) so an orphan result
+    /// never accumulates without bound.
     private var pendingResults: [String: ToolResultBlock] = [:]
+    private var pendingResultOrder: [String] = []
 
-    /// Per-subagent open cards, keyed `agentID` → (cardID → card).
+    /// Per-subagent open cards, keyed `agentID` → (cardID → card). Same terminal-drop as
+    /// ``openCards``.
     private var subagentOpenCards: [String: [String: ToolCard]] = [:]
     private var subagentPendingResults: [String: [String: ToolResultBlock]] = [:]
+    /// Insertion order of held subagent results, keyed by `agentID`, for the same cap.
+    private var subagentPendingResultOrder: [String: [String]] = [:]
 
     /// Known subagent nodes by id (so a status change re-emits the same node).
     private var subagents: [String: SubagentNode] = [:]
+
+    /// Distinct subagent ids seen, in first-sight order, for the drop-oldest agent cap (INSP-LEAK-1).
+    private var seenAgents: Set<String> = []
+    private var agentOrder: [String] = []
 
     /// The latest todo list (replaced wholesale on each `TodoWrite`/`Task*`).
     private var latestTodos: [TodoItem] = []
@@ -102,8 +141,31 @@ public struct EventBuilder {
 
     // MARK: - Subagent node lifecycle
 
+    /// Records a (possibly new) agentID and, once past ``maxAgents``, evicts the OLDEST agents to
+    /// ``agentRetainTarget`` — removing ALL of their per-agent state together so no per-agent map leaks
+    /// the agentID dimension over a long session (INSP-LEAK-1). Idempotent for an already-seen id.
+    private mutating func noteAgent(_ agentID: String) {
+        guard seenAgents.insert(agentID).inserted else { return }
+        agentOrder.append(agentID)
+        guard agentOrder.count > Self.maxAgents else { return }
+        let evictCount = agentOrder.count - Self.agentRetainTarget
+        let evicted = agentOrder.prefix(evictCount)
+        agentOrder.removeFirst(evictCount)
+        for old in evicted {
+            seenAgents.remove(old)
+            subagents.removeValue(forKey: old)
+            subagentOpenCards.removeValue(forKey: old)
+            subagentPendingResults.removeValue(forKey: old)
+            subagentPendingResultOrder.removeValue(forKey: old)
+        }
+    }
+
+    /// Number of distinct subagent ids currently tracked (≤ ``maxAgents``). Test/diagnostics seam.
+    var trackedAgentCount: Int { agentOrder.count }
+
     /// Records/updates a subagent node and emits the change (idempotent on no-change).
     public mutating func updateSubagent(_ node: SubagentNode) -> [InspectorEvent] {
+        noteAgent(node.id)
         let existing = subagents[node.id]
         // Merge: a later update (e.g. SubagentStop) should not blank fields a meta file
         // already supplied.
@@ -170,14 +232,14 @@ public struct EventBuilder {
     // MARK: - Tool-card pairing
 
     private mutating func applyToolUse(_ use: ToolUseBlock, agentID: String?) -> [InspectorEvent] {
-        // If a result already arrived out-of-order, resolve immediately.
+        // If a result already arrived out-of-order, resolve immediately. The card is
+        // born terminal, so we do NOT keep it open — no further result can change it.
         if let pending = takePendingResult(id: use.id, agentID: agentID) {
             let card = ToolCard(
                 id: use.id, name: use.name, input: use.input,
                 output: pending.content,
                 status: pending.isError ? .errored : .completed
             )
-            setOpenCard(card, agentID: agentID)
             return cardEvent(card, agentID: agentID)
         }
         let card = ToolCard(id: use.id, name: use.name, input: use.input, status: .pending)
@@ -193,7 +255,11 @@ public struct EventBuilder {
         }
         card.output = result.content
         card.status = result.isError ? .errored : .completed
-        setOpenCard(card, agentID: agentID)
+        // Terminal now: drop the open card so the map cannot grow unbounded over a long
+        // session. The line-uuid dedup (``processedKeys``) guarantees neither this
+        // `tool_result` line nor its `tool_use` line is re-applied, so a later lookup
+        // can never need this entry again.
+        clearOpenCard(id: card.id, agentID: agentID)
         return cardEvent(card, agentID: agentID)
     }
 
@@ -239,7 +305,16 @@ public struct EventBuilder {
     private mutating func markProcessed(_ identity: LineIdentity, agentID: String?) -> Bool {
         guard let uuid = identity.uuid else { return true }
         let key = agentID.map { "sidechain:\($0):\(uuid)" } ?? uuid
-        return processedKeys.insert(key).inserted
+        guard processedKeys.insert(key).inserted else { return false }
+        processedKeyOrder.append(key)
+        // Insertion-ordered ring: once past the cap, evict the oldest key so the dedup
+        // set stays bounded over a very long session. The cap spans any realistic
+        // transcript, so the truncation full re-read still dedups every live line.
+        if processedKeyOrder.count > Self.processedKeyCap {
+            let oldest = processedKeyOrder.removeFirst()
+            processedKeys.remove(oldest)
+        }
+        return true
     }
 
     // MARK: - Open-card / pending-result storage (main vs subagent)
@@ -251,24 +326,72 @@ public struct EventBuilder {
 
     private mutating func setOpenCard(_ card: ToolCard, agentID: String?) {
         if let agentID {
+            noteAgent(agentID)
             subagentOpenCards[agentID, default: [:]][card.id] = card
         } else {
             openCards[card.id] = card
         }
     }
 
+    /// Drops a (now-terminal) open card so the open-card map cannot grow unbounded.
+    private mutating func clearOpenCard(id: String, agentID: String?) {
+        if let agentID {
+            subagentOpenCards[agentID]?.removeValue(forKey: id)
+        } else {
+            openCards.removeValue(forKey: id)
+        }
+    }
+
     private mutating func setPendingResult(_ result: ToolResultBlock, agentID: String?) {
         if let agentID {
+            noteAgent(agentID)
+            // Overwrite of an existing id keeps the same order slot (idempotent re-feed),
+            // so only track order on a genuinely new id.
+            let isNew = subagentPendingResults[agentID]?[result.toolUseID] == nil
             subagentPendingResults[agentID, default: [:]][result.toolUseID] = result
+            if isNew {
+                subagentPendingResultOrder[agentID, default: []].append(result.toolUseID)
+                evictSubagentPendingIfNeeded(agentID: agentID)
+            }
         } else {
+            let isNew = pendingResults[result.toolUseID] == nil
             pendingResults[result.toolUseID] = result
+            if isNew {
+                pendingResultOrder.append(result.toolUseID)
+                evictPendingIfNeeded()
+            }
         }
     }
 
     private mutating func takePendingResult(id: String, agentID: String?) -> ToolResultBlock? {
         if let agentID {
-            return subagentPendingResults[agentID]?.removeValue(forKey: id)
+            let taken = subagentPendingResults[agentID]?.removeValue(forKey: id)
+            if taken != nil, let idx = subagentPendingResultOrder[agentID]?.firstIndex(of: id) {
+                subagentPendingResultOrder[agentID]?.remove(at: idx)
+            }
+            return taken
         }
-        return pendingResults.removeValue(forKey: id)
+        let taken = pendingResults.removeValue(forKey: id)
+        if taken != nil, let idx = pendingResultOrder.firstIndex(of: id) {
+            pendingResultOrder.remove(at: idx)
+        }
+        return taken
+    }
+
+    /// Evicts the oldest held main-session result(s) once the cap is exceeded. An orphan
+    /// result (no matching `tool_use` ever) is the only thing that lingers; dropping the
+    /// oldest is correct (its card would have been emitted long ago if the use existed).
+    private mutating func evictPendingIfNeeded() {
+        while pendingResultOrder.count > Self.pendingResultCap {
+            let oldest = pendingResultOrder.removeFirst()
+            pendingResults.removeValue(forKey: oldest)
+        }
+    }
+
+    private mutating func evictSubagentPendingIfNeeded(agentID: String) {
+        while (subagentPendingResultOrder[agentID]?.count ?? 0) > Self.pendingResultCap {
+            guard let oldest = subagentPendingResultOrder[agentID]?.removeFirst() else { break }
+            subagentPendingResults[agentID]?.removeValue(forKey: oldest)
+        }
     }
 }

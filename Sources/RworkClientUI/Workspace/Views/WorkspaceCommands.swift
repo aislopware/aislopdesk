@@ -32,10 +32,19 @@ import SwiftUI
 /// Mount it on the `WindowGroup` scene: `WindowGroup { … }.commands { WorkspaceCommands() }`.
 public struct WorkspaceCommands: Commands {
     @FocusedValue(\.workspaceStore) private var store: WorkspaceStore?
+    @FocusedValue(\.commandPaletteToggle) private var paletteToggle: CommandPaletteToggle?
 
     public init() {}
 
     public var body: some Commands {
+        // Surface the ⌘K command palette as a VISIBLE menu item in the View menu (it was a hidden
+        // background button — the chord worked but nothing advertised it). Routed through the focused
+        // scene's toggle so it targets the key window; disabled when no workspace window is key.
+        CommandGroup(after: .toolbar) {
+            Button("Command Palette") { paletteToggle?.toggle() }
+                .keyboardShortcut("k", modifiers: .command)
+                .disabled(paletteToggle == nil)
+        }
         // The Pane menu reads as a workspace-level menu alongside the OS chrome. `CommandMenu`'s
         // trailing closure is a `@ViewBuilder` (Buttons + Dividers), not nested `Commands` — every
         // Button funnels its `WorkspaceCommand` through `apply(_:to:)`.
@@ -51,8 +60,12 @@ public struct WorkspaceCommands: Commands {
 
     @ViewBuilder
     private var paneMenu: some View {
-        commandButton("Split Horizontally", .splitHorizontal)
-        commandButton("Split Vertically", .splitVertical)
+        // "Right"/"Down" (not "Horizontally"/"Vertically") so the menu matches the Cmd-K palette +
+        // the per-pane tooltip wording AND avoids the tmux-vs-iTerm H/V ambiguity — the new pane's
+        // landing direction is what these say. (.splitHorizontal lands side-by-side → "Right";
+        // .splitVertical stacks → "Down".)
+        commandButton("Split Right", .splitHorizontal)
+        commandButton("Split Down", .splitVertical)
 
         Divider()
 
@@ -69,6 +82,9 @@ public struct WorkspaceCommands: Commands {
         Divider()
 
         commandButton("Zoom Pane", .toggleZoom)
+        // Recovery affordance: surface "Reconnect Pane" in the menu bar (it was palette-only +
+        // keyless, so a failed/dropped pane had no discoverable in-place recovery).
+        commandButton("Reconnect Pane", .reconnectPane)
         commandButton("Close Pane", .closePane)
     }
 

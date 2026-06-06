@@ -32,8 +32,20 @@ import Foundation
 /// Read-only by construction: the only input is the engine's observation stream; there
 /// is no path back to the agent.
 public actor InspectorReplayLog {
-    /// Append-only event history. `history[i]` is `seq == i`.
+    /// Retained event window. `history[i]` is `seq == baseSeq + i` (see ``baseSeq``).
     private var history: [InspectorEvent] = []
+
+    /// The absolute seq of `history[0]` (R6 #4). Bumped when the oldest events are dropped to keep
+    /// `history` bounded, so a subscriber's `fromSeq` still maps to a stable absolute sequence number.
+    /// Starts at 0 (no events dropped yet → `history[i]` is seq `i`, unchanged from the old semantics).
+    private var baseSeq: Int = 0
+
+    /// Hard cap on retained events: once `history` exceeds this, the oldest are dropped down to
+    /// ``retainTarget`` in ONE batch (amortized O(1) per append vs O(n) `removeFirst` each time). Without
+    /// this the host's inspector log grew without bound for the host's lifetime (slow OOM, amplified by
+    /// every long session / reconnect). 50k events is generous for a diagnostic inspector session.
+    private let maxRetained: Int
+    private let retainTarget: Int
 
     /// Live subscribers, keyed by a per-subscription id so termination can detach the
     /// right one.
@@ -44,7 +56,21 @@ public actor InspectorReplayLog {
     /// tail will ever arrive).
     private var finished = false
 
-    public init() {}
+    /// Production: 50k retained, dropping to 37.5k on overflow (generous for a diagnostic session).
+    public init() {
+        self.maxRetained = 50_000
+        self.retainTarget = 37_500
+    }
+
+    /// Test-only seam: a tiny retention window so the retention-drop / truncation-marker path
+    /// (R17 INSP-WIRE-1) is deterministically exercisable without appending 50k events. `internal`
+    /// (kept out of the public API); the public `init()` above is unchanged so existing callers and
+    /// their compiled symbols are untouched.
+    init(maxRetained: Int, retainTarget: Int) {
+        precondition(retainTarget < maxRetained, "retainTarget must be below maxRetained")
+        self.maxRetained = maxRetained
+        self.retainTarget = retainTarget
+    }
 
     /// Consumes the engine's single ordered event stream exactly once: appends each
     /// event to `history` and fans it out to every live subscriber. Call this ONCE with
@@ -67,6 +93,13 @@ public actor InspectorReplayLog {
     /// both, never neither.
     public func append(_ event: InspectorEvent) {
         history.append(event)
+        // R6 #4: bound the retained window. Drop the oldest in ONE batch when over the cap (amortized
+        // O(1)); `baseSeq` advances so absolute seq numbers stay stable for resuming subscribers.
+        if history.count > maxRetained {
+            let drop = history.count - retainTarget
+            history.removeFirst(drop)
+            baseSeq += drop
+        }
         for continuation in subscribers.values {
             continuation.yield(event)
         }
@@ -82,8 +115,10 @@ public actor InspectorReplayLog {
         subscribers.removeAll()
     }
 
-    /// The number of events recorded so far (diagnostics / tests).
-    public var historyCount: Int { history.count }
+    /// The total number of events recorded so far — `baseSeq + history.count`, i.e. the next seq to be
+    /// assigned (NOT the retained-window size). Stable across retention drops, so a client may resume
+    /// from it to get only the live tail.
+    public var historyCount: Int { baseSeq + history.count }
 
     /// Subscribes from `fromSeq`: replays `history[fromSeq...]` in order, then streams
     /// live events. `fromSeq == 0` = full replay then live; a higher value resumes after a
@@ -93,11 +128,33 @@ public actor InspectorReplayLog {
     /// actor step, so no event slips between them (see the type doc). A `fromSeq` past the
     /// end of `history` (a future resume point) yields an empty replay then the live tail.
     public func subscribe(fromSeq: Int64) -> AsyncStream<InspectorEvent> {
-        // Clamp to the valid range: a negative or out-of-range fromSeq must not crash the
-        // slice. A fromSeq beyond `history.count` means "I already have everything" →
-        // empty replay.
-        let lowerBound = max(0, min(Int(fromSeq), history.count))
-        let snapshot = Array(history[lowerBound...])
+        // Map the ABSOLUTE `fromSeq` to an index into the retained window (R6 #4): `history[i]` is seq
+        // `baseSeq + i`, so the index is `fromSeq - baseSeq`. A `fromSeq` below `baseSeq` (the client
+        // wants events already dropped to stay bounded) clamps to index 0 — the oldest retained event;
+        // the dropped prefix is unrecoverable, the bounded-retention tradeoff. A `fromSeq` past the end
+        // ("I already have everything") clamps to `history.count` → empty replay.
+        //
+        // R7 #6 (a regression the R6 #4 `- baseSeq` introduced): the subtraction must be OVERFLOW-SAFE.
+        // `fromSeq` is peer-controlled and unauthenticated; once `baseSeq > 0` a crafted `fromSeq ==
+        // Int64.min` underflows `Int(fromSeq) - baseSeq` and TRAPS the whole host daemon (a single-frame
+        // remote DoS). Saturate on underflow to `Int.min`, which then clamps to index 0 ("give me
+        // everything retained") — the correct, safe meaning of a below-base fromSeq.
+        let rel = Int(fromSeq).subtractingReportingOverflow(baseSeq)
+        let relIndex = rel.overflow ? Int.min : rel.partialValue
+        let lowerBound = max(0, min(relIndex, history.count))
+        var snapshot = Array(history[lowerBound...])
+
+        // R17 INSP-WIRE-1: if the requested prefix was BELOW the retained window (relIndex < 0, i.e.
+        // `fromSeq < baseSeq` — those events were dropped to keep `history` bounded), the snapshot
+        // silently starts mid-transcript. Prepend a truncation marker so the client renders "N earlier
+        // steps dropped" rather than believing it received a complete full replay. `droppedCount` is the
+        // number of absolute seqs missing ahead of the oldest retained event.
+        if relIndex < 0 {
+            let droppedCount = baseSeq - max(0, Int(clamping: fromSeq))
+            if droppedCount > 0 {
+                snapshot.insert(.historyTruncated(droppedCount: droppedCount), at: 0)
+            }
+        }
 
         // If the upstream already finished, there will be no live tail: deliver the
         // snapshot and finish.
@@ -134,4 +191,8 @@ public actor InspectorReplayLog {
 
     /// The number of currently-attached live subscribers (diagnostics / tests).
     public var subscriberCount: Int { subscribers.count }
+
+    /// The number of events currently RETAINED in the bounded window (≤ the retention cap) — distinct
+    /// from ``historyCount`` (the absolute total ever appended). Diagnostics / tests (R6 #4).
+    public var retainedEventCount: Int { history.count }
 }

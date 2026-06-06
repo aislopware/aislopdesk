@@ -1,6 +1,7 @@
 import XCTest
 @testable import RworkClient
 @testable import RworkClientUI
+import RworkTransport
 #if canImport(SwiftUI)
 import SwiftUI
 #endif
@@ -187,6 +188,121 @@ final class PaneStatusIndicatorTests: XCTestCase {
         vm.applyReconnectGaveUp()
         XCTAssertEqual(vm.status, .connected, "a late give-up must not whitewash a recovered pane")
     }
+
+    /// R11: a deliberate `disconnect()` lands `.disconnected` and cancels the supervisor — but a
+    /// reconnect callback whose hop-`Task` already fired can still run AFTER that. Because
+    /// `.disconnected` is BOTH the transient-drop state AND the deliberate-close terminal state, the
+    /// late callback would otherwise revive the closed pane to a never-resolving `.reconnecting`
+    /// (orange) / `.unreachable` (red). The `deliberatelyClosed` guard must swallow both.
+    func testReconnectCallbacksDoNotReviveADeliberatelyClosedPane() async {
+        let vm = makeViewModel()
+        await vm.disconnect()
+        XCTAssertEqual(vm.status, .disconnected)
+
+        vm.applyReconnectProgress(attempt: 1, nextRetry: Date())
+        XCTAssertEqual(vm.status, .disconnected, "a late progress must not revive a deliberately-closed pane to reconnecting")
+
+        vm.applyReconnectGaveUp()
+        XCTAssertEqual(vm.status, .disconnected, "a late give-up must not flip a deliberately-closed pane to unreachable")
+    }
+
+    // MARK: - Connect-form validation hint (UI/UX pass)
+
+    /// `validationHint` is `nil` exactly when `canConnect` is true (the hint never contradicts the
+    /// button-enabled state) and otherwise explains WHY the disabled Connect button is greyed.
+    func testValidationHintMatchesCanConnect() {
+        let vm = makeViewModel()
+
+        vm.host = ""; vm.port = "7777"
+        XCTAssertFalse(vm.canConnect)
+        XCTAssertEqual(vm.validationHint, "Enter a host")
+
+        vm.host = "example.com"; vm.port = "abc"
+        XCTAssertFalse(vm.canConnect)
+        XCTAssertEqual(vm.validationHint, "Port must be a number from 1–65535")
+
+        vm.host = "example.com"; vm.port = "99999"   // out of UInt16 range → unparseable
+        XCTAssertFalse(vm.canConnect)
+        XCTAssertEqual(vm.validationHint, "Port must be a number from 1–65535")
+
+        vm.host = "example.com"; vm.port = "0"        // parseable UInt16 but not a connectable port
+        XCTAssertFalse(vm.canConnect, "port 0 is rejected so the hint matches the advertised 1–65535")
+        XCTAssertEqual(vm.validationHint, "Port must be a number from 1–65535")
+
+        vm.host = "example.com"; vm.port = "7777"
+        XCTAssertTrue(vm.canConnect)
+        XCTAssertNil(vm.validationHint, "a valid form has no hint (button enabled)")
+    }
+
+    /// The `.failed` reason humanizes a transport `LocalizedError` but PRESERVES the readable Swift
+    /// payload for any other error — guarding the regression where `error.localizedDescription` on a
+    /// plain `Error` enum (e.g. `ClientError`, thrown by `client.resume()` before connect) bridges to
+    /// Foundation's "The operation couldn't be completed. (… error N.)" dump.
+    func testFailureReasonHumanizesTransportButPreservesOtherPayloads() {
+        XCTAssertEqual(
+            ConnectionViewModel.failureReason(for: RworkTransportError.timedOut("connect exceeded 10s")),
+            "Connection timed out — host unreachable?",
+            "a transport LocalizedError yields its clean errorDescription"
+        )
+        let clientReason = ConnectionViewModel.failureReason(for: ClientError.invalidState("resume before first connect"))
+        XCTAssertEqual(clientReason, #"invalidState("resume before first connect")"#,
+                       "a non-LocalizedError keeps its readable Swift payload")
+        XCTAssertFalse(clientReason.contains("couldn't be completed"), "must not be the bridged NSError dump")
+        XCTAssertFalse(
+            ConnectionViewModel.failureReason(for: CancellationError()).contains("couldn't be completed"),
+            "CancellationError must not surface as the Foundation dump either"
+        )
+    }
+
+    /// The status dot overlays a NON-COLOUR "!" glyph for error phases only (WCAG 1.4.1 — red must not
+    /// be the sole error cue). Healthy/in-flight/idle phases never show it.
+    #if canImport(SwiftUI)
+    func testStatusDotShowsNonColorErrorGlyphForErrorPhasesOnly() {
+        XCTAssertTrue(PaneStatusDot(status: .from(.failed("boom"))).showsErrorGlyph)
+        XCTAssertTrue(PaneStatusDot(status: .from(.unreachable)).showsErrorGlyph)
+        XCTAssertFalse(PaneStatusDot(status: .from(.connected)).showsErrorGlyph)
+        XCTAssertFalse(PaneStatusDot(status: .from(.connecting)).showsErrorGlyph)
+        XCTAssertFalse(PaneStatusDot(status: .from(.reconnecting(attempt: 1, nextRetry: nil))).showsErrorGlyph)
+        XCTAssertFalse(PaneStatusDot(status: .from(.disconnected)).showsErrorGlyph)
+    }
+    #endif
+
+    /// The in-pane recovery banner shows ONLY for the recoverable terminal states (`.failed` carries the
+    /// humanized reason; `.unreachable` has a fixed reason). `.reconnecting` is auto-healing (live
+    /// countdown in the chrome) and must NOT raise a Retry banner; connecting/connected/disconnected
+    /// have no banner. (Drives `PaneLeafView`'s `.failed`/`.unreachable` overlay.)
+    #if canImport(SwiftUI)
+    func testRecoveryReasonOnlyForFailedAndUnreachable() {
+        XCTAssertEqual(
+            PaneRecoveryBanner.reason(for: .failed("Connection timed out — host unreachable?")),
+            "Connection timed out — host unreachable?",
+            ".failed surfaces its humanized message as the banner reason"
+        )
+        XCTAssertNotNil(PaneRecoveryBanner.reason(for: .unreachable), ".unreachable has a recovery banner")
+        XCTAssertNil(PaneRecoveryBanner.reason(for: .disconnected))
+        XCTAssertNil(PaneRecoveryBanner.reason(for: .connecting))
+        XCTAssertNil(PaneRecoveryBanner.reason(for: .connected))
+        XCTAssertNil(
+            PaneRecoveryBanner.reason(for: .reconnecting(attempt: 2, nextRetry: nil)),
+            "reconnecting is auto-healing → no Retry banner (would duplicate the chrome countdown)"
+        )
+    }
+
+    /// UI/UX pass-3 #1: a cleanly-exited shell (`.disconnected`) gets a NEUTRAL "session ended" notice —
+    /// DISTINCT from the orange error `reason(for:)` (which stays nil for `.disconnected`), so a clean
+    /// exit never reads as a failure. Every non-disconnected status has no session-ended notice.
+    func testSessionEndedReasonOnlyForDisconnected() {
+        XCTAssertNotNil(PaneRecoveryBanner.sessionEndedReason(for: .disconnected),
+                        "a clean shell exit gets a neutral session-ended notice")
+        XCTAssertNil(PaneRecoveryBanner.reason(for: .disconnected),
+                     "…and the orange error banner stays absent (the two affordances are distinct)")
+        XCTAssertNil(PaneRecoveryBanner.sessionEndedReason(for: .connected))
+        XCTAssertNil(PaneRecoveryBanner.sessionEndedReason(for: .connecting))
+        XCTAssertNil(PaneRecoveryBanner.sessionEndedReason(for: .reconnecting(attempt: 1, nextRetry: nil)))
+        XCTAssertNil(PaneRecoveryBanner.sessionEndedReason(for: .failed("x")))
+        XCTAssertNil(PaneRecoveryBanner.sessionEndedReason(for: .unreachable))
+    }
+    #endif
 
     /// The WF3 backoff schedule the published `nextRetry` is derived from is the pure, clock-free
     /// `Backoff.delay(forAttempt:)` — assert it is the capped-exponential sequence the UI countdown

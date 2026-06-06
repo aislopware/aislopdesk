@@ -163,6 +163,13 @@ struct PaneStatusDot: View {
     /// a disconnected/reconnecting pane shows its connection state, not a stale running cue.
     private var showsRunningRing: Bool { running && status.phase == .connected }
 
+    /// Whether to overlay a NON-COLOUR error glyph. The rail/header dot signals an error by RED alone
+    /// (WCAG 1.4.1 — colour must not be the only cue), so a small "!" makes `.failed`/`.unreachable`
+    /// distinguishable without relying on hue. Error phases only; the running ring is `.connected`-gated
+    /// and never co-occurs, so this overlay does not touch the `size + 4` ring math. `internal` so the
+    /// condition is unit-testable.
+    var showsErrorGlyph: Bool { status.phase == .unreachable || status.phase == .failed }
+
     /// The running-ring colour (amber) — distinct from every connection colour so the running cue
     /// reads as "activity", not a connection state change.
     private static let runningColor = Color.orange
@@ -189,6 +196,16 @@ struct PaneStatusDot: View {
                             .frame(width: size + 4, height: size + 4)
                             .opacity(pulseOpacity(at: context.date))
                     }
+                }
+            }
+            // NON-COLOUR error cue: a white "!" over the red error dot so a colour-blind user can tell a
+            // failed/unreachable pane from a healthy one without relying on hue. Additive overlay (the
+            // base dot + ring math are untouched); shown for error phases only.
+            .overlay {
+                if showsErrorGlyph {
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: size + 1, weight: .black))
+                        .foregroundStyle(.white)
                 }
             }
             .help(detailedLabel)

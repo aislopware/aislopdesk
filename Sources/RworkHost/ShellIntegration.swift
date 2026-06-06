@@ -110,6 +110,10 @@ public enum ShellIntegration {
         for file in files {
             let url = dir.appendingPathComponent(file.name)
             guard (try? file.body.write(to: url, atomically: true, encoding: .utf8)) != nil else {
+                // Partial-write failure: remove the just-created dir (+ any files already written) so a
+                // per-pane shim dir is not orphaned in tmp — restores the no-leaked-shim-dir guarantee on
+                // the error path (the success path is byte-for-byte unchanged) (R13).
+                try? fm.removeItem(at: dir)
                 return nil
             }
         }
