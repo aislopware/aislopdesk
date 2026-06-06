@@ -53,14 +53,17 @@ public final class NWMuxByteLink: MuxByteLink, @unchecked Sendable {
             guard let self else { return }
             if let error {
                 self.chunkContinuation.finish(throwing: RworkTransportError.receiveFailed(String(describing: error)))
-                return
+                self.connection.cancel() // R11: free the socket fd — finishing the stream alone leaves the
+                return                   // NWConnection (and its fd) alive (the R6 #10 fix, missed on the mux link).
             }
             if let data, !data.isEmpty {
                 self.chunkContinuation.yield(data)
             }
             if isComplete {
                 self.chunkContinuation.finish()
-                return
+                self.connection.cancel() // R11: a CLEAN FIN must also release the fd — the host's connection
+                return                   // reap (linkDownHandler) only fires on `error != nil`, so a graceful
+                                         // client disconnect would otherwise leak both sockets + the MuxNWConnection.
             }
             self.receiveLoop()
         }
@@ -101,20 +104,32 @@ public enum LiveMuxConnectionFactory {
             let connectionID = UUID()
 
             let controlConn = NWConnection(host: endpointHost, port: endpointPort, using: TransportParameters.makeTCP())
-            try await controlConn.startAndWaitReady(on: DispatchQueue(label: "rwork.mux.control.ready"))
-            try await controlConn.sendRaw(ChannelAssociation.muxControlPreamble(connectionID: connectionID))
+            var dataConn: NWConnection?
+            do {
+                try await controlConn.startAndWaitReady(on: DispatchQueue(label: "rwork.mux.control.ready"))
+                try await controlConn.sendRaw(ChannelAssociation.muxControlPreamble(connectionID: connectionID))
 
-            let dataConn = NWConnection(host: endpointHost, port: endpointPort, using: TransportParameters.makeTCP())
-            try await dataConn.startAndWaitReady(on: DispatchQueue(label: "rwork.mux.data.ready"))
-            try await dataConn.sendRaw(ChannelAssociation.muxDataPreamble(connectionID: connectionID))
+                let data = NWConnection(host: endpointHost, port: endpointPort, using: TransportParameters.makeTCP())
+                dataConn = data
+                try await data.startAndWaitReady(on: DispatchQueue(label: "rwork.mux.data.ready"))
+                try await data.sendRaw(ChannelAssociation.muxDataPreamble(connectionID: connectionID))
 
-            let connection = MuxNWConnection(
-                role: .client,
-                controlLink: NWMuxByteLink(connection: controlConn, label: "control"),
-                dataLink: NWMuxByteLink(connection: dataConn, label: "data")
-            )
-            await connection.start()
-            return connection
+                let connection = MuxNWConnection(
+                    role: .client,
+                    controlLink: NWMuxByteLink(connection: controlConn, label: "control"),
+                    dataLink: NWMuxByteLink(connection: data, label: "data")
+                )
+                await connection.start()
+                return connection
+            } catch {
+                // R11: cancel any half-built sockets before rethrowing. Once `controlConn` is `.ready` it
+                // is a live fd; if DATA establishment then fails (flaky/dead host), the caller
+                // (ConnectionRegistry's `makeConnection`) only sees the error and has NO handle to these
+                // sockets — so without this they leak, accumulating toward fd exhaustion on every retry.
+                controlConn.cancel()
+                dataConn?.cancel()
+                throw error
+            }
         }
     }
 }

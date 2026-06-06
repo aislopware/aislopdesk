@@ -149,6 +149,30 @@ public enum VideoScaleMath {
     }
 }
 
+/// Pre-decode triage for a reassembled frame (R15 #9). A ZERO-byte frame must never reach
+/// `VTDecompressionSessionDecodeFrame` as a zero-length sample buffer: the decode fails and the
+/// session's hard-failure recovery tears the live `VTDecompressionSession` down + forces a full IDR
+/// round-trip (a visible stall) — needless churn for what is really a corrupt/empty fragment (a
+/// hostile UDP payloadLength that decoded to 0, or a host bug emitting an empty frame). Classify it
+/// up front instead. Pure (Int + Bool only) so it is unit-testable with ZERO VideoToolbox dependency.
+public enum FrameDecodability: Equatable, Sendable {
+    /// Non-empty — submit to the decoder as usual.
+    case decodable
+    /// An empty DELTA — drop it without touching the decoder. A single empty/lost delta does not
+    /// warrant a re-anchor; the reassembler's loss recovery covers a genuine gap.
+    case dropSilently
+    /// An empty KEYFRAME — the IDR itself was empty, so ask the host for a fresh one, but do NOT
+    /// invalidate the (otherwise-healthy) session. The decoder throws ``VideoDecoderError/awaitingKeyframe``
+    /// for this case, whose caller path requests an IDR WITHOUT a session rebuild.
+    case requestKeyframe
+
+    /// Triage a frame by its keyframe flag and reassembled byte count.
+    public static func classify(keyframe: Bool, byteCount: Int) -> FrameDecodability {
+        if byteCount > 0 { return .decodable }
+        return keyframe ? .requestKeyframe : .dropSilently
+    }
+}
+
 /// Pure frame-gated resize-adoption decision (the client mirror of the host's
 /// ``SizeNegotiation``): after the host acks an in-session resize, the client must adopt the new
 /// size as its aspect-fit denominator (``decodedSize``) ONLY when a decoded `CVPixelBuffer` at

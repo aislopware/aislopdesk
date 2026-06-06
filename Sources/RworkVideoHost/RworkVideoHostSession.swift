@@ -275,31 +275,15 @@ public actor RworkVideoHostSession {
         if case .bye = message { transport.resetClientFlow() }
     }
 
-    /// CONCURRENCY-HOST-1 crash-without-bye reaper hook. Handles a reaped
-    /// (crashed / lost-bye) client EXACTLY like a clean `bye`: run the SM's bye effects (which
-    /// include `.stopCapture` → the identity-guarded `teardownLiveComponents`), then free the pinned
-    /// UDP flow LAST via `resetClientFlow()` — byte-for-byte the same order as `handleControl`'s bye
-    /// branch (line ~268).
-    ///
-    /// Why this order, and why `runReaperTick` deliberately does NOT free the slot first: the slot
-    /// MUST stay pinned for the whole teardown. If the transport freed it before this async teardown
-    /// (the earlier design), a reconnecting client could be accepted DURING the `await capturer.stop()`
-    /// suspension and then have its FRESH capture torn down — the streaming-but-dead F2 wedge the
-    /// reviewer caught. Keeping the pin until the very end means a reconnect is refused at the
-    /// listener until teardown finishes AND the SM is `.listening`, so handleReap can never demote
-    /// or tear down a newer client: the race is eliminated by construction, identical to the proven
-    /// clean-bye path. There is deliberately NO second unconditional `teardownLiveComponents` — the
-    /// SM `.bye` effect already tore down (identity-guarded); a redundant call re-opened the race.
-    /// Wired as `Task { await session.handleReap() }` from `transport.onReap` (the only new async
-    /// work; inbound delivery stays inline).
-    /// Reaper TIMING is [MS-confirm]; the STRUCTURE mirrors the unit-tested clean-bye semantics.
-    public func handleReap() async {
-        let bounds = currentWindowBoundsCG()
-        for effect in stateMachine.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: { _, _ in nil }, resolveResizeSize: { _, _ in nil }) {
-            await apply(effect)
-        }
-        transport.resetClientFlow()
-    }
+    // R11 (dead-code removal): a `handleReap()` crash-without-bye hook lived here, documented as
+    // "wired as `Task { await session.handleReap() }` from `transport.onReap`". That wiring never
+    // existed — `transport` has no `onReap`, and the only reaper in the live (mux) path is
+    // `NWVideoMuxDatagramTransport.runReaperTick` → `onReapLane` → `VideoMuxSessionRegistry.retireAndStop`
+    // → `session.stop()`. `stop()` is a STRICT SUPERSET of what the dead hook did (it also drains the
+    // inbound/encoded pumps and runs `teardownLiveComponents` unconditionally), so the reaped client is
+    // already torn down correctly. The method was a single-pin-era leftover with zero call sites
+    // (verified across Sources + Tests) and a misleading docstring, so it was removed rather than kept
+    // as a confusing public no-op.
 
     private func inject(_ event: InputEvent, raiseFirst: Bool) async {
         guard let injector else { return }

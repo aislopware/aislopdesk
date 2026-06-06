@@ -78,6 +78,12 @@ public final class HostTitleBellSniffer: @unchecked Sendable {
         case oscDiscard
         /// Inside a discarded OSC and the previous byte was `ESC` (possible `ST`).
         case oscDiscardEscape
+        /// Inside a DCS/SOS/PM/APC string sequence (R9 #4): swallow the body to its ST/BEL terminator,
+        /// emitting NOTHING. UNLIKE an OSC, an embedded ESC that is NOT `\` is part of the opaque string
+        /// (it does NOT start a new sequence), so this never re-classifies — that is the whole point.
+        case stringConsume
+        /// Inside a string sequence and the previous byte was `ESC` (possible `ST` = `ESC \`).
+        case stringConsumeEscape
     }
 
     private let lock = NSLock()
@@ -100,6 +106,12 @@ public final class HostTitleBellSniffer: @unchecked Sendable {
     private static let rightBracket: UInt8 = 0x5D  // ']'
     private static let backslash: UInt8 = 0x5C     // '\'
     private static let semicolon: UInt8 = 0x3B     // ';'
+    // String-sequence introducers (R9 #4): DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`. A real
+    // terminal swallows their body to the ST/BEL terminator without ringing a bell or changing the title.
+    private static let dcs: UInt8 = 0x50           // 'P'
+    private static let sos: UInt8 = 0x58           // 'X'
+    private static let pm: UInt8 = 0x5E            // '^'
+    private static let apc: UInt8 = 0x5F           // '_'
 
     // MARK: Observe
 
@@ -143,6 +155,13 @@ public final class HostTitleBellSniffer: @unchecked Sendable {
             case Self.rightBracket:
                 state = .osc
                 oscBuffer.removeAll(keepingCapacity: true)
+            case Self.dcs, Self.sos, Self.pm, Self.apc:
+                // R9 #4 (security): DCS/SOS/PM/APC introduce a STRING sequence whose body a conformant
+                // terminal swallows to its ST/BEL terminator WITHOUT ringing a bell or changing the title.
+                // Consume the whole string + terminator, emitting NOTHING — else a malicious remote program
+                // could embed a BEL (phantom bell) or an `ESC]2;…` (title spoof) inside the string body and
+                // we'd fabricate control events the client never honors.
+                state = .stringConsume
             case Self.esc:
                 // `ESC ESC` — stay in escape, waiting to classify the second ESC.
                 state = .escape
@@ -199,6 +218,30 @@ public final class HostTitleBellSniffer: @unchecked Sendable {
                 // there is no title to finish since the OSC was discarded).
                 state = .escape
                 step(byte, into: &messages)
+            }
+
+        case .stringConsume:
+            // R9 #4: swallow a DCS/SOS/PM/APC string body, emitting nothing. The ONLY terminators are
+            // ST (`ESC \`) and BEL. CRUCIALLY, unlike the OSC-discard path, an embedded ESC that is not
+            // `\` stays INSIDE the string (it does NOT introduce a new sequence), so an `ESC]2;…` in the
+            // body can never spoof a title and an embedded BEL never rings.
+            switch byte {
+            case Self.bel:
+                state = .ground
+            case Self.esc:
+                state = .stringConsumeEscape
+            default:
+                break // opaque string-body byte — swallow.
+            }
+
+        case .stringConsumeEscape:
+            switch byte {
+            case Self.backslash:
+                state = .ground // `ESC \` = ST terminator.
+            case Self.esc:
+                state = .stringConsumeEscape // another ESC — could still begin ST; keep waiting.
+            default:
+                state = .stringConsume // a lone ESC inside the body — swallow it + keep consuming.
             }
 
         case .oscEscape:

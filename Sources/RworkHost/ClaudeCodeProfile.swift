@@ -61,6 +61,10 @@ public struct ClaudeCodeProfile: Sendable, Equatable {
     /// is matched by prefix (see ``environment(parent:)``) and is not enumerated here.
     public static let inheritedKeys = [
         "HOME", "USER", "LOGNAME", "SHELL", "PATH", "TMPDIR", "LANG", "TERM_PROGRAM",
+        // TERMINFO / TERMINFO_DIRS (R8 #2): the terminfo PROBE honours them, so the child must inherit
+        // them or a "resolvable" xterm-ghostty verdict it can't actually find degrades every TUI. See
+        // HostEnvironment.curated().
+        "TERMINFO", "TERMINFO_DIRS",
     ]
 
     /// Builds the curated environment for launching `claude`.

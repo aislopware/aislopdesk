@@ -77,4 +77,22 @@ final class FlowCreditPolicyTests: XCTestCase {
         XCTAssertEqual(policy.remaining, 0)
         XCTAssertTrue(policy.isBlocked)
     }
+
+    /// R6 #7 regression: a huge `UInt32`-sized grant (or a long run of grants) must NOT Int-overflow-trap
+    /// `remaining += bytesToAdd`; it saturates at `Int.max`. The growable-window semantics
+    /// (`testAdjustCanGrowBeyondInitialWindow`) are preserved — we only defuse the overflow trap.
+    func testAdjustIsOverflowSafeAndStillGrowable() {
+        var policy = FlowCreditPolicy(initialWindow: 1000)
+        // Still grows past the initial window (design intent — not clamped).
+        policy.adjust(bytesToAdd: 5000)
+        XCTAssertEqual(policy.remaining, 6000, "a grant grows the window past initialWindow (SSH auto-tuning)")
+        // A near-Int.max remaining + a large grant SATURATES instead of trapping/wrapping negative.
+        for _ in 0..<3 { policy.adjust(bytesToAdd: Int.max) }
+        XCTAssertEqual(policy.remaining, Int.max, "repeated huge grants saturate at Int.max (no overflow trap)")
+        XCTAssertFalse(policy.isBlocked, "a saturated window is not blocked")
+        // And a single UInt32-max grant from a fresh policy never traps.
+        var p2 = FlowCreditPolicy(initialWindow: 256 * 1024)
+        p2.adjust(bytesToAdd: Int(UInt32.max))
+        XCTAssertEqual(p2.remaining, 256 * 1024 + Int(UInt32.max), "a UInt32-max grant adds without trapping")
+    }
 }

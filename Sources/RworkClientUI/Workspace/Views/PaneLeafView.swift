@@ -166,7 +166,12 @@ private struct TerminalContentView: View {
             if showConnectForm {
                 connectForm
             } else {
+                // An OVERLAY, never a `.failed`/`.unreachable` content branch: replacing `terminalComposite`
+                // would unmount `TerminalScreenView` on every drop/retry crossing, churning the libghostty
+                // surface (the documented focus/teardown freeze class — see the macOS note on
+                // `terminalComposite`). The overlay keeps the renderer mounted with stable identity.
                 terminalComposite
+                    .overlay(alignment: .top) { recoveryBanner }
             }
         }
         // Lazy connect ONCE on appear (docs/22 §6) — but ONLY for a pane with an explicit endpoint.
@@ -199,6 +204,13 @@ private struct TerminalContentView: View {
                     .foregroundStyle(.secondary)
                 Text("Connect to a host")
                     .font(.headline)
+                // First-run guidance: the form prefills a default host, which misleads a newcomer into
+                // thinking the local machine is the host. Name the prerequisite explicitly so they know a
+                // daemon must be running at the address they enter. (No port hardcoded — the form prefills it.)
+                Text("Enter the address of a machine running rwork-hostd.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
                 ConnectionView(model: connection)
                     .frame(maxWidth: 420)
             }
@@ -209,21 +221,86 @@ private struct TerminalContentView: View {
         }
     }
 
-    /// The proven terminal composite (renderer + input bar), shown once the pane is connecting/live or
-    /// when it carries an explicit endpoint.
+    /// The proven terminal composite, shown once the pane is connecting/live or when it carries an
+    /// explicit endpoint. PLATFORM-SPLIT — the renderer is shared, but the keyboard-input surface is NOT:
+    ///
+    /// - **macOS**: renderer ONLY — you type DIRECTLY into the terminal (`GhosttyLayerBackedView.keyDown`
+    ///   → `surface.key` → host PTY, the natural desktop terminal UX). The GUI "shell command" bar was
+    ///   removed here (commit d2d382f): on macOS that bar grabbed keyboard focus, which UNFOCUSED the
+    ///   libghostty surface (`GhosttyLayerBackedView.resignFirstResponder` → `surface.setFocus(false)`),
+    ///   idling its renderer loop so the screen FROZE. The full-bleed, auto-focused terminal keeps the
+    ///   surface focused and repainting. DO NOT add the bar back on macOS.
+    ///
+    /// - **iOS**: renderer + a per-pane ``InputBarView`` pinned at the BOTTOM (the standard mobile
+    ///   terminal layout — terminal fills, keyboard bar docked). This is REQUIRED, not optional: the iOS
+    ///   `GhosttyLayerBackedView` is a PASSIVE `CAMetalLayer` display — it is not a first responder and
+    ///   implements no `UIKeyInput`, so it has NO keyboard path of its own. The keyboard/IME/accessory/
+    ///   floating-cursor stack lives entirely in ``InputBarView`` → ``TerminalInputHost`` (doc 17 §2.5);
+    ///   d2d382f dropped this bar from the live tree (it only ever survived in the retired
+    ///   `ClientRootView`), so iOS users lost ALL keyboard input. Re-mounting it here restores the path,
+    ///   exactly as `ClientRootView` did for one session (docs/22 §7), now keyed per ``PaneID``.
+    ///
+    /// REPAINT-SAFE on iOS (unlike macOS): the iOS surface sets `surface.setFocus(true)` once in
+    /// `attach()` and NEVER calls `setFocus(false)` — it has no `resignFirstResponder` tied to render
+    /// focus. So when ``TerminalInputHost``'s IME proxy takes the keyboard first responder, the surface
+    /// keeps its render focus + 60fps `CADisplayLink` tick and keeps repainting. The macOS freeze cannot
+    /// recur here.
     private var terminalComposite: some View {
-        // The GUI "shell command" input bar was REMOVED (user request): you type DIRECTLY into the
-        // terminal — `GhosttyLayerBackedView.keyDown` → `surface.key` → host PTY, the natural terminal
-        // UX. This ALSO fixes live repaint: the input bar grabbed keyboard focus, which UNFOCUSED the
-        // libghostty surface (`resignFirstResponder` → `setFocus(false)`), idling its renderer loop so
-        // the screen froze. With the terminal full-bleed + auto-focused it stays focused and repaints.
-        // (iOS soft-keyboard input is handled separately by TerminalInputHost, not this bar.)
         Group {
             if let terminalModel = live.terminalModel {
+                #if os(iOS)
+                // Terminal fills; the keyboard input bar is docked at the bottom (mobile layout). The bar
+                // binds the SAME connection's live client (nil while disconnected → it disables send) via
+                // `live.connection?.activeClient` — the proven OUT path is bar → `RworkClient.sendInput`
+                // → the ordered drain. `paneID` + `focusCoordinator` route the iOS first-responder
+                // arbiter so multiple visible iPad-regular panes don't fight over the keyboard (docs/22
+                // §7). Guarded on `live.inputBar` (present for any terminal/Claude pane; mirrors the
+                // `if let terminalModel` guard) so an idle/remote pane never shows a stray bar.
+                VStack(spacing: 0) {
+                    TerminalScreenView(model: terminalModel, isFocused: isFocused)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if let inputBar = live.inputBar {
+                        Divider()
+                        InputBarView(
+                            model: inputBar,
+                            client: live.connection?.activeClient,
+                            paneID: live.id,
+                            focusCoordinator: focusCoordinator
+                        )
+                    }
+                }
+                #else
+                // macOS: renderer ONLY — type directly into the terminal (no bar; see the doc comment).
                 TerminalScreenView(model: terminalModel, isFocused: isFocused)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                #endif
             } else {
                 Color.clear
+            }
+        }
+    }
+
+    /// A recovery affordance shown OVER the (still-mounted) terminal when an explicit-endpoint pane has
+    /// no on-screen connect form to fall back to: a `.failed`/`.unreachable` pane otherwise renders a
+    /// dead/blank terminal whose only failure cue is a 7pt dot + a tiny chrome caption, and whose only
+    /// recovery is the off-screen ⇧⌘R / palette "Reconnect Pane". This puts the reason + a Retry button
+    /// where the user is already looking. `.reconnecting` is deliberately EXCLUDED — it is auto-healing
+    /// and already shows a live countdown in the chrome. Reuses the proven `connect()` recovery path.
+    @ViewBuilder
+    private var recoveryBanner: some View {
+        if let connection = live.connection {
+            if let reason = PaneRecoveryBanner.reason(for: connection.status) {
+                PaneRecoveryBanner(reason: reason) {
+                    Task { await connection.connect() }
+                }
+                .padding(8)
+            } else if let endedReason = PaneRecoveryBanner.sessionEndedReason(for: connection.status) {
+                // A cleanly-exited shell on an explicit-endpoint pane: a NEUTRAL "Session ended" notice +
+                // Reconnect, where the user is looking — instead of a frozen terminal dead-end (pass-3 #1).
+                PaneRecoveryBanner(reason: endedReason, isNeutral: true) {
+                    Task { await connection.connect() }
+                }
+                .padding(8)
             }
         }
     }
@@ -603,6 +680,60 @@ private struct RemoteGUIPaneView: View {
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+/// A compact failure-recovery banner overlaid on a `.failed`/`.unreachable` terminal pane: the reason
+/// plus a Retry button. Kept to the top edge + hit-testing only itself, so it never steals the
+/// terminal's keyboard focus (the macOS unfocused-surface freeze hazard).
+struct PaneRecoveryBanner: View {
+    let reason: String
+    /// `true` = a NEUTRAL "session ended" notice (a clean shell exit), styled without the orange error
+    /// affordance; `false` (default) = the orange `.failed`/`.unreachable` recovery banner.
+    var isNeutral: Bool = false
+    let retry: () -> Void
+
+    /// The user-facing reason for a recoverable (`.failed`/`.unreachable`) status, or `nil` when the
+    /// status is not a recovery state (so the overlay is absent for connecting/connected/reconnecting —
+    /// `.reconnecting` is auto-healing and already shows a live countdown in the chrome). Static + on
+    /// this internal type so the projection is unit-testable without rendering the view.
+    static func reason(for status: ConnectionViewModel.Status) -> String? {
+        switch status {
+        case .failed(let message): return message
+        case .unreachable:         return "Host unreachable — the connection could not be re-established."
+        case .disconnected, .connecting, .connected, .reconnecting: return nil
+        }
+    }
+
+    /// A NEUTRAL "the shell exited" notice for a cleanly `.disconnected` explicit-endpoint pane (the
+    /// remote shell ran `exit` / the process died). DISTINCT from the orange error `reason(for:)` — a
+    /// clean exit is not a failure and must not read as an alarm. Returns nil for every other status. Was
+    /// a silent dead-end (frozen terminal, grey dot, no message, no Retry) before pass-3 #1.
+    static func sessionEndedReason(for status: ConnectionViewModel.Status) -> String? {
+        if case .disconnected = status { return "Session ended — the shell on the host exited." }
+        return nil
+    }
+
+    var body: some View {
+        let accent: Color = isNeutral ? .secondary : .orange
+        HStack(spacing: 8) {
+            Image(systemName: isNeutral ? "power" : "exclamationmark.triangle.fill")
+                .foregroundStyle(accent)
+            Text(reason)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button(isNeutral ? "Reconnect" : "Retry", action: retry)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(accent.opacity(0.5)))
+        .frame(maxWidth: 460)
+        .accessibilityElement(children: .combine)
     }
 }
 #endif

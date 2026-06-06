@@ -119,6 +119,15 @@ public struct RworkClientApp: App {
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
                 }
+                // R7 #5 (CRITICAL data-loss): macOS scene phase delivers no reliable flush on ⌘Q, so the
+                // 600 ms-debounced workspace save silently ABANDONS the most recent layout edits (split /
+                // close / rename / divider-drag made within ~600 ms of quitting) on every quit. Flush
+                // synchronously on app termination: `saveImmediately()` cancels the pending debounce and
+                // does a generation-bumped atomic write, and `willTerminate` observers run synchronously
+                // BEFORE the process exits, so the latest tree is durably persisted.
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    store.saveImmediately()
+                }
                 #endif
         }
         // The native command surface (docs/22 §5): a Pane + Tab menu on macOS, the hardware-keyboard
@@ -160,17 +169,34 @@ public struct RworkClientApp: App {
             await prev?.value
             switch phase {
             case .background:
-                await store.pauseAll()
-                // Flush the tree NOW (cancelling any in-flight debounced save) through the store's
-                // configured persistence — docs/22 §6 save-on-background. Inside the serialized pause
-                // step, so the save can't race a resume.
+                // R15 #4: hold a background-execution assertion so the OS grants time to finish the
+                // durable save + clean bye instead of suspending the process mid-flight. Bare SwiftUI
+                // scenePhase returns immediately after kicking off this Task, so without an assertion
+                // the OS can suspend before the awaited `pauseAll()` fan-out (each pane flushes its ack,
+                // sends a clean `bye`, tears its socket down) — or the save — completes. docs/17/18 §2.5
+                // prescribe exactly this UIKit `beginBackgroundTask` window (~30s) over bare scenePhase.
+                let bgTask = UIApplication.shared.beginBackgroundTask(withName: "rwork.background-flush")
+                // R15 #8: flush the durable layout tree FIRST. `saveImmediately()` is synchronous and
+                // cheap (cancel the debounce + one atomic file write); sequencing it AFTER the whole
+                // N-pane network teardown made the user-visible persistence the first casualty of a
+                // truncated background window if a pane's `sendBye` stalled on a flaky NetBird path.
+                // Save, THEN pause. (docs/22 §6 save-on-background; pause/resume ordering is preserved
+                // by the outer `await prev?.value` chaining.)
                 store.saveImmediately()
+                await store.pauseAll()
+                if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) }
             case .active:
                 await store.resumeAll()
             default:
                 break
             }
         }
+        #elseif os(macOS)
+        // macOS delivers `.background` when the app is hidden / the last window closes. Flush the tree
+        // then too (R7 #5) — a complement to the `willTerminate` flush above — so a layout edit is not
+        // lost if the window closes without a full ⌘Q. `saveImmediately()` cancels the debounce + writes
+        // synchronously, so there is no race with a subsequent re-activate.
+        if phase == .background { store.saveImmediately() }
         #endif
     }
 }

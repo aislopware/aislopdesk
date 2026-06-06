@@ -27,6 +27,11 @@ public enum InputRouting {
         public var control: Bool
         public var option: Bool    // Alt
         public var command: Bool
+        /// Shift. Deliberately NOT consulted by ``route(_:)`` (a shifted printable letter must still
+        /// flow through the IME proxy), only by the special-key byte encoder — UIKit reports the same
+        /// `characters` for Tab with or without Shift, so this is the only way to tell Shift+Tab
+        /// (back-tab `ESC [ Z`) from a forward Tab (R12 #6).
+        public var shift: Bool
         /// True for a non-printable special key (arrows, Esc, Tab, Return, Delete, F-keys).
         public var isSpecial: Bool
 
@@ -36,6 +41,7 @@ public enum InputRouting {
             control: Bool = false,
             option: Bool = false,
             command: Bool = false,
+            shift: Bool = false,
             isSpecial: Bool = false
         ) {
             self.characters = characters
@@ -43,6 +49,7 @@ public enum InputRouting {
             self.control = control
             self.option = option
             self.command = command
+            self.shift = shift
             self.isSpecial = isSpecial
         }
     }

@@ -89,6 +89,99 @@ final class MuxBugFixRegressionTests: XCTestCase {
         }
     }
 
+    // MARK: - [R11] channelOpen on the CONTROL link is never legitimate → dropped (memory-DoS cap)
+
+    /// A `channelOpen` only ever arrives on the DATA link (`openChannel` → `dataLink.send`). The
+    /// per-connection cap that bounds the router table is `link == .data`, so a hostile peer could
+    /// spam channelOpen frames on the CONTROL link to grow `controlTable` without bound (the last
+    /// router-table memory-DoS vector). The R11 guard drops a control-link channelOpen BEFORE it
+    /// reaches `MuxRoutingCore.route` — so neither the control table grows NOR the host open hook fires.
+    func testChannelOpenOnControlLinkIsDroppedAndDoesNotGrowControlTable() async throws {
+        let (clientControl, hostControl) = InMemoryMuxLink.pair()
+        let (_, hostData) = InMemoryMuxLink.pair()
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData)
+
+        let opens = AtomicCounter()
+        await host.setHostOpenHandler { _ in opens.bump() }
+        await host.start()
+
+        // Storm distinct channelOpen ids straight onto the host's CONTROL link.
+        for id in UInt32(1)...50 {
+            try await clientControl.send(MuxEnvelopeCodec.encode(
+                .channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0)))
+        }
+        try await Task.sleep(for: .milliseconds(120))   // let the control receive loop route them all
+
+        XCTAssertEqual(opens.value, 0, "a control-link channelOpen must NOT spawn a session (never legitimate there)")
+        let controlTableCount = await host._controlTableStateCountForTesting
+        XCTAssertEqual(controlTableCount, 0, "a control-link channelOpen storm must not grow the control router table")
+    }
+
+    // MARK: - [R12 #1] channelOpen/channelClose churn does not grow the router tables unbounded
+
+    /// On the HOST the PEER chooses channel ids. A hostile/buggy peer that repeatedly opens then closes
+    /// a channel with a FRESH id each cycle keeps the LIVE channel count at ~0 (so the per-connection cap
+    /// never trips) yet, before the fix, left a permanent `.halfClosed` dataTable entry AND — because the
+    /// attacker omits the control-link close — a zombie `.open` controlTable entry + an orphaned control
+    /// sub-channel per cycle: unbounded growth driven by tiny frames. The ChannelTable eviction ring +
+    /// the symmetric control-side close on the DATA-link close bound BOTH tables.
+    func testChannelOpenCloseChurnDoesNotGrowRouterTablesUnbounded() async throws {
+        let (_, hostControl) = InMemoryMuxLink.pair()
+        let (clientData, hostData) = InMemoryMuxLink.pair()
+        let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData)
+        await host.setHostOpenHandler { _ in }
+        await host.setHostCloseHandler { _ in }
+        await host.start()
+
+        // Churn well past the eviction-ring capacity (1024), DATA-link ONLY (the attacker omits the
+        // control-link close), with a fresh distinct id every cycle.
+        for id in stride(from: UInt32(2), through: 4000, by: 2) {
+            try await clientData.send(MuxEnvelopeCodec.encode(
+                .channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0)))
+            try await clientData.send(MuxEnvelopeCodec.encode(.channelClose(channelID: id)))
+        }
+        // A sentinel OPEN left live: FIFO on the data link guarantees every churn frame was processed
+        // before it goes live, so observing it bounds the whole burst as drained.
+        let sentinel: UInt32 = 99_999
+        try await clientData.send(MuxEnvelopeCodec.encode(
+            .channelOpen(channelID: sentinel, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0)))
+        try await Self.waitUntil(timeout: 20) { await host.hasLiveChannels }
+
+        let dataCount = await host._dataTableStateCountForTesting
+        let controlCount = await host._controlTableStateCountForTesting
+        // ~2000 cycles ran; without the fix each table would hold ~2000 entries. Bounded now to
+        // (ring cap 1024) + (the 1 live sentinel), with headroom.
+        XCTAssertLessThanOrEqual(dataCount, 1100, "dataTable bounded by the eviction ring, not ~2000")
+        XCTAssertLessThanOrEqual(controlCount, 1100, "controlTable bounded (symmetric close + ring), not ~2000")
+        let dead = await host.isDead
+        XCTAssertFalse(dead, "the connection stays healthy throughout the churn")
+    }
+
+    // MARK: - [R12 #2] duplicate same-side mux preamble closes the displaced half (fd-leak guard)
+
+    /// The pure pairing decision behind `HostTransport.associateMux`: a CONTROL+DATA pair completes, but
+    /// a SECOND same-side half (two CONTROLs / two DATAs before the opposite peer arrives) is a re-park
+    /// that DISPLACES the already-parked half — which must be closed so its NWConnection/fd does not leak.
+    func testMuxPairingClosesDisplacedSameSideHalf() {
+        // First arrival of either side: parks, nothing displaced.
+        XCTAssertEqual(MuxPairing.decide(existingHasControl: false, existingHasData: false, isControl: true),
+                       .init(paired: false, closesDisplacedSameSide: false))
+        XCTAssertEqual(MuxPairing.decide(existingHasControl: false, existingHasData: false, isControl: false),
+                       .init(paired: false, closesDisplacedSameSide: false))
+
+        // Opposite side arrives → pair completes, nothing displaced.
+        XCTAssertEqual(MuxPairing.decide(existingHasControl: true, existingHasData: false, isControl: false),
+                       .init(paired: true, closesDisplacedSameSide: false))
+        XCTAssertEqual(MuxPairing.decide(existingHasControl: false, existingHasData: true, isControl: true),
+                       .init(paired: true, closesDisplacedSameSide: false))
+
+        // SAME side arrives again (duplicate) → re-park AND close the displaced half (the leak guard).
+        XCTAssertEqual(MuxPairing.decide(existingHasControl: true, existingHasData: false, isControl: true),
+                       .init(paired: false, closesDisplacedSameSide: true))
+        XCTAssertEqual(MuxPairing.decide(existingHasControl: false, existingHasData: true, isControl: false),
+                       .init(paired: false, closesDisplacedSameSide: true))
+    }
+
     // MARK: - helpers
 
     /// Polls `condition` (an async predicate) until true or the timeout elapses.

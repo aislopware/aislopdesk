@@ -122,6 +122,22 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
     // MARK: - split materializes exactly one new leaf, focuses it, keeps the original
 
     /// A split adds EXACTLY one new key (the new leaf), preserves the original leaf's session by
+    /// `isOnlyLeaf` (drives the chrome close-button label "Close tab" vs "Close pane"): true for the
+    /// sole pane of a single-pane tab, false for every pane after a split, false for an unknown id.
+    func testIsOnlyLeafTracksTabLeafCount() {
+        let store = makeStore()
+        let solo = leafIDs(store)[0]
+        XCTAssertTrue(store.isOnlyLeaf(solo), "the lone pane of a single-pane tab is the only leaf (close = close tab)")
+
+        store.split(solo, axis: .horizontal, kind: .terminal)
+        let leaves = leafIDs(store)
+        XCTAssertEqual(leaves.count, 2)
+        for id in leaves {
+            XCTAssertFalse(store.isOnlyLeaf(id), "after a split, neither pane is the only leaf (close = close pane)")
+        }
+        XCTAssertFalse(store.isOnlyLeaf(PaneID()), "an id not present in any tab is not the only leaf")
+    }
+
     /// identity (no churn of the existing pane), focuses the new leaf, and tears down nothing.
     func testSplitMaterializesExactlyOneNewLeafAndKeepsOriginal() async {
         let store = makeStore()

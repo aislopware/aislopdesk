@@ -2,12 +2,14 @@
 import SwiftUI
 
 /// The terminal screen: hosts the ``TerminalRenderingView`` seam (production
-/// `GhosttyTerminalView` via ``TerminalRendererFactory``, or the BUILD-STATUS placeholder)
-/// plus a thin status/title overlay. Binds a ``TerminalViewModel``.
+/// `GhosttyTerminalView` via ``TerminalRendererFactory``, or the BUILD-STATUS placeholder),
+/// full-bleed. Binds a ``TerminalViewModel``.
 ///
-/// The view itself is renderer-agnostic — it asks the factory for the rendering view and
-/// lays a title bar over it. The byte pipeline is driven by `observe(client:)`, started by
-/// the embedding scene (`RworkClientApp`) so this view can be reused inside the split layout.
+/// The view itself is renderer-agnostic — it just asks the factory for the rendering view. The
+/// per-pane header (title + connection-status dot) is owned by ``PaneChromeView``, which wraps every
+/// leaf, so this view no longer draws its own title/status strip (#25 — it overlaid live output). The
+/// byte pipeline is driven by `observe(client:)`, started by the embedding scene (`RworkClientApp`) so
+/// this view can be reused inside the split layout.
 public struct TerminalScreenView: View {
     @State private var model: TerminalViewModel
     /// The pane's workspace focus, threaded to the renderer so only the focused pane takes the macOS
@@ -22,46 +24,21 @@ public struct TerminalScreenView: View {
     }
 
     public var body: some View {
+        // #25: the inner title/status strip was REMOVED — it was dead weight that OVERLAID the live
+        // terminal output (the `.top`-aligned HStack sat on top of the first rows). `PaneChromeView`
+        // already owns the per-pane header (kind glyph + title + connection-status dot + split/zoom/
+        // close buttons) and wraps every leaf, so this strip duplicated that chrome while obscuring
+        // text. The renderer is now full-bleed; the ZStack is kept so future overlays (e.g. a bell
+        // flash) have an anchor without reintroducing a layout shift.
         ZStack(alignment: .top) {
             // The renderer seam — production GhosttyTerminalView, or the placeholder.
             TerminalRendererFactory.make(model: model, isFocused: isFocused)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            // Title / status strip.
-            HStack(spacing: 8) {
-                StatusDot(status: model.connectionStatus)
-                Text(model.title ?? "Terminal")
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-                Spacer()
-                Text(model.connectionStatus.label)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
         }
     }
 }
 
-struct StatusDot: View {
-    let status: TerminalViewModel.ConnectionStatus
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
-    }
-
-    private var color: Color {
-        switch status {
-        case .connected: return .green
-        case .connecting, .reconnecting: return .yellow
-        case .disconnected: return .red
-        case .exited: return .gray
-        case .idle: return .secondary
-        }
-    }
-}
+// `StatusDot` was removed with the inner status strip (#25). The shared, more capable
+// ``PaneStatusDot`` (in `PaneStatusIndicator.swift`) is the one source of truth for the connection
+// dot, used by `PaneChromeView` (per-pane header) and `TabSidebarView`.
 #endif

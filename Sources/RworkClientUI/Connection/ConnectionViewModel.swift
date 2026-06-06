@@ -75,6 +75,13 @@ public final class ConnectionViewModel {
     #endif
 
     private var client: RworkClient?
+    /// Monotonic connect-attempt counter (R6 #1 — the VM analogue of `RworkClient.connectGeneration`).
+    /// `connect()`/`resume()` capture it before the long handshake `await`; a teardown / reconnect /
+    /// second connect that lands during that suspension means the post-await `status`/`sessionID` writes
+    /// belong to a SUPERSEDED attempt and must be discarded. Without it, because `RworkClient.connect`
+    /// now RETURNS (not throws) when it was closed/paused/superseded mid-handshake, the VM's `do` branch
+    /// would whitewash an already-torn-down pane to `.connected` (and overwrite `sessionID`).
+    private var connectGeneration = 0
     private var reconnect: ReconnectManager?
     private var supervisorTask: Task<Void, Never>?
     /// The single events loop (chrome status + forward to the terminal model).
@@ -185,7 +192,22 @@ public final class ConnectionViewModel {
         !host.trimmingCharacters(in: .whitespaces).isEmpty && parsedPort != nil
     }
 
-    private var parsedPort: UInt16? { UInt16(port.trimmingCharacters(in: .whitespaces)) }
+    /// Why the Connect button is disabled, or `nil` when it is enabled. Surfaced as a small caption
+    /// under the host/port form so a silently-greyed button explains itself. Defined so that
+    /// `validationHint == nil` ⟺ `canConnect` (the button-enabled state is the single source of
+    /// truth; the hint never contradicts it). `parsedPort` is private, so this must live on the VM.
+    public var validationHint: String? {
+        if host.trimmingCharacters(in: .whitespaces).isEmpty { return "Enter a host" }
+        if parsedPort == nil { return "Port must be a number from 1–65535" }
+        return nil
+    }
+
+    private var parsedPort: UInt16? {
+        // Reject port 0: it is never a connectable TCP port, and accepting it would contradict the
+        // `validationHint` copy ("1–65535"). `UInt16("0") == 0` (not nil), so guard the lower bound.
+        guard let p = UInt16(port.trimmingCharacters(in: .whitespaces)), p >= 1 else { return nil }
+        return p
+    }
 
     // MARK: Lifecycle
 
@@ -205,6 +227,10 @@ public final class ConnectionViewModel {
 
         let client = makeClient()
         self.client = client
+        // Claim a generation for THIS attempt (R6 #1). A teardown/reconnect/second connect during the
+        // handshake `await` below supersedes us; the post-await status writes must then be discarded.
+        connectGeneration &+= 1
+        let myGeneration = connectGeneration
 
         // OUT path (renderer → host): the terminal model's `sendInput`/`sendResize` (driven by
         // `GhosttyTerminalView`'s onWrite/onResize) append into ONE main-actor FIFO; a single drain
@@ -291,13 +317,31 @@ public final class ConnectionViewModel {
         supervisorTask = supervisor
         do {
             try await client.connect(host: host, port: port)
-            sessionID = await client.sessionID
+            // Read the learned id, THEN re-check we are still the live attempt before writing any state —
+            // `RworkClient.connect` RETURNS (not throws) when it was closed/paused/superseded mid-handshake,
+            // so without this guard a torn-down or superseded pane would be whitewashed to `.connected`.
+            // `self.client === client` catches a racing teardown (it nils `self.client`); the generation
+            // catches a second connect (it bumped `connectGeneration`). No `await` between guard and writes.
+            let learnedID = await client.sessionID
+            guard myGeneration == connectGeneration, self.client === client else { return }
+            sessionID = learnedID
             status = .connected
         } catch {
+            guard myGeneration == connectGeneration, self.client === client else { return }
             supervisor.cancel()
             supervisorTask = nil
-            status = .failed(String(describing: error))
+            status = .failed(Self.failureReason(for: error))
         }
+    }
+
+    /// The user-facing `.failed` reason for a thrown error. A `LocalizedError` (e.g.
+    /// ``RworkTransportError``) yields its clean `errorDescription` ("Connection timed out — host
+    /// unreachable?"); ANY OTHER error falls back to `String(describing:)`, which preserves the readable
+    /// Swift payload (`invalidState("resume before first connect")`) rather than Foundation's bridged
+    /// "The operation couldn't be completed. (… error N.)" dump that bare `.localizedDescription` would
+    /// produce for a plain `Error` enum like `RworkClient.ClientError` or `CancellationError`.
+    static func failureReason(for error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? String(describing: error)
     }
 
     // MARK: - Internal error types
@@ -348,9 +392,13 @@ public final class ConnectionViewModel {
         }
         do {
             try await client.resume()
+            // Same supersede guard as connect() (R6 #1): a teardown/reconnect during resume's handshake
+            // nils/replaces `self.client`, so don't whitewash a torn-down pane back to `.connected`.
+            guard self.client === client else { return }
             if wasLive { status = .connected }
         } catch {
-            status = .failed(String(describing: error))
+            guard self.client === client else { return }
+            status = .failed(Self.failureReason(for: error))   // humanized + payload-safe (see connect()'s catch)
         }
     }
 
@@ -367,44 +415,63 @@ public final class ConnectionViewModel {
         observeTask = Task { @MainActor [weak self] in
             for await event in client.events {
                 guard let self else { return }
-                // Fold into chrome status first…
-                switch event {
-                case .disconnected:
-                    if self.deliberatelyClosed {
-                        self.status = .disconnected
-                    } else {
-                        // A fresh drop: enter reconnecting with no attempt info yet (the supervisor's
-                        // `onProgress` enriches it with the attempt count + countdown as it retries).
-                        self.status = .reconnecting(attempt: 0, nextRetry: nil)
-                        self.terminal.markReconnecting()
-                    }
-                case let .reconnected(sessionID, _):
-                    self.sessionID = sessionID
-                    self.status = .connected
-                case .exit:
-                    self.status = .disconnected
-                case let .commandStatus(commandStatus):
-                    // A finished command (OSC 133;D): best-effort long-command notification
-                    // (macOS-only). The running/idle indicator itself is folded by the terminal
-                    // model below — this branch only drives the notification side-effect.
-                    if case let .idle(exitCode, durationMS) = commandStatus {
-                        #if os(macOS)
-                        self.commandNotifier.notifyIfLong(
-                            paneTitle: self.terminal.title ?? "",
-                            exitCode: exitCode,
-                            durationMS: durationMS
-                        )
-                        #endif
-                    }
-                case .title, .bell:
-                    break
-                }
-                // …then forward EVERY event to the terminal model so its status / title /
-                // bell / exit / resume-seq stay consistent with the chrome.
-                self.terminal.handle(event)
+                self.foldEvent(event)
             }
         }
     }
+
+    /// Folds one client event into the chrome `status`, then forwards EVERY event to the terminal model
+    /// so its status / title / bell / exit / resume-seq stay consistent with the chrome. Extracted from
+    /// `observeEvents` so the deliberate-close guards are unit-testable synchronously (R13 #3).
+    private func foldEvent(_ event: RworkClient.Event) {
+        switch event {
+        case .disconnected:
+            if self.deliberatelyClosed {
+                self.status = .disconnected
+            } else {
+                // A fresh drop: enter reconnecting with no attempt info yet (the supervisor's
+                // `onProgress` enriches it with the attempt count + countdown as it retries).
+                self.status = .reconnecting(attempt: 0, nextRetry: nil)
+                self.terminal.markReconnecting()
+            }
+        case let .reconnected(sessionID, _):
+            // A late .reconnected can be drained from the broadcaster buffer AFTER a deliberate
+            // disconnect() (a buffered AsyncStream element is delivered even post-cancel/finish).
+            // Mirror the .disconnected + applyReconnect* guards so it cannot whitewash a
+            // deliberately-closed pane back to green .connected with a stale sessionID + dead transport.
+            // `return` (not break) also skips the terminal.handle(event) forward below, which would
+            // otherwise wedge the terminal model's connectionStatus to .connected past disconnect()'s
+            // terminal.reset() (R13 #3).
+            if self.deliberatelyClosed { return }
+            self.sessionID = sessionID
+            self.status = .connected
+        case .exit:
+            self.status = .disconnected
+        case let .commandStatus(commandStatus):
+            // A finished command (OSC 133;D): best-effort long-command notification (macOS-only). The
+            // running/idle indicator itself is folded by the terminal model below — this branch only
+            // drives the notification side-effect.
+            if case let .idle(exitCode, durationMS) = commandStatus {
+                #if os(macOS)
+                self.commandNotifier.notifyIfLong(
+                    paneTitle: self.terminal.title ?? "",
+                    exitCode: exitCode,
+                    durationMS: durationMS
+                )
+                #endif
+            }
+        case .title, .bell:
+            break
+        }
+        self.terminal.handle(event)
+    }
+
+    #if DEBUG
+    /// Test hook (no production caller): fold one event synchronously through the SAME path
+    /// `observeEvents` uses, so a unit test can assert the deliberate-close guards without driving the
+    /// async event stream (R13 #3). `internal` + `DEBUG`-gated so it never leaks into release API.
+    func foldEventForTesting(_ event: RworkClient.Event) { foldEvent(event) }
+    #endif
 
     /// Folds a ``ReconnectManager`` progress callback into `status` (WF3 backoff → UI). Only enriches
     /// the `.reconnecting`/dropped states — a campaign attempt that arrives after the resume already
@@ -412,11 +479,18 @@ public final class ConnectionViewModel {
     /// can race the `.reconnected` event) must NOT drag a live pane back to "reconnecting". So this is a
     /// no-op unless the pane is currently reconnecting-ish (`.reconnecting`/`.disconnected`).
     func applyReconnectProgress(attempt: Int, nextRetry: Date?) {
+        // R11: a reconnect callback's hop-Task can land AFTER a deliberate `disconnect()` (which sets
+        // `status = .disconnected` + `deliberatelyClosed`, cancels the supervisor). Cancelling the
+        // supervisor does NOT cancel an already-fired callback's hop-Task, and `.disconnected` is BOTH a
+        // transient-drop state AND the deliberate-close terminal state — so without this guard a late
+        // callback whitewashes a closed pane to `.reconnecting` (orange "Reconnecting…" that never
+        // resolves, since the supervisor is dead). `observeEvents` already guards `.disconnected` this way.
+        guard !deliberatelyClosed else { return }
         switch status {
         case .reconnecting, .disconnected:
             status = .reconnecting(attempt: attempt, nextRetry: nextRetry)
         default:
-            break   // already connected / failed / deliberately closed — do not regress
+            break   // already connected / failed — do not regress
         }
     }
 
@@ -431,6 +505,9 @@ public final class ConnectionViewModel {
     /// reconnecting flips to `.unreachable` (the visible WF3 give-up state). Guarded so a give-up that
     /// races a late resume cannot whitewash a `.connected` pane.
     func applyReconnectGaveUp() {
+        // R11: same deliberate-close guard as `applyReconnectProgress` — a give-up callback racing a
+        // `disconnect()` must not whitewash the closed pane to `.unreachable` (red "Unreachable").
+        guard !deliberatelyClosed else { return }
         switch status {
         case .reconnecting, .disconnected:
             status = .unreachable

@@ -244,6 +244,13 @@ public final class PTYProcess: @unchecked Sendable {
     /// Applies a terminal size to the PTY via `TIOCSWINSZ` (driven by `resize`). The
     /// kernel then delivers `SIGWINCH` to the child's foreground process group.
     public func setWindowSize(cols: UInt16, rows: UInt16, pxWidth: UInt16 = 0, pxHeight: UInt16 = 0) {
+        // Hold `exitLock` across the guard AND the ioctl so `closeMaster` (which nils `masterFD` under the
+        // same lock, then closes the fd) cannot null + recycle the fd between this read and the syscall —
+        // otherwise the TIOCSWINSZ could land on an unrelated, just-reopened fd with the same number (a
+        // TOCTOU). Safe/non-deadlocking: TIOCSWINSZ is a microsecond non-blocking syscall that never
+        // re-enters PTYProcess (R13 #12).
+        exitLock.lock()
+        defer { exitLock.unlock() }
         guard masterFD >= 0 else { return }
         var ws = winsize(ws_row: rows, ws_col: cols, ws_xpixel: pxWidth, ws_ypixel: pxHeight)
         _ = ioctl(masterFD, TIOCSWINSZ, &ws)
@@ -347,13 +354,20 @@ public final class PTYProcess: @unchecked Sendable {
     private func startReaper(pid: pid_t) {
         Thread.detachNewThread { [weak self] in
             var status: Int32 = 0
+            var reapedOK = false
             while true {
                 let r = waitpid(pid, &status, 0)
-                if r == pid { break }
-                if r == -1 && errno != EINTR { break }
+                if r == pid { reapedOK = true; break }   // success: `status` is a real wait status
+                if r == -1 && errno != EINTR { break }   // failure (e.g. ECHILD: child already reaped)
             }
             let code: Int32
-            if (status & 0o177) == 0 {
+            if !reapedOK {
+                // waitpid FAILED — `status` was never written (still 0), so the prior code decoded it
+                // as a clean `exit 0`, masking the abnormal condition (the wire `exit(code:0)` would
+                // lie that a vanished/double-reaped child exited gracefully). Report a sentinel instead
+                // so the client sees an abnormal termination. (128+SIGKILL=137, the "killed" convention.)
+                code = 128 + SIGKILL
+            } else if (status & 0o177) == 0 {
                 // WIFEXITED: high byte is the exit status.
                 code = (status >> 8) & 0xFF
             } else {

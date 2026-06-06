@@ -44,6 +44,13 @@ public final class TerminalModeTracker {
         /// Inside an OSC and the previous byte was `ESC` — waiting to see if it is the
         /// `\` that completes an `ST` terminator (`ESC\`), or a new sequence start.
         case oscEscape
+        /// Inside a DCS/SOS/PM/APC string sequence (R9 #4): swallow the body to ST/BEL, tracking nothing.
+        /// An embedded `ESC[?1049h` (alt-screen) / `ESC]133;…` in a string body must NOT flip the mode —
+        /// a conformant terminal treats the whole string as opaque. Unlike OSC, an embedded non-`\` ESC
+        /// stays INSIDE the string (it does not start a new sequence), so this never re-classifies.
+        case stringConsume
+        /// Inside a string sequence and the previous byte was `ESC` (possible `ST` = `ESC\`).
+        case stringConsumeEscape
     }
 
     private var state: State = .ground
@@ -66,6 +73,11 @@ public final class TerminalModeTracker {
     private static let leftBracket: UInt8 = 0x5B   // '['
     private static let rightBracket: UInt8 = 0x5D  // ']'
     private static let backslash: UInt8 = 0x5C     // '\'
+    // String-sequence introducers (R9 #4): DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`.
+    private static let dcs: UInt8 = 0x50           // 'P'
+    private static let sos: UInt8 = 0x58           // 'X'
+    private static let pm: UInt8 = 0x5E            // '^'
+    private static let apc: UInt8 = 0x5F           // '_'
 
     // MARK: Consume
 
@@ -102,6 +114,10 @@ public final class TerminalModeTracker {
             case Self.rightBracket:
                 state = .osc
                 oscBuffer.removeAll(keepingCapacity: true)
+            case Self.dcs, Self.sos, Self.pm, Self.apc:
+                // R9 #4: a DCS/SOS/PM/APC string body is opaque to a conformant terminal — swallow it to
+                // ST/BEL so an embedded `ESC[?1049h` / `ESC]133;…` can't flip the tracked mode.
+                state = .stringConsume
             case Self.esc:
                 // `ESC ESC` — stay in escape, waiting to classify the second ESC.
                 state = .escape
@@ -159,6 +175,28 @@ public final class TerminalModeTracker {
                 handleOSC(oscBuffer, into: &events)
                 state = .escape
                 step(byte, into: &events)
+            }
+
+        case .stringConsume:
+            // R9 #4: swallow a DCS/SOS/PM/APC string body. Terminators are ST/BEL; an embedded ESC that
+            // is not `\` stays INSIDE the opaque string (it never starts a new tracked sequence).
+            switch byte {
+            case Self.bel:
+                state = .ground
+            case Self.esc:
+                state = .stringConsumeEscape
+            default:
+                break // opaque string-body byte.
+            }
+
+        case .stringConsumeEscape:
+            switch byte {
+            case Self.backslash:
+                state = .ground // `ESC \` = ST terminator.
+            case Self.esc:
+                state = .stringConsumeEscape // another ESC — could still begin ST; keep waiting.
+            default:
+                state = .stringConsume // a lone ESC inside the body — swallow it + keep consuming.
             }
         }
     }

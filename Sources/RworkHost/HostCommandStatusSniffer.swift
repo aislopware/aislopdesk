@@ -77,6 +77,11 @@ public final class HostCommandStatusSniffer: @unchecked Sendable {
         case oscDiscard
         /// Inside a discarded OSC and the previous byte was `ESC` (possible `ST`).
         case oscDiscardEscape
+        /// Inside a DCS/SOS/PM/APC string sequence (R9 #4): swallow the body to ST/BEL, emit nothing. An
+        /// embedded ESC that is NOT `\` stays inside the opaque string (never starts a new sequence).
+        case stringConsume
+        /// Inside a string sequence and the previous byte was `ESC` (possible `ST` = `ESC \`).
+        case stringConsumeEscape
     }
 
     private var state: State = .ground
@@ -92,6 +97,12 @@ public final class HostCommandStatusSniffer: @unchecked Sendable {
     private static let bel: UInt8 = 0x07
     private static let rightBracket: UInt8 = 0x5D  // ']'
     private static let backslash: UInt8 = 0x5C     // '\'
+    // String-sequence introducers (R9 #4): DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _` — their body
+    // is swallowed to ST/BEL, so an embedded `133;C/D` run inside one must NOT be parsed as an OSC 133 mark.
+    private static let dcs: UInt8 = 0x50           // 'P'
+    private static let sos: UInt8 = 0x58           // 'X'
+    private static let pm: UInt8 = 0x5E            // '^'
+    private static let apc: UInt8 = 0x5F           // '_'
 
     // MARK: Observe
 
@@ -129,6 +140,11 @@ public final class HostCommandStatusSniffer: @unchecked Sendable {
             case Self.rightBracket:
                 state = .osc
                 oscBuffer.removeAll(keepingCapacity: true)
+            case Self.dcs, Self.sos, Self.pm, Self.apc:
+                // R9 #4 (security): DCS/SOS/PM/APC string body is swallowed to ST/BEL, emitting nothing —
+                // so a malicious remote program cannot embed an `ESC]133;C/D` run inside a string sequence
+                // to fabricate a phantom running/idle status (with attacker-chosen exit code + duration).
+                state = .stringConsume
             case Self.esc:
                 state = .escape // `ESC ESC` — stay, classify the second ESC.
             default:
@@ -170,6 +186,28 @@ public final class HostCommandStatusSniffer: @unchecked Sendable {
                 // Stray ESC inside the discarded OSC — re-classify as a NEW sequence's introducer.
                 state = .escape
                 step(byte, into: &messages)
+            }
+
+        case .stringConsume:
+            // R9 #4: swallow a DCS/SOS/PM/APC string body, emitting nothing. Terminators are ST/BEL; an
+            // embedded ESC that is not `\` stays INSIDE the string (an `ESC]133;…` body can't spoof status).
+            switch byte {
+            case Self.bel:
+                state = .ground
+            case Self.esc:
+                state = .stringConsumeEscape
+            default:
+                break // opaque string-body byte — swallow.
+            }
+
+        case .stringConsumeEscape:
+            switch byte {
+            case Self.backslash:
+                state = .ground // `ESC \` = ST terminator.
+            case Self.esc:
+                state = .stringConsumeEscape // another ESC — could still begin ST; keep waiting.
+            default:
+                state = .stringConsume // a lone ESC inside the body — swallow it + keep consuming.
             }
 
         case .oscEscape:

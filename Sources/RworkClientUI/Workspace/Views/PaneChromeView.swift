@@ -58,10 +58,11 @@ struct PaneChromeView<Content: View>: View {
             let status = connectionStatus
             PaneStatusDot(status: status, running: isRunning)
 
-            Text(spec.title)
+            Text(displayTitle)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(isFocused ? .primary : .secondary)
                 .lineLimit(1)
+                .truncationMode(.middle)
 
             // Reconnecting/unreachable detail beside the dot so "connecting forever" reads as a clear
             // "Reconnecting (n) — retrying in Ns" / "Unreachable" (surfacing the WF3 timeout + backoff).
@@ -101,7 +102,7 @@ struct PaneChromeView<Content: View>: View {
                 store.focus(id)        // zoom acts on the focused pane — ensure it's this one first
                 store.toggleZoom()
             }
-            chromeButton("xmark", help: "Close pane", role: .destructive) {
+            chromeButton("xmark", help: store.isOnlyLeaf(id) ? "Close tab" : "Close pane", role: .destructive) {
                 store.closePane(id)
             }
         }
@@ -176,6 +177,19 @@ struct PaneChromeView<Content: View>: View {
         (handle as? LivePaneSession)?.terminalModel?.shellActivity == .running
     }
 
+    /// The header label: prefer the LIVE OSC 0/2 terminal title (the shell's cwd / running command)
+    /// when the shell has set one, falling back to the static `spec.title`. Without this, split
+    /// same-kind panes all read the generic "Terminal" and are indistinguishable in a multi-pane tab
+    /// (and in the Cmd-K pane-jump list). Reading the `@Observable` model's `title` here re-renders the
+    /// header when the shell changes it. Empty/whitespace titles fall back so a pane is never blank.
+    private var displayTitle: String {
+        if let live = (handle as? LivePaneSession)?.terminalModel?.title,
+           !live.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return live
+        }
+        return spec.title
+    }
+
     /// The compact status detail shown beside the title for the in-flight / terminal states. For a
     /// reconnecting pane with a known next-retry instant it ticks a live "retrying in Ns" countdown via
     /// a `TimelineView` (refreshed once a second, no store mutation); otherwise it shows the static
@@ -197,11 +211,25 @@ struct PaneChromeView<Content: View>: View {
                     .foregroundStyle(.orange)
                     .lineLimit(1)
             }
-        case .unreachable, .failed:
+        case .connecting:
+            // An initial dial can block on the dead-host handshake/timeout (~10s); surface a
+            // "Connecting…" cue beside the title — not just the pulsing dot — so the wait reads as
+            // in-flight, not frozen. Neutral (secondary) since it is not yet an error.
             Text(status.label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        case .unreachable, .failed:
+            // Show the CONCRETE reason ("Failed: timed out") inline, not the bare word "Failed" —
+            // the reason was previously reachable only via the 7pt status-dot hover tooltip. The
+            // full text stays in `.help` for the truncated case. (`.unreachable` carries no message,
+            // so `detailedLabel` is just "Unreachable" there — still correct.)
+            Text(status.detailedLabel)
                 .font(.caption2)
                 .foregroundStyle(.red)
                 .lineLimit(1)
+                .truncationMode(.middle)
+                .help(status.detailedLabel)
         default:
             EmptyView()
         }

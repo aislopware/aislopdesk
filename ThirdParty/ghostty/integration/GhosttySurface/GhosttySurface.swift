@@ -50,9 +50,11 @@
 //  this type is `@MainActor` to *guarantee* the call sites are on main:
 //    • TCP receive loop (bg thread) → `await MainActor.run { surface.feed(d) }`
 //      (here: the surface is `@MainActor`, so callers `await` into it).
-//    • The C write-callback fires SYNCHRONOUSLY on the main thread from Ghostty's
-//      key encoder, so `onWrite` is invoked on main; we hand bytes to the client
-//      without blocking the encoder.
+//    • The C write-callback fires on libghostty's dedicated IO thread (the fork's
+//      `External.zig`: "invoked on the IO thread"), NOT synchronously on main — even
+//      replies generated during a main-thread `feed()` are emitted off-main via the IO
+//      mailbox. So `onWrite` MUST be routed through `ghosttyOnMainActor` (the main hop is
+//      REQUIRED, not a defensive fallback — see the write_callback below).
 //    • Hazard (doc 18 §C): actor-suspension escape — do NOT `await` *between*
 //      write_output → refresh → draw; keep that trio synchronous (it is, below).
 //
@@ -137,7 +139,8 @@ public final class GhosttySurface: @MainActor TerminalSurface {
     private var contentScale: Double
 
     /// Bytes the renderer wants to send back to the host (encoded keystrokes).
-    /// Invoked on the main thread from the C `write_callback`.
+    /// The C `write_callback` fires on libghostty's IO thread; `ghosttyOnMainActor` hops it onto the
+    /// main actor before this is invoked, so handlers may touch `@MainActor` state safely.
     public var onWrite: ((Data) -> Void)?
 
     // MARK: Init / lifecycle
@@ -204,9 +207,11 @@ public final class GhosttySurface: @MainActor TerminalSurface {
                   let ud = ghostty_surface_userdata(cSurface) else { return }
             let me = Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
             let bytes = Data(bytes: dataPtr, count: len)   // copied before any main hop
-            // Usually fired synchronously on main (the key encoder runs on main); but
-            // libghostty makes no thread guarantee, so route through ghosttyOnMainActor:
-            // synchronous when already on main (the common, ordered case), else hop to main.
+            // libghostty fires write_callback on its dedicated IO thread (the fork's External.zig),
+            // NOT synchronously on main — so the ghosttyOnMainActor hop below is REQUIRED, not an
+            // optimization (it runs synchronously when already on main, else hops). Do NOT drop it:
+            // calling onWrite → model?.sendInput on the IO thread trips @MainActor isolation / data
+            // races on the model — the exact off-main crash class this hop exists to prevent.
             ghosttyOnMainActor {
                 me.onWrite?(bytes)
             }
@@ -410,6 +415,123 @@ public final class GhosttySurface: @MainActor TerminalSurface {
                 // header 1184 takes `uintptr_t` (imported as Swift `UInt`).
                 ghostty_surface_text(surf, cptr, UInt(buf.count))   // header 1184
             }
+        }
+    }
+
+    // MARK: TerminalSurface — Mouse / scroll / selection / clipboard
+    //
+    // Pointer + clipboard wiring (the second half of the GUI input path, after keys/text).
+    // Each wrapper is a thin `guard let surface` over the C ABI, mirroring upstream Ghostty's
+    // `Ghostty.Surface.swift:90-156` (`mouseCaptured`, `sendMouseButton`, `sendMousePos`,
+    // `sendMouseScroll`, `perform(action:)`). The embedding NSView (`GhosttyLayerBackedView`)
+    // forwards AppKit events here; libghostty owns mouse-reporting mode (X10/1000/1002/1003/SGR),
+    // text selection, and bracketed-paste, so the embedder never hand-rolls any of it.
+
+    /// Whether the terminal app has captured the mouse (enabled a mouse-reporting mode).
+    /// `ghostty_surface_mouse_captured` (header 1188). Upstream: `Surface.swift:90`.
+    /// When `true` the embedder must NOT treat a drag as a local text-selection gesture —
+    /// libghostty is forwarding the motion to the remote program instead.
+    public var mouseCaptured: Bool {
+        guard let s = surface else { return false }
+        return ghostty_surface_mouse_captured(s)   // header 1188
+    }
+
+    /// Sends a mouse button press/release. `ghostty_surface_mouse_button` (header 1189) returns
+    /// whether libghostty CONSUMED the event (e.g. a right-click it turned into a paste, or a
+    /// click the terminal program is reporting). Upstream: `Surface.swift:102-109`.
+    @discardableResult
+    public func sendMouseButton(
+        state: ghostty_input_mouse_state_e,
+        button: ghostty_input_mouse_button_e,
+        mods: ghostty_input_mods_e
+    ) -> Bool {
+        guard let s = surface else { return false }
+        return ghostty_surface_mouse_button(s, state, button, mods)   // header 1189
+    }
+
+    /// Reports the cursor position in POINTS (view-local, y-flipped by the caller so origin is
+    /// top-left). libghostty applies `contentScale` internally — do NOT pre-multiply by the
+    /// backing scale (header note: selection bounds are in "points"). `ghostty_surface_mouse_pos`
+    /// (header 1193). Upstream: `Surface.swift:118-125`. Pass (-1, -1) to mark "cursor left the
+    /// viewport" (the upstream `mouseExited` convention).
+    public func sendMousePos(x: Double, y: Double, mods: ghostty_input_mods_e) {
+        guard let s = surface else { return }
+        ghostty_surface_mouse_pos(s, x, y, mods)   // header 1193
+    }
+
+    /// Sends a scroll-wheel delta with the packed precision/momentum mods. `deltaX`/`deltaY` are the
+    /// raw `NSEvent.scrollingDelta*` (already ×2'd for precision by the caller, matching upstream).
+    /// `ghostty_surface_mouse_scroll` (header 1197). Upstream: `Surface.swift:134-141`. The mods are a
+    /// packed `ghostty_input_scroll_mods_t` (Int32: bit0 = precision, bits1-3 = momentum) the caller
+    /// builds per `Ghostty.Input.swift:438-465`.
+    public func sendMouseScroll(deltaX: Double, deltaY: Double, mods: ghostty_input_scroll_mods_t) {
+        guard let s = surface else { return }
+        ghostty_surface_mouse_scroll(s, deltaX, deltaY, mods)   // header 1197
+    }
+
+    /// Forwards a trackpad pressure event (force-click stages). `ghostty_surface_mouse_pressure`
+    /// (header 1201). Upstream: `SurfaceView_AppKit.swift:1039`. Reset to (0, 0) on mouse-up.
+    public func sendMousePressure(stage: UInt32, pressure: Double) {
+        guard let s = surface else { return }
+        ghostty_surface_mouse_pressure(s, stage, pressure)   // header 1201
+    }
+
+    /// Whether the surface currently holds a text selection (`ghostty_surface_has_selection`,
+    /// header 1216). Used by the embedder to decide whether Cmd-C has anything to copy.
+    public func hasSelection() -> Bool {
+        guard let s = surface else { return false }
+        return ghostty_surface_has_selection(s)   // header 1216
+    }
+
+    /// Reads the current selection as a Swift `String`, or `nil` if there is none.
+    ///
+    /// `ghostty_surface_read_selection(surface, &text)` (header 1217) fills a `ghostty_text_s`
+    /// (header 381) whose `text` is a NUL-terminated UTF-8 buffer OWNED BY libghostty; we copy it
+    /// into a Swift `String` and then MUST `ghostty_surface_free_text` (header 1221) — the
+    /// `defer` guarantees the free on every return path. Mirrors upstream
+    /// `SurfaceView_AppKit.swift:1851-1854` (`String(cString: text.text)` + `free_text`).
+    public func readSelection() -> String? {
+        guard let s = surface else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_selection(s, &text) else { return nil }   // header 1217
+        defer { ghostty_surface_free_text(s, &text) }                        // header 1221 — libghostty owns the buffer
+        guard let ptr = text.text else { return nil }
+        return String(cString: ptr)                                          // upstream copies via String(cString:)
+    }
+
+    /// Performs a named libghostty keybinding action (e.g. `copy_to_clipboard`,
+    /// `paste_from_clipboard`, `select_all`). `ghostty_surface_binding_action(surface, cstr, len)`
+    /// (header 1211) returns whether it ran. Upstream `Surface.swift:150-156` passes `len-1` (the
+    /// UTF-8 byte length WITHOUT the trailing NUL) — replicated here. Routing paste through this
+    /// (not hand-rolled bytes) lets libghostty apply bracketed-paste (DECSET 2004) itself.
+    @discardableResult
+    public func performBindingAction(_ action: String) -> Bool {
+        guard let s = surface else { return false }
+        let len = action.utf8CString.count
+        if len == 0 { return false }
+        return action.withCString { cstr in
+            ghostty_surface_binding_action(s, cstr, UInt(len - 1))   // header 1211 (len excludes NUL — upstream Surface.swift:154)
+        }
+    }
+
+    /// Completes a pending clipboard READ request libghostty asked for via `read_clipboard_cb`.
+    /// `ghostty_surface_complete_clipboard_request(surface, cstr, state, confirmed)` (header 1212)
+    /// hands the host-pasteboard string back to the requesting OSC-52 / paste flow. Mirrors upstream
+    /// `App.swift:360-368` (`completeClipboardRequest`). `state` is the opaque token the C callback
+    /// supplied — passed straight back through so libghostty can resume the suspended request.
+    ///
+    /// `confirmed` is the access-gate answer. libghostty ships `clipboard-read = .ask` and
+    /// `clipboard-paste-protection = true` by default, so the FIRST completion (from `read_clipboard_cb`)
+    /// passes `confirmed: false` to EXERCISE the gate: for an OSC-52 read, or a paste of unsafe
+    /// (non-bracketed, control-char) content, core then returns `UnauthorizedPaste`/`UnsafePaste` and
+    /// re-asks via `confirm_read_clipboard_cb`. That confirm path is the embedder's approve/deny decision
+    /// point (upstream shows a dialog); Rwork has no dialog, so it AUTO-APPROVES by passing
+    /// `confirmed: true` there. Passing `false` on the confirm path would re-trip the same gate and
+    /// recurse forever (stack overflow) — the `true` is what actually terminates the request.
+    public func completeClipboardRead(_ string: String, state: UnsafeMutableRawPointer?, confirmed: Bool = false) {
+        guard let s = surface else { return }
+        string.withCString { cstr in
+            ghostty_surface_complete_clipboard_request(s, cstr, state, confirmed)   // header 1212
         }
     }
 

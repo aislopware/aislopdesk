@@ -176,14 +176,30 @@ final class HostTitleBellSnifferTests: XCTestCase {
     }
 
     func testStrayESCInOSCThenBELIsNotABell() {
-        // `ESC ]0;abc` then `ESC X` (a non-`\`, non-`]` 2-byte escape we do not track) then
-        // a BEL. The stray ESC ends the (untitled-because-no-terminator-but-complete) OSC;
-        // since `0;abc` IS a complete OSC 0 payload, the title fires when the OSC is ended
-        // by the stray ESC. `ESC X` is consumed cleanly, and the trailing BEL is a real
-        // bell in ground state.
+        // `ESC ]0;abc` (a complete OSC 0 payload) then `ESC X`. The first `ESC` after the OSC ends it, so
+        // the title `abc` fires — but `ESC X` is the SOS (Start Of String) introducer, a STRING sequence
+        // whose body a conformant terminal swallows to its ST/BEL terminator, emitting NOTHING. So the
+        // trailing BEL is the SOS TERMINATOR, NOT a real bell — exactly what this test's NAME asserts.
+        // (R9 #4: before the DCS/SOS/PM/APC string-state fix, the sniffer wrongly fired a phantom `.bell`
+        // here, since it treated `X` as an untracked escape and re-parsed the BEL in ground state.)
         let bytes = Array("\(ESC)]0;abc".utf8) + Array("\(ESC)X".utf8) + Array(BEL.utf8)
-        XCTAssertEqual(observeWhole(bytes), [.title("abc"), .bell])
+        XCTAssertEqual(observeWhole(bytes), [.title("abc")])
         assertForwardsUnchanged(bytes)
+    }
+
+    /// R9 #4 (security): a BEL inside a DCS/SOS/PM/APC string sequence is the string body/terminator, not
+    /// a real bell — a conformant terminal never rings it. A malicious remote program (`printf
+    /// '\033P\007'`) must not be able to inject a phantom bell, and an `ESC]2;…` embedded in a string body
+    /// must not spoof the tab title.
+    func testStringSequencesSwallowEmbeddedBellAndTitle() {
+        // DCS with an embedded BEL → swallowed (no phantom bell). `ESC P` … `BEL`.
+        XCTAssertEqual(observeWhole(Array("\(ESC)Pq\(BEL)".utf8)), [], "a BEL inside a DCS string is not a bell")
+        // APC with an embedded OSC-2-looking title → swallowed (no title spoof). `ESC _` … `ESC \`.
+        let apcSpoof = Array("\(ESC)_\(ESC)]2;pwned\(BEL)".utf8) + Array("\(ESC)\\".utf8)
+        XCTAssertEqual(observeWhole(apcSpoof), [], "an OSC embedded in an APC string body must not spoof the title")
+        // A REAL OSC 2 after a swallowed PM string still fires (resync is clean).
+        let pmThenReal = Array("\(ESC)^junk\(BEL)".utf8) + Array("\(ESC)]2;real\(BEL)".utf8)
+        XCTAssertEqual(observeWhole(pmThenReal), [.title("real")], "a real title after a swallowed PM string still fires")
     }
 
     func testDoubleESCThenBackslashTerminatesST() {

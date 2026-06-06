@@ -13,44 +13,49 @@ extension WireMessage {
     /// `payloadLength` counts `messageType` + `body` and excludes the 4 prefix
     /// bytes — exactly what ``FrameDecoder`` expects.
     public func encode() -> Data {
-        var body = Data()
-        body.append(messageType)
+        // Build the whole frame in ONE buffer: a 4-byte length placeholder, then [messageType][body…],
+        // then BACK-PATCH the prefix with the payload length. This avoids an intermediate `body` Data
+        // and the extra whole-payload copy it forced — notably the up-to-128 KiB `.output` payload under
+        // a flood (the old code memcpy'd that payload twice: into `body`, then into `frame`).
+        var frame = Data()
+        frame.append(contentsOf: [0, 0, 0, 0]) // length prefix placeholder (back-patched below)
+        frame.append(messageType)
 
         switch self {
         case let .output(seq, bytes):
-            body.appendBE(seq)
-            body.append(bytes)
+            frame.appendBE(seq)
+            frame.append(bytes)
 
         case let .exit(code):
-            body.appendBE(code)
+            frame.appendBE(code)
 
         case let .input(bytes):
-            body.append(bytes)
+            frame.append(bytes)
 
         case let .hello(protocolVersion, sessionID, lastReceivedSeq):
-            body.appendBE(protocolVersion)
-            body.append(sessionID.dataBytes)
-            body.appendBE(lastReceivedSeq)
+            frame.appendBE(protocolVersion)
+            frame.append(sessionID.dataBytes)
+            frame.appendBE(lastReceivedSeq)
 
         case let .resize(cols, rows, pxWidth, pxHeight):
-            body.appendBE(cols)
-            body.appendBE(rows)
-            body.appendBE(pxWidth)
-            body.appendBE(pxHeight)
+            frame.appendBE(cols)
+            frame.appendBE(rows)
+            frame.appendBE(pxWidth)
+            frame.appendBE(pxHeight)
 
         case let .ack(seq):
-            body.appendBE(seq)
+            frame.appendBE(seq)
 
         case .bye:
             break // empty body
 
         case let .helloAck(sessionID, resumeFromSeq, returningClient):
-            body.append(sessionID.dataBytes)
-            body.appendBE(resumeFromSeq)
-            body.append(returningClient ? 1 : 0)
+            frame.append(sessionID.dataBytes)
+            frame.appendBE(resumeFromSeq)
+            frame.append(returningClient ? 1 : 0)
 
         case let .title(string):
-            body.append(Data(string.utf8))
+            frame.append(Data(string.utf8))
 
         case .bell:
             break // empty body
@@ -61,19 +66,23 @@ extension WireMessage {
             // UInt32 duration, matching the manual-binary style (never JSON/Codable).
             switch status {
             case .running:
-                body.append(0)
+                frame.append(0)
             case let .idle(exitCode, durationMS):
-                body.append(1)
-                body.append(exitCode != nil ? 1 : 0)   // hasExit
-                body.appendBE(exitCode ?? 0)            // Int32 BE (0 when absent)
-                body.appendBE(durationMS)               // UInt32 BE
+                frame.append(1)
+                frame.append(exitCode != nil ? 1 : 0)   // hasExit
+                frame.appendBE(exitCode ?? 0)            // Int32 BE (0 when absent)
+                frame.appendBE(durationMS)               // UInt32 BE
             }
         }
 
-        // Frame = 4-byte BE length prefix (covers type + body) + the payload.
-        var frame = Data(capacity: 4 + body.count)
-        frame.appendBE(UInt32(body.count))
-        frame.append(body)
+        // payloadLength counts [messageType][body] — everything after the 4-byte prefix — exactly the
+        // value the old `UInt32(body.count)` carried.
+        let payloadLength = UInt32(frame.count - 4)
+        let s = frame.startIndex
+        frame[s]     = UInt8(truncatingIfNeeded: payloadLength >> 24)
+        frame[s + 1] = UInt8(truncatingIfNeeded: payloadLength >> 16)
+        frame[s + 2] = UInt8(truncatingIfNeeded: payloadLength >> 8)
+        frame[s + 3] = UInt8(truncatingIfNeeded: payloadLength)
         return frame
     }
 }

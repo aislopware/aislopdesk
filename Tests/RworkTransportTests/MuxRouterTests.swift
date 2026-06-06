@@ -121,6 +121,29 @@ final class MuxRouterTests: XCTestCase {
         XCTAssertEqual(router.allocateChannel(), 3)
     }
 
+    /// R9 #1: a `channelOpenAck(accepted: true)` for an id we NEVER allocated is spurious/hostile — it
+    /// must NOT materialize a permanent phantom `.open` table entry (the same unbounded router-table
+    /// memory-DoS already closed for channelClose [R6 #5] and channelOpen [R7 #6]). A legit ack always
+    /// lands on an id the client recorded `.open` at openChannel time, so an unknown-id ack is rejected.
+    func testOpenAckForUnknownIdCreatesNoPhantomChannel() {
+        var router = MuxRouter()
+        let decision = router.route(.channelOpenAck(channelID: 99, accepted: true))
+        guard case .lifecycle(99, .closed) = decision else {
+            return XCTFail("an ack for an unknown id reports .closed (no entry created), got \(decision)")
+        }
+        XCTAssertFalse(router.isOpen(99), "an ack for an unknown id must not create a phantom open channel")
+        // Data for the phantom id is dropped (no entry to route to).
+        guard case .dropUnknownChannel(99, _) = router.route(.channelData(channelID: 99, payload: Data("x".utf8))) else {
+            return XCTFail("data for the unknown id must be dropped, not delivered to a phantom channel")
+        }
+        // The legit path is unaffected: an ack for an ALLOCATED id still opens it.
+        let id = router.allocateChannel()
+        guard case .lifecycle(_, .open) = router.route(.channelOpenAck(channelID: id, accepted: true)) else {
+            return XCTFail("a legit ack still opens an allocated channel")
+        }
+        XCTAssertTrue(router.isOpen(id))
+    }
+
     func testWindowAdjustReportsLifecycleWithoutChangingOpenState() {
         var router = MuxRouter()
         open(1, in: &router)

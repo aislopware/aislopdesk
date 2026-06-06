@@ -158,8 +158,16 @@ public actor MuxSubChannel: MessageChannel {
         while offset < total {
             let granted = try await awaitChunkCredit(maxWanted: total - offset)
             // `granted` ∈ [1, total-offset]: ship exactly that many bytes as their own envelope.
-            let slice = framed.subdata(in: offset..<(offset + granted))
-            try await muxSend(channelID, slice)
+            if offset == 0 && granted == total {
+                // The whole frame fits the granted credit (the >99% common case): ship `framed`
+                // directly. `framed.subdata(in: 0..<total)` would be a byte-identical copy of `framed`
+                // that muxSend then copies AGAIN into the envelope — pure waste. `framed` is a COW
+                // value `let` not mutated after this, so handing it to the @Sendable closure is safe.
+                try await muxSend(channelID, framed)
+            } else {
+                let slice = framed.subdata(in: offset..<(offset + granted))
+                try await muxSend(channelID, slice)
+            }
             offset += granted
         }
     }
