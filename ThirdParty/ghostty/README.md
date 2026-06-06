@@ -21,11 +21,22 @@ Swift binding for that renderer.
 
 | Pin | Value | Source of truth |
 |-----|-------|-----------------|
-| Fork | `daiimus/ghostty` | DECISIONS: "own minimal patch ref daiimus External.zig" |
-| Branch | `ios-external-backend` | the branch carrying the external-IO C API |
-| **SHA** | `21c717340b62349d67124446c2447bf38796540b` | hard-pinned in `build-libghostty.sh` |
-| **Zig** | `0.15.2` | the fork's `build.zig.zon` `minimum_zig_version` |
+| **Upstream** | `ghostty-org/ghostty` @ **`v1.3.1`** | canonical tag (2026-03-13); the reproducible base |
+| Fork delta | `daiimus/ghostty:ios-external-backend` (= v1.3.0 + external backend) | `patches/rwork-libghostty-on-v1.3.1.patch` |
+| Merge SHA (local) | `c38ee78…` | local merge of v1.3.1 + fork delta + 0001/0002 (not on any remote) |
+| **Zig** | `0.15.2` | the source's `build.zig.zon` `minimum_zig_version` (0.16 not adoptable — see below) |
 | Zig SHA-256 | `3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b` | `zig-aarch64-macos-0.15.2.tar.xz` |
+
+**2026-06-06 update — bumped ghostty 1.3.0 → 1.3.1.** The source is now canonical
+upstream **`v1.3.1`** with the daiimus external-backend fork delta merged on top
+(External.zig + the tmux control-mode viewer + search + the embedded C glue), plus the
+two rwork patches. The merge took ONE conflict (Surface.zig `io_backend` init block —
+resolved by keeping the fork's `uses_external` branching and porting v1.3.1's
+`working-directory` `.value()` change). The v1.3.1 embedded ABI change `read_clipboard_cb`
+`void → bool` was absorbed in the integration (`CGhostty/ghostty.h` + the Swift callback
+now returns `true` since we complete the request synchronously). The reproducible recipe
+is `git clone --branch v1.3.1` upstream + apply `patches/rwork-libghostty-on-v1.3.1.patch`
+(+ 0001/0002); `build-libghostty.sh` does this automatically.
 
 ### Why this fork, directly (approach **(b)**)
 
@@ -48,54 +59,46 @@ external-IO API. We chose **(b)** because it most reliably yields the symbols:
   (per DECISIONS) has the exact change in hand. `build-libghostty.sh` does **not**
   apply it — the pinned branch already contains it.
 
-`brew`'s `zig 0.16.0` is **too new** for this fork (Zig breaks between minors). The
+`brew`'s `zig 0.16.0` cannot build this source (see "Why Zig stays 0.15.2" below). The
 build script ignores brew and downloads the pinned **0.15.2** into the gitignored
 `.toolchain/`, used via a build-local `PATH`.
 
 ---
 
-## Build outcome / known blocker (honest status — WF-5)
+## Build outcome (honest status)
 
-**The build infra is complete and correct, but the actual compile is currently
-BLOCKED on this machine by a Zig ↔ macOS-SDK incompatibility — not a script, pin,
-or binding bug.** The build script downloaded + SHA-verified Zig 0.15.2, pinned the
-fork source, confirmed the external-IO symbols in the source header, and fetched the
-Zig deps; it then failed at the **link** step.
+**The build WORKS on this macOS 26.5 / Xcode 26.5 / arm64 host** and produces a
+universal `libghostty.xcframework` (macos-arm64 + ios-arm64 + ios-arm64-simulator),
+all external-IO symbols verified. The earlier Zig-0.15.2 ↔ macOS-26-SDK *link* wall
+is resolved by the **xcrun SDK shim** (caveat #1 in the script header): the build-local
+`xcrun` answers the `macosx --show-sdk-path` query with an old SDK (≤ 15.x) so Zig's
+native macOS link step succeeds, while iOS/sim queries pass through to the real 26.5
+SDK. The shim is **build-time only** — it has zero effect on the shipped binary or on
+runtime. `build-libghostty.sh` preflights it with a libSystem link smoke test.
 
-The pincer (both characterized empirically):
+### Why Zig stays 0.15.2 (and is NOT bumped to 0.16.0)
 
-1. **Zig 0.15.2 (the pinned, fork-required version) cannot link against the macOS
-   26.5 SDK** present on this host. Even a trivial `zig run` of an empty program
-   fails with `undefined symbol: __availability_version_check`, `_abort`, `_bzero`,
-   `_fork`, … — Zig 0.15.2 predates macOS 26 and doesn't know its `libSystem`
-   availability-runtime layout. `--sysroot`/`-lc` do not help; the symbols *are*
-   present in `MacOSX.sdk/usr/lib/libSystem.tbd`, but 0.15.2's bundled libc stubs +
-   linker can't resolve them against this SDK.
-2. **Zig 0.16.0 (the only Zig that links the macOS 26.5 SDK here — verified: a
-   trivial program links fine) is rejected by the fork's `build.zig`** on two
-   independent counts: a hard version gate
-   (`requireZig` → `@compileError("Your Zig version v0.16.0 does not meet the
-   required build version of v0.15.2")`) AND a `std` API break
-   (`std.process.EnvMap` was removed/renamed after 0.15.2, so `src/build/Config.zig`
-   no longer compiles).
+Zig **0.16.0** (2026-04-13) *is* the first Zig that links the macOS 26 SDK natively (it
+carries the `aarch64-macos`↔`arm64e-macos` TBD-matching fix), so on paper it could
+remove the SDK shim. We deliberately **do not** adopt it, because **ghostty does not
+compile under Zig 0.16.0** — and neither does upstream ghostty itself (its HEAD still
+pins `minimum_zig_version = "0.15.2"`). The 0.15→0.16 boundary is a large, multi-class
+breaking change across the ~462-file ghostty source:
 
-So there is **no satisfying toolchain on a macOS-26.5-only host**. This was
-anticipated in [`docs/19`] (brew 0.16.0 "too new for the fork"); the inverse — 0.15.2
-"too old for the macOS 26.5 SDK" — closes the gap.
+- `std.ArrayList` flipped to **unmanaged-by-default** (managed `.init(alloc)`/`.append(item)`
+  deprecated) → ~68 files,
+- the **"Writergate"** I/O rewrite (`std.io.Reader`/`Writer`, `.writer()`/`.reader()`,
+  `fixedBufferStream`, `getStdOut`) with new buffer semantics → ~40 files,
+- `format`-method signature changes (`{}` → `{f}` for format-method types),
+- `std.process.EnvMap` → `std.process.Environ.Map` (17 files),
+- plus the `requireZig` exact-minor gate.
 
-**To actually produce the xcframework, build on one of:**
-- a macOS host with an **older SDK (≤ 15.x / Sequoia)** that Zig 0.15.2 supports
-  (e.g. an Xcode 16 Command Line Tools install, or a CI runner image), **or**
-- a future Zig that supports **both** the macOS 26.x SDK and the fork's `build.zig`
-  (then bump the `ZIG_*` pins here and re-verify the header), **or**
-- bump the **fork pin** to a daiimus/own SHA whose `build.zig` accepts a
-  macOS-26-capable Zig — **no such SHA is known to exist today**; this option is
-  hypothetical and would require first producing (or finding) such a branch and then
-  re-confirming the external-IO symbols after the bump.
-
-`build-libghostty.sh` now **preflights** this exact condition (a libSystem link
-smoke test) and fails fast with the actionable message above, instead of burning the
-full dep-fetch + compile before hitting the link error.
+Porting all of that is a project upstream hasn't undertaken; doing it downstream — on
+top of also carrying the external-backend fork delta — would yield a fragile, divergent
+fork whose subtle I/O-buffering behaviour can only be validated by full ghostty test +
+HW runs. Since the shim is invisible at runtime, **0.15.2 + shim is the correct pin**.
+**Re-evaluate when upstream ghostty bumps its own `minimum_zig_version` to 0.16+** — then
+bump `ZIG_VERSION`/`ZIG_SHA256` here, drop the shim, and re-verify the header.
 
 ---
 
