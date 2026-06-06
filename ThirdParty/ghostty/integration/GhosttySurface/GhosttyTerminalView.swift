@@ -181,8 +181,13 @@ final class GhosttyApp {
         // is itself main-thread-only. We use a SYNCHRONOUS `MainActor.assumeIsolated` (not the async
         // `ghosttyOnMainActor` hop) so the C `state` pointer is consumed in-frame without crossing an
         // actor boundary — matching upstream's direct synchronous handling.
+        // v1.3.1 ABI: read_clipboard_cb returns Bool — `true` = "I am handling this request and
+        // will complete it" (libghostty keeps `state` valid until `completeClipboardRead`); `false`
+        // = "cannot start" (libghostty frees `state` itself). We ALWAYS complete the request
+        // synchronously below (consuming `state`), so we MUST return `true`: returning `false` would
+        // have libghostty free the already-consumed `state` → use-after-free.
         runtime.read_clipboard_cb = { (userdata, location, state) in
-            guard let userdata else { return }
+            guard let userdata else { return false }
             MainActor.assumeIsolated {
                 let surface = Unmanaged<GhosttySurface>.fromOpaque(userdata).takeUnretainedValue()
                 // HONOR `location`: STANDARD = the system clipboard; SELECTION = a SEPARATE clipboard.
@@ -198,6 +203,7 @@ final class GhosttyApp {
                 #endif
                 surface.completeClipboardRead(str, state: state)
             }
+            return true
         }
 
         // CONFIRM-READ: libghostty reaches here when the access gate tripped on the FIRST completion —

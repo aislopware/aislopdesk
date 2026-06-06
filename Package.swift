@@ -1,4 +1,4 @@
-// swift-tools-version:6.0
+// swift-tools-version:6.2
 import PackageDescription
 
 // Rwork — terminal-first remote-coding for Apple platforms.
@@ -11,10 +11,10 @@ import PackageDescription
 let package = Package(
     name: "Rwork",
     platforms: [
-        // `.v26` requires _PackageDescription 6.2; this manifest is swift-tools-version:6.0,
-        // so the string form is used to express the macOS 26 / iOS 26 floor.
-        .macOS("26.0"),
-        .iOS("26.0"),
+        // swift-tools-version:6.2 → PackageDescription 6.2, so the `.v26` enum is available
+        // for the macOS 26 / iOS 26 floor (previously expressed via the string form under 6.0).
+        .macOS(.v26),
+        .iOS(.v26),
     ],
     products: [
         .library(name: "RworkProtocol", targets: ["RworkProtocol"]),

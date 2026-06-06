@@ -85,9 +85,17 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────────────────
 # PINS — change deliberately; see ThirdParty/ghostty/README.md.
 # ─────────────────────────────────────────────────────────────────────────────
-GHOSTTY_REPO="https://github.com/daiimus/ghostty.git"
-GHOSTTY_BRANCH="ios-external-backend"
-GHOSTTY_SHA="21c717340b62349d67124446c2447bf38796540b"
+# SOURCE = canonical upstream ghostty @ a pinned TAG + the rwork "fork-delta" patch
+# (the daiimus external-backend fork: External.zig + tmux control-mode viewer + search + the
+# embedded C glue, rebased onto the tag) + rwork patches 0001/0002 (§2b). This is REPRODUCIBLE
+# against canonical upstream — no dependency on the daiimus fork remaining available at build
+# time. §2 uses an already-prepared .work/ghostty-src tree as-is when present (sentinel check),
+# else clones the tag and applies the fork-delta patch. See README "Chosen fork + pins".
+GHOSTTY_UPSTREAM_REPO="https://github.com/ghostty-org/ghostty.git"  # canonical upstream
+GHOSTTY_TAG="v1.3.1"                                                # pinned upstream tag
+# Provenance of the fork delta (NOT cloned at build time; recorded for rebase reference):
+GHOSTTY_FORK_REPO="https://github.com/daiimus/ghostty.git"          # external-backend fork
+GHOSTTY_FORK_SHA="21c717340b62349d67124446c2447bf38796540b"         # fork delta source (= v1.3.0 + ext backend)
 
 ZIG_VERSION="0.15.2"                                  # build.zig.zon minimum_zig_version
 ZIG_ARCH="aarch64"                                    # Apple Silicon host
@@ -114,6 +122,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOLCHAIN_DIR="${SCRIPT_DIR}/.toolchain"
 WORK_DIR="${SCRIPT_DIR}/.work"
 SRC_DIR="${WORK_DIR}/ghostty-src"
+FORKDELTA_PATCH="${SCRIPT_DIR}/rwork-libghostty-on-v1.3.1.patch"   # fork delta vs upstream GHOSTTY_TAG
 ZIG_DIR="${TOOLCHAIN_DIR}/zig-${ZIG_ARCH}-macos-${ZIG_VERSION}"
 ZIG_BIN="${ZIG_DIR}/zig"
 ZIG_GLOBAL_CACHE="${WORK_DIR}/zig-global-cache"       # keep deps out of ~/.cache
@@ -129,7 +138,7 @@ fail() { printf '\033[1;31m[build-libghostty] FAIL: %s\033[0m\n' "$*" >&2; exit 
 # ─────────────────────────────────────────────────────────────────────────────
 # Preflight
 # ─────────────────────────────────────────────────────────────────────────────
-log "host: $(uname -sm), target=${XCFRAMEWORK_TARGET}, zig-pin=${ZIG_VERSION}, ghostty-pin=${GHOSTTY_SHA:0:12}"
+log "host: $(uname -sm), target=${XCFRAMEWORK_TARGET}, zig-pin=${ZIG_VERSION}, ghostty-pin=${GHOSTTY_TAG}+fork-delta"
 [ "$(uname -s)" = "Darwin" ] || fail "must build on macOS (xcframework + Apple SDK required)."
 command -v curl >/dev/null  || fail "curl not found."
 command -v shasum >/dev/null || fail "shasum not found."
@@ -254,31 +263,25 @@ fi
 log "preflight OK: zig ${ZIG_VERSION} links via the shim (SDK ${MACOS_SDK_SHIM_PATH})."
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Pinned ghostty fork source (clone @ branch, hard-pin to SHA)
+# 2. Source = upstream ghostty @ GHOSTTY_TAG + fork-delta patch (reproducible).
+#    Sentinel: a prepared tree already carries src/termio/External.zig (the fork's
+#    external backend) AND the 0002 `queueWriteLocked` fix in Termio.zig. If both are
+#    present, USE THE TREE AS-IS (don't clobber a hand-prepared / mid-rebase tree).
+#    Otherwise clone the pinned upstream tag and apply the consolidated fork delta;
+#    §2b then layers the small ordered rwork patches (0001/0002).
 # ─────────────────────────────────────────────────────────────────────────────
-if [ -d "${SRC_DIR}/.git" ]; then
-    CUR_SHA="$(git -C "${SRC_DIR}" rev-parse HEAD 2>/dev/null || echo none)"
-    if [ "${CUR_SHA}" != "${GHOSTTY_SHA}" ]; then
-        log "source at ${CUR_SHA:0:12}, want ${GHOSTTY_SHA:0:12} — refetching"
-        git -C "${SRC_DIR}" fetch --depth 1 origin "${GHOSTTY_SHA}" 2>/dev/null \
-            || git -C "${SRC_DIR}" fetch --depth 1 origin "${GHOSTTY_BRANCH}"
-        git -C "${SRC_DIR}" checkout -q "${GHOSTTY_SHA}" 2>/dev/null \
-            || git -C "${SRC_DIR}" checkout -q FETCH_HEAD
-    else
-        log "ghostty source already at pinned SHA ${GHOSTTY_SHA:0:12}"
-    fi
+if [ -f "${SRC_DIR}/src/termio/External.zig" ] \
+   && grep -q "queueWriteLocked" "${SRC_DIR}/src/termio/Termio.zig" 2>/dev/null; then
+    log "using prepared source tree at ${SRC_DIR} (HEAD $(git -C "${SRC_DIR}" rev-parse --short HEAD 2>/dev/null || echo '?'))"
 else
-    log "cloning ${GHOSTTY_REPO} @ ${GHOSTTY_BRANCH}"
+    log "preparing source: clone ${GHOSTTY_UPSTREAM_REPO} @ ${GHOSTTY_TAG} + apply ${FORKDELTA_PATCH##*/}"
+    [ -f "${FORKDELTA_PATCH}" ] || fail "missing fork-delta patch: ${FORKDELTA_PATCH}"
     rm -rf "${SRC_DIR}"
-    git clone --depth 1 --branch "${GHOSTTY_BRANCH}" "${GHOSTTY_REPO}" "${SRC_DIR}" \
-        || fail "git clone failed (network blocked?)."
-    CUR_SHA="$(git -C "${SRC_DIR}" rev-parse HEAD)"
-    if [ "${CUR_SHA}" != "${GHOSTTY_SHA}" ]; then
-        log "branch tip ${CUR_SHA:0:12} != pinned ${GHOSTTY_SHA:0:12}; pinning exactly"
-        git -C "${SRC_DIR}" fetch --depth 1 origin "${GHOSTTY_SHA}" \
-            && git -C "${SRC_DIR}" checkout -q "${GHOSTTY_SHA}" \
-            || log "WARN: could not hard-pin to ${GHOSTTY_SHA} (branch may have moved); using ${CUR_SHA:0:12}"
-    fi
+    git clone --depth 1 --branch "${GHOSTTY_TAG}" "${GHOSTTY_UPSTREAM_REPO}" "${SRC_DIR}" \
+        || fail "git clone of upstream ${GHOSTTY_TAG} failed (network blocked?)."
+    git -C "${SRC_DIR}" apply --whitespace=nowarn "${FORKDELTA_PATCH}" \
+        || fail "fork-delta patch ${FORKDELTA_PATCH##*/} did not apply to ${GHOSTTY_TAG} (tag/patch drift — regenerate)."
+    log "fork delta applied onto ${GHOSTTY_TAG} (external backend + tmux viewer + search + C glue)."
 fi
 
 # Confirm the external-IO symbols are actually present in the source header before
@@ -624,5 +627,5 @@ done <<< "${SLICE_LIBS}"
 [ "${VERIFIED}" -eq 1 ] || fail "FINAL assembled library is missing required external-IO symbols (the ar/ranlib bypass failed — did libghostty_zcu.o survive? did ranlib run?)."
 
 ok "OK: ${OUT_XCFRAMEWORK}"
-ok "    zig=${ZIG_VERSION}  ghostty=${GHOSTTY_SHA:0:12}  target=${XCFRAMEWORK_TARGET}  sdk-shim=${MACOS_SDK_SHIM_PATH}"
+ok "    zig=${ZIG_VERSION}  ghostty=${GHOSTTY_TAG}+fork-delta  target=${XCFRAMEWORK_TARGET}  sdk-shim=${MACOS_SDK_SHIM_PATH}"
 ok "    final library assembled via ar/ranlib bypass (${MEMBER_COUNT} members); all required external-IO symbols verified."
