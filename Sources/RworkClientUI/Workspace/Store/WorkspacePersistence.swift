@@ -90,16 +90,41 @@ public struct WorkspacePersistence: @unchecked Sendable {
     /// JSON→JSON upgrade, then decode). That is out of scope — see ``WorkspaceSchemaMigration``.
     public func load() -> Workspace {
         guard let data = try? Data(contentsOf: fileURL) else {
-            return .defaultWorkspace()
+            return .defaultWorkspace()   // missing file = first launch; nothing to back up
         }
         guard let decoded = try? JSONDecoder().decode(Workspace.self, from: data) else {
-            return .defaultWorkspace()
+            return resetToDefault()      // hard-corrupt JSON — preserve the bytes aside
         }
         // Forward-migrate the decoded value to this build's schema. A future/un-migratable version
         // (migrate → nil) falls back to the default; v1-today is an identity passthrough.
         guard let migrated = WorkspaceSchemaMigration.migrate(decoded, from: decoded.schemaVersion) else {
-            return .defaultWorkspace()
+            return resetToDefault()      // e.g. a newer build wrote it, this older build can't read it
         }
-        return migrated
+        // Repair a corrupt / copy-pasted tree with DUPLICATE leaf PaneIDs (the liveness registry is keyed
+        // 1:1 by PaneID, so duplicates would collapse two panes onto one session) by RE-MINTING the
+        // duplicates in place — lossless, since restored sessions always start idle (UI/UX pass-3 #5
+        // refines the R13 nuke-to-default, which discarded the user's whole tab/split/endpoint layout on a
+        // single duplicate id). Then repair a dangling/nil activeTabID + any tab's dangling focusedPane so
+        // the detail pane is never blank and focus is never pinned to a ghost pane (R13).
+        var seen = Set<PaneID>()
+        var repaired = migrated
+        repaired.tabs = repaired.tabs.map { tab in
+            var t = tab
+            t.root = t.root.dedupingLeafIDs(seen: &seen)
+            return t
+        }
+        return repaired.normalizingActiveTab().normalizingTabFocus()
+    }
+
+    /// Best-effort copy the unrestorable file aside BEFORE the next `save()` atomically overwrites it, so a
+    /// merely-unreadable-by-THIS-build file (a future schemaVersion after a downgrade) or a hard-corrupt
+    /// one is recoverable instead of silently destroyed (UI/UX pass-3 #2). Bounded to a single fixed-name
+    /// `.corrupt` sidecar (overwrites any prior backup — no unbounded accumulation). Only the decode /
+    /// migrate failure paths reach here; the missing-file path has nothing to copy.
+    private func resetToDefault() -> Workspace {
+        let backup = fileURL.appendingPathExtension("corrupt")
+        try? FileManager.default.removeItem(at: backup)
+        try? FileManager.default.copyItem(at: fileURL, to: backup)
+        return .defaultWorkspace()
     }
 }

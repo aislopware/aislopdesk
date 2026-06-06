@@ -46,6 +46,24 @@ public extension PaneNode {
         }
     }
 
+    /// Returns a copy of the tree with any leaf whose id was ALREADY seen re-minted to a FRESH `PaneID`,
+    /// so the whole tree ends with globally-unique leaf ids. Pre-order: the FIRST occurrence of an id
+    /// keeps it; a later duplicate gets a new id. Used on persistence load to repair a corrupt / copy-
+    /// pasted tree WITHOUT discarding the user's layout — a re-minted leaf is lossless because restored
+    /// sessions always start idle anyway (UI/UX pass-3 #5 refines the R13 nuke-to-default, which threw the
+    /// whole tab/split/endpoint tree away on a single duplicate id).
+    func dedupingLeafIDs(seen: inout Set<PaneID>) -> PaneNode {
+        switch self {
+        case let .leaf(id, spec):
+            guard seen.contains(id) else { seen.insert(id); return self }
+            let fresh = PaneID()
+            seen.insert(fresh)
+            return .leaf(fresh, spec)
+        case let .split(axis, children, fractions):
+            return .split(axis, children: children.map { $0.dedupingLeafIDs(seen: &seen) }, fractions: fractions)
+        }
+    }
+
     /// The spec for `id`, or `nil` if no such leaf exists in this tree.
     func spec(for id: PaneID) -> PaneSpec? {
         switch self {

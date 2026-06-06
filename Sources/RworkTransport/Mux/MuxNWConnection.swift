@@ -129,7 +129,25 @@ public actor MuxNWConnection {
             lastReceivedSeq: lastReceivedSeq,
             channelClass: channelClass
         ))
-        try await dataLink.send(openFrame)
+        do {
+            try await dataLink.send(openFrame)
+        } catch {
+            // R8 #8: the send failed (the shared link is dead) → UNDO this open's partial registration so
+            // it leaves no GHOST channel. registerChannels() already inserted dataChannels[id] /
+            // controlChannels[id] / dataReceiveWindows[id] (each holding a FrameDecoder + an inbound
+            // AsyncThrowingStream continuation + a ReceiveWindowAccountant) and the tables opened `id`.
+            // ConnectionRegistry's catch only tears the WHOLE connection down when this was the LAST
+            // channel; with a surviving sibling the connection is kept and this orphan would leak forever
+            // (and keep `hasLiveChannels` true after every real channel closes). Clean it up + rethrow.
+            await pair.data.finish()
+            await pair.control.finish()
+            dataChannels.removeValue(forKey: id)
+            controlChannels.removeValue(forKey: id)
+            dataReceiveWindows.removeValue(forKey: id)
+            dataTable.localClose(id)
+            controlTable.localClose(id)
+            throw error
+        }
         return pair
     }
 
@@ -165,11 +183,34 @@ public actor MuxNWConnection {
         !dataChannels.isEmpty || !controlChannels.isEmpty
     }
 
+    /// Test-only: the number of id entries the DATA router table retains — used to assert a hostile
+    /// channelOpen storm cannot grow the router table without bound past the channel cap (R7 #6).
+    var _dataTableStateCountForTesting: Int { dataTable.stateCount }
+
+    /// Test-only: the number of id entries the CONTROL router table retains — used to assert a hostile
+    /// `channelOpen` storm on the CONTROL link (never a legitimate frame there) cannot grow the control
+    /// table at all (R11 — drops the frame before `MuxRoutingCore.route` would `open(id)` a phantom).
+    var _controlTableStateCountForTesting: Int { controlTable.stateCount }
+
     /// Tears down the whole shared connection (both links + all receive loops). Called by the
     /// registry only when the LAST channel closes. Finishes every remaining sub-channel's inbound.
     public func close() async {
         guard !closed else { return }
         closed = true
+        // R6 self-audit fix: `close()` can be reached via the R5 link-down reap (`setLinkDownHandler` →
+        // `HostServer.removeMuxConnection` → here) when the CONTROL link fails FIRST. That path cancels
+        // the DATA receive loop below before its `finishLink(.data, …)` could fire `hostCloseHandler` to
+        // reap the per-channel PTYs — so without reaping HERE, every live pane's PTY + master fd + child
+        // + reaper thread would leak on a control-first drop (the exact EMFILE concern R5 set out to
+        // fix). Reap every still-registered channel through `hostCloseHandler` NOW, while the maps are
+        // intact, before cancelling the loops / clearing the maps / nil-ing the handler. Idempotent with
+        // `HostServer.removeMuxSession`'s map-removal guard and the `onExit` path, so a normal
+        // `channelClose` that already reaped (or a `stop()` that already drained the sessions) is a
+        // harmless no-op. Host-only; the client never installs `hostCloseHandler`.
+        if role == .host, let reap = hostCloseHandler {
+            let liveIDs = Set(dataChannels.keys).union(controlChannels.keys).union(pendingHostCloses)
+            for id in liveIDs { reap(id) }
+        }
         for task in receiveTasks { task.cancel() }
         receiveTasks.removeAll()
         await controlLink.close()
@@ -179,6 +220,16 @@ public actor MuxNWConnection {
         dataChannels.removeAll()
         controlChannels.removeAll()
         dataReceiveWindows.removeAll()
+        // R5 rank 3: release the host's stored handler closures. They capture host state (and a strong
+        // capture would form a connection → handler → connection retain cycle); nil-ing them on close
+        // guarantees a closed connection is no longer kept alive by its own handlers. Idempotent
+        // (close() is guarded by `closed`). The host installs them; the client never sets them.
+        hostOpenHandler = nil
+        hostCloseHandler = nil
+        linkDownHandler = nil
+        linkDownFired = true
+        pendingHostOpens.removeAll()
+        pendingHostCloses.removeAll()
     }
 
     // MARK: - Internals
@@ -249,6 +300,25 @@ public actor MuxNWConnection {
     /// Applies the pure ``MuxRoutingCore`` decision for one frame on one link. `async` so it can
     /// `await` per-channel delivery inline (preserving per-link frame order — see ``ingest``).
     private func route(_ frame: MuxFrame, on link: Link) async {
+        // R7 self-audit (completes R6 #6): enforce the per-connection channel cap BEFORE the router
+        // records the new id in `dataTable.states`. The R6 cap check ran AFTER `MuxRoutingCore.route`
+        // advanced the table, so a hostile peer spamming distinct over-cap `channelOpen` ids still grew
+        // the router table without bound (the cheap memory-DoS analogue of the channelClose unknown-id
+        // growth the sibling `ChannelTable` fix closed; the EXPENSIVE PTY/fork was already bounded).
+        // Refuse a NEW over-cap open here and RETURN without advancing the table or registering anything.
+        if role == .host, link == .data, case let .channelOpen(id, _, _, _) = frame,
+           dataChannels[id] == nil, dataChannels.count >= MuxFlowControl.maxChannelsPerConnection {
+            let refusal = MuxEnvelopeCodec.encode(.channelOpenAck(channelID: id, accepted: false))
+            try? await dataLink.send(refusal)
+            return
+        }
+        // R11: a `channelOpen` is NEVER legitimate on the CONTROL link — the client always opens on the
+        // DATA link (`openChannel` → `dataLink.send`). The data-link cap above is `link == .data`, so a
+        // hostile peer could otherwise spam channelOpen frames on the CONTROL link and grow `controlTable`
+        // without bound (the last router-table memory-DoS vector after R6 #6 / R7 / R9 #1). Drop it before
+        // it reaches `MuxRoutingCore.route` (which would `open(id)` a phantom controlTable entry).
+        if link == .control, case .channelOpen = frame { return }
+
         let decision: MuxRoutingDecision
         if link == .control {
             decision = MuxRoutingCore.route(frame, in: &controlTable)
@@ -280,6 +350,8 @@ public actor MuxNWConnection {
             // a SECOND PTY and overwrites/orphans the first session in the owner's map (master-fd +
             // child-process + reaper-thread leak, and a split input stream). The `id` is already
             // registered, so its data/control still route; we just suppress the redundant open.
+            // Over-cap NEW opens were already refused at the top of route() (R6 #6 / R7 self-audit),
+            // before the router recorded the id — so any channelOpen reaching here is within the cap.
             let isNewChannel = dataChannels[id] == nil
             if isNewChannel { _ = registerChannels(id: id) }
             // Mirror the open into the control table too so control-link data for this id routes.
@@ -356,6 +428,17 @@ public actor MuxNWConnection {
                 // `setHostCloseHandler`), BUFFER it so the shell is reaped once the handler attaches —
                 // never dropped (which would leak the PTY + master fd).
                 if role == .host, link == .data {
+                    // Symmetric to the channelOpen mirror (registerChannels + `controlTable.open` at the
+                    // open site): a peer close on the DATA link tears down the WHOLE channel, so also drop
+                    // the CONTROL sub-channel and advance the control table to terminal. A well-behaved
+                    // client ALSO sends channelClose on the control link (closeChannel sends both), which
+                    // makes this a harmless no-op there — but a peer that closes on DATA ONLY would
+                    // otherwise leak controlChannels[id] + a zombie `.open` controlTable[id] (registered at
+                    // open) forever, an unbounded sub-channel + router-table growth the live-count cap
+                    // never catches under open/close churn (R12 #1). The control table's terminal entry is
+                    // then bounded by ChannelTable's eviction ring.
+                    if let controlCh = controlChannels.removeValue(forKey: channelID) { await controlCh.finish() }
+                    controlTable.remoteClose(channelID)
                     if let hostCloseHandler { hostCloseHandler(channelID) }
                     else { pendingHostCloses.append(channelID) }
                 }
@@ -413,6 +496,26 @@ public actor MuxNWConnection {
         for channelID in queued { handler(channelID) }
     }
 
+    /// Optional host hook (R5 rank 3): fired EXACTLY ONCE when the physical connection dies via a HARD
+    /// link failure (TCP RST / NetBird flap / decode fault), so the host can drop it from its retention
+    /// map + ``close()`` it — freeing the 2 sockets + 2 receive tasks and breaking the handler retain
+    /// cycle. A clean per-channel FIN (`error == nil` in ``finishLink``) is NOT a connection death and
+    /// does NOT fire it. Host-only; the handler must capture the connectionID, never the connection.
+    private var linkDownHandler: (@Sendable () -> Void)?
+    /// Guards ``linkDownHandler`` to fire at most once (both links typically fail together on a drop).
+    private var linkDownFired = false
+
+    /// Installs the host's connection-death hook (see ``linkDownHandler``). If the link ALREADY failed
+    /// before the install, fires immediately so a connection that died during accept is still reaped.
+    public func setLinkDownHandler(_ handler: @escaping @Sendable () -> Void) {
+        if linkFailed && !linkDownFired {
+            linkDownFired = true
+            handler()
+            return
+        }
+        linkDownHandler = handler
+    }
+
     /// Sends a `channelOpenAck` for `id` on the DATA link (host → client). Host-only.
     public func sendOpenAck(_ id: UInt32, accepted: Bool) async {
         let frame = MuxEnvelopeCodec.encode(.channelOpenAck(channelID: id, accepted: accepted))
@@ -461,6 +564,17 @@ public actor MuxNWConnection {
         // send windows are torn down via each sub-channel's `finish()` above, which also wakes any
         // parked sender so the link drop never leaks a suspended task.)
         if link == .data { dataReceiveWindows.removeAll() }
+        // R5 rank 3: a HARD link failure means the whole physical connection is dead. Fire the host's
+        // connection-death hook ONCE (first failing link wins) so the host reaps the connection from its
+        // retention map + closes it. A clean per-channel FIN (`error == nil`) is NOT a connection death.
+        // `linkDownFired` is consumed ONLY when a handler actually fires — if none is installed yet, the
+        // already-set `linkFailed` flag lets a LATER `setLinkDownHandler` fire immediately (the
+        // died-during-accept race), so we must not pre-burn the one-shot here.
+        if role == .host, error != nil, !linkDownFired, let handler = linkDownHandler {
+            linkDownFired = true
+            linkDownHandler = nil
+            handler()
+        }
     }
 }
 

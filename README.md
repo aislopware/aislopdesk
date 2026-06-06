@@ -117,6 +117,17 @@ the idle-TTL reaper, and half-open handshakes are reaped on timeout.
 | `--claude`     | Launch `claude` under the curated `ClaudeCodeProfile` env (`TERM=xterm-ghostty`, `COLORTERM`, `CLAUDE_CODE_NO_FLICKER`, …) instead of a plain shell. |
 | `--xterm256`   | With `--claude`, advertise `TERM=xterm-256color` (the multi-line-paste #54700 fallback) instead of `xterm-ghostty`. No-op without `--claude`. |
 
+**TERM auto-fallback (terminfo bootstrap, audit #17).** The host's default is
+`TERM=xterm-ghostty` (best features for the libghostty client), but that terminfo entry is
+not present on a fresh remote host — so before each PTY spawn the host probes whether it can
+resolve `xterm-ghostty` (searches `$TERMINFO` / `~/.terminfo` / `$TERMINFO_DIRS` / the system
+terminfo dirs, then `infocmp xterm-ghostty`). If it cannot, the host automatically advertises
+`TERM=xterm-256color` instead — universally present and correct enough for `vim`/`htop`/`less`/
+`tmux`/`top` — and logs the fallback to stderr. This mirrors Ghostty's documented #54700
+fallback; the heavier kitty-`ssh`-kitten model (pushing + `tic`-installing the compiled
+ghostty terminfo on the remote) is intentionally deferred. An explicit `--xterm256` always
+wins over auto-detection.
+
 ### Run the interactive client (`rwork-client`)
 
 ```sh

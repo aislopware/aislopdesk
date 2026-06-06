@@ -128,4 +128,65 @@ final class PausableQueueGateTests: XCTestCase {
         XCTAssertFalse(rec.isPaused, "a small enqueue under the bound never pauses")
         XCTAssertEqual(rec.transitions, 0, "no pause/resume churn for sub-bound writes (interactive path)")
     }
+
+    // MARK: - Replay-buffer second pause source (R5 rank 2 — OR composition)
+
+    /// The ReplayBuffer source pauses the loop INDEPENDENT of the queue bound (the unbounded-retention
+    /// case: queue empty because the client consumes the wire, but retained-unacked bytes over the cap).
+    func testReplayPauseSourceAlonePausesAndResumes() {
+        let rec = PauseRecorder()
+        let gate = PausableQueueGate(capacity: 1000) { rec.apply($0) }
+        gate.enqueue(10) // well under the queue bound
+        XCTAssertFalse(rec.isPaused)
+        gate.setReplayPause(true)   // retained-byte cap crossed even though the queue is near-empty
+        XCTAssertTrue(rec.isPaused, "the replay source pauses the read loop independent of the queue bound")
+        gate.setReplayPause(false)
+        XCTAssertFalse(rec.isPaused, "clearing the replay source resumes (queue is below bound)")
+    }
+
+    /// Resume happens ONLY when BOTH sources clear — draining the queue while replay still wants pause
+    /// must NOT resume (the cross-source analogue of the FIX #3 lost-wakeup).
+    func testResumesOnlyWhenBothSourcesClear() {
+        let rec = PauseRecorder()
+        let gate = PausableQueueGate(capacity: 100) { rec.apply($0) }
+        gate.enqueue(120)            // queue full → pause
+        gate.setReplayPause(true)    // replay also wants pause
+        XCTAssertTrue(rec.isPaused)
+        gate.dequeue(120)            // queue drains below bound, but replay still over cap
+        XCTAssertTrue(rec.isPaused, "queue cleared but replay still over cap → must remain paused")
+        gate.setReplayPause(false)   // now both clear
+        XCTAssertFalse(rec.isPaused, "both sources clear → resume")
+        XCTAssertEqual(gate.outstanding, 0)
+    }
+
+    /// Symmetric: replay clears first but the queue is still full → stay paused until the queue drains.
+    func testQueueKeepsLoopPausedAfterReplayClears() {
+        let rec = PauseRecorder()
+        let gate = PausableQueueGate(capacity: 100) { rec.apply($0) }
+        gate.setReplayPause(true)
+        gate.enqueue(120)
+        XCTAssertTrue(rec.isPaused)
+        gate.setReplayPause(false)   // replay clears, queue still full
+        XCTAssertTrue(rec.isPaused, "replay cleared but queue still full → remain paused")
+        gate.dequeue(120)
+        XCTAssertFalse(rec.isPaused, "both clear → resume")
+    }
+
+    /// Concurrency: hammer BOTH sources from many tasks, ending with both cleared. The atomic OR must
+    /// leave the gate NOT paused (no cross-source lost-wakeup).
+    func testConcurrentBothSourcesEndUnpausedWhenBothClear() async {
+        let rec = PauseRecorder()
+        let gate = PausableQueueGate(capacity: 512) { rec.apply($0) }
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 {
+                group.addTask { for _ in 0..<2000 { gate.enqueue(256); gate.dequeue(256) } }
+            }
+            for _ in 0..<4 {
+                group.addTask { for _ in 0..<2000 { gate.setReplayPause(true); gate.setReplayPause(false) } }
+            }
+        }
+        XCTAssertEqual(gate.outstanding, 0, "balanced enqueue/dequeue nets to zero")
+        XCTAssertFalse(rec.isPaused,
+                       "both sources cleared ⇒ gate must NOT be left paused (no cross-source lost-wakeup)")
+    }
 }

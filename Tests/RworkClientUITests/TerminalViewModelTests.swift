@@ -98,6 +98,24 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(model.shellActivity, .idle)
     }
 
+    func testExitClearsStaleRunningActivity() {
+        let model = TerminalViewModel()
+        model.handle(.commandStatus(.running))
+        XCTAssertEqual(model.shellActivity, .running)
+        // `exit` itself emits OSC 133;C with no matching ;D (the shell dies first); the pane must
+        // not be left showing "running…" on a dead shell (HW-confirmed on Mac Studio).
+        model.handle(.exit(code: 0))
+        XCTAssertEqual(model.shellActivity, .idle, "an exited shell runs nothing")
+        XCTAssertEqual(model.connectionStatus, .exited(code: 0))
+    }
+
+    func testDisconnectClearsStaleRunningActivity() {
+        let model = TerminalViewModel()
+        model.handle(.commandStatus(.running))
+        model.handle(.disconnected(reason: "FIN"))
+        XCTAssertEqual(model.shellActivity, .idle, "a drop mid-command must not pin the indicator on running")
+    }
+
     func testResetClearsShellActivityAndLastCommand() {
         let model = TerminalViewModel()
         model.handle(.commandStatus(.running))
@@ -284,6 +302,48 @@ final class TerminalViewModelTests: XCTestCase {
         let surface = RecordingSurface()
         model.attachSurface(surface)
         XCTAssertTrue(surface.feeds.isEmpty, "no retained output → attach feeds nothing (not even DECSTR)")
+    }
+
+    /// RIS — Reset to Initial State (`ESC c`), fed on a fresh-session reconnect.
+    private static let ris = Data([0x1B, 0x63])
+
+    /// A real transport drop kills the host shell; the reconnect spawns a BRAND-NEW one whose
+    /// output restarts at seq 1 (the mux path never resumes). The first fresh chunk must be
+    /// preceded by a RIS hard reset and the dead session's replay ring must be dropped, so the user
+    /// sees a clean shell — not the old framebuffer with a new prompt grafted on (audit finding #9).
+    func testReconnectWipesDeadSessionScreenAndRingBeforeFreshOutput() {
+        let model = TerminalViewModel()
+        let surface = RecordingSurface()
+        model.attachSurface(surface)                       // live surface, empty ring
+        model.ingestOutput(Data("OLD-SESSION".utf8))       // dead session output (ring + surface)
+        XCTAssertEqual(surface.feeds, [Data("OLD-SESSION".utf8)])
+        XCTAssertEqual(model.ringByteCount, Data("OLD-SESSION".utf8).count)
+
+        model.markReconnecting()                           // drop → reconnect campaign begins
+
+        model.ingestOutput(Data("FRESH-PROMPT".utf8))      // first output of the fresh shell
+        XCTAssertEqual(
+            surface.feeds,
+            [Data("OLD-SESSION".utf8), Self.ris, Data("FRESH-PROMPT".utf8)],
+            "fresh-session reconnect feeds RIS before the new shell's first output"
+        )
+        XCTAssertEqual(
+            model.ringByteCount, Data("FRESH-PROMPT".utf8).count,
+            "the dead session's bytes are dropped from the ring; only the fresh chunk remains"
+        )
+
+        // One-shot: a SECOND fresh chunk does NOT re-trigger RIS.
+        model.ingestOutput(Data("MORE".utf8))
+        XCTAssertEqual(surface.feeds.filter { $0 == Self.ris }.count, 1, "RIS fires exactly once per reconnect")
+    }
+
+    /// A normal FIRST connect (no reconnect campaign) must NOT inject a RIS — only a reconnect does.
+    func testFirstConnectDoesNotInjectHardReset() {
+        let model = TerminalViewModel()
+        let surface = RecordingSurface()
+        model.attachSurface(surface)
+        model.ingestOutput(Data("hello".utf8))
+        XCTAssertEqual(surface.feeds, [Data("hello".utf8)], "no RIS on a fresh first connect")
     }
 
     func testResetClearsRing() {

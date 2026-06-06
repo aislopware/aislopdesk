@@ -16,9 +16,21 @@ public struct FrameDecoder {
     /// Length of the big-endian `UInt32` frame-length prefix.
     private static let prefixLength = 4
 
-    /// Unconsumed received bytes. Completed frames are dropped from the front as
-    /// they are parsed.
+    /// Reclaim the consumed prefix once the read cursor has advanced past this many bytes, so the
+    /// buffer's wasted head stays bounded during a long burst. 64 KiB == the max single `recv` chunk,
+    /// so in the common case compaction happens at most once per received chunk.
+    private static let compactionThreshold = 64 * 1024
+
+    /// Received bytes. Completed frames are NOT removed per-parse (that front-removal memmoves the
+    /// entire tail forward — O(n) per frame, O(n²) for a chunk of many small frames). Instead a
+    /// ``readOffset`` cursor advances past consumed frames and the head is compacted LAZILY (on a
+    /// drain that returns `nil`, or when the cursor crosses ``compactionThreshold``), amortizing total
+    /// work to O(bytes). All indexing is relative to `buffer.startIndex + readOffset`.
     private var buffer = Data()
+
+    /// Number of leading bytes in ``buffer`` already consumed by completed frames but not yet
+    /// physically removed (reclaimed by ``compactConsumed()``).
+    private var readOffset = 0
 
     public init() {}
 
@@ -35,8 +47,10 @@ public struct FrameDecoder {
     ///   ``Rwork/maxFramePayloadLength``; or any error from
     ///   ``WireMessage/decode(payload:)`` (unknown type, malformed/truncated body).
     public mutating func nextMessage() throws -> WireMessage? {
+        // Bytes not yet consumed by a completed frame.
+        let available = buffer.count - readOffset
         // Need at least the length prefix to know how big the frame is.
-        guard buffer.count >= Self.prefixLength else { return nil }
+        guard available >= Self.prefixLength else { compactConsumed(); return nil }
 
         let payloadLength = Int(readPrefix())
 
@@ -47,26 +61,36 @@ public struct FrameDecoder {
 
         // Wait until the whole payload has arrived (partial read — not an error).
         let frameLength = Self.prefixLength + payloadLength
-        guard buffer.count >= frameLength else { return nil }
+        guard available >= frameLength else { compactConsumed(); return nil }
 
-        // Slice out the payload (after the prefix) and consume the frame bytes.
-        let start = buffer.startIndex
-        let payloadStart = start + Self.prefixLength
-        let payload = Data(buffer[payloadStart ..< start + frameLength])
-        buffer.removeSubrange(start ..< start + frameLength)
+        // Slice out the payload (after the prefix) and ADVANCE the cursor past the frame (no per-frame
+        // front-removal). `base` is the absolute index of this frame's first byte.
+        let base = buffer.startIndex + readOffset
+        let payloadStart = base + Self.prefixLength
+        let payload = Data(buffer[payloadStart ..< base + frameLength])
+        readOffset += frameLength
+        // Bound the wasted head mid-burst; a drain that returns nil reclaims the rest.
+        if readOffset >= Self.compactionThreshold { compactConsumed() }
 
         return try WireMessage.decode(payload: payload)
     }
 
-    /// Reads the 4-byte big-endian length prefix at the front of the buffer
-    /// without consuming it. (Consumption happens in ``nextMessage()`` once the
-    /// full frame is confirmed present, so an incomplete frame leaves the prefix
-    /// in place for the next call.)
+    /// Physically drops the consumed prefix (`readOffset` bytes) from the front of the buffer ONCE,
+    /// resetting the cursor — the single O(remaining) memmove that replaces the per-frame one.
+    private mutating func compactConsumed() {
+        guard readOffset > 0 else { return }
+        buffer.removeSubrange(buffer.startIndex ..< buffer.startIndex + readOffset)
+        readOffset = 0
+    }
+
+    /// Reads the 4-byte big-endian length prefix at the cursor without consuming it. (The cursor
+    /// advances in ``nextMessage()`` once the full frame is confirmed present, so an incomplete frame
+    /// leaves the prefix in place for the next call.)
     private func readPrefix() -> UInt32 {
-        let start = buffer.startIndex
+        let base = buffer.startIndex + readOffset
         var value: UInt32 = 0
         for i in 0 ..< Self.prefixLength {
-            value = (value << 8) | UInt32(buffer[start + i])
+            value = (value << 8) | UInt32(buffer[base + i])
         }
         return value
     }

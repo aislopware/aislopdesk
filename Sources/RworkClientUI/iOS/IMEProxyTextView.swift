@@ -95,7 +95,17 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
             super.deleteBackward()
             return
         }
-        onKeyPress?(InputRouting.KeyPress(characters: "\u{7F}", isSpecial: true))
+        // R10: a SOFTWARE-keyboard Backspace has NO paired `UIPress` release (it calls `deleteBackward()`
+        // directly), so a bare `onKeyPress` arms the owner's `KeyRepeater` and never disarms it — after
+        // the 350 ms initial delay it floods a DEL byte at 20 Hz (deleting the whole input line and
+        // continuing) until the user presses a different special key / loses focus / the view is torn
+        // down. Emit a ONE-SHOT instead: the press fires a single DEL synchronously and ARMS the repeat,
+        // then the immediate release (same RepeatKey identity `"S:\u{7F}"`) CANCELS the timer before it
+        // can fire — exactly one DEL, no runaway. (Hardware Backspace is unaffected: it flows through
+        // `pressesBegan`/`pressesEnded`, which already produce a paired release.)
+        let del = InputRouting.KeyPress(characters: "\u{7F}", isSpecial: true)
+        onKeyPress?(del)
+        onKeyRelease?(del)
     }
 
     // MARK: Hardware keyboard (pressesBegan/Ended → InputRouting → owner's KeyRepeater)
@@ -158,6 +168,7 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
             control: key.modifierFlags.contains(.control),
             option: key.modifierFlags.contains(.alternate),
             command: key.modifierFlags.contains(.command),
+            shift: key.modifierFlags.contains(.shift),
             isSpecial: Self.isSpecial(key)
         )
     }

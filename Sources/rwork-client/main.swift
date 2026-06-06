@@ -269,8 +269,13 @@ Task {
         finish(1)
     }
 
-    // 2. Start the reconnect supervisor (byte-exact resume on drop).
-    reconnect.start(host: args.host, port: args.port)
+    // 2. Start the reconnect supervisor (byte-exact resume on drop). RETAIN the task so the shutdown
+    //    sequence can CANCEL it (R16 CLI-1) — otherwise it free-runs and can pop a buffered
+    //    `.disconnected` (which `handleStreamEnded` yields on EVERY clean stream end, remote-shell-exit
+    //    included) and fire a doomed `connect()` racing the process `exit()`, orphaning a freshly
+    //    spawned host shell. (The client's own `isClosed` guard from R15 #1 also defends this, but the
+    //    supervisor can win the `isClosed` read before `close()` sets it; cancelling is the clean stop.)
+    let supervisor = reconnect.start(host: args.host, port: args.port)
 
     // 3. Initial resize from the local terminal size.
     if let ws = TerminalRawMode.windowSize(fd: STDIN_FILENO) {
@@ -412,6 +417,7 @@ Task {
         stderrLine("session ending (output)")
     }
 
+    supervisor.cancel()   // R16 CLI-1: stop the reconnect supervisor BEFORE close() so it can't dial during exit.
     eventsTask.cancel()
     resizeTask.cancel()
     inputSenderTask.cancel()

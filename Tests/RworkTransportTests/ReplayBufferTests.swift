@@ -195,4 +195,25 @@ final class ReplayBufferTests: XCTestCase {
         XCTAssertEqual(buffer.messages(after: 0).map(\.seq), [1, 2, 3, 4, 5, 6])
         XCTAssertEqual(buffer.retainedBytes, 6 * 1024 * 1024)
     }
+
+    // MARK: Instance-configurable caps (R5 rank 2 — lets the relay wiring be tested at a tiny cap)
+
+    /// `shouldPauseDrain` must honor the INSTANCE caps, not just the 64 MiB / 4 MiB statics — so a tiny
+    /// cap exercises the same online-slow-consumer and offline-gate transitions without 64 MiB of heap.
+    func testShouldPauseDrainHonorsInstanceCaps() {
+        var buf = ReplayBuffer(maxBackupBytes: 100, offlineGateBytes: 40)
+        XCTAssertFalse(buf.shouldPauseDrain)
+        buf.append(bytes: Data(count: 50))      // retained 50 < 100, online → no pause
+        XCTAssertFalse(buf.shouldPauseDrain)
+        buf.isClientOnline = false
+        XCTAssertTrue(buf.shouldPauseDrain, "offline + retained(50) ≥ offlineGate(40) → pause")
+        buf.isClientOnline = true
+        XCTAssertFalse(buf.shouldPauseDrain, "back online, retained(50) < maxBackup(100) → no pause")
+        buf.append(bytes: Data(count: 60))      // retained 110 ≥ 100 → online slow-consumer pause
+        XCTAssertTrue(buf.shouldPauseDrain, "online: retained(110) ≥ maxBackup(100) → pause regardless of online")
+        buf.ack(upTo: buf.highestSeq)           // release all → retained 0
+        XCTAssertFalse(buf.shouldPauseDrain, "ack released the backlog → resume")
+        // The public statics remain the production contract values (unchanged by the instance caps).
+        XCTAssertEqual(ReplayBuffer.maxBackupBytes, 64 * 1024 * 1024)
+    }
 }

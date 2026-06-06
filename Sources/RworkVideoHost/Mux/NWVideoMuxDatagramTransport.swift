@@ -116,6 +116,19 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         params.includePeerToPeer = false
 
         let media = try NWListener(using: params, on: mediaPort)
+        // R15 #10: surface a POST-bind listener failure. Unlike `NWListener(using:on:)` — which throws
+        // synchronously only for an immediately-invalid configuration — a runtime bind `.failed`
+        // (e.g. EADDRINUSE: the media UDP port already held) is delivered ASYNCHRONOUSLY to this
+        // handler. With no handler installed it was silently dropped: `start()` returned success, the
+        // daemon logged "listening…", yet the socket never bound and no video ever flowed, with zero
+        // error surfaced. Log it loudly so the operator (Console.app / launch-from-Terminal) sees the
+        // real cause. (Gating `start()` success on `.ready` via a checked continuation — mirroring
+        // HostTransport — is the fuller fix, deferred as the real-socket path is hardware-only-verifiable.)
+        media.stateUpdateHandler = { [weak self] state in
+            if case let .failed(error) = state {
+                self?.log.error("media listener failed: \(String(describing: error)) — video will not flow on the media port")
+            }
+        }
         media.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
             self.lock.lock()
@@ -128,9 +141,14 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
             self.receiveMedia(on: conn, live: live, onReceive: onReceive)
         }
         media.start(queue: queue)
-        self.mediaListener = media
 
         let cursor = try NWListener(using: params, on: cursorPort)
+        // R15 #10: same post-bind failure surfacing for the cursor listener (see media above).
+        cursor.stateUpdateHandler = { [weak self] state in
+            if case let .failed(error) = state {
+                self?.log.error("cursor listener failed: \(String(describing: error)) — cursor updates will not flow on the cursor port")
+            }
+        }
         cursor.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
             self.lock.lock()
@@ -143,14 +161,17 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
             self.receiveCursor(on: conn, live: live, onReceive: onReceive)
         }
         cursor.start(queue: queue)
-        self.cursorListener = cursor
 
         // CONCURRENCY-HOST-1 mux analogue: arm the per-lane idle-timeout reaper. On `queue` (serial
         // receive queue).
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + KeepaliveTiming.reaperTick, repeating: KeepaliveTiming.reaperTick)
         timer.setEventHandler { [weak self] in self?.runReaperTick() }
-        lock.withLock { reaperTimer = timer }
+        // R14 lock-domain fix: store the listener refs UNDER the lock alongside reaperTimer (every other
+        // mutable field on this @unchecked Sendable class is lock-guarded; these two were the lone
+        // lock-free exception → a torn read / ARC race if a future stop() ever overlapped an in-flight
+        // start()). The listeners are already started above; only the field stores move under the lock.
+        lock.withLock { mediaListener = media; cursorListener = cursor; reaperTimer = timer }
         timer.resume()
 
         log.info("NWVideoMuxDatagramTransport listening media=\(self.mediaPort.rawValue) cursor=\(self.cursorPort.rawValue) (shared mux flow)")
@@ -373,9 +394,13 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     }
 
     public func stop() async {
-        mediaListener?.cancel(); mediaListener = nil
-        cursorListener?.cancel(); cursorListener = nil
-        lock.withLock {
+        // R14 lock-domain fix: read+nil the listener refs UNDER the lock (their write moved under the lock
+        // in start()), then cancel OUTSIDE the lock. cancel() is idempotent and the refs are read nowhere
+        // else, so this is behavior-preserving — it just closes the lock-free read/nil hole.
+        let (media, cursor): (NWListener?, NWListener?) = lock.withLock {
+            let m = mediaListener, c = cursorListener
+            mediaListener = nil
+            cursorListener = nil
             stopped = true
             // Cancel the reaper timer BEFORE tearing down flows so a tick cannot fire mid-teardown.
             reaperTimer?.cancel(); reaperTimer = nil
@@ -385,7 +410,10 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
             cursorConns.removeAll()
             channelMediaConn.removeAll()
             channelCursorConn.removeAll()
+            return (m, c)
         }
+        media?.cancel()
+        cursor?.cancel()
     }
 }
 #endif

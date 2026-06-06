@@ -52,9 +52,18 @@ public struct FlowCreditPolicy: Sendable, Equatable {
 
     /// Re-credits the window by `bytesToAdd` (an SSH `CHANNEL_WINDOW_ADJUST`).
     /// Negative grants are ignored. Replenishing a blocked window unblocks it.
+    ///
+    /// OVERFLOW-SAFE (R6 #7): a huge peer-chosen `UInt32` grant (or a long run of grants) must not
+    /// Int-overflow-trap the `remaining += bytesToAdd`. Saturate at `Int.max` instead. NOTE: SSH-style
+    /// windows may legitimately grow PAST ``initialWindow`` (it is the starting reference, not a hard
+    /// cap on `remaining` — see `testAdjustCanGrowBeyondInitialWindow`), so we deliberately do NOT clamp
+    /// to the window; we only defuse the overflow trap. (For this remote-terminal the SENDER is the host
+    /// PTY, whose output is bounded by what the shell produces, so an inflated window is not itself a
+    /// socket-monopolisation lever — the bounded-queue + ReplayBuffer gates bound host memory regardless.)
     public mutating func adjust(bytesToAdd: Int) {
         guard bytesToAdd > 0 else { return }
-        remaining += bytesToAdd
+        let (sum, overflowed) = remaining.addingReportingOverflow(bytesToAdd)
+        remaining = overflowed ? Int.max : sum
     }
 
     /// Whether the window is exhausted (no credit to send even a single byte).

@@ -162,9 +162,24 @@ final class Holder: @unchecked Sendable {
 }
 let holder = Holder()
 
+// A one-shot latch so a second SIGINT during the async shutdown does not spawn a second teardown Task
+// that calls `exit(0)` again (two concurrent libc `exit()` calls are UB). R16 HOSTD-1.
+final class VideoShutdownLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    func tryFire() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if fired { return false }
+        fired = true
+        return true
+    }
+}
+let videoShutdownLatch = VideoShutdownLatch()
+
 signal(SIGINT, SIG_IGN)
 let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 sigint.setEventHandler {
+    guard videoShutdownLatch.tryFire() else { return }   // ignore repeated Ctrl-C during the async drain
     log("SIGINT — shutting down")
     Task {
         if let (registry, mux) = holder.currentMux() {

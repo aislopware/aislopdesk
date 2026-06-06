@@ -106,4 +106,24 @@ final class ChannelTableTests: XCTestCase {
         XCTAssertNil(table.state(of: 42))
         XCTAssertFalse(table.isOpen(42))
     }
+
+    /// R6 #5 regression: a `channelClose` for an id that was NEVER registered must create NO table
+    /// entry — otherwise a hostile peer grows `states` without bound by spamming closes for arbitrary
+    /// peer-chosen ids (a router memory-DoS). The close still reports `.closed`, it just leaves no
+    /// permanent allocation behind.
+    func testRemoteCloseForUnknownIDCreatesNoEntry() {
+        var table = ChannelTable()
+        for id in stride(from: UInt32(1000), to: 1000 + 5000, by: 2) {
+            XCTAssertEqual(table.remoteClose(id), .closed, "a close for an unknown id reports dead")
+        }
+        XCTAssertTrue(table.liveChannelIDs.isEmpty, "no live channels were created by stray closes")
+        XCTAssertNil(table.state(of: 1000), "a stray close for an unknown id must leave NO retained entry")
+        // A locally-allocated id still flows through the normal half-close → closed machine and IS
+        // retained (the monotonic-no-reuse guarantee for OUR ids is unaffected).
+        let mine = table.allocate()
+        table.open(mine)
+        XCTAssertEqual(table.localClose(mine), .halfClosed)
+        XCTAssertEqual(table.remoteClose(mine), .closed)
+        XCTAssertEqual(table.state(of: mine), .closed, "our own closed id is retained (no reuse)")
+    }
 }

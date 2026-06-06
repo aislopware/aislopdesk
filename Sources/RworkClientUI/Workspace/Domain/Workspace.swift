@@ -55,6 +55,34 @@ public extension Workspace {
     func index(of id: TabID) -> Int? {
         tabs.firstIndex { $0.id == id }
     }
+
+    /// Repairs the `activeTabID` invariant: if it is nil or points at a tab that no longer exists,
+    /// repoint it at the first tab (or `nil` when there are none). Applied on persistence load so a
+    /// dangling active-tab id in ANY schema version restores with a selected tab, not a blank detail
+    /// pane — `activeTab` returns nil for a dangling id, leaving the detail empty (R13). Identity for a
+    /// valid id and for the empty-tabs case.
+    func normalizingActiveTab() -> Workspace {
+        let valid = activeTabID.map { id in tabs.contains { $0.id == id } } ?? false
+        guard !valid else { return self }
+        var copy = self
+        copy.activeTabID = tabs.first?.id
+        return copy
+    }
+
+    /// Repairs each tab's `focusedPane` invariant: if it points at a leaf that no longer exists in that
+    /// tab's tree (a corrupt / hand-edited persisted file), repoint it at the tab's first leaf so keyboard
+    /// focus is never pinned to a ghost pane. Applied on load alongside ``normalizingActiveTab()`` —
+    /// completing the same corrupt-file repair (R13): the active tab AND the focus inside every tab.
+    func normalizingTabFocus() -> Workspace {
+        var copy = self
+        for i in copy.tabs.indices {
+            let leaves = copy.tabs[i].root.allLeafIDs()
+            if !leaves.contains(copy.tabs[i].focusedPane), let first = leaves.first {
+                copy.tabs[i].focusedPane = first
+            }
+        }
+        return copy
+    }
 }
 
 // MARK: - Pure tab arithmetic (each returns a NEW workspace)

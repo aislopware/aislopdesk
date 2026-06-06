@@ -145,4 +145,49 @@ final class InspectorReplayLogTests: XCTestCase {
         for await event in stream { got.append(event) }
         XCTAssertEqual(got, [msg("u0"), msg("u1")])
     }
+
+    /// R6 #4: the retained history is BOUNDED. Appending past the cap drops the oldest, but
+    /// `historyCount` (the absolute next-seq) keeps climbing and `subscribe(fromSeq:)` maps the ABSOLUTE
+    /// seq through the dropped base — the live tail is exact, and a stale `fromSeq` below the base clamps
+    /// (no crash) instead of leaking the whole history forever.
+    func testHistoryRetentionIsBoundedAndSeqStaysAbsolute() async throws {
+        let log = InspectorReplayLog()
+        let total = 60_000 // > the 50k retention cap
+        for i in 0..<total { await log.append(msg("e\(i)")) }
+
+        let absolute = await log.historyCount
+        let retained = await log.retainedEventCount
+        XCTAssertEqual(absolute, total, "historyCount is the ABSOLUTE next-seq, stable across retention drops")
+        XCTAssertLessThanOrEqual(retained, 50_000, "the retained window is bounded (no unbounded OOM)")
+        XCTAssertGreaterThan(absolute, retained, "older events were dropped to keep memory bounded")
+
+        await log.markFinished() // so subscribe streams deliver the snapshot then finish (no live wait)
+        // Absolute-seq mapping survives the drop: from (total-3) → exactly the last 3 events in order.
+        let tail = await log.subscribe(fromSeq: Int64(total - 3))
+        let gotTail = try await collect(tail, count: 3)
+        XCTAssertEqual(gotTail, [msg("e\(total - 3)"), msg("e\(total - 2)"), msg("e\(total - 1)")],
+                       "subscribe maps the ABSOLUTE fromSeq through baseSeq to the correct tail after drops")
+        // A fromSeq BELOW the retained base must clamp to the oldest retained (no crash / no negative slice).
+        let fromZero = await log.subscribe(fromSeq: 0)
+        let firstFew = try await collect(fromZero, count: 1)
+        XCTAssertEqual(firstFew.count, 1, "fromSeq below baseSeq clamps to the oldest retained event")
+    }
+
+    /// R7 #6 regression: once `baseSeq` has advanced (events dropped), a hostile/unauthenticated
+    /// `subscribe(fromSeq: Int64.min)` must NOT overflow-trap the host (`Int(fromSeq) - baseSeq`
+    /// underflow) — it saturates to "everything retained". `Int64.max` (past the end) → empty replay.
+    func testSubscribeWithHostileFromSeqDoesNotCrash() async throws {
+        let log = InspectorReplayLog()
+        for i in 0..<60_000 { await log.append(msg("e\(i)")) } // baseSeq advances past 0
+        await log.markFinished()
+
+        let everything = await log.subscribe(fromSeq: Int64.min) // would underflow-trap before the fix
+        let got = try await collect(everything, count: 1)
+        XCTAssertEqual(got.count, 1, "fromSeq=Int64.min saturates to the oldest retained event (no host-crash trap)")
+
+        let none = await log.subscribe(fromSeq: Int64.max)
+        var n = 0
+        for await _ in none { n += 1 }
+        XCTAssertEqual(n, 0, "fromSeq past the end yields an empty replay, also without trapping")
+    }
 }

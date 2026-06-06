@@ -67,4 +67,41 @@ final class ToolCardPairingTests: XCTestCase {
         events += b.ingest(line: use) // same uuid → second ingest emits nothing
         XCTAssertEqual(cards(events).count, 1, "re-read tail must not double-emit")
     }
+
+    // MARK: - Unbounded-map bound (R9 fix)
+
+    /// After a use+result pair completes, the full pair re-fed (truncation re-read)
+    /// must STILL dedup — even though the open card was dropped to bound memory. The
+    /// line-uuid dedup carries the contract; the dropped card is never looked up again.
+    func testCompletedPairReReadStillDedups() {
+        var b = EventBuilder()
+        let use = toolUseLine(id: "a")
+        let res = toolResultLine(id: "a", output: "ok", isError: false)
+        var events = b.ingest(line: use)
+        events += b.ingest(line: res)
+        XCTAssertEqual(cards(events).map(\.status), [.pending, .completed])
+        // Full re-read of the same two physical lines (same uuids) → zero new cards.
+        var reread = b.ingest(line: use)
+        reread += b.ingest(line: res)
+        XCTAssertTrue(cards(reread).isEmpty, "completed pair re-read must not re-emit")
+    }
+
+    /// Driving thousands of complete pairs through one builder must not retain an open
+    /// card per pair (the leak). We can't read the private map, but a re-read of an
+    /// early pair must still dedup, proving the dedup contract survives the drop.
+    func testManyCompletedPairsKeepDedupContract() {
+        var b = EventBuilder()
+        let first = toolUseLine(id: "first")
+        let firstRes = toolResultLine(id: "first", output: "ok", isError: false)
+        _ = b.ingest(line: first)
+        _ = b.ingest(line: firstRes)
+        for i in 0 ..< 5_000 {
+            _ = b.ingest(line: toolUseLine(id: "c\(i)"))
+            _ = b.ingest(line: toolResultLine(id: "c\(i)", output: "ok", isError: false))
+        }
+        // Re-read the very first pair: must dedup (its uuid is well within the cap).
+        var reread = b.ingest(line: first)
+        reread += b.ingest(line: firstRes)
+        XCTAssertTrue(cards(reread).isEmpty, "early pair must still dedup after many pairs")
+    }
 }

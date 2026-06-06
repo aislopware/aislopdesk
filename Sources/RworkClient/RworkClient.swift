@@ -21,22 +21,32 @@ import RworkTransport
 /// a background ticker flushes it at most once every ``ackInterval`` (default 50ms). We
 /// never ack a seq we have not delivered — correctness over cadence (`docs/20` §5).
 ///
-/// ### Reconnect + byte-exact dedup (the headline guarantee)
-/// On a transport drop ``ReconnectManager`` calls back into ``connect(...)`` presenting
-/// the SAME `sessionID` + ``highestContiguousSeq`` as `lastReceivedSeq`. The host
-/// replays every retained `output` with `seq > lastReceivedSeq` on the fresh data
-/// channel before resuming live streaming. Because a buggy/racy host *could* replay an
-/// output we already delivered (or the client could re-present a stale seq), the client
-/// **dedups by seq**: it drops any inbound `output` whose `seq <= highestSeqFed`. The
-/// result spliced into ``output`` is gap-free and dup-free.
+/// ### Reconnect + seq dedup
+/// On a transport drop ``ReconnectManager`` calls back into ``connect(...)`` presenting the
+/// SAME `sessionID` + ``highestContiguousSeq`` as `lastReceivedSeq`. The seq **dedup** mechanism
+/// itself is robust: the client drops any inbound `output` whose `seq <= highestSeqFed`, so were a
+/// host to replay an already-delivered tail (or were the client to re-present a stale seq), the
+/// result spliced into ``output`` would be gap-free and dup-free.
+///
+/// IMPORTANT — what reconnect actually does TODAY: the mux transport (the sole terminal
+/// connectivity) has **no per-channel server-side resume**. A real drop kills the host shell and
+/// the reconnect spawns a BRAND-NEW one whose `output` restarts at seq 1 — there is no replay (see
+/// `MuxChannelSession` "S1 has no per-channel reconnect/resume", `HostServer.spawnMuxChannel`). So
+/// reconnect is the **ssh model (fresh shell)**, NOT a byte-exact resume, and ``connect(...)``
+/// therefore RESETS the dedup/ack high-water marks on every (re)connect so the fresh shell renders
+/// from seq 1. Client-side scrollback is preserved across a SwiftUI surface rebuild (tab switch)
+/// via the view model's replay ring, but NOT across a transport drop. Host-side survival + true
+/// `seq > lastReceivedSeq` replay (`docs/20` §8.3) is a designed-but-unimplemented later stage; if
+/// it lands, the unconditional reset in ``connect(...)`` must become conditional on a
+/// host-authoritative returning flag.
 ///
 /// ### iOS lifecycle seam ([17] §2.5, [18] §H)
 /// ``pause()`` / ``resume()`` are the hooks WF-8 wires to UIKit
 /// `didEnterBackground` / `willEnterForeground`. `pause()` proactively closes the
 /// transport (iOS would tear the TCP down a few seconds after backgrounding anyway —
 /// see DECISIONS §reconnect); `resume()` triggers a reconnect with the preserved
-/// `sessionID` + seq so the resume is byte-exact. Output produced while paused is
-/// retained on the host (`ReplayBuffer`) and replayed on `resume()`.
+/// `sessionID` + seq. Per the reconnect note above, on the mux path this yields a FRESH shell (not
+/// a byte-exact resume) — the renderer is reset and the new shell repaints from its first prompt.
 ///
 /// All mutable state lives inside this `actor`. No `@unchecked Sendable`.
 public actor RworkClient {
@@ -121,6 +131,17 @@ public actor RworkClient {
     private var closed = false
     private var paused = false
 
+    /// Monotonic connect-attempt counter. Each ``connect(...)`` captures its value at entry; if a
+    /// NEWER connect starts during this one's `await transport.connect(...)` suspension (the actor is
+    /// reentrant at every await), the older invocation observes its captured generation is now stale
+    /// and DISCARDS its just-built transport instead of adopting it. Without this, two overlapping
+    /// connects (e.g. the reconnect supervisor racing iOS `resume()`) both reach `self.transport =
+    /// transport`; the second overwrites the first WITHOUT tearing it down, leaking a fully-live
+    /// transport (2 sockets + inbound pump + ack ticker) and its ``ConnectionRegistry`` refcount — the
+    /// "zombie transport" race. Paired with the post-handshake `closed`/`paused` re-check below for the
+    /// close()/pause()-during-reconnect variants.
+    private var connectGeneration: UInt64 = 0
+
     /// Set while we are deliberately replacing the transport (reconnect entry / pause).
     /// `teardownTransport()` closes the OLD transport, which finishes the OLD inbound
     /// stream and lands the old pump in ``handleStreamEnded(error:)`` with `nil` — a
@@ -128,7 +149,14 @@ public actor RworkClient {
     /// that spurious `.disconnected` (mirror of the `closed` guard), so `ReconnectManager`
     /// does not queue a redundant reconnect campaign. The real drop path
     /// (``_forceDropForTesting()`` / transport failing on its own) leaves this `false`.
-    private var tearingDown = false
+    /// DEPTH counter (not a bare Bool) so two overlapping teardowns — a reentrant connect()/pause() whose
+    /// teardownTransport awaits across another connect()/pause() — cannot clobber each other's suppression
+    /// window: a shared Bool let the inner scope's `= false` clear the outer's `= true`, briefly un-
+    /// suppressing handleStreamEnded so a self-inflicted old-pump stream-end surfaced a spurious
+    /// `.disconnected` + a redundant reconnect. Each scope inc/decrements only its own, so the depth stays
+    /// > 0 for the whole span any teardown is in flight (R13 #11).
+    private var tearingDownDepth = 0
+    private var tearingDown: Bool { tearingDownDepth > 0 }
     private var lastSentResize: (cols: UInt16, rows: UInt16, px: UInt16, py: UInt16)?
 
     /// Optional terminal renderer fed the inbound output (libghostty seam / headless).
@@ -175,13 +203,18 @@ public actor RworkClient {
         self.host = host
         self.port = port
 
+        // Claim a generation BEFORE the first suspension (teardown). A concurrent connect that starts
+        // while we are suspended will claim a HIGHER one, marking us stale at the post-handshake check.
+        connectGeneration &+= 1
+        let myGeneration = connectGeneration
+
         // Tear down any prior transport (reconnect path) so we never double-pump. Guard the
         // teardown so the old inbound pump's self-inflicted stream-end (the OLD transport
         // closing finishes the OLD inbound stream) does NOT surface a spurious `.disconnected`
         // that would make ReconnectManager queue a redundant reconnect campaign.
-        tearingDown = true
+        tearingDownDepth += 1
         await teardownTransport()
-        tearingDown = false
+        tearingDownDepth -= 1
 
         let transport = makeTransport()
         let resume = sessionID ?? WireMessage.newSessionID
@@ -199,35 +232,71 @@ public actor RworkClient {
             throw error
         }
 
+        // POST-HANDSHAKE re-check — the actor was reentrant across `await transport.connect(...)`.
+        // If, during that suspension, the client was closed (deliberate disconnect) or paused (iOS
+        // background), OR a NEWER connect() superseded us (claimed a higher `connectGeneration`), OR our
+        // driving task was cancelled, we must DISCARD this freshly-built transport rather than adopt it.
+        // Adopting it would assign `self.transport = transport` over the other live/closing one WITHOUT
+        // tearing this one down — leaking a live transport + its inbound pump + ack ticker + the
+        // ConnectionRegistry channel refcount (the zombie-transport bug). `transport.close()` releases
+        // the channel (refcount--), so nothing leaks. We RETURN rather than throw: a thrown error would
+        // make ``ReconnectManager``'s loop RETRY and fight whichever connect legitimately won — returning
+        // tells it "the client is handled, stop the campaign."
+        if closed || paused || Task.isCancelled || myGeneration != connectGeneration {
+            await transport.close()
+            return
+        }
+
         self.transport = transport
         let learnedID = await transport.sessionID
         let resumeFromSeq = await transport.resumeFromSeq
         let returning = await transport.returningClient
         if let learnedID { self.sessionID = learnedID }
 
+        // RESET DEDUP / ACK STATE ON EVERY (RE)CONNECT. The mux transport — the SOLE terminal
+        // connectivity — has NO per-channel server-side resume: `HostServer.spawnMuxChannel` mints a
+        // BRAND-NEW PTY on every channelOpen and `MuxChannelSession` documents "S1 has no per-channel
+        // reconnect/resume … the shell MUST die" on any drop. So the host's `output` ALWAYS restarts at
+        // seq 1, even on a "reconnect". Our `highestSeqFed`/`highestContiguousSeq` high-water marks
+        // belong to the OLD (now-dead) session and MUST be reset here, before the pumps start —
+        // otherwise:
+        //   • `deliverOutput` drops every fresh `output` with seq <= the stale `highestSeqFed`,
+        //     SILENTLY SWALLOWING the new shell's first prompt until its seq passes the old mark; and
+        //   • the ack ticker sends `ack(stale highestContiguousSeq)` against the fresh session.
+        // (On a first connect these are already 0 — a harmless no-op.)
+        //
+        // WHY UNCONDITIONAL (not gated on `returning`): `MuxClientTransport.returningClient` is computed
+        // CLIENT-SIDE as `resume != newSessionID`, so it is `true` on EVERY reconnect — but the host
+        // never actually preserved anything (it always spawned a fresh shell). Gating the reset on
+        // `!returning` (the old code) therefore SKIPPED it on the exact path that needs it most. The
+        // reset is correct as long as no transport performs a real server-side resume-with-replay; IF
+        // host-side per-channel survival ever lands (docs/20 §8.3 / an openAck-carried returning flag),
+        // this must become conditional on that HOST-AUTHORITATIVE signal, not the client-side guess.
+        highestSeqFed = 0
+        highestContiguousSeq = 0
+        ackPending = false
+
         if returning, let learnedID {
+            // Surface the reconnect so the UI flips `.reconnecting` → `.connected`
+            // (ConnectionViewModel folds this event). NOTE: despite the name, this is NOT a byte-exact
+            // resume on the mux path — the shell is fresh; the event only conveys "the link came back".
             eventBroadcaster.yield(.reconnected(sessionID: learnedID, resumeFromSeq: resumeFromSeq))
-        } else {
-            // The host did NOT recognize our resume id and minted a BRAND-NEW session (the
-            // old one was forgotten — host restarted, idle-TTL reaped, or this is a first
-            // connect): its `output` restarts at seq 1. Our dedup / ack high-water marks
-            // belong to the OLD session, so they MUST be reset here, before the pumps start.
-            // Otherwise:
-            //   • `deliverOutput` would drop every fresh `output` with seq <= the stale
-            //     `highestSeqFed`, silently swallowing the new session's start until its seq
-            //     passed the old high-water mark; and
-            //   • the ack ticker would send `ack(stale highestContiguousSeq)` on the fresh
-            //     session, releasing replay-buffer entries 1..N the client never received.
-            // (On a first connect these are already 0, so the reset is a harmless no-op.)
-            highestSeqFed = 0
-            highestContiguousSeq = 0
-            ackPending = false
         }
 
         // Re-assert the last known window size on (re)connect so the remote PTY matches
         // the local terminal even after a resume rebound the control channel.
         if let size = lastSentResize {
             try? await transport.sendResize(cols: size.cols, rows: size.rows, pxWidth: size.px, pxHeight: size.py)
+        }
+
+        // POST-ADOPTION re-check (R13 #2): the line-238 check ran BEFORE four more cross-actor awaits
+        // (transport.sessionID/resumeFromSeq/returningClient/sendResize), each a reentrancy window. If a
+        // deliberate close()/pause() landed during any of them, teardownTransport() already cancelled +
+        // niled the pumps and closed this transport — re-creating the pumps here would leak a forever-
+        // spinning ack ticker (its loop has no closed/transport guard). Bail before starting them.
+        if closed || paused || Task.isCancelled || myGeneration != connectGeneration {
+            await transport.close()
+            return
         }
 
         startInboundPump(transport)
@@ -260,6 +329,11 @@ public actor RworkClient {
     func _handleInboundForTesting(_ message: WireMessage) {
         handleInbound(message)
     }
+
+    /// Test-only: whether a transport is currently adopted (`self.transport != nil`). Used by the
+    /// reconnect-race regression suite to assert that a connect superseded/closed/paused mid-handshake
+    /// does NOT leave a zombie transport adopted on the client.
+    var _hasLiveTransportForTesting: Bool { transport != nil }
 
     private func handleInbound(_ message: WireMessage) {
         switch message {
@@ -384,9 +458,9 @@ public actor RworkClient {
         }
         // Guard the teardown so the old inbound pump's self-inflicted end does not add a
         // spurious `.disconnected` on top of the explicit "paused" one we yield below.
-        tearingDown = true
+        tearingDownDepth += 1
         await teardownTransport()
-        tearingDown = false
+        tearingDownDepth -= 1
         eventBroadcaster.yield(.disconnected(reason: "paused (backgrounded)"))
     }
 
@@ -401,6 +475,16 @@ public actor RworkClient {
 
     /// True while paused by ``pause()`` (diagnostics / reconnect gating).
     public var isPaused: Bool { paused }
+
+    /// True once ``close()`` has permanently retired the client (diagnostics / reconnect gating).
+    /// ``ReconnectManager`` consults this ALONGSIDE ``isPaused`` because the two deliberate-shutdown
+    /// paths are NOT symmetric: ``pause()`` yields an explicit `.disconnected` AND sets `paused`,
+    /// but ``close()`` sets `closed` and `finish()`es the event stream WITHOUT yielding `.disconnected`.
+    /// A real transport drop that yielded `.disconnected` just before `close()` leaves that event
+    /// BUFFERED in a subscriber ahead of the stream's finish — so a reconnect supervisor that gated
+    /// only on `isPaused` would pop the stale drop after close and run a doomed `connect`-after-close
+    /// campaign. Gating on `isClosed` too closes that race.
+    public var isClosed: Bool { closed }
 
     /// Test-only: simulate a hard network loss — tear down the transport (cancelling the
     /// underlying NWConnections) WITHOUT sending a clean `bye`, exactly as an iOS TCP

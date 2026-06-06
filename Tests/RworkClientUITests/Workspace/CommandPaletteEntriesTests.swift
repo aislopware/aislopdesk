@@ -30,6 +30,31 @@ final class CommandPaletteEntriesTests: XCTestCase {
         XCTAssertNil(CommandPaletteView.fuzzyScore(query: "xyz", in: "Reconnect Pane"))
     }
 
+    // MARK: - Tab entry keyword search ("select tab N")
+
+    /// A tab entry folds non-displayed `keywords` ("select tab N") into `searchText`, so the menu-bar
+    /// phrasing finds a tab by POSITION even when the tab is not literally named "N". Without the
+    /// keywords, that phrasing would not match the tab's visible text — closing the two-surface gap.
+    func testTabEntryKeywordsEnableSelectTabNQuery() {
+        let withKeywords = CommandPaletteView.Entry(
+            id: "tab.x", kind: .tab(TabID()), title: "Work",
+            subtitle: "Switch to tab", symbol: "rectangle.stack", keywords: "select tab 3"
+        )
+        XCTAssertNotNil(
+            CommandPaletteView.fuzzyScore(query: "select tab 3", in: withKeywords.searchText),
+            "the menu-learned 'Select Tab 3' phrasing must match a tab via its keywords"
+        )
+
+        let noKeywords = CommandPaletteView.Entry(
+            id: "tab.x", kind: .tab(TabID()), title: "Work",
+            subtitle: "Switch to tab", symbol: "rectangle.stack"
+        )
+        XCTAssertNil(
+            CommandPaletteView.fuzzyScore(query: "select tab 3", in: noKeywords.searchText),
+            "without keywords that phrasing does not match the tab's visible text (proves keywords are load-bearing)"
+        )
+    }
+
     // MARK: - buildPaneEntries
 
     /// A multi-leaf tab yields one pane entry per leaf, each carrying the correct (PaneID, TabID); a
@@ -91,5 +116,27 @@ final class CommandPaletteEntriesTests: XCTestCase {
         XCTAssertNil(store.activeTab)
         apply(.reconnectPane, to: store)   // must not trap
         XCTAssertNil(store.activeTab)
+    }
+
+    // MARK: - apply(.renameTab) wiring (was a dead no-op)
+
+    /// `apply(.renameTab)` bumps `renameTabRequest` so the sidebar opens its inline rename field — the
+    /// fix for the ⌘R / menu / palette "Rename Tab" entry points that previously did nothing.
+    func testApplyRenameTabBumpsRenameRequestWithActiveTab() {
+        let store = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
+        XCTAssertNotNil(store.activeTab)
+        let before = store.renameTabRequest
+        apply(.renameTab, to: store)
+        XCTAssertEqual(store.renameTabRequest, before + 1, "rename request bumps so the sidebar opens the field")
+    }
+
+    /// With no active tab, `apply(.renameTab)` is a graceful no-op (nothing to rename).
+    func testApplyRenameTabNoopWithNoActiveTab() {
+        let store = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
+        store.closeTab(store.activeTab!.id)
+        XCTAssertNil(store.activeTab)
+        let before = store.renameTabRequest
+        apply(.renameTab, to: store)   // must not trap
+        XCTAssertEqual(store.renameTabRequest, before, "no active tab → no rename request")
     }
 }

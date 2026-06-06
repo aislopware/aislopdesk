@@ -44,6 +44,11 @@ public final class InputDedupRing {
     private var pending: [UInt8] = []
     /// How many bytes at the front of `pending` we have already matched against output.
     private var matched: Int = 0
+    /// Held (tentatively-suppressed) bytes that were EVICTED before their match could be confirmed
+    /// (R17 DEDUP-1). These were real output bytes withheld from passthrough during ``filter(_:)``
+    /// awaiting confirmation; eviction is a non-confirmation, so they must be flushed — the next
+    /// ``filter(_:)`` emits them first (in stream order, ahead of its own chunk) instead of eating them.
+    private var flushBuffer: [UInt8] = []
 
     public init(capacity: Int = 4096) {
         precondition(capacity > 0, "capacity must be positive")
@@ -70,6 +75,16 @@ public final class InputDedupRing {
         // the already-held match prefix, also retreat the cursor so it stays valid.
         if pending.count > capacity {
             let drop = pending.count - capacity
+            // R17 DEDUP-1: the evicted region may overlap the already-HELD (matched) prefix — bytes
+            // suppressed from passthrough during filter() awaiting confirmation. Evicting them gives up
+            // on the match, so they are real output that must be FLUSHED, not silently eaten. Buffer the
+            // held portion (pending[0..<min(matched, drop)]) for the next filter() to emit. The un-held
+            // evicted bytes (expected echo not yet seen in output) are correctly dropped — their future
+            // echo, if any, simply passes through (the documented correctness-over-completeness rule).
+            let heldEvicted = min(matched, drop)
+            if heldEvicted > 0 {
+                flushBuffer.append(contentsOf: pending[0..<heldEvicted])
+            }
             pending.removeFirst(drop)
             matched = max(0, matched - drop)
         }
@@ -84,10 +99,23 @@ public final class InputDedupRing {
     /// recently-sent input and returns the remaining (non-echo) bytes to render. Non-echo
     /// output passes through untouched. See the type doc for the hold-and-confirm model.
     public func filter(_ output: Data) -> Data {
-        guard !pending.isEmpty else { return output }
+        // Fast path only when there is nothing held AND nothing to flush.
+        guard !pending.isEmpty || !flushBuffer.isEmpty else { return output }
 
         var passthrough = [UInt8]()
-        passthrough.reserveCapacity(output.count)
+        passthrough.reserveCapacity(flushBuffer.count + output.count)
+
+        // R17 DEDUP-1: emit any held bytes that were evicted unconfirmed BEFORE this chunk — they
+        // precede it in the output stream (they were withheld during an earlier filter()).
+        if !flushBuffer.isEmpty {
+            passthrough.append(contentsOf: flushBuffer)
+            flushBuffer.removeAll(keepingCapacity: true)
+        }
+
+        if pending.isEmpty {
+            passthrough.append(contentsOf: output)
+            return Data(passthrough)
+        }
 
         for byte in output {
             stepFilter(byte, into: &passthrough)
@@ -132,6 +160,7 @@ public final class InputDedupRing {
     public func reset() {
         pending.removeAll(keepingCapacity: true)
         matched = 0
+        flushBuffer.removeAll(keepingCapacity: true)
     }
 
     // MARK: Newline normalization

@@ -54,7 +54,9 @@ final class CommandInterpreterTests: XCTestCase {
             (KeyChord(character: "[", [.command]),                 .cycleFocus(forward: false)),
             // Zoom + rename.
             (KeyChord(.return, [.command, .shift]),                .toggleZoom),
-            (KeyChord(character: "r", [.command]),                 .renameTab)
+            (KeyChord(character: "r", [.command]),                 .renameTab),
+            // Reconnect the focused pane (primary failure recovery) — ⇧⌘R, distinct from ⌘R rename.
+            (KeyChord(character: "r", [.command, .shift]),         .reconnectPane)
         ]
 
         for (chord, command) in expected {

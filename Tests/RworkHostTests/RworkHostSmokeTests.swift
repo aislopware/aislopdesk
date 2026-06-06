@@ -44,6 +44,23 @@ final class RworkHostSmokeTests: XCTestCase {
         XCTAssertEqual(env["TERM"], "xterm-256color")
     }
 
+    /// R8 #2: TERMINFO / TERMINFO_DIRS must be forwarded to the child when the parent has them — the
+    /// host's terminfo probe honours those dirs, so a child that did NOT inherit them would advertise a
+    /// `TERM=xterm-ghostty` whose entry its ncurses cannot find (every TUI degrades). When absent, they
+    /// must NOT be fabricated.
+    func testCuratedEnvironmentForwardsTerminfoSearchPath() {
+        let withVars = HostEnvironment.curated(parent: [
+            "PATH": "/usr/bin", "TERMINFO": "/opt/ghostty/share/terminfo",
+            "TERMINFO_DIRS": "/opt/ghostty/share/terminfo:/usr/share/terminfo",
+        ])
+        XCTAssertEqual(withVars["TERMINFO"], "/opt/ghostty/share/terminfo",
+                       "the child inherits the same terminfo dir the probe validated")
+        XCTAssertEqual(withVars["TERMINFO_DIRS"], "/opt/ghostty/share/terminfo:/usr/share/terminfo")
+        let withoutVars = HostEnvironment.curated(parent: ["PATH": "/usr/bin"])
+        XCTAssertNil(withoutVars["TERMINFO"], "absent in the parent → not fabricated")
+        XCTAssertNil(withoutVars["TERMINFO_DIRS"])
+    }
+
     func testLoginArgv0HasLeadingDash() {
         XCTAssertEqual(HostEnvironment.loginArgv0(forShell: "/bin/zsh"), "-zsh")
         XCTAssertEqual(HostEnvironment.loginArgv0(forShell: "/usr/local/bin/fish"), "-fish")

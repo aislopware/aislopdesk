@@ -84,6 +84,18 @@ import UIKit
 
 // MARK: - Process-wide libghostty app handle
 
+#if os(macOS)
+/// Maps a libghostty clipboard `location` to its NSPasteboard. `STANDARD` is the real system
+/// clipboard; `SELECTION` is a PRIVATE pasteboard (mirrors upstream `NSPasteboard.ghostty(_:)`) so
+/// libghostty's default-ON copy-on-select does NOT clobber the user's system clipboard on every
+/// drag-select — only an explicit Cmd-C / `copy_to_clipboard` (STANDARD) touches `.general`.
+@inline(__always) func rworkPasteboard(for location: ghostty_clipboard_e) -> NSPasteboard {
+    location == GHOSTTY_CLIPBOARD_SELECTION
+        ? NSPasteboard(name: NSPasteboard.Name("com.rwork.terminal.selection"))
+        : .general
+}
+#endif
+
 /// Owns the single process-wide `ghostty_app_t`. libghostty is initialized once per
 /// process (`ghostty_init`, header 1117) and one `app` handle is shared by every
 /// surface (`ghostty_app_new`, header 1141). Surfaces are created from it
@@ -136,7 +148,9 @@ final class GhosttyApp {
         //    GUI coordinator can later enrich). All fields zero-initialized first.
         var runtime = ghostty_runtime_config_s()
         runtime.userdata = nil
-        runtime.supports_selection_clipboard = false
+        // We provide a selection clipboard (Cmd-C populates it via copy_to_clipboard) — let libghostty
+        // offer middle-click-paste / selection semantics (upstream App.swift sets this true).
+        runtime.supports_selection_clipboard = true
         runtime.wakeup_cb = { _ in
             // libghostty asks to be ticked on its main loop. THIS IS A CROSS-THREAD SIGNAL by design
             // — on macOS it fires from libghostty's `renderer`/`io` libxev threads, NOT the main
@@ -149,9 +163,93 @@ final class GhosttyApp {
         // action_cb returns whether the action was handled; the viewer handles none
         // of the app-level actions (split/new-window/etc.) — return false.
         runtime.action_cb = { _, _, _ in false }
-        runtime.read_clipboard_cb = { _, _, _ in }
-        runtime.confirm_read_clipboard_cb = { _, _, _, _ in }
-        runtime.write_clipboard_cb = { _, _, _, _, _ in }
+
+        // Clipboard callbacks — modeled on upstream `Ghostty.App.swift:324-405`. The `userdata`
+        // here is the SURFACE's userdata (libghostty passes it through), which rwork set to the
+        // `GhosttySurface` in `GhosttySurface.init` (`config.userdata = passUnretained(self)`), so we
+        // recover it via `Unmanaged<GhosttySurface>.fromOpaque(...).takeUnretainedValue()`. These fire
+        // synchronously on the main thread from the surface's binding-action / OSC-52 path, so the
+        // `@MainActor` `GhosttySurface` helpers are safe to call without a hop.
+
+        // READ: libghostty wants the host pasteboard contents (paste / OSC-52 read). Read
+        // NSPasteboard.general as a string and hand it straight back via the surface's
+        // complete-request helper (upstream readClipboard, App.swift:324-338). No confirm dialog.
+        //
+        // THREADING: these clipboard callbacks fire SYNCHRONOUSLY on the MAIN thread — they originate
+        // from the binding-action path (`@objc copy/paste`, main) and the OSC-52 `feed` path (main,
+        // doc 18 §C) — exactly the main-thread assumption upstream's macOS App.swift makes. NSPasteboard
+        // is itself main-thread-only. We use a SYNCHRONOUS `MainActor.assumeIsolated` (not the async
+        // `ghosttyOnMainActor` hop) so the C `state` pointer is consumed in-frame without crossing an
+        // actor boundary — matching upstream's direct synchronous handling.
+        runtime.read_clipboard_cb = { (userdata, location, state) in
+            guard let userdata else { return }
+            MainActor.assumeIsolated {
+                let surface = Unmanaged<GhosttySurface>.fromOpaque(userdata).takeUnretainedValue()
+                // HONOR `location`: STANDARD = the system clipboard; SELECTION = a SEPARATE clipboard.
+                // libghostty's copy-on-select is ON by default, so a plain drag-select fires a SELECTION
+                // write/read — routing that to the system clipboard would clobber the user's real
+                // clipboard on every selection. Upstream maps SELECTION to a private pasteboard
+                // (NSPasteboard.ghostty(_:)); we mirror that. iOS has no selection clipboard.
+                #if os(macOS)
+                let pb = rworkPasteboard(for: location)
+                let str = pb.string(forType: .string) ?? ""
+                #else
+                let str = (location == GHOSTTY_CLIPBOARD_SELECTION) ? "" : (UIPasteboard.general.string ?? "")
+                #endif
+                surface.completeClipboardRead(str, state: state)
+            }
+        }
+
+        // CONFIRM-READ: libghostty reaches here when the access gate tripped on the FIRST completion —
+        // an OSC-52 read (`clipboard-read = .ask`) or a paste of unsafe content
+        // (`clipboard-paste-protection = true`). This is the embedder's APPROVE/DENY decision point;
+        // upstream posts a confirm-dialog Notification. rwork has no dialog, so it AUTO-APPROVES by
+        // completing with `confirmed: true`. This is REQUIRED: completing with `confirmed: false` here
+        // would re-trip the same gate → core re-invokes this callback → unbounded synchronous recursion
+        // → stack-overflow crash (host OSC-52 read / multi-line paste would crash the whole client).
+        runtime.confirm_read_clipboard_cb = { (userdata, cString, state, _ /*request*/) in
+            guard let userdata else { return }
+            let str = cString.map { String(cString: $0) } ?? ""   // upstream uses String(cString:)
+            MainActor.assumeIsolated {
+                let surface = Unmanaged<GhosttySurface>.fromOpaque(userdata).takeUnretainedValue()
+                surface.completeClipboardRead(str, state: state, confirmed: true)
+            }
+        }
+
+        // WRITE: libghostty (copy_to_clipboard / OSC-52 write) hands us a C array of
+        // `ghostty_clipboard_content_s` { mime, data }. Write the text/plain entry to
+        // NSPasteboard.general (upstream writeClipboard, App.swift:371-405). We model the STANDARD
+        // clipboard only (the selection clipboard is virtual on macOS); ignore non-text mimes.
+        runtime.write_clipboard_cb = { (_ /*userdata*/, location, content, len, _ /*confirm*/) in
+            guard let content, len > 0 else { return }
+            // Find the text/plain entry (mime == "text/plain"); fall back to the first entry's data.
+            // Both pointers are NUL-terminated UTF-8 owned by libghostty — copied via String(cString:)
+            // exactly like upstream `ClipboardContent.from(content:)` (GhosttyPackage.swift:298-308).
+            var text: String?
+            for i in 0..<Int(len) {
+                let item = content[i]
+                guard let dataPtr = item.data else { continue }
+                let data = String(cString: dataPtr)
+                let mime = item.mime.map { String(cString: $0) }
+                if mime == "text/plain" { text = data; break }
+                if text == nil { text = data }
+            }
+            guard let text else { return }
+            // Pasteboard is main-thread-only; this path is main (copy_to_clipboard binding / main feed).
+            // HONOR `location`: a SELECTION write (copy-on-select drag) goes to a PRIVATE pasteboard so
+            // it never clobbers the user's real system clipboard; only an explicit STANDARD copy
+            // (Cmd-C / copy_to_clipboard) writes the system clipboard. (iOS: no selection clipboard.)
+            MainActor.assumeIsolated {
+                #if os(macOS)
+                let pb = rworkPasteboard(for: location)
+                pb.declareTypes([.string], owner: nil)
+                pb.setString(text, forType: .string)
+                #else
+                if location != GHOSTTY_CLIPBOARD_SELECTION { UIPasteboard.general.string = text }
+                #endif
+            }
+        }
+
         runtime.close_surface_cb = { _, _ in }
 
         // 4. App (header 1141).
@@ -545,9 +643,18 @@ final class GhosttyLayerBackedView: NSView {
         var key = ghostty_input_key_s()
         key.action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         key.mods = Self.ghosttyMods(event.modifierFlags)
-        key.consumed_mods = GHOSTTY_MODS_NONE
+        // consumed_mods: the mods AppKit already "used up" producing `event.characters`. Upstream
+        // (NSEvent+Extension `consumedModifiers`) reports the layout-consumed set; we approximate it
+        // as all mods EXCEPT control/command — those never alter the produced character on a US/Latin
+        // layout, so libghostty must still see them to encode Ctrl-/Cmd- combos. This stops Ghostty
+        // from double-applying Shift/Option (e.g. a shifted `!` being re-shifted) in its encoder.
+        key.consumed_mods = Self.ghosttyMods(event.modifierFlags.subtracting([.control, .command]))
         key.keycode = UInt32(event.keyCode)
-        key.unshifted_codepoint = event.charactersIgnoringModifiers?.unicodeScalars.first.map { $0.value } ?? 0
+        // unshifted_codepoint: the character the key would produce with NO modifiers (header field).
+        // `charactersIgnoringModifiers` STILL reflects Shift (it ignores Cmd/Ctrl/Opt but not Shift),
+        // so a shifted `2` reported `@` here — wrong. `characters(byApplyingModifiers: [])` strips ALL
+        // modifiers including Shift, giving the true base codepoint Ghostty keys its bindings on.
+        key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first.map { $0.value } ?? 0
         key.composing = false
         // `text` is a borrowed const char* for the keypress duration; bind the chars.
         if let chars = event.characters, !chars.isEmpty {
@@ -563,15 +670,260 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
+        // PRESS/RELEASE SYMMETRY (R5 rank 7): keyDown SUPPRESSES the libghostty PRESS for a
+        // Ctrl+<single C0/DEL> key (it sends the raw control byte directly, bypassing the kitty encoder),
+        // so the surface never saw that PRESS. Its RELEASE must be suppressed symmetrically — otherwise,
+        // when a remote TUI negotiates the kitty `report_events` progressive-enhancement flag, libghostty
+        // would encode an ORPHAN CSI-u release sequence (a release with no matching press) and inject
+        // stray bytes right after the intended Ctrl-C/Z/D byte. Mirror the exact keyDown Ctrl guard.
+        if event.modifierFlags.contains(.control),
+           !event.modifierFlags.contains(.command),
+           let chars = event.characters,
+           chars.unicodeScalars.count == 1,
+           let scalar = chars.unicodeScalars.first,
+           scalar.value < 0x20 || scalar.value == 0x7F {
+            return
+        }
+
         var key = ghostty_input_key_s()
         key.action = GHOSTTY_ACTION_RELEASE
         key.mods = Self.ghosttyMods(event.modifierFlags)
-        key.consumed_mods = GHOSTTY_MODS_NONE
+        // Same consumed-mods / unshifted-codepoint correctness as keyDown (see there for the why).
+        key.consumed_mods = Self.ghosttyMods(event.modifierFlags.subtracting([.control, .command]))
         key.keycode = UInt32(event.keyCode)
-        key.unshifted_codepoint = event.charactersIgnoringModifiers?.unicodeScalars.first.map { $0.value } ?? 0
+        key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first.map { $0.value } ?? 0
         key.composing = false
         key.text = nil
         _ = surface?.key(key)
+    }
+
+    // MARK: Mouse / scroll forwarding → libghostty
+    //
+    // Mirrors upstream `SurfaceView_AppKit.swift:860-1051`. libghostty owns ALL mouse semantics:
+    // X10/1000/1002/1003 + SGR mouse-reporting (so a remote `vim`/`tmux`/`htop` gets click+drag+
+    // hover+scroll), local TEXT SELECTION when the program is NOT reporting, and the position cursor.
+    // We just translate each AppKit event into the C call with the right state/button/mods and the
+    // flipped view-local POINT coordinate (libghostty applies contentScale itself — points, not pixels).
+
+    /// View-local position of an event in POINTS, y-flipped so origin is top-left (this view is the
+    /// default non-flipped AppKit coordinate space, so we mirror upstream's `frame.height - pos.y`).
+    private func surfacePoint(_ event: NSEvent) -> (x: Double, y: Double) {
+        let pos = convert(event.locationInWindow, from: nil)
+        return (Double(pos.x), Double(frame.height - pos.y))
+    }
+
+    /// Pressure stage tracked across events so `mouseUp` can reset it to 0 (upstream `prevPressureStage`).
+    private var prevPressureStage: Int = 0
+
+    override func mouseDown(with event: NSEvent) {
+        // FOCUS-ON-CLICK: claim the pane BEFORE forwarding to the surface. Installing `mouseDown`
+        // CONSUMES the click that `PaneTreeView`'s `.onTapGesture { store.focus(id) }` used to see,
+        // so we must reproduce that focus transfer here — both the workspace focus (chrome/keyboard
+        // follow via the reactive `isFocused` → `isFocusedPane` path) AND the immediate first
+        // responder so typing works without waiting a SwiftUI render. `applyKeyboardFocus`/this guard
+        // are idempotent, so this does not fight the existing `isFocused` path (no double-focus).
+        model?.onRequestFocus?()
+        if let window, window.firstResponder !== self { window.makeFirstResponder(self) }
+
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT, mods: mods)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // Always reset pressure when the mouse goes up (upstream SurfaceView_AppKit.swift:875/883).
+        prevPressureStage = 0
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, mods: mods)
+        surface?.sendMousePressure(stage: 0, pressure: 0)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS, button: Self.mouseButton(event.buttonNumber), mods: mods)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: Self.mouseButton(event.buttonNumber), mods: mods)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        // libghostty returns whether it consumed the right-click (e.g. turned it into a paste). If not
+        // consumed, fall through to the default (which would surface a context menu were one installed).
+        if surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, mods: mods) == true { return }
+        super.rightMouseDown(with: event)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        if surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT, mods: mods) == true { return }
+        super.rightMouseUp(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        let p = surfacePoint(event)
+        surface?.sendMousePos(x: p.x, y: p.y, mods: mods)
+    }
+
+    // A drag is just a moved position to libghostty (it tracks the held button from the down/up pair);
+    // upstream routes every *Dragged variant straight to mouseMoved (SurfaceView_AppKit.swift:998-1008).
+    override func mouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+    override func rightMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+    override func otherMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        // Reset the cursor position on enter — lots of mouse-report logic depends on the position being
+        // inside the viewport (upstream SurfaceView_AppKit.swift:936-952).
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        let p = surfacePoint(event)
+        surface?.sendMousePos(x: p.x, y: p.y, mods: mods)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        // If a button is held the drag still delivers positions even past the edge, so don't send the
+        // "left viewport" marker (upstream SurfaceView_AppKit.swift:955-972).
+        if NSEvent.pressedMouseButtons != 0 { return }
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        surface?.sendMousePos(x: -1, y: -1, mods: mods)   // negative = cursor left the viewport
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        // Build the packed scroll mods (Int32: bit0 = precision, bits1-3 = momentum), mirroring
+        // upstream `Ghostty.Input.swift:438-465` (ScrollMods) + `SurfaceView_AppKit.swift:1010-1031`.
+        var x = event.scrollingDeltaX
+        var y = event.scrollingDeltaY
+        let precision = event.hasPreciseScrollingDeltas
+        if precision {
+            // 2x feels right for trackpad/Magic-Mouse precision deltas (upstream's subjective tuning).
+            x *= 2
+            y *= 2
+        }
+        var packed: Int32 = 0
+        if precision { packed |= 0b0000_0001 }                                   // bit0 = precision
+        packed |= Int32(Self.scrollMomentum(event.momentumPhase)) << 1           // bits1-3 = momentum
+        surface?.sendMouseScroll(deltaX: Double(x), deltaY: Double(y), mods: packed)
+    }
+
+    override func pressureChange(with event: NSEvent) {
+        // Let Ghostty set up its pressure state first (upstream SurfaceView_AppKit.swift:1033-1039). We
+        // do NOT implement force-click QuickLook (no remote selection lookup) — just forward the stage.
+        surface?.sendMousePressure(stage: UInt32(event.stage), pressure: Double(event.pressure))
+        prevPressureStage = event.stage
+    }
+
+    /// NSEvent.buttonNumber → libghostty mouse button (header 64-77). 0/1/2 = left/right/middle (handled
+    /// by their dedicated overrides); 2+ here are the extra buttons. Mirrors the relevant cases of
+    /// upstream `MouseButton(fromNSEventButtonNumber:)` (Ghostty.Input.swift:401-415).
+    private static func mouseButton(_ buttonNumber: Int) -> ghostty_input_mouse_button_e {
+        switch buttonNumber {
+        case 0: return GHOSTTY_MOUSE_LEFT
+        case 1: return GHOSTTY_MOUSE_RIGHT
+        case 2: return GHOSTTY_MOUSE_MIDDLE
+        case 3: return GHOSTTY_MOUSE_EIGHT   // back
+        case 4: return GHOSTTY_MOUSE_NINE    // forward
+        case 5: return GHOSTTY_MOUSE_SIX
+        case 6: return GHOSTTY_MOUSE_SEVEN
+        case 7: return GHOSTTY_MOUSE_FOUR
+        case 8: return GHOSTTY_MOUSE_FIVE
+        case 9: return GHOSTTY_MOUSE_TEN
+        case 10: return GHOSTTY_MOUSE_ELEVEN
+        default: return GHOSTTY_MOUSE_UNKNOWN
+        }
+    }
+
+    /// NSEvent.Phase momentum → the libghostty Momentum int (none=0…mayBegin=6), packed by
+    /// `scrollWheel`. Mirrors `Ghostty.Input.Momentum(_ momentum: NSEvent.Phase)` and the enum at
+    /// `Ghostty.Input.swift:481-489`.
+    private static func scrollMomentum(_ phase: NSEvent.Phase) -> UInt8 {
+        switch phase {
+        case .began:      return 1
+        case .stationary: return 2
+        case .changed:    return 3
+        case .ended:      return 4
+        case .cancelled:  return 5
+        case .mayBegin:   return 6
+        default:          return 0   // .none / unhandled
+        }
+    }
+
+    // MARK: Tracking area (hover / motion reporting)
+
+    /// Reinstall a tracking area covering the whole visible view so `mouseMoved`/`mouseEntered`/
+    /// `mouseExited` fire — required for mouse-motion reporting (mode 1003) and libghostty hover.
+    /// `.inVisibleRect` keeps it sized to bounds automatically; `.activeInKeyWindow` matches a
+    /// terminal that only tracks while focused. Mirrors upstream's tracking-area setup.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        let area = NSTrackingArea(
+            rect: .zero,   // ignored with .inVisibleRect — AppKit keeps it pinned to the visible bounds
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+    }
+
+    // MARK: Clipboard responder selectors (Cmd-C / Cmd-V / Cmd-A)
+    //
+    // The terminal keyDown deliberately does NOT intercept Cmd-combos (they are app shortcuts). The
+    // standard Edit menu / Cmd-key path lands on these responder selectors; we route each to the
+    // matching libghostty binding action so copy uses the selection, paste applies bracketed-paste
+    // (DECSET 2004) itself — do NOT hand-roll paste bytes — and select-all spans the screen+scrollback.
+    // The workspace command table (Cmd-T/W/D/1-9/R/]/[ + Opt-Cmd-arrows + Cmd-K) does NOT bind C/V/A,
+    // so these never collide.
+
+    // `copy`/`paste` are responder-chain selectors NOT declared on NSResponder itself, so they are
+    // plain `@objc` (no `override`); `selectAll(_:)` IS declared on NSResponder, so it MUST be
+    // `override` — matching upstream `SurfaceView_AppKit.swift:1507/1515/1539`.
+    @objc func copy(_ sender: Any?) {
+        surface?.performBindingAction("copy_to_clipboard")
+    }
+
+    @objc func paste(_ sender: Any?) {
+        surface?.performBindingAction("paste_from_clipboard")   // libghostty applies bracketed-paste
+    }
+
+    @objc override func selectAll(_ sender: Any?) {
+        surface?.performBindingAction("select_all")
+    }
+
+    /// Catch Cmd-C / Cmd-V / Cmd-A DIRECTLY, regardless of whether an Edit menu is installed. Returning
+    /// `true` marks the equivalent handled so it does not propagate to the menu / beep. Other Cmd-combos
+    /// (the workspace shortcuts) are left to `super` so the command table still sees them.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Only the bare Cmd-<letter> (no shift/ctrl/opt) is the copy/paste/select-all chord; a shifted
+        // or otherwise-modified Cmd combo is left to the workspace command table / remote app.
+        guard event.type == .keyDown,
+              event.modifierFlags.contains(.command),
+              !event.modifierFlags.contains(.control),
+              !event.modifierFlags.contains(.option),
+              !event.modifierFlags.contains(.shift),
+              let chars = event.charactersIgnoringModifiers else {
+            return super.performKeyEquivalent(with: event)
+        }
+        switch chars {
+        case "c": copy(nil); return true
+        case "v": paste(nil); return true
+        case "a": selectAll(nil); return true
+        // Font sizing — the universal terminal chords (Terminal.app/iTerm/Ghostty): ⌘= grows, ⌘-
+        // shrinks, ⌘0 resets. Routed to libghostty's font-size binding actions, which reflow the grid
+        // (the resize path then propagates the new cols/rows to the host). None collide with the
+        // workspace command table (Cmd-T/W/D/1-9/R/]/[ + Opt-Cmd-arrows + Cmd-K) — Cmd-0 is unbound
+        // (tabs use Cmd-1…9). "=" is the no-shift form of the +/= key, matching macOS convention.
+        // `increase/decrease_font_size` take a points DELTA parameter (Binding.zig:369/375 —
+        // `increase_font_size: f32`), so the action string MUST carry `:1` (Ghostty's own default
+        // step, Config.zig); a bare `increase_font_size` fails to parse and no-ops. `reset_font_size`
+        // is parameterless.
+        case "=": surface?.performBindingAction("increase_font_size:1"); return true
+        case "-": surface?.performBindingAction("decrease_font_size:1"); return true
+        case "0": surface?.performBindingAction("reset_font_size");      return true
+        default:  return super.performKeyEquivalent(with: event)
+        }
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -650,8 +1002,160 @@ final class GhosttyLayerBackedView: UIView {
     /// present a background-only frame (no text) and never self-correct.
     private var displayLink: CADisplayLink?
 
+    // MARK: Pan-to-scroll (touch scrollback)
+    //
+    // PAN-TO-SCROLL — the iOS counterpart of the macOS `scrollWheel` override above
+    // (lines ~775-790, HW-verified scroll-wheel → scrollback). The macOS renderer is an
+    // `NSView` that receives `scrollWheel(with:)` for free; an iOS `UIView` gets NO scroll
+    // events, so we install a `UIPanGestureRecognizer` and translate a finger drag into the
+    // SAME `surface.sendMouseScroll(deltaX:deltaY:mods:)` call. libghostty then decides the
+    // behavior: on the primary screen the delta navigates scrollback; in an alt-screen
+    // mouse-mode TUI (vim/tmux/htop) it is encoded as a mouse-scroll report — both handled
+    // internally, so NO gating is needed here (same as macOS `scrollWheel`).
+    //
+    // Strong ref so we can `removeGestureRecognizer` in `detach()` (UIView already retains
+    // its recognizers, but holding it lets us detach symmetrically with the rest of teardown).
+    private var panRecognizer: UIPanGestureRecognizer?
+
+    /// Accumulated `translation(in:).y` consumed so far, so each `.changed` event yields the
+    /// INCREMENTAL delta since the previous event (UIPanGestureRecognizer reports CUMULATIVE
+    /// translation, not per-event). Mirrors macOS feeding small per-event `scrollingDeltaY`
+    /// deltas to `sendMouseScroll` rather than one absolute value — keeps scrollback smooth.
+    /// Reset to 0 on `.began` (a fresh gesture starts a fresh accumulation).
+    private var lastPanTranslationY: CGFloat = 0
+
+    // MARK: Tap-to-mouse-button (touch click for mouse-mode TUIs)
+    //
+    // TAP→MOUSE-BUTTON — the iOS counterpart of the macOS `mouseDown`/`mouseUp` overrides above
+    // (lines ~699-719, HW-verified click → libghostty mouse semantics). The macOS renderer is an
+    // `NSView` that receives `mouseDown(with:)`/`mouseUp(with:)` for free; an iOS `UIView` gets NO
+    // click events, so we install a `UITapGestureRecognizer` and translate a finger tap into the
+    // SAME position + press/release pair the macOS overrides emit, via
+    // `surface.sendMousePos(x:y:mods:)` + `surface.sendMouseButton(state:button:mods:)`. libghostty
+    // then decides the behavior off `mouse_captured`: in an alt-screen mouse-mode TUI (vim
+    // `set mouse=a`, tmux, htop, lazygit, less) the tap is encoded as a click REPORT to the remote
+    // program; at the bare shell (no mouse mode) it is a zero-length press+release at a cell that
+    // libghostty positions/clears the selection with — harmless (no clipboard write, the selection
+    // is zero-length). Either way libghostty owns the decision, so NO gating is needed here (same as
+    // macOS `mouseDown`). This is the natural companion to the pan-to-scroll above.
+    //
+    // Strong ref so we can `removeGestureRecognizer` in `detach()` (UIView already retains its
+    // recognizers, but holding it lets us detach symmetrically with the rest of teardown — mirrors
+    // `panRecognizer`).
+    private var tapRecognizer: UITapGestureRecognizer?
+
+    /// Installs the pan-to-scroll recognizer on `self` (the renderer UIView). Idempotent —
+    /// guarded so the idempotent `attach()` (called from both `makeUIView` and `updateUIView`)
+    /// never stacks duplicate recognizers. The keyboard input bar (`TerminalInputHost`) is a
+    /// SEPARATE sibling view in the iOS `terminalComposite` VStack (PaneLeafView), so the pan
+    /// here cannot swallow its taps; and a `UIPanGestureRecognizer` only recognizes DRAGS, not
+    /// taps, so a tap meant for focusing/keyboard passes straight through to other handlers.
+    private func installPanToScrollIfNeeded() {
+        guard panRecognizer == nil else { return }
+        isUserInteractionEnabled = true   // a passive renderer may default this off
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePanToScroll(_:)))
+        pan.maximumNumberOfTouches = 2    // 1- or 2-finger drag scrolls; matches a trackpad scroll
+        addGestureRecognizer(pan)
+        panRecognizer = pan
+    }
+
+    /// Translates a finger drag → libghostty scroll delta. Mirrors the macOS `scrollWheel`
+    /// override (same file): build the packed `ghostty_input_scroll_mods_t` and feed small
+    /// per-event `deltaY` values to `surface.sendMouseScroll`.
+    ///
+    /// SIGN CONVENTION (matched to the HW-verified macOS `scrollWheel`): on macOS, a positive
+    /// `event.scrollingDeltaY` (natural scrolling: two fingers move DOWN) reveals OLDER lines.
+    /// On iOS, `UIPanGestureRecognizer.translation(in:).y` is POSITIVE when the finger moves
+    /// DOWN the screen (UIView top-left origin, +y downward). So the incremental DOWNWARD
+    /// translation maps DIRECTLY to a POSITIVE `deltaY` with NO inversion — dragging the content
+    /// DOWN reveals older scrollback, exactly as the macOS path. (COORDINATES: scroll needs only
+    /// DELTAS, not a position, so the iOS top-left vs. AppKit bottom-left origin difference — which
+    /// would require a y-flip for `mouse_pos` — is irrelevant here; no coordinate conversion.)
+    @objc private func handlePanToScroll(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            lastPanTranslationY = 0
+        case .changed:
+            // Incremental translation since the last event = cumulative − consumed (UIPan reports
+            // CUMULATIVE translation). Feeding the delta (not the absolute) keeps small per-event
+            // values flowing to libghostty, matching macOS `scrollingDeltaY` cadence.
+            let cumulative = gesture.translation(in: self).y
+            let deltaY = cumulative - lastPanTranslationY
+            lastPanTranslationY = cumulative
+            guard deltaY != 0 else { return }
+            // SET THE CURSOR POSITION FIRST. For LOCAL scrollback the position is irrelevant (scroll
+            // needs only deltas), but when a TUI has enabled mouse reporting (vim `set mouse=a`, tmux,
+            // htop) libghostty encodes the wheel as an SGR mouse report carrying the CELL UNDER THE
+            // CURSOR — and it reuses the LAST `mouse_pos`. iOS has no hover/tracking-area motion, so
+            // without this the embedded apprt's cursor_pos stays at its initial (-1,-1) and the
+            // out-of-viewport guard SUPPRESSES the wheel report (scroll silently dropped in mouse-mode
+            // TUIs). macOS avoids this only because `mouseMoved`/`mouseEntered` keep cursor_pos fresh.
+            // iOS is TOP-LEFT origin → NO y-flip (matching `handleTap`, unlike the macOS `surfacePoint`).
+            let p = gesture.location(in: self)
+            surface?.sendMousePos(x: Double(p.x), y: Double(p.y), mods: GHOSTTY_MODS_NONE)
+            // Packed scroll mods (Int32: bit0 = precision, bits1-3 = momentum), per the macOS
+            // override + `Ghostty.Input.swift:438-465`. Touch is HIGH-PRECISION → set bit0. A
+            // finger-driven pan carries no momentum phase here → momentum bits = 0 (.none), which
+            // is fine for v1 (a future round could map the end-velocity to a momentum phase).
+            let packed: ghostty_input_scroll_mods_t = 0b0000_0001   // precision; momentum = none
+            surface?.sendMouseScroll(deltaX: 0, deltaY: Double(deltaY), mods: packed)
+        default:
+            // .ended / .cancelled / .failed: nothing to flush (no momentum modeled in v1). The next
+            // .began resets `lastPanTranslationY`, so no stale accumulation leaks across gestures.
+            break
+        }
+    }
+
+    /// Installs the tap-to-mouse-button recognizer on `self` (the renderer UIView). Idempotent —
+    /// guarded like `installPanToScrollIfNeeded` so the idempotent `attach()` (called from both
+    /// `makeUIView` and `updateUIView`) never stacks duplicate recognizers.
+    ///
+    /// COEXISTS with the pan recognizer above: a `UITapGestureRecognizer` recognizes a DISCRETE tap
+    /// while the `UIPanGestureRecognizer` recognizes a DRAG, so they do not contend — UIKit's default
+    /// tap-vs-pan handling means a tap does not fire while a pan is in progress, and no explicit
+    /// `require(toFail:)` relationship is needed. KEYBOARD FOCUS is NOT this gesture's job: on iOS the
+    /// keyboard is raised by tapping the SEPARATE input-bar sibling view (`TerminalInputHost`, doc 17
+    /// §2.5) below the renderer, so a renderer tap is PURELY a mouse event — we do NOT call
+    /// `becomeFirstResponder`/touch keyboard state here (that would fight `TerminalInputHost`).
+    private func installTapIfNeeded() {
+        guard tapRecognizer == nil else { return }
+        isUserInteractionEnabled = true   // a passive renderer may default this off
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.numberOfTapsRequired = 1
+        tap.numberOfTouchesRequired = 1
+        addGestureRecognizer(tap)
+        tapRecognizer = tap
+    }
+
+    /// Translates a finger tap → a libghostty position + left-button press/release pair. Mirrors the
+    /// macOS `mouseDown`/`mouseUp` overrides (same file, lines ~699-719): position the cursor, then
+    /// send `GHOSTTY_MOUSE_PRESS` and `GHOSTTY_MOUSE_RELEASE` for `GHOSTTY_MOUSE_LEFT`. libghostty
+    /// owns the meaning (selection clear at the shell, click report in a mouse-mode TUI) off
+    /// `mouse_captured`, so there is no gating here — same as the macOS path.
+    ///
+    /// COORDINATES: `recognizer.location(in: self)` is view-local POINTS with a TOP-LEFT origin
+    /// (+y downward). iOS is ALREADY top-left, so — UNLIKE the macOS `surfacePoint` path which does
+    /// `frame.height - pos.y` because AppKit is bottom-left — we pass the y straight through with NO
+    /// flip. libghostty applies `contentScale` itself (points, not pixels), matching `sendMousePos`.
+    @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        // FOCUS-ON-TAP: this gesture recognizer consumes the body tap that the SwiftUI leaf used to
+        // drive workspace focus (`PaneTreeView .onTapGesture { store.focus(id) }`), so transfer focus
+        // here exactly as the macOS `mouseDown` does (line ~706). `onRequestFocus` is wired
+        // platform-agnostically by `wireFocusOnClick` (PaneTreeView) and `store.focus(id)` is
+        // idempotent. Without this, tapping an unfocused pane's terminal body on iPad-regular
+        // multi-pane no longer focuses it. (Keyboard focus stays owned by the input bar.)
+        model?.onRequestFocus?()
+        let loc = recognizer.location(in: self)   // view-local POINTS, top-left origin — no y-flip
+        surface?.sendMousePos(x: Double(loc.x), y: Double(loc.y), mods: GHOSTTY_MODS_NONE)
+        _ = surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS,   button: GHOSTTY_MOUSE_LEFT, mods: GHOSTTY_MODS_NONE)
+        _ = surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, mods: GHOSTTY_MODS_NONE)
+    }
+
     func attach(model: TerminalViewModel) {
         self.model = model
+        installPanToScrollIfNeeded()
+        installTapIfNeeded()
         if surface == nil {
             let scale = window?.screen.scale ?? UIScreen.main.scale
             let s = GhosttySurface(
@@ -700,6 +1204,16 @@ final class GhosttyLayerBackedView: UIView {
     func detach() {
         displayLink?.invalidate()
         displayLink = nil
+        // Remove the pan-to-scroll recognizer we installed (symmetric with `installPanToScrollIfNeeded`).
+        if let pan = panRecognizer {
+            removeGestureRecognizer(pan)
+            panRecognizer = nil
+        }
+        // Remove the tap-to-mouse-button recognizer we installed (symmetric with `installTapIfNeeded`).
+        if let tap = tapRecognizer {
+            removeGestureRecognizer(tap)
+            tapRecognizer = nil
+        }
         let detaching = surface
         surface = nil
         detaching?.close()

@@ -95,18 +95,22 @@ public final class KeyboardAccessoryBar: UIInputView {
     /// Returns the bytes to send and consumes the Ctrl arm. Used by the owner when a letter
     /// key arrives while ``controlArmed``.
     public func controlFold(_ scalar: UnicodeScalar) -> [UInt8] {
-        defer { if controlArmed { controlArmed = false; updateControlVisual() } }
+        defer { consumeControlArm() }
         return KeyboardAccessoryBar.controlCode(for: scalar)
     }
 
-    /// Pure mapping of a letter to its ASCII control code (Ctrl-A = 1 … Ctrl-Z = 26). Returns
-    /// the original byte for non-letters. `nonisolated` because it touches no UIKit state — the
-    /// hardware-key encoder calls it from the key-repeat scheduler's background queue.
+    /// Consumes the one-shot Ctrl arm (after an armed letter has been folded) and clears its visual.
+    /// Used by the soft-keyboard text path, which folds the first scalar via the pure
+    /// ``KeyEncoding/foldArmedControl(_:armed:)`` and then consumes the arm here (R13 #6).
+    public func consumeControlArm() {
+        if controlArmed { controlArmed = false; updateControlVisual() }
+    }
+
+    /// Pure mapping of a key to its ASCII control code (delegates to the platform-agnostic, headless-
+    /// testable ``KeyEncoding/controlCode(for:)``). `nonisolated` because it touches no UIKit state —
+    /// the hardware-key encoder calls it from the key-repeat scheduler's background queue.
     public nonisolated static func controlCode(for scalar: UnicodeScalar) -> [UInt8] {
-        let v = scalar.value
-        if v >= 0x61, v <= 0x7A { return [UInt8(v - 0x60)] }        // a-z
-        if v >= 0x41, v <= 0x5A { return [UInt8(v - 0x40)] }        // A-Z
-        return [UInt8(v & 0x7F)]
+        KeyEncoding.controlCode(for: scalar)
     }
 }
 

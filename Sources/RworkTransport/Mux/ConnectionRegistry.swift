@@ -106,16 +106,35 @@ public final class ConnectionRegistry {
                 channelClass: 0
             )
         } catch {
-            entries[key]?.pendingAcquires -= 1
-            // openChannel only throws when the shared link is already dead (the send failed) — so the
-            // whole connection is unusable. If no OTHER channel is live AND no other acquire is in
-            // flight on this endpoint, drop the dead connection + entry so the next acquire builds a
-            // fresh one instead of reusing a corpse (leak-on-throw). A surviving sibling/pending keeps it.
-            if (entries[key]?.channelIDs.isEmpty ?? true) && (entries[key]?.pendingAcquires ?? 0) == 0 {
-                entries.removeValue(forKey: key)
-                await connection.close()
+            // IDENTITY-GATE the cleanup (R8 #1, mirrors `release()` / `sharedConnection`): only touch
+            // entries[key] if it is STILL our connection. A dead-eviction can rebuild entries[key] under
+            // a DIFFERENT connection while `openChannel` is suspended; our `pendingAcquires` reservation
+            // went with the OLD (removed) entry, so decrementing the FRESH one underflows it. If rebuilt
+            // under us, just ensure our corpse is closed.
+            if entries[key]?.connection === connection {
+                entries[key]?.pendingAcquires -= 1
+                // openChannel only throws when the shared link is already dead (the send failed) — so the
+                // whole connection is unusable. If no OTHER channel is live AND no other acquire is in
+                // flight on this endpoint, drop the dead connection + entry so the next acquire builds a
+                // fresh one instead of reusing a corpse. A surviving sibling/pending keeps it.
+                if (entries[key]?.channelIDs.isEmpty ?? true) && (entries[key]?.pendingAcquires ?? 0) == 0 {
+                    entries.removeValue(forKey: key)
+                    await connection.close()
+                }
+            } else {
+                await connection.close() // our corpse may not have been closed by the rebuild; idempotent
             }
             throw error
+        }
+        // IDENTITY-GATE the success-path mutations too (R8 #1): if a concurrent dead-eviction rebuilt
+        // entries[key] under a different connection while `openChannel` was suspended, `connection` is the
+        // OLD corpse — the eviction already `close()`d it (finishing these sub-channels) and discarded our
+        // `pendingAcquires` reservation with the old entry. Decrementing/inserting into the FRESH entry
+        // would underflow ITS pendingAcquires (→ permanent leak) AND collide our stale channelID with the
+        // new connection's first channel. Treat as a failed acquire; the caller (ReconnectManager) rebuilds.
+        guard entries[key]?.connection === connection else {
+            await connection.close() // idempotent — ensure the corpse is fully torn down
+            throw RworkTransportError.notConnected("mux connection evicted during channel open")
         }
         entries[key]?.pendingAcquires -= 1
         entries[key]?.channelIDs.insert(pair.data.channelID)
@@ -134,8 +153,30 @@ public final class ConnectionRegistry {
             // entry + close it and fall through to build a FRESH one. A still-live connection is reused
             // as before (the shared-connection invariant).
             if await existing.connection.isDead {
-                entries.removeValue(forKey: key)
-                await existing.connection.close()
+                // IDENTITY-GATED eviction. `await existing.connection.isDead` is a real cross-actor hop
+                // into the `MuxNWConnection` actor; while suspended here, a CONCURRENT acquirer for this
+                // same key can run, evict this same corpse, and store a FRESH connection. Removing
+                // blindly (the prior code) would then delete that fresh entry → the concurrent
+                // acquirer's connection is ORPHANED (leaked — `release` can never find it again) AND
+                // both panes' first channels collide on id 1 (each connection's `ChannelTable` allocates
+                // 1 first), so a later release tears down the WRONG pane. So only evict if the pool STILL
+                // holds this exact corpse; if it was rebuilt under us, reuse the fresh connection.
+                if entries[key]?.connection === existing.connection {
+                    entries.removeValue(forKey: key)
+                    await existing.connection.close()
+                    // `close()` ALSO suspends — and during it a concurrent acquirer can have fully
+                    // built + stored a fresh connection (and cleared `building[key]`). If we then fell
+                    // straight through to build, we'd construct a SECOND fresh connection and ORPHAN
+                    // one (made.count == 3, one channel stranded). So re-check the pool here: reuse a
+                    // rebuilt entry if present; otherwise fall through to the `building` single-flight
+                    // below (which shares a concurrent acquirer's IN-FLIGHT build) or build fresh.
+                    if let rebuilt = entries[key]?.connection { return rebuilt }
+                } else if let rebuilt = entries[key]?.connection {
+                    return rebuilt   // a concurrent acquirer already replaced the corpse with a live one
+                }
+                // else entries[key] == nil (corpse evicted by a concurrent acquirer, its fresh one not
+                // yet stored): fall through to the `building` single-flight below, which returns that
+                // concurrent acquirer's in-flight build instead of orphaning a second connection.
             } else {
                 return existing.connection
             }
@@ -170,7 +211,14 @@ public final class ConnectionRegistry {
         // disconnects a live one). Mutate the LIVE entry AFTER the await, mirroring `acquire`.
         guard let connection = entries[key]?.connection else { return }
         await connection.closeChannel(channelID)
-        guard entries[key] != nil else { return }   // a concurrent release already tore the entry down
+        // `closeChannel` suspends (a real NWConnection write); while suspended, a concurrent
+        // dead-eviction in `sharedConnection` can have evicted this (now-dead) connection and stored a
+        // FRESH one under `key`. Our `channelID` belonged to the OLD connection, so we must touch the
+        // pool ONLY if it STILL holds that exact connection. A bare `entries[key] != nil` check (the
+        // prior guard) WRONGLY passes on a rebuild → we would `remove` the fresh entry and `close` the
+        // stale connection, orphaning the freshly-built one and stranding the pane riding it. Identity
+        // is the correct guard (mirrors `acquire`/`sharedConnection`).
+        guard entries[key]?.connection === connection else { return }
         entries[key]?.channelIDs.remove(channelID)
         // Tear down only when the LAST channel is gone AND no acquire is mid-open (pendingAcquires),
         // so an in-flight acquire's channel is never stranded on a just-closed connection.

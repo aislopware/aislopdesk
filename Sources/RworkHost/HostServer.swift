@@ -53,6 +53,31 @@ public final class HostServer: @unchecked Sendable {
     /// client. Namespacing by the per-connection identity gives each connection its own keyspace.
     private var muxSessions: [MuxSessionKey: MuxChannelSession] = [:]
 
+    /// Accepted shared mux connections, keyed by their stable `connectionID`, guarded by `lock`
+    /// (R5 rank 3). The host must RETAIN every accepted ``MuxNWConnection`` so it can `close()` it —
+    /// cancelling its 2 receive loops + 2 `NWConnection`s/sockets — on ``stop()`` or when its physical
+    /// link drops. Before this map existed, `stop()` closed nothing and the host open-handler captured
+    /// the connection strongly (a retain cycle), so every Start→Stop cycle on the long-lived menu-bar
+    /// host abandoned one live connection + 2 sockets + 2 tasks, accumulating toward EMFILE. The map is
+    /// also the strong-ref the open handler looks the connection up from (instead of capturing it).
+    private var muxConnections: [UUID: MuxNWConnection] = [:]
+
+    /// Set true by ``stop()`` (under `lock`) before draining sessions. The accepted connections' receive
+    /// loops keep running after `stop()` (the listener cancel does not cancel them), so a `channelOpen`
+    /// already buffered / in flight can still reach ``spawnMuxChannel`` AFTER the session map is drained
+    /// — which would fork a login shell that is never reaped and OUTLIVES the daemon (SIGINT during an
+    /// active channel-open). `spawnMuxChannel` checks this flag (early, and again at the insert) and
+    /// REFUSES the channel once stopping, so no orphan PTY is minted past shutdown. Monotonic; guarded
+    /// by `lock`.
+    private var stopping = false
+
+    /// Cache of the resolved effective TERM keyed by `requested|explicitOverride`, guarded by `lock`.
+    /// The host's terminfo state doesn't change during a session, so the (possibly `infocmp`-spawning)
+    /// probe runs at most ~once per key instead of on EVERY channel-open (new pane/tab), and the
+    /// fallback diagnostic is logged exactly once. (Review #5/#6: avoid per-open re-probe + unbounded
+    /// synchronous infocmp on the channel-open path.)
+    private var resolvedTermCache: [String: ClaudeCodeProfile.Term] = [:]
+
     /// A hook the daemon can set to log session lifecycle to stderr.
     public var onLog: (@Sendable (String) -> Void)?
 
@@ -68,6 +93,13 @@ public final class HostServer: @unchecked Sendable {
     /// `@Sendable` and may be invoked off the main actor (from the lock-guarded spawn/remove
     /// paths) — the app hops to its actor before touching UI state.
     public var onConnectionCountChanged: (@Sendable (Int) -> Void)?
+
+    /// Fired when the listener fails AFTER it became ready (R15 #2) — a post-bind interface drop /
+    /// socket error that the one-shot `start()` result cannot report. Purely observational and
+    /// ADDITIVE (defaults `nil`, so the headless `rwork-hostd` daemon is byte-identical): the
+    /// menu-bar host app sets it to re-classify its "running" badge to "failed" when the listener
+    /// silently dies. May be invoked off the main actor; the app hops to its actor.
+    public var onListenerFailed: (@Sendable (RworkTransportError) -> Void)?
 
     public init(
         port: UInt16,
@@ -88,7 +120,21 @@ public final class HostServer: @unchecked Sendable {
     /// Starts the listener and begins accepting shared mux connections. Returns once the listener
     /// is ready (so the caller can read ``boundPort()``).
     public func start() async throws {
-        try await transport.start(port: port)
+        // Forward a POST-ready listener failure (R15 #2) to this server's hook. Read the hook lazily
+        // at failure time (`self?.onListenerFailed`) so the app's assignment after init is honoured;
+        // `[weak self]` avoids retaining the server through the transport's listener handler.
+        try await transport.start(port: port, onListenerFailed: { [weak self] err in
+            self?.onListenerFailed?(err)
+        })
+        // Pre-warm the terminfo resolution OFF any connection's receive loop. The resolution can run a
+        // directory probe and (on a host lacking the ghostty terminfo) spawn `infocmp` — doing that
+        // lazily inside `spawnMuxChannel` blocks the MuxNWConnection actor's receive loop on the first
+        // channel-open (review #5). Resolving the common key (.ghostty, false) here in a detached task
+        // populates `resolvedTermCache`, so `spawnMuxChannel` reads a warm cache with no probe/IO on the
+        // connection's actor. (The .xterm256-explicit path short-circuits the probe entirely.)
+        Task.detached(priority: .utility) { [weak self] in
+            _ = self?.resolveEffectiveTerm(requested: .ghostty, explicitOverride: false)
+        }
         let muxStream = transport.muxConnections_
         muxAcceptTask = Task { [weak self] in
             for await muxConnection in muxStream {
@@ -99,10 +145,39 @@ public final class HostServer: @unchecked Sendable {
 
     /// Stops the listener and shuts down every live channel.
     public func stop() async {
+        // Mark stopping FIRST so any `channelOpen` racing this shutdown (the accepted connections'
+        // receive loops keep running past the listener cancel) is REFUSED by `spawnMuxChannel` rather
+        // than forking a shell that would be minted after the drain below and outlive the daemon.
+        markStopping()
         muxAcceptTask?.cancel()
         await transport.stop()
+        // R5 rank 8: tear the channels down in PARALLEL on the concurrent teardown queue instead of
+        // serially (each `shutdown()` blocks up to ~0.25s for an interactive shell that ignores SIGTERM,
+        // so N panes took ~N×0.25s serially while parking a cooperative-pool thread). `shutdownDetached`
+        // runs each on `MuxChannelSession.teardownQueue` (concurrent); we still AWAIT every completion
+        // before returning, preserving the CLI reap-before-exit invariant (children fully reaped + master
+        // fds closed before `rwork-hostd` calls `exit(0)`).
         let liveMux = drainMuxSessions()
-        for session in liveMux { session.shutdown() }
+        await withTaskGroup(of: Void.self) { group in
+            for session in liveMux {
+                group.addTask {
+                    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                        session.shutdownDetached { c.resume() }
+                    }
+                }
+            }
+            await group.waitForAll()
+        }
+        // R5 rank 3: close every accepted connection so its 2 receive loops + 2 NWConnections/sockets
+        // are torn down (and its handler retain cycle broken). Without this each Start→Stop cycle on the
+        // long-lived menu-bar host abandoned one live connection → accumulation toward EMFILE.
+        let liveConns = drainMuxConnections()
+        for conn in liveConns { await conn.close() }
+    }
+
+    /// Synchronously sets the `stopping` flag (NSLock is unavailable from the async `stop()` directly).
+    private func markStopping() {
+        lock.lock(); stopping = true; lock.unlock()
     }
 
     /// Synchronously removes and returns every live mux channel session (no `await` across the lock).
@@ -114,6 +189,39 @@ public final class HostServer: @unchecked Sendable {
         // The map is now empty → report 0 distinct client connections (the `stop()` path).
         onConnectionCountChanged?(0)
         return live
+    }
+
+    /// Synchronously removes and returns every retained accepted connection (R5 rank 3). The caller
+    /// `close()`s them outside the lock (cancelling receive loops + sockets + breaking the handler cycle).
+    private func drainMuxConnections() -> [MuxNWConnection] {
+        lock.lock()
+        let live = Array(muxConnections.values)
+        muxConnections.removeAll()
+        lock.unlock()
+        return live
+    }
+
+    /// Synchronously retains an accepted connection (NSLock is unavailable from the async
+    /// `handleNewMuxConnection` directly — same discipline as ``markStopping()``).
+    private func retainMuxConnection(_ id: UUID, _ connection: MuxNWConnection) {
+        lock.lock(); muxConnections[id] = connection; lock.unlock()
+    }
+
+    /// Looks up a retained accepted connection by id — the open handler resolves the connection HERE
+    /// (the map's strong ref) instead of capturing it strongly, which would form a retain cycle.
+    private func muxConnection(for id: UUID) -> MuxNWConnection? {
+        lock.lock(); defer { lock.unlock() }
+        return muxConnections[id]
+    }
+
+    /// Removes a connection from the retention map and closes it (cancels its 2 receive loops + 2
+    /// NWConnections, nils its handlers to break the retain cycle). Reached when the physical link drops
+    /// (the `setLinkDownHandler` reap). Idempotent: a second call after the map entry is gone is a no-op.
+    private func removeMuxConnection(_ id: UUID) {
+        lock.lock()
+        let conn = muxConnections.removeValue(forKey: id)
+        lock.unlock()
+        if let conn { Task { await conn.close() } }
     }
 
     /// Snapshots the count of distinct client *connections* carrying channels (one shared mux
@@ -146,11 +254,23 @@ public final class HostServer: @unchecked Sendable {
     /// connection allocates `channelID` 1 for its first pane.
     private func handleNewMuxConnection(_ connection: MuxNWConnection) async {
         let connectionID = connection.connectionID
+        // R5 rank 3: RETAIN the connection so stop()/link-drop can close it (frees its 2 receive loops +
+        // 2 NWConnections). This map is also the strong ref the open handler resolves the connection from.
+        retainMuxConnection(connectionID, connection)
         await connection.setHostOpenHandler { [weak self] open in
-            // Hop off the mux actor's executor: spawning a PTY + locking the session map is the
-            // owner's (HostServer) job. The sub-channels are already registered on `connection`.
-            guard let self else { return }
-            self.spawnMuxChannel(open, on: connection, connectionID: connectionID)
+            // R5 rank 6: hop the blocking PTY spawn OFF the mux actor's receive loop. `spawnMuxChannel`
+            // runs a synchronous `openpty()` + `fork()` (+ reaper-thread spawn) that would otherwise
+            // stall the receive loop — and thus input echo / resize / output for EVERY OTHER pane riding
+            // this shared connection — for the spawn's duration. The channel's sub-channels are already
+            // registered on `connection`, so any inbound frame that arrives during the spawn is buffered
+            // on them and lost nothing; `sendOpenAck` already completes asynchronously.
+            //
+            // Resolve the connection from the retention map by id rather than CAPTURING it strongly — a
+            // strong capture forms a connection → hostOpenHandler → connection retain cycle (R5 rank 3).
+            Task.detached(priority: .userInitiated) { [weak self] in
+                guard let self, let conn = self.muxConnection(for: connectionID) else { return }
+                self.spawnMuxChannel(open, on: conn, connectionID: connectionID)
+            }
         }
         // FIX #2: a clean peer `channelClose` must tear the channel's PTY + master fd down. There is
         // NO per-channel reconnect/resume, so a closed channel's shell must NOT be kept alive — the
@@ -159,6 +279,12 @@ public final class HostServer: @unchecked Sendable {
         // idempotent with the `onExit` path, so a close that races the child's own exit is harmless.
         await connection.setHostCloseHandler { [weak self] channelID in
             self?.removeMuxSession(MuxSessionKey(connectionID: connectionID, channelID: channelID))
+        }
+        // R5 rank 3: when the whole physical link drops (peer crash / TCP reset), reap the connection —
+        // drop it from the retention map + close it (frees sockets + receive tasks). Captures only the
+        // connectionID (never the connection), so it forms no retain cycle.
+        await connection.setLinkDownHandler { [weak self] in
+            self?.removeMuxConnection(connectionID)
         }
         onLog?("mux connection \(connectionID) accepted (shared)")
     }
@@ -173,12 +299,22 @@ public final class HostServer: @unchecked Sendable {
         // first PTY + master fd + reaper thread). Re-ack idempotently and return.
         lock.lock()
         let alreadyLive = muxSessions[key] != nil
+        let isStopping = stopping
         lock.unlock()
+        if isStopping {
+            // Shutting down — refuse the channel so we never fork a PTY that would outlive the daemon
+            // (a channelOpen racing stop() after the session map was drained).
+            Task { await connection.sendOpenAck(open.channelID, accepted: false) }
+            return
+        }
         if alreadyLive {
             Task { await connection.sendOpenAck(open.channelID, accepted: true) }
             return
         }
         let pty = PTYProcess()
+        // R8 #3: the per-session ZDOTDIR shim dir (if the zsh shim is installed) — captured so the
+        // session can delete it when the child exits, instead of leaking one temp dir per pane forever.
+        var shimDir: URL?
         do {
             let argv0 = HostEnvironment.loginArgv0(forShell: shellPath)
             switch launchMode {
@@ -187,24 +323,48 @@ public final class HostServer: @unchecked Sendable {
                 // interactive shell reprints its prompt after a resize. Opt-out via
                 // RWORK_SHELL_INTEGRATION=0; non-zsh shells are left untouched. The shim sources
                 // the user's real startup files, so their env / prompt is preserved.
-                var env = HostEnvironment.curated()
+                //
+                // Audit #17: resolve the effective TERM against the host's terminfo DB. The
+                // plain-shell default is `xterm-ghostty`, but on a host that cannot resolve
+                // that entry we auto-fall back to `xterm-256color` (#54700) so vim/htop/less/
+                // tmux/top don't degrade. No explicit override exists on the plain-shell path.
+                let term = self.resolveEffectiveTerm(requested: .ghostty, explicitOverride: false)
+                var env = HostEnvironment.curated(term: term.rawValue)
                 if let overrides = ShellIntegration.makeEnvironmentOverrides(
                     parent: ProcessInfo.processInfo.environment,
                     shellPath: shellPath
                 ) {
                     for (key, value) in overrides { env[key] = value }
+                    // The shim's ZDOTDIR override IS the generated `rwork-zdotdir-*` dir — track it so the
+                    // session deletes it on the child's exit (R8 #3).
+                    shimDir = overrides["ZDOTDIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
                 }
                 try pty.spawn(shellPath, environment: env, argv0: argv0)
             case .claudeCode(let profile):
+                // Audit #17: same terminfo bootstrap for the Claude path. An explicit
+                // `--xterm256` (`profile.term == .xterm256`) is an operator override and WINS —
+                // the resolver keeps it untouched; only a `.ghostty` request that the host
+                // cannot resolve auto-falls back.
+                let term = self.resolveEffectiveTerm(
+                    requested: profile.term,
+                    explicitOverride: profile.term == .xterm256
+                )
+                var resolvedProfile = profile
+                resolvedProfile.term = term
                 try pty.spawn(
                     shellPath,
-                    arguments: profile.loginShellArguments(),
-                    environment: profile.environment(),
+                    arguments: resolvedProfile.loginShellArguments(),
+                    environment: resolvedProfile.environment(),
                     argv0: argv0
                 )
             }
         } catch {
             onLog?("mux channel \(open.channelID) (conn \(connectionID)): shell spawn failed: \(error)")
+            // R9 self-audit: the ZDOTDIR shim dir is written BEFORE the spawn, so a spawn failure (e.g.
+            // EMFILE / fork failure — conditions that can REPEAT) would leak it (no MuxChannelSession is
+            // created on this path to delete it later). Clean it up here so R8 #3's "no leaked shim dir
+            // per pane" guarantee holds on the failure path too.
+            if let shimDir { try? FileManager.default.removeItem(at: shimDir) }
             // Refuse the channel so the client's router marks it dead and never routes data to it.
             Task { await connection.sendOpenAck(open.channelID, accepted: false) }
             return
@@ -214,18 +374,70 @@ public final class HostServer: @unchecked Sendable {
             channelID: open.channelID,
             pty: pty,
             data: open.data,
-            control: open.control
+            control: open.control,
+            shimDir: shimDir
         )
         // The shell-exit reaper closes over the SAME composite key so it only removes THIS
         // connection's session (idempotent with the peer-close `setHostCloseHandler` path).
         session.onExit = { [weak self] _ in self?.removeMuxSession(key) }
         lock.lock()
+        if stopping {
+            // stop() set `stopping` AFTER our early check but BEFORE this insert (it raced the fork).
+            // Do NOT register past the drain — tear the just-spawned shell down (its reaper is already
+            // running from `pty.spawn`, so `shutdown()` reaps it cleanly) and refuse the channel.
+            lock.unlock()
+            session.shutdown()
+            Task { await connection.sendOpenAck(open.channelID, accepted: false) }
+            return
+        }
         muxSessions[key] = session
         lock.unlock()
         emitConnectionCount()
         session.startRelay()
         Task { await connection.sendOpenAck(open.channelID, accepted: true) }
         onLog?("mux channel \(open.channelID) (conn \(connectionID)): shell \(shellPath) (pid \(pty.pid)) attached")
+    }
+
+    /// Resolves the effective `TERM` for a new PTY against the host's terminfo database
+    /// (audit #17), logging the auto-fallback exactly when it fires.
+    ///
+    /// Delegates the decision to ``TerminfoResolver`` (pure logic + the live terminfo probe).
+    /// When the host cannot resolve `xterm-ghostty` and no explicit `--xterm256` override is in
+    /// effect, the resolver returns `.xterm256` with `fellBack == true`; we then emit ONE
+    /// diagnostic line via ``onLog`` (host stderr — the same out-of-band channel as every other
+    /// session-lifecycle log, NOT the PTY byte stream, so it never pollutes what the client
+    /// renders). The log is gated on `fellBack`: when ghostty resolves, or the operator
+    /// explicitly chose `xterm-256color`, nothing is logged.
+    private func resolveEffectiveTerm(
+        requested: ClaudeCodeProfile.Term,
+        explicitOverride: Bool
+    ) -> ClaudeCodeProfile.Term {
+        // Cache by (requested, explicitOverride): the host terminfo state is stable for the session,
+        // so resolve (and possibly spawn infocmp) at most once per key, not on every channel-open.
+        let key = "\(requested.rawValue)|\(explicitOverride)"
+        lock.lock()
+        if let cached = resolvedTermCache[key] { lock.unlock(); return cached }
+        lock.unlock()
+
+        let result = TerminfoResolver.resolve(
+            requested: requested,
+            explicitOverride: explicitOverride
+        )
+
+        // Store under lock; the FIRST writer logs the fallback (a concurrent first-open that already
+        // cached wins and we return its value without a duplicate log).
+        lock.lock()
+        if let cached = resolvedTermCache[key] { lock.unlock(); return cached }
+        resolvedTermCache[key] = result.term
+        lock.unlock()
+
+        if result.fellBack {
+            onLog?(
+                "TERM: host cannot resolve '\(requested.rawValue)' terminfo entry; "
+                    + "falling back to '\(result.term.rawValue)' (#54700) so TUI apps work"
+            )
+        }
+        return result.term
     }
 
     private func removeMuxSession(_ key: MuxSessionKey) {
