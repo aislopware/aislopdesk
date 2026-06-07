@@ -60,23 +60,19 @@ final class CommandPaletteEntriesTests: XCTestCase {
     /// A multi-leaf tab yields one pane entry per leaf, each carrying the correct (PaneID, TabID); a
     /// single-leaf tab yields none (it is fully represented by its tab entry).
     func testBuildPaneEntriesOnlyForMultiPaneTabs() {
-        // Two-leaf tab.
+        // Two-pane tab.
         let leftID = PaneID(), rightID = PaneID()
-        let multiTab = Tab(
+        let multiTab = Tab.canvasTab(
             name: "Work",
-            root: .split(
-                .horizontal,
-                children: [
-                    .leaf(leftID, PaneSpec(kind: .terminal, title: "Left")),
-                    .leaf(rightID, PaneSpec(kind: .claudeCode, title: "Right")),
-                ],
-                fractions: [0.5, 0.5]
-            ),
-            focusedPane: leftID
+            panes: [
+                (leftID, PaneSpec(kind: .terminal, title: "Left")),
+                (rightID, PaneSpec(kind: .claudeCode, title: "Right")),
+            ],
+            focused: leftID
         )
-        // Single-leaf tab.
+        // Single-pane tab.
         let soloID = PaneID()
-        let soloTab = Tab(name: "Solo", root: .leaf(soloID, PaneSpec(kind: .terminal, title: "Solo")), focusedPane: soloID)
+        let soloTab = Tab.canvasTab(name: "Solo", panes: [(soloID, PaneSpec(kind: .terminal, title: "Solo"))])
 
         let entries = CommandPaletteView.buildPaneEntries(tabs: [multiTab, soloTab])
 

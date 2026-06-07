@@ -34,9 +34,11 @@ final class CommandInterpreterTests: XCTestCase {
         let interpreter = CommandInterpreter()
 
         let expected: [(KeyChord, WorkspaceCommand)] = [
-            // Splits.
-            (KeyChord(character: "d", [.command]),                 .splitHorizontal),
-            (KeyChord(character: "d", [.command, .shift]),         .splitVertical),
+            // Canvas: new pane / tidy.
+            (KeyChord(character: "d", [.command]),                 .newPane),
+            (KeyChord(character: "d", [.command, .shift]),         .tidy),
+            // Centre camera on the focused pane.
+            (KeyChord(character: "c", [.option, .command]),        .centerFocusedPane),
             // Close.
             (KeyChord(character: "w", [.command]),                 .closePane),
             (KeyChord(character: "w", [.command, .shift]),         .closeTab),
@@ -77,7 +79,7 @@ final class CommandInterpreterTests: XCTestCase {
     // MARK: - Case-insensitivity convention (⇧ is in modifiers, not the char)
 
     /// `KeyChord(character:)` lower-cases the base key, so an upper-case letter without `.shift` is
-    /// the same chord as the lower-case one — `⌘D` (typed with caps) still maps to splitHorizontal,
+    /// the same chord as the lower-case one — `⌘D` (typed with caps) still maps to `.newPane`,
     /// it is NOT mistaken for ⇧⌘D.
     func testUpperCaseCharIsNormalizedToLowerCaseBaseKey() {
         let interpreter = CommandInterpreter()
@@ -86,12 +88,12 @@ final class CommandInterpreterTests: XCTestCase {
             KeyChord(character: "d", [.command]),
             "the convenience init lower-cases the base key — case is not part of identity"
         )
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "D", [.command])), .splitHorizontal)
-        // The vertical split requires an EXPLICIT .shift, not an upper-case char.
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "D", [.command, .shift])), .splitVertical)
+        XCTAssertEqual(interpreter.feed(KeyChord(character: "D", [.command])), .newPane)
+        // Tidy requires an EXPLICIT .shift, not an upper-case char.
+        XCTAssertEqual(interpreter.feed(KeyChord(character: "D", [.command, .shift])), .tidy)
         XCTAssertEqual(
             interpreter.feed(KeyChord(character: "d", [.command, .shift])),
-            .splitVertical,
+            .tidy,
             "shift is carried by the modifier set, identically for 'd' and 'D'"
         )
     }
@@ -119,7 +121,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// live); the old chord stops resolving and the new chord resolves to the remapped command.
     func testRebindingViaMutableBindingsTakesEffect() {
         let interpreter = CommandInterpreter()
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "d", [.command])), .splitHorizontal)
+        XCTAssertEqual(interpreter.feed(KeyChord(character: "d", [.command])), .newPane)
 
         // Remap ⌘D to newTab and drop the old meaning.
         interpreter.bindings[KeyChord(character: "d", [.command])] = .newTab

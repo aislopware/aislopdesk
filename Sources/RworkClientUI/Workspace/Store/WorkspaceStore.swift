@@ -165,6 +165,24 @@ public final class WorkspaceStore {
     /// solves a multi-pane layout — `.next`/`.previous` still work via the pre-order cycle fallback).
     private var lastSolvedLayout: SolvedLayout?
 
+    /// The last viewport size the canvas view reported (docs/30 §5.3). Used by new-pane placement, the
+    /// in-view guarantee, and the centre/tidy camera ops so the store can position panes without the
+    /// view passing a size into every mutation. A nominal desktop default until the view reports one.
+    private var lastViewport: CGSize = CGSize(width: 1280, height: 800)
+
+    /// The set of pane ids the canvas view currently reports as INSIDE the viewport (no margin). Pure
+    /// view-derived state; never reconciles. Drives ``isPaneVisible(_:)`` (the video-cap "on screen"
+    /// signal).
+    private var paneIDsInViewport: Set<PaneID> = []
+
+    /// Whether the canvas view has reported viewport membership at least once since it last appeared.
+    /// Distinguishes "no report yet" (compact carousel / pre-first-layout → fall back to
+    /// ``isPaneOnActiveTab(_:)``) from "reported, and it is genuinely empty" (panned into the void →
+    /// nothing is visible, so an off-screen video pane SHOULD release its slot). Reset by
+    /// ``clearViewportMembership()`` when the canvas disappears (a regular→compact flip) so the compact
+    /// path falls back correctly instead of inheriting a stale set.
+    private var hasReportedViewport = false
+
     /// The single-focus arbiter for the iOS multi-visible (iPad-regular) input path (docs/22 §7). One
     /// per workspace, created alongside the store. The regular `PaneTreeView` leaves route their
     /// ``TerminalInputHost`` first-responder through this so a stale async `becomeFirstResponder`
@@ -225,11 +243,11 @@ public final class WorkspaceStore {
     /// NavigationSplitView layout settle even though the pane stays on screen (the autoconnect
     /// connect bug). The debounced teardown re-checks this so a spurious disappear (still on the
     /// active tab) is ignored and only a real tab switch (pane left the active tab) deactivates.
-    public func isPaneOnActiveTab(_ id: PaneID) -> Bool { workspace.activeTab?.root.contains(id) ?? false }
+    public func isPaneOnActiveTab(_ id: PaneID) -> Bool { workspace.activeTab?.canvas.contains(id) ?? false }
 
-    /// All leaf ids across every tab (the reconcile diff domain). Pre-order within each tab.
+    /// All pane ids across every tab (the reconcile diff domain). z-order within each tab.
     private func allLeafIDs() -> [PaneID] {
-        workspace.tabs.flatMap { $0.root.allLeafIDs() }
+        workspace.tabs.flatMap { $0.canvas.allIDs() }
     }
 
     // MARK: - Layout reporting (for geometric focus move)
@@ -284,29 +302,34 @@ public final class WorkspaceStore {
 
     // MARK: - Pane mutations (pure op → reconcile)
 
-    /// Splits leaf `id` along `axis`, adding a new leaf of `kind` as a sibling, and focuses the new
-    /// leaf. Applies to whichever tab owns `id` (almost always the active tab). Reconcile materializes
-    /// the one new session.
+    /// Adds a new pane of `kind` to the active tab's canvas, placed near (cascaded off) the focused
+    /// pane, then focuses + raises it and guarantees it is in view. Replaces the old `split` (there is
+    /// no axis on a free canvas). Reconcile materializes the one new session.
     ///
-    /// Connect-once: the new leaf inherits the endpoint of the pane being split (falling back to the
-    /// active pane's endpoint) when the new `kind` is `.terminal` or `.claudeCode`. `.remoteGUI`
-    /// never inherits (it uses a ``VideoEndpoint``, a distinct field). A nil source endpoint produces
-    /// a nil-endpoint new pane (no change from the old behavior).
-    public func split(_ id: PaneID, axis: SplitAxis, kind: PaneKind) {
-        guard let tabID = tabID(owning: id) else { return }
-        let newLeafID = PaneID()
+    /// Connect-once: the new pane inherits the endpoint of the focused pane (falling back to the active
+    /// pane's endpoint) when `kind` is `.terminal` or `.claudeCode`. `.remoteGUI` never inherits (it
+    /// uses a ``VideoEndpoint``, a distinct field). A nil source endpoint produces a nil-endpoint new
+    /// pane (no change from the old behavior).
+    public func addPane(kind: PaneKind) {
+        guard let tabID = workspace.activeTabID else { return }
         let inherited: Endpoint? = (kind == .terminal || kind == .claudeCode)
-            ? (spec(for: id)?.endpoint ?? activePaneEndpoint)
+            ? (workspace.activeTab?.focusedPane).flatMap({ spec(for: $0)?.endpoint }) ?? activePaneEndpoint
             : nil
-        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind), endpoint: inherited)
+        let newSpec = PaneSpec(kind: kind, title: defaultTitle(for: kind), endpoint: inherited)
+        let viewport = lastViewport
         workspace = workspace.updatingTab(tabID) { tab in
-            tab.root = tab.root.splitting(id, axis: axis, newLeaf: (newLeafID, spec))
-            // Focus the new leaf if the split actually created it (it exists in the new tree).
-            if tab.root.contains(newLeafID) {
-                tab.focusedPane = newLeafID
+            let (canvas, id) = tab.canvas.adding(newSpec, near: tab.focusedPane, viewport: viewport)
+            tab.canvas = canvas
+            tab.focusedPane = id
+            // A new pane exits any maximize (the canvas layout changed).
+            if tab.maximizedPane != nil { tab.maximizedPane = nil }
+            // In-view guarantee: without zoom-to-fit, a new pane that lands off (or barely clipping) the
+            // current viewport would be invisible — pan the camera to centre it unless its CENTRE is
+            // already inside the viewport (a bare-intersection sliver does not count as "in view").
+            let visible = CGRect(origin: canvas.camera.origin, size: viewport)
+            if let f = canvas.frame(of: id), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
+                tab.canvas = tab.canvas.centered(on: id, viewport: viewport)
             }
-            // A split invalidates any zoom on this tab (the layout changed).
-            if tab.zoomedPane != nil { tab.zoomedPane = nil }
         }
         reconcile()
     }
@@ -320,15 +343,15 @@ public final class WorkspaceStore {
 
         var closedTab = false
         workspace = workspace.updatingTab(tabID) { tab in
-            guard let newRoot = tab.root.closing(id) else {
+            guard let newCanvas = tab.canvas.removing(id) else {
                 closedTab = true       // the tab emptied
                 return
             }
-            tab.root = newRoot
+            tab.canvas = newCanvas
             if tab.focusedPane == id {
-                tab.focusedPane = refocus ?? newRoot.allLeafIDs().first ?? tab.focusedPane
+                tab.focusedPane = refocus ?? newCanvas.allIDs().first ?? tab.focusedPane
             }
-            if tab.zoomedPane == id { tab.zoomedPane = nil }
+            if tab.maximizedPane == id { tab.maximizedPane = nil }
         }
         if closedTab {
             workspace = workspace.closing(tabID)
@@ -340,7 +363,14 @@ public final class WorkspaceStore {
     public func focus(_ id: PaneID) {
         guard let tabID = tabID(owning: id) else { return }
         workspace = workspace.updatingTab(tabID) { tab in
-            if tab.root.contains(id) { tab.focusedPane = id }
+            if tab.canvas.contains(id) {
+                tab.focusedPane = id
+                // Maximize follows focus: if a pane is maximized and focus jumps elsewhere (e.g. the
+                // ⌘K pane-jump), re-point the maximize to the newly-focused pane so the on-screen pane
+                // always equals the one receiving keyboard input — never leave the user typing into an
+                // invisible pane behind a different maximized one.
+                if tab.maximizedPane != nil { tab.maximizedPane = id }
+            }
         }
         reconcile()
     }
@@ -358,7 +388,7 @@ public final class WorkspaceStore {
             if let solved = lastSolvedLayout, solved.frames[tab.focusedPane] != nil {
                 target = FocusResolver.neighbor(of: tab.focusedPane, dir, in: solved)
             } else {
-                target = FocusResolver.cycle(tab.root.allLeafIDs(), from: tab.focusedPane, forward: dir == .next)
+                target = FocusResolver.cycle(tab.canvas.allIDs(), from: tab.focusedPane, forward: dir == .next)
             }
         case .left, .right, .up, .down:
             guard let solved = lastSolvedLayout else { return }
@@ -368,24 +398,118 @@ public final class WorkspaceStore {
         focus(target)
     }
 
-    /// Toggles zoom on the active tab's focused pane (a presentation flag — no tree surgery, so the
-    /// registry is untouched, docs/22 §3). Reconcile is still called for uniformity (it is a no-op:
-    /// the leaf set did not change).
+    /// Toggles maximize on the active tab's focused pane (a presentation flag — no model surgery, so
+    /// the registry is untouched, docs/30 §1). Renders the one item full-viewport (ignoring the camera
+    /// / other items). The command/menu word stays "Zoom"/"Maximize"; this flips `maximizedPane`.
+    /// Reconcile is still called for uniformity (it is a no-op: the item set did not change).
     public func toggleZoom() {
         guard let tabID = workspace.activeTabID else { return }
         workspace = workspace.updatingTab(tabID) { tab in
-            tab.zoomedPane = (tab.zoomedPane == tab.focusedPane) ? nil : tab.focusedPane
+            tab.maximizedPane = (tab.maximizedPane == tab.focusedPane) ? nil : tab.focusedPane
         }
         reconcile()
     }
 
-    /// Sets the `fractions` of the split addressed by `path` in `tab` (e.g. after a divider drag).
-    /// Pure geometry change; leaf set unchanged so reconcile is a no-op.
-    public func setFractions(tab: TabID, path: [Int], to fractions: [Double]) {
-        workspace = workspace.updatingTab(tab) { t in
-            t.root = t.root.settingFractions(at: path, to: fractions)
+    // MARK: - Canvas mutations (move / resize / raise / camera / arrange)
+
+    /// Translates pane `id` by `delta` (the chrome drag-to-move commit), raising it to front and
+    /// focusing it. Item SET unchanged → reconcile is a registry no-op (it only persists).
+    public func movePane(_ id: PaneID, by delta: CGSize) {
+        guard let tabID = tabID(owning: id) else { return }
+        workspace = workspace.updatingTab(tabID) { tab in
+            tab.canvas = tab.canvas.moving(id, by: delta).raising(id)
+            tab.focusedPane = id
         }
         reconcile()
+    }
+
+    /// Sets pane `id`'s frame (the corner/edge resize commit). The VIEW frame change drives the
+    /// terminal host's `layout()` → reflow (the existing path; no new resize API). Item set unchanged.
+    public func resizePane(_ id: PaneID, to frame: CGRect) {
+        guard let tabID = tabID(owning: id) else { return }
+        workspace = workspace.updatingTab(tabID) { tab in
+            tab.canvas = tab.canvas.resizing(id, to: frame)
+        }
+        reconcile()
+    }
+
+    /// Brings pane `id` to the front and focuses it (on focus / drag-start). Item set unchanged.
+    public func raisePane(_ id: PaneID) {
+        guard let tabID = tabID(owning: id) else { return }
+        workspace = workspace.updatingTab(tabID) { tab in
+            tab.canvas = tab.canvas.raising(id)
+            tab.focusedPane = id
+        }
+        reconcile()
+    }
+
+    /// Commits a pan (the `.onEnded` of a canvas drag / a scroll-wheel step). Per-frame *live* pan is
+    /// view `@State` and never touches the store (mirrors `SplitContainer`'s `@GestureState`
+    /// discipline); only the committed camera lands here and rides the existing save debounce.
+    public func commitCamera(_ camera: CanvasCamera) {
+        guard let tabID = workspace.activeTabID else { return }
+        workspace = workspace.updatingTab(tabID) { $0.canvas = $0.canvas.camera(camera) }
+        reconcile()
+    }
+
+    /// Centres the camera on pane `id` ("Center on Pane" + the off-screen-focus reveal).
+    public func centerOnPane(_ id: PaneID) {
+        guard let tabID = tabID(owning: id) else { return }
+        workspace = workspace.updatingTab(tabID) { $0.canvas = $0.canvas.centered(on: id, viewport: lastViewport) }
+        reconcile()
+    }
+
+    /// Centres the camera on the bounding box of ALL panes ("Center on All" — NOT "Fit"; there is no
+    /// scale, so it centres but cannot shrink).
+    public func centerOnAll() {
+        guard let tabID = workspace.activeTabID else { return }
+        workspace = workspace.updatingTab(tabID) { $0.canvas = $0.canvas.centeredOnAll(viewport: lastViewport) }
+        reconcile()
+    }
+
+    /// Packs the active tab's panes into a uniform grid and recentres ("Tidy").
+    public func tidyActiveTab() {
+        guard let tabID = workspace.activeTabID else { return }
+        workspace = workspace.updatingTab(tabID) { $0.canvas = $0.canvas.tidied(viewport: lastViewport) }
+        reconcile()
+    }
+
+    // MARK: - Viewport reporting (for placement / centring / video-cap visibility)
+
+    /// The canvas view reports its current viewport size so the store can place / centre / tidy panes
+    /// without the view threading a size into every mutation. View-only state — never reconciles.
+    public func updateViewport(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        lastViewport = size
+    }
+
+    /// The canvas view reports which panes currently intersect the viewport (no margin). View-only
+    /// state — never reconciles. Feeds ``isPaneVisible(_:)`` (the video-cap "on screen" signal). Marks
+    /// membership as reported, so a subsequently EMPTY set means "panned to the void" (release), not
+    /// "no report yet" (keep).
+    public func updateViewportMembership(_ ids: Set<PaneID>) {
+        paneIDsInViewport = ids
+        hasReportedViewport = true
+    }
+
+    /// Clears viewport membership and the reported flag — called when the canvas view DISAPPEARS (a
+    /// regular→compact projection flip). Without this the compact carousel would inherit the canvas's
+    /// last (stale) membership set and make wrong video-teardown decisions; clearing the flag restores
+    /// the documented compact fallback to ``isPaneOnActiveTab(_:)``.
+    public func clearViewportMembership() {
+        paneIDsInViewport = []
+        hasReportedViewport = false
+    }
+
+    /// Whether pane `id` is on the active tab AND currently inside the reported viewport — the signal
+    /// the video-teardown / activation decision uses INSTEAD of ``isPaneOnActiveTab(_:)`` (docs/30 §5.3).
+    /// On a canvas an off-viewport pane is still "on the active tab", so the old guard would never free
+    /// its `liveVideoCap` slot; this one does. When membership has NOT been reported (the compact
+    /// carousel / pre-first-layout paths) it falls back to ``isPaneOnActiveTab(_:)`` so those paths are
+    /// byte-identical; once reported, an empty set means genuinely-nothing-on-screen (release).
+    public func isPaneVisible(_ id: PaneID) -> Bool {
+        guard isPaneOnActiveTab(id) else { return false }
+        return hasReportedViewport ? paneIDsInViewport.contains(id) : true
     }
 
     // MARK: - Reconnect (palette / recovery)
@@ -428,7 +552,7 @@ public final class WorkspaceStore {
     public func updateSpec(_ id: PaneID, _ transform: @escaping (inout PaneSpec) -> Void) {
         guard let tabID = tabID(owning: id) else { return }
         workspace = workspace.updatingTab(tabID) { tab in
-            tab.root = tab.root.updatingSpec(id, transform)
+            tab.canvas = tab.canvas.updatingSpec(id, transform)
         }
         reconcile()
     }
@@ -593,10 +717,13 @@ public final class WorkspaceStore {
         return VideoEndpoint(host: host, mediaPort: media, cursorPort: cursor, windowID: wid, title: title)
     }
 
-    /// A one-tab, one-leaf workspace from `spec` (the bootstrap shape). The leaf id is minted fresh.
+    /// A one-tab, one-pane workspace from `spec` (the bootstrap shape). The pane id is minted fresh; the
+    /// item sits at the canvas origin at the default size.
     private static func singleLeafWorkspace(spec: PaneSpec) -> Workspace {
         let paneID = PaneID()
-        let tab = Tab(name: spec.title, root: .leaf(paneID, spec), focusedPane: paneID)
+        let item = CanvasItem(id: paneID, spec: spec,
+                              frame: CGRect(origin: .zero, size: Canvas.defaultItemSize), z: 0)
+        let tab = Tab(name: spec.title, canvas: Canvas(items: [item]), focusedPane: paneID)
         return Workspace(tabs: [tab], activeTabID: tab.id)
     }
 
@@ -707,7 +834,7 @@ public final class WorkspaceStore {
         //    owns the tree, so it is the authority on "tab0/pane0"; the terminal leaf reads this flag
         //    after connect to fire the OUT-path proof. Recomputed every reconcile so the flag follows
         //    the tree (a reshape never strands it on a stale pane).
-        let autotypeTarget = workspace.tabs.first?.root.allLeafIDs().first
+        let autotypeTarget = workspace.tabs.first?.canvas.allIDs().first
         for (id, handle) in registry {
             (handle as? LivePaneSession)?.isAutotypeTarget = (id == autotypeTarget)
         }
@@ -816,10 +943,10 @@ public final class WorkspaceStore {
 
     // MARK: - Tree lookups
 
-    /// The spec for leaf `id` across all tabs, or `nil`.
+    /// The spec for pane `id` across all tabs, or `nil`.
     private func spec(for id: PaneID) -> PaneSpec? {
         for tab in workspace.tabs {
-            if let spec = tab.root.spec(for: id) { return spec }
+            if let spec = tab.canvas.spec(for: id) { return spec }
         }
         return nil
     }
@@ -832,17 +959,17 @@ public final class WorkspaceStore {
         return spec(for: focused)?.endpoint
     }
 
-    /// The id of the tab whose root contains leaf `id`, or `nil`.
+    /// The id of the tab whose canvas contains pane `id`, or `nil`.
     private func tabID(owning id: PaneID) -> TabID? {
-        workspace.tabs.first { $0.root.contains(id) }?.id
+        workspace.tabs.first { $0.canvas.contains(id) }?.id
     }
 
     /// Whether `id` is the SOLE leaf of its tab — so closing it closes the whole tab (and, if it is
     /// the only tab, empties the workspace). Lets the pane chrome label the close button honestly
     /// ("Close tab" vs "Close pane") instead of silently destroying more than the word implies.
     public func isOnlyLeaf(_ id: PaneID) -> Bool {
-        guard let tab = workspace.tabs.first(where: { $0.root.contains(id) }) else { return false }
-        return tab.root.allLeafIDs().count == 1
+        guard let tab = workspace.tabs.first(where: { $0.canvas.contains(id) }) else { return false }
+        return tab.canvas.itemCount == 1
     }
 
     /// A neighbour to refocus on after closing `id`, resolved geometrically against the last solved
@@ -855,10 +982,10 @@ public final class WorkspaceStore {
             }
         }
         guard let tab = workspace.tabs.first(where: { $0.id == tabID }) else { return nil }
-        let leaves = tab.root.allLeafIDs()
-        guard let i = leaves.firstIndex(of: id) else { return nil }
-        if i + 1 < leaves.count { return leaves[i + 1] }
-        if i - 1 >= 0 { return leaves[i - 1] }
+        let ids = tab.canvas.allIDs()
+        guard let i = ids.firstIndex(of: id) else { return nil }
+        if i + 1 < ids.count { return ids[i + 1] }
+        if i - 1 >= 0 { return ids[i - 1] }
         return nil
     }
 
@@ -987,13 +1114,13 @@ public extension WorkspaceStore {
 @MainActor
 public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
     switch command {
-    case .splitHorizontal:
+    case .newPane:
+        store.addPane(kind: .terminal)
+    case .tidy:
+        store.tidyActiveTab()
+    case .centerFocusedPane:
         if let pane = store.activeTab?.focusedPane {
-            store.split(pane, axis: .horizontal, kind: .terminal)
-        }
-    case .splitVertical:
-        if let pane = store.activeTab?.focusedPane {
-            store.split(pane, axis: .vertical, kind: .terminal)
+            store.centerOnPane(pane)
         }
     case .closePane:
         if let pane = store.activeTab?.focusedPane {

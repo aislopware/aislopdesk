@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 @testable import RworkClientUI
 
 /// Pins the load-bearing **reconcile** contract of ``WorkspaceStore`` (docs/22 §2.3, §8): the diff
@@ -41,10 +42,10 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         )
     }
 
-    /// All leaf ids across every tab, in pre-order (the reconcile diff domain), derived from the tree —
+    /// All pane ids across every tab, in z-order (the reconcile diff domain), derived from the canvas —
     /// the source of truth the registry is asserted against.
     private func leafIDs(_ store: WorkspaceStore) -> [PaneID] {
-        store.workspace.tabs.flatMap { $0.root.allLeafIDs() }
+        store.workspace.tabs.flatMap { $0.canvas.allIDs() }
     }
 
     /// The set of ids the registry currently holds, surfaced via the only public registry windows
@@ -98,15 +99,13 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
     func testInitMaterializesAllRestoredLeavesAcrossTabs() {
         // Tab A: a 2-leaf horizontal split. Tab B: a single claudeCode leaf.
         let a0 = PaneID(), a1 = PaneID(), b0 = PaneID()
-        let tabA = Tab(
+        let tabA = Tab.canvasTab(
             name: "A",
-            root: .split(.horizontal,
-                         children: [.leaf(a0, PaneSpec(kind: .terminal, title: "a0")),
-                                    .leaf(a1, PaneSpec(kind: .terminal, title: "a1"))],
-                         fractions: [0.5, 0.5]),
-            focusedPane: a0
+            panes: [(a0, PaneSpec(kind: .terminal, title: "a0")),
+                    (a1, PaneSpec(kind: .terminal, title: "a1"))],
+            focused: a0
         )
-        let tabB = Tab(name: "B", root: .leaf(b0, PaneSpec(kind: .claudeCode, title: "b0")), focusedPane: b0)
+        let tabB = Tab.canvasTab(name: "B", panes: [(b0, PaneSpec(kind: .claudeCode, title: "b0"))])
         let restored = Workspace(tabs: [tabA, tabB], activeTabID: tabA.id)
 
         let store = makeStore(restoring: restored)
@@ -129,7 +128,7 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         let solo = leafIDs(store)[0]
         XCTAssertTrue(store.isOnlyLeaf(solo), "the lone pane of a single-pane tab is the only leaf (close = close tab)")
 
-        store.split(solo, axis: .horizontal, kind: .terminal)
+        store.addPane(kind: .terminal)
         let leaves = leafIDs(store)
         XCTAssertEqual(leaves.count, 2)
         for id in leaves {
@@ -144,7 +143,7 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         let original = leafIDs(store)[0]
         let originalHandle = fake(store, original)
 
-        store.split(original, axis: .horizontal, kind: .terminal)
+        store.addPane(kind: .terminal)
 
         let leaves = leafIDs(store)
         XCTAssertEqual(leaves.count, 2, "split goes from 1 → 2 leaves")
@@ -169,12 +168,12 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         let store = makeStore()
         let l0 = leafIDs(store)[0]
 
-        store.split(l0, axis: .horizontal, kind: .terminal)
+        store.addPane(kind: .terminal)
         let afterFirst = Set(leafIDs(store))
         let l1 = afterFirst.subtracting([l0]).first!
         assertInvariant(store, "after first split")
 
-        store.split(l1, axis: .horizontal, kind: .terminal)
+        store.addPane(kind: .terminal)
         let afterSecond = leafIDs(store)
         XCTAssertEqual(afterSecond.count, 3, "same-axis split flattens to a 3-way row")
         assertInvariant(store, "after second same-axis split")
@@ -194,7 +193,7 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
     func testClosePaneRemovesKeySynchronouslyAndTearsDownExactlyOnce() async {
         let store = makeStore()
         let original = leafIDs(store)[0]
-        store.split(original, axis: .vertical, kind: .terminal)
+        store.addPane(kind: .terminal)
         let leaves = leafIDs(store)
         let victim = leaves.first { $0 != original }!
         let survivor = original
@@ -241,15 +240,13 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
     func testCloseTabTearsDownAllItsSessions() async {
         // Tab A: 2 leaves. Tab B (active-after): 1 leaf.
         let a0 = PaneID(), a1 = PaneID(), b0 = PaneID()
-        let tabA = Tab(
+        let tabA = Tab.canvasTab(
             name: "A",
-            root: .split(.horizontal,
-                         children: [.leaf(a0, PaneSpec(kind: .terminal, title: "a0")),
-                                    .leaf(a1, PaneSpec(kind: .terminal, title: "a1"))],
-                         fractions: [0.5, 0.5]),
-            focusedPane: a0
+            panes: [(a0, PaneSpec(kind: .terminal, title: "a0")),
+                    (a1, PaneSpec(kind: .terminal, title: "a1"))],
+            focused: a0
         )
-        let tabB = Tab(name: "B", root: .leaf(b0, PaneSpec(kind: .terminal, title: "b0")), focusedPane: b0)
+        let tabB = Tab.canvasTab(name: "B", panes: [(b0, PaneSpec(kind: .terminal, title: "b0"))])
         let store = makeStore(restoring: Workspace(tabs: [tabA, tabB], activeTabID: tabA.id))
 
         let a0Handle = fake(store, a0)!
@@ -305,9 +302,9 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
 
         // split (creates a second leaf in tab2) — needed before move/zoom/focus have neighbours.
         let p0 = tab2.focusedPane
-        store.split(p0, axis: .horizontal, kind: .terminal)
+        store.addPane(kind: .terminal)
         assertInvariant(store, "split")
-        let leavesInTab2 = store.activeTab!.root.allLeafIDs()
+        let leavesInTab2 = store.activeTab!.canvas.allIDs()
         XCTAssertEqual(leavesInTab2.count, 2)
 
         // focus (pure focus change — leaf set unchanged → registry unchanged)
@@ -324,9 +321,9 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         store.toggleZoom()
         assertInvariant(store, "toggleZoom off")
 
-        // setFractions on tab2's root split (geometry only — leaf set unchanged)
-        store.setFractions(tab: tab2.id, path: [], to: [0.3, 0.7])
-        assertInvariant(store, "setFractions")
+        // resizePane (canvas geometry only — pane set unchanged → registry no-op)
+        store.resizePane(leavesInTab2[0], to: CGRect(x: 0, y: 0, width: 800, height: 500))
+        assertInvariant(store, "resizePane")
 
         // updateSpec (rename a leaf — leaf set unchanged, session not rebuilt)
         let handleBefore = store.handle(for: leavesInTab2[0]) as AnyObject
@@ -406,7 +403,7 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         let store = makeStore()
         store.addTab(kind: .terminal)
         let p0 = store.activeTab!.focusedPane
-        store.split(p0, axis: .horizontal, kind: .terminal)
+        store.addPane(kind: .terminal)
         let before = store.allSessions.map { ObjectIdentifier($0) }
         assertInvariant(store, "pre-flip")
 
@@ -422,13 +419,12 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
                       "size-class compact → compact even at 500pt")
 
         // A regular-mode solved layout, then a compact-mode (empty-frames) one — the view→store report.
-        let leaves = store.activeTab!.root.allLeafIDs()
+        let leaves = store.activeTab!.canvas.allIDs()
         let regular = SolvedLayout(
             frames: [
                 leaves[0]: CGRect(x: 0, y: 0, width: 600, height: 400),
                 leaves[1]: CGRect(x: 600, y: 0, width: 600, height: 400),
-            ],
-            dividers: []
+            ]
         )
         store.updateSolvedLayout(regular)
         assertInvariant(store, "after reporting regular layout")
@@ -452,16 +448,14 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
     /// dedicated task in registry-removal order. Each runs exactly once (no fire-and-forget double-run).
     func testClosingMultiLeafTabTearsDownEachOrphanExactlyOnce() async {
         let a0 = PaneID(), a1 = PaneID(), a2 = PaneID(), b0 = PaneID()
-        let tabA = Tab(
+        let tabA = Tab.canvasTab(
             name: "A",
-            root: .split(.horizontal,
-                         children: [.leaf(a0, PaneSpec(kind: .terminal, title: "a0")),
-                                    .leaf(a1, PaneSpec(kind: .terminal, title: "a1")),
-                                    .leaf(a2, PaneSpec(kind: .terminal, title: "a2"))],
-                         fractions: [1.0 / 3, 1.0 / 3, 1.0 / 3]),
-            focusedPane: a0
+            panes: [(a0, PaneSpec(kind: .terminal, title: "a0")),
+                    (a1, PaneSpec(kind: .terminal, title: "a1")),
+                    (a2, PaneSpec(kind: .terminal, title: "a2"))],
+            focused: a0
         )
-        let tabB = Tab(name: "B", root: .leaf(b0, PaneSpec(kind: .terminal, title: "b0")), focusedPane: b0)
+        let tabB = Tab.canvasTab(name: "B", panes: [(b0, PaneSpec(kind: .terminal, title: "b0"))])
         let store = makeStore(restoring: Workspace(tabs: [tabA, tabB], activeTabID: tabA.id))
 
         let handles = [a0, a1, a2].map { fake(store, $0)! }
@@ -487,11 +481,11 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         // A single remoteGUI tab grown to two leaves (no stray terminal tab to muddy the invariant).
         let rootID = PaneID()
         let spec = PaneSpec(kind: .remoteGUI, title: "Remote window")
-        let tab = Tab(name: "Remote window", root: .leaf(rootID, spec), focusedPane: rootID)
+        let tab = Tab.canvasTab(name: "Remote window", panes: [(rootID, spec)])
         let store = makeStore(restoring: Workspace(tabs: [tab], activeTabID: tab.id))
-        let first = store.activeTab!.root.allLeafIDs()[0]
-        store.split(first, axis: .horizontal, kind: .remoteGUI)
-        let ids = store.activeTab!.root.allLeafIDs()
+        let first = store.activeTab!.canvas.allIDs()[0]
+        store.addPane(kind: .remoteGUI)
+        let ids = store.activeTab!.canvas.allIDs()
         XCTAssertEqual(ids.count, 2)
         assertInvariant(store, "two remoteGUI leaves")
 
@@ -525,14 +519,12 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
     func testQuiesceAwaitsTeardownSpawnedDuringDrain() async {
         // Three terminal leaves in one tab so we can close two of them independently and keep a survivor.
         let a0 = PaneID(), a1 = PaneID(), a2 = PaneID()
-        let tab = Tab(
+        let tab = Tab.canvasTab(
             name: "A",
-            root: .split(.horizontal,
-                         children: [.leaf(a0, PaneSpec(kind: .terminal, title: "a0")),
-                                    .leaf(a1, PaneSpec(kind: .terminal, title: "a1")),
-                                    .leaf(a2, PaneSpec(kind: .terminal, title: "a2"))],
-                         fractions: [1.0 / 3, 1.0 / 3, 1.0 / 3]),
-            focusedPane: a0
+            panes: [(a0, PaneSpec(kind: .terminal, title: "a0")),
+                    (a1, PaneSpec(kind: .terminal, title: "a1")),
+                    (a2, PaneSpec(kind: .terminal, title: "a2"))],
+            focused: a0
         )
         let store = makeStore(restoring: Workspace(tabs: [tab], activeTabID: tab.id))
         let gate0 = FakeTeardownGate()

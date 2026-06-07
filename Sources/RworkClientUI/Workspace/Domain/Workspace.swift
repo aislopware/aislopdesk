@@ -31,9 +31,11 @@ public struct Workspace: Codable, Sendable, Equatable {
 // MARK: - Schema + default
 
 public extension Workspace {
-    /// The schema version this build writes. Decoding a higher (or unrecognized) version is
-    /// treated as un-restorable and falls back to ``defaultWorkspace()`` (docs/22 §6).
-    static let currentSchemaVersion = 1
+    /// The schema version this build writes (the pan-only infinite ``Canvas`` shape). A
+    /// higher/unrecognized version — or any older, incompatible on-disk shape that no longer decodes —
+    /// falls back to ``defaultWorkspace()`` (the app has no released persisted format to migrate from,
+    /// so there is deliberately no backward-compatibility path; docs/30 §4).
+    static let currentSchemaVersion = 2
 
     /// The fresh-launch / decode-failure fallback: a single tab with one terminal pane, active.
     static func defaultWorkspace() -> Workspace {
@@ -76,9 +78,15 @@ public extension Workspace {
     func normalizingTabFocus() -> Workspace {
         var copy = self
         for i in copy.tabs.indices {
-            let leaves = copy.tabs[i].root.allLeafIDs()
-            if !leaves.contains(copy.tabs[i].focusedPane), let first = leaves.first {
+            let ids = copy.tabs[i].canvas.allIDs()
+            if !ids.contains(copy.tabs[i].focusedPane), let first = ids.first {
                 copy.tabs[i].focusedPane = first
+            }
+            // Symmetric repair for the parallel presentation pointer: a dangling `maximizedPane` (a
+            // re-minted / hand-edited id no longer in this tab's canvas) is cleared so a restored tab
+            // never carries a stale maximize that points at a ghost pane.
+            if let maximized = copy.tabs[i].maximizedPane, !ids.contains(maximized) {
+                copy.tabs[i].maximizedPane = nil
             }
         }
         return copy

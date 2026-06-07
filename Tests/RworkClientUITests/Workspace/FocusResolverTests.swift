@@ -22,7 +22,7 @@ final class FocusResolverTests: XCTestCase {
     private func layout(_ pairs: [(PaneID, CGRect)]) -> SolvedLayout {
         var frames: [PaneID: CGRect] = [:]
         for (id, rect) in pairs { frames[id] = rect }
-        return SolvedLayout(frames: frames, dividers: [])
+        return SolvedLayout(frames: frames)
     }
 
     // MARK: - Directional neighbour: simple 2x1 horizontal layout

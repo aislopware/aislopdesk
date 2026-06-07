@@ -15,7 +15,7 @@ final class WorkspaceStoreReconnectGuardTests: XCTestCase {
     }
 
     private func leafIDs(_ store: WorkspaceStore) -> [PaneID] {
-        store.workspace.tabs.flatMap { $0.root.allLeafIDs() }
+        store.workspace.tabs.flatMap { $0.canvas.allIDs() }
     }
 
     /// The re-check is TRUE while the pane is live, and FALSE once it has been closed — so the detached
@@ -23,7 +23,7 @@ final class WorkspaceStoreReconnectGuardTests: XCTestCase {
     func testPaneStillRegisteredFlipsFalseAfterClose() async {
         let store = makeStore()
         let original = leafIDs(store)[0]
-        store.split(original, axis: .horizontal, kind: .terminal)
+        store.addPane(kind: .terminal)
         let victim = leafIDs(store).first { $0 != original } ?? leafIDs(store)[1]
 
         guard let handle = store.handle(for: victim) else {
@@ -46,7 +46,7 @@ final class WorkspaceStoreReconnectGuardTests: XCTestCase {
     func testPaneStillRegisteredIsByIdentityNotKeyPresence() {
         let store = makeStore()
         let id0 = leafIDs(store)[0]
-        store.split(id0, axis: .horizontal, kind: .terminal)
+        store.addPane(kind: .terminal)
         let id1 = leafIDs(store).first { $0 != id0 }!
 
         guard let h0 = store.handle(for: id0), let h1 = store.handle(for: id1) else {

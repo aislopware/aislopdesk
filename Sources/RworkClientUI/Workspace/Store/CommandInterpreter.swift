@@ -8,8 +8,9 @@ import Foundation
 /// (`.contextMenu`, swipe) emit the same cases. Keeping it a value type makes the chord → command
 /// mapping fully unit-testable with no view.
 public enum WorkspaceCommand: Sendable, Equatable {
-    case splitHorizontal           // ⌘D
-    case splitVertical             // ⇧⌘D
+    case newPane                   // ⌘D   — add a pane to the canvas (replaces splitHorizontal)
+    case tidy                      // ⇧⌘D  — pack panes into a grid (replaces splitVertical)
+    case centerFocusedPane         // ⌥⌘C  — centre the camera on the focused pane (the pan-only "recenter")
     case closePane                 // ⌘W
     case closeTab                  // ⇧⌘W
     case newTab                    // ⌘T
@@ -18,7 +19,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case selectTab(Int)            // ⌘1…⌘9 (1-based menu position)
     case focus(FocusDirection)     // ⌥⌘←/→/↑/↓
     case cycleFocus(forward: Bool) // ⌘] (forward) / ⌘[ (back)
-    case toggleZoom                // ⇧⌘↩
+    case toggleZoom                // ⇧⌘↩  — maximize the focused pane to the viewport
     case renameTab                 // ⌘R
     case reconnectPane             // ⇧⌘R — re-dial the focused pane (primary failure recovery)
 }
@@ -110,9 +111,9 @@ public extension CommandInterpreter {
     static var defaultBindings: [KeyChord: WorkspaceCommand] {
         var map: [KeyChord: WorkspaceCommand] = [:]
 
-        // Splits: ⌘D / ⇧⌘D.
-        map[KeyChord(character: "d", [.command])] = .splitHorizontal
-        map[KeyChord(character: "d", [.command, .shift])] = .splitVertical
+        // Canvas: ⌘D = new pane, ⇧⌘D = tidy (reuses the old split chords for muscle-memory).
+        map[KeyChord(character: "d", [.command])] = .newPane
+        map[KeyChord(character: "d", [.command, .shift])] = .tidy
 
         // Close: ⌘W (pane) / ⇧⌘W (tab).
         map[KeyChord(character: "w", [.command])] = .closePane
@@ -133,6 +134,9 @@ public extension CommandInterpreter {
         map[KeyChord(.rightArrow, [.option, .command])] = .focus(.right)
         map[KeyChord(.upArrow, [.option, .command])] = .focus(.up)
         map[KeyChord(.downArrow, [.option, .command])] = .focus(.down)
+
+        // Centre the camera on the focused pane: ⌥⌘C (⌥⌘ avoids the ⌘C copy chord).
+        map[KeyChord(character: "c", [.option, .command])] = .centerFocusedPane
 
         // Cycle focus: ⌘] forward / ⌘[ back.
         map[KeyChord(character: "]", [.command])] = .cycleFocus(forward: true)

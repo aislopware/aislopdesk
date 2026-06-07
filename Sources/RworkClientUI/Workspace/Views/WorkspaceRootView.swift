@@ -10,10 +10,11 @@ import SwiftUI
 /// sidebar + detail for free on regular width, and collapses the sidebar into the navigation stack
 /// on compact width. The ONLY size-class adaptation switch in the whole app lives in ``detail`` — it
 /// computes `WorkspaceLayout.isCompact(...)` once and branches:
-/// - **regular** → the full recursive ``PaneTreeView`` (splits, dividers, zoom, multi-pane).
-/// - **compact** → the ``PaneCarouselView``: the SAME tree projected to one swipeable leaf at a time
-///   (an always-on zoom — docs/22 §4). The flip is view-only: it swaps the projection without calling
-///   `reconcile()`, dropping focus, or tearing down sessions.
+/// - **regular** → the ``CanvasView``: the tab's pan-only infinite canvas (free-floating panes,
+///   drag-to-move, resize, maximize, multi-pane — docs/30).
+/// - **compact** → the ``PaneCarouselView``: the SAME canvas projected to one swipeable pane at a time
+///   (a tiny-pane plane is unusable on a phone — docs/30 §6.6). The flip is view-only: it swaps the
+///   projection without calling `reconcile()`, dropping focus, or tearing down sessions.
 ///
 /// It also publishes its store as the focused scene value (so the menu-bar / iPad ``WorkspaceCommands``
 /// target THIS window — docs/22 §5) and hosts the ⌘K ``CommandPaletteView`` overlay.
@@ -108,8 +109,7 @@ public struct WorkspaceRootView: View {
                         // this branch — view-only, no reconcile / focus drop / session teardown.
                         PaneCarouselView(store: store, onShowTabs: { columnVisibility = .all })
                     } else {
-                        PaneTreeView(node: store.activeTab!.root, store: store, tab: store.activeTab!.id)
-                            .padding(6)
+                        CanvasView(store: store, tab: store.activeTab!.id)
                     }
                 } else {
                     emptyState

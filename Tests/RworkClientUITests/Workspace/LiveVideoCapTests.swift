@@ -55,15 +55,15 @@ final class LiveVideoCapTests: XCTestCase {
         precondition(n >= 1)
         let rootID = PaneID()
         let spec = PaneSpec(kind: .remoteGUI, title: "Remote window")
-        let tab = Tab(name: "Remote window", root: .leaf(rootID, spec), focusedPane: rootID)
+        let tab = Tab.canvasTab(name: "Remote window", panes: [(rootID, spec)])
         let ws = Workspace(tabs: [tab], activeTabID: tab.id)
         let store = WorkspaceStore(restoring: ws, makeSession: { FakePaneSession($0) }, liveVideoCap: cap, videoTeardownSettle: videoTeardownSettle)
 
-        var ids = store.activeTab!.root.allLeafIDs()
+        var ids = store.activeTab!.canvas.allIDs()
         // Split the most-recently-added leaf to grow the tree to `n` remoteGUI leaves.
         while ids.count < n {
-            store.split(ids.last!, axis: .horizontal, kind: .remoteGUI)
-            ids = store.activeTab!.root.allLeafIDs()
+            store.addPane(kind: .remoteGUI)
+            ids = store.activeTab!.canvas.allIDs()
         }
         XCTAssertEqual(ids.count, n, "tree should have exactly \(n) remoteGUI leaves")
         XCTAssertEqual(store.allSessions.count, n, "registry holds only the remoteGUI leaves (no stray default tab)")
@@ -87,7 +87,7 @@ final class LiveVideoCapTests: XCTestCase {
         }
         // Registry-key invariant holds: one handle per leaf, keyed by leaf id.
         XCTAssertEqual(Set(store.allSessions.map { $0.id }),
-                       Set(store.activeTab!.root.allLeafIDs()))
+                       Set(store.activeTab!.canvas.allIDs()))
     }
 
     // MARK: - The cap admits up to N, then gates
@@ -194,17 +194,17 @@ final class LiveVideoCapTests: XCTestCase {
         // cap=2, but saturate it with two live remoteGUI panes first.
         let store = makeStore(cap: 2)
         store.addTab(kind: .remoteGUI)                         // tab: one remoteGUI leaf
-        let guiRoot = store.activeTab!.root.allLeafIDs()[0]
-        store.split(guiRoot, axis: .horizontal, kind: .remoteGUI)
-        let guiIDs = store.activeTab!.root.allLeafIDs()        // two remoteGUI leaves
+        let guiRoot = store.activeTab!.canvas.allIDs()[0]
+        store.addPane(kind: .remoteGUI)
+        let guiIDs = store.activeTab!.canvas.allIDs()        // two remoteGUI leaves
         XCTAssertTrue(store.activateVideo(guiIDs[0]))
         XCTAssertTrue(store.activateVideo(guiIDs[1]))          // cap now saturated
 
         // Add terminal + claudeCode panes in a separate tab.
         store.addTab(kind: .terminal)
-        let terminalID = store.activeTab!.root.allLeafIDs()[0]
-        store.split(terminalID, axis: .vertical, kind: .claudeCode)
-        let mixedIDs = store.activeTab!.root.allLeafIDs()
+        let terminalID = store.activeTab!.canvas.allIDs()[0]
+        store.addPane(kind: .claudeCode)
+        let mixedIDs = store.activeTab!.canvas.allIDs()
         let claudeID = mixedIDs.first { store.handle(for: $0)?.kind == .claudeCode }!
 
         // activateVideo is a definitional false for non-video kinds — regardless of cap state.
@@ -275,7 +275,7 @@ final class LiveVideoCapTests: XCTestCase {
         // Synchronously: it is gone from the registry and the invariant holds.
         XCTAssertNil(store.handle(for: ids[0]), "closed pane removed from the registry synchronously")
         XCTAssertEqual(Set(store.allSessions.map { $0.id }),
-                       Set(store.activeTab!.root.allLeafIDs()),
+                       Set(store.activeTab!.canvas.allIDs()),
                        "registry keys == leaf ids the instant closePane returns")
 
         // The async teardown completes only after quiesce(); only THEN is the closed pane's video stack
@@ -396,8 +396,8 @@ final class LiveVideoCapTests: XCTestCase {
         XCTAssertNil(store.handle(for: ids[0]), "closed pane gone from the registry synchronously")
 
         // Same tick, open a replacement remoteGUI pane (split the survivor). It materializes idle.
-        store.split(ids[1], axis: .horizontal, kind: .remoteGUI)
-        let reopened = store.activeTab!.root.allLeafIDs().first { $0 != ids[1] }!
+        store.addPane(kind: .remoteGUI)
+        let reopened = store.activeTab!.canvas.allIDs().first { $0 != ids[1] }!
 
         // The replacement must be GATED: ids[1] is live (1) + ids[0] still tearing down (1) = the cap of
         // 2 is still occupied. Admitting it would transiently run THREE video stacks.
@@ -433,8 +433,8 @@ final class LiveVideoCapTests: XCTestCase {
         // Same tick, open a replacement. It must be GATED while the closing pane's slot is still held by
         // the settle (ids[1] live + ids[0] settling = cap of 2 occupied). Yield a few turns so teardown()
         // has returned but the settle sleep is still in flight.
-        store.split(ids[1], axis: .horizontal, kind: .remoteGUI)
-        let reopened = store.activeTab!.root.allLeafIDs().first { $0 != ids[1] }!
+        store.addPane(kind: .remoteGUI)
+        let reopened = store.activeTab!.canvas.allIDs().first { $0 != ids[1] }!
         await Task.yield()
         XCTAssertFalse(store.activateVideo(reopened),
                        "reopen gated during the teardown settle — the closing pane's stack is still settling")
@@ -455,8 +455,8 @@ final class LiveVideoCapTests: XCTestCase {
         XCTAssertTrue(store.activateVideo(ids[0]))
         XCTAssertTrue(store.activateVideo(ids[1]))
         store.closePane(ids[0])
-        store.split(ids[1], axis: .horizontal, kind: .remoteGUI)
-        let reopened = store.activeTab!.root.allLeafIDs().first { $0 != ids[1] }!
+        store.addPane(kind: .remoteGUI)
+        let reopened = store.activeTab!.canvas.allIDs().first { $0 != ids[1] }!
         await store.quiesce() // no settle sleep — teardown completes promptly
         XCTAssertTrue(store.activateVideo(reopened),
                       "with .zero settle the freed slot admits the reopened pane (today's behaviour)")
@@ -481,8 +481,8 @@ final class LiveVideoCapTests: XCTestCase {
 
         // Open a replacement. Because the closing pane was NEVER video-active, it is not counted in
         // flight — so with only ids[1] live (1 of 2) the reopened pane admits right now.
-        store.split(ids[1], axis: .horizontal, kind: .remoteGUI)
-        let reopened = store.activeTab!.root.allLeafIDs().first { $0 != ids[1] }!
+        store.addPane(kind: .remoteGUI)
+        let reopened = store.activeTab!.canvas.allIDs().first { $0 != ids[1] }!
         XCTAssertTrue(store.activateVideo(reopened),
                       "an in-flight teardown of a NON-active pane does not occupy a cap slot")
 
