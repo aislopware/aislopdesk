@@ -4,10 +4,10 @@ import Foundation
 
 /// Loads + saves the pure ``Workspace`` value tree to disk (docs/22 §6).
 ///
-/// The tree IS the format — it is already `Codable`, with a hand-written discriminated `PaneNode`
-/// codec (`PaneNode+Codable.swift`) so the JSON is stable and versionable. This type is deliberately
-/// **IO-thin**: it owns only the file URL and the encode/decode, so it is unit-testable against a
-/// temp directory with no store, no UI, no client.
+/// The value tree IS the format — it is already `Codable` (each tab's flat ``Canvas`` synthesizes a
+/// stable shape, with a thin defensive `Canvas.init(from:)` enforcing the invariants on decode). This
+/// type is deliberately **IO-thin**: it owns only the file URL and the encode/decode, so it is
+/// unit-testable against a temp directory with no store, no UI, no client.
 ///
 /// ### The RESTORED-vs-RECONNECTED discipline (docs/22 §6)
 /// Persistence restores SHAPE and INTENT only — never live connections, byte buffers, or sessionIDs.
@@ -93,24 +93,23 @@ public struct WorkspacePersistence: @unchecked Sendable {
             return .defaultWorkspace()   // missing file = first launch; nothing to back up
         }
         guard let decoded = try? JSONDecoder().decode(Workspace.self, from: data) else {
-            return resetToDefault()      // hard-corrupt JSON — preserve the bytes aside
+            return resetToDefault()      // hard-corrupt JSON (or an older incompatible shape) — preserve aside
         }
         // Forward-migrate the decoded value to this build's schema. A future/un-migratable version
-        // (migrate → nil) falls back to the default; v1-today is an identity passthrough.
+        // (migrate → nil) falls back to the default; the current version is an identity passthrough.
         guard let migrated = WorkspaceSchemaMigration.migrate(decoded, from: decoded.schemaVersion) else {
             return resetToDefault()      // e.g. a newer build wrote it, this older build can't read it
         }
-        // Repair a corrupt / copy-pasted tree with DUPLICATE leaf PaneIDs (the liveness registry is keyed
-        // 1:1 by PaneID, so duplicates would collapse two panes onto one session) by RE-MINTING the
-        // duplicates in place — lossless, since restored sessions always start idle (UI/UX pass-3 #5
-        // refines the R13 nuke-to-default, which discarded the user's whole tab/split/endpoint layout on a
-        // single duplicate id). Then repair a dangling/nil activeTabID + any tab's dangling focusedPane so
-        // the detail pane is never blank and focus is never pinned to a ghost pane (R13).
+        // Repair a corrupt / copy-pasted canvas with DUPLICATE item PaneIDs (the liveness registry is
+        // keyed 1:1 by PaneID, so duplicates would collapse two panes onto one session) by RE-MINTING the
+        // duplicates in place — lossless, since restored sessions always start idle (UI/UX pass-3 #5).
+        // Then repair a dangling/nil activeTabID + any tab's dangling focusedPane so the detail pane is
+        // never blank and focus is never pinned to a ghost pane (R13).
         var seen = Set<PaneID>()
         var repaired = migrated
         repaired.tabs = repaired.tabs.map { tab in
             var t = tab
-            t.root = t.root.dedupingLeafIDs(seen: &seen)
+            t.canvas = t.canvas.dedupingItemIDs(seen: &seen)
             return t
         }
         return repaired.normalizingActiveTab().normalizingTabFocus()

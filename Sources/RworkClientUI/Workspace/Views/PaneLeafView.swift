@@ -606,6 +606,20 @@ private struct RemoteGUIPaneView: View {
         // that was previously gated re-attempts admission. Cap-safe: the retry flows through
         // `activateVideo`. `nil` (no-store preview) never bumps, so this is inert there.
         .onChange(of: store?.videoPromotionGeneration) { _, _ in retryIfGated() }
+        // CANVAS — release/re-admit the cap slot by VIEWPORT MEMBERSHIP, not just by mount lifetime.
+        // A canvas keeps a video pane MOUNTED while it is within the cull margin (so `.onDisappear`
+        // does not fire), but the pane can be off the actual viewport (panned aside, or hidden behind a
+        // maximized sibling). `isPaneVisible` flips false then → free the slot (debounced teardown, so a
+        // brief scroll-past does not churn the decode stack); flips true → re-admit. Inert on the
+        // no-store preview path (`isPaneVisible` is nil there → neither branch).
+        .onChange(of: store?.isPaneVisible(live.id)) { _, visible in
+            if visible == false {
+                scheduleTeardown()
+            } else if visible == true {
+                cancelPendingTeardown()
+                if !admitted { activate() }
+            }
+        }
     }
 
     /// Requests a cap slot for this pane (store path) or activates directly (no-store preview path).
@@ -635,11 +649,13 @@ private struct RemoteGUIPaneView: View {
         teardownTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard !Task.isCancelled else { return }
-            // The disappear was SPURIOUS if the pane is still a leaf of the active tab (SwiftUI
-            // sent a lone `.onDisappear` during the initial layout settle but the pane never left
-            // the screen, and `.onAppear` does NOT re-fire to cancel us). Only a REAL disappear —
-            // the pane has left the active tab (a genuine tab switch / close) — actually tears down.
-            if let store, store.isPaneOnActiveTab(live.id) {
+            // The disappear was SPURIOUS if the pane is still VISIBLE — on the active tab AND inside the
+            // reported viewport (SwiftUI sent a lone `.onDisappear` during the initial layout settle but
+            // the pane never left the screen, and `.onAppear` does NOT re-fire to cancel us). A REAL
+            // disappear — a tab switch / close OR a canvas CULL (the pane was panned off-viewport) —
+            // tears down (freeing the `liveVideoCap` slot). `isPaneVisible` falls back to
+            // `isPaneOnActiveTab` on the compact / pre-report paths, so those stay byte-identical.
+            if let store, store.isPaneVisible(live.id) {
                 teardownTask = nil
                 return
             }

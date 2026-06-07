@@ -323,9 +323,9 @@ struct CommandPaletteView: View {
     /// suite are the only callers.
     @MainActor static func buildPaneEntries(tabs: [Tab]) -> [Entry] {
         var entries: [Entry] = []
-        for tab in tabs where tab.root.leafCount > 1 {
-            for id in tab.root.allLeafIDs() {
-                guard let spec = tab.root.spec(for: id) else { continue }
+        for tab in tabs where tab.canvas.itemCount > 1 {
+            for id in tab.canvas.allIDs() {
+                guard let spec = tab.canvas.spec(for: id) else { continue }
                 entries.append(
                     Entry(
                         id: "pane.\(id.raw.uuidString)",
@@ -441,9 +441,10 @@ struct CommandPaletteView: View {
     /// though its store effect is a UI affordance (the command layer treats it as a no-op marker,
     /// docs/22 §5).
     nonisolated static let commandCatalog: [CatalogItem] = [
-        CatalogItem(command: .splitHorizontal, title: "Split Right", symbol: "rectangle.split.2x1"),
-        CatalogItem(command: .splitVertical, title: "Split Down", symbol: "rectangle.split.1x2"),
-        CatalogItem(command: .toggleZoom, title: "Toggle Zoom", symbol: "arrow.up.left.and.arrow.down.right"),
+        CatalogItem(command: .newPane, title: "New Pane", symbol: "plus.rectangle"),
+        CatalogItem(command: .tidy, title: "Tidy Layout", symbol: "square.grid.2x2"),
+        CatalogItem(command: .centerFocusedPane, title: "Center on Pane", symbol: "scope"),
+        CatalogItem(command: .toggleZoom, title: "Maximize Pane", symbol: "arrow.up.left.and.arrow.down.right"),
         CatalogItem(command: .closePane, title: "Close Pane", symbol: "xmark"),
         CatalogItem(command: .reconnectPane, title: "Reconnect Pane", symbol: "arrow.clockwise"),
         CatalogItem(command: .newTab, title: "New Tab", symbol: "plus"),

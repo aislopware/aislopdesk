@@ -24,11 +24,11 @@ public struct CompactPage: Sendable, Equatable {
 /// and a size-class flip is view-only (it must NOT reconcile, drop focus, or tear sessions down,
 /// docs/22 §4). Free of UIKit; unit-tested on macOS (docs/22 §8 `CompactLayoutResolverTests`).
 public enum CompactLayoutResolver {
-    /// The carousel pages, in **pre-order leaf order** — identical to `tab.root.allLeafIDs()`, so
-    /// page order matches the desktop tree's reading order exactly.
+    /// The carousel pages, in canvas **z-order** — identical to `tab.canvas.allIDs()`, so page order is
+    /// a stable, total ordering of the panes (the canvas analogue of the old pre-order leaf order).
     public static func pages(for tab: Tab) -> [CompactPage] {
-        tab.root.allLeafIDs().compactMap { id in
-            guard let spec = tab.root.spec(for: id) else { return nil }
+        tab.canvas.allIDs().compactMap { id in
+            guard let spec = tab.canvas.spec(for: id) else { return nil }
             return CompactPage(id: id, kind: spec.kind, title: spec.title)
         }
     }
@@ -37,7 +37,7 @@ public enum CompactLayoutResolver {
     /// Returns `0` if the focused pane is somehow absent (defensive — keeps the carousel on a
     /// valid page rather than out of bounds).
     public static func selectedIndex(for tab: Tab) -> Int {
-        let ids = tab.root.allLeafIDs()
+        let ids = tab.canvas.allIDs()
         return ids.firstIndex(of: tab.focusedPane) ?? 0
     }
 }

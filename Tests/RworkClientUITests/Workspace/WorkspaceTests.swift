@@ -31,7 +31,7 @@ final class WorkspaceTests: XCTestCase {
     func testDefaultWorkspaceIsOneActiveTerminalTab() {
         let ws = Workspace.defaultWorkspace()
         XCTAssertEqual(ws.schemaVersion, Workspace.currentSchemaVersion)
-        XCTAssertEqual(ws.schemaVersion, 1)
+        XCTAssertEqual(ws.schemaVersion, 2)
         XCTAssertEqual(ws.tabs.count, 1)
 
         let tab = ws.tabs[0]
@@ -39,12 +39,12 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(ws.activeTabID, tab.id, "the single tab is active")
         XCTAssertEqual(ws.activeTab?.id, tab.id)
 
-        // Root is a single terminal leaf, focused, not zoomed.
-        XCTAssertEqual(tab.root.leafCount, 1)
-        XCTAssertNil(tab.zoomedPane)
-        let leafID = tab.root.allLeafIDs()[0]
-        XCTAssertEqual(tab.focusedPane, leafID, "focus points at the only leaf")
-        XCTAssertEqual(tab.root.spec(for: leafID)?.kind, .terminal)
+        // Canvas is a single terminal pane, focused, not maximized.
+        XCTAssertEqual(tab.canvas.itemCount, 1)
+        XCTAssertNil(tab.maximizedPane)
+        let paneID = tab.canvas.allIDs()[0]
+        XCTAssertEqual(tab.focusedPane, paneID, "focus points at the only pane")
+        XCTAssertEqual(tab.canvas.spec(for: paneID)?.kind, .terminal)
     }
 
     // MARK: - adding
@@ -55,7 +55,7 @@ final class WorkspaceTests: XCTestCase {
 
         XCTAssertEqual(result.tabs.count, 3)
         XCTAssertEqual(result.tabs[2].name, "claude")
-        XCTAssertEqual(result.tabs[2].root.spec(for: result.tabs[2].root.allLeafIDs()[0])?.kind, .claudeCode)
+        XCTAssertEqual(result.tabs[2].canvas.spec(for: result.tabs[2].canvas.allIDs()[0])?.kind, .claudeCode)
         XCTAssertEqual(result.activeTabID, result.tabs[2].id, "the freshly added tab becomes active")
         // Original tabs preserved by identity.
         XCTAssertEqual(Array(result.tabs.prefix(2)).map { $0.id }, ids)

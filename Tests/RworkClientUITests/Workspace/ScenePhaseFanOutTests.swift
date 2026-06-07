@@ -38,12 +38,12 @@ final class ScenePhaseFanOutTests: XCTestCase {
 
         // tab 0: split the root terminal into terminal | claudeCode.
         let tab0Root = store.activeTab!.focusedPane
-        store.split(tab0Root, axis: .horizontal, kind: .claudeCode)
+        store.addPane(kind: .claudeCode)
 
         // tab 1: a new terminal tab, split into two terminals.
         store.addTab(kind: .terminal)
         let tab1Root = store.activeTab!.focusedPane
-        store.split(tab1Root, axis: .vertical, kind: .terminal)
+        store.addPane(kind: .terminal)
 
         let fakes = store.allSessions.compactMap { $0 as? FakePaneSession }
         return (store, fakes)
@@ -111,7 +111,7 @@ final class ScenePhaseFanOutTests: XCTestCase {
     func testVideoPaneSuspendsOnPauseAndRestoresOnResume() async {
         let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
         let root = store.activeTab!.focusedPane
-        store.split(root, axis: .horizontal, kind: .remoteGUI)
+        store.addPane(kind: .remoteGUI)
         let videoID = store.activeTab!.focusedPane          // the new remoteGUI leaf is focused
         XCTAssertTrue(store.activateVideo(videoID), "video pane admitted under the cap")
         let video = store.handle(for: videoID) as! FakePaneSession
@@ -129,7 +129,7 @@ final class ScenePhaseFanOutTests: XCTestCase {
     func testInactiveVideoPaneStaysInactiveAcrossFanOut() async {
         let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
         let root = store.activeTab!.focusedPane
-        store.split(root, axis: .horizontal, kind: .remoteGUI)
+        store.addPane(kind: .remoteGUI)
         let videoID = store.activeTab!.focusedPane
         let video = store.handle(for: videoID) as! FakePaneSession
         XCTAssertFalse(video.isVideoActive, "never activated")
@@ -145,7 +145,7 @@ final class ScenePhaseFanOutTests: XCTestCase {
         let (store, fakes) = makeMultiPaneStore()
 
         // Sanity: handles exist for leaves on BOTH tabs (the registry spans all tabs).
-        let allLeafIDs = store.workspace.tabs.flatMap { $0.root.allLeafIDs() }
+        let allLeafIDs = store.workspace.tabs.flatMap { $0.canvas.allIDs() }
         XCTAssertEqual(Set(fakes.map { $0.id }), Set(allLeafIDs),
                        "every leaf across every tab is materialized")
         XCTAssertGreaterThan(store.workspace.tabs.count, 1, "more than one tab, so some panes are off-screen")

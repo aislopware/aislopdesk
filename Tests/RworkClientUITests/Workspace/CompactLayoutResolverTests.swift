@@ -1,62 +1,45 @@
 import XCTest
 @testable import RworkClientUI
 
-/// Tests for ``CompactLayoutResolver`` — the pure **compact projection** (docs/22 §1.3, §2.2, §4)
-/// that flattens the SAME tree of intent into an ordered, swipeable page list. The phone layout must
-/// be a lossless *view of the same model*: page order equals the desktop pre-order leaf order, so a
-/// size-class flip never reorders or drops a pane. (Swipe → next focus is owned end-to-end by the
-/// carousel's `TabView` selection binding + `store.move`, the shipped/tested paging path — the
-/// resolver no longer carries a parallel `focus(after:swipe:in:)` seam.)
+/// Tests for ``CompactLayoutResolver`` — the pure **compact projection** (docs/30 §6.6) that flattens
+/// the SAME canvas of intent into an ordered, swipeable page list. The phone layout must be a lossless
+/// *view of the same model*: page order equals the canvas z-order (`tab.canvas.allIDs()`), so a
+/// size-class flip never reorders or drops a pane.
 ///
-/// Contract under test (read from `CompactLayoutResolver`):
-/// - `pages(for:)` order == `tab.root.allLeafIDs()` (pre-order), carrying each leaf's kind+title.
+/// Contract under test:
+/// - `pages(for:)` order == `tab.canvas.allIDs()` (z-order), carrying each pane's kind+title.
 /// - `selectedIndex(for:)` == the focused pane's index, or `0` if the focused pane is absent.
 final class CompactLayoutResolverTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func leaf(_ id: PaneID, _ kind: PaneKind = .terminal, _ title: String) -> PaneNode {
-        .leaf(id, PaneSpec(kind: kind, title: title))
+    /// A 3-pane canvas tab whose z-order is a, b, c (``Tab/canvasTab`` assigns z = array index), each
+    /// pane carrying a distinct kind+title so the projection's payload is checkable.
+    private func threePaneTab(focused: PaneID, a: PaneID, b: PaneID, c: PaneID) -> Tab {
+        Tab.canvasTab(name: "Work", panes: [
+            (a, PaneSpec(kind: .terminal, title: "Shell")),
+            (b, PaneSpec(kind: .claudeCode, title: "Claude")),
+            (c, PaneSpec(kind: .remoteGUI, title: "Screen")),
+        ], focused: focused)
     }
 
-    /// A 3-leaf tab whose pre-order leaf sequence is deliberately interleaved across a nested
-    /// split so that "pre-order" is observable (not merely a flat left-to-right row):
-    ///
-    ///   root = horizontal [ A , vertical[ B , C ] ]
-    ///   pre-order leaves = A, B, C
-    ///
-    /// Each leaf carries a distinct kind+title so the projection's payload is checkable.
-    private func threeLeafTab(focused: PaneID, a: PaneID, b: PaneID, c: PaneID) -> Tab {
-        let inner = PaneNode.split(.vertical, children: [
-            leaf(b, .claudeCode, "Claude"),
-            leaf(c, .remoteGUI, "Screen"),
-        ], fractions: [0.5, 0.5])
-        let root = PaneNode.split(.horizontal, children: [
-            leaf(a, .terminal, "Shell"),
-            inner,
-        ], fractions: [0.5, 0.5])
-        return Tab(name: "Work", root: root, focusedPane: focused, zoomedPane: nil)
-    }
+    // MARK: - pages(): z-order, with payload
 
-    // MARK: - pages(): pre-order, with payload
-
-    /// Pages are emitted in pre-order leaf order, each carrying the leaf's id, kind, and title.
-    func testPagesArePreOrderLeavesWithPayload() {
+    func testPagesAreZOrderWithPayload() {
         let a = PaneID(), b = PaneID(), c = PaneID()
-        let tab = threeLeafTab(focused: a, a: a, b: b, c: c)
+        let tab = threePaneTab(focused: a, a: a, b: b, c: c)
 
         let pages = CompactLayoutResolver.pages(for: tab)
-        XCTAssertEqual(pages.map(\.id), [a, b, c], "page order == root.allLeafIDs() pre-order")
-        XCTAssertEqual(pages.map(\.id), tab.root.allLeafIDs(), "page order tracks the tree's pre-order exactly")
+        XCTAssertEqual(pages.map(\.id), [a, b, c], "page order == canvas.allIDs() z-order")
+        XCTAssertEqual(pages.map(\.id), tab.canvas.allIDs(), "page order tracks the canvas z-order exactly")
 
-        XCTAssertEqual(pages.map(\.kind), [.terminal, .claudeCode, .remoteGUI], "each page carries its leaf kind")
-        XCTAssertEqual(pages.map(\.title), ["Shell", "Claude", "Screen"], "each page carries its leaf title")
+        XCTAssertEqual(pages.map(\.kind), [.terminal, .claudeCode, .remoteGUI], "each page carries its pane kind")
+        XCTAssertEqual(pages.map(\.title), ["Shell", "Claude", "Screen"], "each page carries its pane title")
     }
 
-    /// A single-leaf tab projects to exactly one page.
-    func testSingleLeafTabHasOnePage() {
+    func testSinglePaneTabHasOnePage() {
         let only = PaneID()
-        let tab = Tab(name: "Solo", root: leaf(only, .terminal, "Term"), focusedPane: only)
+        let tab = Tab.canvasTab(name: "Solo", panes: [(only, PaneSpec(kind: .terminal, title: "Term"))])
 
         let pages = CompactLayoutResolver.pages(for: tab)
         XCTAssertEqual(pages.count, 1)
@@ -64,32 +47,31 @@ final class CompactLayoutResolverTests: XCTestCase {
         XCTAssertEqual(pages.first?.title, "Term")
     }
 
-    /// `Tab.make` produces a one-page compact projection consistent with its single leaf.
+    /// `Tab.make` produces a one-page compact projection consistent with its single pane.
     func testMakeTabHasSinglePage() {
         let tab = Tab.make(kind: .terminal, title: "New")
         let pages = CompactLayoutResolver.pages(for: tab)
         XCTAssertEqual(pages.count, 1)
-        XCTAssertEqual(pages.first?.id, tab.focusedPane, "the single page is the focused leaf")
+        XCTAssertEqual(pages.first?.id, tab.focusedPane, "the single page is the focused pane")
         XCTAssertEqual(pages.first?.kind, .terminal)
         XCTAssertEqual(pages.first?.title, "New")
     }
 
     // MARK: - selectedIndex(): focused pane's position
 
-    /// selectedIndex returns the pre-order index of the focused pane.
     func testSelectedIndexTracksFocusedPane() {
         let a = PaneID(), b = PaneID(), c = PaneID()
 
-        XCTAssertEqual(CompactLayoutResolver.selectedIndex(for: threeLeafTab(focused: a, a: a, b: b, c: c)), 0)
-        XCTAssertEqual(CompactLayoutResolver.selectedIndex(for: threeLeafTab(focused: b, a: a, b: b, c: c)), 1)
-        XCTAssertEqual(CompactLayoutResolver.selectedIndex(for: threeLeafTab(focused: c, a: a, b: b, c: c)), 2)
+        XCTAssertEqual(CompactLayoutResolver.selectedIndex(for: threePaneTab(focused: a, a: a, b: b, c: c)), 0)
+        XCTAssertEqual(CompactLayoutResolver.selectedIndex(for: threePaneTab(focused: b, a: a, b: b, c: c)), 1)
+        XCTAssertEqual(CompactLayoutResolver.selectedIndex(for: threePaneTab(focused: c, a: a, b: b, c: c)), 2)
     }
 
-    /// If the focused pane is somehow absent from the tree, selectedIndex defends with 0 (keeps
-    /// the carousel on a valid page rather than out of bounds) — it does NOT return nil.
+    /// If the focused pane is somehow absent, selectedIndex defends with 0 (keeps the carousel on a
+    /// valid page) — it does NOT return nil.
     func testSelectedIndexDefaultsToZeroWhenFocusAbsent() {
         let a = PaneID(), b = PaneID(), c = PaneID(), ghost = PaneID()
-        let tab = threeLeafTab(focused: ghost, a: a, b: b, c: c)
+        let tab = threePaneTab(focused: ghost, a: a, b: b, c: c)
         XCTAssertEqual(CompactLayoutResolver.selectedIndex(for: tab), 0, "absent focus → page 0 (defensive)")
     }
 }

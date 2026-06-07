@@ -80,7 +80,7 @@ struct TabSidebarView: View {
             Spacer(minLength: 0)
 
             // A small pane-count chip so a multi-pane tab reads as such at a glance.
-            let count = tab.root.leafCount
+            let count = tab.canvas.itemCount
             if count > 1 {
                 Text("\(count)")
                     .font(.caption2.monospacedDigit())
@@ -164,7 +164,7 @@ struct TabSidebarView: View {
     /// ``PaneConnectionStatus/fold(_:)`` — view-free testable; a `.remoteGUI` / unmaterialized leaf
     /// contributes `.none`.
     private func tabStatus(_ tab: Tab) -> PaneConnectionStatus {
-        let statuses = tab.root.allLeafIDs().map { id -> ConnectionViewModel.Status? in
+        let statuses = tab.canvas.allIDs().map { id -> ConnectionViewModel.Status? in
             (store.handle(for: id) as? LivePaneSession)?.connection?.status
         }
         return PaneConnectionStatus.fold(statuses)
@@ -175,8 +175,8 @@ struct TabSidebarView: View {
     /// The kind to represent the whole tab by in the rail. Picks the kind of the focused pane if it
     /// is in the tree, else the first leaf's — a simple, stable heuristic for the row icon.
     private func dominantKind(of tab: Tab) -> PaneKind {
-        if let spec = tab.root.spec(for: tab.focusedPane) { return spec.kind }
-        if let first = tab.root.allLeafIDs().first, let spec = tab.root.spec(for: first) { return spec.kind }
+        if let spec = tab.canvas.spec(for: tab.focusedPane) { return spec.kind }
+        if let first = tab.canvas.allIDs().first, let spec = tab.canvas.spec(for: first) { return spec.kind }
         return .terminal
     }
 }

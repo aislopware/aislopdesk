@@ -29,19 +29,6 @@ public struct TabID: Hashable, Codable, Sendable {
     public init(raw: UUID = UUID()) { self.raw = raw }
 }
 
-// MARK: - Split geometry kind
-
-/// How the children of a split are arranged. `horizontal` lays children **side-by-side**
-/// (varying along x); `vertical` **stacks** them (varying along y). This is the orientation a
-/// ``LayoutSolver`` allocates fractions along, and the axis a ``FocusResolver`` reasons about
-/// when resolving left/right vs up/down neighbours.
-public enum SplitAxis: String, Codable, Sendable {
-    /// Children sit side-by-side; the split's width is divided by `fractions`.
-    case horizontal
-    /// Children are stacked top-to-bottom; the split's height is divided by `fractions`.
-    case vertical
-}
-
 // MARK: - Leaf intent (what a pane IS — never a live object)
 
 /// What a pane *is*. The kind selects which proven per-session stack the live layer will

@@ -20,10 +20,15 @@ struct PaneChromeView<Content: View>: View {
     let handle: (any PaneSessionHandle)?
     /// Whether this pane is focused (shows the ring + a brighter header).
     let isFocused: Bool
-    /// Whether the tab is currently zoomed on THIS pane (flips the zoom button's glyph/intent).
+    /// Whether the tab is currently maximized on THIS pane (flips the maximize button's glyph/intent).
     let isZoomed: Bool
     /// The store, for the chrome's mutations.
     let store: WorkspaceStore
+    /// The drag-to-move gesture attached to the HEADER only (so dragging the body still reaches the
+    /// terminal). Type-erased + optional: the canvas item passes one, a maximized / chrome-only caller
+    /// passes `nil`. `AnyGesture<Void>` because the chrome only needs to *attach* it — the
+    /// `@GestureState` preview + `.onEnded` commit live inside the gesture the caller built.
+    var moveHandleGesture: AnyGesture<Void>? = nil
     /// The wrapped content (the leaf view).
     @ViewBuilder let content: () -> Content
 
@@ -85,21 +90,29 @@ struct PaneChromeView<Content: View>: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial))
+        // Drag-to-move lives on the HEADER ONLY (region isolation, plain `.gesture` never
+        // `.highPriorityGesture`) so a drag on the terminal body still reaches libghostty's `mouseDown`
+        // (docs/30 §6.5). `contentShape` makes the whole header bar a drag/tap target.
+        .contentShape(Rectangle())
+        // A plain CLICK on the title bar focuses the pane (the natural way to select a window). The move
+        // DragGesture has minimumDistance 2, so a sub-2px click never triggers its `.onEnded` focus —
+        // this tap covers it. `.simultaneousGesture` so it coexists with the drag and the chrome buttons.
+        .simultaneousGesture(TapGesture().onEnded { store.focus(id) })
+        .modifier(OptionalMoveGesture(gesture: moveHandleGesture))
     }
 
-    /// The split / zoom / close controls. Compact icon buttons in the native borderless toolbar idiom.
-    /// The split affordances are KIND-pickers (docs/22 WF6 DECISIONS): a plain tap splits with a
-    /// terminal (the common case); the menu offers Claude Code / Remote so the user chooses the new
-    /// pane's KIND before it is created — mirroring the sidebar / detail "New" idiom.
+    /// The add / maximize / close controls. Compact icon buttons in the native borderless toolbar
+    /// idiom. The add affordance is a KIND-picker (docs/30 §6.7): a plain tap adds a terminal pane (the
+    /// common case); the menu offers Claude Code / Remote so the user chooses the new pane's KIND —
+    /// mirroring the sidebar / detail "New" idiom (the old split-direction buttons are gone with splits).
     private var controls: some View {
         HStack(spacing: 2) {
-            splitMenu("rectangle.split.2x1", axis: .horizontal, help: "Split right")
-            splitMenu("rectangle.split.1x2", axis: .vertical, help: "Split down")
+            addMenu
             chromeButton(
                 isZoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                help: isZoomed ? "Restore" : "Zoom"
+                help: isZoomed ? "Restore" : "Maximize"
             ) {
-                store.focus(id)        // zoom acts on the focused pane — ensure it's this one first
+                store.focus(id)        // maximize acts on the focused pane — ensure it's this one first
                 store.toggleZoom()
             }
             chromeButton("xmark", help: store.isOnlyLeaf(id) ? "Close tab" : "Close pane", role: .destructive) {
@@ -109,31 +122,31 @@ struct PaneChromeView<Content: View>: View {
         .font(.caption)
     }
 
-    /// A split affordance that picks the new pane's KIND: tap to split with a terminal, or open the
-    /// menu to split with a Claude Code / Remote pane along `axis` (docs/22 WF6 DECISIONS).
+    /// The "add pane" KIND-picker: tap to add a terminal pane to the canvas, or open the menu to add a
+    /// Claude Code / Remote pane. New panes cascade off the focused pane and are guaranteed in view.
     @ViewBuilder
-    private func splitMenu(_ systemImage: String, axis: SplitAxis, help: String) -> some View {
+    private var addMenu: some View {
         Menu {
             Button {
-                store.split(id, axis: axis, kind: .terminal)
+                store.addPane(kind: .terminal)
             } label: {
                 Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
             }
             Button {
-                store.split(id, axis: axis, kind: .claudeCode)
+                store.addPane(kind: .claudeCode)
             } label: {
                 Label("Claude Code", systemImage: PaneLeafView.icon(for: .claudeCode))
             }
             Button {
-                store.split(id, axis: axis, kind: .remoteGUI)
+                store.addPane(kind: .remoteGUI)
             } label: {
                 Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
             }
         } label: {
-            Image(systemName: systemImage)
+            Image(systemName: "plus")
                 .frame(width: 18, height: 18)
         } primaryAction: {
-            store.split(id, axis: axis, kind: .terminal)
+            store.addPane(kind: .terminal)
         }
         .menuIndicator(.hidden)
         #if os(macOS)
@@ -141,8 +154,8 @@ struct PaneChromeView<Content: View>: View {
         #endif
         .fixedSize()
         .foregroundStyle(.secondary)
-        .help(help)
-        .accessibilityLabel(help)
+        .help("Add pane")
+        .accessibilityLabel("Add pane")
     }
 
     @ViewBuilder
@@ -241,6 +254,22 @@ struct PaneChromeView<Content: View>: View {
         let remaining = Int(nextRetry.timeIntervalSince(now).rounded(.up))
         guard remaining > 0 else { return status.label }
         return "\(status.label) retrying in \(remaining)s"
+    }
+}
+
+// MARK: - Optional move gesture
+
+/// Attaches a (type-erased) drag-to-move gesture to the pane header only when one is provided.
+/// `.gesture(_:)` has no optional-taking overload, so this `ViewModifier` branches on the optional —
+/// the canvas item passes a gesture; a maximized / chrome-only caller passes `nil`.
+private struct OptionalMoveGesture: ViewModifier {
+    let gesture: AnyGesture<Void>?
+    func body(content: Content) -> some View {
+        if let gesture {
+            content.gesture(gesture)
+        } else {
+            content
+        }
     }
 }
 #endif

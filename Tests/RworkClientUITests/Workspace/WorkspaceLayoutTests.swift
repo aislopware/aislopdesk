@@ -122,14 +122,12 @@ final class WorkspaceLayoutTests: XCTestCase {
     /// Fixtures: a 3-leaf horizontal row in one tab, materialized through the fake seam.
     private func makeThreeLeafStore() -> (WorkspaceStore, [PaneID]) {
         let a0 = PaneID(), a1 = PaneID(), a2 = PaneID()
-        let tab = Tab(
+        let tab = Tab.canvasTab(
             name: "A",
-            root: .split(.horizontal,
-                         children: [.leaf(a0, PaneSpec(kind: .terminal, title: "a0")),
-                                    .leaf(a1, PaneSpec(kind: .terminal, title: "a1")),
-                                    .leaf(a2, PaneSpec(kind: .terminal, title: "a2"))],
-                         fractions: [1.0 / 3, 1.0 / 3, 1.0 / 3]),
-            focusedPane: a1
+            panes: [(a0, PaneSpec(kind: .terminal, title: "a0")),
+                    (a1, PaneSpec(kind: .terminal, title: "a1")),
+                    (a2, PaneSpec(kind: .terminal, title: "a2"))],
+            focused: a1
         )
         let store = WorkspaceStore(
             restoring: Workspace(tabs: [tab], activeTabID: tab.id),
@@ -147,8 +145,7 @@ final class WorkspaceLayoutTests: XCTestCase {
                 ids[0]: CGRect(x: 0, y: 0, width: 100, height: 100),
                 ids[1]: CGRect(x: 100, y: 0, width: 100, height: 100),
                 ids[2]: CGRect(x: 200, y: 0, width: 100, height: 100),
-            ],
-            dividers: []
+            ]
         ))
         XCTAssertEqual(store.activeTab?.focusedPane, ids[1], "focused on the middle pane")
         store.move(.left)
@@ -166,16 +163,14 @@ final class WorkspaceLayoutTests: XCTestCase {
                 ids[0]: CGRect(x: 0, y: 0, width: 100, height: 100),
                 ids[1]: CGRect(x: 100, y: 0, width: 100, height: 100),
                 ids[2]: CGRect(x: 200, y: 0, width: 100, height: 100),
-            ],
-            dividers: []
+            ]
         ))
         // Zoom the focused (middle) pane. The FIX has PaneTreeView's zoomed branch report a single-leaf
         // layout; simulate that report through the same store seam the view uses.
         store.toggleZoom()
-        XCTAssertEqual(store.activeTab?.zoomedPane, ids[1], "middle pane is zoomed")
+        XCTAssertEqual(store.activeTab?.maximizedPane, ids[1], "middle pane is zoomed")
         store.updateSolvedLayout(SolvedLayout(
-            frames: [ids[1]: CGRect(x: 0, y: 0, width: 300, height: 100)],
-            dividers: []
+            frames: [ids[1]: CGRect(x: 0, y: 0, width: 300, height: 100)]
         ))
 
         // A directional move finds no neighbour in the single-leaf layout → focus is unchanged (no jump
@@ -193,11 +188,10 @@ final class WorkspaceLayoutTests: XCTestCase {
         let (store, ids) = makeThreeLeafStore()
         store.toggleZoom()    // zoom the middle pane (ids[1])
         store.updateSolvedLayout(SolvedLayout(
-            frames: [ids[1]: CGRect(x: 0, y: 0, width: 300, height: 100)],
-            dividers: []
+            frames: [ids[1]: CGRect(x: 0, y: 0, width: 300, height: 100)]
         ))
         store.closePane(ids[1])
-        let survivors = store.activeTab?.root.allLeafIDs() ?? []
+        let survivors = store.activeTab?.canvas.allIDs() ?? []
         XCTAssertEqual(survivors.count, 2, "closing one of three leaves leaves two")
         XCTAssertNotNil(store.activeTab?.focusedPane)
         XCTAssertTrue(survivors.contains(store.activeTab!.focusedPane),
@@ -243,8 +237,8 @@ final class WorkspaceLayoutTests: XCTestCase {
     /// (the BUG-K race shape). Two single-leaf tabs; we register hosts for both and drive selectTab.
     func testTabSwitchReassertsFocusForNewTabHost() {
         let pA = PaneID(), pB = PaneID()
-        let tabA = Tab(name: "A", root: .leaf(pA, PaneSpec(kind: .terminal, title: "A")), focusedPane: pA)
-        let tabB = Tab(name: "B", root: .leaf(pB, PaneSpec(kind: .terminal, title: "B")), focusedPane: pB)
+        let tabA = Tab.canvasTab(name: "A", panes: [(pA, PaneSpec(kind: .terminal, title: "A"))])
+        let tabB = Tab.canvasTab(name: "B", panes: [(pB, PaneSpec(kind: .terminal, title: "B"))])
         let store = WorkspaceStore(
             restoring: Workspace(tabs: [tabA, tabB], activeTabID: tabA.id),
             makeSession: { FakePaneSession($0) }

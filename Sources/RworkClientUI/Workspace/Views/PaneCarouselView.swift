@@ -96,13 +96,13 @@ struct PaneCarouselView: View {
     /// leaf shows at full opacity.
     @ViewBuilder
     private func pageView(for page: CompactPage, in tab: Tab) -> some View {
-        if let spec = tab.root.spec(for: page.id) {
+        if let spec = tab.canvas.spec(for: page.id) {
             PaneChromeView(
                 id: page.id,
                 spec: spec,
                 handle: store.handle(for: page.id),
                 isFocused: true,
-                isZoomed: tab.zoomedPane == page.id,
+                isZoomed: tab.maximizedPane == page.id,
                 store: store
             ) {
                 // BUG-E: a `.page` `TabView` keeps the adjacent pages ALIVE during a swipe, so the
@@ -186,30 +186,30 @@ struct PaneCarouselView: View {
         .background(.bar)
     }
 
-    /// The `+` affordance: split the focused leaf into a new pane of a chosen kind (adds a swipe page).
-    /// A plain tap adds the common case (a terminal split); the menu offers the other kinds — mirroring
-    /// the sidebar / detail "New" idiom so the user always picks the pane KIND (docs/22 WF6 decisions).
+    /// The `+` affordance: add a new pane of a chosen kind to the canvas (adds a swipe page). A plain
+    /// tap adds the common case (a terminal); the menu offers the other kinds — mirroring the sidebar /
+    /// detail "New" idiom so the user always picks the pane KIND (docs/30 §6.7).
     private func addMenu(for tab: Tab) -> some View {
         Menu {
             Button {
-                store.split(tab.focusedPane, axis: .horizontal, kind: .terminal)
+                store.addPane(kind: .terminal)
             } label: {
                 Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
             }
             Button {
-                store.split(tab.focusedPane, axis: .horizontal, kind: .claudeCode)
+                store.addPane(kind: .claudeCode)
             } label: {
                 Label("Claude Code", systemImage: PaneLeafView.icon(for: .claudeCode))
             }
             Button {
-                store.split(tab.focusedPane, axis: .horizontal, kind: .remoteGUI)
+                store.addPane(kind: .remoteGUI)
             } label: {
                 Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
             }
         } label: {
             Image(systemName: "plus")
         } primaryAction: {
-            store.split(tab.focusedPane, axis: .horizontal, kind: .terminal)
+            store.addPane(kind: .terminal)
         }
         #if os(macOS)
         .menuStyle(.borderlessButton)
@@ -242,7 +242,7 @@ struct PaneCarouselView: View {
         Binding(
             get: { tab.focusedPane },
             set: { newID in
-                guard newID != tab.focusedPane, tab.root.contains(newID) else { return }
+                guard newID != tab.focusedPane, tab.canvas.contains(newID) else { return }
                 store.focus(newID)
             }
         )

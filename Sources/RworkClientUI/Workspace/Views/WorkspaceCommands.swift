@@ -60,12 +60,9 @@ public struct WorkspaceCommands: Commands {
 
     @ViewBuilder
     private var paneMenu: some View {
-        // "Right"/"Down" (not "Horizontally"/"Vertically") so the menu matches the Cmd-K palette +
-        // the per-pane tooltip wording AND avoids the tmux-vs-iTerm H/V ambiguity — the new pane's
-        // landing direction is what these say. (.splitHorizontal lands side-by-side → "Right";
-        // .splitVertical stacks → "Down".)
-        commandButton("Split Right", .splitHorizontal)
-        commandButton("Split Down", .splitVertical)
+        // Canvas verbs (splits are gone): ⌘D adds a pane, ⇧⌘D tidies the layout into a grid.
+        commandButton("New Pane", .newPane)
+        commandButton("Tidy Layout", .tidy)
 
         Divider()
 
@@ -81,7 +78,15 @@ public struct WorkspaceCommands: Commands {
 
         Divider()
 
-        commandButton("Zoom Pane", .toggleZoom)
+        commandButton("Center on Pane", .centerFocusedPane)
+        // "Center on All" has no command-enum case (it is a whole-tab camera action with no focused
+        // target), so it calls the store directly — disabled when no workspace window is key.
+        Button("Center on All") { if let store { store.centerOnAll() } }
+            .disabled(store == nil)
+
+        Divider()
+
+        commandButton("Maximize Pane", .toggleZoom)
         // Recovery affordance: surface "Reconnect Pane" in the menu bar (it was palette-only +
         // keyless, so a failed/dropped pane had no discoverable in-place recovery).
         commandButton("Reconnect Pane", .reconnectPane)
