@@ -5,7 +5,7 @@ import XCTest
 
 /// Pins the iOS background/foreground **lifecycle fan-out** on ``WorkspaceStore`` (docs/22 §4, §11.4):
 /// `pauseAll()` pauses EVERY materialized session and `resumeAll()` resumes EVERY session — once each,
-/// across all tabs, including the inspector-bearing `.claudeCode` pane (whose `pause()` the
+/// across the whole canvas, including the inspector-bearing `.claudeCode` pane (whose `pause()` the
 /// `LivePaneSession` routes to BOTH its connection and its inspector channel; the double records the
 /// single `pause()` call, which is what the store guarantees).
 ///
@@ -24,25 +24,20 @@ final class ScenePhaseFanOutTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    /// Builds a store whose default workspace is one terminal tab, then grows it (via the store's own
-    /// mutations, so every leaf is materialized through `reconcile()`) to a multi-tab, multi-pane shape
-    /// that includes a `.claudeCode` pane:
-    ///
-    /// - tab 0: terminal (root) split horizontally → terminal | claudeCode  (2 leaves)
-    /// - tab 1: terminal (root) split vertically   → terminal / terminal     (2 leaves)
+    /// Builds a store whose default workspace is one terminal pane, then grows it (via the store's own
+    /// mutations, so every pane is materialized through `reconcile()`) to a multi-pane canvas that
+    /// includes a `.claudeCode` pane: the default terminal + an added claudeCode + two more terminals
+    /// (4 panes total on the single canvas, one of them the inspector-bearing claudeCode pane).
     ///
     /// Returns the store and the set of all materialized handles cast to `FakePaneSession` for direct
     /// counter assertions. Order of `allSessions` is unspecified, so callers key off identity, not order.
     private func makeMultiPaneStore() -> (store: WorkspaceStore, fakes: [FakePaneSession]) {
         let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
 
-        // tab 0: split the root terminal into terminal | claudeCode.
-        let tab0Root = store.activeTab!.focusedPane
+        // The default workspace already has one terminal pane; add three more onto the same canvas,
+        // one of them the inspector-bearing claudeCode pane.
         store.addPane(kind: .claudeCode)
-
-        // tab 1: a new terminal tab, split into two terminals.
-        store.addTab(kind: .terminal)
-        let tab1Root = store.activeTab!.focusedPane
+        store.addPane(kind: .terminal)
         store.addPane(kind: .terminal)
 
         let fakes = store.allSessions.compactMap { $0 as? FakePaneSession }
@@ -54,8 +49,8 @@ final class ScenePhaseFanOutTests: XCTestCase {
     func testPauseAllPausesEverySessionExactlyOnce() async {
         let (store, fakes) = makeMultiPaneStore()
 
-        // Precondition: 4 leaves materialized (2 per tab), one of them the claudeCode pane.
-        XCTAssertEqual(fakes.count, 4, "two tabs × two panes are all materialized")
+        // Precondition: 4 panes materialized on the canvas, one of them the claudeCode pane.
+        XCTAssertEqual(fakes.count, 4, "all four canvas panes are materialized")
         XCTAssertEqual(fakes.filter { $0.kind == .claudeCode }.count, 1,
                        "the inspector-bearing claudeCode pane is among them")
         XCTAssertTrue(fakes.allSatisfy { $0.pauseCount == 0 }, "nothing paused before pauseAll")
@@ -110,9 +105,8 @@ final class ScenePhaseFanOutTests: XCTestCase {
     /// cannot exceed `liveVideoCap`. Driven through `FakePaneSession`, which mirrors the contract.
     func testVideoPaneSuspendsOnPauseAndRestoresOnResume() async {
         let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
-        let root = store.activeTab!.focusedPane
         store.addPane(kind: .remoteGUI)
-        let videoID = store.activeTab!.focusedPane          // the new remoteGUI leaf is focused
+        let videoID = store.focusedPane!                    // the new remoteGUI pane is focused
         XCTAssertTrue(store.activateVideo(videoID), "video pane admitted under the cap")
         let video = store.handle(for: videoID) as! FakePaneSession
         XCTAssertTrue(video.isVideoActive, "active before background")
@@ -128,9 +122,8 @@ final class ScenePhaseFanOutTests: XCTestCase {
     /// restore re-opens only what was admitted, never spuriously activating an idle video pane.
     func testInactiveVideoPaneStaysInactiveAcrossFanOut() async {
         let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
-        let root = store.activeTab!.focusedPane
         store.addPane(kind: .remoteGUI)
-        let videoID = store.activeTab!.focusedPane
+        let videoID = store.focusedPane!
         let video = store.handle(for: videoID) as! FakePaneSession
         XCTAssertFalse(video.isVideoActive, "never activated")
 
@@ -139,20 +132,21 @@ final class ScenePhaseFanOutTests: XCTestCase {
         XCTAssertFalse(video.isVideoActive, "an idle video pane is not spuriously activated by resume")
     }
 
-    func testFanOutCoversEverySessionAcrossAllTabsNotJustTheActiveTab() async {
-        // Tab 1 is active after the fixture build; tab 0's two panes are on an INACTIVE tab. pauseAll
-        // must still reach them (background pauses the whole app, not just the visible tab).
+    func testFanOutCoversEverySessionOnTheCanvasNotJustTheFocusedPane() async {
+        // Only one pane is focused after the fixture build; the rest are unfocused (and may be off the
+        // current viewport). pauseAll must still reach them (background pauses the whole app, not just
+        // the focused/visible pane).
         let (store, fakes) = makeMultiPaneStore()
 
-        // Sanity: handles exist for leaves on BOTH tabs (the registry spans all tabs).
-        let allLeafIDs = store.workspace.tabs.flatMap { $0.canvas.allIDs() }
-        XCTAssertEqual(Set(fakes.map { $0.id }), Set(allLeafIDs),
-                       "every leaf across every tab is materialized")
-        XCTAssertGreaterThan(store.workspace.tabs.count, 1, "more than one tab, so some panes are off-screen")
+        // Sanity: a handle exists for every pane on the canvas (the registry spans the whole canvas).
+        let allPaneIDs = store.workspace.canvas.allIDs()
+        XCTAssertEqual(Set(fakes.map { $0.id }), Set(allPaneIDs),
+                       "every pane on the canvas is materialized")
+        XCTAssertGreaterThan(allPaneIDs.count, 1, "more than one pane, so some are unfocused")
 
         await store.pauseAll()
         XCTAssertTrue(fakes.allSatisfy { $0.pauseCount == 1 },
-                      "panes on the inactive tab are paused too, not just the active tab's panes")
+                      "unfocused panes are paused too, not just the focused pane")
     }
 
     // MARK: - The fan-out is AWAITED (no fire-and-forget)
@@ -221,13 +215,13 @@ final class ScenePhaseFanOutTests: XCTestCase {
     /// fire-and-forget per-session race would let pauseAll() return with some pauses still pending.
     func testPauseAllAwaitsAllSessionsNotJustTheFirst() async {
         let gate = ContinuationGate()
-        // Three tabs (three single-leaf gated sessions). Each pause() blocks on the SAME shared gate,
+        // Three panes on the canvas (three gated sessions). Each pause() blocks on the SAME shared gate,
         // which only releases all waiters together — so pauseAll cannot return until all are released.
         let store = WorkspaceStore(makeSession: { GatedFakePaneSession($0, gate: gate) }, liveVideoCap: 2)
-        store.addTab(kind: .terminal)
-        store.addTab(kind: .terminal)
+        store.addPane(kind: .terminal)
+        store.addPane(kind: .terminal)
         let gateds = store.allSessions.compactMap { $0 as? GatedFakePaneSession }
-        XCTAssertEqual(gateds.count, 3, "three single-leaf tabs, three gated sessions")
+        XCTAssertEqual(gateds.count, 3, "three canvas panes, three gated sessions")
 
         let finished = Flag()
         let task = Task { @MainActor in
@@ -249,11 +243,11 @@ final class ScenePhaseFanOutTests: XCTestCase {
     // MARK: - Empty / idempotency edges
 
     func testPauseAllOnEmptyRegistryIsANoOp() async {
-        // A store with no leaves (close the only pane → tab closes → no tabs). pauseAll must not hang
-        // or crash with an empty registry.
+        // A store with no panes (close the only pane → empty canvas). pauseAll must not hang or crash
+        // with an empty registry.
         let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
-        let onlyPane = store.activeTab!.focusedPane
-        store.closePane(onlyPane)        // last leaf → tab closes → empty workspace
+        let onlyPane = store.focusedPane!
+        store.closePane(onlyPane)        // last pane → empty canvas
         await store.quiesce()            // let the orphan teardown settle
         XCTAssertTrue(store.allSessions.isEmpty, "registry is empty")
 

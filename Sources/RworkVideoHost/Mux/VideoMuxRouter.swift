@@ -154,12 +154,22 @@ public struct VideoMuxRouter: Sendable {
         case dropNoStamp
     }
 
-    public static func bootstrapAction(for decision: Decision, channel: VideoChannel, payloadIsHello: Bool) -> BootstrapAction {
+    public static func bootstrapAction(
+        for decision: Decision,
+        channel: VideoChannel,
+        payloadIsHello: Bool,
+        payloadIsListRequest: Bool = false
+    ) -> BootstrapAction {
         switch decision {
         case .rejectUnadmitted, .dropRetired:
-            // Both the never-seen and the retired (cross-process reuse) cases admit ONLY a hello on
-            // the control channel; everything else drops without a stamp.
-            return (channel == .control && payloadIsHello) ? .bootstrapDeliver : .dropNoStamp
+            // Both the never-seen and the retired (cross-process reuse) cases bootstrap (deliver +
+            // stamp the reply flow) ONLY for a hello OR a window-LIST request on the control channel;
+            // everything else drops without a stamp. A listWindows is delivered+stamped exactly like a
+            // hello so the daemon can answer it (the daemon intercepts it and replies WITHOUT minting a
+            // session — it never reaches the registry's mint path, and a never-admitted list lane is
+            // retired right after the reply).
+            let isBootstrapControl = channel == .control && (payloadIsHello || payloadIsListRequest)
+            return isBootstrapControl ? .bootstrapDeliver : .dropNoStamp
         case .dropDraining, .route, .drop:
             // A draining lane is mid-teardown — drop EVEN a hello (no false accept, no premature
             // re-mint). `.route` is the live path; `.drop` (empty datagram) never bootstraps.

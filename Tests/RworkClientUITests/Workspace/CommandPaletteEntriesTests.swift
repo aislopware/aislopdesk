@@ -4,11 +4,11 @@ import XCTest
 import SwiftUI
 #endif
 
-/// Pins the command-palette catalog + per-pane entry builder additions (research B2): the new
-/// "Reconnect Pane" command surfaces and ranks under "recon", and a multi-pane tab produces one
-/// jump-to-pane entry per leaf carrying both the pane id and its owning tab id. Pure seams — the fuzzy
-/// scorer and `buildPaneEntries` are tested directly, no SwiftUI render. `.reconnectPane` command
-/// routing is asserted against the store via `apply(_:to:)` with the `FakePaneSession` seam.
+/// Pins the command-palette catalog + per-pane entry builder: the "Reconnect Pane" command surfaces
+/// and ranks under "recon", and `buildPaneEntries` emits one jump-to-pane entry per canvas pane,
+/// subtitled by its owning group (single-canvas model — there is no tab layer). Pure seams — the fuzzy
+/// scorer and `buildPaneEntries` are tested directly, no SwiftUI render. `.reconnectPane` / `.renamePane`
+/// command routing is asserted against the store via `apply(_:to:)` with the `FakePaneSession` seam.
 @MainActor
 final class CommandPaletteEntriesTests: XCTestCase {
 
@@ -30,62 +30,40 @@ final class CommandPaletteEntriesTests: XCTestCase {
         XCTAssertNil(CommandPaletteView.fuzzyScore(query: "xyz", in: "Reconnect Pane"))
     }
 
-    // MARK: - Tab entry keyword search ("select tab N")
-
-    /// A tab entry folds non-displayed `keywords` ("select tab N") into `searchText`, so the menu-bar
-    /// phrasing finds a tab by POSITION even when the tab is not literally named "N". Without the
-    /// keywords, that phrasing would not match the tab's visible text — closing the two-surface gap.
-    func testTabEntryKeywordsEnableSelectTabNQuery() {
-        let withKeywords = CommandPaletteView.Entry(
-            id: "tab.x", kind: .tab(TabID()), title: "Work",
-            subtitle: "Switch to tab", symbol: "rectangle.stack", keywords: "select tab 3"
-        )
-        XCTAssertNotNil(
-            CommandPaletteView.fuzzyScore(query: "select tab 3", in: withKeywords.searchText),
-            "the menu-learned 'Select Tab 3' phrasing must match a tab via its keywords"
-        )
-
-        let noKeywords = CommandPaletteView.Entry(
-            id: "tab.x", kind: .tab(TabID()), title: "Work",
-            subtitle: "Switch to tab", symbol: "rectangle.stack"
-        )
-        XCTAssertNil(
-            CommandPaletteView.fuzzyScore(query: "select tab 3", in: noKeywords.searchText),
-            "without keywords that phrasing does not match the tab's visible text (proves keywords are load-bearing)"
-        )
-    }
-
     // MARK: - buildPaneEntries
 
-    /// A multi-leaf tab yields one pane entry per leaf, each carrying the correct (PaneID, TabID); a
-    /// single-leaf tab yields none (it is fully represented by its tab entry).
-    func testBuildPaneEntriesOnlyForMultiPaneTabs() {
-        // Two-pane tab.
-        let leftID = PaneID(), rightID = PaneID()
-        let multiTab = Tab.canvasTab(
-            name: "Work",
+    /// Every pane on the canvas yields exactly one jump-to-pane entry carrying its `PaneID`, titled by
+    /// the leaf spec; an ungrouped pane is subtitled "Pane" while a grouped pane is "Pane in <group>".
+    func testBuildPaneEntriesOneEntryPerPaneWithGroupSubtitle() {
+        let groupedID = PaneID(), ungroupedID = PaneID()
+        let group = PaneGroup(name: "Work")
+        let workspace = Workspace.make(
             panes: [
-                (leftID, PaneSpec(kind: .terminal, title: "Left")),
-                (rightID, PaneSpec(kind: .claudeCode, title: "Right")),
+                (groupedID, PaneSpec(kind: .terminal, title: "Left")),
+                (ungroupedID, PaneSpec(kind: .claudeCode, title: "Right")),
             ],
-            focused: leftID
-        )
-        // Single-pane tab.
-        let soloID = PaneID()
-        let soloTab = Tab.canvasTab(name: "Solo", panes: [(soloID, PaneSpec(kind: .terminal, title: "Solo"))])
+            focused: groupedID,
+            groups: [group]
+        ).assigning(pane: groupedID, toGroup: group.id)
 
-        let entries = CommandPaletteView.buildPaneEntries(tabs: [multiTab, soloTab])
+        let entries = CommandPaletteView.buildPaneEntries(workspace: workspace)
 
-        XCTAssertEqual(entries.count, 2, "only the 2-leaf tab contributes pane entries")
-        let pairs: [(PaneID, TabID)] = entries.compactMap { entry in
-            if case let .pane(p, t) = entry.kind { return (p, t) }
+        XCTAssertEqual(entries.count, 2, "one entry per pane on the canvas")
+        // Each entry carries its PaneID.
+        let paneIDs: [PaneID] = entries.compactMap { entry in
+            if case let .pane(p) = entry.kind { return p }
             return nil
         }
-        XCTAssertEqual(pairs.count, 2)
-        XCTAssertTrue(pairs.contains { $0.0 == leftID && $0.1 == multiTab.id })
-        XCTAssertTrue(pairs.contains { $0.0 == rightID && $0.1 == multiTab.id })
+        XCTAssertEqual(Set(paneIDs), [groupedID, ungroupedID])
         // Titles come from the leaf specs.
         XCTAssertEqual(Set(entries.map(\.title)), ["Left", "Right"])
+        // Subtitle reflects group membership.
+        let byID = Dictionary(uniqueKeysWithValues: entries.compactMap { entry -> (PaneID, String?)? in
+            if case let .pane(p) = entry.kind { return (p, entry.subtitle) }
+            return nil
+        })
+        XCTAssertEqual(byID[groupedID], "Pane in Work", "a grouped pane names its group")
+        XCTAssertEqual(byID[ungroupedID], "Pane", "an ungrouped pane is plain 'Pane'")
     }
 
     #endif
@@ -93,7 +71,7 @@ final class CommandPaletteEntriesTests: XCTestCase {
     // MARK: - apply(.reconnectPane) routing
 
     /// `apply(.reconnectPane)` is a graceful no-op against the `FakePaneSession` seam (no live
-    /// connection) — it must not trap and must not mutate the tree / registry.
+    /// connection) — it must not trap and must not mutate the canvas / registry.
     func testApplyReconnectPaneIsSafeWithFakeSession() {
         let store = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
         let before = store.workspace
@@ -101,38 +79,38 @@ final class CommandPaletteEntriesTests: XCTestCase {
 
         apply(.reconnectPane, to: store)   // focused pane has a FakePaneSession (no connection) ⇒ no-op
 
-        XCTAssertEqual(store.workspace, before, "reconnect must not mutate the tree")
+        XCTAssertEqual(store.workspace, before, "reconnect must not mutate the canvas")
         XCTAssertEqual(store.allSessions.count, sessions, "reconnect must not touch the registry")
     }
 
-    /// `apply(.reconnectPane)` with no active tab is a graceful no-op (no focused pane to reconnect).
-    func testApplyReconnectPaneNoopWithNoActiveTab() {
+    /// `apply(.reconnectPane)` with no focused pane is a graceful no-op (no target to reconnect).
+    func testApplyReconnectPaneNoopWithNoFocusedPane() {
         let store = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
-        store.closeTab(store.activeTab!.id)
-        XCTAssertNil(store.activeTab)
+        store.closePane(store.focusedPane!)   // close the only pane → empty canvas, no focus
+        XCTAssertNil(store.focusedPane)
         apply(.reconnectPane, to: store)   // must not trap
-        XCTAssertNil(store.activeTab)
+        XCTAssertNil(store.focusedPane)
     }
 
-    // MARK: - apply(.renameTab) wiring (was a dead no-op)
+    // MARK: - apply(.renamePane) wiring
 
-    /// `apply(.renameTab)` bumps `renameTabRequest` so the sidebar opens its inline rename field — the
-    /// fix for the ⌘R / menu / palette "Rename Tab" entry points that previously did nothing.
-    func testApplyRenameTabBumpsRenameRequestWithActiveTab() {
+    /// `apply(.renamePane)` bumps `renameRequest` so the sidebar opens its inline rename field on the
+    /// focused pane — the ⌘R / menu / palette "Rename Pane" entry point.
+    func testApplyRenamePaneBumpsRenameRequestWithFocusedPane() {
         let store = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
-        XCTAssertNotNil(store.activeTab)
-        let before = store.renameTabRequest
-        apply(.renameTab, to: store)
-        XCTAssertEqual(store.renameTabRequest, before + 1, "rename request bumps so the sidebar opens the field")
+        XCTAssertNotNil(store.focusedPane)
+        let before = store.renameRequest
+        apply(.renamePane, to: store)
+        XCTAssertEqual(store.renameRequest, before + 1, "rename request bumps so the sidebar opens the field")
     }
 
-    /// With no active tab, `apply(.renameTab)` is a graceful no-op (nothing to rename).
-    func testApplyRenameTabNoopWithNoActiveTab() {
+    /// With no focused pane, `apply(.renamePane)` is a graceful no-op (nothing to rename).
+    func testApplyRenamePaneNoopWithNoFocusedPane() {
         let store = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
-        store.closeTab(store.activeTab!.id)
-        XCTAssertNil(store.activeTab)
-        let before = store.renameTabRequest
-        apply(.renameTab, to: store)   // must not trap
-        XCTAssertEqual(store.renameTabRequest, before, "no active tab → no rename request")
+        store.closePane(store.focusedPane!)   // close the only pane → no focus
+        XCTAssertNil(store.focusedPane)
+        let before = store.renameRequest
+        apply(.renamePane, to: store)   // must not trap
+        XCTAssertEqual(store.renameRequest, before, "no focused pane → no rename request")
     }
 }

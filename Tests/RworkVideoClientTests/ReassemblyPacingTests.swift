@@ -71,14 +71,15 @@ final class ReassemblyPacingTests: XCTestCase {
         XCTAssertEqual(drops, [fragsA[0].header.frameID], "frame A was declared lost once B advanced the frontier")
     }
 
-    func testPacerPresentsNewestOfTwoReassembledFrames() throws {
-        // Two frames complete back-to-back; only the newest should be presented at the
-        // next vsync (skip-late), matching the doc-17 §3.7 pacer policy.
-        let pacer = FramePacer(renderCallback: { _ in })
+    func testPacerBuffersTwoReassembledFramesInOrder() throws {
+        // Two frames complete back-to-back; the jitter buffer (targetDepth 2) primes and
+        // presents them IN ORDER (oldest first), not skip-late — smoothing arrival jitter.
+        let pacer = FramePacer(targetDepth: 2, renderCallback: { _ in })
         let frame1 = makePixelBuffer()
         let frame2 = makePixelBuffer()
         pacer.submit(frame1)
         pacer.submit(frame2)
+        XCTAssertTrue(pacer.frameForVSync() === frame1, "FIFO: oldest of the two presented first")
         XCTAssertTrue(pacer.frameForVSync() === frame2)
     }
 }

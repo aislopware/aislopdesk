@@ -231,7 +231,7 @@ final class InspectorGlueTests: XCTestCase {
 
         // The store's makeInspector seam: hand the session a loopback-backed client (no network).
         let session = LivePaneSession.make(
-            PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
+            PaneSpec(kind: .claudeCode, title: "claude"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) }
         )
@@ -263,7 +263,7 @@ final class InspectorGlueTests: XCTestCase {
         let source = InspectorSource(channel: hostCh)
 
         let session = LivePaneSession.make(
-            PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
+            PaneSpec(kind: .claudeCode, title: "claude"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) }
         )
@@ -294,7 +294,7 @@ final class InspectorGlueTests: XCTestCase {
 
         var clientHandedOut = 0
         let session = LivePaneSession.make(
-            PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
+            PaneSpec(kind: .claudeCode, title: "claude"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in
                 clientHandedOut += 1
@@ -334,7 +334,7 @@ final class InspectorGlueTests: XCTestCase {
         let source = InspectorSource(channel: hostCh)
 
         let session = LivePaneSession.make(
-            PaneSpec(kind: .claudeCode, title: "claude", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
+            PaneSpec(kind: .claudeCode, title: "claude"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) }
         )
@@ -364,7 +364,7 @@ final class InspectorGlueTests: XCTestCase {
     func testTerminalSessionHasNoInspectorAndSubscribeIsNoOp() async throws {
         var makeInspectorCalled = false
         let session = LivePaneSession.make(
-            PaneSpec(kind: .terminal, title: "term", endpoint: Endpoint(host: "127.0.0.1", port: 7420)),
+            PaneSpec(kind: .terminal, title: "term"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in
                 makeInspectorCalled = true
@@ -386,7 +386,7 @@ final class InspectorGlueTests: XCTestCase {
     func testInspectorPortConventionIsTerminalPortPlusOffset() {
         XCTAssertEqual(WorkspaceStore.inspectorPortOffset, 1, "documented single-source offset")
         XCTAssertEqual(
-            WorkspaceStore.inspectorPort(for: Endpoint(host: "127.0.0.1", port: 7420)),
+            WorkspaceStore.inspectorPort(for: ConnectionTarget(host: "127.0.0.1", port: 7420)),
             7421,
             "inspector NWConnection #2 = terminal port + offset"
         )
@@ -397,7 +397,7 @@ final class InspectorGlueTests: XCTestCase {
     /// unaffected). Guards the `addingReportingOverflow` boundary.
     func testInspectorPortReturnsNilWhenTerminalIsOnTopPort() {
         XCTAssertNil(
-            WorkspaceStore.inspectorPort(for: Endpoint(host: "127.0.0.1", port: .max)),
+            WorkspaceStore.inspectorPort(for: ConnectionTarget(host: "127.0.0.1", port: .max)),
             "no port above UInt16.max → inspector unavailable, not a crash"
         )
     }

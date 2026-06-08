@@ -104,9 +104,10 @@ public struct VideoClientStateMachine: Sendable {
             // is sent, so this branch is simply never reached.
             guard state == .streaming else { return [] }
             return [.updateCaptureSize(VideoSize(width: Double(cw), height: Double(ch)))]
-        case .hello, .resizeRequest, .keepalive:
-            // The client never receives a hello / resizeRequest / keepalive (all client→host) —
-            // defensive no-op.
+        case .hello, .resizeRequest, .keepalive, .listWindows, .windowList, .focusWindow:
+            // The client never receives a hello / resizeRequest / keepalive / listWindows / focusWindow
+            // (all client→host). A `windowList` IS host→client but is handled out-of-band by the discovery
+            // query (a transient lane), NOT by a streaming session's FSM — defensive no-op here.
             return []
         }
     }

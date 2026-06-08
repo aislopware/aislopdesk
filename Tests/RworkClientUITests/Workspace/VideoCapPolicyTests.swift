@@ -116,18 +116,16 @@ final class VideoCapPolicyTests: XCTestCase {
         let phoneCap = VideoCapPolicy.cap(for: .phone)
         XCTAssertEqual(phoneCap, 1, "the phone tier admits exactly one live video pane")
 
-        // A single-remoteGUI-tab workspace grown to two remoteGUI leaves (no stray default terminal tab).
+        // A single-remoteGUI-pane canvas grown to two remoteGUI leaves (no stray default terminal pane).
         let rootID = PaneID()
         let spec = PaneSpec(kind: .remoteGUI, title: "Remote window")
-        let tab = Tab.canvasTab(name: "Remote window", panes: [(rootID, spec)])
         let store = WorkspaceStore(
-            restoring: Workspace(tabs: [tab], activeTabID: tab.id),
+            restoring: Workspace.make(panes: [(rootID, spec)], focused: rootID),
             makeSession: { FakePaneSession($0) },
             liveVideoCap: phoneCap
         )
-        let first = store.activeTab!.canvas.allIDs()[0]
         store.addPane(kind: .remoteGUI)
-        let ids = store.activeTab!.canvas.allIDs()
+        let ids = store.workspace.canvas.allIDs()
         XCTAssertEqual(ids.count, 2, "two remoteGUI leaves")
 
         XCTAssertTrue(store.activateVideo(ids[0]), "the single phone-cap slot admits the first pane")

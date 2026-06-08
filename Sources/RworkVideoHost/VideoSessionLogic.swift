@@ -158,10 +158,17 @@ public struct VideoSessionStateMachine: Sendable {
         case .helloAck, .resizeAck:
             // Host never receives a helloAck/resizeAck — defensive no-op.
             return []
-        case .keepalive:
-            // A liveness keepalive (CONCURRENCY-HOST-1) carries NO state-machine semantics — its
-            // only effect is the transport-level `lastInbound` stamp the reaper reads. The SM does
-            // not touch capture/stream state for it: defensive no-op (no effects).
+        case .keepalive, .focusWindow:
+            // `keepalive` (CONCURRENCY-HOST-1) carries NO state-machine semantics — its only effect
+            // is the transport-level `lastInbound` stamp the reaper reads. `focusWindow` (the
+            // raise-the-focused-pane's-window model) is actioned at the ACTOR level
+            // (``RworkVideoHostSession/handleControl`` raises the captured window) and likewise has
+            // no SM/capture-state effect. Both are defensive no-ops here (no effects).
+            return []
+        case .listWindows, .windowList:
+            // Window-list discovery is answered at the DAEMON level (session-less, no capture mint)
+            // and never reaches a session's state machine — defensive no-op here. `windowList` is
+            // host→client and never arrives at the host at all.
             return []
         }
     }
@@ -259,7 +266,7 @@ public struct InputDatagramRouter: Sendable {
         } catch {
             return .drop(reason: "undecodable input datagram")
         }
-        let raiseFirst = needsRaise || Self.alwaysRaises(event)
+        let raiseFirst = Self.raiseFirst(for: event, needsRaise: needsRaise)
         return .inject(event, raiseFirst: raiseFirst)
     }
 
@@ -276,6 +283,49 @@ public struct InputDatagramRouter: Sendable {
     public static func rearmRaiseAfter(_ event: InputEvent) -> Bool {
         if case .mouseUp = event { return true }
         return false
+    }
+
+    /// Whether `event` is EXEMPT from the armed raise latch (the scroll-latency fix). A scroll is
+    /// dispatched by the window server to the window UNDER THE CURSOR regardless of key focus, so it
+    /// never needs the (expensive: ~6–10 synchronous AX IPC round-trips) re-raise — even when the
+    /// post-click latch is armed by ``rearmRaiseAfter(_:)``. The canonical gesture is "click a pane
+    /// to focus it, then scroll": before this exemption that first post-click scroll paid a full AX
+    /// raise ("scroll bị delay"). A `mouseDown` still always raises (``alwaysRaises(_:)``); a
+    /// key/text with the latch armed still raises (it needs key focus). Because an exempt scroll does
+    /// NOT satisfy `raiseFirst`, the actor never clears the latch on it, so a key arriving AFTER the
+    /// scroll still re-raises.
+    public static func latchExemptFromRaise(_ event: InputEvent) -> Bool {
+        if case .scroll = event { return true }
+        return false
+    }
+
+    /// The single pure rule the live consumer (``RworkVideoHostSession`` `injectCoalesced`) and
+    /// ``route(datagram:mediaFlowing:needsRaise:)`` share: should `event` raise+focus the target
+    /// window before injection, given the current latch. A `mouseDown` always raises; otherwise the
+    /// armed latch raises everything EXCEPT a latch-exempt scroll.
+    public static func raiseFirst(for event: InputEvent, needsRaise: Bool) -> Bool {
+        (needsRaise && !latchExemptFromRaise(event)) || alwaysRaises(event)
+    }
+}
+
+/// Pure policy for the host's activate-then-control window raise (the CLICK-latency fix). The
+/// injector's `raiseTargetWindow()` runs ~6–10 SYNCHRONOUS cross-process Accessibility IPC calls
+/// (each capped at the 0.25 s messaging timeout) that the input consumer AWAITS before the click is
+/// posted — so paying the full chain on EVERY click of a window that is already frontmost is the
+/// dominant felt input latency ("click bị delay 1 lúc"). This decides, from a CHEAP non-AX
+/// frontmost-app read, whether the full AX raise is actually needed. Pure ⇒ headlessly testable
+/// without AX/TCC (the injector itself is never driven from tests).
+public enum InputInjectorRaisePolicy {
+    /// Whether to run the full AX raise chain. Skips it ONLY when the target app is ALREADY the
+    /// frontmost app AND this is not the first interaction (the first interaction always raises, to
+    /// set `kAXMainWindow`/`kAXFocusedWindow` so keystrokes land on the right window even when the
+    /// app is already frontmost). Errs toward raising on any uncertainty — a `nil` frontmost read or
+    /// a different frontmost app — so activate-then-control correctness is never weakened: a click on
+    /// a genuinely-backgrounded window still raises.
+    public static func shouldRaise(frontmostPID: pid_t?, targetPID: pid_t, firstInteraction: Bool) -> Bool {
+        if firstInteraction { return true }
+        guard let frontmostPID else { return true }   // unknown frontmost → raise to be safe
+        return frontmostPID != targetPID
     }
 }
 

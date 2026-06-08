@@ -48,11 +48,16 @@ struct ClientAppMain {
         // `RworkVideoClient` — injects it here at launch. With no registration the seam
         // shows the gated `RemoteWindowPlaceholderView`.
         #if canImport(RworkVideoClient)
-        VideoWindowFactory.shared = { descriptor in
+        VideoWindowFactory.shared = { descriptor, paneContext in
             // LIVE path when the descriptor carries a full endpoint (host + media/cursor
             // ports), entered via the Remote-window panel: build the VideoWindowConnection
             // and the orchestrator-backed VideoWindowView(title:connection:). Otherwise the
             // chrome-only initializer (no live decode) — the seam's preview/placeholder path.
+            //
+            // `paneContext` (active state + activate/canvas-scroll callbacks) is destructured into
+            // primitives here — `RworkVideoClient` cannot import `RworkClientUI` (the seam exists
+            // for exactly that reason), so the context type stays on the `RworkClientUI` side and
+            // only its Bool + closures cross into `VideoWindowView`.
             if descriptor.hasEndpoint {
                 let connection = VideoWindowConnection(
                     host: descriptor.host,
@@ -60,7 +65,11 @@ struct ClientAppMain {
                     cursorPort: descriptor.cursorPort,
                     windowID: descriptor.windowID
                 )
-                return AnyView(VideoWindowView(title: descriptor.title, connection: connection))
+                return AnyView(VideoWindowView(
+                    title: descriptor.title, connection: connection,
+                    isActive: paneContext.isActive,
+                    onActivate: paneContext.onActivate,
+                    onCanvasScroll: paneContext.onCanvasScroll))
             }
             return AnyView(VideoWindowView(title: descriptor.title))
         }
@@ -68,6 +77,22 @@ struct ClientAppMain {
         // same host share ONE UDP flow (one flow per host, N panes); the host's `rwork-videohostd`
         // speaks the matching 19-byte channelID-prefixed wire — the only video wire there is now.
         MainActor.assumeIsolated { VideoMuxInstaller.install() }
+
+        // Remote-window PICKER discovery seam (docs/31): inject the host-window query so the
+        // cross-platform UI lists windows instead of making the user type a CGWindowID. Maps the
+        // video-protocol `WindowSummary` → the UI's `RemoteWindowSummary`. `nil` (no video module) ⇒ the
+        // picker falls back to manual entry.
+        MainActor.assumeIsolated {
+            RemoteWindowDiscovery.shared = { host, mediaPort, cursorPort in
+                let windows = await VideoWindowDiscovery.discoverWindows(
+                    host: host, mediaPort: mediaPort, cursorPort: cursorPort
+                )
+                return windows.map {
+                    RemoteWindowSummary(windowID: $0.windowID, appName: $0.appName, title: $0.title,
+                                        width: $0.width, height: $0.height)
+                }
+            }
+        }
         #endif
 
         RworkClientApp.main()

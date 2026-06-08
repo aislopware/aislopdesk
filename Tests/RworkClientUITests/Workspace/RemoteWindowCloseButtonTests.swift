@@ -33,7 +33,7 @@ final class RemoteWindowCloseButtonTests: XCTestCase {
     /// assert it is non-`Optional` (a trivially-true runtime check whose real job is to FORCE the
     /// compiler to resolve the initializer overloads above).
     func testDefaultInitializerOmitsCloseButtonArgument() {
-        let model = RemoteWindowModel(host: "h", windowID: "1")
+        let model = RemoteWindowModel(windowID: "1")
         // Default form — workspace usage. Must compile WITHOUT passing showCloseButton.
         let panel = RemoteWindowPanel(model: model)
         XCTAssertNotNil(panel as RemoteWindowPanel?,
@@ -43,7 +43,7 @@ final class RemoteWindowCloseButtonTests: XCTestCase {
     /// The explicit form (standalone callers that want the inline Close) must also compile, for both
     /// `true` and `false`. Constructing all three shapes pins the full initializer surface.
     func testExplicitInitializerAcceptsBothVisibilities() {
-        let model = RemoteWindowModel(host: "h", windowID: "1")
+        let model = RemoteWindowModel(windowID: "1")
         let hidden = RemoteWindowPanel(model: model, showCloseButton: false)
         let shown = RemoteWindowPanel(model: model, showCloseButton: true)
         XCTAssertNotNil(hidden as RemoteWindowPanel?)
@@ -56,7 +56,7 @@ final class RemoteWindowCloseButtonTests: XCTestCase {
     /// `close()` contract must be identical: it clears `active` back to `nil` (form re-shown / live
     /// view torn down). Asserted directly on the model — no view, no ViewInspector.
     func testCloseRowActionStillClearsActive() {
-        let model = RemoteWindowModel(host: "h", windowID: "1")
+        let model = RemoteWindowModel(windowID: "1")
         model.open()
         XCTAssertNotNil(model.active, "precondition: open() makes the panel show the live view")
         model.close()   // exactly what the Close row's button invokes
@@ -67,11 +67,13 @@ final class RemoteWindowCloseButtonTests: XCTestCase {
     /// (`model.active` non-nil ⇒ live `VideoWindowFactory.make` view; nil ⇒ entry form). Pins the
     /// unchanged `open()` → complete-endpoint descriptor contract the panel relies on.
     func testOpenStillProducesLiveEndpointDescriptor() {
-        let model = RemoteWindowModel(host: " h.local ", mediaPort: "9000", cursorPort: "9001",
-                                      windowID: "42", title: "Safari")
+        let model = RemoteWindowModel(
+            target: { ConnectionTarget(host: "h.local", port: 7420, mediaPort: 9000, cursorPort: 9001) },
+            windowID: "42", title: "Safari"
+        )
         model.open()
         guard let d = model.active else { return XCTFail("open() should set active") }
-        XCTAssertEqual(d.host, "h.local", "host is trimmed (unchanged)")
+        XCTAssertEqual(d.host, "h.local", "host comes from the app target")
         XCTAssertEqual(d.mediaPort, 9000)
         XCTAssertEqual(d.cursorPort, 9001)
         XCTAssertEqual(d.windowID, 42)
@@ -79,17 +81,15 @@ final class RemoteWindowCloseButtonTests: XCTestCase {
                       "descriptor still carries a live endpoint ⇒ panel takes the live factory path")
     }
 
-    /// The `canOpen` gate (which drives the entry-form Open button) is untouched by the panel edit:
-    /// it still requires a non-empty host, valid DISTINCT non-zero ports, and a valid window id.
-    func testCanOpenGateUnchanged() {
-        let m = RemoteWindowModel()                 // empty host + windowID, default ports
+    /// The `canOpen` gate (which drives the entry-form Open button) now requires only a valid window id —
+    /// host + UDP ports come from the app-global target, not the per-pane form (docs/31).
+    func testCanOpenGateRequiresWindowID() {
+        let m = RemoteWindowModel()                 // empty windowID
         XCTAssertFalse(m.canOpen)
-        m.host = "100.64.0.2"
-        XCTAssertFalse(m.canOpen, "still missing window id")
         m.windowID = "12345"
-        XCTAssertTrue(m.canOpen, "host + windowID + default valid distinct ports ⇒ can open")
-        m.cursorPort = m.mediaPort                   // collapse the two ports
-        XCTAssertFalse(m.canOpen, "media == cursor port must still be rejected (two UDP sockets)")
+        XCTAssertTrue(m.canOpen, "a valid window id ⇒ can open")
+        m.windowID = "nope"
+        XCTAssertFalse(m.canOpen, "an unparseable window id cannot open")
     }
 
     /// A no-endpoint descriptor (preview / placeholder path) is still NOT live — the panel renders

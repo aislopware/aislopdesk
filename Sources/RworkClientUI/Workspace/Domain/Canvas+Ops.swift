@@ -68,7 +68,7 @@ public extension Canvas {
             if seen.contains(item.id) {
                 let fresh = PaneID()
                 seen.insert(fresh)
-                newItems.append(CanvasItem(id: fresh, spec: item.spec, frame: item.frame, z: item.z))
+                newItems.append(CanvasItem(id: fresh, spec: item.spec, frame: item.frame, z: item.z, groupID: item.groupID))
             } else {
                 seen.insert(item.id)
                 newItems.append(item)
@@ -241,6 +241,54 @@ public extension Canvas {
             x: point.x - viewport.width / 2,
             y: point.y - viewport.height / 2
         ))
+    }
+}
+
+// MARK: - Groups (membership lives on the item; pure queries + mutations)
+
+public extension Canvas {
+    /// The ids of every pane belonging to `groupID` (or, when `groupID` is `nil`, every UNGROUPED
+    /// pane), in the canonical ``allIDs()`` order so the sidebar section + canvas box are deterministic.
+    func ids(inGroup groupID: PaneGroupID?) -> [PaneID] {
+        allIDs().filter { id in item(id)?.groupID == groupID }
+    }
+
+    /// The set of group ids actually referenced by at least one item — used to prune dangling group
+    /// metadata (a `PaneGroup` whose every member was closed) on load / save.
+    func groupIDsInUse() -> Set<PaneGroupID> {
+        Set(items.compactMap(\.groupID))
+    }
+
+    /// The tight canvas-space bounding box around every pane in `groupID`, or `nil` when the group has
+    /// no members. The view insets/labels it for the Figma-style group frame.
+    func groupBoundingBox(_ groupID: PaneGroupID) -> CGRect? {
+        let frames = items.filter { $0.groupID == groupID }.map(\.frame)
+        guard var box = frames.first else { return nil }
+        for f in frames.dropFirst() { box = box.union(f) }
+        return box
+    }
+
+    /// Assigns pane `id` to `groupID` (or ungroups it when `groupID` is `nil`). Disjoint by
+    /// construction — a pane carries exactly one optional `groupID`, so re-assigning moves it. No-op if
+    /// absent or already in that group.
+    func assigning(_ id: PaneID, toGroup groupID: PaneGroupID?) -> Canvas {
+        guard let existing = item(id), existing.groupID != groupID else { return self }
+        return mapItem(id) { $0.groupID = groupID }
+    }
+
+    /// Clears membership for every pane in `groupID` (the model side of deleting a group — the members
+    /// survive as ungrouped panes). Identity if no pane is in the group.
+    func clearingGroup(_ groupID: PaneGroupID) -> Canvas {
+        guard items.contains(where: { $0.groupID == groupID }) else { return self }
+        return Canvas(
+            items: items.map { item in
+                guard item.groupID == groupID else { return item }
+                var copy = item
+                copy.groupID = nil
+                return copy
+            },
+            camera: camera
+        )
     }
 }
 

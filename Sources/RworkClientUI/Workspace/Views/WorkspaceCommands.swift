@@ -3,7 +3,7 @@ import SwiftUI
 
 // MARK: - WorkspaceCommands (native menu-bar / hardware-keyboard shortcuts)
 
-/// The native command surface for the workspace: a `Pane` menu and a `Tab` menu whose every item is
+/// The native command surface for the workspace: a `Pane` menu whose every item is
 /// a `.keyboardShortcut`-decorated `Button` that builds a ``WorkspaceCommand`` and applies it — via
 /// the one tested `apply(_:to:)` free function — to the focused scene's ``WorkspaceStore`` (docs/22
 /// §5). This is the *thin adapter* the architecture calls for: it owns no logic, it maps a menu
@@ -51,18 +51,14 @@ public struct WorkspaceCommands: Commands {
         CommandMenu("Pane") {
             paneMenu
         }
-        CommandMenu("Tab") {
-            tabMenu
-        }
     }
 
-    // MARK: - Pane menu
+    // MARK: - Pane menu (tabs are gone — everything is on the single canvas)
 
     @ViewBuilder
     private var paneMenu: some View {
-        // Canvas verbs (splits are gone): ⌘D adds a pane, ⇧⌘D tidies the layout into a grid.
         commandButton("New Pane", .newPane)
-        commandButton("Tidy Layout", .tidy)
+        commandButton("New Group", .newGroup)
 
         Divider()
 
@@ -79,42 +75,17 @@ public struct WorkspaceCommands: Commands {
         Divider()
 
         commandButton("Center on Pane", .centerFocusedPane)
-        // "Center on All" has no command-enum case (it is a whole-tab camera action with no focused
-        // target), so it calls the store directly — disabled when no workspace window is key.
-        Button("Center on All") { if let store { store.centerOnAll() } }
-            .disabled(store == nil)
+        commandButton("Center on All", .centerAll)
+        commandButton("Tidy Layout", .tidy)
 
         Divider()
 
         commandButton("Maximize Pane", .toggleZoom)
+        commandButton("Rename Pane…", .renamePane)
         // Recovery affordance: surface "Reconnect Pane" in the menu bar (it was palette-only +
         // keyless, so a failed/dropped pane had no discoverable in-place recovery).
         commandButton("Reconnect Pane", .reconnectPane)
         commandButton("Close Pane", .closePane)
-    }
-
-    // MARK: - Tab menu
-
-    @ViewBuilder
-    private var tabMenu: some View {
-        commandButton("New Tab", .newTab)
-        commandButton("Rename Tab…", .renameTab)
-
-        Divider()
-
-        commandButton("Next Tab", .nextTab)
-        commandButton("Previous Tab", .prevTab)
-
-        Divider()
-
-        // Select tab ⌘1…⌘9 (1-based menu position; ⌘9 = last by store convention).
-        ForEach(1...9, id: \.self) { position in
-            commandButton("Select Tab \(position)", .selectTab(position))
-        }
-
-        Divider()
-
-        commandButton("Close Tab", .closeTab)
     }
 
     // MARK: - Item builder

@@ -20,8 +20,8 @@ import SwiftUI
 /// Wiring (app target, once at launch):
 /// ```swift
 /// import RworkVideoClient
-/// VideoWindowFactory.shared = { descriptor in
-///     AnyView(VideoWindowView(title: descriptor.title))
+/// VideoWindowFactory.shared = { descriptor, context in
+///     AnyView(VideoWindowView(title: descriptor.title, context: context))
 /// }
 /// ```
 public struct RemoteWindowDescriptor: Sendable, Equatable {
@@ -61,21 +61,95 @@ public struct RemoteWindowDescriptor: Sendable, Equatable {
     }
 }
 
+/// Per-render context the cross-platform canvas passes through the seam to the gated video view, so the
+/// remote-GUI pane behaves like one item on the infinite canvas: only the ACTIVE pane consumes
+/// pointer/scroll, a click ACTIVATES it (and raises the host window), and a scroll over a NON-active pane
+/// pans the canvas instead of being swallowed by the (background) remote window.
+public struct RemotePaneContext {
+    /// Whether this pane is the workspace's active/focused pane. The video view forwards pointer/scroll
+    /// to the remote window ONLY when active; a non-active pane routes scroll to ``onCanvasScroll``.
+    public var isActive: Bool
+    /// Make this pane the workspace's active pane — called on click (mouseDown). For a GUI pane the host
+    /// window is ALSO raised by the pane's own `focusWindow`; this sets the *workspace* focus.
+    public var onActivate: () -> Void
+    /// Pan the canvas by a (sign-adjusted) delta — called when a NON-active pane receives a scroll, so the
+    /// gesture navigates the canvas rather than scrolling the background remote window.
+    public var onCanvasScroll: (CGSize) -> Void
+
+    public init(isActive: Bool = true,
+                onActivate: @escaping () -> Void = {},
+                onCanvasScroll: @escaping (CGSize) -> Void = { _ in }) {
+        self.isActive = isActive
+        self.onActivate = onActivate
+        self.onCanvasScroll = onCanvasScroll
+    }
+
+    /// The standalone default (no canvas around it): always active, no-op callbacks — for previews / sheet
+    /// hosts that render a `RemoteWindowPanel` directly.
+    public static var standalone: RemotePaneContext { RemotePaneContext() }
+}
+
 /// Injects the production remote-GUI-window video view when the app target provides
 /// one. `nil` → the gated placeholder is shown.
 @MainActor
 public final class VideoWindowFactory {
-    /// App-registered factory (set once at launch). `nil` → use the placeholder.
-    public static var shared: ((RemoteWindowDescriptor) -> AnyView)?
+    /// App-registered factory (set once at launch). `nil` → use the placeholder. Receives the descriptor
+    /// + the per-render ``RemotePaneContext`` (active state + activate/canvas-scroll callbacks).
+    public static var shared: ((RemoteWindowDescriptor, RemotePaneContext) -> AnyView)?
 
     /// Builds the remote-GUI-window view: the registered production renderer if
     /// present (and a host is capturing), else the gated placeholder.
-    public static func make(_ descriptor: RemoteWindowDescriptor) -> AnyView {
+    public static func make(_ descriptor: RemoteWindowDescriptor, context: RemotePaneContext = .standalone) -> AnyView {
         if let factory = shared {
-            return factory(descriptor)
+            return factory(descriptor, context)
         }
         return AnyView(RemoteWindowPlaceholderView(descriptor: descriptor))
     }
+}
+
+/// One host-side window the Remote-Window PICKER lists (docs/31). The cross-platform mirror of the
+/// video protocol's `WindowSummary`, kept here so `RworkClientUI` needn't depend on `RworkVideoProtocol`.
+/// `Identifiable` (by `windowID`) so a SwiftUI `List`/`ForEach` can render it directly.
+public struct RemoteWindowSummary: Sendable, Equatable, Identifiable {
+    public var windowID: UInt32
+    public var appName: String
+    public var title: String
+    public var width: UInt16
+    public var height: UInt16
+    public var id: UInt32 { windowID }
+
+    public init(windowID: UInt32, appName: String, title: String, width: UInt16, height: UInt16) {
+        self.windowID = windowID
+        self.appName = appName
+        self.title = title
+        self.width = width
+        self.height = height
+    }
+
+    /// "App — Title  (W×H)" for one picker row (title omitted when empty).
+    public var displayLabel: String {
+        let head = title.isEmpty ? appName : "\(appName) — \(title)"
+        return "\(head)  (\(width)×\(height))"
+    }
+}
+
+/// The **discovery seam** (docs/31): the GUI app injects a closure that queries the host for its
+/// shareable windows (implemented in `RworkVideoClient.VideoWindowDiscovery`), so the cross-platform UI
+/// can populate the Remote-Window picker WITHOUT importing the gated video module. `nil` → no discovery
+/// available → the picker shows its manual-window-id fallback.
+///
+/// Wiring (app target, once at launch):
+/// ```swift
+/// import RworkVideoClient
+/// RemoteWindowDiscovery.shared = { host, mediaPort, cursorPort in
+///     await VideoWindowDiscovery.discoverWindows(host: host, mediaPort: mediaPort, cursorPort: cursorPort)
+///         .map { RemoteWindowSummary(windowID: $0.windowID, appName: $0.appName, title: $0.title, width: $0.width, height: $0.height) }
+/// }
+/// ```
+@MainActor
+public final class RemoteWindowDiscovery {
+    /// App-registered window-list query (set once at launch). `nil` → the picker uses manual entry.
+    public static var shared: (@MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16) async -> [RemoteWindowSummary])?
 }
 
 /// The gated placeholder shown when the GUI video path is not active (no host

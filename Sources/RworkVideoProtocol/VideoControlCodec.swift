@@ -42,6 +42,9 @@ import Foundation
 /// type 4 resizeRequest: Float64 desiredW | Float64 desiredH | UInt32 epoch
 /// type 5 resizeAck:     UInt16 captureWidth | UInt16 captureHeight | UInt32 epoch
 /// type 6 keepalive:     (no body)
+/// type 7 listWindows:   (no body)
+/// type 8 windowList:    UInt16 count | per record: UInt32 id | UInt16 w | UInt16 h | lp app | lp title
+/// type 9 focusWindow:   (no body)
 /// ```
 ///
 /// Liveness keepalive (additive after the resize pair — CONCURRENCY-HOST-1 crash-without-bye):
@@ -52,6 +55,29 @@ import Foundation
 /// arm, which THROWS `.malformed` — both consumers catch-and-DROP it (the host's `handleControl`,
 /// the client's `ReceivedDatagramRouter`), never crash. A keepalive is meant to be inert to a peer
 /// that doesn't speak it; only a NEW host stamps it as liveness.
+/// One host-side shareable window in a ``VideoControlMessage/windowList(_:)`` response — the data the
+/// client's Remote-Window PICKER renders (replacing manual window-id entry). Mirrors what
+/// `rwork-videohostd --list` prints, but delivered over the wire.
+public struct WindowSummary: Equatable, Sendable {
+    /// The host CGWindowID to put in a `hello`'s `requestedWindowID` to stream this window.
+    public var windowID: UInt32
+    /// The owning application name (e.g. "Google Chrome").
+    public var appName: String
+    /// The window title (may be empty).
+    public var title: String
+    /// Window size in points (for display in the picker; clamped to UInt16 on the wire).
+    public var width: UInt16
+    public var height: UInt16
+
+    public init(windowID: UInt32, appName: String, title: String, width: UInt16, height: UInt16) {
+        self.windowID = windowID
+        self.appName = appName
+        self.title = title
+        self.width = width
+        self.height = height
+    }
+}
+
 public enum VideoControlMessage: Equatable, Sendable {
     /// Client → host: open a session for `requestedWindowID`, sized to `viewport`.
     case hello(protocolVersion: UInt16, requestedWindowID: UInt32, viewport: VideoSize)
@@ -70,6 +96,21 @@ public enum VideoControlMessage: Equatable, Sendable {
     /// seconds while streaming so the host's idle-timeout reaper distinguishes a quiet-but-alive
     /// client from a crashed one. Inert to a peer that does not recognise type 6 (it drops it).
     case keepalive
+    /// Client → host: "what windows can I stream?" — a session-LESS discovery request (the host answers
+    /// with ``windowList(_:)`` WITHOUT minting a capture session). Zero body. Carries the remote-window
+    /// PICKER (replaces manual window-id entry). An old host drops it (unknown type) → the client times
+    /// out + falls back to the manual id field.
+    case listWindows
+    /// Host → client: the shareable windows, in response to ``listWindows``. The client renders these in
+    /// the picker; choosing one sends a normal `hello` with that window's id.
+    case windowList([WindowSummary])
+    /// Client → host: the remote-window pane was focused on the client (hover / first-responder). Asks the
+    /// host to RAISE the captured window to frontmost ONCE, proactively — so the user's first click lands
+    /// instantly instead of paying the per-interaction activate-then-control raise stall. Zero body,
+    /// idempotent on the host (the raise short-circuits when the window is already frontmost). Inert to an
+    /// old host (unknown type → dropped). This is the "raise the focused pane's window" model that
+    /// replaced the abandoned no-raise background-injection approach.
+    case focusWindow
 
     public var messageType: UInt8 {
         switch self {
@@ -79,6 +120,9 @@ public enum VideoControlMessage: Equatable, Sendable {
         case .resizeRequest: return 4
         case .resizeAck: return 5
         case .keepalive: return 6
+        case .listWindows: return 7
+        case .windowList: return 8
+        case .focusWindow: return 9
         }
     }
 
@@ -111,6 +155,21 @@ public enum VideoControlMessage: Equatable, Sendable {
             out.appendBE(h)
             out.appendBE(epoch)
         case .keepalive:
+            break
+        case .listWindows:
+            break
+        case .windowList(let windows):
+            // `UInt16 count` then per record: UInt32 id | UInt16 w | UInt16 h | len-prefixed app | len-prefixed title.
+            // The CALLER (host) must cap the list to fit one UDP datagram (control is not packetized).
+            out.appendBE(UInt16(truncatingIfNeeded: windows.count))
+            for w in windows {
+                out.appendBE(w.windowID)
+                out.appendBE(w.width)
+                out.appendBE(w.height)
+                out.appendLengthPrefixed(w.appName)
+                out.appendLengthPrefixed(w.title)
+            }
+        case .focusWindow:
             break
         }
         return out
@@ -151,6 +210,25 @@ public enum VideoControlMessage: Equatable, Sendable {
             return .resizeAck(captureWidth: w, captureHeight: h, epoch: epoch)
         case 6:
             return .keepalive
+        case 7:
+            return .listWindows
+        case 8:
+            let count = Int(try reader.readUInt16())
+            var windows: [WindowSummary] = []
+            // Do NOT reserveCapacity(count) — count is untrusted. Each record read throws `.truncated`
+            // the instant the datagram runs short, so a bogus huge count cannot over-allocate or
+            // over-read (it bails on the first missing byte).
+            for _ in 0 ..< count {
+                let id = try reader.readUInt32()
+                let w = try reader.readUInt16()
+                let h = try reader.readUInt16()
+                let app = try reader.readLengthPrefixed()
+                let title = try reader.readLengthPrefixed()
+                windows.append(WindowSummary(windowID: id, appName: app, title: title, width: w, height: h))
+            }
+            return .windowList(windows)
+        case 9:
+            return .focusWindow
         default:
             throw VideoProtocolError.malformed("unknown video control message type \(type)")
         }

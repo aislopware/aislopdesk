@@ -64,17 +64,40 @@ public struct VideoWindowView: View {
     /// the backing view brings up the full client pipeline.
     public let connection: VideoWindowConnection?
 
+    /// Whether this pane is the active/focused pane on the canvas. Only the active pane forwards
+    /// pointer/scroll to the remote window; a non-active pane routes scroll to ``onCanvasScroll`` (the
+    /// "only the active pane swallows pointer" rule). Plain (non-isolated) closures + Bool so the
+    /// `AppMain` factory can bridge them across the seam without importing `RworkClientUI`.
+    let isActive: Bool
+    /// Make this pane active (set workspace focus) — called on click. The host window is also raised
+    /// (via the pane's own `focusWindow`).
+    let onActivate: () -> Void
+    /// Pan the canvas when a NON-active pane is scrolled (so scroll over a background pane navigates the
+    /// canvas instead of being swallowed by the remote window).
+    let onCanvasScroll: (CGSize) -> Void
+
     /// The existing seam signature (title-only): renders the Metal-backed view chrome
     /// without a live connection. Kept so `VideoWindowFactory` callers compile.
     public init(title: String) {
         self.title = title
         self.connection = nil
+        self.isActive = true
+        self.onActivate = {}
+        self.onCanvasScroll = { _ in }
     }
 
-    /// Live remote-window view: brings up the orchestrator against `connection`.
-    public init(title: String, connection: VideoWindowConnection) {
+    /// Live remote-window view: brings up the orchestrator against `connection`. `isActive` /
+    /// `onActivate` / `onCanvasScroll` carry the canvas pane behaviour (active-only pointer + click-to-
+    /// activate + non-active scroll-to-pan); they default to the standalone (always-active) values.
+    public init(title: String, connection: VideoWindowConnection,
+                isActive: Bool = true,
+                onActivate: @escaping () -> Void = {},
+                onCanvasScroll: @escaping (CGSize) -> Void = { _ in }) {
         self.title = title
         self.connection = connection
+        self.isActive = isActive
+        self.onActivate = onActivate
+        self.onCanvasScroll = onCanvasScroll
     }
 
     /// Owns the control bridge for this view's lifetime; the backing view wires its closures.
@@ -82,7 +105,8 @@ public struct VideoWindowView: View {
 
     public var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            MetalVideoLayerView(connection: connection, controls: controls)
+            MetalVideoLayerView(connection: connection, controls: controls,
+                                isActive: isActive, onActivate: onActivate, onCanvasScroll: onCanvasScroll)
                 // FILL THE PANE. Without this the bare representable does not claim the
                 // ZStack's space, so the `.bottomTrailing` alignment pins the Metal view as a
                 // small island in the BOTTOM-RIGHT corner (the "nhỏ 1 góc" bug) — and clicks
@@ -124,20 +148,41 @@ public struct VideoWindowView: View {
 }
 
 #if os(macOS)
+/// Env-gated (`RWORK_VIDEO_DEBUG`) stderr diagnostics for the remote-GUI VIEW layer (scroll routing +
+/// isActive delivery) — the BUG-2 ground-truth probe. A non-active pane that logs `isActive=true` proves a
+/// stale/sticky focus value; `isActive=false` with no pan proves a downstream scroll-routing problem.
+func videoViewDbg(_ message: @autoclosure () -> String) {
+    guard ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil else { return }
+    FileHandle.standardError.write(Data("Rwork[video.client.view]: \(message())\n".utf8))
+}
+
 /// `NSViewRepresentable` host backing the `CAMetalLayer` + cursor overlay on macOS.
 struct MetalVideoLayerView: NSViewRepresentable {
     let connection: VideoWindowConnection?
     var controls: VideoPaneControls? = nil
+    var isActive: Bool = true
+    var onActivate: () -> Void = {}
+    var onCanvasScroll: (CGSize) -> Void = { _ in }
 
     func makeNSView(context: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
         view.controls = controls
+        view.isActive = isActive
+        view.onActivate = onActivate
+        view.onCanvasScroll = onCanvasScroll
         view.activate(connection: connection)
+        // BUG-2 probe: a recreate (makeNSView) on focus change — vs an in-place updateNSView — would reset
+        // isActive to its `true` default mid-stream; logging it distinguishes "stale Bool" from "recreate".
+        videoViewDbg("makeNSView (CREATED) isActive=\(isActive)")
         return view
     }
 
     func updateNSView(_ nsView: MetalLayerBackedView, context: Context) {
         nsView.controls = controls
+        if nsView.isActive != isActive { videoViewDbg("updateNSView isActive \(nsView.isActive)→\(isActive)") }
+        nsView.isActive = isActive
+        nsView.onActivate = onActivate
+        nsView.onCanvasScroll = onCanvasScroll
         nsView.activate(connection: connection)
     }
 
@@ -151,6 +196,27 @@ struct MetalVideoLayerView: NSViewRepresentable {
 final class MetalLayerBackedView: NSView {
     let videoLayer = CAMetalLayer()
     private let pipeline = VideoWindowPipeline()
+
+    /// Whether THIS pane is the canvas's active/focused pane. Only the active pane forwards
+    /// pointer/scroll to the remote window; a non-active pane routes a scroll to ``onCanvasScroll`` (so
+    /// scroll navigates the canvas) and ignores hover, matching the terminal pane's `isFocusedPane` rule.
+    /// Set by `MetalVideoLayerView` on every render (reactive to focus changes). On change it re-applies
+    /// the local cursor — a pane losing focus must drop the host shape back to the arrow even if the
+    /// pointer never moved.
+    var isActive: Bool = true { didSet { applyLocalCursor() } }
+
+    // ── CURSOR (Parsec model): the host streams its cursor SHAPE (cached bitmaps); the OS draws that
+    //    shape on the LOCAL cursor at the INSTANT mouse position — zero added latency, and exactly ONE
+    //    cursor because macOS does NOT composite the host's RTT-delayed POSITION overlay. While the
+    //    pointer is inside an ACTIVE pane and the host cursor is visible we set the host's shape; in a
+    //    `.fit` letterbox margin / host-hidden-cursor / a background pane we keep the plain arrow.
+    //    `pointerInside` gates the work to when the pointer is actually over this view.
+    private var pointerInside = false
+    /// Make this pane the active pane — called at the top of `mouseDown` (click-to-activate). Sets the
+    /// *workspace* focus; the host window is raised separately via `pipeline.focusWindow()`.
+    var onActivate: () -> Void = {}
+    /// Pan the canvas by a (sign-adjusted) delta — called from `scrollWheel` when this pane is NOT active.
+    var onCanvasScroll: (CGSize) -> Void = { _ in }
 
     // ── Local view navigation (macOS): pinch-zoom (+ pan-when-zoomed) via the RESPONDER
     //    `magnify`/`scrollWheel` methods — NOT gesture recognizers. A recognizer on this
@@ -175,6 +241,10 @@ final class MetalLayerBackedView: NSView {
 
     func activate(connection: VideoWindowConnection?) {
         pipeline.activate(view: self, videoLayer: videoLayer, connection: connection)
+        // Re-apply the local cursor when the host SWAPS shape, or when the host cursor enters/leaves the
+        // captured window (visible flip) — so the pointer shape tracks the remote with no RTT lag.
+        pipeline.onServerCursorVisibilityChanged = { [weak self] _ in self?.applyLocalCursor() }
+        pipeline.onRemoteCursorChanged = { [weak self] in self?.applyLocalCursor() }
         // Wire the SwiftUI overlay's buttons to THIS view's pipeline (live connection only).
         if connection != nil, let controls {
             controls.onToggleFill = { [weak self] in self?.applyToggleFill() }
@@ -182,7 +252,27 @@ final class MetalLayerBackedView: NSView {
             controls.mode = pipeline.contentMode
         }
     }
-    func deactivate() { pipeline.deactivate() }
+    func deactivate() {
+        if pointerInside { NSCursor.arrow.set() }   // restore the arrow before the pipeline tears down
+        pointerInside = false
+        pipeline.deactivate()
+    }
+
+    // MARK: Local cursor (Parsec model — host shape on the instant local pointer)
+
+    /// Sets the local OS cursor to the host's CURRENT shape while the pointer is inside an ACTIVE pane
+    /// and the host cursor is visible there; otherwise the plain arrow. The OS draws it at the live mouse
+    /// position so there's no RTT lag, and macOS composites no host-position overlay so there's no
+    /// duplicate. No-op unless the pointer is over this view (so a shape swap elsewhere can't hijack the
+    /// global cursor).
+    private func applyLocalCursor() {
+        guard pointerInside else { return }
+        if isActive, pipeline.isServerCursorVisible, let cursor = pipeline.currentRemoteCursor {
+            cursor.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
 
     override func layout() {
         super.layout()
@@ -259,21 +349,47 @@ final class MetalLayerBackedView: NSView {
     /// (`max(1, Int(clickCount))`), so saturating is harmless (R14).
     nonisolated static func clampClickCount(_ n: Int) -> UInt8 { UInt8(clamping: n) }
 
-    override func mouseMoved(with event: NSEvent) { pipeline.mouseMove(viewPoint(event)) }
+    // Only the ACTIVE pane tracks hover (the "only the active pane swallows pointer" rule). A non-active
+    // pane ignores hover so it never injects a stray remote mouse-move; you must click it first.
+    override func mouseMoved(with event: NSEvent) {
+        guard isActive else { return }
+        pipeline.mouseMove(viewPoint(event))
+    }
     // A drag (a button is HELD) is a DISTINCT NSView callback from a hover `mouseMoved`, so the
     // client KNOWS which button is down and forwards an explicit `.mouseDrag`; the host posts
-    // the matching `*MouseDragged` STATELESSLY — no host-side held-button guess. (No local
-    // gesture interception here — that is what previously left the remote button stuck.)
+    // the matching `*MouseDragged` STATELESSLY — no host-side held-button guess. NOT gated on
+    // `isActive`: a drag only follows a `mouseDown` on THIS pane, which already activated it, so the
+    // in-gesture frames must keep flowing even before SwiftUI re-renders `isActive` true.
     override func mouseDragged(with event: NSEvent) { pipeline.mouseDrag(.left, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
     override func rightMouseDragged(with event: NSEvent) { pipeline.mouseDrag(.right, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
-    override func mouseDown(with event: NSEvent) { pipeline.mouseDown(.left, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
+    // CLICK = ACTIVATE: a mouseDown makes this the active pane (`onActivate` → workspace focus) AND
+    // raises the host window to top (`focusWindow`), THEN lands as a remote click. This is the
+    // "click to activate + raise GUI window on click" model (replaces the earlier hover-raise). The
+    // activating click is always forwarded so clicking a control in a background window just works.
+    override func mouseDown(with event: NSEvent) {
+        // BUG-1 probe: clicking is the reported freeze trigger. Correlate this line with `cursorAPPLY`/
+        // `RENDER` gaps (client main-actor block from focus()) and `mediaRX` gaps (host capture hitch on
+        // window-raise) to see which path stalls on a click.
+        videoViewDbg("click → activate isActive=\(isActive)")
+        onActivate()
+        // Send the host window-raise ONLY when (re)activating an UNfocused pane — not on every click of
+        // an already-active pane. The host raise is best-effort + costly (AX IPC); re-raising on each
+        // click of the focused pane is wasted work (the host throttles redundant raises as a backstop).
+        if !isActive { pipeline.focusWindow() }
+        pipeline.mouseDown(.left, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event))
+    }
     override func mouseUp(with event: NSEvent) { pipeline.mouseUp(.left, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
-    override func rightMouseDown(with event: NSEvent) { pipeline.mouseDown(.right, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
+    override func rightMouseDown(with event: NSEvent) {
+        onActivate()
+        if !isActive { pipeline.focusWindow() }
+        pipeline.mouseDown(.right, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event))
+    }
     override func rightMouseUp(with event: NSEvent) { pipeline.mouseUp(.right, viewPoint(event), Self.clampClickCount(event.clickCount), mods(event)) }
     override func scrollWheel(with event: NSEvent) {
-        // Zoomed in → two-finger scroll PANS the local view (reach the off-screen crop). At 1×
-        // it forwards as a remote scroll (the renderer clamps panLimit to 0 at 1× anyway, so a
-        // local pan would be inert). Scroll is separate from clicks, so this can't stick a button.
+        // Zoomed in (local crop): a two-finger scroll pans the LOCAL view so you can reach the off-screen
+        // parts of the zoomed window. This is the ONE case where a scroll stays INSIDE the pane, and it is
+        // independent of canvas focus. (At 1× the renderer clamps panLimit to 0, so a local pan is inert
+        // anyway — fall through to the canvas pan below.)
         if zoom > 1.001 {
             let invZoom = 1.0 / Double(zoom)
             pan.x = CGFloat(min(max(Double(pan.x) - Double(event.scrollingDeltaX) / Double(max(bounds.width, 1)) * invZoom, -0.5), 0.5))
@@ -281,7 +397,27 @@ final class MetalLayerBackedView: NSView {
             pipeline.setZoom(zoom, pan: pan)
             return
         }
-        pipeline.scroll(dx: Double(event.scrollingDeltaX), dy: Double(event.scrollingDeltaY), viewPoint: viewPoint(event))
+        // SCROLL ROUTING (1× zoom) — gated on EXPLICIT canvas focus (`isActive == store.isFocused(id)`),
+        // the desktop model the user asked for ("khi focus vào pane gui rồi, pane gui phải nuốt scroll"):
+        //   • FOCUSED pane   → forward the scroll to the REMOTE window (you clicked in, you're scrolling
+        //     its content). Forwarding is a UDP send — no `@Observable` mutation, so it never blocks the
+        //     stream. Mirrors the terminal pane's focused-scrollback rule.
+        //   • UNFOCUSED pane → PAN THE CANVAS, never swallow — so panning across a background pane keeps
+        //     navigating instead of stopping at its edge. Routed through the debounced `onCanvasScroll`
+        //     accumulator (NOT a per-step commitCamera), so it never blocks the stream either.
+        //   • ⌥ held         → ALWAYS pan the canvas, even while focused (escape hatch to pan a focused
+        //     pane without first unfocusing it).
+        // Natural-scroll sign matches `CanvasView.PanView` so a pane-pan feels identical to the bg pan.
+        if isActive && !event.modifierFlags.contains(.option) {
+            videoViewDbg("scroll → remote (focused)")
+            pipeline.scroll(dx: Double(event.scrollingDeltaX), dy: Double(event.scrollingDeltaY), viewPoint: viewPoint(event))
+            return
+        }
+        let dx: CGFloat, dy: CGFloat
+        if event.hasPreciseScrollingDeltas { dx = event.scrollingDeltaX; dy = event.scrollingDeltaY }
+        else { dx = event.scrollingDeltaX * 10; dy = event.scrollingDeltaY * 10 }
+        videoViewDbg("scroll → canvas pan d=(\(Int(-dx)),\(Int(-dy))) isActive=\(isActive)")
+        onCanvasScroll(CGSize(width: -dx, height: -dy))
     }
     // ALL keys (printable + special) go through the layout-level keycode `.key` path so
     // the HOST's keyboard layout + input method (e.g. OpenKey/xkey Telex) interpret and
@@ -327,15 +463,40 @@ final class MetalLayerBackedView: NSView {
         super.updateTrackingAreas()
         if let existing = trackingArea { removeTrackingArea(existing) }
         let area = NSTrackingArea(
+            // `.mouseEnteredAndExited` tracks whether the pointer is in the pane; `.cursorUpdate` makes
+            // AppKit call `cursorUpdate(with:)` on each move so we re-assert the host's cursor shape.
             rect: bounds,
-            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
             owner: self, userInfo: nil)
         addTrackingArea(area)
         trackingArea = area
     }
+    override func mouseEntered(with event: NSEvent) {
+        pointerInside = true
+        applyLocalCursor()
+    }
+    override func mouseExited(with event: NSEvent) {
+        pointerInside = false
+        NSCursor.arrow.set()   // leaving the pane → restore the normal pointer
+    }
+    /// AppKit's per-move cursor callback while the pointer is in the pane: re-assert the host shape (or
+    /// fall through to AppKit's default arrow) so a transient `.set()` from elsewhere can't win on a move.
+    override func cursorUpdate(with event: NSEvent) {
+        if isActive, pipeline.isServerCursorVisible, let cursor = pipeline.currentRemoteCursor {
+            cursor.set()
+        } else {
+            super.cursorUpdate(with: event)   // AppKit already set the window's default (arrow) pre-callback
+        }
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { window?.makeFirstResponder(self) }
+    }
+    /// Restore the arrow when the view leaves its window (drag-out / pane close): a teardown that skipped
+    /// `mouseExited` must not leave a stale host-shape cursor set.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil { if pointerInside { NSCursor.arrow.set() }; pointerInside = false }
     }
 
     static func modifiers(_ flags: NSEvent.ModifierFlags) -> InputModifiers {
@@ -374,6 +535,12 @@ import UIKit
 struct MetalVideoLayerView: UIViewRepresentable {
     let connection: VideoWindowConnection?
     var controls: VideoPaneControls? = nil
+    // Accepted for signature parity with the macOS representable (the shared `VideoWindowView.body`
+    // constructs both). iOS pane activation already runs through the canvas's per-pane SwiftUI tap
+    // gesture + a background `DragGesture` for panning, so these are currently unused on iOS.
+    var isActive: Bool = true
+    var onActivate: () -> Void = {}
+    var onCanvasScroll: (CGSize) -> Void = { _ in }
 
     func makeUIView(context: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()

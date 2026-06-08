@@ -14,33 +14,62 @@ import UIKit
 /// ⚠️ **GUI-ONLY** for the `CADisplayLink` path (needs a run loop + a screen).
 /// COMPILED + reviewed; not driven from tests.
 ///
-/// Pacing policy (doc 17 §3.7, Moonlight pacer):
-/// - The decoder pushes decoded frames into ``submit(_:)`` (most-recent wins).
-/// - Each VSync tick pulls the latest decoded frame and renders it; an EMPTY queue
-///   shows the LAST decoded frame again (no judder).
-/// - A late frame is SKIPPED, never queued, so latency does not accumulate — we keep
-///   only the single most-recent frame, dropping any older one still pending.
+/// Pacing policy — small JITTER BUFFER (2026-06-08, motion-smoothness):
+/// - The decoder pushes decoded frames into ``submit(_:)``; they queue oldest-first.
+/// - Presentation HOLDS until the buffer first fills to ``targetDepth`` (priming),
+///   establishing a few frames of slack. Thereafter each VSync presents ONE frame in
+///   order — converting bursty / variable arrival into a steady one-per-vsync cadence.
+/// - The slack absorbs the arrival/decode latency SPIKE at a static→motion transition
+///   (idle = tiny 1.5 KB frames → scroll = 40–220 KB frames): without it the previous
+///   "present newest / skip-late" pacer re-showed the last frame for a tick = the
+///   "khựng khựng on idle-then-scroll" judder. (This is the Parsec/Moonlight render-ahead.)
+/// - HOMEOSTASIS: presentation never carries more than ``targetDepth`` frames (drops the
+///   oldest excess), so steady-state depth — and thus added latency — settles at
+///   ≈targetDepth/fps instead of ratcheting up to ``maxDepth`` under sustained motion or
+///   clock skew. ``maxDepth`` is a submit-side hard backstop. An empty buffer re-presents
+///   the last frame (no judder beyond a single repeat).
+/// - RE-PRIME: the host idle-skips static frames, so during any idle the buffer drains to
+///   empty. After a sustained dry spell the pacer drops back to priming, so the slack is
+///   REBUILT before the next scroll — making every stop→scroll transition smooth, not just
+///   the first of a session.
 ///
-/// The "keep only the newest frame" logic is pure and is unit-testable in isolation;
-/// the `CADisplayLink` wiring is GUI-only.
+/// The queue policy is pure and unit-testable in isolation; the `CADisplayLink` wiring
+/// is GUI-only. Trade-off: ~``targetDepth`` frames of added latency (≈targetDepth/fps s)
+/// bought for smoothness — the same trade Parsec makes. Both depths are env-tunable from
+/// the construction site (``VideoWindowPipeline``) via `RWORK_JITTER_DEPTH` / `_MAX`.
 public final class FramePacer: @unchecked Sendable {
-    /// Called each VSync with the frame to draw (the newest decoded, or the last
-    /// shown when nothing newer arrived). `nil` only before the first frame.
+    /// Called each VSync with the frame to draw (the next queued, or the last shown when
+    /// the buffer is empty / still priming). `nil` only before the first frame.
     public typealias RenderCallback = @Sendable (CVImageBuffer) -> Void
 
     private let log = Logger(subsystem: "rwork.video.client", category: "FramePacer")
     private let renderCallback: RenderCallback
     private let lock = NSLock()
-    /// The newest decoded frame not yet shown; replaced (dropped) when a newer one
-    /// arrives before the next vsync — this is the skip-late behaviour.
-    private var pendingFrame: CVImageBuffer?
-    /// The last frame shown — re-presented on an empty queue (show-last-frame).
+    /// Jitter buffer: decoded frames awaiting presentation, oldest first. Drained one per
+    /// vsync; the oldest are dropped if it grows past ``maxDepth`` (bounded latency).
+    private var queue: [CVImageBuffer] = []
+    /// The last frame shown — re-presented while priming or on an empty buffer.
     private var lastShownFrame: CVImageBuffer?
+    /// False until the buffer reaches ``targetDepth``; while false we hold (re-show last) so
+    /// the slack that absorbs jitter is established before steady presentation. RESET to false
+    /// after a SUSTAINED dry spell (``underflowRun`` ≥ ``targetDepth`` — a real idle, since the
+    /// host idle-skips static frames, NOT a transient single-frame dip during scroll), so the
+    /// slack is REBUILT before motion resumes. This is what makes EVERY stop→scroll transition
+    /// smooth, not only the first of a session.
+    private var primed = false
+    /// Consecutive vsyncs the buffer has been empty (underflow). Reaching ``targetDepth`` means
+    /// a genuine producer stall/idle (re-prime); reset to 0 on any presented frame.
+    private var underflowRun = 0
 
-    /// The GUI video-path frame-rate cap. The video path is capped at ~24-30fps (the
-    /// measured GUI cadence — NOT a 60/120fps game-stream); on a 120 Hz display we run
-    /// the link at full vsync but only render every Nth tick so the cap holds without
-    /// extra encode/decode work the host never produces (doc 18, FPS memory note).
+    /// Frames to buffer before presentation begins. The absorbed arrival/decode jitter is
+    /// ≈ this many frames; it is also the steady-state added latency (≈ targetDepth / fps).
+    public let targetDepth: Int
+    /// Hard cap on buffered frames; beyond it the oldest are dropped so latency cannot grow.
+    public let maxDepth: Int
+
+    /// The GUI video-path frame-rate cap (matches the host's `--fps`, default 60). On a
+    /// 120 Hz display the link runs at full vsync but ``tick()`` only presents every Nth
+    /// refresh so the cap holds without extra work the host never produces.
     public let maxFrameRate: Double
 
     // On BOTH platforms the modern driver is a `CADisplayLink`: macOS 14+ exposes
@@ -61,29 +90,50 @@ public final class FramePacer: @unchecked Sendable {
     /// Tracks the elapsed time so the cap throttles ticks below the display refresh.
     private var lastRenderHostTime: Double = 0
 
-    public init(maxFrameRate: Double = 30.0, renderCallback: @escaping RenderCallback) {
+    public init(maxFrameRate: Double = 60.0, targetDepth: Int = 2, maxDepth: Int = 5, renderCallback: @escaping RenderCallback) {
         self.maxFrameRate = maxFrameRate
+        self.targetDepth = max(1, targetDepth)
+        self.maxDepth = max(max(1, targetDepth), maxDepth)
         self.renderCallback = renderCallback
     }
 
-    /// Submits a freshly decoded frame. If an earlier frame is still pending for this
-    /// vsync it is dropped (skip-late: only the newest frame is presented).
+    /// Submits a freshly decoded frame to the tail of the jitter buffer. If the buffer has
+    /// grown past ``maxDepth`` (producer outran the display), the OLDEST frames are dropped
+    /// so latency cannot accumulate — we catch up to "now" rather than playing stale frames.
     public func submit(_ frame: CVImageBuffer) {
         lock.lock()
-        pendingFrame = frame // drops any older pending frame
+        queue.append(frame)
+        if queue.count > maxDepth { queue.removeFirst(queue.count - maxDepth) }
         lock.unlock()
     }
 
     /// One VSync step: decide which frame to present (pure; the GUI link calls this).
-    /// Returns the frame to draw, or `nil` if nothing has ever been decoded yet.
+    /// Returns the next queued frame in order, or the last shown while priming / on an
+    /// empty buffer, or `nil` if nothing has ever been decoded yet.
     public func frameForVSync() -> CVImageBuffer? {
         lock.lock(); defer { lock.unlock() }
-        if let pending = pendingFrame {
-            lastShownFrame = pending
-            pendingFrame = nil
-            return pending
+        if !primed {
+            // (Re)prime: hold (re-show last) until the buffer fills to targetDepth, (re)building the
+            // jitter slack BEFORE steady presentation. Re-entered after a sustained dry spell (below),
+            // so the slack is rebuilt ahead of every stop→scroll resume — not just once per session.
+            if queue.count >= targetDepth { primed = true; underflowRun = 0 } else { return lastShownFrame }
         }
-        return lastShownFrame // show-last-frame on empty queue
+        // Homeostasis: never carry MORE than targetDepth frames — drop the OLDEST excess so steady-state
+        // depth (hence added latency) settles at ≈ targetDepth/fps instead of ratcheting up to maxDepth
+        // under sustained motion / clock skew. Catches up to the freshest within the slack window.
+        if queue.count > targetDepth { queue.removeFirst(queue.count - targetDepth) }
+        if !queue.isEmpty {
+            let next = queue.removeFirst()
+            lastShownFrame = next
+            underflowRun = 0
+            return next
+        }
+        // Underflow: producer fell behind (idle-skip or stall). Re-present last. After a SUSTAINED dry
+        // spell (empty ≥ targetDepth vsyncs ⇒ a real idle, not a transient scroll dip) drop back to
+        // priming so slack is rebuilt before motion resumes.
+        underflowRun += 1
+        if underflowRun >= max(1, targetDepth) { primed = false }
+        return lastShownFrame
     }
 
     /// VSync handler: pull the frame and render it, honouring the frame-rate cap.

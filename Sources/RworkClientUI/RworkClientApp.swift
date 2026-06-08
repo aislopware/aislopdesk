@@ -31,6 +31,9 @@ public struct RworkClientApp: App {
     /// The single workspace store. Built ONCE in ``init()`` (no `@State` double-init: we construct the
     /// store eagerly and seed the `@State` backing with it, never reassigning).
     @State private var store: WorkspaceStore
+    /// The ONE app-global connection (docs/31): owns the single endpoint + status, fronted by the
+    /// connect-gate. Built once beside the store + the shared mux registry.
+    @State private var connection: AppConnection
     @Environment(\.scenePhase) private var scenePhase
     /// Serializes the iOS background/foreground lifecycle transitions so the LAST phase observed is the
     /// LAST applied: each `handleScenePhase` chains its work behind the previous transition's, so a
@@ -76,11 +79,21 @@ public struct RworkClientApp: App {
         // per host, each as a logical channel. The wire is mux preamble + envelope framing — the
         // only terminal wire.
         let muxRegistry = ConnectionRegistry(makeConnection: LiveMuxConnectionFactory.makeConnection)
+        // The ONE app-global connection (docs/31). Seed its target from the env in automation (so
+        // check-macos.sh/check-video.sh keep working), else from the persisted `Workspace.connection`,
+        // else the default. Every pane reads `connection.target` for its host/ports.
+        let restored = persistence?.load()   // nil in automation ⇒ bootstrap replaces it anyway
+        let env = ProcessInfo.processInfo.environment
+        let seedTarget: ConnectionTarget = isAutomation
+            ? (WorkspaceStore.videoTarget(from: env)?.0 ?? WorkspaceStore.terminalTarget(from: env) ?? .default)
+            : (restored?.connection ?? .default)
+        let appConnection = AppConnection(registry: muxRegistry, seed: seedTarget)
         let store = WorkspaceStore(
-            restoring: persistence?.load(),   // nil in automation ⇒ bootstrap replaces it anyway
+            restoring: restored,
             makeSession: WorkspaceStore.liveMakeSession(
                 makeInspector: WorkspaceStore.liveMakeInspector,
-                muxRegistry: muxRegistry
+                muxRegistry: muxRegistry,
+                target: { appConnection.target }
             ),
             liveVideoCap: liveVideoCap,
             persistence: persistence,
@@ -99,14 +112,38 @@ public struct RworkClientApp: App {
         if isAutomation {
             store.bootstrapFromEnvironment()
         }
+        // Persist a committed target into the tree (so the gate prefills the last host next launch).
+        appConnection.onTargetCommitted = { [weak store] target in store?.commitConnectionTarget(target) }
+        // Gate the scene-level "Reconnect Pane" command on the app being connected, so ⇧⌘R before the
+        // first connect can't build the shared mux behind the connect-gate.
+        store.isAppConnected = { [weak appConnection] in
+            if case .connected = appConnection?.status { return true }
+            return false
+        }
         _store = State(initialValue: store)
+        _connection = State(initialValue: appConnection)
     }
 
     public var body: some Scene {
         WindowGroup {
-            WorkspaceRootView(store: store)
+            WorkspaceRootView(store: store, connection: connection)
                 .onChange(of: scenePhase) { _, phase in
                     handleScenePhase(phase)
+                }
+                // AUTOMATION ONLY (env-gated): auto-connect the app connection so an autoconnect launch
+                // goes live without a manual gate click (check-macos.sh/check-video.sh). A normal launch
+                // shows the gate prefilled and waits for the user's Connect.
+                .task {
+                    guard Self.hasAutomationEnvironment() else { return }
+                    let env = ProcessInfo.processInfo.environment
+                    if (env["RWORK_AUTOCONNECT_HOST"]?.isEmpty == false) {
+                        await connection.connect()   // terminal automation: pin the TCP mux
+                    } else {
+                        // Video-only automation (check-video.sh): the video host serves UDP only and runs
+                        // no TCP listener, so there is no mux to pin. Mark connected so the gate dismisses
+                        // and the canvas (+ the .remoteGUI pane) mounts and opens its UDP flow.
+                        connection.markConnectedForAutomation()
+                    }
                 }
                 #if os(macOS)
                 // AUTOMATION ONLY (env-gated): bring the window to front + make it key at launch so the
@@ -184,8 +221,13 @@ public struct RworkClientApp: App {
                 // by the outer `await prev?.value` chaining.)
                 store.saveImmediately()
                 await store.pauseAll()
+                // Unpin the shared mux LAST (after channels pause) so the OS doesn't kill the app for a
+                // stranded background socket; `resume()` re-pins it.
+                await connection.pause()
                 if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) }
             case .active:
+                // Re-establish the shared mux FIRST, then re-open the per-pane channels on it.
+                await connection.resume()
                 await store.resumeAll()
             default:
                 break

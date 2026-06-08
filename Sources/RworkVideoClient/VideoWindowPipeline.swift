@@ -41,6 +41,52 @@ final class VideoWindowPipeline {
     private var activeConnection: VideoWindowConnection?
     private var layerSize: VideoSize = VideoSize(width: 0, height: 0)
 
+    /// INBOUND cursor-overlay coalescing (BUG-1 freeze fix). The ~120 Hz cursor stream used to spawn ONE
+    /// `Task { @MainActor in compositor.apply }` PER packet. When a click flips workspace focus, the
+    /// resulting synchronous SwiftUI re-render holds the MAIN ACTOR for a span; every queued cursor Task
+    /// is head-of-line-blocked behind it, then drains as a BURST of now-stale positions — the overlay
+    /// "freezes for a moment, then lurches". (The host keeps emitting fine — verified — so the freeze is
+    /// purely client main-actor contention, which is why the prior host-side off-main fix changed
+    /// nothing.) The coalescer keeps only the LATEST update+placement (most-recent-wins) and schedules at
+    /// most ONE flush Task at a time, so a busy span collapses to a SINGLE fresh apply the instant the
+    /// actor frees — no stale burst, and 120 Tasks/s never pile up. Mirrors the OUTBOUND `motionPump`
+    /// most-recent-wins discipline above.
+    private var pendingCursorUpdate: CursorUpdate?
+    private var pendingCursorPlacement: RworkVideoClientSession.CursorPlacement?
+    private var cursorFlushScheduled = false
+
+    /// Whether the server (host) cursor overlay is CURRENTLY visible — the latest applied
+    /// ``CursorUpdate/visible`` flag (the host reports `true` only while its mouse is inside the captured
+    /// window, so this is `false` in `.fit` letterbox margins or when the host hides its own cursor). The
+    /// macOS backing view reads this to decide whether to hide the LOCAL OS arrow while the pointer is
+    /// inside an active pane, so the host-streamed cursor and the OS cursor don't BOTH show ("duplicate
+    /// cursor"). Defaults `false` (no overlay yet ⇒ keep the OS arrow).
+    private(set) var isServerCursorVisible = false
+    /// Fired on the @MainActor whenever ``isServerCursorVisible`` FLIPS (not per 120 Hz packet). The
+    /// backing view re-evaluates its OS-cursor decision. Set by the view in `activate`; `nil` on iOS.
+    var onServerCursorVisibilityChanged: ((Bool) -> Void)?
+
+    #if os(macOS)
+    /// The LOCAL `NSCursor` mirroring the host's CURRENT cursor SHAPE (Parsec model: the OS draws it at
+    /// the instant local mouse position, so the pointer never lags by an RTT). `nil` until the shape
+    /// bitmap arrives → the view shows the plain arrow. Rebuilt only when the host shapeID changes.
+    private(set) var currentRemoteCursor: NSCursor?
+    private var currentRemoteCursorShapeID: UInt16?
+    /// Fired on the @MainActor when ``currentRemoteCursor`` changes (host swapped cursor shape). The
+    /// backing view re-applies it so the shape updates even while the mouse is stationary.
+    var onRemoteCursorChanged: (() -> Void)?
+    #endif
+
+    /// BUG-1 freeze LOCALISATION (env-gated `RWORK_VIDEO_DEBUG`). Monotonic gap probes on the two
+    /// MAIN-ACTOR paths whose stall the user perceives as "the pointer freezes when I click back": the
+    /// cursor APPLY (``coalesceCursor``) and the video RENDER hop. Compared against the SESSION-ACTOR cursor
+    /// RX probe in ``RworkVideoClientSession``: if RX gaps stay SMALL on click-back while these spike, the
+    /// freeze is a main-actor BLOCK (the click→focus SwiftUI re-render holding the main thread), which the
+    /// coalescer cannot shorten — not a host/network stall. Decisive data instead of a 4th blind guess.
+    private static let dbgGapEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil
+    private var dbgLastCursorApply: Double = 0
+    private var dbgLastRender: Double = 0
+
     /// Client half of the input-latency fix: coalesce high-rate pointer motion to one send per
     /// display-refresh interval (most-recent-wins), so a 60-120 Hz trackpad does not spawn a Task
     /// per event and flood the wire + the session actor's mailbox. `pendingMotionSend` holds the
@@ -78,7 +124,7 @@ final class VideoWindowPipeline {
     /// `view`. Idempotent: re-activating with the same connection is a no-op; a
     /// different connection tears the old one down first. `maxFrameRate` caps the GUI
     /// video path (~24-30fps; NOT a 60/120fps game stream).
-    func activate(view: HostView, videoLayer: CAMetalLayer, connection: VideoWindowConnection?, maxFrameRate: Double = 30.0) {
+    func activate(view: HostView, videoLayer: CAMetalLayer, connection: VideoWindowConnection?, maxFrameRate: Double = 60.0) {
         guard let connection else { return } // no live host: chrome only (placeholder owns the idle UI)
         if activeConnection == connection, session != nil { return }
         deactivate()
@@ -89,16 +135,31 @@ final class VideoWindowPipeline {
             return
         }
         let compositor = ClientCursorCompositor()
+        #if !os(macOS)
+        // iOS composites the host cursor POSITION as an overlay layer. macOS instead draws the host
+        // SHAPE on the LOCAL OS cursor at the instant mouse position (Parsec model — see flushCursor),
+        // so it does NOT add the position overlay (that would re-introduce a duplicate, RTT-lagged cursor).
         videoLayer.addSublayer(compositor.cursorLayer)
+        #endif
         self.renderer = renderer
         self.compositor = compositor
 
-        // The pacer pulls the newest decoded frame each vsync and renders it; the
-        // render callback is main-confined (the renderer is `@MainActor`). The pacer's
-        // callback is `@Sendable` and invoked on the display-link's main run loop.
-        let pacer = FramePacer(maxFrameRate: maxFrameRate) { buffer in
+        // The pacer drains its jitter buffer one frame per vsync and renders; the render
+        // callback is main-confined (the renderer is `@MainActor`). The pacer's callback is
+        // `@Sendable` and invoked on the display-link's main run loop. Jitter-buffer depths
+        // are env-tunable for on-device A/B without a rebuild (`RWORK_JITTER_DEPTH` =
+        // priming/slack frames ≈ added latency; `RWORK_JITTER_MAX` = hard cap before
+        // dropping the oldest). Defaults 2 / 5 absorb the idle→scroll size-jump backlog at
+        // ~33 ms latency.
+        let env = ProcessInfo.processInfo.environment
+        let jitterDepth = env["RWORK_JITTER_DEPTH"].flatMap(Int.init).map { min(8, max(1, $0)) } ?? 3
+        let jitterMax = env["RWORK_JITTER_MAX"].flatMap(Int.init).map { min(16, max(1, $0)) } ?? 5
+        let pacer = FramePacer(maxFrameRate: maxFrameRate, targetDepth: jitterDepth, maxDepth: jitterMax) { [weak self] buffer in
             let box = UnsafeTransfer(buffer)
-            Task { @MainActor in renderer.render(box.value) }
+            Task { @MainActor in
+                renderer.render(box.value)
+                self?.dbgNoteRender()   // BUG-1: time consecutive MAIN-ACTOR renders (freeze localisation)
+            }
         }
         self.pacer = pacer
 
@@ -131,10 +192,11 @@ final class VideoWindowPipeline {
                 // is internally locked, so the main hop only re-presents at vsync.
                 pacer.submit(buffer)
             },
-            applyCursor: { [weak compositor] update, placement in
-                Task { @MainActor in
-                    compositor?.apply(update, viewSize: placement.viewSize, videoNativeSize: placement.videoNativeSize, zoom: placement.zoom, pan: placement.pan, mode: placement.mode)
-                }
+            applyCursor: { [weak self] update, placement in
+                // COALESCE onto the main actor (BUG-1): store most-recent-wins + schedule at most one
+                // flush, instead of one apply Task per 120 Hz packet (which piled up behind the
+                // click→focus re-render and drained as a stale burst → the "freeze then lurch").
+                Task { @MainActor in self?.coalesceCursor(update, placement) }
             },
             registerCursorShape: { [weak compositor] image, logicalSize, shapeID in
                 let box = UnsafeTransfer(image)
@@ -180,6 +242,15 @@ final class VideoWindowPipeline {
             Task { await session.stop() }
         }
         compositor?.cursorLayer.removeFromSuperlayer()
+        setServerCursorVisible(false)   // host cursor gone ⇒ let the view restore the OS arrow
+        #if os(macOS)
+        currentRemoteCursor = nil
+        currentRemoteCursorShapeID = nil
+        onRemoteCursorChanged?()
+        #endif
+        pendingCursorUpdate = nil
+        pendingCursorPlacement = nil
+        cursorFlushScheduled = false
         session = nil
         renderer = nil
         compositor = nil
@@ -273,6 +344,109 @@ final class VideoWindowPipeline {
     func text(_ string: String) {
         guard let session else { return }
         submitFlushingMotion { await session.sendText(string) }
+    }
+
+    /// Tell the host to raise the captured window because this pane gained focus on the client
+    /// (hover / first-responder). Fire-and-forget + idempotent on the host (raises once, skips when
+    /// already frontmost), so the user's first click lands instantly. NOT routed through the ordered
+    /// input FIFO — it is a pre-warm hint, not an input event, and need not be ordered against clicks.
+    func focusWindow() {
+        guard let session else { return }
+        Task { await session.sendFocusWindow() }
+    }
+
+    // MARK: Cursor-overlay coalescing (inbound; BUG-1 freeze fix)
+
+    /// Stores the freshest cursor update+placement (most-recent-wins) and schedules a SINGLE flush if one
+    /// is not already pending. Called from the per-packet `applyCursor` hook (after a main-actor hop).
+    /// During a busy main-actor span (the click→focus SwiftUI re-render) many of these queue, but each is
+    /// a cheap store and only ONE `flushCursor` is ever queued — so when the actor frees, the overlay
+    /// snaps once to the LATEST position instead of replaying a burst of stale ones.
+    private func coalesceCursor(_ update: CursorUpdate, _ placement: RworkVideoClientSession.CursorPlacement) {
+        dbgNoteCursorApply()   // BUG-1: time consecutive MAIN-ACTOR cursor applies (freeze localisation)
+        pendingCursorUpdate = update
+        pendingCursorPlacement = placement
+        guard !cursorFlushScheduled else { return }
+        cursorFlushScheduled = true
+        Task { @MainActor [weak self] in self?.flushCursor() }
+    }
+
+    /// BUG-1: logs a MAIN-ACTOR cursor-APPLY gap > 100 ms. A spike here while the session-actor RX gap
+    /// (``RworkVideoClientSession``) stays small means the overlay froze because the main thread was
+    /// BLOCKED (the click→focus SwiftUI re-render) — which the coalescer cannot shorten; it only prevents
+    /// the post-block stale burst. This pinpoints the cause the prior coalescing fix could not address.
+    private func dbgNoteCursorApply() {
+        guard Self.dbgGapEnabled else { return }
+        let now = FramePacer.currentHostTimeSeconds()
+        if dbgLastCursorApply > 0 {
+            let gap = now - dbgLastCursorApply
+            if gap > 0.1 { FileHandle.standardError.write(Data("Rwork[video.client.view]: cursorAPPLY gap \(Int(gap * 1000))ms (main-actor block)\n".utf8)) }
+        }
+        dbgLastCursorApply = now
+    }
+
+    /// BUG-1: logs a MAIN-ACTOR render gap > 120 ms. Spikes TOGETHER with `cursorAPPLY` ⇒ the whole main
+    /// actor stalled (video + overlay both freeze). A RENDER spike WITHOUT a matching media-datagram gap in
+    /// the log ⇒ frames arrived but couldn't be presented (main-actor block), not a host/network stall.
+    private func dbgNoteRender() {
+        guard Self.dbgGapEnabled else { return }
+        let now = FramePacer.currentHostTimeSeconds()
+        if dbgLastRender > 0 {
+            let gap = now - dbgLastRender
+            if gap > 0.12 { FileHandle.standardError.write(Data("Rwork[video.client.view]: RENDER gap \(Int(gap * 1000))ms (main-actor)\n".utf8)) }
+        }
+        dbgLastRender = now
+    }
+
+    /// Applies the latest pending cursor update to the compositor (one CALayer placement). Re-arms by
+    /// clearing the scheduled flag so the NEXT packet schedules a fresh flush. No-op once torn down.
+    private func flushCursor() {
+        cursorFlushScheduled = false
+        guard let update = pendingCursorUpdate, let placement = pendingCursorPlacement, let compositor else {
+            pendingCursorUpdate = nil; pendingCursorPlacement = nil
+            setServerCursorVisible(false)   // torn down / nothing to draw ⇒ no overlay ⇒ show the OS arrow
+            return
+        }
+        pendingCursorUpdate = nil
+        pendingCursorPlacement = nil
+        #if os(macOS)
+        // macOS Parsec model: DON'T composite the host POSITION (it lags by an RTT + the outbound
+        // motion-coalescing interval). Just track the host's SHAPE + visibility; the backing view
+        // draws that shape on the LOCAL OS cursor at the instant mouse position.
+        updateRemoteCursor(update)
+        #else
+        compositor.apply(update, viewSize: placement.viewSize, videoNativeSize: placement.videoNativeSize,
+                         zoom: placement.zoom, pan: placement.pan, mode: placement.mode)
+        #endif
+        // Mirror the host cursor's just-applied visibility so the view can choose remote-shape vs arrow.
+        setServerCursorVisible(update.visible)
+    }
+
+    #if os(macOS)
+    /// Rebuilds ``currentRemoteCursor`` when the host shapeID changes (or when its bitmap finally
+    /// arrives after a re-request for an id we'd already seen), and notifies the view. Cheap: a real
+    /// rebuild happens only on a shape SWAP, not per 120 Hz position packet.
+    private func updateRemoteCursor(_ update: CursorUpdate) {
+        guard let compositor else { return }
+        if currentRemoteCursorShapeID != update.shapeID {
+            currentRemoteCursorShapeID = update.shapeID
+            currentRemoteCursor = compositor.makeCursor(shapeID: update.shapeID, hotspot: update.hotspot)
+            onRemoteCursorChanged?()
+        } else if currentRemoteCursor == nil,
+                  let cursor = compositor.makeCursor(shapeID: update.shapeID, hotspot: update.hotspot) {
+            currentRemoteCursor = cursor
+            onRemoteCursorChanged?()
+        }
+    }
+    #endif
+
+    /// Updates ``isServerCursorVisible`` and notifies the view ONLY on a real flip (the apply path runs at
+    /// ~120 Hz but `visible` rarely changes), so the OS-cursor hide/show toggles at most when the host
+    /// cursor actually enters/leaves the captured window.
+    private func setServerCursorVisible(_ visible: Bool) {
+        guard visible != isServerCursorVisible else { return }
+        isServerCursorVisible = visible
+        onServerCursorVisibilityChanged?(visible)
     }
 
     // MARK: Motion pump (client-side coalescing)

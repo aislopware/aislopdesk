@@ -37,6 +37,25 @@ final class VideoSessionStateMachineTests: XCTestCase {
         XCTAssertEqual(effects[1], .startCapture(windowID: 42, width: 800, height: 600))
     }
 
+    func testFocusWindowIsAStateMachineNoOp() {
+        // `focusWindow` (the raise-the-focused-pane's-window model) is actioned at the ACTOR level
+        // (RworkVideoHostSession raises the captured window); the pure SM must treat it as an inert
+        // no-op in BOTH listening and streaming — no effects, no state change, no capture churn.
+        var sm = VideoSessionStateMachine(nextStreamID: 7)
+        _ = sm.start()
+        XCTAssertTrue(sm.handleControl(.focusWindow, windowBoundsCG: bounds, resolveCaptureSize: acceptAll).isEmpty,
+                      "focusWindow yields no effects while listening")
+        XCTAssertEqual(sm.state, .listening)
+
+        let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 42, viewport: VideoSize(width: 800, height: 600))
+        _ = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        XCTAssertEqual(sm.state, .streaming)
+        XCTAssertTrue(sm.handleControl(.focusWindow, windowBoundsCG: bounds, resolveCaptureSize: acceptAll).isEmpty,
+                      "focusWindow yields no effects while streaming")
+        XCTAssertEqual(sm.state, .streaming, "focusWindow must not perturb the streaming state")
+        XCTAssertTrue(sm.mediaFlowing)
+    }
+
     func testWrongProtocolVersionRejected() {
         var sm = VideoSessionStateMachine()
         _ = sm.start()

@@ -6,7 +6,7 @@ import CoreGraphics
 /// that every keyboard surface — the macOS menu-bar ``WorkspaceCommands``, the iPad hardware-keyboard
 /// HUD, and the compact on-screen affordances — funnels through. Each `WorkspaceCommand` case must
 /// land on the expected ``WorkspaceStore`` mutation, observable through the store's public surface
-/// (the tree of intent + the `FakePaneSession`-backed registry).
+/// (the single canvas of intent + the `FakePaneSession`-backed registry).
 ///
 /// The whole suite injects the spec-only `makeSession` seam with a ``FakePaneSession`` (docs/22 §0,
 /// §8) so it exercises the command → mutation chain **without ever building a `RworkClient` or a
@@ -25,9 +25,9 @@ final class CommandRoutingTests: XCTestCase {
         )
     }
 
-    /// The active tab's pane ids in z-order, or `[]` when there is no active tab.
+    /// The canvas's pane ids in z-order.
     private func paneIDs(_ store: WorkspaceStore) -> [PaneID] {
-        store.activeTab?.canvas.allIDs() ?? []
+        store.workspace.canvas.allIDs()
     }
 
     /// Reports a left/right SolvedLayout so geometric focus moves resolve: `left` fills the left half,
@@ -47,16 +47,16 @@ final class CommandRoutingTests: XCTestCase {
     func testApplyNewPaneGrowsPaneCountAndFocusesNewPane() {
         let store = makeStore()
         XCTAssertEqual(paneIDs(store).count, 1, "default workspace = one pane")
-        let original = store.activeTab!.focusedPane
+        let original = store.workspace.focusedPane
 
         apply(.newPane, to: store)
 
         let ids = paneIDs(store)
         XCTAssertEqual(ids.count, 2, "newPane adds exactly one pane")
         XCTAssertEqual(store.allSessions.count, 2, "reconcile materialized the new pane's session")
-        let focused = store.activeTab!.focusedPane
+        let focused = store.workspace.focusedPane
         XCTAssertNotEqual(focused, original, "focus moved to the newly created pane")
-        XCTAssertTrue(ids.contains(focused), "the focused pane is on the canvas")
+        XCTAssertTrue(focused.map(ids.contains) ?? false, "the focused pane is on the canvas")
     }
 
     /// `apply(.tidy)` packs the canvas into a non-overlapping grid (pane count + sessions unchanged).
@@ -71,7 +71,7 @@ final class CommandRoutingTests: XCTestCase {
         XCTAssertEqual(paneIDs(store).count, 3, "tidy never changes the pane set")
         XCTAssertEqual(store.allSessions.count, 3, "tidy is a registry no-op")
         // No two panes overlap after tidy.
-        let frames = store.activeTab!.canvas.items.map(\.frame)
+        let frames = store.workspace.canvas.items.map(\.frame)
         for i in frames.indices {
             for j in (i + 1)..<frames.count {
                 let inter = frames[i].intersection(frames[j])
@@ -84,87 +84,116 @@ final class CommandRoutingTests: XCTestCase {
     func testApplyCenterFocusedPaneMovesOnlyCamera() {
         let store = makeStore()
         apply(.newPane, to: store)
-        let focused = store.activeTab!.focusedPane
+        let focused = store.workspace.focusedPane
         let panesBefore = paneIDs(store)
 
         apply(.centerFocusedPane, to: store)
 
         XCTAssertEqual(paneIDs(store), panesBefore, "center never changes the pane set")
-        XCTAssertEqual(store.activeTab!.focusedPane, focused, "center never changes focus")
+        XCTAssertEqual(store.workspace.focusedPane, focused, "center never changes focus")
+    }
+
+    /// `apply(.centerAll)` only moves the camera (no pane-set / focus change).
+    func testApplyCenterAllMovesOnlyCamera() {
+        let store = makeStore()
+        apply(.newPane, to: store)
+        apply(.newPane, to: store)                          // three panes spread across the canvas
+        let focused = store.workspace.focusedPane
+        let panesBefore = paneIDs(store)
+
+        apply(.centerAll, to: store)
+
+        XCTAssertEqual(paneIDs(store), panesBefore, "centerAll never changes the pane set")
+        XCTAssertEqual(store.workspace.focusedPane, focused, "centerAll never changes focus")
     }
 
     // MARK: - Close pane
 
-    /// `apply(.closePane)` removes the focused pane from a multi-pane tab and re-points focus.
+    /// `apply(.closePane)` removes the focused pane from a multi-pane canvas and re-points focus.
     func testApplyClosePaneRemovesFocusedPane() {
         let store = makeStore()
         apply(.newPane, to: store)                          // two panes, the new one focused
         XCTAssertEqual(paneIDs(store).count, 2)
-        let closing = store.activeTab!.focusedPane
+        let closing = store.workspace.focusedPane
 
         apply(.closePane, to: store)
 
         let ids = paneIDs(store)
         XCTAssertEqual(ids.count, 1, "closePane removed the focused pane")
-        XCTAssertFalse(ids.contains(closing), "the closed pane is gone")
-        XCTAssertEqual(store.activeTab!.focusedPane, ids[0], "focus re-pointed to the survivor")
+        XCTAssertFalse(closing.map(ids.contains) ?? false, "the closed pane is gone")
+        XCTAssertEqual(store.workspace.focusedPane, ids[0], "focus re-pointed to the survivor")
     }
 
-    // MARK: - Tabs: lifecycle
+    // MARK: - Groups: lifecycle
 
-    func testApplyNewTabAddsAndActivatesTab() {
+    /// `apply(.newGroup)` appends a new (empty) group; the pane set / focus / registry are untouched
+    /// (a group is metadata, not a pane).
+    func testApplyNewGroupAddsGroupWithoutTouchingPanes() {
         let store = makeStore()
-        XCTAssertEqual(store.workspace.tabs.count, 1)
-        let firstTab = store.activeTab!.id
+        XCTAssertTrue(store.workspace.groups.isEmpty, "default workspace has no groups")
+        let panesBefore = paneIDs(store)
+        let sessionsBefore = store.allSessions.count
 
-        apply(.newTab, to: store)
+        apply(.newGroup, to: store)
 
-        XCTAssertEqual(store.workspace.tabs.count, 2, "newTab appended a tab")
-        XCTAssertNotEqual(store.activeTab!.id, firstTab, "the new tab is active")
+        XCTAssertEqual(store.workspace.groups.count, 1, "newGroup appended a group")
+        XCTAssertEqual(paneIDs(store), panesBefore, "newGroup must not change the pane set")
+        XCTAssertEqual(store.allSessions.count, sessionsBefore, "newGroup must not touch the registry")
     }
 
-    func testApplyCloseTabRemovesActiveTab() {
+    /// The pure group arithmetic the sidebar / store funnel through:
+    /// `addGroup` → `assignPane` → `renameGroup` → `removeGroup` (members survive ungrouped).
+    func testGroupArithmeticAssignsRenamesAndRemoves() {
         let store = makeStore()
-        apply(.newTab, to: store)
-        XCTAssertEqual(store.workspace.tabs.count, 2)
-        let active = store.activeTab!.id
+        apply(.newPane, to: store)                          // two panes on the canvas
+        let ids = paneIDs(store)
+        let pane = ids[0]
 
-        apply(.closeTab, to: store)
+        let groupID = store.addGroup(name: "Servers")
+        XCTAssertEqual(store.workspace.group(groupID)?.name, "Servers", "the group was created and named")
 
-        XCTAssertEqual(store.workspace.tabs.count, 1, "closeTab removed the active tab")
-        XCTAssertNil(store.workspace.tabs.first { $0.id == active }, "the closed tab is gone")
+        store.assignPane(pane, toGroup: groupID)
+        XCTAssertEqual(store.workspace.group(ofPane: pane)?.id, groupID, "the pane was assigned to the group")
+
+        store.renameGroup(groupID, "Hosts")
+        XCTAssertEqual(store.workspace.group(groupID)?.name, "Hosts", "the group was renamed")
+
+        store.removeGroup(groupID)
+        XCTAssertNil(store.workspace.group(groupID), "the group was removed")
+        XCTAssertNil(store.workspace.group(ofPane: pane), "the member survives, now ungrouped")
+        XCTAssertEqual(paneIDs(store), ids, "removing a group never closes its panes")
     }
 
-    // MARK: - Tabs: navigation
-
-    func testApplyNextAndPrevTabAdvanceWithWrap() {
+    /// `moveGroup(from:to:)` reorders the group list without changing membership or the pane set.
+    func testMoveGroupReordersWithoutChangingPanes() {
         let store = makeStore()
-        apply(.newTab, to: store)
-        apply(.newTab, to: store)
-        let ids = store.workspace.tabs.map(\.id)
-        XCTAssertEqual(store.workspace.activeTabID, ids[2])
+        let panesBefore = paneIDs(store)
+        let first = store.addGroup(name: "First")
+        let second = store.addGroup(name: "Second")
+        XCTAssertEqual(store.workspace.groups.map(\.id), [first, second])
 
-        apply(.nextTab, to: store)
-        XCTAssertEqual(store.workspace.activeTabID, ids[0], "next from last wraps to first")
+        store.moveGroup(from: IndexSet(integer: 1), to: 0)
 
-        apply(.prevTab, to: store)
-        XCTAssertEqual(store.workspace.activeTabID, ids[2], "prev from first wraps to last")
+        XCTAssertEqual(store.workspace.groups.map(\.id), [second, first], "the second group moved to the front")
+        XCTAssertEqual(paneIDs(store), panesBefore, "moveGroup never changes the pane set")
     }
 
-    func testApplySelectTabByPosition() {
+    // MARK: - Center on group
+
+    /// `centerOnGroup` only moves the camera onto the group's bounding box (no pane-set / focus change).
+    func testCenterOnGroupMovesOnlyCamera() {
         let store = makeStore()
-        apply(.newTab, to: store)
-        apply(.newTab, to: store)
-        let ids = store.workspace.tabs.map(\.id)
+        apply(.newPane, to: store)
+        let ids = paneIDs(store)
+        let groupID = store.addGroup(name: "G")
+        store.assignPane(ids[1], toGroup: groupID)
+        let panesBefore = paneIDs(store)
+        let focused = store.workspace.focusedPane
 
-        apply(.selectTab(1), to: store)
-        XCTAssertEqual(store.workspace.activeTabID, ids[0], "selectTab(1) = first tab")
+        store.centerOnGroup(groupID)
 
-        apply(.selectTab(2), to: store)
-        XCTAssertEqual(store.workspace.activeTabID, ids[1], "selectTab(2) = second tab")
-
-        apply(.selectTab(9), to: store)
-        XCTAssertEqual(store.workspace.activeTabID, ids[2], "selectTab(9) = last tab (macOS convention)")
+        XCTAssertEqual(paneIDs(store), panesBefore, "centerOnGroup never changes the pane set")
+        XCTAssertEqual(store.workspace.focusedPane, focused, "centerOnGroup never changes focus")
     }
 
     // MARK: - Focus: geometric
@@ -177,23 +206,23 @@ final class CommandRoutingTests: XCTestCase {
         reportTwoPaneLayout(store, left: left, right: right)
 
         store.focus(left)
-        XCTAssertEqual(store.activeTab!.focusedPane, left)
+        XCTAssertEqual(store.workspace.focusedPane, left)
 
         apply(.focus(.right), to: store)
-        XCTAssertEqual(store.activeTab!.focusedPane, right, "focus(.right) lands on the right pane")
+        XCTAssertEqual(store.workspace.focusedPane, right, "focus(.right) lands on the right pane")
 
         apply(.focus(.left), to: store)
-        XCTAssertEqual(store.activeTab!.focusedPane, left, "focus(.left) lands back on the left pane")
+        XCTAssertEqual(store.workspace.focusedPane, left, "focus(.left) lands back on the left pane")
     }
 
     func testApplyFocusDirectionNoopWithoutSolvedLayout() {
         let store = makeStore()
         apply(.newPane, to: store)
-        let focusedBefore = store.activeTab!.focusedPane
+        let focusedBefore = store.workspace.focusedPane
 
         apply(.focus(.left), to: store)                     // no updateSolvedLayout called
 
-        XCTAssertEqual(store.activeTab!.focusedPane, focusedBefore, "no layout ⇒ no directional move")
+        XCTAssertEqual(store.workspace.focusedPane, focusedBefore, "no layout ⇒ no directional move")
     }
 
     // MARK: - Focus: cycle
@@ -206,63 +235,43 @@ final class CommandRoutingTests: XCTestCase {
         store.focus(a)
 
         apply(.cycleFocus(forward: true), to: store)
-        XCTAssertEqual(store.activeTab!.focusedPane, b, "cycle forward a → b")
+        XCTAssertEqual(store.workspace.focusedPane, b, "cycle forward a → b")
 
         apply(.cycleFocus(forward: true), to: store)
-        XCTAssertEqual(store.activeTab!.focusedPane, a, "cycle forward wraps b → a")
+        XCTAssertEqual(store.workspace.focusedPane, a, "cycle forward wraps b → a")
 
         apply(.cycleFocus(forward: false), to: store)
-        XCTAssertEqual(store.activeTab!.focusedPane, b, "cycle backward wraps a → b")
+        XCTAssertEqual(store.workspace.focusedPane, b, "cycle backward wraps a → b")
     }
 
     // MARK: - Maximize
 
     func testApplyToggleZoomTogglesMaximizedPane() {
         let store = makeStore()
-        let focused = store.activeTab!.focusedPane
-        XCTAssertNil(store.activeTab!.maximizedPane, "no maximize initially")
+        let focused = store.workspace.focusedPane
+        XCTAssertNil(store.workspace.maximizedPane, "no maximize initially")
 
         apply(.toggleZoom, to: store)
-        XCTAssertEqual(store.activeTab!.maximizedPane, focused, "toggleZoom maximized the focused pane")
+        XCTAssertEqual(store.workspace.maximizedPane, focused, "toggleZoom maximized the focused pane")
 
         apply(.toggleZoom, to: store)
-        XCTAssertNil(store.activeTab!.maximizedPane, "toggleZoom again cleared the maximize")
+        XCTAssertNil(store.workspace.maximizedPane, "toggleZoom again cleared the maximize")
     }
 
     // MARK: - Rename (command-layer no-op for the tree)
 
-    /// `apply(.renameTab)` does not mutate the tree / focus / maximize / registry — it only nudges the
-    /// inline-rename request (the field commits the value through `store.renameTab`, docs/30 §7).
-    func testApplyRenameTabDoesNotMutateTreeOrRegistry() {
+    /// `apply(.renamePane)` does not mutate the canvas / focus / maximize / registry — it only nudges the
+    /// inline-rename request (the sidebar field commits the value, docs/30 §7).
+    func testApplyRenamePaneDoesNotMutateTreeOrRegistry() {
         let store = makeStore()
         let before = store.workspace
         let sessionsBefore = store.allSessions.count
+        let renameBefore = store.renameRequest
 
-        apply(.renameTab, to: store)
+        apply(.renamePane, to: store)
 
-        XCTAssertEqual(store.workspace, before, "renameTab command must not mutate the tree")
-        XCTAssertEqual(store.allSessions.count, sessionsBefore, "renameTab command must not touch the registry")
-    }
-
-    // MARK: - No-target safety
-
-    func testCommandsAreNoopWithNoActiveTab() {
-        let store = makeStore()
-        apply(.closeTab, to: store)
-        XCTAssertNil(store.activeTab, "workspace is now empty")
-
-        // These all read the (absent) active tab / focused pane and must simply do nothing.
-        apply(.newPane, to: store)
-        apply(.tidy, to: store)
-        apply(.centerFocusedPane, to: store)
-        apply(.closePane, to: store)
-        apply(.closeTab, to: store)
-        apply(.toggleZoom, to: store)
-        apply(.focus(.right), to: store)
-        apply(.cycleFocus(forward: true), to: store)
-        apply(.renameTab, to: store)
-
-        XCTAssertNil(store.activeTab, "still empty — no command resurrected a tab")
-        XCTAssertTrue(store.allSessions.isEmpty, "no sessions materialized from no-op commands")
+        XCTAssertEqual(store.workspace, before, "renamePane command must not mutate the canvas")
+        XCTAssertEqual(store.allSessions.count, sessionsBefore, "renamePane command must not touch the registry")
+        XCTAssertEqual(store.renameRequest, renameBefore + 1, "renamePane nudged the inline-rename request")
     }
 }

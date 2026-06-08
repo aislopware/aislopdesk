@@ -3,7 +3,7 @@
 // It is the executable wrapper the `RworkVideoHostSession` orchestrator was missing: it
 // enumerates the host's shareable windows (ScreenCaptureKit), binds ONE shared UDP media +
 // cursor flow (`NWVideoMuxDatagramTransport`), and mints a per-channel session from each
-// client `hello`'s own windowID — which then captures → 2-session HEVC encodes → packetizes
+// client `hello`'s own windowID — which then captures → HEVC encodes (live + crisp refresh) → packetizes
 // → serves, and injects client input back (doc 17 §3, doc 18). One UDP flow per host, N panes.
 //
 // ⚠️ GUI + TCC ONLY. `SCShareableContent` (and the capture/encode the session starts) need a
@@ -37,6 +37,13 @@ struct VideoHostdArguments {
     var cursorPort: UInt16 = 9001
     var scale: Double = 1.0   // capture at window-points × scale PIXELS (1 = point-res/light; raise for sharper)
     var bitrateMbps: Int = 12 // live-encoder target bitrate (Mbps); raise for crisper text
+    var fps: Int = 60         // capture + encoder frame-rate cap; 60 = smooth scroll/motion, 30 = lighter
+    // Feature #1: create a HiDPI 2× virtual display and move each remoted window onto it, so the
+    // window renders at REAL Retina backing (sharp text) instead of point-res-upscale on a 1× host.
+    // Env `RWORK_VD=1` is an A/B default; `--virtual-display` forces it on.
+    var virtualDisplay = false
+    var vdPointWidth = 1920   // VD logical (point) size; windows larger than this are resized to fit
+    var vdPointHeight = 1080
 
     static func usage(_ program: String) -> String {
         """
@@ -52,6 +59,11 @@ struct VideoHostdArguments {
           --bitrate N        live-encoder target bitrate in Mbps (default 12; higher = crisper text,
                              but the low-latency rate-control caps keyframe growth — for truly sharp
                              text raise --scale instead, or use an all-intra mode)
+          --fps N            capture + encoder frame-rate cap (default 60; 30 = lighter/less smooth)
+          --virtual-display  create a HiDPI 2× virtual display and move each remoted window onto it
+                             so it renders at REAL Retina backing (razor-sharp text) instead of a
+                             point-resolution upscale. Falls back to 1× if unavailable. (env RWORK_VD=1)
+          --vd-point-size WxH  virtual-display logical size in points (default 1920x1080 → 3840x2160 px)
 
         Needs Screen-Recording (capture) + Accessibility & Post-Event (input) TCC, and a
         real GUI login session. Run from the desktop, not over SSH.
@@ -83,11 +95,24 @@ struct VideoHostdArguments {
             case "--bitrate":
                 guard let v = next(), let n = Int(v), n >= 1 else { return nil }
                 a.bitrateMbps = n; i += 1
+            case "--fps":
+                guard let v = next(), let n = Int(v), n >= 1, n <= 120 else { return nil }
+                a.fps = n; i += 1
+            case "--virtual-display": a.virtualDisplay = true
+            case "--vd-point-size":
+                // Parse WxH (e.g. 1920x1080).
+                guard let v = next() else { return nil }
+                let parts = v.lowercased().split(separator: "x")
+                guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]), w >= 320, h >= 240 else { return nil }
+                a.vdPointWidth = w; a.vdPointHeight = h; i += 1
             case "-h", "--help": return nil
             default: return nil
             }
             i += 1
         }
+        // Env A/B default: RWORK_VD=1 enables the virtual display without a CLI flag (--virtual-display
+        // still forces it on regardless).
+        if ProcessInfo.processInfo.environment["RWORK_VD"] == "1" { a.virtualDisplay = true }
         // The daemon ALWAYS runs the UDP-mux path: it mints a per-channel session from EACH client
         // hello's own windowID (the §2 asymmetry: two panes watch different windows over one shared
         // flow), so no fixed window arg is required (one may still be passed to validate at --list
@@ -144,6 +169,53 @@ func describe(_ w: SCWindow) -> String {
                   w.windowID, app as NSString, title as NSString, size as NSString)
 }
 
+/// System apps whose windows are NOT useful to stream — filtered OUT of the picker list (docs/31).
+private let pickerSystemApps: Set<String> = [
+    "", "Window Server", "Control Center", "Dock", "Notification Center", "Spotlight", "Wallpaper",
+]
+
+/// Maps an `SCWindow` to a picker ``WindowSummary``, or `nil` if it is system chrome / a tiny indicator
+/// (StatusIndicator, Cursor, Menubar, Control Center items) that should not appear in the picker.
+@Sendable func pickerSummary(_ w: SCWindow) -> WindowSummary? {
+    let app = w.owningApplication?.applicationName ?? ""
+    let width = Int(w.frame.width.rounded()), height = Int(w.frame.height.rounded())
+    guard !pickerSystemApps.contains(app), width >= 80, height >= 80 else { return nil }
+    return WindowSummary(
+        windowID: w.windowID,
+        appName: app,
+        title: w.title ?? "",
+        width: UInt16(clamping: width),
+        height: UInt16(clamping: height)
+    )
+}
+
+/// Coalesces concurrent `listWindows` answers per channelID (the discovery-path mirror of
+/// `VideoMuxSessionRegistry.minting`): a list lane never mints a session, so without this a lossy /
+/// fast-retransmitting / looping client would spawn one expensive `SCShareableContent` enumeration PER
+/// retransmit, piling up concurrent window-server round-trips. `begin` admits exactly one in-flight
+/// answer per channelID; retransmits while it runs are dropped.
+final class ListAnswerGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var inFlight: Set<UInt32> = []
+    /// Marks `id` in-flight and returns `true`; returns `false` if an answer for `id` is already running.
+    func begin(_ id: UInt32) -> Bool { lock.withLock { inFlight.insert(id).inserted } }
+    func end(_ id: UInt32) { lock.withLock { _ = inFlight.remove(id) } }
+}
+
+/// Answers a client `listWindows` discovery request (docs/31 picker): enumerate the shareable windows,
+/// filter to real app windows, cap to a control-datagram-safe count, send a `windowList` back on the
+/// request's channelID, then RETIRE that channelID's reply-flow entry (the lane was never admitted as a
+/// streaming session, so its `channelMediaConn` mapping would otherwise linger). The `answerGuard` slot
+/// is cleared on every exit so a later (post-reply) retransmit can re-answer.
+@Sendable func answerWindowList(channelID: UInt32, mux: NWVideoMuxDatagramTransport, answerGuard: ListAnswerGuard) async {
+    defer { answerGuard.end(channelID) }
+    let summaries = ((try? await shareableWindows()) ?? []).compactMap(pickerSummary).prefix(64)
+    let reply = VideoControlMessage.windowList(Array(summaries)).encode()
+    mux.send(reply, on: .control, channelID: channelID)
+    mux.retire(channelID)
+    log("answered listWindows on chan=\(channelID): \(summaries.count) windows (\(reply.count) bytes)")
+}
+
 // What is held for the process lifetime; SIGINT drives the orderly stop. Set by the bring-up
 // Task, read by the SIGINT Task — different threads, so a lock guards the shared vars (the
 // `@unchecked Sendable` would otherwise hide a real data race). The daemon always runs the
@@ -153,12 +225,15 @@ final class Holder: @unchecked Sendable {
     private let lock = NSLock()
     private var registry: VideoMuxSessionRegistry?
     private var mux: NWVideoMuxDatagramTransport?
+    private var virtualDisplay: VirtualDisplay?   // feature #1: held for daemon lifetime (ARC owns the CGVirtualDisplay)
     func setMux(_ r: VideoMuxSessionRegistry, _ m: NWVideoMuxDatagramTransport) { lock.lock(); registry = r; mux = m; lock.unlock() }
     func currentMux() -> (VideoMuxSessionRegistry, NWVideoMuxDatagramTransport)? {
         lock.lock(); defer { lock.unlock() }
         guard let registry, let mux else { return nil }
         return (registry, mux)
     }
+    func setVirtualDisplay(_ vd: VirtualDisplay) { lock.lock(); virtualDisplay = vd; lock.unlock() }
+    func currentVirtualDisplay() -> VirtualDisplay? { lock.lock(); defer { lock.unlock() }; return virtualDisplay }
 }
 let holder = Holder()
 
@@ -185,6 +260,11 @@ sigint.setEventHandler {
         if let (registry, mux) = holder.currentMux() {
             await registry.stopAll()
             await mux.stop()
+        }
+        // Tear the virtual display down AFTER all SCStreams stopped (FB17797423: never release the
+        // VD while a stream targets it). ARC dealloc unregisters it from WindowServer.
+        if let vd = holder.currentVirtualDisplay() {
+            await MainActor.run { vd.destroy() }
         }
         exit(0)
     }
@@ -237,6 +317,27 @@ Task {
         let bitrate = args.bitrateMbps * 1_000_000
         let mediaPort = args.mediaPort, cursorPort = args.cursorPort
 
+        // ── Feature #1: optional HiDPI 2× virtual display ────────────────────────────────────────
+        // Created ONCE and SHARED across panes (held by `holder` for the daemon lifetime — recreating
+        // it mid-session risks the SCK FB17797423 wrong-framebuffer bug). Each remoted window is then
+        // moved onto it (per-mint, below) so it renders at REAL Retina 2× backing → razor-sharp text,
+        // versus the soft point-resolution upscale on the 1× host display. ANY failure (private API
+        // absent, WindowServer refusal, pixel-limit) leaves `vdDisplayID == 0` → capture stays at the
+        // existing 1× `effectiveScale`. Never crashes.
+        let virtualDisplay = await MainActor.run { VirtualDisplay() }
+        holder.setVirtualDisplay(virtualDisplay)
+        var vdID: CGDirectDisplayID = 0
+        if args.virtualDisplay {
+            let geo = VirtualDisplayGeometry(pointWidth: args.vdPointWidth, pointHeight: args.vdPointHeight, scale: 2)
+            if let id = await virtualDisplay.create(geo) {
+                vdID = id
+                log("virtual display ONLINE id=\(id) (\(args.vdPointWidth)x\(args.vdPointHeight)pt @2× → \(geo.pixelWidth)x\(geo.pixelHeight)px) — windows will be moved onto it for sharp capture")
+            } else {
+                log("virtual display unavailable — falling back to 1× real-display capture")
+            }
+        }
+        let vdDisplayID = vdID   // immutable capture for the mint closure
+
         // CONCURRENCY-HOST-1 mux analogue: the shared transport arms the per-lane reaper.
         let mux = NWVideoMuxDatagramTransport(mediaPort: mediaPort, cursorPort: cursorPort)
         // One shared sink table both the registry (reads on dispatch) and the per-lane transports
@@ -266,7 +367,24 @@ Task {
                 sinkTable: sinkTable,
                 onRetire: { id in retireBox.retire(id) }
             )
-            let session = RworkVideoHostSession(window: w, transport: lane, captureScale: effectiveScale, bitrate: bitrate)
+            // Feature #1: if the VD is up, move THIS window onto it (AX) and capture at 2× real
+            // backing. The move returns the ACHIEVED post-move point size (a window larger than the VD
+            // is resized down) — thread it in as the authoritative capture/helloAck size so the
+            // SCStream + the client's input mapping use the new size, not the stale SCWindow.frame.
+            // If the move fails (fixed-size/hung app/AX denied) fall back to 1× for this pane — the
+            // window simply stays where it is and still streams. Per-pane so two panes can each be
+            // moved onto the shared VD.
+            let paneCaptureScale: Double
+            var paneSizeOverride: VideoSize? = nil
+            if vdDisplayID != 0, let movePid = w.owningApplication?.processID,
+               let achieved = await WindowPlacement.moveWindowOntoDisplay(windowID: requestedWindowID, pid: movePid, displayID: vdDisplayID) {
+                paneCaptureScale = 2.0
+                paneSizeOverride = VideoSize(width: Double(achieved.width), height: Double(achieved.height))
+            } else {
+                paneCaptureScale = effectiveScale
+                if vdDisplayID != 0 { log("mux: could not move window \(requestedWindowID) onto the VD — capturing at 1×") }
+            }
+            let session = RworkVideoHostSession(window: w, transport: lane, captureScale: paneCaptureScale, captureSizeOverride: paneSizeOverride, bitrate: bitrate, fps: args.fps)
             try await session.start()
             log("mux: minted session chan=\(channelID) window-id=\(requestedWindowID) over shared flow")
             return session
@@ -276,6 +394,9 @@ Task {
         // (capture/encode actually stops — the leak `retire` alone left).
         mux.onReapLane = { id in await registry.retireAndStop(id) }
         holder.setMux(registry, mux)
+        // Coalesces concurrent listWindows answers per channelID (so a lossy/looping client can't pile up
+        // SCShareableContent enumerations — the discovery mirror of the registry's `minting` dedup).
+        let listAnswerGuard = ListAnswerGuard()
         try await mux.start { channelID, channel, data in
             // ORDERING: an ADMITTED lane's sink appends to its session's serial inbound queue
             // SYNCHRONOUSLY, in arrival order, on the transport's serial receive queue — so a mouseUp
@@ -285,6 +406,14 @@ Task {
             // hello for a not-yet-minted lane needs the async mint hop.
             if let sink = sinkTable.sink(channelID) {
                 sink(channel, data)
+            } else if channel == .control, let msg = try? VideoControlMessage.decode(data), case .listWindows = msg {
+                // Session-LESS window discovery (docs/31 picker): enumerate + reply, NEVER mint a capture
+                // session. The transport already stamped this channelID's reply flow (listWindows
+                // bootstraps like a hello), so the reply can be sent back; answerWindowList retires it.
+                // Coalesce retransmits: only spawn an enumeration if one isn't already in flight for this id.
+                if listAnswerGuard.begin(channelID) {
+                    Task { await answerWindowList(channelID: channelID, mux: mux, answerGuard: listAnswerGuard) }
+                }
             } else {
                 Task { await registry.dispatch(channelID: channelID, channel: channel, data: data) }
             }
@@ -296,7 +425,16 @@ Task {
     }
 }
 
-dispatchMain()
+// Run loop. CGVirtualDisplay needs a live CFRunLoop to stay registered with WindowServer, which
+// `dispatchMain()` does NOT provide; `NSApplication.run()` runs the main run loop AND drains the
+// main dispatch queue (so the `.main` SIGINT source still fires). Switch to it ONLY when the VD is
+// enabled — the default path keeps the proven `dispatchMain()` untouched. NSApp is already
+// configured `.accessory` above (no Dock/menu-bar presence).
+if args.virtualDisplay {
+    NSApplication.shared.run()
+} else {
+    dispatchMain()
+}
 
 #else
 

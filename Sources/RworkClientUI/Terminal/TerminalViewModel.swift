@@ -73,7 +73,19 @@ public final class TerminalViewModel {
 
     /// The terminal renderer the model feeds inbound bytes to. `nil` in the headless /
     /// placeholder case; the app target sets it to a libghostty ``GhosttySurface``.
-    public weak var surface: (any TerminalSurface)?
+    ///
+    /// `@ObservationIgnored`: this is WIRING (the renderer the model feeds), not view state — exactly
+    /// like ``inputSink`` / ``resizeSink`` / ``onRequestFocus``. It MUST NOT be observation-tracked.
+    /// ``attachSurface(_:)`` both READS (`self.surface !== surface`) and WRITES (`self.surface =
+    /// surface`) this property, and it is called from `GhosttyMetalLayerView.updateNSView` — i.e. from
+    /// INSIDE a SwiftUI AttributeGraph update. If `surface` were tracked, that read would register the
+    /// updating attribute as a dependency and the write would invalidate it, so SwiftUI would re-run
+    /// the update → `updateNSView` → `attach` → `attachSurface` → read+write → invalidate → ∞: an
+    /// infinite re-render loop that pins the main thread (a multi-second beachball "crash", seen when a
+    /// focus change / reconnect triggers `updateNSView`). Ignoring it removes the dependency so the
+    /// assignment is inert to the graph. No SwiftUI view body reads `surface`, so nothing needs it
+    /// reactive (the renderer view owns its own surface; this is only the feed target).
+    @ObservationIgnored public weak var surface: (any TerminalSurface)?
 
     /// OUT path sink: the encoded keystroke/escape bytes libghostty emits from the
     /// renderer's `key`/`text` events (`GhosttySurface.onWrite`). The ``ConnectionViewModel``
@@ -89,11 +101,32 @@ public final class TerminalViewModel {
     /// (`GhosttySurface.onResize`). Same lifecycle as ``inputSink``: set on connect to
     /// forward to ``RworkClient/sendResize(cols:rows:pxWidth:pxHeight:)`` (→ host
     /// `TIOCSWINSZ`), cleared on teardown.
-    @ObservationIgnored public var resizeSink: ((UInt16, UInt16) -> Void)?
+    /// Wiring it (on connect) FLUSHES the latest grid the renderer derived so far: libghostty's
+    /// `resize_callback` fires during surface creation / initial layout — BEFORE `connect()` wires
+    /// this sink — so those early grids would otherwise be lost and the host PTY would stay at its
+    /// 80×24 init size while libghostty renders the real grid (the "render lộn xộn" / overlapping-
+    /// glyph bug: zsh wraps at 80 cols, fzf draws at row 24, but the surface is a different size).
+    /// `didSet` delivers the pending size the instant a sink appears, so the host always learns the
+    /// real grid even when no further resize happens after connect.
+    @ObservationIgnored public var resizeSink: ((UInt16, UInt16) -> Void)? {
+        didSet {
+            // A freshly-wired sink means a (re)connect: the host PTY is at its 80×24 init size and
+            // must be told the real grid even if it has not changed since the last connection, so
+            // clear the dedup memory and force a fresh delivery of the current grid.
+            if resizeSink != nil { lastSentSize = nil }
+            deliverResizeIfNeeded()
+        }
+    }
 
-    /// Last grid size forwarded, so a duplicate resize (libghostty emits `onResize` both from
-    /// `setSize` directly AND from its own `resize_callback` for the same layout pass) is
-    /// coalesced and not sent twice.
+    /// The latest grid the renderer derived, recorded UNCONDITIONALLY (even while disconnected, when
+    /// there is no sink yet) so it can be flushed the moment ``resizeSink`` is wired on connect.
+    @ObservationIgnored private var pendingSize: (cols: UInt16, rows: UInt16)?
+
+    /// Last grid size actually FORWARDED through the sink, so a duplicate resize (libghostty emits
+    /// `onResize` both from `setSize` directly AND from its own `resize_callback` for the same layout
+    /// pass) is coalesced and not sent twice. Only updated when a resize is genuinely delivered — a
+    /// resize attempted while disconnected (sink nil) must NOT poison this, or the dedup would later
+    /// suppress the real send once the sink is wired.
     @ObservationIgnored private var lastSentSize: (cols: UInt16, rows: UInt16)?
 
     /// Click-to-focus hook (macOS). The terminal NSView (`GhosttyLayerBackedView`) now installs
@@ -104,6 +137,13 @@ public final class TerminalViewModel {
     /// transfers workspace focus. `@ObservationIgnored`: wiring, not view state. Nil for headless /
     /// preview callers (no store), where it is simply never invoked.
     @ObservationIgnored public var onRequestFocus: (() -> Void)?
+
+    /// Pans the CANVAS by a (sign-adjusted) delta when a scroll lands on this terminal while it is NOT the
+    /// active pane — so scrolling over a background terminal navigates the canvas instead of being
+    /// swallowed by libghostty's scrollback ("only the active pane swallows pointer"). The renderer's
+    /// `scrollWheel` calls this when `!isFocusedPane`; the leaf wires it to the store's camera pan.
+    /// `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers (never invoked).
+    @ObservationIgnored public var onCanvasScroll: ((CGSize) -> Void)?
 
     // MARK: Replay byte-ring (surface-rebuild survival)
 
@@ -168,9 +208,32 @@ public final class TerminalViewModel {
     /// Coalesces consecutive duplicates (same cols/rows) so libghostty's double-emit per
     /// layout pass forwards at most one resize.
     public func sendResize(cols: UInt16, rows: UInt16) {
-        if let last = lastSentSize, last.cols == cols, last.rows == rows { return }
-        lastSentSize = (cols, rows)
-        resizeSink?(cols, rows)
+        pendingSize = (cols, rows)        // record the latest grid even if not connected yet
+        deliverResizeIfNeeded()
+    }
+
+    /// Forwards ``pendingSize`` to the host via ``resizeSink`` if it differs from the last delivered
+    /// size. Called from ``sendResize`` (grid changed) AND from `resizeSink.didSet` (sink wired on
+    /// connect) — so the host learns the real grid regardless of which happens first. A no-op while
+    /// the sink is nil, leaving `lastSentSize` untouched so the dedup never suppresses the eventual
+    /// first real send.
+    private func deliverResizeIfNeeded() {
+        guard let sink = resizeSink, let sz = pendingSize else { return }
+        if let last = lastSentSize, last.cols == sz.cols, last.rows == sz.rows { return }
+        lastSentSize = sz
+        sink(sz.cols, sz.rows)
+    }
+
+    /// Forces a re-delivery of the latest grid (``pendingSize``) to the sink, bypassing the dedup.
+    /// Called right AFTER the client finishes connecting: a resize delivered to the OUT drain DURING
+    /// the mux handshake makes `RworkClient.sendResize` throw `invalidState("sendResize before
+    /// connect")`, which the drain's `try?` silently swallows — yet `lastSentSize` was already
+    /// recorded, so the dedup would block every later send and the host PTY would stay at its 80×24
+    /// init grid (the "render lộn xộn" / overlapping-glyph bug). Re-arming + re-delivering here sends
+    /// the real grid once the host is ready to accept it.
+    public func resendCurrentSize() {
+        lastSentSize = nil
+        deliverResizeIfNeeded()
     }
 
     // MARK: Stream observation

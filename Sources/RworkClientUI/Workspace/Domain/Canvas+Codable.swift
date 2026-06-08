@@ -42,14 +42,16 @@ public extension CanvasCamera {
 // MARK: - CanvasItem (frame as a readable {origin:{x,y}, size:{width,height}})
 
 public extension CanvasItem {
-    private enum CodingKeys: String, CodingKey { case id, spec, frame, z }
+    private enum CodingKeys: String, CodingKey { case id, spec, frame, z, groupID }
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             id: try c.decode(PaneID.self, forKey: .id),
             spec: try c.decode(PaneSpec.self, forKey: .spec),
             frame: try c.decode(WireRect.self, forKey: .frame).rect,
-            z: try c.decode(Int.self, forKey: .z)
+            z: try c.decode(Int.self, forKey: .z),
+            // Optional so an ungrouped pane (and any pre-group file) round-trips: absent ⇒ ungrouped.
+            groupID: try c.decodeIfPresent(PaneGroupID.self, forKey: .groupID)
         )
     }
     func encode(to encoder: any Encoder) throws {
@@ -58,6 +60,8 @@ public extension CanvasItem {
         try c.encode(spec, forKey: .spec)
         try c.encode(WireRect(frame), forKey: .frame)
         try c.encode(z, forKey: .z)
+        // Omit the key entirely for an ungrouped pane (keeps the JSON minimal + the round-trip stable).
+        try c.encodeIfPresent(groupID, forKey: .groupID)
     }
 }
 
@@ -88,17 +92,10 @@ public extension Canvas {
         // origin can never later overflow or make a save throw.
         let camera = (try container.decodeIfPresent(CanvasCamera.self, forKey: .camera) ?? .zero).sanitized()
 
-        // A live tab's canvas must have ≥ 1 item — mirrors the legacy split's `children.count >= 2`
-        // structural guard. A zero-item canvas is corruption; fail loudly so the store's
-        // decode-failure fallback (default workspace + `.corrupt` sidecar) fires.
-        guard !rawItems.isEmpty else {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: container.codingPath,
-                    debugDescription: "Canvas must have >= 1 item, got 0"
-                )
-            )
-        }
+        // An EMPTY canvas is now a valid state — it is the single workspace root (docs/31), not a tab's
+        // canvas, so when the user closes the last pane the canvas legitimately has zero items and must
+        // round-trip (→ the "Add a pane" empty state on reload). (Was a hard decode failure when a
+        // canvas could only exist inside a non-empty tab.)
 
         // Sanitize each frame on the way in: a NaN / infinite / sub-minimum frame must never reach the
         // layout. (Duplicate ids are repaired separately — losslessly re-minted — at `load()` time via

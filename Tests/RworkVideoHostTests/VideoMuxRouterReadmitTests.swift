@@ -82,6 +82,25 @@ final class VideoMuxRouterReadmitTests: XCTestCase {
             .dropNoStamp, "a stray non-control datagram for an unknown lane drops")
     }
 
+    func testListRequestBootstrapsLikeHelloOnControlOnly() {
+        // docs/31 picker: a window-LIST request bootstraps (deliver + stamp the reply flow) like a hello
+        // on the control channel for an unadmitted OR retired lane — so the daemon can answer it (without
+        // minting a session). It must NOT bootstrap off a non-control channel, nor while draining.
+        XCTAssertEqual(
+            VideoMuxRouter.bootstrapAction(for: .rejectUnadmitted, channel: .control, payloadIsHello: false, payloadIsListRequest: true),
+            .bootstrapDeliver, "a listWindows request bootstraps an unadmitted lane (session-less reply)")
+        XCTAssertEqual(
+            VideoMuxRouter.bootstrapAction(for: .dropRetired, channel: .control, payloadIsHello: false, payloadIsListRequest: true),
+            .bootstrapDeliver, "a listWindows request bootstraps a retired lane too (cross-process reuse)")
+        XCTAssertEqual(
+            VideoMuxRouter.bootstrapAction(for: .rejectUnadmitted, channel: .video, payloadIsHello: false, payloadIsListRequest: true),
+            .dropNoStamp, "a list request off the control channel drops (only .control bootstraps)")
+        let listWhileDraining = VideoMuxRouter.Decision.dropDraining
+        XCTAssertEqual(
+            VideoMuxRouter.bootstrapAction(for: listWhileDraining, channel: .control, payloadIsHello: false, payloadIsListRequest: true),
+            .dropNoStamp, "a list request racing a teardown drops like a hello does")
+    }
+
     func testRoutedAndEmptyDecisionsNeverBootstrap() {
         // `.route` is handled on the live path; an empty `.drop` never bootstraps regardless of input.
         XCTAssertEqual(

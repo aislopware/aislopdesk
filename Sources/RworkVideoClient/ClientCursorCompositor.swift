@@ -2,6 +2,9 @@
 import Foundation
 import QuartzCore
 import RworkVideoProtocol
+#if os(macOS)
+import AppKit
+#endif
 
 /// Composites the side-channel cursor over the decoded video at display-refresh
 /// (doc 17 §3.3 — the highest-impact native-feel technique).
@@ -31,6 +34,30 @@ public final class ClientCursorCompositor {
         cursorLayer.isHidden = true
         cursorLayer.zPosition = 1000 // above the video layer
     }
+
+    #if os(macOS)
+    /// Builds a LOCAL `NSCursor` from the cached host shape bitmap + hotspot, for the macOS
+    /// "Parsec model": the OS draws the host's cursor SHAPE at the INSTANT local mouse position
+    /// (zero added latency), instead of compositing the host's RTT-delayed POSITION as an overlay.
+    /// Returns `nil` if the shape isn't cached yet (caller shows the plain arrow until it arrives).
+    ///
+    /// The image is wrapped at its LOGICAL point size (the CGImage may be a Retina/MTU-downscaled
+    /// bitmap) and the hotspot is in host-window points — which equal the NSCursor image points here
+    /// because capture is point-resolution — so `NSCursor(image:hotSpot:)` faithfully reproduces the
+    /// host pointer (arrow / I-beam / hand / resize / …).
+    func makeCursor(shapeID: UInt16, hotspot: VideoPoint) -> NSCursor? {
+        guard let cached = shapeCache[shapeID] else { return nil }
+        let w = cached.logicalSize.width > 0 ? cached.logicalSize.width : Double(cached.image.width)
+        let h = cached.logicalSize.height > 0 ? cached.logicalSize.height : Double(cached.image.height)
+        guard w > 0, h > 0 else { return nil }
+        let image = NSImage(cgImage: cached.image, size: NSSize(width: w, height: h))
+        // Clamp the hotspot into the image bounds (a malformed/oversized hotspot would otherwise
+        // make AppKit reject the cursor) — defensive, the wire floats are already finite-checked.
+        let hx = min(max(hotspot.x, 0), w)
+        let hy = min(max(hotspot.y, 0), h)
+        return NSCursor(image: image, hotSpot: NSPoint(x: hx, y: hy))
+    }
+    #endif
 
     /// Registers a cursor shape bitmap for a shapeID (the side path delivers these
     /// rarely; the hot ``apply(_:videoScale:)`` path is position-only).
@@ -122,6 +149,15 @@ public final class ClientCursorCompositor {
         return VideoSize(width: cursorLayer.bounds.width, height: cursorLayer.bounds.height)
     }
 
+    /// Converts a TOP-LEFT layer-origin Y (the convention the aspect-fit placement math —
+    /// and the input path's `bounds.height - p.y` flip — use) into the BOTTOM-LEFT Y a macOS
+    /// layer-backed `NSView` uses for its sublayers (`y' = parentHeight - y - height`). Pure so
+    /// the flip is unit-tested without a `CALayer`. iOS `UIView` layers are top-left and never
+    /// call this (the placement frame is used as-is).
+    nonisolated public static func bottomLeftOriginY(topLeftY: Double, height: Double, parentHeight: Double) -> Double {
+        parentHeight - topLeftY - height
+    }
+
     private func setLayerFrame(_ frame: VideoRect) {
         // Belt-and-suspenders: assigning a CALayer frame with a non-finite (NaN/±inf) component
         // raises an uncaught CALayerInvalidGeometry exception that kills the process. The codec now
@@ -130,10 +166,25 @@ public final class ClientCursorCompositor {
         // aspect-fit math (e.g. a zero video/view dimension) — skip the update rather than crash.
         let r = frame.cgRect
         guard r.origin.x.isFinite, r.origin.y.isFinite, r.size.width.isFinite, r.size.height.isFinite else { return }
+        var placed = r
+        #if os(macOS)
+        // The overlay layer is a sublayer of the macOS `CAMetalLayer`, whose host view sets
+        // neither `isFlipped` nor `isGeometryFlipped` → its sublayer coordinate space is
+        // BOTTOM-LEFT (+Y up). The placement math returns a TOP-LEFT frame (the same space the
+        // input path flips into via `bounds.height - p.y`), so writing it verbatim mirrors the
+        // cursor vertically — it tracks the wrong pixel and looks badly offset from where clicks
+        // land ("con trỏ client/server lệch rất nhiều"). Flip Y into the parent's bottom-left
+        // space so the composited cursor sits on the SAME pixel the input encoder targets.
+        // (Reads the live parent bounds in POINTS — the sublayer frame is in the parent's point
+        // space, not the pixel `drawableSize`.) iOS `UIView` layers are already top-left → no flip.
+        if let parentHeight = cursorLayer.superlayer?.bounds.height, parentHeight > 0 {
+            placed.origin.y = Self.bottomLeftOriginY(topLeftY: r.origin.y, height: r.size.height, parentHeight: parentHeight)
+        }
+        #endif
         // No implicit animation — the cursor must track at refresh, not tween.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        cursorLayer.frame = r
+        cursorLayer.frame = placed
         CATransaction.commit()
     }
 }

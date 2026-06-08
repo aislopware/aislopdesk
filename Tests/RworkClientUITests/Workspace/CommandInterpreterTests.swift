@@ -9,7 +9,7 @@ import SwiftUI
 /// on-screen affordances all funnel through. These tests pin:
 ///
 /// - **Every shipped default binding** resolves to the exact command (the load-bearing fact that
-///   ⌘D splits, ⌥⌘← moves focus, ⌘1…⌘9 selects, etc.).
+///   ⌘T adds a pane, ⌥⌘← moves focus, ⌃⌘G makes a group, etc.).
 /// - **The case-insensitivity convention** — `KeyChord(character:)` lower-cases the base key, so
 ///   ⇧ is carried only by `.shift`; `"D"` and `"d"` are the same chord, and ⇧⌘D needs an explicit
 ///   `.shift` rather than an upper-case letter.
@@ -35,17 +35,15 @@ final class CommandInterpreterTests: XCTestCase {
 
         let expected: [(KeyChord, WorkspaceCommand)] = [
             // Canvas: new pane / tidy.
-            (KeyChord(character: "d", [.command]),                 .newPane),
+            (KeyChord(character: "t", [.command]),                 .newPane),
             (KeyChord(character: "d", [.command, .shift]),         .tidy),
-            // Centre camera on the focused pane.
+            // Centre camera on the focused pane / on all panes.
             (KeyChord(character: "c", [.option, .command]),        .centerFocusedPane),
-            // Close.
+            (KeyChord(character: "c", [.option, .command, .shift]), .centerAll),
+            // Close the focused pane.
             (KeyChord(character: "w", [.command]),                 .closePane),
-            (KeyChord(character: "w", [.command, .shift]),         .closeTab),
-            // Tabs.
-            (KeyChord(character: "t", [.command]),                 .newTab),
-            (KeyChord(.tab, [.control]),                           .nextTab),
-            (KeyChord(.tab, [.control, .shift]),                   .prevTab),
+            // New group.
+            (KeyChord(character: "g", [.control, .command]),       .newGroup),
             // Geometric focus.
             (KeyChord(.leftArrow, [.option, .command]),            .focus(.left)),
             (KeyChord(.rightArrow, [.option, .command]),           .focus(.right)),
@@ -56,7 +54,7 @@ final class CommandInterpreterTests: XCTestCase {
             (KeyChord(character: "[", [.command]),                 .cycleFocus(forward: false)),
             // Zoom + rename.
             (KeyChord(.return, [.command, .shift]),                .toggleZoom),
-            (KeyChord(character: "r", [.command]),                 .renameTab),
+            (KeyChord(character: "r", [.command]),                 .renamePane),
             // Reconnect the focused pane (primary failure recovery) — ⇧⌘R, distinct from ⌘R rename.
             (KeyChord(character: "r", [.command, .shift]),         .reconnectPane)
         ]
@@ -66,29 +64,19 @@ final class CommandInterpreterTests: XCTestCase {
         }
     }
 
-    /// ⌘1…⌘9 each resolve to `selectTab(n)` with the matching 1-based position (the menu / store
-    /// position convention, docs/22 §5).
-    func testSelectTabDigitsOneThroughNine() {
-        let interpreter = CommandInterpreter()
-        for n in 1...9 {
-            let chord = KeyChord(character: Character(String(n)), [.command])
-            XCTAssertEqual(interpreter.feed(chord), .selectTab(n), "⌘\(n) selects tab position \(n)")
-        }
-    }
-
     // MARK: - Case-insensitivity convention (⇧ is in modifiers, not the char)
 
     /// `KeyChord(character:)` lower-cases the base key, so an upper-case letter without `.shift` is
-    /// the same chord as the lower-case one — `⌘D` (typed with caps) still maps to `.newPane`,
-    /// it is NOT mistaken for ⇧⌘D.
+    /// the same chord as the lower-case one — `⌘T` (typed with caps) still maps to `.newPane`,
+    /// it is NOT mistaken for ⇧⌘T.
     func testUpperCaseCharIsNormalizedToLowerCaseBaseKey() {
         let interpreter = CommandInterpreter()
         XCTAssertEqual(
-            KeyChord(character: "D", [.command]),
-            KeyChord(character: "d", [.command]),
+            KeyChord(character: "T", [.command]),
+            KeyChord(character: "t", [.command]),
             "the convenience init lower-cases the base key — case is not part of identity"
         )
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "D", [.command])), .newPane)
+        XCTAssertEqual(interpreter.feed(KeyChord(character: "T", [.command])), .newPane)
         // Tidy requires an EXPLICIT .shift, not an upper-case char.
         XCTAssertEqual(interpreter.feed(KeyChord(character: "D", [.command, .shift])), .tidy)
         XCTAssertEqual(
@@ -107,12 +95,12 @@ final class CommandInterpreterTests: XCTestCase {
         // A bare letter (no ⌘/⌥) is never a workspace chord — it belongs to the terminal.
         XCTAssertNil(interpreter.feed(KeyChord(character: "a")))
         // A bound base key with the WRONG modifiers is also unbound.
-        XCTAssertNil(interpreter.feed(KeyChord(character: "d")), "⌘ is required — bare 'd' falls through")
-        XCTAssertNil(interpreter.feed(KeyChord(character: "d", [.control])), "⌃D is not a workspace chord")
+        XCTAssertNil(interpreter.feed(KeyChord(character: "t")), "⌘ is required — bare 't' falls through")
+        XCTAssertNil(interpreter.feed(KeyChord(character: "t", [.control])), "⌃T is not a workspace chord")
         // A named key with no binding.
         XCTAssertNil(interpreter.feed(KeyChord(.return)))
-        // ⌘0 is not bound (digits are 1...9 only).
-        XCTAssertNil(interpreter.feed(KeyChord(character: "0", [.command])))
+        // A digit chord is not bound (⌘1…⌘9 tab-select is gone).
+        XCTAssertNil(interpreter.feed(KeyChord(character: "1", [.command])))
     }
 
     // MARK: - Rebinding
@@ -121,11 +109,11 @@ final class CommandInterpreterTests: XCTestCase {
     /// live); the old chord stops resolving and the new chord resolves to the remapped command.
     func testRebindingViaMutableBindingsTakesEffect() {
         let interpreter = CommandInterpreter()
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "d", [.command])), .newPane)
+        XCTAssertEqual(interpreter.feed(KeyChord(character: "t", [.command])), .newPane)
 
-        // Remap ⌘D to newTab and drop the old meaning.
-        interpreter.bindings[KeyChord(character: "d", [.command])] = .newTab
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "d", [.command])), .newTab, "rebind takes effect")
+        // Remap ⌘T to newGroup and drop the old meaning.
+        interpreter.bindings[KeyChord(character: "t", [.command])] = .newGroup
+        XCTAssertEqual(interpreter.feed(KeyChord(character: "t", [.command])), .newGroup, "rebind takes effect")
 
         // Remove a binding entirely → it falls through.
         interpreter.bindings[KeyChord(character: "w", [.command])] = nil
@@ -141,7 +129,7 @@ final class CommandInterpreterTests: XCTestCase {
         let interpreter = CommandInterpreter(bindings: custom)
         XCTAssertEqual(interpreter.feed(KeyChord(character: "x", [.command])), .closePane)
         // A DEFAULT chord is NOT present because the custom table replaced the defaults.
-        XCTAssertNil(interpreter.feed(KeyChord(character: "d", [.command])), "custom table replaces, not merges")
+        XCTAssertNil(interpreter.feed(KeyChord(character: "t", [.command])), "custom table replaces, not merges")
     }
 
     /// `defaultBindings` is a COMPUTED property — each access rebuilds a fresh, equal table. Pin
@@ -208,7 +196,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(KeyChord.Key.rightArrow.keyEquivalent, .rightArrow)
         XCTAssertEqual(KeyChord.Key.upArrow.keyEquivalent, .upArrow)
         XCTAssertEqual(KeyChord.Key.downArrow.keyEquivalent, .downArrow)
-        XCTAssertEqual(KeyChord.Key.character("d").keyEquivalent, KeyEquivalent("d"))
+        XCTAssertEqual(KeyChord.Key.character("t").keyEquivalent, KeyEquivalent("t"))
         XCTAssertEqual(KeyChord.Key.character("]").keyEquivalent, KeyEquivalent("]"))
     }
 
@@ -221,8 +209,8 @@ final class CommandInterpreterTests: XCTestCase {
     ///     workspace chord, so it always reaches the terminal.
     ///  2. **No Ctrl-letter.** Any shortcut on a *printable character* carries ⌘ or ⌥ (never
     ///     Ctrl-only), because Ctrl+letter is a terminal control code (`^C`, `^D`, …) the shell
-    ///     owns. The two Ctrl-prefixed bindings the table does ship (⌃⇥ / ⌃⇧⇥) are on the *Tab* key,
-    ///     which is not a printable letter and so does not collide with terminal control input.
+    ///     owns. The one Ctrl-prefixed binding the table does ship (⌃⌘G new-group) also carries ⌘,
+    ///     so it never collides with terminal control input.
     func testAdapterPreservesConflictRule() {
         for (chord, _) in CommandInterpreter.defaultBindings {
             let mods = chord.shortcut.modifiers
@@ -242,13 +230,12 @@ final class CommandInterpreterTests: XCTestCase {
 
     // MARK: - WorkspaceCommand value semantics (associated values compare)
 
-    /// `WorkspaceCommand` is `Equatable` with its associated values significant — `selectTab(1)` is
-    /// not `selectTab(2)`, `focus(.left)` is not `focus(.right)`, `cycleFocus(forward:)` is
-    /// direction-sensitive. The whole binding-assertion strategy above relies on this; pin it.
+    /// `WorkspaceCommand` is `Equatable` with its associated values significant — `focus(.left)` is
+    /// not `focus(.right)`, `cycleFocus(forward:)` is direction-sensitive. The whole
+    /// binding-assertion strategy above relies on this; pin it.
     func testWorkspaceCommandEqualityIsAssociatedValueSensitive() {
-        XCTAssertNotEqual(WorkspaceCommand.selectTab(1), .selectTab(2))
-        XCTAssertEqual(WorkspaceCommand.selectTab(3), .selectTab(3))
         XCTAssertNotEqual(WorkspaceCommand.focus(.left), .focus(.right))
+        XCTAssertEqual(WorkspaceCommand.focus(.up), .focus(.up))
         XCTAssertNotEqual(WorkspaceCommand.cycleFocus(forward: true), .cycleFocus(forward: false))
         XCTAssertEqual(WorkspaceCommand.toggleZoom, .toggleZoom)
     }

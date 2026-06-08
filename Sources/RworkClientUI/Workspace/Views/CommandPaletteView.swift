@@ -99,7 +99,7 @@ struct CommandPaletteView: View {
                 .foregroundStyle(.secondary)
                 .font(.system(size: 15, weight: .regular))
 
-            TextField("Run a command or jump to a tab…", text: $query)
+            TextField("Run a command or jump to a pane or group…", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 16))
                 .focused($searchFocused)
@@ -218,14 +218,14 @@ struct CommandPaletteView: View {
         switch entry.kind {
         case let .command(command):
             apply(command, to: store)
-        case let .tab(id):
-            store.selectTab(id)
-        case let .pane(paneID, tabID):
-            // Jump focus to a specific pane: activate its owning tab FIRST (so the pane is on-screen),
-            // then focus it. `store.focus` resolves the owning tab internally but does not activate it,
-            // so the explicit `selectTab` is what makes a cross-tab jump land.
-            store.selectTab(tabID)
+        case let .group(id):
+            // Jump to a group: pan the camera to frame its panes (groups are spatial clusters now).
+            store.centerOnGroup(id)
+        case let .pane(paneID):
+            // Jump to a pane: focus it AND pan the camera to centre it (it may be far off-viewport on
+            // the infinite canvas).
             store.focus(paneID)
+            store.centerOnPane(paneID)
         }
         dismiss()
     }
@@ -257,7 +257,7 @@ struct CommandPaletteView: View {
     /// need to cache). An empty query shows the full catalog in catalog order; a non-empty query keeps
     /// only fuzzy-subsequence matches, ranked best-first.
     private var entries: [Entry] {
-        let all = commandEntries + tabEntries + paneEntries
+        let all = commandEntries + groupEntries + paneEntries
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return all }
 
@@ -291,53 +291,43 @@ struct CommandPaletteView: View {
         }
     }
 
-    /// One "switch to tab" entry per tab, in sidebar order. Derived live so a renamed / added / closed
-    /// tab is reflected the next time the palette opens.
-    private var tabEntries: [Entry] {
-        store.workspace.tabs.enumerated().map { index, tab in
+    /// One "jump to group" entry per group, in sidebar order. Selecting one pans the camera to frame the
+    /// group's panes. Derived live so a renamed / added / removed group is reflected next open.
+    private var groupEntries: [Entry] {
+        store.workspace.groups.map { group in
             Entry(
-                id: "tab.\(tab.id.raw.uuidString)",
-                kind: .tab(tab.id),
-                title: tab.name,
-                subtitle: "Switch to tab",
-                symbol: "rectangle.stack",
-                shortcutHint: index < 9 ? Self.shortcutHint(for: .selectTab(index + 1)) : nil,
-                // Match the menu-bar "Select Tab N" phrasing so ⌘K finds the right tab by position.
-                keywords: index < 9 ? "select tab \(index + 1)" : nil
+                id: "group.\(group.id.raw.uuidString)",
+                kind: .group(group.id),
+                title: group.name,
+                subtitle: "Jump to group",
+                symbol: "square.on.square.dashed"
             )
         }
     }
 
-    /// One "jump to pane" entry per leaf of every MULTI-pane tab (a single-leaf tab is already fully
-    /// represented by its tab entry, so per-pane entries there would be noise). Selecting one activates
-    /// the owning tab and focuses the pane. Built live from the tree so it tracks splits/closes.
+    /// One "jump to pane" entry per pane on the canvas. Selecting one focuses the pane and centres the
+    /// camera on it. Built live from the canvas so it tracks adds/closes.
     private var paneEntries: [Entry] {
-        Self.buildPaneEntries(tabs: store.workspace.tabs)
+        Self.buildPaneEntries(workspace: store.workspace)
     }
 
     /// Pure builder for the per-pane jump entries (factored out so it is unit-testable without a view):
-    /// for each tab with >1 leaf, one entry per leaf titled by the pane's `spec.title`, subtitled by the
-    /// owning tab, carrying BOTH the `PaneID` and its owning `TabID` so the run handler can activate the
-    /// tab then focus the pane. `@MainActor` because the pane glyph (`PaneLeafView.icon`) is
-    /// main-actor-isolated (inferred from `View`); the view's `paneEntries` and the `@MainActor` test
+    /// one entry per pane titled by `spec.title`, subtitled by its group name (or "Pane" when ungrouped),
+    /// carrying the `PaneID` so the run handler focuses + centres it. `@MainActor` because the pane glyph
+    /// (`PaneLeafView.icon`) is main-actor-isolated; the view's `paneEntries` and the `@MainActor` test
     /// suite are the only callers.
-    @MainActor static func buildPaneEntries(tabs: [Tab]) -> [Entry] {
-        var entries: [Entry] = []
-        for tab in tabs where tab.canvas.itemCount > 1 {
-            for id in tab.canvas.allIDs() {
-                guard let spec = tab.canvas.spec(for: id) else { continue }
-                entries.append(
-                    Entry(
-                        id: "pane.\(id.raw.uuidString)",
-                        kind: .pane(id, tab.id),
-                        title: spec.title,
-                        subtitle: "Pane in \(tab.name)",
-                        symbol: PaneLeafView.icon(for: spec.kind)
-                    )
-                )
-            }
+    @MainActor static func buildPaneEntries(workspace: Workspace) -> [Entry] {
+        workspace.canvas.allIDs().compactMap { id -> Entry? in
+            guard let spec = workspace.canvas.spec(for: id) else { return nil }
+            let groupName = workspace.group(ofPane: id)?.name
+            return Entry(
+                id: "pane.\(id.raw.uuidString)",
+                kind: .pane(id),
+                title: spec.title,
+                subtitle: groupName.map { "Pane in \($0)" } ?? "Pane",
+                symbol: PaneLeafView.icon(for: spec.kind)
+            )
         }
-        return entries
     }
 
     // MARK: - Fuzzy matching (case-insensitive subsequence)
@@ -382,10 +372,10 @@ struct CommandPaletteView: View {
     struct Entry: Identifiable {
         enum Kind {
             case command(WorkspaceCommand)
-            case tab(TabID)
-            /// Jump focus to a specific pane: carries the pane id AND its owning tab id so the run
-            /// handler activates the tab then focuses the pane (a cross-tab jump).
-            case pane(PaneID, TabID)
+            /// Jump to a group: pans the camera to frame the group's panes.
+            case group(PaneGroupID)
+            /// Jump to a pane: focuses it and centres the camera on it.
+            case pane(PaneID)
         }
 
         let id: String
@@ -442,16 +432,14 @@ struct CommandPaletteView: View {
     /// docs/22 §5).
     nonisolated static let commandCatalog: [CatalogItem] = [
         CatalogItem(command: .newPane, title: "New Pane", symbol: "plus.rectangle"),
+        CatalogItem(command: .newGroup, title: "New Group", symbol: "square.on.square.dashed"),
         CatalogItem(command: .tidy, title: "Tidy Layout", symbol: "square.grid.2x2"),
         CatalogItem(command: .centerFocusedPane, title: "Center on Pane", symbol: "scope"),
+        CatalogItem(command: .centerAll, title: "Center on All", symbol: "dot.scope"),
         CatalogItem(command: .toggleZoom, title: "Maximize Pane", symbol: "arrow.up.left.and.arrow.down.right"),
-        CatalogItem(command: .closePane, title: "Close Pane", symbol: "xmark"),
+        CatalogItem(command: .renamePane, title: "Rename Pane", symbol: "pencil"),
         CatalogItem(command: .reconnectPane, title: "Reconnect Pane", symbol: "arrow.clockwise"),
-        CatalogItem(command: .newTab, title: "New Tab", symbol: "plus"),
-        CatalogItem(command: .closeTab, title: "Close Tab", symbol: "xmark.rectangle"),
-        CatalogItem(command: .renameTab, title: "Rename Tab", symbol: "pencil"),
-        CatalogItem(command: .nextTab, title: "Next Tab", symbol: "chevron.right"),
-        CatalogItem(command: .prevTab, title: "Previous Tab", symbol: "chevron.left"),
+        CatalogItem(command: .closePane, title: "Close Pane", symbol: "xmark"),
         CatalogItem(command: .cycleFocus(forward: true), title: "Focus Next Pane", symbol: "arrow.forward.square"),
         CatalogItem(command: .cycleFocus(forward: false), title: "Focus Previous Pane", symbol: "arrow.backward.square"),
         CatalogItem(command: .focus(.left), title: "Focus Left", symbol: "arrow.left"),

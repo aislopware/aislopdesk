@@ -13,7 +13,7 @@ import Foundation
 /// off 4: UInt32 frameID     — groups fragments of one encoded video frame
 /// off 8: UInt16 fragIndex   — 0-based index of this fragment within the frame
 /// off10: UInt16 fragCount   — total fragments in the frame
-/// off12: UInt8  flags       — bit0 keyframe(IDR), bit1 parity(FEC), bit2 crisp(Session B)
+/// off12: UInt8  flags       — bit0 keyframe(IDR), bit1 parity(FEC), bit2 crisp(static refresh)
 /// off13: UInt16 payloadLen  — bytes of payload that follow (defensive; UDP also bounds it)
 /// ```
 /// = **15-byte header**. The MTU budget (`VideoPacketizer.maxDatagramSize` = 1200,
@@ -26,7 +26,9 @@ public struct FrameFragmentHeader: Equatable, Sendable {
         public static let keyframe = Flags(rawValue: 1 << 0)
         /// This fragment is an FEC parity fragment, not original data.
         public static let parity = Flags(rawValue: 1 << 1)
-        /// This frame came from the on-demand crisp encoder (Session B, all-intra).
+        /// This frame is a CRISP near-lossless static refresh (a QP-bumped keyframe from the live
+        /// session, emitted when the window is at rest — Design A). Informational on the wire; the
+        /// client treats it as an ordinary keyframe.
         public static let crisp = Flags(rawValue: 1 << 2)
     }
 
@@ -123,7 +125,7 @@ public struct VideoPacketizer {
     /// - Parameters:
     ///   - frame: the AVCC bytes (length-prefixed NAL units) of one encoded frame.
     ///   - keyframe: whether this is an IDR (sets the keyframe flag).
-    ///   - crisp: whether this frame is from the crisp Session-B encoder.
+    ///   - crisp: whether this is a crisp near-lossless static refresh keyframe (informational).
     /// - Returns: data fragments + parity fragments, in send order.
     public mutating func packetize(frame: Data, keyframe: Bool, crisp: Bool = false) -> [FrameFragment] {
         let frameID = nextFrameID

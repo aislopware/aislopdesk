@@ -132,6 +132,11 @@ public enum ShellIntegration {
             "# rwork shell-integration shim — forwards \(fileName) to the user's real startup file.",
             "__rwork_shim=\"${ZDOTDIR:-$HOME}\"",
             "__rwork_real=\"${RWORK_REAL_ZDOTDIR:-$HOME}\"",
+            // Point ZDOTDIR at the user's REAL dir WHILE their startup file runs, so config that
+            // derives paths from ${ZDOTDIR:-$HOME} (e.g. oh-my-zsh's HISTFILE) resolves to the real
+            // dir — not the temp shim dir, which silently aimed Ctrl-R history + zsh-autosuggestions
+            // at an empty per-session file. Restored to the shim below (reassert) for the NEXT file.
+            "if [ \"$__rwork_real\" = \"$HOME\" ]; then unset ZDOTDIR; else ZDOTDIR=\"$__rwork_real\"; fi",
             "[ -f \"$__rwork_real/\(fileName)\" ] && source \"$__rwork_real/\(fileName)\"",
         ]
         if reassertZDotDir {
@@ -153,6 +158,21 @@ public enum ShellIntegration {
     # SIGWINCH prompt-reprint hook so the prompt is redrawn after a remote resize.
     __rwork_shim="${ZDOTDIR:-$HOME}"
     __rwork_real="${RWORK_REAL_ZDOTDIR:-$HOME}"
+    # macOS's system /etc/zshrc runs BETWEEN our .zprofile and this file with ZDOTDIR STILL set to
+    # the shim, and it does `HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history` — so history (Ctrl-R recall +
+    # zsh-autosuggestions, which read $HISTFILE) silently landed in the throwaway per-session shim
+    # dir, i.e. always empty. We can't intercept /etc/zshrc, so repair it HERE (we run right after):
+    # a HISTFILE that points INTO the shim dir is redirected back to the user's real ZDOTDIR, keeping
+    # the same basename. A HISTFILE the user sets explicitly in their own .zshrc (sourced below) still
+    # wins. Done BEFORE sourcing the user rc so history loads from the real file. (Same root cause as
+    # the autosuggestion-color report: not color — the suggestions just had no history to draw from.)
+    case "$HISTFILE" in
+      "$__rwork_shim"/*) HISTFILE="${__rwork_real%/}/${HISTFILE##*/}" ;;
+    esac
+    # Point ZDOTDIR at the user's REAL dir WHILE their .zshrc runs so config that derives paths from
+    # ${ZDOTDIR:-$HOME} (oh-my-zsh's ZSH_COMPDUMP, etc.) resolves to the real dir, not the shim. The
+    # final block below re-restores ZDOTDIR to the real value for the running shell.
+    if [ "$__rwork_real" = "$HOME" ]; then unset ZDOTDIR; else ZDOTDIR="$__rwork_real"; fi
     [ -f "$__rwork_real/.zshrc" ] && source "$__rwork_real/.zshrc"
 
     # Chain any pre-existing TRAPWINCH (e.g. powerlevel10k's) so the user's handler still runs,

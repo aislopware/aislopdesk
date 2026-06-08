@@ -22,6 +22,18 @@ extension Data {
     mutating func appendBE(_ value: Int32) {
         appendBE(UInt32(bitPattern: value))
     }
+
+    /// Appends a `UInt16` byte-length prefix followed by the string's UTF-8 bytes. Used to delimit
+    /// multiple variable-length strings in ONE datagram (e.g. the window-list records) — unlike the
+    /// single trailing `remaining()` string, a length prefix gives record boundaries. A string whose
+    /// UTF-8 exceeds `UInt16.max` bytes is truncated at a byte boundary (window titles are never that
+    /// long; this only guards a pathological input).
+    mutating func appendLengthPrefixed(_ string: String) {
+        var bytes = Array(string.utf8)
+        if bytes.count > Int(UInt16.max) { bytes = Array(bytes.prefix(Int(UInt16.max))) }
+        appendBE(UInt16(bytes.count))
+        append(contentsOf: bytes)
+    }
 }
 
 /// Errors raised while decoding video-path wire messages.
@@ -108,6 +120,16 @@ struct VideoByteReader {
         let slice = data[(data.startIndex + offset)...]
         offset = data.count
         return Data(slice)
+    }
+
+    /// Reads a `UInt16`-length-prefixed UTF-8 string (the counterpart to ``Data/appendLengthPrefixed(_:)``).
+    /// `readBytes` throws ``VideoProtocolError/truncated`` if the datagram is too short for the declared
+    /// length, so a corrupt/oversized prefix DROPS the datagram rather than over-reading or crashing.
+    /// Invalid UTF-8 decodes lossily (a remote window title must never crash the receiver).
+    mutating func readLengthPrefixed() throws -> String {
+        let len = Int(try readUInt16())
+        let bytes = try readBytes(len)
+        return String(decoding: bytes, as: UTF8.self)
     }
 }
 

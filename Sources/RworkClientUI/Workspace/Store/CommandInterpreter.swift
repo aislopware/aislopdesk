@@ -8,19 +8,16 @@ import Foundation
 /// (`.contextMenu`, swipe) emit the same cases. Keeping it a value type makes the chord → command
 /// mapping fully unit-testable with no view.
 public enum WorkspaceCommand: Sendable, Equatable {
-    case newPane                   // ⌘D   — add a pane to the canvas (replaces splitHorizontal)
-    case tidy                      // ⇧⌘D  — pack panes into a grid (replaces splitVertical)
+    case newPane                   // ⌘T   — add a pane to the single canvas
+    case tidy                      // ⇧⌘D  — pack panes into a grid
     case centerFocusedPane         // ⌥⌘C  — centre the camera on the focused pane (the pan-only "recenter")
+    case centerAll                 // ⌥⇧⌘C — centre the camera on the bounding box of ALL panes
     case closePane                 // ⌘W
-    case closeTab                  // ⇧⌘W
-    case newTab                    // ⌘T
-    case nextTab                   // ⌃⇥
-    case prevTab                   // ⌃⇧⇥
-    case selectTab(Int)            // ⌘1…⌘9 (1-based menu position)
+    case newGroup                  // ⌃⌘G  — create a new (empty) pane group
     case focus(FocusDirection)     // ⌥⌘←/→/↑/↓
     case cycleFocus(forward: Bool) // ⌘] (forward) / ⌘[ (back)
     case toggleZoom                // ⇧⌘↩  — maximize the focused pane to the viewport
-    case renameTab                 // ⌘R
+    case renamePane                // ⌘R   — rename the focused pane
     case reconnectPane             // ⇧⌘R — re-dial the focused pane (primary failure recovery)
 }
 
@@ -111,23 +108,15 @@ public extension CommandInterpreter {
     static var defaultBindings: [KeyChord: WorkspaceCommand] {
         var map: [KeyChord: WorkspaceCommand] = [:]
 
-        // Canvas: ⌘D = new pane, ⇧⌘D = tidy (reuses the old split chords for muscle-memory).
-        map[KeyChord(character: "d", [.command])] = .newPane
+        // Canvas: ⌘T = new pane (the freed "new tab" chord, intuitive for "new"), ⇧⌘D = tidy into a grid.
+        map[KeyChord(character: "t", [.command])] = .newPane
         map[KeyChord(character: "d", [.command, .shift])] = .tidy
 
-        // Close: ⌘W (pane) / ⇧⌘W (tab).
+        // Close the focused pane: ⌘W.
         map[KeyChord(character: "w", [.command])] = .closePane
-        map[KeyChord(character: "w", [.command, .shift])] = .closeTab
 
-        // Tabs: ⌘T new, ⌃⇥ next, ⌃⇧⇥ prev.
-        map[KeyChord(character: "t", [.command])] = .newTab
-        map[KeyChord(.tab, [.control])] = .nextTab
-        map[KeyChord(.tab, [.control, .shift])] = .prevTab
-
-        // Select tab ⌘1…⌘9 (1-based menu position; ⌘9 = last by store convention).
-        for n in 1...9 {
-            map[KeyChord(character: Character(String(n)), [.command])] = .selectTab(n)
-        }
+        // New group: ⌃⌘G (groups organize panes in the sidebar + draw a labeled box on the canvas).
+        map[KeyChord(character: "g", [.control, .command])] = .newGroup
 
         // Geometric focus move: ⌥⌘ + arrows.
         map[KeyChord(.leftArrow, [.option, .command])] = .focus(.left)
@@ -135,8 +124,9 @@ public extension CommandInterpreter {
         map[KeyChord(.upArrow, [.option, .command])] = .focus(.up)
         map[KeyChord(.downArrow, [.option, .command])] = .focus(.down)
 
-        // Centre the camera on the focused pane: ⌥⌘C (⌥⌘ avoids the ⌘C copy chord).
+        // Centre the camera: ⌥⌘C on the focused pane, ⌥⇧⌘C on all panes (⌥⌘ avoids the ⌘C copy chord).
         map[KeyChord(character: "c", [.option, .command])] = .centerFocusedPane
+        map[KeyChord(character: "c", [.option, .command, .shift])] = .centerAll
 
         // Cycle focus: ⌘] forward / ⌘[ back.
         map[KeyChord(character: "]", [.command])] = .cycleFocus(forward: true)
@@ -145,8 +135,8 @@ public extension CommandInterpreter {
         // Zoom toggle: ⇧⌘↩.
         map[KeyChord(.return, [.command, .shift])] = .toggleZoom
 
-        // Rename tab: ⌘R.
-        map[KeyChord(character: "r", [.command])] = .renameTab
+        // Rename the focused pane: ⌘R.
+        map[KeyChord(character: "r", [.command])] = .renamePane
 
         // Reconnect the focused pane: ⇧⌘R. The primary failure-recovery command was palette-only;
         // a chord makes it learnable and surfaces its glyph in the menu + palette automatically.

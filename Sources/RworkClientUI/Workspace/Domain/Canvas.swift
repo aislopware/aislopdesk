@@ -48,12 +48,17 @@ public struct CanvasItem: Identifiable, Codable, Sendable, Equatable {
     public var frame: CGRect
     /// Explicit z-order; **higher == frontmost** (the focused / last-dragged pane floats to top).
     public var z: Int
+    /// The ``PaneGroup`` this pane belongs to, or `nil` for an ungrouped pane. Disjoint membership: a
+    /// pane is in at most one group. `nil` by default (a brand-new pane is ungrouped). Closing the pane
+    /// drops the membership for free; deleting the group clears this back to `nil`.
+    public var groupID: PaneGroupID?
 
-    public init(id: PaneID, spec: PaneSpec, frame: CGRect, z: Int) {
+    public init(id: PaneID, spec: PaneSpec, frame: CGRect, z: Int, groupID: PaneGroupID? = nil) {
         self.id = id
         self.spec = spec
         self.frame = frame
         self.z = z
+        self.groupID = groupID
     }
 }
 

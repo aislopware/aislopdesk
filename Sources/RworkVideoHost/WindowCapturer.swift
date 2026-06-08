@@ -28,15 +28,35 @@ import OSLog
 ///   no send (doc 17 §3.5). >90% of coding frames are static.
 /// - Heartbeat IDR ~1s so a reconnecting/loss-recovering client catches a frame.
 public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    /// Heartbeat IDR cadence: force a keyframe ~every second on an idle window
-    /// (doc 17 §3.5) so a late-joining / loss-recovering client gets a decode anchor.
-    public static let heartbeatIDRInterval: TimeInterval = 1.0
+    /// Heartbeat IDR cadence (seconds): force a keyframe periodically so a late-joining / loss-recovering
+    /// client gets a decode anchor. Raised 1.0 → 2.5 (F2 flicker fix, 2026-06-08): on a never-idle window
+    /// every heartbeat is a full 50-135 KB IDR burst (the crisp path never fires) that risks burst loss for
+    /// ZERO visual benefit to an already-in-sync client — ~2.5 s removes most of those periodic bursts
+    /// while keeping a prompt insurance anchor (DETECTED loss recovers via the recovery channel, not this
+    /// heartbeat). Env A/B `RWORK_HEARTBEAT_S`, clamped [0.25, 60].
+    public static let heartbeatIDRInterval: TimeInterval = {
+        if let s = ProcessInfo.processInfo.environment["RWORK_HEARTBEAT_S"], let v = Double(s), v >= 0.25, v <= 60 { return v }
+        return 2.5
+    }()
 
-    /// Called for each captured frame with its NV12 `CVPixelBuffer` and whether the
-    /// encoder should force a keyframe (heartbeat or first frame). The handler MUST
-    /// hand the pixel buffer to the encoder and return promptly so the
-    /// `CMSampleBuffer` surface can be released within the queue-depth deadline.
-    public typealias FrameHandler = @Sendable (_ pixelBuffer: CVPixelBuffer, _ presentationTime: CMTime, _ forceKeyframe: Bool) -> Void
+    /// Called for each captured frame with its NV12 `CVPixelBuffer`, whether the encoder should
+    /// force a keyframe (heartbeat or first frame), and whether this frame should be a CRISP
+    /// near-lossless intra refresh (`crisp`). `crisp` is true ONLY on the static-IDR timer path
+    /// (the window is at rest → re-encode the cached frame near-lossless for razor-sharp text);
+    /// every live motion frame passes `crisp == false` so motion stays low-latency. The handler
+    /// MUST hand the pixel buffer to the encoder and return promptly so the `CMSampleBuffer`
+    /// surface can be released within the queue-depth deadline.
+    /// `compact` is true ONLY for a forced IDR on the LIVE (active) path that is a recovery or
+    /// heartbeat (NOT the first frame, NOT the static-timer crisp path) — the handler should encode it
+    /// SMALL+coarse (``VideoEncoder/encodeCompactKeyframe``) so it survives a UDP burst and does not
+    /// re-trigger the recovery-IDR loop. `crisp` and `compact` are mutually exclusive.
+    public typealias FrameHandler = @Sendable (_ pixelBuffer: CVPixelBuffer, _ presentationTime: CMTime, _ forceKeyframe: Bool, _ crisp: Bool, _ compact: Bool) -> Void
+
+    /// Whether the static-IDR timer upgrades its re-encode to a CRISP near-lossless frame
+    /// (Design A, ``VideoEncoder/encodeLiveCrispKeyframe``). Default on; set `RWORK_CRISP=0` to
+    /// A/B back to a plain (live-QP) heartbeat IDR with no rebuild. Read once (static screen
+    /// behaviour only; HW-verified path, not unit-tested).
+    private static let crispWhenStatic = ProcessInfo.processInfo.environment["RWORK_CRISP"] != "0"
 
     private let log = Logger(subsystem: "rwork.video.host", category: "WindowCapturer")
     private let frameQueue = DispatchQueue(label: "rwork.video.capture", qos: .userInteractive)
@@ -46,6 +66,20 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// Last time we forced a heartbeat IDR (uptime seconds).
     private var lastHeartbeat: TimeInterval = 0
     private var hasEmittedFirstFrame = false
+    /// Uptime seconds of the last EMITTED keyframe (any reason) — drives the F1 recovery-IDR cooldown.
+    /// frameQueue-owned (set on both the live path and the timer path, both on frameQueue).
+    private var lastKeyframeEmit: TimeInterval = 0
+    /// F1 (flicker fix, 2026-06-08): minimum spacing (seconds) between RECOVERY-driven (latch) IDRs, to
+    /// collapse a self-sustaining recovery-IDR storm (each big IDR is a UDP burst → loss → another recovery
+    /// request → another IDR). A latch-only force within this window of the last emitted keyframe ships a
+    /// P-frame instead: the recent keyframe already re-anchored the client, and the client's 2·RTT
+    /// escalation re-requests later (OUTSIDE the window) if that one was also lost — so recovery is
+    /// de-bursted, never dropped. NEVER gates the first-frame or heartbeat IDR. 0 disables. Env
+    /// `RWORK_MIN_IDR_MS` (default 500 ms).
+    private static let minRecoveryIDRInterval: TimeInterval = {
+        if let s = ProcessInfo.processInfo.environment["RWORK_MIN_IDR_MS"], let v = Double(s), v >= 0, v <= 5_000 { return v / 1000.0 }
+        return 0.5
+    }()
 
     /// Latched when the client requests a forced IDR (loss recovery, doc 17 §3.6). The
     /// next delivered frame forces a keyframe and clears it. Guarded because the
@@ -100,7 +134,13 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
             return
         }
         staticIDRDecider.recordSynthetic(now: now)
-        frameHandler(buf, syntheticPTS(), true)            // force IDR, same hand-off as live path
+        lastKeyframeEmit = now   // F1: the timer ALWAYS emits a keyframe → anchor the recovery cooldown
+        // The window is at rest (the live path is quiet — that is why this timer fired), so upgrade
+        // the re-encode to a CRISP near-lossless intra refresh for razor-sharp static text (Design A,
+        // same live session → no client decoder rebuild). `RWORK_CRISP=0` falls back to a plain IDR.
+        // Static (at-rest) path: crisp (sharp) when enabled, never compact — at rest there is no live
+        // delta competing for the wire, so the larger near-lossless IDR is not a burst-loss risk.
+        frameHandler(buf, syntheticPTS(), true, Self.crispWhenStatic, false) // force IDR, same hand-off as live path
     }
 
     /// One 90 kHz tick past the last emitted PTS → strictly monotonic, collision-free with
@@ -111,11 +151,25 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         return next
     }
 
+    /// Capture frame-rate cap (fps). Default 60 for smooth scroll/motion; idle-skip keeps a static
+    /// window near-zero regardless. Used to build the `minimumFrameInterval`.
+    private let fps: Int
+    /// Capture pixel scale (window points × this = the output buffer pixels). Needed to express
+    /// `sourceRect` in POINTS (`pixelDim / captureScale`) — the source crop is point-space while
+    /// `config.width/height` are pixel-space.
+    private let captureScale: Double
+
     public init(
+        fps: Int = 60,
+        captureScale: Double = 1.0,
         frameHandler: @escaping FrameHandler
     ) {
+        self.fps = max(1, fps)
+        self.captureScale = max(1.0, captureScale)
         self.frameHandler = frameHandler
-        self.staticIDRDecider = StaticIDRDecider(heartbeat: Self.heartbeatIDRInterval)
+        // Cap quietWindow at 1s (F2): the decider's quietWindow gates shouldReencode, so a longer
+        // heartbeat must NOT stretch the timer-path recovery-suppression window — recovery stays responsive.
+        self.staticIDRDecider = StaticIDRDecider(heartbeat: Self.heartbeatIDRInterval, quietWindow: min(1.0, Self.heartbeatIDRInterval))
         super.init()
     }
 
@@ -128,7 +182,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// placement stay correct without a separate pixel-scale axis. (On a Retina host
     /// this means remoted windows render at point resolution, not backing pixels — a
     /// quality trade chosen for a single, consistent capture-size source of truth.)
-    public static func makeConfiguration(width: Int, height: Int) -> SCStreamConfiguration {
+    public static func makeConfiguration(width: Int, height: Int, fps: Int = 60, captureScale: Double = 1.0) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange // NV12 zero-copy (doc 02 §3.1)
         config.showsCursor = false                                          // client-side cursor (RESULTS.md D)
@@ -136,11 +190,45 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // to BGRA capture per the SDK header — a no-op for our NV12 path, set for
         // intent).
         config.showMouseClicks = false
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 30)       // cap ~30fps (doc 02 §3.1)
+        // Cap at `fps` (default 60 — Parsec-class smoothness for scroll/motion; 30 was visibly
+        // steppier). macOS 15+ silently defaults to 1/60; idle-skip keeps a static window near-zero
+        // regardless of the cap (doc 02 §3.1).
+        config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(1, fps)))
         config.queueDepth = 3                                               // 2-3 for low latency (doc 02 §3.1)
         config.width = width
         config.height = height
         config.colorSpaceName = CGColorSpace.sRGB
+        // ── BLUR-ON-TOOLTIP FIX (HW-root-caused 2026-06-08) ────────────────────────────────
+        // With `SCContentFilter(desktopIndependentWindow:)`, SCK composites the target window's
+        // CHILD/associated windows into the captured BOUNDING rect (SCStreamFrameInfoBoundingRect =
+        // "smallest box containing all captured windows"). Chrome's link-URL status bubble is a
+        // child window that pops up at the bottom-left and EXTENDS that rect past the window frame.
+        // Because `config.width/height` are pinned to the window's own point size, SCK hardware-scales
+        // the now-larger union rect DOWN to fit the fixed buffer (contentScale drops below 1.0) — so
+        // the ENTIRE composited frame, all static text included, is sampled into fewer pixels and the
+        // whole pane goes soft, snapping back to sharp the instant the bubble hides. This is upstream
+        // of the encoder, which is why neither raising the live bitrate (12→40 Mbps, keyframes stayed
+        // a constant ~52 KB) nor lowering the QP ceiling (32→22) had ANY effect — the detail was gone
+        // before encode (HW A/B confirmed).
+        //
+        // We KEEP child windows (so the URL tooltip / popovers still render) but PIN the sampled
+        // region to the window's own frame via `sourceRect`: SCK then maps exactly (0,0,W,H) points
+        // 1:1 into the fixed pixel buffer no matter how far a child window pushes the union rect, so
+        // contentScale stays at 1.0 (sharp). A child window that overlaps the frame is shown; the part
+        // (if any) below the frame edge is simply cropped — never downscaled. `sourceRect` is in
+        // POINTS, so divide the pixel dims by `captureScale`.
+        // NOTE (HW 2026-06-08): with child windows included, the crop anchors a couple points off the
+        // window's own top-left (a child window's geometry nudges the capture origin), so the image
+        // sits a hair to the right. The user chose to keep this (tooltip + tiny shift) over a pixel-
+        // perfect-but-tooltip-less capture (`includeChildWindows = false`); the offset is well under a
+        // glyph and not worth the dynamic re-anchoring it would take to chase.
+        let pointW = Double(width) / max(1.0, captureScale)
+        let pointH = Double(height) / max(1.0, captureScale)
+        config.sourceRect = CGRect(x: 0, y: 0, width: pointW, height: pointH)
+        if #available(macOS 14.0, *) {
+            config.ignoreShadowsSingleWindow = true     // don't let the window's drop-shadow pad the rect
+            config.ignoreGlobalClipSingleWindow = true  // don't pad the rect to the global clip
+        }
         return config
     }
 
@@ -156,7 +244,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// Retina resolution — sharp text — instead of the soft point-resolution default. ⚠️
     /// Requires a window-server + Screen-Recording TCC session — NEVER call from a test.
     public func start(window: SCWindow, pixelWidth: Int, pixelHeight: Int) async throws {
-        let config = Self.makeConfiguration(width: pixelWidth, height: pixelHeight)
+        let config = Self.makeConfiguration(width: pixelWidth, height: pixelHeight, fps: fps, captureScale: captureScale)
         let filter = Self.makeFilter(window: window)
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: frameQueue)
@@ -169,11 +257,11 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // static window (only `.idle` frames) this is the ONLY path that can produce an IDR for
         // a joining / loss-recovering client.
         //
-        // Tick at half the heartbeat cadence: the decider only emits when >= heartbeat has
-        // elapsed, so sub-cadence ticks are cheap no-ops, but they halve the phase-misalignment
-        // penalty (worst-case effective heartbeat ~1.5s instead of ~2s) and the recovery-IDR
-        // latency on a static window (review finding, VIDEO-HOST-1).
-        let tick = Self.heartbeatIDRInterval / 2
+        // Fixed 0.25s poll, DECOUPLED from the heartbeat (F2): with a multi-second heartbeat the timer
+        // must still poll the recovery latch + service a truly-idle window promptly. The decider only
+        // EMITS when >= heartbeat has elapsed, so sub-cadence ticks are cheap no-ops; a fixed small tick
+        // keeps recovery/idle latency low regardless of the (now longer) heartbeat cadence.
+        let tick = 0.25
         let timer = DispatchSource.makeTimerSource(queue: frameQueue)
         timer.schedule(deadline: .now() + tick, repeating: tick, leeway: .milliseconds(50))
         timer.setEventHandler { [weak self] in self?.onIDRTimerTick() }
@@ -246,22 +334,43 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
 
         // Heartbeat IDR ~1s, plus a forced keyframe on the very first delivered frame,
         // plus any client-requested IDR (loss recovery, doc 17 §3.6).
-        var forceKeyframe = takePendingForcedKeyframe()
+        let latched = takePendingForcedKeyframe()
+        var forceKeyframe = latched
+        var isFirstFrame = false
+        var isHeartbeat = false
         if !hasEmittedFirstFrame {
             forceKeyframe = true
+            isFirstFrame = true
             hasEmittedFirstFrame = true
-            lastHeartbeat = now
         } else if now - lastHeartbeat >= Self.heartbeatIDRInterval {
             forceKeyframe = true
-            lastHeartbeat = now
+            isHeartbeat = true
         }
-        if forceKeyframe { lastHeartbeat = now } // re-anchor cadence on a recovery IDR
+        // F1: collapse a recovery-IDR storm. If the ONLY reason is the recovery latch AND a keyframe was
+        // emitted < cooldown ago, ship a P-frame instead — the recent keyframe already re-anchored the
+        // client; if it was ALSO lost, the client's 2·RTT escalation re-requests later (outside the
+        // cooldown) and is honored. Never gates the first-frame or heartbeat IDR. The dropped force is NOT
+        // re-latched (takePendingForcedKeyframe already cleared it) so it cannot deferred-storm.
+        if forceKeyframe, latched, !isFirstFrame, !isHeartbeat,
+           Self.minRecoveryIDRInterval > 0, now - lastKeyframeEmit < Self.minRecoveryIDRInterval {
+            forceKeyframe = false
+        }
+        // Anchor BOTH the heartbeat cadence and the recovery cooldown on ANY actually-emitted keyframe.
+        if forceKeyframe { lastHeartbeat = now; lastKeyframeEmit = now }
+        // COMPACT IDR (2026-06-08 motion-smoothness): a forced IDR on the LIVE (active) path — recovery
+        // (client-requested after loss) or heartbeat — is encoded SMALL+coarse (encodeCompactKeyframe)
+        // so it survives a UDP burst instead of re-triggering the recovery-IDR loop that shows as a
+        // periodic motion hitch. The FIRST frame stays full quality (one-time, no loop); the static
+        // timer path stays CRISP. `compact ⟹ forceKeyframe` by construction.
+        let compact = forceKeyframe && !isFirstFrame
 
         // Hand the CVPixelBuffer to the encoder. The pixel buffer is retained by the
         // encoder for the duration of the encode; when this callback returns the
         // CMSampleBuffer (and its surface) is released — within the queue-depth
         // deadline minimumFrameInterval × (queueDepth − 1) (WWDC22 s10155).
-        frameHandler(pixelBuffer, encodePTS, forceKeyframe)
+        // A live (motion) frame is NEVER crisp — motion must stay low-latency; only the static
+        // timer above upgrades to a crisp refresh.
+        frameHandler(pixelBuffer, encodePTS, forceKeyframe, false, compact)
     }
 
     // MARK: SCStreamDelegate

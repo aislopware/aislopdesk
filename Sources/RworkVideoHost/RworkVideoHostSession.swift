@@ -11,7 +11,7 @@ import RworkVideoProtocol
 /// pipeline:
 ///
 /// ```
-/// WindowCapturer (NV12 frame) ─▶ VideoEncoder (2-session HEVC, doc 18 §E)
+/// WindowCapturer (NV12 frame) ─▶ VideoEncoder (single-session HEVC + crisp refresh, doc 18 §E)
 ///        ─▶ VideoPacketizer (FramePacketizer) ─▶ UDP video datagrams
 /// WindowGeometryWatcher ─▶ geometry datagrams
 /// CursorSampler ─▶ cursor position + (OOB) shape bitmap datagrams (cursor socket)
@@ -39,11 +39,44 @@ public actor RworkVideoHostSession {
     /// flow from `log show`. When enabled, the key lifecycle beats are mirrored to stderr so the
     /// gate can pinpoint where (if anywhere) the pipeline stalls. No-op in production.
     private static let debugStderr = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil
+    /// Burst-resilient transmission interleaving (2026-06-08 flicker fix). DEFAULT OFF: a white/blank
+    /// stream was observed the first time the column-major send order shipped, so until that is
+    /// root-caused on HW the safe default is the plain consecutive send order. A/B without a rebuild
+    /// via `RWORK_INTERLEAVE=1`. The pure ``FragmentInterleaver`` (+ its tests) stays in place.
+    private static let interleaveTransmit = ProcessInfo.processInfo.environment["RWORK_INTERLEAVE"] == "1"
+    /// SEND PACING (2026-06-08 flicker fix, the SAFE one — no reorder, no wire change). A large frame
+    /// (a ~115 KB heartbeat IDR ≈ 97 datagrams, or a big scroll delta) sent as ONE instant burst
+    /// overflows the client UDP receive buffer / WireGuard tunnel → consecutive packet loss → the
+    /// single-loss XOR FEC cannot recover → a corrupt frame the next one only half-fixes → FLICKER.
+    /// Pacing splits a large frame's datagrams into small chunks separated by a sub-ms gap so the
+    /// receiver drains them as they arrive (no burst overflow); tiny frames (the static-window common
+    /// case, ~1 datagram) still send instantly. DEFAULT ON; disable via `RWORK_PACE=0`.
+    private static let paceSend = ProcessInfo.processInfo.environment["RWORK_PACE"] != "0"
+    /// Frames with at most this many datagrams send in one shot (no pacing) — covers static-window
+    /// P-frames and small deltas. Above it, send in chunks of this size with ``paceGapNanos`` between.
+    private static let paceChunkFragments = 8
+    /// Gap between paced chunks. 0.5 ms × (97/8 ≈ 12 chunks) ≈ 6 ms to drain a heartbeat IDR — well
+    /// under the 16 ms frame interval, so the consumer never falls behind. Override µs via `RWORK_PACE_US`.
+    private static let paceGapNanos: UInt64 = {
+        if let s = ProcessInfo.processInfo.environment["RWORK_PACE_US"], let v = UInt64(s), v >= 1, v <= 10_000 { return v * 1_000 }
+        return 500_000
+    }()
+    /// KEYFRAME DUPLICATE-SEND (F3 flicker fix, 2026-06-08). Forward redundancy by REPETITION: re-send a
+    /// keyframe's datagrams a second time (paced + time-separated) so a large IDR survives a time-correlated
+    /// burst loss that the single-loss XOR FEC cannot repair. This is the only host-only, REORDER-FREE way
+    /// to add real burst tolerance (the client reassembler dedups by frameID/fragIndex, so duplicates are
+    /// harmless and the frame decodes exactly once → NO white-screen risk, unlike the gated-off interleave).
+    /// Keyframes ONLY (never deltas). DEFAULT OFF; enable via `RWORK_KF_DUP=1`.
+    private static let kfDup = ProcessInfo.processInfo.environment["RWORK_KF_DUP"] == "1"
+    /// Throttle so a recovery-IDR burst is not byte-amplified: duplicate at most one keyframe per interval.
+    private static let kfDupMinInterval: TimeInterval = 0.25
     /// Full per-event injection trace (`RWORK_INPUT_TRACE=1`): logs EVERY injected input event
     /// with a monotonic sequence number (NOT sampled), so a loopback run can read the exact
     /// injected ORDER — the ground truth for the reorder fix. No-op in production.
     private static let inputTrace = ProcessInfo.processInfo.environment["RWORK_INPUT_TRACE"] != nil
     private var encodedFrameCount = 0
+    /// Uptime seconds of the last keyframe whose datagrams were duplicate-sent (F3 throttle).
+    private var lastKeyframeDupTime: TimeInterval = 0
     nonisolated private func dbg(_ message: @autoclosure () -> String) {
         guard Self.debugStderr else { return }
         FileHandle.standardError.write(Data("rwork-videohostd[session]: \(message())\n".utf8))
@@ -54,14 +87,28 @@ public actor RworkVideoHostSession {
     /// Capture/encode at `window points × captureScale` PIXELS — 2 (Retina) gives sharp text;
     /// the helloAck/cursor mapping stays in POINTS so coordinates are unaffected.
     private let captureScale: Double
+    /// Authoritative POINT capture size, set by the daemon when it AX-moves/resizes the window onto
+    /// the HiDPI virtual display (feature #1): the achieved post-move size, NOT the stale `SCWindow.frame`
+    /// snapshot. Drives both the `helloAck` captureWidth/Height (client input-mapping denominator) and
+    /// the SCStream size, so a window resized DOWN to fit the VD is captured + acked at its real new
+    /// size (no over-crop, no input desync). `nil` ⇒ no VD move happened ⇒ size from `window.frame`
+    /// as before (default-path behaviour unchanged).
+    private let captureSizeOverride: VideoSize?
     /// Live-encoder target bitrate (bits/sec). Higher = crisper text (HEVC softens glyph edges
     /// at low bitrate); raise it over LAN/NetBird where bandwidth is ample.
     private let bitrate: Int
+    /// Capture + encoder frame-rate cap (fps). Default 60 for Parsec-class scroll/motion smoothness
+    /// (30 was visibly steppier); threaded into every `WindowCapturer`/`VideoEncoder` this session builds.
+    private let fps: Int
     private let scheduler = VideoSendScheduler()
     private let recoveryRouter = RecoveryDatagramRouter()
 
     private var stateMachine: VideoSessionStateMachine
     private var packetizer: VideoPacketizer
+    /// FEC group size, mirrored from the packetizer's scheme, so ``onEncodedFrame`` can interleave a
+    /// frame's fragments column-major across groups before transmit (burst-loss → flicker fix). 1 when
+    /// there is no FEC (interleaving is then a no-op).
+    private let fecGroupSize: Int
 
     // Live components, created on accept (never in a test).
     private var capturer: WindowCapturer?
@@ -107,13 +154,16 @@ public actor RworkVideoHostSession {
     ///   - window: the desktop-independent window to remote.
     ///   - transport: the UDP datagram transport (production: a ``VideoMuxChannelTransport`` lane on the shared ``NWVideoMuxDatagramTransport``).
     ///   - fec: optional FEC scheme for the video packetizer (default 20% XOR parity).
-    public init(window: SCWindow, transport: any VideoDatagramTransport, fec: FECScheme? = XORParityFEC(), captureScale: Double = 2.0, bitrate: Int = VideoEncoder.bitrateBitsPerSecond) {
+    public init(window: SCWindow, transport: any VideoDatagramTransport, fec: FECScheme? = XORParityFEC(), captureScale: Double = 2.0, captureSizeOverride: VideoSize? = nil, bitrate: Int = VideoEncoder.bitrateBitsPerSecond, fps: Int = 60) {
         self.window = window
         self.transport = transport
         self.captureScale = max(1.0, captureScale)
+        self.captureSizeOverride = captureSizeOverride
         self.bitrate = bitrate
+        self.fps = max(1, fps)
         self.stateMachine = VideoSessionStateMachine()
         self.packetizer = VideoPacketizer(fec: fec)
+        self.fecGroupSize = fec?.groupSize ?? 1
     }
 
     // MARK: Lifecycle
@@ -232,7 +282,7 @@ public actor RworkVideoHostSession {
     private func injectCoalesced(_ run: [InputEvent]) async {
         guard !run.isEmpty else { return }
         for event in InputMotionCoalescer.coalesce(run) {
-            let raiseFirst = inputNeedsRaise || InputDatagramRouter.alwaysRaises(event)
+            let raiseFirst = InputDatagramRouter.raiseFirst(for: event, needsRaise: inputNeedsRaise)
             await inject(event, raiseFirst: raiseFirst)
         }
     }
@@ -245,13 +295,39 @@ public actor RworkVideoHostSession {
             return
         }
         dbg("control received: \(String(describing: message)) (window=\(window.windowID))")
+        // Proactive raise on client pane focus (the "raise the focused pane's window" model that
+        // replaced background injection): bring the captured window frontmost ONCE now, so the user's
+        // FIRST click lands instantly instead of paying the per-interaction activate-then-control raise
+        // stall. Idempotent — `raiseTargetWindow()` short-circuits when already frontmost. Only
+        // meaningful while streaming (the injector exists only then). The SM has no semantics for this
+        // message, so action it here and return (no effects to apply).
+        if case .focusWindow = message {
+            // Bind a LOCAL non-optional injector (it is `@unchecked Sendable`) so the MainActor hop can
+            // capture it — mirrors `inject(_:raiseFirst:)`'s `guard let injector` pattern.
+            guard stateMachine.mediaFlowing, let injector else { return }
+            if Self.inputTrace {
+                FileHandle.standardError.write(Data("rwork-videohostd[inject]: focusWindow → proactive raise (async, window=\(window.windowID))\n".utf8))
+            }
+            // FIRE-AND-FORGET (the "click bị delay" fix): never AWAIT the AX raise. On an AX-slow target
+            // it costs ≈1s, and the input path must not block on it. `raiseTargetWindow()` self-throttles
+            // so this proactive raise + the imminent mouseDown raise coalesce to one bit of work.
+            Task { @MainActor in injector.raiseTargetWindow() }
+            // A following move/scroll/key need not re-raise.
+            inputNeedsRaise = false
+            return
+        }
         let bounds = currentWindowBoundsCG()
-        let effects = stateMachine.handleControl(message, windowBoundsCG: bounds, resolveCaptureSize: { [window] requestedWindowID, viewport in
+        let effects = stateMachine.handleControl(message, windowBoundsCG: bounds, resolveCaptureSize: { [window, captureSizeOverride] requestedWindowID, viewport in
             // Accept only the window this session was created for; size the capture to
             // the real window backing store (clamp the requested viewport to it).
             guard requestedWindowID == UInt32(window.windowID) else { return nil }
-            let w = UInt16(max(1, min(Double(UInt16.max), window.frame.width.rounded())))
-            let h = UInt16(max(1, min(Double(UInt16.max), window.frame.height.rounded())))
+            // Prefer the daemon's achieved post-move size (feature #1 VD): a window resized DOWN to
+            // fit the VD must be captured + acked at its NEW point size, not the stale `SCWindow.frame`
+            // enumeration snapshot — else the SCStream over-crops and the client's input-mapping
+            // denominator desyncs. `nil` (no VD move) ⇒ `window.frame` as before.
+            let sourcePoints = captureSizeOverride ?? VideoSize(width: window.frame.width, height: window.frame.height)
+            let w = UInt16(max(1, min(Double(UInt16.max), sourcePoints.width.rounded())))
+            let h = UInt16(max(1, min(Double(UInt16.max), sourcePoints.height.rounded())))
             _ = viewport // viewport informs client-side scaling; host captures native window pixels.
             return (w, h)
         }, resolveResizeSize: { [window] requestedWindowID, desired in
@@ -287,23 +363,25 @@ public actor RworkVideoHostSession {
 
     private func inject(_ event: InputEvent, raiseFirst: Bool) async {
         guard let injector else { return }
-        // Activate-THEN-control (doc 18 §A): the raise must COMPLETE before the event is
-        // posted, else the first click of an interaction can land on the not-yet-frontmost
-        // window. AWAIT the main-actor raise, then post — do not fire-and-forget the raise.
+        // CLICK-LATENCY FIX (the "click bị delay" bug, proven on-device). The AX raise is ~6–10
+        // SYNCHRONOUS cross-process IPC calls; against an AX-slow target app each hits the messaging
+        // timeout → ≈1s per raise. The old code AWAITED that raise before posting EACH event, and a
+        // single click fires several (mouseDown's `alwaysRaises` + every duplicate loss-resilience
+        // mouseUp re-arming the latch + the first post-up move), so one click stalled multiple seconds.
+        // On-device trace proved `frontmost` never equals the target (cross-app activation is throttled
+        // on macOS 14+), so the short-circuit never fired and the raise was both slow AND futile — yet
+        // clicks STILL landed, proving the posted CGEvent (not the raise) is the delivery mechanism.
+        // So FIRE-AND-FORGET the raise (best-effort window-order/keyboard-focus nudge) and post the event
+        // IMMEDIATELY. Bonus: removing the await deletes the suspension point, so the coalesced run now
+        // injects in STRICT order (the down/up-inversion race the await introduced is gone); and
+        // `raiseTargetWindow()` self-throttles so the several raises per click coalesce to one.
         if raiseFirst {
-            // Clear the latch BEFORE the main-actor hop. That hop is a SUSPENSION POINT that
-            // releases the actor, so the burst of `.mouseDrag`/`.mouseMove` datagrams behind a
-            // mouseDown interleaves here. With the latch left armed, each of them would also
-            // raise (thundering-herd of AX raises + app activations mid-drag, which can itself
-            // disrupt a selection); clearing it now means only this first event raises and the
-            // rest of the interaction injects straight through.
             inputNeedsRaise = false
-            await MainActor.run { injector.raiseTargetWindow() }
-            // The main-actor hop is a suspension point: a `stop()`/`bye` teardown can run here
-            // and nil the injector (and close the sockets). Re-check on the actor before posting
-            // so a buffered datagram cannot inject a stray, UNBALANCED event into the target app
-            // after the session was torn down.
-            guard self.injector != nil else { return }
+            let injectorRef = injector
+            if Self.inputTrace {
+                FileHandle.standardError.write(Data("rwork-videohostd[inject]: raiseFirst dispatched async (event=\(event))\n".utf8))
+            }
+            Task { @MainActor in injectorRef.raiseTargetWindow() }
         }
         dbgInject(event)
         injector.inject(event)
@@ -396,7 +474,7 @@ public actor RworkVideoHostSession {
     ///
     /// Ordering (industry drain→recreate→forceIDR + the spec's option 4b):
     ///   a. AX-resize the window; read back the achieved POINT size (window may self-clamp).
-    ///   b. Build the NEW encoder (createLive + createCrisp) FIRST; abort if it throws.
+    ///   b. Build the NEW encoder (createLiveSession) FIRST; abort if it throws.
     ///   c. Drain the OLD encoder (`completeFrames`) so no in-flight output is dropped, then
     ///      stop the OLD capturer and start a NEW one at the achieved pixel size — the new
     ///      capturer forces an IDR on its first delivered frame (`hasEmittedFirstFrame`), so
@@ -449,10 +527,9 @@ public actor RworkVideoHostSession {
 
         // b. Build the NEW encoder FIRST (off the live path). If creation throws, abort and keep
         //    the OLD encoder running — degrade to no-resize, never to a dead session.
-        let newEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate, outputHandler: makeEncoderOutputHandler())
+        let newEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate), fps: fps, outputHandler: makeEncoderOutputHandler())
         do {
             try newEncoder.createLiveSession()
-            try newEncoder.createCrispSession()
         } catch {
             log.error("resize encoder create failed: \(String(describing: error)) — keeping old encoder")
             dbg("resizeCapture epoch=\(epoch) — new encoder create FAILED; ABORTED (old encoder kept)")
@@ -471,9 +548,15 @@ public actor RworkVideoHostSession {
         //    false ⇒ forced IDR on its first frame for free, and avoids the per-frame
         //    encoder-ref swap race entirely.
         let logCallback = log
-        let newCapturer = WindowCapturer { pixelBuffer, pts, forceKeyframe in
+        let newCapturer = WindowCapturer(fps: fps, captureScale: captureScale) { pixelBuffer, pts, forceKeyframe, crisp, compact in
             do {
-                try newEncoder.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+                if crisp {
+                    try newEncoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else if compact {
+                    try newEncoder.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else {
+                    try newEncoder.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+                }
             } catch {
                 logCallback.error("live encode (post-resize) failed: \(String(describing: error))")
             }
@@ -600,10 +683,9 @@ public actor RworkVideoHostSession {
         let pixelWidth = max(1, Int((points.width * captureScale).rounded()))
         let pixelHeight = max(1, Int((points.height * captureScale).rounded()))
 
-        let rebuiltEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate, outputHandler: makeEncoderOutputHandler())
+        let rebuiltEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate), fps: fps, outputHandler: makeEncoderOutputHandler())
         do {
             try rebuiltEncoder.createLiveSession()
-            try rebuiltEncoder.createCrispSession()
         } catch {
             log.error("resize recovery: old-size encoder rebuild failed: \(String(describing: error)) — capture stays down")
             dbg("resizeCapture epoch=\(epoch) — old-size encoder rebuild FAILED; capture remains down")
@@ -611,9 +693,15 @@ public actor RworkVideoHostSession {
         }
 
         let logCallback = log
-        let rebuiltCapturer = WindowCapturer { pixelBuffer, pts, forceKeyframe in
+        let rebuiltCapturer = WindowCapturer(fps: fps, captureScale: captureScale) { pixelBuffer, pts, forceKeyframe, crisp, compact in
             do {
-                try rebuiltEncoder.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+                if crisp {
+                    try rebuiltEncoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else if compact {
+                    try rebuiltEncoder.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else {
+                    try rebuiltEncoder.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+                }
             } catch {
                 logCallback.error("live encode (post-resize recovery) failed: \(String(describing: error))")
             }
@@ -654,11 +742,12 @@ public actor RworkVideoHostSession {
         let pixelWidth = max(1, Int((Double(width) * captureScale).rounded()))
         let pixelHeight = max(1, Int((Double(height) * captureScale).rounded()))
 
-        // Encoder: the EXACT doc-18 2-session HEVC config (created inside VideoEncoder).
-        let encoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: bitrate, outputHandler: makeEncoderOutputHandler())
+        // Encoder: the EXACT doc-18 low-latency HEVC live session + crisp static refresh (created inside VideoEncoder).
+        // Bitrate is resolution-aware (LiveBitratePolicy): a 2× HiDPI window has 4× the pixels and must
+        // be provisioned proportionally or the rate cap starves scroll frames → stutter (`bitrate` is the floor).
+        let encoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate), fps: fps, outputHandler: makeEncoderOutputHandler())
         do {
             try encoder.createLiveSession()
-            try encoder.createCrispSession()
         } catch {
             log.error("encoder session create failed: \(String(describing: error)) — aborting session")
             dbg("ENCODER create FAILED: \(String(describing: error)) — aborting")
@@ -673,9 +762,15 @@ public actor RworkVideoHostSession {
         // `@unchecked Sendable` and thread-safe for `encodeLive`. The encoded OUTPUT is
         // what hops back to the actor (`onEncodedFrame`) to packetize + send.
         let logCallback = log
-        let capturer = WindowCapturer { pixelBuffer, pts, forceKeyframe in
+        let capturer = WindowCapturer(fps: fps, captureScale: captureScale) { pixelBuffer, pts, forceKeyframe, crisp, compact in
             do {
-                try encoder.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+                if crisp {
+                    try encoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else if compact {
+                    try encoder.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else {
+                    try encoder.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+                }
             } catch {
                 logCallback.error("live encode failed: \(String(describing: error))")
             }
@@ -799,7 +894,7 @@ public actor RworkVideoHostSession {
         }
     }
 
-    private func onEncodedFrame(avcc: Data, keyframe: Bool, crisp: Bool) {
+    private func onEncodedFrame(avcc: Data, keyframe: Bool, crisp: Bool) async {
         guard stateMachine.mediaFlowing else {
             dbg("encoded frame DROPPED (mediaFlowing=false)")
             return
@@ -809,8 +904,50 @@ public actor RworkVideoHostSession {
             dbg("encoded+sent frame #\(encodedFrameCount) (\(avcc.count)B, keyframe=\(keyframe), crisp=\(crisp))")
         }
         let fragments = packetizer.packetize(frame: avcc, keyframe: keyframe, crisp: crisp)
-        for outgoing in scheduler.scheduleFrame(fragments) {
-            transport.send(outgoing.bytes, on: outgoing.channel)
+        // Interleave transmission column-major across FEC groups so an adjacent-loss BURST spreads to
+        // distinct groups (each recoverable by single-loss XOR) instead of wiping one group. Header
+        // `fragIndex`/grouping is unchanged, so the client (reassembles by index, reorder-tolerant) is
+        // unaffected — host-only, no wire change. GATED OFF by default (RWORK_INTERLEAVE=1) pending HW
+        // root-cause of the white-screen regression seen on first enable.
+        let ordered = Self.interleaveTransmit ? FragmentInterleaver.interleave(fragments, groupSize: fecGroupSize) : fragments
+        let outgoings = scheduler.scheduleFrame(ordered)
+        await sendPaced(outgoings)
+        // F3: keyframe DUPLICATE-SEND. A heartbeat/recovery IDR is a large multi-datagram burst; even
+        // paced, a time-correlated loss in one XOR group is unrecoverable → corrupt IDR → flicker.
+        // Re-send the SAME ordered list a second time (paced + time-separated) so the IDR survives unless
+        // BOTH copies of a fragment are lost. Reassembler dedups by frameID/fragIndex (overwrite-by-
+        // identical-bytes; a copy after completion is .stale) → decoded exactly once. NOT a reorder → no
+        // white-screen risk. Keyframes ONLY; throttled to ≤1 per kfDupMinInterval so a storm isn't
+        // byte-amplified. RWORK_KF_DUP=1 to enable.
+        if Self.kfDup, keyframe, stateMachine.mediaFlowing {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastKeyframeDupTime >= Self.kfDupMinInterval {
+                lastKeyframeDupTime = now
+                try? await Task.sleep(nanoseconds: Self.paceGapNanos)   // time-separate the two copies
+                if stateMachine.mediaFlowing { await sendPaced(outgoings) }
+            }
+        }
+    }
+
+    /// Sends one frame's datagrams, PACED (see `paceSend`) when large so a big IDR / scroll-delta does not
+    /// blast as one instant burst → no receive-buffer overflow → no burst loss → no flicker. Small frames
+    /// send in one shot. Reorder-free + wire-identical, so zero white-screen risk. Re-checks `mediaFlowing`
+    /// after each gap so a bye/stop teardown racing the pacing aborts cleanly.
+    private func sendPaced(_ outgoings: [VideoSendScheduler.Outgoing]) async {
+        if Self.paceSend, outgoings.count > Self.paceChunkFragments {
+            var i = 0
+            while i < outgoings.count {
+                let end = min(i + Self.paceChunkFragments, outgoings.count)
+                var j = i
+                while j < end { transport.send(outgoings[j].bytes, on: outgoings[j].channel); j += 1 }
+                i = end
+                if i < outgoings.count {
+                    try? await Task.sleep(nanoseconds: Self.paceGapNanos)
+                    guard stateMachine.mediaFlowing else { return } // a bye/stop teardown raced the gap
+                }
+            }
+        } else {
+            for outgoing in outgoings { transport.send(outgoing.bytes, on: outgoing.channel) }
         }
     }
 
