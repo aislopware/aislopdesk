@@ -114,6 +114,28 @@ final class ShellIntegrationTests: XCTestCase {
                       "must restore the user's real ZDOTDIR")
     }
 
+    /// REGRESSION (live-host bug, 2026-06-07): macOS's system `/etc/zshrc` runs between our shim's
+    /// `.zprofile` and `.zshrc` with `ZDOTDIR` STILL pointed at the throwaway shim dir, and sets
+    /// `HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history` — so Ctrl-R history recall + zsh-autosuggestions
+    /// (both read `$HISTFILE`) silently aimed at an always-empty per-session file. The shim's `.zshrc`
+    /// must redirect a shim-relative `HISTFILE` back to the user's real ZDOTDIR BEFORE sourcing the
+    /// user's rc (so the real history loads), without clobbering a user-set HISTFILE.
+    func testZshrcRedirectsShimRelativeHistfileToRealDir() throws {
+        let dir = try XCTUnwrap(ShellIntegration.writeShimDirectory(into: makeTempDir()))
+        let zshrc = try String(contentsOf: dir.appendingPathComponent(".zshrc"), encoding: .utf8)
+        // Guards on the shim-dir prefix and rewrites to the real dir keeping the basename.
+        XCTAssertTrue(zshrc.contains("\"$__rwork_shim\"/*)"),
+                      "must match a HISTFILE that points INTO the shim dir")
+        XCTAssertTrue(zshrc.contains("HISTFILE=\"${__rwork_real%/}/${HISTFILE##*/}\""),
+                      "must redirect the shim-relative HISTFILE to the real ZDOTDIR, same basename")
+        // The redirect must come BEFORE the user's real .zshrc is sourced (so history loads from the
+        // real file and a user HISTFILE override in their rc still wins).
+        let caseIdx = try XCTUnwrap(zshrc.range(of: "${HISTFILE##*/}"))
+        let sourceIdx = try XCTUnwrap(zshrc.range(of: "$__rwork_real/.zshrc"))
+        XCTAssertTrue(caseIdx.lowerBound < sourceIdx.lowerBound,
+                      "HISTFILE repair must precede sourcing the user's real .zshrc")
+    }
+
     // MARK: OSC 133 shell integration (WF11)
 
     func testZshrcInstallsOSC133HooksViaAddZshHook() throws {

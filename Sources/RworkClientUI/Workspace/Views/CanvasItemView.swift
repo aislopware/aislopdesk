@@ -1,5 +1,37 @@
 #if canImport(SwiftUI)
 import SwiftUI
+#if os(macOS)
+import AppKit
+
+// MARK: - ScrollPanForwarder (BUG-2 "pan stops at the pane edge")
+
+/// A transparent AppKit view that forwards a trackpad/wheel scroll to the canvas pan
+/// (``WorkspaceStore/scrollPan(by:)``). The pane's SwiftUI chrome — the resize-handle PERIMETER (the
+/// pane "edge") and the header — is hit-OPAQUE (`.contentShape`), so a scroll over it is SWALLOWED: it
+/// cannot fall through to the single background pan-catcher behind the panes, and the pan "stops at the
+/// edge of the pane". Used as the resize-grip fill + a pane background, this makes every NON-content part
+/// of a pane pan the canvas exactly like the empty background does. It overrides ONLY `scrollWheel`, so
+/// SwiftUI's resize / move / tap gestures (which use `mouseDown`/`mouseDragged`) still work unobstructed —
+/// the default `NSView` mouse handling propagates up to SwiftUI's recognizers untouched. Sign matches
+/// ``CanvasView``'s `PanView` so panning over a pane feels identical to panning empty space.
+struct ScrollPanForwarder: NSViewRepresentable {
+    let store: WorkspaceStore
+    func makeNSView(context: Context) -> NSView { ForwardingView(store: store) }
+    func updateNSView(_ nsView: NSView, context: Context) { (nsView as? ForwardingView)?.store = store }
+
+    final class ForwardingView: NSView {
+        weak var store: WorkspaceStore?
+        init(store: WorkspaceStore) { self.store = store; super.init(frame: .zero) }
+        @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not used") }
+        override func scrollWheel(with event: NSEvent) {
+            let dx: CGFloat, dy: CGFloat
+            if event.hasPreciseScrollingDeltas { dx = event.scrollingDeltaX; dy = event.scrollingDeltaY }
+            else { dx = event.scrollingDeltaX * 10; dy = event.scrollingDeltaY * 10 }
+            store?.scrollPan(by: CGSize(width: -dx, height: -dy))   // natural-scroll, same sign as PanView
+        }
+    }
+}
+#endif
 
 // MARK: - CanvasItemView (one positioned pane on the infinite plane)
 
@@ -19,10 +51,18 @@ import SwiftUI
 struct CanvasItemView: View {
     let item: CanvasItem
     let store: WorkspaceStore
-    let tab: TabID
     /// The named coordinate space of the canvas plane (so a drag translation is the canvas-space delta,
     /// 1:1 since the camera is a pure translate).
     let coordSpace: String
+
+    /// Non-nil ⇒ this pane is MAXIMIZED: render at this fixed size (the full viewport minus a small
+    /// inset) instead of ``CanvasItem/frame``, and suppress the live move/resize offset. The parent
+    /// ``CanvasView`` positions us at the camera-anchored viewport centre. Passing a SIZE (not swapping
+    /// in a separate full-screen view) is what keeps the maximized pane at the SAME SwiftUI identity as
+    /// its canvas tile, so libghostty's surface is merely RESIZED — never torn down + rebuilt. The old
+    /// separate-subtree maximize rebuilt the surface, which replayed stale bytes (garbled glyphs) and
+    /// crashed the app on repeated maximize/restore cycles.
+    var displaySize: CGSize? = nil
 
     /// Live drag-to-move preview (rigid `.offset`; auto-resets on gesture end). The committed move
     /// lands via ``WorkspaceStore/movePane(_:by:)`` on `.onEnded`.
@@ -34,19 +74,22 @@ struct CanvasItemView: View {
     private var isFocused: Bool { store.isFocused(item.id) }
 
     var body: some View {
-        let shown = resizeLive ?? item.frame
+        let maximized = displaySize != nil
+        // Maximized → fixed viewport size (parent centres us); otherwise the live-resize preview, else
+        // the persisted frame.
+        let shown = displaySize.map { CGRect(origin: .zero, size: $0) } ?? (resizeLive ?? item.frame)
         // Keep the ANCHORED edge pinned during a resize: the parent positions us at the original
         // frame's centre, so shift by the centre delta of the previewed frame (zero when not resizing),
-        // plus the rigid move preview.
-        let offsetX = (shown.midX - item.frame.midX) + moveLive.width
-        let offsetY = (shown.midY - item.frame.midY) + moveLive.height
+        // plus the rigid move preview. A maximized pane can't be moved/resized → no live offset.
+        let offsetX = maximized ? 0 : (shown.midX - item.frame.midX) + moveLive.width
+        let offsetY = maximized ? 0 : (shown.midY - item.frame.midY) + moveLive.height
 
         return PaneChromeView(
             id: item.id,
             spec: item.spec,
             handle: store.handle(for: item.id),
             isFocused: isFocused,
-            isZoomed: store.activeTab?.maximizedPane == item.id,
+            isZoomed: store.workspace.maximizedPane == item.id,
             store: store,
             moveHandleGesture: AnyGesture(moveGesture.map { _ in () })
         ) {
@@ -59,6 +102,14 @@ struct CanvasItemView: View {
             )
         }
         .frame(width: shown.width, height: shown.height)   // resize previews live (intended reflow)
+        #if os(macOS)
+        // BUG-2: catch a scroll over the pane CHROME (header / focus-ring border / padding) and pan the
+        // canvas, instead of the opaque chrome swallowing it. Behind the content, so the video/terminal
+        // NSView (in front) still gets — and forwards — its own scroll. The resize-grip PERIMETER is the
+        // OVERLAY in front of this, so its grips forward via `gripBase` (below); together they make the
+        // whole pane pan like empty space.
+        .background { ScrollPanForwarder(store: store) }
+        #endif
         .overlay { resizeHandles }
         .offset(x: offsetX, y: offsetY)
         // NOTE: the dragged pane floats above its siblings via the OUTER `.zIndex` in CanvasView (sibling
@@ -123,15 +174,26 @@ struct CanvasItemView: View {
             cornerHandle(.bottomLeft, alignment: .bottomLeading)
             cornerHandle(.bottomRight, alignment: .bottomTrailing)
         }
-        .allowsHitTesting(store.activeTab?.maximizedPane == nil)   // no resize while maximized
+        .allowsHitTesting(store.workspace.maximizedPane == nil)   // no resize while maximized
     }
 
     private static let cornerGrip: CGFloat = 16
     private static let edgeThickness: CGFloat = 8
 
+    /// The invisible fill of a resize grip. On macOS it is a ``ScrollPanForwarder`` so a scroll over the
+    /// grip — the pane PERIMETER, i.e. the "cạnh của pane" — pans the canvas instead of being swallowed
+    /// (BUG-2); the SwiftUI resize `.gesture` still fires because the forwarder overrides only
+    /// `scrollWheel`. On iOS (no scroll wheel) it is a plain clear rectangle.
+    @ViewBuilder private var gripBase: some View {
+        #if os(macOS)
+        ScrollPanForwarder(store: store)
+        #else
+        Rectangle().fill(Color.clear)
+        #endif
+    }
+
     private func cornerHandle(_ anchor: ResizeAnchor, alignment: Alignment) -> some View {
-        Rectangle()
-            .fill(Color.clear)
+        gripBase
             .frame(width: Self.cornerGrip, height: Self.cornerGrip)
             .contentShape(Rectangle())
             .gesture(resizeGesture(anchor))
@@ -144,8 +206,7 @@ struct CanvasItemView: View {
     @ViewBuilder
     private func edgeHandle(_ anchor: ResizeAnchor, alignment: Alignment) -> some View {
         let horizontal = (anchor == .top || anchor == .bottom)
-        Rectangle()
-            .fill(Color.clear)
+        gripBase
             .frame(
                 width: horizontal ? nil : Self.edgeThickness,
                 height: horizontal ? Self.edgeThickness : nil
@@ -172,6 +233,13 @@ struct CanvasItemView: View {
         guard let live = store.handle(for: id) as? LivePaneSession,
               let model = live.terminalModel else { return }
         model.onRequestFocus = { [weak store] in store?.focus(id) }
+        // "Only the active pane swallows scroll": a scroll on a NON-focused terminal pans the canvas
+        // instead of scrolling its scrollback (the renderer calls this only when `!isFocusedPane`).
+        model.onCanvasScroll = { [weak store] delta in
+            // Debounced live accumulator (not a per-step commitCamera) so panning over a background
+            // terminal is smooth and never thrashes the canvas re-render cascade (BUG-2/BUG-1 fix).
+            store?.scrollPan(by: delta)
+        }
     }
 }
 #endif

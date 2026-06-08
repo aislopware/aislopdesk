@@ -43,6 +43,23 @@ public final class InputInjector: @unchecked Sendable {
     private let balanceLock = NSLock()
     private var balance = InputButtonBalance()
 
+    /// Whether the full AX raise chain has run at least once for this session (the CLICK-latency
+    /// fix). The first interaction always raises (to set `kAXMainWindow`/`kAXFocusedWindow`); after
+    /// that, `raiseTargetWindow()` skips the ~6–10 synchronous AX IPC calls whenever the target app
+    /// is already frontmost. Main-actor-confined: read/written only inside `@MainActor`
+    /// `raiseTargetWindow()`, so it needs no lock (the class's `@unchecked Sendable` contract).
+    @MainActor private var hasRaisedTargetOnce = false
+
+    /// When the last raise actually ran (the CLICK-latency throttle). One click dispatches SEVERAL raise
+    /// requests — the proactive `focusWindow` raise, the mouseDown's `alwaysRaises`, each loss-resilience
+    /// duplicate mouseUp re-arming the latch, and the first post-up move — and against an AX-slow target
+    /// each full chain costs ~1s of MAIN-ACTOR time. They are now fired async (off the input path), but
+    /// without a throttle they would still pile up back-to-back on the main actor. Coalesce them: skip a
+    /// raise that lands within ``raiseThrottle`` of the previous one. The raise is best-effort (clicks are
+    /// delivered by the posted CGEvent regardless), so coalescing is harmless. Main-actor-confined.
+    @MainActor private var lastRaiseAt: Date?
+    private static let raiseThrottle: TimeInterval = 0.5
+
     /// Test-only same-machine seam (`RWORK_VIDEO_INJECT_TO_PID=1`): deliver events straight to
     /// the target PID via `postToPid` and SKIP the cursor warp, so a loopback host on the SAME
     /// Mac does not hijack the global cursor away from the client window being driven (which
@@ -83,6 +100,26 @@ public final class InputInjector: @unchecked Sendable {
     /// throttled on macOS 14+) with `activate()` (doc 05 §4 caveat).
     @MainActor
     public func raiseTargetWindow() {
+        // CLICK-LATENCY: the AX chain below is ~6–10 SYNCHRONOUS cross-process IPC calls (each
+        // capped at the 0.25 s messaging timeout) that the input consumer AWAITS before the click is
+        // posted. Skip the whole chain when the target app is ALREADY frontmost and we have raised
+        // at least once — `NSWorkspace.frontmostApplication` is a cheap local query, NOT cross-process
+        // AX IPC. Errs toward raising (``InputInjectorRaisePolicy/shouldRaise(frontmostPID:targetPID:firstInteraction:)``):
+        // a click on a genuinely-backgrounded window, a different frontmost app, or an unreadable
+        // frontmost still runs the full raise, so activate-then-control focus correctness is preserved.
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let willRaise = InputInjectorRaisePolicy.shouldRaise(frontmostPID: frontmostPID, targetPID: pid, firstInteraction: !hasRaisedTargetOnce)
+        if Self.inputTrace {
+            let f = frontmostPID.map(String.init) ?? "nil"
+            FileHandle.standardError.write(Data("rwork-videohostd[inject]: raise decision frontmost=\(f) target=\(pid) first=\(!hasRaisedTargetOnce) -> \(willRaise ? "RAISE(full AX chain)" : "SKIP(no AX)")\n".utf8))
+        }
+        guard willRaise else { return }
+        // THROTTLE redundant back-to-back raises within one click (see ``lastRaiseAt``): the first raise
+        // of a click runs; the rest (proactive focus + duplicate ups + the post-up move) return instantly,
+        // so the main actor is never churned by N futile ~1s AX chains per click.
+        if let lastRaiseAt, Date().timeIntervalSince(lastRaiseAt) < Self.raiseThrottle { return }
+        lastRaiseAt = Date()
+        hasRaisedTargetOnce = true
         let appEl = AXUIElementCreateApplication(pid)
         // Cap blocking AX IPC. `raiseTargetWindow` runs on the main actor and the input
         // consumer AWAITS it before injecting the mouseDown (activate-then-control), so a
@@ -91,7 +128,7 @@ public final class InputInjector: @unchecked Sendable {
         // up unbounded. A short timeout makes each AX call fail fast instead (the raise is
         // best-effort: a missed raise just means the click lands on the already-frontmost
         // window) without changing injection ordering.
-        AXUIElementSetMessagingTimeout(appEl, 0.25)
+        AXUIElementSetMessagingTimeout(appEl, 0.08)
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &windowsRef) == .success,
               let axWindows = windowsRef as? [AXUIElement] else { return }

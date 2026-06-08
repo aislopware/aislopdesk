@@ -120,9 +120,20 @@ let package = Package(
         // HW encode HANG without a window-server + Screen-Recording TCC session, which
         // a headless test/CI run does not have (docs/research/spikes/vtbench/RESULTS.md).
         // The encoder/capture configs match the MEASURED spike configs exactly.
+        // Private CoreGraphics `CGVirtualDisplay*` headers (clang module). Lets the host create a
+        // HiDPI 2× virtual display so a remoted window renders at real Retina backing (sharp text)
+        // instead of point-resolution upscale. macOS-only (CoreGraphics); see the header for the
+        // run-loop / main-thread / retain contract. The classes link from the PUBLIC CoreGraphics
+        // framework — only the headers are private (no dlopen, no entitlement).
+        .target(
+            name: "CRworkVirtualDisplay",
+            path: "Sources/CRworkVirtualDisplay",
+            publicHeadersPath: "include"
+        ),
+
         .target(
             name: "RworkVideoHost",
-            dependencies: ["RworkVideoProtocol"],
+            dependencies: ["RworkVideoProtocol", "CRworkVirtualDisplay"],
             // macOS-only: SCStream + VTCompressionSession + AX/CGEvent are macOS APIs.
             // (RworkVideoProtocol stays cross-platform; only this host layer is gated.)
             swiftSettings: []

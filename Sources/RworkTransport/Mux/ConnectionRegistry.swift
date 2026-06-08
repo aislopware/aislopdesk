@@ -45,6 +45,13 @@ public final class ConnectionRegistry {
     /// TOCTOU: `makeConnection` is awaited before the entry is stored, so a naive nil-check races).
     private var building: [String: Task<MuxNWConnection, Error>] = [:]
 
+    /// Endpoints the app-global connection has PINNED (docs/31 connect-gate). The shared connection for
+    /// a pinned key stays up even with ZERO channels, so the gate can establish the mux BEFORE any pane
+    /// opens a channel and it survives closing the last pane. `pin`/`unpin` toggle membership; the
+    /// last-channel teardown guards additionally require the key to be un-pinned. There is exactly one
+    /// pinned key at a time in practice (the single app target), but the set generalizes cleanly.
+    private var pinnedKeys: Set<String> = []
+
     /// Builds a fresh shared connection for an endpoint (opens the CONTROL + DATA links + starts
     /// the receive loops). Injected so tests substitute an in-memory connection.
     private let makeConnection: @MainActor (_ host: String, _ port: UInt16) async throws -> MuxNWConnection
@@ -117,7 +124,8 @@ public final class ConnectionRegistry {
                 // whole connection is unusable. If no OTHER channel is live AND no other acquire is in
                 // flight on this endpoint, drop the dead connection + entry so the next acquire builds a
                 // fresh one instead of reusing a corpse. A surviving sibling/pending keeps it.
-                if (entries[key]?.channelIDs.isEmpty ?? true) && (entries[key]?.pendingAcquires ?? 0) == 0 {
+                if (entries[key]?.channelIDs.isEmpty ?? true) && (entries[key]?.pendingAcquires ?? 0) == 0
+                    && !pinnedKeys.contains(key) {
                     entries.removeValue(forKey: key)
                     await connection.close()
                 }
@@ -220,11 +228,70 @@ public final class ConnectionRegistry {
         // is the correct guard (mirrors `acquire`/`sharedConnection`).
         guard entries[key]?.connection === connection else { return }
         entries[key]?.channelIDs.remove(channelID)
-        // Tear down only when the LAST channel is gone AND no acquire is mid-open (pendingAcquires),
-        // so an in-flight acquire's channel is never stranded on a just-closed connection.
+        // Tear down only when the LAST channel is gone AND no acquire is mid-open (pendingAcquires) AND
+        // the endpoint is NOT pinned by the app-global connection — so an in-flight acquire's channel is
+        // never stranded on a just-closed connection, and a pinned mux survives closing the last pane.
+        if entries[key]?.channelIDs.isEmpty == true && (entries[key]?.pendingAcquires ?? 0) == 0
+            && !pinnedKeys.contains(key) {
+            entries.removeValue(forKey: key)
+            await connection.close()
+        }
+    }
+
+    // MARK: - App-global pin (the connect-gate's mux lifecycle, docs/31)
+
+    /// Establishes (or reuses) the shared connection for `(host,port)` and PINS it so it stays up with
+    /// ZERO channels. The connect-gate calls this so the app is "connected" before any pane opens a
+    /// channel and stays connected across closing the last pane. Returns when the mux is established;
+    /// throws if it cannot be (host unreachable — `makeConnection`'s connect timeout). A re-`pin` after a
+    /// drop rebuilds: `sharedConnection` evicts a dead pooled connection regardless of the pin.
+    public func pin(host: String, port: UInt16) async throws {
+        let key = Self.key(host, port)
+        pinnedKeys.insert(key)   // optimistic — protects the build from a racing last-channel teardown
+        let connection: MuxNWConnection
+        do {
+            connection = try await sharedConnection(host: host, port: port, key: key)
+        } catch {
+            // Build failed: drop the pin we optimistically set, unless a channel / another acquire still
+            // wants this endpoint (then leave the entry's own lifecycle in charge).
+            if (entries[key]?.channelIDs.isEmpty ?? true) && (entries[key]?.pendingAcquires ?? 0) == 0 {
+                pinnedKeys.remove(key)
+            }
+            throw error
+        }
+        // A concurrent `unpin()` during the build await removed our pin (its `entries[key]` was still nil
+        // mid-build, so it could not tear the not-yet-built connection down). Tear the just-built,
+        // now-unpinned, zero-channel connection down instead of ORPHANING it — symmetric to `acquire()`'s
+        // post-`openChannel` identity re-check. The `=== connection` gate avoids clobbering a connection a
+        // concurrent dead-eviction rebuilt under this key during the await.
+        if !pinnedKeys.contains(key),
+           entries[key]?.connection === connection,
+           (entries[key]?.channelIDs.isEmpty ?? true),
+           (entries[key]?.pendingAcquires ?? 0) == 0 {
+            entries.removeValue(forKey: key)
+            await connection.close()
+        }
+    }
+
+    /// Removes the pin for `(host,port)` and tears the shared connection down if no channel rides it.
+    /// The app-global connection's `disconnect()` calls this; if panes still hold channels, the shared
+    /// connection survives until the last one releases (the normal refcount path).
+    public func unpin(host: String, port: UInt16) async {
+        let key = Self.key(host, port)
+        pinnedKeys.remove(key)
+        guard let connection = entries[key]?.connection else { return }
         if entries[key]?.channelIDs.isEmpty == true && (entries[key]?.pendingAcquires ?? 0) == 0 {
             entries.removeValue(forKey: key)
             await connection.close()
         }
+    }
+
+    /// Whether the shared connection for `(host,port)` is currently established and alive. Used by
+    /// ``AppConnection`` to detect a drop (it polls this while connected) so the connect-gate can
+    /// reappear and auto-reconnect. `false` when there is no entry or the connection reports `isDead`.
+    public func isConnectionAlive(host: String, port: UInt16) async -> Bool {
+        let key = Self.key(host, port)
+        guard let connection = entries[key]?.connection else { return false }
+        return !(await connection.isDead)
     }
 }

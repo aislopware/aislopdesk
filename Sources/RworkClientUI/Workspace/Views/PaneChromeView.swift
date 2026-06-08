@@ -89,6 +89,24 @@ struct PaneChromeView<Content: View>: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
+        #if os(macOS)
+        // BUG-2 ("ở cạnh trên/header vẫn bị"): the header bar is hit-OPAQUE (it carries the drag-to-move +
+        // tap-to-focus gestures over the whole bar), so a scroll over it was SWALLOWED instead of panning
+        // the canvas — exactly like the resize-grip perimeter was before `gripBase`. Fix with the SAME
+        // pattern: make the bar's hit layer a `ScrollPanForwarder` (a real NSView that forwards scroll →
+        // `store.scrollPan`) that ALSO carries those gestures. As a `.background` BETWEEN the content and
+        // the material it becomes the front-most hit layer over the title/empty area (a real NSView child,
+        // so it wins scroll hit-testing the way the content NSView does), while button clicks — drawn in
+        // front — still work. Drag-to-move stays HEADER-only (a body drag still reaches libghostty), and
+        // the sub-2px tap (move gesture has minimumDistance 2) still focuses the pane.
+        .background {
+            ScrollPanForwarder(store: store)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { store.focus(id) })
+                .modifier(OptionalMoveGesture(gesture: moveHandleGesture))
+        }
+        .background(isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial))
+        #else
         .background(isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial))
         // Drag-to-move lives on the HEADER ONLY (region isolation, plain `.gesture` never
         // `.highPriorityGesture`) so a drag on the terminal body still reaches libghostty's `mouseDown`
@@ -99,6 +117,7 @@ struct PaneChromeView<Content: View>: View {
         // this tap covers it. `.simultaneousGesture` so it coexists with the drag and the chrome buttons.
         .simultaneousGesture(TapGesture().onEnded { store.focus(id) })
         .modifier(OptionalMoveGesture(gesture: moveHandleGesture))
+        #endif
     }
 
     /// The add / maximize / close controls. Compact icon buttons in the native borderless toolbar
@@ -115,7 +134,7 @@ struct PaneChromeView<Content: View>: View {
                 store.focus(id)        // maximize acts on the focused pane — ensure it's this one first
                 store.toggleZoom()
             }
-            chromeButton("xmark", help: store.isOnlyLeaf(id) ? "Close tab" : "Close pane", role: .destructive) {
+            chromeButton("xmark", help: store.isOnlyLeaf(id) ? "Close last pane" : "Close pane", role: .destructive) {
                 store.closePane(id)
             }
         }

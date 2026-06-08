@@ -196,6 +196,23 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(calls, 2, "reset re-arms coalescing so the same size re-sends on reconnect")
     }
 
+    /// REGRESSION (render lộn xộn, 2026-06-07): libghostty's `resize_callback` fires during surface
+    /// creation / initial layout — BEFORE `ConnectionViewModel.connect()` wires `resizeSink`. The old
+    /// `sendResize` recorded `lastSentSize` even with a nil sink, so the grid was dropped AND the dedup
+    /// then suppressed the real send once the sink appeared → the host PTY stayed at its 80×24 init
+    /// size while libghostty rendered the true grid (overlapping glyphs, fzf drawn at the wrong row).
+    /// Wiring the sink must FLUSH the latest pre-connect grid.
+    func testPreConnectResizeIsFlushedWhenSinkWired() {
+        let model = TerminalViewModel()
+        var calls: [(cols: UInt16, rows: UInt16)] = []
+        model.sendResize(cols: 137, rows: 42)            // fires before connect → no sink yet
+        XCTAssertTrue(calls.isEmpty, "no sink yet → nothing forwarded")
+        model.resizeSink = { calls.append((cols: $0, rows: $1)) }   // connect wires the sink
+        XCTAssertEqual(calls.count, 1, "wiring the sink flushes the pre-connect grid to the host")
+        XCTAssertEqual(calls.first?.cols, 137)
+        XCTAssertEqual(calls.first?.rows, 42)
+    }
+
     func testResetClearsState() {
         let model = TerminalViewModel()
         model.handle(.title("x"))
@@ -302,6 +319,33 @@ final class TerminalViewModelTests: XCTestCase {
         let surface = RecordingSurface()
         model.attachSurface(surface)
         XCTAssertTrue(surface.feeds.isEmpty, "no retained output → attach feeds nothing (not even DECSTR)")
+    }
+
+    /// REGRESSION (the multi-second-beachball "crash"): `surface` MUST be `@ObservationIgnored`.
+    /// `attachSurface(_:)` both reads (`self.surface !== surface`) and writes (`self.surface = surface`)
+    /// this property, and the renderer calls it from `GhosttyMetalLayerView.updateNSView` — i.e. from
+    /// inside a SwiftUI AttributeGraph update. If `surface` were observation-tracked, that read would
+    /// register the updating attribute as a dependency and the write would invalidate it, so SwiftUI
+    /// would re-run the update → `updateNSView` → `attach` → `attachSurface` → invalidate → ∞ (an
+    /// infinite re-render loop pinning the main thread — observed as a hang when a focus change / new
+    /// pane / reconnect triggers `updateNSView`). Here: read `model.surface` INSIDE
+    /// `withObservationTracking`; with `@ObservationIgnored` that read registers no dependency, so the
+    /// `attachSurface` write must NOT fire `onChange`. Drop `@ObservationIgnored` and this fails.
+    func testSurfaceMutationDoesNotTriggerObservation() {
+        final class Flag: @unchecked Sendable { var fired = false }
+        let model = TerminalViewModel()
+        let surface = RecordingSurface()   // strong ref keeps the weak `model.surface` alive
+        let flag = Flag()
+        withObservationTracking {
+            _ = model.surface
+        } onChange: {
+            flag.fired = true
+        }
+        model.attachSurface(surface)   // writes self.surface from "inside an update" (simulated)
+        XCTAssertFalse(
+            flag.fired,
+            "surface must be @ObservationIgnored — mutating it during a SwiftUI update must not invalidate the graph (else updateNSView→attach→attachSurface→invalidate→∞ hangs the main thread)"
+        )
     }
 
     /// RIS — Reset to Initial State (`ESC c`), fed on a fresh-session reconnect.

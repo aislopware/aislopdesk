@@ -1,245 +1,239 @@
 import XCTest
 @testable import RworkClientUI
 
-/// Pins the **pure tab arithmetic** on ``Workspace`` (docs/22 §5, §8) — add / close / move /
-/// select / rename, plus active-tab reselection on close and the default-workspace factory. Every
+/// Pins the **pure workspace arithmetic** on ``Workspace`` (docs/31) — the single-canvas + named
+/// ``PaneGroup`` model that replaced the retired tab layer. Group CRUD (add / rename / remove / assign
+/// / reorder), focus, lookups, and the normalizing repairs, plus the default-workspace factory. Every
 /// op returns a new `Workspace` value; no store, no client, no async.
 ///
 /// The subtle contracts asserted here:
-/// - `closing(_:)` an *active* tab reselects `min(removedIndex, count−1)` (the tab that slid into
-///   the slot, clamped to last).
-/// - `selecting(position:)` is 1-based, and position 9 = last tab when there are > 9 tabs.
-/// - `selectingAdjacent(forward:)` wraps, and no-ops with < 2 tabs.
-/// - `defaultWorkspace()` is exactly one active "Terminal" tab with one focused terminal leaf.
+/// - `removingGroup(_:)` drops the group but its member panes SURVIVE as ungrouped (deleting a group
+///   never closes a pane).
+/// - `assigning(pane:toGroup:)` is disjoint — a pane is in at most one group, so re-assigning moves it.
+/// - `focusing(_:)` only takes if the pane is on the canvas (no-op otherwise).
+/// - `defaultWorkspace()` is exactly one focused "Terminal" pane on a single canvas, not maximized.
 final class WorkspaceTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    /// Builds a workspace of `n` terminal tabs (named t0…t(n-1)) with the first active, returning
-    /// the workspace and the ordered tab ids so tests can assert against pinned identities.
-    private func makeWorkspace(_ n: Int) -> (ws: Workspace, ids: [TabID]) {
-        var tabs: [Tab] = []
-        for i in 0..<n {
-            tabs.append(Tab.make(kind: .terminal, title: "t\(i)"))
+    /// Builds a workspace of `n` terminal panes (titled t0…t(n-1)) on a single canvas with the first
+    /// focused, returning the workspace and the ordered pane ids so tests can assert pinned identities.
+    private func makeWorkspace(_ n: Int) -> (ws: Workspace, ids: [PaneID]) {
+        let panes: [(PaneID, PaneSpec)] = (0..<n).map { i in
+            (PaneID(), PaneSpec(kind: .terminal, title: "t\(i)"))
         }
-        let ws = Workspace(tabs: tabs, activeTabID: tabs.first?.id)
-        return (ws, tabs.map { $0.id })
+        let ws = Workspace.make(panes: panes, focused: panes.first?.0)
+        return (ws, panes.map { $0.0 })
     }
 
     // MARK: - defaultWorkspace
 
-    func testDefaultWorkspaceIsOneActiveTerminalTab() {
+    func testDefaultWorkspaceIsOneFocusedTerminalPane() {
         let ws = Workspace.defaultWorkspace()
         XCTAssertEqual(ws.schemaVersion, Workspace.currentSchemaVersion)
-        XCTAssertEqual(ws.schemaVersion, 2)
-        XCTAssertEqual(ws.tabs.count, 1)
+        XCTAssertEqual(ws.schemaVersion, 4)
 
-        let tab = ws.tabs[0]
-        XCTAssertEqual(tab.name, "Terminal")
-        XCTAssertEqual(ws.activeTabID, tab.id, "the single tab is active")
-        XCTAssertEqual(ws.activeTab?.id, tab.id)
+        // A single terminal pane on the canvas, focused, not maximized, ungrouped.
+        XCTAssertEqual(ws.canvas.itemCount, 1)
+        XCTAssertNil(ws.maximizedPane)
+        XCTAssertTrue(ws.groups.isEmpty)
 
-        // Canvas is a single terminal pane, focused, not maximized.
-        XCTAssertEqual(tab.canvas.itemCount, 1)
-        XCTAssertNil(tab.maximizedPane)
-        let paneID = tab.canvas.allIDs()[0]
-        XCTAssertEqual(tab.focusedPane, paneID, "focus points at the only pane")
-        XCTAssertEqual(tab.canvas.spec(for: paneID)?.kind, .terminal)
+        let paneID = ws.canvas.allIDs()[0]
+        XCTAssertEqual(ws.focusedPane, paneID, "focus points at the only pane")
+        XCTAssertEqual(ws.canvas.spec(for: paneID)?.kind, .terminal)
+        XCTAssertEqual(ws.canvas.spec(for: paneID)?.title, "Terminal")
+        XCTAssertNil(ws.group(ofPane: paneID), "the only pane is ungrouped")
     }
 
-    // MARK: - adding
+    // MARK: - addingGroup
 
-    func testAddingKindAppendsAndActivates() {
-        let (ws, ids) = makeWorkspace(2)
-        let result = ws.adding(kind: .claudeCode, title: "claude")
+    func testAddingGroupAppendsEmptyGroupAndReturnsID() {
+        let (ws, _) = makeWorkspace(2)
+        let (result, gid) = ws.addingGroup(name: "alpha")
 
-        XCTAssertEqual(result.tabs.count, 3)
-        XCTAssertEqual(result.tabs[2].name, "claude")
-        XCTAssertEqual(result.tabs[2].canvas.spec(for: result.tabs[2].canvas.allIDs()[0])?.kind, .claudeCode)
-        XCTAssertEqual(result.activeTabID, result.tabs[2].id, "the freshly added tab becomes active")
-        // Original tabs preserved by identity.
-        XCTAssertEqual(Array(result.tabs.prefix(2)).map { $0.id }, ids)
+        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(result.groups[0].id, gid)
+        XCTAssertEqual(result.groups[0].name, "alpha")
+        XCTAssertEqual(result.group(gid)?.name, "alpha", "lookup finds the freshly minted group")
+        // A new group has no members yet — every pane is still ungrouped.
+        XCTAssertEqual(result.canvas.ids(inGroup: gid), [], "new group starts empty")
+        XCTAssertEqual(result.canvas.ids(inGroup: nil), ws.canvas.allIDs(), "all panes still ungrouped")
     }
 
-    func testAddingPrebuiltTabAppendsAndActivates() {
+    func testAddingGroupPreservesEarlierGroupsInOrder() {
         let (ws, _) = makeWorkspace(1)
-        let tab = Tab.make(kind: .remoteGUI, title: "gui")
-        let result = ws.adding(tab)
+        let (afterFirst, first) = ws.addingGroup(name: "alpha")
+        let (afterSecond, second) = afterFirst.addingGroup(name: "beta")
 
-        XCTAssertEqual(result.tabs.count, 2)
-        XCTAssertEqual(result.tabs[1].id, tab.id)
-        XCTAssertEqual(result.activeTabID, tab.id)
+        XCTAssertEqual(afterSecond.groups.map { $0.id }, [first, second], "append order is preserved")
+        XCTAssertEqual(afterSecond.groupIndex(of: first), 0)
+        XCTAssertEqual(afterSecond.groupIndex(of: second), 1)
     }
 
-    // MARK: - selecting
+    // MARK: - renamingGroup
 
-    func testSelectingByIDActivatesIt() {
-        let (ws, ids) = makeWorkspace(3)
-        let result = ws.selecting(ids[2])
-        XCTAssertEqual(result.activeTabID, ids[2])
+    func testRenamingGroupChangesNameOnly() {
+        let (ws, _) = makeWorkspace(1)
+        let (a, alpha) = ws.addingGroup(name: "alpha")
+        let (b, _) = a.addingGroup(name: "beta")
+        let result = b.renamingGroup(alpha, to: "renamed")
+
+        XCTAssertEqual(result.group(alpha)?.name, "renamed")
+        XCTAssertEqual(result.groups[1].name, "beta", "siblings untouched")
     }
 
-    func testSelectingAbsentIDIsNoOp() {
+    func testRenamingAbsentGroupIsNoOp() {
         let (ws, _) = makeWorkspace(2)
-        let result = ws.selecting(TabID())
-        XCTAssertEqual(result, ws)
+        XCTAssertEqual(ws.renamingGroup(PaneGroupID(), to: "x"), ws)
     }
 
-    func testSelectingPositionIsOneBased() {
+    // MARK: - assigning (disjoint membership)
+
+    func testAssigningPaneToGroupSetsMembership() {
         let (ws, ids) = makeWorkspace(3)
-        XCTAssertEqual(ws.selecting(position: 1).activeTabID, ids[0], "⌘1 = first")
-        XCTAssertEqual(ws.selecting(position: 2).activeTabID, ids[1])
-        XCTAssertEqual(ws.selecting(position: 3).activeTabID, ids[2])
+        let (withGroup, gid) = ws.addingGroup(name: "alpha")
+        let result = withGroup.assigning(pane: ids[1], toGroup: gid)
+
+        XCTAssertEqual(result.group(ofPane: ids[1])?.id, gid, "the pane now belongs to the group")
+        XCTAssertEqual(result.canvas.ids(inGroup: gid), [ids[1]], "group has exactly that member")
+        XCTAssertNil(result.group(ofPane: ids[0]), "siblings remain ungrouped")
     }
 
-    func testSelectingPositionZeroOrOutOfRangeIsNoOp() {
-        let (ws, _) = makeWorkspace(3)
-        XCTAssertEqual(ws.selecting(position: 0), ws, "0 is out of the 1-based range")
-        // Position 5 with only 3 tabs (and 5 != 9) is out of range.
-        XCTAssertEqual(ws.selecting(position: 5), ws)
-    }
-
-    /// macOS convention: ⌘9 jumps to the LAST tab when there are more than nine tabs.
-    func testSelectingPositionNineSelectsLastWhenMoreThanNineTabs() {
-        let (ws, ids) = makeWorkspace(12)
-        let result = ws.selecting(position: 9)
-        XCTAssertEqual(result.activeTabID, ids[11], "⌘9 = last tab when >9 tabs")
-    }
-
-    /// With exactly nine (or fewer-but-≥9) tabs, ⌘9 addresses the literal 9th tab.
-    func testSelectingPositionNineSelectsNinthWhenNineTabs() {
-        let (ws, ids) = makeWorkspace(9)
-        let result = ws.selecting(position: 9)
-        XCTAssertEqual(result.activeTabID, ids[8], "⌘9 = 9th tab (index 8) when exactly 9 tabs")
-    }
-
-    // MARK: - selectingAdjacent (wraps)
-
-    func testSelectingAdjacentForwardWraps() {
-        let (ws, ids) = makeWorkspace(3) // active = ids[0]
-        let one = ws.selectingAdjacent(forward: true)
-        XCTAssertEqual(one.activeTabID, ids[1])
-        let two = one.selectingAdjacent(forward: true)
-        XCTAssertEqual(two.activeTabID, ids[2])
-        let wrapped = two.selectingAdjacent(forward: true)
-        XCTAssertEqual(wrapped.activeTabID, ids[0], "forward past the end wraps to first")
-    }
-
-    func testSelectingAdjacentBackwardWraps() {
-        let (ws, ids) = makeWorkspace(3) // active = ids[0]
-        let wrapped = ws.selectingAdjacent(forward: false)
-        XCTAssertEqual(wrapped.activeTabID, ids[2], "backward past the start wraps to last")
-    }
-
-    func testSelectingAdjacentNoOpWithSingleTab() {
-        let (ws, ids) = makeWorkspace(1)
-        XCTAssertEqual(ws.selectingAdjacent(forward: true).activeTabID, ids[0])
-        XCTAssertEqual(ws.selectingAdjacent(forward: false).activeTabID, ids[0])
-    }
-
-    // MARK: - renaming
-
-    func testRenamingChangesNameOnly() {
+    /// Membership is disjoint: re-assigning a pane to a second group MOVES it (it is not in two groups).
+    func testAssigningPaneToSecondGroupMovesIt() {
         let (ws, ids) = makeWorkspace(2)
-        let result = ws.renaming(ids[1], to: "renamed")
-        XCTAssertEqual(result.tabs[1].name, "renamed")
-        XCTAssertEqual(result.tabs[0].name, "t0", "siblings untouched")
-        XCTAssertEqual(result.activeTabID, ws.activeTabID, "rename does not change selection")
+        let (a, alpha) = ws.addingGroup(name: "alpha")
+        let (b, beta) = a.addingGroup(name: "beta")
+        let inAlpha = b.assigning(pane: ids[0], toGroup: alpha)
+        let inBeta = inAlpha.assigning(pane: ids[0], toGroup: beta)
+
+        XCTAssertEqual(inBeta.group(ofPane: ids[0])?.id, beta, "re-assignment moves the pane")
+        XCTAssertEqual(inBeta.canvas.ids(inGroup: alpha), [], "left the first group")
+        XCTAssertEqual(inBeta.canvas.ids(inGroup: beta), [ids[0]], "joined the second group")
     }
 
-    func testRenamingAbsentIDIsNoOp() {
+    func testAssigningPaneToNilUngroupsIt() {
+        let (ws, ids) = makeWorkspace(2)
+        let (a, alpha) = ws.addingGroup(name: "alpha")
+        let grouped = a.assigning(pane: ids[0], toGroup: alpha)
+        let ungrouped = grouped.assigning(pane: ids[0], toGroup: nil)
+
+        XCTAssertNil(ungrouped.group(ofPane: ids[0]), "passing nil ungroups the pane")
+        XCTAssertEqual(ungrouped.canvas.ids(inGroup: alpha), [])
+    }
+
+    // MARK: - removingGroup (members survive ungrouped)
+
+    func testRemovingGroupDropsGroupButKeepsMembersUngrouped() {
+        let (ws, ids) = makeWorkspace(3)
+        let (a, alpha) = ws.addingGroup(name: "alpha")
+        let grouped = a.assigning(pane: ids[0], toGroup: alpha)
+            .assigning(pane: ids[1], toGroup: alpha)
+        let result = grouped.removingGroup(alpha)
+
+        XCTAssertNil(result.group(alpha), "the group metadata is gone")
+        XCTAssertTrue(result.groups.isEmpty)
+        // The panes survive — deleting a group never closes a pane, just clears membership.
+        XCTAssertEqual(result.canvas.allIDs(), ids, "all panes survive on the canvas")
+        XCTAssertNil(result.group(ofPane: ids[0]), "former members are now ungrouped")
+        XCTAssertNil(result.group(ofPane: ids[1]))
+    }
+
+    func testRemovingAbsentGroupIsNoOp() {
         let (ws, _) = makeWorkspace(2)
-        XCTAssertEqual(ws.renaming(TabID(), to: "x"), ws)
+        XCTAssertEqual(ws.removingGroup(PaneGroupID()), ws)
     }
 
-    // MARK: - moving (onMove semantics, identity preserved)
+    // MARK: - movingGroup (onMove semantics, identity preserved)
 
-    func testMovingReordersAndPreservesActiveByIdentity() {
-        let (ws, ids) = makeWorkspace(3) // [t0, t1, t2], active t0
-        // Move t0 (index 0) to the end (destination 3 in SwiftUI onMove terms).
-        let result = ws.moving(from: IndexSet(integer: 0), to: 3)
-        XCTAssertEqual(result.tabs.map { $0.id }, [ids[1], ids[2], ids[0]])
-        XCTAssertEqual(result.activeTabID, ids[0], "active tab preserved by identity across reorder")
+    func testMovingGroupReordersByIdentity() {
+        let (ws, _) = makeWorkspace(1)
+        let (a, g0) = ws.addingGroup(name: "g0")
+        let (b, g1) = a.addingGroup(name: "g1")
+        let (c, g2) = b.addingGroup(name: "g2") // [g0, g1, g2]
+        // Move g0 (index 0) to the end (destination 3 in SwiftUI onMove terms).
+        let result = c.movingGroup(from: IndexSet(integer: 0), to: 3)
+
+        XCTAssertEqual(result.groups.map { $0.id }, [g1, g2, g0], "groups reorder by identity")
+        XCTAssertEqual(result.groups.map { $0.name }, ["g1", "g2", "g0"])
     }
 
-    // MARK: - closing
+    // MARK: - focus (pure)
 
-    func testClosingNonActiveTabKeepsActive() {
-        let (ws, ids) = makeWorkspace(3) // active t0
-        let result = ws.closing(ids[2])
-        XCTAssertEqual(result.tabs.map { $0.id }, [ids[0], ids[1]])
-        XCTAssertEqual(result.activeTabID, ids[0], "closing a non-active tab leaves the active one")
+    func testFocusingMovesFocusToExistingPane() {
+        let (ws, ids) = makeWorkspace(3) // focused = ids[0]
+        let result = ws.focusing(ids[2])
+        XCTAssertEqual(result.focusedPane, ids[2])
     }
 
-    func testClosingAbsentTabIsNoOp() {
+    func testFocusingAbsentPaneIsNoOp() {
         let (ws, _) = makeWorkspace(2)
-        XCTAssertEqual(ws.closing(TabID()), ws)
+        let result = ws.focusing(PaneID())
+        XCTAssertEqual(result, ws, "focusing a pane not on the canvas is a no-op")
     }
 
-    /// Closing the active tab in the MIDDLE reselects the tab that slid into the slot (same index).
-    func testClosingActiveMiddleTabReselectsSuccessorInSlot() {
-        let (base, ids) = makeWorkspace(4)
-        let ws = base.selecting(ids[1]) // active = t1 (index 1)
-        let result = ws.closing(ids[1])
-        XCTAssertEqual(result.tabs.map { $0.id }, [ids[0], ids[2], ids[3]])
-        XCTAssertEqual(result.activeTabID, ids[2], "the tab that took the removed slot becomes active")
-    }
-
-    /// Closing the active LAST tab clamps the reselection to the new last tab.
-    func testClosingActiveLastTabClampsToNewLast() {
+    /// Maximize follows focus: typing must never land on a pane hidden behind a maximized one.
+    func testFocusingRepointsMaximizeToTheFocusedPane() {
         let (base, ids) = makeWorkspace(3)
-        let ws = base.selecting(ids[2]) // active = last
-        let result = ws.closing(ids[2])
-        XCTAssertEqual(result.tabs.map { $0.id }, [ids[0], ids[1]])
-        XCTAssertEqual(result.activeTabID, ids[1], "reselection clamps to the new last tab")
-    }
-
-    /// Closing the active FIRST tab reselects what is now the first tab (old index 1).
-    func testClosingActiveFirstTabReselectsNewFirst() {
-        let (ws, ids) = makeWorkspace(3) // active = t0
-        let result = ws.closing(ids[0])
-        XCTAssertEqual(result.tabs.map { $0.id }, [ids[1], ids[2]])
-        XCTAssertEqual(result.activeTabID, ids[1], "min(removedIndex, count-1) = index 0 = new first")
-    }
-
-    /// Closing the only tab empties the workspace and clears the active id.
-    func testClosingOnlyTabEmptiesWorkspace() {
-        let (ws, ids) = makeWorkspace(1)
-        let result = ws.closing(ids[0])
-        XCTAssertTrue(result.tabs.isEmpty)
-        XCTAssertNil(result.activeTabID)
-        XCTAssertNil(result.activeTab)
+        var ws = base
+        ws.maximizedPane = ids[0]
+        let result = ws.focusing(ids[2])
+        XCTAssertEqual(result.focusedPane, ids[2])
+        XCTAssertEqual(result.maximizedPane, ids[2], "maximize tracks the newly focused pane")
     }
 
     // MARK: - lookups
 
-    func testIndexOfAndActiveTab() {
+    func testGroupLookupsByIDAndPane() {
         let (ws, ids) = makeWorkspace(3)
-        XCTAssertEqual(ws.index(of: ids[1]), 1)
-        XCTAssertNil(ws.index(of: TabID()))
-        XCTAssertEqual(ws.activeTab?.id, ids[0])
+        let (a, gid) = ws.addingGroup(name: "alpha")
+        let result = a.assigning(pane: ids[1], toGroup: gid)
+
+        XCTAssertEqual(result.group(gid)?.name, "alpha")
+        XCTAssertEqual(result.groupIndex(of: gid), 0)
+        XCTAssertNil(result.group(PaneGroupID()), "absent group id resolves to nil")
+        XCTAssertNil(result.groupIndex(of: PaneGroupID()))
+        XCTAssertEqual(result.group(ofPane: ids[1])?.id, gid)
+        XCTAssertNil(result.group(ofPane: ids[0]), "ungrouped pane has no group")
     }
 
-    // MARK: - active-tab delegation
+    // MARK: - normalizing repairs (applied on load — never crash on a hand-edited file)
 
-    func testUpdatingActiveTabRoutesToActiveOnly() {
-        let (ws, ids) = makeWorkspace(2) // active t0
-        let result = ws.updatingActiveTab { $0.name = "active-renamed" }
-        XCTAssertEqual(result.tabs[0].name, "active-renamed")
-        XCTAssertEqual(result.tabs[1].name, "t1", "non-active tab untouched")
-        // Verify it really targeted the active one by identity.
-        XCTAssertEqual(result.tabs[0].id, ids[0])
+    func testNormalizingFocusRepairsDanglingFocusAndMaximize() {
+        let (base, ids) = makeWorkspace(2)
+        var ws = base
+        ws.focusedPane = PaneID()        // points at a pane not on the canvas
+        ws.maximizedPane = PaneID()      // dangling maximize
+        let result = ws.normalizingFocus()
+
+        XCTAssertEqual(result.focusedPane, ids[0], "dangling focus repoints to the first pane")
+        XCTAssertNil(result.maximizedPane, "dangling maximize clears")
     }
 
-    func testUpdatingTabByIDTargetsThatTab() {
+    func testNormalizingFocusFillsNilFocus() {
+        let (base, ids) = makeWorkspace(2)
+        var ws = base
+        ws.focusedPane = nil
+        let result = ws.normalizingFocus()
+        XCTAssertEqual(result.focusedPane, ids[0], "nil focus repoints to the first pane")
+    }
+
+    /// A pane whose `groupID` names a group not in `groups` (a hand-edited / partially-deleted file)
+    /// is reset to ungrouped; empty groups are KEPT.
+    func testNormalizingGroupsResetsDanglingMembershipKeepsEmptyGroups() {
         let (ws, ids) = makeWorkspace(2)
-        let result = ws.updatingTab(ids[1]) { $0.name = "explicit" }
-        XCTAssertEqual(result.tabs[1].name, "explicit")
-        XCTAssertEqual(result.tabs[0].name, "t0")
-    }
+        let (a, alpha) = ws.addingGroup(name: "alpha")
+        // Assign a pane to alpha, then drop the group from `groups` WITHOUT clearing membership,
+        // simulating a hand-edited file where the item references a non-existent group.
+        var corrupt = a.assigning(pane: ids[0], toGroup: alpha)
+        corrupt.groups.removeAll()
+        let result = corrupt.normalizingGroups()
 
-    func testUpdatingTabAbsentIDIsNoOp() {
-        let (ws, _) = makeWorkspace(2)
-        XCTAssertEqual(ws.updatingTab(TabID()) { $0.name = "x" }, ws)
+        XCTAssertNil(result.group(ofPane: ids[0]), "membership to an absent group is reset to ungrouped")
+
+        // An empty (member-less) but registered group is preserved.
+        let (withEmpty, _) = ws.addingGroup(name: "empty")
+        let normalized = withEmpty.normalizingGroups()
+        XCTAssertEqual(normalized.groups.count, 1, "an empty registered group is kept")
     }
 }

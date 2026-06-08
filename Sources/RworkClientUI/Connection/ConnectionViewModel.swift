@@ -16,43 +16,18 @@ import RworkClient
 @MainActor
 @Observable
 public final class ConnectionViewModel {
-    /// What the UI shows for the connection (mirrors + extends the terminal status with the
-    /// "deliberately disconnected" distinction the terminal model can't make on its own).
-    public enum Status: Sendable, Equatable {
-        case disconnected
-        case connecting
-        case connected
-        /// A transport drop is being retried by the ``ReconnectManager`` supervisor (WF3 backoff). The
-        /// `attempt` is the 1-based campaign attempt and `nextRetry` (when set) is the instant the next
-        /// attempt fires, so the UI can render a live "retrying in Ns" countdown via a `TimelineView`
-        /// tick — a `Date?` (not a live countdown Int) keeps the case `Equatable`/`Sendable` and the
-        /// model free of per-second mutation. A bare drop (before the supervisor reports an attempt)
-        /// uses `attempt: 0, nextRetry: nil` ("Reconnecting…").
-        case reconnecting(attempt: Int, nextRetry: Date?)
-        /// Terminal WF3 give-up: the reconnect campaign exhausted `maxReconnectAttempts` (~58s) without
-        /// reaching the host. Distinct from `.failed` (the *initial* connect timeout/refusal) — this is
-        /// the *post-connect* host-died-and-stayed-dead state, so "connecting forever" becomes a visible
-        /// "Unreachable" instead of a frozen reconnecting dot.
-        case unreachable
-        case failed(String)
+    /// The CHANNEL-level status this pane's dot/recovery-banner show. The app-wide connect-gate uses
+    /// ``AppConnection/status`` instead; this is the per-pane channel on the shared mux. Hoisted to the
+    /// shared ``ConnectionStatus`` so one enum drives both (docs/31).
+    public typealias Status = ConnectionStatus
 
-        public var label: String {
-            switch self {
-            case .disconnected: return "disconnected"
-            case .connecting: return "connecting"
-            case .connected: return "connected"
-            case let .reconnecting(attempt, _):
-                return attempt > 0 ? "reconnecting (\(attempt))" : "reconnecting"
-            case .unreachable: return "unreachable"
-            case .failed(let m): return "failed: \(m)"
-            }
-        }
-    }
+    // MARK: Target (app-global)
 
-    // MARK: Entry fields (bound to the form)
-
-    public var host: String
-    public var port: String
+    /// Resolves the CURRENT app-global ``ConnectionTarget`` at connect-time. The pane no longer carries
+    /// its own host/port (docs/31): every channel rides the one shared mux at the app target, read fresh
+    /// here so changing the host + reconnecting re-targets every pane. Injected (not stored host/port) so
+    /// a later host change is picked up without rebuilding the session.
+    private let target: @MainActor () -> ConnectionTarget
 
     // MARK: Observable status
 
@@ -164,14 +139,12 @@ public final class ConnectionViewModel {
 
     public init(
         terminal: TerminalViewModel,
-        host: String = "127.0.0.1",
-        port: UInt16 = 7420,
+        target: @escaping @MainActor () -> ConnectionTarget = { .default },
         backoff: ReconnectManager.Backoff = .init(),
         makeClient: @escaping @Sendable () -> RworkClient
     ) {
         self.terminal = terminal
-        self.host = host
-        self.port = String(port)
+        self.target = target
         self.backoff = backoff
         self.makeClient = makeClient
     }
@@ -187,43 +160,25 @@ public final class ConnectionViewModel {
     /// The live client (so the input bar can `sendInput`). `nil` while disconnected.
     public var activeClient: RworkClient? { client }
 
-    /// Whether the host/port form parses to a valid endpoint.
-    public var canConnect: Bool {
-        !host.trimmingCharacters(in: .whitespaces).isEmpty && parsedPort != nil
-    }
-
-    /// Why the Connect button is disabled, or `nil` when it is enabled. Surfaced as a small caption
-    /// under the host/port form so a silently-greyed button explains itself. Defined so that
-    /// `validationHint == nil` ⟺ `canConnect` (the button-enabled state is the single source of
-    /// truth; the hint never contradicts it). `parsedPort` is private, so this must live on the VM.
-    public var validationHint: String? {
-        if host.trimmingCharacters(in: .whitespaces).isEmpty { return "Enter a host" }
-        if parsedPort == nil { return "Port must be a number from 1–65535" }
-        return nil
-    }
-
-    private var parsedPort: UInt16? {
-        // Reject port 0: it is never a connectable TCP port, and accepting it would contradict the
-        // `validationHint` copy ("1–65535"). `UInt16("0") == 0` (not nil), so guard the lower bound.
-        guard let p = UInt16(port.trimmingCharacters(in: .whitespaces)), p >= 1 else { return nil }
-        return p
-    }
-
     // MARK: Lifecycle
 
-    /// Connects to the entered host/port, starts reconnect supervision + stream observation.
+    /// Opens this pane's CHANNEL on the shared mux at the current app target, starting reconnect
+    /// supervision + stream observation. The host/port come from the app-global ``ConnectionTarget``
+    /// (the connect-gate dialled them) — the pane no longer has its own form.
     public func connect() async {
-        guard let port = parsedPort else {
-            status = .failed("invalid port")
-            return
-        }
-        let host = self.host.trimmingCharacters(in: .whitespaces)
+        let t = target()
+        let host = t.host
+        let port = t.port
 
+        // Flip to `.connecting` SYNCHRONOUSLY — before the first `await` (teardown) — so a re-entrant
+        // caller (the lazy connect-on-appear `.task` SwiftUI cancels + restarts during the initial
+        // canvas layout settle) observes `.connecting` and does NOT double-dial a second client onto
+        // the same pane while this one is still standing up its mux channel.
+        status = .connecting
         // Tear down any prior session first (re-connect to a new target).
         await teardown()
         deliberatelyClosed = false
         terminal.reset()
-        status = .connecting
 
         let client = makeClient()
         self.client = client
@@ -316,7 +271,18 @@ public final class ConnectionViewModel {
         let supervisor = manager.start(host: host, port: port)
         supervisorTask = supervisor
         do {
-            try await client.connect(host: host, port: port)
+            // CANCELLATION SHIELD (canvas auto-connect bug): the lazy connect-on-appear runs inside
+            // SwiftUI's `.task`, which SwiftUI CANCELS + restarts when the leaf view churns during the
+            // initial canvas layout settle. `RworkClient.connect()` re-checks `Task.isCancelled` AFTER
+            // acquiring its mux channel and, if set, tears that channel back down — closing the shared
+            // connection mid-handshake while we still flip to `.connected` below (a live-looking but
+            // DEAD socket: the host attaches a shell, the link drops, no `.disconnected` is observed,
+            // so no reconnect fires). The connection lives in the store registry, not the view, so it
+            // must outlive a view-`.task` cancellation. Establish it in an unstructured `Task` (which
+            // does NOT inherit our caller's cancellation); awaiting `.value` still propagates a real
+            // connect error/timeout, but `Task.isCancelled` inside is now always false. Our own
+            // generation + `self.client === client` guards below remain the authority on supersession.
+            try await Task { @MainActor in try await client.connect(host: host, port: port) }.value
             // Read the learned id, THEN re-check we are still the live attempt before writing any state —
             // `RworkClient.connect` RETURNS (not throws) when it was closed/paused/superseded mid-handshake,
             // so without this guard a torn-down or superseded pane would be whitewashed to `.connected`.
@@ -326,6 +292,21 @@ public final class ConnectionViewModel {
             guard myGeneration == connectGeneration, self.client === client else { return }
             sessionID = learnedID
             status = .connected
+            // The host PTY is now ready to accept a resize. Re-send the renderer's current grid: any
+            // resize that fired during the handshake threw `sendResize before connect` and was dropped
+            // (the OUT drain's `try?`), but the model recorded it as sent — so without this the dedup
+            // would pin the host at its 80×24 init grid (overlapping glyphs / fzf at the wrong row).
+            terminal.resendCurrentSize()
+            // …and again shortly after: the host's CONTROL-channel reader (which applies resize via
+            // TIOCSWINSZ) may not be pumping the instant connect returns, so a resize sent right now can
+            // be dropped at the mux before it is read (input/output ride the DATA channel and only flow
+            // once the user types — well past this window — so they never hit this race). Re-assert when
+            // the reader is reliably live; the host debounces duplicates, so the extra send is free.
+            Task { @MainActor [weak self, weak client] in
+                try? await Task.sleep(for: .milliseconds(400))
+                guard let self, self.client === client else { return }
+                self.terminal.resendCurrentSize()
+            }
         } catch {
             guard myGeneration == connectGeneration, self.client === client else { return }
             supervisor.cancel()
@@ -342,19 +323,6 @@ public final class ConnectionViewModel {
     /// produce for a plain `Error` enum like `RworkClient.ClientError` or `CancellationError`.
     static func failureReason(for error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-    }
-
-    // MARK: - Internal error types
-
-    private enum ConnectionError: Error, CustomStringConvertible {
-        case connectTimedOut(host: String, port: UInt16)
-
-        var description: String {
-            switch self {
-            case let .connectTimedOut(host, port):
-                return "timed out connecting to \(host):\(port)"
-            }
-        }
     }
 
     /// A deliberate disconnect: close the client + stop the supervisor (no reconnect).
@@ -445,6 +413,24 @@ public final class ConnectionViewModel {
             if self.deliberatelyClosed { return }
             self.sessionID = sessionID
             self.status = .connected
+            // RECONNECT GRID RE-ASSERT (the "render bị xô lệch khi reconnect" fix). A reconnect spawns
+            // a BRAND-NEW host shell (the mux path has no server-side resume — see
+            // `TerminalViewModel.markReconnecting`), whose PTY starts at its 80×24 init size. The grid
+            // re-assert that `connect()` does (resendCurrentSize + a +400ms re-assert) runs ONLY on the
+            // initial connect, NOT here — the supervisor re-establishes the session internally and only
+            // emits this event. Without re-sending the renderer's real grid, the new PTY stays at 80×24
+            // while libghostty renders the layout-derived grid (e.g. 79×22), so zsh wraps at the wrong
+            // column and TUIs draw at the wrong row (overlapping / skewed glyphs). Mirror connect()'s
+            // two-shot re-assert: now, then again after the host control-reader is reliably pumping (it
+            // may not be the instant the resume completes, so an immediate-only send can be dropped at
+            // the mux before it is read; the host debounces duplicates, so the second send is free).
+            self.terminal.resendCurrentSize()
+            let reconnectedClient = self.client
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(400))
+                guard let self, self.client === reconnectedClient else { return }
+                self.terminal.resendCurrentSize()
+            }
         case .exit:
             self.status = .disconnected
         case let .commandStatus(commandStatus):

@@ -46,6 +46,12 @@ public actor RworkVideoClientSession {
     private var dbgMediaCount = 0
     private var dbgDecodeCount = 0
     private var dbgPointerCount = 0
+    /// BUG-1: monotonic time of the last cursor datagram RECEIVED on this (session) actor. The host/net
+    /// side of the freeze probe — see ``dbgNoteCursorRx()``.
+    private var dbgLastCursorRx: Double = 0
+    /// BUG-1: monotonic time of the last VIDEO datagram received — to detect a host capture stall (a gap in
+    /// video arrival) distinct from a client main-actor block.
+    private var dbgLastMediaRx: Double = 0
     nonisolated private func dbg(_ message: @autoclosure () -> String) {
         guard Self.debugStderr else { return }
         FileHandle.standardError.write(Data("Rwork[video.client]: \(message())\n".utf8))
@@ -377,6 +383,17 @@ public actor RworkVideoClientSession {
         if dbgMediaCount == 1 || dbgMediaCount % 30 == 0 {
             dbg("media datagram #\(dbgMediaCount) received (channel=\(channel), \(data.count)B, mediaFlowing=\(stateMachine.mediaFlowing))")
         }
+        // BUG-1: a gap in VIDEO datagram arrival = a HOST-side capture stall (e.g. the SCStream hitching
+        // when the window is raised on a click). If a `mediaRX gap` lines up with a `click` line but there
+        // is NO client `cursorAPPLY`/`RENDER` gap, the freeze is host capture, not client main-actor.
+        if channel == .video, Self.debugStderr, stateMachine.mediaFlowing {
+            let now = FramePacer.currentHostTimeSeconds()
+            if dbgLastMediaRx > 0 {
+                let gap = now - dbgLastMediaRx
+                if gap > 0.1 { dbg("mediaRX gap \(Int(gap * 1000))ms (host capture/net)") }
+            }
+            dbgLastMediaRx = now
+        }
         switch router.route(channel: channel, data: data, mediaFlowing: stateMachine.mediaFlowing) {
         case .control(let message):
             for effect in stateMachine.handleControl(message) { await apply(effect) }
@@ -569,6 +586,7 @@ public actor RworkVideoClientSession {
         }
         switch message {
         case .update(let update):
+            dbgNoteCursorRx()
             lastCursorUpdate = update
             // FIX B self-heal: a position update referencing a shapeID we never cached means its
             // one-shot bitmap was lost (or never fit one datagram). Re-request it on the recovery
@@ -588,6 +606,21 @@ public actor RworkVideoClientSession {
         guard shapeRequests.shouldRequest(shapeID: shapeID, now: FramePacer.currentHostTimeSeconds()) else { return }
         dbg("cursor shape \(shapeID) missing — requesting re-ship on recovery channel")
         transport.send(RecoveryMessage.requestCursorShape(shapeID: shapeID).encode(), on: .recovery)
+    }
+
+    /// BUG-1: logs a SESSION-ACTOR cursor RX gap > 100 ms — the host/network side of the freeze. The host
+    /// ``CursorSampler`` samples position OFF its main thread at 120 Hz unconditionally (built so a
+    /// window-raise can't stall it), so a spike here would mean a genuine host/net stall. If this stays
+    /// SMALL on click-back while the main-actor APPLY/RENDER gaps spike, the freeze is a CLIENT main-actor
+    /// block (the focus re-render), not the host — which is the decisive split for the fix.
+    private func dbgNoteCursorRx() {
+        guard Self.debugStderr else { return }
+        let now = FramePacer.currentHostTimeSeconds()
+        if dbgLastCursorRx > 0 {
+            let gap = now - dbgLastCursorRx
+            if gap > 0.1 { dbg("cursorRX gap \(Int(gap * 1000))ms (host/net)") }
+        }
+        dbgLastCursorRx = now
     }
 
     private func applyCursor(_ update: CursorUpdate) {
@@ -672,6 +705,16 @@ public actor RworkVideoClientSession {
 
     public func sendText(_ string: String) {
         sendInput(inputEncoder.text(string))
+    }
+
+    /// Tells the host to RAISE the captured window to frontmost because this pane was focused on the
+    /// client (hover / first-responder). Sent fire-and-forget on the `.control` channel WHILE streaming.
+    /// Proactive + idempotent: the host raises once (short-circuiting if already frontmost), so the
+    /// user's first click lands instantly without the per-interaction activate-then-control raise stall.
+    /// (Replaces the abandoned no-raise background-injection approach.)
+    public func sendFocusWindow() {
+        guard stateMachine.mediaFlowing else { return }
+        transport.send(VideoControlMessage.focusWindow.encode(), on: .control)
     }
 
     // MARK: Recovery (client → host)

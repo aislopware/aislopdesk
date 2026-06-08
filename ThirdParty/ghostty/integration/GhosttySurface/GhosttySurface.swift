@@ -226,6 +226,7 @@ public final class GhosttySurface: @MainActor TerminalSurface {
             ghosttyOnMainActor {
                 me.cols = newCols
                 me.rows = newRows
+                rdbg("resize_callback → grid \(newCols)x\(newRows)")
                 // The GUI coordinator observes (cols,rows) to emit a `resize`
                 // WireMessage to the host (TIOCSWINSZ). Surfaced via onResize hook
                 // below to keep this type protocol-pure.

@@ -24,20 +24,20 @@ public struct CompactPage: Sendable, Equatable {
 /// and a size-class flip is view-only (it must NOT reconcile, drop focus, or tear sessions down,
 /// docs/22 §4). Free of UIKit; unit-tested on macOS (docs/22 §8 `CompactLayoutResolverTests`).
 public enum CompactLayoutResolver {
-    /// The carousel pages, in canvas **z-order** — identical to `tab.canvas.allIDs()`, so page order is
-    /// a stable, total ordering of the panes (the canvas analogue of the old pre-order leaf order).
-    public static func pages(for tab: Tab) -> [CompactPage] {
-        tab.canvas.allIDs().compactMap { id in
-            guard let spec = tab.canvas.spec(for: id) else { return nil }
+    /// The carousel pages, in canvas **z-order** — identical to `canvas.allIDs()`, so page order is a
+    /// stable, total ordering of the panes (the canvas analogue of the old pre-order leaf order).
+    public static func pages(for canvas: Canvas) -> [CompactPage] {
+        canvas.allIDs().compactMap { id in
+            guard let spec = canvas.spec(for: id) else { return nil }
             return CompactPage(id: id, kind: spec.kind, title: spec.title)
         }
     }
 
     /// The index of the currently focused page (the page bound as the carousel's selection).
-    /// Returns `0` if the focused pane is somehow absent (defensive — keeps the carousel on a
-    /// valid page rather than out of bounds).
-    public static func selectedIndex(for tab: Tab) -> Int {
-        let ids = tab.canvas.allIDs()
-        return ids.firstIndex(of: tab.focusedPane) ?? 0
+    /// Returns `0` if the focused pane is absent / nil (defensive — keeps the carousel on a valid page
+    /// rather than out of bounds).
+    public static func selectedIndex(focusedPane: PaneID?, in canvas: Canvas) -> Int {
+        guard let focusedPane else { return 0 }
+        return canvas.allIDs().firstIndex(of: focusedPane) ?? 0
     }
 }

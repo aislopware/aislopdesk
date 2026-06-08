@@ -19,18 +19,18 @@ final class CanvasReviewFixTests: XCTestCase {
 
     func testFocusWhileMaximizedRepointsMaximizeToTheFocusedPane() {
         let store = makeStore()
-        let a = store.activeTab!.focusedPane
+        let a = store.focusedPane!
         store.addPane(kind: .terminal)                       // pane b, focused
-        let b = store.activeTab!.focusedPane
+        let b = store.focusedPane!
         XCTAssertNotEqual(a, b)
 
         store.focus(a)
         store.toggleZoom()                                   // maximize a
-        XCTAssertEqual(store.activeTab!.maximizedPane, a)
+        XCTAssertEqual(store.workspace.maximizedPane, a)
 
         store.focus(b)                                       // ⌘K-style jump to b while a is maximized
-        XCTAssertEqual(store.activeTab!.focusedPane, b)
-        XCTAssertEqual(store.activeTab!.maximizedPane, b,
+        XCTAssertEqual(store.focusedPane, b)
+        XCTAssertEqual(store.workspace.maximizedPane, b,
                        "maximize follows focus — the on-screen pane equals the focused one (no invisible-pane typing)")
     }
 
@@ -38,11 +38,10 @@ final class CanvasReviewFixTests: XCTestCase {
 
     func testIsPaneVisibleReportedVsEmptySemantics() {
         let p0 = PaneID(), p1 = PaneID()
-        let tab = Tab.canvasTab(name: "A", panes: [(p0, PaneSpec(kind: .remoteGUI, title: "0")),
-                                                   (p1, PaneSpec(kind: .remoteGUI, title: "1"))])
-        let store = makeStore(restoring: Workspace(tabs: [tab], activeTabID: tab.id))
+        let store = makeStore(restoring: .make(panes: [(p0, PaneSpec(kind: .remoteGUI, title: "0")),
+                                                       (p1, PaneSpec(kind: .remoteGUI, title: "1"))]))
 
-        // Pre-report: falls back to isPaneOnActiveTab (both true).
+        // Pre-report: falls back to isPaneOnCanvas (both true).
         XCTAssertTrue(store.isPaneVisible(p0))
         XCTAssertTrue(store.isPaneVisible(p1))
 
@@ -58,11 +57,11 @@ final class CanvasReviewFixTests: XCTestCase {
 
         // Cleared (canvas disappeared → compact flip) → fallback restored.
         store.clearViewportMembership()
-        XCTAssertTrue(store.isPaneVisible(p0), "after clear, the compact fallback to isPaneOnActiveTab is restored")
+        XCTAssertTrue(store.isPaneVisible(p0), "after clear, the compact fallback to isPaneOnCanvas is restored")
 
-        // A pane on a non-active tab is never visible.
-        store.addTab(kind: .terminal)
-        XCTAssertFalse(store.isPaneVisible(p0), "p0 is on the now-inactive tab")
+        // A pane no longer on the canvas is never visible (the on-canvas guard).
+        store.closePane(p0)
+        XCTAssertFalse(store.isPaneVisible(p0), "p0 is no longer on the canvas")
     }
 
     // MARK: - camera / coordinate sanitation
@@ -120,12 +119,13 @@ final class CanvasReviewFixTests: XCTestCase {
         let persistence = WorkspacePersistence(fileURL: url)
 
         let real = PaneID()
-        var tab = Tab.canvasTab(name: "A", panes: [(real, PaneSpec(kind: .terminal, title: "A"))])
-        tab.maximizedPane = PaneID()    // dangling — not in the canvas
-        try persistence.save(Workspace(tabs: [tab], activeTabID: tab.id))
+        // Dangling maximizedPane — a pane not on the canvas.
+        let workspace = Workspace.make(panes: [(real, PaneSpec(kind: .terminal, title: "A"))],
+                                       focused: real, maximized: PaneID())
+        try persistence.save(workspace)
 
         let loaded = persistence.load()
-        XCTAssertNil(loaded.tabs.first?.maximizedPane, "a dangling maximizedPane is cleared on load (symmetric with focus repair)")
-        XCTAssertEqual(loaded.tabs.first?.focusedPane, real)
+        XCTAssertNil(loaded.maximizedPane, "a dangling maximizedPane is cleared on load (symmetric with focus repair)")
+        XCTAssertEqual(loaded.focusedPane, real)
     }
 }

@@ -68,10 +68,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// The factory the store handed in, retained so `resume()` can rebuild a fresh ``InspectorClient``
     /// after `pause()` closed the previous one (iOS would otherwise kill the app for stranding a
     /// background socket — docs/22 DECISIONS). `nil` for non-`.claudeCode` panes.
-    private let makeInspector: (@MainActor (Endpoint) -> InspectorClient?)?
-    /// The endpoint the inspector second channel points at (the same PATH-1 endpoint the terminal
-    /// uses; the host serves the inspector beside the PTY). Held for the `resume()` rebuild.
-    private let inspectorEndpoint: Endpoint?
+    private let makeInspector: (@MainActor (ConnectionTarget) -> InspectorClient?)?
+    /// Resolves the CURRENT app target for the inspector second-channel build/rebuild (the inspector
+    /// rides the same host as the terminal, on the terminal port + 1). Read fresh at subscribe-time so a
+    /// host change is picked up. `nil` for non-`.claudeCode` panes.
+    private let target: (@MainActor () -> ConnectionTarget)?
 
     // MARK: Video activation
 
@@ -111,8 +112,8 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         inspector: InspectorViewModel?,
         inspectorClient: InspectorClient?,
         remoteWindow: RemoteWindowModel?,
-        makeInspector: (@MainActor (Endpoint) -> InspectorClient?)?,
-        inspectorEndpoint: Endpoint?
+        makeInspector: (@MainActor (ConnectionTarget) -> InspectorClient?)?,
+        target: (@MainActor () -> ConnectionTarget)?
     ) {
         self.id = id
         self.kind = kind
@@ -122,7 +123,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         self.inspectorClient = inspectorClient
         self.remoteWindow = remoteWindow
         self.makeInspector = makeInspector
-        self.inspectorEndpoint = inspectorEndpoint
+        self.target = target
     }
 
     // MARK: - Factory (the store's makeSession production path)
@@ -142,36 +143,35 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     public static func make(
         _ spec: PaneSpec,
         makeClient: @escaping @Sendable () -> RworkClient,
-        makeInspector: @escaping @MainActor (Endpoint) -> InspectorClient?
+        makeInspector: @escaping @MainActor (ConnectionTarget) -> InspectorClient?,
+        target: @escaping @MainActor () -> ConnectionTarget = { .default }
     ) -> LivePaneSession {
         // `make` is a pure spec→session factory: the spec carries no id (identity lives on the tree's
         // leaf), so the session mints a placeholder ``PaneID`` here and the store's `reconcile()`
         // immediately re-points it to the real leaf id via `adopt(id:)` before registering it.
         switch spec.kind {
         case .terminal:
-            return makeTerminal(spec, claudeCode: false, makeClient: makeClient, makeInspector: makeInspector)
+            return makeTerminal(spec, claudeCode: false, makeClient: makeClient, makeInspector: makeInspector, target: target)
         case .claudeCode:
-            return makeTerminal(spec, claudeCode: true, makeClient: makeClient, makeInspector: makeInspector)
+            return makeTerminal(spec, claudeCode: true, makeClient: makeClient, makeInspector: makeInspector, target: target)
         case .remoteGUI:
-            return makeRemoteGUI(spec)
+            return makeRemoteGUI(spec, target: target)
         }
     }
 
-    /// Builds a `.terminal` / `.claudeCode` session: a `ConnectionViewModel` (host/port pre-filled,
-    /// NOT connected) + an `InputBarModel`, plus an inspector model for `.claudeCode`.
+    /// Builds a `.terminal` / `.claudeCode` session: a `ConnectionViewModel` bound to the app target
+    /// (NOT connected) + an `InputBarModel`, plus an inspector model for `.claudeCode`.
     private static func makeTerminal(
         _ spec: PaneSpec,
         claudeCode: Bool,
         makeClient: @escaping @Sendable () -> RworkClient,
-        makeInspector: @escaping @MainActor (Endpoint) -> InspectorClient?
+        makeInspector: @escaping @MainActor (ConnectionTarget) -> InspectorClient?,
+        target: @escaping @MainActor () -> ConnectionTarget
     ) -> LivePaneSession {
         let terminal = TerminalViewModel()
-        let host = spec.endpoint?.host ?? "127.0.0.1"
-        let port = spec.endpoint?.port ?? 7420
         let connection = ConnectionViewModel(
             terminal: terminal,
-            host: host,
-            port: port,
+            target: target,
             makeClient: makeClient
         )
         let inputBar = InputBarModel()
@@ -187,24 +187,21 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             inspectorClient: nil,                          // opened lazily by subscribeInspector()
             remoteWindow: nil,
             makeInspector: claudeCode ? makeInspector : nil,
-            inspectorEndpoint: claudeCode ? spec.endpoint : nil
+            target: claudeCode ? target : nil
         )
     }
 
-    /// Builds a `.remoteGUI` session: a `RemoteWindowModel` with the video endpoint pre-filled, NOT
-    /// opened (UDP is user-initiated — docs/22 §6).
-    private static func makeRemoteGUI(_ spec: PaneSpec) -> LivePaneSession {
+    /// Builds a `.remoteGUI` session: a `RemoteWindowModel` bound to the app target with the per-pane
+    /// window pre-filled, NOT opened (UDP is user-initiated — docs/22 §6).
+    private static func makeRemoteGUI(
+        _ spec: PaneSpec,
+        target: @escaping @MainActor () -> ConnectionTarget
+    ) -> LivePaneSession {
         let model: RemoteWindowModel
         if let v = spec.video {
-            model = RemoteWindowModel(
-                host: v.host,
-                mediaPort: String(v.mediaPort),
-                cursorPort: String(v.cursorPort),
-                windowID: String(v.windowID),
-                title: v.title
-            )
+            model = RemoteWindowModel(target: target, windowID: String(v.windowID), title: v.title)
         } else {
-            model = RemoteWindowModel()
+            model = RemoteWindowModel(target: target)
         }
         return LivePaneSession(
             id: PaneID(),
@@ -215,7 +212,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             inspectorClient: nil,
             remoteWindow: model,
             makeInspector: nil,
-            inspectorEndpoint: nil
+            target: nil
         )
     }
 
@@ -234,7 +231,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     public func subscribeInspector() async {
         guard kind == .claudeCode, let model = inspector else { return }
         guard inspectorClient == nil else { return }
-        guard let endpoint = inspectorEndpoint, let client = makeInspector?(endpoint) else { return }
+        guard let target, let client = makeInspector?(target()) else { return }
         // Cancelled before we stored anything (e.g. pause()/teardown() fired between resume's spawn and
         // here) — close the just-built client so its lazily-opened socket is never stranded.
         if Task.isCancelled { await client.close(); return }

@@ -101,7 +101,7 @@ final class PaneStatusIndicatorTests: XCTestCase {
     func testConnectionViewModelShellActivityReadsThroughToTerminal() {
         let terminal = TerminalViewModel()
         let vm = ConnectionViewModel(
-            terminal: terminal, host: "127.0.0.1", port: 7777,
+            terminal: terminal, target: { ConnectionTarget(host: "127.0.0.1", port: 7777) },
             makeClient: { fatalError("not invoked") }
         )
         XCTAssertEqual(vm.shellActivity, .idle)
@@ -144,9 +144,7 @@ final class PaneStatusIndicatorTests: XCTestCase {
     /// pure: no socket, no `HostServer`.
     private func makeViewModel() -> ConnectionViewModel {
         ConnectionViewModel(
-            terminal: TerminalViewModel(),
-            host: "127.0.0.1",
-            port: 7777,
+            terminal: TerminalViewModel(), target: { ConnectionTarget(host: "127.0.0.1", port: 7777) },
             makeClient: { fatalError("makeClient must not be invoked in a pure status-transition test") }
         )
     }
@@ -206,33 +204,7 @@ final class PaneStatusIndicatorTests: XCTestCase {
         XCTAssertEqual(vm.status, .disconnected, "a late give-up must not flip a deliberately-closed pane to unreachable")
     }
 
-    // MARK: - Connect-form validation hint (UI/UX pass)
-
-    /// `validationHint` is `nil` exactly when `canConnect` is true (the hint never contradicts the
-    /// button-enabled state) and otherwise explains WHY the disabled Connect button is greyed.
-    func testValidationHintMatchesCanConnect() {
-        let vm = makeViewModel()
-
-        vm.host = ""; vm.port = "7777"
-        XCTAssertFalse(vm.canConnect)
-        XCTAssertEqual(vm.validationHint, "Enter a host")
-
-        vm.host = "example.com"; vm.port = "abc"
-        XCTAssertFalse(vm.canConnect)
-        XCTAssertEqual(vm.validationHint, "Port must be a number from 1–65535")
-
-        vm.host = "example.com"; vm.port = "99999"   // out of UInt16 range → unparseable
-        XCTAssertFalse(vm.canConnect)
-        XCTAssertEqual(vm.validationHint, "Port must be a number from 1–65535")
-
-        vm.host = "example.com"; vm.port = "0"        // parseable UInt16 but not a connectable port
-        XCTAssertFalse(vm.canConnect, "port 0 is rejected so the hint matches the advertised 1–65535")
-        XCTAssertEqual(vm.validationHint, "Port must be a number from 1–65535")
-
-        vm.host = "example.com"; vm.port = "7777"
-        XCTAssertTrue(vm.canConnect)
-        XCTAssertNil(vm.validationHint, "a valid form has no hint (button enabled)")
-    }
+    // MARK: - Failure-reason humanization
 
     /// The `.failed` reason humanizes a transport `LocalizedError` but PRESERVES the readable Swift
     /// payload for any other error — guarding the regression where `error.localizedDescription` on a

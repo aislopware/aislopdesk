@@ -15,8 +15,8 @@
 // - WindowCapturer        — SCStream + SCContentFilter(desktopIndependentWindow:),
 //                           NV12 zero-copy, showsCursor=false, 30fps cap, queueDepth
 //                           3, idle-skip, heartbeat IDR.
-// - VideoEncoder          — the 2-session HEVC design (Session A low-latency-RC live;
-//                           Session B Quality=1.0 all-intra crisp).
+// - VideoEncoder          — single low-latency-RC HEVC live session + a crisp static refresh
+//                           (Design A: QP-bumped near-lossless keyframe on the SAME session).
 // - CursorSampler         — ~120 Hz NSEvent/NSCursor → cursor side-channel.
 // - WindowGeometryWatcher — AX move/resize notifications + CGWindowList drag-poll.
 // - InputInjector         — activate-then-control: raise+focus → CGEvent.post,

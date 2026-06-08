@@ -59,9 +59,9 @@ final class ResizeControlCodecTests: XCTestCase {
     }
 
     func testUnknownControlTypeStillRejected() {
-        // The accepted type set is 1..6 (type 6 is the keepalive added for CONCURRENCY-HOST-1);
-        // anything beyond MUST still be rejected as malformed.
-        XCTAssertThrowsError(try VideoControlMessage.decode(Data([7])))
+        // The accepted type set is 1..9 (7 = listWindows, 8 = windowList, 9 = focusWindow — the
+        // raise-the-focused-pane's-window signal); anything beyond MUST still be rejected as malformed.
+        XCTAssertThrowsError(try VideoControlMessage.decode(Data([10])))
         XCTAssertThrowsError(try VideoControlMessage.decode(Data([99])))
     }
 

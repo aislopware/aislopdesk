@@ -110,8 +110,7 @@ struct PaneLeafView: View {
     }
 
     private var endpointDescription: String? {
-        if let e = spec.endpoint { return "\(e.host):\(e.port)" }
-        if let v = spec.video { return "\(v.host) · \(v.title)" }
+        if let v = spec.video { return v.title }
         return nil
     }
 
@@ -147,7 +146,8 @@ struct PaneLeafView: View {
 /// ``ClaudeCodePaneView`` for `.claudeCode`.
 private struct TerminalContentView: View {
     let live: LivePaneSession
-    /// The pure intent — read for `spec.endpoint` to decide auto-connect vs. the connect form.
+    /// The pure intent (kind + title). The host/port live on the app-global connection — the pane just
+    /// opens a channel on it.
     let spec: PaneSpec
     /// Whether this pane is the active tab's focused pane — threaded to the renderer so only the
     /// focused pane takes the macOS keyboard first responder (unfocused split siblings keep repainting
@@ -157,68 +157,19 @@ private struct TerminalContentView: View {
     /// host registers under this pane's id (docs/22 §7). `nil` ⇒ direct-claim (compact / macOS).
     var focusCoordinator: PaneFocusCoordinator? = nil
 
-    /// Whether this pane carries an explicit endpoint (restored / configured / automation). Only such
-    /// a pane auto-connects on appear; a fresh user pane shows the connect form first.
-    private var hasExplicitEndpoint: Bool { spec.endpoint != nil }
-
     var body: some View {
-        Group {
-            if showConnectForm {
-                connectForm
-            } else {
-                // An OVERLAY, never a `.failed`/`.unreachable` content branch: replacing `terminalComposite`
-                // would unmount `TerminalScreenView` on every drop/retry crossing, churning the libghostty
-                // surface (the documented focus/teardown freeze class — see the macOS note on
-                // `terminalComposite`). The overlay keeps the renderer mounted with stable identity.
-                terminalComposite
-                    .overlay(alignment: .top) { recoveryBanner }
-            }
-        }
-        // Lazy connect ONCE on appear (docs/22 §6) — but ONLY for a pane with an explicit endpoint.
-        // A fresh user pane (no endpoint) waits for the user's Connect in the form. Not connected on
-        // disappear — the session survives tab switches in the store registry. Re-entrancy-safe:
-        // `connect()` tears down a prior session first, but we only call it from a fresh idle pane.
-        .task { await connectIfNeeded() }
-    }
-
-    /// Show the connect form when this pane has no explicit endpoint AND is not yet live — i.e. a
-    /// fresh user-created pane awaiting host/port. Once it connects (or while connecting/reconnecting)
-    /// the terminal composite is shown instead. A pane with an explicit endpoint never shows the form
-    /// (it auto-connects).
-    private var showConnectForm: Bool {
-        guard !hasExplicitEndpoint, let connection = live.connection else { return false }
-        switch connection.status {
-        case .disconnected, .failed, .unreachable: return true
-        case .connecting, .connected, .reconnecting: return false
-        }
-    }
-
-    /// The new-pane empty state: the proven ``ConnectionView`` (host/port + Connect) over this pane's
-    /// own ``ConnectionViewModel``. Centered so it reads as an empty state, not a toolbar.
-    @ViewBuilder
-    private var connectForm: some View {
-        if let connection = live.connection {
-            VStack(spacing: 12) {
-                Image(systemName: PaneLeafView.icon(for: spec.kind))
-                    .font(.system(size: 30, weight: .regular))
-                    .foregroundStyle(.secondary)
-                Text("Connect to a host")
-                    .font(.headline)
-                // First-run guidance: the form prefills a default host, which misleads a newcomer into
-                // thinking the local machine is the host. Name the prerequisite explicitly so they know a
-                // daemon must be running at the address they enter. (No port hardcoded — the form prefills it.)
-                Text("Enter the address of a machine running rwork-hostd.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                ConnectionView(model: connection)
-                    .frame(maxWidth: 420)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding()
-        } else {
-            Color.clear
-        }
+        // Always the terminal composite (the app-global connect-gate guarantees the mux is up before the
+        // canvas is shown, so a pane never owns a host/port form — docs/31). The channel-level recovery
+        // banner is an OVERLAY, never a content branch: replacing `terminalComposite` would unmount
+        // `TerminalScreenView` on every drop/retry crossing, churning the libghostty surface (the
+        // documented focus/teardown freeze class). The overlay keeps the renderer mounted with stable id.
+        terminalComposite
+            .overlay(alignment: .top) { recoveryBanner }
+            // Open this pane's channel ONCE on appear. The shared mux is already up (the gate pinned it),
+            // so this just acquires a channel. Not closed on disappear — the session survives in the store
+            // registry. Re-entrancy-safe: `connect()` flips `.connecting` synchronously + shields the
+            // handshake in an unstructured Task, so a re-run never double-dials or tears the channel down.
+            .task { await connectIfNeeded() }
     }
 
     /// The proven terminal composite, shown once the pane is connecting/live or when it carries an
@@ -305,17 +256,16 @@ private struct TerminalContentView: View {
         }
     }
 
-    /// Triggers the connection's lazy `connect()` for a fresh idle pane that carries an EXPLICIT
-    /// endpoint, then runs the `RWORK_AUTOTYPE` OUT-path proof if this is the automation target
-    /// (tab0/pane0). A pane with no explicit endpoint is NOT auto-dialed — the user drives Connect via
-    /// the form (docs/22 WF6 DECISIONS).
+    /// Opens this pane's channel on the app-global connection (lazy, once on appear), then runs the
+    /// `RWORK_AUTOTYPE` OUT-path proof if this is the automation target (pane0). Every terminal pane now
+    /// rides the one app connection, so there is no per-pane "explicit endpoint" gate — the channel opens
+    /// against the app target the gate dialled.
     private func connectIfNeeded() async {
         func clog(_ m: @autoclosure () -> String) {
             if ProcessInfo.processInfo.environment["RWORK_RENDER_DEBUG"] != nil {
                 FileHandle.standardError.write(Data("[CONN] \(m())\n".utf8))
             }
         }
-        guard hasExplicitEndpoint else { clog("no explicit endpoint → return"); return }
         // The pane's `connection` (its `ConnectionViewModel`) is materialized by the store's
         // reconcile, which can RACE this `.task`: when the view wins, `live.connection` is still nil.
         // The old code (`guard ... let connection else { return }`) gave up immediately, so an
@@ -332,7 +282,11 @@ private struct TerminalContentView: View {
         guard let connection else { clog("connection nil after \(spins) spins → return"); return }
         clog("ready after \(spins) spins, status=\(String(describing: connection.status))")
         // Only connect a freshly-materialized idle pane; never re-dial a live/connecting one (a tab
-        // switch re-runs `.task`, and `.id(PaneID)` keeps this view stable across reshapes).
+        // switch re-runs `.task`, and `.id(PaneID)` keeps this view stable across reshapes). The
+        // cancellation shield that keeps a canvas-churned `.task` from tearing the just-acquired mux
+        // channel back down lives INSIDE `ConnectionViewModel.connect()` (it also flips `status` to
+        // `.connecting` synchronously there, so a re-entrant `.task` sees `.connecting` and never
+        // double-dials).
         if connection.status == .disconnected {
             await connection.connect()
             clog("connect() returned, status=\(String(describing: connection.status))")
@@ -560,6 +514,24 @@ private struct RemoteGUIPaneView: View {
     /// and only the gated placeholder once the cap is genuinely saturated.
     private var hasFreeSlot: Bool { store?.hasFreeVideoSlot(for: live.id) ?? true }
 
+    /// Canvas behaviour for this remote-GUI pane, threaded to the gated video view: only the ACTIVE
+    /// (focused) pane consumes pointer/scroll; a click ACTIVATES it (and the video view raises the host
+    /// window via its own `focusWindow`); a scroll over a NON-active pane pans the canvas instead of being
+    /// swallowed. `nil` store (no-store preview) → `.standalone` (always active, no-op callbacks).
+    private var paneContext: RemotePaneContext {
+        guard let store else { return .standalone }
+        let id = live.id
+        return RemotePaneContext(
+            isActive: store.isFocused(id),
+            onActivate: { [weak store] in store?.focus(id) },
+            onCanvasScroll: { [weak store] delta in
+                // Debounced live accumulator (not a per-step commitCamera) — a scroll over a GUI pane pans
+                // the canvas smoothly without the re-render cascade that froze the stream (BUG-2/BUG-1).
+                store?.scrollPan(by: delta)
+            }
+        )
+    }
+
     var body: some View {
         Group {
             if let model = live.remoteWindow {
@@ -574,7 +546,11 @@ private struct RemoteGUIPaneView: View {
                 if RemoteGUIDisplay.resolve(admitted: admitted, configured: configured, hasFreeSlot: hasFreeSlot) == .gated {
                     gatedPlaceholder
                 } else {
-                    RemoteWindowPanel(model: model, showCloseButton: false)
+                    // Thread the canvas pane behaviour through: only the ACTIVE pane swallows
+                    // pointer/scroll; a NON-active GUI pane routes scroll to canvas-pan and ignores
+                    // hover. Without this argument the panel falls back to `.standalone`
+                    // (`isActive: true` always), so every GUI pane keeps swallowing the pointer.
+                    RemoteWindowPanel(model: model, showCloseButton: false, paneContext: paneContext)
                 }
             } else {
                 Color.clear

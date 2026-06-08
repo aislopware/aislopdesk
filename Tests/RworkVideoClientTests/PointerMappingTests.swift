@@ -99,6 +99,38 @@ final class PointerMappingTests: XCTestCase {
         XCTAssertEqual(frame.origin.y, 198, accuracy: 1e-9)
     }
 
+    // MARK: macOS overlay Y-flip — top-left placement → bottom-left layer space
+
+    func testBottomLeftOriginYIsTheStandardRectFlip() {
+        // y' = parentHeight - y - height. A cursor whose TOP-LEFT origin is y=50 in a 1000-tall
+        // parent, 16 tall, sits at bottom-left origin 1000-50-16 = 934.
+        XCTAssertEqual(ClientCursorCompositor.bottomLeftOriginY(topLeftY: 50, height: 16, parentHeight: 1000), 934, accuracy: 1e-9)
+    }
+
+    func testOverlayAtWindowTopStaysAtViewTopAfterFlip() {
+        // The bug: a cursor at the WINDOW TOP (host y≈0) was written verbatim into the macOS
+        // bottom-left layer, mirroring it to the view BOTTOM. After the flip a top-of-window
+        // cursor must sit near the view TOP — i.e. a LARGE bottom-left origin-Y (just under the
+        // parent's full height), NOT near 0.
+        let view = VideoSize(width: 1600, height: 1000)
+        let video = VideoSize(width: 1920, height: 1080)   // letterboxed: displayed rect (0,50,1600,900)
+        let cursor = VideoSize(width: 16, height: 16)
+        // Host cursor at the window's top edge.
+        let topUpdate = CursorUpdate(position: VideoPoint(x: 960, y: 0), shapeID: 1, hotspot: VideoPoint(x: 0, y: 0), visible: true)
+        let topFrame = ClientCursorCompositor.layerFrame(for: topUpdate, viewSize: view, videoNativeSize: video, zoom: 1, pan: VideoPoint(x: 0, y: 0), cursorSize: cursor)
+        let topFlipped = ClientCursorCompositor.bottomLeftOriginY(topLeftY: topFrame.origin.y, height: cursor.height, parentHeight: view.height)
+        // Displayed rect top is view y=50 (top-left) → bottom-left origin 1000-50-16 = 934 (high = near top).
+        XCTAssertEqual(topFlipped, 934, accuracy: 1e-9)
+
+        // Host cursor at the window's bottom edge → near the view BOTTOM → a SMALL bottom-left origin.
+        let bottomUpdate = CursorUpdate(position: VideoPoint(x: 960, y: 1080), shapeID: 1, hotspot: VideoPoint(x: 0, y: 0), visible: true)
+        let bottomFrame = ClientCursorCompositor.layerFrame(for: bottomUpdate, viewSize: view, videoNativeSize: video, zoom: 1, pan: VideoPoint(x: 0, y: 0), cursorSize: cursor)
+        let bottomFlipped = ClientCursorCompositor.bottomLeftOriginY(topLeftY: bottomFrame.origin.y, height: cursor.height, parentHeight: view.height)
+        // Displayed rect bottom is view y=950 (top-left) → bottom-left origin 1000-950-16 = 34 (low = near bottom).
+        XCTAssertEqual(bottomFlipped, 34, accuracy: 1e-9)
+        XCTAssertGreaterThan(topFlipped, bottomFlipped, "window-top cursor is ABOVE window-bottom cursor in bottom-left space")
+    }
+
     // MARK: renderer fit == displayedVideoRect-derived fit (2e — drift guard)
 
     func testRendererFitFormulaEqualsDisplayedVideoRect() {

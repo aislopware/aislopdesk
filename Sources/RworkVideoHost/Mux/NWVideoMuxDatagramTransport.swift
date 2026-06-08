@@ -307,7 +307,10 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
                 // for stray/adversarial ids. A lane takes its first liveness stamp on its first
                 // ADMITTED datagram (the `.route` arm).
                 let isHello = Self.payloadIsHello(channel: channel, payload: payload)
-                switch VideoMuxRouter.bootstrapAction(for: decision, channel: channel, payloadIsHello: isHello) {
+                // A window-LIST request also bootstraps (deliver + stamp the reply flow) so the daemon
+                // can answer it WITHOUT minting a session (docs/31 remote-window picker).
+                let isList = Self.payloadIsListRequest(channel: channel, payload: payload)
+                switch VideoMuxRouter.bootstrapAction(for: decision, channel: channel, payloadIsHello: isHello, payloadIsListRequest: isList) {
                 case .bootstrapDeliver:
                     channelMediaConn[channelID] = conn
                     return true
@@ -332,6 +335,16 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         guard channel == .control,
               let msg = try? VideoControlMessage.decode(payload),
               case .hello = msg else { return false }
+        return true
+    }
+
+    /// One-shot peek: does a control-channel payload decode as a `listWindows` discovery request? Like
+    /// the hello peek, only the control channel can carry it. Lets a session-LESS list request bootstrap
+    /// its reply flow so the daemon can answer it without minting a capture session (docs/31).
+    private static func payloadIsListRequest(channel: VideoChannel, payload: Data) -> Bool {
+        guard channel == .control,
+              let msg = try? VideoControlMessage.decode(payload),
+              case .listWindows = msg else { return false }
         return true
     }
 

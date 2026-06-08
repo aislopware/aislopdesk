@@ -20,11 +20,13 @@ public struct PaneID: Hashable, Codable, Sendable {
     public init(raw: UUID = UUID()) { self.raw = raw }
 }
 
-/// Stable identity for a tab (one ``Tab`` owns one ``PaneNode`` tree).
+/// Stable identity for a ``PaneGroup`` — a named, ordered collection of panes on the single canvas
+/// (the replacement for the retired tab concept, docs/31).
 ///
-/// Mirrors ``PaneID``: minted once, stable across the tab's lifetime, survives the persistence
-/// round-trip (docs/22 §6) so focus / active-tab references stay valid after restore.
-public struct TabID: Hashable, Codable, Sendable {
+/// Mirrors ``PaneID``: minted once, stable across the group's lifetime, survives the persistence
+/// round-trip (docs/22 §6) so a pane's `groupID` membership and the sidebar's group order stay valid
+/// after restore.
+public struct PaneGroupID: Hashable, Codable, Sendable {
     public let raw: UUID
     public init(raw: UUID = UUID()) { self.raw = raw }
 }
@@ -46,62 +48,39 @@ public enum PaneKind: String, Codable, Sendable, Equatable {
     case remoteGUI
 }
 
-/// Where a terminal / Claude Code pane points: the host + control port of the PATH 1
-/// connection. Value-typed and `Codable` so it persists with the tree and is the *intent* the
-/// store later hands to `LivePaneSession.make` — the tree never holds the live `RworkClient`.
-public struct Endpoint: Codable, Sendable, Equatable {
-    public var host: String
-    public var port: UInt16
-    public init(host: String, port: UInt16) {
-        self.host = host
-        self.port = port
-    }
-}
-
-/// Where a remote-GUI (video) pane points. PATH 2 uses two UDP sockets — one for the media
-/// (encoded video) stream, one for the cursor side-channel — plus the host-side window identity
-/// being mirrored. Persisted with the tree so a restored video pane reopens its form pre-filled,
-/// but is **never** auto-connected (UDP is user-initiated, docs/22 §6).
+/// Which remote window a `.remoteGUI` (video) pane mirrors. The host + UDP ports are no longer here —
+/// they live ONCE on the app-global ``ConnectionTarget`` (docs/31). All video panes ride the one shared
+/// UDP flow at the app host; only the per-pane `windowID` selects which host-side window to stream.
+/// Persisted with the tree so a restored video pane remembers its window + title; the actual UDP is
+/// opened against the app target.
 public struct VideoEndpoint: Codable, Sendable, Equatable {
-    public var host: String
-    /// UDP port carrying the encoded video frames.
-    public var mediaPort: UInt16
-    /// UDP port carrying the cursor side-channel.
-    public var cursorPort: UInt16
     /// The host-side window being mirrored (ScreenCaptureKit window id).
     public var windowID: UInt32
     /// Human-readable window title (shown in pane chrome before the stream is live).
     public var title: String
-    public init(host: String, mediaPort: UInt16, cursorPort: UInt16, windowID: UInt32, title: String) {
-        self.host = host
-        self.mediaPort = mediaPort
-        self.cursorPort = cursorPort
+    public init(windowID: UInt32, title: String) {
         self.windowID = windowID
         self.title = title
     }
 }
 
-/// The full value-typed description of a leaf: its kind, its display title, and the (optional)
-/// endpoint it points at. Exactly one of ``endpoint`` / ``video`` is populated in practice —
-/// `terminal`/`claudeCode` carry an ``Endpoint``, `remoteGUI` carries a ``VideoEndpoint`` — but
-/// both are optional so a pane can exist in an "unconfigured" state (form not yet filled) and
-/// still round-trip through persistence.
+/// The full value-typed description of a leaf: its kind, its display title, and (for `.remoteGUI`) the
+/// window it mirrors. The connection host is NOT here — terminals/Claude open a channel on the app-global
+/// ``ConnectionTarget`` and `.remoteGUI` opens a lane on the same host's UDP flow, selecting its window
+/// via ``video``.
 ///
 /// A `PaneSpec` is pure intent: it is what the pane *should* be, not a handle to anything live.
-/// The store reads it to materialize a session; mutating it (e.g. rename, fill in an endpoint)
-/// is done through ``PaneNode/updatingSpec(_:_:)`` and triggers a reconcile downstream.
+/// The store reads it to materialize a session; mutating it (e.g. rename) is done through
+/// ``PaneNode/updatingSpec(_:_:)`` and triggers a reconcile downstream.
 public struct PaneSpec: Codable, Sendable, Equatable {
     public var kind: PaneKind
     public var title: String
-    /// Set for `terminal` / `claudeCode` panes.
-    public var endpoint: Endpoint?
-    /// Set for `remoteGUI` panes.
+    /// Set for `remoteGUI` panes (which host-side window to mirror).
     public var video: VideoEndpoint?
 
-    public init(kind: PaneKind, title: String, endpoint: Endpoint? = nil, video: VideoEndpoint? = nil) {
+    public init(kind: PaneKind, title: String, video: VideoEndpoint? = nil) {
         self.kind = kind
         self.title = title
-        self.endpoint = endpoint
         self.video = video
     }
 }

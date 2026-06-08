@@ -37,14 +37,48 @@ public final class CursorSampler: @unchecked Sendable {
     private var windowBoundsCG: VideoRect
     private let boundsLock = NSLock()
 
-    /// Stable shape-id assignment: each distinct `NSCursor` gets an incrementing id.
-    private var shapeIDs: [ObjectIdentifier: UInt16] = [:]
+    /// Content key for shape dedup: the cursor's rendered bitmap bytes + hotspot. Two reads of the
+    /// same displayed shape compare equal even though `NSCursor.currentSystem` hands back distinct
+    /// objects, so the same shape keeps ONE stable `shapeID` (no churn, no bitmap re-ship spam).
+    private struct ShapeKey: Hashable {
+        let bitmap: Data
+        let hotspotX: Double
+        let hotspotY: Double
+    }
+    /// Stable shape-id assignment: each distinct cursor SHAPE (keyed by its rendered bitmap + hotspot,
+    /// NOT object identity — `NSCursor.currentSystem` returns a FRESH object per read) gets an
+    /// incrementing id. Mutated only on the main actor (in ``refreshShapeAndScreen()``), so it needs
+    /// no lock. Bounded in practice by the OS's finite cursor repertoire (arrow, I-beam, hand, the
+    /// resize variants, …) — a few dozen per session, never unbounded.
+    private var shapeIDs: [ShapeKey: UInt16] = [:]
     private var nextShapeID: UInt16 = 0
+
+    /// CACHE for the off-main hot position path (the "cursor freezes during click-to-raise" fix).
+    /// The 120 Hz position sample runs OFF the main thread so a main-thread window raise
+    /// (``InputInjector/raiseTargetWindow()`` — ~6–10 synchronous AX IPC calls that hold the main
+    /// thread) can no longer starve the cursor stream. `NSEvent.mouseLocation` (the only per-sample
+    /// read) is a window-server query that is safe off-main; the main-ONLY reads — `NSCursor.currentSystem`
+    /// (the system-wide displayed shape) and `NSScreen` (primary height for the Y-flip) — are refreshed on a slower main cadence
+    /// and cached here. Guarded by ``stateLock`` (written on main, read on the cursor queue).
+    private var cachedShapeID: UInt16 = 0
+    private var cachedHotspot: VideoPoint = VideoPoint(x: 0, y: 0)
+    private var cachedPrimaryHeight: Double = 0
+    /// Set true after the first main-thread shape/screen prime; until then the position path emits
+    /// nothing (so no update ever carries a bogus shape id or an unset screen height).
+    private var shapePrimed = false
+    private let stateLock = NSLock()
+    /// Counts cursor-queue ticks so the (cold) shape/screen refresh runs at ~30 Hz (every 4th tick),
+    /// not on every 120 Hz position sample. Touched only on the serial cursor queue.
+    private var tickCount = 0
     /// The already-encoded ``CursorShapeMessage`` per `shapeID`, retained so a client that
     /// LOST the one-shot shipment can ask for it again (FIX B self-heal — `reshipShape`). Guarded
     /// by `shapeLock` because `reshipShape` may be called off the main actor (the recovery path).
     private var shapeMessages: [UInt16: CursorShapeMessage] = [:]
     private let shapeLock = NSLock()
+    /// Opt-in stderr trace (`RWORK_VIDEO_DEBUG=1`): logs each NEWLY-minted cursor shapeID so a HW run
+    /// can confirm distinct shapes (I-beam / hand / resize) are actually being detected and shipped —
+    /// the symptom of the `NSCursor.current` → `currentSystem` fix. Fires only on a new shape (rare).
+    private static let debugStderr = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil
 
     public init(windowBoundsCG: VideoRect, updateHandler: @escaping UpdateHandler, shapeHandler: ShapeHandler? = nil) {
         self.windowBoundsCG = windowBoundsCG
@@ -70,10 +104,16 @@ public final class CursorSampler: @unchecked Sendable {
 
     /// Starts the ~120 Hz sampling timer. GUI-only.
     public func start() {
+        // Prime the cached shape + primary-screen height on main BEFORE the position timer fires, so
+        // the first emitted position already carries a valid shape id (and the Y-flip height). The
+        // position path stays gated on `shapePrimed` until this completes.
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.refreshShapeAndScreen() }
+        }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         let interval = 1.0 / Self.sampleHz
         timer.schedule(deadline: .now(), repeating: interval)
-        timer.setEventHandler { [weak self] in self?.sample() }
+        timer.setEventHandler { [weak self] in self?.tick() }
         self.timer = timer
         timer.resume()
     }
@@ -83,26 +123,42 @@ public final class CursorSampler: @unchecked Sendable {
         timer = nil
     }
 
-    /// One sample: read mouse position + shape, convert to window space, emit.
-    /// `NSEvent.mouseLocation` is Cocoa bottom-left global; we keep the math in
-    /// window-relative normalized-free points (the side channel carries host-window
-    /// points, which the client composites directly — doc 17 §3.3).
-    @MainActor
-    private func sampleOnMain() {
-        let globalCocoa = NSEvent.mouseLocation // bottom-left, +Y up
-        boundsLock.lock(); let bounds = windowBoundsCG; boundsLock.unlock()
+    /// One cursor-queue tick (off the main thread). Emits the hot POSITION sample every tick so the
+    /// cursor never freezes during a main-thread window raise, and refreshes the cold shape/screen
+    /// state on main at ~30 Hz (every 4th tick).
+    private func tick() {
+        emitPositionOffMain()
+        tickCount &+= 1
+        if tickCount % 4 == 0 {
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.refreshShapeAndScreen() }
+            }
+        }
+    }
 
-        // Convert global Cocoa point to window-relative top-left points. The window
-        // bounds are CG top-left; flip the cursor's Cocoa Y using the main screen
-        // height so both are in the same top-left space, then subtract the origin.
-        let primaryHeight = Double(NSScreen.screens.first?.frame.height ?? 0)
+    /// Hot path (runs OFF the main thread, on the cursor queue): read the live mouse position and
+    /// emit a ``CursorUpdate`` with the CACHED shape/height. `NSEvent.mouseLocation` is Cocoa
+    /// bottom-left global and is safe to query off-main; we keep the math in window-relative
+    /// normalized-free points (the side channel carries host-window points, which the client
+    /// composites directly — doc 17 §3.3). Because this never touches the main thread, a concurrent
+    /// main-thread `raiseTargetWindow()` (the ~6–10 AX IPC calls) can't stall the cursor stream.
+    private func emitPositionOffMain() {
+        boundsLock.lock(); let bounds = windowBoundsCG; boundsLock.unlock()
+        stateLock.lock()
+        let primed = shapePrimed
+        let primaryHeight = cachedPrimaryHeight
+        let id = cachedShapeID
+        let hotspot = cachedHotspot
+        stateLock.unlock()
+        guard primed else { return } // wait for the first main-thread shape/screen prime
+
+        let globalCocoa = NSEvent.mouseLocation // bottom-left, +Y up (off-main-safe window-server read)
+        // Convert global Cocoa point to window-relative top-left points. The window bounds are CG
+        // top-left; flip the cursor's Cocoa Y using the cached main screen height so both are in the
+        // same top-left space, then subtract the origin.
         let cgY = primaryHeight - Double(globalCocoa.y)
         let windowX = Double(globalCocoa.x) - bounds.origin.x
         let windowY = cgY - bounds.origin.y
-
-        let cursor = NSCursor.current
-        let hotspot = VideoPoint(x: Double(cursor.hotSpot.x), y: Double(cursor.hotSpot.y))
-        let id = shapeID(for: cursor, hotspot: hotspot)
         let visible = windowX >= 0 && windowY >= 0 && windowX <= bounds.size.width && windowY <= bounds.size.height
 
         let update = CursorUpdate(
@@ -112,27 +168,50 @@ public final class CursorSampler: @unchecked Sendable {
         updateHandler(update)
     }
 
-    private func sample() {
-        // Hop to main for AppKit reads (NSCursor.current / NSEvent.mouseLocation are
-        // main-thread reads; doc 18 §C main-thread contract for AppKit state).
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated { self?.sampleOnMain() }
-        }
+    /// Cold path (~30 Hz on the MAIN actor): read the main-ONLY AppKit state — `NSCursor.currentSystem`
+    /// (the system-wide displayed shape) and `NSScreen` (primary height) — and cache it for the off-main position path. Ships a
+    /// new shape bitmap the first time a distinct cursor appears (via ``shapeID(for:hotspot:)``).
+    /// During a window raise this refresh is delayed (the main thread is busy), but the off-main
+    /// position path keeps flowing, so the cursor never freezes — only the shape briefly lags.
+    @MainActor
+    private func refreshShapeAndScreen() {
+        let primaryHeight = Double(NSScreen.screens.first?.frame.height ?? 0)
+        // The system-wide DISPLAYED cursor (crosses the process boundary via the window server) — NOT
+        // `NSCursor.current`, which is only THIS background `.accessory` daemon's own (empty) cursor
+        // stack and so is permanently the arrow, freezing the client's shape. `currentSystem` reflects
+        // the foreground app's I-beam / hand / resize shapes; fall back to `.current` only if nil.
+        let cursor = NSCursor.currentSystem ?? NSCursor.current
+        let hotspot = VideoPoint(x: Double(cursor.hotSpot.x), y: Double(cursor.hotSpot.y))
+        let id = shapeID(for: cursor, hotspot: hotspot)
+        stateLock.lock()
+        cachedPrimaryHeight = primaryHeight
+        cachedShapeID = id
+        cachedHotspot = hotspot
+        shapePrimed = true
+        stateLock.unlock()
     }
 
     @MainActor
     private func shapeID(for cursor: NSCursor, hotspot: VideoPoint) -> UInt16 {
-        let key = ObjectIdentifier(cursor)
+        // Key on the cursor's RENDERED BITMAP + hotspot, not `ObjectIdentifier(cursor)`:
+        // `NSCursor.currentSystem` hands back a freshly-constructed object on every read, so object
+        // identity would mint a new id on EVERY 30 Hz sample → shapeID churn + a bitmap re-ship each
+        // sample. The content key maps the same displayed shape to one stable id.
+        let image = cursor.image
+        let key = ShapeKey(bitmap: image.tiffRepresentation ?? Data(), hotspotX: hotspot.x, hotspotY: hotspot.y)
         if let id = shapeIDs[key] { return id }
         let id = nextShapeID
         nextShapeID &+= 1
         shapeIDs[key] = id
-        // OOB cursor-bitmap channel (doc 17 §3.3): the FIRST time a distinct cursor
+        if Self.debugStderr {
+            FileHandle.standardError.write(Data("[cursor] mint shapeID=\(id) hotspot=(\(hotspot.x),\(hotspot.y)) bitmapBytes=\(key.bitmap.count)\n".utf8))
+        }
+        // OOB cursor-bitmap channel (doc 17 §3.3): the FIRST time a distinct shape
         // appears, ship its bitmap + hotspot ONCE so the client caches it by `id` and
         // composites the pointer itself (`showsCursor` stays false on capture). The
         // hot per-sample message stays position-only. The encoded message is also RETAINED
         // (FIX B) so a client that loses this one-shot shipment can re-request it.
-        if let shapeHandler, let message = Self.encodeShape(cursor.image, shapeID: id, hotspot: hotspot) {
+        if let shapeHandler, let message = Self.encodeShape(image, shapeID: id, hotspot: hotspot) {
             shapeLock.lock(); shapeMessages[id] = message; shapeLock.unlock()
             shapeHandler(message)
         }

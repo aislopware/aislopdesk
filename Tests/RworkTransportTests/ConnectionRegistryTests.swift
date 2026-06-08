@@ -231,6 +231,81 @@ final class ConnectionRegistryTests: XCTestCase {
                        "C2 tears down on its last release (no pendingAcquires-underflow leak)")
     }
 
+    // MARK: - App-global pin (docs/31 connect-gate)
+
+    /// `pin` establishes the shared connection with ZERO channels and keeps it alive — the connect-gate
+    /// is "connected" before any pane opens a channel.
+    func testPinEstablishesConnectionWithNoChannels() async throws {
+        let (registry, created) = makeRegistry()
+        try await registry.pin(host: "h", port: 1)
+        XCTAssertEqual(registry.sharedConnectionCount, 1, "pin builds the shared connection")
+        XCTAssertEqual(registry.channelCount(host: "h", port: 1), 0, "no channels yet — just the pinned mux")
+        XCTAssertEqual(created(), 1)
+        let alive = await registry.isConnectionAlive(host: "h", port: 1)
+        XCTAssertTrue(alive, "the pinned connection reports alive")
+    }
+
+    /// A pinned connection SURVIVES the last channel release (the app stays connected when you close the
+    /// last pane); `unpin` then tears it down.
+    func testPinnedConnectionSurvivesLastChannelReleaseThenUnpinTearsDown() async throws {
+        let (registry, created) = makeRegistry()
+        try await registry.pin(host: "h", port: 1)
+        let ch = try await registry.acquire(host: "h", port: 1, sessionID: UUID(), lastReceivedSeq: 0)
+        XCTAssertEqual(registry.channelCount(host: "h", port: 1), 1)
+        XCTAssertEqual(created(), 1, "the channel rides the already-pinned connection (no rebuild)")
+
+        // Closing the ONLY channel must NOT tear the pinned connection down.
+        await registry.release(host: "h", port: 1, channelID: ch.channelID)
+        XCTAssertEqual(registry.sharedConnectionCount, 1, "pinned connection survives the last channel close")
+        XCTAssertEqual(registry.channelCount(host: "h", port: 1), 0)
+
+        // Unpin (deliberate disconnect) with no channels → torn down.
+        await registry.unpin(host: "h", port: 1)
+        XCTAssertEqual(registry.sharedConnectionCount, 0, "unpin tears the pinned connection down when no channel rides it")
+    }
+
+    /// `unpin` with channels still live leaves the connection up (the refcount path still owns it); only
+    /// the LAST channel release then tears it down.
+    func testUnpinWithLiveChannelKeepsConnectionUntilLastRelease() async throws {
+        let (registry, _) = makeRegistry()
+        try await registry.pin(host: "h", port: 1)
+        let ch = try await registry.acquire(host: "h", port: 1, sessionID: UUID(), lastReceivedSeq: 0)
+
+        await registry.unpin(host: "h", port: 1)
+        XCTAssertEqual(registry.sharedConnectionCount, 1, "a live channel keeps the connection up after unpin")
+
+        await registry.release(host: "h", port: 1, channelID: ch.channelID)
+        XCTAssertEqual(registry.sharedConnectionCount, 0, "the last channel release tears it down once unpinned")
+    }
+
+    /// REGRESSION (docs/31 review): an `unpin()` that races `pin()`'s in-flight build must NOT orphan the
+    /// just-built shared connection. Before the fix, unpin removed the optimistic pin while the build's
+    /// `entries[key]` was still nil (so unpin found nothing to tear down), then the build completed and
+    /// stored a LIVE zero-channel connection that no path ever reclaimed (a permanent socket leak —
+    /// reachable by tapping the gate's Cancel during `.connecting`/`.reconnecting`).
+    func testPinRacingConcurrentUnpinDoesNotOrphanConnection() async throws {
+        let gate = BuildGate()
+        let registry = ConnectionRegistry { _, _ in
+            await gate.wait()                       // suspend the build until the test releases it
+            let (cc, hc) = InMemoryMuxLink.pair()
+            let (cd, hd) = InMemoryMuxLink.pair()
+            let client = MuxNWConnection(role: .client, controlLink: cc, dataLink: cd)
+            let host = MuxNWConnection(role: .host, controlLink: hc, dataLink: hd)
+            await host.setHostOpenHandler { open in Task { await host.sendOpenAck(open.channelID, accepted: true) } }
+            await client.start(); await host.start()
+            return client
+        }
+
+        async let pinTask: Void = registry.pin(host: "h", port: 1)
+        try await pollUntil { gate.isWaiting }      // pin is suspended inside the build
+        await registry.unpin(host: "h", port: 1)    // concurrent unpin removes the optimistic pin
+        gate.release()                              // let the build complete
+        try await pinTask
+
+        XCTAssertEqual(registry.sharedConnectionCount, 0,
+                       "a pin whose unpin raced its build must tear the just-built connection down, not orphan it")
+    }
+
     private func pollUntil(timeout: Duration = .seconds(3), _ cond: () async -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
@@ -242,6 +317,21 @@ final class ConnectionRegistryTests: XCTestCase {
 }
 
 private enum RegistryTestError: Error { case timedOut }
+
+/// Suspends a `makeConnection` build until the test releases it — so a test can hold `pin()` mid-build
+/// and inject a concurrent `unpin()`. `@MainActor` (the factory is `@MainActor`).
+@MainActor
+private final class BuildGate {
+    private var cont: CheckedContinuation<Void, Never>?
+    private(set) var isWaiting = false
+    func wait() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            isWaiting = true
+            cont = c
+        }
+    }
+    func release() { isWaiting = false; cont?.resume(); cont = nil }
+}
 
 /// Holds the FIRST connection's gated link + corpse handles so the test can park `openChannel` mid-send,
 /// kill C1, and drive the eviction race deterministically. `@MainActor` (the factory is `@MainActor`).

@@ -1,210 +1,197 @@
 import Foundation
+import CoreGraphics
 
-// MARK: - Workspace (the whole tree of intent)
+// MARK: - Workspace (the whole tree of intent — ONE canvas, no tabs)
 
-/// The entire **tree of intent** (docs/22 §1.1): a versioned list of ``Tab``s plus which one is
-/// active. This pure value type *is* the persistence format (docs/22 §6) — `Codable`,
-/// round-trippable, holding no live object. The later `WorkspaceStore` owns one of these as its
-/// single source of truth and reconciles the liveness registry against it after every mutation.
+/// The entire **workspace of intent** (docs/31): a single infinite ``Canvas`` of free-floating panes,
+/// the focused / maximized pane, and the named ``PaneGroup``s the panes are organized into. This pure
+/// value type *is* the persistence format (docs/22 §6) — `Codable`, round-trippable, holding no live
+/// object. ``WorkspaceStore`` owns one of these as its single source of truth and reconciles the
+/// liveness registry against it after every mutation.
 ///
-/// All tab-level arithmetic lives here as **pure functions returning a new `Workspace`**
-/// (`adding`, `closing`, `moving`, `selecting`, `renaming`). The store calls these and then
-/// reconciles — the store contributes the side effects, this type contributes the deterministic,
-/// unit-testable shape math (docs/22 §8 `WorkspaceTests`).
+/// ### Tabs are gone (docs/31)
+/// The old `[Tab]` layer (one canvas per tab, an `activeTabID`) is removed: everything lives on ONE
+/// canvas. Tab switching used to unmount/rebuild the active tab's libghostty surfaces (a naive
+/// byte-ring replay → render corruption); a single always-mounted canvas removes that path entirely.
+/// Organization that tabs provided is now ``groups`` — pure sidebar/box metadata, NOT a layout layer.
+///
+/// All workspace-level arithmetic lives here as **pure functions returning a new `Workspace`** (group
+/// CRUD + the normalizing repairs). The canvas-level ops (move/resize/raise/camera/…) live on
+/// ``Canvas``; the store composes both then reconciles.
 public struct Workspace: Codable, Sendable, Equatable {
-    /// The current schema version for forward migration (docs/22 §6). Bumped when the persisted
-    /// shape changes; a decode of an unknown/old version falls back to the default workspace
-    /// rather than crashing.
+    /// The current schema version for forward migration (docs/22 §6). Bumped when the persisted shape
+    /// changes; an unknown/old version simply falls back to ``defaultWorkspace()`` (this is a
+    /// single-user project — there is deliberately NO backward-compat migration path).
     public var schemaVersion: Int
-    public var tabs: [Tab]
-    /// The active tab, or `nil` when there are no tabs. Kept valid by the ops below (closing the
-    /// active tab reselects a neighbour).
-    public var activeTabID: TabID?
+    /// THE single infinite plane of free-floating panes (was one `Canvas` per tab).
+    public var canvas: Canvas
+    /// The pane that currently has focus, or `nil` when the canvas is empty. Kept valid by the ops below
+    /// + ``normalizingFocus()`` (a closed / dangling focus repoints to a surviving pane).
+    public var focusedPane: PaneID?
+    /// `nil` = normal canvas; non-nil = that pane is maximized to fill the viewport (a pure presentation
+    /// flag — no model surgery, registry untouched, the proven no-teardown property of the old
+    /// `zoomedPane`).
+    public var maximizedPane: PaneID?
+    /// The named groups panes can be organized into, in sidebar order. Pure metadata: a pane's
+    /// membership lives on its ``CanvasItem/groupID``; a `PaneGroup` here only carries id + name.
+    public var groups: [PaneGroup]
+    /// The ONE app-global host the whole app connects to (docs/31): every terminal pane is a channel on
+    /// the shared mux at this host, every video pane a lane on the shared UDP flow at this host. Replaces
+    /// the old per-pane `PaneSpec.endpoint`. Persisted so the connect-gate prefills the last-used host;
+    /// `nil` until the user first connects (the gate then shows ``ConnectionTarget/default``).
+    public var connection: ConnectionTarget?
 
-    public init(schemaVersion: Int = Workspace.currentSchemaVersion, tabs: [Tab], activeTabID: TabID?) {
+    public init(
+        schemaVersion: Int = Workspace.currentSchemaVersion,
+        canvas: Canvas,
+        focusedPane: PaneID?,
+        maximizedPane: PaneID? = nil,
+        groups: [PaneGroup] = [],
+        connection: ConnectionTarget? = nil
+    ) {
         self.schemaVersion = schemaVersion
-        self.tabs = tabs
-        self.activeTabID = activeTabID
+        self.canvas = canvas
+        self.focusedPane = focusedPane
+        self.maximizedPane = maximizedPane
+        self.groups = groups
+        self.connection = connection
     }
 }
 
 // MARK: - Schema + default
 
 public extension Workspace {
-    /// The schema version this build writes (the pan-only infinite ``Canvas`` shape). A
-    /// higher/unrecognized version — or any older, incompatible on-disk shape that no longer decodes —
-    /// falls back to ``defaultWorkspace()`` (the app has no released persisted format to migrate from,
-    /// so there is deliberately no backward-compatibility path; docs/30 §4).
-    static let currentSchemaVersion = 2
+    /// The schema version this build writes (the single-canvas + groups shape, docs/31). A
+    /// higher/unrecognized version — or any older on-disk shape that no longer decodes — falls back to
+    /// ``defaultWorkspace()``. Single-user project: there is no backward-compatibility path by design.
+    static let currentSchemaVersion = 4
 
-    /// The fresh-launch / decode-failure fallback: a single tab with one terminal pane, active.
+    /// The fresh-launch / decode-failure fallback: one terminal pane at the origin, focused, ungrouped.
     static func defaultWorkspace() -> Workspace {
-        let tab = Tab.make(kind: .terminal, title: "Terminal")
-        return Workspace(tabs: [tab], activeTabID: tab.id)
+        let paneID = PaneID()
+        let item = CanvasItem(
+            id: paneID,
+            spec: PaneSpec(kind: .terminal, title: "Terminal"),
+            frame: CGRect(origin: .zero, size: Canvas.defaultItemSize),
+            z: 0
+        )
+        return Workspace(canvas: Canvas(items: [item]), focusedPane: paneID)
     }
 }
 
 // MARK: - Lookups
 
 public extension Workspace {
-    /// The active tab, or `nil`. A computed convenience over `activeTabID`.
-    var activeTab: Tab? {
-        guard let id = activeTabID else { return nil }
-        return tabs.first { $0.id == id }
-    }
+    /// The group with `id`, or `nil`.
+    func group(_ id: PaneGroupID) -> PaneGroup? { groups.first { $0.id == id } }
 
-    /// The index of the tab with `id`, or `nil`.
-    func index(of id: TabID) -> Int? {
-        tabs.firstIndex { $0.id == id }
-    }
+    /// The index of the group with `id`, or `nil`.
+    func groupIndex(of id: PaneGroupID) -> Int? { groups.firstIndex { $0.id == id } }
 
-    /// Repairs the `activeTabID` invariant: if it is nil or points at a tab that no longer exists,
-    /// repoint it at the first tab (or `nil` when there are none). Applied on persistence load so a
-    /// dangling active-tab id in ANY schema version restores with a selected tab, not a blank detail
-    /// pane — `activeTab` returns nil for a dangling id, leaving the detail empty (R13). Identity for a
-    /// valid id and for the empty-tabs case.
-    func normalizingActiveTab() -> Workspace {
-        let valid = activeTabID.map { id in tabs.contains { $0.id == id } } ?? false
-        guard !valid else { return self }
+    /// The group a pane belongs to, or `nil` if it is ungrouped / absent.
+    func group(ofPane paneID: PaneID) -> PaneGroup? {
+        guard let gid = canvas.item(paneID)?.groupID else { return nil }
+        return group(gid)
+    }
+}
+
+// MARK: - Normalizing repairs (applied on load — never crash on a hand-edited file)
+
+public extension Workspace {
+    /// Repairs the `focusedPane` / `maximizedPane` invariants: a focus pointing at a pane no longer on
+    /// the canvas repoints to the first pane (or `nil` when empty); a dangling maximize clears. Applied
+    /// on persistence load so keyboard focus is never pinned to a ghost pane and no stale maximize
+    /// survives (R13, ported to the single canvas).
+    func normalizingFocus() -> Workspace {
         var copy = self
-        copy.activeTabID = tabs.first?.id
+        let ids = canvas.allIDs()
+        if let f = copy.focusedPane, !ids.contains(f) {
+            copy.focusedPane = ids.first
+        } else if copy.focusedPane == nil {
+            copy.focusedPane = ids.first
+        }
+        if let m = copy.maximizedPane, !ids.contains(m) {
+            copy.maximizedPane = nil
+        }
         return copy
     }
 
-    /// Repairs each tab's `focusedPane` invariant: if it points at a leaf that no longer exists in that
-    /// tab's tree (a corrupt / hand-edited persisted file), repoint it at the tab's first leaf so keyboard
-    /// focus is never pinned to a ghost pane. Applied on load alongside ``normalizingActiveTab()`` —
-    /// completing the same corrupt-file repair (R13): the active tab AND the focus inside every tab.
-    func normalizingTabFocus() -> Workspace {
+    /// Repairs group membership: an item whose `groupID` names a group not in ``groups`` is reset to
+    /// ungrouped (a hand-edited / partially-deleted file). Empty groups are KEPT (a user may create a
+    /// group before assigning panes). Pure.
+    func normalizingGroups() -> Workspace {
+        let valid = Set(groups.map(\.id))
         var copy = self
-        for i in copy.tabs.indices {
-            let ids = copy.tabs[i].canvas.allIDs()
-            if !ids.contains(copy.tabs[i].focusedPane), let first = ids.first {
-                copy.tabs[i].focusedPane = first
-            }
-            // Symmetric repair for the parallel presentation pointer: a dangling `maximizedPane` (a
-            // re-minted / hand-edited id no longer in this tab's canvas) is cleared so a restored tab
-            // never carries a stale maximize that points at a ghost pane.
-            if let maximized = copy.tabs[i].maximizedPane, !ids.contains(maximized) {
-                copy.tabs[i].maximizedPane = nil
-            }
-        }
+        copy.canvas = Canvas(
+            items: canvas.items.map { item in
+                guard let gid = item.groupID, !valid.contains(gid) else { return item }
+                var c = item
+                c.groupID = nil
+                return c
+            },
+            camera: canvas.camera
+        )
         return copy
     }
 }
 
-// MARK: - Pure tab arithmetic (each returns a NEW workspace)
+// MARK: - Focus (pure)
 
 public extension Workspace {
-    /// Appends a fresh single-leaf tab of `kind` and makes it active, returning the new
-    /// workspace. The new tab's `TabID` is minted here.
-    ///
-    /// - Parameter endpoint: pre-fill the leaf's endpoint (connect-once inheritance). `nil` (the
-    ///   default) leaves the pane in the unconfigured state so existing callers are unaffected.
-    func adding(kind: PaneKind, title: String, endpoint: Endpoint? = nil) -> Workspace {
+    /// Focuses pane `id` if it is on the canvas (no-op otherwise). Maximize follows focus: if a pane is
+    /// maximized and focus jumps elsewhere, the maximize re-points so the on-screen pane always equals
+    /// the one taking keyboard input (never type into an invisible pane behind a maximized one).
+    func focusing(_ id: PaneID) -> Workspace {
+        guard canvas.contains(id) else { return self }
         var copy = self
-        let tab = Tab.make(kind: kind, title: title, endpoint: endpoint)
-        copy.tabs.append(tab)
-        copy.activeTabID = tab.id
-        return copy
-    }
-
-    /// Inserts an already-built `tab` (e.g. one restored or constructed elsewhere) and makes it
-    /// active, returning the new workspace.
-    func adding(_ tab: Tab) -> Workspace {
-        var copy = self
-        copy.tabs.append(tab)
-        copy.activeTabID = tab.id
-        return copy
-    }
-
-    /// Closes the tab `id`, returning the new workspace. If the closed tab was active, the
-    /// **neighbour** becomes active (the tab that took its slot, else the new last tab, else
-    /// `nil` when the workspace empties). A no-op if `id` is absent.
-    func closing(_ id: TabID) -> Workspace {
-        guard let removeIndex = index(of: id) else { return self }
-        var copy = self
-        copy.tabs.remove(at: removeIndex)
-
-        if activeTabID == id {
-            if copy.tabs.isEmpty {
-                copy.activeTabID = nil
-            } else {
-                // Prefer the tab that slid into the removed slot; clamp to the last tab.
-                let neighbour = min(removeIndex, copy.tabs.count - 1)
-                copy.activeTabID = copy.tabs[neighbour].id
-            }
-        }
-        return copy
-    }
-
-    /// Makes the tab `id` active (no-op if absent), returning the new workspace.
-    func selecting(_ id: TabID) -> Workspace {
-        guard index(of: id) != nil else { return self }
-        var copy = self
-        copy.activeTabID = id
-        return copy
-    }
-
-    /// Selects the tab at the given **1-based menu position** (⌘1…⌘9 semantics, docs/22 §5),
-    /// returning the new workspace. Out-of-range positions are a no-op. Position `9` is special:
-    /// when there are more than nine tabs it selects the *last* tab (the macOS tab convention).
-    func selecting(position: Int) -> Workspace {
-        guard position >= 1, !tabs.isEmpty else { return self }
-        let zeroBased: Int
-        if position == 9 {
-            zeroBased = tabs.count - 1 // ⌘9 = last tab
-        } else {
-            zeroBased = position - 1
-        }
-        guard tabs.indices.contains(zeroBased) else { return self }
-        return selecting(tabs[zeroBased].id)
-    }
-
-    /// Activates the next / previous tab with wrap (⌃⇥ / ⌃⇧⇥), returning the new workspace.
-    /// A no-op when there are fewer than two tabs or no active tab.
-    func selectingAdjacent(forward: Bool) -> Workspace {
-        guard tabs.count > 1, let current = activeTabID, let currentIndex = index(of: current) else { return self }
-        let count = tabs.count
-        let nextIndex = forward
-            ? (currentIndex + 1) % count
-            : (currentIndex - 1 + count) % count
-        return selecting(tabs[nextIndex].id)
-    }
-
-    /// Moves tabs from `source` index set to `destination`, returning the new workspace. Matches
-    /// SwiftUI `onMove` / `moveTab(from:to:)` semantics so the sidebar reorder binds directly. The
-    /// active tab is preserved by identity (its `TabID` is unchanged by a reorder).
-    func moving(from source: IndexSet, to destination: Int) -> Workspace {
-        var copy = self
-        copy.tabs.move(fromOffsets: source, toOffset: destination)
-        return copy
-    }
-
-    /// Renames the tab `id` to `name`, returning the new workspace (no-op if absent).
-    func renaming(_ id: TabID, to name: String) -> Workspace {
-        guard let i = index(of: id) else { return self }
-        var copy = self
-        copy.tabs[i].name = name
+        copy.focusedPane = id
+        if copy.maximizedPane != nil { copy.maximizedPane = id }
         return copy
     }
 }
 
-// MARK: - Active-tab delegations (pure tree edits routed to the active tab)
+// MARK: - Pure group arithmetic (each returns a NEW workspace)
 
 public extension Workspace {
-    /// Applies a pure mutation to a specific tab's `root`/focus/zoom in place, returning the new
-    /// workspace. The single funnel the leaf-level ops below route through.
-    func updatingTab(_ id: TabID, _ transform: (inout Tab) -> Void) -> Workspace {
-        guard let i = index(of: id) else { return self }
+    /// Appends a new empty group named `name`, returning the new workspace and the minted id. The new
+    /// group has no members yet (the caller assigns panes via ``assigning(pane:toGroup:)``).
+    func addingGroup(name: String) -> (Workspace, PaneGroupID) {
+        let group = PaneGroup(name: name)
         var copy = self
-        transform(&copy.tabs[i])
+        copy.groups.append(group)
+        return (copy, group.id)
+    }
+
+    /// Renames group `id` to `name` (no-op if absent).
+    func renamingGroup(_ id: PaneGroupID, to name: String) -> Workspace {
+        guard let i = groupIndex(of: id) else { return self }
+        var copy = self
+        copy.groups[i].name = name
         return copy
     }
 
-    /// Convenience: apply a transform to the *active* tab.
-    func updatingActiveTab(_ transform: (inout Tab) -> Void) -> Workspace {
-        guard let id = activeTabID else { return self }
-        return updatingTab(id, transform)
+    /// Removes group `id`: drops it from ``groups`` AND clears the `groupID` of its members (they
+    /// survive as ungrouped panes — deleting a group never closes a pane). No-op if absent.
+    func removingGroup(_ id: PaneGroupID) -> Workspace {
+        guard groupIndex(of: id) != nil else { return self }
+        var copy = self
+        copy.groups.removeAll { $0.id == id }
+        copy.canvas = copy.canvas.clearingGroup(id)
+        return copy
+    }
+
+    /// Assigns pane `paneID` to group `groupID` (or ungroups it when `groupID` is `nil`). Disjoint —
+    /// a pane is in at most one group, so this moves it. No-op if the pane is absent.
+    func assigning(pane paneID: PaneID, toGroup groupID: PaneGroupID?) -> Workspace {
+        var copy = self
+        copy.canvas = copy.canvas.assigning(paneID, toGroup: groupID)
+        return copy
+    }
+
+    /// Reorders groups (SwiftUI `onMove` semantics). Pure reorder; membership unchanged.
+    func movingGroup(from source: IndexSet, to destination: Int) -> Workspace {
+        var copy = self
+        copy.groups.move(fromOffsets: source, toOffset: destination)
+        return copy
     }
 }

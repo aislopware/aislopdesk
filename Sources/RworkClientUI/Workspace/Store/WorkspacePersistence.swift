@@ -103,16 +103,12 @@ public struct WorkspacePersistence: @unchecked Sendable {
         // Repair a corrupt / copy-pasted canvas with DUPLICATE item PaneIDs (the liveness registry is
         // keyed 1:1 by PaneID, so duplicates would collapse two panes onto one session) by RE-MINTING the
         // duplicates in place — lossless, since restored sessions always start idle (UI/UX pass-3 #5).
-        // Then repair a dangling/nil activeTabID + any tab's dangling focusedPane so the detail pane is
-        // never blank and focus is never pinned to a ghost pane (R13).
+        // Then repair a dangling/nil focusedPane + maximizedPane (focus never pinned to a ghost pane) and
+        // any item pointing at a group that no longer exists (R13, ported to the single canvas).
         var seen = Set<PaneID>()
         var repaired = migrated
-        repaired.tabs = repaired.tabs.map { tab in
-            var t = tab
-            t.canvas = t.canvas.dedupingItemIDs(seen: &seen)
-            return t
-        }
-        return repaired.normalizingActiveTab().normalizingTabFocus()
+        repaired.canvas = repaired.canvas.dedupingItemIDs(seen: &seen)
+        return repaired.normalizingFocus().normalizingGroups()
     }
 
     /// Best-effort copy the unrestorable file aside BEFORE the next `save()` atomically overwrites it, so a

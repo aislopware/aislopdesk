@@ -15,7 +15,7 @@ final class WorkspaceStoreReconnectGuardTests: XCTestCase {
     }
 
     private func leafIDs(_ store: WorkspaceStore) -> [PaneID] {
-        store.workspace.tabs.flatMap { $0.canvas.allIDs() }
+        store.workspace.canvas.allIDs()
     }
 
     /// The re-check is TRUE while the pane is live, and FALSE once it has been closed — so the detached

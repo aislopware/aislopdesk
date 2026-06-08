@@ -138,6 +138,18 @@ final class GhosttyApp {
 
         // 2. Config (header 1123 / 1132). Defaults are fine for the EXTERNAL backend;
         //    per-surface backend/callbacks are set in GhosttySurface, not here.
+        //
+        //    NOTE — we deliberately do NOT load the user's `~/.config/ghostty/config` here. Doing so
+        //    (the obvious way to inherit their theme/palette/font) changes the FONT (e.g. `font-size`,
+        //    `adjust-cell-height`), hence the cell size — but the host PTY then stays at the grid the
+        //    surface was created with (default 80×24) instead of the real font-reflowed grid, so zsh
+        //    wraps at the wrong column and fzf/Ctrl-R draw their UI at the wrong row (the reported
+        //    "render lộn xộn"). Re-enabling theme/font inheritance requires ALSO making the host PTY
+        //    track libghostty's real grid after the font reflow (and bundling ghostty's themes dir so
+        //    NAMED themes like "Monokai Pro" resolve). Until that lands, keep the default config so the
+        //    grid the GUI computes matches what libghostty renders. (The reported invisible
+        //    zsh-autosuggestion was NOT a palette issue — it was the empty-HISTFILE shim bug, fixed in
+        //    RworkHost/ShellIntegration.swift.)
         let config = ghostty_config_new()
         ghostty_config_finalize(config)
 
@@ -798,6 +810,17 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        // ONLY the active pane swallows scroll: a scroll on a NON-focused terminal pans the CANVAS
+        // (matching the macOS background pan's natural-scroll sign) instead of being eaten by
+        // libghostty's scrollback. The leaf wires `onCanvasScroll` to the store camera pan; if it's
+        // not wired (headless/preview) the scroll is simply dropped rather than mis-routed.
+        if !isFocusedPane {
+            let dx: CGFloat, dy: CGFloat
+            if event.hasPreciseScrollingDeltas { dx = event.scrollingDeltaX; dy = event.scrollingDeltaY }
+            else { dx = event.scrollingDeltaX * 10; dy = event.scrollingDeltaY * 10 }
+            model?.onCanvasScroll?(CGSize(width: -dx, height: -dy))
+            return
+        }
         // Build the packed scroll mods (Int32: bit0 = precision, bits1-3 = momentum), mirroring
         // upstream `Ghostty.Input.swift:438-465` (ScrollMods) + `SurfaceView_AppKit.swift:1010-1031`.
         var x = event.scrollingDeltaX

@@ -20,7 +20,7 @@ final class ConnectionViewModelSupersedeTests: XCTestCase {
         for _ in 0..<120 {
             let rec = GateRecorder()
             let vm = ConnectionViewModel(
-                terminal: TerminalViewModel(), host: "h", port: 1,
+                terminal: TerminalViewModel(), target: { ConnectionTarget(host: "h", port: 1) },
                 makeClient: { RworkClient(makeTransport: { rec.makeTransport() }) }
             )
             let connectTask = Task { await vm.connect() }
@@ -39,7 +39,7 @@ final class ConnectionViewModelSupersedeTests: XCTestCase {
     /// whitewash the closed pane back to green `.connected`. Folded synchronously via the DEBUG hook.
     func testLateReconnectedAfterDisconnectStaysDisconnected() async {
         let vm = ConnectionViewModel(
-            terminal: TerminalViewModel(), host: "h", port: 1,
+            terminal: TerminalViewModel(), target: { ConnectionTarget(host: "h", port: 1) },
             makeClient: { RworkClient(makeTransport: { fatalError("never connected in this test") }) }
         )
         await vm.disconnect()   // deliberatelyClosed = true; status = .disconnected (never connected)

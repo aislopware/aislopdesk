@@ -23,6 +23,8 @@ import SwiftUI
 /// the WINDOW, never on the pane views (docs/22 §3).
 public struct WorkspaceRootView: View {
     @Bindable var store: WorkspaceStore
+    /// The ONE app-global connection (docs/31): drives the modal connect-gate + the toolbar status.
+    @Bindable var connection: AppConnection
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     /// The sidebar's visibility — `.automatic` by default (the system shows sidebar + detail on regular
@@ -37,6 +39,13 @@ public struct WorkspaceRootView: View {
     /// zero-cost branch.
     @State private var showCommandPalette = false
 
+    /// Whether the app has connected at least once this launch. The canvas (and its panes' auto-connect
+    /// `.task`s) only MOUNT after the first successful connect — otherwise a pane behind the gate would
+    /// open a channel and build the shared mux WITHOUT the gate's pin, leaving the gate stuck at
+    /// `.disconnected`. Once mounted it STAYS mounted across later drops (the gate just overlays), so
+    /// panes + their libghostty surfaces are preserved and only the per-channel reconnect runs.
+    @State private var hasConnectedOnce = false
+
     /// The OUTER WINDOW's width on macOS, fed by ``WindowWidthReader`` (ITEM #6). `nil` until the
     /// reader observes a window (and always `nil` on iOS, which keeps its size-class-primary decision):
     /// the breakpoint then falls back to the detail GeometryReader width. Keying the macOS breakpoint
@@ -44,20 +53,21 @@ public struct WorkspaceRootView: View {
     /// `NavigationSplitView` reports a partially laid-out detail width.
     @State private var windowWidth: CGFloat?
 
-    public init(store: WorkspaceStore) {
+    public init(store: WorkspaceStore, connection: AppConnection) {
         self.store = store
+        self.connection = connection
     }
 
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            TabSidebarView(store: store)
+            PaneSidebarView(store: store)
                 #if os(macOS)
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 320)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
                 #endif
         } detail: {
             detail
                 .toolbar { detailToolbar }
-                .navigationTitle(store.activeTab?.name ?? "Rwork")
+                .navigationTitle(windowTitle)
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
@@ -78,6 +88,20 @@ public struct WorkspaceRootView: View {
         // empty branch when hidden (zero cost) — and an overlay, not a `.sheet`, so it owns its own
         // backdrop + placement rather than fighting sheet chrome.
         .overlay { CommandPaletteView(store: store, isPresented: $showCommandPalette) }
+        // The app-global connect-gate (docs/31): a modal over the WHOLE shell — including the sidebar +
+        // palette — whenever the one connection is not `.connected`. Placed here (above the regular↔compact
+        // switch in `detail`) so a projection flip never re-mounts it. The canvas is unusable until
+        // connected; on a mid-session drop it reappears ("reconnecting…") and auto-dismisses on recovery.
+        .overlay {
+            if !isConnected {
+                ConnectionGateView(connection: connection)
+                    .transition(.opacity)
+            }
+        }
+        // Latch "connected at least once" so the canvas mounts on first connect and stays mounted across
+        // later drops (panes preserved; the gate just overlays). Seed it now in case we launch connected.
+        .onChange(of: connection.status) { _, _ in if isConnected { hasConnectedOnce = true } }
+        .onAppear { if isConnected { hasConnectedOnce = true } }
         // Toggle the palette with ⌘K. The chord lives on the VISIBLE menu-bar "Command Palette" item
         // (``WorkspaceCommands``) — discoverable + scene-targeted — reached through this focused-scene
         // value rather than a hidden background button. A ⌘-prefixed chord obeys the §5 conflict rule
@@ -101,15 +125,19 @@ public struct WorkspaceRootView: View {
             )
 
             Group {
-                if store.activeTab != nil {
+                if !hasConnectedOnce {
+                    // Pre-first-connect: render nothing (the gate covers the whole shell). Mounting the
+                    // canvas here would fire the panes' auto-connect and build the mux without the pin.
+                    Color.clear
+                } else if !store.workspace.canvas.items.isEmpty {
                     if compact {
-                        // Compact (iPhone / iPad-compact): the SAME tree projected to one swipeable
-                        // leaf at a time (docs/22 §4). The carousel's "show tabs" reveals the shell
+                        // Compact (iPhone / iPad-compact): the SAME canvas projected to one swipeable
+                        // pane at a time (docs/22 §4). The carousel's "show panes" reveals the shell
                         // sidebar by flipping `columnVisibility`. A regular↔compact flip swaps ONLY
                         // this branch — view-only, no reconcile / focus drop / session teardown.
-                        PaneCarouselView(store: store, onShowTabs: { columnVisibility = .all })
+                        PaneCarouselView(store: store, onShowSidebar: { columnVisibility = .all })
                     } else {
-                        CanvasView(store: store, tab: store.activeTab!.id)
+                        CanvasView(store: store)
                     }
                 } else {
                     emptyState
@@ -120,13 +148,24 @@ public struct WorkspaceRootView: View {
         .background(.background)
     }
 
+    /// Whether the app-global connection is up (gate dismissed, canvas usable).
+    private var isConnected: Bool {
+        if case .connected = connection.status { return true }
+        return false
+    }
+
+    /// The window title: the focused pane's title, falling back to "Rwork" when the canvas is empty.
+    private var windowTitle: String {
+        store.focusedPane.flatMap { store.workspace.canvas.spec(for: $0)?.title } ?? "Rwork"
+    }
+
     private var emptyState: some View {
         ContentUnavailableView {
-            Label("No Pane", systemImage: "rectangle.dashed")
+            Label("No Panes", systemImage: "rectangle.dashed")
         } description: {
-            Text("Add a tab to get started.")
+            Text("Add a pane to get started.")
         } actions: {
-            Button("New Tab") { store.addTab(kind: .terminal) }
+            Button("New Pane") { store.addPane(kind: .terminal) }
         }
     }
 
@@ -134,23 +173,37 @@ public struct WorkspaceRootView: View {
 
     @ToolbarContentBuilder
     private var detailToolbar: some ToolbarContent {
+        // App-global connection status + disconnect (docs/31): one host-level affordance, distinct from
+        // the per-pane channel dots. A menu so the host is visible and Disconnect re-shows the gate.
+        ToolbarItem(placement: .navigation) {
+            Menu {
+                Text("\(connection.target.host):\(String(connection.target.port))")
+                Divider()
+                Button("Disconnect", role: .destructive) { Task { await connection.disconnect() } }
+            } label: {
+                Label(connection.status.label, systemImage: "circle.fill")
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(PaneConnectionStatus.from(connection.status).color)
+            }
+            .help("Connection: \(connection.target.host) — \(connection.status.label)")
+        }
         ToolbarItem(placement: .primaryAction) {
             Menu {
-                Button { store.addTab(kind: .terminal) } label: {
+                Button { store.addPane(kind: .terminal) } label: {
                     Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
                 }
-                Button { store.addTab(kind: .claudeCode) } label: {
+                Button { store.addPane(kind: .claudeCode) } label: {
                     Label("Claude Code", systemImage: PaneLeafView.icon(for: .claudeCode))
                 }
-                Button { store.addTab(kind: .remoteGUI) } label: {
+                Button { store.addPane(kind: .remoteGUI) } label: {
                     Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
                 }
             } label: {
-                Label("New Tab", systemImage: "plus")
+                Label("New Pane", systemImage: "plus")
             } primaryAction: {
-                store.addTab(kind: .terminal)
+                store.addPane(kind: .terminal)
             }
-            .help("New tab")
+            .help("New pane")
         }
     }
 }
