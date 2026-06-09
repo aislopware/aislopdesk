@@ -51,8 +51,11 @@ public struct VideoClientStateMachine: Sendable {
         /// Send this control message to the host (on the control channel).
         case sendControl(VideoControlMessage)
         /// The session is up at the negotiated capture size: bring up the decoder /
-        /// pacer / renderer (the actor's GUI-only step).
-        case startDecodePipeline(captureSize: VideoSize, windowBoundsCG: VideoRect)
+        /// pacer / renderer (the actor's GUI-only step). `fullRange` (WF-6 #8) is the
+        /// stream's negotiated luma range, taken straight off the `helloAck`; the actor
+        /// sets the decoder's output pixel-format + the renderer's shader coefficients
+        /// from it so both follow the host's actual encoded range. `false` ⇒ video-range.
+        case startDecodePipeline(captureSize: VideoSize, windowBoundsCG: VideoRect, fullRange: Bool)
         /// Tear the decode pipeline down.
         case stopDecodePipeline
         /// The host acked an in-session resize: it adopted `size` as the new capture size.
@@ -75,7 +78,7 @@ public struct VideoClientStateMachine: Sendable {
     /// (idempotent — UDP may deliver the ack more than once).
     public mutating func handleControl(_ message: VideoControlMessage) -> [Effect] {
         switch message {
-        case .helloAck(let accepted, let streamID, let cw, let ch, let bounds):
+        case .helloAck(let accepted, let streamID, let cw, let ch, let bounds, let fullRange):
             guard state == .connecting else {
                 // Already resolved: ignore a duplicate / late ack.
                 return []
@@ -88,7 +91,7 @@ public struct VideoClientStateMachine: Sendable {
             self.captureSize = VideoSize(width: Double(cw), height: Double(ch))
             self.windowBoundsCG = bounds
             state = .streaming
-            return [.startDecodePipeline(captureSize: captureSize, windowBoundsCG: bounds)]
+            return [.startDecodePipeline(captureSize: captureSize, windowBoundsCG: bounds, fullRange: fullRange)]
         case .bye:
             guard state == .streaming || state == .connecting else { return [] }
             state = .stopped
@@ -476,5 +479,136 @@ public struct CursorShapeRequestTracker: Sendable, Equatable {
         }
         lastRequested[shapeID] = now
         return true
+    }
+}
+
+/// Pure one-way-delay (OWD) jitter estimator for the network-feedback channel — the RFC3550
+/// inter-arrival-jitter form, computed ENTIRELY in the CLIENT's own monotonic clock from
+/// SECOND-ORDER differences of arrival intervals. Because it uses only the client's relative
+/// deltas (never the host's send timestamp), the constant clock offset cancels and even modest
+/// rate skew is negligible — it is fully clock-skew-immune. The caller passes each frame's arrival
+/// time in (client monotonic seconds), so there is no wall-clock / no I/O and the math is
+/// deterministic + headlessly unit-testable.
+///
+/// ⚠️ Do NOT feed the host `hostSendTsMillis` into this — that would re-introduce cross-machine
+/// clock skew. Jitter is a purely client-local arrival-cadence measure.
+public struct OWDJitterEstimator: Sendable, Equatable {
+    /// Client-monotonic time (seconds) of the previous arrival (`nil` ⇒ no sample yet).
+    private var lastArrival: Double?
+    /// The previous inter-arrival interval (seconds), for the 2nd-difference (`nil` ⇒ <2 samples).
+    private var lastInterArrival: Double?
+    /// Smoothed jitter (seconds), RFC3550 `J += (|D| − J)/16`.
+    public private(set) var jitterSeconds: Double = 0
+
+    public init() {}
+
+    /// Folds one frame arrival (client monotonic seconds). The first sample only seeds `lastArrival`
+    /// (no interval yet); the second seeds the first interval (no 2nd-difference yet); from the third
+    /// on it updates the smoothed jitter — so an initial burst never emits a spurious spike.
+    public mutating func note(arrival: Double) {
+        guard let prevArrival = lastArrival else { lastArrival = arrival; return }
+        let inter = arrival - prevArrival
+        lastArrival = arrival
+        guard let prevInter = lastInterArrival else { lastInterArrival = inter; return }
+        let d = abs(inter - prevInter)
+        jitterSeconds += (d - jitterSeconds) / 16
+        lastInterArrival = inter
+    }
+
+    /// The smoothed jitter as microseconds, clamped to the `UInt32` wire field (never traps the
+    /// `UInt32(Double)` initializer: negatives floor to 0, an absurd value saturates at `UInt32.max`).
+    public func jitterMicros() -> UInt32 {
+        let micros = jitterSeconds * 1_000_000
+        return UInt32(min(Double(UInt32.max), max(0, micros)))
+    }
+}
+
+/// PURE adaptive jitter-buffer depth controller (client). Recommends a presentation buffer
+/// depth (in FRAMES) from the measured inter-arrival jitter, sized so the slack ≈
+/// `jitterSafety` × jitter (NOT 1×, so a marginal link keeps headroom). The response is
+/// asymmetric BY DESIGN — anti-judder hysteresis:
+///   • GROW FAST — a higher recommendation (jitter rose) OR an underrun is applied in the
+///     same step, so the buffer re-inflates the instant a real dip occurs.
+///   • SHRINK SLOW — a lower recommendation steps the depth DOWN by at most ONE, and only
+///     after `shrinkCooldownFrames` CONSECUTIVE low-jitter frames, so a freshly grown buffer
+///     "sticks" for ~cooldown frames and a near-boundary link cannot thrash. `depthForJitter`
+///     uses `ceil`, so small jitter wobble does not flip the integer recommendation.
+/// Clock-free + deterministic (the caller folds each decoded-frame's smoothed jitter), so it
+/// is headlessly unit-testable. The recommendation is always clamped to `[minDepth, maxDepth]`.
+///
+/// On a perfectly steady link `jitter == 0` ⇒ recommendation `minDepth` (the latency floor),
+/// which is the whole point: reclaim the fixed-depth buffer's ~targetDepth/fps of added
+/// latency on a clean LAN while still re-inflating on a real spike.
+public struct AdaptiveJitterController: Sendable, Equatable {
+    /// Floor — never recommend fewer than this many frames (1 ⇒ present as soon as decoded).
+    public let minDepth: Int
+    /// Ceiling — the pacer's hard cap; the recommendation never exceeds it.
+    public let maxDepth: Int
+    /// Presentation cadence (frames/s) — converts jitter SECONDS into a FRAME count.
+    public let fps: Double
+    /// Buffer-sizing multiple: depth ≈ ceil(jitter × fps × safety). >1 gives a marginal link
+    /// headroom so ordinary wobble does not underrun.
+    public let jitterSafety: Double
+    /// Consecutive low-jitter frames required before a single one-step shrink (the slow,
+    /// hysteretic shrink path). ~3s at 60fps by default.
+    public let shrinkCooldownFrames: Int
+
+    /// The live recommendation (frames). Initialised to the configured/initial depth.
+    public private(set) var targetDepth: Int
+    /// Consecutive frames the recommendation has been BELOW `targetDepth`; a one-step shrink
+    /// fires (and resets this) at `shrinkCooldownFrames`. Reset to 0 by any grow or steady step.
+    private var shrinkRun: Int = 0
+
+    public init(minDepth: Int = 1, maxDepth: Int, fps: Double, initialDepth: Int, jitterSafety: Double = 2.5, shrinkCooldownFrames: Int = 180) {
+        let lo = max(1, minDepth)
+        self.minDepth = lo
+        self.maxDepth = max(lo, maxDepth)
+        self.fps = fps
+        self.jitterSafety = jitterSafety
+        self.shrinkCooldownFrames = max(1, shrinkCooldownFrames)
+        self.targetDepth = min(self.maxDepth, max(lo, initialDepth))
+    }
+
+    /// Depth that would absorb jitter `j` (seconds): `1 + ceil(j × fps × safety)`, clamped to
+    /// `[minDepth, maxDepth]`. `j == 0` ⇒ `minDepth`. The `max(0, …)` guards a (theoretical)
+    /// negative jitter so the +1 base never underflows the floor.
+    private func depthForJitter(_ j: Double) -> Int {
+        // Clamp the Double BEFORE the Int conversion: a non-finite (NaN/Inf) or out-of-range
+        // product would TRAP the `Int(_:)` initialiser. The result is bounded by maxDepth anyway,
+        // so capping `raw` at maxDepth is behaviour-preserving for every reachable value while
+        // making the conversion total (trap-class hardening, codebase invariant).
+        let raw = (j * fps * jitterSafety).rounded(.up)
+        let extra = raw.isFinite ? max(0, Int(min(raw, Double(maxDepth)))) : 0
+        return min(maxDepth, max(minDepth, 1 + extra))
+    }
+
+    /// Folds one decoded-frame's smoothed jitter and returns the (possibly updated) depth.
+    /// GROW FAST when the recommendation rises; SHRINK SLOW (one step per cooldown) when it
+    /// falls; reset the cooldown when steady.
+    @discardableResult
+    public mutating func noteFrame(jitterSeconds: Double) -> Int {
+        let desired = depthForJitter(jitterSeconds)
+        if desired > targetDepth {
+            targetDepth = min(maxDepth, desired)
+            shrinkRun = 0
+        } else if desired < targetDepth {
+            shrinkRun += 1
+            if shrinkRun >= shrinkCooldownFrames {
+                targetDepth = max(minDepth, targetDepth - 1)
+                shrinkRun = 0
+            }
+        } else {
+            shrinkRun = 0
+        }
+        return targetDepth
+    }
+
+    /// A real starvation occurred — GROW one step immediately (capped) and restart the shrink
+    /// cooldown so the bump is not undone by the next low-jitter frame.
+    @discardableResult
+    public mutating func noteUnderrun() -> Int {
+        targetDepth = min(maxDepth, targetDepth + 1)
+        shrinkRun = 0
+        return targetDepth
     }
 }

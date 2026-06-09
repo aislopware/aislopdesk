@@ -18,9 +18,17 @@ final class RecoveryDatagramRouterTests: XCTestCase {
         XCTAssertEqual(decision, .forceKeyframe)
     }
 
-    func testRequestLTRRefreshForcesKeyframe() {
+    /// WF-8: requestLTRRefresh now routes to `.refreshLTR` (the actor decides LTR-refresh-vs-IDR from
+    /// runtime acked-token state), DISTINCT from requestIDR's `.forceKeyframe` (the guaranteed IDR).
+    func testRequestLTRRefreshRoutesToRefreshLTR() {
         let message = RecoveryMessage.requestLTRRefresh(fromFrameID: 10, toFrameID: 12)
-        XCTAssertEqual(router.route(datagram: message.encode(), mediaFlowing: true), .forceKeyframe)
+        XCTAssertEqual(router.route(datagram: message.encode(), mediaFlowing: true), .refreshLTR)
+    }
+
+    /// requestIDR MUST stay a real forced keyframe — the guaranteed-recovery escalation must never
+    /// degrade to an LTR refresh.
+    func testRequestIDRStaysForceKeyframe() {
+        XCTAssertEqual(router.route(datagram: RecoveryMessage.requestIDR.encode(), mediaFlowing: true), .forceKeyframe)
     }
 
     func testAckSurfacesStreamSeq() {
@@ -47,6 +55,27 @@ final class RecoveryDatagramRouterTests: XCTestCase {
         }
     }
 
+    /// The network-feedback channel: a NetworkStats report routes to `.networkStats` carrying the
+    /// decoded report verbatim (the actor folds it + logs — MAINTAIN+LOG only).
+    func testNetworkStatsRoutes() {
+        let report = NetworkStatsReport(framesReceived: 600, fecRecovered: 12, unrecovered: 3, latestHostSendTs: 1_234_567, clientHoldMs: 7, owdJitterMicros: 850)
+        let decision = router.route(datagram: RecoveryMessage.networkStats(report).encode(), mediaFlowing: true)
+        XCTAssertEqual(decision, .networkStats(report))
+    }
+
+    func testNetworkStatsIgnoredWhenNotStreaming() {
+        let report = NetworkStatsReport(framesReceived: 1, fecRecovered: 0, unrecovered: 0, latestHostSendTs: 1, clientHoldMs: 0, owdJitterMicros: 0)
+        XCTAssertEqual(router.route(datagram: RecoveryMessage.networkStats(report).encode(), mediaFlowing: false), .ignoreNotStreaming)
+    }
+
+    /// A truncated NetworkStats body (short of the 6×UInt32 payload) DROPS — never crashes the host.
+    func testTruncatedNetworkStatsDrops() {
+        let full = RecoveryMessage.networkStats(NetworkStatsReport(framesReceived: 1, fecRecovered: 2, unrecovered: 3, latestHostSendTs: 4, clientHoldMs: 5, owdJitterMicros: 6)).encode()
+        guard case .drop = router.route(datagram: full.prefix(10), mediaFlowing: true) else {
+            return XCTFail("expected a truncated stats body to drop")
+        }
+    }
+
     // MARK: Never-run wire-collision regression
 
     /// THE original bug: recovery rode the `.input` channel, where the host decodes
@@ -59,8 +88,8 @@ final class RecoveryDatagramRouterTests: XCTestCase {
         let inputRouter = InputDatagramRouter()
         let ltr = RecoveryMessage.requestLTRRefresh(fromFrameID: 7, toFrameID: 7).encode()
 
-        // The recovery router decodes it correctly → forces a keyframe.
-        XCTAssertEqual(router.route(datagram: ltr, mediaFlowing: true), .forceKeyframe)
+        // The recovery router decodes it correctly → routes to the WF-8 LTR-refresh decision.
+        XCTAssertEqual(router.route(datagram: ltr, mediaFlowing: true), .refreshLTR)
 
         // The same bytes on the INPUT router would have been mis-decoded as a mouseDown
         // (type byte 2) at a garbage coordinate — exactly the phantom-click hazard. We

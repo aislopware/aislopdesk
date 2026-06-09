@@ -73,6 +73,14 @@ public final class VideoDecoder: @unchecked Sendable {
         currentParameterSets = sets
     }
 
+    /// WF-6 (#8): request the FULL-RANGE NV12 output variant when true (else the VideoRange variant —
+    /// today). Set from the stream's negotiated `helloAck.fullRange` BEFORE the first `configure`: the
+    /// session configures lazily on the first keyframe, and `helloAck` always arrives before any media,
+    /// so the ordering is safe. Default false ⇒ byte-identical output. R8/RG8 plane layout is identical
+    /// for both NV12 variants, so the renderer's makeTexture is unaffected — only the requested range
+    /// (and thus the shader coefficients the renderer pairs with it) differs.
+    public var outputFullRange = false
+
     public init(decodedFrameHandler: @escaping DecodedFrameHandler) {
         self.decodedFrameHandler = decodedFrameHandler
     }
@@ -156,8 +164,13 @@ public final class VideoDecoder: @unchecked Sendable {
         // `configure(parameterSets:)` path re-populates the cache after this returns.
         currentParameterSets = nil
 
+        // WF-6 (#8): request the NV12 variant matching the stream's negotiated luma range (set from
+        // helloAck before this lazy first configure). Default VideoRange ⇒ today, byte-identical.
+        let pixelFormat = outputFullRange
+            ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         let imageBufferAttributes: [CFString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, // NV12 (doc 04)
+            kCVPixelBufferPixelFormatTypeKey: pixelFormat,                                       // NV12 (doc 04)
             kCVPixelBufferMetalCompatibilityKey: true,                                          // zero-copy to Metal
             kCVPixelBufferIOSurfacePropertiesKey: [:],
         ]

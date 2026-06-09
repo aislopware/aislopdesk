@@ -15,7 +15,7 @@ final class VideoWireTypeTests: XCTestCase {
     }
 
     func testControlHelloAckRoundTrip() throws {
-        let message = VideoControlMessage.helloAck(accepted: true, streamID: 7, captureWidth: 1920, captureHeight: 1080, windowBoundsCG: VideoRect(x: -100.5, y: 50.25, width: 800, height: 600))
+        let message = VideoControlMessage.helloAck(accepted: true, streamID: 7, captureWidth: 1920, captureHeight: 1080, windowBoundsCG: VideoRect(x: -100.5, y: 50.25, width: 800, height: 600), fullRange: true)
         XCTAssertEqual(try VideoControlMessage.decode(message.encode()), message)
     }
 
@@ -24,7 +24,7 @@ final class VideoWireTypeTests: XCTestCase {
     }
 
     func testControlRejectAckRoundTrip() throws {
-        let message = VideoControlMessage.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: VideoRect(x: 0, y: 0, width: 0, height: 0))
+        let message = VideoControlMessage.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: VideoRect(x: 0, y: 0, width: 0, height: 0), fullRange: false)
         XCTAssertEqual(try VideoControlMessage.decode(message.encode()), message)
     }
 

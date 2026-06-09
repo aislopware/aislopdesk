@@ -32,20 +32,21 @@ final class VideoClientStateMachineTests: XCTestCase {
     func testAcceptedHelloAckStartsPipelineAndStreams() {
         var sm = makeSM()
         _ = sm.start()
-        let ack = VideoControlMessage.helloAck(accepted: true, streamID: 7, captureWidth: 1920, captureHeight: 1080, windowBoundsCG: VideoRect(x: 10, y: 20, width: 800, height: 600))
+        // WF-6 (#8): a full-range ack must carry fullRange:true through to the startDecodePipeline effect.
+        let ack = VideoControlMessage.helloAck(accepted: true, streamID: 7, captureWidth: 1920, captureHeight: 1080, windowBoundsCG: VideoRect(x: 10, y: 20, width: 800, height: 600), fullRange: true)
         let effects = sm.handleControl(ack)
         XCTAssertEqual(sm.state, .streaming)
         XCTAssertTrue(sm.mediaFlowing)
         XCTAssertEqual(sm.streamID, 7)
         XCTAssertEqual(sm.captureSize, VideoSize(width: 1920, height: 1080))
         XCTAssertEqual(sm.windowBoundsCG, VideoRect(x: 10, y: 20, width: 800, height: 600))
-        XCTAssertEqual(effects, [.startDecodePipeline(captureSize: VideoSize(width: 1920, height: 1080), windowBoundsCG: VideoRect(x: 10, y: 20, width: 800, height: 600))])
+        XCTAssertEqual(effects, [.startDecodePipeline(captureSize: VideoSize(width: 1920, height: 1080), windowBoundsCG: VideoRect(x: 10, y: 20, width: 800, height: 600), fullRange: true)])
     }
 
     func testRejectedHelloAckGoesToRejectedNoPipeline() {
         var sm = makeSM()
         _ = sm.start()
-        let reject = VideoControlMessage.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: VideoRect(x: 0, y: 0, width: 0, height: 0))
+        let reject = VideoControlMessage.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: VideoRect(x: 0, y: 0, width: 0, height: 0), fullRange: false)
         let effects = sm.handleControl(reject)
         XCTAssertEqual(sm.state, .rejected)
         XCTAssertFalse(sm.mediaFlowing)
@@ -55,7 +56,7 @@ final class VideoClientStateMachineTests: XCTestCase {
     func testDuplicateAckWhileStreamingIsIgnored() {
         var sm = makeSM()
         _ = sm.start()
-        let ack = VideoControlMessage.helloAck(accepted: true, streamID: 7, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600))
+        let ack = VideoControlMessage.helloAck(accepted: true, streamID: 7, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600), fullRange: false)
         _ = sm.handleControl(ack)
         // A retransmitted ack (UDP) must NOT restart the pipeline.
         let again = sm.handleControl(ack)
@@ -66,7 +67,7 @@ final class VideoClientStateMachineTests: XCTestCase {
     func testByeWhileStreamingStopsPipeline() {
         var sm = makeSM()
         _ = sm.start()
-        _ = sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600)))
+        _ = sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600), fullRange: false))
         let effects = sm.handleControl(.bye)
         XCTAssertEqual(sm.state, .stopped)
         XCTAssertEqual(effects, [.stopDecodePipeline])
@@ -75,7 +76,7 @@ final class VideoClientStateMachineTests: XCTestCase {
     func testStopWhileStreamingSendsByeAndStopsPipeline() {
         var sm = makeSM()
         _ = sm.start()
-        _ = sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600)))
+        _ = sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600), fullRange: false))
         let effects = sm.stop()
         XCTAssertEqual(sm.state, .stopped)
         XCTAssertEqual(effects, [.sendControl(.bye), .stopDecodePipeline])
@@ -94,7 +95,7 @@ final class VideoClientStateMachineTests: XCTestCase {
     func testResizeAckWhileStreamingEmitsUpdateCaptureSize() {
         var sm = makeSM()
         _ = sm.start()
-        _ = sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600)))
+        _ = sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600), fullRange: false))
         XCTAssertEqual(sm.state, .streaming)
 
         let ack = VideoControlMessage.resizeAck(captureWidth: 1280, captureHeight: 800, epoch: 3)
@@ -115,7 +116,7 @@ final class VideoClientStateMachineTests: XCTestCase {
         // After bye/stop: a late resizeAck must not resurrect anything.
         var stopped = makeSM()
         _ = stopped.start()
-        _ = stopped.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600)))
+        _ = stopped.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600), fullRange: false))
         _ = stopped.handleControl(.bye)
         XCTAssertEqual(stopped.state, .stopped)
         XCTAssertTrue(stopped.handleControl(.resizeAck(captureWidth: 1280, captureHeight: 800, epoch: 1)).isEmpty)
@@ -126,7 +127,7 @@ final class VideoClientStateMachineTests: XCTestCase {
         // The client never RECEIVES a resizeRequest (host→client only is resizeAck) — defensive.
         var sm = makeSM()
         _ = sm.start()
-        _ = sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600)))
+        _ = sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600), fullRange: false))
         XCTAssertTrue(sm.handleControl(.resizeRequest(desired: VideoSize(width: 1, height: 1), epoch: 1)).isEmpty)
         XCTAssertEqual(sm.state, .streaming)
     }
@@ -134,7 +135,7 @@ final class VideoClientStateMachineTests: XCTestCase {
     func testClientIgnoresHelloAndStrayAckWhenNotConnecting() {
         var sm = makeSM()
         // Before start: a stray ack does nothing (still idle).
-        XCTAssertTrue(sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 1, captureHeight: 1, windowBoundsCG: VideoRect(x: 0, y: 0, width: 1, height: 1))).isEmpty)
+        XCTAssertTrue(sm.handleControl(.helloAck(accepted: true, streamID: 1, captureWidth: 1, captureHeight: 1, windowBoundsCG: VideoRect(x: 0, y: 0, width: 1, height: 1), fullRange: false)).isEmpty)
         XCTAssertEqual(sm.state, .idle)
         // A hello (host→client only) is never acted on.
         _ = sm.start()

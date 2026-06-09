@@ -163,6 +163,11 @@ final class CodecTests: XCTestCase {
             .requestIDR,
             .requestCursorShape(shapeID: 0),
             .requestCursorShape(shapeID: .max),
+            // Network-feedback telemetry: a mix of 0 / .max / mid field values to exercise the
+            // 6-UInt32 body byte-for-byte (the network-feedback channel).
+            .networkStats(NetworkStatsReport(framesReceived: 0, fecRecovered: 0, unrecovered: 0, latestHostSendTs: 0, clientHoldMs: 0, owdJitterMicros: 0)),
+            .networkStats(NetworkStatsReport(framesReceived: .max, fecRecovered: .max, unrecovered: .max, latestHostSendTs: .max, clientHoldMs: .max, owdJitterMicros: .max)),
+            .networkStats(NetworkStatsReport(framesReceived: 600, fecRecovered: 12, unrecovered: 3, latestHostSendTs: 1_234_567, clientHoldMs: 7, owdJitterMicros: 850)),
         ]
         for message in cases {
             XCTAssertEqual(try RecoveryMessage.decode(message.encode()), message)
@@ -171,6 +176,33 @@ final class CodecTests: XCTestCase {
 
     func testRecoveryMessageRejectsUnknownType() {
         XCTAssertThrowsError(try RecoveryMessage.decode(Data([99])))
+    }
+
+    /// WF-8: the client sends `ack` carrying a FRAME ID (the dead ack path repurposed — the
+    /// `streamSeq` field name is historical) after decoding an LTR-flagged frame. It is the same wire
+    /// shape as the legacy ack, so it round-trips byte-for-byte; the host reinterprets the UInt32 as a
+    /// frameID. This documents that no new message type / header growth is needed for WF-8.
+    func testWF8AckCarriesFrameIDRoundTrip() throws {
+        for frameID: UInt32 in [0, 1, 12_345, .max] {
+            let message = RecoveryMessage.ack(streamSeq: frameID)
+            let decoded = try RecoveryMessage.decode(message.encode())
+            XCTAssertEqual(decoded, message)
+            guard case .ack(let got) = decoded else { return XCTFail("expected ack") }
+            XCTAssertEqual(got, frameID)
+        }
+    }
+
+    /// A NetworkStats datagram with a body shorter than the fixed 24-byte (6×UInt32) payload must
+    /// throw `.truncated` so the router drops it — a malformed stats packet never crashes the host.
+    func testNetworkStatsRejectsTruncatedBody() {
+        let full = RecoveryMessage.networkStats(NetworkStatsReport(framesReceived: 1, fecRecovered: 2, unrecovered: 3, latestHostSendTs: 4, clientHoldMs: 5, owdJitterMicros: 6)).encode()
+        XCTAssertEqual(full.count, 25, "type byte + 6 UInt32 = 25 bytes")
+        // Type byte alone, and every prefix shorter than the full body, must throw.
+        for prefix in [1, 2, 5, 13, 24] {
+            XCTAssertThrowsError(try RecoveryMessage.decode(full.prefix(prefix))) { error in
+                XCTAssertEqual(error as? VideoProtocolError, .truncated, "prefix \(prefix) should be .truncated")
+            }
+        }
     }
 
     func testRecoveryPolicyPrefersLTRThenEscalatesAfterTwoRTT() {

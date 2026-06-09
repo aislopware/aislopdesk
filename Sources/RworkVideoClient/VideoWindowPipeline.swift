@@ -101,7 +101,7 @@ final class VideoWindowPipeline {
     /// still fire-and-forgets it on its own tick (`flushPendingMotion()`).
     private var pendingMotionSend: (@Sendable () async -> Void)?
     private var motionPump: Task<Void, Never>?
-    private var motionInterval: TimeInterval = 1.0 / 30.0
+    private var motionInterval: TimeInterval = 1.0 / 120.0
 
     /// SINGLE ordered outbound-input FIFO + its one consumer. Every input send (move/drag/down/up/
     /// scroll/key/text) is ENQUEUED here synchronously on the @MainActor (no `await` between a
@@ -154,7 +154,11 @@ final class VideoWindowPipeline {
         let env = ProcessInfo.processInfo.environment
         let jitterDepth = env["RWORK_JITTER_DEPTH"].flatMap(Int.init).map { min(8, max(1, $0)) } ?? 3
         let jitterMax = env["RWORK_JITTER_MAX"].flatMap(Int.init).map { min(16, max(1, $0)) } ?? 5
-        let pacer = FramePacer(maxFrameRate: maxFrameRate, targetDepth: jitterDepth, maxDepth: jitterMax) { [weak self] buffer in
+        // Adaptive jitter buffer (default OFF ⇒ fixed depth exactly as today). When on, the pacer
+        // self-measures decoded-frame arrival jitter and floats the depth between 1 and jitterMax:
+        // it shrinks toward the latency floor on a clean LAN and re-inflates on a real spike/underrun.
+        let adaptive = env["RWORK_ADAPTIVE_JITTER"].map { $0 == "1" || $0.lowercased() == "true" } ?? false
+        let pacer = FramePacer(maxFrameRate: maxFrameRate, targetDepth: jitterDepth, maxDepth: jitterMax, adaptiveJitter: adaptive) { [weak self] buffer in
             let box = UnsafeTransfer(buffer)
             Task { @MainActor in
                 renderer.render(box.value)
@@ -201,6 +205,11 @@ final class VideoWindowPipeline {
             registerCursorShape: { [weak compositor] image, logicalSize, shapeID in
                 let box = UnsafeTransfer(image)
                 Task { @MainActor in compositor?.registerShape(box.value, logicalSize: logicalSize, for: shapeID) }
+            },
+            setColorRange: { [weak self] range in
+                // WF-6 (#8): point the (main-confined) renderer at the stream's negotiated luma range
+                // before the first frame. `ColorRange` is Sendable; the renderer is @MainActor.
+                Task { @MainActor in self?.renderer?.colorRange = range }
             }
         )
 
@@ -220,8 +229,10 @@ final class VideoWindowPipeline {
 
         // Bring up the single ordered outbound-input consumer before any input can be enqueued.
         startOutboundConsumer()
-        // Drive the motion-coalescing pump at the same cadence as the video frame cap.
-        motionInterval = 1.0 / max(1, maxFrameRate)
+        // WF-5 (#7): drive the motion-coalescing pump at its own (more responsive) cadence,
+        // DECOUPLED from the video frame cap. Default 120Hz (~8.3ms), down from 1/maxFrameRate
+        // (~16.7ms @60). most-recent-wins + move-before-button ordering are interval-independent.
+        motionInterval = Self.resolveMotionInterval()
         startMotionPump()
     }
 
@@ -450,6 +461,26 @@ final class VideoWindowPipeline {
     }
 
     // MARK: Motion pump (client-side coalescing)
+
+    /// WF-5 (#7) INPUT-MOTION INTERVAL. The motion pump flushes the most-recent deferred pointer
+    /// move once per this interval (most-recent-wins; absolute coords; NO delta-summing). Lower =
+    /// snappier. Default 1/120s (~8.3ms), down from the old 1/maxFrameRate (~16.7ms @60). The host
+    /// re-coalesces whatever arrives, so a tighter interval is safe. A/B via `RWORK_INPUT_HZ` (Hz)
+    /// or `RWORK_INPUT_INTERVAL_MS` (ms); HZ takes precedence if both set. Clamped to avoid wire spam.
+    static func resolveMotionInterval() -> TimeInterval {
+        let env = ProcessInfo.processInfo.environment
+        return resolveMotionInterval(hz: env["RWORK_INPUT_HZ"], ms: env["RWORK_INPUT_INTERVAL_MS"])
+    }
+
+    /// PURE (nonisolated so it is unit-testable headlessly): map the two env strings to a sane
+    /// interval. `RWORK_INPUT_HZ` (1…1000 Hz) wins over `RWORK_INPUT_INTERVAL_MS` (1…1000 ms); any
+    /// missing / unparseable / out-of-range value falls through to the next, finally to 1/120s
+    /// (~8.3ms). The clamp bounds wire spam (≤1000Hz) and pathological near-zero cadence (≥1Hz).
+    nonisolated static func resolveMotionInterval(hz: String?, ms: String?) -> TimeInterval {
+        if let hz, let v = Double(hz), v >= 1, v <= 1000 { return 1.0 / v }
+        if let ms, let v = Double(ms), v >= 1, v <= 1000 { return v / 1000.0 }
+        return 1.0 / 120.0
+    }
 
     /// Starts the @MainActor pump that flushes the latest deferred pointer motion every
     /// `motionInterval`. Idle ticks are a no-op (nothing pending). Restarted on each activate.

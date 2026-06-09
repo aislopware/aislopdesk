@@ -50,7 +50,13 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// heartbeat (NOT the first frame, NOT the static-timer crisp path) — the handler should encode it
     /// SMALL+coarse (``VideoEncoder/encodeCompactKeyframe``) so it survives a UDP burst and does not
     /// re-trigger the recovery-IDR loop. `crisp` and `compact` are mutually exclusive.
-    public typealias FrameHandler = @Sendable (_ pixelBuffer: CVPixelBuffer, _ presentationTime: CMTime, _ forceKeyframe: Bool, _ crisp: Bool, _ compact: Bool) -> Void
+    /// `ltrRefresh` (WF-8) is true ONLY on the LIVE path when the host chose a cheap LTR-refresh
+    /// recovery (``VideoEncoder/encodeLiveLTRRefresh(pixelBuffer:presentationTime:)``) — a small
+    /// P-frame against an ACKNOWLEDGED long-term reference, NOT a keyframe. It is mutually exclusive
+    /// with `forceKeyframe`/`crisp`/`compact` (a keyframe is a superset recovery and wins) and is never
+    /// set on the static-timer path (which re-anchors with a crisp/compact IDR instead). Always false
+    /// when `RWORK_LTR` is off ⇒ byte-identical handler behaviour.
+    public typealias FrameHandler = @Sendable (_ pixelBuffer: CVPixelBuffer, _ presentationTime: CMTime, _ forceKeyframe: Bool, _ crisp: Bool, _ compact: Bool, _ ltrRefresh: Bool) -> Void
 
     /// Whether the static-IDR timer upgrades its re-encode to a CRISP near-lossless frame
     /// (Design A, ``VideoEncoder/encodeLiveCrispKeyframe``). Default on; set `RWORK_CRISP=0` to
@@ -87,6 +93,14 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// an `NSLock` is enough here (set rarely, read once per frame).
     private let keyframeLock = NSLock()
     private var pendingForcedKeyframe = false
+    /// WF-8: latched when the host chose an LTR-refresh recovery (``RworkVideoHostSession`` `.refreshLTR`
+    /// → ``requestLTRRefresh()``) instead of a forced IDR. The next LIVE frame encodes a cheap
+    /// ForceLTRRefresh P-frame and clears it; on a STATIC window the timer drains it and re-anchors
+    /// with a crisp/compact IDR instead (an LTR refresh has no live delta to ride). Distinct from
+    /// `pendingForcedKeyframe` so an LTR refresh never forces a keyframe (it is the cheap alternative).
+    /// Under the same `keyframeLock`. Never set when `RWORK_LTR` is off (the actor folds .refreshLTR to
+    /// requestKeyframe()) ⇒ always-false drain ⇒ byte-identical.
+    private var pendingLTRRefresh = false
 
     // VIDEO-HOST-1 static-IDR (always on). All of these are touched ONLY on `frameQueue`
     // (the SCStream callback queue + the timer queue are the same), or — for the latch —
@@ -107,11 +121,25 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         keyframeLock.lock(); pendingForcedKeyframe = true; keyframeLock.unlock()
     }
 
+    /// WF-8: requests a cheap LTR refresh on the next captured frame (host `.refreshLTR` recovery
+    /// decision when the ACKED-ONLY gate holds). Thread-safe; called from the orchestrator actor.
+    public func requestLTRRefresh() {
+        keyframeLock.lock(); pendingLTRRefresh = true; keyframeLock.unlock()
+    }
+
     /// Atomically reads + clears the pending-forced-keyframe latch.
     private func takePendingForcedKeyframe() -> Bool {
         keyframeLock.lock(); defer { keyframeLock.unlock() }
         let pending = pendingForcedKeyframe
         pendingForcedKeyframe = false
+        return pending
+    }
+
+    /// WF-8: atomically reads + clears the pending-LTR-refresh latch.
+    private func takePendingLTRRefresh() -> Bool {
+        keyframeLock.lock(); defer { keyframeLock.unlock() }
+        let pending = pendingLTRRefresh
+        pendingLTRRefresh = false
         return pending
     }
 
@@ -123,14 +151,26 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// so FIFO + monotonic PTS w.r.t. real frames is preserved.
     private func onIDRTimerTick() {
         let now = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1_000_000_000.0
-        let forced = takePendingForcedKeyframe()          // drain the SAME NSLock latch
+        let forcedKeyframe = takePendingForcedKeyframe()  // drain the keyframe latch
+        // WF-8: a STATIC window has no live delta to ride an LTR refresh, so on this path an LTR
+        // request degrades to the same crisp/compact re-anchor as a forced keyframe — drain it and
+        // fold it into `forced` (but the frameHandler is still called with ltrRefresh=false: the
+        // static path never issues an actual ForceLTRRefresh, it re-encodes the cached frame crisp).
+        // Always false when RWORK_LTR is off ⇒ `forced` is byte-identical to today.
+        let forcedLTR = takePendingLTRRefresh()
+        let forced = forcedKeyframe || forcedLTR
         guard staticIDRDecider.shouldReencode(now: now,
                                               forcedLatched: forced,
                                               hasRetainedBuffer: cachedPixelBuffer != nil),
               let buf = cachedPixelBuffer else {
-            // If we drained `forced` but decided not to fire (quiet window — the live path
-            // will service it), DON'T lose the recovery request: re-latch it.
-            if forced { keyframeLock.lock(); pendingForcedKeyframe = true; keyframeLock.unlock() }
+            // If we drained a recovery request but decided not to fire (quiet window — the live path
+            // will service it), DON'T lose it: re-latch each kind we took.
+            if forcedKeyframe || forcedLTR {
+                keyframeLock.lock()
+                if forcedKeyframe { pendingForcedKeyframe = true }
+                if forcedLTR { pendingLTRRefresh = true }
+                keyframeLock.unlock()
+            }
             return
         }
         staticIDRDecider.recordSynthetic(now: now)
@@ -140,7 +180,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // same live session → no client decoder rebuild). `RWORK_CRISP=0` falls back to a plain IDR.
         // Static (at-rest) path: crisp (sharp) when enabled, never compact — at rest there is no live
         // delta competing for the wire, so the larger near-lossless IDR is not a burst-loss risk.
-        frameHandler(buf, syntheticPTS(), true, Self.crispWhenStatic, false) // force IDR, same hand-off as live path
+        frameHandler(buf, syntheticPTS(), true, Self.crispWhenStatic, false, false) // force IDR, same hand-off as live path (never an LTR refresh on the static path)
     }
 
     /// One 90 kHz tick past the last emitted PTS → strictly monotonic, collision-free with
@@ -158,14 +198,19 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// `sourceRect` in POINTS (`pixelDim / captureScale`) — the source crop is point-space while
     /// `config.width/height` are pixel-space.
     private let captureScale: Double
+    /// WF-6 (#8): capture NV12 in the FULL-RANGE pixel-format variant when true (else the VideoRange
+    /// variant — today). Threaded into ``makeConfiguration``; default false ⇒ byte-identical capture.
+    private let fullRange: Bool
 
     public init(
         fps: Int = 60,
         captureScale: Double = 1.0,
+        fullRange: Bool = false,
         frameHandler: @escaping FrameHandler
     ) {
         self.fps = max(1, fps)
         self.captureScale = max(1.0, captureScale)
+        self.fullRange = fullRange
         self.frameHandler = frameHandler
         // Cap quietWindow at 1s (F2): the decider's quietWindow gates shouldReencode, so a longer
         // heartbeat must NOT stretch the timer-path recovery-suppression window — recovery stays responsive.
@@ -182,9 +227,15 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// placement stay correct without a separate pixel-scale axis. (On a Retina host
     /// this means remoted windows render at point resolution, not backing pixels — a
     /// quality trade chosen for a single, consistent capture-size source of truth.)
-    public static func makeConfiguration(width: Int, height: Int, fps: Int = 60, captureScale: Double = 1.0) -> SCStreamConfiguration {
+    public static func makeConfiguration(width: Int, height: Int, fps: Int = 60, captureScale: Double = 1.0, fullRange: Bool = false) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
-        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange // NV12 zero-copy (doc 02 §3.1)
+        // NV12 zero-copy (doc 02 §3.1). WF-6 (#8): the luma RANGE is carried by the pixel-format
+        // VARIANT (FullRange vs VideoRange) — THIS is the capture-side range knob; VT reads it to
+        // stamp the SPS `video_full_range_flag`. R8/RG8 plane layout is identical for both NV12
+        // variants, so the client's makeTexture is unaffected. Default VideoRange ⇒ today, byte-identical.
+        config.pixelFormat = fullRange
+            ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = false                                          // client-side cursor (RESULTS.md D)
         // showMouseClicks gates the click "ripple" overlay (default NO; only applies
         // to BGRA capture per the SDK header — a no-op for our NV12 path, set for
@@ -244,7 +295,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// Retina resolution — sharp text — instead of the soft point-resolution default. ⚠️
     /// Requires a window-server + Screen-Recording TCC session — NEVER call from a test.
     public func start(window: SCWindow, pixelWidth: Int, pixelHeight: Int) async throws {
-        let config = Self.makeConfiguration(width: pixelWidth, height: pixelHeight, fps: fps, captureScale: captureScale)
+        let config = Self.makeConfiguration(width: pixelWidth, height: pixelHeight, fps: fps, captureScale: captureScale, fullRange: fullRange)
         let filter = Self.makeFilter(window: window)
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: frameQueue)
@@ -335,6 +386,8 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // Heartbeat IDR ~1s, plus a forced keyframe on the very first delivered frame,
         // plus any client-requested IDR (loss recovery, doc 17 §3.6).
         let latched = takePendingForcedKeyframe()
+        // WF-8: drain the LTR-refresh latch too (always false when RWORK_LTR is off ⇒ byte-identical).
+        let ltrLatched = takePendingLTRRefresh()
         var forceKeyframe = latched
         var isFirstFrame = false
         var isHeartbeat = false
@@ -363,6 +416,12 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // periodic motion hitch. The FIRST frame stays full quality (one-time, no loop); the static
         // timer path stays CRISP. `compact ⟹ forceKeyframe` by construction.
         let compact = forceKeyframe && !isFirstFrame
+        // WF-8: send a cheap LTR refresh ONLY when we are NOT already sending a keyframe — a keyframe
+        // (first/heartbeat/recovery IDR) is a superset recovery and wins, so an LTR refresh latched
+        // alongside it is simply consumed (the keyframe re-anchors the client). If `forceKeyframe`
+        // ended up false but an LTR refresh was latched, ship the small ForceLTRRefresh P-frame.
+        // Always false when RWORK_LTR is off (the latch is never set) ⇒ byte-identical.
+        let ltrRefresh = ltrLatched && !forceKeyframe
 
         // Hand the CVPixelBuffer to the encoder. The pixel buffer is retained by the
         // encoder for the duration of the encode; when this callback returns the
@@ -370,7 +429,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // deadline minimumFrameInterval × (queueDepth − 1) (WWDC22 s10155).
         // A live (motion) frame is NEVER crisp — motion must stay low-latency; only the static
         // timer above upgrades to a crisp refresh.
-        frameHandler(pixelBuffer, encodePTS, forceKeyframe, false, compact)
+        frameHandler(pixelBuffer, encodePTS, forceKeyframe, false, compact, ltrRefresh)
     }
 
     // MARK: SCStreamDelegate

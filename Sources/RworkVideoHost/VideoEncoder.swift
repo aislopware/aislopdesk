@@ -97,6 +97,44 @@ public final class VideoEncoder: @unchecked Sendable {
     /// intra frame (feature #1) without ever clamping it.
     public static let crispDataRateMaxBytes = 8_000_000
 
+    /// WF-5 (#5) TUNABLE VBV WINDOW. `DataRateLimits = [maxBytes, seconds]`: a hard cap of `maxBytes`
+    /// over a sliding `seconds` window. Default 1.0s (today exactly). A TIGHTER window caps per-frame
+    /// size spikes / queueing latency while PRESERVING the average rate, because the byte budget
+    /// scales WITH the window: `[(bytesPerSecond)*T, T]` keeps `bytesPerSecond` constant and only
+    /// narrows the burst. A/B via `RWORK_VBV_WINDOW` (seconds). Resolution/QP untouched. Clamped to a
+    /// sane A/B range so a bad env value cannot zero the budget. NOTE (gotcha 5): a TIGHT window
+    /// re-tightens the per-frame byte budget and, paired with the QP40 ceiling, can re-introduce the
+    /// 2× HiDPI scroll drops QP40 was raised to avoid — default stays 1.0 = today.
+    public static let vbvWindowSeconds: Double = resolveVBVWindow(ProcessInfo.processInfo.environment["RWORK_VBV_WINDOW"])
+
+    /// PURE: parse + clamp the `RWORK_VBV_WINDOW` env string to a sane window in seconds. `nil` /
+    /// unparseable / out-of-`[0.01, 4.0]` → 1.0 (today's default, so a bad env can never zero the
+    /// budget). Extracted so the clamp is unit-testable without re-triggering the once-resolved static.
+    static func resolveVBVWindow(_ raw: String?) -> Double {
+        if let raw, let v = Double(raw), v >= 0.01, v <= 4.0 { return v }
+        return 1.0
+    }
+
+    /// PURE: scale a per-1.0s byte budget over `seconds` → `(maxBytes, seconds)`, PRESERVING the
+    /// average rate (budget scales WITH the window). At `seconds == 1.0` returns
+    /// `(bytesPerSecond, 1.0)` exactly — `Int(Double(b)*1.0) == b` for `b ≤ 2^53` — so the default
+    /// path is byte-identical. The wrong shape the task warns against is `(budget, T)`, which would
+    /// slash the average to `budget/T`; this always returns `(budget*T, T)`.
+    static func vbvComponents(bytesPerSecond: Int, seconds: Double) -> (maxBytes: Int, seconds: Double) {
+        (Int(Double(bytesPerSecond) * seconds), seconds)
+    }
+
+    /// Builds `[maxBytes, seconds]` for `bytesPerSecond` (a per-1.0s byte budget) over the resolved
+    /// ``vbvWindowSeconds``. At T==1.0 it returns exactly `[bytesPerSecond, 1.0]` — element[0] an
+    /// `Int` and element[1] the same `Double 1.0` — so the default path bridges to a byte-identical
+    /// CFArray (NSNumber long + NSNumber double). Pass the per-1.0s budget UNCHANGED (`clamped/8`,
+    /// `currentLiveBitrate()/8`, `crispDataRateMaxBytes`, `live/8`); the helper applies `*T`. Routing
+    /// all DataRateLimits set-sites through this one helper makes a half-threaded window impossible.
+    static func dataRateLimits(bytesPerSecond: Int) -> CFArray {
+        let c = vbvComponents(bytesPerSecond: bytesPerSecond, seconds: vbvWindowSeconds)
+        return [c.maxBytes, c.seconds] as CFArray
+    }
+
     // MARK: Compact recovery/heartbeat IDR (motion-smoothness, 2026-06-08)
     //
     // At 2× HiDPI (feature #1) a full intra frame is ~100 KB. A RECOVERY IDR (client requested it
@@ -132,9 +170,15 @@ public final class VideoEncoder: @unchecked Sendable {
     /// `crisp=…` host log marks the refresh frames and their byte size verifies the QP-bump took.
     public enum Mode: Sendable { case live, crisp }
 
-    /// Emitted for each finished encode: the AVCC bytes, keyframe flag, and which
-    /// session produced it.
-    public typealias OutputHandler = @Sendable (_ avcc: Data, _ keyframe: Bool, _ mode: Mode) -> Void
+    /// Emitted for each finished encode: the AVCC bytes, keyframe flag, which session produced it,
+    /// and (WF-8) the LTR acknowledgement token if this is a Long-Term-Reference frame.
+    ///
+    /// `ltrToken` is non-nil ONLY when `RWORK_LTR` is on AND the encoded sample carried
+    /// `kVTSampleAttachmentKey_RequireLTRAcknowledgementToken` — i.e. this is an LTR frame the client
+    /// must ack. nil on every LTR-off / non-LTR frame, so the OFF path is byte-identical (the 4th arg
+    /// is simply always nil). The host records `frameID ↔ token` and sets the `isLTR` wire bit when it
+    /// is present.
+    public typealias OutputHandler = @Sendable (_ avcc: Data, _ keyframe: Bool, _ mode: Mode, _ ltrToken: Int64?) -> Void
 
     private let log = Logger(subsystem: "rwork.video.host", category: "VideoEncoder")
     private let width: Int32
@@ -148,14 +192,120 @@ public final class VideoEncoder: @unchecked Sendable {
     /// encoder uses it to size its rate-control window. Best-effort (a hint, not latency-critical).
     private let fps: Int
 
+    /// WF-6 (#8): emit EXPLICIT BT.709 VUI (ColorPrimaries/TransferFunction/YCbCrMatrix) when true.
+    /// Default false ⇒ NO new VUI keys ⇒ the SPS VUI bytes are byte-identical to today, so the OFF
+    /// path never changes the parameter sets (and thus never trips the client's first-keyframe decoder
+    /// rebuild). The luma RANGE itself (video vs full) is conveyed by the SOURCE pixel-buffer's format
+    /// variant the ``WindowCapturer`` chooses — VT reads it and stamps SPS `video_full_range_flag`; it
+    /// is NOT a VT compression key. So both knobs are driven by the SAME host flag, atomically.
+    private let fullRange: Bool
+
+    /// WF-8: when true, set `kVTCompressionPropertyKey_EnableLTR` on the live session, READ the
+    /// `RequireLTRAcknowledgementToken` attachment off each encoded sample (surfaced as the
+    /// OutputHandler's 4th arg), feed acknowledged tokens via `AcknowledgedLTRTokens`, and honour
+    /// `ForceLTRRefresh` on ``encodeLiveLTRRefresh(pixelBuffer:presentationTime:)``. Default false ⇒
+    /// none of that happens ⇒ the encoder is byte-identical to today (EnableLTR unset, no token read,
+    /// the props dict reduces to today's `[ForceKeyFrame:true]`-or-nil). Probe-proven supported on
+    /// this host (WF-7).
+    private let ltrEnabled: Bool
+
     private var liveSession: VTCompressionSession?
 
-    public init(width: Int, height: Int, bitrate: Int = bitrateBitsPerSecond, fps: Int = 60, outputHandler: @escaping OutputHandler) {
+    /// WF-8 acked-token STAGING. The host actor calls ``stageAcknowledgedToken(_:)`` from its `.ack`
+    /// recovery arm (off the capture queue) to hand the encoder a token the client has DECODED+ACKED;
+    /// the next ``encode(...)`` drains+clears this list and feeds it as `AcknowledgedLTRTokens`, so it
+    /// can never grow unbounded (drained every encode). NSLock-guarded — written on the actor, read on
+    /// the capture queue (same `@unchecked Sendable` + NSLock discipline as `bitrateLock`).
+    private let ackedLock = NSLock()
+    private var pendingAckedTokens: [Int64] = []
+
+    /// MUTABLE live target bitrate (bits/sec) — the SINGLE source of truth for the rate-control
+    /// properties (AverageBitRate + DataRateLimits). Seeded to `bitrate` (the immutable CEILING) so
+    /// when WF-2 adaptive bitrate (`RWORK_ABR`) is OFF this never moves and every RC property is
+    /// byte-identical to before. The WF-2 controller lowers/raises it at runtime via
+    /// ``setLiveBitrate(_:)``; the crisp/compact brackets RESTORE from it (via ``currentLiveBitrate()``)
+    /// so a bracket can never revert a controller-lowered rate back to the original ceiling.
+    ///
+    /// CONCURRENCY: read on the capture queue (create + bracket restores) and written on the host
+    /// actor (``setLiveBitrate(_:)``), so ALL access goes through `bitrateLock` (NSLock) — the same
+    /// `@unchecked Sendable` + NSLock discipline used elsewhere (InboundQueue/EncodedFrameQueue).
+    private let bitrateLock = NSLock()
+    private var liveBitrate: Int
+    /// > 0 while a crisp/compact bracket is mid-relax (between its RELAX and its `defer` RESTORE).
+    /// ``setLiveBitrate(_:)`` always updates `liveBitrate` under the lock, but SKIPS issuing the
+    /// VTSessionSetProperty writes while a bracket is active — the active bracket's `defer` re-reads
+    /// ``currentLiveBitrate()`` and applies the newest value on restore, so the controller can never
+    /// clobber the relaxed crisp/compact config mid-IDR and the bracket never reverts the controller.
+    private var bracketDepth = 0
+
+    public init(width: Int, height: Int, bitrate: Int = bitrateBitsPerSecond, fps: Int = 60, fullRange: Bool = false, ltrEnabled: Bool = false, outputHandler: @escaping OutputHandler) {
         self.width = Int32(width)
         self.height = Int32(height)
         self.bitrate = max(1_000_000, bitrate)
+        self.liveBitrate = max(1_000_000, bitrate)   // seed the mutable live rate to the ceiling
         self.fps = max(1, fps)
+        self.fullRange = fullRange
+        self.ltrEnabled = ltrEnabled
         self.outputHandler = outputHandler
+    }
+
+    /// WF-8: stage a token the client has ACKNOWLEDGED (decoded an LTR frame for) so the next encode
+    /// feeds it as `kVTEncodeFrameOptionKey_AcknowledgedLTRTokens`. Called from the host actor's `.ack`
+    /// recovery arm. No-op when LTR is off (the actor only calls this under its `RWORK_LTR` gate, but
+    /// the drain is gated again in `encode` so a stray stage is harmless). DEDUP + BOUNDED: the encode
+    /// drain usually outpaces acks, but acks can arrive while no frame is being encoded (a capture
+    /// stall), so dedup repeats and cap to the most-recent few — the encoder only needs the current
+    /// acknowledged set, and an unbounded staging list is the codebase's documented no-no.
+    public func stageAcknowledgedToken(_ token: Int64) {
+        ackedLock.lock(); defer { ackedLock.unlock() }
+        if pendingAckedTokens.contains(token) { return }
+        pendingAckedTokens.append(token)
+        if pendingAckedTokens.count > 32 { pendingAckedTokens.removeFirst(pendingAckedTokens.count - 32) }
+    }
+
+    /// Atomically takes + clears the staged acked tokens (called once per encode under `ltrEnabled`).
+    private func drainPendingAckedTokens() -> [Int64] {
+        ackedLock.lock(); defer { ackedLock.unlock() }
+        let out = pendingAckedTokens
+        pendingAckedTokens = []
+        return out
+    }
+
+    /// Thread-safe read of the current live target bitrate (bits/sec). Used at the create site and by
+    /// the crisp/compact bracket restores so they always restore the controller's LATEST rate, not the
+    /// immutable ceiling. (NSLock is non-recursive — never call this while already holding `bitrateLock`.)
+    private func currentLiveBitrate() -> Int {
+        bitrateLock.lock(); defer { bitrateLock.unlock() }
+        return liveBitrate
+    }
+
+    /// WF-2 ADAPTIVE BITRATE actuator. Sets the live target bitrate to `target`, clamped to
+    /// `[LiveBitratePolicy.minimumBitrate, bitrate]` — i.e. never 0/negative and never above the
+    /// immutable ceiling. Called from the host actor (handleRecovery, throttled to material changes).
+    ///
+    /// Updates `liveBitrate` (the source of truth) under the lock ALWAYS. It issues the actual
+    /// VTSessionSetProperty writes (BOTH AverageBitRate and DataRateLimits together, so the two RC
+    /// knobs stay consistent) ONLY when no crisp/compact bracket is mid-relax; while a bracket is
+    /// active it skips the writes and lets that bracket's `defer` apply the new value on restore.
+    /// Best-effort (`set`, not `setCritical`): a rejected mid-session change keeps the prior rate and
+    /// never throws/aborts the encoder. Returns whether `liveBitrate` actually changed.
+    @discardableResult
+    public func setLiveBitrate(_ target: Int) -> Bool {
+        let clamped = max(LiveBitratePolicy.minimumBitrate, min(self.bitrate, target))
+        bitrateLock.lock()
+        let changed = clamped != liveBitrate
+        liveBitrate = clamped
+        let midBracket = bracketDepth > 0
+        let sess = liveSession
+        bitrateLock.unlock()
+        guard changed, let sess else { return false }
+        if !midBracket {
+            // Not mid-bracket: apply both RC properties now so steady-state stays consistent.
+            set(sess, kVTCompressionPropertyKey_AverageBitRate, clamped as CFNumber)
+            set(sess, kVTCompressionPropertyKey_DataRateLimits, Self.dataRateLimits(bytesPerSecond: clamped / 8))
+        }
+        // Mid-bracket: skip — the active bracket's defer re-reads currentLiveBitrate() and applies it.
+        return changed
     }
 
     deinit {
@@ -205,9 +355,11 @@ public final class VideoEncoder: @unchecked Sendable {
         set(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, Int(Int32.max) as CFNumber) // IDR on-demand (best-effort)
         // AverageBitRate + DataRateLimits together ARE the low-latency rate-control
         // contract — both latency-critical.
-        try setCritical(session, kVTCompressionPropertyKey_AverageBitRate, bitrate as CFNumber)
-        // DataRateLimits = [maxBytes, seconds]; hard cap at the configured bitrate (/8 not /4).
-        try setCritical(session, kVTCompressionPropertyKey_DataRateLimits, [bitrate / 8, 1.0] as CFArray)
+        // Read the LIVE bitrate (== ceiling `bitrate` unless WF-2 ABR has already lowered it) so a
+        // session rebuilt mid-stream (resize) comes up at the controller's current rate, not the ceiling.
+        try setCritical(session, kVTCompressionPropertyKey_AverageBitRate, currentLiveBitrate() as CFNumber)
+        // DataRateLimits = [maxBytes, seconds]; hard cap at the live bitrate (/8 not /4).
+        try setCritical(session, kVTCompressionPropertyKey_DataRateLimits, Self.dataRateLimits(bytesPerSecond: currentLiveBitrate() / 8))
         // SpatialAdaptiveQPLevel=Disable is a QP-modulation HINT. The spike host advertised it,
         // but it is kVTPropertyNotSupportedErr (-12900) on HEVC encoders that don't implement
         // the key — and low-latency rate control is ALREADY established by
@@ -229,12 +381,230 @@ public final class VideoEncoder: @unchecked Sendable {
         // hardware (the exact regression class the 2026-06-02 fix #1 guards against). The key
         // exists on macOS 26; on older OSes it is simply tolerated as a no-op.
         set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, Self.maxAllowedFrameQP as CFNumber)
+        // WF-6 (#8): EXPLICIT BT.709 VUI (color primaries / transfer / matrix). GATED behind
+        // `fullRange` so the OFF path sets NO new keys and the emitted SPS VUI is byte-identical to
+        // today — an UNCONDITIONAL set would change the parameter-set bytes (→ a needless client
+        // decoder rebuild on the first keyframe) and would also relabel the sRGB-transfer capture as
+        // 709-transfer. Best-effort (`set`, NOT `setCritical`): hygiene/quality, not the latency
+        // contract, so a -12900 on an encoder lacking the key is tolerated. NOTE: the luma RANGE is
+        // NOT set here — it rides the source pixel-buffer's FullRange variant (WindowCapturer), which
+        // VT reads to stamp `video_full_range_flag`; these keys only label primaries/transfer/matrix.
+        if fullRange {
+            set(session, kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2)
+            set(session, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2)
+            set(session, kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2)
+        }
+        // WF-8: LONG-TERM-REFERENCE recovery. Enable LTR so the encoder periodically promotes frames
+        // to long-term references (each emitted carrying `RequireLTRAcknowledgementToken`) and honours
+        // a later `ForceLTRRefresh` against an ACKNOWLEDGED LTR — a cheap P-frame recovery with NO
+        // decoder flush, vs a full IDR. GATED behind `ltrEnabled` (`RWORK_LTR`) so the OFF path sets
+        // NO new key and the session is byte-identical to today. Best-effort (`set`, NOT `setCritical`,
+        // like fullRange): an encoder lacking the key returns -12900 and the encoder degrades to the
+        // IDR-only recovery path — never aborts. WF-7's HW probe confirmed noErr on THIS host.
+        if ltrEnabled {
+            set(session, kVTCompressionPropertyKey_EnableLTR, kCFBooleanTrue)
+        }
         // ProfileLevel OMITTED for the low-latency session (doc 18 §E).
         // NOTE: do NOT query UsingHardwareAcceleratedVideoEncoder here — it returns
         // -12900 with low-latency on; HW is already gated by Require...=true above.
 
         VTCompressionSessionPrepareToEncodeFrames(session)
         self.liveSession = session
+    }
+
+    // MARK: WF-7 (#9) LTR capability probe — DIAGNOSTIC ONLY (RWORK_LTR_PROBE)
+    //
+    // Answers the CRITICAL UNKNOWN for Long-Term-Reference recovery: does
+    // `kVTCompressionPropertyKey_EnableLTR` + per-frame `ForceLTRRefresh` actually work on a
+    // LOW-LATENCY HEVC session on THIS hardware? EnableLTR shipped H.264-ONLY at launch, so whether it
+    // returns noErr or `kVTPropertyNotSupportedErr` (-12900) on a low-latency HEVC session on macOS 26
+    // is UNVERIFIED. The probe is ISOLATED ON PURPOSE: it is a `static` func with NO instance access,
+    // so it can NEVER read/write `liveSession`, `bitrateLock`, or the crisp/compact bracket state, and
+    // it runs on its OWN throwaway VTCompressionSession that is torn down on every exit path. It does
+    // NOT change the live encode/recovery behaviour — it only logs ONE `LTR-PROBE:` verdict line.
+
+    /// The single-word verdict of the LTR capability probe. `unknown` = the probe could not be
+    /// completed (session-create or pixel-buffer alloc failed → re-run); `unsupported` = EnableLTR or a
+    /// ForceLTRRefresh encode was rejected (keep the compact-IDR fallback — do NOT switch to H.264);
+    /// `ambiguous` = EnableLTR took but the documented `kCFBooleanTrue` ForceLTRRefresh form was
+    /// rejected while the `CFNumber` form was accepted (the header's CFNumber-vs-Boolean contradiction
+    /// resolves toward CFNumber); `supported` = EnableLTR + the documented ForceLTRRefresh form both
+    /// took (the full LTR wire/ack path is worth building).
+    enum LTRProbeVerdict: String, Sendable {
+        case supported, unsupported, ambiguous, unknown
+    }
+
+    /// PURE: maps the probe's captured `OSStatus` values to a ``LTRProbeVerdict``. Extracted so the
+    /// status→verdict mapping is unit-testable WITHOUT a HW VTCompressionSession (the session itself is
+    /// hang-gated and never runs headlessly). `enableStatus == nil` means "EnableLTR was never reached"
+    /// (create / pixel-buffer alloc failed first) → `.unknown`. `forceLTRNumberStatus == nil` means the
+    /// CFNumber retry was not attempted (the Boolean form already succeeded, or there was nothing to
+    /// disambiguate).
+    static func interpretLTRProbe(
+        enableStatus: OSStatus?,
+        keyframeEncodeStatus: OSStatus = noErr,
+        forceLTRBooleanStatus: OSStatus = noErr,
+        forceLTRNumberStatus: OSStatus? = nil,
+        sawAckToken: Bool = false
+    ) -> LTRProbeVerdict {
+        guard let enableStatus else { return .unknown }          // never reached EnableLTR → re-run
+        guard enableStatus == noErr else { return .unsupported }  // EnableLTR rejected (likely -12900)
+        guard keyframeEncodeStatus == noErr else { return .unsupported } // could not seed an LTR ref
+        let booleanTook = forceLTRBooleanStatus == noErr          // documented kCFBooleanTrue form
+        let numberTook = forceLTRNumberStatus == noErr            // CFNumber retry (header contradiction)
+        guard booleanTook || numberTook else { return .unsupported } // both ForceLTRRefresh forms rejected
+        // API ACCEPTANCE ALONE IS NOT ENOUGH: trust `.supported` ONLY when the documented Boolean form
+        // took AND the encoder actually emitted an LTR frame carrying the RequireLTRAcknowledgementToken
+        // attachment (proves real LTR-frame emission, not just a no-op property accept). Anything else
+        // accepted-but-unconfirmed (no ack-token, or only the non-documented CFNumber form) is `.ambiguous`
+        // → manual HW inspection before building the LTR wire/ack path.
+        guard booleanTook, sawAckToken else { return .ambiguous }
+        return .supported
+    }
+
+    /// Records, from the throwaway probe's `@Sendable` block output handler, the last callback
+    /// `OSStatus` and whether ANY emitted sample carried the `RequireLTRAcknowledgementToken`
+    /// attachment (mirror of ``deliver(sampleBuffer:mode:handler:)``'s attachment inspection). The VT
+    /// output block is `@Sendable` and fires on VT's own queue, so the writes are `NSLock`-guarded.
+    private final class LTRProbeBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lastCallbackStatus: OSStatus = noErr
+        private var sawToken = false
+        func record(status: OSStatus, sampleBuffer: CMSampleBuffer?) {
+            lock.lock(); defer { lock.unlock() }
+            lastCallbackStatus = status
+            guard status == noErr, let sampleBuffer,
+                  let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[CFString: Any]],
+                  let first = attachments.first else { return }
+            if first[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] != nil { sawToken = true }
+        }
+        func snapshot() -> (status: OSStatus, sawToken: Bool) {
+            lock.lock(); defer { lock.unlock() }
+            return (lastCallbackStatus, sawToken)
+        }
+    }
+
+    /// WF-7 (#9) HARDWARE CAPABILITY PROBE. Creates a THROWAWAY low-latency HEVC VTCompressionSession
+    /// (the SAME spec/properties as ``createLiveSession()``), tries `EnableLTR` + a `ForceLTRRefresh`
+    /// encode, and logs ONE `LTR-PROBE:` verdict line. Every `VTSessionSetProperty` /
+    /// `VTCompressionSessionEncodeFrame` status is captured into a local and reported — there is NO
+    /// `setCritical`, NO force-unwrap, NO precondition on any LTR result, so an unsupported property is
+    /// a normal logged branch, never an abort. Gated default-off behind `RWORK_LTR_PROBE` at the daemon
+    /// startup, run BEFORE the listener admits clients so no live session can coexist on the HW encoder.
+    ///
+    /// ⚠️ HANG-SAFETY: like the rest of this type, the HW create/encode HANG without a window-server +
+    /// TCC session — NEVER call this from a test; only from the gated daemon path on a real GUI host.
+    public static func runLTRCapabilityProbe(
+        width: Int = 1280, height: Int = 720,
+        bitrate: Int = bitrateBitsPerSecond, fps: Int = 60,
+        log: (String) -> Void
+    ) {
+        let w = Int32(max(16, width)), h = Int32(max(16, height))
+        let fpsClamped = Int32(max(1, fps))
+        let bitrateClamped = max(1_000_000, bitrate)
+
+        // (a) SAME spec dict as createLiveSession 277-280 (low-latency RC + require-HW), HEVC codec.
+        let spec: [CFString: Any] = [
+            kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true,
+            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
+        ]
+        var session: VTCompressionSession?
+        let createStatus = VTCompressionSessionCreate(
+            allocator: nil, width: w, height: h,
+            codecType: kCMVideoCodecType_HEVC, encoderSpecification: spec as CFDictionary,
+            imageBufferAttributes: nil, compressedDataAllocator: nil,
+            outputCallback: nil, refcon: nil, compressionSessionOut: &session
+        )
+        guard createStatus == noErr, let session else {
+            // -12905 (XPC race) reads as VERDICT=unknown (re-run), distinct from -12900 (unsupported).
+            log("LTR-PROBE: session-create=\(createStatus) VERDICT=\(interpretLTRProbe(enableStatus: nil).rawValue)")
+            return
+        }
+        // ALWAYS tear the throwaway session down on every exit path.
+        defer { VTCompressionSessionInvalidate(session) }
+
+        // (b) Mirror the proven property keys best-effort — statuses IGNORED (they don't affect the LTR
+        //     verdict; mirroring is only for config fidelity). Plain VTSessionSetProperty (NOT the
+        //     instance `setCritical`/`set`) so the probe stays static/independent. None throw.
+        _ = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        _ = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        _ = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fpsClamped as CFNumber)
+        _ = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrateClamped as CFNumber)
+        _ = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: Self.dataRateLimits(bytesPerSecond: bitrateClamped / 8))
+        _ = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxAllowedFrameQP, value: Self.maxAllowedFrameQP as CFNumber)
+
+        // (c) THE PROBE step 1 — EnableLTR (the CRITICAL unknown). CFBoolean per the header (macos 12.0).
+        let enableStatus = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_EnableLTR, value: kCFBooleanTrue)
+        guard enableStatus == noErr else {
+            log("LTR-PROBE: EnableLTR=\(enableStatus) (kVTPropertyNotSupportedErr=-12900) keyframe-encode=n/a ForceLTRRefresh-encode=n/a RequireAckToken=n/a VERDICT=\(interpretLTRProbe(enableStatus: enableStatus).rawValue)")
+            return
+        }
+        VTCompressionSessionPrepareToEncodeFrames(session)
+
+        // (d) Throwaway zeroed NV12 buffer (content is irrelevant for a capability check).
+        var pixelBuffer: CVPixelBuffer?
+        let pbStatus = CVPixelBufferCreate(
+            kCFAllocatorDefault, Int(w), Int(h),
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
+            &pixelBuffer
+        )
+        guard pbStatus == kCVReturnSuccess, let pixelBuffer else {
+            log("LTR-PROBE: EnableLTR=\(enableStatus) pixelbuffer-create=\(pbStatus) VERDICT=\(interpretLTRProbe(enableStatus: nil).rawValue)")
+            return
+        }
+
+        // (e) NSLock-guarded box records the block callback status + ack-token observation.
+        let box = LTRProbeBox()
+
+        // (f) Frame #1 — a normal forced keyframe SEEDS an LTR reference. With no acknowledged LTR yet,
+        //     ForceLTRRefresh would otherwise just emit an IDR (header 1269-1270), so encode this first.
+        let enc1 = VTCompressionSessionEncodeFrame(
+            session, imageBuffer: pixelBuffer,
+            presentationTimeStamp: CMTime(value: 0, timescale: fpsClamped),
+            duration: .invalid,
+            frameProperties: [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary,
+            infoFlagsOut: nil
+        ) { status, _, sampleBuffer in box.record(status: status, sampleBuffer: sampleBuffer) }
+
+        // (g) Frame #2 WITH ForceLTRRefresh — documented prose form (kCFBooleanTrue) FIRST.
+        let enc2Boolean = VTCompressionSessionEncodeFrame(
+            session, imageBuffer: pixelBuffer,
+            presentationTimeStamp: CMTime(value: 1, timescale: fpsClamped),
+            duration: .invalid,
+            frameProperties: [kVTEncodeFrameOptionKey_ForceLTRRefresh: kCFBooleanTrue] as CFDictionary,
+            infoFlagsOut: nil
+        ) { status, _, sampleBuffer in box.record(status: status, sampleBuffer: sampleBuffer) }
+
+        // (3) Disambiguate the header's CFNumber-vs-Boolean contradiction (decl says CFNumberRef,
+        //     @abstract says "set to kCFBooleanTrue"): if the Boolean form was rejected, RETRY the same
+        //     refresh with the CFNumber form to see which the SDK actually accepts. Status captured;
+        //     passing the "wrong" CFType yields a status (or is ignored), never a trap.
+        var enc2Number: OSStatus? = nil
+        if enc2Boolean != noErr {
+            enc2Number = VTCompressionSessionEncodeFrame(
+                session, imageBuffer: pixelBuffer,
+                presentationTimeStamp: CMTime(value: 2, timescale: fpsClamped),
+                duration: .invalid,
+                frameProperties: [kVTEncodeFrameOptionKey_ForceLTRRefresh: 1 as CFNumber] as CFDictionary,
+                infoFlagsOut: nil
+            ) { status, _, sampleBuffer in box.record(status: status, sampleBuffer: sampleBuffer) }
+        }
+
+        // (h) Drain ALL pending block callbacks synchronously so the box is fully populated before read.
+        VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
+
+        // (i) Single verdict line. (defer above invalidates the throwaway session.)
+        let (lastCallback, sawToken) = box.snapshot()
+        let verdict = interpretLTRProbe(
+            enableStatus: enableStatus,
+            keyframeEncodeStatus: enc1,
+            forceLTRBooleanStatus: enc2Boolean,
+            forceLTRNumberStatus: enc2Number,
+            sawAckToken: sawToken
+        )
+        let enc2Desc = enc2Number.map { "boolean=\(enc2Boolean)/number=\($0)" } ?? "\(enc2Boolean)"
+        log("LTR-PROBE: EnableLTR=\(enableStatus), keyframe-encode=\(enc1), ForceLTRRefresh-encode=\(enc2Desc), callback-status=\(lastCallback), RequireAckToken=\(sawToken), VERDICT=\(verdict.rawValue)")
     }
 
     // MARK: Crisp static refresh (Design A — single-session QP-bump, doc 17 §3.4)
@@ -256,18 +626,32 @@ public final class VideoEncoder: @unchecked Sendable {
     /// ships a normal keyframe (visible: the `crisp=…` log byte size stays ~live-keyframe-sized).
     public func encodeLiveCrispKeyframe(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) throws {
         guard let session = liveSession else { throw VideoEncoderError.sessionCreateFailed(-12903) }
+        // WF-2: mark a bracket active so a concurrent setLiveBitrate (host actor) skips its own RC
+        // writes; the restore defer below re-applies the controller's latest rate.
+        bitrateLock.lock(); bracketDepth += 1; bitrateLock.unlock()
         // 1. Drain prior in-flight frames so they finish under the LIVE config (not the relaxed one).
         VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
         // 2. Relax: drop the QP ceiling + widen the hard rate cap for exactly this one IDR.
-        set(session, kVTCompressionPropertyKey_DataRateLimits, [Self.crispDataRateMaxBytes, 1.0] as CFArray)
+        set(session, kVTCompressionPropertyKey_DataRateLimits, Self.dataRateLimits(bytesPerSecond: Self.crispDataRateMaxBytes))
         set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, Self.crispMaxQP as CFNumber)
         // 5. Restore the proven live low-latency config no matter how we exit. CRITICAL: restore the
-        //    SESSION's cap (`bitrate / 8`, matching the create-site), NOT the static 12 Mbps default —
-        //    otherwise the first static refresh on a `--bitrate >12` session would permanently clamp
-        //    the live stream to 1.5 MB (~⅓ of e.g. a 40 Mbps config) and never recover.
+        //    LIVE cap (`currentLiveBitrate() / 8`, matching the create-site), NOT the static 12 Mbps
+        //    default — otherwise the first static refresh on a `--bitrate >12` session would permanently
+        //    clamp the live stream to 1.5 MB (~⅓ of e.g. a 40 Mbps config) and never recover. Reading
+        //    the LIVE value (not the immutable ceiling) also means a WF-2-lowered rate is preserved.
+        //    Decrement bracketDepth in the SAME defer so it drops only after the restore lands.
+        //    Restore BOTH RC knobs (AverageBitRate + DataRateLimits) from the SAME live snapshot: a
+        //    controller `setLiveBitrate` that landed mid-bracket updated `liveBitrate` but SKIPPED its
+        //    own VTSessionSetProperty writes, so this defer is the ONLY place the new rate is applied.
+        //    The crisp relax only widened DataRateLimits, so restoring just that knob would leave
+        //    AverageBitRate stale at the pre-controller value; writing both keeps the two consistent
+        //    (each is a no-op when no controller change occurred — the value is already current).
         defer {
+            let live = currentLiveBitrate()
             set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, Self.maxAllowedFrameQP as CFNumber)
-            set(session, kVTCompressionPropertyKey_DataRateLimits, [bitrate / 8, 1.0] as CFArray)
+            set(session, kVTCompressionPropertyKey_AverageBitRate, live as CFNumber)
+            set(session, kVTCompressionPropertyKey_DataRateLimits, Self.dataRateLimits(bytesPerSecond: live / 8))
+            bitrateLock.lock(); bracketDepth -= 1; bitrateLock.unlock()
         }
         // 3. Encode the forced crisp keyframe.
         try encode(session: session, pixelBuffer: pixelBuffer, presentationTime: presentationTime, forceKeyframe: true, mode: .crisp)
@@ -288,12 +672,23 @@ public final class VideoEncoder: @unchecked Sendable {
     ///      client decoder rebuild. Best-effort sets: a rejected change just ships a normal-size IDR.
     public func encodeCompactKeyframe(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) throws {
         guard let session = liveSession else { throw VideoEncoderError.sessionCreateFailed(-12903) }
+        // WF-2: mark a bracket active (see encodeLiveCrispKeyframe) — restore re-applies the live rate.
+        bitrateLock.lock(); bracketDepth += 1; bitrateLock.unlock()
         VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
         set(session, kVTCompressionPropertyKey_AverageBitRate, Self.compactBitrate as CFNumber)
         set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, Self.compactMaxQP as CFNumber)
         defer {
+            // Restore BOTH RC knobs from the SAME live snapshot (not the immutable ceiling) so a
+            // WF-2-lowered rate is preserved. The compact relax only lowered AverageBitRate, but a
+            // controller `setLiveBitrate` that landed mid-bracket skipped BOTH writes — so
+            // DataRateLimits (the HARD cap) must be re-applied here too, else it stays stale at the
+            // pre-controller (looser) value and a complex frame can exceed a concurrent congestion
+            // back-off. Each write is a no-op when no controller change occurred.
+            let live = currentLiveBitrate()
             set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, Self.maxAllowedFrameQP as CFNumber)
-            set(session, kVTCompressionPropertyKey_AverageBitRate, bitrate as CFNumber)
+            set(session, kVTCompressionPropertyKey_AverageBitRate, live as CFNumber)
+            set(session, kVTCompressionPropertyKey_DataRateLimits, Self.dataRateLimits(bytesPerSecond: live / 8))
+            bitrateLock.lock(); bracketDepth -= 1; bitrateLock.unlock()
         }
         try encode(session: session, pixelBuffer: pixelBuffer, presentationTime: presentationTime, forceKeyframe: true, mode: .live)
         VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
@@ -309,18 +704,43 @@ public final class VideoEncoder: @unchecked Sendable {
         try encode(session: session, pixelBuffer: pixelBuffer, presentationTime: presentationTime, forceKeyframe: forceKeyframe, mode: .live)
     }
 
-    private func encode(session: VTCompressionSession, pixelBuffer: CVPixelBuffer, presentationTime: CMTime, forceKeyframe: Bool, mode: Mode) throws {
-        var frameProperties: CFDictionary?
-        if forceKeyframe {
-            frameProperties = [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary
+    /// WF-8: emit a cheap LTR-refresh P-frame against an ACKNOWLEDGED long-term reference — the
+    /// low-cost alternative to a recovery IDR (no decoder flush, a fraction of the bytes). Deliberately
+    /// NOT wrapped in the crisp/compact bitrate bracket (those force large IDRs); this is a small
+    /// normal live encode with `ForceLTRRefresh` set. VT references the acknowledged LTR (or emits an
+    /// IDR if none is acknowledged — its own contract, a second safety net under the host's ACKED-ONLY
+    /// gate). The actor only calls this when ``LTRController/hasAckedToken`` is true.
+    public func encodeLiveLTRRefresh(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) throws {
+        guard let session = liveSession else { throw VideoEncoderError.sessionCreateFailed(-12903) }
+        try encode(session: session, pixelBuffer: pixelBuffer, presentationTime: presentationTime, forceKeyframe: false, mode: .live, forceLTRRefresh: true)
+    }
+
+    private func encode(session: VTCompressionSession, pixelBuffer: CVPixelBuffer, presentationTime: CMTime, forceKeyframe: Bool, mode: Mode, forceLTRRefresh: Bool = false) throws {
+        var props: [CFString: Any] = [:]
+        if forceKeyframe { props[kVTEncodeFrameOptionKey_ForceKeyFrame] = true }
+        if ltrEnabled {
+            // WF-8: request an LTR refresh against an ACKED long-term reference (a cheap P-frame). Form
+            // is kCFBooleanTrue — WF-7-probe-proven + the header @abstract, despite the CFNumberRef
+            // decl. VT falls back to an IDR if no LTR is acknowledged (its own contract) — a second
+            // safety net under the actor's ACKED-ONLY gate.
+            if forceLTRRefresh { props[kVTEncodeFrameOptionKey_ForceLTRRefresh] = kCFBooleanTrue }
+            // Feed the tokens the client has acknowledged (drained+cleared each encode → can't grow).
+            // Each NSNumber bridges to the CFNumberRef VT expects inside the CFArray.
+            let acked = drainPendingAckedTokens()
+            if !acked.isEmpty {
+                props[kVTEncodeFrameOptionKey_AcknowledgedLTRTokens] = acked.map { NSNumber(value: $0) } as CFArray
+            }
         }
+        // When ltrEnabled is false this is EXACTLY today's dict: [ForceKeyFrame:true] or nil.
+        let frameProperties: CFDictionary? = props.isEmpty ? nil : (props as CFDictionary)
         let handler = outputHandler
+        let readLTRToken = ltrEnabled
         let status = VTCompressionSessionEncodeFrame(
             session, imageBuffer: pixelBuffer, presentationTimeStamp: presentationTime,
             duration: .invalid, frameProperties: frameProperties, infoFlagsOut: nil
         ) { status, _, sampleBuffer in
             guard status == noErr, let sampleBuffer else { return }
-            Self.deliver(sampleBuffer: sampleBuffer, mode: mode, handler: handler)
+            Self.deliver(sampleBuffer: sampleBuffer, mode: mode, readLTRToken: readLTRToken, handler: handler)
         }
         guard status == noErr else { throw VideoEncoderError.encodeFailed(status) }
     }
@@ -328,7 +748,7 @@ public final class VideoEncoder: @unchecked Sendable {
     /// Extracts the AVCC bytes + keyframe flag from a finished `CMSampleBuffer` and
     /// forwards them. The block buffer holds length-prefixed NAL units (the client
     /// re-prefixes when it reassembles fragments — see RworkVideoProtocol.NALUnit).
-    private static func deliver(sampleBuffer: CMSampleBuffer, mode: Mode, handler: OutputHandler) {
+    private static func deliver(sampleBuffer: CMSampleBuffer, mode: Mode, readLTRToken: Bool, handler: OutputHandler) {
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         var totalLength = 0
         var dataPointer: UnsafeMutablePointer<CChar>?
@@ -344,6 +764,17 @@ public final class VideoEncoder: @unchecked Sendable {
             keyframe = !notSync
         }
 
+        // WF-8: read the LTR ack token if this is a Long-Term-Reference frame. GATED on `readLTRToken`
+        // (the instance `ltrEnabled`): when LTR is off this whole block is skipped → `ltrToken` stays
+        // nil → the handler call is byte-identical to today. Mirror of the WF-7 probe's attachment
+        // inspection (`LTRProbeBox.record`) — read the VALUE (an Int64 token) not just presence.
+        var ltrToken: Int64? = nil
+        if readLTRToken,
+           let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[CFString: Any]],
+           let first = attachments.first {
+            ltrToken = (first[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] as? NSNumber)?.int64Value
+        }
+
         // CRITICAL: VTCompressionSession keeps the HEVC VPS/SPS/PPS parameter sets in the sample
         // buffer's FORMAT DESCRIPTION, NOT inline in the CMBlockBuffer — so the bytes above are
         // the coded slice ONLY. The client builds its CMVideoFormatDescription from parameter
@@ -356,7 +787,7 @@ public final class VideoEncoder: @unchecked Sendable {
            let params = hevcParameterSetsAVCC(from: fmt) {
             avcc = params + avcc
         }
-        handler(avcc, keyframe, mode)
+        handler(avcc, keyframe, mode, ltrToken)
     }
 
     /// Extracts the HEVC VPS/SPS/PPS parameter sets from a `CMVideoFormatDescription` and returns

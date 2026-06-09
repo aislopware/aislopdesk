@@ -48,6 +48,13 @@ public final class MetalVideoRenderer {
     /// the input encoder + cursor invert, so a fit↔fill toggle never desyncs click mapping.
     public var contentMode: VideoContentMode = .fit
 
+    /// WF-6 (#8): the negotiated luma range driving the YCbCr→RGB shader coefficients. Set before the
+    /// first render from the stream's `helloAck.fullRange` (via the pipeline's `setColorRange` hook).
+    /// Default `.video` ⇒ the GPU output is byte-identical to today — the `.video` coefficients ARE the
+    /// prior hardcoded shader literals. There is ONE pipeline state (the matrix is the same); only the
+    /// per-frame coefficient uniform values differ, so no shader recompile is needed.
+    public var colorRange: ColorRange = .video
+
     public init?(metalLayer: CAMetalLayer) {
         guard let device = metalLayer.device ?? MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
@@ -174,6 +181,15 @@ public final class MetalVideoRenderer {
         let py = min(max(Float(panNormalized.y), -panLimit), panLimit)
         var zoomPan = SIMD4<Float>(invZoom, px, py, 0)
         encoder.setFragmentBytes(&zoomPan, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
+        // WF-6 (#8): the YCbCr→RGB coefficients for the negotiated luma range, from the single pure
+        // source of truth (YCbCrConversion). For `.video` these are exactly the prior hardcoded shader
+        // literals → byte-identical GPU input on the default-OFF path. Only luma scale/bias differ for
+        // `.full`. Packed as two `float4` (the 8th lane is padding) for Metal's 16-byte alignment.
+        let coeffs = YCbCrConversion.coefficients(colorRange)
+        var ycbcr = YCbCrCoeffsUniform(
+            c0: SIMD4<Float>(coeffs.lumaScale, coeffs.lumaBias, coeffs.chromaBias, coeffs.crToR),
+            c1: SIMD4<Float>(coeffs.cbToG, coeffs.crToG, coeffs.cbToB, 0))
+        encoder.setFragmentBytes(&ycbcr, length: MemoryLayout<YCbCrCoeffsUniform>.stride, index: 1)
         encoder.setFragmentTexture(lumaTexture, index: 0)
         encoder.setFragmentTexture(chromaTexture, index: 1)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -217,13 +233,27 @@ public final class MetalVideoRenderer {
         let pixelBuffer: CVPixelBuffer
     }
 
+    /// WF-6 (#8) fragment uniform mirroring the Metal `YCbCrCoeffs` struct (two `float4`): the seven
+    /// YCbCr→RGB coefficients (lumaScale, lumaBias, chromaBias, crToR | cbToG, crToG, cbToB, _pad). Two
+    /// `SIMD4<Float>` guarantee the 16-byte alignment Metal uses for `float4`, so the `setFragmentBytes`
+    /// byte layout matches the shader's struct exactly.
+    private struct YCbCrCoeffsUniform {
+        var c0: SIMD4<Float>
+        var c1: SIMD4<Float>
+    }
+
     /// Inline Metal shader: full-screen triangle-strip quad + BT.709 NV12 YCbCr→RGB
-    /// conversion (video-range). Kept inline so the target needs no `.metal` resource.
+    /// conversion driven by a coefficient uniform (WF-6 #8 — `.video` values reproduce the
+    /// prior hardcoded video-range literals exactly). Kept inline so the target needs no
+    /// `.metal` resource.
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
 
     struct VertexOut { float4 position [[position]]; float2 uv; };
+    // WF-6 (#8): the seven YCbCr->RGB coefficients (lumaScale, lumaBias, chromaBias, crToR |
+    // cbToG, crToG, cbToB, _pad), fed from RworkVideoProtocol.YCbCrConversion.
+    struct YCbCrCoeffs { float4 c0; float4 c1; };
 
     vertex VertexOut rwork_video_vertex(uint vid [[vertex_id]],
                                         constant float2 &fit [[buffer(0)]]) {
@@ -240,19 +270,24 @@ public final class MetalVideoRenderer {
     fragment float4 rwork_video_fragment(VertexOut in [[stage_in]],
                                          texture2d<float> lumaTex [[texture(0)]],
                                          texture2d<float> chromaTex [[texture(1)]],
-                                         constant float4 &zoomPan [[buffer(0)]]) {
+                                         constant float4 &zoomPan [[buffer(0)]],
+                                         constant YCbCrCoeffs &coeffs [[buffer(1)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         // zoomPan = (invZoom, panX, panY, _): crop the sampled UV around the panned centre.
         float2 uv = (in.uv - 0.5) * zoomPan.x + 0.5 + float2(zoomPan.y, zoomPan.z);
         float y = lumaTex.sample(s, uv).r;
         float2 cbcr = chromaTex.sample(s, uv).rg;
-        // BT.709 video-range YCbCr -> RGB.
-        float yy = (y - 16.0/255.0) * (255.0/219.0);
-        float cb = cbcr.x - 128.0/255.0;
-        float cr = cbcr.y - 128.0/255.0;
-        float r = yy + 1.5748 * cr;
-        float g = yy - 0.1873 * cb - 0.4681 * cr;
-        float b = yy + 1.8556 * cb;
+        // BT.709 YCbCr -> RGB, coefficient-driven (WF-6 #8). For .video the values are the prior
+        // hardcoded literals (lumaScale 255/219, lumaBias 16/255, chromaBias 128/255, crToR 1.5748,
+        // cbToG 0.1873, crToG 0.4681, cbToB 1.8556) -> identical output. .full changes ONLY luma.
+        float lumaScale = coeffs.c0.x, lumaBias = coeffs.c0.y, chromaBias = coeffs.c0.z, crToR = coeffs.c0.w;
+        float cbToG = coeffs.c1.x, crToG = coeffs.c1.y, cbToB = coeffs.c1.z;
+        float yy = (y - lumaBias) * lumaScale;
+        float cb = cbcr.x - chromaBias;
+        float cr = cbcr.y - chromaBias;
+        float r = yy + crToR * cr;
+        float g = yy - cbToG * cb - crToG * cr;
+        float b = yy + cbToB * cb;
         return float4(r, g, b, 1.0);
     }
     """

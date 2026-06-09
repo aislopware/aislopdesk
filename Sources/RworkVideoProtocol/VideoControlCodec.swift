@@ -37,6 +37,7 @@ import Foundation
 ///                       | Float64 viewportW | Float64 viewportH
 /// type 2 helloAck:      UInt8 accepted(0/1) | UInt32 streamID
 ///                       | UInt16 captureWidth | UInt16 captureHeight
+///                       | UInt8 fullRange(0/1)
 ///                       | Float64 boundsX | boundsY | boundsW | boundsH
 /// type 3 bye:           (no body)
 /// type 4 resizeRequest: Float64 desiredW | Float64 desiredH | UInt32 epoch
@@ -83,7 +84,10 @@ public enum VideoControlMessage: Equatable, Sendable {
     case hello(protocolVersion: UInt16, requestedWindowID: UInt32, viewport: VideoSize)
     /// Host → client: accept/reject + negotiated capture size + the window's current
     /// CG-top-left bounds (the input-mapping origin until geometry updates arrive).
-    case helloAck(accepted: Bool, streamID: UInt32, captureWidth: UInt16, captureHeight: UInt16, windowBoundsCG: VideoRect)
+    /// `fullRange` (WF-6 #8) tells the client the encoded stream's luma swing so it picks
+    /// the matching decoder pixel-format + YCbCr→RGB shader coefficients FROM THE STREAM
+    /// (no separate client env flag). `false` ⇒ today's video-range (the default).
+    case helloAck(accepted: Bool, streamID: UInt32, captureWidth: UInt16, captureHeight: UInt16, windowBoundsCG: VideoRect, fullRange: Bool)
     /// Either side: clean session teardown.
     case bye
     /// Client → host: the client surface settled to `desired` (points); please re-size
@@ -135,11 +139,12 @@ public enum VideoControlMessage: Equatable, Sendable {
             out.appendBE(windowID)
             out.appendBE(viewport.width)
             out.appendBE(viewport.height)
-        case .helloAck(let accepted, let streamID, let w, let h, let bounds):
+        case .helloAck(let accepted, let streamID, let w, let h, let bounds, let fullRange):
             out.append(accepted ? 1 : 0)
             out.appendBE(streamID)
             out.appendBE(w)
             out.appendBE(h)
+            out.append(fullRange ? 1 : 0)   // WF-6 (#8): negotiated luma range (after captureHeight)
             out.appendBE(bounds.origin.x)
             out.appendBE(bounds.origin.y)
             out.appendBE(bounds.size.width)
@@ -190,12 +195,13 @@ public enum VideoControlMessage: Equatable, Sendable {
             let streamID = try reader.readUInt32()
             let cw = try reader.readUInt16()
             let ch = try reader.readUInt16()
+            let fr = try reader.readUInt8() != 0   // WF-6 (#8): negotiated luma range (after captureHeight)
             let bx = try reader.readFiniteFloat64("helloAck.bounds.x")
             let by = try reader.readFiniteFloat64("helloAck.bounds.y")
             let bw = try reader.readFiniteFloat64("helloAck.bounds.w")
             let bh = try reader.readFiniteFloat64("helloAck.bounds.h")
             return .helloAck(accepted: accepted, streamID: streamID, captureWidth: cw, captureHeight: ch,
-                             windowBoundsCG: VideoRect(x: bx, y: by, width: bw, height: bh))
+                             windowBoundsCG: VideoRect(x: bx, y: by, width: bw, height: bh), fullRange: fr)
         case 3:
             return .bye
         case 4:

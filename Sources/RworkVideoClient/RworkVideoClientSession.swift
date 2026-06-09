@@ -94,14 +94,20 @@ public actor RworkVideoClientSession {
         public var applyCursor: @Sendable (CursorUpdate, CursorPlacement) -> Void
         /// Register a cursor shape bitmap for its shapeID (shipped rarely, OOB).
         public var registerCursorShape: @Sendable (CGImage, VideoSize, UInt16) -> Void
+        /// WF-6 (#8): set the renderer's YCbCr→RGB color range to the stream's negotiated luma range.
+        /// Called once at pipeline bring-up, BEFORE the first frame renders (the `helloAck` carrying
+        /// the range arrives before any media). `.video` ⇒ today's coefficients, byte-identical.
+        public var setColorRange: @Sendable (ColorRange) -> Void
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
             applyCursor: @escaping @Sendable (CursorUpdate, CursorPlacement) -> Void,
-            registerCursorShape: @escaping @Sendable (CGImage, VideoSize, UInt16) -> Void
+            registerCursorShape: @escaping @Sendable (CGImage, VideoSize, UInt16) -> Void,
+            setColorRange: @escaping @Sendable (ColorRange) -> Void
         ) {
             self.submitDecodedFrame = submitDecodedFrame
             self.applyCursor = applyCursor
             self.registerCursorShape = registerCursorShape
+            self.setColorRange = setColorRange
         }
     }
 
@@ -206,6 +212,29 @@ public actor RworkVideoClientSession {
     /// until ``updateRTTEstimate(_:)`` feeds a measurement.
     private var rttEstimate: TimeInterval = 0.05
 
+    // MARK: Network-feedback telemetry (the network-feedback channel)
+
+    /// DEFAULT ON; `RWORK_NETSTATS=0` disables: the client sends no NetworkStats reports and the
+    /// RTT loop reverts to today's open-loop behaviour. The 4-byte header field is still parsed
+    /// either way (the host writes 0 when disabled).
+    private static let telemetryEnabled = ProcessInfo.processInfo.environment["RWORK_NETSTATS"] != "0"
+    /// The newest `hostSendTsMillis` OBSERVED on a video fragment (0 = none / telemetry off). An
+    /// OPAQUE token the client echoes back; never compared against the client clock.
+    private var latestHostSendTs: UInt32 = 0
+    /// Client-monotonic time (seconds) at which `latestHostSendTs` was observed, so the report's
+    /// `clientHoldMs` is a client-LOCAL relative delta (now − observedAt) — never an absolute
+    /// client timestamp (which would embed cross-machine skew).
+    private var latestHostSendTsObservedAt: Double = 0
+    /// Pure inter-arrival jitter estimator (client-clock-only 2nd differences).
+    private var owdJitter = OWDJitterEstimator()
+    /// Windowed counters reset after every report: frames completed / FEC-recovered / unrecovered.
+    private var winFramesReceived: UInt32 = 0
+    private var winFecRecovered: UInt32 = 0
+    private var winUnrecovered: UInt32 = 0
+    /// The self-owned ~50 ms NetworkStats timer (mirrors ``keepaliveTask``'s safe weak pattern).
+    /// Cancelled in ``stop()``.
+    private var networkStatsTask: Task<Void, Never>?
+
     /// - Parameters:
     ///   - requestedWindowID: the host CGWindowID to remote.
     ///   - viewport: the client surface size sent in the hello.
@@ -242,12 +271,14 @@ public actor RworkVideoClientSession {
         }
         for effect in stateMachine.start() { await apply(effect) }
         startKeepalive()
+        startNetworkStats()
         log.info("video client session started; hello sent")
     }
 
     /// Sends a best-effort `bye`, tears the pipeline + sockets down.
     public func stop() async {
         keepaliveTask?.cancel(); keepaliveTask = nil
+        networkStatsTask?.cancel(); networkStatsTask = nil
         resizeSettleTask?.cancel(); resizeSettleTask = nil
         for effect in stateMachine.stop() { await apply(effect) }
         await transport.stop()
@@ -277,6 +308,45 @@ public actor RworkVideoClientSession {
     private func sendKeepaliveIfStreaming() {
         guard stateMachine.mediaFlowing else { return }
         transport.send(VideoControlMessage.keepalive.encode(), on: .control)
+    }
+
+    // MARK: Network-feedback telemetry (the network-feedback channel)
+
+    /// Starts the self-owned ~50 ms NetworkStats timer. COPIES ``startKeepalive()``'s safe weak
+    /// pattern EXACTLY — a strong `self` capture in a long-lived timer Task would leak the whole
+    /// session (decoder, sockets, Metal hooks). Cancelled in ``stop()``.
+    private func startNetworkStats() {
+        networkStatsTask?.cancel()
+        networkStatsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard let self else { return }
+                await self.sendNetworkStatsIfStreaming()
+            }
+        }
+    }
+
+    /// Sends one NetworkStats report iff streaming and telemetry is enabled, then RESETS the windowed
+    /// counters (the counts are per-report-window). `clientHoldMs` is a client-LOCAL delta (now −
+    /// observedAt), never an absolute client timestamp, so the host can subtract it inside its own
+    /// clock with zero cross-machine skew. The hold is clamped non-negative + saturating so a long
+    /// pause cannot trap the `UInt32(Double)` initializer.
+    private func sendNetworkStatsIfStreaming() {
+        guard stateMachine.mediaFlowing, Self.telemetryEnabled else { return }
+        let now = FramePacer.currentHostTimeSeconds()
+        let holdMs: UInt32 = latestHostSendTs == 0 ? 0 : UInt32(min(Double(UInt32.max), max(0, (now - latestHostSendTsObservedAt) * 1000)))
+        let report = NetworkStatsReport(
+            framesReceived: winFramesReceived,
+            fecRecovered: winFecRecovered,
+            unrecovered: winUnrecovered,
+            latestHostSendTs: latestHostSendTs,
+            clientHoldMs: holdMs,
+            owdJitterMicros: owdJitter.jitterMicros())
+        transport.send(RecoveryMessage.networkStats(report).encode(), on: .recovery)
+        // Reset the window — counts are per-report.
+        winFramesReceived = 0
+        winFecRecovered = 0
+        winUnrecovered = 0
     }
 
     // MARK: Layout (called by the host view each layout pass)
@@ -410,10 +480,22 @@ public actor RworkVideoClientSession {
     }
 
     private func ingestVideo(_ fragment: FrameFragment) {
+        // Network-feedback telemetry: every fragment arrival feeds the client-clock-only jitter
+        // estimator, and the NEWEST host-send-ts (wrap-aware max) is tracked to echo back so the
+        // host can derive RTT in its own clock. A late kfDup duplicate carries an OLDER stamp, so
+        // the wrap-aware comparison rejects it (latestHostSendTs never regresses). 0 = telemetry off.
+        owdJitter.note(arrival: FramePacer.currentHostTimeSeconds())
+        let ts = fragment.header.hostSendTsMillis
+        if ts != 0, latestHostSendTs == 0 || ts.distanceWrapped(from: latestHostSendTs) > 0 {
+            latestHostSendTs = ts
+            latestHostSendTsObservedAt = FramePacer.currentHostTimeSeconds()
+        }
         let result = reassembler.ingest(fragment)
         switch result {
         case .completed(let frame):
             dbg("frame reassembled (keyframe=\(frame.keyframe)) → decoding")
+            winFramesReceived &+= 1
+            if frame.recoveredViaFEC { winFecRecovered &+= 1 }
             decode(frame)
         case .dropped(let lost):
             // R7 #3: when the INGESTED fragment's OWN frame becomes hopeless, `ingest()` returns
@@ -439,6 +521,8 @@ public actor RworkVideoClientSession {
     /// by BOTH the `.dropped` return and the `nextDroppedFrame()` drain so neither path can silently
     /// swallow a loss (R7 #3).
     private func signalRecovery(lostFrameID lost: UInt32) {
+        // Network-feedback telemetry: count an unrecoverable loss (the loss-rate numerator).
+        winUnrecovered &+= 1
         if shouldEscalateToIDR() {
             requestIDR()
             // Re-anchor the escalation clock so the NEXT dropped frame in this same loss episode does
@@ -474,13 +558,38 @@ public actor RworkVideoClientSession {
             // The decoded NV12 size becomes the cursor-scale denominator.
             updateDecodedSize(from: frame)
             try decoder.decode(frame)
+            // WF-8: on a SUCCESSFUL decode of an LTR-flagged frame, ACK it so the host learns the
+            // client now HOLDS this long-term reference and may ForceLTRRefresh against it (the
+            // ACKED-ONLY invariant — we ack ONLY frames we actually decoded, never merely received
+            // fragments of). The ack rides the dedicated `.recovery` channel; its `streamSeq` wire
+            // field carries the FRAME ID for WF-8 (the dead ack path repurposed — see
+            // RecoveryMessage.ack). NO env gate: a host with RWORK_LTR off never sets the isLTR bit, so
+            // `frame.isLTR` is always false ⇒ no acks are ever sent ⇒ byte-identical to today.
+            if frame.isLTR {
+                transport.send(RecoveryMessage.ack(streamSeq: frame.frameID).encode(), on: .recovery)
+            }
             dbgDecodeCount += 1
             if dbgDecodeCount == 1 || dbgDecodeCount % 15 == 0 {
                 dbg("DECODED frame #\(dbgDecodeCount) (keyframe=\(frame.keyframe)) → submitted to pacer/render")
             }
             // A successful keyframe ends the recovery episode and disarms the clock,
             // so the next loss starts a fresh 2·RTT escalation window.
-            if frame.keyframe { escalation.keyframeDecoded() }
+            if frame.keyframe {
+                // REVIVE updateRTTEstimate (previously had zero call sites): the recovery
+                // round-trip the client already tracks IS a real measured RTT — request sent at
+                // `firstRequestTime`, recovering keyframe decoded now. It is an UPPER BOUND (it
+                // includes host encode latency), which makes the 2·RTT escalation timer slightly
+                // more conservative — the safe direction. Clamp [5 ms, 2 s] so a pathological
+                // sample can't disable escalation; the EWMA in updateRTTEstimate smooths it. This
+                // replaces the static 0.05 s as the steady-state value (0.05 s stays only as the
+                // pre-measurement bootstrap). No host→client echo exists this phase, so this
+                // client-local measurement is the available RTT signal.
+                if let first = escalation.firstRequestTime {
+                    let rttSample = FramePacer.currentHostTimeSeconds() - first
+                    updateRTTEstimate(min(2.0, max(0.005, rttSample)))
+                }
+                escalation.keyframeDecoded()
+            }
         } catch VideoDecoderError.awaitingKeyframe {
             // A delta arrived before the first IDR — drop it and ask for a keyframe.
             dbg("decode: awaiting keyframe (delta dropped) → requesting IDR")
@@ -745,8 +854,8 @@ public actor RworkVideoClientSession {
         switch effect {
         case .sendControl(let message):
             transport.send(message.encode(), on: .control)
-        case .startDecodePipeline(let captureSize, _):
-            startDecodePipeline(captureSize: captureSize)
+        case .startDecodePipeline(let captureSize, _, let fullRange):
+            startDecodePipeline(captureSize: captureSize, fullRange: fullRange)
         case .stopDecodePipeline:
             stopDecodePipeline()
         case .updateCaptureSize(let size):
@@ -760,9 +869,14 @@ public actor RworkVideoClientSession {
         }
     }
 
-    private func startDecodePipeline(captureSize: VideoSize) {
+    private func startDecodePipeline(captureSize: VideoSize, fullRange: Bool) {
         decodedSize = captureSize
-        dbg("decode pipeline up — native(capture)=\(Int(captureSize.width))x\(Int(captureSize.height)); this is the FIXED aspect-fit denominator for the session")
+        dbg("decode pipeline up — native(capture)=\(Int(captureSize.width))x\(Int(captureSize.height)) fullRange=\(fullRange); this is the FIXED aspect-fit denominator for the session")
+        // WF-6 (#8): set the renderer's color range to the stream's negotiated luma range BEFORE the
+        // first frame renders (the helloAck carrying it arrived before any media). The decoder's output
+        // pixel-format variant is set below from the SAME bool, so renderer + decoder agree — both
+        // derived from the host's actual encoded range. `.video` ⇒ today's coefficients.
+        gui.setColorRange(ColorRange(fullRange: fullRange))
         // The decoder hands each decoded NV12 buffer to the pipeline-owned pacer (via
         // the GUI hook, most-recent-wins); the pacer renders it at the display link's
         // vsync. GUI-only — the decode path is never reached in a test.
@@ -778,6 +892,9 @@ public actor RworkVideoClientSession {
             let h = Double(CVPixelBufferGetHeight(imageBuffer))
             Task { await self.noteDecoded(width: w, height: h) }
         }
+        // WF-6 (#8): request the NV12 output variant matching the stream's range (set before the
+        // decoder's lazy first configure on the first keyframe). `false` ⇒ VideoRange (today).
+        decoder.outputFullRange = fullRange
         self.decoder = decoder
         reapplyCursor()
         log.info("client decode pipeline up at capture \(captureSize.width, privacy: .public)x\(captureSize.height, privacy: .public)")

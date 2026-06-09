@@ -64,7 +64,7 @@ final class ResizeStateMachineTests: XCTestCase {
         _ = sm.handleControl(.bye, windowBoundsCG: bounds, resolveCaptureSize: acceptAll, resolveResizeSize: resolveResize)
         let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: windowID, viewport: VideoSize(width: 800, height: 600))
         let reconnect = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll, resolveResizeSize: resolveResize)
-        guard case .sendControl(.helloAck(_, let streamID, _, _, _)) = reconnect[0] else { return XCTFail("expected reconnect ack") }
+        guard case .sendControl(.helloAck(_, let streamID, _, _, _, _)) = reconnect[0] else { return XCTFail("expected reconnect ack") }
         XCTAssertEqual(streamID, 8, "the resize between hello and bye did NOT consume a streamID")
     }
 
