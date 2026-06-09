@@ -44,13 +44,14 @@ final class VideoMuxHeaderCodecTests: XCTestCase {
         }
     }
 
-    func testMuxFrameFragmentHeaderSizeIs19() {
-        XCTAssertEqual(MuxFrameFragmentHeader.size, 19)
+    func testMuxFrameFragmentHeaderSizeIs23() {
+        // 19-byte live FrameFragmentHeader (grew from 15 with the host-send-timestamp) + 4-byte channelID.
+        XCTAssertEqual(MuxFrameFragmentHeader.size, 23)
         XCTAssertEqual(MuxFrameFragmentHeader.size, FrameFragmentHeader.size + 4)
     }
 
-    func testMuxMaxPayloadSizeIsDatagramMinus19() {
-        XCTAssertEqual(MuxFrameFragmentHeader.maxPayloadSize, VideoPacketizer.maxDatagramSize - 19)
+    func testMuxMaxPayloadSizeIsDatagramMinus23() {
+        XCTAssertEqual(MuxFrameFragmentHeader.maxPayloadSize, VideoPacketizer.maxDatagramSize - 23)
         XCTAssertEqual(MuxFrameFragmentHeader.maxPayloadSize, VideoPacketizer.maxDatagramSize - MuxFrameFragmentHeader.size)
     }
 
@@ -121,12 +122,13 @@ final class VideoMuxHeaderCodecTests: XCTestCase {
         }
     }
 
-    // MARK: Frame-fragment framing sizes (the mux wire wraps the 15-byte FrameFragmentHeader)
+    // MARK: Frame-fragment framing sizes (the mux wire wraps the 19-byte FrameFragmentHeader)
 
-    func testMuxFrameFragmentHeaderWrapsTheFifteenByteHeader() {
-        // The mux frame-fragment header is the 15-byte FrameFragmentHeader prefixed by the 4-byte
-        // channelID. Pinning the relationship guards the on-wire framing math.
-        XCTAssertEqual(FrameFragmentHeader.size, 15)
+    func testMuxFrameFragmentHeaderWrapsTheLiveHeader() {
+        // The mux frame-fragment header is the 19-byte FrameFragmentHeader (15-byte base + 4-byte
+        // host-send-timestamp) prefixed by the 4-byte channelID. Pinning the relationship guards the
+        // on-wire framing math.
+        XCTAssertEqual(FrameFragmentHeader.size, 19)
         XCTAssertEqual(MuxFrameFragmentHeader.size, FrameFragmentHeader.size + VideoMuxHeaderCodec.channelIDLength)
     }
 

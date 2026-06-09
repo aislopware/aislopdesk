@@ -8,12 +8,23 @@ public struct ReassembledFrame: Equatable, Sendable {
     /// The AVCC byte buffer (length-prefixed NAL units) — exactly the bytes the
     /// host packetized, restored either directly or via FEC recovery.
     public var avcc: Data
+    /// True when a data hole existed and FEC parity filled it to complete this frame (the
+    /// `fecRecovered` telemetry numerator). False for a frame that arrived whole. Defaulted so
+    /// existing constructors stay valid.
+    public var recoveredViaFEC: Bool
+    /// WF-8: this is a Long-Term-Reference frame (the fragments carried
+    /// ``FrameFragmentHeader/Flags/isLTR``, bit 6). On a SUCCESSFUL decode the client replies
+    /// `RecoveryMessage.ack(frameID)` so the host learns the client holds this LTR (the ACKED-ONLY
+    /// recovery invariant). Defaulted false for source-compat; false on every pre-WF-8 / LTR-off frame.
+    public var isLTR: Bool
 
-    public init(frameID: UInt32, keyframe: Bool, crisp: Bool, avcc: Data) {
+    public init(frameID: UInt32, keyframe: Bool, crisp: Bool, avcc: Data, recoveredViaFEC: Bool = false, isLTR: Bool = false) {
         self.frameID = frameID
         self.keyframe = keyframe
         self.crisp = crisp
         self.avcc = avcc
+        self.recoveredViaFEC = recoveredViaFEC
+        self.isLTR = isLTR
     }
 }
 
@@ -45,6 +56,15 @@ public struct FrameReassembler {
         var fragCount: UInt16
         var keyframe: Bool
         var crisp: Bool
+        /// WF-8: set true once ANY fragment of this frame carries ``FrameFragmentHeader/Flags/isLTR``
+        /// (bit 6) — like `keyframe`/`crisp`, latched from the flags so a reordered/partial arrival
+        /// still marks the frame an LTR. Threaded into the completed ``ReassembledFrame``.
+        var isLTR: Bool = false
+        /// WF-4: the FEC tier PINNED from the FIRST fragment seen for this frame. Every fragment of a
+        /// frame carries the same tier; later disagreement (a corrupt fragment) is ignored so the
+        /// data/parity split can't change mid-frame. Drives the per-frame group size via
+        /// ``AdaptiveFECPolicy/groupSize(forTier:default:)`` (nil = OFF → frame is treated as no-parity).
+        var fecTier: UInt8 = AdaptiveFECPolicy.defaultTier
         /// Data-fragment payloads by `fragIndex` (the data range is `0 ..< dataCount`).
         var data: [UInt16: Data] = [:]
         /// Parity-fragment payloads keyed by their GROUP ORDER (0-based among parity
@@ -144,10 +164,11 @@ public struct FrameReassembler {
             highestSeenFrameID = frameID
         }
 
-        var entry = pending[frameID] ?? Pending(fragCount: fragment.header.fragCount, keyframe: false, crisp: false)
+        var entry = pending[frameID] ?? Pending(fragCount: fragment.header.fragCount, keyframe: false, crisp: false, fecTier: fragment.header.flags.fecTier)
         entry.fragCount = fragment.header.fragCount
         if fragment.header.flags.contains(.keyframe) { entry.keyframe = true }
         if fragment.header.flags.contains(.crisp) { entry.crisp = true }
+        if fragment.header.flags.contains(.isLTR) { entry.isLTR = true }   // WF-8 bit 6
 
         if fragment.header.flags.contains(.parity) {
             let pIndex = Int(fragment.header.fragIndex)
@@ -159,8 +180,14 @@ public struct FrameReassembler {
             entry.dataCount = min(entry.dataCount ?? pIndex, pIndex)
             // Key parity by GROUP ORDER (= fragIndex - dataCount), so a lost group-0
             // parity does not shift the boundary or mis-map a surviving higher-group
-            // parity. Without FEC, fall back to the raw fragIndex (no inversion possible).
-            let dataBoundary = fec != nil ? invertedDataCount(fragCount: Int(entry.fragCount)) : pIndex
+            // parity. Without FEC (or an OFF-tier frame), fall back to the raw fragIndex.
+            // The boundary uses this frame's PER-FRAME group size (WF-4), not a local constant.
+            let dataBoundary: Int
+            if let g = parityGroupSize(entry) {
+                dataBoundary = invertedDataCount(fragCount: Int(entry.fragCount), groupSize: g)
+            } else {
+                dataBoundary = pIndex
+            }
             let groupOrder = max(0, pIndex - dataBoundary)
             entry.parity[groupOrder] = fragment.payload
         } else {
@@ -221,14 +248,16 @@ public struct FrameReassembler {
     /// ingested yet. Such a frame is NOT permanently hopeless — its late, reordered
     /// parity could still complete it — so the sweep grants it the reorder grace.
     private func awaitingRecoverableParity(_ frameID: UInt32) -> Bool {
-        guard let entry = pending[frameID], let fec else { return false }
+        // PER-FRAME group size (WF-4): nil for no-FEC OR an OFF-tier frame → no parity can ever
+        // arrive to fill a hole, so the frame is never "awaiting parity".
+        guard let entry = pending[frameID], let g = parityGroupSize(entry) else { return false }
         let dataCount = resolvedDataCount(entry)
         guard dataCount > 0 else { return false }
         var index = 0
         var groupIndex = 0
         var sawRepairableHole = false
         while index < dataCount {
-            let upper = min(index + fec.groupSize, dataCount)
+            let upper = min(index + g, dataCount)
             let missing = (index ..< upper).filter { entry.data[UInt16($0)] == nil }.count
             if missing >= 2 { return false } // not parity-repairable: permanently hopeless
             if missing == 1 {
@@ -237,7 +266,7 @@ public struct FrameReassembler {
                 if entry.parity[groupIndex] != nil { return false }
                 sawRepairableHole = true
             }
-            index += fec.groupSize
+            index += g
             groupIndex += 1
         }
         return sawRepairableHole
@@ -246,9 +275,9 @@ public struct FrameReassembler {
     /// Attempts to finish a specific frame; emits `.completed` when whole.
     private mutating func tryComplete(frameID: UInt32) -> ReassemblyResult {
         guard let entry = pending[frameID] else { return .stale }
-        guard let avcc = assemble(entry) else { return .incomplete }
+        guard let assembled = assemble(entry) else { return .incomplete }
         retire(frameID, completed: true)
-        return .completed(ReassembledFrame(frameID: frameID, keyframe: entry.keyframe, crisp: entry.crisp, avcc: avcc))
+        return .completed(ReassembledFrame(frameID: frameID, keyframe: entry.keyframe, crisp: entry.crisp, avcc: assembled.avcc, recoveredViaFEC: assembled.recoveredViaFEC, isLTR: entry.isLTR))
     }
 
     /// Resolves how many of a frame's fragments are DATA (vs FEC parity).
@@ -264,21 +293,33 @@ public struct FrameReassembler {
     /// of WHICH parity fragments survived. With no FEC, `dataCount == fragCount`.
     private func resolvedDataCount(_ entry: Pending) -> Int {
         let total = Int(entry.fragCount)
-        if fec != nil { return invertedDataCount(fragCount: total) }
-        // No FEC: every fragment is data (the observed boundary, if any, equals total).
+        // WF-4: gate on the PER-FRAME group size, NOT on `fec != nil`. An OFF-tier frame holds a
+        // non-nil `fec` instance but carries NO parity (group size nil) → it must take the
+        // no-parity branch (dataCount == fragCount), else the inversion would subtract parity that
+        // was never sent and mis-split the frame.
+        if let g = parityGroupSize(entry) { return invertedDataCount(fragCount: total, groupSize: g) }
+        // No FEC OR OFF tier: every fragment is data (the observed boundary, if any, equals total).
         return entry.dataCount ?? total
     }
 
+    /// The PER-FRAME FEC group size for `entry` (WF-4): nil for a no-FEC client OR an OFF-tier frame
+    /// (`AdaptiveFECPolicy.groupSize` returns nil), in which case the frame is treated as no-parity.
+    /// Tier 0 routes to the configured `fec.groupSize`, matching the host's tier-0 default.
+    private func parityGroupSize(_ entry: Pending) -> Int? {
+        guard let fec else { return nil }
+        return AdaptiveFECPolicy.groupSize(forTier: entry.fecTier, default: fec.groupSize)
+    }
+
     /// Inverts `fragCount = dataCount + ceil(dataCount / groupSize)` to recover the data
-    /// fragment count from the total, assuming the configured FEC group size. Monotonic
-    /// in `dataCount`, so a simple descending scan finds the unique solution. Returns
-    /// `fragCount` unchanged if there is no FEC scheme (no parity to subtract).
-    private func invertedDataCount(fragCount total: Int) -> Int {
-        guard let fec else { return total }
+    /// fragment count from the total, using the PER-FRAME `groupSize` (WF-4). Monotonic in
+    /// `dataCount`, so a simple descending scan finds the unique solution. A non-positive
+    /// `groupSize` (defensive) returns `fragCount` unchanged.
+    private func invertedDataCount(fragCount total: Int, groupSize: Int) -> Int {
+        guard groupSize >= 1 else { return total }
         // Find d such that d + ceil(d / groupSize) == total. Monotonic in d.
         var d = total
         while d > 0 {
-            let parity = (d + fec.groupSize - 1) / fec.groupSize
+            let parity = (d + groupSize - 1) / groupSize
             if d + parity == total { return d }
             if d + parity < total { break }
             d -= 1
@@ -286,33 +327,38 @@ public struct FrameReassembler {
         return total
     }
 
-    /// Returns the reassembled AVCC bytes if all data fragments are present (after
-    /// FEC recovery), else `nil`.
-    private func assemble(_ entry: Pending) -> Data? {
+    /// Returns the reassembled AVCC bytes if all data fragments are present (after FEC recovery),
+    /// else `nil`. `recoveredViaFEC` is true when a data hole existed and the FEC `recover` filled
+    /// it (the `fecRecovered` telemetry numerator) — false for a frame that arrived whole.
+    private func assemble(_ entry: Pending) -> (avcc: Data, recoveredViaFEC: Bool)? {
         // dataCount is the parity boundary; if no parity seen, infer it (see helper).
         let dataCount = resolvedDataCount(entry)
         guard dataCount > 0 else {
             // A zero-data frame: only valid if fragCount accounts purely for an empty
             // single fragment.
-            if entry.data[0] != nil { return entry.data[0] }
+            if let only = entry.data[0] { return (only, false) }
             return nil
         }
 
         var dataFragments: [Data?] = (0 ..< dataCount).map { entry.data[UInt16($0)] }
 
-        if dataFragments.contains(where: { $0 == nil }), let fec {
+        // A hole existed before FEC: if recovery then completes the frame, it was FEC-recovered.
+        // WF-4: only attempt recovery with a real PER-FRAME group size (nil = no-FEC OR OFF tier →
+        // no parity exists, so a hole stays a hole and the frame is left incomplete/dropped).
+        let hadHole = dataFragments.contains(where: { $0 == nil })
+        if hadHole, let fec, let g = parityGroupSize(entry) {
             let parityCount = Int(entry.fragCount) - dataCount
             // Parity is keyed by GROUP ORDER (FIX #1): group `g`'s parity is `parity[g]`,
             // so a lost group-0 parity leaves slot 0 `nil` (the recover() contract) while
             // a surviving group-1 parity is correctly at slot 1 — never shifted.
             let parityFragments: [Data?] = (0 ..< max(0, parityCount)).map { entry.parity[$0] }
-            dataFragments = fec.recover(dataFragments: dataFragments, parityFragments: parityFragments)
+            dataFragments = fec.recover(dataFragments: dataFragments, parityFragments: parityFragments, groupSize: g)
         }
 
         guard !dataFragments.contains(where: { $0 == nil }) else { return nil }
         var avcc = Data()
         for fragment in dataFragments { avcc.append(fragment!) }
-        return avcc
+        return (avcc, hadHole)
     }
 
     /// Whether a frame still has a chance to complete (all data present or FEC could
@@ -322,20 +368,20 @@ public struct FrameReassembler {
         let dataCount = resolvedDataCount(entry)
         if dataCount <= 0 { return entry.data[0] != nil }
         // Group losses by FEC group; a group with >1 missing data fragment and no
-        // way to fill it cannot complete. Without FEC, ANY missing data fragment is
-        // terminal once the frame is "old".
-        guard let fec else {
+        // way to fill it cannot complete. Without FEC (or an OFF-tier frame, group size nil),
+        // ANY missing data fragment is terminal once the frame is "old".
+        guard let g = parityGroupSize(entry) else {
             return !(0 ..< dataCount).contains { entry.data[UInt16($0)] == nil }
         }
         var index = 0
         var groupIndex = 0
         while index < dataCount {
-            let upper = min(index + fec.groupSize, dataCount)
+            let upper = min(index + g, dataCount)
             let missing = (index ..< upper).filter { entry.data[UInt16($0)] == nil }.count
             if missing >= 2 { return false }
             // Parity keyed by GROUP ORDER (FIX #1): this group's parity is `parity[groupIndex]`.
             if missing == 1, entry.parity[groupIndex] == nil { return false }
-            index += fec.groupSize
+            index += g
             groupIndex += 1
         }
         return true

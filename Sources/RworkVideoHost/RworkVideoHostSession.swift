@@ -39,11 +39,18 @@ public actor RworkVideoHostSession {
     /// flow from `log show`. When enabled, the key lifecycle beats are mirrored to stderr so the
     /// gate can pinpoint where (if anywhere) the pipeline stalls. No-op in production.
     private static let debugStderr = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil
-    /// Burst-resilient transmission interleaving (2026-06-08 flicker fix). DEFAULT OFF: a white/blank
-    /// stream was observed the first time the column-major send order shipped, so until that is
-    /// root-caused on HW the safe default is the plain consecutive send order. A/B without a rebuild
-    /// via `RWORK_INTERLEAVE=1`. The pure ``FragmentInterleaver`` (+ its tests) stays in place.
-    private static let interleaveTransmit = ProcessInfo.processInfo.environment["RWORK_INTERLEAVE"] == "1"
+    /// Burst-resilient transmission interleaving (2026-06-08 flicker fix). DEFAULT ON; `RWORK_INTERLEAVE=0`
+    /// reverts to the plain consecutive send order. The white/blank stream once seen on first enable was
+    /// HW-investigated (2026-06-09) and is GONE on the current codebase — proven two ways: (1) the headless
+    /// `rwork-loopback-validate` harness runs synthetic→REAL HW HEVC encode→packetize→interleave→reassemble
+    /// →REAL HW decode and reports 120/120 clean at no-loss AND full FEC recovery of a 2- and 3-adjacent
+    /// datagram burst that the plain order drops entirely (0/120); (2) the live GUI loopback (capture→encode
+    /// →UDP→decode→Metal) with `RWORK_INTERLEAVE=1` rendered the remote window crisply with zero decode
+    /// failures. The original symptom was a live-only artifact since fixed incidentally by the header rewrite
+    /// + reassembler dataCount-inversion. Reorder is a pure send-order permutation (header/`fragIndex`
+    /// untouched, reassembler reorder-tolerant) → no wire change. The pure ``FragmentInterleaver`` (+ tests)
+    /// and the harness interleave scenarios stand as regression proof.
+    private static let interleaveTransmit = ProcessInfo.processInfo.environment["RWORK_INTERLEAVE"] != "0"
     /// SEND PACING (2026-06-08 flicker fix, the SAFE one — no reorder, no wire change). A large frame
     /// (a ~115 KB heartbeat IDR ≈ 97 datagrams, or a big scroll delta) sent as ONE instant burst
     /// overflows the client UDP receive buffer / WireGuard tunnel → consecutive packet loss → the
@@ -70,6 +77,45 @@ public actor RworkVideoHostSession {
     private static let kfDup = ProcessInfo.processInfo.environment["RWORK_KF_DUP"] == "1"
     /// Throttle so a recovery-IDR burst is not byte-amplified: duplicate at most one keyframe per interval.
     private static let kfDupMinInterval: TimeInterval = 0.25
+    /// NETWORK-FEEDBACK TELEMETRY (the network-feedback channel). DEFAULT ON; disable with
+    /// `RWORK_NETSTATS=0`. When ON, every outgoing video fragment is stamped with the host-relative
+    /// send time and the host folds the client's periodic NetworkStats reports into a NetworkEstimate
+    /// (MAINTAIN+LOG only — nothing consumes it to change the stream yet). When "0", the host writes a
+    /// 0 timestamp → the client observes 0 → reports `latestHostSendTs = 0` → the RTT fold is skipped
+    /// (computeRTTMillis returns nil), fully reverting to today's open-loop path. The 4-byte wire field
+    /// stays present either way (fixed header layout).
+    private static let telemetryEnabled = ProcessInfo.processInfo.environment["RWORK_NETSTATS"] != "0"
+    /// WF-2 ADAPTIVE BITRATE. DEFAULT OFF; enable with `RWORK_ABR=1`. When ON the host folds each
+    /// client NetworkStats report (already done for telemetry) into a ``LiveCongestionController`` and
+    /// actuates the resulting target via ``VideoEncoder/setLiveBitrate(_:)``. When OFF the controller
+    /// is never seeded/ticked, so `setLiveBitrate` is never called and the live rate stays pinned at
+    /// the resolution-aware ceiling — byte-identical to today. Needs telemetry reports to ever tick
+    /// (if the client sets `RWORK_NETSTATS=0` no reports arrive ⇒ the controller never fires ⇒ inert).
+    private static let abrEnabled = ProcessInfo.processInfo.environment["RWORK_ABR"] == "1"
+    /// WF-4 ADAPTIVE FEC. DEFAULT OFF; enable with `RWORK_ADAPTIVE_FEC=1`. When ON the host picks a
+    /// per-frame XOR-parity group size (``AdaptiveFECPolicy``) from the folded loss EWMA and signals it
+    /// in each fragment's flags so the client splits data/parity identically. When OFF the host always
+    /// sends tier 0 (the configured `fec.groupSize`, 5 in prod) → spare flag bits stay zero → the wire is
+    /// byte-identical to the pre-WF-4 path. Needs telemetry reports to ever change tier (if the client
+    /// sets `RWORK_NETSTATS=0` no reports arrive ⇒ the tier stays at the today-default tier 0, never OFF).
+    private static let adaptiveFECEnabled = ProcessInfo.processInfo.environment["RWORK_ADAPTIVE_FEC"] == "1"
+    /// WF-6 (#8) FULL-RANGE COLOR. DEFAULT OFF; enable with `RWORK_FULL_RANGE=1`. ONE flag flips ALL
+    /// FOUR atomic points together: (1) the capturer's NV12 pixel-format variant, (2) the encoder's
+    /// explicit BT.709 VUI keys, (3) the `helloAck.fullRange` byte the host sends, and — because the
+    /// client derives its decoder pixel-format + shader coefficients FROM that byte — (4) the client
+    /// decoder + Metal shader. When OFF all four stay video-range, byte-identical to today. Read once
+    /// (env static, like the flags above). NOTE: this is a HOST flag only — the client follows the
+    /// stream, so there is NO matching client env to keep in sync (the desync footgun is unreachable).
+    private static let fullRange = ProcessInfo.processInfo.environment["RWORK_FULL_RANGE"] == "1"
+    /// WF-8 LONG-TERM-REFERENCE RECOVERY. DEFAULT OFF; enable with `RWORK_LTR=1` (WF-7's HW probe
+    /// confirmed VERDICT=supported on this host). When ON: the encoder sets EnableLTR + reads the
+    /// per-frame ack token, LTR frames carry the `isLTR` wire bit, the client acks decoded LTR frames,
+    /// and a `requestLTRRefresh` recovers via a cheap `ForceLTRRefresh` P-frame against an ACKNOWLEDGED
+    /// token (the ACKED-ONLY invariant) instead of a full IDR — falling back to a real IDR when no
+    /// token is acked. When OFF: EnableLTR unset, no token read, no `isLTR` bit, `.refreshLTR` folds to
+    /// `requestKeyframe()` (today's requestLTRRefresh→IDR), the client sees no LTR frame so sends no
+    /// ack — byte-identical to today. Read once (env static, like the flags above).
+    private static let ltrEnabled = ProcessInfo.processInfo.environment["RWORK_LTR"] == "1"
     /// Full per-event injection trace (`RWORK_INPUT_TRACE=1`): logs EVERY injected input event
     /// with a monotonic sequence number (NOT sampled), so a loopback run can read the exact
     /// injected ORDER — the ground truth for the reorder fix. No-op in production.
@@ -77,6 +123,34 @@ public actor RworkVideoHostSession {
     private var encodedFrameCount = 0
     /// Uptime seconds of the last keyframe whose datagrams were duplicate-sent (F3 throttle).
     private var lastKeyframeDupTime: TimeInterval = 0
+    /// Monotonic anchor for the per-fragment `hostSendTsMillis` stamp + the RTT fold (the network-
+    /// feedback channel). Captured at init BEFORE any frame, so every stamp and `hostRelativeMillis()`
+    /// share ONE epoch — RTT is `(hostNow − stamp) − clientHold`, all in this single clock domain
+    /// (zero cross-machine skew). A reconnect that re-creates the actor resets the anchor; a stale
+    /// stamp echoed from a prior session is rejected by `NetworkEstimate.computeRTTMillis` (elaps<0 / >60s).
+    private let sessionStartUptime = ProcessInfo.processInfo.systemUptime
+    /// Host-side network estimate folded from the client's periodic NetworkStats reports. A pure value
+    /// type — no reference capture, so no retain-cycle risk.
+    private var networkEstimate = NetworkEstimate()
+    /// WF-2 ADAPTIVE BITRATE controller (only seeded when `RWORK_ABR=1`). A pure value type re-seeded
+    /// at every encoder build so a resize re-anchors it to the new resolution's ceiling. `nil` ⇒ ABR
+    /// off or no encoder yet ⇒ no actuation.
+    private var congestionController: LiveCongestionController?
+    /// The last bitrate actually pushed to the encoder via `setLiveBitrate`, so the controller's small
+    /// per-tick additive moves are throttled to MATERIAL changes (the controller's `current` advances
+    /// every tick; actuation compares against THIS, not the prior tick). Re-anchored to the ceiling at
+    /// each encoder build.
+    private var lastActuatedBitrate = 0
+    /// WF-4 current adaptive-FEC tier. Starts at tier 0 (= today's configured `fec.groupSize`, g5) so
+    /// the stream is byte-identical to today until a real netstats report folds loss and (only when
+    /// `RWORK_ADAPTIVE_FEC=1`) moves it. With no reports it never moves — inert at the safe default,
+    /// never OFF.
+    private var currentFECTier: UInt8 = AdaptiveFECPolicy.defaultTier
+    /// WF-8 LTR recovery bookkeeping (pure value type — no reference capture, no retain-cycle risk).
+    /// Records `frameID ↔ ack-token` for emitted LTR frames and the set of tokens the client has
+    /// ACKNOWLEDGED, both bounded. Only mutated when `RWORK_LTR=1`; inert (never recorded/acked) when
+    /// off, so a `.refreshLTR` decision always falls back to a real IDR.
+    private var ltrController = LTRController()
     nonisolated private func dbg(_ message: @autoclosure () -> String) {
         guard Self.debugStderr else { return }
         FileHandle.standardError.write(Data("rwork-videohostd[session]: \(message())\n".utf8))
@@ -161,7 +235,7 @@ public actor RworkVideoHostSession {
         self.captureSizeOverride = captureSizeOverride
         self.bitrate = bitrate
         self.fps = max(1, fps)
-        self.stateMachine = VideoSessionStateMachine()
+        self.stateMachine = VideoSessionStateMachine(fullRange: Self.fullRange)
         self.packetizer = VideoPacketizer(fec: fec)
         self.fecGroupSize = fec?.groupSize ?? 1
     }
@@ -212,7 +286,7 @@ public actor RworkVideoHostSession {
                 let batch = eq.drainAll()
                 // Process IN ORDER (the FIFO carried encode order from the serial VT callback).
                 for frame in batch {
-                    await self.onEncodedFrame(avcc: frame.avcc, keyframe: frame.keyframe, crisp: frame.crisp)
+                    await self.onEncodedFrame(avcc: frame.avcc, keyframe: frame.keyframe, crisp: frame.crisp, ltrToken: frame.ltrToken)
                 }
             }
         }
@@ -424,14 +498,43 @@ public actor RworkVideoHostSession {
         }
     }
 
+    /// Host-monotonic milliseconds since `sessionStartUptime`, truncated into a `UInt32` (the wire
+    /// width). `truncatingIfNeeded` makes the ~49.7-day wrap well-defined; the RTT fold's wrap-aware
+    /// subtraction stays correct across it. Stamped on every video fragment and read again on a
+    /// NetworkStats receipt, so both ends of the RTT live in this one clock domain.
+    private func hostRelativeMillis() -> UInt32 {
+        UInt32(truncatingIfNeeded: Int64((ProcessInfo.processInfo.systemUptime - sessionStartUptime) * 1000))
+    }
+
     private func handleRecovery(_ data: Data) {
         switch recoveryRouter.route(datagram: data, mediaFlowing: stateMachine.mediaFlowing) {
         case .forceKeyframe:
             // Force an IDR on the next captured frame so a client that lost frames
             // re-anchors immediately instead of waiting for the ~1s heartbeat IDR.
             capturer?.requestKeyframe()
+        case .refreshLTR:
+            // WF-8: the client asked for an LTR refresh. Decide LTR-refresh-vs-IDR from the runtime
+            // acked-token state under the ACKED-ONLY invariant. `.ltrRefresh` issues a cheap
+            // ForceLTRRefresh P-frame against a token the client DECODED+ACKED; `.idr` falls back to a
+            // real keyframe (when RWORK_LTR is off OR no token is acked yet — today's behaviour exactly).
+            switch ltrController.recoveryDecision(request: .ltrRefresh, hasEnableLTR: Self.ltrEnabled) {
+            case .ltrRefresh:
+                dbg("recovery refreshLTR → LTR refresh (acked tokens available)")
+                capturer?.requestLTRRefresh()
+            case .idr:
+                capturer?.requestKeyframe()
+            }
         case .ack(let streamSeq):
-            // No retransmit/LTR-pin window to advance yet; record for diagnostics.
+            // WF-8: the `streamSeq` wire field carries a FRAME ID (the dead ack path is repurposed —
+            // see RecoveryMessage.ack). Fold it: map frameID→token, add the token to the bounded acked
+            // set, and stage it onto the encoder as an AcknowledgedLTRTokens option so a later
+            // ForceLTRRefresh may reference it (the ACKED-ONLY invariant). An unknown/duplicate/evicted
+            // frameID is a safe no-op (ackFrame returns nil). Only acts under RWORK_LTR; off ⇒ the
+            // client never sends acks anyway, and this stays diagnostics-only.
+            if Self.ltrEnabled, let token = ltrController.ackFrame(frameID: streamSeq) {
+                encoder?.stageAcknowledgedToken(token)
+                dbg("recovery ack frameID=\(streamSeq) → staged LTR token \(token)")
+            }
             log.debug("recovery ack streamSeq=\(streamSeq, privacy: .public)")
         case .reshipCursorShape(let shapeID):
             // FIX B self-heal: the client lost this shape's one-shot bitmap (or it never fit
@@ -439,11 +542,78 @@ public actor RworkVideoHostSession {
             // socket again as a `CursorShapeMessage`; the client cache re-insert is idempotent.
             dbg("recovery requestCursorShape \(shapeID) — re-shipping cursor shape")
             cursorSampler?.reshipShape(shapeID)
+        case .networkStats(let report):
+            // Network-feedback telemetry: fold a clock-skew-free estimate (host-clock RTT + loss +
+            // jitter trend) and LOG it. MAINTAIN+LOG only this phase — nothing consumes the estimate
+            // to alter the stream yet. `RWORK_NETSTATS=0` ⇒ the client reports latestHostSendTs=0 ⇒
+            // computeRTTMillis returns nil ⇒ the RTT term is skipped (loss/jitter still fold).
+            let rtt = NetworkEstimate.computeRTTMillis(hostNowMs: hostRelativeMillis(),
+                                                       latestHostSendTs: report.latestHostSendTs,
+                                                       clientHoldMs: report.clientHoldMs)
+            networkEstimate.fold(rttMillis: rtt, framesReceived: report.framesReceived,
+                                 unrecovered: report.unrecovered, owdJitterMicros: report.owdJitterMicros)
+            // WF-4 ADAPTIVE FEC: pick the per-frame group-size tier from the freshly-folded loss EWMA.
+            // Hysteretic + one-step-clamped (anti-flap) inside the pure policy. Updated ONLY here, inside
+            // a real report → it can't move before there is loss data (inert when no reports arrive).
+            // No-op unless `RWORK_ADAPTIVE_FEC=1` ⇒ the tier stays at the today-default tier 0.
+            if Self.adaptiveFECEnabled {
+                currentFECTier = AdaptiveFECPolicy.tier(forLossRate: networkEstimate.lossRate, previousTier: currentFECTier)
+            }
+            // WF-2 ADAPTIVE BITRATE: tick the AIMD controller on the freshly-folded estimate and
+            // actuate a MATERIAL target change onto the live encoder. No-op unless `RWORK_ABR=1` (the
+            // controller is then never seeded ⇒ nil ⇒ this whole block is skipped and the live rate
+            // stays pinned at the ceiling). The controller is a pure value type — copy out, tick,
+            // write back; no reference capture, so no retain-cycle risk. `setLiveBitrate` is throttled
+            // to material moves (≈5% of ceiling / 500 kbps) so it fires rarely, not every report.
+            if Self.abrEnabled, var ctrl = congestionController {
+                let target = ctrl.onReport(networkEstimate)
+                congestionController = ctrl
+                if LiveCongestionController.isMaterialChange(previous: lastActuatedBitrate, target: target, ceiling: ctrl.ceiling) {
+                    lastActuatedBitrate = target
+                    encoder?.setLiveBitrate(target)
+                    dbg("abr: actuate target=\(target) ceiling=\(ctrl.ceiling) floor=\(ctrl.floor) current=\(ctrl.current) ticks=\(ctrl.ticks)")
+                }
+            }
+            // Precompute display strings so the log interpolation captures only plain Strings.
+            let rttStr = rtt.map { String($0) } ?? "nil"
+            let smoothedStr = String(format: "%.1f", networkEstimate.smoothedRTTMillis)
+            let lossStr = String(format: "%.3f", networkEstimate.lossRate)
+            let minRTTStr = networkEstimate.minRTTMillis.isFinite ? String(format: "%.1f", networkEstimate.minRTTMillis) : "inf"
+            let rising = networkEstimate.owdGradientRising
+            log.info("netstats rx: rttSample=\(rttStr, privacy: .public)ms smoothedRTT=\(smoothedStr, privacy: .public)ms loss=\(lossStr, privacy: .public) rising=\(rising, privacy: .public)")
+            dbg("netstats rx: frames=\(report.framesReceived) fec=\(report.fecRecovered) lost=\(report.unrecovered) hostTs=\(report.latestHostSendTs) hold=\(report.clientHoldMs)ms jitter=\(report.owdJitterMicros)us → rtt=\(rttStr)ms smoothedRTT=\(smoothedStr)ms minRTT=\(minRTTStr)ms loss=\(lossStr) rising=\(rising)")
         case .drop(let reason):
             log.error("dropping recovery datagram: \(reason)")
         case .ignoreNotStreaming:
             break
         }
+    }
+
+    /// (Re)seed the WF-2 congestion controller to a freshly-built encoder's resolution-aware ceiling
+    /// (no-op unless `RWORK_ABR=1`). Called at EVERY encoder build (initial bring-up + both resize
+    /// rebuild paths) so a resize re-anchors the controller — and `lastActuatedBitrate` — to the NEW
+    /// ceiling; without re-seeding the controller would keep the OLD ceiling/current and either starve
+    /// (old smaller ceiling) or over-shoot (old larger ceiling) the new resolution.
+    private func seedCongestionController(ceiling: Int) {
+        guard Self.abrEnabled else { return }
+        congestionController = LiveCongestionController(ceiling: ceiling)
+        lastActuatedBitrate = ceiling
+    }
+
+    /// WF-8 self-audit fix: invalidate the LTR acked-set + frame map whenever a FRESH encoder /
+    /// `VTCompressionSession` is installed (initial bring-up + both resize rebuild paths — the
+    /// WF-8 counterpart of ``seedCongestionController``, called at the SAME install sites so the
+    /// two recovery controllers re-anchor to the new encoder in lockstep). A new VT session holds
+    /// ZERO acknowledged long-term references and the new encoder's `pendingAckedTokens` starts
+    /// empty, so without this the controller's `acknowledgedTokens` (acked against the now-destroyed
+    /// session) would keep `hasAckedToken` true → a `.refreshLTR` request would return `.ltrRefresh`
+    /// and issue a `ForceLTRRefresh` against an LTR the rebuilt session never had, bypassing the
+    /// host-side half of the ACKED-ONLY invariant (only VT's own contract would then prevent
+    /// corruption). Resetting re-arms the host gate (`.idr` fallback) until the client decodes+acks a
+    /// NEW LTR frame on the rebuilt session. No-op when `RWORK_LTR` is off (the controller is never
+    /// populated), but reset unconditionally so the invariant holds the instant LTR is enabled.
+    private func resetLTRForNewEncoder() {
+        ltrController.reset()
     }
 
     // MARK: Effects
@@ -527,7 +697,10 @@ public actor RworkVideoHostSession {
 
         // b. Build the NEW encoder FIRST (off the live path). If creation throws, abort and keep
         //    the OLD encoder running — degrade to no-resize, never to a dead session.
-        let newEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate), fps: fps, outputHandler: makeEncoderOutputHandler())
+        // WF-2: the new resolution has a new ceiling — re-seed the controller to it once the new
+        //    encoder is actually installed (below), so the controller re-anchors after a resize.
+        let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate)
+        let newEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: ceiling, fps: fps, fullRange: Self.fullRange, ltrEnabled: Self.ltrEnabled, outputHandler: makeEncoderOutputHandler())
         do {
             try newEncoder.createLiveSession()
         } catch {
@@ -548,9 +721,11 @@ public actor RworkVideoHostSession {
         //    false ⇒ forced IDR on its first frame for free, and avoids the per-frame
         //    encoder-ref swap race entirely.
         let logCallback = log
-        let newCapturer = WindowCapturer(fps: fps, captureScale: captureScale) { pixelBuffer, pts, forceKeyframe, crisp, compact in
+        let newCapturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
             do {
-                if crisp {
+                if ltrRefresh {
+                    try newEncoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else if crisp {
                     try newEncoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
                 } else if compact {
                     try newEncoder.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
@@ -589,6 +764,8 @@ public actor RworkVideoHostSession {
 
         // Install the new components, then bring the new SCStream up at the achieved pixel size.
         self.encoder = newEncoder
+        seedCongestionController(ceiling: ceiling)   // WF-2: re-anchor the controller to the new resolution's ceiling
+        resetLTRForNewEncoder()                      // WF-8: the new VT session holds no acked LTRs — invalidate the acked-set
         self.capturer = newCapturer
         let captureWindow = window
         do {
@@ -683,7 +860,10 @@ public actor RworkVideoHostSession {
         let pixelWidth = max(1, Int((points.width * captureScale).rounded()))
         let pixelHeight = max(1, Int((points.height * captureScale).rounded()))
 
-        let rebuiltEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate), fps: fps, outputHandler: makeEncoderOutputHandler())
+        // WF-2: this recovery rebuild uses the OLD (pre-resize) pixel size — re-seed the controller to
+        // its ceiling once installed so it re-anchors to the size actually being captured.
+        let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate)
+        let rebuiltEncoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: ceiling, fps: fps, fullRange: Self.fullRange, ltrEnabled: Self.ltrEnabled, outputHandler: makeEncoderOutputHandler())
         do {
             try rebuiltEncoder.createLiveSession()
         } catch {
@@ -693,9 +873,11 @@ public actor RworkVideoHostSession {
         }
 
         let logCallback = log
-        let rebuiltCapturer = WindowCapturer(fps: fps, captureScale: captureScale) { pixelBuffer, pts, forceKeyframe, crisp, compact in
+        let rebuiltCapturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
             do {
-                if crisp {
+                if ltrRefresh {
+                    try rebuiltEncoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else if crisp {
                     try rebuiltEncoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
                 } else if compact {
                     try rebuiltEncoder.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
@@ -707,6 +889,8 @@ public actor RworkVideoHostSession {
             }
         }
         self.encoder = rebuiltEncoder
+        seedCongestionController(ceiling: ceiling)   // WF-2: re-anchor the controller to the rebuilt (old-size) ceiling
+        resetLTRForNewEncoder()                      // WF-8: the rebuilt VT session holds no acked LTRs — invalidate the acked-set
         self.capturer = rebuiltCapturer
         let captureWindow = window
         do {
@@ -745,7 +929,10 @@ public actor RworkVideoHostSession {
         // Encoder: the EXACT doc-18 low-latency HEVC live session + crisp static refresh (created inside VideoEncoder).
         // Bitrate is resolution-aware (LiveBitratePolicy): a 2× HiDPI window has 4× the pixels and must
         // be provisioned proportionally or the rate cap starves scroll frames → stutter (`bitrate` is the floor).
-        let encoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate), fps: fps, outputHandler: makeEncoderOutputHandler())
+        // WF-2: this resolution-aware result is BOTH the encoder bitrate AND the congestion controller's
+        // ceiling (the controller may never exceed it). Hoist it so we can seed the controller below.
+        let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps, floor: bitrate)
+        let encoder = VideoEncoder(width: pixelWidth, height: pixelHeight, bitrate: ceiling, fps: fps, fullRange: Self.fullRange, ltrEnabled: Self.ltrEnabled, outputHandler: makeEncoderOutputHandler())
         do {
             try encoder.createLiveSession()
         } catch {
@@ -754,6 +941,8 @@ public actor RworkVideoHostSession {
             return
         }
         self.encoder = encoder
+        seedCongestionController(ceiling: ceiling)   // WF-2: anchor the controller to this build's ceiling
+        resetLTRForNewEncoder()                      // WF-8: anchor the LTR acked-set to this build (clears any prior-client acks on actor reuse)
 
         // Capturer: NV12 frames → encoder.encodeLive (zero-copy hand-off). The capture
         // closure captures the encoder DIRECTLY (not via the actor) so the hot per-frame
@@ -762,9 +951,11 @@ public actor RworkVideoHostSession {
         // `@unchecked Sendable` and thread-safe for `encodeLive`. The encoded OUTPUT is
         // what hops back to the actor (`onEncodedFrame`) to packetize + send.
         let logCallback = log
-        let capturer = WindowCapturer(fps: fps, captureScale: captureScale) { pixelBuffer, pts, forceKeyframe, crisp, compact in
+        let capturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
             do {
-                if crisp {
+                if ltrRefresh {
+                    try encoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else if crisp {
                     try encoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
                 } else if compact {
                     try encoder.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
@@ -887,14 +1078,14 @@ public actor RworkVideoHostSession {
     private func makeEncoderOutputHandler() -> VideoEncoder.OutputHandler {
         let queue = encodedQueue
         let wakeup = encodedWakeup
-        return { avcc, keyframe, mode in
+        return { avcc, keyframe, mode, ltrToken in
             // Enqueue THEN signal (no lost wakeup): the consumer always drains after the last append.
-            queue?.append(EncodedFrameQueue.Frame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp))
+            queue?.append(EncodedFrameQueue.Frame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp, ltrToken: ltrToken))
             wakeup?.yield()
         }
     }
 
-    private func onEncodedFrame(avcc: Data, keyframe: Bool, crisp: Bool) async {
+    private func onEncodedFrame(avcc: Data, keyframe: Bool, crisp: Bool, ltrToken: Int64?) async {
         guard stateMachine.mediaFlowing else {
             dbg("encoded frame DROPPED (mediaFlowing=false)")
             return
@@ -903,13 +1094,34 @@ public actor RworkVideoHostSession {
         if encodedFrameCount == 1 || encodedFrameCount % 15 == 0 {
             dbg("encoded+sent frame #\(encodedFrameCount) (\(avcc.count)B, keyframe=\(keyframe), crisp=\(crisp))")
         }
-        let fragments = packetizer.packetize(frame: avcc, keyframe: keyframe, crisp: crisp)
+        // Stamp the host-relative send time on every fragment of this frame (the network-feedback
+        // channel). All fragments of one frame share one stamp; the ~≤6 ms pacing/kfDup bias is
+        // sub-frame and acceptable (it makes the measured RTT a slight upper bound — the safe
+        // direction). 0 when telemetry is disabled (RWORK_NETSTATS=0) → the client reports
+        // latestHostSendTs=0 → the host's RTT fold is skipped.
+        let sendTs: UInt32 = Self.telemetryEnabled ? hostRelativeMillis() : 0
+        // WF-4: the per-frame FEC tier. Adaptive OFF ⇒ always tier 0 (= configured g5) ⇒ byte-identical.
+        let tier = Self.adaptiveFECEnabled ? currentFECTier : AdaptiveFECPolicy.defaultTier
+        // WF-8: if this is an LTR frame (RWORK_LTR on AND the encoder surfaced an ack token), record the
+        // frameID↔token mapping (read the frameID the packetizer is ABOUT to assign, BEFORE packetize
+        // increments it) so a later client ack(frameID) can fold the token, AND mark every fragment
+        // with the isLTR wire bit so the client knows to ack on decode. Off ⇒ ltrToken nil ⇒ no record,
+        // isLTR false ⇒ byte-identical wire. The packetizer persists across resize, so the frameID is
+        // stable; record/peek/packetize all run here in encode order on the actor → race-free.
+        let isLTR = Self.ltrEnabled && ltrToken != nil
+        if isLTR, let token = ltrToken {
+            ltrController.recordLTRFrame(frameID: packetizer.peekNextFrameID, token: token)
+        }
+        let fragments = packetizer.packetize(frame: avcc, keyframe: keyframe, crisp: crisp, hostSendTsMillis: sendTs, fecTier: tier, isLTR: isLTR)
         // Interleave transmission column-major across FEC groups so an adjacent-loss BURST spreads to
         // distinct groups (each recoverable by single-loss XOR) instead of wiping one group. Header
         // `fragIndex`/grouping is unchanged, so the client (reassembles by index, reorder-tolerant) is
-        // unaffected — host-only, no wire change. GATED OFF by default (RWORK_INTERLEAVE=1) pending HW
-        // root-cause of the white-screen regression seen on first enable.
-        let ordered = Self.interleaveTransmit ? FragmentInterleaver.interleave(fragments, groupSize: fecGroupSize) : fragments
+        // unaffected — host-only, no wire change. DEFAULT ON (RWORK_INTERLEAVE=0 disables): the once-seen
+        // white-screen was HW-investigated 2026-06-09 (headless harness + live GUI loopback) and does NOT
+        // reproduce on the current codebase. WF-4: interleave by the SAME per-frame group size the parity
+        // used (OFF tier ⇒ g=1 ⇒ no-op; tier 0 ⇒ fecGroupSize ⇒ identical).
+        let interleaveGroup = AdaptiveFECPolicy.groupSize(forTier: tier, default: fecGroupSize) ?? 1
+        let ordered = Self.interleaveTransmit ? FragmentInterleaver.interleave(fragments, groupSize: interleaveGroup) : fragments
         let outgoings = scheduler.scheduleFrame(ordered)
         await sendPaced(outgoings)
         // F3: keyframe DUPLICATE-SEND. A heartbeat/recovery IDR is a large multi-datagram burst; even
@@ -1021,11 +1233,13 @@ private final class InboundQueue: @unchecked Sendable {
 /// gave no FIFO guarantee across separately-created Tasks targeting the actor (frame N+1 could be
 /// processed before frame N → a delta packetized before its IDR).
 final class EncodedFrameQueue: @unchecked Sendable {
-    /// One encoded frame: the AVCC bytes + keyframe/crisp flags the packetizer needs.
+    /// One encoded frame: the AVCC bytes + keyframe/crisp flags the packetizer needs, plus the WF-8
+    /// LTR ack token (non-nil only when this is a Long-Term-Reference frame and RWORK_LTR is on).
     struct Frame: Sendable {
         let avcc: Data
         let keyframe: Bool
         let crisp: Bool
+        let ltrToken: Int64?
     }
 
     private let lock = NSLock()

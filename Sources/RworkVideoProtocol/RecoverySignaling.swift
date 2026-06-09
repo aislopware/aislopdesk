@@ -12,9 +12,49 @@ import Foundation
 ///
 /// This type models the messages only; the LTR encode wiring lives in
 /// `RworkVideoHost.VideoEncoder`.
+///
+/// A client→host **NetworkStats** report (the network-feedback telemetry channel) rides this same
+/// `.recovery` channel. It is a fixed-width, all-`UInt32` body, so a malformed/truncated report
+/// throws on decode → the router drops the single datagram → the host never crashes on hostile
+/// stats input. All six fields are RELATIVE (windowed counters / a host-stamp echo / client-local
+/// deltas), so the host can derive RTT in its own clock without any cross-machine clock skew.
+public struct NetworkStatsReport: Equatable, Sendable {
+    /// Complete frames the client received in this report window.
+    public var framesReceived: UInt32
+    /// Of those, how many were completed via FEC recovery (a data hole the parity filled).
+    public var fecRecovered: UInt32
+    /// Frames the client declared unrecoverably lost in this window (the loss numerator).
+    public var unrecovered: UInt32
+    /// The newest `hostSendTsMillis` the client has OBSERVED on a video fragment (0 = none /
+    /// telemetry off). The host echoes it against its own clock to compute RTT.
+    public var latestHostSendTs: UInt32
+    /// Client-LOCAL elapsed ms since it observed `latestHostSendTs` (a relative delta in the
+    /// client's own monotonic clock — NEVER an absolute client timestamp). The host subtracts it
+    /// from `(hostNow − latestHostSendTs)` so the client-side processing hold is removed from RTT.
+    public var clientHoldMs: UInt32
+    /// Inter-arrival jitter (microseconds) from the client's OWN clock, RFC3550 2nd-difference form
+    /// (relative deltas only) — fully clock-skew-immune.
+    public var owdJitterMicros: UInt32
+
+    public init(framesReceived: UInt32, fecRecovered: UInt32, unrecovered: UInt32, latestHostSendTs: UInt32, clientHoldMs: UInt32, owdJitterMicros: UInt32) {
+        self.framesReceived = framesReceived
+        self.fecRecovered = fecRecovered
+        self.unrecovered = unrecovered
+        self.latestHostSendTs = latestHostSendTs
+        self.clientHoldMs = clientHoldMs
+        self.owdJitterMicros = owdJitterMicros
+    }
+}
+
 public enum RecoveryMessage: Equatable, Sendable {
     /// Acknowledge the highest contiguous `streamSeq` durably received. Lets the
     /// host bound its retransmit / LTR-pin window.
+    ///
+    /// WF-8 REUSE (single-user repo, no backcompat): the client now sends this after a SUCCESSFUL
+    /// decode of an LTR-flagged frame (``FrameFragmentHeader/Flags/isLTR``), carrying that frame's
+    /// `frameID` in the `streamSeq` field (the field name is historical — the host's `.ack` arm feeds
+    /// it to ``LTRController/ackFrame(frameID:)``, NOT as a streamSeq). This is the ACKED-ONLY signal:
+    /// the host learns the client holds that long-term reference and may `ForceLTRRefresh` against it.
     case ack(streamSeq: UInt32)
 
     /// Request-for-invalidate: the client lost the frames in `[fromFrameID,
@@ -35,6 +75,12 @@ public enum RecoveryMessage: Equatable, Sendable {
     /// host re-emits that shape's bitmap. The cache re-insert is idempotent.
     case requestCursorShape(shapeID: UInt16)
 
+    /// Periodic client→host network-feedback telemetry (the network-feedback channel). Carries a
+    /// ``NetworkStatsReport`` (windowed loss/FEC counters + the newest observed host-send-ts echo +
+    /// the client-local hold + inter-arrival jitter) so the host can MAINTAIN+LOG a clock-skew-free
+    /// RTT/loss/jitter estimate. Telemetry only — it does not change stream behaviour this phase.
+    case networkStats(NetworkStatsReport)
+
     /// On-wire message-type byte.
     public var messageType: UInt8 {
         switch self {
@@ -42,6 +88,7 @@ public enum RecoveryMessage: Equatable, Sendable {
         case .requestLTRRefresh: return 2
         case .requestIDR: return 3
         case .requestCursorShape: return 4
+        case .networkStats: return 5
         }
     }
 
@@ -59,6 +106,13 @@ public enum RecoveryMessage: Equatable, Sendable {
             break
         case .requestCursorShape(let shapeID):
             out.appendBE(shapeID)
+        case .networkStats(let r):
+            out.appendBE(r.framesReceived)
+            out.appendBE(r.fecRecovered)
+            out.appendBE(r.unrecovered)
+            out.appendBE(r.latestHostSendTs)
+            out.appendBE(r.clientHoldMs)
+            out.appendBE(r.owdJitterMicros)
         }
         return out
     }
@@ -79,6 +133,18 @@ public enum RecoveryMessage: Equatable, Sendable {
             return .requestIDR
         case 4:
             return .requestCursorShape(shapeID: try reader.readUInt16())
+        case 5:
+            // Six fixed-width UInt32s; each read is bounds-checked, so a body < 24 bytes throws
+            // .truncated → the router drops the datagram (no OOB / overflow / force-unwrap surface).
+            let framesReceived = try reader.readUInt32()
+            let fecRecovered = try reader.readUInt32()
+            let unrecovered = try reader.readUInt32()
+            let latestHostSendTs = try reader.readUInt32()
+            let clientHoldMs = try reader.readUInt32()
+            let owdJitterMicros = try reader.readUInt32()
+            return .networkStats(NetworkStatsReport(
+                framesReceived: framesReceived, fecRecovered: fecRecovered, unrecovered: unrecovered,
+                latestHostSendTs: latestHostSendTs, clientHoldMs: clientHoldMs, owdJitterMicros: owdJitterMicros))
         default:
             throw VideoProtocolError.malformed("unknown recovery message type \(type)")
         }

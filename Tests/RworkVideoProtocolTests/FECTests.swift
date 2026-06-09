@@ -293,4 +293,121 @@ final class FECTests: XCTestCase {
         if case .completed = result {} else { XCTFail("newer frame should complete, got \(result)") }
         XCTAssertEqual(reassembler.nextDroppedFrame(), data0[0].header.frameID)
     }
+
+    // MARK: WF-4 adaptive FEC — host encodes at a wire tier, the client reads the tier per-frame
+
+    /// A frame sized to split into exactly `target` data fragments (`target-1` full payloads + 1 partial).
+    private func adaptiveFrame(dataFragmentTarget target: Int) -> Data {
+        NALUnit.join([Data((0 ..< (VideoPacketizer.maxPayloadSize * (target - 1) + 200)).map { UInt8(truncatingIfNeeded: $0) })])
+    }
+
+    /// GOLD AGREEMENT: the host packetizes at `tier` (mapping to `expectedGroupSize`); a SEPARATE
+    /// reassembler — configured with the prod default groupSize 5, told NOTHING about the tier — must
+    /// derive THIS frame's data/parity split + parity-group mapping from the wire tier alone and
+    /// recover a single dropped data fragment. If it used its local g5 it would mis-split and fail.
+    private func assertClientRecoversWireSignalledTier(_ tier: UInt8, expectedGroupSize: Int, file: StaticString = #file, line: UInt = #line) throws {
+        let fec = XORParityFEC(groupSize: 5)
+        var packetizer = VideoPacketizer(fec: fec)
+        let frameBytes = adaptiveFrame(dataFragmentTarget: 6)
+        let fragments = packetizer.packetize(frame: frameBytes, keyframe: true, fecTier: tier)
+        let data = fragments.filter { !$0.header.flags.contains(.parity) }
+        let parity = fragments.filter { $0.header.flags.contains(.parity) }
+        XCTAssertEqual(data.count, 6, "frame must split into exactly 6 data fragments", file: file, line: line)
+        XCTAssertEqual(parity.count, (6 + expectedGroupSize - 1) / expectedGroupSize, "parity count = ceil(6 / groupSize)", file: file, line: line)
+        XCTAssertTrue(fragments.allSatisfy { $0.header.flags.fecTier == tier }, "every fragment carries the SAME tier", file: file, line: line)
+
+        // Reassembler is g5; it must override per-frame from the wire tier (NOT use its local constant).
+        var reassembler = FrameReassembler(fec: fec)
+        var completed: ReassembledFrame?
+        // Drop data[0] (a single loss in group 0); deliver the rest, then all parity → recover.
+        for fragment in data.dropFirst() {
+            if case .completed(let f) = reassembler.ingest(fragment) { completed = f }
+        }
+        XCTAssertNil(completed, "still missing data[0] before parity arrives", file: file, line: line)
+        for fragment in parity {
+            if case .completed(let f) = reassembler.ingest(fragment) { completed = f }
+        }
+        XCTAssertNotNil(completed, "wire-signalled tier \(tier) must let the client recover the single loss", file: file, line: line)
+        XCTAssertEqual(completed?.avcc, frameBytes, "recovered frame matches the original exactly", file: file, line: line)
+        XCTAssertTrue(completed?.recoveredViaFEC ?? false, "completion was via FEC recovery (a hole existed)", file: file, line: line)
+        XCTAssertNil(reassembler.nextDroppedFrame(), file: file, line: line)
+    }
+
+    func testClientRecoversWireSignalledTierLight() throws { try assertClientRecoversWireSignalledTier(2, expectedGroupSize: 10) }
+    func testClientRecoversWireSignalledTierHeavy() throws { try assertClientRecoversWireSignalledTier(3, expectedGroupSize: 3) }
+    func testClientRecoversWireSignalledTierSevere() throws { try assertClientRecoversWireSignalledTier(4, expectedGroupSize: 2) }
+
+    /// Tier 0 (the default + gate-off value) is BYTE-IDENTICAL to the pre-WF-4 no-tier packetize: same
+    /// flags byte (spare bits zero), same parity shape, same fragCount. This is the gate-off invariant.
+    func testTierZeroPacketizeIsByteIdenticalToPreWF4() {
+        let fec = XORParityFEC(groupSize: 5)
+        var preWF4Packetizer = VideoPacketizer(fec: fec)
+        var tier0Packetizer = VideoPacketizer(fec: fec)
+        let frame = NALUnit.join([Data((0 ..< (VideoPacketizer.maxPayloadSize * 2 + 333)).map { UInt8(truncatingIfNeeded: $0) })])
+        // Fresh packetizers start at the same streamSeq/frameID, so identical inputs ⇒ identical bytes.
+        let preWF4 = preWF4Packetizer.packetize(frame: frame, keyframe: true, crisp: true, hostSendTsMillis: 4242)
+        let tier0 = tier0Packetizer.packetize(frame: frame, keyframe: true, crisp: true, hostSendTsMillis: 4242, fecTier: 0)
+        XCTAssertEqual(preWF4.map { $0.encode() }, tier0.map { $0.encode() }, "tier 0 must be byte-identical to the no-tier default")
+        XCTAssertEqual(
+            tier0.filter { $0.header.flags.contains(.parity) }.count,
+            preWF4.filter { $0.header.flags.contains(.parity) }.count,
+            "tier 0 keeps the g5 parity shape"
+        )
+    }
+
+    /// OFF tier (tier 1): the host emits ZERO parity (fragCount == dataCount); the client completes on
+    /// all-data with `fec` still non-nil — the gate is the PER-FRAME group size, not `fec != nil`.
+    func testOffTierEmitsNoParityAndCompletesDataOnly() throws {
+        let fec = XORParityFEC(groupSize: 5)
+        var packetizer = VideoPacketizer(fec: fec)
+        let frameBytes = adaptiveFrame(dataFragmentTarget: 4)
+        let fragments = packetizer.packetize(frame: frameBytes, keyframe: true, fecTier: 1)
+        XCTAssertTrue(fragments.allSatisfy { !$0.header.flags.contains(.parity) }, "OFF tier emits NO parity")
+        XCTAssertTrue(fragments.allSatisfy { $0.header.flags.fecTier == 1 }, "every fragment carries the OFF tier")
+        XCTAssertEqual(fragments.count, 4, "fragCount == dataCount (no parity appended)")
+
+        var reassembler = FrameReassembler(fec: fec)
+        var completed: ReassembledFrame?
+        for f in fragments { if case .completed(let r) = reassembler.ingest(f) { completed = r } }
+        XCTAssertNotNil(completed, "an OFF-tier frame completes on all-data even though the client holds a non-nil fec")
+        XCTAssertEqual(completed?.avcc, frameBytes)
+        XCTAssertFalse(completed?.recoveredViaFEC ?? true, "no FEC recovery on an OFF-tier frame")
+    }
+
+    /// OFF tier single loss is unrecoverable (no parity exists) and is dropped the instant the frontier
+    /// advances — an OFF frame is granted NO reorder grace (it isn't "awaiting parity").
+    func testOffTierSingleLossIsUnrecoverableAndDropped() throws {
+        let fec = XORParityFEC(groupSize: 5)
+        var packetizer = VideoPacketizer(fec: fec)
+        let frame0bytes = adaptiveFrame(dataFragmentTarget: 4)
+        let frame0 = packetizer.packetize(frame: frame0bytes, keyframe: true, fecTier: 1)
+        let next = packetizer.packetize(frame: NALUnit.join([Data([1, 2, 3])]), keyframe: false, fecTier: 1)
+        XCTAssertEqual(frame0.filter { $0.header.flags.contains(.parity) }.count, 0, "OFF tier: no parity to recover with")
+
+        var reassembler = FrameReassembler(fec: fec) // default grace — proves OFF frames get no grace
+        for f in frame0.dropFirst() { _ = reassembler.ingest(f) } // lose data[0]
+        let result = reassembler.ingest(next[0])
+        if case .completed = result {} else { XCTFail("newer frame should complete, got \(result)") }
+        XCTAssertEqual(reassembler.nextDroppedFrame(), frame0[0].header.frameID, "OFF tier single loss is unrecoverable → dropped")
+    }
+
+    /// Dropping a PARITY fragment is harmless when every data fragment arrived — the frame completes by
+    /// all-data regardless of group size (here tier 3 / g3 with two parity groups, the first dropped).
+    func testAdaptiveTierCompletesWhenAParityFragmentIsDropped() throws {
+        let fec = XORParityFEC(groupSize: 5)
+        var packetizer = VideoPacketizer(fec: fec)
+        let frameBytes = adaptiveFrame(dataFragmentTarget: 6)
+        let fragments = packetizer.packetize(frame: frameBytes, keyframe: true, fecTier: 3)
+        let data = fragments.filter { !$0.header.flags.contains(.parity) }
+        let parity = fragments.filter { $0.header.flags.contains(.parity) }
+        XCTAssertEqual(parity.count, 2, "6 data / g3 = 2 parity groups")
+
+        var reassembler = FrameReassembler(fec: fec)
+        var completed: ReassembledFrame?
+        for f in data { if case .completed(let r) = reassembler.ingest(f) { completed = r } } // all data → completes
+        _ = reassembler.ingest(parity[1]) // parity[0] dropped; irrelevant since data is whole
+        XCTAssertNotNil(completed, "dropping a parity fragment is harmless when all data arrived")
+        XCTAssertEqual(completed?.avcc, frameBytes)
+        XCTAssertFalse(completed?.recoveredViaFEC ?? true, "no hole ⇒ not FEC-recovered")
+    }
 }

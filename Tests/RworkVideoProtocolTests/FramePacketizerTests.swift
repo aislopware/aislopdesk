@@ -29,6 +29,69 @@ final class FramePacketizerTests: XCTestCase {
         XCTAssertEqual(reassembled.avcc, frame)
         XCTAssertTrue(reassembled.keyframe)
         XCTAssertFalse(reassembled.crisp)
+        XCTAssertFalse(reassembled.isLTR, "no isLTR by default")
+    }
+
+    // MARK: WF-8 isLTR flag (bit 6)
+
+    /// An LTR-flagged frame round-trips bit 6 through wire encode/decode and reassembly: every
+    /// fragment carries `.isLTR`, and the completed frame reports `isLTR == true` so the client knows
+    /// to ack it. A multi-fragment frame proves the flag rides every fragment (not just the first).
+    func testIsLTRFlagRoundTripsThroughWireAndReassembly() throws {
+        var packetizer = VideoPacketizer()
+        let frame = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize + 200, 40]) // > 1 fragment
+        let fragments = packetizer.packetize(frame: frame, keyframe: false, isLTR: true)
+        XCTAssertGreaterThan(fragments.count, 1)
+        for fragment in fragments {
+            // Survives a full wire encode→decode.
+            let decoded = try FrameFragment.decode(fragment.encode())
+            XCTAssertTrue(decoded.header.flags.contains(.isLTR), "every fragment carries bit 6")
+        }
+        var reassembler = FrameReassembler()
+        var completed: ReassembledFrame?
+        for fragment in fragments {
+            let wire = try FrameFragment.decode(fragment.encode())
+            if case .completed(let f) = reassembler.ingest(wire) { completed = f }
+        }
+        XCTAssertEqual(completed?.avcc, frame)
+        XCTAssertEqual(completed?.isLTR, true, "the reassembled frame is marked an LTR frame")
+    }
+
+    /// The OFF path is byte-identical: `isLTR: false` (the default) leaves bit 6 zero, the flags byte
+    /// is identical to omitting the argument, and the reassembled frame reports `isLTR == false`. This
+    /// is the wire-byte-equality guarantee for `RWORK_LTR` off.
+    func testIsLTROffIsByteIdentical() throws {
+        var p1 = VideoPacketizer()
+        var p2 = VideoPacketizer()
+        let frame = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize + 200, 40])
+        let omitted = p1.packetize(frame: frame, keyframe: true, crisp: true)
+        let explicitOff = p2.packetize(frame: frame, keyframe: true, crisp: true, isLTR: false)
+        XCTAssertEqual(omitted.map { $0.encode() }, explicitOff.map { $0.encode() },
+                       "isLTR:false is byte-identical to omitting it")
+        for fragment in omitted {
+            XCTAssertFalse(fragment.header.flags.contains(.isLTR), "bit 6 clear when off")
+            XCTAssertEqual(fragment.header.flags.rawValue & 0x40, 0, "bit 6 (0x40) is zero")
+        }
+        var reassembler = FrameReassembler()
+        var completed: ReassembledFrame?
+        for fragment in omitted {
+            if case .completed(let f) = reassembler.ingest(fragment) { completed = f }
+        }
+        XCTAssertEqual(completed?.isLTR, false)
+    }
+
+    /// isLTR is disjoint from keyframe/crisp/FEC-tier: a keyframe+crisp+isLTR frame on a non-zero tier
+    /// preserves every bit independently through the wire.
+    func testIsLTRIsDisjointFromOtherFlagBits() throws {
+        var packetizer = VideoPacketizer(fec: XORParityFEC(groupSize: 4))
+        let frame = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize * 2 + 11])
+        let fragments = packetizer.packetize(frame: frame, keyframe: true, crisp: true, fecTier: 1, isLTR: true)
+        // The data fragments carry keyframe+crisp+isLTR+tier1; assert all coexist on at least the first.
+        let head = try FrameFragment.decode(fragments[0].encode())
+        XCTAssertTrue(head.header.flags.contains(.keyframe))
+        XCTAssertTrue(head.header.flags.contains(.crisp))
+        XCTAssertTrue(head.header.flags.contains(.isLTR))
+        XCTAssertEqual(head.header.flags.fecTier, 1, "tier bits 3-5 intact alongside isLTR bit 6")
     }
 
     func testMultiFragmentFrameRoundTripsInOrder() throws {

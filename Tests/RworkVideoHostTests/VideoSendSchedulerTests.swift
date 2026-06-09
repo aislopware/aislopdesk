@@ -65,7 +65,7 @@ final class VideoSendSchedulerTests: XCTestCase {
     }
 
     func testControlGoesOnControlChannel() throws {
-        let message = VideoControlMessage.helloAck(accepted: true, streamID: 3, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600))
+        let message = VideoControlMessage.helloAck(accepted: true, streamID: 3, captureWidth: 800, captureHeight: 600, windowBoundsCG: VideoRect(x: 0, y: 0, width: 800, height: 600), fullRange: false)
         let out = scheduler.scheduleControl(message)
         XCTAssertEqual(out.channel, .control)
         XCTAssertEqual(try VideoControlMessage.decode(out.bytes), message)

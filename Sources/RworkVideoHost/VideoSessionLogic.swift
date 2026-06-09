@@ -35,8 +35,15 @@ public struct VideoSessionStateMachine: Sendable {
     /// reconnecting client distinguish a fresh session).
     private var nextStreamID: UInt32
 
-    public init(nextStreamID: UInt32 = 1) {
+    /// WF-6 (#8): whether this host is encoding FULL-RANGE luma. Stamped into every accepted
+    /// `helloAck` (and the duplicate re-ack — which MUST echo the same value) so the client
+    /// derives the decoder pixel-format + shader coefficients from the stream. A reject always
+    /// sends `fullRange: false`. Default false ⇒ today's video-range, byte-identical.
+    public let fullRange: Bool
+
+    public init(nextStreamID: UInt32 = 1, fullRange: Bool = false) {
         self.nextStreamID = nextStreamID
+        self.fullRange = fullRange
     }
 
     /// Side effects the actor must perform after a transition.
@@ -94,7 +101,7 @@ public struct VideoSessionStateMachine: Sendable {
         case .hello(let version, let requestedWindowID, let viewport):
             // Strict version check — no fallback (doc 20 §4 discipline).
             guard version == RworkVideoProtocol.version else {
-                return [.sendControl(.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: windowBoundsCG))]
+                return [.sendControl(.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: windowBoundsCG, fullRange: false))]
             }
             // Only accept a hello while listening; ignore a duplicate once streaming
             // (idempotent — the client may retransmit the unreliable hello).
@@ -102,12 +109,12 @@ public struct VideoSessionStateMachine: Sendable {
                 if state == .streaming, requestedWindowID == windowID {
                     // Re-ack an in-flight duplicate so a lost ack is recovered, but do
                     // NOT restart capture.
-                    return [.sendControl(.helloAck(accepted: true, streamID: lastStreamID, captureWidth: captureWidth, captureHeight: captureHeight, windowBoundsCG: windowBoundsCG))]
+                    return [.sendControl(.helloAck(accepted: true, streamID: lastStreamID, captureWidth: captureWidth, captureHeight: captureHeight, windowBoundsCG: windowBoundsCG, fullRange: fullRange))]
                 }
                 return []
             }
             guard let (w, h) = resolveCaptureSize(requestedWindowID, viewport) else {
-                return [.sendControl(.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: windowBoundsCG))]
+                return [.sendControl(.helloAck(accepted: false, streamID: 0, captureWidth: 0, captureHeight: 0, windowBoundsCG: windowBoundsCG, fullRange: false))]
             }
             let streamID = nextStreamID
             nextStreamID &+= 1
@@ -123,7 +130,7 @@ public struct VideoSessionStateMachine: Sendable {
             lastResizeEpoch = 0
             state = .streaming
             return [
-                .sendControl(.helloAck(accepted: true, streamID: streamID, captureWidth: w, captureHeight: h, windowBoundsCG: windowBoundsCG)),
+                .sendControl(.helloAck(accepted: true, streamID: streamID, captureWidth: w, captureHeight: h, windowBoundsCG: windowBoundsCG, fullRange: fullRange)),
                 .startCapture(windowID: requestedWindowID, width: w, height: h),
             ]
         case .bye:
@@ -461,10 +468,16 @@ public struct RecoveryDatagramRouter: Sendable {
 
     /// The decision for one received recovery datagram.
     public enum Decision: Equatable, Sendable {
-        /// Force an IDR keyframe on the next captured frame (requestIDR, or — for now —
-        /// an LTR refresh, which the host satisfies with a forced IDR until the LTR
-        /// encode path lands: a forced IDR is always a correct, if heavier, refresh).
+        /// Force an IDR keyframe on the next captured frame. This is the GUARANTEED-recovery
+        /// escalation (`requestIDR`): a true keyframe unconditionally re-anchors a desynced client.
+        /// Kept distinct from ``refreshLTR`` so the escalation can never degrade to an LTR refresh.
         case forceKeyframe
+        /// WF-8: the client requested an LTR refresh (`requestLTRRefresh`). The ACTOR decides at
+        /// runtime — via ``LTRController/recoveryDecision(request:hasEnableLTR:)`` — whether to issue a
+        /// cheap `ForceLTRRefresh` (only when `RWORK_LTR` is on AND a token has been acknowledged: the
+        /// ACKED-ONLY invariant) or fall back to a real IDR. When LTR is off this folds to
+        /// `requestKeyframe()` — exactly today's requestLTRRefresh→IDR behaviour.
+        case refreshLTR
         /// A durable-receipt ack: the host may advance its retransmit/LTR-pin window.
         /// No live effect yet (no retransmit buffer); recorded for the docs/escalation.
         case ack(streamSeq: UInt32)
@@ -473,6 +486,10 @@ public struct RecoveryDatagramRouter: Sendable {
         /// ``CursorSampler`` to re-emit that shape on the cursor socket; the client cache
         /// re-insert is idempotent.
         case reshipCursorShape(shapeID: UInt16)
+        /// A periodic client network-feedback report (loss/FEC counters + host-send-ts echo +
+        /// client hold + jitter). The actor folds it into its ``NetworkEstimate`` and logs —
+        /// MAINTAIN+LOG only, no stream-behaviour change this phase.
+        case networkStats(NetworkStatsReport)
         /// Drop a malformed/undecodable datagram (a corrupt single packet must never
         /// crash the receiver — same contract as the reassembler).
         case drop(reason: String)
@@ -490,16 +507,111 @@ public struct RecoveryDatagramRouter: Sendable {
             return .drop(reason: "undecodable recovery datagram")
         }
         switch message {
-        case .requestIDR, .requestLTRRefresh:
-            // Both map to a forced IDR for now: a keyframe unconditionally re-anchors a
-            // client that lost frames. (The dedicated LTR-refresh encode is a future
-            // optimisation; an IDR is the correct, no-fallback recovery.)
+        case .requestIDR:
+            // The guaranteed-recovery escalation: ALWAYS a real IDR (a keyframe unconditionally
+            // re-anchors a client that lost frames). Never an LTR refresh.
             return .forceKeyframe
+        case .requestLTRRefresh:
+            // WF-8: defer the LTR-refresh-vs-IDR choice to the actor (it owns the runtime acked-token
+            // state + the RWORK_LTR gate). With LTR off the actor folds this to a real IDR — today's
+            // behaviour exactly.
+            return .refreshLTR
         case .ack(let streamSeq):
             return .ack(streamSeq: streamSeq)
         case .requestCursorShape(let shapeID):
             return .reshipCursorShape(shapeID: shapeID)
+        case .networkStats(let report):
+            return .networkStats(report)
         }
+    }
+}
+
+/// Pure, host-clock-only network estimate folded from the client's periodic ``NetworkStatsReport``
+/// (the network-feedback channel). NO wall-clock and NO I/O — timestamps are injected as parameters
+/// — so the RTT / loss / OWD-gradient math is deterministic and headlessly unit-testable, exactly
+/// like ``StaticIDRDecider`` / ``RecoveryDatagramRouter``. It MAINTAINS+LOGS only this phase: nothing
+/// consumes the estimate to change stream behaviour yet.
+///
+/// ⚠️ CLOCK-SKEW DISCIPLINE (the central trap): RTT is computed ENTIRELY in the host's own clock —
+/// `(hostNow − latestHostSendTs) − clientHoldMs`, where `latestHostSendTs` is the host's OWN stamp
+/// echoed back and `clientHoldMs` is a client-LOCAL relative delta. The two machine clocks are NEVER
+/// subtracted from each other, so there is zero cross-machine offset in the result. The jitter term
+/// is computed client-side from 2nd-order inter-arrival differences (also skew-immune) and only
+/// FOLDED here.
+public struct NetworkEstimate: Sendable, Equatable {
+    /// EWMA-smoothed RTT (ms). 0 until the first valid sample folds.
+    public private(set) var smoothedRTTMillis: Double = 0
+    /// Windowed minimum RTT (ms) — the path's no-queue baseline. `.infinity` until the first sample.
+    public private(set) var minRTTMillis: Double = .infinity
+    /// EWMA loss rate in [0, 1] (unrecovered / framesReceived per report). RETAINED for logging /
+    /// telemetry trend — but the WF-2 controller does NOT key its decrease on this (see ``lastLossSample``).
+    public private(set) var lossRate: Double = 0
+    /// RAW per-report loss fraction from the MOST RECENT fold (unrecovered / framesReceived), in [0, 1].
+    /// Unlike ``lossRate`` (EWMA-damped, alpha 0.125) this is the INSTANTANEOUS sample, so a clean
+    /// report reads 0 even while the EWMA tail of a prior spike is still decaying above threshold. The
+    /// WF-2 ``LiveCongestionController`` keys its multiplicative decrease on THIS, so a single transient
+    /// loss spike causes exactly ONE decrease — not a multi-report cascade driven by the slowly-decaying
+    /// EWMA re-tripping the threshold on subsequent perfectly-clean reports.
+    public private(set) var lastLossSample: Double = 0
+    /// Whether the most recent OWD-jitter sample rose vs the previous (a congestion-onset hint).
+    public private(set) var owdGradientRising: Bool = false
+
+    /// Last folded jitter sample (µs) for the rising-trend comparison.
+    private var lastOWDJitterMicros: UInt32 = 0
+    /// How many reports have been folded (warms up the gradient so the first sample doesn't spike).
+    private var sampleCount: Int = 0
+
+    public init() {}
+
+    /// EWMA weight on a fresh RTT sample (0.125 → 7/8 history, RFC6298-style).
+    public static let rttAlpha: Double = 0.125
+    /// EWMA weight on a fresh loss sample.
+    public static let lossAlpha: Double = 0.125
+    /// Slow re-baseline factor for `minRTTMillis` so a transient low sample doesn't pin it forever
+    /// (the baseline drifts up by this fraction of the gap each fold when the new sample is higher).
+    public static let minRTTDecay: Double = 0.01
+    /// RTT samples above this (ms) are implausible — dropped rather than poisoning the EWMA.
+    public static let maxPlausibleRTTMillis = 60_000
+
+    /// PURE wrap-safe host-clock RTT (ms), or `nil` to REJECT the sample. Total over all `UInt32`
+    /// inputs — the `Int32(bitPattern:)` subtraction cannot trap. Rejects when telemetry is off
+    /// (`latestHostSendTs == 0`), the stamp is in the future (`elapsed < 0` — e.g. a stale stamp
+    /// from a prior session after an actor re-create), the hold exceeds the elapsed (`rtt < 0`), or
+    /// the result is implausibly large (`> maxPlausibleRTTMillis`).
+    public static func computeRTTMillis(hostNowMs: UInt32, latestHostSendTs: UInt32, clientHoldMs: UInt32) -> Int? {
+        guard latestHostSendTs != 0 else { return nil }
+        // Wrap-aware delta, same trick as UInt32.distanceWrapped (FrameReassembler): a counter that
+        // wrapped between stamp and now still yields the correct small positive elapsed.
+        let elapsed = Int(Int32(bitPattern: hostNowMs &- latestHostSendTs))
+        guard elapsed >= 0 else { return nil }
+        let rtt = elapsed - Int(clientHoldMs)
+        guard rtt >= 0, rtt <= maxPlausibleRTTMillis else { return nil }
+        return rtt
+    }
+
+    /// Folds one report. `rttMillis == nil` (rejected by ``computeRTTMillis``) skips the RTT/min-RTT
+    /// update but still folds loss + jitter (so disabling the RTT loop never blinds the rest).
+    public mutating func fold(rttMillis: Int?, framesReceived: UInt32, unrecovered: UInt32, owdJitterMicros: UInt32) {
+        if let rtt = rttMillis {
+            let sample = Double(rtt)
+            smoothedRTTMillis = smoothedRTTMillis == 0 ? sample : (smoothedRTTMillis * (1 - Self.rttAlpha) + sample * Self.rttAlpha)
+            if sample < minRTTMillis {
+                minRTTMillis = sample
+            } else if minRTTMillis.isFinite {
+                // Slow re-baseline so a one-off low doesn't pin the baseline below the real path RTT.
+                minRTTMillis += (sample - minRTTMillis) * Self.minRTTDecay
+            }
+        }
+        // Loss rate: guard divide-by-zero (a report with 0 frames received contributes a 0 sample).
+        let lossSample = framesReceived > 0 ? Double(unrecovered) / Double(framesReceived) : 0
+        lastLossSample = lossSample
+        lossRate = lossRate * (1 - Self.lossAlpha) + lossSample * Self.lossAlpha
+        // OWD gradient: only meaningful after a short warmup (the first sample has no predecessor).
+        if sampleCount >= 2 {
+            owdGradientRising = owdJitterMicros > lastOWDJitterMicros
+        }
+        lastOWDJitterMicros = owdJitterMicros
+        sampleCount += 1
     }
 }
 

@@ -159,6 +159,13 @@ let package = Package(
         // clear non-macOS error. COMPILED + reviewed; live behaviour is GUI+TCC-gated.
         .executableTarget(name: "rwork-videohostd", dependencies: ["RworkVideoHost", "RworkVideoProtocol"]),
 
+        // Headless closed-loop validation harness: synthetic CVPixelBuffer -> REAL HW
+        // VideoEncoder -> VideoPacketizer (FEC tier + isLTR + hostSendTs) -> deterministic
+        // fragment loss -> FrameReassembler (FEC recovery) -> REAL HW VideoDecoder, plus the
+        // pure WF-1..WF-8 controllers driven on synthetic telemetry. Runs from a normal
+        // (non-GUI, non-TCC) executable; its stdout IS the validation evidence. macOS-only.
+        .executableTarget(name: "rwork-loopback-validate", dependencies: ["RworkVideoHost", "RworkVideoClient", "RworkVideoProtocol"]),
+
         // MARK: Tests
         .testTarget(name: "RworkProtocolTests", dependencies: ["RworkProtocol"]),
         .testTarget(name: "RworkTransportTests", dependencies: ["RworkTransport"]),

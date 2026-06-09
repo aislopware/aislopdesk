@@ -14,16 +14,31 @@ import Foundation
 /// holding `nil` for unrecoverable losses, which the caller escalates to
 /// request-recovery).
 public protocol FECScheme: Sendable {
-    /// How many data fragments share one parity fragment. With `groupSize = 5` the
-    /// overhead is 1/5 = 20% parity, matching the doc-17 target.
+    /// The DEFAULT group size: how many data fragments share one parity fragment when no explicit
+    /// per-frame group size is supplied. With `groupSize = 5` the overhead is 1/5 = 20% parity,
+    /// matching the doc-17 target. WF-4 adaptive FEC drives a per-frame group size through the
+    /// `groupSize:`-parameterized methods; this value is the tier-0 / convenience default.
     var groupSize: Int { get }
 
-    /// Computes parity fragments for `dataFragments`, in group order.
-    func parity(forDataFragments dataFragments: [Data]) -> [Data]
+    /// Computes parity fragments for `dataFragments`, in group order, grouping by `groupSize`.
+    func parity(forDataFragments dataFragments: [Data], groupSize: Int) -> [Data]
 
-    /// Attempts to recover lost (`nil`) data fragments using the parity fragments.
-    /// Entries that cannot be recovered remain `nil`.
-    func recover(dataFragments: [Data?], parityFragments: [Data?]) -> [Data?]
+    /// Attempts to recover lost (`nil`) data fragments using the parity fragments, grouping by
+    /// `groupSize`. Entries that cannot be recovered remain `nil`.
+    func recover(dataFragments: [Data?], parityFragments: [Data?], groupSize: Int) -> [Data?]
+}
+
+public extension FECScheme {
+    /// Convenience: parity using the scheme's configured default ``groupSize``. Keeps pre-WF-4
+    /// callers (no explicit group size) compiling and behaving identically.
+    func parity(forDataFragments dataFragments: [Data]) -> [Data] {
+        parity(forDataFragments: dataFragments, groupSize: groupSize)
+    }
+
+    /// Convenience: recover using the scheme's configured default ``groupSize``.
+    func recover(dataFragments: [Data?], parityFragments: [Data?]) -> [Data?] {
+        recover(dataFragments: dataFragments, parityFragments: parityFragments, groupSize: groupSize)
+    }
 }
 
 /// XOR parity FEC: each group of ``groupSize`` data fragments produces one parity
@@ -53,7 +68,8 @@ public struct XORParityFEC: FECScheme {
     /// so that XOR-recovery reproduces the *exact* original length even when group
     /// members differ in size. The parity fragment is the byte-wise XOR of these
     /// length-prefixed encodings, zero-padded to the longest member.
-    public func parity(forDataFragments dataFragments: [Data]) -> [Data] {
+    public func parity(forDataFragments dataFragments: [Data], groupSize: Int) -> [Data] {
+        let groupSize = max(1, groupSize) // defensive floor: a non-positive size must never trap/loop.
         var parities: [Data] = []
         var index = 0
         while index < dataFragments.count {
@@ -64,7 +80,8 @@ public struct XORParityFEC: FECScheme {
         return parities
     }
 
-    public func recover(dataFragments: [Data?], parityFragments: [Data?]) -> [Data?] {
+    public func recover(dataFragments: [Data?], parityFragments: [Data?], groupSize: Int) -> [Data?] {
+        let groupSize = max(1, groupSize) // defensive floor (matches `parity`): host/client apply it identically.
         var result = dataFragments
         var groupIndex = 0
         var index = 0

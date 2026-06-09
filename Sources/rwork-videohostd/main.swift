@@ -307,6 +307,19 @@ Task {
             exit(0)
         }
 
+        // ── WF-7 (#9) LTR capability probe (RWORK_LTR_PROBE, default OFF) — DIAGNOSTIC ONLY ──────────
+        // Runs ONCE here, BEFORE `mux.start` admits any client, on a THROWAWAY VTCompressionSession
+        // that never touches a live encoder, and logs a single `LTR-PROBE:` verdict line to stderr (the
+        // user reads it on the Mac Studio host). Placing it before the listener guarantees zero
+        // HW-encoder concurrency (no live session can exist yet). NSApplication.accessory (above) has
+        // already connected the window-server so the HW create/encode won't CGS_REQUIRE_INIT-abort. The
+        // probe is bounded by VTCompressionSessionCompleteFrames (a few ms) so it does not meaningfully
+        // delay bring-up. When the env var is unset this branch is skipped → the normal path is
+        // byte-identical (no live encode/recovery behaviour changes).
+        if ProcessInfo.processInfo.environment["RWORK_LTR_PROBE"] != nil {
+            VideoEncoder.runLTRCapabilityProbe(bitrate: args.bitrateMbps * 1_000_000, fps: args.fps, log: log)
+        }
+
         // ── UDP-mux bring-up: ONE shared UDP flow, N sessions (one per channel/window). Each client
         // video pane sends its OWN hello (its own windowID); the daemon mints/looks-up the session by
         // channelID (`VideoMuxSessionRegistry`). The §2 asymmetry — two panes watching DIFFERENT

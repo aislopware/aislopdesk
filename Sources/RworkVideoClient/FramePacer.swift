@@ -52,12 +52,13 @@ public final class FramePacer: @unchecked Sendable {
     private var lastShownFrame: CVImageBuffer?
     /// False until the buffer reaches ``targetDepth``; while false we hold (re-show last) so
     /// the slack that absorbs jitter is established before steady presentation. RESET to false
-    /// after a SUSTAINED dry spell (``underflowRun`` ≥ ``targetDepth`` — a real idle, since the
+    /// after a SUSTAINED dry spell (``underflowRun`` ≥ `max(2, liveDepth)` — a real idle, since the
     /// host idle-skips static frames, NOT a transient single-frame dip during scroll), so the
     /// slack is REBUILT before motion resumes. This is what makes EVERY stop→scroll transition
-    /// smooth, not only the first of a session.
+    /// smooth, not only the first of a session. (The `max(2, …)` floor keeps re-prime strictly
+    /// above the single-vsync transient-dip detector even at the adaptive floor `liveDepth == 1`.)
     private var primed = false
-    /// Consecutive vsyncs the buffer has been empty (underflow). Reaching ``targetDepth`` means
+    /// Consecutive vsyncs the buffer has been empty (underflow). Reaching `max(2, liveDepth)` means
     /// a genuine producer stall/idle (re-prime); reset to 0 on any presented frame.
     private var underflowRun = 0
 
@@ -71,6 +72,25 @@ public final class FramePacer: @unchecked Sendable {
     /// 120 Hz display the link runs at full vsync but ``tick()`` only presents every Nth
     /// refresh so the cap holds without extra work the host never produces.
     public let maxFrameRate: Double
+
+    /// Whether the adaptive jitter-buffer controller is engaged (env `RWORK_ADAPTIVE_JITTER`).
+    /// When false the buffer is a FIXED ``targetDepth``, byte-identical to the pre-adaptive
+    /// pacer: ``liveDepth`` is never reassigned, ``controller`` is nil, and arrival jitter is
+    /// never measured.
+    private let adaptiveJitter: Bool
+    /// The LIVE presentation depth the priming / homeostasis / re-prime logic reads. Equals
+    /// ``targetDepth`` when adaptive is off; otherwise the controller's recommendation.
+    /// ⚠️ MUTABLE — mutated AND read ONLY under ``lock`` (``submit`` writes it via the
+    /// controller; ``frameForVSync`` reads it at the 3 depth sites and writes it on underrun).
+    /// Do NOT read it from ``tick()`` (which runs unlocked) — go through ``frameForVSync()`` or
+    /// the locked ``currentDepth`` accessor, or you reintroduce the data race the queue avoids.
+    private var liveDepth: Int
+    /// Client-clock arrival-jitter estimator, fed ONE sample per decoded-frame ``submit``
+    /// (adaptive only). Guarded by ``lock``. RESET at a re-prime-on-idle transition so the long
+    /// idle gap is not folded as a spurious jitter spike that would re-inflate on every resume.
+    private var jitter = OWDJitterEstimator()
+    /// The adaptive depth controller (nil when adaptive is off). Guarded by ``lock``.
+    private var controller: AdaptiveJitterController?
 
     // On BOTH platforms the modern driver is a `CADisplayLink`: macOS 14+ exposes
     // `NSView.displayLink(target:selector:)` (the non-deprecated replacement for
@@ -90,10 +110,19 @@ public final class FramePacer: @unchecked Sendable {
     /// Tracks the elapsed time so the cap throttles ticks below the display refresh.
     private var lastRenderHostTime: Double = 0
 
-    public init(maxFrameRate: Double = 60.0, targetDepth: Int = 2, maxDepth: Int = 5, renderCallback: @escaping RenderCallback) {
+    public init(maxFrameRate: Double = 60.0, targetDepth: Int = 2, maxDepth: Int = 5, adaptiveJitter: Bool = false, renderCallback: @escaping RenderCallback) {
         self.maxFrameRate = maxFrameRate
-        self.targetDepth = max(1, targetDepth)
-        self.maxDepth = max(max(1, targetDepth), maxDepth)
+        let clampedTarget = max(1, targetDepth)
+        let clampedMax = max(clampedTarget, maxDepth)
+        self.targetDepth = clampedTarget
+        self.maxDepth = clampedMax
+        self.adaptiveJitter = adaptiveJitter
+        // OFF ⇒ liveDepth stays == targetDepth forever (controller nil, never consulted) ⇒
+        // the fixed-depth path is byte-identical to before this feature.
+        self.liveDepth = clampedTarget
+        self.controller = adaptiveJitter
+            ? AdaptiveJitterController(minDepth: 1, maxDepth: clampedMax, fps: maxFrameRate, initialDepth: clampedTarget)
+            : nil
         self.renderCallback = renderCallback
     }
 
@@ -104,6 +133,13 @@ public final class FramePacer: @unchecked Sendable {
         lock.lock()
         queue.append(frame)
         if queue.count > maxDepth { queue.removeFirst(queue.count - maxDepth) }
+        // Adaptive: one decoded-FRAME arrival = one jitter sample (correct cadence for a
+        // FRAME-denominated depth). Fold it and let the controller re-recommend liveDepth.
+        // maxDepth (the hard cap trim above) is unchanged — it stays the backstop.
+        if adaptiveJitter {
+            jitter.note(arrival: Self.currentHostTimeSeconds())
+            liveDepth = controller!.noteFrame(jitterSeconds: jitter.jitterSeconds)
+        }
         lock.unlock()
     }
 
@@ -112,29 +148,60 @@ public final class FramePacer: @unchecked Sendable {
     /// empty buffer, or `nil` if nothing has ever been decoded yet.
     public func frameForVSync() -> CVImageBuffer? {
         lock.lock(); defer { lock.unlock() }
+        // NOTE: all depth reads below use `liveDepth` (== targetDepth when adaptive is off, so
+        // this path is unchanged; the controller's live recommendation when on).
         if !primed {
-            // (Re)prime: hold (re-show last) until the buffer fills to targetDepth, (re)building the
+            // (Re)prime: hold (re-show last) until the buffer fills to liveDepth, (re)building the
             // jitter slack BEFORE steady presentation. Re-entered after a sustained dry spell (below),
             // so the slack is rebuilt ahead of every stop→scroll resume — not just once per session.
-            if queue.count >= targetDepth { primed = true; underflowRun = 0 } else { return lastShownFrame }
+            // This also resets underflowRun to 0, which the transient-dip discriminator below relies on.
+            if queue.count >= liveDepth { primed = true; underflowRun = 0 } else { return lastShownFrame }
         }
-        // Homeostasis: never carry MORE than targetDepth frames — drop the OLDEST excess so steady-state
-        // depth (hence added latency) settles at ≈ targetDepth/fps instead of ratcheting up to maxDepth
+        // Homeostasis: never carry MORE than liveDepth frames — drop the OLDEST excess so steady-state
+        // depth (hence added latency) settles at ≈ liveDepth/fps instead of ratcheting up to maxDepth
         // under sustained motion / clock skew. Catches up to the freshest within the slack window.
-        if queue.count > targetDepth { queue.removeFirst(queue.count - targetDepth) }
+        if queue.count > liveDepth { queue.removeFirst(queue.count - liveDepth) }
         if !queue.isEmpty {
+            // Capture the transient-dip flag BEFORE resetting underflowRun: a present that follows ≥1
+            // empty vsync WHILE STILL PRIMED is a real (transient) starvation → grow. After an IDLE
+            // re-prime, underflowRun was reset to 0 at the priming gate above, so this is false ⇒ host
+            // idle-skips never inflate the buffer (the precise idle-vs-underrun discriminator).
+            let wasTransientDip = underflowRun > 0
             let next = queue.removeFirst()
             lastShownFrame = next
             underflowRun = 0
+            if adaptiveJitter && wasTransientDip {
+                liveDepth = controller!.noteUnderrun()
+            }
             return next
         }
         // Underflow: producer fell behind (idle-skip or stall). Re-present last. After a SUSTAINED dry
-        // spell (empty ≥ targetDepth vsyncs ⇒ a real idle, not a transient scroll dip) drop back to
-        // priming so slack is rebuilt before motion resumes.
+        // spell (empty ≥ max(2, liveDepth) vsyncs ⇒ a real idle, not a transient scroll dip) drop back
+        // to priming so slack is rebuilt before motion resumes.
+        //
+        // FLOOR: the threshold is max(2, …), NOT max(1, …), so it stays STRICTLY above the transient-dip
+        // detector (a single empty vsync, `wasTransientDip = underflowRun > 0` above). At the adaptive
+        // floor liveDepth == 1 (the steady state a clean link drives toward) the two would otherwise
+        // COLLIDE at 1: the first empty vsync would re-prime (resetting underflowRun + wiping the jitter
+        // estimator) before the next present could see underflowRun > 0, so neither grow path (noteUnderrun
+        // nor noteFrame) could ever fire — the buffer would pin at 1 with single-frame-repeat judder and
+        // no self-healing as a clean LAN degrades. Keeping re-prime ≥ 2 means a single dip at the floor is
+        // still classified transient (→ grows via noteUnderrun), while 2+ empty vsyncs is still a real idle.
+        // For liveDepth ≥ 2 this is identical to the old max(1, liveDepth) == liveDepth (no behaviour change).
         underflowRun += 1
-        if underflowRun >= max(1, targetDepth) { primed = false }
+        if underflowRun >= max(2, liveDepth) {
+            primed = false
+            // Reset the jitter estimator at the idle transition: otherwise the long idle gap becomes a
+            // huge inter-arrival → a spurious 2nd-difference spike on resume → the buffer inflates on
+            // every stop→scroll, defeating the latency reclaim.
+            if adaptiveJitter { jitter = OWDJitterEstimator() }
+        }
         return lastShownFrame
     }
+
+    /// TEST SEAM (also useful under `RWORK_VIDEO_DEBUG`): the live presentation depth, read
+    /// under ``lock``. With adaptive off this always equals ``targetDepth``.
+    var currentDepth: Int { lock.lock(); defer { lock.unlock() }; return liveDepth }
 
     /// VSync handler: pull the frame and render it, honouring the frame-rate cap.
     /// Called by the display-link driver each refresh (and directly from tests).

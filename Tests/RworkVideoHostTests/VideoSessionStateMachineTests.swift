@@ -33,8 +33,42 @@ final class VideoSessionStateMachineTests: XCTestCase {
         // Ack first, then start capture — in that order.
         XCTAssertEqual(effects.count, 2)
         guard case .sendControl(let ack) = effects[0] else { return XCTFail("expected sendControl first") }
-        XCTAssertEqual(ack, .helloAck(accepted: true, streamID: 7, captureWidth: 800, captureHeight: 600, windowBoundsCG: bounds))
+        XCTAssertEqual(ack, .helloAck(accepted: true, streamID: 7, captureWidth: 800, captureHeight: 600, windowBoundsCG: bounds, fullRange: false))
         XCTAssertEqual(effects[1], .startCapture(windowID: 42, width: 800, height: 600))
+    }
+
+    func testFullRangeFlagStampedIntoAcceptAndReAckButNeverIntoReject() {
+        // WF-6 (#8): a host configured full-range stamps fullRange=true into the accept ack AND the
+        // duplicate re-ack (same value, the atomicity invariant), but a REJECT always sends false.
+        var sm = VideoSessionStateMachine(nextStreamID: 1, fullRange: true)
+        _ = sm.start()
+        let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 42, viewport: VideoSize(width: 800, height: 600))
+        let accept = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        guard case .sendControl(.helloAck(true, _, _, _, _, let frAccept)) = accept[0] else { return XCTFail("expected accept ack") }
+        XCTAssertTrue(frAccept, "accept ack carries the host's full-range flag")
+
+        // Duplicate hello while streaming → re-ack must echo the SAME range.
+        let again = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        guard case .sendControl(.helloAck(true, _, _, _, _, let frReAck)) = again[0] else { return XCTFail("expected re-ack") }
+        XCTAssertTrue(frReAck, "re-ack echoes the same full-range value")
+
+        // A reject (here: a wrong-window resolveCaptureSize → nil) always sends fullRange:false.
+        var rej = VideoSessionStateMachine(nextStreamID: 1, fullRange: true)
+        _ = rej.start()
+        let reject = rej.handleControl(hello, windowBoundsCG: bounds) { _, _ in nil }
+        guard case .sendControl(.helloAck(false, _, _, _, _, let frReject)) = reject[0] else { return XCTFail("expected reject ack") }
+        XCTAssertFalse(frReject, "a reject never advertises full-range")
+    }
+
+    func testDefaultStateMachineIsVideoRange() {
+        // WF-6 (#8): the default (no fullRange arg) is video-range — the OFF path the wire-byte-identity
+        // guard depends on.
+        var sm = VideoSessionStateMachine(nextStreamID: 1)
+        _ = sm.start()
+        let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 42, viewport: VideoSize(width: 800, height: 600))
+        let accept = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
+        guard case .sendControl(.helloAck(_, _, _, _, _, let fr)) = accept[0] else { return XCTFail("expected ack") }
+        XCTAssertFalse(fr, "default host is video-range (OFF)")
     }
 
     func testFocusWindowIsAStateMachineNoOp() {
@@ -66,7 +100,7 @@ final class VideoSessionStateMachineTests: XCTestCase {
         XCTAssertEqual(sm.state, .listening) // stayed listening — no accept
         XCTAssertFalse(sm.mediaFlowing)
         XCTAssertEqual(effects.count, 1)
-        guard case .sendControl(.helloAck(let accepted, _, _, _, _)) = effects[0] else { return XCTFail("expected reject ack") }
+        guard case .sendControl(.helloAck(let accepted, _, _, _, _, _)) = effects[0] else { return XCTFail("expected reject ack") }
         XCTAssertFalse(accepted)
     }
 
@@ -78,7 +112,7 @@ final class VideoSessionStateMachineTests: XCTestCase {
 
         XCTAssertEqual(sm.state, .listening)
         XCTAssertEqual(effects.count, 1)
-        guard case .sendControl(.helloAck(let accepted, _, _, _, _)) = effects[0] else { return XCTFail("expected reject") }
+        guard case .sendControl(.helloAck(let accepted, _, _, _, _, _)) = effects[0] else { return XCTFail("expected reject") }
         XCTAssertFalse(accepted)
     }
 
@@ -93,7 +127,7 @@ final class VideoSessionStateMachineTests: XCTestCase {
         XCTAssertEqual(sm.state, .streaming)
         // Re-ack only — NO second startCapture.
         XCTAssertEqual(again.count, 1)
-        guard case .sendControl(.helloAck(let accepted, let streamID, _, _, _)) = again[0] else { return XCTFail("expected re-ack") }
+        guard case .sendControl(.helloAck(let accepted, let streamID, _, _, _, _)) = again[0] else { return XCTFail("expected re-ack") }
         XCTAssertTrue(accepted)
         XCTAssertEqual(streamID, 3, "re-ack keeps the same streamID, does not mint a new one")
     }
@@ -130,7 +164,7 @@ final class VideoSessionStateMachineTests: XCTestCase {
         _ = sm.start()
         let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 42, viewport: VideoSize(width: 800, height: 600))
         let first = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
-        guard case .sendControl(.helloAck(_, let firstStreamID, _, _, _)) = first[0] else { return XCTFail("expected first ack") }
+        guard case .sendControl(.helloAck(_, let firstStreamID, _, _, _, _)) = first[0] else { return XCTFail("expected first ack") }
         XCTAssertEqual(firstStreamID, 5)
 
         // Client says bye, then reconnects with a fresh hello — no daemon restart.
@@ -146,7 +180,7 @@ final class VideoSessionStateMachineTests: XCTestCase {
 
         // Ack (with an ADVANCED streamID) first, then a fresh startCapture.
         XCTAssertEqual(reconnect.count, 2)
-        guard case .sendControl(.helloAck(let accepted, let streamID, let w, let h, _)) = reconnect[0] else { return XCTFail("expected reconnect ack") }
+        guard case .sendControl(.helloAck(let accepted, let streamID, let w, let h, _, _)) = reconnect[0] else { return XCTFail("expected reconnect ack") }
         XCTAssertTrue(accepted)
         XCTAssertEqual(streamID, 6, "the second hello mints a fresh, advanced streamID")
         XCTAssertEqual(w, 800)
@@ -201,7 +235,7 @@ final class VideoSessionStateMachineTests: XCTestCase {
         for _ in 0..<4 {
             let accept = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
             XCTAssertEqual(sm.state, .streaming)
-            guard case .sendControl(.helloAck(let accepted, let streamID, _, _, _)) = accept[0] else { return XCTFail("expected ack") }
+            guard case .sendControl(.helloAck(let accepted, let streamID, _, _, _, _)) = accept[0] else { return XCTFail("expected ack") }
             XCTAssertTrue(accepted)
             seenStreamIDs.append(streamID)
             XCTAssertEqual(accept[1], .startCapture(windowID: 42, width: 800, height: 600))
@@ -246,13 +280,13 @@ final class VideoSessionStateMachineTests: XCTestCase {
         _ = a.start()
         let hello = VideoControlMessage.hello(protocolVersion: RworkVideoProtocol.version, requestedWindowID: 5, viewport: VideoSize(width: 10, height: 10))
         let e1 = a.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
-        guard case .sendControl(.helloAck(_, let s1, _, _, _)) = e1[0] else { return XCTFail() }
+        guard case .sendControl(.helloAck(_, let s1, _, _, _, _)) = e1[0] else { return XCTFail() }
         XCTAssertEqual(s1, 1)
 
         var b = VideoSessionStateMachine(nextStreamID: 2)
         _ = b.start()
         let e2 = b.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
-        guard case .sendControl(.helloAck(_, let s2, _, _, _)) = e2[0] else { return XCTFail() }
+        guard case .sendControl(.helloAck(_, let s2, _, _, _, _)) = e2[0] else { return XCTFail() }
         XCTAssertEqual(s2, 2)
     }
 }
