@@ -152,8 +152,14 @@ public actor RworkVideoHostSession {
     /// burst loss that the single-loss XOR FEC cannot repair. This is the only host-only, REORDER-FREE way
     /// to add real burst tolerance (the client reassembler dedups by frameID/fragIndex, so duplicates are
     /// harmless and the frame decodes exactly once → NO white-screen risk, unlike the gated-off interleave).
-    /// Keyframes ONLY (never deltas). DEFAULT OFF; enable via `RWORK_KF_DUP=1`.
-    private static let kfDup = ProcessInfo.processInfo.environment["RWORK_KF_DUP"] == "1"
+    /// Keyframes ONLY (never deltas). DEFAULT **ON** since 2026-06-10 (LOSS-TOLERANCE #3): the
+    /// measured worst-case freeze is a LOST KEYFRAME inside the 500ms recovery-IDR cooldown — the
+    /// client shows the last good frame for up to the full window. Duplicating keyframes makes that
+    /// require BOTH copies of a fragment lost (weather loss ~1% ⇒ ~1e-4 per fragment), and the
+    /// ``VideoSendLane`` means the duplicate no longer sleeps inside the encoder pump. Byte cost is
+    /// keyframes only, throttled ≤1 dup per 250ms, on a path measured to carry 30Mbps at the same
+    /// loss as 5Mbps. `RWORK_KF_DUP=0` disables.
+    private static let kfDup = ProcessInfo.processInfo.environment["RWORK_KF_DUP"] != "0"
     /// Throttle so a recovery-IDR burst is not byte-amplified: duplicate at most one keyframe per interval.
     private static let kfDupMinInterval: TimeInterval = 0.25
     /// NETWORK-FEEDBACK TELEMETRY (the network-feedback channel). DEFAULT ON; disable with
@@ -194,7 +200,14 @@ public actor RworkVideoHostSession {
     /// token is acked. When OFF: EnableLTR unset, no token read, no `isLTR` bit, `.refreshLTR` folds to
     /// `requestKeyframe()` (today's requestLTRRefresh→IDR), the client sees no LTR frame so sends no
     /// ack — byte-identical to today. Read once (env static, like the flags above).
-    private static let ltrEnabled = ProcessInfo.processInfo.environment["RWORK_LTR"] == "1"
+    ///
+    /// DEFAULT **ON** since 2026-06-10 (LOSS-TOLERANCE #3 — drop-frame-keep-cadence): on the real
+    /// path, loss is weather (rate-independent ~1% + 3-9% bursts), so recovery happens many times a
+    /// minute and its COST is what the user feels. With LTR off every recovery is a full IDR +
+    /// client decoder rebuild; with LTR on it is a cheap ForceLTRRefresh P-frame against an acked
+    /// token, no decoder flush — Parsec-class "frame kế chữa lành" recovery. HW-validated on this
+    /// host (WF-7 probe VERDICT=supported; WF-8 headless harness). `RWORK_LTR=0` disables.
+    private static let ltrEnabled = ProcessInfo.processInfo.environment["RWORK_LTR"] != "0"
     /// Full per-event injection trace (`RWORK_INPUT_TRACE=1`): logs EVERY injected input event
     /// with a monotonic sequence number (NOT sampled), so a loopback run can read the exact
     /// injected ORDER — the ground truth for the reorder fix. No-op in production.

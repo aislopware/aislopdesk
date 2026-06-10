@@ -77,7 +77,9 @@ final class LiveCongestionControllerTests: XCTestCase {
 
     func testWarmupIsANoOp() {
         var ctrl = LiveCongestionController(ceiling: ceiling)
-        let lossy = estimate(lossSamples: 0.5, folds: 4) // 50% loss — would normally halve.
+        // SUSTAINED 50% loss: 8 folds push the EWMA lossRate to ~0.33 > catastrophic 0.25, so the
+        // first post-warmup report halves even at flat RTT — would normally act.
+        let lossy = estimate(lossSamples: 0.5, folds: 8)
         // The first (warmupTicks - 1) reports must NOT change anything.
         for _ in 0..<(LiveCongestionController.warmupTicks - 1) {
             XCTAssertEqual(ctrl.onReport(lossy), ceiling, "no action during warmup even under heavy loss")
@@ -92,25 +94,27 @@ final class LiveCongestionControllerTests: XCTestCase {
 
     func testDecreaseOnLossAboveThreshold() {
         var ctrl = warmedController(ceiling: ceiling)
-        // Loss steady at ~5% (> 2% threshold, < 10% severe) → ordinary multiplicative decrease.
-        let lossy = estimate(lossSamples: 0.05, folds: 8)
+        // Loss steady at ~5% (> 2% threshold, < 10% severe) WITH RTT inflation on the same report
+        // (LOSS-TOLERANCE #4: sub-catastrophic loss needs queue corroboration) → ordinary decrease.
+        let lossy = estimate(lossSamples: 0.05, folds: 8, rttCongested: true)
         let before = ctrl.current
         let after = ctrl.onReport(lossy)
         XCTAssertEqual(after, max(ctrl.floor, Int(Double(before) * LiveCongestionController.decreaseFactor)),
-                       "ordinary congestion → current *= decreaseFactor")
+                       "ordinary corroborated congestion → current *= decreaseFactor")
         XCTAssertLessThan(after, before)
     }
 
     func testSevereLossHalves() {
         var ctrl = warmedController(ceiling: ceiling)
-        let severe = estimate(lossSamples: 0.5, folds: 12) // ~50% loss → severe.
+        // Sustained ~50% loss (12 folds ⇒ EWMA ~0.4 > catastrophic 0.25) → halve even at flat RTT.
+        let severe = estimate(lossSamples: 0.5, folds: 12)
         let before = ctrl.current
         let after = ctrl.onReport(severe)
         XCTAssertEqual(after, max(ctrl.floor, Int(Double(before) * LiveCongestionController.severeDecreaseFactor)),
-                       "severe loss → current *= severeDecreaseFactor (halve)")
-        // Severe drop is steeper than an ordinary drop from the same point.
+                       "sustained catastrophic loss → current *= severeDecreaseFactor (halve)")
+        // Severe drop is steeper than an ordinary corroborated drop from the same point.
         var ordinaryCtrl = warmedController(ceiling: ceiling)
-        let ordinary = ordinaryCtrl.onReport(estimate(lossSamples: 0.05, folds: 8))
+        let ordinary = ordinaryCtrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
         XCTAssertLessThan(after, ordinary, "severe halving drops further than an ordinary decrease")
     }
 
@@ -186,8 +190,8 @@ final class LiveCongestionControllerTests: XCTestCase {
 
     func testHoldDownSuppressesImmediateReIncrease() {
         var ctrl = warmedController(ceiling: ceiling)
-        // One loss report drops the rate and arms the hold-down.
-        let dropped = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8))
+        // One corroborated-loss report drops the rate and arms the hold-down.
+        let dropped = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
         XCTAssertLessThan(dropped, ceiling)
         // Clean reports DURING the hold-down window must NOT increase the rate.
         let clean = estimate(lossSamples: 0, folds: 1)
@@ -200,7 +204,7 @@ final class LiveCongestionControllerTests: XCTestCase {
 
     func testProbeIncreaseOnCleanLinkPastHoldDown() {
         var ctrl = warmedController(ceiling: ceiling)
-        let dropped = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8))
+        let dropped = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
         let clean = estimate(lossSamples: 0, folds: 1)
         // Burn through the hold-down window.
         for _ in 0..<LiveCongestionController.holdTicks { _ = ctrl.onReport(clean) }
@@ -232,47 +236,51 @@ final class LiveCongestionControllerTests: XCTestCase {
         }
     }
 
-    /// REGRESSION (finding 2): a SINGLE transient loss spike followed by perfectly-clean reports must
-    /// cause exactly ONE decrease — never a cascade. The controller keys on the RAW per-report loss, so
-    /// the spike's slowly-decaying EWMA tail (which lingers above threshold for many reports) does NOT
-    /// re-trip the decrease on subsequent clean reports.
-    func testSingleTransientSpikeCausesExactlyOneDecrease() {
+    /// LOSS-TOLERANCE #4 (philosophy change, 2026-06-10): a SINGLE transient loss spike at FLAT RTT
+    /// is WEATHER — a burst the FEC/LTR/kfDup machinery absorbs — and must cause ZERO decreases.
+    /// (Raw sample 100% but no RTT corroboration; the EWMA only moves to ~12.5%, under the
+    /// catastrophic gate. The old behaviour spent one decrease per spike; on the measured path —
+    /// spikes many times a minute, rate-independent — that compounded into the ABR sawtooth.)
+    func testSingleTransientSpikeAtFlatRTTNeverDecreases() {
         var ctrl = LiveCongestionController(ceiling: ceiling)
         var est = NetworkEstimate()
         steppedClean(&est, &ctrl, count: LiveCongestionController.warmupTicks)
         XCTAssertEqual(ctrl.current, ceiling, "warmup leaves the rate at the ceiling")
 
-        // ONE spike report: 100% loss.
+        // ONE spike report: 100% loss, RTT flat at the baseline.
         est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 1000, owdJitterMicros: 100)
-        let afterSpike = ctrl.onReport(est)
-        XCTAssertLessThan(afterSpike, ceiling, "the spike triggers exactly one decrease")
-        // The CASCADE TRAP: the EWMA loss is STILL above the threshold right after the spike, so a
-        // controller keyed on `lossRate` (not the raw sample) WOULD keep decreasing on clean reports.
+        XCTAssertEqual(ctrl.onReport(est), ceiling, "an uncorroborated spike is weather — no decrease")
+        // The EWMA tail lingers above the ORDINARY threshold for many reports — none may decrease.
         XCTAssertGreaterThan(est.lossRate, LiveCongestionController.lossThreshold,
-                             "EWMA loss lingers above threshold after the spike (the trap the fix avoids)")
-
-        // Now PERFECTLY clean reports. The rate must NEVER drop below the single post-spike level
-        // (it holds during the hold-down, then climbs) — i.e. NO cascade.
+                             "EWMA loss lingers above threshold after the spike (the old cascade trap)")
         for _ in 0..<60 {
             est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
-            XCTAssertGreaterThanOrEqual(ctrl.onReport(est), afterSpike,
-                "a clean report after a spike must never decrease below the single post-spike level")
+            XCTAssertEqual(ctrl.onReport(est), ceiling, "the decaying EWMA tail must not decrease either")
         }
-        XCTAssertGreaterThan(ctrl.current, afterSpike, "after the hold-down the clean link recovers upward")
     }
 
-    /// REGRESSION (finding 2, severe): one 100%-loss report then a clean link must not slam to the floor
-    /// over the following clean reports — a single severe blip costs one halving, not a march to the floor.
-    func testSevereSpikeThenCleanDoesNotMarchToFloor() {
+    /// LOSS-TOLERANCE #4: a SUSTAINED true collapse (every report ~100% loss, flat RTT) IS acted on —
+    /// via the EWMA catastrophic gate — but at most ONE halving per hold-down window, so the decaying
+    /// EWMA tail after the collapse ends can never march the rate to the floor.
+    func testSustainedCollapseHalvesOncePerHoldDown() {
         var ctrl = LiveCongestionController(ceiling: ceiling)
         var est = NetworkEstimate()
         steppedClean(&est, &ctrl, count: LiveCongestionController.warmupTicks)
-        est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 1000, owdJitterMicros: 100)
-        let afterSpike = ctrl.onReport(est)
-        XCTAssertEqual(afterSpike, max(ctrl.floor, Int(Double(ceiling) * LiveCongestionController.severeDecreaseFactor)),
-                       "severe spike = exactly one halving")
-        steppedClean(&est, &ctrl, count: 5)
-        XCTAssertGreaterThanOrEqual(ctrl.current, afterSpike, "clean reports never push it below the single halving")
+        // Collapse: 100%-loss reports. The EWMA crosses 0.25 after ~3 folds → first halving.
+        var firstHalveTick: Int?
+        for i in 0..<LiveCongestionController.holdTicks {
+            est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 1000, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+            if firstHalveTick == nil, ctrl.current < ceiling { firstHalveTick = i }
+        }
+        XCTAssertNotNil(firstHalveTick, "a sustained collapse is detected within the first hold-down window")
+        XCTAssertEqual(ctrl.current, max(ctrl.floor, Int(Double(ceiling) * LiveCongestionController.severeDecreaseFactor)),
+                       "exactly ONE halving within the hold-down window — no per-report cascade")
+        // Collapse ends; the EWMA tail (still > 0.25 for a few reports) must not halve again before
+        // the hold-down expires.
+        steppedClean(&est, &ctrl, count: 3)
+        XCTAssertGreaterThanOrEqual(ctrl.current, max(ctrl.floor, Int(Double(ceiling) * LiveCongestionController.severeDecreaseFactor)),
+                                    "the post-collapse EWMA tail never pushes below the single halving")
     }
 
     /// REGRESSION (finding 3): a no-op decrease at the floor must NOT re-arm the hold-down. After the
@@ -290,10 +298,57 @@ final class LiveCongestionControllerTests: XCTestCase {
         // The hold-down must point at/behind NOW — no-op decreases at the floor did not push it ahead.
         XCTAssertLessThanOrEqual(ctrl.holdUntilTick, ctrl.ticks,
             "no-op decreases at the floor do not extend the hold-down into the future")
-        // So the very next clean report is already past the hold-down → recovery climbs immediately.
+        // Recovery starts as soon as the catastrophic EWMA decays under its gate (~11 clean reports
+        // from lossRate ≈ 1.0; the catastrophic branch keeps selecting no-op floor decreases until
+        // then) — NOT after an extra hold-down window (which would be 20 more).
+        for _ in 0..<11 {
+            est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+        }
         est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
         XCTAssertGreaterThan(ctrl.onReport(est), ctrl.floor,
-            "recovery starts immediately once loss clears (hold-down was not extended at the floor)")
+            "recovery climbs once the EWMA clears (hold-down was not extended at the floor)")
+    }
+
+    // MARK: LOSS-TOLERANCE #4 — weather loss (rate-independent, flat RTT) never gives up bitrate
+
+    /// THE 2026-06-10 measured path shape (iperf3, inter-ISP FPT↔Viettel): loss ~0.6–9% bursts with
+    /// COMPLETELY FLAT RTT (jitter 0.3ms). Backing off cannot reduce it (identical loss at 5 and
+    /// 30Mbps), so the controller must hold the rate and let FEC/LTR/kfDup absorb the weather.
+    func testWeatherLossFlatRTTNeverDecreases() {
+        var ctrl = warmedController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        // A 10-second weather episode: per-report raw loss wandering 3–9%, RTT pinned at baseline.
+        let lossPerMille: [UInt32] = [30, 90, 42, 60, 86, 33, 77, 51]
+        for i in 0..<200 {
+            est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: lossPerMille[i % lossPerMille.count],
+                     owdJitterMicros: 300)
+            XCTAssertEqual(ctrl.onReport(est), ceiling,
+                           "rate-independent weather loss at flat RTT must never leave the ceiling")
+        }
+    }
+
+    func testLossWithRTTInflationDecreasesImmediately() {
+        var ctrl = warmedController(ceiling: ceiling)
+        // 5% loss + RTT inflated past both gates on the SAME report = corroborated congestion —
+        // fires on the FIRST such report (no rttStreakTicks wait; the streak gate is RTT-alone).
+        let congested = estimate(lossSamples: 0.05, folds: 4, rttCongested: true)
+        let before = ctrl.current
+        XCTAssertLessThan(ctrl.onReport(congested), before,
+                          "loss + queue evidence = real congestion → immediate decrease")
+    }
+
+    func testCatastrophicLossHalvesEvenAtFlatRTT() {
+        var ctrl = warmedController(ceiling: ceiling)
+        // SUSTAINED 30% loss at flat RTT: 16 folds push the EWMA past the 0.25 catastrophic gate →
+        // halve without corroboration (queue-less policer / true collapse — backing off is the only
+        // safe move). A short 30% burst (few folds, EWMA still low) deliberately would NOT.
+        let catastrophic = estimate(lossSamples: 0.30, folds: 16)
+        XCTAssertGreaterThan(catastrophic.lossRate, LiveCongestionController.catastrophicLossThreshold)
+        let after = ctrl.onReport(catastrophic)
+        XCTAssertEqual(after, max(ctrl.floor, Int(Double(ceiling) * LiveCongestionController.severeDecreaseFactor)),
+                       "sustained catastrophic loss halves even with no RTT evidence")
     }
 
     // MARK: Floor / never-0
