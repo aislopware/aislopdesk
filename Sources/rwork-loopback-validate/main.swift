@@ -420,10 +420,18 @@ struct ClosedLoopResult {
     var adverseUnrecSecondHalf = 0     // steady-state (after the FEC climb settles) — the fair A/B window
     var bitrateFellInAdverse = false
     var bitrateRecoveredAfter = false
+    /// Bitrate at the END of the recovery phase. The recovery VERDICT keys on this, not the phase
+    /// average: by AIMD design the climb starts only after the RTT-EWMA decays (~0.7s) + the
+    /// hold-down (~1s), so a short phase's AVERAGE understates a recovery that is clearly underway.
+    var endBitrateMbps = 0.0
 }
 
 /// `fixedTier != nil` pins the FEC tier (non-adaptive baseline); `nil` lets AdaptiveFECPolicy drive it.
-func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bool, enableJitter: Bool, fixedTier: UInt8? = nil, verbose: Bool) -> ClosedLoopResult {
+/// `congestRTTInAdverse`: when true the adverse phase ALSO inflates the one-way delay (queue
+/// build-up → measured RTT ~90ms vs ~10ms baseline) so the loss is CORROBORATED — real congestion.
+/// When false the adverse phase is WEATHER loss (loss at flat RTT, the 2026-06-10 measured path
+/// shape) and the LOSS-TOLERANCE #4 controller must HOLD the bitrate.
+func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bool, enableJitter: Bool, fixedTier: UInt8? = nil, congestRTTInAdverse: Bool = true, verbose: Bool) -> ClosedLoopResult {
     var result = ClosedLoopResult()
 
     // ── Host-side real components ──
@@ -456,7 +464,10 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
 
     // ── Virtual clock + per-phase loss/jitter schedule ──
     let reportEvery = 3                     // ~50 ms at 60 fps
-    let oneWayMs = 5.0                      // stable ~10 ms RTT (loss is the ABR driver, not RTT)
+    // One-way delay: ~10ms RTT baseline; a CONGESTED adverse phase inflates it to ~90ms RTT
+    // (queue build-up — the corroboration LOSS-TOLERANCE #4 requires), a WEATHER adverse phase
+    // keeps it flat (loss alone must NOT move the bitrate).
+    func oneWayMs(phase: Int) -> Double { (congestRTTInAdverse && phase == 1) ? 45.0 : 5.0 }
     var clockMs = 0.0
     var globalFrag = 0
     var recoveryPending = false
@@ -474,7 +485,9 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
         var phaseBitrateSum = 0.0, phaseBitrateN = 0
         var phasePeakTier: UInt8 = 0, phasePeakDepth = 0, phaseUnrec = 0
         var phaseEncBytesSum = 0, phaseEncN = 0
-        let phaseName = phase == 1 ? "ADVERSE (3% loss\(enableJitter ? " + jitter" : ""))" : (phase == 0 ? "CLEAN" : "CLEAN recovery")
+        let phaseName = phase == 1
+            ? "ADVERSE (3% loss\(congestRTTInAdverse ? " + RTT inflation" : " at FLAT RTT = weather")\(enableJitter ? " + jitter" : ""))"
+            : (phase == 0 ? "CLEAN" : "CLEAN recovery")
         if verbose { print("  ── PHASE \(phase + 1) \(phaseName) ──") }
 
         for f in 0..<framesPerPhase {
@@ -497,7 +510,7 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
                 // The frame's fragments arrive spread across the wire (host paces large frames ~8 ms), NOT
                 // all at one instant — so the per-fragment OWD jitter estimator sees realistic inter-arrival
                 // deltas (the same `owd.note(arrival:)` per-fragment cadence as RworkVideoClientSession).
-                let frameArrivalMs = clockMs + oneWayMs + jitterMs(phase: phase, frame: f)
+                let frameArrivalMs = clockMs + oneWayMs(phase: phase) + jitterMs(phase: phase, frame: f)
                 let intraGap = frags.count > 1 ? 8.0 / Double(frags.count) : 0.0
 
                 // CLIENT: ingest each surviving fragment exactly as RworkVideoClientSession.ingestVideo.
@@ -533,7 +546,7 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
 
                 // CLIENT: emit a NetworkStatsReport every `reportEvery` frames (the 50 ms cadence).
                 if phaseEncN % reportEvery == 0 {
-                    let holdMs = latestHostSendTs == 0 ? 0 : UInt32(max(0, arrivalMsHold(now: clockMs + oneWayMs, observedAt: latestObservedAtMs)))
+                    let holdMs = latestHostSendTs == 0 ? 0 : UInt32(max(0, arrivalMsHold(now: clockMs + oneWayMs(phase: phase), observedAt: latestObservedAtMs)))
                     let report = NetworkStatsReport(framesReceived: winFrames, fecRecovered: winFec,
                                                     unrecovered: winUnrec, latestHostSendTs: latestHostSendTs,
                                                     clientHoldMs: holdMs, owdJitterMicros: owd.jitterMicros())
@@ -543,7 +556,7 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
                     guard case .networkStats(let rx)? = try? RecoveryMessage.decode(wire) else { continue }
 
                     // HOST: fold + tick + actuate — exactly RworkVideoHostSession.handleRecovery(.networkStats).
-                    let hostNowMs = UInt32(clockMs + oneWayMs * 2)
+                    let hostNowMs = UInt32(clockMs + oneWayMs(phase: phase) * 2)
                     let rtt = NetworkEstimate.computeRTTMillis(hostNowMs: hostNowMs, latestHostSendTs: rx.latestHostSendTs, clientHoldMs: rx.clientHoldMs)
                     est.fold(rttMillis: rtt, framesReceived: rx.framesReceived, unrecovered: rx.unrecovered, owdJitterMicros: rx.owdJitterMicros)
                     if enableFEC, fixedTier == nil { currentTier = AdaptiveFECPolicy.tier(forLossRate: est.lossRate, previousTier: currentTier) }
@@ -573,9 +586,11 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
     }
 
     result.adverseUnrecSecondHalf = adverseSecondHalfUnrec
+    result.endBitrateMbps = Double(lastActuated) / 1_000_000.0
     if result.phaseAvgBitrateMbps.count == 3 {
         result.bitrateFellInAdverse = result.phaseAvgBitrateMbps[1] < result.phaseAvgBitrateMbps[0] - 0.05
-        result.bitrateRecoveredAfter = result.phaseAvgBitrateMbps[2] > result.phaseAvgBitrateMbps[1] + 0.05
+        // Recovery = the END state climbed back above the adverse average (see endBitrateMbps doc).
+        result.bitrateRecoveredAfter = result.endBitrateMbps > result.phaseAvgBitrateMbps[1] + 0.05
     }
     return result
 }
@@ -611,8 +626,15 @@ func runClosedLoopSuite(framesPerPhase: Int) {
     print("    adverse FULL-phase UNRECOVERED              : adaptive=\(on.phaseUnrecovered[1])  vs  pinned-g5=\(fecPinned.phaseUnrecovered[1])  (adaptive pays a climb-from-OFF transient)")
     let fecHelped = on.adverseUnrecSecondHalf <= fecPinned.adverseUnrecSecondHalf
 
+    print("\n  [C] LOSS-TOLERANCE #4 weather control (ABR ON, 3% loss at FLAT RTT — the measured 2026-06-10 path shape)")
+    let weather = runClosedLoopAdaptation(framesPerPhase: framesPerPhase, enableABR: true, enableFEC: true, enableJitter: false,
+                                          congestRTTInAdverse: false, verbose: false)
+    let weatherHeld = !weather.bitrateFellInAdverse
+    print("    BITRATE  Mbps/phase  : clean=\(mbps(weather.phaseAvgBitrateMbps[0]))  weather=\(mbps(weather.phaseAvgBitrateMbps[1]))  after=\(mbps(weather.phaseAvgBitrateMbps[2]))")
+
     print("\n  ===== CLOSED-LOOP VERDICT =====")
-    print("    #2 ABR        : bitrate fell under loss=\(on.bitrateFellInAdverse ? "YES" : "no")  recovered after=\(on.bitrateRecoveredAfter ? "YES" : "no")  \(on.bitrateFellInAdverse && on.bitrateRecoveredAfter ? "✅" : "⚠️")")
+    print("    #2 ABR        : bitrate fell under CORROBORATED loss (RTT inflated)=\(on.bitrateFellInAdverse ? "YES" : "no")  recovered after=\(on.bitrateRecoveredAfter ? "YES" : "no")  \(on.bitrateFellInAdverse && on.bitrateRecoveredAfter ? "✅" : "⚠️")")
+    print("    #2b weather   : bitrate HELD under uncorroborated weather loss (flat RTT)=\(weatherHeld ? "YES" : "no")  \(weatherHeld ? "✅" : "⚠️")")
     let tierClimbed = maxTier(on.phasePeakTier[1], on.phasePeakTier[0]) == on.phasePeakTier[1] && on.phasePeakTier[1] != on.phasePeakTier[0]
     print("    #3 adaptiveFEC: tier escalated under loss=\(tierClimbed ? "YES" : "no")  reduced unrecovered=\(fecHelped ? "YES" : "no")  \(tierClimbed && fecHelped ? "✅" : "⚠️")")
     let depthGrew = on.phasePeakDepth[1] > on.phasePeakDepth[0]

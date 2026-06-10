@@ -62,6 +62,23 @@ public struct LiveCongestionController: Sendable, Equatable {
     public static let lossThreshold: Double = envDouble("RWORK_ABR_LOSS", 0.02, min: 0, max: 1)
     /// EWMA loss-rate above which the link is "severely congested" → halve immediately. `RWORK_ABR_SEVERE`.
     public static let severeLossThreshold: Double = envDouble("RWORK_ABR_SEVERE", 0.10, min: 0, max: 1)
+    /// LOSS-TOLERANCE #4 (2026-06-10): loss below ``catastrophicLossThreshold`` decreases ONLY when
+    /// CORROBORATED by RTT inflation (both gates of the RTT predicate on the same report). Measured
+    /// on the real inter-ISP path (iperf3, 1200B datagrams): loss is ~0.6–1.1% at 5, 12 AND 30Mbps —
+    /// rate-INDEPENDENT weather, with multi-second 3–9% burst episodes at FLAT RTT (jitter 0.3ms).
+    /// Backing the rate off cannot reduce that loss; it only degrades quality and (pre-#1) paced the
+    /// recovery IDR at the collapsed rate. Loss WITH RTT inflation = a building queue = real
+    /// congestion → the classic AIMD response stays. `RWORK_ABR_LOSS_NEEDS_RTT=0` reverts.
+    public static let lossNeedsRTTCorroboration = ProcessInfo.processInfo.environment["RWORK_ABR_LOSS_NEEDS_RTT"] != "0"
+    /// EWMA loss-rate above THIS halves even at flat RTT: a queue-less policer / true link collapse
+    /// drops without inflating RTT, and at a SUSTAINED ≥25% the stream is unusable regardless of
+    /// cause — backing off is the only safe move. Keyed on the EWMA ``NetworkEstimate/lossRate``
+    /// (NOT the raw sample) deliberately: the ~50ms report window holds only ~3 frames, so ONE
+    /// dropped frame reads as a 33% raw sample — weather, not collapse. The EWMA (alpha 0.125)
+    /// needs ~6 consecutive ≥50%-loss reports (~300ms of true collapse) to cross 0.25, while a
+    /// single spike moves it ≤12.5%. Gated on the hold-down so the decaying EWMA tail after the
+    /// collapse ends cannot cascade halvings to the floor. `RWORK_ABR_CATASTROPHIC`.
+    public static let catastrophicLossThreshold: Double = envDouble("RWORK_ABR_CATASTROPHIC", 0.25, min: 0, max: 1)
     /// Multiplicative decrease factor on ordinary congestion (0.85 = drop to 85%). `RWORK_ABR_DEC`.
     public static let decreaseFactor: Double = envDouble("RWORK_ABR_DEC", 0.85, min: 0.05, max: 0.999)
     /// Multiplicative decrease factor on SEVERE loss (0.5 = halve). `RWORK_ABR_SEVERE_DEC`.
@@ -158,10 +175,22 @@ public struct LiveCongestionController: Sendable, Equatable {
             && rttInflatedStreak >= Self.rttStreakTicks
             && ticks >= holdUntilTick
 
-        if e.lastLossSample > Self.severeLossThreshold {
-            // Severe loss: halve immediately.
+        // LOSS-TOLERANCE #4: sub-catastrophic loss acts only when CORROBORATED by RTT inflation on
+        // the same report (queue evidence). Weather loss — the measured rate-independent ~1%/3–9%
+        // bursts at FLAT RTT — is handled by FEC/LTR/kfDup, not by giving up bitrate.
+        let lossEvidence = !Self.lossNeedsRTTCorroboration || rttInflated
+        if e.lossRate > Self.catastrophicLossThreshold,
+           e.lastLossSample > Self.severeLossThreshold,
+           ticks >= holdUntilTick {
+            // SUSTAINED catastrophic loss (EWMA over the gate AND the CURRENT raw sample still
+            // severe — the collapse is happening now, not the decaying tail of one that ended):
+            // halve regardless of RTT (queue-less policer / true collapse), at most once per
+            // hold-down window.
             decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)))
-        } else if e.lastLossSample > Self.lossThreshold || rttCongested {
+        } else if e.lastLossSample > Self.severeLossThreshold, lossEvidence {
+            // Severe CORROBORATED loss: halve immediately.
+            decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)))
+        } else if (e.lastLossSample > Self.lossThreshold && lossEvidence) || rttCongested {
             // Ordinary congestion: multiplicative decrease.
             decrease(to: max(floor, Int(Double(current) * Self.decreaseFactor)))
         } else if ticks >= holdUntilTick && !rttInflated {
