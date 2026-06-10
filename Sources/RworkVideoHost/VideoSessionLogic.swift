@@ -673,11 +673,14 @@ public struct StaticIDRDecider: Sendable, Equatable {
         // Recovery request always wins once the live path is quiet (latency-critical: a client
         // is frozen). Fire regardless of heartbeat phase.
         if forcedLatched { return true }
-        // Otherwise: heartbeat. Fire iff a full interval elapsed since the LAST emission of
-        // ANY kind (real or synthetic) — so cadence is measured from whatever last anchored.
-        let lastEmission = max(lastCompleteEncode, lastSyntheticEncode)
-        if lastEmission == 0 { return true } // armed, never emitted, buffer present ⇒ fire now
-        return (now - lastEmission) >= heartbeat
+        // Otherwise: heartbeat — measured from the last SYNTHETIC emission only (SHARPNESS,
+        // 2026-06-10; was `max(lastComplete, lastSynthetic)`). Measuring from the last REAL frame
+        // made the FIRST crisp re-anchor after a scroll wait a full heartbeat (2.5 s of QP-coarse
+        // text) even though the quiet window had long passed; Parsec re-sharpens in ~1 s. With the
+        // synthetic-only anchor the first crisp fires as soon as the quiet window clears (~1 s
+        // after motion stops), while the steady-state static cadence stays one `heartbeat` apart.
+        if lastSyntheticEncode == 0 { return true } // armed, none emitted yet, quiet ⇒ fire now
+        return (now - lastSyntheticEncode) >= heartbeat
     }
 }
 

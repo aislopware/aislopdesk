@@ -67,6 +67,13 @@ public final class MetalVideoRenderer {
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = true
         metalLayer.maximumDrawableCount = 2 // ~1 vsync latency (doc 04)
+        // LAT (2026-06-10 loopback hunt, env RWORK_NO_VSYNC=1): present the drawable as soon as
+        // the GPU finishes instead of holding it for the next display refresh — shaves the
+        // 0-16.7ms (avg ~8) composite-alignment wait at the cost of possible tearing mid-scan.
+        // Default ON-vsync (today's behavior); opt-in for the latency-first profile.
+        if ProcessInfo.processInfo.environment["RWORK_NO_VSYNC"] == "1" {
+            metalLayer.displaySyncEnabled = false
+        }
 
         guard let library = try? device.makeLibrary(source: Self.shaderSource, options: nil),
               let vertexFunction = library.makeFunction(name: "rwork_video_vertex"),

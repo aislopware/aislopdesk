@@ -35,6 +35,10 @@ public final class NWVideoMuxClientFlow: @unchecked Sendable {
     private let queue = DispatchQueue(label: "rwork.video.client.transport.mux", qos: .userInteractive)
 
     private let lock = NSLock()
+    /// KHỰNG-ladder stage 3 (RWORK_VIDEO_DEBUG): last VIDEO-datagram socket-arrival time.
+    /// Owned by the serial receive queue — no lock needed.
+    static let dbgGapEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil
+    private var dbgLastVideoRxAt: Double = 0
     private var mediaConn: NWConnection?
     private var cursorConn: NWConnection?
     /// channelID → (onMedia, onCursor) for the lane. A datagram is delivered only to its lane.
@@ -136,6 +140,17 @@ public final class NWVideoMuxClientFlow: @unchecked Sendable {
             if let data, let (channelID, rest) = try? VideoMuxHeaderCodec.decode(data), rest.count >= 1 {
                 let tag = rest[rest.startIndex]
                 if let channel = VideoChannel(rawValue: tag) {
+                    // KHỰNG-ladder stage 3 (RWORK_VIDEO_DEBUG): a >28ms hole between MEDIA datagrams at
+                    // the SOCKET (before any actor hop) during continuous motion = the hole already
+                    // existed on the wire (host stall or path stall) — stages 4/5 can only inherit it.
+                    // Serial receive queue ⇒ the stamp needs no lock.
+                    if Self.dbgGapEnabled, channel == .video {
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if self.dbgLastVideoRxAt > 0, now - self.dbgLastVideoRxAt > 0.028 {
+                            FileHandle.standardError.write(Data("Rwork[video.client]: rx gap \(Int((now - self.dbgLastVideoRxAt) * 1000))ms\n".utf8))
+                        }
+                        self.dbgLastVideoRxAt = now
+                    }
                     let payload = Data(rest[(rest.startIndex + 1)...])
                     let sink = self.lock.withLock { self.mediaSinks[channelID] }
                     sink?(channel, payload)   // a datagram for a closed/unknown lane is dropped (loss isolation)

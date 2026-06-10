@@ -114,15 +114,72 @@ final class LiveCongestionControllerTests: XCTestCase {
         XCTAssertLessThan(after, ordinary, "severe halving drops further than an ordinary decrease")
     }
 
-    func testDecreaseOnRTTInflationWithRisingGradient() {
+    func testDecreaseOnSustainedRTTInflation() {
         var ctrl = warmedController(ceiling: ceiling)
-        // No loss, but RTT inflated past minRTT*1.25 WITH a rising OWD gradient → congestion.
+        // No loss, but RTT inflated past BOTH gates (minRTT×1.25 AND minRTT+slack) — must be
+        // SUSTAINED for `rttStreakTicks` consecutive reports before the decrease fires.
         let rtt = estimate(lossSamples: 0, folds: 4, rttCongested: true)
         XCTAssertTrue(rtt.smoothedRTTMillis > rtt.minRTTMillis * LiveCongestionController.rttInflateFactor)
-        XCTAssertTrue(rtt.owdGradientRising)
+        XCTAssertTrue(rtt.smoothedRTTMillis > rtt.minRTTMillis + LiveCongestionController.rttSlackMillis)
         let before = ctrl.current
-        let after = ctrl.onReport(rtt)
-        XCTAssertLessThan(after, before, "RTT inflation + rising gradient is a congestion signal")
+        for _ in 0..<(LiveCongestionController.rttStreakTicks - 1) {
+            XCTAssertEqual(ctrl.onReport(rtt), before, "sub-streak inflation must not decrease (nor climb)")
+        }
+        XCTAssertLessThan(ctrl.onReport(rtt), before,
+                          "inflation sustained for the full streak is a congestion signal → decrease")
+    }
+
+    /// REGRESSION (2026-06-10 live log): a clean low-latency LAN (minRTT ≈ 5ms, smoothedRTT wobbling
+    /// 7–12ms from scheduling noise, jitter gradient flapping ~50/50, loss 0.000 on ALL reports) must
+    /// NEVER decrease. The old predicate (`minRTT × 1.25` + per-report gradient flag) pinned the rate
+    /// at the FLOOR for an entire session on exactly this input shape.
+    func testCleanLANJitterNeverDecreases() {
+        var ctrl = LiveCongestionController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        est.fold(rttMillis: 5, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 10_000)
+        // Live-measured shape: RTT samples 5–16ms, jitter wobbling so the gradient flag flips.
+        let rtts = [7, 12, 9, 15, 6, 11, 5, 16, 8, 13]
+        let jitters: [UInt32] = [9_000, 14_000, 11_000, 13_500, 10_000, 12_500]
+        for i in 0..<200 {
+            est.fold(rttMillis: rtts[i % rtts.count], framesReceived: 1000, unrecovered: 0,
+                     owdJitterMicros: jitters[i % jitters.count])
+            XCTAssertEqual(ctrl.onReport(est), ceiling,
+                           "LAN scheduling wobble under the absolute slack must never leave the ceiling")
+        }
+    }
+
+    /// REGRESSION (EWMA cascade): one sustained real inflation episode must back off ONE hold-down
+    /// at a time — not ×0.85 per 50ms report straight to the floor while the smoothed-RTT EWMA decays.
+    func testSustainedRTTInflationBacksOffOncePerHoldDownNotPerReport() {
+        var ctrl = warmedController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        // Baseline ~5ms, then a genuine queue build-up: every report sees 80ms.
+        est.fold(rttMillis: 5, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        let reports = LiveCongestionController.holdTicks + 10 // long enough for exactly 2 decreases
+        for _ in 0..<reports {
+            est.fold(rttMillis: 80, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+        }
+        XCTAssertLessThan(ctrl.current, ceiling, "a real sustained inflation IS detected")
+        let twoDecreases = Int(Double(ceiling) * LiveCongestionController.decreaseFactor
+                                                * LiveCongestionController.decreaseFactor)
+        XCTAssertGreaterThanOrEqual(ctrl.current, twoDecreases - 1,
+            "RTT back-off is rate-limited to one decrease per hold-down — no per-report cascade to the floor")
+        XCTAssertGreaterThan(ctrl.current, ctrl.floor, "the cooldown keeps a single episode off the floor")
+    }
+
+    /// The absolute slack governs on a tiny baseline: smoothedRTT 3× the minRTT (well past the
+    /// multiplicative gate) but only a few ms of ABSOLUTE inflation must never decrease.
+    func testAbsoluteSlackGuardsTinyBaseline() {
+        var ctrl = LiveCongestionController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        est.fold(rttMillis: 3, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        for _ in 0..<200 {
+            est.fold(rttMillis: 12, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+        }
+        // smoothedRTT ≈ 12ms vs minRTT ≈ 3–4ms: ×1.25 cleared, but the +15ms slack is not.
+        XCTAssertEqual(ctrl.current, ceiling, "sub-slack absolute inflation on a tiny baseline never decreases")
     }
 
     // MARK: Hold-down

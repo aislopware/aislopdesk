@@ -28,7 +28,8 @@ public enum VideoEncoderError: Error {
 ///   24ms → live MUST be low-latency-RC). Specification keys
 ///   `EnableLowLatencyRateControl=true` + `RequireHardwareAcceleratedVideoEncoder=
 ///   true`; property keys `RealTime=true`, `ExpectedFrameRate=30`,
-///   `PrioritizeEncodingSpeedOverQuality=true`, `AllowFrameReordering=false`,
+///   `PrioritizeEncodingSpeedOverQuality=false` (QUALITY-first since 2026-06-10;
+///   `RWORK_SPEED_OVER_QUALITY=1` restores the speed hint), `AllowFrameReordering=false`,
 ///   `MaxKeyFrameInterval=INT_MAX`, `AverageBitRate` + `DataRateLimits=[12_000_000/8,
 ///   1.0]` (12 Mbps hard cap, **/8 not /4**), `SpatialAdaptiveQPLevel=Disable` (BEST-EFFORT —
 ///   `kVTPropertyNotSupportedErr`/-12900 on encoders without the key; not latency-critical).
@@ -53,6 +54,13 @@ public final class VideoEncoder: @unchecked Sendable {
     public static let dataRateMaxBytes = bitrateBitsPerSecond / 8 // 1_500_000
     /// -12905 (XPC) create-race retry backoff, 50-100ms (doc 18 §G).
     public static let createRetryBackoffNanos: UInt64 = 75_000_000
+    /// SHARPNESS (2026-06-10): `PrioritizeEncodingSpeedOverQuality` default flipped true → FALSE.
+    /// The hint tilts the HW encoder's rate-distortion choices toward coarser quantization at equal
+    /// bitrate — a direct sharpness loss ("không nét bằng Parsec") — while Apple-silicon HEVC HW
+    /// encodes 4K60 in real time comfortably without it (RealTime + low-latency RC stay set, so the
+    /// latency contract is unchanged). `RWORK_SPEED_OVER_QUALITY=1` restores the speed-first hint
+    /// for A/B or for hardware where quality-first encode misses the 16.7 ms frame budget.
+    static let speedOverQuality = ProcessInfo.processInfo.environment["RWORK_SPEED_OVER_QUALITY"] == "1"
     /// §A1 (doc 26 §A) worst-case quantizer CEILING for the live session. HEVC QP range is
     /// 1 (lossless) … 51 (coarsest). VideoToolbox RAISES QP up to this ceiling to keep a frame under
     /// the hard `DataRateLimits` cap, and DROPS the frame if even at this ceiling it cannot fit — so
@@ -131,9 +139,24 @@ public final class VideoEncoder: @unchecked Sendable {
     /// `currentLiveBitrate()/8`, `crispDataRateMaxBytes`, `live/8`); the helper applies `*T`. Routing
     /// all DataRateLimits set-sites through this one helper makes a half-threaded window impossible.
     static func dataRateLimits(bytesPerSecond: Int) -> CFArray {
-        let c = vbvComponents(bytesPerSecond: bytesPerSecond, seconds: vbvWindowSeconds)
+        // PURE-VBR (RWORK_PURE_VBR=1): Parsec-style rate control — AverageBitRate steers, the hard
+        // cap never binds. VT's DataRateLimits enforcement DROPS a frame that exceeds the window
+        // budget (silently — the encode callback gets sampleBuffer=nil), and the 2026-06-10 khựng
+        // ladder measured exactly that: capture clean at 60fps, send gaps 28-400ms, on dense
+        // high-entropy content whenever the live budget was tight. Unbinding the cap here (1 GB/s
+        // ≈ ∞) flows through EVERY set-site (create / crisp bracket / compact bracket / ABR
+        // actuate / probe) so a half-threaded gate is impossible; the encoder then COARSENS via
+        // QP under pressure instead of dropping — a soft frame beats a missing one.
+        let effective = pureVBR ? 1_000_000_000 : bytesPerSecond
+        let c = vbvComponents(bytesPerSecond: effective, seconds: vbvWindowSeconds)
         return [c.maxBytes, c.seconds] as CFArray
     }
+
+    /// See ``dataRateLimits(bytesPerSecond:)``. Default OFF (today's hard-cap behavior).
+    static let pureVBR = ProcessInfo.processInfo.environment["RWORK_PURE_VBR"] == "1"
+    /// Drop visibility (RWORK_VIDEO_DEBUG): VT signals a dropped frame as `sampleBuffer == nil`
+    /// in the encode callback — swallowing it silently hid the khựng factory for a whole session.
+    static let dbgDropEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil
 
     // MARK: Compact recovery/heartbeat IDR (motion-smoothness, 2026-06-08)
     //
@@ -350,8 +373,13 @@ public final class VideoEncoder: @unchecked Sendable {
         // (logged on failure) since they degrade quality, not the latency contract.
         try setCritical(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue)
         set(session, kVTCompressionPropertyKey_ExpectedFrameRate, fps as CFNumber) // best-effort (60 default)
-        set(session, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue) // best-effort
+        set(session, kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+            Self.speedOverQuality ? kCFBooleanTrue : kCFBooleanFalse) // best-effort; default QUALITY-first (sharpness)
         try setCritical(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse) // no B-frames — latency-critical
+        // Explicitly opt OUT of the power-efficiency hint: left unset, the HW encoder may apply
+        // an efficiency clock policy that adds encode latency. We always trade watts for ms here.
+        // Best-effort: tolerated as -12900 on encoders without the key.
+        set(session, kVTCompressionPropertyKey_MaximizePowerEfficiency, kCFBooleanFalse)
         set(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, Int(Int32.max) as CFNumber) // IDR on-demand (best-effort)
         // AverageBitRate + DataRateLimits together ARE the low-latency rate-control
         // contract — both latency-critical.
@@ -738,8 +766,15 @@ public final class VideoEncoder: @unchecked Sendable {
         let status = VTCompressionSessionEncodeFrame(
             session, imageBuffer: pixelBuffer, presentationTimeStamp: presentationTime,
             duration: .invalid, frameProperties: frameProperties, infoFlagsOut: nil
-        ) { status, _, sampleBuffer in
-            guard status == noErr, let sampleBuffer else { return }
+        ) { status, infoFlags, sampleBuffer in
+            guard status == noErr, let sampleBuffer else {
+                // A nil sampleBuffer at status==noErr IS a VT frame drop (rate-control budget,
+                // .frameDropped flag) — make it visible; silence here cost a whole debug session.
+                if Self.dbgDropEnabled {
+                    FileHandle.standardError.write(Data("rwork-videohostd[encoder]: VT DROP status=\(status) frameDropped=\(infoFlags.contains(.frameDropped))\n".utf8))
+                }
+                return
+            }
             Self.deliver(sampleBuffer: sampleBuffer, mode: mode, readLTRToken: readLTRToken, handler: handler)
         }
         guard status == noErr else { throw VideoEncoderError.encodeFailed(status) }
