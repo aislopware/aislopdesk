@@ -154,11 +154,11 @@ final class VideoWindowPipeline {
         // dropping the oldest). Defaults 2 / 5 absorb the idle→scroll size-jump backlog at
         // ~33 ms latency.
         let env = ProcessInfo.processInfo.environment
-        // LAT-2 (2026-06-09): default 3 → 2. At 60fps depth 2 ≈ 33ms standing buffer = Parsec's budget,
-        // and one frame of slack still absorbs decode/arrival jitter for smooth cadence. With pacing now
-        // OFF by default (frames arrive within <1ms of completion, no 30-130ms spread) the old depth-3
-        // (50ms) slack is unnecessary latency. `RWORK_JITTER_DEPTH=1` for absolute-lowest latency.
-        let jitterDepth = env["RWORK_JITTER_DEPTH"].flatMap(Int.init).map { min(8, max(1, $0)) } ?? 2
+        // LAT-2 (2026-06-09): default 3 → 2. At 60fps depth 2 ≈ 33ms standing buffer = Parsec's budget.
+        // 2026-06-11 defaults consolidation: 2 → 1 (R4/R7 HW-validated "gần bằng parsec" state ran
+        // depth 1; present-on-arrival — default ON — is depth-1-only, and the extra frame was pure
+        // latency). `RWORK_JITTER_DEPTH=2` restores the slack frame for a jittery link A/B.
+        let jitterDepth = env["RWORK_JITTER_DEPTH"].flatMap(Int.init).map { min(8, max(1, $0)) } ?? 1
         let jitterMax = env["RWORK_JITTER_MAX"].flatMap(Int.init).map { min(16, max(1, $0)) } ?? 5
         // Adaptive jitter buffer (default OFF ⇒ fixed depth exactly as today). When on, the pacer
         // self-measures decoded-frame arrival jitter and floats the depth between 1 and jitterMax:

@@ -73,13 +73,16 @@ final class VBVWindowTests: XCTestCase {
 
     // MARK: dataRateLimits CFArray bridge (default-path byte identity)
 
-    // With no RWORK_VBV_WINDOW in the test process env, the resolved window is 1.0 → the bridged
-    // CFArray is exactly [bytesPerSecond (Int), 1.0 (Double)], matching the pre-WF-5 literal.
-    func testDataRateLimitsDefaultBridgesIdentically() throws {
+    // 2026-06-11 defaults consolidation: PURE VBR is the default (`RWORK_PURE_VBR` unset ⇒ the
+    // hard cap never binds — VT's DataRateLimits enforcement silently DROPS frames over the
+    // window budget, the R7-HW-measured khựng factory). The bridged CFArray keeps the exact
+    // [bytes (Int), seconds (Double)] shape; the byte element is the unbound sentinel regardless
+    // of the requested rate (AverageBitRate alone steers — the Parsec rate-control model).
+    func testDataRateLimitsDefaultIsPureVBRUnbound() throws {
         XCTAssertEqual(VideoEncoder.vbvWindowSeconds, 1.0, "test env must not set RWORK_VBV_WINDOW")
         let arr = VideoEncoder.dataRateLimits(bytesPerSecond: 1_500_000) as NSArray
         XCTAssertEqual(arr.count, 2)
-        XCTAssertEqual(arr[0] as? Int, 1_500_000)
+        XCTAssertEqual(arr[0] as? Int, 1_000_000_000, "default = pure VBR: the hard cap must never bind")
         XCTAssertEqual(arr[1] as? Double, 1.0)
     }
 }

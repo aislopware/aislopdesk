@@ -176,7 +176,11 @@ public actor RworkVideoHostSession {
     /// is never seeded/ticked, so `setLiveBitrate` is never called and the live rate stays pinned at
     /// the resolution-aware ceiling — byte-identical to today. Needs telemetry reports to ever tick
     /// (if the client sets `RWORK_NETSTATS=0` no reports arrive ⇒ the controller never fires ⇒ inert).
-    private static let abrEnabled = ProcessInfo.processInfo.environment["RWORK_ABR"] == "1"
+    /// DEFAULT **ON** since 2026-06-11 (defaults consolidation): with LOSS-TOLERANCE #4 the
+    /// controller is weather-proof (holds the rate on uncorroborated loss, backs off only on
+    /// queue evidence or sustained collapse), so the closed loop is pure upside — on a clean
+    /// LAN/loopback it is inert at the ceiling. `RWORK_ABR=0` reverts to open-loop.
+    private static let abrEnabled = ProcessInfo.processInfo.environment["RWORK_ABR"] != "0"
     /// WF-4 ADAPTIVE FEC. DEFAULT OFF; enable with `RWORK_ADAPTIVE_FEC=1`. When ON the host picks a
     /// per-frame XOR-parity group size (``AdaptiveFECPolicy``) from the folded loss EWMA and signals it
     /// in each fragment's flags so the client splits data/parity identically. When OFF the host always
