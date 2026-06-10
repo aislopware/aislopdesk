@@ -81,7 +81,10 @@ public final class VideoEncoder: @unchecked Sendable {
     /// WindowCapturer.makeConfiguration `includeChildWindows = false`).
     public static let maxAllowedFrameQP: Int = {
         if let s = ProcessInfo.processInfo.environment["RWORK_MAX_QP"], let v = Int(s), v >= 1, v <= 51 { return v }
-        return 40
+        // 51 (uncapped) since 2026-06-11, paired with default pure-VBR: the encoder must ALWAYS
+        // be able to coarsen its way under the budget rather than drop (R7 HW-validated QP51;
+        // the crisp static refresh restores sharpness the moment motion stops).
+        return 51
     }()
 
     /// CRISP STATIC REFRESH (doc 17 §3.4 — Design A, single-session QP-bump, 2026-06-08).
@@ -152,8 +155,11 @@ public final class VideoEncoder: @unchecked Sendable {
         return [c.maxBytes, c.seconds] as CFArray
     }
 
-    /// See ``dataRateLimits(bytesPerSecond:)``. Default OFF (today's hard-cap behavior).
-    static let pureVBR = ProcessInfo.processInfo.environment["RWORK_PURE_VBR"] == "1"
+    /// See ``dataRateLimits(bytesPerSecond:)``. DEFAULT **ON** since 2026-06-11 (defaults
+    /// consolidation): the R7 khựng ladder HW-measured VT's hard cap silently DROPPING dense
+    /// frames (send gaps 28–400ms); pure VBR + a high QP ceiling coarsens instead — a soft frame
+    /// beats a missing one (drop-frame-keep-cadence). `RWORK_PURE_VBR=0` restores the hard cap.
+    static let pureVBR = ProcessInfo.processInfo.environment["RWORK_PURE_VBR"] != "0"
     /// Drop visibility (RWORK_VIDEO_DEBUG): VT signals a dropped frame as `sampleBuffer == nil`
     /// in the encode callback — swallowing it silently hid the khựng factory for a whole session.
     static let dbgDropEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil

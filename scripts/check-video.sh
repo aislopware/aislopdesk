@@ -154,20 +154,16 @@ OSLOG="$WORK/oslog.txt"
 } > "$OSLOG" 2>&1
 echo "==> OSLog flow → $OSLOG ($(wc -l < "$OSLOG") lines)"
 
-# ── 6. Screenshot the client's remote-window sheet for VISUAL confirmation (the real proof) ─────
-# (The pixels are the ground truth: if the sheet shows the remote window's content, the whole
-#  capture→HEVC→UDP→decode→Metal pipeline ran. We do NOT gate on byte-throughput parsing — nettop
-#  formats values with units, which is brittle to scrape.)
-SHEET_WID="$("$HOSTD" --list 2>&1 | grep -E 'Rwork +\(untitled\)' | grep -oE 'id=[0-9]+' | head -1 | cut -d= -f2 || true)"
-[[ -z "$SHEET_WID" ]] && SHEET_WID="$("$HOSTD" --list 2>&1 | grep -E ' Rwork ' | grep -oE 'id=[0-9]+' | head -1 | cut -d= -f2 || true)"
-if [[ -n "$SHEET_WID" ]]; then
-  screencapture -x -l"$SHEET_WID" "$SHOT"
-  echo "==> screenshot saved: $SHOT"
-else
-  # Fall back to a full-screen grab so there is always something to read.
-  screencapture -x "$SHOT"
-  echo "==> screenshot (full screen fallback) saved: $SHOT"
-fi
+# ── 6. Screenshot for VISUAL confirmation (the real proof) ──────────────────────────────────────
+# (The pixels are the ground truth: if the client window shows the remote window's content, the
+#  whole capture→HEVC→UDP→decode→Metal pipeline ran. We do NOT gate on byte-throughput parsing.)
+# GOTCHA (2026-06-09, HW-learned): running `$HOSTD --list` here AGAIN — while the serving host's
+# SCStream is ACTIVE — hangs the enumeration. Never list-while-active: raise the client app and
+# take a full-screen grab instead (the client window is what we need to read anyway).
+osascript -e 'tell application "System Events" to set frontmost of first process whose name is "Rwork" to true' 2>/dev/null || true
+sleep 1
+screencapture -x "$SHOT"
+echo "==> screenshot (full screen; client raised) saved: $SHOT"
 echo
 echo "================================================================================"
 echo " DONE. Now tell your agent: read  $SHOT"
