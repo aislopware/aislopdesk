@@ -108,6 +108,22 @@ public actor RworkVideoHostSession {
     /// slower than 40ms/chunk (a collapsed-to-floor ABR must not serialize a frame into a multi-second stall).
     private static let pacingGapFloorNanos: UInt64 = 200_000
     private static let pacingGapCeilNanos: UInt64 = 40_000_000
+    /// LOSS-TOLERANCE #1 (2026-06-10): route paced sends through the dedicated ``VideoSendLane``
+    /// instead of awaiting the pacing INSIDE the encoder-output pump. Measured defect: inline pacing
+    /// of frame N delayed frames N+1..k → send gaps 28–179ms on the real path (the visible khựng).
+    /// DEFAULT ON; `RWORK_SEND_LANE=0` reverts to the inline `sendPaced` path.
+    private static let sendLaneEnabled = ProcessInfo.processInfo.environment["RWORK_SEND_LANE"] != "0"
+    /// LOSS-TOLERANCE #1b: pace KEYFRAMES at no less than this rate. A recovery IDR paced at a
+    /// post-backoff ABR rate (collapsed to the floor) serializes over 100s of ms — and IDR delivery
+    /// time IS recovery time. Measured (2026-06-10 iperf3): the path carries 30Mbps with the same
+    /// ~1% weather loss as 5Mbps, so draining an IDR at ≥12Mbps costs nothing in loss while cutting
+    /// the freeze tail. `RWORK_KF_PACE_FLOOR_BPS` overrides (clamp 1–100 Mbps).
+    private static let kfPaceFloorBps: Int = {
+        if let s = ProcessInfo.processInfo.environment["RWORK_KF_PACE_FLOOR_BPS"], let v = Int(s) {
+            return min(100_000_000, max(1_000_000, v))
+        }
+        return 12_000_000
+    }()
     /// CONTENT-ADAPTIVE FPS (2026-06-09) — drop fps under heavy motion so a full-screen scroll fits a
     /// ~12Mbps link (a 60fps full-screen scroll's 58–200KB frames exceed link/60 bytes/frame → loss).
     /// DEFAULT OFF (2026-06-09): the alternating skip (encode/skip/encode) delivers frames at irregular
@@ -289,6 +305,9 @@ public actor RworkVideoHostSession {
     /// once in ``start()``); every encoder-callback site feeds the SAME queue.
     private var encodedQueue: EncodedFrameQueue?
     private var encodedWakeup: AsyncStream<Void>.Continuation?
+    /// LOSS-TOLERANCE #1: dedicated paced-send lane (created in ``start()``, closed in ``stop()``,
+    /// flushed on media teardown). `nil` before start / after stop / when `RWORK_SEND_LANE=0`.
+    private var sendLane: VideoSendLane?
     private var encodedConsumer: Task<Void, Never>?
     /// Content-adaptive fps controller (created per encoder build with the resolution-aware per-frame
     /// budget). `nil` until the capturer is built. Read in ``onEncodedFrame`` to feed back frame sizes.
@@ -365,6 +384,13 @@ public actor RworkVideoHostSession {
             }
         }
 
+        // LOSS-TOLERANCE #1: the paced-send lane. `transport.send` is fire-and-forget UDP enqueue
+        // (protocol contract: never blocks), safe to call from the lane's consumer task.
+        if Self.sendLaneEnabled {
+            let transport = transport
+            sendLane = VideoSendLane(send: { data, channel in transport.send(data, on: channel) })
+        }
+
         log.info("video host session listening for client hello")
     }
 
@@ -382,6 +408,9 @@ public actor RworkVideoHostSession {
         encodedConsumer?.cancel()
         encodedConsumer = nil
         encodedQueue = nil
+        // End the paced-send lane (queued frames are for a session that no longer exists).
+        sendLane?.close()
+        sendLane = nil
         for effect in stateMachine.stop() { await apply(effect) }
         await teardownLiveComponents()
         await transport.stop()
@@ -1127,6 +1156,10 @@ public actor RworkVideoHostSession {
     }
 
     private func teardownLiveComponents() async {
+        // Frames queued in the paced-send lane belong to the capture/encode generation being torn
+        // down — drop them (a mid-pace job aborts at its next chunk boundary). The lane itself
+        // survives for the next hello; `stop()` is what closes it.
+        sendLane?.flush()
         // Compare-and-clear (race guard, F2). `#8` made `bye → .listening` re-armable, so a
         // bye's stopCapture (this teardown) can now overlap a reconnect hello's startCapture:
         // `await capturer?.stop()` (a slow SCStream stopCapture) is a suspension point across
@@ -1220,6 +1253,34 @@ public actor RworkVideoHostSession {
                 dbg("send gap \(Int((now - dbgLastFrameSendAt) * 1000))ms")   // khựng-ladder stage 2
             }
             dbgLastFrameSendAt = now
+        }
+        // LOSS-TOLERANCE #1: hand the frame to the paced-send lane and RETURN — the encoder-output
+        // pump never sleeps on pacing again (inline pacing of frame N delayed frames N+1..k →
+        // measured 28–179ms send gaps = the khựng). Wire order is preserved (one lane consumer).
+        if let sendLane {
+            // 1b: keyframes pace at ≥ kfPaceFloorBps — IDR delivery time IS recovery time, and the
+            // measured path carries 30Mbps at the same weather-loss as 5Mbps (rate-independent).
+            let paceTargetBps = keyframe ? max(lastActuatedBitrate, Self.kfPaceFloorBps) : lastActuatedBitrate
+            let gapNanos: UInt64 = !Self.paceSend ? 0 : (Self.pacingAdaptive
+                ? Self.adaptivePaceGapNanos(targetBps: paceTargetBps, fallbackBps: Self.pacingFallbackBps,
+                                            chunkFragments: Self.paceChunkFragments, datagramSize: VideoPacketizer.maxDatagramSize,
+                                            floorNanos: Self.pacingGapFloorNanos, ceilNanos: Self.pacingGapCeilNanos,
+                                            rateMultiplier: Self.paceRateMultiplier)
+                : Self.paceGapNanos)
+            sendLane.enqueue(VideoSendLane.Job(outgoings: outgoings, gapNanos: gapNanos,
+                                               chunkFragments: Self.paceChunkFragments))
+            // F3 keyframe DUPLICATE-SEND, lane edition: the second copy is just another in-order job
+            // with a leading time-separation gap. Throttle state stays actor-owned.
+            if Self.kfDup, keyframe {
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - lastKeyframeDupTime >= Self.kfDupMinInterval {
+                    lastKeyframeDupTime = now
+                    sendLane.enqueue(VideoSendLane.Job(outgoings: outgoings, gapNanos: gapNanos,
+                                                       chunkFragments: Self.paceChunkFragments,
+                                                       leadingDelayNanos: Self.paceGapNanos))
+                }
+            }
+            return
         }
         await sendPaced(outgoings)
         // F3: keyframe DUPLICATE-SEND. A heartbeat/recovery IDR is a large multi-datagram burst; even
