@@ -166,6 +166,12 @@ let package = Package(
         // (non-GUI, non-TCC) executable; its stdout IS the validation evidence. macOS-only.
         .executableTarget(name: "rwork-loopback-validate", dependencies: ["RworkVideoHost", "RworkVideoClient", "RworkVideoProtocol"]),
 
+        // Frame-cadence watcher: SCK desktopIndependentWindow capture of ANY window (foreground
+        // or background) that logs per-frame arrival timestamps + content checksums and prints a
+        // stall histogram — the objective frame-level smoothness instrument (works on Rwork AND
+        // Parsec windows alike). GUI+TCC-gated at runtime; no video file is written.
+        .executableTarget(name: "rwork-framewatch"),
+
         // MARK: Tests
         .testTarget(name: "RworkProtocolTests", dependencies: ["RworkProtocol"]),
         .testTarget(name: "RworkTransportTests", dependencies: ["RworkTransport"]),

@@ -221,6 +221,8 @@ public actor RworkVideoClientSession {
     /// The newest `hostSendTsMillis` OBSERVED on a video fragment (0 = none / telemetry off). An
     /// OPAQUE token the client echoes back; never compared against the client clock.
     private var latestHostSendTs: UInt32 = 0
+    /// KHỰNG-ladder stage 4 (RWORK_VIDEO_DEBUG): last fragment-ingest time on this actor.
+    private var dbgLastIngestAt: Double = 0
     /// Client-monotonic time (seconds) at which `latestHostSendTs` was observed, so the report's
     /// `clientHoldMs` is a client-LOCAL relative delta (now − observedAt) — never an absolute
     /// client timestamp (which would embed cross-machine skew).
@@ -485,6 +487,16 @@ public actor RworkVideoClientSession {
         // host can derive RTT in its own clock. A late kfDup duplicate carries an OLDER stamp, so
         // the wrap-aware comparison rejects it (latestHostSendTs never regresses). 0 = telemetry off.
         owdJitter.note(arrival: FramePacer.currentHostTimeSeconds())
+        // KHỰNG-ladder stage 4 (RWORK_VIDEO_DEBUG): a >28ms hole between fragment ingests ON THE
+        // ACTOR while stage 3 (socket) was clean = the per-datagram Task hop / actor backlog ate
+        // the time. Stage 3 also gapped ⇒ inherited, not actor-caused.
+        if Self.debugStderr {
+            let now = ProcessInfo.processInfo.systemUptime
+            if dbgLastIngestAt > 0, now - dbgLastIngestAt > 0.028 {
+                dbg("ingest gap \(Int((now - dbgLastIngestAt) * 1000))ms")
+            }
+            dbgLastIngestAt = now
+        }
         let ts = fragment.header.hostSendTsMillis
         if ts != 0, latestHostSendTs == 0 || ts.distanceWrapped(from: latestHostSendTs) > 0 {
             latestHostSendTs = ts
@@ -872,6 +884,19 @@ public actor RworkVideoClientSession {
     private func startDecodePipeline(captureSize: VideoSize, fullRange: Bool) {
         decodedSize = captureSize
         dbg("decode pipeline up — native(capture)=\(Int(captureSize.width))x\(Int(captureSize.height)) fullRange=\(fullRange); this is the FIXED aspect-fit denominator for the session")
+        // 1:1 PIXEL MATCH (2026-06-10 sharpness vs Parsec): the resize debounce only ran from
+        // `setLayerSize` (layout passes), and at connect those all land BEFORE mediaFlowing —
+        // so the INITIAL pane size was never negotiated and every frame paid a permanent
+        // non-integer fit-scale (measured live: native 2662x1658 → drawable 2485x1576 = 0.93×
+        // bilinear blur on all text — the "Parsec 1920x1200 nét căng mà mình thì không" gap).
+        // Kick the debounce ONCE at stream start so the host AX-resizes the captured window to
+        // the pane's point size (capture@2× == drawable px ⇒ zero resample). Guarded so a pane
+        // already matching the capture (within the debounce's own minDelta) does not trigger a
+        // pointless capture restart at connect.
+        if abs(layerSize.width - captureSize.width) >= 8 || abs(layerSize.height - captureSize.height) >= 8 {
+            dbg("resize: initial pane \(Int(layerSize.width))x\(Int(layerSize.height)) ≠ capture \(Int(captureSize.width))x\(Int(captureSize.height)) → negotiating 1:1")
+            maybeRequestResize(for: layerSize)
+        }
         // WF-6 (#8): set the renderer's color range to the stream's negotiated luma range BEFORE the
         // first frame renders (the helloAck carrying it arrived before any media). The decoder's output
         // pixel-format variant is set below from the SAME bool, so renderer + decoder agree — both

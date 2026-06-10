@@ -32,6 +32,20 @@ import Foundation
 ///    decrease actually lowers the rate (a no-op decrease at the floor does not extend it) — suppress
 ///    immediate re-increase thrash without inflating dead time at the floor.
 ///  - Recovery is deliberately slow (additive `ceiling / increaseDivisor` per tick).
+///  - The RTT path needs an ABSOLUTE slack (`rttSlackMillis`) on top of the multiplicative
+///    `rttInflateFactor`: on a low-latency LAN (minRTT ≈ 5ms) the ×1.25 threshold is ~6ms — pure
+///    scheduling noise (smoothedRTT wobbles 7–12ms) trips it permanently. Real queue build-up shows
+///    up as tens of ms of ABSOLUTE inflation; +15ms slack makes sub-slack wobble invisible while a
+///    long-baseline WAN path (minRTT 50ms+) is still governed by the multiplicative factor.
+///  - The RTT signal must be SUSTAINED (`rttStreakTicks` consecutive inflated reports, ~150ms)
+///    before it may decrease — a one-report blip never acts. The per-report `owdGradientRising`
+///    flag is deliberately NOT consulted: it compares only two adjacent jitter samples, so on a
+///    steady link it flaps ~50/50 (measured live 2026-06-10) — a coin flip, not a signal.
+///  - RTT-triggered decreases respect the SAME hold-down that gates increases (max one RTT decrease
+///    per `holdTicks`): `smoothedRTTMillis` is an EWMA that decays over ~8+ reports, so without the
+///    cooldown one real inflation episode cascades ×0.85 every 50ms straight to the floor (the
+///    2026-06-09 "ABR collapse"). Loss-triggered decreases stay IMMEDIATE — raw-sample keyed,
+///    react-fast is correct there.
 ///
 /// SAFE WHEN TELEMETRY OFF: with `loss == 0` and no valid RTT (`minRTTMillis == .infinity`) the
 /// congestion predicate is always false, so the controller can only additively increase — but it
@@ -56,8 +70,13 @@ public struct LiveCongestionController: Sendable, Equatable {
     public static let increaseDivisor: Int = envInt("RWORK_ABR_INC_DIV", 32, min: 1, max: 100_000)
     /// Reports to suppress any increase after a decrease — the anti-thrash hold-down (~20 × 50ms ≈ 1s). `RWORK_ABR_HOLD`.
     public static let holdTicks: Int = envInt("RWORK_ABR_HOLD", 20, min: 0, max: 100_000)
-    /// `smoothedRTT > minRTT × rttInflateFactor` (WITH a rising OWD gradient) signals queue build-up. `RWORK_ABR_RTT`.
+    /// `smoothedRTT > minRTT × rttInflateFactor` (AND past the absolute slack) signals queue build-up. `RWORK_ABR_RTT`.
     public static let rttInflateFactor: Double = envDouble("RWORK_ABR_RTT", 1.25, min: 1.0, max: 100)
+    /// ABSOLUTE smoothed-RTT inflation over the baseline (ms) ALSO required before the RTT path may
+    /// signal congestion — keeps LAN scheduling wobble (a few ms on a ~5ms baseline) sub-threshold. `RWORK_ABR_SLACK`.
+    public static let rttSlackMillis: Double = envDouble("RWORK_ABR_SLACK", 15.0, min: 0, max: 10_000)
+    /// CONSECUTIVE inflated reports required before the RTT path decreases (~N × 50ms). `RWORK_ABR_RTT_N`.
+    public static let rttStreakTicks: Int = envInt("RWORK_ABR_RTT_N", 3, min: 1, max: 100_000)
     /// Floor as a fraction of the ceiling (also clamped to ``LiveBitratePolicy/minimumBitrate``). `RWORK_ABR_MINFRAC`.
     public static let minFrac: Double = envDouble("RWORK_ABR_MINFRAC", 0.25, min: 0.01, max: 1.0)
     /// Actuation churn gate (fraction of ceiling): the host skips a re-actuation smaller than this. `RWORK_ABR_MATERIAL`.
@@ -79,6 +98,9 @@ public struct LiveCongestionController: Sendable, Equatable {
     public private(set) var ticks = 0
     /// No increase is permitted until `ticks` reaches this (set on every decrease).
     public private(set) var holdUntilTick = 0
+    /// Consecutive reports whose smoothed RTT cleared BOTH inflation gates (factor + slack). The RTT
+    /// path may decrease only once this reaches ``rttStreakTicks`` — one noisy report never acts.
+    public private(set) var rttInflatedStreak = 0
 
     /// Additive-increase step in bps (≥ 1 so a tiny ceiling still makes progress).
     private var increaseStep: Int { max(1, ceiling / Self.increaseDivisor) }
@@ -123,9 +145,18 @@ public struct LiveCongestionController: Sendable, Equatable {
         // one blip would cascade into a multi-step drop on otherwise perfectly-clean reports. Keying
         // on the raw sample means a clean report (raw loss 0) never decreases, so a spike costs exactly
         // ONE decrease + the hold-down — react-fast, recover-slow AIMD without the EWMA-tail cascade.
-        let rttCongested = e.minRTTMillis.isFinite
+        // RTT path (see STABILITY MITIGATIONS): BOTH inflation gates (multiplicative factor AND
+        // absolute slack), SUSTAINED for `rttStreakTicks` consecutive reports, AND past the
+        // hold-down (the EWMA-decay anti-cascade cooldown — max one RTT decrease per `holdTicks`).
+        // `owdGradientRising` is deliberately ignored: adjacent-sample jitter comparison is a coin
+        // flip on a steady link, not congestion evidence.
+        let rttInflated = e.minRTTMillis.isFinite
             && e.smoothedRTTMillis > e.minRTTMillis * Self.rttInflateFactor
-            && e.owdGradientRising
+            && e.smoothedRTTMillis > e.minRTTMillis + Self.rttSlackMillis
+        rttInflatedStreak = rttInflated ? rttInflatedStreak + 1 : 0
+        let rttCongested = rttInflated
+            && rttInflatedStreak >= Self.rttStreakTicks
+            && ticks >= holdUntilTick
 
         if e.lastLossSample > Self.severeLossThreshold {
             // Severe loss: halve immediately.
@@ -133,8 +164,11 @@ public struct LiveCongestionController: Sendable, Equatable {
         } else if e.lastLossSample > Self.lossThreshold || rttCongested {
             // Ordinary congestion: multiplicative decrease.
             decrease(to: max(floor, Int(Double(current) * Self.decreaseFactor)))
-        } else if ticks >= holdUntilTick {
-            // Clean link past the hold-down: probe up additively toward the ceiling.
+        } else if ticks >= holdUntilTick && !rttInflated {
+            // Clean link past the hold-down: probe up additively toward the ceiling. `!rttInflated`
+            // keeps the probe from climbing INTO a building queue while the streak/hold-down is
+            // still suppressing the decrease (minRTT re-baselines upward ~1%/fold, so a genuinely
+            // shifted path baseline un-sticks this on its own).
             current = min(ceiling, current + increaseStep)
         }
         return current

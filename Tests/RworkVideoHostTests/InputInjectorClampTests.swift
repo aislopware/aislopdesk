@@ -30,5 +30,23 @@ final class InputInjectorClampTests: XCTestCase {
         XCTAssertEqual(InputInjector.clampToInt32(Double(Int32.max) + 1000), Int32.max)
         XCTAssertEqual(InputInjector.clampToInt32(Double(Int32.min) - 1000), Int32.min)
     }
+
+    /// `scaledScrollDelta` (RWORK_SCROLL_GAIN) multiplies BEFORE the clamp, so the gained value
+    /// inherits the same never-traps guarantee — and gain 1.0 is byte-identical to the bare clamp.
+    func testScaledScrollDeltaGainsAndNeverTraps() {
+        // Gain 1.0 (the default) == bare clamp for every interesting input.
+        for v in [0.0, 12.7, -12.7, 1e300, -1e300, .infinity, -.infinity, .nan] {
+            XCTAssertEqual(InputInjector.scaledScrollDelta(v, gain: 1.0), InputInjector.clampToInt32(v))
+        }
+        // Ordinary gain scales (then rounds).
+        XCTAssertEqual(InputInjector.scaledScrollDelta(10, gain: 1.5), 15)
+        XCTAssertEqual(InputInjector.scaledScrollDelta(-10, gain: 1.5), -15)
+        XCTAssertEqual(InputInjector.scaledScrollDelta(3, gain: 0.5), 2) // 1.5 → .rounded() half-away-from-zero
+        // Hostile value × gain still saturates, never traps.
+        XCTAssertEqual(InputInjector.scaledScrollDelta(1e300, gain: 10), Int32.max)
+        XCTAssertEqual(InputInjector.scaledScrollDelta(-1e300, gain: 10), Int32.min)
+        XCTAssertEqual(InputInjector.scaledScrollDelta(.nan, gain: 2), 0)
+        XCTAssertEqual(InputInjector.scaledScrollDelta(.infinity, gain: 0.1), Int32.max)
+    }
 }
 #endif

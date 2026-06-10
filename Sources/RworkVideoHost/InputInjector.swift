@@ -68,6 +68,16 @@ public final class InputInjector: @unchecked Sendable {
     /// post tap + cursor move differ.
     private static let injectToPid = ProcessInfo.processInfo.environment["RWORK_VIDEO_INJECT_TO_PID"] != nil
     private static let inputTrace = ProcessInfo.processInfo.environment["RWORK_INPUT_TRACE"] != nil
+    /// Scroll gain multiplier (`RWORK_SCROLL_GAIN`, default 1.0 = byte-identical pass-through).
+    /// The client forwards macOS's already-accelerated trackpad deltas 1:1 and the coalescer never
+    /// merges or drops a scroll, so distance parity with a local gesture holds at 1.0 — this knob
+    /// exists for the "remote scroll should travel further per flick" feel A/B (Parsec-style input
+    /// boost). Clamped to a sane band so a typo can't make scroll unusable.
+    private static let scrollGain: Double = {
+        guard let s = ProcessInfo.processInfo.environment["RWORK_SCROLL_GAIN"],
+              let v = Double(s), v.isFinite, v >= 0.1, v <= 10 else { return 1.0 }
+        return v
+    }()
 
     public init(pid: pid_t, windowID: CGWindowID, windowBoundsCG: VideoRect) {
         self.pid = pid
@@ -272,7 +282,8 @@ public final class InputInjector: @unchecked Sendable {
         // decode; this clamp is the defence-in-depth backstop for a finite-but-huge value,
         // and it can never trap.
         guard let event = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: 2,
-                                  wheel1: Self.clampToInt32(dy), wheel2: Self.clampToInt32(dx), wheel3: 0) else { return }
+                                  wheel1: Self.scaledScrollDelta(dy, gain: Self.scrollGain),
+                                  wheel2: Self.scaledScrollDelta(dx, gain: Self.scrollGain), wheel3: 0) else { return }
         stampAndPost(event, tag: tag)
     }
 
@@ -285,6 +296,13 @@ public final class InputInjector: @unchecked Sendable {
         if value >= Double(Int32.max) { return Int32.max }
         if value <= Double(Int32.min) { return Int32.min }
         return Int32(value.rounded())
+    }
+
+    /// Applies the scroll gain BEFORE the trap-free clamp, so a hostile wire delta times a large
+    /// gain still saturates instead of trapping (the product stays a plain Double: `inf × gain`
+    /// and overflow both land in the clamp's saturating branches).
+    static func scaledScrollDelta(_ value: Double, gain: Double) -> Int32 {
+        clampToInt32(value * gain)
     }
 
     private func postKey(keyCode: UInt16, down: Bool, modifiers: InputModifiers, tag: UInt32) {

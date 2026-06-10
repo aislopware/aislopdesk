@@ -87,17 +87,19 @@ final class VideoWindowPipeline {
     private var dbgLastCursorApply: Double = 0
     private var dbgLastRender: Double = 0
 
-    /// Client half of the input-latency fix: coalesce high-rate pointer motion to one send per
+    /// Client half of the input-latency fix: coalesce high-rate HOVER motion to one send per
     /// display-refresh interval (most-recent-wins), so a 60-120 Hz trackpad does not spawn a Task
     /// per event and flood the wire + the session actor's mailbox. `pendingMotionSend` holds the
-    /// latest deferred move/drag; `motionPump` flushes it every `motionInterval`; any button /
-    /// scroll / key / text flushes it FIRST so a move that physically preceded a click is never
+    /// latest deferred hover move; `motionPump` flushes it every `motionInterval`; any drag /
+    /// button / scroll / key / text flushes it FIRST so a move that physically preceded it is never
     /// sent after it (noVNC `_flushMouseMoveTimer` / TigerVNC `pointerEventInterval`). The host
     /// additionally coalesces whatever still arrives, so this is a bandwidth/CPU optimisation
-    /// layered on a correctness fix that already holds host-side.
-    /// The latest deferred move/drag as an `async` action (the actual `session.sendMouseMove/Drag`
-    /// await), NOT a fire-and-forget `Task`. Storing the bare async work lets a button event fold
-    /// the flush + the button into ONE ordered hop (`takePendingMotion()`), while the motion pump
+    /// layered on a correctness fix that already holds host-side. DRAGS no longer defer here
+    /// (2026-06-10 select-text latency — see `mouseDrag`): they are feedback-critical, so they ride
+    /// the ordered FIFO immediately like buttons/scroll.
+    /// The latest deferred hover move as an `async` action (the actual `session.sendMouseMove`
+    /// await), NOT a fire-and-forget `Task`. Storing the bare async work lets a following event fold
+    /// the flush + itself into ONE ordered hop (`takePendingMotion()`), while the motion pump
     /// still fire-and-forgets it on its own tick (`flushPendingMotion()`).
     private var pendingMotionSend: (@Sendable () async -> Void)?
     private var motionPump: Task<Void, Never>?
@@ -152,15 +154,52 @@ final class VideoWindowPipeline {
         // dropping the oldest). Defaults 2 / 5 absorb the idle→scroll size-jump backlog at
         // ~33 ms latency.
         let env = ProcessInfo.processInfo.environment
-        let jitterDepth = env["RWORK_JITTER_DEPTH"].flatMap(Int.init).map { min(8, max(1, $0)) } ?? 3
+        // LAT-2 (2026-06-09): default 3 → 2. At 60fps depth 2 ≈ 33ms standing buffer = Parsec's budget,
+        // and one frame of slack still absorbs decode/arrival jitter for smooth cadence. With pacing now
+        // OFF by default (frames arrive within <1ms of completion, no 30-130ms spread) the old depth-3
+        // (50ms) slack is unnecessary latency. `RWORK_JITTER_DEPTH=1` for absolute-lowest latency.
+        let jitterDepth = env["RWORK_JITTER_DEPTH"].flatMap(Int.init).map { min(8, max(1, $0)) } ?? 2
         let jitterMax = env["RWORK_JITTER_MAX"].flatMap(Int.init).map { min(16, max(1, $0)) } ?? 5
         // Adaptive jitter buffer (default OFF ⇒ fixed depth exactly as today). When on, the pacer
         // self-measures decoded-frame arrival jitter and floats the depth between 1 and jitterMax:
         // it shrinks toward the latency floor on a clean LAN and re-inflates on a real spike/underrun.
         let adaptive = env["RWORK_ADAPTIVE_JITTER"].map { $0 == "1" || $0.lowercased() == "true" } ?? false
-        let pacer = FramePacer(maxFrameRate: maxFrameRate, targetDepth: jitterDepth, maxDepth: jitterMax, adaptiveJitter: adaptive) { [weak self] buffer in
+        // Present-on-arrival for a starved display (FramePacer header; select-text/typing feedback
+        // latency). Default ON — it only fires where the old hold-for-vsync was strictly worse;
+        // `RWORK_PRESENT_ON_ARRIVAL=0` restores the pure vsync-paced pacer for A/B.
+        let presentOnArrival = env["RWORK_PRESENT_ON_ARRIVAL"].map { !($0 == "0" || $0.lowercased() == "false") } ?? true
+        // DISPLAY-NATIVE TICK (2026-06-10 latency audit): the link was hard-locked to the host
+        // content fps (60), so on a 120 Hz ProMotion panel a decoded frame could sit up to a full
+        // 16.7 ms waiting for the next tick. Resolve the tick rate from the view's ACTUAL screen
+        // (floored at the content fps): worst-case hold halves, and at depth 1 the between-arrival
+        // drain makes the dense stream present-on-arrival (see the FramePacer header).
+        // `RWORK_TICK_HZ` overrides for A/B without a rebuild.
+        #if os(macOS)
+        let displayMaxHz = view.window?.screen?.maximumFramesPerSecond ?? NSScreen.main?.maximumFramesPerSecond ?? 0
+        #else
+        let displayMaxHz = view.window?.windowScene?.screen.maximumFramesPerSecond ?? 0
+        #endif
+        let tickRate = FramePacer.resolveTickRate(envOverride: env["RWORK_TICK_HZ"], displayMaxHz: displayMaxHz, floor: maxFrameRate)
+        // DEADLINE PACER (RWORK_PACER=deadline; see the FramePacer header): schedule presentation
+        // on the CONTENT rhythm with a small playout delay (RWORK_PLAYOUT_MS, default 20) instead
+        // of on arrival events — the research-validated fix for jitter-induced "bunched frame"
+        // stutter (WebRTC VCMTiming / Moonlight model).
+        let deadlineMode = env["RWORK_PACER"]?.lowercased() == "deadline"
+        let playoutMs = env["RWORK_PLAYOUT_MS"].flatMap(Double.init) ?? 20.0
+        let contentFps = env["RWORK_CONTENT_FPS"].flatMap(Double.init) ?? 60.0
+        let pacer = FramePacer(maxFrameRate: tickRate, targetDepth: jitterDepth, maxDepth: jitterMax, adaptiveJitter: adaptive, presentOnArrival: presentOnArrival,
+                               deadlineMode: deadlineMode, contentFps: contentFps, playoutDelayMs: playoutMs) { [weak self] buffer in
+            // CAD-2 (2026-06-09 smoothness): present SYNCHRONOUSLY on the display-link tick instead of
+            // hopping through `Task { @MainActor }`. The FramePacer is driven by `NSView.displayLink` /
+            // `CADisplayLink`, which fires on the MAIN run loop — so this callback is ALREADY on the main
+            // actor's executor. The old async `Task` deferred the render to a LATER main-actor slot, so a
+            // frame could miss its own vsync (0-16ms present jitter under main-actor load = cadence khựng).
+            // `assumeIsolated` runs it now, in-tick, landing the frame on THIS vsync. Safe: the only caller
+            // (display-link `step()` → `tick()` → `frameForVSync()`) is main-thread; off-main would trap.
+            // `UnsafeTransfer` boxes the non-Sendable CVImageBuffer across the @Sendable→@MainActor closure
+            // boundary; it is sound here because the hand-off is SYNCHRONOUS (no escape, same thread/tick).
             let box = UnsafeTransfer(buffer)
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 renderer.render(box.value)
                 self?.dbgNoteRender()   // BUG-1: time consecutive MAIN-ACTOR renders (freeze localisation)
             }
@@ -287,6 +326,10 @@ final class VideoWindowPipeline {
                 FileHandle.standardError.write(Data("Rwork[video.client]: layoutChanged layer=\(Int(layerSize.width))x\(Int(layerSize.height))pt contentsScale=\(scale) drawable=\(Int(layer.drawableSize.width))x\(Int(layer.drawableSize.height))px\n".utf8))
             }
         }
+        // The layer geometry changed under an unchanged frame — force the next tick to render
+        // (the pacer skips identical re-shows; without this arm, a resize would show a stale
+        // stretch until the next content frame).
+        pacer?.setNeedsRedisplay()
         guard let session else { return }
         Task { await session.setLayerSize(layerSize) }
     }
@@ -298,6 +341,7 @@ final class VideoWindowPipeline {
     func setZoom(_ zoom: CGFloat, pan: CGPoint) {
         renderer?.zoom = zoom
         renderer?.panNormalized = pan
+        pacer?.setNeedsRedisplay()   // transform changed under an unchanged frame (see layoutChanged)
         if let session {
             let z = Double(zoom)
             let p = VideoPoint(x: Double(pan.x), y: Double(pan.y))
@@ -331,7 +375,13 @@ final class VideoWindowPipeline {
     }
     func mouseDrag(_ button: MouseButton, _ viewPoint: VideoPoint, _ clickCount: UInt8, _ modifiers: InputModifiers) {
         guard let session else { return }
-        pendingMotionSend = { await session.sendMouseDrag(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
+        // SELECT-TEXT LATENCY (2026-06-10): a drag is FEEDBACK-CRITICAL — the host-rendered
+        // selection highlight tracks it — so it goes out IMMEDIATELY through the ordered FIFO
+        // like a button/scroll, NOT deferred to the motion pump. At the 120 Hz pump the deferral
+        // coalesced almost nothing anyway (trackpad events arrive at 90-120 Hz) yet cost 0-8.3 ms
+        // on every drag step. Hover moves (cosmetic, no host-side feedback the user is tracking)
+        // stay pump-coalesced. Flushing any pending hover first preserves physical order.
+        submitFlushingMotion { await session.sendMouseDrag(button: button, viewPoint: viewPoint, clickCount: clickCount, modifiers: modifiers) }
     }
     func mouseDown(_ button: MouseButton, _ viewPoint: VideoPoint, _ clickCount: UInt8, _ modifiers: InputModifiers) {
         guard let session else { return }

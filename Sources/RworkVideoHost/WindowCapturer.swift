@@ -38,6 +38,17 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         if let s = ProcessInfo.processInfo.environment["RWORK_HEARTBEAT_S"], let v = Double(s), v >= 0.25, v <= 60 { return v }
         return 2.5
     }()
+    /// CAD-3 (2026-06-09 smoothness): whether to force a periodic heartbeat IDR on the LIVE (active-motion)
+    /// path. DEFAULT OFF. On a never-idle window the heartbeat is a 50-135 KB IDR through
+    /// `encodeCompactKeyframe`, whose two synchronous `VTCompressionSessionCompleteFrames` calls BLOCK the
+    /// capture queue ~15 ms → a dropped capture + a big frame every `heartbeatIDRInterval` (2.5s) = a
+    /// PERIODIC cadence hitch during a long scroll ("vuốt lâu thì khựng"). As the heartbeat comment notes,
+    /// it is "ZERO visual benefit to an already-in-sync client" and DETECTED loss recovers via the recovery
+    /// channel (requestIDR), not this heartbeat. The STATIC-window timer (`onIDRTimerTick`) still re-anchors
+    /// with a crisp IDR the instant motion pauses, and a late-joining/decode-failed client still requests an
+    /// IDR — so suppressing the motion heartbeat removes the hitch with no resilience loss on a low-loss
+    /// link. `RWORK_MOTION_HEARTBEAT=1` restores the periodic motion IDR (for a genuinely lossy WAN).
+    static let motionHeartbeatEnabled = ProcessInfo.processInfo.environment["RWORK_MOTION_HEARTBEAT"] == "1"
 
     /// Called for each captured frame with its NV12 `CVPixelBuffer`, whether the encoder should
     /// force a keyframe (heartbeat or first frame), and whether this frame should be a CRISP
@@ -108,6 +119,9 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     private var staticIDRDecider: StaticIDRDecider
     private var idrTimer: DispatchSourceTimer?
     private var cachedPixelBuffer: CVPixelBuffer?   // deep COPY, frameQueue-owned (see copyPixelBuffer)
+    /// KHỰNG-ladder stage 1 (RWORK_VIDEO_DEBUG): last DELIVERED-frame time, frameQueue-owned.
+    static let dbgGapEnabled = ProcessInfo.processInfo.environment["RWORK_VIDEO_DEBUG"] != nil
+    private var lastDeliveredAt: Double = 0
     /// Highest PTS handed to the encoder by EITHER path, in the 90 kHz synthetic timescale,
     /// so a synthetic IDR is strictly monotonic and a later real frame never reverses it.
     private var lastEmittedPTS: CMTime = .zero
@@ -244,7 +258,14 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // Cap at `fps` (default 60 — Parsec-class smoothness for scroll/motion; 30 was visibly
         // steppier). macOS 15+ silently defaults to 1/60; idle-skip keeps a static window near-zero
         // regardless of the cap (doc 02 §3.1).
-        config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(1, fps)))
+        // LAT (2026-06-10, env RWORK_CAPTURE_HZ): the capture min-interval normally matches the
+        // encode fps, which QUANTIZES when SCK may deliver a fresh composite (a change landing
+        // just after a slot waits out the rest of it). A HIGHER capture ceiling lets SCK hand
+        // over a changed frame sooner WITHOUT raising the encode rate (delivery stays
+        // content-driven; idle windows still deliver nothing). NOTE: `--fps 120` (raising BOTH)
+        // measured WORSE glass-to-glass (+18ms p50) — only decouple the capture side.
+        let captureHz = ProcessInfo.processInfo.environment["RWORK_CAPTURE_HZ"].flatMap(Int.init).map { min(240, max(15, $0)) } ?? max(1, fps)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(captureHz))
         config.queueDepth = 3                                               // 2-3 for low latency (doc 02 §3.1)
         config.width = width
         config.height = height
@@ -296,7 +317,28 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// Requires a window-server + Screen-Recording TCC session — NEVER call from a test.
     public func start(window: SCWindow, pixelWidth: Int, pixelHeight: Int) async throws {
         let config = Self.makeConfiguration(width: pixelWidth, height: pixelHeight, fps: fps, captureScale: captureScale, fullRange: fullRange)
-        let filter = Self.makeFilter(window: window)
+        var filter = Self.makeFilter(window: window)
+        // DISPLAY-CAPTURE (2026-06-10 loopback latency hunt, env RWORK_DISPLAY_CAPTURE=1):
+        // SCK's per-window composite path (`desktopIndependentWindow`) measured ~5ms SLOWER
+        // p50 than a display capture cropped to the same rect (framewatch signed A/B, n=51).
+        // When enabled, capture the DISPLAY containing the window with `sourceRect` pinned to
+        // the window's frame (display-local points). ⚠️ Anything overlapping that rect is
+        // captured too — intended for the VD path, where the window is parked alone at the
+        // display origin; default OFF.
+        if ProcessInfo.processInfo.environment["RWORK_DISPLAY_CAPTURE"] == "1" {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+            if let display = content.displays.first(where: { CGDisplayBounds($0.displayID).contains(center) }) {
+                let db = CGDisplayBounds(display.displayID)
+                config.sourceRect = CGRect(x: window.frame.minX - db.minX, y: window.frame.minY - db.minY,
+                                           width: Double(pixelWidth) / max(1.0, captureScale),
+                                           height: Double(pixelHeight) / max(1.0, captureScale))
+                filter = SCContentFilter(display: display, excludingWindows: [])
+                log.notice("display-capture mode: display \(display.displayID) sourceRect \(Int(config.sourceRect.origin.x)),\(Int(config.sourceRect.origin.y)) \(Int(config.sourceRect.width))x\(Int(config.sourceRect.height))pt")
+            } else {
+                log.error("display-capture: no display contains window center — falling back to window filter")
+            }
+        }
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: frameQueue)
         try await stream.startCapture()
@@ -368,6 +410,17 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // `now` (computed here for both the heartbeat block and the static-IDR caching below).
         let now = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1_000_000_000.0
 
+        // KHỰNG LADDER stage 1 (2026-06-10, RWORK_VIDEO_DEBUG): a >28ms gap between two DELIVERED
+        // frames during continuous motion means SCK itself stalled (or idle-skipped a changing
+        // frame) — anything downstream can only inherit this hole. Idle pages legitimately gap;
+        // read these lines only against a continuous-motion test (testufo).
+        if Self.dbgGapEnabled {
+            if lastDeliveredAt > 0, now - lastDeliveredAt > 0.028 {
+                FileHandle.standardError.write(Data("rwork-videohostd[gap]: capture gap \(Int((now - lastDeliveredAt) * 1000))ms\n".utf8))
+            }
+            lastDeliveredAt = now
+        }
+
         // VIDEO-HOST-1: cache a deep COPY of this real frame so the timer can re-encode it as a
         // forced IDR while the window is static, anchor the decider's live clock, and advance the
         // synthetic-PTS high-water mark so a later synthetic frame stays strictly past every real
@@ -395,7 +448,10 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
             forceKeyframe = true
             isFirstFrame = true
             hasEmittedFirstFrame = true
-        } else if now - lastHeartbeat >= Self.heartbeatIDRInterval {
+        } else if Self.motionHeartbeatEnabled, now - lastHeartbeat >= Self.heartbeatIDRInterval {
+            // CAD-3: the periodic motion-heartbeat IDR is gated OFF by default (it was the 2.5s scroll
+            // hitch — see `motionHeartbeatEnabled`). When off, `lastHeartbeat` is anchored only on the
+            // first-frame + recovery IDRs (below), and the static-timer re-anchors on motion pause.
             forceKeyframe = true
             isHeartbeat = true
         }

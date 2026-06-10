@@ -60,8 +60,10 @@ final class StaticIDRDeciderTests: XCTestCase {
     //    isolates that recovery beats the heartbeat phase).
     func testForcedWinsOnceQuietBeforeHeartbeat() {
         var d = make(quietWindow: 0.3)   // shorter than heartbeat (1.0) to isolate the forced path
+        d.recordSynthetic(now: 10.1)     // recent synthetic anchor ⇒ the heartbeat phase is mid-cycle
         d.onCompleteFrame(now: 10)
-        // now=10.5: past the 0.3 quiet window but only 0.5 < 1.0 heartbeat → heartbeat alone is silent.
+        // now=10.5: past the 0.3 quiet window but only 0.4 < 1.0 since the synthetic anchor →
+        // heartbeat alone is silent.
         XCTAssertFalse(d.shouldReencode(now: 10.5, forcedLatched: false, hasRetainedBuffer: true),
                        "sub-heartbeat, no forced ⇒ no fire")
         XCTAssertTrue(d.shouldReencode(now: 10.5, forcedLatched: true, hasRetainedBuffer: true),
@@ -73,6 +75,7 @@ final class StaticIDRDeciderTests: XCTestCase {
     //     non-forced still does not. Pins the strict-`<` semantics against a `<`→`<=` regression.
     func testQuietWindowExactBoundary() {
         var d = make(quietWindow: 0.3)
+        d.recordSynthetic(now: 9.9)      // recent synthetic anchor ⇒ the heartbeat phase is mid-cycle
         d.onCompleteFrame(now: 10)
         XCTAssertTrue(d.shouldReencode(now: 10.3, forcedLatched: true, hasRetainedBuffer: true),
                       "forced at exactly +quietWindow ⇒ fire (strict `<` does not suppress the boundary)")
@@ -99,7 +102,8 @@ final class StaticIDRDeciderTests: XCTestCase {
                       "one heartbeat after the synthetic ⇒ fire")
     }
 
-    // 8. A real frame after a synthetic re-anchors to the real frame (quiet window + cadence).
+    // 8. A real frame after a synthetic still gates via its quiet window; once quiet AND one
+    //    heartbeat past the synthetic anchor, fire.
     func testRealFrameAfterSyntheticReAnchorsToReal() {
         var d = make()
         d.recordSynthetic(now: 11)
@@ -107,7 +111,26 @@ final class StaticIDRDeciderTests: XCTestCase {
         XCTAssertFalse(d.shouldReencode(now: 11.9, forcedLatched: false, hasRetainedBuffer: true),
                        "within the quiet window of the real frame ⇒ no fire")
         XCTAssertTrue(d.shouldReencode(now: 12.3, forcedLatched: false, hasRetainedBuffer: true),
-                      "one heartbeat past the later anchor (the real frame at 11.2 → max) ⇒ fire")
+                      "quiet window cleared + one heartbeat past the synthetic anchor ⇒ fire")
+    }
+
+    // 11. SHARPNESS (2026-06-10): the FIRST crisp after motion stops fires as soon as the quiet
+    //     window clears — it does NOT wait a full heartbeat from the last REAL frame. Production
+    //     shape: heartbeat 2.5, quietWindow 1.0 ⇒ crisp ~1 s after the scroll ends (Parsec-like),
+    //     then steady-state synthetics one heartbeat apart.
+    func testFirstCrispAfterMotionFiresAtQuietWindowNotHeartbeat() {
+        var d = StaticIDRDecider(heartbeat: 2.5, quietWindow: 1.0)
+        d.recordSynthetic(now: 2)        // an old static-phase synthetic long ago
+        d.onCompleteFrame(now: 10)       // ...then motion; the last real frame lands at t=10
+        XCTAssertFalse(d.shouldReencode(now: 10.9, forcedLatched: false, hasRetainedBuffer: true),
+                       "still inside the quiet window ⇒ live path owns it")
+        XCTAssertTrue(d.shouldReencode(now: 11.0, forcedLatched: false, hasRetainedBuffer: true),
+                      "quiet window cleared ⇒ first crisp fires NOW (not at lastComplete+heartbeat=12.5)")
+        d.recordSynthetic(now: 11.0)
+        XCTAssertFalse(d.shouldReencode(now: 12.5, forcedLatched: false, hasRetainedBuffer: true),
+                       "subsequent statics pace one heartbeat from the synthetic anchor")
+        XCTAssertTrue(d.shouldReencode(now: 13.5, forcedLatched: false, hasRetainedBuffer: true),
+                      "heartbeat elapsed since the synthetic ⇒ steady-state cadence holds")
     }
 
     // 9. lastComplete == 0 but lastSynthetic set: max() picks the synthetic anchor, quiet-window

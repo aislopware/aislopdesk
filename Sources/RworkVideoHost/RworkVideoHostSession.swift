@@ -57,7 +57,18 @@ public actor RworkVideoHostSession {
     /// single-loss XOR FEC cannot recover → a corrupt frame the next one only half-fixes → FLICKER.
     /// Pacing splits a large frame's datagrams into small chunks separated by a sub-ms gap so the
     /// receiver drains them as they arrive (no burst overflow); tiny frames (the static-window common
-    /// case, ~1 datagram) still send instantly. DEFAULT ON; disable via `RWORK_PACE=0`.
+    /// case, ~1 datagram) still send instantly.
+    ///
+    /// DEFAULT **ON** since 2026-06-10 (`RWORK_PACE=0` disables). HISTORY: the 2026-06-09 latency
+    /// workflow turned pacing OFF after measuring "pure latency harm on a non-lossy link" — but
+    /// that verdict was for EXACT-rate pacing (k=1: a heavy frame serialized over 30-130ms,
+    /// backlogging the consumer). 2026-06-10 HW (testufo stars-hdr, 40Mbps, Wi-Fi client): the
+    /// un-paced path blasts a 133KB frame as ~110 back-to-back datagrams → measured 2-13% burst
+    /// loss windows → FEC misses → recovery IDRs + ABR sawtooth 40→20→40Mbps = the periodic
+    /// "khựng". The fix is pacing at a MULTIPLE of the live rate (``paceRateMultiplier``): bursts
+    /// are capped at k× the link's sustained rate while the heaviest frame still drains in ~10ms
+    /// (≲ a frame interval), so the consumer never falls behind. Frames ≤ ``paceChunkFragments``
+    /// datagrams still send in one shot (input-feedback latency unaffected).
     private static let paceSend = ProcessInfo.processInfo.environment["RWORK_PACE"] != "0"
     /// Frames with at most this many datagrams send in one shot (no pacing) — covers static-window
     /// P-frames and small deltas. Above it, send in chunks of this size with ``paceGapNanos`` between.
@@ -68,6 +79,58 @@ public actor RworkVideoHostSession {
         if let s = ProcessInfo.processInfo.environment["RWORK_PACE_US"], let v = UInt64(s), v >= 1, v <= 10_000 { return v * 1_000 }
         return 500_000
     }()
+    /// RC-2 (2026-06-09 smoothness): RATE-PROPORTIONAL pacing. The fixed `paceGapNanos` (0.5ms) drains an
+    /// 8-fragment (~9600-byte) chunk ~13× FASTER than a 12Mbps link can absorb → a big frame blasts
+    /// ~146Mbps into the link → self-inflicted burst loss (measured 10–14% on a real scroll) → ABR
+    /// collapse + FEC failure = the blur/khung/flicker chain. When ON (default; `RWORK_PACE_ADAPTIVE=0`
+    /// reverts to the fixed gap), the inter-chunk gap is computed so a chunk drains at ≈ the LIVE ABR
+    /// target (`lastActuatedBitrate`): gap = chunkBytes×8 / targetBps. This is rwork's equivalent of
+    /// Parsec's window-AIMD-paced send — it never puts more bytes/sec on the wire than the link drains.
+    /// An explicit `RWORK_PACE_US` still pins a static gap (overrides adaptive, for A/B).
+    private static let pacingAdaptive: Bool = {
+        if ProcessInfo.processInfo.environment["RWORK_PACE_US"] != nil { return false }   // explicit static pin wins
+        return ProcessInfo.processInfo.environment["RWORK_PACE_ADAPTIVE"] != "0"
+    }()
+    /// Link-rate fallback when the ABR target is not yet known (ABR off / pre-warmup).
+    private static let pacingFallbackBps = 12_000_000
+    /// Pace at this MULTIPLE of the live ABR target (`RWORK_PACE_RATE_X`, default 2.5, clamp
+    /// 1–10). k=1 (exact rate) serializes a max frame over ~27ms at 40Mbps — longer than the
+    /// 16.7ms frame interval, the measured 06-09 "lag grows while you scroll" harm. k=2.5 keeps
+    /// the instantaneous burst at 2.5× the sustained rate (gentle on Wi-Fi airtime/WireGuard
+    /// queues) while a 133KB worst-case frame drains in ~10ms.
+    private static let paceRateMultiplier: Double = {
+        if let s = ProcessInfo.processInfo.environment["RWORK_PACE_RATE_X"], let v = Double(s), v.isFinite {
+            return min(10, max(1, v))
+        }
+        return 2.5
+    }()
+    /// Clamp the adaptive gap: never faster than 0.2ms (a high ABR target would otherwise ≈0 it), never
+    /// slower than 40ms/chunk (a collapsed-to-floor ABR must not serialize a frame into a multi-second stall).
+    private static let pacingGapFloorNanos: UInt64 = 200_000
+    private static let pacingGapCeilNanos: UInt64 = 40_000_000
+    /// CONTENT-ADAPTIVE FPS (2026-06-09) — drop fps under heavy motion so a full-screen scroll fits a
+    /// ~12Mbps link (a 60fps full-screen scroll's 58–200KB frames exceed link/60 bytes/frame → loss).
+    /// DEFAULT OFF (2026-06-09): the alternating skip (encode/skip/encode) delivers frames at irregular
+    /// 16.7/33.3ms intervals = the PRIMARY cadence khựng, and it solves a link-capacity constraint that
+    /// does not exist here (the link is not the limit). Coarsen QP at full fps instead (RWORK_MAX_QP).
+    /// `RWORK_ADAPTIVE_FPS=1` re-enables for a genuinely bandwidth-starved link. See ``AdaptiveFPSController``.
+    private static let adaptiveFPSEnabled = ProcessInfo.processInfo.environment["RWORK_ADAPTIVE_FPS"] == "1"
+
+    /// PURE (unit-tested): inter-chunk pacing gap (ns) so `chunkFragments × datagramSize` bytes drain at
+    /// `targetBps × rateMultiplier`, clamped to `[floorNanos, ceilNanos]`. `targetBps <= 0` ⇒ `fallbackBps`.
+    /// `rateMultiplier` (≥1) is the burst-vs-serialization dial: 1 = exact link rate (max frame ~27ms at
+    /// 40Mbps — backlogs the consumer), 2.5 (default) = max frame ~10ms while bursts stay 2.5× sustained.
+    static func adaptivePaceGapNanos(targetBps: Int, fallbackBps: Int, chunkFragments: Int,
+                                     datagramSize: Int, floorNanos: UInt64, ceilNanos: UInt64,
+                                     rateMultiplier: Double = 1.0) -> UInt64 {
+        let bps = targetBps > 0 ? targetBps : fallbackBps
+        guard bps > 0 else { return ceilNanos }
+        let effectiveBps = Double(bps) * max(1.0, rateMultiplier.isFinite ? rateMultiplier : 1.0)
+        let chunkBits = Double(chunkFragments * datagramSize) * 8.0
+        let gap = chunkBits / effectiveBps * 1_000_000_000.0
+        guard gap.isFinite, gap >= 0 else { return ceilNanos }
+        return max(floorNanos, min(UInt64(min(gap, Double(ceilNanos))), ceilNanos))
+    }
     /// KEYFRAME DUPLICATE-SEND (F3 flicker fix, 2026-06-08). Forward redundancy by REPETITION: re-send a
     /// keyframe's datagrams a second time (paced + time-separated) so a large IDR survives a time-correlated
     /// burst loss that the single-loss XOR FEC cannot repair. This is the only host-only, REORDER-FREE way
@@ -141,6 +204,10 @@ public actor RworkVideoHostSession {
     /// every tick; actuation compares against THIS, not the prior tick). Re-anchored to the ceiling at
     /// each encoder build.
     private var lastActuatedBitrate = 0
+    /// KHỰNG-ladder stage 2 (RWORK_VIDEO_DEBUG): last frame-send start, actor-owned. A >28ms gap
+    /// between two frame sends during continuous motion = the hole formed at/before encode
+    /// (capture stage-1 clean ⇒ encoder/actor pump); see WindowCapturer stage 1.
+    private var dbgLastFrameSendAt: Double = 0
     /// WF-4 current adaptive-FEC tier. Starts at tier 0 (= today's configured `fec.groupSize`, g5) so
     /// the stream is byte-identical to today until a real netstats report folds loss and (only when
     /// `RWORK_ADAPTIVE_FEC=1`) moves it. With no reports it never moves — inert at the safe default,
@@ -223,6 +290,9 @@ public actor RworkVideoHostSession {
     private var encodedQueue: EncodedFrameQueue?
     private var encodedWakeup: AsyncStream<Void>.Continuation?
     private var encodedConsumer: Task<Void, Never>?
+    /// Content-adaptive fps controller (created per encoder build with the resolution-aware per-frame
+    /// budget). `nil` until the capturer is built. Read in ``onEncodedFrame`` to feed back frame sizes.
+    private var adaptiveFPS: AdaptiveFPSController?
 
     /// - Parameters:
     ///   - window: the desktop-independent window to remote.
@@ -257,7 +327,9 @@ public actor RworkVideoHostSession {
         let (wakeups, wakeup) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         inboundQueue = queue
         inboundWakeup = wakeup
-        inboundConsumer = Task { [weak self] in
+        // .high: this pump sits between a received input datagram and CGEventPost — a bare
+        // Task inherits ambient priority and can queue behind pool work (~0.5-1.5 ms).
+        inboundConsumer = Task(priority: .high) { [weak self] in
             for await _ in wakeups {
                 guard let self else { break }
                 let batch = queue.drainAll()
@@ -280,7 +352,9 @@ public actor RworkVideoHostSession {
         let (eWakeups, eWakeup) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         encodedQueue = eq
         encodedWakeup = eWakeup
-        encodedConsumer = Task { [weak self] in
+        // .high: every encoded frame crosses this pump on its way to the wire; a bare Task's
+        // inherited priority lets the executor queue it behind lower-priority work.
+        encodedConsumer = Task(priority: .high) { [weak self] in
             for await _ in eWakeups {
                 guard let self else { break }
                 let batch = eq.drainAll()
@@ -595,9 +669,13 @@ public actor RworkVideoHostSession {
     /// ceiling; without re-seeding the controller would keep the OLD ceiling/current and either starve
     /// (old smaller ceiling) or over-shoot (old larger ceiling) the new resolution.
     private func seedCongestionController(ceiling: Int) {
+        // LAT-3: seed `lastActuatedBitrate` to the REAL resolution-aware ceiling BEFORE the ABR guard, so
+        // the adaptive send-pacing gap (the only reader) uses the true ~45Mbps ceiling — not the 12Mbps
+        // fallback — even when ABR is off. Inert in the default config (pacing off), strictly-better when
+        // `RWORK_PACE=1` is A/B'd with `RWORK_ABR=0` (otherwise heavy frames serialize at 4× the gap).
+        lastActuatedBitrate = ceiling
         guard Self.abrEnabled else { return }
         congestionController = LiveCongestionController(ceiling: ceiling)
-        lastActuatedBitrate = ceiling
     }
 
     /// WF-8 self-audit fix: invalidate the LTR acked-set + frame map whenever a FRESH encoder /
@@ -951,7 +1029,17 @@ public actor RworkVideoHostSession {
         // `@unchecked Sendable` and thread-safe for `encodeLive`. The encoded OUTPUT is
         // what hops back to the actor (`onEncodedFrame`) to packetize + send.
         let logCallback = log
+        // CONTENT-ADAPTIVE FPS: per-frame budget = resolution-aware ceiling / 8 / fps (the bytes a single
+        // frame may use to stay within the link at full fps). A frame above it ⇒ skip the next capture
+        // (≈half fps under heavy motion → fits the ~12Mbps link, no loss). Captured by the frameHandler
+        // (capture queue) + read in onEncodedFrame (actor) — both via the thread-safe controller.
+        let adaptiveFPS = AdaptiveFPSController(budgetBytes: ceiling / 8 / max(1, fps), enabled: Self.adaptiveFPSEnabled)
+        self.adaptiveFPS = adaptiveFPS
         let capturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
+            // CONTENT-ADAPTIVE FPS: drop this capture (don't encode) when the previous frame blew the
+            // per-frame budget. Reference-safe — the next encoded frame just deltas off the last ENCODED
+            // one. Forced frames (keyframe/crisp/compact/LTR) always ship.
+            if adaptiveFPS.shouldSkip(isForcedFrame: forceKeyframe || crisp || compact || ltrRefresh) { return }
             do {
                 if ltrRefresh {
                     try encoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
@@ -1090,6 +1178,9 @@ public actor RworkVideoHostSession {
             dbg("encoded frame DROPPED (mediaFlowing=false)")
             return
         }
+        // CONTENT-ADAPTIVE FPS: feed back this frame's encoded size so the capturer can drop the next
+        // capture if it blew the per-frame link budget (heavy motion → ≈half fps → fits the link).
+        adaptiveFPS?.noteEncoded(bytes: avcc.count)
         encodedFrameCount += 1
         if encodedFrameCount == 1 || encodedFrameCount % 15 == 0 {
             dbg("encoded+sent frame #\(encodedFrameCount) (\(avcc.count)B, keyframe=\(keyframe), crisp=\(crisp))")
@@ -1123,6 +1214,13 @@ public actor RworkVideoHostSession {
         let interleaveGroup = AdaptiveFECPolicy.groupSize(forTier: tier, default: fecGroupSize) ?? 1
         let ordered = Self.interleaveTransmit ? FragmentInterleaver.interleave(fragments, groupSize: interleaveGroup) : fragments
         let outgoings = scheduler.scheduleFrame(ordered)
+        if Self.debugStderr {
+            let now = ProcessInfo.processInfo.systemUptime
+            if dbgLastFrameSendAt > 0, now - dbgLastFrameSendAt > 0.028 {
+                dbg("send gap \(Int((now - dbgLastFrameSendAt) * 1000))ms")   // khựng-ladder stage 2
+            }
+            dbgLastFrameSendAt = now
+        }
         await sendPaced(outgoings)
         // F3: keyframe DUPLICATE-SEND. A heartbeat/recovery IDR is a large multi-datagram burst; even
         // paced, a time-correlated loss in one XOR group is unrecoverable → corrupt IDR → flicker.
@@ -1147,6 +1245,14 @@ public actor RworkVideoHostSession {
     /// after each gap so a bye/stop teardown racing the pacing aborts cleanly.
     private func sendPaced(_ outgoings: [VideoSendScheduler.Outgoing]) async {
         if Self.paceSend, outgoings.count > Self.paceChunkFragments {
+            // RC-2: rate-proportional gap (drain a chunk at ≈ the live link rate) instead of the fixed
+            // 0.5ms burst. Computed once per frame from the current ABR target.
+            let gapNanos: UInt64 = Self.pacingAdaptive
+                ? Self.adaptivePaceGapNanos(targetBps: lastActuatedBitrate, fallbackBps: Self.pacingFallbackBps,
+                                            chunkFragments: Self.paceChunkFragments, datagramSize: VideoPacketizer.maxDatagramSize,
+                                            floorNanos: Self.pacingGapFloorNanos, ceilNanos: Self.pacingGapCeilNanos,
+                                            rateMultiplier: Self.paceRateMultiplier)
+                : Self.paceGapNanos
             var i = 0
             while i < outgoings.count {
                 let end = min(i + Self.paceChunkFragments, outgoings.count)
@@ -1154,7 +1260,7 @@ public actor RworkVideoHostSession {
                 while j < end { transport.send(outgoings[j].bytes, on: outgoings[j].channel); j += 1 }
                 i = end
                 if i < outgoings.count {
-                    try? await Task.sleep(nanoseconds: Self.paceGapNanos)
+                    try? await Task.sleep(nanoseconds: gapNanos)
                     guard stateMachine.mediaFlowing else { return } // a bye/stop teardown raced the gap
                 }
             }
@@ -1180,9 +1286,23 @@ public actor RworkVideoHostSession {
 
     /// A new cursor SHAPE bitmap to ship out-of-band (once per shapeID; the sampler
     /// owns the dedup). Sent on the cursor socket as a ``CursorShapeMessage``.
+    ///
+    /// SHAPE-LAG FIX (2026-06-10): sent TWICE, ~25 ms apart. The shipment is one-shot per shapeID —
+    /// if its single datagram is lost the client shows the wrong pointer until the re-request
+    /// debounce fires, which reads exactly like "cursor shape changes slower than Parsec". A shape
+    /// change often coincides with video motion (the lossiest moment), so cheap time-separated
+    /// repetition (≤ ~1.2 KB, a few dozen per session) closes that window; the client's shape
+    /// registration is idempotent per shapeID, so the duplicate is harmless.
     private func onCursorShape(_ shape: CursorShapeMessage) {
         guard stateMachine.mediaFlowing else { return }
-        transport.send(scheduler.scheduleCursor(.shape(shape)).bytes, on: .cursor)
+        let bytes = scheduler.scheduleCursor(.shape(shape)).bytes
+        transport.send(bytes, on: .cursor)
+        Task { // inherits this actor's isolation; re-checks liveness after the gap so a
+               // bye/stop teardown racing the delay aborts cleanly
+            try? await Task.sleep(nanoseconds: 25_000_000)
+            guard stateMachine.mediaFlowing else { return }
+            transport.send(bytes, on: .cursor)
+        }
     }
 
     // MARK: Helpers

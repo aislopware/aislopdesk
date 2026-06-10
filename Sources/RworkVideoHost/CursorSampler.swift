@@ -67,9 +67,28 @@ public final class CursorSampler: @unchecked Sendable {
     /// nothing (so no update ever carries a bogus shape id or an unset screen height).
     private var shapePrimed = false
     private let stateLock = NSLock()
-    /// Counts cursor-queue ticks so the (cold) shape/screen refresh runs at ~30 Hz (every 4th tick),
-    /// not on every 120 Hz position sample. Touched only on the serial cursor queue.
+    /// Counts cursor-queue ticks for the shape-refresh policy's fallback/safety cadences.
+    /// Touched only on the serial cursor queue.
     private var tickCount = 0
+    /// SHAPE-LAG FIX (2026-06-10): the window server's cursor SEED — a counter that increments
+    /// whenever the DISPLAYED system cursor image changes. Polling it is a cheap off-main mach call,
+    /// so the 120 Hz cursor-queue tick can detect a shape change the same tick it happens and hop to
+    /// main ONLY then — instead of the old unconditional every-4th-tick (30 Hz) main-thread refresh
+    /// whose worst case (33 ms + main-queue delay) made the client's cursor shape visibly lag Parsec.
+    /// Private CGS API (re-exported from SkyLight; probed FOUND on this OS) resolved via `dlsym` with
+    /// a graceful fallback: symbol missing ⇒ the policy reverts to the legacy 30 Hz cadence.
+    private typealias CursorSeedFn = @convention(c) () -> Int32
+    private static let currentCursorSeed: CursorSeedFn? = {
+        let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2) // RTLD_DEFAULT
+        for name in ["CGSCurrentCursorSeed", "SLSCurrentCursorSeed"] {
+            if let sym = dlsym(rtldDefault, name) {
+                return unsafeBitCast(sym, to: CursorSeedFn.self)
+            }
+        }
+        return nil
+    }()
+    /// Pure seed→refresh decision state (touched only on the serial cursor queue).
+    private var shapeRefreshPolicy = ShapeRefreshPolicy()
     /// The already-encoded ``CursorShapeMessage`` per `shapeID`, retained so a client that
     /// LOST the one-shot shipment can ask for it again (FIX B self-heal — `reshipShape`). Guarded
     /// by `shapeLock` because `reshipShape` may be called off the main actor (the recovery path).
@@ -125,11 +144,13 @@ public final class CursorSampler: @unchecked Sendable {
 
     /// One cursor-queue tick (off the main thread). Emits the hot POSITION sample every tick so the
     /// cursor never freezes during a main-thread window raise, and refreshes the cold shape/screen
-    /// state on main at ~30 Hz (every 4th tick).
+    /// state on main per ``ShapeRefreshPolicy``: the SAME tick the window-server cursor seed changes
+    /// (shape-change detection ≤ 8.3 ms), at ~1 Hz as a safety net while the seed is stable, or at
+    /// the legacy ~30 Hz when the seed symbol is unavailable.
     private func tick() {
         emitPositionOffMain()
         tickCount &+= 1
-        if tickCount % 4 == 0 {
+        if shapeRefreshPolicy.shouldRefresh(seed: Self.currentCursorSeed?(), tickCount: tickCount) {
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated { self?.refreshShapeAndScreen() }
             }
@@ -184,11 +205,18 @@ public final class CursorSampler: @unchecked Sendable {
         let hotspot = VideoPoint(x: Double(cursor.hotSpot.x), y: Double(cursor.hotSpot.y))
         let id = shapeID(for: cursor, hotspot: hotspot)
         stateLock.lock()
+        let idChanged = shapePrimed && cachedShapeID != id
         cachedPrimaryHeight = primaryHeight
         cachedShapeID = id
         cachedHotspot = hotspot
         shapePrimed = true
         stateLock.unlock()
+        // SHAPE-LAG FIX: the client switches its local pointer on the NEXT CursorUpdate that carries
+        // the new shapeID. Emit one immediately on a shape CHANGE (on the cursor queue, where every
+        // other emission runs) instead of waiting up to 8.3 ms for the next 120 Hz position tick.
+        if idChanged {
+            queue.async { [weak self] in self?.emitPositionOffMain() }
+        }
     }
 
     @MainActor
@@ -289,6 +317,39 @@ public final class CursorSampler: @unchecked Sendable {
         source.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
         NSGraphicsContext.restoreGraphicsState()
         return dest
+    }
+}
+
+/// PURE decision: should this cursor-queue tick dispatch the main-thread shape/screen refresh?
+/// (The "decider beside the actor" discipline — headlessly unit-testable; the `dlsym` seed read and
+/// the `DispatchQueue.main.async` side effects stay thin in ``CursorSampler/tick()``.)
+///
+/// - `seed != nil` (the private window-server cursor-seed API resolved): refresh the SAME tick the
+///   seed changes — shape-change detection within one 120 Hz tick (≤ 8.3 ms) — plus a slow ~1 Hz
+///   safety refresh (`safetyDivisor`) so screen-height changes (the Y-flip input) and any seed edge
+///   case the API misses still converge.
+/// - `seed == nil` (symbol unavailable on this OS): the legacy unconditional ~30 Hz cadence
+///   (`fallbackDivisor`, every 4th 120 Hz tick).
+///
+/// The FIRST call with a non-nil seed always refreshes (`lastSeed` starts nil ≠ any seed) — that is
+/// the main-thread prime that unblocks the position path's `shapePrimed` gate.
+struct ShapeRefreshPolicy {
+    private(set) var lastSeed: Int32?
+    let fallbackDivisor: Int
+    let safetyDivisor: Int
+
+    init(fallbackDivisor: Int = 4, safetyDivisor: Int = 120) {
+        self.fallbackDivisor = fallbackDivisor
+        self.safetyDivisor = safetyDivisor
+    }
+
+    mutating func shouldRefresh(seed: Int32?, tickCount: Int) -> Bool {
+        guard let seed else { return tickCount % fallbackDivisor == 0 }
+        if seed != lastSeed {
+            lastSeed = seed
+            return true
+        }
+        return tickCount % safetyDivisor == 0
     }
 }
 #endif
