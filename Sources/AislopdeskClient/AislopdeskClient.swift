@@ -76,8 +76,13 @@ public actor AislopdeskClient {
 
     // MARK: Surfaced streams
 
-    private let outputStream: AsyncStream<Data>
-    private let outputContinuation: AsyncStream<Data>.Continuation
+    /// Inbox of delivered-but-not-yet-consumed `output` payloads, drained in batches by
+    /// the single consumer via ``takeOutputBatch()``. Replaces the old per-chunk
+    /// `AsyncStream<Data>` so a backlog crosses to the consumer as ONE batch (one
+    /// MainActor hop, one render flush) instead of one job per wire chunk.
+    private var outputInbox: [Data] = []
+    private let outputWakeStream: AsyncStream<Void>
+    private let outputWakeContinuation: AsyncStream<Void>.Continuation
 
     /// Multicast hub for events: each ``events`` access subscribes a fresh child stream so
     /// `ReconnectManager` and the view-models can all observe the SAME events concurrently
@@ -85,9 +90,24 @@ public actor AislopdeskClient {
     /// fan-in; see ``EventBroadcaster``).
     private let eventBroadcaster = EventBroadcaster<Event>()
 
+    /// Wakeups for the output inbox: one (coalesced) signal per append burst.
+    ///
+    /// **SINGLE consumer only** (same contract the old `output` stream had): the consumer
+    /// loops `for await _ in outputWakeups { await takeOutputBatch() … }` and MUST do one
+    /// final ``takeOutputBatch()`` after the loop exits — a tail appended immediately
+    /// before the stream finishes (exit/close) is otherwise lost. `bufferingNewest(1)`
+    /// coalesces redundant wakes; appends always happen BEFORE the yield, so a pending
+    /// wake always observes a complete inbox.
+    public nonisolated var outputWakeups: AsyncStream<Void> { outputWakeStream }
+
+    /// Atomically takes the whole pending output backlog (FIFO order preserved).
     /// Raw PTY/VT output bytes from the host, spliced gap-free / dup-free across
-    /// reconnects. Finishes when the remote child exits (or the client closes).
-    public nonisolated var output: AsyncStream<Data> { outputStream }
+    /// reconnects by ``deliverOutput(seq:bytes:)``'s dedup.
+    public func takeOutputBatch() -> [Data] {
+        let batch = outputInbox
+        outputInbox.removeAll(keepingCapacity: true)
+        return batch
+    }
 
     /// Title / bell / exit / connection lifecycle events.
     ///
@@ -174,9 +194,8 @@ public actor AislopdeskClient {
     ) {
         self.ackInterval = ackInterval
         self.makeTransport = makeTransport
-        var outC: AsyncStream<Data>.Continuation!
-        self.outputStream = AsyncStream(bufferingPolicy: .unbounded) { outC = $0 }
-        self.outputContinuation = outC
+        (self.outputWakeStream, self.outputWakeContinuation) =
+            AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
     }
 
     /// Attaches a feeder that mirrors every delivered `output` payload to a terminal
@@ -341,8 +360,9 @@ public actor AislopdeskClient {
             deliverOutput(seq: seq, bytes: bytes)
         case let .exit(code):
             eventBroadcaster.yield(.exit(code: code))
-            // The byte stream is over once the child exits.
-            outputContinuation.finish()
+            // The byte stream is over once the child exits. Finishing the wake stream ends
+            // the consumer's wake loop; its final takeOutputBatch() drains any tail.
+            outputWakeContinuation.finish()
         case let .title(text):
             eventBroadcaster.yield(.title(text))
         case .bell:
@@ -373,7 +393,10 @@ public actor AislopdeskClient {
             // delivered, and never more than we have).
             highestContiguousSeq = seq
         }
-        outputContinuation.yield(bytes)
+        // Append-then-yield: the pending wake (bufferingNewest(1)) always observes a
+        // complete inbox, so no chunk can be stranded without a wake.
+        outputInbox.append(bytes)
+        outputWakeContinuation.yield(())
         surfaceFeed?(bytes)
         // Mark an ack as pending; the coalescing ticker sends it.
         ackPending = true
@@ -527,7 +550,7 @@ public actor AislopdeskClient {
         await flushAckIfPending()
         if let transport { try? await transport.sendBye() }
         await teardownTransport()
-        outputContinuation.finish()
+        outputWakeContinuation.finish()
         eventBroadcaster.finish()
     }
 }

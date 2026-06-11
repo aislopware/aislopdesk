@@ -283,9 +283,28 @@ public final class GhosttySurface: @MainActor TerminalSurface {
     /// avoid the doc-18-§C actor-suspension-escape hazard.
     private var feedCount = 0
     public func feed(_ bytes: Data) {
+        guard writeOutput(bytes) else { return }
+        flushOutput()
+    }
+
+    /// Batch variant: writes every chunk, then flushes ONCE — under a backlog the
+    /// renderer-thread wakeup + present arming are paid per batch, not per wire chunk.
+    /// Fully synchronous (doc-18-§C: no suspension between writes and the flush).
+    public func feedBatch(_ chunks: ArraySlice<Data>) {
+        var wroteAny = false
+        for chunk in chunks where writeOutput(chunk) {
+            wroteAny = true
+        }
+        guard wroteAny else { return }
+        flushOutput()
+    }
+
+    /// The write_output half of ``feed(_:)``. Returns whether bytes were written.
+    @discardableResult
+    private func writeOutput(_ bytes: Data) -> Bool {
         guard let s = surface, !bytes.isEmpty else {
             rdbg("feed SKIPPED surface=\(surface != nil) empty=\(bytes.isEmpty)")
-            return
+            return false
         }
         feedCount += 1
         if kRenderDebug, feedCount <= 6 || feedCount % 50 == 0 { rdbg("feed #\(feedCount) \(bytes.count)B") }
@@ -295,16 +314,23 @@ public final class GhosttySurface: @MainActor TerminalSurface {
             // header 1185 takes `uintptr_t` (imported as Swift `UInt`).
             ghostty_surface_write_output(s, cptr, UInt(bytes.count))   // header 1185
         }
-        // Coalescing redraw (VVTerm `scheduleCustomIORedraw` pattern). The render is
-        // already triggered by write_output; refresh+draw force the next frame. Both
-        // are main-thread-only (doc 18 §C).
-        // Only REFRESH here (wakes the renderer thread → `updateFrame`, rebuilding cells from the
-        // just-written state). Do NOT call `ghostty_surface_draw`: its present runs in THIS
-        // MainActor-async (output-pump) context, where the implicit CATransaction never commits — it
-        // sets the layer contents but they never appear on screen. The present is driven by the
-        // view's gated tick via `layer.setNeedsDisplay()` → libghostty's IOSurfaceLayer `display`
-        // callback, the SAME path a window RESIZE uses (you observed resize DOES repaint), which runs
-        // INSIDE a CA commit so the new frame actually shows.
+        return true
+    }
+
+    /// The refresh/present half of ``feed(_:)``.
+    ///
+    /// Coalescing redraw (VVTerm `scheduleCustomIORedraw` pattern). The render is
+    /// already triggered by write_output; refresh+draw force the next frame. Both
+    /// are main-thread-only (doc 18 §C).
+    /// Only REFRESH here (wakes the renderer thread → `updateFrame`, rebuilding cells from the
+    /// just-written state). Do NOT call `ghostty_surface_draw`: its present runs in THIS
+    /// MainActor-async (output-pump) context, where the implicit CATransaction never commits — it
+    /// sets the layer contents but they never appear on screen. The present is driven by the
+    /// view's gated tick via `layer.setNeedsDisplay()` → libghostty's IOSurfaceLayer `display`
+    /// callback, the SAME path a window RESIZE uses (you observed resize DOES repaint), which runs
+    /// INSIDE a CA commit so the new frame actually shows.
+    private func flushOutput() {
+        guard let s = surface else { return }
         ghostty_surface_refresh(s)   // header 1167 → renderer thread updateFrame (rebuild cells)
         onContentChanged?()          // dirty signal → the view's gated tick triggers the display present
     }

@@ -1,0 +1,140 @@
+import XCTest
+import AislopdeskClient
+import AislopdeskTerminal
+@testable import AislopdeskClientUI
+
+/// Batch-drain ingest tests (`TerminalViewModel.ingestBatch`): the inbound path's analogue
+/// of the OUT-path coalescer. Pins the load-bearing properties of the batch design:
+/// byte-identity with per-chunk ingest, ONE renderer flush per budget pass, chunk-granular
+/// ring retention, `Task.yield()` interleaving between over-budget passes, and the
+/// fresh-session wipe ordering (RIS strictly before the first batch byte).
+@MainActor
+final class TerminalViewModelBatchTests: XCTestCase {
+
+    /// Surface seam that records each write AND each flush boundary: `feed` = one write +
+    /// one flush; `feedBatch` = N writes + one flush (mirrors `GhosttySurface`'s override).
+    private final class FlushRecordingSurface: TerminalSurface, @unchecked Sendable {
+        var writes: [Data] = []
+        var flushes = 0
+        func feed(_ bytes: Data) {
+            writes.append(bytes)
+            flushes += 1
+        }
+        func feedBatch(_ chunks: ArraySlice<Data>) {
+            writes.append(contentsOf: chunks)
+            flushes += 1
+        }
+        func setSize(cols: UInt16, rows: UInt16) {}
+        func handleInput(_ bytes: Data) {}
+        var onWrite: ((Data) -> Void)?
+    }
+
+    /// RIS — Reset to Initial State (`ESC c`), the fresh-session wipe prefix.
+    private static let ris = Data([0x1B, 0x63])
+
+    func testBatchMatchesPerChunkIngestByteForByte() async {
+        let chunks = [Data("abc".utf8), Data("defg".utf8), Data("h".utf8)]
+
+        let single = FlushRecordingSurface()
+        let singleModel = TerminalViewModel(surface: single)
+        for chunk in chunks { singleModel.ingestOutput(chunk) }
+
+        let batched = FlushRecordingSurface()
+        let batchedModel = TerminalViewModel(surface: batched)
+        await batchedModel.ingestBatch(chunks)
+
+        XCTAssertEqual(
+            batched.writes.reduce(Data(), +), single.writes.reduce(Data(), +),
+            "batched ingest must deliver byte-identical output in order"
+        )
+        XCTAssertEqual(batched.writes, chunks, "wire-chunk write granularity is preserved")
+        XCTAssertEqual(batchedModel.ringByteCount, singleModel.ringByteCount,
+                       "ring retention is identical between the two paths")
+        XCTAssertEqual(batchedModel.bytesReceived, singleModel.bytesReceived)
+    }
+
+    func testUnderBudgetBatchFlushesExactlyOnce() async {
+        let surface = FlushRecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        let chunks = (0..<10).map { Data("chunk\($0)".utf8) }   // tiny — far under budget
+        await model.ingestBatch(chunks)
+        XCTAssertEqual(surface.flushes, 1, "one renderer flush for the whole under-budget batch")
+        XCTAssertEqual(surface.writes, chunks)
+    }
+
+    func testOverBudgetBatchSplitsAtChunkBoundariesOneFlushPerPass() async {
+        let surface = FlushRecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        // 3 chunks of ~budget/2 each → passes accumulate until >= budget: pass1 = 2 chunks,
+        // pass2 = 1 chunk. Chunks must never split.
+        let half = TerminalViewModel.ingestByteBudget / 2
+        let chunks = [
+            Data(repeating: 0x61, count: half),
+            Data(repeating: 0x62, count: half),
+            Data(repeating: 0x63, count: half),
+        ]
+        await model.ingestBatch(chunks)
+        XCTAssertEqual(surface.flushes, 2, "budget split → two passes, one flush each")
+        XCTAssertEqual(surface.writes, chunks, "chunks are never split or reordered")
+        XCTAssertEqual(model.bytesReceived, half * 3)
+    }
+
+    func testOverBudgetBatchYieldsBetweenPasses() async {
+        let surface = FlushRecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        let chunks = [
+            Data(repeating: 0x61, count: TerminalViewModel.ingestByteBudget),
+            Data(repeating: 0x62, count: TerminalViewModel.ingestByteBudget),
+        ]
+        // A MainActor marker enqueued BEFORE the drain starts: the drain's between-pass
+        // Task.yield() must let it run before the final pass completes — proving input
+        // events / display-link work interleave with a multi-pass backlog.
+        var markerRan = false
+        var flushesWhenMarkerRan = -1
+        Task { @MainActor in
+            markerRan = true
+            flushesWhenMarkerRan = surface.flushes
+        }
+        await model.ingestBatch(chunks)
+        XCTAssertTrue(markerRan, "marker task interleaved with the multi-pass drain (Task.yield ran)")
+        XCTAssertLessThan(flushesWhenMarkerRan, 2,
+                          "marker ran BEFORE the drain finished — the backlog did not monopolize the main actor")
+        XCTAssertEqual(surface.flushes, 2)
+    }
+
+    func testFreshSessionWipePrecedesFirstBatchByte() async {
+        let surface = FlushRecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        model.ingestOutput(Data("old-session".utf8))
+        model.markReconnecting()
+        surface.writes.removeAll()
+
+        await model.ingestBatch([Data("new".utf8), Data("shell".utf8)])
+        XCTAssertEqual(surface.writes.first, Self.ris,
+                       "RIS hard reset is fed strictly before the fresh session's first byte")
+        XCTAssertEqual(surface.writes.dropFirst().reduce(Data(), +), Data("newshell".utf8))
+        // Ring was wiped before retaining the new chunks: only the fresh bytes remain.
+        XCTAssertEqual(model.ringByteCount, "newshell".count)
+    }
+
+    func testEmptyBatchIsANoOp() async {
+        let surface = FlushRecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        await model.ingestBatch([])
+        XCTAssertEqual(surface.flushes, 0)
+        XCTAssertTrue(surface.writes.isEmpty)
+        XCTAssertEqual(model.bytesReceived, 0)
+    }
+
+    func testAttachSurfaceReplaysAsOneBatch() {
+        let model = TerminalViewModel()
+        model.ingestOutput(Data("aa".utf8))
+        model.ingestOutput(Data("bb".utf8))
+        let rebuilt = FlushRecordingSurface()
+        model.attachSurface(rebuilt)
+        XCTAssertEqual(rebuilt.flushes, 1, "replay is one batch → one renderer flush")
+        XCTAssertEqual(rebuilt.writes,
+                       [Data([0x1B, 0x5B, 0x21, 0x70]), Data("aa".utf8), Data("bb".utf8)],
+                       "DECSTR prefix then the ring in FIFO order")
+    }
+}

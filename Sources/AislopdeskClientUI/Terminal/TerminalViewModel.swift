@@ -250,26 +250,58 @@ public final class TerminalViewModel {
     /// stream nondeterministically (output is safe because the model is its sole consumer).
     public func observe(client: AislopdeskClient) async {
         connectionStatus = .connecting
-        await pumpOutput(client.output)
+        for await _ in client.outputWakeups {
+            await ingestBatch(client.takeOutputBatch())
+        }
+        // FINAL DRAIN: a tail appended just before the wake stream finished (exit/close)
+        // has no wake left to announce it — take it explicitly.
+        await ingestBatch(client.takeOutputBatch())
     }
 
-    private func pumpOutput(_ output: AsyncStream<Data>) async {
-        for await chunk in output {
-            ingestOutput(chunk)
+    /// Max bytes fed to the surface per synchronous MainActor pass. Between passes the
+    /// drain yields so input events / the display link / SwiftUI interleave — a multi-MB
+    /// backlog (cat of a big file) no longer monopolizes the main thread in one job.
+    static let ingestByteBudget = 256 * 1024
+
+    /// Folds a BATCH of `output` chunks in budget-bounded synchronous passes: each pass
+    /// runs ring bookkeeping per chunk, then ONE `surface.feedBatch` (one renderer flush).
+    /// `Task.yield()` only BETWEEN passes — never inside one (doc-18-§C: the surface's
+    /// write/flush trio must not interleave with suspension).
+    public func ingestBatch(_ chunks: [Data]) async {
+        guard !chunks.isEmpty else { return }
+        var i = 0
+        while i < chunks.count {
+            var end = i
+            var passBytes = 0
+            repeat {
+                passBytes += chunks[end].count
+                end += 1
+            } while end < chunks.count && passBytes < Self.ingestByteBudget
+            ingestPass(chunks[i..<end])
+            i = end
+            if i < chunks.count { await Task.yield() }
         }
     }
 
-    /// Folds one `output` chunk: feed the renderer + bump telemetry. The first byte flips
-    /// `.connecting`/`.reconnecting` → `.connected` (we are receiving from the host).
-    ///
-    /// Order matters: the chunk is retained in the replay ring (evicting whole oldest chunks to
-    /// stay under ``maxRingBytes``) BEFORE it is fed to the surface, so the ring is always a
-    /// superset/peer of what the live surface has seen — a same-tick rebuild + replay reproduces
-    /// the current screen.
+    /// Folds one `output` chunk (the single-chunk pass — kept as the synchronous API for
+    /// tests and direct feeders).
     public func ingestOutput(_ chunk: Data) {
+        ingestPass([chunk])
+    }
+
+    /// One fully-synchronous ingest pass: feed the renderer + bump telemetry. The first
+    /// byte flips `.connecting`/`.reconnecting` → `.connected` (we are receiving from the
+    /// host).
+    ///
+    /// Order matters: every chunk is retained in the replay ring (evicting whole oldest
+    /// chunks to stay under ``maxRingBytes``) BEFORE the batch is fed to the surface, so
+    /// the ring is always a superset/peer of what the live surface has seen — a same-tick
+    /// rebuild + replay reproduces the current screen. NO `await` may be introduced in
+    /// here (doc-18-§C).
+    private func ingestPass(_ chunks: ArraySlice<Data>) {
         // FRESH-SESSION WIPE: the first output after a reconnect belongs to a brand-new host shell
         // (the mux path never resumes). Hard-reset the live surface and drop the dead session's
-        // replay ring BEFORE this chunk paints, so the user sees a clean shell instead of the old
+        // replay ring BEFORE this pass paints, so the user sees a clean shell instead of the old
         // framebuffer with a new prompt grafted on. Inline here (not on the `.reconnected` event) so
         // the wipe is strictly ordered before the fresh bytes — no cross-stream race.
         if pendingFreshSessionReset {
@@ -281,18 +313,24 @@ public final class TerminalViewModel {
         if connectionStatus == .connecting || connectionStatus == .reconnecting {
             connectionStatus = .connected
         }
-        bytesReceived += chunk.count
 
-        // Retain a WHOLE copy in the bounded replay ring, then evict whole oldest chunks until
-        // we are back under the cap (never split a Data — a partial chunk could cut an escape
-        // sequence and corrupt the replay).
-        ring.append(chunk)
-        ringByteCount += chunk.count
-        while ringByteCount > maxRingBytes, ring.count > 1 {
-            ringByteCount -= ring.removeFirst().count
+        // Retain WHOLE copies in the bounded replay ring, then evict whole oldest chunks
+        // until we are back under the cap (never split a Data — a partial chunk could cut
+        // an escape sequence and corrupt the replay). Per-wire-chunk granularity is kept
+        // deliberately: concatenating would memcpy and coarsen eviction.
+        var passBytes = 0
+        for chunk in chunks {
+            passBytes += chunk.count
+            ring.append(chunk)
+            ringByteCount += chunk.count
+            while ringByteCount > maxRingBytes, ring.count > 1 {
+                ringByteCount -= ring.removeFirst().count
+            }
         }
+        // ONE observable mutation per pass (SwiftUI change tracking is not free per chunk).
+        bytesReceived += passBytes
 
-        surface?.feed(chunk)
+        surface?.feedBatch(chunks)
     }
 
     // MARK: Surface attach / detach (replay across rebuild)
@@ -323,10 +361,9 @@ public final class TerminalViewModel {
         let isDifferentInstance = (self.surface !== surface)
         self.surface = surface
         guard isDifferentInstance, !ring.isEmpty else { return }
-        surface.feed(Self.decstrSoftReset)
-        for chunk in ring {
-            surface.feed(chunk)
-        }
+        // One batch = one renderer flush for the whole replay (the view follows with its
+        // own requestPresent burst on attach).
+        surface.feedBatch(ArraySlice([Self.decstrSoftReset] + ring))
     }
 
     /// Detaches the renderer surface (the representable was dismantled). Drops the `weak`
