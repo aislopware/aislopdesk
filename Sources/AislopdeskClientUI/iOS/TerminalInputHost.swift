@@ -34,7 +34,6 @@ import AislopdeskClient
 /// recording them would leave stale bytes that could later swallow a real TUI redraw.
 public struct TerminalInputHost: UIViewRepresentable {
     private let model: InputBarModel
-    private let client: AislopdeskClient?
     /// The pane this input surface backs (docs/22 §7). The key the ``PaneFocusCoordinator`` registers
     /// this host under so a focus change can resign-before-become the right surface.
     private let paneID: PaneID
@@ -45,18 +44,16 @@ public struct TerminalInputHost: UIViewRepresentable {
 
     public init(
         model: InputBarModel,
-        client: AislopdeskClient?,
         paneID: PaneID,
         coordinator: PaneFocusCoordinator? = nil
     ) {
         self.model = model
-        self.client = client
         self.paneID = paneID
         self.coordinator = coordinator
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(model: model, client: client, paneID: paneID, focusCoordinator: coordinator)
+        Coordinator(model: model, paneID: paneID, focusCoordinator: coordinator)
     }
 
     public func makeUIView(context: Context) -> TerminalInputResponderView {
@@ -78,8 +75,9 @@ public struct TerminalInputHost: UIViewRepresentable {
     }
 
     public func updateUIView(_ uiView: TerminalInputResponderView, context: Context) {
-        // The client can change across reconnects; keep the coordinator's send target current.
-        context.coordinator.client = client
+        // Nothing to refresh: sends funnel through InputBarModel.sendSink → the pane's
+        // TerminalViewModel OUT FIFO, which always targets the LIVE client (the sink is
+        // re-wired by ConnectionViewModel.connect across reconnects).
     }
 
     public static func dismantleUIView(_ uiView: TerminalInputResponderView, coordinator: Coordinator) {
@@ -92,11 +90,17 @@ public struct TerminalInputHost: UIViewRepresentable {
     }
 
     /// Owns the per-instance send glue: turns the components' byte/text callbacks into
-    /// `InputBarModel` sends on the main actor, recording for B1 dedup.
+    /// SYNCHRONOUS `InputBarModel` sends on the main actor, recording for B1 dedup.
+    ///
+    /// NO local queue/drain (docs/29's documented dual-OUT-drain reorder fix): the model's
+    /// `sendSink` enqueues straight into the pane's ONE ordered OUT FIFO (the
+    /// `ConnectionViewModel` drain), so a tap/scroll byte and a keystroke can never race
+    /// the reentrant client actor — the iOS keyboard path and the gesture/clipboard path
+    /// now share a single FIFO. Record-then-enqueue is synchronous in call order, so the
+    /// B1 echo-dedup ring matches wire order by construction.
     @MainActor
     public final class Coordinator {
         let model: InputBarModel
-        var client: AislopdeskClient?
         /// The pane this host backs (the coordinator registration key — docs/22 §7).
         let paneID: PaneID
         /// The single-focus arbiter, or `nil` on the compact single-host path.
@@ -106,36 +110,14 @@ public struct TerminalInputHost: UIViewRepresentable {
         /// the host's, so this is the right owner.
         private var focusAdapter: FocusInputHostAdapter?
 
-        /// One ordered outbound item (a raw key sequence or composed text).
-        private enum Outbound { case raw([UInt8]); case text(String) }
-
-        /// Single serial outbound queue + ONE drain task. The component callbacks ENQUEUE
-        /// synchronously (on the main actor, in true call order); the drain awaits each send
-        /// sequentially. This is the fix for the reordering bug: previously every key/text
-        /// callback spawned its OWN `Task { await model.send… }`, and two rapid events
-        /// (two fast keypresses, a paste split into segments, IME commits back-to-back) race
-        /// onto the `AislopdeskClient` actor in SCHEDULER order, not creation order — so they
-        /// could swap, corrupting the typed byte order on the host PTY AND desyncing the B1
-        /// echo-dedup ring (`recordComposeSent` ran out of order). The single drain restores
-        /// FIFO order, mirroring the `ConnectionViewModel` OUT-path serial drain.
-        private let outbound: AsyncStream<Outbound>
-        private let outboundContinuation: AsyncStream<Outbound>.Continuation
-        private var drainTask: Task<Void, Never>?
-
         init(
             model: InputBarModel,
-            client: AislopdeskClient?,
             paneID: PaneID,
             focusCoordinator: PaneFocusCoordinator?
         ) {
             self.model = model
-            self.client = client
             self.paneID = paneID
             self.focusCoordinator = focusCoordinator
-            var cont: AsyncStream<Outbound>.Continuation!
-            self.outbound = AsyncStream(bufferingPolicy: .unbounded) { cont = $0 }
-            self.outboundContinuation = cont
-            startDrain()
         }
 
         /// Builds (and retains) the ``FocusInputHostAdapter`` over `view` for the focus coordinator.
@@ -158,37 +140,16 @@ public struct TerminalInputHost: UIViewRepresentable {
             else { focusCoordinator.unregister(paneID) }
         }
 
-        private func startDrain() {
-            // Capture the stream value (not `self`) so the task does not retain the
-            // coordinator; re-check `self` per item. When the coordinator deallocs, dropping
-            // `outboundContinuation` finishes the stream and the drain exits.
-            let stream = outbound
-            drainTask = Task { [weak self] in
-                for await item in stream {
-                    guard let self else { return }
-                    // Read the LIVE client at send time — it changes across reconnects
-                    // (`updateUIView` updates it). A nil client just drops the item.
-                    guard let client = self.client else { continue }
-                    switch item {
-                    case .raw(let bytes): await self.model.sendRaw(bytes, over: client)
-                    case .text(let text): await self.model.sendText(text, over: client)
-                    }
-                }
-            }
-        }
-
         func attach(to view: TerminalInputResponderView) {
-            view.onKeyBytes = { [weak self] bytes in self?.outboundContinuation.yield(.raw(bytes)) }
-            view.onText = { [weak self] text in self?.outboundContinuation.yield(.text(text)) }
+            // Direct synchronous main-actor calls in true event order — the sink behind
+            // sendRaw/sendText appends to the pane's single OUT FIFO.
+            view.onKeyBytes = { [weak self] bytes in self?.model.sendRaw(bytes) }
+            view.onText = { [weak self] text in self?.model.sendText(text) }
         }
 
-        /// Stops the drain (called on SwiftUI dismantle). Finishing the continuation ends the
-        /// `for await` so the drain task completes; cancelling is belt-and-suspenders.
-        func teardown() {
-            outboundContinuation.finish()
-            drainTask?.cancel()
-            drainTask = nil
-        }
+        /// Called on SwiftUI dismantle. Nothing to stop — sends are synchronous enqueues;
+        /// the pane's OUT drain is owned (and torn down) by `ConnectionViewModel`.
+        func teardown() {}
     }
 }
 

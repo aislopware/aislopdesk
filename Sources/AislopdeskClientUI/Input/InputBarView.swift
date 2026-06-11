@@ -57,7 +57,6 @@ public struct InputBarView: View {
         // FloatingCursorController) and routes every keystroke straight to `AislopdeskClient.sendInput`.
         TerminalInputHost(
             model: model,
-            client: client,
             paneID: paneID ?? PaneID(),
             // Never register a coordinator under an ephemeral (no-paneID) key: a coordinator only
             // makes sense with a STABLE paneID. A mis-wired caller (coordinator but nil paneID)
@@ -76,8 +75,10 @@ public struct InputBarView: View {
 
     #if os(macOS)
     private func send() {
-        guard let client else { return }
-        Task { await model.submit(over: client) }
+        // SYNCHRONOUS enqueue through the model's sendSink → the pane's single OUT FIFO.
+        // (The old per-submit `Task { await client.sendInput }` was a third OUT path racing
+        // the reentrant client actor — the repo's recurring reorder class.)
+        model.submit()
     }
 
     private var placeholder: String {

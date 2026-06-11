@@ -182,6 +182,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             makeClient: makeClient
         )
         let inputBar = InputBarModel()
+        // SINGLE OUT FUNNEL: input-bar bytes ride the pane's ONE ordered OUT FIFO
+        // (terminal.sendInput → inputSink → ConnectionViewModel outQueue/drain), the same
+        // path as renderer keystrokes — never a separate drain racing the client actor
+        // (docs/29 dual-OUT-drain reorder fix). Weak: the sink must not retain the model.
+        inputBar.sendSink = { [weak terminal] data in terminal?.sendInput(data) }
 
         let inspectorModel: InspectorViewModel? = claudeCode ? InspectorViewModel() : nil
 
