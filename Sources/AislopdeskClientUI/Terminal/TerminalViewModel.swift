@@ -1,5 +1,6 @@
 import Foundation
 import AislopdeskClient
+import AislopdeskClaudeCode
 import AislopdeskTerminal
 
 /// The terminal screen's view-model: it consumes a ``AislopdeskClient``'s `output` byte stream +
@@ -201,7 +202,133 @@ public final class TerminalViewModel {
     /// the renderer's `GhosttySurface.onWrite` bridge.
     public func sendInput(_ data: Data) {
         if Self.echoProbeEnabled { probeInputAt = ContinuousClock.now }
+        if glitchCaretMode != .off { noteGlitchCaretSend(data) }
         inputSink?(data)
+    }
+
+    // MARK: Glitch caret (predictive-echo v1 — docs/12 §B → docs/17 §2.4, docs/31 #3)
+
+    /// The WAN typing-latency masker, in its sanctioned CONSERVATIVE form: we never paint
+    /// predicted text (no shadow VT parser — the desync class docs/17 rejects); we only
+    /// show a dim "input received" caret nudge when a keystroke's echo has not arrived
+    /// within ``glitchWindow``. Reconciliation is therefore trivial: ANY host output
+    /// hides the caret (the real render is the truth), and a hard ``glitchExpiry``
+    /// bounds non-echoing prompts (`stty -echo`, `read -s`).
+    ///
+    /// Arming gates (ALL must hold):
+    /// - mode: `.forced`, or `.rttGated` with the EWMA RTT above ``glitchRTTOnMS``
+    ///   (hysteresis: stays armed until it falls below ``glitchRTTOffMS`` — the 3 s
+    ///   ping cadence makes the gate signal slow; don't flap at the boundary);
+    /// - `.connected`, and the tracker says `.shellPrompt` — alt-screen TUIs (Claude
+    ///   Code, vim) do their own full-screen echo discipline; mosh disables prediction
+    ///   there too (docs/17 §2.4 point 2);
+    /// - the send is EXACTLY one printable ASCII byte (0x20...0x7E). Backspace (0x7F)
+    ///   retires one pending keystroke; anything else (CR, ESC sequences, multi-byte =
+    ///   paste / committed IME text — Vietnamese Telex composes to multi-byte UTF-8)
+    ///   CLEARS all pending state (the mosh `become_tentative`/paste-reset analogue,
+    ///   stricter): predicted columns would desync instantly, so we never guess.
+    public enum GlitchCaretMode: Sendable, Equatable {
+        case off
+        /// `AISLOPDESK_GLITCH_CARET=1` — armed only while the measured RTT warrants it.
+        case rttGated
+        /// `AISLOPDESK_GLITCH_CARET=force` — RTT gate bypassed, zero glitch window
+        /// (loopback rig render verification; echo would otherwise win the race).
+        case forced
+    }
+
+    private static func glitchCaretModeFromEnv() -> GlitchCaretMode {
+        switch ProcessInfo.processInfo.environment["AISLOPDESK_GLITCH_CARET"] {
+        case "force": return .forced
+        case .some(let value) where !value.isEmpty && value != "0": return .rttGated
+        default: return .off
+        }
+    }
+
+    /// Read from the env once per model; internal-settable so headless tests drive the
+    /// gate matrix without process environment games.
+    @ObservationIgnored var glitchCaretMode: GlitchCaretMode = TerminalViewModel.glitchCaretModeFromEnv()
+
+    /// Echo-wait before the caret shows (mosh GLITCH_THRESHOLD territory: 150–250 ms).
+    @ObservationIgnored var glitchWindow: Duration = .milliseconds(175)
+    /// Hard ceiling on a shown caret with no echo at all (non-echoing prompts).
+    @ObservationIgnored var glitchExpiry: Duration = .milliseconds(1500)
+    /// RTT hysteresis (EWMA from ping/pong, 3 s cadence): arm above on, disarm below off.
+    static let glitchRTTOnMS: Double = 30
+    static let glitchRTTOffMS: Double = 20
+
+    /// TRUE while the dim caret overlay should draw (the ONE observable output of the
+    /// whole feature — everything else is plain bookkeeping).
+    public private(set) var glitchCaretVisible = false
+
+    /// Keystrokes sent but not yet answered by ANY host output (positional, like the
+    /// echo probe — conservative direction: any output clears, so the caret can only
+    /// under-show, never over-show).
+    @ObservationIgnored private var pendingEchoCount = 0
+    @ObservationIgnored private var glitchTask: Task<Void, Never>?
+    /// Hysteresis state of the RTT gate (`.rttGated` mode).
+    @ObservationIgnored private var rttGateOpen = false
+    /// Pane-local EWMA RTT mirror (folded from the `.rtt` event; diagnostics + gate).
+    @ObservationIgnored public private(set) var paneLatencyMS: Double?
+    /// Alt-screen gate: a client-side `TerminalModeTracker` fed in ``ingestPass`` (only
+    /// while the feature is on — it has a memchr skim fast path, but off means OFF).
+    @ObservationIgnored private let glitchModeTracker = TerminalModeTracker()
+
+    private var glitchCaretArmed: Bool {
+        guard connectionStatus == .connected, glitchModeTracker.mode == .shellPrompt else { return false }
+        switch glitchCaretMode {
+        case .off: return false
+        case .forced: return true
+        case .rttGated: return rttGateOpen
+        }
+    }
+
+    /// OUT-side classification (see the gate list above). Called per keystroke — cheap.
+    private func noteGlitchCaretSend(_ data: Data) {
+        guard glitchCaretArmed else {
+            clearGlitchCaret()
+            return
+        }
+        if data.count == 1, let byte = data.first {
+            switch byte {
+            case 0x20...0x7E:
+                pendingEchoCount += 1
+                if pendingEchoCount == 1 { armGlitchTimer() }
+            case 0x7F:
+                pendingEchoCount = max(0, pendingEchoCount - 1)
+                if pendingEchoCount == 0 { clearGlitchCaret() }
+            default:
+                clearGlitchCaret()   // CR, Ctrl-*, ESC — a state change we won't model
+            }
+        } else {
+            clearGlitchCaret()       // paste / IME / encoded escape sequence
+        }
+    }
+
+    /// One timer per pending RUN, armed when the count goes 0→1 (the glitch window is
+    /// measured from the OLDEST unanswered keystroke, as in mosh): show after
+    /// ``glitchWindow`` if still unanswered, force-hide at ``glitchExpiry``.
+    private func armGlitchTimer() {
+        glitchTask?.cancel()
+        let window = glitchWindow
+        let expiry = glitchExpiry
+        glitchTask = Task { [weak self] in
+            // Weak across both sleeps — a parked timer must not extend the model's life.
+            try? await Task.sleep(for: window)
+            guard !Task.isCancelled, (self?.pendingEchoCount ?? 0) > 0 else { return }
+            self?.glitchCaretVisible = true
+            try? await Task.sleep(for: expiry)
+            guard !Task.isCancelled else { return }
+            self?.clearGlitchCaret()
+        }
+    }
+
+    /// Hides the caret and forgets all pending keystrokes. Idempotent and cheap (the
+    /// observable flag is only written when it actually changes).
+    private func clearGlitchCaret() {
+        pendingEchoCount = 0
+        glitchTask?.cancel()
+        glitchTask = nil
+        if glitchCaretVisible { glitchCaretVisible = false }
     }
 
     // MARK: Echo probe (rig instrumentation — docs/31 follow-up #4)
@@ -342,6 +469,15 @@ public final class TerminalViewModel {
             let ms = Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
             FileHandle.standardError.write(Data(String(format: "[echo-probe] key→ingest %.1fms\n", ms).utf8))
         }
+        // Glitch caret (docs/31 #3): host output is the ground truth — ANY ingest hides
+        // the caret (the entire reconciliation policy: we never painted characters, so a
+        // "misprediction" can only ever be a caret shown one output-gap too long). The
+        // mode tracker keeps the alt-screen gate fresh (memchr skim — ground content is
+        // one memchr per chunk). One enum compare when the feature is off.
+        if glitchCaretMode != .off {
+            for chunk in chunks { glitchModeTracker.consume(chunk) }
+            clearGlitchCaret()
+        }
         // FRESH-SESSION WIPE: the first output after a reconnect belongs to a brand-new host shell
         // (the mux path never resumes). Hard-reset the live surface and drop the dead session's
         // replay ring BEFORE this pass paints, so the user sees a clean shell instead of the old
@@ -450,6 +586,7 @@ public final class TerminalViewModel {
             // dead pane (HW-confirmed). Clear it — a terminated shell runs nothing. (Mirrors
             // `markReconnecting`, which already clears this stale state on a drop.)
             shellActivity = .idle
+            clearGlitchCaret()   // no host left to echo — drop the nudge immediately
         case let .disconnected(reason):
             // A drop while we still want to be connected reads as "reconnecting" (the
             // ReconnectManager is retrying); the ConnectionViewModel owns the authoritative
@@ -458,13 +595,20 @@ public final class TerminalViewModel {
             // Same stale-OSC-133 guard as the exit/reconnect paths: a drop straddling a C→D pair
             // would otherwise pin the indicator on "running…" across the disconnect.
             shellActivity = .idle
+            clearGlitchCaret()
         case let .reconnected(sessionID, resumeFromSeq):
             self.sessionID = sessionID
             self.lastResumeSeq = resumeFromSeq
             connectionStatus = .connected
-        case .rtt:
-            // Folded by ConnectionViewModel (latencyMS) — no terminal-model state.
-            break
+        case let .rtt(milliseconds):
+            // ConnectionViewModel owns the badge's latencyMS; the pane-local mirror feeds
+            // the glitch caret's hysteresis gate (docs/31 #3).
+            paneLatencyMS = milliseconds
+            if milliseconds > Self.glitchRTTOnMS {
+                rttGateOpen = true
+            } else if milliseconds < Self.glitchRTTOffMS {
+                rttGateOpen = false
+            }
         }
     }
 
@@ -479,6 +623,7 @@ public final class TerminalViewModel {
         // The reconnect will bring a FRESH host shell (no mux resume) — arm the one-shot wipe so the
         // next output clears the dead session's screen/scrollback before painting the new prompt.
         pendingFreshSessionReset = true
+        clearGlitchCaret()   // keystrokes in flight died with the old session
     }
 
     /// Clears the pending-bell flag once the view has flashed.
@@ -500,5 +645,6 @@ public final class TerminalViewModel {
         ring.removeAll()     // stale scrollback must not survive into a new session
         ringByteCount = 0
         pendingFreshSessionReset = false  // deliberate connect already starts clean; no pending wipe
+        clearGlitchCaret()
     }
 }
