@@ -129,5 +129,88 @@ final class LTREscalationTrackerTests: XCTestCase {
         XCTAssertNil(tracker.firstRequestTime)
         XCTAssertFalse(tracker.shouldEscalate(now: 1.0, rtt: rtt, policy: policy))
     }
+
+    // MARK: SELF-HEAL (2026-06-11) — a decoded P-frame newer than every loss ends the episode
+
+    /// THE self-heal fix: the WF-8 LTR-refresh recovery frame (and every cadence refresh) is a
+    /// P-frame, `keyframe=false` on the wire. The OLD tracker cleared only on a keyframe, so a
+    /// recovery that SUCCEEDED via refresh still fired a spurious forced IDR 2·RTT later. A
+    /// successfully-decoded frame strictly NEWER than every recorded loss must end the episode.
+    func testDecodedFrameNewerThanLossHealsEpisode() {
+        var tracker = LTREscalationTracker()
+        tracker.noteLoss(frameID: 100)
+        tracker.noteRequestSent(now: 0)
+        XCTAssertTrue(tracker.hasOutstandingRequest)
+
+        // An OLDER frame (in flight before the loss) decoding must NOT clear the episode.
+        XCTAssertFalse(tracker.frameDecoded(frameID: 99))
+        XCTAssertTrue(tracker.hasOutstandingRequest)
+        // The lost frame itself can never decode, but boundary-equal must also not clear.
+        XCTAssertFalse(tracker.frameDecoded(frameID: 100))
+        XCTAssertTrue(tracker.hasOutstandingRequest)
+
+        // The healing refresh (a P-frame newer than the loss) ends the episode — no IDR.
+        XCTAssertTrue(tracker.frameDecoded(frameID: 101))
+        XCTAssertFalse(tracker.hasOutstandingRequest)
+        XCTAssertNil(tracker.maxLostFrameID)
+        XCTAssertFalse(tracker.shouldEscalate(now: 1.0, rtt: rtt, policy: policy))
+    }
+
+    /// Multiple losses in one episode: the boundary is the NEWEST loss — a frame between two
+    /// losses must not clear; only one past ALL of them may.
+    func testEpisodeBoundaryIsNewestLoss() {
+        var tracker = LTREscalationTracker()
+        tracker.noteLoss(frameID: 100)
+        tracker.noteRequestSent(now: 0)
+        tracker.noteLoss(frameID: 140)
+        tracker.noteRequestSent(now: 0.01)
+        // Out-of-order loss reports keep the newest boundary (wrap-aware keep-newest).
+        tracker.noteLoss(frameID: 120)
+        XCTAssertEqual(tracker.maxLostFrameID, 140)
+
+        XCTAssertFalse(tracker.frameDecoded(frameID: 130), "between losses — chain not proven past 140")
+        XCTAssertTrue(tracker.hasOutstandingRequest)
+        XCTAssertTrue(tracker.frameDecoded(frameID: 141))
+        XCTAssertFalse(tracker.hasOutstandingRequest)
+    }
+
+    /// A hard-decode-failure `requestIDR()` arms the episode WITHOUT a loss frameID. Then only a
+    /// keyframe may clear it (the decoder session was invalidated — only an IDR reconfigures it):
+    /// `frameDecoded` must be inert when no loss was attributed.
+    func testEpisodeWithoutAttributedLossClearsOnlyOnKeyframe() {
+        var tracker = LTREscalationTracker()
+        tracker.noteRequestSent(now: 0) // e.g. awaitingKeyframe / hard decode failure
+        XCTAssertNil(tracker.maxLostFrameID)
+        XCTAssertFalse(tracker.frameDecoded(frameID: 5000))
+        XCTAssertTrue(tracker.hasOutstandingRequest)
+        tracker.keyframeDecoded()
+        XCTAssertFalse(tracker.hasOutstandingRequest)
+    }
+
+    /// frameID wrap-around: a loss near UInt32.max healed by a post-wrap frame (wrap-aware compare,
+    /// same `distanceWrapped` contract as the reassembler).
+    func testHealAcrossFrameIDWrap() {
+        var tracker = LTREscalationTracker()
+        tracker.noteLoss(frameID: UInt32.max - 1)
+        tracker.noteRequestSent(now: 0)
+        XCTAssertFalse(tracker.frameDecoded(frameID: UInt32.max - 2), "older across wrap must not clear")
+        XCTAssertTrue(tracker.frameDecoded(frameID: 2), "post-wrap newer frame heals")
+        XCTAssertFalse(tracker.hasOutstandingRequest)
+    }
+
+    /// keyframeDecoded must clear the loss boundary too, so a STALE boundary from a closed episode
+    /// can never let an old-loss comparison leak into the next episode.
+    func testKeyframeClearsLossBoundary() {
+        var tracker = LTREscalationTracker()
+        tracker.noteLoss(frameID: 100)
+        tracker.noteRequestSent(now: 0)
+        tracker.keyframeDecoded()
+        XCTAssertNil(tracker.maxLostFrameID)
+        // Next episode armed by a hard failure (no attributed loss): a successful delta decode at
+        // 101 must NOT clear it via the previous episode's stale boundary.
+        tracker.noteRequestSent(now: 1.0)
+        XCTAssertFalse(tracker.frameDecoded(frameID: 101))
+        XCTAssertTrue(tracker.hasOutstandingRequest)
+    }
 }
 #endif

@@ -392,6 +392,378 @@ func runLTRHWScenario(frames: Int) -> ScenarioStats {
     return stats
 }
 
+// MARK: - ACK-REFERENCED ENCODING probe (Parsec model: every delta references only ACKED LTRs)
+
+/// One arm of the ack-ref experiment. `ackRef=true` encodes EVERY delta with `ForceLTRRefresh`
+/// (so VT references only acknowledged LTR frames — the Parsec "ack-referenced" model) and feeds
+/// client acks back with a simulated `ackLagFrames` round-trip. `dropEveryN>0` drops one WHOLE frame
+/// per N on the wire (the client never sees it, never acks it). `recoverOnFail` mirrors production
+/// (decode failure → forced IDR re-anchor); the ack-ref loss arm runs with it OFF to prove the chain
+/// needs no recovery at all.
+/// LOW-MOTION variant of ``fillFrame``: the checkerboard+gradient background is FROZEN (no `i` term)
+/// and only the small high-contrast block moves. Mirrors real desktop content (mostly static) — the
+/// discriminator between "ack-ref frames are P (tiny deltas on static content)" and "ack-ref frames
+/// are secretly INTRA (size stays large regardless of motion)".
+func fillFrameLowMotion(_ pb: CVPixelBuffer, _ i: Int) {
+    CVPixelBufferLockBaseAddress(pb, [])
+    defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+    let w = CVPixelBufferGetWidth(pb)
+    let h = CVPixelBufferGetHeight(pb)
+    let bx = (i &* 9) % max(1, w)
+    let by = (i &* 5) % max(1, h)
+    if let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) {
+        let yptr = base.assumingMemoryBound(to: UInt8.self)
+        let ystride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+        for y in 0..<h {
+            let row = yptr + y * ystride
+            let yband = (y >> 4) & 1
+            for x in 0..<w {
+                let cell = ((x >> 4) & 1) ^ yband
+                let grad = (x &+ y) & 0x3F
+                var lum: Int = cell == 0 ? (50 + grad) : (190 - grad)
+                if abs(x - bx) < 40 && abs(y - by) < 40 { lum = 235 }
+                row[x] = UInt8(lum & 0xFF)
+            }
+        }
+    }
+    if let base = CVPixelBufferGetBaseAddressOfPlane(pb, 1) {
+        let cptr = base.assumingMemoryBound(to: UInt8.self)
+        let cstride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1)
+        let ch = h / 2
+        for y in 0..<ch {
+            let row = cptr + y * cstride
+            var x = 0
+            while x < w {
+                row[x] = 128
+                if x + 1 < w { row[x + 1] = 128 }
+                x += 2
+            }
+        }
+    }
+}
+
+func expectedLumaLowMotion(x: Int, y: Int, frame i: Int, w: Int, h: Int) -> Int {
+    let bx = (i &* 9) % max(1, w)
+    let by = (i &* 5) % max(1, h)
+    let cell = ((x >> 4) & 1) ^ ((y >> 4) & 1)
+    let grad = (x &+ y) & 0x3F
+    var lum: Int = cell == 0 ? (50 + grad) : (190 - grad)
+    if abs(x - bx) < 40 && abs(y - by) < 40 { lum = 235 }
+    return lum & 0xFF
+}
+
+/// Analytic mirror of ``fillFrame``'s LUMA formula — lets the decode side verify picture CONTENT
+/// against the deterministic source without storing reference frames. Any reference-chain corruption
+/// (a frame predicted from data the decoder never got) shows up as a large mean-abs-diff (MAD),
+/// where a healthy lossy decode sits at a small constant.
+func expectedLuma(x: Int, y: Int, frame i: Int, w: Int, h: Int) -> Int {
+    let bx = (i &* 9) % max(1, w)
+    let by = (i &* 5) % max(1, h)
+    let cell = ((x >> 4) & 1) ^ ((y >> 4) & 1)
+    let grad = (x &+ y &+ i &* 4) & 0x3F
+    var lum: Int = cell == 0 ? (50 + grad) : (190 - grad)
+    if abs(x - bx) < 40 && abs(y - by) < 40 { lum = 235 }
+    return lum & 0xFF
+}
+
+/// Decode-side picture-content verification box. The harness decode is SYNCHRONOUS (flags:[]), so the
+/// handler runs inside `dec.decode(...)` on the calling thread — `sourceIndex`/`dropRecent` set just
+/// before the call are race-free (NSLock only for discipline).
+final class MADBox: @unchecked Sendable {
+    private let lock = NSLock()
+    var sourceIndex = 0
+    var dropRecent = false           // a whole-frame wire loss happened within the last 3 frames
+    var lowMotion = false            // verify against the low-motion content formula instead
+    private(set) var sumMAD = 0.0
+    private(set) var count = 0
+    private(set) var maxMAD = 0.0
+    private(set) var postDropMaxMAD = 0.0
+    var avgMAD: Double { count > 0 ? sumMAD / Double(count) : 0 }
+    func measure(_ img: CVImageBuffer) {
+        let pb = img as CVPixelBuffer
+        guard CVPixelBufferLockBaseAddress(pb, .readOnly) == kCVReturnSuccess else { return }
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return }
+        let ptr = base.assumingMemoryBound(to: UInt8.self)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+        lock.lock(); let i = sourceIndex; let recent = dropRecent; let lowM = lowMotion; lock.unlock()
+        var sum = 0, n = 0
+        var y = 2
+        while y < h {
+            let row = ptr + y * stride
+            var x = 3
+            while x < w {
+                let want = lowM
+                    ? expectedLumaLowMotion(x: x, y: y, frame: i, w: w, h: h)
+                    : expectedLuma(x: x, y: y, frame: i, w: w, h: h)
+                sum += abs(Int(row[x]) - want)
+                n += 1
+                x += 7
+            }
+            y += 5
+        }
+        guard n > 0 else { return }
+        let mad = Double(sum) / Double(n)
+        lock.lock()
+        sumMAD += mad; count += 1
+        if mad > maxMAD { maxMAD = mad }
+        if recent && mad > postDropMaxMAD { postDropMaxMAD = mad }
+        lock.unlock()
+    }
+}
+
+struct AckRefArmResult {
+    var name = ""
+    var encoded = 0
+    var keyframes = 0
+    var ltrTokenFrames = 0
+    var deltaBytesTotal = 0
+    var deltaCount = 0
+    var kfBytesTotal = 0
+    var decodeOK = 0
+    var decodeFail = 0
+    var recoveryIDRs = 0
+    var framesDroppedOnWire = 0
+    var avgMAD = 0.0
+    var maxMAD = 0.0
+    var postDropMaxMAD = 0.0
+    var refreshBytesTotal = 0
+    var refreshCount = 0
+    var avgRefreshBytes: Int { refreshCount > 0 ? refreshBytesTotal / refreshCount : 0 }
+    var avgDeltaBytes: Int { deltaCount > 0 ? deltaBytesTotal / deltaCount : 0 }
+    var avgKFBytes: Int { keyframes > 0 ? kfBytesTotal / keyframes : 0 }
+    /// Size-blind average across ALL frames — the honest cross-arm comparator when the NotSync
+    /// attachment mislabels LTR-refresh P-frames as "keyframes".
+    var avgFrameBytes: Int { encoded > 0 ? (deltaBytesTotal + kfBytesTotal) / encoded : 0 }
+}
+
+/// `refreshEvery > 0` switches the arm from PER-FRAME refresh to SPARSE: normal P-chain deltas with
+/// one `encodeLiveLTRRefresh` every `refreshEvery` frames (the WF-8 recovery shape) — sizes of those
+/// refresh frames land in `refreshBytesTotal` (P-sized ⇒ genuine LTR reference; intra-sized ⇒ VT's
+/// "LTR refresh" is just a coarse intra and the LTR API never yields real long-term P references).
+func runAckRefArm(name: String, frames: Int, ackRef: Bool, ackLagFrames: Int, dropEveryN: Int, recoverOnFail: Bool, neverAck: Bool = false, verbose: Bool = false, lowMotion: Bool = false, refreshEvery: Int = 0, dropFrames: Set<Int> = []) -> AckRefArmResult {
+    var r = AckRefArmResult(); r.name = name
+    let sink = FrameSink()
+    let decodedCounter = Counter()
+    let enc: VideoEncoder
+    do {
+        enc = VideoEncoder(
+            width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: ackRef,
+            outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+        try enc.createLiveSession()
+    } catch {
+        print("  [\(name)] ENCODER CREATE FAILED: \(error)")
+        return r
+    }
+
+    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
+    let mad = MADBox()
+    mad.lowMotion = lowMotion
+    let dec = VideoDecoder(decodedFrameHandler: { img in decodedCounter.value += 1; mad.measure(img) })
+    var ltrCtl = LTRController()
+    guard let pb = makePixelBuffer(width: kWidth, height: kHeight, fullRange: false) else { return r }
+
+    var hostTs: UInt32 = 1
+    /// Simulated ack RTT: a decoded LTR frame's ack arrives back at the host `ackLagFrames` later.
+    var pendingAcks: [(dueAtFrame: Int, frameID: UInt32)] = []
+    var recoveryPending = false
+    var lastDropIndex = -1_000_000 // NOT Int.min — `i - lastDropIndex` would overflow-trap
+
+    for i in 0..<frames {
+        // Deliver acks whose simulated round-trip elapsed (BEFORE this encode — an arriving datagram).
+        if ackRef && !neverAck {
+            for a in pendingAcks where a.dueAtFrame <= i {
+                if let tok = ltrCtl.ackFrame(frameID: a.frameID) { enc.stageAcknowledgedToken(tok) }
+            }
+            pendingAcks.removeAll { $0.dueAtFrame <= i }
+        }
+
+        if lowMotion { fillFrameLowMotion(pb, i) } else { fillFrame(pb, i) }
+        let force = (i == 0) || recoveryPending
+        recoveryPending = false
+        if force && i > 0 { r.recoveryIDRs += 1 }
+        let isRefreshFrame = ackRef && !force
+            && (refreshEvery == 0 || (i > 0 && i % refreshEvery == 0))
+        do {
+            if isRefreshFrame {
+                // Per-frame (refreshEvery==0) or sparse (every N) ForceLTRRefresh.
+                try enc.encodeLiveLTRRefresh(pixelBuffer: pb, presentationTime: CMTime(value: Int64(i), timescale: Int32(kFPS)))
+            } else {
+                try enc.encodeLive(pixelBuffer: pb, presentationTime: CMTime(value: Int64(i), timescale: Int32(kFPS)), forceKeyframe: force)
+            }
+        } catch { continue }
+        enc.completeFrames()
+
+        // Whole-frame wire loss: a mid-cycle frame so the seed keyframe is never the one dropped.
+        // Negative dropEveryN = BURST mode: drop |n| CONSECUTIVE frames once per 24 (the worst case
+        // for any internal "reference an older LTR" policy — both adjacent LTR slots die together).
+        let dropThisFrame: Bool
+        if !dropFrames.isEmpty {
+            dropThisFrame = dropFrames.contains(i)
+        } else if dropEveryN < 0 {
+            let burst = -dropEveryN
+            dropThisFrame = i > 0 && (i % 24) >= 12 && (i % 24) < 12 + burst
+        } else {
+            dropThisFrame = dropEveryN > 0 && i > 0 && (i % dropEveryN == dropEveryN / 2)
+        }
+        if dropThisFrame { r.framesDroppedOnWire += 1; lastDropIndex = i }
+
+        for out in sink.drain() {
+            r.encoded += 1
+            if out.keyframe { r.keyframes += 1; r.kfBytesTotal += out.avcc.count } else { r.deltaBytesTotal += out.avcc.count; r.deltaCount += 1 }
+            if isRefreshFrame && refreshEvery > 0 {
+                r.refreshBytesTotal += out.avcc.count; r.refreshCount += 1
+                if verbose { print("    refresh@\(i) kf=\(out.keyframe) ltrTok=\(out.ltr.map(String.init) ?? "-") bytes=\(out.avcc.count)") }
+            }
+            if verbose && r.encoded <= 12 {
+                print("    f#\(r.encoded - 1) kf=\(out.keyframe) ltrTok=\(out.ltr.map(String.init) ?? "-") bytes=\(out.avcc.count)")
+            }
+            let frameID = pk.peekNextFrameID
+            let isLTRFrame = (out.ltr != nil)
+            if isLTRFrame { r.ltrTokenFrames += 1; ltrCtl.recordLTRFrame(frameID: frameID, token: out.ltr!) }
+            let frags = pk.packetize(
+                frame: out.avcc, keyframe: out.keyframe,
+                hostSendTsMillis: hostTs, fecTier: 0, isLTR: isLTRFrame)
+            hostTs &+= 16
+            if dropThisFrame { continue } // lost on the wire: never reassembled, never decoded, never acked
+            for frag in frags {
+                let wire = frag.encode()
+                guard let parsed = try? FrameFragment.decode(wire) else { continue }
+                if case .completed(let f) = ra.ingest(parsed) {
+                    do {
+                        mad.sourceIndex = i
+                        mad.dropRecent = (i - lastDropIndex) <= 3
+                        try dec.decode(f)
+                        r.decodeOK += 1
+                        if ackRef, !neverAck, f.isLTR {
+                            pendingAcks.append((dueAtFrame: i + max(1, ackLagFrames), frameID: f.frameID))
+                        }
+                    } catch {
+                        r.decodeFail += 1
+                        if recoverOnFail { recoveryPending = true }
+                    }
+                }
+            }
+        }
+        while ra.nextDroppedFrame() != nil {} // whole-frame loss is intentional here — drain bookkeeping
+    }
+    enc.completeFrames()
+    r.avgMAD = mad.avgMAD; r.maxMAD = mad.maxMAD; r.postDropMaxMAD = mad.postDropMaxMAD
+    print("  [\(name)] enc=\(r.encoded) kf=\(r.keyframes) ltrTok=\(r.ltrTokenFrames) "
+        + "avgALL=\(r.avgFrameBytes)B framesLost=\(r.framesDroppedOnWire) "
+        + "decodeOK=\(r.decodeOK) decodeFail=\(r.decodeFail) recoveryIDRs=\(r.recoveryIDRs) "
+        + String(format: "MAD avg=%.1f max=%.1f postDrop=%.1f", r.avgMAD, r.maxMAD, r.postDropMaxMAD))
+    return r
+}
+
+/// The 5-arm experiment + verdicts. Answers the THREE unknowns of Parsec-style ack-referenced
+/// encoding on THIS HW before any production wiring:
+///   (1) does the low-latency HEVC encoder accept per-frame ForceLTRRefresh and emit a token EVERY
+///       frame (not just occasionally)?
+///   (2) what is the byte overhead of referencing an (RTT-old) acked LTR instead of prev-frame —
+///       at a 2-frame lag (~33ms RTT) and a 6-frame lag (~100ms RTT)?
+///   (3) does the decode chain actually SURVIVE whole-frame loss with NO recovery round-trip
+///       (decodeFail==0, recoveryIDRs==0), where the baseline P-chain breaks?
+func runAckRefProbe(frames: Int) {
+    print("=== ACK-REF probe :: per-frame ForceLTRRefresh (Parsec ack-referenced encoding) on REAL HW ===")
+    print("    \(frames) frames/arm, whole-frame wire loss 1/13 (~7.7%), ack lag in FRAMES (60fps ⇒ 2≈33ms RTT, 6≈100ms)\n")
+
+    let base     = runAckRefArm(name: "A base P-chain    clean          ", frames: frames, ackRef: false, ackLagFrames: 0, dropEveryN: 0,  recoverOnFail: true)
+    let baseLoss = runAckRefArm(name: "B base P-chain    drop1/13 +rec  ", frames: frames, ackRef: false, ackLagFrames: 0, dropEveryN: 13, recoverOnFail: true)
+    let ackClean = runAckRefArm(name: "C ack-ref lag2    clean          ", frames: frames, ackRef: true,  ackLagFrames: 2, dropEveryN: 0,  recoverOnFail: true, verbose: true)
+    let ackLoss  = runAckRefArm(name: "D ack-ref lag2    drop1/13 NOrec ", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: 13, recoverOnFail: false)
+    let ackLag6  = runAckRefArm(name: "E ack-ref lag6    clean          ", frames: frames, ackRef: true,  ackLagFrames: 6, dropEveryN: 0,  recoverOnFail: true)
+    // ADVERSARIAL: drop only TOKEN (LTR) frames — i%16==8 is always even = the observed token cadence.
+    // If VT references the previous LTR UNCONDITIONALLY (ignoring acks), losing an LTR frame must
+    // corrupt its dependents → postDrop MAD spikes (or decode fails). If VT honours acks, the next
+    // refresh references an OLDER acked LTR and the picture stays clean.
+    let ackTokLoss = runAckRefArm(name: "F ack-ref lag2    dropTOKEN NOrec", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: 16, recoverOnFail: false)
+    // NO acks ever: per VT's contract every ForceLTRRefresh without an acked LTR should fall back
+    // to IDR (or reference only its internal always-safe anchor). Distinguishes ack-driven from
+    // ack-ignored behaviour when byte sizes are compared against C/E.
+    let ackNever = runAckRefArm(name: "G ack-ref NO-acks drop1/13 NOrec ", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: 13, recoverOnFail: false, neverAck: true)
+    // BURST: 4 consecutive whole frames die every 24 (≥2 adjacent token/LTR frames lost together) —
+    // the worst case for an internal older-LTR reference policy. If even this stays pixel-clean the
+    // healing envelope covers the real path's measured burst shape.
+    let ackBurst = runAckRefArm(name: "H ack-ref lag2    BURST4/24 NOrec", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: -4, recoverOnFail: false)
+    // Find the healing HORIZON: 8 consecutive lost frames (133ms outage). If this breaks, the client's
+    // existing loss-recovery (refresh/IDR request) remains the backstop for outages past the horizon.
+    let ackBurst8 = runAckRefArm(name: "I ack-ref lag2    BURST8/24 NOrec", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: -8, recoverOnFail: false)
+    // THE INTRA-DETECTOR: low-motion content (frozen background, only the block moves) — real desktop
+    // shape. P deltas collapse to a few KB; a secretly-INTRA stream stays large. This decides whether
+    // per-frame ForceLTRRefresh is shippable at all (all-intra would balloon idle bitrate ~10×).
+    let baseLow = runAckRefArm(name: "J base P-chain    LOW-MOTION clean", frames: frames, ackRef: false, ackLagFrames: 0, dropEveryN: 0, recoverOnFail: true, lowMotion: true)
+    let ackLow  = runAckRefArm(name: "K ack-ref lag2    LOW-MOTION clean", frames: frames, ackRef: true,  ackLagFrames: 2, dropEveryN: 0, recoverOnFail: true, lowMotion: true)
+    // SPARSE refresh (the WF-8 recovery shape): normal P-chain + ForceLTRRefresh every 30 frames.
+    // Refresh frame P-sized (~few KB on low-motion) ⇒ VT emits a GENUINE P against the acked LTR;
+    // intra-sized (~25KB) ⇒ even sparse "LTR refresh" is a coarse intra (= compact-IDR equivalent).
+    let sparse = runAckRefArm(name: "L sparse-refresh  LOW-MOTION clean", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: 0, recoverOnFail: true, verbose: true, lowMotion: true, refreshEvery: 30)
+    // WHICH LTR does the sparse refresh reference? Burst-kill frames 25–29 (their tokens are never
+    // acked), refresh fires at 30. ACKED-LTR semantics (Parsec) ⇒ the refresh references ≤24 (the
+    // newest acked LTR), the client holds it, decode + MAD stay clean WITHOUT any recovery.
+    // Newest-INTERNAL-LTR semantics ⇒ the refresh references a dead frame → decode fails/corrupts.
+    let anchored = runAckRefArm(name: "M sparse+burst25-29 acked  NOrec  ", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: 0, recoverOnFail: false, lowMotion: true, refreshEvery: 30, dropFrames: [25, 26, 27, 28, 29])
+    // Same but NO acks ever: VT's documented contract says ForceLTRRefresh without an acknowledged
+    // LTR falls back to an IDR — the safety net under the host's ACKED-ONLY gate.
+    let anchoredNoAck = runAckRefArm(name: "N sparse+burst25-29 NOack  NOrec  ", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: 0, recoverOnFail: false, neverAck: true, lowMotion: true, refreshEvery: 30, dropFrames: [25, 26, 27, 28, 29])
+    // Refresh COST on real motion: full-motion content, refresh every 6 frames (100ms self-heal
+    // cadence) — how much bigger is a refresh (referencing an ~RTT-old acked LTR) than a 1-back delta?
+    let sparseCost = runAckRefArm(name: "O sparse6 MOTION  clean (cost)    ", frames: frames, ackRef: true, ackLagFrames: 2, dropEveryN: 0, recoverOnFail: true, refreshEvery: 6)
+
+    func pct(_ a: Int, _ b: Int) -> String {
+        guard b > 0 else { return "n/a" }
+        return String(format: "%+.1f%%", (Double(a) / Double(b) - 1.0) * 100.0)
+    }
+    let tokenCoverage = ackClean.encoded > 0 ? Double(ackClean.ltrTokenFrames) / Double(ackClean.encoded) : 0
+    // The CLEAN arm's own max MAD = the lossy-codec noise floor; a post-drop MAD within ~1.5× of it
+    // means the picture after a loss is as healthy as a picture with no loss at all.
+    let cleanCeiling = max(3.0, ackClean.maxMAD * 1.5)
+    let dSurvives = ackLoss.decodeFail == 0 && ackLoss.recoveryIDRs == 0 && ackLoss.postDropMaxMAD <= cleanCeiling
+    let fSurvives = ackTokLoss.decodeFail == 0 && ackTokLoss.recoveryIDRs == 0 && ackTokLoss.postDropMaxMAD <= cleanCeiling
+    let baselineBreaks = baseLoss.decodeFail > 0 || baseLoss.recoveryIDRs > 0
+
+    print("")
+    print("  token cadence (LTR frames/encoded)      : \(ackClean.ltrTokenFrames)/\(ackClean.encoded) = \(String(format: "%.0f%%", tokenCoverage * 100))")
+    print("  byte overhead vs baseline  lag2 / lag6  : \(pct(ackClean.avgFrameBytes, base.avgFrameBytes)) / \(pct(ackLag6.avgFrameBytes, base.avgFrameBytes)) (base \(base.avgFrameBytes)B)")
+    print("  acks ignored by encoder?                : lag2=\(ackClean.avgFrameBytes)B lag6=\(ackLag6.avgFrameBytes)B noAck=\(ackNever.avgFrameBytes)B "
+        + "(identical ⇒ AcknowledgedLTRTokens has no effect)")
+    print("  VERDICT survive 7.7% mixed frame loss, ZERO recovery : \(dSurvives ? "✅" : "❌") "
+        + String(format: "(decodeFail=%d recIDR=%d postDropMAD=%.1f vs clean %.1f)", ackLoss.decodeFail, ackLoss.recoveryIDRs, ackLoss.postDropMaxMAD, ackClean.maxMAD))
+    print("  VERDICT survive TOKEN-frame loss, ZERO recovery      : \(fSurvives ? "✅" : "❌") "
+        + String(format: "(decodeFail=%d recIDR=%d postDropMAD=%.1f)", ackTokLoss.decodeFail, ackTokLoss.recoveryIDRs, ackTokLoss.postDropMaxMAD))
+    let hSurvives = ackBurst.decodeFail == 0 && ackBurst.recoveryIDRs == 0 && ackBurst.postDropMaxMAD <= cleanCeiling
+    print("  VERDICT survive BURST-4 frame loss, ZERO recovery    : \(hSurvives ? "✅" : "❌") "
+        + String(format: "(decodeFail=%d recIDR=%d postDropMAD=%.1f)", ackBurst.decodeFail, ackBurst.recoveryIDRs, ackBurst.postDropMaxMAD))
+    let iSurvives = ackBurst8.decodeFail == 0 && ackBurst8.recoveryIDRs == 0 && ackBurst8.postDropMaxMAD <= cleanCeiling
+    print("  horizon  survive BURST-8 frame loss, ZERO recovery   : \(iSurvives ? "✅" : "❌ (past horizon — client recovery backstop applies)") "
+        + String(format: "(decodeFail=%d postDropMAD=%.1f)", ackBurst8.decodeFail, ackBurst8.postDropMaxMAD))
+    print("  VERDICT no-acks arm under loss (VT contract check)   : "
+        + String(format: "decodeFail=%d postDropMAD=%.1f kf=%d", ackNever.decodeFail, ackNever.postDropMaxMAD, ackNever.keyframes))
+    print("  baseline P-chain breaks under same loss (contrast)   : \(baselineBreaks ? "✅ breaks as expected" : "⚠️ did not break") "
+        + String(format: "(decodeFail=%d recIDR=%d postDropMAD=%.1f)", baseLoss.decodeFail, baseLoss.recoveryIDRs, baseLoss.postDropMaxMAD))
+    let intraRatio = baseLow.avgFrameBytes > 0 ? Double(ackLow.avgFrameBytes) / Double(baseLow.avgFrameBytes) : 0
+    let isSecretlyIntra = intraRatio > 3.0
+    print("  INTRA-DETECTOR low-motion bytes base→ackRef          : \(baseLow.avgFrameBytes)B → \(ackLow.avgFrameBytes)B "
+        + String(format: "(%.1f×) ", intraRatio)
+        + (isSecretlyIntra ? "❌ ack-ref frames are SECRETLY INTRA — per-frame refresh NOT shippable" : "✅ genuine P-frames — shippable"))
+    let sparseRefreshIsP = sparse.avgRefreshBytes > 0 && sparse.avgRefreshBytes < baseLow.avgFrameBytes * 8
+    print("  SPARSE refresh frame size (every 30, low-motion)     : \(sparse.avgRefreshBytes)B vs P-delta \(baseLow.avgFrameBytes)B vs intra ~\(ackLow.avgFrameBytes)B → "
+        + (sparseRefreshIsP ? "✅ GENUINE LTR-P (WF-8 recovery is a real P-frame)" : "❌ intra-sized (VT LTR refresh = coarse intra, no real long-term P reference)"))
+    // M: only the refresh@30 + followers matter. Post-burst MAD clean + no decode failures AFTER
+    // frame 30 ⇒ acked-LTR anchored. (Frames 25–29 were never delivered; deltas before 30 that
+    // referenced a dead frame would throw — count via decodeFail timing instead of total.)
+    let mHealed = anchored.postDropMaxMAD <= cleanCeiling && anchored.postDropMaxMAD > 0
+    print("  VERDICT refresh anchors to ACKED LTR (burst-kill 25-29): \(mHealed ? "✅ healed at refresh@30 with zero recovery" : "❌ refresh referenced a dead frame") "
+        + String(format: "(decodeFail=%d postDropMAD=%.1f kf=%d)", anchored.decodeFail, anchored.postDropMaxMAD, anchored.keyframes))
+    print("  VERDICT no-ack refresh falls back to IDR (VT contract) : "
+        + String(format: "kf=%d decodeFail=%d postDropMAD=%.1f refreshAvg=%dB", anchoredNoAck.keyframes, anchoredNoAck.decodeFail, anchoredNoAck.postDropMaxMAD, anchoredNoAck.avgRefreshBytes))
+    let costRatio = base.avgFrameBytes > 0 ? Double(sparseCost.avgRefreshBytes) / Double(base.avgFrameBytes) : 0
+    print("  refresh COST on motion (every 6, vs 1-back delta)      : \(sparseCost.avgRefreshBytes)B vs \(base.avgFrameBytes)B "
+        + String(format: "(%.2f× per refresh ⇒ +%.1f%% stream at K=6)", costRatio, max(0, costRatio - 1) / 6 * 100))
+}
+
 // MARK: - CLOSED-LOOP adaptation (full reflex through REAL components, in-process lossy transport)
 
 /// Drives the COMPLETE closed-loop adaptation reflex end-to-end with the real product components —
@@ -908,6 +1280,7 @@ func printSummary(_ all: [ScenarioStats]) {
 let args = CommandLine.arguments
 let smoke = args.contains("--smoke")
 let closedLoopOnly = args.contains("--closed-loop")
+let ackRefOnly = args.contains("--ack-ref")
 var frameCount = Int(ProcessInfo.processInfo.environment["RWORK_LV_FRAMES"] ?? "") ?? 120
 if let idx = args.firstIndex(of: "--frames"), idx + 1 < args.count, let n = Int(args[idx + 1]) { frameCount = n }
 if smoke { frameCount = 10 }
@@ -922,6 +1295,12 @@ print("")
 if closedLoopOnly {
     runClosedLoopSuite(framesPerPhase: max(60, frameCount))
     print("\nrwork-loopback-validate: COMPLETE (closed-loop only) — exiting 0")
+    exit(0)
+}
+
+if ackRefOnly {
+    runAckRefProbe(frames: max(60, frameCount))
+    print("\nrwork-loopback-validate: COMPLETE (ack-ref probe only) — exiting 0")
     exit(0)
 }
 

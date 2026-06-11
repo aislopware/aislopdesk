@@ -574,6 +574,10 @@ public actor RworkVideoClientSession {
     private func signalRecovery(lostFrameID lost: UInt32) {
         // Network-feedback telemetry: count an unrecoverable loss (the loss-rate numerator).
         winUnrecovered &+= 1
+        // SELF-HEAL: record the loss boundary so a SUCCESSFULLY-decoded frame newer than every loss
+        // (the host's cadence/recovery LTR refresh — a P-frame, never a keyframe) can end the episode
+        // instead of letting the 2·RTT escalation fire a spurious IDR after a healed stream.
+        escalation.noteLoss(frameID: lost)
         if shouldEscalateToIDR() {
             requestIDR()
             // Re-anchor the escalation clock so the NEXT dropped frame in this same loss episode does
@@ -622,6 +626,13 @@ public actor RworkVideoClientSession {
             dbgDecodeCount += 1
             if dbgDecodeCount == 1 || dbgDecodeCount % 15 == 0 {
                 dbg("DECODED frame #\(dbgDecodeCount) (keyframe=\(frame.keyframe)) → submitted to pacer/render")
+            }
+            // SELF-HEAL: a successful NON-keyframe decode that is newer than every loss in the
+            // armed episode proves the chain re-anchored (a delta referencing a lost frame throws —
+            // HW-measured), so end the episode without waiting for a keyframe. This is what lets
+            // the host's cadence/recovery LTR refresh actually REPLACE the forced IDR.
+            if !frame.keyframe, escalation.frameDecoded(frameID: frame.frameID) {
+                dbg("recovery episode healed by frame #\(frame.frameID) (no IDR needed)")
             }
             // A successful keyframe ends the recovery episode and disarms the clock,
             // so the next loss starts a fresh 2·RTT escalation window.
@@ -994,10 +1005,45 @@ public actor RworkVideoClientSession {
 /// ends the episode.
 public struct LTREscalationTracker: Sendable, Equatable {
     /// Host time (seconds) of the first request in the current recovery episode, or
-    /// `nil` when no recovery is outstanding. Cleared by ``keyframeDecoded()``.
+    /// `nil` when no recovery is outstanding. Cleared by ``keyframeDecoded()`` or by
+    /// ``frameDecoded(frameID:)`` when a frame NEWER than every loss in the episode decodes.
     public private(set) var firstRequestTime: TimeInterval?
 
+    /// The NEWEST (wrap-aware) frameID declared unrecoverably lost in the current episode, or `nil`
+    /// when no loss was attributed (a `requestIDR` from a hard decode failure arms the episode with
+    /// no frameID — then ONLY a keyframe can clear it, exactly the old behaviour). Recorded by
+    /// ``noteLoss(frameID:)``; lets ``frameDecoded(frameID:)`` recognise a SELF-HEALED stream.
+    ///
+    /// WHY (2026-06-11 self-heal): the episode used to clear ONLY on a decoded KEYFRAME. But the
+    /// WF-8 LTR-refresh recovery frame — and every SELF-HEAL cadence refresh — is a plain P-frame
+    /// (`kf=false` on the wire, HW-proven in the ack-ref probe), so a recovery that SUCCEEDED via
+    /// refresh left the episode armed and the 2·RTT escalation fired a spurious forced IDR anyway
+    /// (a live bug: LTR recovery never actually saved the IDR). A delta that references a LOST
+    /// frame cannot decode (VT throws — measured, 9/9 in the probe's baseline arm), so a frame
+    /// NEWER than every loss of the episode decoding SUCCESSFULLY proves the chain re-anchored —
+    /// keyframe or not.
+    public private(set) var maxLostFrameID: UInt32?
+
     public init() {}
+
+    /// Records one unrecoverably-lost frame of the current episode (wrap-aware keep-newest).
+    /// Called by the loss-detection path BEFORE the recovery request is sent.
+    public mutating func noteLoss(frameID: UInt32) {
+        if let cur = maxLostFrameID, frameID.distanceWrapped(from: cur) <= 0 { return }
+        maxLostFrameID = frameID
+    }
+
+    /// A NON-keyframe decoded successfully. Ends the episode IFF it is strictly newer than every
+    /// recorded loss (it cannot have referenced a lost frame — those throw) AND a loss was actually
+    /// attributed. Returns whether the episode was cleared (observability/tests).
+    @discardableResult
+    public mutating func frameDecoded(frameID: UInt32) -> Bool {
+        guard firstRequestTime != nil, let lost = maxLostFrameID,
+              frameID.distanceWrapped(from: lost) > 0 else { return false }
+        firstRequestTime = nil
+        maxLostFrameID = nil
+        return true
+    }
 
     /// Whether a recovery episode is currently outstanding (a request was sent and no
     /// keyframe has cleared it yet).
@@ -1019,10 +1065,11 @@ public struct LTREscalationTracker: Sendable, Equatable {
         return policy.shouldEscalateToIDR(elapsedSinceRequest: now - firstRequestTime, rtt: rtt)
     }
 
-    /// A keyframe (LTR refresh or forced IDR) decoded — the recovery episode is over,
-    /// so disarm the clock. The next loss starts a fresh episode and re-arms it.
+    /// A keyframe decoded — the recovery episode is over unconditionally (a keyframe references
+    /// nothing), so disarm the clock. The next loss starts a fresh episode and re-arms it.
     public mutating func keyframeDecoded() {
         firstRequestTime = nil
+        maxLostFrameID = nil
     }
 
     /// Re-anchor the clock to `now` AFTER a forced-IDR escalation actually fired (F7).
