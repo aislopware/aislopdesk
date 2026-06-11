@@ -137,4 +137,75 @@ final class TerminalViewModelBatchTests: XCTestCase {
                        [Data([0x1B, 0x5B, 0x21, 0x70]), Data("aa".utf8), Data("bb".utf8)],
                        "DECSTR prefix then the ring in FIFO order")
     }
+
+    // MARK: Render-side backpressure (docs/31 #5 — async-feed surfaces)
+
+    /// Surface whose ``feedBackpressure()`` suspends until the test releases it —
+    /// models GhosttySurface's serial feed queue above high water.
+    private final class BackpressureSurface: TerminalSurface, FeedBackpressuring, @unchecked Sendable {
+        var writes: [Data] = []
+        var flushes = 0
+        var backpressureCalls = 0
+        private var parked: [CheckedContinuation<Void, Never>] = []
+        var gateOpen = false
+
+        func feed(_ bytes: Data) { writes.append(bytes); flushes += 1 }
+        func feedBatch(_ chunks: ArraySlice<Data>) {
+            writes.append(contentsOf: chunks)
+            flushes += 1
+        }
+        func setSize(cols: UInt16, rows: UInt16) {}
+        func handleInput(_ bytes: Data) {}
+        var onWrite: ((Data) -> Void)?
+
+        func feedBackpressure() async {
+            backpressureCalls += 1
+            if gateOpen { return }
+            await withCheckedContinuation { parked.append($0) }
+        }
+        func release() {
+            gateOpen = true
+            let toResume = parked
+            parked.removeAll()
+            for continuation in toResume { continuation.resume() }
+        }
+    }
+
+    func testIngestAwaitsBackpressureBeforeEveryPass() async {
+        let surface = BackpressureSurface()
+        let model = TerminalViewModel(surface: surface)
+        let chunks = [
+            Data(repeating: 0x61, count: TerminalViewModel.ingestByteBudget),
+            Data(repeating: 0x62, count: TerminalViewModel.ingestByteBudget),
+        ]
+        let ingest = Task { @MainActor in await model.ingestBatch(chunks) }
+        // Parked before the FIRST pass: nothing fed while the surface is above water.
+        await Task.megaYield()
+        XCTAssertEqual(surface.flushes, 0, "no pass ran while backpressure parked")
+        XCTAssertEqual(surface.backpressureCalls, 1)
+
+        surface.release()
+        await ingest.value
+        XCTAssertEqual(surface.flushes, 2, "both passes ran after release")
+        XCTAssertEqual(surface.writes, chunks)
+        XCTAssertEqual(surface.backpressureCalls, 2, "backpressure awaited before EVERY pass")
+    }
+
+    func testSynchronousSurfacesUnaffectedByBackpressureHook() async {
+        // The default no-op keeps plain surfaces exactly as before (covered implicitly
+        // by every other test in this file using FlushRecordingSurface — this pins the
+        // default's existence explicitly).
+        let surface = FlushRecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        await model.ingestBatch([Data("ok".utf8)])
+        XCTAssertEqual(surface.flushes, 1)
+    }
+}
+
+private extension Task where Success == Never, Failure == Never {
+    /// Yields enough times for already-runnable MainActor work to complete — the
+    /// parked-ingest assertions need the ingest Task to reach its first await.
+    static func megaYield() async {
+        for _ in 0..<20 { await Task.yield() }
+    }
 }

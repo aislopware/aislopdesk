@@ -286,10 +286,22 @@ public final class TerminalViewModel {
     /// runs ring bookkeeping per chunk, then ONE `surface.feedBatch` (one renderer flush).
     /// `Task.yield()` only BETWEEN passes — never inside one (doc-18-§C: the surface's
     /// write/flush trio must not interleave with suspension).
+    ///
+    /// RENDER-SIDE BACKPRESSURE: before EVERY pass (including the first) the pump awaits
+    /// ``FeedBackpressuring/feedBackpressure()`` when the surface conforms. With an
+    /// asynchronous feed (GhosttySurface's serial feed queue, docs/31 #5) the mux's
+    /// credit-at-consumption would otherwise decouple wire credit from parse progress —
+    /// `takeOutputBatch` grants window credit the moment the pump TAKES bytes, so a
+    /// flood would pile up un-parsed in the feed queue without bound. Parking here stops
+    /// the take → stops the credit → the wire window holds the flood at the host,
+    /// end-to-end. Synchronous surfaces (tests, headless) don't conform — no await.
     public func ingestBatch(_ chunks: [Data]) async {
         guard !chunks.isEmpty else { return }
         var i = 0
         while i < chunks.count {
+            if let backpressured = surface as? any FeedBackpressuring {
+                await backpressured.feedBackpressure()
+            }
             var end = i
             var passBytes = 0
             repeat {

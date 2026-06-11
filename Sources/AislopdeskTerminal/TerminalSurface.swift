@@ -54,3 +54,20 @@ extension TerminalSurface {
         }
     }
 }
+
+/// Backpressure seam for renderers whose ``TerminalSurface/feed(_:)`` is an
+/// ASYNCHRONOUS enqueue (GhosttySurface's per-surface serial feed queue, docs/31 #5).
+///
+/// A SEPARATE `Sendable` protocol (not a `TerminalSurface` requirement with a default):
+/// the ingest pump must `await` this from the main actor, and awaiting a nonisolated
+/// async member on a non-Sendable `any TerminalSurface` existential is a Swift 6
+/// sending violation. Synchronous renderers (headless, tests) simply don't conform —
+/// the pump's `as?` probe skips them with zero overhead change.
+public protocol FeedBackpressuring: Sendable {
+    /// Parks until the renderer can absorb more feed work — i.e. its queued-but-
+    /// unparsed backlog is below a high-water mark. The ingest pump awaits this before
+    /// each pass so wire flow control (credit-at-consumption) stays coupled to actual
+    /// parse progress; without it a flood turns the feed queue into an unbounded
+    /// buffer. Must always resolve in bounded time.
+    func feedBackpressure() async
+}
