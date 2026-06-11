@@ -117,4 +117,52 @@ public enum AdaptiveFECPolicy {
         else { stepped = current }
         return tier(forLevel: stepped)
     }
+
+    // MARK: Relax dwell (2026-06-11, 4G burst-flap fix)
+
+    /// How many CONSECUTIVE relax-demanding reports must accumulate before the tier steps DOWN one
+    /// level. Escalation stays immediate (one step per report, as before).
+    ///
+    /// WHY: on the real 4G path the first adaptive-FEC deployment FLAPPED — 224 tier changes in one
+    /// session, cycling OFF→g10→g5→g10→OFF every ~8s. Mobile loss arrives in BURSTS seconds apart;
+    /// the loss EWMA decays below the relax thresholds between bursts, so the one-step-per-report
+    /// relax walked back to OFF in ~1s and EVERY burst landed on an unprotected stream (118
+    /// unrecovered frames ≈ 1%, almost all inside OFF windows). Requiring ~12s of consecutively
+    /// clean reports (24 at the ~2/s netstats cadence) keeps g10 armed BETWEEN bursts while a
+    /// genuinely clean path (home WiFi) still relaxes to OFF — just ~12s per step slower, a
+    /// one-time cost against a standing 10-20% overhead saving.
+    public static let relaxDwellReports = 24
+
+    /// Tier decision state for the dwell-gated variant: the current wire tier plus the count of
+    /// consecutive reports that demanded relaxation. Value type, host-session owned — same
+    /// "pure decider beside the actor" shape as `LTRController`/`StaticIDRDecider`.
+    public struct TierState: Equatable, Sendable {
+        public var tier: UInt8
+        public var relaxStreak: Int
+        public init(tier: UInt8 = AdaptiveFECPolicy.defaultTier, relaxStreak: Int = 0) {
+            self.tier = tier
+            self.relaxStreak = relaxStreak
+        }
+    }
+
+    /// Dwell-gated tier step — the production entry point (plain ``tier(forLossRate:previousTier:)``
+    /// stays for tests/tools). Escalation: immediate one-step, resets the relax streak. Relaxation:
+    /// counted across consecutive relax-demanding reports and applied only when the streak reaches
+    /// `dwell`; any report that does NOT demand relaxation (hold or escalate) resets the streak, so
+    /// a burst arriving mid-dwell re-arms the full wait.
+    public static func nextTierState(forLossRate loss: Double, state: TierState, dwell: Int = relaxDwellReports) -> TierState {
+        let current = level(forTier: state.tier)
+        let target = targetLevel(forLossRate: loss, currentLevel: current)
+        if target > current {
+            return TierState(tier: tier(forLevel: current + 1), relaxStreak: 0)
+        }
+        if target < current {
+            let streak = state.relaxStreak + 1
+            if streak >= max(1, dwell) {
+                return TierState(tier: tier(forLevel: current - 1), relaxStreak: 0)
+            }
+            return TierState(tier: state.tier, relaxStreak: streak)
+        }
+        return TierState(tier: state.tier, relaxStreak: 0)
+    }
 }

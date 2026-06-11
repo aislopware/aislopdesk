@@ -248,11 +248,12 @@ public actor RworkVideoHostSession {
     /// between two frame sends during continuous motion = the hole formed at/before encode
     /// (capture stage-1 clean ⇒ encoder/actor pump); see WindowCapturer stage 1.
     private var dbgLastFrameSendAt: Double = 0
-    /// WF-4 current adaptive-FEC tier. Starts at tier 0 (= today's configured `fec.groupSize`, g5) so
-    /// the stream is byte-identical to today until a real netstats report folds loss and (only when
-    /// `RWORK_ADAPTIVE_FEC=1`) moves it. With no reports it never moves — inert at the safe default,
-    /// never OFF.
-    private var currentFECTier: UInt8 = AdaptiveFECPolicy.defaultTier
+    /// WF-4 current adaptive-FEC tier + relax-dwell streak. Starts at tier 0 (= today's configured
+    /// `fec.groupSize`, g5) so the stream is byte-identical to the static path until a real netstats
+    /// report folds loss and (only when adaptive FEC is on) moves it. With no reports it never
+    /// moves — inert at the safe default, never OFF. The dwell (`AdaptiveFECPolicy.relaxDwellReports`)
+    /// makes relaxation require ~12s of consecutively clean reports — the 4G burst-flap fix.
+    private var fecTierState = AdaptiveFECPolicy.TierState()
     /// WF-8 LTR recovery bookkeeping (pure value type — no reference capture, no retain-cycle risk).
     /// Records `frameID ↔ ack-token` for emitted LTR frames and the set of tokens the client has
     /// ACKNOWLEDGED, both bounded. Only mutated when `RWORK_LTR=1`; inert (never recorded/acked) when
@@ -695,11 +696,11 @@ public actor RworkVideoHostSession {
             // a real report → it can't move before there is loss data (inert when no reports arrive).
             // No-op unless `RWORK_ADAPTIVE_FEC=1` ⇒ the tier stays at the today-default tier 0.
             if Self.adaptiveFECEnabled {
-                let next = AdaptiveFECPolicy.tier(forLossRate: networkEstimate.lossRate, previousTier: currentFECTier)
-                if next != currentFECTier {
-                    dbg("adaptive-fec: tier \(currentFECTier) → \(next) (lossEWMA=\(String(format: "%.4f", networkEstimate.lossRate)))")
-                    currentFECTier = next
+                let next = AdaptiveFECPolicy.nextTierState(forLossRate: networkEstimate.lossRate, state: fecTierState)
+                if next.tier != fecTierState.tier {
+                    dbg("adaptive-fec: tier \(fecTierState.tier) → \(next.tier) (lossEWMA=\(String(format: "%.4f", networkEstimate.lossRate)))")
                 }
+                fecTierState = next
             }
             // WF-2 ADAPTIVE BITRATE: tick the AIMD controller on the freshly-folded estimate and
             // actuate a MATERIAL target change onto the live encoder. No-op unless `RWORK_ABR=1` (the
@@ -1268,7 +1269,7 @@ public actor RworkVideoHostSession {
         // latestHostSendTs=0 → the host's RTT fold is skipped.
         let sendTs: UInt32 = Self.telemetryEnabled ? hostRelativeMillis() : 0
         // WF-4: the per-frame FEC tier. Adaptive OFF ⇒ always tier 0 (= configured g5) ⇒ byte-identical.
-        let tier = Self.adaptiveFECEnabled ? currentFECTier : AdaptiveFECPolicy.defaultTier
+        let tier = Self.adaptiveFECEnabled ? fecTierState.tier : AdaptiveFECPolicy.defaultTier
         // WF-8: if this is an LTR frame (RWORK_LTR on AND the encoder surfaced an ack token), record the
         // frameID↔token mapping (read the frameID the packetizer is ABOUT to assign, BEFORE packetize
         // increments it) so a later client ack(frameID) can fold the token, AND mark every fragment
