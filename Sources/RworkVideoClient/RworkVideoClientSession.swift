@@ -175,6 +175,13 @@ public actor RworkVideoClientSession {
     /// Cancelled in ``stop()``. ⚠️ Timer firing is [MS-confirm] (real-clock glue); the reap
     /// DECISION it feeds is covered by `IdleReapDeciderTests`.
     private var keepaliveTask: Task<Void, Never>?
+
+    /// Single batch-drain consumer of the inbound datagram queue (see ``start()``). Mirrors the
+    /// host's `InboundQueue` pump; replaces the legacy per-datagram `Task { await receive… }`
+    /// fan-out (≈3000 Task spawns/sec at 60fps × ~50 fragments — pure scheduler overhead, and the
+    /// per-fragment actor hops added ~1.5ms of reassembly-completion latency + jitter per frame).
+    private var inboundConsumer: Task<Void, Never>?
+    private var inboundWakeup: AsyncStream<Void>.Continuation?
     /// Client-side debounce coalescing a burst of layout callbacks (one per drag frame) to the
     /// SETTLED surface size — one `resizeRequest` per settled size, monotonic epoch.
     private var resizeDebounce = ResizeDebounce()
@@ -264,12 +271,32 @@ public actor RworkVideoClientSession {
     /// Connects the UDP flows, sends the `hello`, and starts receiving. The decode
     /// pipeline (decoder + display link) starts once the host accepts.
     public func start() async throws {
-        try await transport.start { [weak self] channel, data in
-            guard let self else { return }
-            Task { await self.receiveMedia(channel: channel, data: data) }
-        } onCursor: { [weak self] data in
-            guard let self else { return }
-            Task { await self.receiveCursor(data) }
+        // ORDERED + BATCHED inbound path (mirrors the host's `InboundQueue` pump): the transport's
+        // serial receive queue APPENDS synchronously (arrival order carried end-to-end) and yields
+        // a coalesced wakeup; ONE .high consumer drains the whole backlog per wakeup and feeds the
+        // actor in order. Replaces a per-datagram `Task { await receive… }` fan-out — ~3000 Task
+        // spawns/sec under load, each its own actor hop, which both burned CPU and let datagrams
+        // race into the actor out of arrival order.
+        let queue = ClientInboundQueue()
+        let (wakeups, wakeup) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        inboundWakeup = wakeup
+        // .high: this pump sits between a received fragment and decode-submit; a bare Task's
+        // inherited priority can queue it behind pool work (same rationale as the host pumps).
+        inboundConsumer = Task(priority: .high) { [weak self] in
+            for await _ in wakeups {
+                guard let self else { break }
+                let batch = queue.drainAll()
+                if batch.isEmpty { continue }   // a coalesced wakeup an earlier drain already emptied
+                await self.receiveBatch(batch)
+            }
+        }
+        // Enqueue THEN signal on the transport's serial receive queue (no lost wakeup).
+        try await transport.start { channel, data in
+            queue.append(.media(channel, data))
+            wakeup.yield()
+        } onCursor: { data in
+            queue.append(.cursor(data))
+            wakeup.yield()
         }
         for effect in stateMachine.start() { await apply(effect) }
         startKeepalive()
@@ -277,11 +304,23 @@ public actor RworkVideoClientSession {
         log.info("video client session started; hello sent")
     }
 
+    /// Drains one inbound batch in arrival order on the actor.
+    private func receiveBatch(_ batch: [ClientInboundQueue.Item]) async {
+        for item in batch {
+            switch item {
+            case .media(let channel, let data): await receiveMedia(channel: channel, data: data)
+            case .cursor(let data): await receiveCursor(data)
+            }
+        }
+    }
+
     /// Sends a best-effort `bye`, tears the pipeline + sockets down.
     public func stop() async {
         keepaliveTask?.cancel(); keepaliveTask = nil
         networkStatsTask?.cancel(); networkStatsTask = nil
         resizeSettleTask?.cancel(); resizeSettleTask = nil
+        inboundWakeup?.finish(); inboundWakeup = nil
+        inboundConsumer?.cancel(); inboundConsumer = nil
         for effect in stateMachine.stop() { await apply(effect) }
         await transport.stop()
         log.info("video client session stopped")
@@ -1000,6 +1039,34 @@ public struct LTREscalationTracker: Sendable, Equatable {
     /// cleared by ``keyframeDecoded()`` when recovery actually lands.
     public mutating func noteEscalated(now: TimeInterval) {
         firstRequestTime = now
+    }
+}
+
+/// Lock-protected FIFO of inbound datagrams (media + cursor) feeding the client session's single
+/// batch-drain consumer. Same discipline as the host's `InboundQueue` / `EncodedFrameQueue`: the
+/// transport's serial receive queue appends synchronously (arrival order carried end-to-end), the
+/// consumer drains the whole backlog per coalesced wakeup. `@unchecked Sendable` + NSLock.
+final class ClientInboundQueue: @unchecked Sendable {
+    enum Item {
+        case media(VideoChannel, Data)
+        case cursor(Data)
+    }
+
+    private let lock = NSLock()
+    private var items: [Item] = []
+
+    /// Append one datagram. Called on the transport's serial receive queue; O(1), never blocks.
+    func append(_ item: Item) {
+        lock.lock(); items.append(item); lock.unlock()
+    }
+
+    /// Atomically take and clear the whole backlog (arrival order). An empty result means a
+    /// coalesced wakeup whose datagrams an earlier drain already consumed.
+    func drainAll() -> [Item] {
+        lock.lock(); defer { lock.unlock() }
+        let out = items
+        items = []
+        return out
     }
 }
 #endif
