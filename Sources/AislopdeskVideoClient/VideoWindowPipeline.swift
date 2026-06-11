@@ -169,12 +169,15 @@ final class VideoWindowPipeline {
         // latency). `AISLOPDESK_JITTER_DEPTH=2` restores the slack frame for a jittery link A/B.
         let jitterDepth = env["AISLOPDESK_JITTER_DEPTH"].flatMap(Int.init).map { min(8, max(1, $0)) } ?? 1
         let jitterMax = env["AISLOPDESK_JITTER_MAX"].flatMap(Int.init).map { min(16, max(1, $0)) } ?? 5
-        // Component 4 (adaptive pacer depth v2, 2026-06-11): late-EVENT driven 1↔2 depth boost
-        // (PacerDepthPolicy — pay latency only AFTER observed late presents, refund after a clean
-        // dwell). Default OFF until the HW feel-test: prior adaptive-jitter art backfired on feel,
-        // and the boost disables present-on-arrival while engaged. TELEMETRY is NOT gated by this —
-        // the policy's late/gap counters always run and ride every NetworkStats report.
-        let adaptiveDepth = env["AISLOPDESK_ADAPTIVE_DEPTH"].map { $0 == "1" || $0.lowercased() == "true" } ?? false
+        // Component 4 (adaptive pacer depth, 2026-06-11): network-late driven 1↔2 depth boost
+        // (PacerDepthPolicy — pay latency only AFTER observed network lates, refund after a clean
+        // dwell). v2's present-gap promotion pinned the depth at 2 on sub-cadence content
+        // (structural — see PacerDepthPolicy header); v3 (2026-06-12) promotes on owd spikes
+        // (`OwdLateDetector`), which can't self-sustain or misread content cadence — so the boost
+        // is now DEFAULT ON (`AISLOPDESK_ADAPTIVE_DEPTH=0` restores fixed depth 1 for A/B).
+        // TELEMETRY is NOT gated by this — the policy's late/gap counters always run and ride
+        // every NetworkStats report.
+        let adaptiveDepth = env["AISLOPDESK_ADAPTIVE_DEPTH"].map { !($0 == "0" || $0.lowercased() == "false") } ?? true
         let depthPolicyConfig = PacerDepthPolicy.Config.fromEnvironment(env)
         // Adaptive jitter buffer (default OFF ⇒ fixed depth exactly as today). When on, the pacer
         // self-measures decoded-frame arrival jitter and floats the depth between 1 and jitterMax:
@@ -299,6 +302,11 @@ final class VideoWindowPipeline {
                 // own NSLock). Strong `pacer` capture matches `submitDecodedFrame` above:
                 // session→hooks→pacer is acyclic.
                 pacer.drainTelemetry()
+            },
+            noteNetworkLate: {
+                // Depth v3: one owd-spike event from the session's OwdLateDetector → the depth
+                // policy's promotion input. Lock-guarded, no main hop (same as drainTelemetry).
+                pacer.noteNetworkLate()
             }
         )
 

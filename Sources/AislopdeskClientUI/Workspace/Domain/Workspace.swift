@@ -64,7 +64,8 @@ public extension Workspace {
     /// The schema version this build writes (the single-canvas + groups shape, docs/31). A
     /// higher/unrecognized version — or any older on-disk shape that no longer decodes — falls back to
     /// ``defaultWorkspace()``. Single-user project: there is no backward-compatibility path by design.
-    static let currentSchemaVersion = 4
+    /// 5 (2026-06-12): `VideoEndpoint` gained `appName` (pane rebind by app+title).
+    static let currentSchemaVersion = 5
 
     /// The fresh-launch / decode-failure fallback: one terminal pane at the origin, focused, ungrouped.
     static func defaultWorkspace() -> Workspace {

@@ -919,6 +919,23 @@ public final class WorkspaceStore {
             let handle = makeSession(spec)
             (handle as? PaneSessionIDAdopting)?.adopt(id: id)
             registry[id] = handle
+            // PANE REBIND (2026-06-12): persist every committed video endpoint into the pane's
+            // spec. Until now a picked window lived only in the RemoteWindowModel — the spec kept
+            // `video: nil`, so a relaunch always re-showed the picker; and a REBOUND endpoint
+            // (stale CGWindowID re-resolved by app+title) must overwrite the stale id. The leaf
+            // set is unchanged by `updateSpec`, so the nested reconcile is a no-op + save. The
+            // pane TITLE follows the binding only while it was tracking the previous binding
+            // (or was never bound) — a user rename survives re-picks.
+            if let model = (handle as? LivePaneSession)?.remoteWindow {
+                model.onEndpointCommitted = { [weak self] endpoint in
+                    self?.updateSpec(id) { spec in
+                        if spec.video == nil || spec.title == spec.video?.title {
+                            spec.title = endpoint.title
+                        }
+                        spec.video = endpoint
+                    }
+                }
+            }
         }
 
         // 3. Mark the `AISLOPDESK_AUTOTYPE` target (docs/22 §7): the first pane on the canvas. The store owns

@@ -11,13 +11,22 @@
 // only AFTER observed late presents (events), refund after a clean dwell — and never reuse
 // `underflowRun` as a signal.
 //
-// "Late" cannot be observed as "arrived after its vsync slot" at depth 1 + present-on-arrival
-// (there is no per-frame deadline in arrival mode). The observable is the CONTENT-PRESENT GAP —
-// exactly what the debug KHỰNG probe already measures with its HW-validated 28ms threshold
-// (FramePacer.dbgNoteHold). This policy promotes that probe to an always-on, fps-derived
-// classifier with three false-positive discriminators: a dense-flow gate (sparse/typing content
-// never counts), an idle gap cap (host idle-skip / motion stop never counts), and a gap-gradient
-// guard (gradual cadence drift never counts).
+// v3 (2026-06-12, owd-late): v2's PROMOTION source — the content-present-gap classifier — was
+// itself structurally wrong: it compares present gaps against the cadence hint, but natural
+// sub-cadence content (VS Code idle repaint ~40fps under a 60fps hint) makes every re-show gap
+// clear the late boundary. MEASURED live (FPT↔Viettel): late=1 in every 50ms report at ALL flow
+// densities → depth pinned at 2 for 99.6% of the session, demote unreachable — arrival GAPS
+// conflate "the network delivered late" with "the host didn't produce a frame". v3 splits the
+// two jobs:
+//  - PROMOTION/DEMOTION now run on NETWORK-late events (`noteNetworkLate`): per-frame one-way-
+//    delay spikes past the path baseline (`OwdLateDetector`, fed by the session off the wire
+//    send stamps). That is the signal a slack frame actually absorbs, it is measured at ARRIVAL
+//    (depth-independent ⇒ no self-sustaining promotion at depth 2), and content cadence can't
+//    fake it.
+//  - The present-gap machinery below is KEPT as pure telemetry: `notePresent` still classifies
+//    (GapClass diagnostics), `noteReshow` still counts khựng episodes (`presentGaps`, the
+//    HW-validated 28ms-threshold probe lineage) — but no gap classification feeds the depth
+//    action anymore.
 //
 // PURE + headlessly testable: no Apple imports, all time injected as client-monotonic seconds
 // (pattern: LiveCongestionController / AdaptiveFECPolicy). The FramePacer owns one instance under
@@ -26,7 +35,8 @@
 /// One windowed drain of the pacer's presentation-health counters, carried client→host on the
 /// NetworkStats recovery message (Phase-0 telemetry: log-only host-side).
 public struct PacerTelemetrySnapshot: Sendable, Equatable {
-    /// Windowed: presents that ENDED a late gap (the clean hitch signal — promotion input).
+    /// Windowed: NETWORK-late events (v3 — owd spikes past baseline, ``PacerDepthPolicy/noteNetworkLate(_:)``;
+    /// the depth-promotion input). Until 2026-06-12 this carried present-gap lates (v2).
     public var lateFrames: UInt32
     /// Windowed: late-gap EPISODES OPENED (counted at the first re-show past the late threshold).
     /// Deliberately a SUPERSET of ``lateFrames``: a gap that no frame ever resolves (motion stop)
@@ -41,12 +51,15 @@ public struct PacerTelemetrySnapshot: Sendable, Equatable {
     }
 }
 
-/// Late/idle/dense gap classifier + promote/demote depth policy. See the file header.
+/// Late/idle/dense gap classifier (telemetry) + promote/demote depth policy (driven by
+/// NETWORK-late events — v3, see the file header).
 ///
-/// Promote: ≥ `promoteLateCount` late EVENTS within `promoteWindowSeconds` ⇒ depth 1 → `boostDepth`
-/// (2 — NEVER higher; v1's unbounded ratchet was the latency failure).
-/// Demote: `demoteCleanSeconds` with ZERO late events (and ≥ `minHoldSeconds` since promotion)
-/// ⇒ back to 1. Counters always run (telemetry); only the depth action is gated by `adaptEnabled`.
+/// Promote: ≥ `promoteLateCount` network-late EVENTS (``noteNetworkLate(_:)``) within
+/// `promoteWindowSeconds` ⇒ depth 1 → `boostDepth` (2 — NEVER higher; v1's unbounded ratchet was
+/// the latency failure).
+/// Demote: `demoteCleanSeconds` with ≤ `demoteToleranceLates` network-late events (and ≥
+/// `minHoldSeconds` since promotion) ⇒ back to 1. Counters always run (telemetry); only the
+/// depth action is gated by `adaptEnabled`.
 public struct PacerDepthPolicy: Sendable, Equatable {
     public struct Config: Sendable, Equatable {
         /// late iff gap > max(`absoluteLateFloorSeconds`, `lateGapFactor` × expectedInterval).
@@ -252,18 +265,25 @@ public struct PacerDepthPolicy: Sendable, Equatable {
             return .idle
         }
         let gradientOK = prevPresentGap.map { gap >= config.gapGradientFactor * $0 } ?? true
+        // v3: classification only (GapClass diagnostics) — a present-gap late no longer counts or
+        // promotes (the v2 pinning bug); the depth action runs on ``noteNetworkLate(_:)``.
         let isLate = gap > lateThresholdSeconds && gradientOK && wasDense(asOf: last)
-        if isLate {
-            if lateCount < .max { lateCount += 1 }
-            lateTimes.append(now)
-            if lateTimes.count > 4 { lateTimes.removeFirst(lateTimes.count - 4) }
-            evaluatePromote(now)
-        }
         gapEpisodeOpen = false   // any present closes an open re-show episode
         prevPresentGap = gap
         lastPresentAt = now
         evaluateDemote(now)
         return isLate ? .late : .normal
+    }
+
+    /// Fold one NETWORK-late event (v3 — the session's `OwdLateDetector` flagged a one-way-delay
+    /// spike past the path baseline): THE promotion input, and the demote dwell's content. Counted
+    /// into the windowed `lateFrames` telemetry too (the wire's late= field now reports the
+    /// promotion-relevant signal).
+    public mutating func noteNetworkLate(_ now: Double) {
+        if lateCount < .max { lateCount += 1 }
+        lateTimes.append(now)
+        if lateTimes.count > 4 { lateTimes.removeFirst(lateTimes.count - 4) }
+        evaluatePromote(now)
     }
 
     /// Fold one empty-queue re-show tick. Counts a late-gap EPISODE (once) the moment the open gap
