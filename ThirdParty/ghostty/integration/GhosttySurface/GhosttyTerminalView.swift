@@ -435,9 +435,18 @@ final class GhosttyLayerBackedView: NSView {
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     /// Ask for the next few display ticks to present (drain new content / flush lazy glyphs).
+    ///
+    /// SINGLE arming choke point: it also UN-PAUSES the display link (renderTick pauses it
+    /// when the ticks drain), so an idle pane costs zero main-thread wakeups instead of a
+    /// 60Hz no-op tick per pane forever. Every arming site (feed→onContentChanged, attach,
+    /// layout, settle-burst items, viewDidMoveToWindow) is main-thread, so the un-pause is
+    /// strictly ordered before the tick that must serve it; resume latency = next vsync,
+    /// identical to the old gated no-op tick. Any future arming path MUST route through
+    /// here or it will silently never present. Nil-safe for AISLOPDESK_NO_TICK.
     func requestPresent(_ ticks: Int = 3) {
         if kRenderDebug { rdbg("requestPresent(\(ticks)) [was \(presentTicks)]") }
         presentTicks = max(presentTicks, ticks)
+        renderDisplayLink?.isPaused = false
     }
 
     /// Post-resize REPAINT-RESIDUAL fix (idle-prompt-prefix-blank-after-resize).
@@ -522,6 +531,9 @@ final class GhosttyLayerBackedView: NSView {
             // gated tick would never present live output.
             s.onContentChanged = { [weak self] in self?.requestPresent() }
             self.surface = s
+            // A BRAND-NEW surface must get its first real layout (setPixelSize) — drop the
+            // same-size guard's cache so the next layout() pass applies unconditionally.
+            lastAppliedLayout = nil
         }
         // attachSurface(_:) (not `model.surface = surface`) so the model REPLAYS its retained byte
         // ring into a rebuilt surface (tab switch / reshape). No-op replay when unchanged.
@@ -552,7 +564,12 @@ final class GhosttyLayerBackedView: NSView {
         // on the runloop (display-link tick); GATED on `presentTicks` so idle is a cheap no-op (no
         // 100%-CPU spin, no MainActor starvation). `displayIfNeeded()` forces the `display` synchronously
         // this tick rather than waiting for the next CA pass.
-        guard presentTicks > 0 else { return }
+        guard presentTicks > 0 else {
+            // Ticks drained → PAUSE the link entirely: an idle pane stops costing a 60Hz
+            // main-thread wakeup. requestPresent (the single arming choke point) un-pauses.
+            renderDisplayLink?.isPaused = true
+            return
+        }
         if kRenderDebug { rdbg("renderTick DISPLAY (ticks=\(presentTicks))") }
         presentTicks -= 1
         layer?.setNeedsDisplay()
@@ -562,6 +579,7 @@ final class GhosttyLayerBackedView: NSView {
     func detach() {
         renderDisplayLink?.invalidate()
         renderDisplayLink = nil
+        lastAppliedLayout = nil   // a future re-attach must re-apply size unconditionally
         // Cancel any pending settle-present burst so a torn-down view never fires `requestPresent`.
         for item in settleItems { item.cancel() }
         settleItems.removeAll(keepingCapacity: true)
@@ -581,9 +599,27 @@ final class GhosttyLayerBackedView: NSView {
 
     // MARK: Resize → grid
 
+    /// The last (bounds.size, scale) actually APPLIED to a live surface+layer by `layout()`.
+    /// Same-size SwiftUI/AppKit passes (focus re-render, canvas reshuffle) early-out: with
+    /// patch 0001, `surface.redraw()` is a FULL synchronous updateFrame+drawFrame on MAIN,
+    /// and every layout also arms presentTicks + a 5-item settle burst (≤10 more sync
+    /// presents) — a spurious same-size pass cost a main-thread render ×~13. Cached ONLY
+    /// when surface != nil && layer != nil (before attach, the surface calls were no-ops —
+    /// caching then would skip the first REAL layout and hit the renderer's zero-size guard
+    /// → blank pane); invalidated in attach()/detach() so a rebuilt surface always gets its
+    /// setPixelSize.
+    private var lastAppliedLayout: (size: CGSize, scale: CGFloat)?
+
     override func layout() {
         super.layout()
         let scale = window?.backingScaleFactor ?? 2.0
+        // SAME-SIZE GUARD: skip the whole setPixelSize/redraw/settle-burst pipeline when
+        // nothing changed. Deliberately does NOT touch settleItems on the skip path — a
+        // prior real resize's ~400ms settle window still completes.
+        if let last = lastAppliedLayout, last.size == bounds.size, last.scale == scale,
+           surface != nil, layer != nil {
+            return
+        }
         // Pass ACTUAL pixel extent; libghostty derives the grid from its measured cell metrics, rounds
         // the surface to whole cells, and fires resize_callback → onResize (host TIOCSWINSZ).
         let pxW = UInt32(max(1, Int((bounds.width * scale).rounded())))
@@ -625,6 +661,10 @@ final class GhosttyLayerBackedView: NSView {
         // initial `requestPresent()` ticks drain within a few display frames. Finite + self-terminating
         // (see `scheduleSettlePresentBurst`); a continuous drag coalesces to one burst.
         scheduleSettlePresentBurst()
+        // Cache ONLY a fully-applied pass (live surface + hosted layer) — see lastAppliedLayout.
+        if surface != nil, layer != nil {
+            lastAppliedLayout = (bounds.size, scale)
+        }
     }
 
     // MARK: Input forwarding → libghostty encoder
@@ -1031,6 +1071,21 @@ final class GhosttyLayerBackedView: UIView {
     /// present a background-only frame (no text) and never self-correct.
     private var displayLink: CADisplayLink?
 
+    /// presentTicks gating — the macOS design ported (the macOS side documented that an
+    /// UNCONDITIONAL per-tick draw_now kept the renderer thread's mach-port permanently
+    /// ready so its libxev loop busy-spun; on iOS the ungated 60Hz drawNow cost a
+    /// cross-thread wakeup + mutex churn per pane per frame, forever, even fully idle).
+    /// On the SIMULATOR the free-run is kept: patch 0001 records the renderer thread's
+    /// libxev wakeup async "not pumped after the initial startup notify (observed on the
+    /// iOS Simulator)" — the steady drawNow is what papers over that there.
+    private var presentTicks = 0
+
+    /// Single arming choke point (mirrors macOS `requestPresent`): content/gesture/layout
+    /// changes arm a few ticks; `renderTick` drains them and goes idle.
+    func requestPresent(_ ticks: Int = 3) {
+        presentTicks = max(presentTicks, ticks)
+    }
+
     // MARK: Pan-to-scroll (touch scrollback)
     //
     // PAN-TO-SCROLL — the iOS counterpart of the macOS `scrollWheel` override above
@@ -1128,6 +1183,9 @@ final class GhosttyLayerBackedView: UIView {
             // is fine for v1 (a future round could map the end-velocity to a momentum phase).
             let packed: ghostty_input_scroll_mods_t = 0b0000_0001   // precision; momentum = none
             surface?.sendMouseScroll(deltaX: 0, deltaY: Double(deltaY), mods: packed)
+            // With the gated tick, scrollback frames must ARM their own present — on iOS
+            // the tick is the only present pump (no macOS-style backing-layer display path).
+            requestPresent(2)
         default:
             // .ended / .cancelled / .failed: nothing to flush (no momentum modeled in v1). The next
             // .began resets `lastPanTranslationY`, so no stale accumulation leaks across gestures.
@@ -1179,6 +1237,9 @@ final class GhosttyLayerBackedView: UIView {
         surface?.sendMousePos(x: Double(loc.x), y: Double(loc.y), mods: GHOSTTY_MODS_NONE)
         _ = surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS,   button: GHOSTTY_MOUSE_LEFT, mods: GHOSTTY_MODS_NONE)
         _ = surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT, mods: GHOSTTY_MODS_NONE)
+        // With the gated tick, gesture-driven content (selection clear / click report
+        // redraw) must ARM its own present — on iOS the tick is the only present pump.
+        requestPresent(2)
     }
 
     func attach(model: TerminalViewModel) {
@@ -1204,7 +1265,12 @@ final class GhosttyLayerBackedView: UIView {
             s.onResize = { [weak model] (cols: UInt16, rows: UInt16) in
                 model?.sendResize(cols: cols, rows: rows)
             }
+            // Dirty signal → gated tick (the macOS wiring, previously MISSING on iOS:
+            // feed's content signal was dropped and only the free-running tick presented).
+            s.onContentChanged = { [weak self] in self?.requestPresent() }
             self.surface = s
+            // A BRAND-NEW surface must get its first real layout — drop the same-size cache.
+            lastAppliedLayout = nil
         }
         // attachSurface(_:) (not `model.surface = surface`) so the model REPLAYS its retained
         // byte-ring into a rebuilt surface — the iOS compact-carousel flip dismantles + rebuilds
@@ -1214,6 +1280,7 @@ final class GhosttyLayerBackedView: UIView {
             model.attachSurface(surface)
         }
         surface?.setFocus(true)
+        requestPresent(8)   // prime the initial glyph flush / flush the replay (mirrors macOS)
 
         // Start the render-thread pacing tick (idempotent). 60 fps is plenty for a
         // terminal; libghostty coalesces (its updateFrame is dirty-gated, so idle ticks
@@ -1227,12 +1294,25 @@ final class GhosttyLayerBackedView: UIView {
     }
 
     @objc private func renderTick() {
+        #if targetEnvironment(simulator)
+        // Simulator: keep the free-run — the renderer thread's libxev wakeup pump is
+        // unreliable there (patch 0001 forensics) and the steady drawNow papers over it.
         surface?.drawNow()
+        #else
+        // Device: GATED. Idle ticks stop signalling the renderer thread (60Hz cross-thread
+        // wakeup + mutex churn per pane, even fully idle). KEEP drawNow when armed — the
+        // macOS setNeedsDisplay/displayIfNeeded present path does not exist on iOS (the
+        // IOSurfaceLayer is an unwired SUBLAYER here).
+        guard presentTicks > 0 else { return }
+        presentTicks -= 1
+        surface?.drawNow()
+        #endif
     }
 
     func detach() {
         displayLink?.invalidate()
         displayLink = nil
+        lastAppliedLayout = nil   // a future re-attach must re-apply size unconditionally
         // Remove the pan-to-scroll recognizer we installed (symmetric with `installPanToScrollIfNeeded`).
         if let pan = panRecognizer {
             removeGestureRecognizer(pan)
@@ -1251,9 +1331,20 @@ final class GhosttyLayerBackedView: UIView {
         model?.detachSurface(detaching)
     }
 
+    /// The last (bounds.size, scale) actually APPLIED to a live surface — the iOS mirror of
+    /// the macOS `lastAppliedLayout` same-size guard (see that doc comment). Invalidated on
+    /// surface creation (`attach`) and `detach`.
+    private var lastAppliedLayout: (size: CGSize, scale: CGFloat)?
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let scale = window?.screen.scale ?? UIScreen.main.scale
+        // SAME-SIZE GUARD (mirrors macOS layout()): spurious same-size SwiftUI passes used
+        // to pay sublayer re-framing + setPixelSize + a full synchronous redraw.
+        if let last = lastAppliedLayout, last.size == bounds.size, last.scale == scale,
+           surface != nil {
+            return
+        }
         metalLayer.contentsScale = scale
         // CRITICAL (iOS): libghostty renders into an `IOSurfaceLayer` it adds as a
         // SUBLAYER of this view's layer (`Metal.zig` `addSublayer:`) — and it NEVER sizes
@@ -1272,6 +1363,11 @@ final class GhosttyLayerBackedView: UIView {
         // Pass ACTUAL layer pixels; libghostty derives the grid + fires resize_callback.
         surface?.setPixelSize(widthPx: pxW, heightPx: pxH)
         surface?.redraw()
+        // A real size change → present the reflowed frame (the gated tick needs arming).
+        requestPresent(3)
+        if surface != nil {
+            lastAppliedLayout = (bounds.size, scale)
+        }
     }
 }
 
