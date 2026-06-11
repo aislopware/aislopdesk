@@ -235,20 +235,41 @@ public struct RecoveryPolicy: Sendable {
     /// 2·RTT wait is the dominant residual freeze term once requests are sent redundantly — a
     /// lossy path has already corroborated that waiting longer rarely saves the IDR.
     public let lossyIdrTimeoutRTTMultiple: Double
-    /// Floor on the LOSSY deadline: a refresh response physically needs RTT + host encode +
-    /// ≤1 frame interval (~16.7 ms @60fps), and the client's RTT samples are clamped ≥5 ms — so a
-    /// bare 1·RTT at a low EWMA would escalate before ANY refresh could arrive ⇒ spurious IDRs
-    /// (the F1-storm class). 30 ms ≈ frame interval + margin; on the target path (RTT 10-59 ms,
-    /// EWMA biased UP by encode latency) the floor rarely binds — it is a LAN/low-RTT safety.
+    /// Floor on the LOSSY deadline. RAISED 30 → 60 ms (2026-06-11 telemetry round): an LTR-refresh
+    /// response PHYSICALLY needs host encode + flight + client decode ≈ 40-60 ms at the live path's
+    /// 10-30 ms RTT — the old 30 ms floor let the client escalate to `requestIDR` BEFORE the LTR
+    /// medicine could land (measured: 202 requestIDR vs 100 LTR refreshes in 169 s; the host
+    /// absorbed a 97-suppression storm). The effective floor is
+    /// `max(lossyEscalationFloor, lossyEscalationFloorRTTMultiple × rtt)` so it tracks the path:
+    /// 60 ms at low RTT, 1.5·RTT once the RTT itself dominates the response time.
+    /// `AISLOPDESK_ESCALATION_FLOOR_MS` (default 60, clamp 20...500) tunes the constant part.
     /// The NORMAL (non-lossy) path has NO floor and stays byte-identical to today.
     public let lossyEscalationFloor: TimeInterval
+    /// The RTT-proportional part of the lossy floor (see ``lossyEscalationFloor``): a refresh
+    /// round-trip is ≥1·RTT, plus encode/decode/frame-interval overhead ≈ half an RTT on the
+    /// target path — escalating earlier than ~1.5·RTT can only duplicate work.
+    public let lossyEscalationFloorRTTMultiple: Double
+
+    /// Pure env resolution for the lossy floor: `AISLOPDESK_ESCALATION_FLOOR_MS`, default 60 ms,
+    /// clamped to 20...500 ms; absent/garbage/out-of-band values keep the default.
+    public static func escalationFloorSeconds(env: [String: String]) -> TimeInterval {
+        guard let s = env["AISLOPDESK_ESCALATION_FLOOR_MS"], let v = Double(s), v.isFinite,
+              v >= 20, v <= 500 else { return 0.06 }
+        return v / 1000.0
+    }
+
+    /// The process-wide resolved default floor (read once, like the host's env-static flags).
+    public static let defaultLossyEscalationFloor: TimeInterval =
+        escalationFloorSeconds(env: ProcessInfo.processInfo.environment)
 
     public init(idrTimeoutRTTMultiple: Double = 2.0,
                 lossyIdrTimeoutRTTMultiple: Double = 1.0,
-                lossyEscalationFloor: TimeInterval = 0.03) {
+                lossyEscalationFloor: TimeInterval = RecoveryPolicy.defaultLossyEscalationFloor,
+                lossyEscalationFloorRTTMultiple: Double = 1.5) {
         self.idrTimeoutRTTMultiple = idrTimeoutRTTMultiple
         self.lossyIdrTimeoutRTTMultiple = lossyIdrTimeoutRTTMultiple
         self.lossyEscalationFloor = lossyEscalationFloor
+        self.lossyEscalationFloorRTTMultiple = lossyEscalationFloorRTTMultiple
     }
 
     /// The first message to send when frames `[from, to]` are detected lost: prefer
@@ -268,11 +289,21 @@ public struct RecoveryPolicy: Sendable {
     }
 
     /// Component 5: the loss-adaptive escalation clock. `observingLoss == false` ⇒ today's
-    /// `2·RTT`, no floor. `observingLoss == true` ⇒ the halved clock,
-    /// `max(lossyIdrTimeoutRTTMultiple·RTT, lossyEscalationFloor)`.
+    /// `2·RTT`, no floor. `observingLoss == true` ⇒ the halved clock floored at the
+    /// physically-arrivable response time:
+    /// `max(lossyIdrTimeoutRTTMultiple·RTT, lossyEscalationFloor, lossyEscalationFloorRTTMultiple·RTT)`
+    /// — at the defaults `max(1·RTT, 60 ms, 1.5·RTT)`. The loss-state halving (1× vs 2×) is kept
+    /// ABOVE the floor; the floor just guarantees an LTR refresh gets the time it physically needs
+    /// before the IDR sledgehammer.
     public func shouldEscalateToIDR(elapsedSinceRequest: TimeInterval, rtt: TimeInterval, observingLoss: Bool) -> Bool {
         let multiple = observingLoss ? lossyIdrTimeoutRTTMultiple : idrTimeoutRTTMultiple
-        let deadline = observingLoss ? max(multiple * rtt, lossyEscalationFloor) : multiple * rtt
+        let deadline: TimeInterval
+        if observingLoss {
+            let floor = max(lossyEscalationFloor, lossyEscalationFloorRTTMultiple * rtt)
+            deadline = max(multiple * rtt, floor)
+        } else {
+            deadline = multiple * rtt
+        }
         return elapsedSinceRequest >= deadline
     }
 }

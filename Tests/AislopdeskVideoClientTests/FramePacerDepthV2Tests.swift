@@ -38,7 +38,7 @@ final class FramePacerDepthV2Tests: XCTestCase {
 
     func testPromoteReprimesAndBoostsLiveDepth() {
         let pacer = FramePacer(targetDepth: 1, adaptiveDepth: true, renderCallback: { _ in })
-        var t = driveClean(pacer, from: 0, frames: 60)
+        var t = driveClean(pacer, from: 0, frames: 130)     // ~2.2s — past the fix-2c promote warmup
         XCTAssertEqual(pacer.currentDepth, 1)
         t = skipOneSlot(pacer, from: t)                     // late #1
         XCTAssertEqual(pacer.currentDepth, 1, "one late never promotes")
@@ -61,7 +61,7 @@ final class FramePacerDepthV2Tests: XCTestCase {
 
     func testDemoteRestoresDepthOneAndPresentOnArrival() {
         let pacer = FramePacer(targetDepth: 1, adaptiveDepth: true, renderCallback: { _ in })
-        var t = driveClean(pacer, from: 0, frames: 60)
+        var t = driveClean(pacer, from: 0, frames: 130)     // past the fix-2c promote warmup
         t = skipOneSlot(pacer, from: t)
         t = driveClean(pacer, from: t, frames: 24)
         t = skipOneSlot(pacer, from: t)

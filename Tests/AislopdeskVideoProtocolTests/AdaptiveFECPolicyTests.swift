@@ -81,16 +81,43 @@ final class AdaptiveFECPolicyTests: XCTestCase {
         XCTAssertEqual(tier, 4, "saturated at the most-redundant level")
     }
 
-    /// Sustained clean link relaxes DOWN one level per call, all the way to OFF (tier 1), then
-    /// saturates. This is the whole point of adaptive FEC: drop the wasted parity on a clean LAN.
-    func testTierRampsDownOneLevelPerCallUnderCleanLink() {
+    /// Sustained clean link relaxes DOWN one level per call but FLOORS at g10 (tier 2) — the
+    /// 2026-06-11 FEC-ladder-floor fix: on a path with nonzero baseline loss the OFF tier is never
+    /// safe (measured: 18 OFF visits → 102 unrecovered / 65 decode-fails in 169s).
+    func testTierRampsDownOneLevelPerCallAndFloorsAtG10() {
         var tier: UInt8 = 4 // start at the most-redundant level (g2)
         let loss = 0.0
         tier = AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: tier); XCTAssertEqual(tier, 3, "g2 → g3")
         tier = AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: tier); XCTAssertEqual(tier, 0, "g3 → g5 (tier 0)")
         tier = AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: tier); XCTAssertEqual(tier, 2, "g5 → g10 (tier 2)")
-        tier = AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: tier); XCTAssertEqual(tier, 1, "g10 → OFF (tier 1)")
-        tier = AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: tier); XCTAssertEqual(tier, 1, "saturated at OFF")
+        tier = AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: tier); XCTAssertEqual(tier, 2, "g10 is the FLOOR — never OFF")
+        tier = AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: tier); XCTAssertEqual(tier, 2, "saturated at g10")
+    }
+
+    /// The escape hatch (`AISLOPDESK_FEC_ALLOW_OFF=1` → `allowOff: true`) restores the old walk all
+    /// the way to OFF, then saturates — for genuinely loss-free links that want the ~10% back.
+    func testAllowOffEscapeHatchRestoresWalkToOff() {
+        var tier: UInt8 = 4
+        let loss = 0.0
+        for expected in [UInt8(3), 0, 2, 1, 1] {
+            tier = AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: tier, allowOff: true)
+            XCTAssertEqual(tier, expected)
+        }
+    }
+
+    /// Pure env resolution for the escape hatch: only the exact "1" enables it.
+    func testAllowOffEnvResolution() {
+        XCTAssertFalse(AdaptiveFECPolicy.allowOffTier(env: [:]))
+        XCTAssertFalse(AdaptiveFECPolicy.allowOffTier(env: ["AISLOPDESK_FEC_ALLOW_OFF": "0"]))
+        XCTAssertFalse(AdaptiveFECPolicy.allowOffTier(env: ["AISLOPDESK_FEC_ALLOW_OFF": "true"]))
+        XCTAssertTrue(AdaptiveFECPolicy.allowOffTier(env: ["AISLOPDESK_FEC_ALLOW_OFF": "1"]))
+    }
+
+    /// Defensive: a pre-existing OFF state under the floor steps UP to g10 on the first clean
+    /// report (the floor is an invariant, not just a relax clamp).
+    func testFloorLiftsAPreExistingOffState() {
+        XCTAssertEqual(AdaptiveFECPolicy.tier(forLossRate: 0.0, previousTier: 1), 2,
+                       "OFF under the floor steps up to g10 even on a clean report")
     }
 
     /// A loss sitting inside the dead-band between two levels HOLDS the current tier from EITHER side
@@ -174,14 +201,65 @@ final class AdaptiveFECPolicyTests: XCTestCase {
         XCTAssertNotEqual(s.tier, 1, "still protected at the end of the bursty period")
     }
 
-    /// A genuinely clean path still reaches OFF — just one level per dwell window (g5 → g10 → OFF
-    /// over 2·dwell consecutive clean reports), preserving the standing-overhead saving.
-    func testDwellCleanPathStillReachesOff() {
+    /// A genuinely clean path relaxes g5 → g10 and SATURATES there (the ladder floor): however
+    /// many clean reports accumulate, the default walk never reaches OFF.
+    func testDwellCleanPathFloorsAtG10() {
+        var s = AdaptiveFECPolicy.TierState(tier: 0) // g5
+        for _ in 0..<(4 * AdaptiveFECPolicy.relaxDwellReports) {
+            s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+            XCTAssertNotEqual(s.tier, 1, "the dwell path must never select OFF at the default")
+        }
+        XCTAssertEqual(s.tier, 2, "sustained clean reports relax g5 → g10 and saturate at the floor")
+    }
+
+    /// The escape hatch through the dwell-gated entry point: with `allowOff: true` the old
+    /// g5 → g10 → OFF walk is restored (one level per dwell window).
+    func testDwellCleanPathReachesOffWithAllowOff() {
         var s = AdaptiveFECPolicy.TierState(tier: 0) // g5
         for _ in 0..<(2 * AdaptiveFECPolicy.relaxDwellReports) {
-            s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+            s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s, allowOff: true)
         }
-        XCTAssertEqual(s.tier, 1, "sustained clean reports relax g5 → g10 → OFF")
+        XCTAssertEqual(s.tier, 1, "allowOff restores the relax-to-OFF walk")
+    }
+
+    // MARK: Sticky relax (2026-06-11, doubled dwell after unrecovered loss)
+
+    /// A report carrying unrecovered loss DOUBLES the relax dwell for the sticky window: the
+    /// streak that would have relaxed at `dwell` keeps holding until `2×dwell`.
+    func testStickyRelaxDoublesDwellAfterUnrecoveredLoss() {
+        let dwell = AdaptiveFECPolicy.relaxDwellReports
+        var s = AdaptiveFECPolicy.TierState(tier: 0) // g5
+        // The unrecovered-loss report opens the sticky window (loss rate still relax-demanding —
+        // the EWMA can read ~0 while a lone frame died).
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s, sawUnrecoveredLoss: true)
+        XCTAssertEqual(s.stickyRelaxRemaining, AdaptiveFECPolicy.stickyRelaxWindowReports)
+        // Up to 2×dwell the tier must hold (the plain dwell would have relaxed at `dwell`).
+        while s.relaxStreak < 2 * dwell - 1 {
+            s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+            XCTAssertEqual(s.tier, 0, "doubled dwell holds g5 at streak \(s.relaxStreak)")
+        }
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+        XCTAssertEqual(s.tier, 2, "relaxes exactly at the doubled dwell")
+    }
+
+    /// The sticky window DECAYS one report at a time and the dwell returns to normal once it
+    /// closes — the doubled dwell is a window, not a latch.
+    func testStickyWindowDecaysBackToNormalDwell() {
+        var s = AdaptiveFECPolicy.TierState(tier: 0, relaxStreak: 0,
+                                            stickyRelaxRemaining: 3)
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+        XCTAssertEqual(s.stickyRelaxRemaining, 2)
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+        XCTAssertEqual(s.stickyRelaxRemaining, 1)
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+        XCTAssertEqual(s.stickyRelaxRemaining, 0, "window closed")
+        // With the window closed and the streak already past the plain dwell, the next clean
+        // report relaxes at the NORMAL dwell.
+        while s.tier == 0 {
+            s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+            XCTAssertLessThanOrEqual(s.relaxStreak, AdaptiveFECPolicy.relaxDwellReports)
+        }
+        XCTAssertEqual(s.tier, 2)
     }
 
     /// A hold report (loss inside the dead-band — neither escalate nor relax) RESETS the streak:

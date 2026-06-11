@@ -66,13 +66,34 @@ public struct PacerDepthPolicy: Sendable, Equatable {
         /// (≈ sustained ≥23fps motion). Excludes typing/sparse content from ever counting late.
         public var denseMinArrivals: Int = 8
         public var denseWindowSeconds: Double = 0.35
+        /// LATE SLACK (2026-06-11 telemetry round, fix 2a): extra margin ON TOP of the late
+        /// boundary, as a fraction of the expected interval. MEASURED live (169s, FPT↔Viettel):
+        /// a steady late=1 trickle at ALL flow densities (537 reports at dense 60fps) — routine
+        /// vsync/arrival jitter landing a hair past the bare boundary — kept the depth pinned at 2
+        /// for 99.6% of the session. 0.25 × interval (≈4.2ms @60fps) absorbs that jitter while a
+        /// genuinely skipped slot (2.0× interval) still clears the boundary by a wide margin.
+        /// `AISLOPDESK_DEPTH_LATE_SLACK_PCT` (0...100).
+        public var lateSlackFraction: Double = 0.25
         /// Promote on this many late events within `promoteWindowSeconds`.
         public var promoteLateCount: Int = 2
         public var promoteWindowSeconds: Double = 1.0
-        /// Demote after this long with zero late events…
+        /// Demote after this long with at most `demoteToleranceLates` late events in the window…
         public var demoteCleanSeconds: Double = 2.5
         /// …but never sooner than this after a promotion (anti-flap).
         public var minHoldSeconds: Double = 1.0
+        /// DEMOTE TOLERANCE (fix 2b): the dwell no longer demands a PERFECTLY clean window — up to
+        /// this many late events inside the trailing `demoteCleanSeconds` still demote (a lone
+        /// genuine late must not re-arm the whole dwell; the measured 1-late-per-second trickle is
+        /// primarily killed by the slack above, this is the backstop). 0 = the old strict dwell.
+        /// `AISLOPDESK_DEPTH_DEMOTE_TOLERANCE` (0...3 — the late ring holds 4).
+        public var demoteToleranceLates: Int = 1
+        /// PROMOTE WARMUP (fix 2c): promote decisions are IGNORED for this long after stream start
+        /// (first arrival) — the LiveCongestionController `warmupTicks` cold-start pattern.
+        /// MEASURED: the session's only promotion landed at hostTs=855ms, during connection
+        /// bring-up, off cold-start transients — and then never demoted. Counters still run
+        /// (telemetry unconditional); only the promote ACTION is gated.
+        /// `AISLOPDESK_DEPTH_WARMUP_MS` (0...30000).
+        public var promoteWarmupSeconds: Double = 2.0
         /// The boosted depth. 1↔2 only; NEVER higher (one frame of slack covers the dominant
         /// one-slot-late hitch; deeper is pure standing latency).
         public var boostDepth: Int = 2
@@ -110,6 +131,15 @@ public struct PacerDepthPolicy: Sendable, Equatable {
                 // Raise if a host-side recovery cooldown pushes worst-case recovery past ~200ms.
                 c.idleGapSeconds = min(2.0, max(0.1, v / 1000.0))
             }
+            if let v = env["AISLOPDESK_DEPTH_LATE_SLACK_PCT"].flatMap(Double.init), v.isFinite {
+                c.lateSlackFraction = min(100.0, max(0.0, v)) / 100.0
+            }
+            if let v = env["AISLOPDESK_DEPTH_DEMOTE_TOLERANCE"].flatMap(Int.init) {
+                c.demoteToleranceLates = min(3, max(0, v))   // lateTimes ring holds 4
+            }
+            if let v = env["AISLOPDESK_DEPTH_WARMUP_MS"].flatMap(Double.init), v.isFinite {
+                c.promoteWarmupSeconds = min(30.0, max(0.0, v / 1000.0))
+            }
             return c
         }
     }
@@ -138,10 +168,14 @@ public struct PacerDepthPolicy: Sendable, Equatable {
     // Present-side state.
     private var lastPresentAt: Double?
     private var prevPresentGap: Double?
-    /// Recent late-event times (cap 4) for the promote pairing window.
+    /// Recent late-event times (cap 4) for the promote pairing window AND the demote-tolerance
+    /// window count (the cap is safe: any count above the 0...3 tolerance clamp blocks demote
+    /// identically whether the ring holds 4 or 40).
     private var lateTimes: [Double] = []
-    private var lastLateAt: Double = -1e30
     private var promotedAt: Double = -1e30
+    /// Stream start = the FIRST arrival (fix 2c): promote decisions are ignored until
+    /// `promoteWarmupSeconds` past this, mirroring `LiveCongestionController.warmupTicks`.
+    private var streamStartAt: Double?
     /// Latched once a re-show tick opens a gap episode; cleared by the next present or idle
     /// classification, so an episode is counted exactly ONCE however many re-shows span it.
     private var gapEpisodeOpen = false
@@ -170,14 +204,19 @@ public struct PacerDepthPolicy: Sendable, Equatable {
         return min(config.maxIntervalSeconds, max(config.minIntervalSeconds, raw))
     }
 
-    /// The late boundary: `max(absFloor, factor × expectedInterval)`.
+    /// The late boundary: `max(absFloor, factor × expectedInterval) + slackFraction × expectedInterval`.
+    /// The slack term (fix 2a) sits ON TOP of the base boundary so ±routine-jitter arrivals — gaps
+    /// a few ms past the bare boundary at dense flow — stop classifying late (see
+    /// ``Config/lateSlackFraction``).
     public var lateThresholdSeconds: Double {
         max(config.absoluteLateFloorSeconds, config.lateGapFactor * expectedIntervalSeconds)
+            + config.lateSlackFraction * expectedIntervalSeconds
     }
 
     /// Fold one decoded-frame SUBMIT (client-monotonic seconds). Also evaluates demote so a
     /// post-idle resume demotes BEFORE the pacer re-primes (avoids one extra held frame at resume).
     public mutating func noteArrival(_ now: Double) {
+        if streamStartAt == nil { streamStartAt = now }
         if let last = lastArrival {
             let gap = now - last
             if gap > 0 && gap <= config.idleGapSeconds {
@@ -218,7 +257,6 @@ public struct PacerDepthPolicy: Sendable, Equatable {
             if lateCount < .max { lateCount += 1 }
             lateTimes.append(now)
             if lateTimes.count > 4 { lateTimes.removeFirst(lateTimes.count - 4) }
-            lastLateAt = now
             evaluatePromote(now)
         }
         gapEpisodeOpen = false   // any present closes an open re-show episode
@@ -268,6 +306,9 @@ public struct PacerDepthPolicy: Sendable, Equatable {
 
     private mutating func evaluatePromote(_ now: Double) {
         guard adaptEnabled, depth == 1 else { return }
+        // Fix 2c — cold-start guard: connection bring-up produces transient gap shapes that look
+        // late; ignore promote DECISIONS (never the counters) until the warmup elapses.
+        guard let start = streamStartAt, now - start >= config.promoteWarmupSeconds else { return }
         let windowStart = now - config.promoteWindowSeconds
         var recent = 0
         for t in lateTimes where t >= windowStart && t <= now { recent += 1 }
@@ -280,7 +321,13 @@ public struct PacerDepthPolicy: Sendable, Equatable {
     private mutating func evaluateDemote(_ now: Double) {
         guard depth > 1 else { return }
         guard now - promotedAt >= config.minHoldSeconds else { return }
-        guard now - lastLateAt >= config.demoteCleanSeconds else { return }
+        // Fix 2b — demote tolerance: demote when the trailing dwell window holds ≤ tolerance late
+        // events (tolerance 0 ≡ the old strict "now − lastLate ≥ dwell": the newest late is always
+        // in the capped ring). A lone genuine late no longer re-arms the full dwell.
+        let windowStart = now - config.demoteCleanSeconds
+        var recent = 0
+        for t in lateTimes where t > windowStart && t <= now { recent += 1 }
+        guard recent <= config.demoteToleranceLates else { return }
         depth = 1
     }
 

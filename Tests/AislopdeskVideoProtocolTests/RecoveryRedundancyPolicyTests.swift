@@ -75,27 +75,41 @@ final class RecoveryRedundancyPolicyTests: XCTestCase {
         }
     }
 
-    func testLossyClockFiresAtOneRTT() {
+    /// FIX 3 (2026-06-11): the lossy deadline is `max(1·RTT, 60 ms, 1.5·RTT)` — at rtt=50 ms the
+    /// 1.5·RTT term dominates (75 ms), still strictly faster than the normal 2·RTT (100 ms).
+    func testLossyClockFiresAtFloorOfOneAndAHalfRTT() {
         let policy = RecoveryPolicy()
-        // rtt = 50 ms: lossy deadline = max(1×50, 30) = 50 ms.
-        XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.049, rtt: 0.05, observingLoss: true))
-        XCTAssertTrue(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.050, rtt: 0.05, observingLoss: true))
+        // Sample points sit just off the exact 75 ms boundary (1.5 × 0.05 is not FP-exact).
+        XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.0749, rtt: 0.05, observingLoss: true))
+        XCTAssertTrue(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.0751, rtt: 0.05, observingLoss: true))
         // The normal clock at the same point still waits for 2·RTT.
-        XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.050, rtt: 0.05, observingLoss: false))
+        XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.0751, rtt: 0.05, observingLoss: false))
         XCTAssertTrue(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.100, rtt: 0.05, observingLoss: false))
     }
 
     /// At rtt=10 ms the bare 1·RTT clock would escalate before any refresh could physically
-    /// arrive — the 30 ms floor binds (escalates at 30 ms, not 10 ms).
+    /// arrive — the 60 ms floor binds (escalates at 60 ms, not 10/15/30 ms).
     func testLossyFloorBindsAtLowRTT() {
         let policy = RecoveryPolicy()
         XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.010, rtt: 0.01, observingLoss: true))
-        XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.029, rtt: 0.01, observingLoss: true))
-        XCTAssertTrue(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.030, rtt: 0.01, observingLoss: true))
+        XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.059, rtt: 0.01, observingLoss: true))
+        XCTAssertTrue(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.060, rtt: 0.01, observingLoss: true))
+    }
+
+    /// THE MEASURED DEFECT PIN (202 requestIDR vs 100 LTR refreshes): at rtt=20 ms — the live
+    /// path's band — the loss-state-halved deadline NEVER drops below 60 ms (an LTR response
+    /// needs host encode + flight + decode ≈ 40-60 ms; the old max(1·RTT, 30 ms) = 30 ms beat it).
+    func testLossyDeadlineNeverBelow60msAtRtt20() {
+        let policy = RecoveryPolicy()
+        for elapsed in stride(from: 0.0, to: 0.060, by: 0.001) {
+            XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: elapsed, rtt: 0.02, observingLoss: true),
+                           "must not escalate at \(Int(elapsed * 1000)) ms (< the 60 ms floor)")
+        }
+        XCTAssertTrue(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.060, rtt: 0.02, observingLoss: true))
     }
 
     /// The NORMAL (non-lossy) path has NO floor: at a tiny RTT it escalates at 2·RTT even below
-    /// 30 ms — byte-identical to the pre-component-5 policy.
+    /// the lossy floor — byte-identical to the pre-component-5 policy.
     func testNormalPathHasNoFloor() {
         let policy = RecoveryPolicy()
         XCTAssertTrue(policy.shouldEscalateToIDR(elapsedSinceRequest: 0.012, rtt: 0.006, observingLoss: false))
@@ -106,7 +120,20 @@ final class RecoveryRedundancyPolicyTests: XCTestCase {
         let policy = RecoveryPolicy()
         XCTAssertEqual(policy.idrTimeoutRTTMultiple, 2.0)
         XCTAssertEqual(policy.lossyIdrTimeoutRTTMultiple, 1.0)
-        XCTAssertEqual(policy.lossyEscalationFloor, 0.03)
+        XCTAssertEqual(policy.lossyEscalationFloor, 0.06)
+        XCTAssertEqual(policy.lossyEscalationFloorRTTMultiple, 1.5)
+    }
+
+    /// `AISLOPDESK_ESCALATION_FLOOR_MS` env resolution: default 60 ms, clamp 20...500,
+    /// absent/garbage/out-of-band → default.
+    func testEscalationFloorEnvResolution() {
+        XCTAssertEqual(RecoveryPolicy.escalationFloorSeconds(env: [:]), 0.06)
+        XCTAssertEqual(RecoveryPolicy.escalationFloorSeconds(env: ["AISLOPDESK_ESCALATION_FLOOR_MS": "100"]), 0.1)
+        XCTAssertEqual(RecoveryPolicy.escalationFloorSeconds(env: ["AISLOPDESK_ESCALATION_FLOOR_MS": "20"]), 0.02)
+        XCTAssertEqual(RecoveryPolicy.escalationFloorSeconds(env: ["AISLOPDESK_ESCALATION_FLOOR_MS": "500"]), 0.5)
+        XCTAssertEqual(RecoveryPolicy.escalationFloorSeconds(env: ["AISLOPDESK_ESCALATION_FLOOR_MS": "19"]), 0.06, "below the clamp → default")
+        XCTAssertEqual(RecoveryPolicy.escalationFloorSeconds(env: ["AISLOPDESK_ESCALATION_FLOOR_MS": "501"]), 0.06, "above the clamp → default")
+        XCTAssertEqual(RecoveryPolicy.escalationFloorSeconds(env: ["AISLOPDESK_ESCALATION_FLOOR_MS": "garbage"]), 0.06)
     }
 
     // MARK: LossObservationWindow — the loss-observing predicate

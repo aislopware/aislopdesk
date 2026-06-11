@@ -793,6 +793,9 @@ struct ClosedLoopResult {
     var phasePeakDepthV2: [Int] = []
     var phaseUnrecovered: [Int] = []
     var phaseAvgEncBytes: [Int] = []
+    /// FIX 1 (2026-06-11, FEC ladder floor): whether the adaptive tier EVER selected OFF during
+    /// the run — the floor's contract is that it never does (without AISLOPDESK_FEC_ALLOW_OFF).
+    var sawOffTier = false
     var adverseUnrecSecondHalf = 0     // steady-state (after the FEC climb settles) — the fair A/B window
     var bitrateFellInAdverse = false
     var bitrateRecoveredAfter = false
@@ -956,6 +959,7 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
                     let rtt = NetworkEstimate.computeRTTMillis(hostNowMs: hostNowMs, latestHostSendTs: rx.latestHostSendTs, clientHoldMs: rx.clientHoldMs)
                     est.fold(rttMillis: rtt, framesReceived: rx.framesReceived, unrecovered: rx.unrecovered, owdJitterMicros: rx.owdJitterMicros)
                     if enableFEC, fixedTier == nil { currentTier = AdaptiveFECPolicy.tier(forLossRate: est.lossRate, previousTier: currentTier) }
+                    if currentTier == 1 { result.sawOffTier = true }
                     phasePeakTier = maxTier(phasePeakTier, currentTier)
                     if enableABR {
                         let target = cc.onReport(est)
@@ -2056,7 +2060,8 @@ struct PacerDepthScenarioResult {
 /// run between presents. Phases:
 ///   A 3s clean 60fps              → never engages (late=0, gaps=0, depth=1)
 ///   B 10s every-20th-frame drop   → promotes ≤1.5s after onset, holds depth 2 to phase end
-///   C 8s clean                    → demotes 2.5-4s after the last late, depth 1 at end
+///   C 8s clean                    → demotes 2-4s after the last late (fix-2b tolerance anchors
+///                                   the dwell at the 2nd-most-recent late), depth 1 at end
 ///   D 60→30fps downshift, no loss → ≤1 crossover late, NO promotion; with the cadence hint: 0
 ///   E motion stop + typing (180ms)→ zero lates (idle + dense gates)
 func runPacerDepthScenario(verbose: Bool) -> PacerDepthScenarioResult {
@@ -2391,8 +2396,13 @@ func printRecoveryRedundancyVerdict(_ rr: RecoveryRedundancyScenarioResult) {
         && rr.redundant.hostDuplicatesDropped >= 1                          // host absorbed the copies
         && rr.redundant.hostAdmitted == 1                                   // exactly one action
     let rrDedup = rr.dedupOn.recoveryEncodes == 1 && rr.dedupOff.recoveryEncodes >= 2
-    let rrFast = rr.fastOn.freezeMs + 40 <= rr.fastOff.freezeMs             // ~50 ms shorter
-    print("    #9 recovery-redundancy: lost-request freeze 3×-copies beats single ≥40%=\(rrRedundant ? "YES" : "no")  straddle dedup ON=1/OFF≥2 HW encodes=\(rrDedup ? "YES" : "no")  halved clock ≥40ms faster when all copies lost=\(rrFast ? "YES" : "no")  \(rrRedundant && rrDedup && rrFast ? "✅" : "⚠️")")
+    // FIX 3 (2026-06-11): the lossy clock is now max(1·RTT, 60ms, 1.5·RTT) — at the arm's
+    // rtt=50ms that is 75ms vs the normal 100ms, so the ON−OFF escalation-deadline gap is ~25ms
+    // (was ~50ms at the old 30ms floor), of which the host's 60fps frame-boundary quantization
+    // can eat up to one frame interval (16.7ms) — measured 152 vs 168ms. The shrunken margin is
+    // the deliberate price of never escalating before an LTR refresh can physically land.
+    let rrFast = rr.fastOn.freezeMs + 8 <= rr.fastOff.freezeMs              // ≥ 25 − 16.7 ms
+    print("    #9 recovery-redundancy: lost-request freeze 3×-copies beats single ≥40%=\(rrRedundant ? "YES" : "no")  straddle dedup ON=1/OFF≥2 HW encodes=\(rrDedup ? "YES" : "no")  lossy clock ≥8ms faster when all copies lost=\(rrFast ? "YES" : "no")  \(rrRedundant && rrDedup && rrFast ? "✅" : "⚠️")")
 }
 
 func runClosedLoopSuite(framesPerPhase: Int) {
@@ -2479,21 +2489,32 @@ func runClosedLoopSuite(framesPerPhase: Int) {
                  rr.baseline.freezeMs, rr.redundant.freezeMs,
                  rr.baseline.freezeMs > 0 ? (1 - rr.redundant.freezeMs / rr.baseline.freezeMs) * 100 : 0))
     print("    straddle dedup (REAL HW)  : ON encodes=\(rr.dedupOn.recoveryEncodes) (expect 1)  OFF control=\(rr.dedupOff.recoveryEncodes) (expect ≥2 — the pre-existing LTR straddle bug)")
-    print(String(format: "    all-copies-lost residual  : fast-escalation ON=%.0fms  vs  OFF=%.0fms (halved clock at max(1·RTT, 30ms))",
+    print(String(format: "    all-copies-lost residual  : fast-escalation ON=%.0fms  vs  OFF=%.0fms (halved clock at max(1·RTT, 60ms, 1.5·RTT) — the fix-3 floor)",
                  rr.fastOn.freezeMs, rr.fastOff.freezeMs))
 
     print("\n  ===== CLOSED-LOOP VERDICT =====")
     print("    #2 ABR        : bitrate fell under CORROBORATED loss (RTT inflated)=\(on.bitrateFellInAdverse ? "YES" : "no")  recovered after=\(on.bitrateRecoveredAfter ? "YES" : "no")  \(on.bitrateFellInAdverse && on.bitrateRecoveredAfter ? "✅" : "⚠️")")
     print("    #2b weather   : bitrate HELD under uncorroborated weather loss (flat RTT)=\(weatherHeld ? "YES" : "no")  \(weatherHeld ? "✅" : "⚠️")")
-    let tierClimbed = maxTier(on.phasePeakTier[1], on.phasePeakTier[0]) == on.phasePeakTier[1] && on.phasePeakTier[1] != on.phasePeakTier[0]
-    print("    #3 adaptiveFEC: tier escalated under loss=\(tierClimbed ? "YES" : "no")  reduced unrecovered=\(fecHelped ? "YES" : "no")  \(tierClimbed && fecHelped ? "✅" : "⚠️")")
+    // FIX 1 (2026-06-11, FEC ladder floor): pre-floor, the clean phase walked the tier to OFF, so
+    // the adverse onset landed on an UNPROTECTED stream — visible unrecovered loss, then a
+    // tier climb (the old "tier escalated under loss" check). With the floor the stream enters
+    // the adverse phase already holding g10, which absorbs the scripted one-hole-per-group loss
+    // COMPLETELY: the loss EWMA never rises and there is nothing to escalate from. The verdict
+    // now pins the floor's contract: never OFF, adverse fully recovered at the standing floor,
+    // and never worse than the pinned-g5 baseline.
+    let fecNeverOff = !on.sawOffTier
+    let fecAbsorbed = on.phaseUnrecovered[1] == 0
+    print("    #3 adaptiveFEC: never relaxed to OFF (ladder floor)=\(fecNeverOff ? "YES" : "no")  adverse absorbed at the standing floor (unrec=0)=\(fecAbsorbed ? "YES" : "no")  reduced unrecovered vs pinned-g5=\(fecHelped ? "YES" : "no")  \(fecNeverOff && fecAbsorbed && fecHelped ? "✅" : "⚠️")")
     let depthGrew = on.phasePeakDepth[1] > on.phasePeakDepth[0]
     print("    #4 adaptiveJit: playout depth grew under jitter=\(depthGrew ? "YES" : "no")  \(depthGrew ? "✅" : "⚠️")")
     let pdClean = pd.cleanLates == 0 && pd.cleanGaps == 0 && pd.cleanDepthStayed1
     let pdPromote = (pd.promoteAfterOnsetMs ?? .infinity) <= 1500 && pd.heldThroughBurst
-    let pdDemote = pd.demoteAfterLastLateMs.map { $0 >= 2500 && $0 <= 4000 } ?? false
+    // FIX 2b (2026-06-11): the default demote tolerance (1) anchors the dwell at the SECOND-most-
+    // recent late — with the burst's ~333ms late spacing the earliest demote is ~dwell−333 ≈
+    // 2.2s after the LAST late (was a strict ≥2.5s at tolerance 0).
+    let pdDemote = pd.demoteAfterLastLateMs.map { $0 >= 2000 && $0 <= 4000 } ?? false
     let pdImmune = pd.downshiftLates <= 1 && !pd.downshiftPromoted && pd.downshiftHintLates == 0 && pd.typingLates == 0
-    print("    #4b depth-v2  : clean never engages=\(pdClean ? "YES" : "no")  promote ≤1.5s into 5% burst + holds=\(pdPromote ? "YES" : "no")  demote 2.5-4s after last late=\(pdDemote ? "YES" : "no")  downshift/typing immune=\(pdImmune ? "YES" : "no")  \(pdClean && pdPromote && pdDemote && pdImmune && pd.depth1AtRecoveryEnd ? "✅" : "⚠️")")
+    print("    #4b depth-v2  : clean never engages=\(pdClean ? "YES" : "no")  promote ≤1.5s into 5% burst + holds=\(pdPromote ? "YES" : "no")  demote 2-4s after last late=\(pdDemote ? "YES" : "no")  downshift/typing immune=\(pdImmune ? "YES" : "no")  \(pdClean && pdPromote && pdDemote && pdImmune && pd.depth1AtRecoveryEnd ? "✅" : "⚠️")")
     let hwTracked = on.phaseAvgEncBytes[1] < on.phaseAvgEncBytes[0]
     print("    HW actuation  : encoded bytes shrank with bitrate=\(hwTracked ? "YES" : "no") (real VTSessionSetProperty took effect)  \(hwTracked ? "✅" : "⚠️")")
     print("    #5 delay-targeting: converged ≤2.5s=\(bnConverged ? "YES" : "no")  tail queue <25ms=\(bnDrained ? "YES" : "no")  no pumping=\(bnNoPump ? "YES" : "no")  \(bnConverged && bnDrained && bnNoPump ? "✅" : "⚠️")")
@@ -2705,9 +2726,12 @@ if args.contains("--pacer-depth") {
     let pd = runPacerDepthScenario(verbose: true)
     let pdClean = pd.cleanLates == 0 && pd.cleanGaps == 0 && pd.cleanDepthStayed1
     let pdPromote = (pd.promoteAfterOnsetMs ?? .infinity) <= 1500 && pd.heldThroughBurst
-    let pdDemote = pd.demoteAfterLastLateMs.map { $0 >= 2500 && $0 <= 4000 } ?? false
+    // FIX 2b (2026-06-11): the default demote tolerance (1) anchors the dwell at the SECOND-most-
+    // recent late — with the burst's ~333ms late spacing the earliest demote is ~dwell−333 ≈
+    // 2.2s after the LAST late (was a strict ≥2.5s at tolerance 0).
+    let pdDemote = pd.demoteAfterLastLateMs.map { $0 >= 2000 && $0 <= 4000 } ?? false
     let pdImmune = pd.downshiftLates <= 1 && !pd.downshiftPromoted && pd.downshiftHintLates == 0 && pd.typingLates == 0
-    print("    #4b depth-v2  : clean never engages=\(pdClean ? "YES" : "no")  promote ≤1.5s into 5% burst + holds=\(pdPromote ? "YES" : "no")  demote 2.5-4s after last late=\(pdDemote ? "YES" : "no")  downshift/typing immune=\(pdImmune ? "YES" : "no")  \(pdClean && pdPromote && pdDemote && pdImmune && pd.depth1AtRecoveryEnd ? "✅" : "⚠️")")
+    print("    #4b depth-v2  : clean never engages=\(pdClean ? "YES" : "no")  promote ≤1.5s into 5% burst + holds=\(pdPromote ? "YES" : "no")  demote 2-4s after last late=\(pdDemote ? "YES" : "no")  downshift/typing immune=\(pdImmune ? "YES" : "no")  \(pdClean && pdPromote && pdDemote && pdImmune && pd.depth1AtRecoveryEnd ? "✅" : "⚠️")")
     print("\naislopdesk-loopback-validate: COMPLETE (pacer-depth only) — exiting 0")
     exit(0)
 }
@@ -2722,7 +2746,7 @@ if args.contains("--recovery-loss") {
                  rr.baseline.freezeMs, rr.redundant.freezeMs,
                  rr.baseline.freezeMs > 0 ? (1 - rr.redundant.freezeMs / rr.baseline.freezeMs) * 100 : 0))
     print("    straddle dedup (REAL HW)  : ON encodes=\(rr.dedupOn.recoveryEncodes) (expect 1)  OFF control=\(rr.dedupOff.recoveryEncodes) (expect ≥2 — the pre-existing LTR straddle bug)")
-    print(String(format: "    all-copies-lost residual  : fast-escalation ON=%.0fms  vs  OFF=%.0fms (halved clock at max(1·RTT, 30ms))",
+    print(String(format: "    all-copies-lost residual  : fast-escalation ON=%.0fms  vs  OFF=%.0fms (halved clock at max(1·RTT, 60ms, 1.5·RTT) — the fix-3 floor)",
                  rr.fastOn.freezeMs, rr.fastOff.freezeMs))
     printRecoveryRedundancyVerdict(rr)
     print("\naislopdesk-loopback-validate: COMPLETE (recovery-loss only) — exiting 0")
