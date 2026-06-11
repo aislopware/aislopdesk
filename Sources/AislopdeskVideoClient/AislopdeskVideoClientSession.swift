@@ -681,7 +681,7 @@ public actor AislopdeskVideoClientSession {
         let result = reassembler.ingest(fragment)
         switch result {
         case .completed(let frame):
-            dbg("frame reassembled (keyframe=\(frame.keyframe)) → decoding")
+            dbg("frame reassembled #\(frame.frameID) (kf=\(frame.keyframe) ltr=\(frame.isLTR) fec=\(frame.recoveredViaFEC)) → decoding")
             winFramesReceived &+= 1
             if frame.recoveredViaFEC {
                 winFecRecovered &+= 1
@@ -715,6 +715,7 @@ public actor AislopdeskVideoClientSession {
     /// by BOTH the `.dropped` return and the `nextDroppedFrame()` drain so neither path can silently
     /// swallow a loss (R7 #3).
     private func signalRecovery(lostFrameID lost: UInt32) {
+        dbg("frame #\(lost) declared LOST (unrecoverable)")
         // Network-feedback telemetry: count an unrecoverable loss (the loss-rate numerator).
         winUnrecovered &+= 1
         // Component 5: feed the loss-observing window (gates the halved escalation clock).
@@ -800,6 +801,7 @@ public actor AislopdeskVideoClientSession {
             // before — the host fold is idempotent.
             if frame.isLTR || frame.keyframe {
                 transport.send(RecoveryMessage.ack(streamSeq: frame.frameID).encode(), on: .recovery)
+                dbg("acked #\(frame.frameID) (kf=\(frame.keyframe) ltr=\(frame.isLTR)) — decoder now holds it")
             }
             dbgDecodeCount += 1
             if dbgDecodeCount == 1 || dbgDecodeCount % 15 == 0 {
