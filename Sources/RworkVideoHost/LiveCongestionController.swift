@@ -165,15 +165,16 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// re-bashing the ceiling every recovery (the measured 25↔40Mbps pumping). `nil` = no knee known.
     public private(set) var kneeBps: Int?
     /// Tick at which the knee memory expires (refreshed by every queue-corroborated decrease).
+    ///
+    /// NOTE (2026-06-11): an "escalating caution" variant — doubling the above-knee divisor per
+    /// knee re-confirmation (÷8→÷16→÷32→÷64) — was built, deployed and REVERTED the same day.
+    /// Two live 4G sessions falsified it: cellular RTT wobble (p50 46 → p90 68ms) is largely
+    /// rate-INDEPENDENT (identical profile at 3M and 11.5M), so each wobble trims −5% and resets
+    /// the hold; any climb slower than the base ÷8 (~0.94M/s at a 12M ceiling) cannot cross the
+    /// material-actuation gap between wobble cuts and the rate PINS near the floor (3.45M for 91%
+    /// of a session, soft image, zero latency benefit). The constant ÷8 caution rides through the
+    /// wobble and breathes 3–11M — measurably better quality at the same RTT. Keep the knee simple.
     public private(set) var kneeExpiresAtTick = 0
-    /// ESCALATING CAUTION (2026-06-11, 4G probe-cycle damping): how many queue-corroborated decreases
-    /// have CONFIRMED this knee while it was still alive. The first live 4G session showed the
-    /// cautious-but-constant climb above the knee still re-bashed the ~4-5Mbps capacity every
-    /// 30-60s — a felt RTT bump per cycle. Each re-confirmation ("we hit the wall at the same place
-    /// again") DOUBLES the above-knee caution (÷8 → ÷16 → ÷32 → ÷64, capped), so on a
-    /// stable-capacity path the oscillation amplitude decays toward a hover; a genuinely shifted
-    /// path lets the knee expire (TTL) which resets confirmations and restores the base climb.
-    public private(set) var kneeConfirmations = 0
 
     /// Additive-increase step in bps (≥ 1 so a tiny ceiling still makes progress).
     private var increaseStep: Int { max(1, ceiling / Self.increaseDivisor) }
@@ -235,9 +236,8 @@ public struct LiveCongestionController: Sendable, Equatable {
             && e.smoothedRTTMillis + 1.0 >= prevSmoothedRTTMillis   // not improving — see prevSmoothedRTTMillis
 
         // Knee TTL: a knee that hasn't been re-confirmed by a queue-corroborated decrease within
-        // `kneeTTLTicks` is stale path knowledge — forget it (and its confirmation count) so the
-        // climb is uncapped again.
-        if kneeBps != nil, ticks >= kneeExpiresAtTick { kneeBps = nil; kneeConfirmations = 0 }
+        // `kneeTTLTicks` is stale path knowledge — forget it so the climb is uncapped again.
+        if kneeBps != nil, ticks >= kneeExpiresAtTick { kneeBps = nil }
 
         // LOSS-TOLERANCE #4: sub-catastrophic loss acts only when CORROBORATED by RTT inflation on
         // the same report (queue evidence). Weather loss — the measured rate-independent ~1%/3–9%
@@ -282,7 +282,7 @@ public struct LiveCongestionController: Sendable, Equatable {
             // built a queue instead of re-bashing it every recovery (25↔40Mbps pumping = the felt
             // sawtooth).
             let cautious = kneeBps.map { current >= $0 } ?? false
-            let step = cautious ? max(1, increaseStep / cautionDivisor()) : increaseStep
+            let step = cautious ? max(1, increaseStep / Self.kneeCautionDivisor) : increaseStep
             current = min(ceiling, current + step)
         }
         return current
@@ -299,37 +299,15 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// weather/policer evidence, not path-capacity knowledge, so it deliberately sets no knee.
     private mutating func decrease(to next: Int, queueCorroborated: Bool) {
         if next < current {
-            let preCut = current
             current = next
             holdUntilTick = ticks + Self.holdTicks
             rttHoldUntilTick = ticks + Self.rttHoldTicks
             rttInflatedStreak = 0
             if queueCorroborated {
-                // ESCALATING CAUTION — refined 2026-06-11 after the first deploy MISFIRED on 4G:
-                // a confirmation must mean "we CLIMBED back up and hit the same wall again", so it
-                // requires the pre-cut rate to have risen at least one full additive step ABOVE the
-                // remembered knee. Without that gate, the connect-phase cut CASCADE (11.4M → 3M in
-                // ~6 consecutive cuts of ONE congestion episode, no climbing in between — increases
-                // are hold-down-blocked) racked conf to max in 4s and pinned the whole session at
-                // the 3M floor (soft image) while RTT was identical to the un-escalated build.
-                // A cascade cut below/at the knee now just deepens the knee, KEEPING the count.
-                if let knee = kneeBps {
-                    if preCut >= knee + increaseStep {
-                        kneeConfirmations = min(kneeConfirmations + 1, 4)
-                    }
-                } else {
-                    kneeConfirmations = 1
-                }
                 kneeBps = current
                 kneeExpiresAtTick = ticks + Self.kneeTTLTicks
             }
         }
-    }
-
-    /// The effective above-knee additive-increase divisor: the base ``kneeCautionDivisor`` doubled
-    /// per knee re-confirmation beyond the first (8 → 16 → 32 → 64, capped at 4 confirmations).
-    private func cautionDivisor() -> Int {
-        Self.kneeCautionDivisor << max(0, min(kneeConfirmations - 1, 3))
     }
 
     // MARK: Actuation churn gate (pure — used by the host, unit-tested here)
