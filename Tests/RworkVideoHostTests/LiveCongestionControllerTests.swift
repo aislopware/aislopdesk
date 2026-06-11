@@ -208,16 +208,21 @@ final class LiveCongestionControllerTests: XCTestCase {
         XCTAssertEqual(hard.after, Int(Double(hard.before) * LiveCongestionController.rttDecreaseFloorFactor),
                        "a huge queue cuts at the hard clamp floor in one step")
 
-        // Gentle end: baseline ~50ms, smoothed nudged just past both gates (×1.25 and +15ms) — the
-        // proportional factor lands above the cap, so the trim is at most −(1 − cap).
+        // Gentle end: LOW baseline (~10ms — the absolute 15ms slack governs, the proportional
+        // fraction is sub-floor there) with smoothed crossing the min+15 gate fast enough to
+        // outrun the ~1%/fold min-drift but landing within 5% of it (sample 31 — swept
+        // numerically; ≤30 the drifting gate is never crossed, ≥36 the cut is deeper than the
+        // cap). On HIGH baselines a barely-over scenario chases the 1.75× gate forever BY DESIGN
+        // (proportional slack — see testHighBaselineWobbleDoesNotCut), so the gentle-cap contract
+        // is pinned where it actually applies.
         var gentle = warmedController(ceiling: ceiling)
         var est2 = NetworkEstimate()
-        est2.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        est2.fold(rttMillis: 10, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
         var sawGentleDecrease = false
-        for _ in 0..<30 {
-            est2.fold(rttMillis: 72, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        for _ in 0..<40 {
+            est2.fold(rttMillis: 31, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
             let before = gentle.current
-            let raw = (est2.minRTTMillis + LiveCongestionController.rttSlackMillis) / est2.smoothedRTTMillis
+            let raw = (est2.minRTTMillis + LiveCongestionController.effectiveSlackMillis(minRTTMillis: est2.minRTTMillis)) / est2.smoothedRTTMillis
             let after = gentle.onReport(est2)
             if after < before {
                 sawGentleDecrease = true
@@ -325,6 +330,49 @@ final class LiveCongestionControllerTests: XCTestCase {
     // showed cellular RTT wobble is rate-independent, so any climb slower than the base ÷8 cannot
     // cross the material-actuation gap between wobble trims and the rate pins at the floor (soft
     // image, zero latency benefit). See LiveCongestionController.kneeExpiresAtTick doc.
+
+    // MARK: Baseline-proportional slack (2026-06-11, cellular wobble fix)
+
+    /// CELLULAR WOBBLE (measured live on 4G, minRTT ≈ 40ms): smoothed RTT floating in the
+    /// `min×1.25 < smoothed < min×1.75` band is rate-independent path texture — it must NOT cut.
+    /// With the old fixed 15ms slack, 40 → 60ms tripped both gates and perpetual −5% trims pinned
+    /// the rate at the floor on a path that carries 8M+.
+    func testHighBaselineWobbleDoesNotCut() {
+        var ctrl = warmedController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        est.fold(rttMillis: 40, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        // Sustained 60ms on a 40ms baseline: past ×1.25 (50) and past min+15 (55), but inside
+        // min + 0.75×min (70) — weather band, never a cut.
+        for _ in 0..<100 {
+            est.fold(rttMillis: 60, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+        }
+        XCTAssertEqual(ctrl.current, ceiling, "sub-1.75×baseline wobble on a cellular path never cuts")
+    }
+
+    /// A REAL queue on the same high baseline (smoothed well past min + 0.75×min) still cuts — the
+    /// proportional slack reclassifies wobble, not genuine congestion.
+    func testHighBaselineRealQueueStillCuts() {
+        var ctrl = warmedController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        est.fold(rttMillis: 40, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        var cut = false
+        for _ in 0..<20 {
+            est.fold(rttMillis: 120, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            let before = ctrl.current
+            if ctrl.onReport(est) < before { cut = true; break }
+        }
+        XCTAssertTrue(cut, "smoothed ≥ min + 0.75×min on a 40ms baseline is a real queue → cuts")
+    }
+
+    /// LAN baselines are unchanged by the proportional slack: 0.75 × 10ms < the 15ms absolute floor,
+    /// so the effective slack is still exactly 15ms.
+    func testEffectiveSlackUnchangedOnLANBaseline() {
+        XCTAssertEqual(LiveCongestionController.effectiveSlackMillis(minRTTMillis: 10), 15.0)
+        XCTAssertEqual(LiveCongestionController.effectiveSlackMillis(minRTTMillis: 5), 15.0)
+        XCTAssertEqual(LiveCongestionController.effectiveSlackMillis(minRTTMillis: 40), 30.0)
+        XCTAssertEqual(LiveCongestionController.effectiveSlackMillis(minRTTMillis: .infinity), 15.0)
+    }
 
     /// The absolute slack governs on a tiny baseline: smoothedRTT 3× the minRTT (well past the
     /// multiplicative gate) but only a few ms of ABSOLUTE inflation must never decrease.
