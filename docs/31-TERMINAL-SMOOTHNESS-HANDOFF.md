@@ -43,6 +43,6 @@ After the video path reached Parsec parity, this round made the TERMINAL path (h
 1. **HW feel-test + deploy** (both ends; then type-under-flood, drag-resize, multi-pane flood on the real WAN).
 2. **iOS real-device check** of the gated tick (type/echo, pan-scrollback, cursor blink) — simulator keeps the free-run deliberately; blink rides the renderer's own present path in theory, unverified on device.
 3. **Predictive-echo glitch caret** (docs/12 §B deferred design) — now HAS its RTT gate (`latencyMS` > ~30 ms). The remaining latency masker for WAN typing.
-4. **Echo-RTT AUTOTYPE instrumentation** — make `check-macos.sh --connect` emit keystroke→render latency numbers, not pass/fail.
+4. ~~Echo-RTT AUTOTYPE instrumentation~~ — **DONE** (`411491d`): `AISLOPDESK_ECHO_PROBE=1` + check-macos step 4d. Loopback baseline: key→render-feed **12.4 ms**.
 5. **Off-main feed** (per-surface serial queue for `write_output` — the C contract allows it; needs a teardown barrier vs `close()`).
 6. `TerminalModeTracker` could take the same memchr ground fast path as `HostOutputSniffer`.
