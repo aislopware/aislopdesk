@@ -252,7 +252,11 @@ public actor MuxNWConnection {
         // already `try?`s. CONTROL stays AWAITED: its send throws are load-bearing
         // (AislopdeskClient.flushAckIfPending re-arms ackPending on a throw) and it is
         // low-rate, so the round trip costs nothing.
-        let dataCh = MuxSubChannel(channelID: id, channel: .data) { channelID, inner in
+        // The DATA sub-channel's consumedSink routes the consumer's "I actually processed
+        // N wire bytes" signal back here (credit-at-CONSUMPTION — see recordConsumed).
+        let dataCh = MuxSubChannel(channelID: id, channel: .data, consumedSink: { [weak self] bytes in
+            await self?.recordConsumed(id, bytes: bytes)
+        }) { channelID, inner in
             dataLink.sendPipelined(MuxEnvelopeCodec.encode(.channelData(channelID: channelID, payload: inner)))
         }
         let controlCh = MuxSubChannel(channelID: id, channel: .control, sendWindowBytes: nil) { channelID, inner in
@@ -262,6 +266,19 @@ public actor MuxNWConnection {
         controlChannels[id] = controlCh
         dataReceiveWindows[id] = ReceiveWindowAccountant(initialWindow: MuxFlowControl.initialWindowBytes)
         return (dataCh, controlCh)
+    }
+
+    /// Credit-at-CONSUMPTION receiver emit (FIX #2 lineage): accounts `bytes` the channel's
+    /// REAL consumer reports (the client's render drain having ingested a batch / the host's
+    /// PTY writer having written an input frame) and, once the accountant's threshold is
+    /// crossed, grants the accumulated credit back to the sender. The grant is written on
+    /// the CONTROL link (never starved behind a flooded DATA link) and PIPELINED (it must
+    /// never suspend anything — this can be called from any consumer context). A closed
+    /// channel's accountant is already removed (closeChannel/finishLink) → no-op.
+    private func recordConsumed(_ id: UInt32, bytes: Int) {
+        guard let grant = dataReceiveWindows[id]?.consume(bytes), grant > 0 else { return }
+        let adjust = MuxEnvelopeCodec.encode(.windowAdjust(channelID: id, bytesToAdd: UInt32(grant)))
+        controlLink.sendPipelined(adjust)
     }
 
     private func makeReceiveLoop(for link: Link) -> Task<Void, Never> {
@@ -400,29 +417,15 @@ public actor MuxNWConnection {
             if let target {
                 // Await INLINE (no Task) so this frame is fully delivered before the next frame on
                 // this link is routed — per-channel order = wire order.
-                let consumed = await target.deliver(payload: payload)
-                // RECEIVER emit (FIX #2): account the consumed DATA bytes; once the half-window
-                // threshold is crossed, grant the accumulated credit back to the sender via a
-                // windowAdjust. The grant is written on the CONTROL link, NOT the DATA link it just
-                // drained: under a sustained BIDIRECTIONAL flood the DATA link is full in both
-                // directions, so emitting the grant INLINE on the DATA receive loop would block the
-                // ONLY task draining inbound DATA on a write that cannot complete until the peer
-                // drains — and the peer is symmetrically stuck → classic credit deadlock. The
-                // CONTROL sub-channel is infinite-window / small-frame / fast-draining (its whole
-                // reason for existing — the data/control split), so the grant always gets out. The
-                // receipt side applies a windowAdjust to channel X regardless of which link it
-                // arrived on (it matches on channelID, see the receipt block above), so routing it
-                // via CONTROL is transparent. Still INLINE on this actor so the grant decision cannot
-                // be reordered against the delivery that triggered it.
-                // PIPELINED grant emission: the awaited variant suspended the ONLY task
-                // draining this link's inbound on a control-socket write — the exact
-                // deadlock shape the FIX #2 link-split defends against. With a pipelined
-                // enqueue the grant can never block the receive loop, making that deadlock
-                // structurally impossible (not merely mitigated).
-                if link == .data, let grant = dataReceiveWindows[channelID]?.consume(consumed), grant > 0 {
-                    let adjust = MuxEnvelopeCodec.encode(.windowAdjust(channelID: channelID, bytesToAdd: UInt32(grant)))
-                    controlLink.sendPipelined(adjust)
-                }
+                //
+                // NO credit is granted here (credit-at-CONSUMPTION): granting at demux time
+                // let an output flood buffer WITHOUT BOUND in the client (the demux always
+                // keeps up with the wire, so the host's PTY-pause backpressure never engaged
+                // from a slow renderer — megabytes queued between demux and the main thread,
+                // and Ctrl-C had to chew through all of it). The grant now fires from
+                // `recordConsumed` when the channel's REAL consumer reports consumption via
+                // `MuxSubChannel.noteConsumed`, bounding un-consumed bytes to ~one window.
+                await target.deliver(payload: payload)
             }
         case let .lifecycle(channelID, newState):
             if newState == .closed || newState == .halfClosed {

@@ -523,12 +523,19 @@ public final class ConnectionViewModel {
         // Flush the residual backlog ONCE here, synchronously on the main actor, through the SAME
         // coalesce so the final size still reaches the PTY before the client closes. This is the
         // only place the queue is drained outside the loop; `coalesceOut` keeps the last resize.
+        //
+        // Residual `.input` is DROPPED, not flushed: input rides the WINDOWED data
+        // sub-channel, and under credit-at-consumption an exhausted window would park this
+        // await BEFORE `client.close()` (the very call that wakes parked senders) could
+        // run → `disconnect()` hangs. Resize rides the unwindowed CONTROL channel (never
+        // parks), and dropping keystrokes at deliberate teardown is the designed semantic
+        // (they were typed against a session that is going away).
         if let client, !outQueue.isEmpty {
             let residual = outQueue
             outQueue.removeAll(keepingCapacity: true)
             for event in Self.coalesceOut(residual) {
                 switch event {
-                case let .input(data):          try? await client.sendInput(data)
+                case .input:                    break
                 case let .resize(cols, rows):   try? await client.sendResize(cols: cols, rows: rows)
                 }
             }

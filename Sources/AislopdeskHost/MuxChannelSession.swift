@@ -282,13 +282,27 @@ final class MuxChannelSession: @unchecked Sendable {
         }
         readLoop.start()
 
-        // INPUT: the DATA sub-channel carries `input`.
+        // INPUT: the DATA sub-channel carries `input`. The blocking `write(2)` runs on a
+        // DEDICATED serial queue (mirroring PTYReadLoop's dedicated read thread): the PTY
+        // master fd is deliberately blocking, so a paste into a non-reading foreground
+        // program used to park a width-limited COOPERATIVE-POOL thread — a few wedged
+        // writers degraded every other pane's drains. Credit is granted only AFTER the
+        // write returns (credit-at-consumption), so a stalled PTY transitively parks the
+        // CLIENT's sender at one window instead of buffering the paste in host RAM.
+        let inputQueue = DispatchQueue(label: "aislopdesk.host.pty-input.\(channelID)", qos: .userInitiated)
         inputTask = Task.detached { [weak self] in
             do {
                 for try await message in data.inbound {
                     if case let .input(bytes) = message {
-                        Self.writeAll(fd: masterFD, data: bytes)
+                        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                            inputQueue.async {
+                                Self.writeAll(fd: masterFD, data: bytes)
+                                done.resume()
+                            }
+                        }
                     }
+                    // Consumed (written to the PTY / processed): grant the window back.
+                    await data.noteConsumed(message.wireByteCount)
                 }
             } catch { /* channel gone — the daemon keeps the shell alive (keep-alive) */ }
             // The DATA channel ended (clean close or drop): the client is no longer reachable on this

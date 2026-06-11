@@ -45,6 +45,15 @@ public actor MuxSubChannel: MessageChannel {
     /// wraps them in a `.channelData` envelope). `@Sendable` so it can be captured across actors.
     private let muxSend: @Sendable (_ channelID: UInt32, _ innerFrame: Data) async throws -> Void
 
+    /// Reports CONSUMED inbound bytes back to the owner so it can feed its
+    /// ``AislopdeskProtocol/ReceiveWindowAccountant`` and re-grant the peer's send window.
+    /// Wired by ``MuxNWConnection`` for the DATA sub-channel (`nil` for CONTROL — unwindowed).
+    /// Credit-at-CONSUMPTION: the consumer (the client's render drain / the host's PTY
+    /// writer) calls ``noteConsumed(_:)`` AFTER it has actually processed a message — not
+    /// at demux time — so total un-consumed bytes anywhere downstream of the demux are
+    /// bounded by the window. The byte-sum is commutative, so this path needs no ordering.
+    private let consumedSink: (@Sendable (_ bytes: Int) async -> Void)?
+
     /// Per-channel streaming frame decoder. Lives inside the actor (not `Sendable`) — one per
     /// logical channel.
     private var decoder = FrameDecoder()
@@ -83,29 +92,42 @@ public actor MuxSubChannel: MessageChannel {
     public init(
         channelID: UInt32,
         channel: Channel,
+        consumedSink: (@Sendable (_ bytes: Int) async -> Void)? = nil,
         muxSend: @escaping @Sendable (_ channelID: UInt32, _ innerFrame: Data) async throws -> Void
     ) {
         self.init(channelID: channelID, channel: channel,
                   sendWindowBytes: MuxFlowControl.initialWindowBytes,
+                  consumedSink: consumedSink,
                   muxSend: muxSend)
     }
 
     /// Designated init taking an explicit send-window size (`nil` = infinite window, never gated).
     /// The CONTROL sub-channel uses `nil`; tests use this to seed a SMALL window so the
-    /// suspend/wake path is exercised without pushing 256 KiB of bytes.
+    /// suspend/wake path is exercised without pushing a whole window of bytes.
     init(
         channelID: UInt32,
         channel: Channel,
         sendWindowBytes: Int?,
+        consumedSink: (@Sendable (_ bytes: Int) async -> Void)? = nil,
         muxSend: @escaping @Sendable (_ channelID: UInt32, _ innerFrame: Data) async throws -> Void
     ) {
         self.channelID = channelID
         self.channel = channel
         self.muxSend = muxSend
+        self.consumedSink = consumedSink
         self.sendWindow = sendWindowBytes.map { FlowCreditPolicy(initialWindow: $0) }
         var continuation: AsyncThrowingStream<WireMessage, Error>.Continuation!
         self.inboundStream = AsyncThrowingStream { continuation = $0 }
         self.inboundContinuation = continuation
+    }
+
+    /// Reports that `bytes` wire bytes of inbound messages were CONSUMED by the channel's
+    /// real consumer (rendered / written to the PTY) — forwards to the owner's receive
+    /// accountant, which emits the `windowAdjust` grant once its threshold is crossed.
+    /// No-op for the CONTROL sub-channel (unwindowed). EVERY data-sub-channel consumer
+    /// MUST call this per consumed message, or its peer parks after one window.
+    public func noteConsumed(_ bytes: Int) async {
+        await consumedSink?(bytes)
     }
 
     public nonisolated var inbound: AsyncThrowingStream<WireMessage, Error> { inboundStream }

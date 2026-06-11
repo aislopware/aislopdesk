@@ -79,8 +79,11 @@ public actor AislopdeskClient {
     /// Inbox of delivered-but-not-yet-consumed `output` payloads, drained in batches by
     /// the single consumer via ``takeOutputBatch()``. Replaces the old per-chunk
     /// `AsyncStream<Data>` so a backlog crosses to the consumer as ONE batch (one
-    /// MainActor hop, one render flush) instead of one job per wire chunk.
-    private var outputInbox: [Data] = []
+    /// MainActor hop, one render flush) instead of one job per wire chunk. Each entry
+    /// carries its message's wire byte count: taking a batch CREDITS those bytes back to
+    /// the host (credit-at-consumption), so the inbox can never hold more than ~one mux
+    /// window and the host's PTY-pause backpressure finally engages from a slow client.
+    private var outputInbox: [(bytes: Data, wireBytes: Int)] = []
     private let outputWakeStream: AsyncStream<Void>
     private let outputWakeContinuation: AsyncStream<Void>.Continuation
 
@@ -100,13 +103,19 @@ public actor AislopdeskClient {
     /// wake always observes a complete inbox.
     public nonisolated var outputWakeups: AsyncStream<Void> { outputWakeStream }
 
-    /// Atomically takes the whole pending output backlog (FIFO order preserved).
-    /// Raw PTY/VT output bytes from the host, spliced gap-free / dup-free across
-    /// reconnects by ``deliverOutput(seq:bytes:)``'s dedup.
-    public func takeOutputBatch() -> [Data] {
+    /// Atomically takes the whole pending output backlog (FIFO order preserved) and
+    /// CREDITS the taken bytes back to the host (credit-at-consumption: "taken" means the
+    /// single consumer is about to feed them — the next take cannot happen until that
+    /// ingest returns, so client-side un-rendered bytes stay bounded by ~one window plus
+    /// the batch in hand). Raw PTY/VT output bytes from the host, spliced gap-free /
+    /// dup-free across reconnects by ``deliverOutput(seq:bytes:)``'s dedup.
+    public func takeOutputBatch() async -> [Data] {
+        guard !outputInbox.isEmpty else { return [] }
         let batch = outputInbox
         outputInbox.removeAll(keepingCapacity: true)
-        return batch
+        let wireBytes = batch.reduce(0) { $0 + $1.wireBytes }
+        await transport?.noteOutputConsumed(wireBytes: wireBytes)
+        return batch.map(\.bytes)
     }
 
     /// Title / bell / exit / connection lifecycle events.
@@ -345,8 +354,8 @@ public actor AislopdeskClient {
     /// `@testable import` — this is the only way to prove the client-side dedup high-water
     /// mark independent of host replay behavior (the host always keys replay off
     /// `lastReceivedSeq`, so an e2e never feeds an already-fed seq).
-    func _handleInboundForTesting(_ message: WireMessage) {
-        handleInbound(message)
+    func _handleInboundForTesting(_ message: WireMessage) async {
+        await handleInbound(message)
     }
 
     /// Test-only: whether a transport is currently adopted (`self.transport != nil`). Used by the
@@ -354,15 +363,18 @@ public actor AislopdeskClient {
     /// does NOT leave a zombie transport adopted on the client.
     var _hasLiveTransportForTesting: Bool { transport != nil }
 
-    private func handleInbound(_ message: WireMessage) {
+    private func handleInbound(_ message: WireMessage) async {
         switch message {
         case let .output(seq, bytes):
-            deliverOutput(seq: seq, bytes: bytes)
+            await deliverOutput(seq: seq, bytes: bytes, wireBytes: message.wireByteCount)
         case let .exit(code):
             eventBroadcaster.yield(.exit(code: code))
             // The byte stream is over once the child exits. Finishing the wake stream ends
             // the consumer's wake loop; its final takeOutputBatch() drains any tail.
             outputWakeContinuation.finish()
+            // `.exit` is data-class (it rode the windowed DATA sub-channel): credit it
+            // immediately — it never enters the inbox.
+            await transport?.noteOutputConsumed(wireBytes: message.wireByteCount)
         case let .title(text):
             eventBroadcaster.yield(.title(text))
         case .bell:
@@ -381,8 +393,14 @@ public actor AislopdeskClient {
     /// duplicate. A future seq beyond `highestSeqFed + 1` would be a gap; the transport
     /// guarantees ascending in-order delivery (replay tail then live, `docs/20` §8.3), so
     /// in practice every accepted output advances the counter by exactly one.
-    private func deliverOutput(seq: Int64, bytes: Data) {
-        guard seq > highestSeqFed else { return } // duplicate (replayed) — drop.
+    private func deliverOutput(seq: Int64, bytes: Data, wireBytes: Int) async {
+        guard seq > highestSeqFed else {
+            // Duplicate (replayed) — drop, but still CREDIT it: the bytes crossed the wire
+            // and were fully processed (by discarding); withholding the credit would leak
+            // window capacity on every replay.
+            await transport?.noteOutputConsumed(wireBytes: wireBytes)
+            return
+        }
         highestSeqFed = seq
         // Contiguous advance: with in-order delivery this tracks highestSeqFed exactly.
         if seq == highestContiguousSeq + 1 {
@@ -394,8 +412,9 @@ public actor AislopdeskClient {
             highestContiguousSeq = seq
         }
         // Append-then-yield: the pending wake (bufferingNewest(1)) always observes a
-        // complete inbox, so no chunk can be stranded without a wake.
-        outputInbox.append(bytes)
+        // complete inbox, so no chunk can be stranded without a wake. The wire byte count
+        // rides along so takeOutputBatch can credit the consumption.
+        outputInbox.append((bytes: bytes, wireBytes: wireBytes))
         outputWakeContinuation.yield(())
         surfaceFeed?(bytes)
         // Mark an ack as pending; the coalescing ticker sends it.

@@ -76,7 +76,35 @@ public actor MuxClientTransport: ClientTransporting {
     }
 
     public func sendInput(_ bytes: Data) async throws {
-        try await requireData().send(.input(bytes))
+        let channel = try requireData()
+        // Split large inputs (paste) into bounded `.input` frames: one giant frame would
+        // (a) reach the host PTY only after the WHOLE paste reassembled (no progressive
+        // echo, Ctrl-C queued behind the transfer), (b) kill the channel past the 16 MiB
+        // FrameDecoder cap, and (c) deadlock the credit-at-consumption window for any
+        // frame ≥ window (the receiver consumes only COMPLETE frames). Order across the
+        // split frames is preserved by the per-channel send gate + this single sequential
+        // loop; a byte stream carries no frame semantics, so the split is invisible at the
+        // PTY (bracketed-paste markers ride the bytes themselves).
+        let cap = MuxFlowControl.maxDataMessagePayloadBytes
+        if bytes.count <= cap {
+            try await channel.send(.input(bytes))
+            return
+        }
+        var offset = bytes.startIndex
+        while offset < bytes.endIndex {
+            let end = bytes.index(offset, offsetBy: cap, limitedBy: bytes.endIndex) ?? bytes.endIndex
+            try await channel.send(.input(Data(bytes[offset..<end])))
+            offset = end
+        }
+    }
+
+    /// Reports that the client's REAL consumer (the render drain) consumed `wireBytes` of
+    /// data-class inbound (`output`/`exit`) — forwarded to the DATA sub-channel's
+    /// credit-at-consumption sink. Control-class messages are unwindowed; the caller
+    /// (`AislopdeskClient`) only reports data-class.
+    public func noteOutputConsumed(wireBytes: Int) async {
+        guard wireBytes > 0 else { return }
+        await dataChannel?.noteConsumed(wireBytes)
     }
 
     public func sendResize(cols: UInt16, rows: UInt16, pxWidth: UInt16 = 0, pxHeight: UInt16 = 0) async throws {
