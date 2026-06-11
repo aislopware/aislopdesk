@@ -71,9 +71,13 @@ public final class MetalVideoRenderer {
         // the GPU finishes instead of holding it for the next display refresh — shaves the
         // 0-16.7ms (avg ~8) composite-alignment wait at the cost of possible tearing mid-scan.
         // Default ON-vsync (today's behavior); opt-in for the latency-first profile.
+        // macOS-only: `displaySyncEnabled` does not exist on iOS (this line shipped ungated in
+        // the R4-R7b series and broke the iOS app build — caught + gated 2026-06-11).
+        #if os(macOS)
         if ProcessInfo.processInfo.environment["RWORK_NO_VSYNC"] == "1" {
             metalLayer.displaySyncEnabled = false
         }
+        #endif
 
         guard let library = try? device.makeLibrary(source: Self.shaderSource, options: nil),
               let vertexFunction = library.makeFunction(name: "rwork_video_vertex"),

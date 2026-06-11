@@ -528,6 +528,12 @@ private struct RemoteGUIPaneView: View {
                 // Debounced live accumulator (not a per-step commitCamera) — a scroll over a GUI pane pans
                 // the canvas smoothly without the re-render cascade that froze the stream (BUG-2/BUG-1).
                 store?.scrollPan(by: delta)
+            },
+            onStreamNativeSize: { [weak store] target, current in
+                // 1:1 SNAP: the stream's native point size became known (first decoded frame) or
+                // changed (host-side resize). Grow/shrink the pane by the VIDEO-CONTENT delta so
+                // the stream renders pixel-for-pixel — the chrome inset rides along untouched.
+                store?.snapPaneToContentSize(id, target: target, current: current)
             }
         )
     }

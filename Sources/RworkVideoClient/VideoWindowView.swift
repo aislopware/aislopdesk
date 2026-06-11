@@ -75,6 +75,12 @@ public struct VideoWindowView: View {
     /// Pan the canvas when a NON-active pane is scrolled (so scroll over a background pane navigates the
     /// canvas instead of being swallowed by the remote window).
     let onCanvasScroll: (CGSize) -> Void
+    /// 1:1 PANE SNAP: ask the surrounding canvas pane to resize its VIDEO CONTENT from `current`
+    /// to `target` points so the stream renders pixel-for-pixel (`target` = decoded pixels /
+    /// contentsScale, fired on the first decoded frame and on host-side capture-size changes).
+    /// `nil` ⇒ standalone window (no pane to snap) → the session keeps the legacy connect-time
+    /// host-follow negotiation instead.
+    let onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)?
 
     /// The existing seam signature (title-only): renders the Metal-backed view chrome
     /// without a live connection. Kept so `VideoWindowFactory` callers compile.
@@ -84,6 +90,7 @@ public struct VideoWindowView: View {
         self.isActive = true
         self.onActivate = {}
         self.onCanvasScroll = { _ in }
+        self.onStreamNativeSize = nil
     }
 
     /// Live remote-window view: brings up the orchestrator against `connection`. `isActive` /
@@ -92,12 +99,14 @@ public struct VideoWindowView: View {
     public init(title: String, connection: VideoWindowConnection,
                 isActive: Bool = true,
                 onActivate: @escaping () -> Void = {},
-                onCanvasScroll: @escaping (CGSize) -> Void = { _ in }) {
+                onCanvasScroll: @escaping (CGSize) -> Void = { _ in },
+                onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)? = nil) {
         self.title = title
         self.connection = connection
         self.isActive = isActive
         self.onActivate = onActivate
         self.onCanvasScroll = onCanvasScroll
+        self.onStreamNativeSize = onStreamNativeSize
     }
 
     /// Owns the control bridge for this view's lifetime; the backing view wires its closures.
@@ -106,7 +115,8 @@ public struct VideoWindowView: View {
     public var body: some View {
         ZStack(alignment: .bottomTrailing) {
             MetalVideoLayerView(connection: connection, controls: controls,
-                                isActive: isActive, onActivate: onActivate, onCanvasScroll: onCanvasScroll)
+                                isActive: isActive, onActivate: onActivate, onCanvasScroll: onCanvasScroll,
+                                onStreamNativeSize: onStreamNativeSize)
                 // FILL THE PANE. Without this the bare representable does not claim the
                 // ZStack's space, so the `.bottomTrailing` alignment pins the Metal view as a
                 // small island in the BOTTOM-RIGHT corner (the "nhỏ 1 góc" bug) — and clicks
@@ -163,6 +173,7 @@ struct MetalVideoLayerView: NSViewRepresentable {
     var isActive: Bool = true
     var onActivate: () -> Void = {}
     var onCanvasScroll: (CGSize) -> Void = { _ in }
+    var onStreamNativeSize: ((CGSize, CGSize) -> Void)? = nil
 
     func makeNSView(context: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
@@ -170,6 +181,7 @@ struct MetalVideoLayerView: NSViewRepresentable {
         view.isActive = isActive
         view.onActivate = onActivate
         view.onCanvasScroll = onCanvasScroll
+        view.onStreamNativeSize = onStreamNativeSize   // before activate — its nil-ness picks snap vs host-follow
         view.activate(connection: connection)
         // BUG-2 probe: a recreate (makeNSView) on focus change — vs an in-place updateNSView — would reset
         // isActive to its `true` default mid-stream; logging it distinguishes "stale Bool" from "recreate".
@@ -183,6 +195,7 @@ struct MetalVideoLayerView: NSViewRepresentable {
         nsView.isActive = isActive
         nsView.onActivate = onActivate
         nsView.onCanvasScroll = onCanvasScroll
+        nsView.onStreamNativeSize = onStreamNativeSize
         nsView.activate(connection: connection)
     }
 
@@ -217,6 +230,11 @@ final class MetalLayerBackedView: NSView {
     var onActivate: () -> Void = {}
     /// Pan the canvas by a (sign-adjusted) delta — called from `scrollWheel` when this pane is NOT active.
     var onCanvasScroll: (CGSize) -> Void = { _ in }
+    /// 1:1 PANE SNAP: ask the canvas pane to resize its video content from `current` to `target`
+    /// points so the stream renders pixel-for-pixel. `nil` ⇒ standalone (no pane). Set by the
+    /// representable BEFORE ``activate(connection:)`` — its nil-ness picks pane-follows-stream
+    /// vs the legacy connect-time host-follow when the session's GUI hooks are built.
+    var onStreamNativeSize: ((CGSize, CGSize) -> Void)?
 
     // ── Local view navigation (macOS): pinch-zoom (+ pan-when-zoomed) via the RESPONDER
     //    `magnify`/`scrollWheel` methods — NOT gesture recognizers. A recognizer on this
@@ -240,6 +258,13 @@ final class MetalLayerBackedView: NSView {
     override func makeBackingLayer() -> CALayer { videoLayer }
 
     func activate(connection: VideoWindowConnection?) {
+        // 1:1 PANE SNAP — wire BEFORE pipeline.activate: the session decides pane-follows-stream
+        // (snap) vs the legacy connect-time host-follow by whether this hook exists when the GUI
+        // hooks are built. The closure reads the live `onStreamNativeSize`, so updateNSView
+        // refreshing the seam closure stays picked up without re-activation.
+        pipeline.onDecodedPixelSize = onStreamNativeSize == nil ? nil : { [weak self] px in
+            self?.adoptStreamPixelSize(px)
+        }
         pipeline.activate(view: self, videoLayer: videoLayer, connection: connection)
         // Re-apply the local cursor when the host SWAPS shape, or when the host cursor enters/leaves the
         // captured window (visible flip) — so the pointer shape tracks the remote with no RTT lag.
@@ -256,6 +281,24 @@ final class MetalLayerBackedView: NSView {
         if pointerInside { NSCursor.arrow.set() }   // restore the arrow before the pipeline tears down
         pointerInside = false
         pipeline.deactivate()
+    }
+
+    /// 1:1 PANE SNAP: the stream's decoded PIXEL size changed (first frame, or the host
+    /// re-captured after a window resize). Compute the point size at which THIS view renders the
+    /// stream pixel-for-pixel (`pixels / contentsScale`), rebase the session's resize debounce on
+    /// it FIRST (so the snap-induced layout pass holds instead of echoing a `resizeRequest` back
+    /// to the host — the snap is client-side only), then ask the canvas pane to adopt it. Skips
+    /// the pane mutation for a sub-half-point delta (already 1:1; the rebase alone suffices).
+    private func adoptStreamPixelSize(_ pixelSize: VideoSize) {
+        guard let handler = onStreamNativeSize else { return }
+        let scale = videoLayer.contentsScale > 0 ? videoLayer.contentsScale : 1
+        let target = StreamSizeSnap.targetPoints(pixelSize: pixelSize, contentsScale: Double(scale))
+        pipeline.adoptLayerSize(target)
+        let current = VideoSize(width: Double(bounds.width), height: Double(bounds.height))
+        guard StreamSizeSnap.shouldSnap(target: target, current: current) else { return }
+        videoViewDbg("1:1 snap → video \(Int(current.width))x\(Int(current.height)) → \(Int(target.width))x\(Int(target.height))pt (pixels \(Int(pixelSize.width))x\(Int(pixelSize.height)) @\(scale)x)")
+        handler(CGSize(width: target.width, height: target.height),
+                CGSize(width: current.width, height: current.height))
     }
 
     // MARK: Local cursor (Parsec model — host shape on the instant local pointer)
@@ -541,15 +584,18 @@ struct MetalVideoLayerView: UIViewRepresentable {
     var isActive: Bool = true
     var onActivate: () -> Void = {}
     var onCanvasScroll: (CGSize) -> Void = { _ in }
+    var onStreamNativeSize: ((CGSize, CGSize) -> Void)? = nil
 
     func makeUIView(context: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
         view.controls = controls
+        view.onStreamNativeSize = onStreamNativeSize   // before activate — nil-ness picks snap vs host-follow
         view.activate(connection: connection)
         return view
     }
     func updateUIView(_ uiView: MetalLayerBackedView, context: Context) {
         uiView.controls = controls
+        uiView.onStreamNativeSize = onStreamNativeSize
         uiView.activate(connection: connection)
     }
     static func dismantleUIView(_ uiView: MetalLayerBackedView, coordinator: ()) {
@@ -572,9 +618,17 @@ final class MetalLayerBackedView: UIView, UIGestureRecognizerDelegate {
     /// Bridge to the SwiftUI control overlay (fit/fill toggle + zoom reset). Set by the
     /// representable before `activate`.
     weak var controls: VideoPaneControls?
+    /// 1:1 PANE SNAP (see the macOS sibling): ask the canvas pane to resize its video content from
+    /// `current` to `target` points. Set by the representable BEFORE ``activate(connection:)``.
+    var onStreamNativeSize: ((CGSize, CGSize) -> Void)?
 
     func activate(connection: VideoWindowConnection?) {
         installGesturesIfNeeded()
+        // 1:1 PANE SNAP — wire BEFORE pipeline.activate (nil-ness picks snap vs host-follow at
+        // session construction; mirrors the macOS sibling).
+        pipeline.onDecodedPixelSize = onStreamNativeSize == nil ? nil : { [weak self] px in
+            self?.adoptStreamPixelSize(px)
+        }
         pipeline.activate(view: self, videoLayer: videoLayer, connection: connection)
         if connection != nil, let controls {
             controls.onToggleFill = { [weak self] in self?.applyToggleFill() }
@@ -583,6 +637,20 @@ final class MetalLayerBackedView: UIView, UIGestureRecognizerDelegate {
         }
     }
     func deactivate() { pipeline.deactivate() }
+
+    /// 1:1 PANE SNAP: compute the point size at which this view renders the stream
+    /// pixel-for-pixel, rebase the session's resize debounce (no host echo), then ask the pane
+    /// to adopt it — mirrors the macOS sibling.
+    private func adoptStreamPixelSize(_ pixelSize: VideoSize) {
+        guard let handler = onStreamNativeSize else { return }
+        let scale = videoLayer.contentsScale > 0 ? videoLayer.contentsScale : 1
+        let target = StreamSizeSnap.targetPoints(pixelSize: pixelSize, contentsScale: Double(scale))
+        pipeline.adoptLayerSize(target)
+        let current = VideoSize(width: Double(bounds.width), height: Double(bounds.height))
+        guard StreamSizeSnap.shouldSnap(target: target, current: current) else { return }
+        handler(CGSize(width: target.width, height: target.height),
+                CGSize(width: current.width, height: current.height))
+    }
 
     private func applyToggleFill() {
         let next: VideoContentMode = (pipeline.contentMode == .fit) ? .fill : .fit
