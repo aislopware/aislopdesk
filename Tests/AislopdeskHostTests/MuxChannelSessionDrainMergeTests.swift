@@ -66,15 +66,25 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         XCTAssertNil(session.takeMergedFrame())
     }
 
-    func testSingleOverCapChunkPassesThroughUnchanged() {
+    /// SUPERSEDED SEMANTICS (night review): an oversized chunk used to pass through WHOLE,
+    /// but a frame whose WIRE size exceeds window/2 can park its sender permanently (the
+    /// header-overhead dead zone). It is now SPLIT at the safe cap; the parts reassemble
+    /// byte-identically in order. (Full split coverage in MuxChannelSessionFrameBoundTests.)
+    func testSingleOverCapChunkIsSplitAndReassemblesByteIdentical() {
         let session = makeSession()
         let big = Data(repeating: 0x7A, count: MuxFlowControl.hostMergeCapBytes * 2)
         session._enqueueChunkForTesting(bytes: big)
-        guard case let .output(bytes, byteCount, _)? = session.takeMergedFrame() else {
-            return XCTFail("expected the oversized chunk as one frame")
+        var reassembled = Data()
+        var frames = 0
+        while case let .output(bytes, byteCount, _)? = session.takeMergedFrame() {
+            XCTAssertLessThanOrEqual(bytes.count, MuxFlowControl.maxOutputFramePayloadBytes,
+                                     "every emitted frame respects the safe cap")
+            XCTAssertEqual(byteCount, bytes.count)
+            reassembled.append(bytes)
+            frames += 1
         }
-        XCTAssertEqual(bytes, big, "an oversized single chunk is passed through byte-identical, never split")
-        XCTAssertEqual(byteCount, big.count)
+        XCTAssertGreaterThan(frames, 1, "an over-cap chunk is split across frames")
+        XCTAssertEqual(reassembled, big, "the split reassembles byte-identically, in order")
     }
 
     func testExitIsAMergeBarrier() {

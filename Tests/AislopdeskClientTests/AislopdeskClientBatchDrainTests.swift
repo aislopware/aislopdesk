@@ -94,6 +94,26 @@ final class AislopdeskClientBatchDrainTests: XCTestCase {
         await client.close()
     }
 
+    /// Night-review regression: a (re)connect must DROP the dead session's undrained inbox
+    /// — stale entries would render after the fresh-session wipe AND credit their wire
+    /// bytes to the NEW transport (a phantom windowAdjust over-grant on the new channel).
+    func testReconnectClearsUndrainedInbox() async throws {
+        let client = AislopdeskClient(makeTransport: { RecordingTransport() })
+        try await client.connect(host: "h", port: 1)
+        await client._handleInboundForTesting(.output(seq: 1, bytes: Data("dead-session".utf8)))
+
+        // Reconnect WITHOUT draining: the stale entry must be gone afterwards.
+        try await client.connect(host: "h", port: 1)
+        let batch = await client.takeOutputBatch()
+        XCTAssertTrue(batch.isEmpty, "the dead session's undrained entries never cross a reconnect")
+
+        // And the fresh session's first output still flows normally.
+        await client._handleInboundForTesting(.output(seq: 1, bytes: Data("fresh".utf8)))
+        let fresh = await client.takeOutputBatch()
+        XCTAssertEqual(fresh, [Data("fresh".utf8)])
+        await client.close()
+    }
+
     // MARK: - Helpers
 
     private actor RecordingTransport: ClientTransporting {
