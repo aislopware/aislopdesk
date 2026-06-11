@@ -839,7 +839,11 @@ public actor AislopdeskVideoClientSession {
             requestIDR()
         } catch {
             log.error("decode failed: \(String(describing: error))")
-            dbg("DECODE FAILED: \(String(describing: error))")
+            // FORENSICS (2026-06-12): -12909s now occur on a loss-free wire (~1/6s under active
+            // scroll) — the next log session must be able to separate corrupt-complete frames
+            // (FEC mis-recovery? truncation?) from reference-misses (stale-LTR refresh?). Print
+            // the frame's full identity with the failure.
+            dbg("DECODE FAILED: \(String(describing: error)) frame=#\(frame.frameID) kf=\(frame.keyframe) ltr=\(frame.isLTR) fec=\(frame.recoveredViaFEC) crisp=\(frame.crisp) bytes=\(frame.avcc.count) gate=\(decodeGate.mode) frontier=\(frontier.wireValue)")
             // VIDEO-CLIENT-1: a hard decode failure (corrupt-but-complete AVCC / decoder
             // malfunction — e.g. an FEC mis-recovery that passes the length check, or
             // VTDecompressionSession returning kVTVideoDecoderMalfunctionErr) is NOT surfaced by
