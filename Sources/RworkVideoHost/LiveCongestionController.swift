@@ -45,9 +45,20 @@ import Foundation
 ///    `factor = (minRTT + slack) / smoothedRTT` clamped to `[rttDecreaseFloorFactor,
 ///    rttDecreaseCapFactor]` — a large standing queue cuts hard in one step, the post-congestion EWMA
 ///    decay tail trims at most −5%, so the 2026-06-09 "×0.85 every 50ms to the floor" cascade is
-///    structurally impossible and the RTT path may re-decrease on the SHORT `rttHoldTicks` spacing
-///    (with a fresh streak each time) instead of the full increase hold-down. Loss-triggered
-///    decreases stay IMMEDIATE and fixed-factor — raw-sample keyed, react-fast is correct there.
+///    structurally impossible and the RTT path may re-decrease on the SHORT `cutHoldTicks` spacing
+///    (with a fresh streak each time) instead of the full increase hold-down.
+///  - ONE MULTIPLICATIVE CUT PER `cutHoldTicks` WINDOW — loss cuts included (CUT-CASCADE FIX,
+///    2026-06-11 VD session): the loss branch used to fire on EVERY report over the threshold, but
+///    the measured inter-ISP weather bursts span 2-10 consecutive ~50ms reports, so one 130ms burst
+///    cascaded 29M→14M→floor in 2 ticks (31 such drops in a 4-minute session) while FEC recovered
+///    every lost frame (cutting bought nothing). TCP halves once per WINDOW, not once per loss —
+///    the first cut of an episode is still immediate; a burst that persists past ~400ms cuts again.
+///  - NO "severe raw-sample" fast-halve (same fix): the ~50ms report window holds only ~3 frames,
+///    so ONE lost frame reads as a 33% raw sample — quantization noise, not severity (the
+///    catastrophic branch documents exactly this, yet the old severe branch keyed on it and halved).
+///    The depth of a corroborated cut now comes from the MEASURED QUEUE (the proportional RTT
+///    sizing) with the classic ×0.85 as the loss-path step; a true collapse is the EWMA-keyed
+///    catastrophic halve, which needs ~300ms of sustained ≥50% loss to arm.
 ///  - A queue-corroborated decrease remembers the landed-on rate as the KNEE (ssthresh, `kneeBps`):
 ///    additive increase at/above it runs ÷`kneeCautionDivisor` so recovery hovers under the rate that
 ///    built the queue instead of re-bashing it every second (the felt 25↔40Mbps pumping). The knee
@@ -115,17 +126,20 @@ public struct LiveCongestionController: Sendable, Equatable {
     }
     /// CONSECUTIVE inflated reports required before the RTT path decreases (~N × 50ms). `RWORK_ABR_RTT_N`.
     public static let rttStreakTicks: Int = envInt("RWORK_ABR_RTT_N", 3, min: 1, max: 100_000)
-    /// Reports between RTT-path decreases (~8 × 50ms ≈ 400ms). DELAY-TARGETING (2026-06-11): the full
-    /// `holdTicks` (~1s) between RTT decreases was the right anti-cascade guard for a FIXED ×0.85 step,
-    /// but it also meant a REAL persistent queue (scroll demand > path capacity, measured live: RTT
-    /// p90 80ms during scroll vs 11ms idle on the FPT↔Viettel path) drained at one small step per
-    /// second — multi-second 50–100ms latency episodes. The decrease is now PROPORTIONAL to the
-    /// measured queue (see ``onReport``), so the EWMA-tail cascade this hold guarded against is
-    /// self-limiting (a draining queue yields factors → ``rttDecreaseCapFactor``); a shorter
-    /// re-decrease spacing lets the controller actually chase a real queue. The streak also resets on
-    /// every decrease, so each re-decrease needs a FRESH `rttStreakTicks` run of inflated reports.
-    /// `RWORK_ABR_RTT_HOLD`.
-    public static let rttHoldTicks: Int = envInt("RWORK_ABR_RTT_HOLD", 8, min: 0, max: 100_000)
+    /// Reports between ANY multiplicative decreases — RTT-path AND loss-path (~8 × 50ms ≈ 400ms).
+    /// DELAY-TARGETING (2026-06-11): the full `holdTicks` (~1s) between RTT decreases was the right
+    /// anti-cascade guard for a FIXED ×0.85 step, but it also meant a REAL persistent queue (scroll
+    /// demand > path capacity, measured live: RTT p90 80ms during scroll vs 11ms idle on the
+    /// FPT↔Viettel path) drained at one small step per second — multi-second 50–100ms latency
+    /// episodes. The decrease is now PROPORTIONAL to the measured queue (see ``onReport``), so the
+    /// EWMA-tail cascade this hold guarded against is self-limiting (a draining queue yields factors
+    /// → ``rttDecreaseCapFactor``); a shorter re-decrease spacing lets the controller actually chase
+    /// a real queue. The streak also resets on every decrease, so each RTT re-decrease needs a FRESH
+    /// `rttStreakTicks` run of inflated reports.
+    /// CUT-CASCADE FIX (2026-06-11, was `rttHoldTicks`): the LOSS path now shares this spacing — a
+    /// multi-report weather burst costs ONE cut per window, not one per report (see type doc).
+    /// `RWORK_ABR_CUT_HOLD`.
+    public static let cutHoldTicks: Int = envInt("RWORK_ABR_CUT_HOLD", 8, min: 0, max: 100_000)
     /// Hardest single proportional RTT decrease (0.6 = at most −40% in one step). `RWORK_ABR_RTT_DEC_MIN`.
     public static let rttDecreaseFloorFactor: Double = envDouble("RWORK_ABR_RTT_DEC_MIN", 0.6, min: 0.05, max: 0.999)
     /// Gentlest proportional RTT decrease — barely-over-threshold inflation still trims a little
@@ -163,9 +177,10 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// path may decrease only once this reaches ``rttStreakTicks`` — one noisy report never acts.
     /// Reset on EVERY decrease, so each re-decrease needs a fresh sustained run.
     public private(set) var rttInflatedStreak = 0
-    /// No RTT-path decrease is permitted until `ticks` reaches this (set on every decrease) — the
-    /// short re-decrease spacing (see ``rttHoldTicks``), distinct from the long increase hold-down.
-    public private(set) var rttHoldUntilTick = 0
+    /// No multiplicative decrease (RTT-path OR loss-path) is permitted until `ticks` reaches this
+    /// (set on every decrease) — the short re-decrease spacing (see ``cutHoldTicks``), distinct from
+    /// the long increase hold-down. The catastrophic branch keeps its own stronger `holdUntilTick`.
+    public private(set) var cutHoldUntilTick = 0
     /// The previous report's smoothed RTT — the one-report delay TREND. An RTT-path decrease
     /// additionally requires the smoothed RTT to be NOT IMPROVING (within 1ms) vs the last report:
     /// a queue that is already DRAINING (rate is under capacity, the level is just the backlog
@@ -248,7 +263,7 @@ public struct LiveCongestionController: Sendable, Equatable {
         rttInflatedStreak = rttInflated ? rttInflatedStreak + 1 : 0
         let rttCongested = rttInflated
             && rttInflatedStreak >= Self.rttStreakTicks
-            && ticks >= rttHoldUntilTick
+            && ticks >= cutHoldUntilTick
             && e.smoothedRTTMillis + 1.0 >= prevSmoothedRTTMillis   // not improving — see prevSmoothedRTTMillis
 
         // Knee TTL: a knee that hasn't been re-confirmed by a queue-corroborated decrease within
@@ -259,6 +274,11 @@ public struct LiveCongestionController: Sendable, Equatable {
         // the same report (queue evidence). Weather loss — the measured rate-independent ~1%/3–9%
         // bursts at FLAT RTT — is handled by FEC/LTR/kfDup, not by giving up bitrate.
         let lossEvidence = !Self.lossNeedsRTTCorroboration || rttInflated
+        // CUT-CASCADE FIX (2026-06-11): the loss path shares the `cutHoldTicks` spacing — the first
+        // cut of an episode is immediate (the hold starts expired), but a weather burst spanning
+        // several consecutive lossy reports costs ONE cut per window, never a per-report cascade.
+        let lossCongested = e.lastLossSample > Self.lossThreshold && lossEvidence
+            && ticks >= cutHoldUntilTick
         if e.lossRate > Self.catastrophicLossThreshold,
            e.lastLossSample > Self.severeLossThreshold,
            ticks >= holdUntilTick {
@@ -267,10 +287,7 @@ public struct LiveCongestionController: Sendable, Equatable {
             // halve regardless of RTT (queue-less policer / true collapse), at most once per
             // hold-down window.
             decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)), queueCorroborated: rttInflated)
-        } else if e.lastLossSample > Self.severeLossThreshold, lossEvidence {
-            // Severe CORROBORATED loss: halve immediately.
-            decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)), queueCorroborated: rttInflated)
-        } else if rttCongested || (e.lastLossSample > Self.lossThreshold && lossEvidence) {
+        } else if rttCongested || lossCongested {
             // Ordinary congestion. DELAY-TARGETING (2026-06-11): the RTT path sizes the decrease to
             // the MEASURED queue instead of a fixed ×0.85 — `factor = (minRTT + slack) / smoothedRTT`,
             // clamped to [rttDecreaseFloorFactor, rttDecreaseCapFactor]. A 70ms standing queue over a
@@ -278,6 +295,10 @@ public struct LiveCongestionController: Sendable, Equatable {
             // through four ×0.85-per-second steps; barely-over-threshold inflation (and the EWMA
             // decay tail after the queue drains) trims at most −5% per step. The loss path keeps the
             // classic ×0.85. When both fire, take the stronger evidence (lower target).
+            //
+            // NOTE (CUT-CASCADE FIX): there is deliberately NO raw-sample "severe → halve" step here
+            // any more — at ~3 frames per report one lost frame reads 33%, so raw severity is
+            // quantization noise. Depth comes from the measured queue; collapse from the EWMA gate.
             var target = Int.max
             if rttCongested {
                 // Drain target uses the SAME baseline-proportional slack as the gate, so the
@@ -287,7 +308,7 @@ public struct LiveCongestionController: Sendable, Equatable {
                                  max(Self.rttDecreaseFloorFactor, drained / e.smoothedRTTMillis))
                 target = min(target, Int(Double(current) * factor))
             }
-            if e.lastLossSample > Self.lossThreshold && lossEvidence {
+            if lossCongested {
                 target = min(target, Int(Double(current) * Self.decreaseFactor))
             }
             decrease(to: max(floor, target), queueCorroborated: rttInflated)
@@ -319,7 +340,7 @@ public struct LiveCongestionController: Sendable, Equatable {
         if next < current {
             current = next
             holdUntilTick = ticks + Self.holdTicks
-            rttHoldUntilTick = ticks + Self.rttHoldTicks
+            cutHoldUntilTick = ticks + Self.cutHoldTicks
             rttInflatedStreak = 0
             if queueCorroborated {
                 kneeBps = current

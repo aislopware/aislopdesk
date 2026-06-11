@@ -153,7 +153,7 @@ final class LiveCongestionControllerTests: XCTestCase {
     }
 
     /// REGRESSION (EWMA cascade, re-stated for DELAY-TARGETING 2026-06-11): one sustained real
-    /// inflation episode must back off ONE `rttHoldTicks` window at a time — never per-report — and
+    /// inflation episode must back off ONE `cutHoldTicks` window at a time — never per-report — and
     /// every RTT decrease must be PROPORTIONAL to the queue the acting report shows
     /// (`(minRTT + slack) / smoothedRTT`, clamped). A genuinely PERSISTENT queue is now CHASED
     /// (re-decrease every ~400ms with a fresh streak) instead of bleeding latency at one small step
@@ -180,8 +180,8 @@ final class LiveCongestionControllerTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(decreaseTicks.count, 2, "a persistent queue is CHASED, not waited out")
         for pair in zip(decreaseTicks, decreaseTicks.dropFirst()) {
-            XCTAssertGreaterThanOrEqual(pair.1 - pair.0, LiveCongestionController.rttHoldTicks,
-                "RTT decreases are spaced by rttHoldTicks — no per-report cascade")
+            XCTAssertGreaterThanOrEqual(pair.1 - pair.0, LiveCongestionController.cutHoldTicks,
+                "RTT decreases are spaced by cutHoldTicks — no per-report cascade")
         }
     }
 
@@ -551,6 +551,85 @@ final class LiveCongestionControllerTests: XCTestCase {
         let after = ctrl.onReport(catastrophic)
         XCTAssertEqual(after, max(ctrl.floor, Int(Double(ceiling) * LiveCongestionController.severeDecreaseFactor)),
                        "sustained catastrophic loss halves even with no RTT evidence")
+    }
+
+    // MARK: CUT-CASCADE FIX (2026-06-11) — one multiplicative cut per spacing window, loss included
+
+    /// LIVE-SESSION REPLAY (2026-06-11 VD session): a weather burst spanning several consecutive
+    /// lossy reports — the measured FPT↔Viettel shape: 130–500ms episodes = 2–10 reports whose raw
+    /// samples read 0.33–0.5 ONLY because a ~50ms report holds ~3 frames, with smoothed RTT pushed
+    /// just past the gate by WiFi airtime noise — must cost exactly ONE ×0.85 cut per `cutHoldTicks`
+    /// window. The old per-report severe-halve cascaded 29M→14M→floor inside 2 ticks, 31 times in a
+    /// 4-minute session, while FEC recovered every single lost frame (unrecovered=0 — the cuts
+    /// bought nothing).
+    func testWeatherBurstSpanningReportsCutsOncePerWindow() {
+        var ctrl = LiveCongestionController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        // Clean low-baseline WiFi shape (minRTT ≈ 6ms) past warmup.
+        for _ in 0..<(LiveCongestionController.warmupTicks + 5) {
+            est.fold(rttMillis: 6, framesReceived: 3, unrecovered: 0, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+        }
+        XCTAssertEqual(ctrl.current, ceiling)
+        let before = ctrl.current
+        // Burst: 6 consecutive reports, RTT samples 80ms (smoothed EWMA crosses the ~21ms gate on
+        // the 2nd), 1 of ~2-3 frames lost per report (raw 0.33-0.5 = "severe" by raw sample).
+        for i in 0..<6 {
+            est.fold(rttMillis: 80, framesReceived: UInt32(2 + i % 2), unrecovered: 1, owdJitterMicros: 500)
+            _ = ctrl.onReport(est)
+        }
+        let oneCut = max(ctrl.floor, Int(Double(before) * LiveCongestionController.decreaseFactor))
+        XCTAssertEqual(ctrl.current, oneCut,
+                       "a multi-report burst inside one spacing window = exactly ONE ×0.85 cut — no per-report cascade, no raw-sample halve")
+        XCTAssertGreaterThan(ctrl.current, ctrl.floor, "the burst must NOT cascade to the floor")
+    }
+
+    /// A single corroborated report whose RAW sample reads "severe" (1 of 2 frames lost = 50%) must
+    /// take the ordinary ×0.85 step, NOT the old ×0.5 fast-halve — raw severity at ~3 frames per
+    /// report is quantization noise; cut depth comes from the measured queue / EWMA collapse gates.
+    func testSevereRawSampleNoLongerFastHalves() {
+        var ctrl = LiveCongestionController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        for _ in 0..<(LiveCongestionController.warmupTicks + 5) {
+            est.fold(rttMillis: 6, framesReceived: 3, unrecovered: 0, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+        }
+        // Two clean-but-slow reports lift smoothedRTT past the gate (corroboration present)…
+        for _ in 0..<2 {
+            est.fold(rttMillis: 80, framesReceived: 3, unrecovered: 0, owdJitterMicros: 500)
+            _ = ctrl.onReport(est)
+        }
+        XCTAssertEqual(ctrl.current, ceiling, "RTT alone below the streak gate must not have cut yet")
+        // …then ONE report with a 50% raw sample (EWMA still far under catastrophic).
+        est.fold(rttMillis: 80, framesReceived: 2, unrecovered: 1, owdJitterMicros: 500)
+        XCTAssertLessThan(est.lossRate, LiveCongestionController.catastrophicLossThreshold)
+        let after = ctrl.onReport(est)
+        XCTAssertEqual(after, max(ctrl.floor, Int(Double(ceiling) * LiveCongestionController.decreaseFactor)),
+                       "raw-severe corroborated loss takes the ordinary ×0.85 step, never the ×0.5 fast-halve")
+    }
+
+    /// A genuinely PERSISTENT corroborated-loss episode (sub-catastrophic) is still chased — it cuts
+    /// again — but every consecutive pair of cuts is spaced by at least `cutHoldTicks`.
+    func testPersistentCorroboratedLossCutsSpacedByWindow() {
+        var ctrl = LiveCongestionController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        for _ in 0..<(LiveCongestionController.warmupTicks + 5) {
+            est.fold(rttMillis: 6, framesReceived: 3, unrecovered: 0, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+        }
+        // 5% raw loss (1 of 20 frames — EWMA stays far under catastrophic) + persistent 80ms RTT.
+        var cutTicks: [Int] = []
+        for i in 0..<40 {
+            est.fold(rttMillis: 80, framesReceived: 20, unrecovered: 1, owdJitterMicros: 500)
+            let before = ctrl.current
+            _ = ctrl.onReport(est)
+            if ctrl.current < before { cutTicks.append(i) }
+        }
+        XCTAssertGreaterThanOrEqual(cutTicks.count, 2, "a persistent episode is chased, not waited out")
+        for pair in zip(cutTicks, cutTicks.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(pair.1 - pair.0, LiveCongestionController.cutHoldTicks,
+                                        "loss cuts share the cutHoldTicks spacing — never per-report")
+        }
     }
 
     // MARK: Floor / never-0
