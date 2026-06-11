@@ -714,7 +714,7 @@ public actor RworkVideoHostSession {
                 if LiveCongestionController.isMaterialChange(previous: lastActuatedBitrate, target: target, ceiling: ctrl.ceiling) {
                     lastActuatedBitrate = target
                     encoder?.setLiveBitrate(target)
-                    dbg("abr: actuate target=\(target) ceiling=\(ctrl.ceiling) floor=\(ctrl.floor) current=\(ctrl.current) ticks=\(ctrl.ticks) knee=\(ctrl.kneeBps.map(String.init) ?? "-") conf=\(ctrl.kneeConfirmations)")
+                    dbg("abr: actuate target=\(target) ceiling=\(ctrl.ceiling) floor=\(ctrl.floor) current=\(ctrl.current) ticks=\(ctrl.ticks) knee=\(ctrl.kneeBps.map(String.init) ?? "-")")
                 }
             }
             // Precompute display strings so the log interpolation captures only plain Strings.
