@@ -6,16 +6,36 @@ import Foundation
 /// sender's initial ``FlowCreditPolicy`` window, a receiver's ``ReceiveWindowAccountant`` window,
 /// and the host's ``BoundedQueuePolicy`` capacity are all sized from ``MuxFlowControl``.
 public enum MuxFlowControl {
-    /// Initial per-channel send/receive window, in bytes. 256 KiB — the yamux default
-    /// (`initialStreamWindow`), and in the same ballpark as a healthy SSH channel window.
+    /// Initial per-channel send/receive window, in bytes. 64 KiB, sized for LATENCY now that
+    /// credit is granted at CONSUMPTION (the client's render drain), not at demux: every
+    /// in-flight byte is committed ahead of fresh output, so the window bounds both client
+    /// RAM per flooding pane AND the echo head-of-line delay (~44 ms at the measured
+    /// ~12 Mbps inter-ISP path; the old 256 KiB ≈ 175 ms). Still far above what an
+    /// interactive pane ever has outstanding, so flow control stays invisible on the
+    /// common path. Throughput ceiling = window per grant round-trip (~17 Mbps at 30 ms
+    /// WAN RTT, ~hundreds of Mbps on LAN) — ample for terminal bytes.
     ///
-    /// Sizing rationale: large enough that a normal interactive pane (keystrokes, a screenful
-    /// of `vt` output — kilobytes) NEVER touches the window, so flow control is invisible on
-    /// the common path; small enough that a flood (`yes | head -c 50M`) can only put ~256 KiB
-    /// in flight per channel before it MUST wait for the receiver to drain + grant, so one
-    /// flooding pane cannot monopolise the shared socket and starve a sibling pane's
-    /// keystrokes (the HOL/starvation problem this stage exists to solve).
-    public static let initialWindowBytes = 256 * 1024
+    /// PROGRESS INVARIANT (credit-at-consumption): every DATA inner frame must satisfy
+    /// `frame wire bytes ≤ window/2` — the receiver can only consume (and thus re-grant)
+    /// COMPLETE decoded frames, so a frame near the whole window could park its sender
+    /// against a receiver whose pending credit never crosses the grant threshold. Enforced
+    /// by construction: host output frames ≤ ``hostMergeCapBytes``/`PTYReadLoop.readChunkSize`
+    /// (32 KiB), client input frames split at ``maxDataMessagePayloadBytes`` (16 KiB).
+    ///
+    /// `AISLOPDESK_MUX_WINDOW` tunes it — ⚠️ MUST be set identically in BOTH processes
+    /// (host + client): the sender's window and the receiver's grant threshold derive from
+    /// this constant in their own process; a host-only decrease below the client's
+    /// half-window threshold permanently stalls the channel on the first flood.
+    public static let initialWindowBytes =
+        envInt("AISLOPDESK_MUX_WINDOW", 64 * 1024, min: 16 * 1024, max: 16 * 1024 * 1024)
+
+    /// Split cap for client→host `.input` frames (paste). One paste used to travel as ONE
+    /// inner frame (up to 16 MiB): the host writes nothing to the PTY until the WHOLE frame
+    /// reassembles, and under credit-at-consumption a frame ≥ the window would deadlock
+    /// (see the progress invariant above). 16 KiB ≪ window/2 streams a paste progressively
+    /// and keeps interleave granularity fine. Splitting a byte stream is transparent to the
+    /// PTY (frames carry no semantics; order is preserved by the per-channel send gate).
+    public static let maxDataMessagePayloadBytes = 16 * 1024
 
     /// Bound on the host's per-channel PTY-read queue, in bytes. Sized for LATENCY, not
     /// throughput: every byte enqueued-not-yet-sent here is committed AHEAD of fresh output

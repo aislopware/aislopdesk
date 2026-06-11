@@ -87,6 +87,37 @@ extension WireMessage {
     }
 }
 
+extension WireMessage {
+    /// The exact number of bytes ``encode()`` produces for this message, computed WITHOUT
+    /// building the frame (no payload copy). Used by the receive-side flow-control
+    /// crediting: the consumer credits `wireByteCount` per consumed message, which matches
+    /// the sender's per-frame debit exactly (`.channelData` chunking partitions inner
+    /// frames, so the chunk payloads of one frame sum to this). Pinned to `encode().count`
+    /// for every variant by `WireMessageWireByteCountTests`.
+    public var wireByteCount: Int {
+        let body: Int
+        switch self {
+        case let .output(_, bytes): body = 8 + bytes.count            // seq Int64 + payload
+        case .exit: body = 4                                          // code Int32
+        case let .input(bytes): body = bytes.count
+        case .hello: body = 2 + Self.sessionIDByteCount + 8           // UInt16 + UUID + Int64
+        case .resize: body = 8                                        // 4 × UInt16
+        case .ack: body = 8                                           // seq Int64
+        case .bye: body = 0
+        case .helloAck: body = Self.sessionIDByteCount + 8 + 1        // UUID + Int64 + Bool
+        case let .title(string): body = string.utf8.count
+        case .bell: body = 0
+        case let .commandStatus(status):
+            switch status {
+            case .running: body = 1                                   // tag
+            case .idle: body = 1 + 1 + 4 + 4                          // tag + hasExit + Int32 + UInt32
+            }
+        }
+        // 4-byte length prefix + 1 type byte + body (see encode()).
+        return 4 + 1 + body
+    }
+}
+
 extension UUID {
     /// The UUID's 16 raw bytes as `Data`, in canonical order.
     var dataBytes: Data {

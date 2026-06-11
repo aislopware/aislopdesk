@@ -40,6 +40,16 @@ public protocol ClientTransporting: Sendable {
     /// Sends a clean `bye`.
     func sendBye() async throws
 
+    /// Reports that the consumer actually CONSUMED `wireBytes` of data-class inbound
+    /// (`output`/`exit`) — drives the mux receive-window re-grant (credit-at-consumption).
+    /// Default no-op for transports without windowed flow control (fakes/tests).
+    func noteOutputConsumed(wireBytes: Int) async
+
     /// Tears down the transport and finishes the inbound stream.
     func close() async
+}
+
+extension ClientTransporting {
+    /// Default no-op: only windowed transports (the mux) account consumption.
+    public func noteOutputConsumed(wireBytes: Int) async {}
 }

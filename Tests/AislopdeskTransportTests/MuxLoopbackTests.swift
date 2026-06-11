@@ -28,6 +28,9 @@ final class MuxLoopbackTests: XCTestCase {
                             // Echo the input back as output on the same channel.
                             try? await open.data.send(.output(seq: 1, bytes: bytes))
                         }
+                        // Credit-at-consumption: the consumer reports what it processed,
+                        // or the peer's sender parks after one window.
+                        await open.data.noteConsumed(message.wireByteCount)
                     }
                 } catch { /* channel closed */ }
             }
@@ -47,6 +50,8 @@ final class MuxLoopbackTests: XCTestCase {
                 do {
                     for try await message in channel.inbound {
                         out.append(message)
+                        // Credit-at-consumption (every data-sub-channel consumer must).
+                        await channel.noteConsumed(message.wireByteCount)
                         if out.count >= count { break }
                     }
                 } catch { /* finished */ }
@@ -307,12 +312,17 @@ final class MuxLoopbackTests: XCTestCase {
         let hostData = RecordingMuxLink(wrapping: hostDataRaw)
         let client = MuxNWConnection(role: .client, controlLink: clientControl, dataLink: clientData)
         let host = MuxNWConnection(role: .host, controlLink: hostControl, dataLink: hostData)
-        // Host: ack the open and DRAIN the inbound flood (no echo) — draining is what makes the host
-        // cross the half-window threshold and EMIT windowAdjust grants, which the spy records.
+        // Host: ack the open and DRAIN + CONSUME the inbound flood (no echo) — reported
+        // consumption (noteConsumed) is what makes the host's accountant cross the
+        // half-window threshold and EMIT windowAdjust grants, which the spy records.
         await host.setHostOpenHandler { open in
             Task {
                 await host.sendOpenAck(open.channelID, accepted: true)
-                do { for try await _ in open.data.inbound { } } catch { }
+                do {
+                    for try await message in open.data.inbound {
+                        await open.data.noteConsumed(message.wireByteCount)
+                    }
+                } catch { }
             }
         }
         await client.start()
@@ -321,7 +331,7 @@ final class MuxLoopbackTests: XCTestCase {
         let ch = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
         try await Task.sleep(for: .milliseconds(80)) // host registers + acks the open
 
-        // Flood > 256 KiB so the host crosses the half-window threshold (multiple times) and grants.
+        // Flood several windows' worth so the host crosses the threshold (multiple times) and grants.
         let chunk = Data(repeating: 0x79, count: 8 * 1024) // 8 KiB/frame
         for _ in 0..<64 { try await ch.data.send(.input(chunk)) } // ~512 KiB ⇒ several grants
         // Give the host receive loop time to drain + emit its grants on the CONTROL link.
@@ -351,7 +361,11 @@ final class MuxLoopbackTests: XCTestCase {
         await host.setHostOpenHandler { open in
             Task {
                 await host.sendOpenAck(open.channelID, accepted: true)
-                do { for try await _ in open.data.inbound { } } catch { }
+                do {
+                    for try await message in open.data.inbound {
+                        await open.data.noteConsumed(message.wireByteCount)
+                    }
+                } catch { }
             }
         }
         await client.start()
@@ -360,6 +374,8 @@ final class MuxLoopbackTests: XCTestCase {
         let ch = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
         try await Task.sleep(for: .milliseconds(80)) // host registers + acks the open (on DATA)
         // Shut the host's outbound DATA: a grant emitted there would park forever; on CONTROL it flows.
+        // (With pipelined data sends the gate no longer parks the enqueue itself, but the grant-routing
+        // assertion is unchanged: only grants arriving via CONTROL can replenish the client's window.)
         hostData.setOutboundGateClosed(true)
 
         let chunk = Data(repeating: 0x79, count: 8 * 1024) // 8 KiB/frame ⇒ ~512 KiB ≫ 256 KiB window
