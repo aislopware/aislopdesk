@@ -37,13 +37,18 @@ public struct OwdLateDetector: Sendable, Equatable {
         /// history 1–2 buckets. Long enough to straddle multi-frame bursts (a whole burst must not
         /// instantly become the baseline), short enough to track a real path change within ~4 s.
         public var bucketMs: Double = 2000
-        /// Absolute spike floor (ms): below this, a deviation is routine kernel/Wi-Fi wobble that
-        /// present-on-arrival absorbs without a slack frame. `AISLOPDESK_OWD_LATE_FLOOR_MS`.
-        public var thresholdFloorMs: Double = 10
+        /// Absolute spike floor (ms). MEASURED LIVE (2026-06-12, first deploy at 10ms): the send
+        /// stamp is minted at PACKETIZE time, BEFORE the VideoSendLane pacer — so big-frame
+        /// serialization + queue-behind-a-big-predecessor shows up as 10-20ms of owd wobble
+        /// during dense scroll (153 "lates"/90s, depth flapping 1↔2). 25ms sits above that
+        /// self-inflicted pacing band; a genuine network burst that threatens presents (the
+        /// >28ms KHỰNG class) still clears it. `AISLOPDESK_OWD_LATE_FLOOR_MS`.
+        public var thresholdFloorMs: Double = 25
         /// Interval-proportional component: a spike beyond this fraction of the content frame
-        /// interval risks a missed present slot (what depth 2 buys back).
+        /// interval risks losing more than the one slot depth 2 buys back (1.25 × interval at a
+        /// governed-down fps keeps the threshold meaningfully above the bigger frame spacing).
         /// `AISLOPDESK_OWD_LATE_FRAC_PCT` (0...400, percent).
-        public var thresholdIntervalFraction: Double = 0.75
+        public var thresholdIntervalFraction: Double = 1.25
         /// Samples required before any late verdict — the baseline needs population first
         /// (connection bring-up transients must not promote; pairs with the policy's warmup).
         public var warmupSamples: Int = 20

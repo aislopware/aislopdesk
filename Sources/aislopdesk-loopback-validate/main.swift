@@ -2091,10 +2091,14 @@ func runPacerDepthScenario(verbose: Bool) -> PacerDepthScenarioResult {
 
     /// Production wiring: one per-frame owd sample (arrival stamp + host send stamp) through the
     /// REAL detector; a verdict feeds the policy's network-late input (the v3 promotion source).
+    /// The HOST packetizes on the content cadence (send stamps are strictly monotone — a delay
+    /// never rewinds a stamp); a spike delays the ARRIVAL, so the deviation the detector sees is
+    /// exactly `spike` over the constant base owd.
+    var sendClockMs = 0.0
     func sampleOwd(spike: Double, intervalMs: Double) {
-        let owd = baseOwd + spike
-        let sendTs = UInt32((max(0, t - owd) * 1000).rounded())
-        if det.note(arrivalMs: t * 1000, sendTs: sendTs, intervalMs: intervalMs) != nil {
+        sendClockMs += intervalMs
+        let arrivalMs = sendClockMs + baseOwd * 1000 + spike * 1000
+        if det.note(arrivalMs: arrivalMs, sendTs: UInt32(sendClockMs.rounded()), intervalMs: intervalMs) != nil {
             dp.noteNetworkLate(t)
             lastLateAt = t
         }

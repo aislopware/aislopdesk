@@ -42,22 +42,25 @@ final class OwdLateDetectorTests: XCTestCase {
     func testSpikePastThresholdIsLate() {
         var d = OwdLateDetector()
         var (arrival, send) = warm(&d)
-        // One frame delayed by +40ms over the established baseline (threshold ≈ max(10, 12.5)=12.5).
+        // One frame delayed by +40ms over the established baseline (threshold = max(25, 1.25×16.7)=25).
         arrival += 16.7 + 40
         send &+= 17
         let over = d.note(arrivalMs: arrival, sendTs: send, intervalMs: interval)
         XCTAssertNotNil(over)
-        XCTAssertGreaterThan(over ?? 0, 20)   // 40 − threshold(12.5) = 27.5
+        XCTAssertGreaterThan(over ?? 0, 10)   // 40 − threshold(25) = 15
     }
 
-    func testRoutineWobbleUnderFloorNeverLate() {
+    /// THE MEASURED FALSE-LATE BAND (2026-06-12 live): packetize-stamped frames pick up 10-20ms
+    /// of VideoSendLane pacing wobble during dense scroll — that band must never classify late
+    /// (at the first deploy's 10ms floor it produced 153 lates/90s and depth flapping).
+    func testPacingWobbleBandNeverLate() {
         var d = OwdLateDetector()
         var (arrival, send) = warm(&d)
-        // ±8ms wobble sits under the 10ms floor (and under 0.75×16.7 = 12.5).
         for i in 0..<50 {
-            arrival += 16.7 + (i % 2 == 0 ? 8 : -8)
+            arrival += 16.7 + (i % 3 == 0 ? 18 : (i % 3 == 1 ? -18 : 0))
             send &+= 17
-            XCTAssertNil(d.note(arrivalMs: arrival, sendTs: send, intervalMs: interval))
+            XCTAssertNil(d.note(arrivalMs: arrival, sendTs: send, intervalMs: interval),
+                         "±18ms pacing wobble sits under the 25ms floor")
         }
     }
 
