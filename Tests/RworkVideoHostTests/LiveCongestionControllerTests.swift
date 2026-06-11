@@ -152,24 +152,172 @@ final class LiveCongestionControllerTests: XCTestCase {
         }
     }
 
-    /// REGRESSION (EWMA cascade): one sustained real inflation episode must back off ONE hold-down
-    /// at a time — not ×0.85 per 50ms report straight to the floor while the smoothed-RTT EWMA decays.
-    func testSustainedRTTInflationBacksOffOncePerHoldDownNotPerReport() {
+    /// REGRESSION (EWMA cascade, re-stated for DELAY-TARGETING 2026-06-11): one sustained real
+    /// inflation episode must back off ONE `rttHoldTicks` window at a time — never per-report — and
+    /// every RTT decrease must be PROPORTIONAL to the queue the acting report shows
+    /// (`(minRTT + slack) / smoothedRTT`, clamped). A genuinely PERSISTENT queue is now CHASED
+    /// (re-decrease every ~400ms with a fresh streak) instead of bleeding latency at one small step
+    /// per second — but the per-report ×every-50ms cascade stays structurally impossible.
+    func testSustainedRTTInflationBacksOffOncePerRTTHoldNotPerReport() {
         var ctrl = warmedController(ceiling: ceiling)
         var est = NetworkEstimate()
         // Baseline ~5ms, then a genuine queue build-up: every report sees 80ms.
         est.fold(rttMillis: 5, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
-        let reports = LiveCongestionController.holdTicks + 10 // long enough for exactly 2 decreases
-        for _ in 0..<reports {
+        var decreaseTicks: [Int] = []
+        for i in 0..<(LiveCongestionController.holdTicks + 10) {
             est.fold(rttMillis: 80, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            let before = ctrl.current
+            // Expected proportional sizing from the ACTING report's own estimate.
+            let raw = (est.minRTTMillis + LiveCongestionController.rttSlackMillis) / est.smoothedRTTMillis
+            let factor = min(LiveCongestionController.rttDecreaseCapFactor,
+                             max(LiveCongestionController.rttDecreaseFloorFactor, raw))
+            let after = ctrl.onReport(est)
+            if after < before {
+                decreaseTicks.append(i)
+                XCTAssertEqual(after, max(ctrl.floor, Int(Double(before) * factor)),
+                               "every RTT decrease is sized by the measured queue, clamped")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(decreaseTicks.count, 2, "a persistent queue is CHASED, not waited out")
+        for pair in zip(decreaseTicks, decreaseTicks.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(pair.1 - pair.0, LiveCongestionController.rttHoldTicks,
+                "RTT decreases are spaced by rttHoldTicks — no per-report cascade")
+        }
+    }
+
+    /// DELAY-TARGETING sizing, both ends of the clamp: a huge standing queue (smoothed ≈ 16× the
+    /// drained RTT) cuts at the hard floor factor in ONE step; barely-over-threshold inflation trims
+    /// at most the gentle cap — the post-congestion EWMA decay tail can never re-cut deeply.
+    func testRTTDecreaseClampBounds() {
+        // Hard end: minRTT ≈ 5ms, smoothedRTT driven by 300ms reports — by the time the streak gate
+        // opens (3rd inflated report) the EWMA sits ≈ 100ms ⇒ raw (5+15)/100 ≈ 0.2 → clamps to 0.6.
+        var ctrl = warmedController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        est.fold(rttMillis: 5, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        var firstDecrease: (before: Int, after: Int, factor: Double)?
+        for _ in 0..<10 {
+            est.fold(rttMillis: 300, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            let before = ctrl.current
+            let raw = (est.minRTTMillis + LiveCongestionController.rttSlackMillis) / est.smoothedRTTMillis
+            let after = ctrl.onReport(est)
+            if after < before { firstDecrease = (before, after, raw); break }
+        }
+        guard let hard = firstDecrease else { return XCTFail("sustained 80ms over a 5ms baseline must decrease") }
+        XCTAssertLessThan(hard.factor, LiveCongestionController.rttDecreaseFloorFactor,
+                          "precondition: the raw factor is below the clamp floor")
+        XCTAssertEqual(hard.after, Int(Double(hard.before) * LiveCongestionController.rttDecreaseFloorFactor),
+                       "a huge queue cuts at the hard clamp floor in one step")
+
+        // Gentle end: baseline ~50ms, smoothed nudged just past both gates (×1.25 and +15ms) — the
+        // proportional factor lands above the cap, so the trim is at most −(1 − cap).
+        var gentle = warmedController(ceiling: ceiling)
+        var est2 = NetworkEstimate()
+        est2.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        var sawGentleDecrease = false
+        for _ in 0..<30 {
+            est2.fold(rttMillis: 72, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            let before = gentle.current
+            let raw = (est2.minRTTMillis + LiveCongestionController.rttSlackMillis) / est2.smoothedRTTMillis
+            let after = gentle.onReport(est2)
+            if after < before {
+                sawGentleDecrease = true
+                XCTAssertGreaterThan(raw, LiveCongestionController.rttDecreaseCapFactor,
+                                     "precondition: the raw factor is above the gentle cap")
+                XCTAssertEqual(after, Int(Double(before) * LiveCongestionController.rttDecreaseCapFactor),
+                               "barely-over-threshold inflation trims at the gentle cap, never deeper")
+                break
+            }
+        }
+        XCTAssertTrue(sawGentleDecrease, "sustained just-over-gate inflation must eventually decrease")
+    }
+
+    // MARK: Knee (ssthresh) memory
+
+    /// A queue-corroborated decrease remembers the landed-on rate; additive recovery at/above the knee
+    /// runs the cautious step, while recovery BELOW the knee keeps the full step.
+    func testKneeCautiousClimbAboveFastBelow() {
+        var ctrl = warmedController(ceiling: ceiling)
+        // Corroborated-loss decrease (×0.85) sets the knee at the landed-on rate.
+        _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        let knee = ctrl.current
+        XCTAssertEqual(ctrl.kneeBps, knee, "a queue-corroborated decrease records the knee")
+
+        // A catastrophic halve at FLAT RTT (no queue evidence) drops BELOW the knee without
+        // overwriting it (rate-independent collapse is not path-capacity knowledge).
+        var est = NetworkEstimate()
+        est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        for _ in 0..<(LiveCongestionController.holdTicks + 10) {
+            est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 1000, owdJitterMicros: 100)
             _ = ctrl.onReport(est)
         }
-        XCTAssertLessThan(ctrl.current, ceiling, "a real sustained inflation IS detected")
-        let twoDecreases = Int(Double(ceiling) * LiveCongestionController.decreaseFactor
-                                                * LiveCongestionController.decreaseFactor)
-        XCTAssertGreaterThanOrEqual(ctrl.current, twoDecreases - 1,
-            "RTT back-off is rate-limited to one decrease per hold-down — no per-report cascade to the floor")
-        XCTAssertGreaterThan(ctrl.current, ctrl.floor, "the cooldown keeps a single episode off the floor")
+        XCTAssertLessThan(ctrl.current, knee)
+        XCTAssertEqual(ctrl.kneeBps, knee, "a flat-RTT catastrophic halve does not move the knee")
+
+        // Decay the loss EWMA + burn the hold-down, then watch the climb: full steps below the knee,
+        // cautious steps at/above it.
+        let fullStep = max(1, ceiling / LiveCongestionController.increaseDivisor)
+        let cautiousStep = max(1, fullStep / LiveCongestionController.kneeCautionDivisor)
+        var sawFull = false, sawCautious = false
+        for _ in 0..<2_000 {
+            est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            let before = ctrl.current
+            let after = ctrl.onReport(est)
+            guard after > before else { continue }
+            if before < knee {
+                XCTAssertEqual(after - before, fullStep,
+                               "below the knee the climb uses the FULL additive step")
+                sawFull = true
+            } else {
+                XCTAssertEqual(after - before, cautiousStep,
+                               "at/above the knee the climb uses the cautious step")
+                sawCautious = true
+            }
+            // Stop only after a couple of CAUTIOUS steps (a full step overshooting the knee must not
+            // end the test before the above-knee behaviour was observed).
+            if sawCautious, after >= knee + 2 * cautiousStep { break }
+        }
+        XCTAssertTrue(sawFull, "recovery below the knee happened at full speed")
+        XCTAssertTrue(sawCautious, "climb above the knee happened at the cautious step")
+    }
+
+    /// DELAY-TARGETING trend gate: a DRAINING queue (smoothed RTT falling report-over-report, even
+    /// while still over both inflation gates) must not keep cutting — the rate is already under
+    /// capacity and the level is just the backlog flushing out. Only a flat/rising trend re-cuts.
+    func testDrainingQueueNeverReCuts() {
+        var ctrl = warmedController(ceiling: ceiling)
+        var est = NetworkEstimate()
+        est.fold(rttMillis: 5, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        // Build a real standing queue (rising trend) until the first cut lands.
+        var afterFirstCut: Int?
+        for _ in 0..<10 {
+            est.fold(rttMillis: 300, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            let before = ctrl.current
+            if ctrl.onReport(est) < before { afterFirstCut = ctrl.current; break }
+        }
+        guard let cut = afterFirstCut else { return XCTFail("a rising queue must cut") }
+        // The queue now DRAINS: samples fall away BELOW the smoothed level, so the smoothed EWMA
+        // falls monotonically — yet stays far above both inflation gates for many reports. (Samples
+        // above the still-climbing EWMA would read as a RISING trend — that catchup phase may
+        // legitimately re-cut; the contract under test is the falling-trend block.)
+        var rtt = 100
+        for _ in 0..<40 {
+            rtt = max(6, rtt - 12)
+            est.fold(rttMillis: rtt, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            _ = ctrl.onReport(est)
+            XCTAssertGreaterThanOrEqual(ctrl.current, cut,
+                "a draining queue (falling smoothed trend) never re-cuts, however inflated the level still is")
+        }
+    }
+
+    /// The knee expires after `kneeTTLTicks` without re-confirmation — a stale knee must not cap the
+    /// climb forever.
+    func testKneeExpiresAfterTTL() {
+        var ctrl = warmedController(ceiling: ceiling)
+        _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        XCTAssertNotNil(ctrl.kneeBps)
+        let clean = estimate(lossSamples: 0, folds: 1)
+        for _ in 0..<(LiveCongestionController.kneeTTLTicks + 1) { _ = ctrl.onReport(clean) }
+        XCTAssertNil(ctrl.kneeBps, "an unconfirmed knee expires after its TTL")
     }
 
     /// The absolute slack governs on a tiny baseline: smoothedRTT 3× the minRTT (well past the
