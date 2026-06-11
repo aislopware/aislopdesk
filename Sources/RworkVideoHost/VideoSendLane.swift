@@ -126,8 +126,19 @@ public final class VideoSendLane: @unchecked Sendable {
         return generation
     }
 
-    /// Sends one job with the inline path's exact chunked pacing, aborting if the lane is
-    /// flushed/closed at a chunk boundary (the `mediaFlowing` re-check equivalent).
+    /// Sends one job with the inline path's chunked pacing on an ABSOLUTE-DEADLINE schedule,
+    /// aborting if the lane is flushed/closed at a chunk boundary (the `mediaFlowing` re-check
+    /// equivalent).
+    ///
+    /// DEADLINE PACING (latency audit, 2026-06-11): the original per-gap
+    /// `Task.sleep(nanoseconds: gapNanos)` was RELATIVE — Darwin's ~1ms timer quantum turns a
+    /// 0.7ms gap request into a 1–2ms actual sleep, and with 6+ gaps per 50KB frame the overshoot
+    /// ACCUMULATED to +3–4ms of serialization per frame (and, worse, per-frame VARIANCE that
+    /// surfaced as present-cadence jitter at the depth-1 present-on-arrival client). Chunk k's
+    /// deadline is now `start + k × gap` on the continuous clock: an oversleep eats into the NEXT
+    /// gap instead of pushing the whole schedule right, and a behind-schedule chunk sends
+    /// immediately with no sleep (catch-up). Total serialization ≈ theoretical + ONE quantum,
+    /// regardless of fragment count; the average wire rate is unchanged.
     private func transmit(_ job: Job, generation gen: UInt64) async {
         if job.leadingDelayNanos > 0 {
             try? await Task.sleep(nanoseconds: job.leadingDelayNanos)
@@ -138,14 +149,21 @@ public final class VideoSendLane: @unchecked Sendable {
             for outgoing in outgoings { send(outgoing.bytes, outgoing.channel) }
             return
         }
+        let clock = ContinuousClock()
+        let start = clock.now
+        var chunk = 0
         var i = 0
         while i < outgoings.count {
             let end = min(i + job.chunkFragments, outgoings.count)
             var j = i
             while j < end { send(outgoings[j].bytes, outgoings[j].channel); j += 1 }
             i = end
+            chunk += 1
             if i < outgoings.count {
-                try? await Task.sleep(nanoseconds: job.gapNanos)
+                let deadline = start + .nanoseconds(Int64(job.gapNanos) * Int64(chunk))
+                if deadline > clock.now {
+                    try? await clock.sleep(until: deadline)
+                }
                 guard currentGeneration() == gen else { return }   // flushed/closed mid-pace
             }
         }

@@ -342,7 +342,13 @@ public actor RworkVideoHostSession {
         self.bitrate = bitrate
         self.fps = max(1, fps)
         self.stateMachine = VideoSessionStateMachine(fullRange: Self.fullRange)
-        self.packetizer = VideoPacketizer(fec: fec)
+        // RWORK_FEC=0 (latency A/B, 2026-06-11): drop the 20% XOR parity entirely — Parsec ships
+        // ZERO video FEC and relies on LTR/IDR recovery alone. Parity costs +20% datagrams per
+        // frame (+1 pacing chunk ≈ +1.5ms lane serialization, sent AFTER the data) on EVERY frame
+        // to save the occasional loss-recovery round-trip. The client reads the FEC tier per
+        // fragment, so a parity-less stream is wire-compatible with an unchanged client.
+        let fecDisabled = ProcessInfo.processInfo.environment["RWORK_FEC"] == "0"
+        self.packetizer = VideoPacketizer(fec: fecDisabled ? nil : fec)
         self.fecGroupSize = fec?.groupSize ?? 1
     }
 
@@ -1331,14 +1337,25 @@ public actor RworkVideoHostSession {
                                             floorNanos: Self.pacingGapFloorNanos, ceilNanos: Self.pacingGapCeilNanos,
                                             rateMultiplier: Self.paceRateMultiplier)
                 : Self.paceGapNanos
+            // ABSOLUTE-DEADLINE schedule (same rationale as VideoSendLane.transmit): a relative
+            // sub-ms Task.sleep oversleeps by Darwin's ~1ms quantum and the overshoot accumulates
+            // per chunk; deadlines anchored at `start` self-correct and a behind-schedule chunk
+            // sends immediately.
+            let clock = ContinuousClock()
+            let start = clock.now
+            var chunk = 0
             var i = 0
             while i < outgoings.count {
                 let end = min(i + Self.paceChunkFragments, outgoings.count)
                 var j = i
                 while j < end { transport.send(outgoings[j].bytes, on: outgoings[j].channel); j += 1 }
                 i = end
+                chunk += 1
                 if i < outgoings.count {
-                    try? await Task.sleep(nanoseconds: gapNanos)
+                    let deadline = start + .nanoseconds(Int64(gapNanos) * Int64(chunk))
+                    if deadline > clock.now {
+                        try? await clock.sleep(until: deadline)
+                    }
                     guard stateMachine.mediaFlowing else { return } // a bye/stop teardown raced the gap
                 }
             }
