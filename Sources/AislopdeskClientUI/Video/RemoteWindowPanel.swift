@@ -18,6 +18,13 @@ public final class RemoteWindowModel {
     /// come from the app target.
     public var windowID: String
     public var title: String
+    /// PANE REBIND: the owning app's name (filled by ``pick(_:)``; empty for manual entry). Persisted
+    /// with the endpoint so a restored binding can re-resolve a stale CGWindowID by app+title.
+    public var appName: String
+
+    /// PANE REBIND: the store persists each committed endpoint into the pane's spec through this
+    /// (wired at session materialization). Fired by ``open()``.
+    public var onEndpointCommitted: ((VideoEndpoint) -> Void)?
 
     // MARK: Picker state (docs/31 discovery)
 
@@ -39,11 +46,13 @@ public final class RemoteWindowModel {
     public init(
         target: @escaping @MainActor () -> ConnectionTarget = { .default },
         windowID: String = "",
-        title: String = "Remote window"
+        title: String = "Remote window",
+        appName: String = ""
     ) {
         self.target = target
         self.windowID = windowID
         self.title = title
+        self.appName = appName
     }
 
     // MARK: Discovery (picker)
@@ -73,10 +82,12 @@ public final class RemoteWindowModel {
             : nil
     }
 
-    /// Picks a window from the list: fills ``windowID`` + ``title`` (the caller then ``open()``s).
+    /// Picks a window from the list: fills ``windowID`` + ``title`` + ``appName`` (the caller then
+    /// ``open()``s).
     public func pick(_ summary: RemoteWindowSummary) {
         windowID = String(summary.windowID)
         title = summary.title.isEmpty ? summary.appName : summary.title
+        appName = summary.appName
     }
 
     var parsedWindowID: UInt32? { UInt32(windowID.trimmingCharacters(in: .whitespaces)) }
@@ -97,6 +108,54 @@ public final class RemoteWindowModel {
             mediaPort: t.mediaPort,
             cursorPort: t.cursorPort
         )
+        // PANE REBIND: persist the now-live binding (app+title travel with the id so a future
+        // restore can re-resolve it). Fired on every open — a re-pick updates the spec too.
+        onEndpointCommitted?(VideoEndpoint(windowID: wid,
+                                           title: title.isEmpty ? "window \(wid)" : title,
+                                           appName: appName))
+    }
+
+    // MARK: Stale-binding revalidation (PANE REBIND, 2026-06-12)
+
+    /// What ``revalidateBinding()`` decided (observability/tests).
+    public enum RebindOutcome: Equatable, Sendable {
+        /// No discovery seam / no parseable id / host unreachable (empty list) — left as-is.
+        case skipped
+        /// The saved id is still valid (same app) — nothing changed.
+        case kept
+        /// The id was stale; re-picked the same app's window (by title tiebreak) and re-opened.
+        case rebound
+        /// The app has no windows on the host anymore — closed back to the picker form.
+        case unbound
+    }
+
+    /// Validates the CURRENT (typically restored) binding against the host's live window list and
+    /// self-heals a stale CGWindowID via ``WindowRebind``. Called once per session by
+    /// `LivePaneSession.setVideoActive` AFTER the optimistic `open()` (the common no-restart case
+    /// streams instantly; a stale binding re-binds within the discovery round-trip instead of
+    /// sitting on a silent black pane forever). Best-effort: an unreachable host / missing seam
+    /// changes nothing.
+    public func revalidateBinding() async -> RebindOutcome {
+        guard let query = RemoteWindowDiscovery.shared, let wid = parsedWindowID else { return .skipped }
+        let t = target()
+        let windows = await query(t.host, t.mediaPort, t.cursorPort)
+        guard !windows.isEmpty else { return .skipped }   // unreachable/empty: not evidence of staleness
+        switch WindowRebind.resolve(windowID: wid, appName: appName, title: title, in: windows) {
+        case .keep:
+            return .kept
+        case .rebind(let window):
+            close()
+            pick(window)
+            open()
+            return .rebound
+        case .unresolved:
+            // The window's app is gone — fall back to the entry form, pre-warmed with the list we
+            // already fetched so the picker renders instantly.
+            close()
+            availableWindows = windows
+            loadError = "\"\(title)\" is no longer open on the host — pick a window."
+            return .unbound
+        }
     }
 
     /// Closes the remote window (tears down the live view → its orchestrator `stop()`).

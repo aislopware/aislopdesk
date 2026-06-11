@@ -85,6 +85,13 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// store: resume re-opens at most what already satisfied `liveVideoCap`, so it cannot exceed it.
     private var wasVideoActiveBeforePause = false
 
+    /// PANE REBIND: whether the one-shot stale-binding revalidation already ran for this session
+    /// (only the RESTORED binding is suspect — see ``maybeRevalidateBinding(_:)``).
+    private var didRevalidateBinding = false
+    /// PANE REBIND: the in-flight revalidation, cancelled by ``teardown()`` so a discovery
+    /// round-trip racing a pane close can never re-open the model.
+    private var rebindTask: Task<Void, Never>?
+
     // MARK: Automation seam (AISLOPDESK_AUTOTYPE)
 
     /// Whether this session is the `AISLOPDESK_AUTOTYPE` OUT-path-proof target — the first leaf of the
@@ -199,7 +206,8 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     ) -> LivePaneSession {
         let model: RemoteWindowModel
         if let v = spec.video {
-            model = RemoteWindowModel(target: target, windowID: String(v.windowID), title: v.title)
+            model = RemoteWindowModel(target: target, windowID: String(v.windowID), title: v.title,
+                                      appName: v.appName)
         } else {
             model = RemoteWindowModel(target: target)
         }
@@ -257,11 +265,32 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         guard kind == .remoteGUI, let model = remoteWindow else { return }
         if active {
             // Open only if configured; mirror the resulting active state.
-            if model.active == nil, model.canOpen { model.open() }
+            if model.active == nil, model.canOpen {
+                model.open()
+                maybeRevalidateBinding(model)
+            }
             isVideoActive = model.active != nil
         } else {
             model.close()
             isVideoActive = false
+        }
+    }
+
+    /// PANE REBIND (2026-06-12): ONE-SHOT stale-binding revalidation after the first optimistic
+    /// `open()`. CGWindowIDs die with the window and get recycled across host restarts, and the
+    /// host rejects a dead id SILENTLY (`helloAck(accepted:false)` → zero client effects → a
+    /// permanent black pane). The model checks the live window list and re-binds by app+title
+    /// (`WindowRebind`); `.unbound` closed back to the picker form, so the cap mirror must follow.
+    /// One-shot per session: only the RESTORED binding is suspect — endpoints the user just picked
+    /// came from a live list.
+    private func maybeRevalidateBinding(_ model: RemoteWindowModel) {
+        guard !didRevalidateBinding else { return }
+        didRevalidateBinding = true
+        rebindTask = Task { @MainActor [weak self, weak model] in
+            guard let model else { return }
+            let outcome = await model.revalidateBinding()
+            guard let self, !Task.isCancelled else { return }
+            if outcome == .unbound { self.isVideoActive = model.active != nil }
         }
     }
 
@@ -331,6 +360,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             await client.close()
             inspectorClient = nil
         }
+        // PANE REBIND: a revalidation racing teardown must not reopen a closed pane.
+        rebindTask?.cancel()
+        rebindTask = nil
         if isVideoActive || remoteWindow?.active != nil {
             remoteWindow?.close()
             isVideoActive = false

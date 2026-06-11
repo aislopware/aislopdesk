@@ -116,5 +116,71 @@ final class RemoteWindowModelTests: XCTestCase {
         m.pick(RemoteWindowSummary(windowID: 7, appName: "Finder", title: "", width: 100, height: 50))
         XCTAssertEqual(m.windowID, "7")
         XCTAssertEqual(m.title, "Finder", "an empty window title falls back to the app name")
+        XCTAssertEqual(m.appName, "Finder", "pick records the owning app (PANE REBIND)")
+    }
+
+    // MARK: - PANE REBIND (2026-06-12): endpoint commit + stale-binding revalidation
+
+    func testOpenCommitsEndpointWithAppName() {
+        let m = RemoteWindowModel(target: { self.target })
+        var committed: VideoEndpoint?
+        m.onEndpointCommitted = { committed = $0 }
+        m.pick(RemoteWindowSummary(windowID: 42, appName: "Safari", title: "Apple", width: 100, height: 50))
+        m.open()
+        XCTAssertEqual(committed, VideoEndpoint(windowID: 42, title: "Apple", appName: "Safari"),
+                       "open() persists the binding (app+title travel with the id)")
+    }
+
+    func testRevalidateKeepsLiveBinding() async {
+        RemoteWindowDiscovery.shared = { _, _, _ in
+            [RemoteWindowSummary(windowID: 58, appName: "Code", title: "main.swift", width: 100, height: 50)]
+        }
+        let m = RemoteWindowModel(target: { self.target }, windowID: "58", title: "main.swift", appName: "Code")
+        m.open()
+        let outcome = await m.revalidateBinding()
+        XCTAssertEqual(outcome, .kept)
+        XCTAssertEqual(m.active?.windowID, 58, "a valid binding streams untouched")
+    }
+
+    func testRevalidateRebindsStaleIDAndRecommits() async {
+        RemoteWindowDiscovery.shared = { _, _, _ in
+            [RemoteWindowSummary(windowID: 77, appName: "Code", title: "new.swift — proj", width: 100, height: 50)]
+        }
+        // Restored binding: id 58 died with the host restart; 77 is the same app's window now.
+        let m = RemoteWindowModel(target: { self.target }, windowID: "58", title: "old.swift — proj", appName: "Code")
+        var committed: VideoEndpoint?
+        m.onEndpointCommitted = { committed = $0 }
+        m.open()
+        let outcome = await m.revalidateBinding()
+        XCTAssertEqual(outcome, .rebound)
+        XCTAssertEqual(m.active?.windowID, 77, "the pane re-opened on the rebound window")
+        XCTAssertEqual(committed?.windowID, 77, "the healed binding is persisted (stale id overwritten)")
+        XCTAssertEqual(committed?.appName, "Code")
+    }
+
+    func testRevalidateUnbindsWhenAppGone() async {
+        let rows = [RemoteWindowSummary(windowID: 9, appName: "Safari", title: "Apple", width: 100, height: 50)]
+        RemoteWindowDiscovery.shared = { _, _, _ in rows }
+        let m = RemoteWindowModel(target: { self.target }, windowID: "58", title: "main.swift", appName: "Code")
+        m.open()
+        let outcome = await m.revalidateBinding()
+        XCTAssertEqual(outcome, .unbound)
+        XCTAssertNil(m.active, "no window of that app remains — back to the picker form")
+        XCTAssertEqual(m.availableWindows, rows, "the picker is pre-warmed with the fetched list")
+        XCTAssertNotNil(m.loadError, "the form explains why the pane fell back")
+    }
+
+    func testRevalidateSkipsOnUnreachableHostOrNoSeam() async {
+        // Empty list (host unreachable / discovery timeout): NOT evidence of staleness.
+        RemoteWindowDiscovery.shared = { _, _, _ in [] }
+        let m = RemoteWindowModel(target: { self.target }, windowID: "58", title: "t", appName: "Code")
+        m.open()
+        let unreachable = await m.revalidateBinding()
+        XCTAssertEqual(unreachable, .skipped)
+        XCTAssertEqual(m.active?.windowID, 58, "an unreachable host changes nothing")
+
+        RemoteWindowDiscovery.shared = nil
+        let noSeam = await m.revalidateBinding()
+        XCTAssertEqual(noSeam, .skipped, "no seam ⇒ no-op")
     }
 }

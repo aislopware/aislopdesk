@@ -2056,20 +2056,25 @@ struct PacerDepthScenarioResult {
 
 /// Component 4 closed-loop reflex check — PURE virtual clock, fully deterministic (no HW, no RNG).
 /// Models the depth-1 present-on-arrival pacer: a delivered frame ARRIVES and PRESENTS at the same
-/// instant; a dropped frame never happens, so the next present's gap doubles; 120 Hz re-show ticks
-/// run between presents. Phases:
+/// instant; 120 Hz re-show ticks run between presents. v3 (2026-06-12): the depth ACTION runs on
+/// NETWORK lates — the REAL `OwdLateDetector` consumes the synthetic send/arrival stamps and its
+/// verdicts feed `noteNetworkLate`, exactly the production session→pacer wiring. Phases:
 ///   A 3s clean 60fps              → never engages (late=0, gaps=0, depth=1)
-///   B 10s every-20th-frame drop   → promotes ≤1.5s after onset, holds depth 2 to phase end
+///   B 10s, +35ms owd spike every  → promotes ≤1.5s after onset, holds depth 2 to phase end
+///     20th frame (Wi-Fi burst)      (NO present gaps in this phase — promotion is owd-only)
 ///   C 8s clean                    → demotes 2-4s after the last late (fix-2b tolerance anchors
 ///                                   the dwell at the 2nd-most-recent late), depth 1 at end
-///   D 60→30fps downshift, no loss → ≤1 crossover late, NO promotion; with the cadence hint: 0
+///   D 60→30fps downshift, no loss → ≤1 crossover CLASSIFIER late (telemetry), NO promotion
 ///   E motion stop + typing (180ms)→ zero lates (idle + dense gates)
 func runPacerDepthScenario(verbose: Bool) -> PacerDepthScenarioResult {
     var r = PacerDepthScenarioResult()
     var dp = PacerDepthPolicy(config: .init(), adaptEnabled: true)
+    var det = OwdLateDetector()
     var t = 0.0
     var lastPresent = 0.0
     var lastLateAt: Double?
+    let baseOwd = 0.020
+    let dt60 = 1.0 / 60.0
 
     /// One content slot: advance the clock by `dt`; when `deliver`, run the 120 Hz re-show ticks
     /// that elapsed since the last present, then fold arrival+present (present-on-arrival).
@@ -2080,16 +2085,25 @@ func runPacerDepthScenario(verbose: Bool) -> PacerDepthScenarioResult {
         while tick < t { dp.noteReshow(tick); tick += 1.0 / 120.0 }
         dp.noteArrival(t)
         let cls = dp.notePresent(t)
-        if cls == .late { lastLateAt = t }
         lastPresent = t
         return cls
     }
 
-    let dt60 = 1.0 / 60.0
+    /// Production wiring: one per-frame owd sample (arrival stamp + host send stamp) through the
+    /// REAL detector; a verdict feeds the policy's network-late input (the v3 promotion source).
+    func sampleOwd(spike: Double, intervalMs: Double) {
+        let owd = baseOwd + spike
+        let sendTs = UInt32((max(0, t - owd) * 1000).rounded())
+        if det.note(arrivalMs: t * 1000, sendTs: sendTs, intervalMs: intervalMs) != nil {
+            dp.noteNetworkLate(t)
+            lastLateAt = t
+        }
+    }
 
-    // ── Phase A: 3s clean 60fps ──
+    // ── Phase A: 3s clean 60fps (also warms the detector's baseline) ──
     for _ in 0..<180 {
         _ = step(deliver: true, dt: dt60)
+        sampleOwd(spike: 0, intervalMs: dt60 * 1000)
         if dp.depth != 1 { r.cleanDepthStayed1 = false }
     }
     let cleanWin = dp.drainCounters()
@@ -2097,23 +2111,25 @@ func runPacerDepthScenario(verbose: Bool) -> PacerDepthScenarioResult {
     r.cleanGaps = cleanWin.presentGaps
     if verbose { print("    [A] 3s clean 60fps        : late=\(r.cleanLates) gaps=\(r.cleanGaps) depth=\(dp.depth)") }
 
-    // ── Phase B: 10s with every-20th frame dropped (5%) ──
+    // ── Phase B: 10s with a +35ms owd spike every 20th frame (the Wi-Fi burst shape) ──
     let onset = t
     for i in 0..<600 {
-        _ = step(deliver: i % 20 != 0, dt: dt60)
+        _ = step(deliver: true, dt: dt60)
+        sampleOwd(spike: i % 20 == 0 ? 0.035 : 0, intervalMs: dt60 * 1000)
         if dp.depth == 2 && r.promoteAfterOnsetMs == nil { r.promoteAfterOnsetMs = (t - onset) * 1000 }
         if r.promoteAfterOnsetMs != nil && dp.depth != 2 { r.heldThroughBurst = false }
     }
     let burstWin = dp.drainCounters()
     r.burstLates = burstWin.lateFrames
     if verbose {
-        print("    [B] 10s 5%-drop burst     : late=\(r.burstLates) promote@\(r.promoteAfterOnsetMs.map { String(format: "%.0fms", $0) } ?? "NEVER") held=\(r.heldThroughBurst ? "YES" : "no") depth=\(dp.depth)")
+        print("    [B] 10s owd-spike burst   : late=\(r.burstLates) promote@\(r.promoteAfterOnsetMs.map { String(format: "%.0fms", $0) } ?? "NEVER") held=\(r.heldThroughBurst ? "YES" : "no") depth=\(dp.depth)")
     }
 
     // ── Phase C: 8s clean recovery ──
     let lastLate = lastLateAt
     for _ in 0..<480 {
         _ = step(deliver: true, dt: dt60)
+        sampleOwd(spike: 0, intervalMs: dt60 * 1000)
         if dp.depth == 1 && r.demoteAfterLastLateMs == nil, let ll = lastLate {
             r.demoteAfterLastLateMs = (t - ll) * 1000
         }
@@ -2480,7 +2496,7 @@ func runClosedLoopSuite(framesPerPhase: Int) {
     print("    ON cuts ≤1s after onset   : \(gr.onCutTicksFromOnset.count) (ticks-from-first \(gr.onCutTicksFromOnset))  min cut spacing=\(gr.onMinCutSpacingTicks.map { "\($0)" } ?? "n/a") ticks")
     print("    clean ±4ms-wobble sub-run : cuts=\(gr.cleanWobbleCuts) (false-positive guard, must be 0)")
 
-    print("\n  [H] ADAPTIVE PACER DEPTH v2 (component 4: late-event 1↔2 boost — pure virtual-clock reflex, phases A-E)")
+    print("\n  [H] ADAPTIVE PACER DEPTH v3 (component 4: owd-late 1↔2 boost — real OwdLateDetector + policy, virtual clock, phases A-E)")
     let pd = runPacerDepthScenario(verbose: true)
 
     print("\n  [I] RECOVERY-REQUEST REDUNDANCY (component 5: 3× spaced copies + host dedup + loss-adaptive halved escalation)")
@@ -2514,7 +2530,7 @@ func runClosedLoopSuite(framesPerPhase: Int) {
     // 2.2s after the LAST late (was a strict ≥2.5s at tolerance 0).
     let pdDemote = pd.demoteAfterLastLateMs.map { $0 >= 2000 && $0 <= 4000 } ?? false
     let pdImmune = pd.downshiftLates <= 1 && !pd.downshiftPromoted && pd.downshiftHintLates == 0 && pd.typingLates == 0
-    print("    #4b depth-v2  : clean never engages=\(pdClean ? "YES" : "no")  promote ≤1.5s into 5% burst + holds=\(pdPromote ? "YES" : "no")  demote 2-4s after last late=\(pdDemote ? "YES" : "no")  downshift/typing immune=\(pdImmune ? "YES" : "no")  \(pdClean && pdPromote && pdDemote && pdImmune && pd.depth1AtRecoveryEnd ? "✅" : "⚠️")")
+    print("    #4b depth-v2  : clean never engages=\(pdClean ? "YES" : "no")  promote ≤1.5s into owd burst + holds=\(pdPromote ? "YES" : "no")  demote 2-4s after last late=\(pdDemote ? "YES" : "no")  downshift/typing immune=\(pdImmune ? "YES" : "no")  \(pdClean && pdPromote && pdDemote && pdImmune && pd.depth1AtRecoveryEnd ? "✅" : "⚠️")")
     let hwTracked = on.phaseAvgEncBytes[1] < on.phaseAvgEncBytes[0]
     print("    HW actuation  : encoded bytes shrank with bitrate=\(hwTracked ? "YES" : "no") (real VTSessionSetProperty took effect)  \(hwTracked ? "✅" : "⚠️")")
     print("    #5 delay-targeting: converged ≤2.5s=\(bnConverged ? "YES" : "no")  tail queue <25ms=\(bnDrained ? "YES" : "no")  no pumping=\(bnNoPump ? "YES" : "no")  \(bnConverged && bnDrained && bnNoPump ? "✅" : "⚠️")")
@@ -2722,7 +2738,7 @@ if args.contains("--gradient") {
 if args.contains("--pacer-depth") {
     // Component 4 standalone: just the [H] adaptive-pacer-depth reflex scenario (pure virtual
     // clock — instant) for quick iteration without the multi-minute full closed-loop suite.
-    print("\n  [H] ADAPTIVE PACER DEPTH v2 (component 4: late-event 1↔2 boost — pure virtual-clock reflex, phases A-E)")
+    print("\n  [H] ADAPTIVE PACER DEPTH v3 (component 4: owd-late 1↔2 boost — real OwdLateDetector + policy, virtual clock, phases A-E)")
     let pd = runPacerDepthScenario(verbose: true)
     let pdClean = pd.cleanLates == 0 && pd.cleanGaps == 0 && pd.cleanDepthStayed1
     let pdPromote = (pd.promoteAfterOnsetMs ?? .infinity) <= 1500 && pd.heldThroughBurst
@@ -2731,7 +2747,7 @@ if args.contains("--pacer-depth") {
     // 2.2s after the LAST late (was a strict ≥2.5s at tolerance 0).
     let pdDemote = pd.demoteAfterLastLateMs.map { $0 >= 2000 && $0 <= 4000 } ?? false
     let pdImmune = pd.downshiftLates <= 1 && !pd.downshiftPromoted && pd.downshiftHintLates == 0 && pd.typingLates == 0
-    print("    #4b depth-v2  : clean never engages=\(pdClean ? "YES" : "no")  promote ≤1.5s into 5% burst + holds=\(pdPromote ? "YES" : "no")  demote 2-4s after last late=\(pdDemote ? "YES" : "no")  downshift/typing immune=\(pdImmune ? "YES" : "no")  \(pdClean && pdPromote && pdDemote && pdImmune && pd.depth1AtRecoveryEnd ? "✅" : "⚠️")")
+    print("    #4b depth-v2  : clean never engages=\(pdClean ? "YES" : "no")  promote ≤1.5s into owd burst + holds=\(pdPromote ? "YES" : "no")  demote 2-4s after last late=\(pdDemote ? "YES" : "no")  downshift/typing immune=\(pdImmune ? "YES" : "no")  \(pdClean && pdPromote && pdDemote && pdImmune && pd.depth1AtRecoveryEnd ? "✅" : "⚠️")")
     print("\naislopdesk-loopback-validate: COMPLETE (pacer-depth only) — exiting 0")
     exit(0)
 }

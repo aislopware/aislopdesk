@@ -58,9 +58,16 @@ public struct VideoEndpoint: Codable, Sendable, Equatable {
     public var windowID: UInt32
     /// Human-readable window title (shown in pane chrome before the stream is live).
     public var title: String
-    public init(windowID: UInt32, title: String) {
+    /// PANE REBIND (2026-06-12): the owning app's name at pick time (`WindowSummary.appName`).
+    /// CGWindowIDs die with the window and get RECYCLED across host restarts, so `windowID` alone
+    /// cannot be trusted on restore — app+title is what lets ``WindowRebind`` re-resolve the
+    /// binding to the same app's window instead of streaming a dead/recycled id. Empty for
+    /// legacy/manual-entry bindings (presence-of-id is then the only validity signal).
+    public var appName: String
+    public init(windowID: UInt32, title: String, appName: String = "") {
         self.windowID = windowID
         self.title = title
+        self.appName = appName
     }
 }
 

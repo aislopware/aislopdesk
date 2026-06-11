@@ -115,6 +115,13 @@ public actor AislopdeskVideoClientSession {
         /// Safe to call from the session actor with NO main hop — the pacer is `@unchecked
         /// Sendable` behind its own NSLock. `nil` ⇒ no pacer attached (depth 0 on the wire).
         public var readPacerTelemetry: (@Sendable () -> PacerTelemetrySnapshot)?
+        /// Depth v3 (owd-late, 2026-06-12): one NETWORK-late event — a frame whose one-way delay
+        /// spiked past the rolling baseline by more than the late threshold (`OwdLateDetector`).
+        /// The pipeline folds it into the pacer's depth policy (`FramePacer.noteNetworkLate`) —
+        /// the PROMOTION source for the adaptive 1↔2 depth boost (replacing the present-gap
+        /// classifier, which natural sub-cadence content kept permanently "late"). Synchronous,
+        /// lock-guarded, callable from the session actor like `readPacerTelemetry`.
+        public var noteNetworkLate: (@Sendable () -> Void)?
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
             applyCursor: @escaping @Sendable (CursorUpdate, CursorPlacement) -> Void,
@@ -122,7 +129,8 @@ public actor AislopdeskVideoClientSession {
             setColorRange: @escaping @Sendable (ColorRange) -> Void,
             notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)? = nil,
             applyStreamCadence: (@Sendable (Int) -> Void)? = nil,
-            readPacerTelemetry: (@Sendable () -> PacerTelemetrySnapshot)? = nil
+            readPacerTelemetry: (@Sendable () -> PacerTelemetrySnapshot)? = nil,
+            noteNetworkLate: (@Sendable () -> Void)? = nil
         ) {
             self.submitDecodedFrame = submitDecodedFrame
             self.applyCursor = applyCursor
@@ -131,6 +139,7 @@ public actor AislopdeskVideoClientSession {
             self.notifyDecodedPixelSize = notifyDecodedPixelSize
             self.applyStreamCadence = applyStreamCadence
             self.readPacerTelemetry = readPacerTelemetry
+            self.noteNetworkLate = noteNetworkLate
         }
     }
 
@@ -260,6 +269,14 @@ public actor AislopdeskVideoClientSession {
     /// ``DecodeFrontier/wireValue``) on every `requestIDR` / `requestLTRRefresh` so the host's
     /// delivery-keyed recovery-IDR cooldown can distinguish a delivered keyframe from a casualty.
     private var frontier = DecodeFrontier()
+    /// Decode-fail cascade fix (2026-06-12): drop-until-anchor admission. Once the reference
+    /// chain is known-broken (an unrecoverable loss), deltas stop reaching VT — only anchor
+    /// candidates (keyframe / LTR refresh / pre-break delta) are submitted. Kills the measured
+    /// 9-losses→23-decode-fails→63-IDR-requests amplification (each old failure also tore the
+    /// VT session down, wiping the very LTR reference the recovery refresh needed).
+    private var decodeGate = DecodeGate()
+    /// Debug-only counter: frames the gate dropped this session (visible in the periodic dbg line).
+    private var dbgGateDrops: UInt64 = 0
     /// Smoothed RTT estimate gating the 2·RTT IDR-escalation timeout. 50 ms default
     /// until ``updateRTTEstimate(_:)`` feeds a measurement.
     private var rttEstimate: TimeInterval = 0.05
@@ -291,7 +308,15 @@ public actor AislopdeskVideoClientSession {
     private var owdTrend = TrendlineEstimator()
     /// Admits exactly ONE trend sample per frame — the FIRST fragment of each wrap-aware strictly-
     /// newer frameID (kfDup duplicates / reordered older frames / ts==0 are self-rejecting).
+    /// Shared by the trendline AND the owd-late detector (both want the same per-frame sample).
     private var trendSampler = TrendSampler()
+    /// Depth v3 (owd-late, 2026-06-12): per-frame one-way-delay spike detector — owd more than
+    /// `max(floor, fraction × frame interval)` past the rolling min-baseline = one network-late
+    /// event, forwarded to the pacer's depth policy via ``GUIHooks/noteNetworkLate``.
+    private var owdLateDetector = OwdLateDetector()
+    /// The stream's content frame interval (ms) — seeds the owd-late threshold. Updated by the
+    /// FPS governor's `streamCadence` message (`.applyStreamCadence`); 60 fps until announced.
+    private var contentIntervalMs: Double = 1000.0 / 60.0
     /// Windowed counters reset after every report: frames completed / FEC-recovered / unrecovered.
     private var winFramesReceived: UInt32 = 0
     private var winFecRecovered: UInt32 = 0
@@ -637,8 +662,21 @@ public actor AislopdeskVideoClientSession {
         // Component 3 (delay-gradient): ONE sample per frame — the first fragment of each strictly-
         // newer frameID (all fragments of a frame share one packetize-time stamp, so per-fragment
         // samples would carry a built-in intra-frame slope; kfDup/reorder/ts==0 self-reject).
-        if Self.trendEnabled, trendSampler.shouldSample(frameID: fragment.header.frameID, sendTs: ts) {
-            owdTrend.note(arrivalMs: now * 1000, sendTs: ts)
+        // The SAME admitted sample also feeds the owd-late detector (depth v3) — one sampler,
+        // two consumers, so the per-frame discipline can't drift between them.
+        if trendSampler.shouldSample(frameID: fragment.header.frameID, sendTs: ts) {
+            if Self.trendEnabled {
+                owdTrend.note(arrivalMs: now * 1000, sendTs: ts)
+            }
+            // Depth v3: an owd spike past baseline + threshold = one network-late event for the
+            // pacer's adaptive depth (the signal depth-2 actually absorbs — unlike the old
+            // present-gap classifier, this can't self-sustain at depth 2 or misread sub-cadence
+            // content as late, so demote actually happens on a clean path).
+            if let overMs = owdLateDetector.note(arrivalMs: now * 1000, sendTs: ts,
+                                                 intervalMs: contentIntervalMs) {
+                gui.noteNetworkLate?()
+                dbg("owd late: +\(Int(overMs))ms over baseline (frame #\(fragment.header.frameID))")
+            }
         }
         let result = reassembler.ingest(fragment)
         switch result {
@@ -685,6 +723,9 @@ public actor AislopdeskVideoClientSession {
         // (the host's cadence/recovery LTR refresh — a P-frame, never a keyframe) can end the episode
         // instead of letting the 2·RTT escalation fire a spurious IDR after a healed stream.
         escalation.noteLoss(frameID: lost)
+        // Cascade fix: arm the decode gate — post-loss deltas are dropped BEFORE VT until an
+        // anchor (keyframe / LTR refresh) decodes, instead of failing one by one (-12909 storm).
+        decodeGate.noteLoss(frameID: lost)
         if shouldEscalateToIDR() {
             requestIDR()
             // Re-anchor the escalation clock so the NEXT dropped frame in this same loss episode does
@@ -720,12 +761,31 @@ public actor AislopdeskVideoClientSession {
 
     private func decode(_ frame: ReassembledFrame) {
         guard let decoder else { return }
+        // Cascade fix (2026-06-12): drop-until-anchor. A delta that (transitively) references a
+        // lost frame cannot decode — submitting it costs a VT failure, a session teardown, and a
+        // redundant IDR request PER FRAME (measured: 9 losses → 23 decode-fails → 63 requests).
+        // While the chain is broken, only anchor candidates reach VT. Liveness: the escalation
+        // episode was armed by the loss path; every gated drop re-runs the escalation check, so a
+        // lost recovery frame still escalates to a forced IDR at the 2·RTT / floor cadence.
+        if case .drop = decodeGate.verdict(frameID: frame.frameID, keyframe: frame.keyframe,
+                                           isLTR: frame.isLTR) {
+            dbgGateDrops &+= 1
+            dbg("decode gate: frame #\(frame.frameID) dropped (\(decodeGate.mode), total \(dbgGateDrops)) — awaiting anchor")
+            if shouldEscalateToIDR() {
+                requestIDR()
+                escalation.noteEscalated(now: FramePacer.currentHostTimeSeconds())
+            }
+            return
+        }
         do {
             // The decoded NV12 size becomes the cursor-scale denominator.
             updateDecodedSize(from: frame)
             try decoder.decode(frame)
             // Component 2: advance the decode frontier — the context every recovery request carries.
             frontier.noteDecoded(frameID: frame.frameID)
+            // Cascade fix: a successful decode may re-open the gate (keyframe, or an anchor newer
+            // than every recorded loss — the same proof `escalation.frameDecoded` uses).
+            decodeGate.noteDecodeSucceeded(frameID: frame.frameID, keyframe: frame.keyframe)
             // WF-8: on a SUCCESSFUL decode of an LTR-flagged frame, ACK it so the host learns the
             // client now HOLDS this long-term reference and may ForceLTRRefresh against it (the
             // ACKED-ONLY invariant — we ack ONLY frames we actually decoded, never merely received
@@ -771,7 +831,10 @@ public actor AislopdeskVideoClientSession {
                 escalation.keyframeDecoded()
             }
         } catch VideoDecoderError.awaitingKeyframe {
-            // A delta arrived before the first IDR — drop it and ask for a keyframe.
+            // A delta arrived before the first IDR — drop it and ask for a keyframe ONCE; the
+            // gate (needKeyframe) absorbs the rest of the pre-IDR deltas, re-requesting at the
+            // escalation cadence instead of once per frame.
+            decodeGate.noteAwaitingKeyframe()
             dbg("decode: awaiting keyframe (delta dropped) → requesting IDR")
             requestIDR()
         } catch {
@@ -795,6 +858,9 @@ public actor AislopdeskVideoClientSession {
             // place by the time the recovery keyframe arrives. (The healthy heartbeat-IDR reuse
             // path / BUG-I is untouched: only a decode FAILURE clears the cached parameter sets.)
             decoder.invalidateSession()
+            // Cascade fix: the session is gone — only a keyframe can re-anchor now. The gate
+            // drops everything else (no more per-delta awaitingKeyframe → requestIDR spam).
+            decodeGate.noteHardDecodeFailure()
             requestIDR()
         }
     }
@@ -1079,6 +1145,8 @@ public actor AislopdeskVideoClientSession {
             // FPS governor: forward the stream's content cadence to the GUI layer (the pipeline
             // rebases the pacer). Idempotent — the host dup-sends ×2 for loss tolerance.
             dbg("streamCadence → content fps \(fps)")
+            // Depth v3: the owd-late threshold scales with the content interval.
+            contentIntervalMs = 1000.0 / max(1.0, Double(fps))
             gui.applyStreamCadence?(Int(fps))
         }
     }

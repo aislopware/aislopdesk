@@ -316,7 +316,28 @@ public final class FramePacer: @unchecked Sendable {
         liveDepth = desired
         if desired > before { primed = false }
         guard Self.dbgEnabled else { return nil }
-        return "Aislopdesk[video.client]: jitter depth \(before)→\(desired) (v2 late-rate)\n"
+        return "Aislopdesk[video.client]: jitter depth \(before)→\(desired) (v3 owd-late)\n"
+    }
+
+    /// Depth v3: fold one NETWORK-late event (the session's `OwdLateDetector` flagged an owd
+    /// spike past the path baseline) into the depth policy — the promotion/demotion source.
+    /// Lock-guarded and synchronous; callable straight from the session actor (same contract as
+    /// ``drainTelemetry()``). The depth action applies immediately so a promote re-primes before
+    /// the next present, not one arrival later.
+    public func noteNetworkLate() {
+        noteNetworkLateForTest(now: Self.currentHostTimeSeconds())
+    }
+
+    /// TEST SEAM (internal, see ``submitForTest(_:now:)``): ``noteNetworkLate()`` with the clock injected.
+    func noteNetworkLateForTest(now: Double) {
+        var depthChangeLine: String?
+        lock.lock()
+        depthPolicy.noteNetworkLate(now)
+        if adaptiveDepthV2, let line = applyPolicyDepthLocked() { depthChangeLine = line }
+        lock.unlock()
+        if let depthChangeLine {
+            FileHandle.standardError.write(Data(depthChangeLine.utf8))
+        }
     }
 
     /// Component 4: drain the windowed presentation-health counters + the live depth gauge for one
