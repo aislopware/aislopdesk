@@ -299,15 +299,27 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// weather/policer evidence, not path-capacity knowledge, so it deliberately sets no knee.
     private mutating func decrease(to next: Int, queueCorroborated: Bool) {
         if next < current {
+            let preCut = current
             current = next
             holdUntilTick = ticks + Self.holdTicks
             rttHoldUntilTick = ticks + Self.rttHoldTicks
             rttInflatedStreak = 0
             if queueCorroborated {
-                // ESCALATING CAUTION: a queue-corroborated decrease while a knee is STILL ALIVE means
-                // the climb re-hit the same wall — confirm (and slow the next climb 2×, capped).
-                // First knee (none alive) starts at one confirmation = the base cautious divisor.
-                kneeConfirmations = kneeBps != nil ? min(kneeConfirmations + 1, 4) : 1
+                // ESCALATING CAUTION — refined 2026-06-11 after the first deploy MISFIRED on 4G:
+                // a confirmation must mean "we CLIMBED back up and hit the same wall again", so it
+                // requires the pre-cut rate to have risen at least one full additive step ABOVE the
+                // remembered knee. Without that gate, the connect-phase cut CASCADE (11.4M → 3M in
+                // ~6 consecutive cuts of ONE congestion episode, no climbing in between — increases
+                // are hold-down-blocked) racked conf to max in 4s and pinned the whole session at
+                // the 3M floor (soft image) while RTT was identical to the un-escalated build.
+                // A cascade cut below/at the knee now just deepens the knee, KEEPING the count.
+                if let knee = kneeBps {
+                    if preCut >= knee + increaseStep {
+                        kneeConfirmations = min(kneeConfirmations + 1, 4)
+                    }
+                } else {
+                    kneeConfirmations = 1
+                }
                 kneeBps = current
                 kneeExpiresAtTick = ticks + Self.kneeTTLTicks
             }

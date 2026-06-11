@@ -328,41 +328,69 @@ final class LiveCongestionControllerTests: XCTestCase {
         var ctrl = warmedController(ceiling: ceiling)
         let fullStep = max(1, ceiling / LiveCongestionController.increaseDivisor)
 
-        // Climb with clean reports until the first increase AT/ABOVE the live knee; return its size.
-        func climbStepAboveKnee() -> Int? {
+        // Climb with clean reports until the rate is at least one FULL step above the live knee
+        // (the refined confirmation gate: only a climb that meaningfully re-entered the wall may
+        // confirm). Returns the size of the first AT/ABOVE-knee increase observed (the cautious step).
+        func climbWellAboveKnee() -> Int? {
             let clean = estimate(lossSamples: 0, folds: 1)
-            for _ in 0..<2_000 {
+            var firstAboveKneeStep: Int?
+            for _ in 0..<5_000 {
                 let before = ctrl.current
                 let after = ctrl.onReport(clean)
-                if after > before, let knee = ctrl.kneeBps, before >= knee { return after - before }
+                guard let knee = ctrl.kneeBps else { return firstAboveKneeStep }
+                if after > before, before >= knee, firstAboveKneeStep == nil { firstAboveKneeStep = after - before }
+                if after >= knee + fullStep { return firstAboveKneeStep }
             }
-            return nil
+            return firstAboveKneeStep
         }
 
         _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
         XCTAssertEqual(ctrl.kneeConfirmations, 1, "first corroborated cut = first confirmation")
-        XCTAssertEqual(climbStepAboveKnee(), max(1, fullStep / LiveCongestionController.kneeCautionDivisor),
+        XCTAssertEqual(climbWellAboveKnee(), max(1, fullStep / LiveCongestionController.kneeCautionDivisor),
                        "first cycle climbs at the base cautious step")
 
         _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
-        XCTAssertEqual(ctrl.kneeConfirmations, 2, "re-hitting the wall while the knee is alive re-confirms it")
-        XCTAssertEqual(climbStepAboveKnee(), max(1, fullStep / (LiveCongestionController.kneeCautionDivisor * 2)),
+        XCTAssertEqual(ctrl.kneeConfirmations, 2, "re-hitting the wall AFTER a real re-climb re-confirms it")
+        XCTAssertEqual(climbWellAboveKnee(), max(1, fullStep / (LiveCongestionController.kneeCautionDivisor * 2)),
                        "second cycle climbs at HALF the cautious step")
 
         _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
         XCTAssertEqual(ctrl.kneeConfirmations, 3)
-        XCTAssertEqual(climbStepAboveKnee(), max(1, fullStep / (LiveCongestionController.kneeCautionDivisor * 4)),
+        XCTAssertEqual(climbWellAboveKnee(), max(1, fullStep / (LiveCongestionController.kneeCautionDivisor * 4)),
                        "third cycle climbs at a QUARTER of the cautious step")
+    }
+
+    /// THE 4G CONNECT-CRASH SCENARIO (measured live, first escalating-caution deploy): a CASCADE of
+    /// queue-corroborated cuts inside ONE congestion episode — no climbing in between (increases are
+    /// hold-down-blocked) — must NOT rack up confirmations. It deepens the knee, keeps the count at 1,
+    /// so the post-crash climb runs at BASE caution instead of pinning the session at the floor ÷64.
+    func testCutCascadeDoesNotEscalateCaution() {
+        var ctrl = warmedController(ceiling: ceiling)
+        for _ in 0..<6 {
+            _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        }
+        XCTAssertEqual(ctrl.kneeConfirmations, 1,
+                       "consecutive cuts with no re-climb are one episode — one confirmation, not six")
+        XCTAssertNotNil(ctrl.kneeBps)
+        XCTAssertLessThan(ctrl.kneeBps!, Int(Double(ceiling) * 0.6), "the cascade still deepened the knee")
     }
 
     /// Knee expiry (TTL) resets the confirmation count too: a genuinely shifted path starts the next
     /// knee at BASE caution, never inheriting stale escalation.
     func testKneeExpiryResetsEscalation() {
         var ctrl = warmedController(ceiling: ceiling)
+        let fullStep = max(1, ceiling / LiveCongestionController.increaseDivisor)
+        let clean = estimate(lossSamples: 0, folds: 1)
+
+        // Cut, re-climb well above the knee (the refined confirmation gate), cut again → conf=2.
         _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        for _ in 0..<5_000 {
+            _ = ctrl.onReport(clean)
+            if let knee = ctrl.kneeBps, ctrl.current >= knee + fullStep { break }
+        }
         _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
         XCTAssertEqual(ctrl.kneeConfirmations, 2)
-        let clean = estimate(lossSamples: 0, folds: 1)
+
         for _ in 0..<(LiveCongestionController.kneeTTLTicks + 1) { _ = ctrl.onReport(clean) }
         XCTAssertNil(ctrl.kneeBps)
         XCTAssertEqual(ctrl.kneeConfirmations, 0, "expiry clears the escalation memory")
