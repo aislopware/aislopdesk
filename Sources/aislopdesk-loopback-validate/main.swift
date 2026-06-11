@@ -191,7 +191,7 @@ func runScenario(name: String, frames: Int, tier: UInt8, loss: LossModel, fullRa
     do {
         enc = VideoEncoder(
             width: kWidth, height: kHeight, fps: kFPS, fullRange: fullRange, ltrEnabled: false,
-            outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+            outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch {
         print("  [\(name)] ENCODER CREATE FAILED: \(error)")
@@ -301,7 +301,7 @@ func runLTRHWScenario(frames: Int) -> ScenarioStats {
     do {
         enc = VideoEncoder(
             width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: true,
-            outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+            outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch {
         print("  LTR encoder create FAILED: \(error)")
@@ -550,7 +550,7 @@ func runAckRefArm(name: String, frames: Int, ackRef: Bool, ackLagFrames: Int, dr
     do {
         enc = VideoEncoder(
             width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: ackRef,
-            outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+            outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch {
         print("  [\(name)] ENCODER CREATE FAILED: \(error)")
@@ -832,7 +832,7 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
     let enc: VideoEncoder
     do {
         enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: false,
-                           outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+                           outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch { print("  closed-loop encoder create FAILED: \(error)"); return result }
     _ = enc.setLiveBitrate(ceiling)
@@ -1038,7 +1038,7 @@ func runBottleneckQueueScenario(frames: Int, verbose: Bool) -> BottleneckResult 
     let enc: VideoEncoder
     do {
         enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: false,
-                           outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+                           outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch { print("  bottleneck encoder create FAILED: \(error)"); return result }
     _ = enc.setLiveBitrate(ceiling)
@@ -1192,7 +1192,7 @@ func runGradientOnsetArm(gradientEnabled: Bool, verbose: Bool) -> GradientArmTra
     let enc: VideoEncoder
     do {
         enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: false,
-                           outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+                           outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch { print("  gradient-onset encoder create FAILED: \(error)"); return trace }
     _ = enc.setLiveBitrate(ceiling)
@@ -1312,7 +1312,7 @@ func runGradientWobbleArm(frames: Int, verbose: Bool) -> Int {
     let enc: VideoEncoder
     do {
         enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: false,
-                           outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+                           outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch { print("  gradient-wobble encoder create FAILED: \(error)"); return 0 }
     _ = enc.setLiveBitrate(ceiling)
@@ -1516,7 +1516,7 @@ func runFPSGovernorCliffScenario(verbose: Bool) -> FPSGovResult {
     let enc: VideoEncoder
     do {
         enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: false,
-                           outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+                           outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch { print("  fps-gov encoder create FAILED: \(error)"); return result }
     _ = enc.setLiveBitrate(ceiling)
@@ -1726,7 +1726,7 @@ func runFPSGovernorWeatherArm(frames: Int, verbose: Bool) -> FPSGovWeatherResult
     let enc: VideoEncoder
     do {
         enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: false,
-                           outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+                           outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         try enc.createLiveSession()
     } catch { print("  fps-gov weather encoder create FAILED: \(error)"); return result }
     _ = enc.setLiveBitrate(ceiling)
@@ -1987,7 +1987,7 @@ func runRecoveryIDRCooldownScenario(verbose: Bool) -> RecoveryIDRResult {
         var policy = RecoveryIDRPolicy()
         let sink = FrameSink()
         let enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: false,
-                               outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+                               outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
         do { try enc.createLiveSession() } catch {
             print("  recovery-idr encoder create FAILED: \(error)"); return result
         }
@@ -2327,7 +2327,7 @@ func runRecoveryDedupStraddleArm(dedupOn: Bool, verbose: Bool) -> RecoveryDedupA
 
     let sink = FrameSink()
     let enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: true,
-                           outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+                           outputHandler: { avcc, kf, _, ltr, _ in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
     do { try enc.createLiveSession() } catch {
         print("  recovery-loss straddle encoder create FAILED: \(error)")
         return r

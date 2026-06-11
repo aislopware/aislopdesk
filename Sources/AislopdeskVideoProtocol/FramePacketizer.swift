@@ -50,6 +50,17 @@ public struct FrameFragmentHeader: Equatable, Sendable {
         /// token, so the OFF path leaves bit 6 zero → byte-identical wire.
         public static let isLTR = Flags(rawValue: 1 << 6)
 
+        /// ACKED-ANCHORED MARKER (bit 7, 2026-06-12): this frame was encoded via `ForceLTRRefresh`
+        /// — it references ONLY long-term references the client ACKNOWLEDGED (decoded), so it is
+        /// decodable even when the recent short-term chain is broken. This is the client decode
+        /// gate's ONLY non-keyframe re-anchor admission: `isLTR` (bit 6) cannot serve — VT
+        /// surfaces an ack token on virtually EVERY frame once LTR is enabled (measured live:
+        /// 7865/7874 frames), so bit 6 says "ack me", not "safe to decode past a loss". Set by
+        /// the host exactly when the encode call carried `kVTEncodeFrameOptionKey_ForceLTRRefresh`
+        /// (recovery refresh + self-heal cadence). Previously-reserved bit ⇒ old senders leave it
+        /// zero (byte-identical wire when unused).
+        public static let ackedAnchored = Flags(rawValue: 1 << 7)
+
         /// The 3-bit FEC tier (0..7) read from bits 3-5 — masks out keyframe/parity/crisp + bits 6,7.
         public var fecTier: UInt8 { (rawValue & Self.tierMask) >> Self.tierShift }
 
@@ -182,7 +193,7 @@ public struct VideoPacketizer {
     ///     EVERY fragment so the client knows to ack it after a successful decode. Default false →
     ///     bit 6 stays zero → byte-identical to the pre-WF-8 wire.
     /// - Returns: data fragments + parity fragments, in send order.
-    public mutating func packetize(frame: Data, keyframe: Bool, crisp: Bool = false, hostSendTsMillis: UInt32 = 0, fecTier: UInt8 = AdaptiveFECPolicy.defaultTier, isLTR: Bool = false) -> [FrameFragment] {
+    public mutating func packetize(frame: Data, keyframe: Bool, crisp: Bool = false, hostSendTsMillis: UInt32 = 0, fecTier: UInt8 = AdaptiveFECPolicy.defaultTier, isLTR: Bool = false, ackedAnchored: Bool = false) -> [FrameFragment] {
         let frameID = nextFrameID
         nextFrameID &+= 1
 
@@ -210,6 +221,7 @@ public struct VideoPacketizer {
         if keyframe { baseFlags.insert(.keyframe) }
         if crisp { baseFlags.insert(.crisp) }
         if isLTR { baseFlags.insert(.isLTR) }   // WF-8 bit 6 — disjoint from keyframe/crisp/tier
+        if ackedAnchored { baseFlags.insert(.ackedAnchored) }   // bit 7 — ForceLTRRefresh product
         // Stamp the tier into bits 3-5 BEFORE forking data/parity flags. Tier 0 leaves them zero.
         baseFlags.setFECTier(fecTier)
 

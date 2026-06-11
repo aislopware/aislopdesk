@@ -207,7 +207,7 @@ public final class VideoEncoder: @unchecked Sendable {
     /// must ack. nil on every LTR-off / non-LTR frame, so the OFF path is byte-identical (the 4th arg
     /// is simply always nil). The host records `frameID ↔ token` and sets the `isLTR` wire bit when it
     /// is present.
-    public typealias OutputHandler = @Sendable (_ avcc: Data, _ keyframe: Bool, _ mode: Mode, _ ltrToken: Int64?) -> Void
+    public typealias OutputHandler = @Sendable (_ avcc: Data, _ keyframe: Bool, _ mode: Mode, _ ltrToken: Int64?, _ ackedAnchored: Bool) -> Void
 
     private let log = Logger(subsystem: "aislopdesk.video.host", category: "VideoEncoder")
     private let width: Int32
@@ -806,7 +806,7 @@ public final class VideoEncoder: @unchecked Sendable {
                 }
                 return
             }
-            Self.deliver(sampleBuffer: sampleBuffer, mode: mode, readLTRToken: readLTRToken, handler: handler)
+            Self.deliver(sampleBuffer: sampleBuffer, mode: mode, readLTRToken: readLTRToken, ackedAnchored: forceLTRRefresh, handler: handler)
         }
         guard status == noErr else { throw VideoEncoderError.encodeFailed(status) }
     }
@@ -814,7 +814,7 @@ public final class VideoEncoder: @unchecked Sendable {
     /// Extracts the AVCC bytes + keyframe flag from a finished `CMSampleBuffer` and
     /// forwards them. The block buffer holds length-prefixed NAL units (the client
     /// re-prefixes when it reassembles fragments — see AislopdeskVideoProtocol.NALUnit).
-    private static func deliver(sampleBuffer: CMSampleBuffer, mode: Mode, readLTRToken: Bool, handler: OutputHandler) {
+    private static func deliver(sampleBuffer: CMSampleBuffer, mode: Mode, readLTRToken: Bool, ackedAnchored: Bool, handler: OutputHandler) {
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         var totalLength = 0
         var dataPointer: UnsafeMutablePointer<CChar>?
@@ -853,7 +853,7 @@ public final class VideoEncoder: @unchecked Sendable {
            let params = hevcParameterSetsAVCC(from: fmt) {
             avcc = params + avcc
         }
-        handler(avcc, keyframe, mode, ltrToken)
+        handler(avcc, keyframe, mode, ltrToken, ackedAnchored)
     }
 
     /// Extracts the HEVC VPS/SPS/PPS parameter sets from a `CMVideoFormatDescription` and returns

@@ -19,7 +19,7 @@ final class EncodedFrameQueueTests: XCTestCase {
     func testDrainPreservesAppendOrder() {
         let q = EncodedFrameQueue()
         for i in 0 ..< 8 {
-            q.append(.init(avcc: Data([UInt8(i)]), keyframe: i == 0, crisp: false, ltrToken: nil))
+            q.append(.init(avcc: Data([UInt8(i)]), keyframe: i == 0, crisp: false, ltrToken: nil, ackedAnchored: false))
         }
         let drained = q.drainAll()
         XCTAssertEqual(drained.map { $0.avcc.first }, [0, 1, 2, 3, 4, 5, 6, 7])
@@ -35,7 +35,7 @@ final class EncodedFrameQueueTests: XCTestCase {
         var next: UInt8 = 0
         for burst in 0 ..< 5 {
             for _ in 0 ... burst {        // growing bursts: 1,2,3,4,5 appends
-                q.append(.init(avcc: Data([next]), keyframe: next == 0, crisp: false, ltrToken: nil))
+                q.append(.init(avcc: Data([next]), keyframe: next == 0, crisp: false, ltrToken: nil, ackedAnchored: false))
                 next += 1
             }
             seen.append(contentsOf: q.drainAll().compactMap { $0.avcc.first })
@@ -53,7 +53,7 @@ final class EncodedFrameQueueTests: XCTestCase {
         let q = EncodedFrameQueue()
         // Encode order: IDR, delta, delta, delta...
         for i in 0 ..< 10 {
-            q.append(.init(avcc: Data([UInt8(i)]), keyframe: i == 0, crisp: false, ltrToken: nil))
+            q.append(.init(avcc: Data([UInt8(i)]), keyframe: i == 0, crisp: false, ltrToken: nil, ackedAnchored: false))
         }
         var packetizer = VideoPacketizer(fec: nil)
         var frameIDs: [UInt32] = []

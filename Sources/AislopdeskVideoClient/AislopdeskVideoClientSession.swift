@@ -275,6 +275,11 @@ public actor AislopdeskVideoClientSession {
     /// 9-losses→23-decode-fails→63-IDR-requests amplification (each old failure also tore the
     /// VT session down, wiping the very LTR reference the recovery refresh needed).
     private var decodeGate = DecodeGate()
+    /// In-order decode admission (2026-06-12): frames release to the decoder strictly in frameID
+    /// order — an out-of-order completion (small frame outrunning a big/FEC-recovering
+    /// predecessor) is HELD until the gap completes or is declared lost, instead of hitting VT
+    /// with a missing reference (the measured `frontier = N−2` -12909 class).
+    private var sequencer = DecodeSequencer()
     /// Debug-only counter: frames the gate dropped this session (visible in the periodic dbg line).
     private var dbgGateDrops: UInt64 = 0
     /// Smoothed RTT estimate gating the 2·RTT IDR-escalation timeout. 50 ms default
@@ -690,7 +695,11 @@ public actor AislopdeskVideoClientSession {
                 // frozen episode already runs the halved escalation clock.
                 lossWindow.noteEvent(now: FramePacer.currentHostTimeSeconds())
             }
-            decode(frame)
+            // In-order release: a frame ahead of a reassembly gap is held until the gap
+            // resolves (complete or declared lost) — never submitted over a missing reference.
+            for released in sequencer.noteCompleted(frame) {
+                decode(released)
+            }
         case .dropped(let lost):
             // R7 #3: when the INGESTED fragment's OWN frame becomes hopeless, `ingest()` returns
             // `.dropped(frameID:)` directly AND has already POPPED that id off its dropped queue — so the
@@ -725,8 +734,13 @@ public actor AislopdeskVideoClientSession {
         // instead of letting the 2·RTT escalation fire a spurious IDR after a healed stream.
         escalation.noteLoss(frameID: lost)
         // Cascade fix: arm the decode gate — post-loss deltas are dropped BEFORE VT until an
-        // anchor (keyframe / LTR refresh) decodes, instead of failing one by one (-12909 storm).
+        // anchor (keyframe / acked-anchored refresh) decodes, instead of failing one by one.
         decodeGate.noteLoss(frameID: lost)
+        // The declared loss closes any sequencer gap at this id: frames held behind it release
+        // NOW (the armed gate above drops the non-anchors among them — its job, not VT's).
+        for released in sequencer.noteLost(frameID: lost) {
+            decode(released)
+        }
         if shouldEscalateToIDR() {
             requestIDR()
             // Re-anchor the escalation clock so the NEXT dropped frame in this same loss episode does
@@ -769,7 +783,7 @@ public actor AislopdeskVideoClientSession {
         // episode was armed by the loss path; every gated drop re-runs the escalation check, so a
         // lost recovery frame still escalates to a forced IDR at the 2·RTT / floor cadence.
         if case .drop = decodeGate.verdict(frameID: frame.frameID, keyframe: frame.keyframe,
-                                           isLTR: frame.isLTR) {
+                                           ackedAnchored: frame.ackedAnchored) {
             dbgGateDrops &+= 1
             dbg("decode gate: frame #\(frame.frameID) dropped (\(decodeGate.mode), total \(dbgGateDrops)) — awaiting anchor")
             if shouldEscalateToIDR() {
