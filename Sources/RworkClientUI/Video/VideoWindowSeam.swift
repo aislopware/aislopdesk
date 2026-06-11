@@ -75,13 +75,21 @@ public struct RemotePaneContext {
     /// Pan the canvas by a (sign-adjusted) delta — called when a NON-active pane receives a scroll, so the
     /// gesture navigates the canvas rather than scrolling the background remote window.
     public var onCanvasScroll: (CGSize) -> Void
+    /// 1:1 PANE SNAP: resize this pane so its VIDEO CONTENT goes from `current` to `target`
+    /// points — fired by the video view when the stream's native 1:1 point size becomes known
+    /// (first decoded frame) or changes (host-side resize), so the stream renders pixel-for-pixel
+    /// with no fractional-scaling blur. `nil` (the standalone default) ⇒ no pane to snap; the
+    /// video session then keeps its legacy connect-time host-follow negotiation instead.
+    public var onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)?
 
     public init(isActive: Bool = true,
                 onActivate: @escaping () -> Void = {},
-                onCanvasScroll: @escaping (CGSize) -> Void = { _ in }) {
+                onCanvasScroll: @escaping (CGSize) -> Void = { _ in },
+                onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)? = nil) {
         self.isActive = isActive
         self.onActivate = onActivate
         self.onCanvasScroll = onCanvasScroll
+        self.onStreamNativeSize = onStreamNativeSize
     }
 
     /// The standalone default (no canvas around it): always active, no-op callbacks — for previews / sheet

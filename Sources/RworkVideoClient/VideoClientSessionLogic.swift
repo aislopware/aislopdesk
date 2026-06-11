@@ -274,11 +274,47 @@ public struct ResizeDebounce: Sendable, Equatable {
         return lastEpoch
     }
 
+    /// Rebases the jitter baseline on a size the CLIENT adopted by itself (the 1:1 pane
+    /// snap — the pane resized to the stream, nothing was sent to the host), WITHOUT
+    /// minting an epoch. The snap-induced layout pass then decides `.hold` (zero delta vs
+    /// this baseline), so a client-side snap never echoes a `resizeRequest` back to the
+    /// host — which would AX-resize the host window and re-trigger the snap (a feedback
+    /// loop). A LATER user drag still differs ≥ `minDelta` and requests normally.
+    public mutating func noteAdopted(_ size: VideoSize) {
+        lastRequested = size
+    }
+
     /// Whether `to` differs from `from` by at least `minDelta` on some axis. A `nil`
     /// baseline (no request yet) always counts as changed (the first settle always fires).
     private func changedEnough(from: VideoSize?, to: VideoSize) -> Bool {
         guard let from else { return true }
         return abs(to.width - from.width) >= minDelta || abs(to.height - from.height) >= minDelta
+    }
+}
+
+/// 1:1 PANE SNAP (2026-06-11 "match the virtual display"). A remote-GUI canvas pane adopts the
+/// STREAM's size instead of asking the host to resize: the host captures at `window points ×
+/// captureScale` pixels (virtual display 2×), and the pane renders those pixels 1:1 only when its
+/// video layer's point size × the CLIENT contentsScale equals the decoded pixel size exactly —
+/// any mismatch pays a fractional bilinear resample that blurs text. The target point size is
+/// therefore `decoded pixels / contentsScale`, derived from the decoded `CVPixelBuffer` (the only
+/// place the client can learn true pixel dims — helloAck/resizeAck carry POINTS and the host's
+/// captureScale is not on the wire). Pure math — the view passes its scale + current size in —
+/// so the snap decision is unit-testable headlessly.
+public enum StreamSizeSnap {
+    /// The video-layer point size at which the decoded stream renders pixel-for-pixel
+    /// (`pixels / scale`). A non-positive scale falls back to 1 (defensive: a real layer's
+    /// `contentsScale` is never ≤ 0).
+    public static func targetPoints(pixelSize: VideoSize, contentsScale: Double) -> VideoSize {
+        let s = contentsScale > 0 ? contentsScale : 1
+        return VideoSize(width: pixelSize.width / s, height: pixelSize.height / s)
+    }
+
+    /// Whether the pane should actually snap: the 1:1 target differs from the current layer
+    /// size by at least `epsilon` points on some axis. Sub-epsilon deltas are layout noise —
+    /// snapping on them would churn the canvas frame + persistence for an invisible change.
+    public static func shouldSnap(target: VideoSize, current: VideoSize, epsilon: Double = 0.5) -> Bool {
+        abs(target.width - current.width) >= epsilon || abs(target.height - current.height) >= epsilon
     }
 }
 

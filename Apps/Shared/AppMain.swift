@@ -69,7 +69,8 @@ struct ClientAppMain {
                     title: descriptor.title, connection: connection,
                     isActive: paneContext.isActive,
                     onActivate: paneContext.onActivate,
-                    onCanvasScroll: paneContext.onCanvasScroll))
+                    onCanvasScroll: paneContext.onCanvasScroll,
+                    onStreamNativeSize: paneContext.onStreamNativeSize))
             }
             return AnyView(VideoWindowView(title: descriptor.title))
         }

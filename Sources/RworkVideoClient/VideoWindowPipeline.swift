@@ -66,6 +66,15 @@ final class VideoWindowPipeline {
     /// backing view re-evaluates its OS-cursor decision. Set by the view in `activate`; `nil` on iOS.
     var onServerCursorVisibilityChanged: ((Bool) -> Void)?
 
+    /// 1:1 PANE SNAP: fired on the @MainActor when the stream's decoded PIXEL size changes (first
+    /// decoded frame, or the first frame at a new capture size after a host-side resize). Carries
+    /// the raw pixel dims; the view derives the 1:1 point size from its own `contentsScale`
+    /// (``StreamSizeSnap``) and snaps its canvas pane. MUST be set (or left nil) BEFORE
+    /// ``activate(view:videoLayer:connection:maxFrameRate:)`` — its nil-ness decides at session
+    /// construction whether the pane follows the stream (snap) or the legacy connect-time
+    /// host-follow negotiation runs (standalone windows).
+    var onDecodedPixelSize: ((VideoSize) -> Void)?
+
     #if os(macOS)
     /// The LOCAL `NSCursor` mirroring the host's CURRENT cursor SHAPE (Parsec model: the OS draws it at
     /// the instant local mouse position, so the pointer never lags by an RTT). `nil` until the shape
@@ -224,6 +233,19 @@ final class VideoWindowPipeline {
             release: { channelID in await registry.release(host: host, mediaPort: mediaPort, cursorPort: cursorPort, channelID: channelID) }
         )
 
+        // 1:1 PANE SNAP: only a view that wired `onDecodedPixelSize` gets the hook — its
+        // nil-ness is how the session distinguishes a canvas pane (pane follows the stream)
+        // from a standalone window (legacy connect-time host-follow negotiation). Hoisted out
+        // of the GUIHooks init with an explicit type (the ternary inside the big call defeated
+        // the type-checker).
+        let notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)?
+        if onDecodedPixelSize == nil {
+            notifyDecodedPixelSize = nil
+        } else {
+            notifyDecodedPixelSize = { [weak self] px in
+                Task { @MainActor in self?.onDecodedPixelSize?(px) }
+            }
+        }
         // GUI hooks: each hops to the main actor to touch the (main-confined) pacer /
         // compositor. The orchestrator actor calls these from its own executor.
         let gui = RworkVideoClientSession.GUIHooks(
@@ -249,7 +271,8 @@ final class VideoWindowPipeline {
                 // WF-6 (#8): point the (main-confined) renderer at the stream's negotiated luma range
                 // before the first frame. `ColorRange` is Sendable; the renderer is @MainActor.
                 Task { @MainActor in self?.renderer?.colorRange = range }
-            }
+            },
+            notifyDecodedPixelSize: notifyDecodedPixelSize
         )
 
         let session = RworkVideoClientSession(
@@ -332,6 +355,15 @@ final class VideoWindowPipeline {
         pacer?.setNeedsRedisplay()
         guard let session else { return }
         Task { await session.setLayerSize(layerSize) }
+    }
+
+    /// 1:1 PANE SNAP: the view computed the stream's 1:1 point size and is snapping its pane to
+    /// it (or found the pane already there). Rebase the session's resize debounce on `size` so
+    /// the snap-induced layout pass does NOT echo a `resizeRequest` back to the host — the snap
+    /// stays client-side (see ``RworkVideoClientSession/noteLayerSizeAdopted(_:)``).
+    func adoptLayerSize(_ size: VideoSize) {
+        guard let session else { return }
+        Task { await session.noteLayerSizeAdopted(size) }
     }
 
     /// VNC-style zoom/pan, forwarded to the renderer (applied as a UV crop next vsync)

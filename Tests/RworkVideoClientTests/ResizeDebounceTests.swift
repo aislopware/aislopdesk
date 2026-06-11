@@ -86,6 +86,41 @@ final class ResizeDebounceTests: XCTestCase {
         XCTAssertEqual(d, before, "decide() is a pure query — only noteRequested() mutates")
     }
 
+    // MARK: 1:1 pane snap (noteAdopted)
+
+    func testNoteAdoptedRebasesWithoutMintingAnEpoch() {
+        var d = ResizeDebounce(minDelta: 8, settleInterval: 0.2)
+        let snapped = VideoSize(width: 1331, height: 829)
+        d.noteAdopted(snapped)
+        XCTAssertEqual(d.lastEpoch, 0, "a client-side snap sends nothing — no epoch minted")
+        XCTAssertEqual(d.lastRequested, snapped, "the snap becomes the jitter baseline")
+        // The snap-induced layout pass settles AT the adopted size → zero delta → hold: the
+        // snap never echoes a resizeRequest back to the host (the feedback-loop guard).
+        XCTAssertEqual(d.decide(layerSize: snapped, elapsedSinceLastChange: 0.3), .hold)
+    }
+
+    func testNoteAdoptedStopsTheFirstSettleAlwaysFiringRule() {
+        // With a nil baseline the FIRST settled size always fires (changedEnough treats nil as
+        // changed). After a snap rebases the baseline, an identical settled size must NOT fire —
+        // otherwise every pane-follow connect would still AX-resize the host window once.
+        let fresh = ResizeDebounce(minDelta: 8, settleInterval: 0.2)
+        let size = VideoSize(width: 1331, height: 829)
+        XCTAssertEqual(fresh.decide(layerSize: size, elapsedSinceLastChange: 0.3), .request(size),
+                       "precondition: a nil baseline fires on the first settle")
+        var adopted = ResizeDebounce(minDelta: 8, settleInterval: 0.2)
+        adopted.noteAdopted(size)
+        XCTAssertEqual(adopted.decide(layerSize: size, elapsedSinceLastChange: 0.3), .hold)
+    }
+
+    func testUserDragAfterAdoptionStillRequests() {
+        var d = ResizeDebounce(minDelta: 8, settleInterval: 0.2)
+        d.noteAdopted(VideoSize(width: 1331, height: 829))
+        // A real user drag (≥ minDelta from the adopted baseline) settles → host-follow resumes.
+        let dragged = VideoSize(width: 1500, height: 900)
+        XCTAssertEqual(d.decide(layerSize: dragged, elapsedSinceLastChange: 0.3), .request(dragged))
+        XCTAssertEqual(d.noteRequested(dragged), 1, "the first WIRE request still carries epoch 1")
+    }
+
     func testTwoSettledSizesAcrossSeparateDragsEachFire() {
         var d = ResizeDebounce(minDelta: 8, settleInterval: 0.2)
         let a = VideoSize(width: 1280, height: 800)

@@ -426,6 +426,26 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    /// 1:1 SNAP (remote-GUI panes): resizes pane `id` by the VIDEO-CONTENT delta `target −
+    /// current` so its stream renders pixel-for-pixel — the pane chrome (header + divider) is a
+    /// constant additive inset around the content, so adjusting the FRAME by the CONTENT delta
+    /// needs no chrome-height constant and stays correct if the chrome ever changes. The origin
+    /// stays pinned (the pane grows right/down, no jump under the cursor). Skipped while the pane
+    /// is maximized (its on-screen size is the viewport override — mutating the underlying frame
+    /// would surprise the restore) and for sub-half-point deltas (layout noise; not worth a
+    /// canvas mutation + persistence write).
+    public func snapPaneToContentSize(_ id: PaneID, target: CGSize, current: CGSize) {
+        guard workspace.maximizedPane != id,
+              let frame = workspace.canvas.frame(of: id) else { return }
+        let dw = target.width - current.width
+        let dh = target.height - current.height
+        guard abs(dw) >= 0.5 || abs(dh) >= 0.5 else { return }
+        let snapped = CGRect(origin: frame.origin,
+                             size: CGSize(width: frame.width + dw, height: frame.height + dh))
+        workspace.canvas = workspace.canvas.resizing(id, to: snapped)
+        reconcile()
+    }
+
     /// Brings pane `id` to the front and focuses it (on focus / drag-start). Item set unchanged.
     public func raisePane(_ id: PaneID) {
         guard workspace.canvas.contains(id) else { return }

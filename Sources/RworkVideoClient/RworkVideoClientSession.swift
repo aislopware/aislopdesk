@@ -98,16 +98,25 @@ public actor RworkVideoClientSession {
         /// Called once at pipeline bring-up, BEFORE the first frame renders (the `helloAck` carrying
         /// the range arrives before any media). `.video` ⇒ today's coefficients, byte-identical.
         public var setColorRange: @Sendable (ColorRange) -> Void
+        /// 1:1 PANE SNAP (2026-06-11): fired when the decoded frames' PIXEL size CHANGES — the
+        /// session's first decoded frame, or the first frame at a new capture size after an
+        /// in-session resize. The view layer derives the 1:1 point size (`pixels /
+        /// contentsScale`, ``StreamSizeSnap``) and snaps its canvas pane to it. `nil` ⇒ no pane
+        /// to snap (a standalone window) → the session keeps the legacy connect-time
+        /// host-follow negotiation (`startDecodePipeline` kicks the resize debounce) instead.
+        public var notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)?
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
             applyCursor: @escaping @Sendable (CursorUpdate, CursorPlacement) -> Void,
             registerCursorShape: @escaping @Sendable (CGImage, VideoSize, UInt16) -> Void,
-            setColorRange: @escaping @Sendable (ColorRange) -> Void
+            setColorRange: @escaping @Sendable (ColorRange) -> Void,
+            notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)? = nil
         ) {
             self.submitDecodedFrame = submitDecodedFrame
             self.applyCursor = applyCursor
             self.registerCursorShape = registerCursorShape
             self.setColorRange = setColorRange
+            self.notifyDecodedPixelSize = notifyDecodedPixelSize
         }
     }
 
@@ -401,6 +410,17 @@ public actor RworkVideoClientSession {
         maybeRequestResize(for: size)
     }
 
+    /// 1:1 PANE SNAP: the view snapped its pane so the stream renders pixel-for-pixel (`size` =
+    /// the resulting video-layer point size). Rebase the resize debounce on it WITHOUT emitting
+    /// (no epoch mint — nothing was sent): the snap-induced layout pass then `.hold`s (zero delta
+    /// vs the adopted baseline) instead of echoing a `resizeRequest` back to the host, so the
+    /// snap stays client-side (no host-window AX-resize, no feedback loop). A LATER user drag
+    /// still differs from this baseline by ≥ `minDelta` and requests normally (host-follow).
+    public func noteLayerSizeAdopted(_ size: VideoSize) {
+        resizeDebounce.noteAdopted(size)
+        dbg("resize: pane snapped to 1:1 — debounce rebased on \(Int(size.width))x\(Int(size.height)) (no request)")
+    }
+
     /// Drives the in-session resize debounce on a layer-size change (env-gated). A real size
     /// change re-arms the settle clock; once the size has been QUIET for the settle interval and
     /// differs enough from the last request, emit exactly one `resizeRequest(desired, epoch)` on
@@ -409,6 +429,15 @@ public actor RworkVideoClientSession {
     /// is not streaming.
     private func maybeRequestResize(for size: VideoSize) {
         guard stateMachine.mediaFlowing else { return }
+        // PANE-FOLLOWS-STREAM (1:1 snap): until the first snap rebases the debounce
+        // (`noteLayerSizeAdopted`), suppress emission entirely. A layout pass racing the first
+        // decoded frame must not echo the pane's STALE size to the host — that would AX-resize
+        // the host window to the old pane size right before the pane adopts the stream's
+        // natural size, defeating the snap. After the rebase, user drags request normally.
+        if gui.notifyDecodedPixelSize != nil, resizeDebounce.lastRequested == nil {
+            dbg("resize: pane-follows-stream — holding resizeRequest until the 1:1 snap rebases the debounce")
+            return
+        }
         // A real change re-arms the settle clock; an identical pass does not (so a size that
         // stops changing can actually settle under repeated identical layout passes).
         if lastSeenSize != size {
@@ -708,6 +737,11 @@ public actor RworkVideoClientSession {
         let decoded = VideoSize(width: width, height: height)
         let previous = lastDecodedPixelSize
         lastDecodedPixelSize = decoded
+        // 1:1 PANE SNAP: surface the GROUND-TRUTH pixel size whenever it changes (the first
+        // frame of the session, or the first frame at a new capture size). The helloAck /
+        // resizeAck carry POINT sizes and the host's captureScale is not on the wire, so the
+        // decoded buffer is the only place the client learns the true pixel dimensions.
+        if previous != decoded { gui.notifyDecodedPixelSize?(decoded) }
         guard let pending = pendingCaptureSize else { return }
         // Adopt only when the decoded buffer is the genuinely-NEW size (aspect match AND a real
         // pixel-size change vs the prior frame) — an in-flight OLD-size frame queued behind the
@@ -943,7 +977,15 @@ public actor RworkVideoClientSession {
         // the pane's point size (capture@2× == drawable px ⇒ zero resample). Guarded so a pane
         // already matching the capture (within the debounce's own minDelta) does not trigger a
         // pointless capture restart at connect.
-        if abs(layerSize.width - captureSize.width) >= 8 || abs(layerSize.height - captureSize.height) >= 8 {
+        //
+        // 1:1 PANE SNAP (2026-06-11): this legacy host-follow negotiation runs ONLY for a
+        // standalone view (`notifyDecodedPixelSize == nil`). A canvas pane registers the snap
+        // hook, and the direction inverts: the PANE adopts the stream's natural size (fired
+        // from `noteDecoded` on the first frame's ground-truth pixel dims), so the host window
+        // is never disturbed at connect — "pane resizes to match the virtual display", not the
+        // other way around.
+        if gui.notifyDecodedPixelSize == nil,
+           abs(layerSize.width - captureSize.width) >= 8 || abs(layerSize.height - captureSize.height) >= 8 {
             dbg("resize: initial pane \(Int(layerSize.width))x\(Int(layerSize.height)) ≠ capture \(Int(captureSize.width))x\(Int(captureSize.height)) → negotiating 1:1")
             maybeRequestResize(for: layerSize)
         }
