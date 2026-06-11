@@ -855,5 +855,59 @@ final class LiveCongestionControllerTests: XCTestCase {
         }
         XCTAssertLessThan(ctrl.onReport(est), ceiling, "the first post-warmup overusing report cuts")
     }
+
+    // MARK: Fix 4 (2026-06-11) — cut-reason attribution (telemetry only, zero behaviour change)
+
+    /// THE attribution pin the host log needs: a gradient-authorized cut reports `.gradient`, an
+    /// RTT-streak (proportional) cut reports `.rttStreak` — and `decide` is behaviour-identical to
+    /// `onReport` (same target).
+    func testCutReasonAttributesGradientVsRttStreak() {
+        // Gradient arm: trend OVERUSING + raw-RTT corroboration, smoothed EWMA still under its
+        // gates ⇒ ONLY the gradient branch can have authorized this cut.
+        var gradient = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        var control = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        let gEst = gradientEstimate(rawRTT: 200, overusing: true)
+        let gDecision = gradient.decide(gEst)
+        XCTAssertLessThan(gDecision.target, ceiling, "precondition: the gradient cut landed")
+        XCTAssertEqual(gDecision.reason, .gradient, "a gradient-authorized cut is attributed to .gradient")
+        XCTAssertEqual(gDecision.target, control.onReport(gEst),
+                       "decide() and onReport() are the same control law (fix 4 changes no behaviour)")
+
+        // RTT-streak arm (gradient gate OFF, no trend fields): sustained smoothed inflation for
+        // rttStreakTicks consecutive reports ⇒ the proportional delay-targeting cut.
+        var rttCtrl = warmedController(ceiling: ceiling, gradientCutEnabled: false)
+        var est = NetworkEstimate()
+        for _ in 0..<8 { est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100) }
+        var lastReason = LiveCongestionController.CutReason.hold
+        var cutTarget = ceiling
+        for _ in 0..<(LiveCongestionController.rttStreakTicks + 2) {
+            est.fold(rttMillis: 400, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+            let d = rttCtrl.decide(est)
+            if d.target < cutTarget { cutTarget = d.target; lastReason = d.reason; break }
+        }
+        XCTAssertLessThan(cutTarget, ceiling, "precondition: the RTT cut landed")
+        XCTAssertEqual(lastReason, .rttStreak, "a sustained-RTT proportional cut is attributed to .rttStreak")
+    }
+
+    /// The no-action and increase reasons: warmup ticks report `.warmup`, a clean post-warmup
+    /// climb reports `.probe`, and a clean report still inside the post-cut hold-down reports
+    /// `.hold`.
+    func testNoCutReasonsWarmupProbeHold() {
+        var ctrl = LiveCongestionController(ceiling: ceiling, gradientCutEnabled: false)
+        let clean = estimate(lossSamples: 0, folds: 1)
+        for _ in 0..<(LiveCongestionController.warmupTicks - 1) {
+            XCTAssertEqual(ctrl.decide(clean).reason, .warmup)
+        }
+        // Past warmup, at the ceiling: the additive branch runs (clamped no-op) ⇒ .probe.
+        XCTAssertEqual(ctrl.decide(clean).reason, .probe)
+
+        // After a catastrophic halve, a clean report inside the hold-down holds.
+        var held = warmedController(ceiling: ceiling, gradientCutEnabled: false)
+        let collapse = estimate(lossSamples: 0.5, folds: 8)
+        let cut = held.decide(collapse)
+        XCTAssertEqual(cut.reason, .catastrophic)
+        XCTAssertLessThan(cut.target, ceiling)
+        XCTAssertEqual(held.decide(clean).reason, .hold, "clean report inside the hold-down = .hold")
+    }
 }
 #endif

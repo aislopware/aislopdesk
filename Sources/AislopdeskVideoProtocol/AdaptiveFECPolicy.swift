@@ -48,6 +48,26 @@ public enum AdaptiveFECPolicy {
 
     // MARK: B. Loss → tier decision (host only)
 
+    /// FEC LADDER FLOOR (2026-06-11, telemetry round). The relax path FLOORS at level 1 (g10,
+    /// ~10% overhead) and never selects the OFF tier by default. MEASURED on the live FPT↔Viettel
+    /// path (169 s, baseline loss 0.1–0.6%): 158 tier transitions including 18 visits to OFF;
+    /// 102 unrecovered frame losses (1.1%) vs 186 FEC-recovered → 65 client decode-fails ≈ 1 per
+    /// 2.6 s, each a blip risk. On a path with NONZERO baseline loss the OFF tier is never safe —
+    /// the dwell only slows the walk there, it does not stop it. `AISLOPDESK_FEC_ALLOW_OFF=1`
+    /// re-enables the old relax-to-OFF behaviour (a genuinely loss-free LAN/loopback can reclaim
+    /// the standing ~10%). The WIRE CODEC for tier 1 is untouched — an OFF-tier frame from an
+    /// old/flagged host still decodes.
+    public static let allowOffTierDefault = allowOffTier(env: ProcessInfo.processInfo.environment)
+
+    /// Pure env resolution for the OFF-tier escape hatch (testable without process state).
+    public static func allowOffTier(env: [String: String]) -> Bool {
+        env["AISLOPDESK_FEC_ALLOW_OFF"] == "1"
+    }
+
+    /// The lowest redundancy LEVEL the relax path may land on: 1 (g10) by default, 0 (OFF) only
+    /// behind the escape hatch. Escalation is unaffected (it only ever raises the level).
+    private static func relaxFloorLevel(allowOff: Bool) -> Int { allowOff ? 0 : 1 }
+
     /// Internal redundancy LEVEL, monotonic in loss (0 = least redundancy … 4 = most):
     ///  level 0 = OFF, 1 = g10, 2 = g5 (the default), 3 = g3, 4 = g2.
     /// Decisions step at most ONE level per call; the level↔tier maps below translate to/from
@@ -104,13 +124,17 @@ public enum AdaptiveFECPolicy {
     }
 
     /// Picks the next wire tier from the EWMA loss and the previous tier, with hysteresis and a
-    /// strict one-level-per-call clamp (anti-flap). The clamp means relaxation toward OFF on a
-    /// sustained clean link is GRADUAL (g5→g10→OFF over successive reports) and a loss spike never
-    /// jumps multiple levels at once — so it can never "prematurely" jump straight to OFF, and the
-    /// host only ever calls this on a real netstats report (inert with no data).
-    public static func tier(forLossRate loss: Double, previousTier: UInt8) -> UInt8 {
+    /// strict one-level-per-call clamp (anti-flap). The clamp means relaxation on a sustained clean
+    /// link is GRADUAL (one level per report) and a loss spike never jumps multiple levels at once.
+    /// Relaxation floors at level 1 (g10) unless `allowOff` (see ``allowOffTierDefault``); from a
+    /// pre-existing OFF state with the floor active, the first call steps UP to g10 (defensive —
+    /// unreachable in production, where the env gate is fixed for the process lifetime). The host
+    /// only ever calls this on a real netstats report (inert with no data).
+    public static func tier(forLossRate loss: Double, previousTier: UInt8,
+                            allowOff: Bool = allowOffTierDefault) -> UInt8 {
         let current = level(forTier: previousTier)
-        let target = targetLevel(forLossRate: loss, currentLevel: current)
+        let target = max(targetLevel(forLossRate: loss, currentLevel: current),
+                         relaxFloorLevel(allowOff: allowOff))
         let stepped: Int
         if target > current { stepped = current + 1 }
         else if target < current { stepped = current - 1 }
@@ -133,36 +157,59 @@ public enum AdaptiveFECPolicy {
     /// one-time cost against a standing 10-20% overhead saving.
     public static let relaxDwellReports = 24
 
-    /// Tier decision state for the dwell-gated variant: the current wire tier plus the count of
-    /// consecutive reports that demanded relaxation. Value type, host-session owned — same
-    /// "pure decider beside the actor" shape as `LTRController`/`StaticIDRDecider`.
+    /// STICKY RELAX (2026-06-11, telemetry round): a report carrying UNRECOVERED frame loss proves
+    /// the CURRENT redundancy was insufficient — relaxing soon after is exactly the measured
+    /// blip-per-2.6s failure mode. For this many reports after any `unrecovered > 0` report the
+    /// relax dwell is DOUBLED (escalation stays immediate). Cheap: one countdown `Int` on
+    /// ``TierState``. The window is `2 × dwell` BY CONSTRUCTION: a shorter window would close
+    /// before a streak could ever reach the doubled dwell, reducing the whole mechanism to a
+    /// one-report delay.
+    public static let stickyRelaxWindowReports = 2 * relaxDwellReports
+
+    /// Tier decision state for the dwell-gated variant: the current wire tier, the count of
+    /// consecutive reports that demanded relaxation, and the sticky-relax countdown (reports left
+    /// in the doubled-dwell window after an unrecovered loss). Value type, host-session owned —
+    /// same "pure decider beside the actor" shape as `LTRController`/`StaticIDRDecider`.
     public struct TierState: Equatable, Sendable {
         public var tier: UInt8
         public var relaxStreak: Int
-        public init(tier: UInt8 = AdaptiveFECPolicy.defaultTier, relaxStreak: Int = 0) {
+        /// Reports remaining in the sticky-relax (doubled-dwell) window; 0 = inactive. Re-armed to
+        /// ``stickyRelaxWindowReports`` by any report with unrecovered loss, decays by 1 per report.
+        public var stickyRelaxRemaining: Int
+        public init(tier: UInt8 = AdaptiveFECPolicy.defaultTier, relaxStreak: Int = 0,
+                    stickyRelaxRemaining: Int = 0) {
             self.tier = tier
             self.relaxStreak = relaxStreak
+            self.stickyRelaxRemaining = stickyRelaxRemaining
         }
     }
 
-    /// Dwell-gated tier step — the production entry point (plain ``tier(forLossRate:previousTier:)``
+    /// Dwell-gated tier step — the production entry point (plain ``tier(forLossRate:previousTier:allowOff:)``
     /// stays for tests/tools). Escalation: immediate one-step, resets the relax streak. Relaxation:
     /// counted across consecutive relax-demanding reports and applied only when the streak reaches
-    /// `dwell`; any report that does NOT demand relaxation (hold or escalate) resets the streak, so
-    /// a burst arriving mid-dwell re-arms the full wait.
-    public static func nextTierState(forLossRate loss: Double, state: TierState, dwell: Int = relaxDwellReports) -> TierState {
+    /// the EFFECTIVE dwell (`dwell`, doubled while the sticky window from a recent unrecovered loss
+    /// is open — see ``stickyRelaxWindowReports``); any report that does NOT demand relaxation
+    /// (hold or escalate) resets the streak, so a burst arriving mid-dwell re-arms the full wait.
+    /// Relaxation floors at level 1 (g10) unless `allowOff` (see ``allowOffTierDefault``).
+    public static func nextTierState(forLossRate loss: Double, state: TierState,
+                                     dwell: Int = relaxDwellReports,
+                                     allowOff: Bool = allowOffTierDefault,
+                                     sawUnrecoveredLoss: Bool = false) -> TierState {
+        let sticky = sawUnrecoveredLoss ? stickyRelaxWindowReports : max(0, state.stickyRelaxRemaining - 1)
+        let effectiveDwell = sticky > 0 ? 2 * dwell : dwell
         let current = level(forTier: state.tier)
-        let target = targetLevel(forLossRate: loss, currentLevel: current)
+        let target = max(targetLevel(forLossRate: loss, currentLevel: current),
+                         relaxFloorLevel(allowOff: allowOff))
         if target > current {
-            return TierState(tier: tier(forLevel: current + 1), relaxStreak: 0)
+            return TierState(tier: tier(forLevel: current + 1), relaxStreak: 0, stickyRelaxRemaining: sticky)
         }
         if target < current {
             let streak = state.relaxStreak + 1
-            if streak >= max(1, dwell) {
-                return TierState(tier: tier(forLevel: current - 1), relaxStreak: 0)
+            if streak >= max(1, effectiveDwell) {
+                return TierState(tier: tier(forLevel: current - 1), relaxStreak: 0, stickyRelaxRemaining: sticky)
             }
-            return TierState(tier: state.tier, relaxStreak: streak)
+            return TierState(tier: state.tier, relaxStreak: streak, stickyRelaxRemaining: sticky)
         }
-        return TierState(tier: state.tier, relaxStreak: 0)
+        return TierState(tier: state.tier, relaxStreak: 0, stickyRelaxRemaining: sticky)
     }
 }

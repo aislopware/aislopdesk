@@ -253,18 +253,65 @@ public struct LiveCongestionController: Sendable, Equatable {
 
     // MARK: Control law
 
+    /// CUT-REASON ATTRIBUTION (fix 4, 2026-06-11 telemetry round — observability only, zero
+    /// behaviour change): WHY the controller moved (or held) this tick, carried on the returned
+    /// ``Decision`` so the host's `abr: actuate` debug line can attribute a cut to its trigger —
+    /// without it the gradient path's (`AISLOPDESK_ABR_GRAD`) efficacy is unmeasurable from logs.
+    public enum CutReason: String, Sendable, Equatable {
+        /// Cold-start guard — no action possible.
+        case warmup
+        /// No branch fired (sub-threshold / hold-down) — target unchanged.
+        case hold
+        /// RTT inflated with a satisfied streak + expired cut-hold, but the smoothed RTT is
+        /// IMPROVING — the drain gate held the cut (the queue is already flushing).
+        case drain
+        /// Additive increase (the normal probe step toward the ceiling).
+        case probe
+        /// Additive increase at/above the remembered knee — the cautious (÷kneeCautionDivisor) step.
+        case knee
+        /// Proportional RTT (delay-targeting) cut — sustained smoothed-RTT inflation streak.
+        case rttStreak
+        /// Loss-corroborated cut — raw loss over the threshold WITH RTT-inflation evidence.
+        case lossCorroborated
+        /// Delay-gradient early cut — client trendline OVERUSING + raw-RTT corroboration.
+        case gradient
+        /// EWMA-keyed catastrophic halve (sustained ≥ catastrophic loss).
+        case catastrophic
+    }
+
+    /// One control-law tick's outcome: the new target plus why. Pure data — printing happens at
+    /// the host's existing debug-log site.
+    public struct Decision: Sendable, Equatable {
+        public let target: Int
+        public let reason: CutReason
+        public init(target: Int, reason: CutReason) {
+            self.target = target
+            self.reason = reason
+        }
+    }
+
     /// Folds one network estimate and returns the (possibly unchanged) new target bitrate.
+    /// Compatibility wrapper over ``decide(_:)`` — every pre-fix-4 call site keeps its shape.
+    @discardableResult
+    public mutating func onReport(_ e: NetworkEstimate) -> Int {
+        decide(e).target
+    }
+
+    /// Folds one network estimate and returns the new target bitrate PLUS the attributed reason
+    /// (fix 4). When several cut branches fire on one report the reason names the branch that set
+    /// the FINAL (lowest) target; on a tie the stronger evidence wins (rttStreak > lossCorroborated
+    /// > gradient — the code order below).
     ///
     /// Decision order: warmup → severe-loss halve → ordinary-congestion multiplicative decrease →
     /// (past hold-down) additive increase. The result is ALWAYS within `[floor, ceiling]`.
     @discardableResult
-    public mutating func onReport(_ e: NetworkEstimate) -> Int {
+    public mutating func decide(_ e: NetworkEstimate) -> Decision {
         ticks += 1
         // Capture the trend input for the NEXT report whatever branch runs (including warmup).
         defer { prevSmoothedRTTMillis = e.smoothedRTTMillis }
         // Cold-start guard: fold (advance `ticks`) but take no action, so an open-loop start with
         // `loss == 0` cannot trigger a spurious drop and the estimate's own gradient can warm up.
-        guard ticks >= Self.warmupTicks else { return current }
+        guard ticks >= Self.warmupTicks else { return Decision(target: current, reason: .warmup) }
 
         // Positive-evidence congestion ONLY (never decrease on absence-of-data): loss over the gate,
         // OR a finite RTT baseline inflated past it WITH a rising OWD gradient (queue build-up).
@@ -325,6 +372,7 @@ public struct LiveCongestionController: Sendable, Equatable {
             // halve regardless of RTT (queue-less policer / true collapse), at most once per
             // hold-down window.
             decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)), queueCorroborated: rttInflated)
+            return Decision(target: current, reason: .catastrophic)
         } else if rttCongested || lossCongested || gradientCongested {
             // Ordinary congestion. DELAY-TARGETING (2026-06-11): the RTT path sizes the decrease to
             // the MEASURED queue instead of a fixed ×0.85 — `factor = (minRTT + slack) / smoothedRTT`,
@@ -338,16 +386,19 @@ public struct LiveCongestionController: Sendable, Equatable {
             // any more — at ~3 frames per report one lost frame reads 33%, so raw severity is
             // quantization noise. Depth comes from the measured queue; collapse from the EWMA gate.
             var target = Int.max
+            var reason = CutReason.hold   // overwritten below — at least one branch fired to get here
             if rttCongested {
                 // Drain target uses the SAME baseline-proportional slack as the gate, so the
                 // proportional cut sizes against the path's own wobble floor, not the LAN constant.
                 let drained = e.minRTTMillis + slack
                 let factor = min(Self.rttDecreaseCapFactor,
                                  max(Self.rttDecreaseFloorFactor, drained / e.smoothedRTTMillis))
-                target = min(target, Int(Double(current) * factor))
+                let cut = Int(Double(current) * factor)
+                if cut < target { target = cut; reason = .rttStreak }
             }
             if lossCongested {
-                target = min(target, Int(Double(current) * Self.decreaseFactor))
+                let cut = Int(Double(current) * Self.decreaseFactor)
+                if cut < target { target = cut; reason = .lossCorroborated }
             }
             if gradientCongested {
                 // The early-onset reflex: one conventional ×0.85-deep cut. NOTE the unchanged
@@ -356,9 +407,11 @@ public struct LiveCongestionController: Sendable, Equatable {
                 // capacity knowledge, and knee-pinning from early cuts would cap the climb for
                 // `kneeTTLTicks` on the measured rate-independent 4G/inter-ISP wobble (the
                 // falsified-design history). The proportional path sets it if the queue is real.
-                target = min(target, Int(Double(current) * Self.gradientDecreaseFactor))
+                let cut = Int(Double(current) * Self.gradientDecreaseFactor)
+                if cut < target { target = cut; reason = .gradient }
             }
             decrease(to: max(floor, target), queueCorroborated: rttInflated)
+            return Decision(target: current, reason: reason)
         } else if ticks >= holdUntilTick && !rttInflated && !(gradientCutEnabled && e.owdTrendOverusing) {
             // Clean link past the hold-down: probe up additively toward the ceiling. `!rttInflated`
             // keeps the probe from climbing INTO a building queue while the streak/hold-down is
@@ -374,8 +427,15 @@ public struct LiveCongestionController: Sendable, Equatable {
             let cautious = kneeBps.map { current >= $0 } ?? false
             let step = cautious ? max(1, increaseStep / Self.kneeCautionDivisor) : increaseStep
             current = min(ceiling, current + step)
+            return Decision(target: current, reason: cautious ? .knee : .probe)
         }
-        return current
+        // No action this tick. Attribute the DRAIN gate when it is the only thing that held an
+        // otherwise fully-armed RTT cut (inflated + streak + cut-hold expired, but improving).
+        let drainGated = rttInflated
+            && rttInflatedStreak >= Self.rttStreakTicks
+            && ticks >= cutHoldUntilTick
+            && e.smoothedRTTMillis + 1.0 < prevSmoothedRTTMillis
+        return Decision(target: current, reason: drainGated ? .drain : .hold)
     }
 
     /// Applies a computed decrease target and arms the anti-thrash hold-downs — but ONLY re-arms them

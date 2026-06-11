@@ -96,7 +96,8 @@ final class RecoveryRequestDeduperTests: XCTestCase {
     func testRedundancySpreadVsDedupWindowCouplingAtDefaults() {
         let window = AislopdeskVideoHostSession.recoveryDedupWindow
         XCTAssertGreaterThan(window, 0, "the default window must be a real (non-kill-switch) window")
-        XCTAssertLessThan(window, 0.030, "must stay below the 30 ms lossy-escalation floor (a legitimate re-request is never deduped)")
+        XCTAssertLessThan(window, RecoveryPolicy().lossyEscalationFloor,
+                          "must stay below the lossy-escalation floor (a legitimate re-request is never deduped)")
         for copies in 1...5 {
             let r = RecoveryRequestRedundancy(copies: copies)
             let spread = Double(r.copies - 1) * r.spacing

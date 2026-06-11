@@ -225,12 +225,13 @@ public actor AislopdeskVideoHostSession {
     /// byte-identical to the pre-WF-4 path. Needs telemetry reports to ever change tier (if the client
     /// sets `AISLOPDESK_NETSTATS=0` no reports arrive ⇒ the tier stays at the today-default tier 0, never OFF).
     // DEFAULT ON since 2026-06-11 (self-heal era): on a clean path (loss EWMA <0.2%) the tier
-    // relaxes g5→g10→OFF over ~2 reports — the standing 20% parity overhead is paid ONLY while
-    // loss actually exists. The ~1s one-step-per-report re-escalation window at loss onset is
-    // covered by AISLOPDESK_SELF_HEAL (any whole-frame loss self-heals ≤K frames with no round-trip)
-    // + client recovery + kfDup. Live-validated same day (tier walked 0→2→1=OFF on the real
-    // path; 14.6k-frame heavy-scroll session: 0 unrecovered, 0 IDR requests). `AISLOPDESK_ADAPTIVE_FEC=0`
-    // restores the static always-g5 tier.
+    // relaxes toward less parity — the standing 20% overhead is paid ONLY while loss exists. The
+    // ~1s one-step-per-report re-escalation window at loss onset is covered by AISLOPDESK_SELF_HEAL
+    // (any whole-frame loss self-heals ≤K frames with no round-trip) + client recovery + kfDup.
+    // FEC LADDER FLOOR (2026-06-11 telemetry round): relaxation now FLOORS at g10 (tier 2, ~10%
+    // overhead) — the measured 18 OFF-tier visits on the 0.1-0.6%-baseline path produced 102
+    // unrecovered losses / 65 decode-fails in 169s. `AISLOPDESK_FEC_ALLOW_OFF=1` restores the old
+    // walk to OFF; `AISLOPDESK_ADAPTIVE_FEC=0` restores the static always-g5 tier.
     private static let adaptiveFECEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_ADAPTIVE_FEC"] != "0"
     /// WF-6 (#8) FULL-RANGE COLOR. DEFAULT OFF; enable with `AISLOPDESK_FULL_RANGE=1`. ONE flag flips ALL
     /// FOUR atomic points together: (1) the capturer's NV12 pixel-format variant, (2) the encoder's
@@ -287,8 +288,9 @@ public actor AislopdeskVideoHostSession {
     /// admitted). COUPLED to the client spacing: ≥ 2× the max copy spread ((copies−1)·spacing =
     /// 12 ms at copies=5, spacing 3 ms) + reorder skew — duplicates do NOT refresh the window
     /// timestamp, so the margin must absorb the whole spread — yet < every legitimate re-request
-    /// spacing (lossy escalation floor 30 ms). Internal (not private) so the coupling test can
-    /// assert against the RESOLVED constant.
+    /// spacing (lossy escalation floor — default 60 ms since fix 3; at the resolved defaults
+    /// 25 ms < 60 ms with room to spare, pinned by the coupling test). Internal (not private) so
+    /// the coupling test can assert against the RESOLVED constants.
     static let recoveryDedupWindow: TimeInterval = {
         if let s = ProcessInfo.processInfo.environment["AISLOPDESK_RECOVERY_DEDUP_MS"],
            let v = Double(s), v >= 0, v <= 200 { return v / 1000.0 }
@@ -783,7 +785,12 @@ public actor AislopdeskVideoHostSession {
             // a real report → it can't move before there is loss data (inert when no reports arrive).
             // No-op unless `AISLOPDESK_ADAPTIVE_FEC=1` ⇒ the tier stays at the today-default tier 0.
             if Self.adaptiveFECEnabled {
-                let next = AdaptiveFECPolicy.nextTierState(forLossRate: networkEstimate.lossRate, state: fecTierState)
+                // FEC LADDER FLOOR + STICKY RELAX (2026-06-11): relaxation floors at g10 (tier 2,
+                // `AISLOPDESK_FEC_ALLOW_OFF=1` restores the old OFF walk) and an unrecovered-loss
+                // report doubles the relax dwell for the next sticky window — both inside the pure
+                // policy; this site only feeds it the report's unrecovered evidence.
+                let next = AdaptiveFECPolicy.nextTierState(forLossRate: networkEstimate.lossRate, state: fecTierState,
+                                                           sawUnrecoveredLoss: report.unrecovered > 0)
                 if next.tier != fecTierState.tier {
                     dbg("adaptive-fec: tier \(fecTierState.tier) → \(next.tier) (lossEWMA=\(String(format: "%.4f", networkEstimate.lossRate)))")
                 }
@@ -796,12 +803,16 @@ public actor AislopdeskVideoHostSession {
             // write back; no reference capture, so no retain-cycle risk. `setLiveBitrate` is throttled
             // to material moves (≈5% of ceiling / 500 kbps) so it fires rarely, not every report.
             if Self.abrEnabled, var ctrl = congestionController {
-                let target = ctrl.onReport(networkEstimate)
+                // Fix 4 (cut-reason attribution): `decide` is `onReport` + the WHY token, so the
+                // actuate line below can attribute a cut to gradient/rttStreak/loss/… — printing
+                // stays here at the debug site; the controller stays pure.
+                let decision = ctrl.decide(networkEstimate)
+                let target = decision.target
                 congestionController = ctrl
                 if LiveCongestionController.isMaterialChange(previous: lastActuatedBitrate, target: target, ceiling: ctrl.ceiling) {
                     lastActuatedBitrate = target
                     encoder?.setLiveBitrate(target)
-                    dbg("abr: actuate target=\(target) ceiling=\(ctrl.ceiling) floor=\(ctrl.floor) current=\(ctrl.current) ticks=\(ctrl.ticks) knee=\(ctrl.kneeBps.map(String.init) ?? "-")")
+                    dbg("abr: actuate target=\(target) ceiling=\(ctrl.ceiling) floor=\(ctrl.floor) current=\(ctrl.current) ticks=\(ctrl.ticks) knee=\(ctrl.kneeBps.map(String.init) ?? "-") reason=\(decision.reason.rawValue)")
                 }
             }
             // FPS GOVERNOR: tick on the same ~50 ms report clock, AFTER the ABR block so it reacts

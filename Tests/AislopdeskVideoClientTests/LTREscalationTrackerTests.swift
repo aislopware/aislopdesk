@@ -199,18 +199,21 @@ final class LTREscalationTrackerTests: XCTestCase {
     }
 
     // MARK: Component 5 (2026-06-11) — loss-adaptive (halved) escalation clock
+    // FIX 3 (same day, telemetry round): the lossy floor is max(60 ms, 1.5·RTT) — at rtt=50 ms
+    // the lossy deadline is 75 ms (was 50 ms), still strictly under the normal 100 ms.
 
-    /// While OBSERVING LOSS the escalation fires at 1·RTT (the halved clock) with an outstanding
-    /// request; the same instant without the loss signal still waits the full 2·RTT.
-    func testObservingLossEscalatesAtOneRTT() {
+    /// While OBSERVING LOSS the escalation fires at the halved clock's floor (1.5·RTT here) with
+    /// an outstanding request; the same instant without the loss signal still waits the full 2·RTT.
+    func testObservingLossEscalatesAtLossyDeadline() {
         var tracker = LTREscalationTracker()
         tracker.noteRequestSent(now: 0)
-        XCTAssertFalse(tracker.shouldEscalate(now: 0.049, rtt: rtt, policy: policy, observingLoss: true))
-        XCTAssertTrue(tracker.shouldEscalate(now: 0.050, rtt: rtt, policy: policy, observingLoss: true),
-                      "lossy clock = max(1·RTT, 30 ms) = 50 ms at rtt=50 ms")
-        XCTAssertFalse(tracker.shouldEscalate(now: 0.050, rtt: rtt, policy: policy, observingLoss: false),
+        // Sample points sit just off the exact 75 ms boundary (1.5 × 0.05 is not FP-exact).
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.0749, rtt: rtt, policy: policy, observingLoss: true))
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.0751, rtt: rtt, policy: policy, observingLoss: true),
+                      "lossy clock = max(1·RTT, 60 ms, 1.5·RTT) = 75 ms at rtt=50 ms")
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.0751, rtt: rtt, policy: policy, observingLoss: false),
                        "normal clock still 2·RTT at the same instant")
-        XCTAssertFalse(tracker.shouldEscalate(now: 0.050, rtt: rtt, policy: policy),
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.0751, rtt: rtt, policy: policy),
                        "default param ⇒ identical to observingLoss: false (existing call shape unchanged)")
     }
 
@@ -221,27 +224,40 @@ final class LTREscalationTrackerTests: XCTestCase {
     }
 
     /// F7 interplay: after a fired escalation re-anchors the clock, the next LOSSY escalation
-    /// only fires ≥ max(1·RTT, floor) after the re-anchor — the halved clock never reopens the
-    /// per-dropped-frame requestIDR spam that noteEscalated exists to close.
+    /// only fires ≥ one full lossy deadline (75 ms at rtt=50 ms) after the re-anchor — the halved
+    /// clock never reopens the per-dropped-frame requestIDR spam that noteEscalated exists to close.
     func testLossyEscalationCoalescesAfterNoteEscalated() {
         var tracker = LTREscalationTracker()
         tracker.noteRequestSent(now: 0)
-        XCTAssertTrue(tracker.shouldEscalate(now: 0.05, rtt: rtt, policy: policy, observingLoss: true))
-        tracker.noteEscalated(now: 0.05)
-        XCTAssertFalse(tracker.shouldEscalate(now: 0.06, rtt: rtt, policy: policy, observingLoss: true))
-        XCTAssertFalse(tracker.shouldEscalate(now: 0.099, rtt: rtt, policy: policy, observingLoss: true))
-        XCTAssertTrue(tracker.shouldEscalate(now: 0.10, rtt: rtt, policy: policy, observingLoss: true),
-                      "next lossy escalation exactly one lossy deadline after the re-anchor")
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.0751, rtt: rtt, policy: policy, observingLoss: true))
+        tracker.noteEscalated(now: 0.0751)
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.085, rtt: rtt, policy: policy, observingLoss: true))
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.149, rtt: rtt, policy: policy, observingLoss: true))
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.1503, rtt: rtt, policy: policy, observingLoss: true),
+                      "next lossy escalation one lossy deadline (~75 ms) after the re-anchor")
     }
 
-    /// The 30 ms floor flows through the tracker: at rtt=10 ms a lossy escalation waits 30 ms
-    /// from the first request, not 10 ms (a refresh physically cannot arrive faster).
+    /// FIX 3: the 60 ms floor flows through the tracker. At rtt=10 ms a lossy escalation waits
+    /// 60 ms from the first request, not 10/30 ms (a refresh physically cannot arrive faster).
     func testLossyFloorThroughTracker() {
         var tracker = LTREscalationTracker()
         tracker.noteRequestSent(now: 0)
         XCTAssertFalse(tracker.shouldEscalate(now: 0.010, rtt: 0.01, policy: policy, observingLoss: true))
-        XCTAssertFalse(tracker.shouldEscalate(now: 0.029, rtt: 0.01, policy: policy, observingLoss: true))
-        XCTAssertTrue(tracker.shouldEscalate(now: 0.030, rtt: 0.01, policy: policy, observingLoss: true))
+        XCTAssertFalse(tracker.shouldEscalate(now: 0.059, rtt: 0.01, policy: policy, observingLoss: true))
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.060, rtt: 0.01, policy: policy, observingLoss: true))
+    }
+
+    /// FIX 3 measured-defect pin through the tracker: at rtt=20 ms — the live path's band — the
+    /// loss-state-halved deadline never drops below 60 ms (the old 30 ms floor escalated to a
+    /// forced IDR before the LTR refresh could physically land: 202 requestIDR vs 100 refreshes).
+    func testLossyDeadlineNeverBelow60msAtRtt20() {
+        var tracker = LTREscalationTracker()
+        tracker.noteRequestSent(now: 0)
+        for now in stride(from: 0.0, to: 0.060, by: 0.001) {
+            XCTAssertFalse(tracker.shouldEscalate(now: now, rtt: 0.02, policy: policy, observingLoss: true),
+                           "must not escalate at \(Int(now * 1000)) ms (< the 60 ms floor)")
+        }
+        XCTAssertTrue(tracker.shouldEscalate(now: 0.060, rtt: 0.02, policy: policy, observingLoss: true))
     }
 
     /// keyframeDecoded must clear the loss boundary too, so a STALE boundary from a closed episode

@@ -251,8 +251,10 @@ public actor AislopdeskVideoClientSession {
         return RecoveryRequestRedundancy(copies: n)
     }()
     /// Component 5: `AISLOPDESK_FAST_ESCALATION` (default ON; "0" disables) — halve the IDR
-    /// escalation clock to `max(1·RTT, 30 ms)` while ``lossWindow`` is observing loss. Off ⇒
-    /// `observingLoss` is forced false and escalation is byte-identical to today.
+    /// escalation clock to `max(1·RTT, 60 ms, 1.5·RTT)` while ``lossWindow`` is observing loss
+    /// (the floor is `AISLOPDESK_ESCALATION_FLOOR_MS`-tunable — fix 3, 2026-06-11: the old 30 ms
+    /// floor escalated before an LTR refresh could physically land). Off ⇒ `observingLoss` is
+    /// forced false and escalation is byte-identical to today.
     private static let fastEscalationEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_FAST_ESCALATION"] != "0"
     /// Component 2: the wrap-aware highest successfully-DECODED frameID. Carried (as
     /// ``DecodeFrontier/wireValue``) on every `requestIDR` / `requestLTRRefresh` so the host's
