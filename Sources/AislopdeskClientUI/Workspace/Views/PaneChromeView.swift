@@ -73,6 +73,19 @@ struct PaneChromeView<Content: View>: View {
             // "Reconnecting (n) — retrying in Ns" / "Unreachable" (surfacing the WF3 timeout + backoff).
             statusDetail(status)
 
+            // Live RTT badge (docs/26 D10): the smoothed ping/pong RTT beside the title while
+            // connected — typing lag finally has an attributable number (network vs host vs
+            // render). Hidden until the first sample; amber past 100ms (the "this will feel
+            // laggy" line for keystroke echo).
+            if case .connected = status.phase, let ms = latencyMS {
+                Text(ms < 1 ? "<1ms" : "\(Int(ms.rounded()))ms")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(ms > 100 ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+                    .lineLimit(1)
+                    .accessibilityLabel(Text("latency \(Int(ms.rounded())) milliseconds"))
+                    .help("Smoothed round-trip time to the host (3s ping)")
+            }
+
             // A "running…" affordance while an OSC 133 command executes on this pane — the iconic
             // modern-terminal activity cue, beside the title. Hidden at the idle prompt.
             if isRunning {
@@ -207,6 +220,13 @@ struct PaneChromeView<Content: View>: View {
     /// non-terminal handle reports idle.
     private var isRunning: Bool {
         (handle as? LivePaneSession)?.terminalModel?.shellActivity == .running
+    }
+
+    /// The smoothed app-layer RTT for the latency badge (`nil` until the first ping/pong
+    /// completes — the badge stays hidden). Reading the `@Observable` connection's
+    /// `latencyMS` re-renders the header on each ~3s sample, which is cheap.
+    private var latencyMS: Double? {
+        (handle as? LivePaneSession)?.connection?.latencyMS
     }
 
     /// The header label: prefer the LIVE OSC 0/2 terminal title (the shell's cwd / running command)
