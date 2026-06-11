@@ -254,7 +254,11 @@ public final class TerminalViewModel {
             await ingestBatch(client.takeOutputBatch())
         }
         // FINAL DRAIN: a tail appended just before the wake stream finished (exit/close)
-        // has no wake left to announce it — take it explicitly.
+        // has no wake left to announce it — take it explicitly. ONLY on a natural finish:
+        // a CANCELLED observe (teardown/reconnect replaced this pump) must NOT take —
+        // it would paint the dead session's tail into the freshly-reset pane and credit
+        // those bytes to the wrong (new) transport (night-review finding).
+        guard !Task.isCancelled else { return }
         await ingestBatch(client.takeOutputBatch())
     }
 

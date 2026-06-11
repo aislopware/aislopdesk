@@ -88,9 +88,20 @@ final class MuxChannelSession: @unchecked Sendable {
     /// Single-chunk fast path returns the chunk's `Data` UNCHANGED (zero added copy — the
     /// interactive steady state stays byte-identical work); only a multi-chunk backlog
     /// pays one concatenation, amortized by skipping N−1 seq/encode/envelope/send rounds.
+    ///
+    /// FRAME BOUND (credit progress invariant): every emitted `.output` payload is capped
+    /// at ``MuxFlowControl/maxOutputFramePayloadBytes`` — window/2 minus the frame-header
+    /// margin, cross-clamped against the merge cap. An over-cap HEAD chunk (a raw read
+    /// chunk, or env-tuned extremes) is SPLIT: the prefix ships now, the remainder is
+    /// reinserted at the FIFO head (byte order preserved; the gate accounting still sums
+    /// to the producer's enqueued total because each emitted frame dequeues exactly its
+    /// own byteCount). Without this, a max-size frame's 13-byte encode overhead could park
+    /// the sender permanently just below the receiver's grant threshold (the 13-byte
+    /// dead-zone stall the night review caught).
     func takeMergedFrame() -> MergedFrame? {
         fifoLock.lock()
         defer { fifoLock.unlock() }
+        let cap = MuxFlowControl.maxOutputFramePayloadBytes
         guard let head = outFIFO.first else { return nil }
         if case let .exit(code) = head {
             outFIFO.removeFirst()
@@ -99,14 +110,23 @@ final class MuxChannelSession: @unchecked Sendable {
         // Head is a chunk: pop it, then greedily absorb following chunks up to the cap.
         guard case var .chunk(bytes, control) = head else { return nil }
         outFIFO.removeFirst()
+        if bytes.count > cap {
+            // SPLIT an over-cap head chunk: ship the prefix (with the chunk's sniffed
+            // control — per-channel control FIFO holds), reinsert the remainder at the
+            // head so the byte stream order is untouched.
+            let prefix = Data(bytes.prefix(cap))
+            let remainder = Data(bytes.dropFirst(cap))
+            outFIFO.insert(.chunk(bytes: remainder, control: []), at: 0)
+            return .output(bytes: prefix, byteCount: prefix.count, control: control)
+        }
         var byteCount = bytes.count
         if case .chunk(let nextBytes, _)? = outFIFO.first,
-           byteCount + nextBytes.count <= MuxFlowControl.hostMergeCapBytes {
+           byteCount + nextBytes.count <= cap {
             // Multi-chunk merge: one mutable accumulator, reserve once.
-            var merged = Data(capacity: min(MuxFlowControl.hostMergeCapBytes, byteCount + nextBytes.count))
+            var merged = Data(capacity: min(cap, byteCount + nextBytes.count))
             merged.append(bytes)
             while case .chunk(let more, let moreControl)? = outFIFO.first,
-                  byteCount + more.count <= MuxFlowControl.hostMergeCapBytes {
+                  byteCount + more.count <= cap {
                 outFIFO.removeFirst()
                 merged.append(more)
                 byteCount += more.count
@@ -551,10 +571,20 @@ final class MuxChannelSession: @unchecked Sendable {
         wake?.yield(())
     }
 
+    /// Bound on the pending control-out queue. Control consumers are latest-state folds
+    /// (title/activity) or droppable samples (pong), so shedding under a flood is safe —
+    /// without a bound, a hostile client spamming `.ping` against its own non-read control
+    /// socket (the sender blocks on TCP backpressure) grows `controlOut` without limit.
+    private static let maxControlOutQueued = 1024
+
     /// Hands sniffed control messages to the dedicated control sender (FIFO per channel).
+    /// Sheds NEW messages past the bound (the queued ones are older but already ordered;
+    /// a shed title/pong is replaced/refreshed by the next one naturally).
     private func enqueueControl(_ messages: [WireMessage]) {
         controlOutLock.lock()
-        controlOut.append(contentsOf: messages)
+        if controlOut.count < Self.maxControlOutQueued {
+            controlOut.append(contentsOf: messages)
+        }
         let wake = controlWakeContinuation
         controlOutLock.unlock()
         wake?.yield(())
@@ -641,7 +671,13 @@ final class MuxChannelSession: @unchecked Sendable {
     /// exit task fires `onExit` (R13 #7). Mirrors ``awaitEOFOrTimeout`` (2 ms poll, runs once per pane).
     /// A dead client whose credit never arrives times out — the code can't be delivered to it anyway —
     /// and ``shutdown()`` cancels the exit task so a torn-down pane returns at once.
-    private func awaitExitSentOrTimeout(_ timeout: Duration = .seconds(2)) async {
+    ///
+    /// 10s (was 2s): with credit-at-consumption the send window tracks the client's RENDER
+    /// drain, so a transiently-stalled client (window drag, brief main-thread stall) can
+    /// legitimately park the `.exit` send for a few seconds — a 2s window made dropping a
+    /// clean exit code routine instead of exceptional. Still bounded + cancellation-aware,
+    /// so teardown never hangs on it.
+    private func awaitExitSentOrTimeout(_ timeout: Duration = .seconds(10)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             if isExitSent() || Task.isCancelled { return }

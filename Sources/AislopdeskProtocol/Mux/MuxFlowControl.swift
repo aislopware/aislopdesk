@@ -35,7 +35,11 @@ public enum MuxFlowControl {
     /// (see the progress invariant above). 16 KiB ≪ window/2 streams a paste progressively
     /// and keeps interleave granularity fine. Splitting a byte stream is transparent to the
     /// PTY (frames carry no semantics; order is preserved by the per-channel send gate).
-    public static let maxDataMessagePayloadBytes = 16 * 1024
+    /// Cross-clamped against the (env-tunable) window so an `AISLOPDESK_MUX_WINDOW` at the
+    /// low bound can never reintroduce the frame≥window/2 dead zone on the input direction.
+    public static var maxDataMessagePayloadBytes: Int {
+        min(16 * 1024, initialWindowBytes / 2 - 16)
+    }
 
     /// Bound on the host's per-channel PTY-read queue, in bytes. Sized for LATENCY, not
     /// throughput: every byte enqueued-not-yet-sent here is committed AHEAD of fresh output
@@ -52,12 +56,30 @@ public enum MuxFlowControl {
     /// Cap on a MERGED host output frame (drain-side coalescing), in bytes. The host drain
     /// concatenates immediately-available FIFO chunks into one `.output` frame up to this
     /// cap, amortizing per-frame costs (seq, two encode copies, actor hops, one send) across
-    /// a flood's small kernel-sized chunks. MUST stay ≤ ``initialWindowBytes``/2 so a merged
-    /// frame can always make window progress (the credit grant threshold is window/2 — a
-    /// frame bigger than that can park the sender against a receiver that never re-grants).
-    /// Tunable via `AISLOPDESK_MUX_MERGE_CAP`.
+    /// a flood's small kernel-sized chunks. Tunable via `AISLOPDESK_MUX_MERGE_CAP` — but the
+    /// EFFECTIVE bound is ``maxOutputFramePayloadBytes``, which cross-clamps this against
+    /// the window (see below); the raw value alone is NOT a safe frame bound.
     public static let hostMergeCapBytes =
         envInt("AISLOPDESK_MUX_MERGE_CAP", 32 * 1024, min: 4 * 1024, max: 128 * 1024)
+
+    /// The PROVABLY-SAFE payload cap for host `.output` frames — the single place the
+    /// credit progress invariant is enforced.
+    ///
+    /// Invariant: every windowed inner frame's WIRE size must stay ≤ window/2, or a sender
+    /// can park permanently: at a credit park the receiver can only re-grant bytes of
+    /// COMPLETE decoded frames, and the partial frame buried in its FrameDecoder is
+    /// uncreditable — if that partial prefix alone exceeds the grant threshold (window/2),
+    /// `pendingCredit` never crosses it and no windowAdjust is ever emitted (a permanent
+    /// pane wedge the night review caught: a 32 KiB PAYLOAD cap put the max .output frame
+    /// at 32 KiB + 13 header bytes = 32781 > 32768, a 13-byte dead zone).
+    ///
+    /// So the cap is in PAYLOAD bytes but accounts the frame overhead: window/2 minus a
+    /// 16-byte margin (≥ the 13-byte `.output` header: 4 length + 1 type + 8 seq, with
+    /// headroom for future header growth), cross-clamped against ``hostMergeCapBytes`` so
+    /// env-tuning either knob can never produce a deadlocking combination.
+    public static var maxOutputFramePayloadBytes: Int {
+        min(hostMergeCapBytes, initialWindowBytes / 2 - 16)
+    }
 
     /// Max number of LIVE logical channels (panes) one physical connection may hold open at once
     /// (R6 #6). A hostile/buggy peer can otherwise spam distinct `channelOpen` ids and make the host

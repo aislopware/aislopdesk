@@ -317,6 +317,12 @@ public actor AislopdeskClient {
         highestSeqFed = 0
         highestContiguousSeq = 0
         ackPending = false
+        // Drop the DEAD session's undrained inbox entries with the seq marks. Two reasons
+        // (night-review findings): (a) a consumer drain racing the reconnect could paint
+        // the old session's tail AFTER the fresh-session wipe; (b) takeOutputBatch credits
+        // taken entries to the CURRENT transport — stale entries would emit a phantom
+        // windowAdjust over-grant on the NEW channel (its peer never sent those bytes).
+        outputInbox.removeAll(keepingCapacity: true)
 
         if returning, let learnedID {
             // Surface the reconnect so the UI flips `.reconnecting` → `.connected`
