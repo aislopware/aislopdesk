@@ -33,6 +33,17 @@ public final class InputBarModel {
     /// The compose-field text (bound to the `TextField`).
     public var compose: String = ""
 
+    /// The single OUT sink: every send funnels SYNCHRONOUSLY through here, on the main
+    /// actor, in true call order — wired by the pane session to
+    /// `TerminalViewModel.sendInput` so input-bar bytes ride the SAME per-pane ordered OUT
+    /// FIFO as renderer keystrokes (ONE drain per pane). This kills the old second/third
+    /// OUT paths (the iOS Coordinator's own drain + macOS per-submit `Task { await
+    /// client.sendInput }`) that raced the reentrant client actor — the repo's recurring
+    /// unstructured-Task reorder class (docs/29). `nil` while the pane is disconnected —
+    /// sends drop, the designed disconnected semantic. `@ObservationIgnored`: wiring, not
+    /// view state.
+    @ObservationIgnored public var sendSink: ((Data) -> Void)?
+
     public init(box: InputBoxModel = InputBoxModel()) {
         self.box = box
         self.affordance = box.affordance
@@ -68,15 +79,17 @@ public final class InputBarModel {
         return bytes
     }
 
-    /// Submits the compose field over `client` and clears it. In B1 the sent bytes are
-    /// already recorded for echo-dedup by ``encodeSubmit()``.
-    public func submit(over client: AislopdeskClient) async {
+    /// Submits the compose field through ``sendSink`` and clears it. In B1 the sent bytes
+    /// are already recorded for echo-dedup by ``encodeSubmit()``. SYNCHRONOUS on the main
+    /// actor: record-then-enqueue happens atomically in call order, so the dedup ring can
+    /// never desync from wire order (the bug the old per-submit `Task` allowed).
+    public func submit() {
         guard let bytes = encodeSubmit() else { return }
         compose = ""
-        try? await client.sendInput(bytes)
+        sendSink?(bytes)
     }
 
-    /// Sends a raw byte sequence over `client`.
+    /// Sends a raw byte sequence through ``sendSink``.
     ///
     /// `record` controls whether the bytes enter the B1 echo-dedup ring. The ring exists to
     /// suppress the PTY's **echo** of input the user typed — so it must only ever hold bytes the
@@ -84,21 +97,21 @@ public final class InputBarModel {
     /// Esc, Tab, Ctrl/Alt codes, floating-cursor `ESC[C`/`ESC[D`) are **not** echoed by the PTY;
     /// recording them would leave them stuck in `pending`, where they could later spuriously match
     /// and swallow a legitimate TUI redraw (e.g. a real `CUF` `ESC[C`). So control sends pass
-    /// `record: false`; only ``sendText(_:over:)`` records.
-    public func sendRaw(_ bytes: [UInt8], over client: AislopdeskClient, record: Bool = false) async {
+    /// `record: false`; only ``sendText(_:)`` records.
+    public func sendRaw(_ bytes: [UInt8], record: Bool = false) {
         let data = Data(bytes)
         if record, affordance == .tuiCompose {
             box.recordComposeSent(data)
         }
-        try? await client.sendInput(data)
+        sendSink?(data)
     }
 
-    /// Sends committed IME / printable `text` (post-composition) over `client` as its UTF-8
-    /// bytes, recording it for dedup in B1. Unlike ``submit(over:)`` this appends **no** Enter:
-    /// the iOS host streams text as it is composed and routes Return as a separate key, matching
+    /// Sends committed IME / printable `text` (post-composition) as its UTF-8 bytes,
+    /// recording it for dedup in B1. Unlike ``submit()`` this appends **no** Enter: the iOS
+    /// host streams text as it is composed and routes Return as a separate key, matching
     /// `ghostty_surface_text` (text) vs `ghostty_surface_key` (Enter) on the real surface.
-    public func sendText(_ text: String, over client: AislopdeskClient) async {
+    public func sendText(_ text: String) {
         guard !text.isEmpty else { return }
-        await sendRaw(Array(text.utf8), over: client, record: true)
+        sendRaw(Array(text.utf8), record: true)
     }
 }

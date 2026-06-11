@@ -1,5 +1,6 @@
 import Foundation
 import AislopdeskClient
+import AislopdeskProtocol
 
 /// Orchestrates a ``AislopdeskClient`` + ``ReconnectManager`` for the UI: host/port entry,
 /// connect/disconnect, and a live status the chrome renders.
@@ -124,6 +125,58 @@ public final class ConnectionViewModel {
         return output
     }
 
+    /// Normalizes the `.input` payloads of an (already-coalesced) batch: MERGES adjacent
+    /// tiny inputs (key repeats, mouse-report storms — each used to pay a full actor-hop +
+    /// send round trip) and SPLITS oversized ones, emitting `.input` frames of at most
+    /// `maxInputFrameBytes`. `.resize` passes through as a HARD BARRIER (input bytes never
+    /// cross it — the ``coalesceOut(_:)`` ordering contract). Concatenation byte-identity
+    /// holds by construction: the emitted input payloads concatenate to exactly the input
+    /// payloads, in order.
+    ///
+    /// Pure ⇒ `nonisolated` (the off-main drain + headless tests call it directly).
+    nonisolated static func packInputs(
+        _ events: [OutEvent],
+        maxInputFrameBytes: Int = MuxFlowControl.maxDataMessagePayloadBytes
+    ) -> [OutEvent] {
+        var output: [OutEvent] = []
+        output.reserveCapacity(events.count)
+        var buffer = Data()
+        func flushBuffer() {
+            guard !buffer.isEmpty else { return }
+            var offset = buffer.startIndex
+            while offset < buffer.endIndex {
+                let end = buffer.index(offset, offsetBy: maxInputFrameBytes, limitedBy: buffer.endIndex)
+                    ?? buffer.endIndex
+                output.append(.input(Data(buffer[offset..<end])))
+                offset = end
+            }
+            buffer.removeAll(keepingCapacity: true)
+        }
+        for event in events {
+            switch event {
+            case let .input(data):
+                buffer.append(data)
+            case .resize:
+                flushBuffer()        // barrier: a resize never crosses input bytes
+                output.append(event)
+            }
+        }
+        flushBuffer()
+        return output
+    }
+
+    /// Sends one coalesced+packed batch over `client`, sequentially (the single-consumer
+    /// FIFO leg). Shared by the off-main drain and headless tests. Errors are swallowed
+    /// per-event (`try?`) exactly as the old inline drain did — disconnected sends drop.
+    nonisolated static func sendBatch(_ batch: [OutEvent], over client: AislopdeskClient) async {
+        for event in packInputs(coalesceOut(batch)) {
+            switch event {
+            case let .input(data):          try? await client.sendInput(data)
+            case let .resize(cols, rows):   try? await client.sendResize(cols: cols, rows: rows)
+            }
+        }
+    }
+
     /// `@MainActor` FIFO of buffered OUT events the single drain task BATCH-pulls (mirrors
     /// `AislopdeskVideoHostSession.InboundQueue.drainAll`). `inputSink`/`resizeSink` append here on the
     /// main actor; `outWake` (a `bufferingNewest(1)` signal) coalesces wakeups so the drain runs
@@ -198,21 +251,26 @@ public final class ConnectionViewModel {
         outQueue.removeAll(keepingCapacity: true)
         let (outWakeups, outWake) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         outWakeContinuation = outWake
-        outDrainTask = Task { @MainActor [weak self, weak client] in
+        // OFF-MAIN drain: appends stay on the main actor (true call order) but the consumer
+        // runs DETACHED, hopping to main ONLY to atomically swap out the batch array — so a
+        // keystroke's send no longer queues behind flood-ingest/render main-actor work
+        // (input latency used to track main-thread depth exactly when a flood ran). The
+        // ordering invariant needs ONE serial consumer, not main-actor residence: (i)
+        // appends are serial on the main actor in call order, (ii) the batch take is atomic
+        // on the main actor, (iii) this single task awaits sends sequentially.
+        outDrainTask = Task.detached(priority: .userInitiated) { [weak self, weak client] in
             for await _ in outWakeups {
-                guard let self else { return }
+                guard let self, let client else { return }
                 // Atomically take + clear the whole backlog (arrival order), then coalesce: a fast
                 // drag piles up between drains → collapses to ~1 resize; a slow settle leaves batch
                 // size ~1 → byte-identical to forwarding each event. The trailing resize of every
                 // batch always survives coalesce, so the final drag size always reaches the PTY.
-                let batch = self.outQueue
-                self.outQueue.removeAll(keepingCapacity: true)
-                for event in Self.coalesceOut(batch) {
-                    switch event {
-                    case let .input(data):          try? await client?.sendInput(data)
-                    case let .resize(cols, rows):   try? await client?.sendResize(cols: cols, rows: rows)
-                    }
+                let batch: [OutEvent] = await MainActor.run {
+                    let b = self.outQueue
+                    self.outQueue.removeAll(keepingCapacity: true)
+                    return b
                 }
+                await Self.sendBatch(batch, over: client)
             }
         }
         terminal.inputSink = { [weak self] data in
@@ -516,6 +574,13 @@ public final class ConnectionViewModel {
         outWakeContinuation?.finish()
         outWakeContinuation = nil
         outDrainTask?.cancel()
+        // AWAIT the drain's completion BEFORE the residual flush: a mid-batch drain is not
+        // stopped by cancel() alone (its sends `try?`), so without this the residual flush
+        // below could interleave with in-flight drain sends (a pre-existing hazard the
+        // off-main drain made worth closing). Bounded: cancel unparks a credit-window wait
+        // (MuxSubChannel.awaitChunkCredit is cancellation-aware) and a closed channel
+        // throws fast into the `try?`.
+        await outDrainTask?.value
         outDrainTask = nil
         // TRAILING-EDGE GUARANTEE at teardown: the async drain may have been cancelled with a
         // settled trailing resize still queued (e.g. the user stopped dragging and immediately
