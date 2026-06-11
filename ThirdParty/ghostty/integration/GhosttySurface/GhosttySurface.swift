@@ -40,23 +40,36 @@
 //    text                        →  ghostty_surface_text(s, ptr, len)          (1184)
 //
 //  ─────────────────────────────────────────────────────────────────────────────
-//  THREADING CONTRACT (doc 18 §C — libghostty threading, SOLVED-by-source)
+//  THREADING CONTRACT (doc 18 §C — libghostty threading, SOLVED-by-source;
+//  REVISED 2026-06-12, docs/31 follow-up #5: the FEED path moved off-main)
 //  ─────────────────────────────────────────────────────────────────────────────
-//  `ghostty_surface_write_output` / `_refresh` / `_draw` MUST be called on the
-//  main thread (confirmed reading VVTerm + the fork's own doc comment on
-//  ghostty_surface_write_output: "NOT safe to call concurrently on the same
-//  surface … typically the embedder calls this from a single I/O thread per
-//  surface"). Swift's `@MainActor` does NOT propagate across the C boundary, so
-//  this type is `@MainActor` to *guarantee* the call sites are on main:
-//    • TCP receive loop (bg thread) → `await MainActor.run { surface.feed(d) }`
-//      (here: the surface is `@MainActor`, so callers `await` into it).
+//  The fork's actual C contract for `ghostty_surface_write_output` is SERIALIZATION,
+//  not main-thread-ness (embedded.zig doc comment: "NOT safe to call concurrently on
+//  the same surface … typically the embedder calls this from a single I/O thread per
+//  surface"). `write_output` parses the whole VT stream ON THE CALLING THREAD under
+//  `renderer_state.mutex` (Termio.processOutput) — that parse is real CPU the main
+//  actor was paying per ingest pass. So:
+//    • FEED (`feed`/`feedBatch`) is `nonisolated`: it enqueues onto a per-surface
+//      serial `SerialFeedGate` queue — the "single I/O thread per surface" the fork
+//      documents. write_output → refresh stay synchronous INSIDE one queue block
+//      (doc-18-§C trio, now queue-internal); the present-arming `onContentChanged`
+//      hops to main ASYNC (never sync — see the no-deadlock rule below).
+//    • EVERYTHING ELSE (key/text/resize/redraw/selection/clipboard/draw) stays
+//      `@MainActor`. All of those lock `renderer_state.mutex` internally, so running
+//      them concurrently with a queue-side write_output is the fork's own blessed
+//      topology (main API thread + one IO thread; Surface.zig draw comment).
+//    • TEARDOWN: `close()` nils the main-side pointer, clears the queue-side pointer
+//      box, then runs the gate's `closeBarrier()` (queue.sync) BEFORE
+//      `ghostty_surface_free` — core `Surface.deinit` joins its threads and DESTROYS
+//      `renderer_state.mutex`, so an in-flight write_output racing the free is a
+//      use-after-free of both the surface and the mutex. The barrier is what makes
+//      the free safe. NO-DEADLOCK RULE: feed-queue blocks must never block on main
+//      (`main.async` only) — `closeBarrier()` runs `queue.sync` FROM main.
 //    • The C write-callback fires on libghostty's dedicated IO thread (the fork's
 //      `External.zig`: "invoked on the IO thread"), NOT synchronously on main — even
-//      replies generated during a main-thread `feed()` are emitted off-main via the IO
-//      mailbox. So `onWrite` MUST be routed through `ghosttyOnMainActor` (the main hop is
+//      replies generated during a `feed()` are emitted off-main via the IO mailbox.
+//      So `onWrite` MUST be routed through `ghosttyOnMainActor` (the main hop is
 //      REQUIRED, not a defensive fallback — see the write_callback below).
-//    • Hazard (doc 18 §C): actor-suspension escape — do NOT `await` *between*
-//      write_output → refresh → draw; keep that trio synchronous (it is, below).
 //
 
 import Foundation
@@ -114,9 +127,12 @@ func ghosttyOnMainActor(_ body: @escaping @MainActor () -> Void) {
 ///   `resize_callback` that the embedder may mirror to the host `TIOCSWINSZ`).
 /// - Keys/text: ``key(_:)`` → `ghostty_surface_key`, ``text(_:)`` → `ghostty_surface_text`.
 ///
-/// `@MainActor` enforces the doc-18-§C main-thread contract at the type level.
+/// `@MainActor` enforces the doc-18-§C main-thread contract at the type level for
+/// everything EXCEPT the feed path: ``feed(_:)``/``feedBatch(_:)`` are `nonisolated`
+/// enqueues onto the per-surface serial ``feedGate`` queue (docs/31 follow-up #5 — see
+/// the header THREADING CONTRACT).
 @MainActor
-public final class GhosttySurface: @MainActor TerminalSurface {
+public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressuring {
 
     // MARK: Stored state
 
@@ -125,8 +141,45 @@ public final class GhosttySurface: @MainActor TerminalSurface {
     /// keeps the app alive for the surface's lifetime.
     private let app: ghostty_app_t
 
-    /// The opaque surface (header line 31). `nil` only after ``close()``.
+    /// The opaque surface (header line 31). `nil` only after ``close()``. This is the
+    /// MAIN-side gate: every @MainActor API guards on it, so nil-ing it in `close()`
+    /// stops key/text/resize/redraw instantly. The FEED queue has its own pointer copy
+    /// in ``feedTarget`` (cleared in the same teardown, before the barrier).
     private var surface: ghostty_surface_t?
+
+    /// The feed queue's view of the C surface + the feed counter. Written on the main
+    /// actor (publish in `init`, clear in the teardown), read under its lock by feed
+    /// blocks — a feed block that runs after `close()` sees `nil` and no-ops.
+    private final class FeedTarget: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pointer: ghostty_surface_t?
+        private var feedCount = 0
+
+        func publish(_ surface: ghostty_surface_t?) {
+            lock.lock()
+            pointer = surface
+            lock.unlock()
+        }
+
+        func take() -> ghostty_surface_t? {
+            lock.lock()
+            defer { lock.unlock() }
+            return pointer
+        }
+
+        func bumpFeedCount() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            feedCount += 1
+            return feedCount
+        }
+    }
+
+    private let feedTarget = FeedTarget()
+
+    /// The per-surface serial feed queue + teardown barrier + backpressure (docs/31
+    /// follow-up #5). See `SerialFeedGate` for the mechanism and the no-deadlock rule.
+    private let feedGate = SerialFeedGate(label: "aislopdesk.ghostty.feed")
 
     /// Current grid, mirrored for `setSize` pixel conversion. libghostty's size API
     /// is in PIXELS (`ghostty_surface_set_size`, line 1174); we convert cols/rows ×
@@ -237,6 +290,7 @@ public final class GhosttySurface: @MainActor TerminalSurface {
         // ghostty_surface_new (header 1158). Must be on main thread. The config
         // already carries `userdata = self` so the C callbacks above can recover us.
         self.surface = ghostty_surface_new(app, &config)
+        feedTarget.publish(self.surface)   // the feed queue may now write_output
         rdbg("init: surface=\(self.surface != nil) scale=\(contentScale) cols=\(cols) rows=\(rows)")
     }
 
@@ -251,25 +305,34 @@ public final class GhosttySurface: @MainActor TerminalSurface {
     public var onContentChanged: (() -> Void)?
 
     /// Frees the surface (header 1160). Idempotent. Must run on the main thread.
+    ///
+    /// TEARDOWN ORDER (the barrier is load-bearing — see the header contract):
+    /// 1. nil the main-side pointer — key/text/resize/redraw stop immediately;
+    /// 2. clear the feed queue's pointer box — not-yet-run feed blocks become no-ops;
+    /// 3. `closeBarrier()` — every IN-FLIGHT `write_output` has fully returned
+    ///    (`queue.sync` from main; feed blocks never block on main, so no deadlock);
+    /// 4. only then `ghostty_surface_free` (core deinit destroys the renderer mutex an
+    ///    in-flight write_output would dereference).
     public func close() {
-        if let s = surface {
-            ghostty_surface_free(s)
-            surface = nil
-        }
+        guard let s = surface else { return }
+        surface = nil
+        feedTarget.publish(nil)
+        feedGate.closeBarrier()
+        ghostty_surface_free(s)
     }
 
     // `isolated deinit` (Swift 6.2+) guarantees the body runs on this type's actor
     // (the main actor), so it may touch the @MainActor-isolated `surface` (a
     // non-Sendable `ghostty_surface_t?`). Without it, Swift 6 strict concurrency
     // rejects accessing `surface` from a nonisolated deinit. `close()` remains the
-    // explicit teardown path; this is the safety net.
+    // explicit teardown path; this is the safety net — it MUST route through the same
+    // barrier'd teardown (a pending feed block racing the free is the same UAF).
+    // Feed blocks capture `self` weakly, so a pending block never delays this deinit.
     isolated deinit {
-        if let s = surface {
-            ghostty_surface_free(s)
-        }
+        close()
     }
 
-    // MARK: TerminalSurface — Data IN
+    // MARK: TerminalSurface — Data IN (off-main: the per-surface serial feed queue)
 
     /// Feeds inbound PTY/VT bytes into the renderer.
     ///
@@ -277,62 +340,75 @@ public final class GhosttySurface: @MainActor TerminalSurface {
     /// to the terminal emulator as if it came from a subprocess/PTY … processes the
     /// data through the terminal emulator and triggers a render."
     ///
-    /// THREADING: the fork documents this is NOT safe to call concurrently on one
-    /// surface; `@MainActor` serializes all calls. We keep the
-    /// write_output → refresh → draw trio SYNCHRONOUS (no `await` between them) to
-    /// avoid the doc-18-§C actor-suspension-escape hazard.
-    private var feedCount = 0
-    public func feed(_ bytes: Data) {
-        guard writeOutput(bytes) else { return }
-        flushOutput()
+    /// THREADING (docs/31 follow-up #5): `nonisolated` — this ENQUEUES onto the
+    /// per-surface serial ``feedGate`` queue and returns. The fork's contract is
+    /// per-surface serialization (its documented topology is exactly one I/O thread
+    /// per surface calling this); the serial queue is that thread, and it moves the
+    /// VT parse (which runs ON the calling thread under the renderer mutex) off the
+    /// main actor. write_output → refresh stay synchronous INSIDE one queue block.
+    public nonisolated func feed(_ bytes: Data) {
+        enqueueFeed([bytes])
     }
 
-    /// Batch variant: writes every chunk, then flushes ONCE — under a backlog the
-    /// renderer-thread wakeup + present arming are paid per batch, not per wire chunk.
-    /// Fully synchronous (doc-18-§C: no suspension between writes and the flush).
-    public func feedBatch(_ chunks: ArraySlice<Data>) {
-        var wroteAny = false
-        for chunk in chunks where writeOutput(chunk) {
-            wroteAny = true
-        }
-        guard wroteAny else { return }
-        flushOutput()
+    /// Batch variant: ONE queue block writes every chunk, then refreshes ONCE — under
+    /// a backlog the renderer-thread wakeup + present arming are paid per batch, not
+    /// per wire chunk.
+    public nonisolated func feedBatch(_ chunks: ArraySlice<Data>) {
+        enqueueFeed(Array(chunks))
     }
 
-    /// The write_output half of ``feed(_:)``. Returns whether bytes were written.
-    @discardableResult
-    private func writeOutput(_ bytes: Data) -> Bool {
-        guard let s = surface, !bytes.isEmpty else {
-            rdbg("feed SKIPPED surface=\(surface != nil) empty=\(bytes.isEmpty)")
-            return false
-        }
-        feedCount += 1
-        if kRenderDebug, feedCount <= 6 || feedCount % 50 == 0 { rdbg("feed #\(feedCount) \(bytes.count)B") }
-        bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard let base = raw.baseAddress else { return }
-            let cptr = base.assumingMemoryBound(to: CChar.self)
-            // header 1185 takes `uintptr_t` (imported as Swift `UInt`).
-            ghostty_surface_write_output(s, cptr, UInt(bytes.count))   // header 1185
-        }
-        return true
+    /// Parks while the feed queue's un-parsed backlog is above high water — the ingest
+    /// pump awaits this before each pass, keeping wire credit-at-consumption coupled to
+    /// actual parse progress (see `SerialFeedGate`).
+    public nonisolated func feedBackpressure() async {
+        await feedGate.waitUntilBelowHighWater()
     }
 
-    /// The refresh/present half of ``feed(_:)``.
+    /// Enqueues one feed block: N × write_output + ONE refresh, then an ASYNC main hop
+    /// for the present arming. `Data` is value-copied into the block (CoW — no race
+    /// with the caller). The block captures `self` WEAKLY (a pending block must not
+    /// delay deinit) and reads the C pointer from ``feedTarget`` at RUN time, so a
+    /// block that runs after `close()` no-ops.
     ///
-    /// Coalescing redraw (VVTerm `scheduleCustomIORedraw` pattern). The render is
-    /// already triggered by write_output; refresh+draw force the next frame. Both
-    /// are main-thread-only (doc 18 §C).
-    /// Only REFRESH here (wakes the renderer thread → `updateFrame`, rebuilding cells from the
-    /// just-written state). Do NOT call `ghostty_surface_draw`: its present runs in THIS
-    /// MainActor-async (output-pump) context, where the implicit CATransaction never commits — it
-    /// sets the layer contents but they never appear on screen. The present is driven by the
-    /// view's gated tick via `layer.setNeedsDisplay()` → libghostty's IOSurfaceLayer `display`
-    /// callback, the SAME path a window RESIZE uses (you observed resize DOES repaint), which runs
-    /// INSIDE a CA commit so the new frame actually shows.
-    private func flushOutput() {
-        guard let s = surface else { return }
-        ghostty_surface_refresh(s)   // header 1167 → renderer thread updateFrame (rebuild cells)
-        onContentChanged?()          // dirty signal → the view's gated tick triggers the display present
+    /// ⚠️ NO-DEADLOCK RULE: nothing in this block may BLOCK on the main thread
+    /// (`close()` runs the gate's `queue.sync` barrier FROM main). The only main
+    /// interaction is the trailing `DispatchQueue.main.async`.
+    private nonisolated func enqueueFeed(_ chunks: [Data]) {
+        let total = chunks.reduce(0) { $0 + $1.count }
+        guard total > 0 else { return }
+        feedGate.enqueue(byteCount: total) { [feedTarget, weak self] in
+            guard let s = feedTarget.take() else {
+                rdbg("feed SKIPPED (surface closed) \(total)B")
+                return
+            }
+            for chunk in chunks where !chunk.isEmpty {
+                let n = feedTarget.bumpFeedCount()
+                if kRenderDebug, n <= 6 || n % 50 == 0 { rdbg("feed #\(n) \(chunk.count)B") }
+                chunk.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let base = raw.baseAddress else { return }
+                    let cptr = base.assumingMemoryBound(to: CChar.self)
+                    // header 1185 takes `uintptr_t` (imported as Swift `UInt`).
+                    ghostty_surface_write_output(s, cptr, UInt(chunk.count))   // header 1185
+                }
+            }
+            // Refresh = renderer-thread wakeup → updateFrame (rebuild cells). Safe from
+            // this queue: it is only a libxev cross-thread async notify (Surface.zig
+            // refreshCallback → queueRender), and processOutput already queues a render
+            // under the lock anyway. Do NOT call `ghostty_surface_draw` here: the
+            // present is driven by the view's gated display-link tick via
+            // `layer.setNeedsDisplay()` (inside a CA commit) — a draw from a non-main
+            // context sets layer contents that never commit to screen.
+            ghostty_surface_refresh(s)   // header 1167
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    // Dirty signal → the view's gated tick presents. Arming MUST stay
+                    // main (CADisplayLink pause/unpause is main-confined) and MUST be
+                    // async (the no-deadlock rule above).
+                    self.onContentChanged?()
+                }
+            }
+        }
     }
 
     // MARK: TerminalSurface — Resize
