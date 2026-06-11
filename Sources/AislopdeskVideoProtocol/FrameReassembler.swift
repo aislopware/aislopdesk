@@ -17,14 +17,18 @@ public struct ReassembledFrame: Equatable, Sendable {
     /// `RecoveryMessage.ack(frameID)` so the host learns the client holds this LTR (the ACKED-ONLY
     /// recovery invariant). Defaulted false for source-compat; false on every pre-WF-8 / LTR-off frame.
     public var isLTR: Bool
+    /// Bit 7 — this frame was encoded via `ForceLTRRefresh` (references ONLY client-acked LTRs),
+    /// the decode gate's non-keyframe re-anchor admission (see FrameFragmentHeader.Flags.ackedAnchored).
+    public var ackedAnchored: Bool
 
-    public init(frameID: UInt32, keyframe: Bool, crisp: Bool, avcc: Data, recoveredViaFEC: Bool = false, isLTR: Bool = false) {
+    public init(frameID: UInt32, keyframe: Bool, crisp: Bool, avcc: Data, recoveredViaFEC: Bool = false, isLTR: Bool = false, ackedAnchored: Bool = false) {
         self.frameID = frameID
         self.keyframe = keyframe
         self.crisp = crisp
         self.avcc = avcc
         self.recoveredViaFEC = recoveredViaFEC
         self.isLTR = isLTR
+        self.ackedAnchored = ackedAnchored
     }
 }
 
@@ -60,6 +64,7 @@ public struct FrameReassembler {
         /// (bit 6) — like `keyframe`/`crisp`, latched from the flags so a reordered/partial arrival
         /// still marks the frame an LTR. Threaded into the completed ``ReassembledFrame``.
         var isLTR: Bool = false
+        var ackedAnchored: Bool = false
         /// WF-4: the FEC tier PINNED from the FIRST fragment seen for this frame. Every fragment of a
         /// frame carries the same tier; later disagreement (a corrupt fragment) is ignored so the
         /// data/parity split can't change mid-frame. Drives the per-frame group size via
@@ -169,6 +174,7 @@ public struct FrameReassembler {
         if fragment.header.flags.contains(.keyframe) { entry.keyframe = true }
         if fragment.header.flags.contains(.crisp) { entry.crisp = true }
         if fragment.header.flags.contains(.isLTR) { entry.isLTR = true }   // WF-8 bit 6
+        if fragment.header.flags.contains(.ackedAnchored) { entry.ackedAnchored = true }   // bit 7
 
         if fragment.header.flags.contains(.parity) {
             let pIndex = Int(fragment.header.fragIndex)
@@ -277,7 +283,7 @@ public struct FrameReassembler {
         guard let entry = pending[frameID] else { return .stale }
         guard let assembled = assemble(entry) else { return .incomplete }
         retire(frameID, completed: true)
-        return .completed(ReassembledFrame(frameID: frameID, keyframe: entry.keyframe, crisp: entry.crisp, avcc: assembled.avcc, recoveredViaFEC: assembled.recoveredViaFEC, isLTR: entry.isLTR))
+        return .completed(ReassembledFrame(frameID: frameID, keyframe: entry.keyframe, crisp: entry.crisp, avcc: assembled.avcc, recoveredViaFEC: assembled.recoveredViaFEC, isLTR: entry.isLTR, ackedAnchored: entry.ackedAnchored))
     }
 
     /// Resolves how many of a frame's fragments are DATA (vs FEC parity).

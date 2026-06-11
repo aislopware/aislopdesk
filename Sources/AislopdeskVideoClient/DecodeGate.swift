@@ -13,13 +13,15 @@ import AislopdeskVideoProtocol
 /// THE GATE: once the reference chain is known-broken (`noteLoss`), deltas stop reaching VT at
 /// all. Only ANCHOR CANDIDATES are submitted:
 ///  - a KEYFRAME (references nothing), or
-///  - an LTR-flagged frame (wire bit 6 — the host's recovery / self-heal cadence refresh, forced
-///    against an LTR this client ACKED, i.e. one it provably decoded BEFORE the loss; still held
-///    in the un-torn-down session's DPB precisely because the gate kept garbage out of VT), or
+///  - an ACKED-ANCHORED frame (wire bit 7 — a `ForceLTRRefresh` product: the host's recovery /
+///    self-heal cadence refresh, forced against an LTR this client ACKED, i.e. one it provably
+///    decoded BEFORE the loss; still held in the un-torn-down session's DPB precisely because
+///    the gate kept garbage out of VT), or
 ///  - a delta OLDER than the oldest loss of the episode (its references predate the break).
-/// A mis-flagged LTR frame that still references the broken chain simply fails in VT and lands in
-/// the existing hard-failure path — exactly today's behaviour for every frame, so the gate is
-/// never worse than the status quo.
+/// NOTE bit 6 (`isLTR`) is NOT an anchor: VT surfaces an ack token on virtually EVERY frame once
+/// LTR is enabled (measured live 2026-06-12: 7865/7874 frames) — bit 6 means "ack me on decode",
+/// not "decodable past a loss". The first gate deploy admitted bit 6 and ate exactly one VT
+/// failure per loss episode through ordinary chain deltas.
 ///
 /// TWO BROKEN MODES — the anchor set differs:
 ///  - ``Mode/brokenChain``: the decoder session is alive (references survive) → keyframe OR LTR.
@@ -85,14 +87,14 @@ public struct DecodeGate: Sendable, Equatable {
     }
 
     /// Admission decision for one reassembled frame. Pure — never mutates; the caller acts.
-    public func verdict(frameID: UInt32, keyframe: Bool, isLTR: Bool) -> Verdict {
+    public func verdict(frameID: UInt32, keyframe: Bool, ackedAnchored: Bool) -> Verdict {
         switch mode {
         case .open:
             return .submit
         case .needKeyframe:
             return keyframe ? .submit : .drop
         case .brokenChain:
-            if keyframe || isLTR { return .submit }
+            if keyframe || ackedAnchored { return .submit }
             // Pre-break delta still in flight: references predate the OLDEST loss.
             if let mn = minLostFrameID, frameID.distanceWrapped(from: mn) < 0 { return .submit }
             return .drop

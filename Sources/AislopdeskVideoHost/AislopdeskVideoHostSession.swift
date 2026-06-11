@@ -477,7 +477,7 @@ public actor AislopdeskVideoHostSession {
                 let batch = eq.drainAll()
                 // Process IN ORDER (the FIFO carried encode order from the serial VT callback).
                 for frame in batch {
-                    await self.onEncodedFrame(avcc: frame.avcc, keyframe: frame.keyframe, crisp: frame.crisp, ltrToken: frame.ltrToken)
+                    await self.onEncodedFrame(avcc: frame.avcc, keyframe: frame.keyframe, crisp: frame.crisp, ltrToken: frame.ltrToken, ackedAnchored: frame.ackedAnchored)
                 }
             }
         }
@@ -1438,14 +1438,14 @@ public actor AislopdeskVideoHostSession {
     private func makeEncoderOutputHandler() -> VideoEncoder.OutputHandler {
         let queue = encodedQueue
         let wakeup = encodedWakeup
-        return { avcc, keyframe, mode, ltrToken in
+        return { avcc, keyframe, mode, ltrToken, ackedAnchored in
             // Enqueue THEN signal (no lost wakeup): the consumer always drains after the last append.
-            queue?.append(EncodedFrameQueue.Frame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp, ltrToken: ltrToken))
+            queue?.append(EncodedFrameQueue.Frame(avcc: avcc, keyframe: keyframe, crisp: mode == .crisp, ltrToken: ltrToken, ackedAnchored: ackedAnchored))
             wakeup?.yield()
         }
     }
 
-    private func onEncodedFrame(avcc: Data, keyframe: Bool, crisp: Bool, ltrToken: Int64?) async {
+    private func onEncodedFrame(avcc: Data, keyframe: Bool, crisp: Bool, ltrToken: Int64?, ackedAnchored: Bool) async {
         guard stateMachine.mediaFlowing else {
             dbg("encoded frame DROPPED (mediaFlowing=false)")
             return
@@ -1502,7 +1502,7 @@ public actor AislopdeskVideoHostSession {
             recoveryIDRPolicy.noteKeyframeSent(frameID: packetizer.peekNextFrameID,
                                                now: ProcessInfo.processInfo.systemUptime)
         }
-        let fragments = packetizer.packetize(frame: avcc, keyframe: keyframe, crisp: crisp, hostSendTsMillis: sendTs, fecTier: tier, isLTR: isLTR)
+        let fragments = packetizer.packetize(frame: avcc, keyframe: keyframe, crisp: crisp, hostSendTsMillis: sendTs, fecTier: tier, isLTR: isLTR, ackedAnchored: ackedAnchored)
         // Interleave transmission column-major across FEC groups so an adjacent-loss BURST spreads to
         // distinct groups (each recoverable by single-loss XOR) instead of wiping one group. Header
         // `fragIndex`/grouping is unchanged, so the client (reassembles by index, reorder-tolerant) is
@@ -1698,6 +1698,9 @@ final class EncodedFrameQueue: @unchecked Sendable {
         let keyframe: Bool
         let crisp: Bool
         let ltrToken: Int64?
+        /// Bit-7 wire marker: this frame was a `ForceLTRRefresh` product (references only
+        /// client-acked LTRs) — the decode gate's non-keyframe re-anchor admission.
+        let ackedAnchored: Bool
     }
 
     private let lock = NSLock()
