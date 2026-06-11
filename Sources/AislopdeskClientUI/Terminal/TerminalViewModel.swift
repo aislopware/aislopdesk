@@ -283,7 +283,13 @@ public final class TerminalViewModel {
             } while end < chunks.count && passBytes < Self.ingestByteBudget
             ingestPass(chunks[i..<end])
             i = end
-            if i < chunks.count { await Task.yield() }
+            if i < chunks.count {
+                await Task.yield()
+                // A teardown/reconnect cancelled this pump mid-batch: stop painting the
+                // dead session's remaining passes (the new session's fresh-wipe ingest can
+                // interleave at the yield above — later dead passes would land AFTER it).
+                if Task.isCancelled { return }
+            }
         }
     }
 
