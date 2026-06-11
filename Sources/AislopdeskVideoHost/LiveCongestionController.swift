@@ -63,6 +63,16 @@ import Foundation
 ///    additive increase at/above it runs ÷`kneeCautionDivisor` so recovery hovers under the rate that
 ///    built the queue instead of re-bashing it every second (the felt 25↔40Mbps pumping). The knee
 ///    expires after `kneeTTLTicks` without re-confirmation — path conditions drift.
+///  - DELAY-GRADIENT EARLY CUT (component 3, 2026-06-11, default OFF — `AISLOPDESK_ABR_GRAD=1`): the
+///    client's libwebrtc-style trendline (per-FRAME OWD slope, adaptive threshold, sustained
+///    overuse) ships its verdict in every report; when it reads OVERUSING **and** the SAME report's
+///    RAW RTT sample clears the existing factor+slack gates (fresh level evidence — no EWMA lag, no
+///    streak), ONE multiplicative ×`gradientDecreaseFactor` cut is authorized after a single report
+///    (~100-170ms from onset vs ~250-300ms for the smoothed path). It shares `cutHoldTicks` spacing
+///    with every other cut (the cut-cascade invariant extends, never regresses), sets NO knee (an
+///    onset reflex is not capacity knowledge — the proportional path sets it if the queue is real),
+///    and while overuse is detected the additive probe is suppressed (never climb INTO a detected
+///    overuse during the cut hold).
 ///
 /// SAFE WHEN TELEMETRY OFF: with `loss == 0` and no valid RTT (`minRTTMillis == .infinity`) the
 /// congestion predicate is always false, so the controller can only additively increase — but it
@@ -158,6 +168,14 @@ public struct LiveCongestionController: Sendable, Equatable {
     public static let materialFraction: Double = envDouble("AISLOPDESK_ABR_MATERIAL", 0.05, min: 0.0, max: 1.0)
     /// Actuation churn gate (absolute bps floor): the host skips a re-actuation smaller than this. `AISLOPDESK_ABR_MATERIAL_FLOOR`.
     public static let materialFloorBps: Int = envInt("AISLOPDESK_ABR_MATERIAL_FLOOR", 500_000, min: 0, max: 1_000_000_000)
+    /// DELAY-GRADIENT EARLY CUT (component 3) — DEFAULT OFF until the HW feel-test (repo convention:
+    /// two prior delay designs were falsified live by rate-independent 4G wobble). `AISLOPDESK_ABR_GRAD=1`
+    /// enables on the host; the client-side estimator + wire fields are pure telemetry and default ON.
+    public static let gradientCutEnabledDefault = ProcessInfo.processInfo.environment["AISLOPDESK_ABR_GRAD"] == "1"
+    /// Multiplicative factor for a gradient-authorized cut. 0.85 = GCC overuse beta (libwebrtc
+    /// AimdRateControl), same depth as the loss path — one early conventional cut, then the
+    /// proportional path sizes any standing queue. `AISLOPDESK_ABR_GRAD_DEC`.
+    public static let gradientDecreaseFactor: Double = envDouble("AISLOPDESK_ABR_GRAD_DEC", 0.85, min: 0.05, max: 0.999)
 
     // MARK: State (all value-type ⇒ auto Equatable / Sendable)
 
@@ -167,6 +185,10 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// The lowest the controller may drive the live rate. Always ≥ ``LiveBitratePolicy/minimumBitrate``
     /// (≥ 1 Mbps) ⇒ NEVER 0, and ≤ `ceiling`.
     public let floor: Int
+    /// Whether the delay-gradient early-cut path is armed (see ``gradientCutEnabledDefault``).
+    /// INSTANCE-level (injected at construction, env default in production) so the loopback harness
+    /// and tests can A/B both arms in one process without env games.
+    public let gradientCutEnabled: Bool
     /// Current target bitrate (bps). Seeded to `ceiling` (open-loop start = today's behaviour).
     public private(set) var current: Int
     /// Folded-report count — the controller's "clock" (see type doc).
@@ -213,17 +235,20 @@ public struct LiveCongestionController: Sendable, Equatable {
 
     /// Primary initialiser. `floor` is clamped to `[minimumBitrate, ceiling]` so the controller can
     /// never drive the rate to 0 nor below a usable minimum. `current` starts AT `ceiling`.
-    public init(ceiling: Int, floor: Int) {
+    /// `gradientCutEnabled` defaults to the env gate — production passes nothing.
+    public init(ceiling: Int, floor: Int, gradientCutEnabled: Bool = Self.gradientCutEnabledDefault) {
         let c = max(1, ceiling)
         self.ceiling = c
         self.floor = max(LiveBitratePolicy.minimumBitrate, min(floor, c))
         self.current = c
+        self.gradientCutEnabled = gradientCutEnabled
     }
 
     /// Convenience: derive the floor from `ceiling × minFrac` (the production wiring), keeping the
     /// floor-derivation policy in one place.
-    public init(ceiling: Int) {
-        self.init(ceiling: ceiling, floor: Int(Double(max(1, ceiling)) * Self.minFrac))
+    public init(ceiling: Int, gradientCutEnabled: Bool = Self.gradientCutEnabledDefault) {
+        self.init(ceiling: ceiling, floor: Int(Double(max(1, ceiling)) * Self.minFrac),
+                  gradientCutEnabled: gradientCutEnabled)
     }
 
     // MARK: Control law
@@ -279,6 +304,19 @@ public struct LiveCongestionController: Sendable, Equatable {
         // several consecutive lossy reports costs ONE cut per window, never a per-report cascade.
         let lossCongested = e.lastLossSample > Self.lossThreshold && lossEvidence
             && ticks >= cutHoldUntilTick
+        // DELAY-GRADIENT EARLY CUT (component 3): ONE report suffices. Trend evidence (the client
+        // trendline reads OVERUSING — monotone delay growth over a full regression window, sustained
+        // past its adaptive threshold) + fresh LEVEL evidence (THIS report's RAW RTT sample past the
+        // same factor+slack gates the smoothed path uses — raw reflects the queue NOW, no EWMA lag,
+        // no streak). Shares the `cutHoldTicks` spacing with every other cut: the FIRST cut of an
+        // episode is immediate (the hold starts expired), and a persisting gradient re-cuts at most
+        // once per window — the cut-cascade fix invariant extends, never regresses.
+        let rawRTTInflated: Bool = {
+            guard let raw = e.lastRTTSampleMillis, e.minRTTMillis.isFinite else { return false }
+            return raw > e.minRTTMillis * Self.rttInflateFactor && raw > e.minRTTMillis + slack
+        }()
+        let gradientCongested = gradientCutEnabled && e.owdTrendOverusing && rawRTTInflated
+            && ticks >= cutHoldUntilTick
         if e.lossRate > Self.catastrophicLossThreshold,
            e.lastLossSample > Self.severeLossThreshold,
            ticks >= holdUntilTick {
@@ -287,7 +325,7 @@ public struct LiveCongestionController: Sendable, Equatable {
             // halve regardless of RTT (queue-less policer / true collapse), at most once per
             // hold-down window.
             decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)), queueCorroborated: rttInflated)
-        } else if rttCongested || lossCongested {
+        } else if rttCongested || lossCongested || gradientCongested {
             // Ordinary congestion. DELAY-TARGETING (2026-06-11): the RTT path sizes the decrease to
             // the MEASURED queue instead of a fixed ×0.85 — `factor = (minRTT + slack) / smoothedRTT`,
             // clamped to [rttDecreaseFloorFactor, rttDecreaseCapFactor]. A 70ms standing queue over a
@@ -311,12 +349,25 @@ public struct LiveCongestionController: Sendable, Equatable {
             if lossCongested {
                 target = min(target, Int(Double(current) * Self.decreaseFactor))
             }
+            if gradientCongested {
+                // The early-onset reflex: one conventional ×0.85-deep cut. NOTE the unchanged
+                // `queueCorroborated: rttInflated` below — a gradient-ONLY cut (smoothed not yet
+                // inflated ⇒ `rttInflated` false) deliberately sets NO knee: an onset reflex is not
+                // capacity knowledge, and knee-pinning from early cuts would cap the climb for
+                // `kneeTTLTicks` on the measured rate-independent 4G/inter-ISP wobble (the
+                // falsified-design history). The proportional path sets it if the queue is real.
+                target = min(target, Int(Double(current) * Self.gradientDecreaseFactor))
+            }
             decrease(to: max(floor, target), queueCorroborated: rttInflated)
-        } else if ticks >= holdUntilTick && !rttInflated {
+        } else if ticks >= holdUntilTick && !rttInflated && !(gradientCutEnabled && e.owdTrendOverusing) {
             // Clean link past the hold-down: probe up additively toward the ceiling. `!rttInflated`
             // keeps the probe from climbing INTO a building queue while the streak/hold-down is
             // still suppressing the decrease (minRTT re-baselines upward ~1%/fold, so a genuinely
-            // shifted path baseline un-sticks this on its own). At/above the remembered knee the
+            // shifted path baseline un-sticks this on its own). Component 3 adds the trend guard
+            // (gated on the same flag for A/B purity): never probe up INTO a detected overuse while
+            // `cutHoldUntilTick` is still blocking the gradient cut — the estimator un-latches
+            // within one window when the slope flattens, so this can never pin the rate. At/above
+            // the remembered knee the
             // step is divided by `kneeCautionDivisor`: the controller hovers under the rate that
             // built a queue instead of re-bashing it every recovery (25↔40Mbps pumping = the felt
             // sawtooth).

@@ -115,10 +115,18 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// P-frame instead: the recent keyframe already re-anchored the client, and the client's 2·RTT
     /// escalation re-requests later (OUTSIDE the window) if that one was also lost — so recovery is
     /// de-bursted, never dropped. NEVER gates the first-frame or heartbeat IDR. 0 disables. Env
-    /// `AISLOPDESK_MIN_IDR_MS` (default 500 ms).
+    /// `AISLOPDESK_MIN_IDR_MS`.
+    ///
+    /// COMPONENT 2 (delivery-keyed cooldown, 2026-06-11): with `AISLOPDESK_RECOVERY_IDR_V2` ON (the
+    /// default) this legacy SENT-keyed gate is INERT (0) — the session actor's ``RecoveryIDRPolicy``
+    /// (delivery-keyed + casualty bypass + token bucket) is the single admission authority, and it
+    /// suppresses BEFORE latching, so a granted latch is never dropped here (the forced-frame
+    /// invariant). `AISLOPDESK_RECOVERY_IDR_V2=0` restores today's 500 ms behaviour byte-for-byte. An
+    /// EXPLICIT `AISLOPDESK_MIN_IDR_MS` always wins — even with V2 on (a valid belt-and-suspenders
+    /// double-gating A/B configuration).
     private static let minRecoveryIDRInterval: TimeInterval = {
         if let s = ProcessInfo.processInfo.environment["AISLOPDESK_MIN_IDR_MS"], let v = Double(s), v >= 0, v <= 5_000 { return v / 1000.0 }
-        return 0.5
+        return ProcessInfo.processInfo.environment["AISLOPDESK_RECOVERY_IDR_V2"] != "0" ? 0 : 0.5
     }()
 
     /// Latched when the client requests a forced IDR (loss recovery, doc 17 §3.6). The
@@ -140,6 +148,24 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// acked LTRs; a cadence refresh would then be VT's IDR fallback every K frames). Under
     /// `keyframeLock` (set rarely off-queue, read once per frame — same discipline as the latches).
     private var selfHealEligible = false
+    /// FPS-GOVERNOR (2026-06-11): the governed encode fps the session actor latches via
+    /// ``setGovernedFPS(_:)``. Equals `fps` (ungoverned, gate inert) until the governor steps.
+    /// Under `keyframeLock` (set rarely off-queue, read once per frame — the `setSelfHealEligible`
+    /// discipline). SCStream delivery stays at the FULL capture rate either way — the governor
+    /// actuates at the capture→encode hand-off (``EncodeCadenceGate``), never by reconfiguring
+    /// `minimumFrameInterval` (a governed 30 fps against a 60 Hz ceiling is exactly the slot-beat
+    /// trap the 2× capture ceiling was raised to kill).
+    private var governedFPS: Int
+    /// FPS-GOVERNOR: the schedule-anchored regular-cadence admit gate. frameQueue-owned (only
+    /// touched in the SCStream callback).
+    private var cadenceGate = EncodeCadenceGate()
+    /// GATED-TAIL FLUSH (2026-06-11): one-shot encode of the cached latest frame at the gate's
+    /// next slot boundary, armed when a delivery is REJECTED by the cadence gate. Without it the
+    /// LAST frame of a motion burst that lands on a gated slot waits for the ~1-1.25 s static
+    /// crisp refresh — a visible stale tail at scroll end. frameQueue-owned (armed in the SCStream
+    /// callback, fired on `frameQueue` via `asyncAfter`, replaced by any fresh `.complete`
+    /// delivery, cancelled in ``stop()``'s `frameQueue.sync` teardown).
+    private var pendingGatedFlush: DispatchWorkItem?
     /// LIVE frames since the last re-anchor (keyframe or LTR refresh) — drives the self-heal
     /// cadence. frameQueue-owned (only touched in the SCStream callback).
     private var framesSinceAnchor = 0
@@ -183,6 +209,28 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     private func selfHealIsEligible() -> Bool {
         keyframeLock.lock(); defer { keyframeLock.unlock() }
         return selfHealEligible
+    }
+
+    /// FPS-GOVERNOR: latch the governed encode fps (clamped to `[1, fps]` — the governor never
+    /// exceeds the base rate). Thread-safe; called from the orchestrator actor on every governed
+    /// step (and re-applied after a resize installs a fresh capturer).
+    public func setGovernedFPS(_ newFps: Int) {
+        let clamped = min(fps, max(1, newFps))
+        keyframeLock.lock(); governedFPS = clamped; keyframeLock.unlock()
+    }
+
+    private func currentGovernedFPS() -> Int {
+        keyframeLock.lock(); defer { keyframeLock.unlock() }
+        return governedFPS
+    }
+
+    /// FPS-GOVERNOR: PEEK (without clearing) whether a recovery latch is pending — the cadence
+    /// gate's `forced` bypass. The actual drain (`takePending…`) stays BELOW the gate, so the
+    /// cooldown/latch logic sees an unchanged forced-frame stream and recovery latency stays
+    /// ≤1 DELIVERY interval (deliveries continue at full rate), not 1 governed interval.
+    private func peekPendingRecoveryLatches() -> Bool {
+        keyframeLock.lock(); defer { keyframeLock.unlock() }
+        return pendingForcedKeyframe || pendingLTRRefresh
     }
 
     /// Atomically reads + clears the pending-forced-keyframe latch.
@@ -252,6 +300,9 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// Capture frame-rate cap (fps). Default 60 for smooth scroll/motion; idle-skip keeps a static
     /// window near-zero regardless. Used to build the `minimumFrameInterval`.
     private let fps: Int
+    /// The resolved SCStream delivery ceiling (Hz) — see ``resolveCaptureHz(envValue:fps:)``.
+    /// Stored so the cadence gate's tolerance (half a delivery slot) matches the actual config.
+    private let captureHz: Int
     /// Capture pixel scale (window points × this = the output buffer pixels). Needed to express
     /// `sourceRect` in POINTS (`pixelDim / captureScale`) — the source crop is point-space while
     /// `config.width/height` are pixel-space.
@@ -267,6 +318,8 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         frameHandler: @escaping FrameHandler
     ) {
         self.fps = max(1, fps)
+        self.captureHz = Self.resolveCaptureHz(envValue: ProcessInfo.processInfo.environment["AISLOPDESK_CAPTURE_HZ"], fps: max(1, fps))
+        self.governedFPS = max(1, fps)
         self.captureScale = max(1.0, captureScale)
         self.fullRange = fullRange
         self.frameHandler = frameHandler
@@ -313,7 +366,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // 57.2 → 60.0fps, p99 cadence 24.2 → 19.8ms) and the live host log showed 144-161 clustered
         // ~30ms double-slot capture gaps per scroll session — ZERO after the raise (14.6k-frame
         // user session). Capture-side only: encode fps (and thus bitrate) unchanged.
-        let captureHz = ProcessInfo.processInfo.environment["AISLOPDESK_CAPTURE_HZ"].flatMap(Int.init).map { min(240, max(15, $0)) } ?? min(240, max(1, fps) * 2)
+        let captureHz = resolveCaptureHz(envValue: ProcessInfo.processInfo.environment["AISLOPDESK_CAPTURE_HZ"], fps: fps)
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(captureHz))
         config.queueDepth = 3                                               // 2-3 for low latency (doc 02 §3.1)
         config.width = width
@@ -351,6 +404,14 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
             config.ignoreGlobalClipSingleWindow = true  // don't pad the rect to the global clip
         }
         return config
+    }
+
+    /// PURE capture-ceiling resolution (refactored out of ``makeConfiguration`` so it is
+    /// unit-testable): `AISLOPDESK_CAPTURE_HZ` overrides, clamped [15, 240]; default 2× the encode
+    /// fps, ceilinged at 240 (see the LAT note above — decouple the capture side only).
+    static func resolveCaptureHz(envValue: String?, fps: Int) -> Int {
+        if let envValue, let v = Int(envValue) { return min(240, max(15, v)) }
+        return min(240, max(1, fps) * 2)
     }
 
     /// Creates the content filter for one desktop-independent window. Captures the
@@ -418,6 +479,10 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // is sufficient — ARC releases the managed copy; no manual CVPixelBufferRelease.
         frameQueue.sync {
             idrTimer?.cancel(); idrTimer = nil
+            // GATED-TAIL FLUSH: cancel the one-shot inside the same frameQueue.sync, so no flush
+            // can race teardown (the work item runs on frameQueue too). Belt-and-braces: a
+            // hypothetical already-queued execution is also inert — `cachedPixelBuffer` is nil.
+            pendingGatedFlush?.cancel(); pendingGatedFlush = nil
             cachedPixelBuffer = nil
         }
         try? await stream.stopCapture()
@@ -485,6 +550,45 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         lastEmittedPTS = CMTimeMaximum(lastEmittedPTS, pts90k)
         let encodePTS = lastEmittedPTS
 
+        // FPS-GOVERNOR cadence gate (2026-06-11): when governed below the base fps, admit
+        // deliveries on the drift-free schedule (every 2nd/3rd/4th delivery slot — metronome-
+        // regular, NOT the retired alternating skip). Placement invariants (each load-bearing):
+        //  - the cachedPixelBuffer copy + staticIDRDecider.onCompleteFrame above MUST run for
+        //    gated frames too. Cache: otherwise the static-timer crisp refresh would re-ship a
+        //    stale pre-final frame after motion stops on a gated frame (permanent stale screen).
+        //    Decider: otherwise the timer would think the live path quiet and fire crisp IDRs
+        //    MID-motion. Cost unchanged vs today (every delivered frame is copied today already).
+        //  - the gate sits ABOVE the latch DRAIN and uses a PEEK for `forced`, so a gated return
+        //    is impossible while a recovery latch is pending / before the first frame — recovery
+        //    converts to the NEXT delivery (≤1 delivery interval, deliveries stay at full rate).
+        //  - `framesSinceAnchor` (below) counts only ENCODED frames — self-heal stays
+        //    per-encoded-frame, rebased time-equivalently via SelfHealCadence.
+        //  - a due motion-heartbeat (default OFF) sits below the gate ⇒ worst-case +66 ms slip on
+        //    its 2.5 s cadence — acceptable.
+        //  - GATED-TAIL FLUSH: any fresh `.complete` delivery supersedes a pending one-shot flush
+        //    (it either encodes now, or is gated and RE-ARMS a replacement below) — so the flush
+        //    only ever fires when its armed frame is still the NEWEST content.
+        pendingGatedFlush?.cancel(); pendingGatedFlush = nil
+        let governed = currentGovernedFPS()
+        if governed < fps {
+            let mustEncode = !hasEmittedFirstFrame || peekPendingRecoveryLatches()
+            if !cadenceGate.admit(now: now, targetIntervalSeconds: 1.0 / Double(governed),
+                                  toleranceSeconds: 0.5 / Double(captureHz), forced: mustEncode) {
+                // Delivered-but-gated: cache/decider/PTS already updated above. If this turns out
+                // to be the LAST frame of the burst, the one-shot ships its content at the next
+                // governed slot boundary instead of leaving a stale tail until the crisp refresh.
+                scheduleGatedTailFlush(now: now)
+                return
+            }
+        }
+        encodeBelowGate(pixelBuffer: pixelBuffer, encodePTS: encodePTS, now: now, governed: governed)
+    }
+
+    /// The BELOW-GATE encode path, shared verbatim by the live SCStream delivery and the
+    /// gated-tail flush (so the flushed frame honours every convention: latch drain, first-frame /
+    /// heartbeat / recovery-cooldown keyframe resolution, compact IDR, LTR refresh + self-heal
+    /// cadence). frameQueue-owned.
+    private func encodeBelowGate(pixelBuffer: CVPixelBuffer, encodePTS: CMTime, now: TimeInterval, governed: Int) {
         // Heartbeat IDR ~1s, plus a forced keyframe on the very first delivered frame,
         // plus any client-requested IDR (loss recovery, doc 17 §3.6).
         let latched = takePendingForcedKeyframe()
@@ -533,9 +637,13 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // window. Gated on eligibility (acks flowing) — ineligible frames don't advance the
         // counter past the threshold meaninglessly; they keep counting so healing starts at most
         // one frame after eligibility arms.
-        if Self.selfHealEvery > 0, !forceKeyframe, !ltrRefresh {
+        // FPS-GOVERNOR: the heal K is rebased TIME-equivalently at a governed fps (60→6, 30→3,
+        // 20→2, 15→2) so the wall-clock heal latency stays ≈100-133 ms — fps is governed down
+        // exactly when whole-frame loss is most likely. `governed == fps` ⇒ K unchanged.
+        let healEvery = SelfHealCadence.effectiveEvery(baseEvery: Self.selfHealEvery, baseFps: fps, governedFps: governed)
+        if healEvery > 0, !forceKeyframe, !ltrRefresh {
             framesSinceAnchor += 1
-            if framesSinceAnchor >= Self.selfHealEvery, selfHealIsEligible() {
+            if framesSinceAnchor >= healEvery, selfHealIsEligible() {
                 ltrRefresh = true
             }
         }
@@ -548,6 +656,42 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // A live (motion) frame is NEVER crisp — motion must stay low-latency; only the static
         // timer above upgrades to a crisp refresh.
         frameHandler(pixelBuffer, encodePTS, forceKeyframe, false, compact, ltrRefresh)
+    }
+
+    // MARK: GATED-TAIL FLUSH (FPS governor, 2026-06-11)
+
+    /// Arms (REPLACING any prior one — repeated gated deliveries re-arm) the one-shot flush at the
+    /// cadence gate's next-due boundary. The work item runs on `frameQueue`, so it is serialized
+    /// against the SCStream callback: by construction it only fires when NO newer `.complete`
+    /// delivery arrived after arming (a fresh delivery cancels/replaces it first). frameQueue-owned.
+    private func scheduleGatedTailFlush(now: Double) {
+        pendingGatedFlush?.cancel()
+        let delay = max(0, cadenceGate.nextDue - now)
+        let item = DispatchWorkItem { [weak self] in self?.onGatedTailFlush() }
+        pendingGatedFlush = item
+        frameQueue.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    /// One-shot flush body (runs on `frameQueue`): re-encode the cached LATEST frame — the gated
+    /// content — through the normal below-gate path. The gate is re-consulted at the boundary
+    /// (advancing the drift-free schedule so the metronome stays regular around the flush; the
+    /// `forced` peek keeps the forced-frames-are-never-gated invariant); a governed fps that
+    /// returned to base in the meantime makes the gate inert, exactly like the live path. The PTS
+    /// is the established synthetic 90 kHz counter (strictly monotonic past the gated frame's own
+    /// PTS, which already advanced `lastEmittedPTS` above the gate).
+    private func onGatedTailFlush() {
+        pendingGatedFlush = nil
+        guard let buf = cachedPixelBuffer else { return }   // stopped / never delivered — nothing to ship
+        let now = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1_000_000_000.0
+        let governed = currentGovernedFPS()
+        if governed < fps {
+            let mustEncode = !hasEmittedFirstFrame || peekPendingRecoveryLatches()
+            guard cadenceGate.admit(now: now, targetIntervalSeconds: 1.0 / Double(governed),
+                                    toleranceSeconds: 0.5 / Double(captureHz), forced: mustEncode) else {
+                return   // fired early vs the schedule (clock skew) — the next delivery covers it
+            }
+        }
+        encodeBelowGate(pixelBuffer: buf, encodePTS: syntheticPTS(), now: now, governed: governed)
     }
 
     // MARK: SCStreamDelegate

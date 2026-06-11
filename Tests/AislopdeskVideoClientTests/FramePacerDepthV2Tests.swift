@@ -1,0 +1,120 @@
+import XCTest
+import CoreVideo
+@testable import AislopdeskVideoClient
+
+/// Component 4 (adaptive pacer depth v2): FramePacer wiring tests via the INTERNAL now-injection
+/// seams (`submitForTest` / `frameForVSyncForTest`) — promote re-primes + boosts `liveDepth`,
+/// demote restores depth 1 (re-arming present-on-arrival), default-off pins the depth while
+/// telemetry still counts, v2 disables v1, and manual depth ≥2 is telemetry-only.
+/// No display link, no env vars — everything is injected at construction.
+final class FramePacerDepthV2Tests: XCTestCase {
+
+    private func makePixelBuffer() -> CVPixelBuffer {
+        var pb: CVPixelBuffer?
+        let status = CVPixelBufferCreate(kCFAllocatorDefault, 4, 4, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, nil, &pb)
+        precondition(status == kCVReturnSuccess && pb != nil, "CVPixelBufferCreate failed (\(status))")
+        return pb!
+    }
+
+    /// Drive `frames` clean 60fps slots: submit + drain at the same injected instant
+    /// (present-on-arrival shape). Returns the advanced clock.
+    private func driveClean(_ pacer: FramePacer, from t: Double, frames: Int) -> Double {
+        var t = t
+        for _ in 0..<frames {
+            t += 1.0 / 60.0
+            pacer.submitForTest(makePixelBuffer(), now: t)
+            _ = pacer.frameForVSyncForTest(now: t)
+        }
+        return t
+    }
+
+    /// One skipped 60fps slot: the next submit+present lands a 33.3ms late gap.
+    private func skipOneSlot(_ pacer: FramePacer, from t: Double) -> Double {
+        let t2 = t + 2.0 / 60.0
+        pacer.submitForTest(makePixelBuffer(), now: t2)
+        _ = pacer.frameForVSyncForTest(now: t2)
+        return t2
+    }
+
+    func testPromoteReprimesAndBoostsLiveDepth() {
+        let pacer = FramePacer(targetDepth: 1, adaptiveDepth: true, renderCallback: { _ in })
+        var t = driveClean(pacer, from: 0, frames: 60)
+        XCTAssertEqual(pacer.currentDepth, 1)
+        t = skipOneSlot(pacer, from: t)                     // late #1
+        XCTAssertEqual(pacer.currentDepth, 1, "one late never promotes")
+        t = driveClean(pacer, from: t, frames: 24)          // 400ms clean
+        t = skipOneSlot(pacer, from: t)                     // late #2 within 1s → promote
+        XCTAssertEqual(pacer.currentDepth, 2, "2nd late within the window boosts liveDepth")
+
+        // Promote re-primed (primed = false): the next single frame is HELD until the slack is
+        // rebuilt to depth 2 — the boost actually holds a standing frame.
+        t += 1.0 / 60.0
+        let held = makePixelBuffer()
+        pacer.submitForTest(held, now: t)
+        let shown = pacer.frameForVSyncForTest(now: t)
+        XCTAssertTrue(shown !== held, "one frame < boosted depth ⇒ re-show last (slack rebuilding)")
+        t += 1.0 / 60.0
+        let second = makePixelBuffer()
+        pacer.submitForTest(second, now: t)
+        XCTAssertTrue(pacer.frameForVSyncForTest(now: t) === held, "slack rebuilt ⇒ present oldest in order")
+    }
+
+    func testDemoteRestoresDepthOneAndPresentOnArrival() {
+        let pacer = FramePacer(targetDepth: 1, adaptiveDepth: true, renderCallback: { _ in })
+        var t = driveClean(pacer, from: 0, frames: 60)
+        t = skipOneSlot(pacer, from: t)
+        t = driveClean(pacer, from: t, frames: 24)
+        t = skipOneSlot(pacer, from: t)
+        XCTAssertEqual(pacer.currentDepth, 2)
+        // While boosted, the present-on-arrival gate is unsatisfiable (empty-queue arrival can
+        // never complete depth 2).
+        XCTAssertFalse(FramePacer.shouldPresentOnArrival(enabled: true, queueWasEmpty: true,
+                                                         queueCount: 1, liveDepth: pacer.currentDepth))
+        // 3s clean dwell (> 2.5s demote + 1s min-hold) → back to 1; the gate re-arms by itself.
+        t = driveClean(pacer, from: t, frames: 180)
+        XCTAssertEqual(pacer.currentDepth, 1, "clean dwell demotes back to the latency floor")
+        XCTAssertTrue(FramePacer.shouldPresentOnArrival(enabled: true, queueWasEmpty: true,
+                                                        queueCount: 1, liveDepth: pacer.currentDepth))
+    }
+
+    func testDefaultOffPinsDepthButTelemetryCounts() {
+        // adaptiveDepth defaulted false (AISLOPDESK_ADAPTIVE_DEPTH unset at the construction site).
+        let pacer = FramePacer(targetDepth: 1, renderCallback: { _ in })
+        var t = driveClean(pacer, from: 0, frames: 60)
+        t = skipOneSlot(pacer, from: t)
+        t = driveClean(pacer, from: t, frames: 24)
+        _ = skipOneSlot(pacer, from: t)
+        XCTAssertEqual(pacer.currentDepth, 1, "depth action gated off ⇒ liveDepth never moves")
+        let snap = pacer.drainTelemetry()
+        XCTAssertEqual(snap.lateFrames, 2, "telemetry is unconditional — both lates counted")
+        XCTAssertEqual(snap.depth, 1)
+        XCTAssertEqual(pacer.drainTelemetry().lateFrames, 0, "drain resets the window")
+    }
+
+    func testV2DisablesV1Controller() {
+        // BOTH adaptive systems requested ⇒ v1 forced off (one writer of liveDepth). The v1
+        // grow-on-transient-dip path (`controller!.noteUnderrun()`) must be inert: an empty vsync
+        // followed by a present would have grown a live v1 controller.
+        let pacer = FramePacer(targetDepth: 1, adaptiveJitter: true, adaptiveDepth: true, renderCallback: { _ in })
+        var t = driveClean(pacer, from: 0, frames: 30)
+        _ = pacer.frameForVSyncForTest(now: t + 0.001)      // empty tick → underflowRun = 1
+        t += 1.0 / 60.0
+        pacer.submitForTest(makePixelBuffer(), now: t)
+        _ = pacer.frameForVSyncForTest(now: t)              // transient-dip present (v1 would grow here)
+        XCTAssertEqual(pacer.currentDepth, 1, "v1 is disabled — transient dips never inflate the depth")
+    }
+
+    func testManualDepth2IsTelemetryOnly() {
+        // Manual AISLOPDESK_JITTER_DEPTH=2 + adaptiveDepth: the v2 ACTION is disabled (the user
+        // pinned the depth) but the policy still counts — the wire keeps carrying lates + depth 2.
+        let pacer = FramePacer(targetDepth: 2, adaptiveDepth: true, renderCallback: { _ in })
+        var t = driveClean(pacer, from: 0, frames: 60)
+        t = skipOneSlot(pacer, from: t)
+        t = driveClean(pacer, from: t, frames: 24)
+        _ = skipOneSlot(pacer, from: t)
+        XCTAssertEqual(pacer.currentDepth, 2, "manual depth stays pinned")
+        let snap = pacer.drainTelemetry()
+        XCTAssertEqual(snap.depth, 2, "gauge reports the pinned depth")
+        XCTAssertGreaterThanOrEqual(snap.lateFrames, 1, "counters still flow in telemetry-only mode")
+    }
+}

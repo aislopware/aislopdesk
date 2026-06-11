@@ -124,13 +124,20 @@ public actor AislopdeskVideoHostSession {
         }
         return 12_000_000
     }()
-    /// CONTENT-ADAPTIVE FPS (2026-06-09) — drop fps under heavy motion so a full-screen scroll fits a
-    /// ~12Mbps link (a 60fps full-screen scroll's 58–200KB frames exceed link/60 bytes/frame → loss).
-    /// DEFAULT OFF (2026-06-09): the alternating skip (encode/skip/encode) delivers frames at irregular
-    /// 16.7/33.3ms intervals = the PRIMARY cadence khựng, and it solves a link-capacity constraint that
-    /// does not exist here (the link is not the limit). Coarsen QP at full fps instead (AISLOPDESK_MAX_QP).
-    /// `AISLOPDESK_ADAPTIVE_FPS=1` re-enables for a genuinely bandwidth-starved link. See ``AdaptiveFPSController``.
-    private static let adaptiveFPSEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_ADAPTIVE_FPS"] == "1"
+    /// FPS GOVERNOR (2026-06-11) — regular-cadence content/congestion-adaptive fps, the successor
+    /// of the retired `AdaptiveFPSController` (whose alternating skip delivered irregular
+    /// 16.7/33.3 ms intervals = the PRIMARY cadence khựng; deleted with `AISLOPDESK_ADAPTIVE_FPS`).
+    /// When ON, the host folds encoded-frame sizes into an ``FPSGovernor`` and ticks it on every
+    /// NetworkStats report: when the offered load exceeds the actuated bitrate past the QP51
+    /// coarsening floor AND there is positive congestion evidence, fps steps DOWN a clean-divisor
+    /// ladder rung (60→30→20→15) — actuated by the capturer's schedule-anchored
+    /// ``EncodeCadenceGate`` (metronome-regular), a live encoder `ExpectedFrameRate` hint, and a
+    /// `streamCadence` control message so the client rebases its pacing. DEFAULT OFF: cadence is
+    /// this project's highest-sensitivity axis ("user hand-feel is the only valid metric") — the
+    /// established pattern is env-gated OFF → HW feel-test → flip default (ABR/LTR/kfDup all
+    /// shipped this way). When OFF the host is byte-identical: no gate, no streamCadence message,
+    /// no self-heal rebase. `AISLOPDESK_FPS_GOVERNOR=1` enables; tunables `AISLOPDESK_FPS_GOV_*`.
+    private static let fpsGovernorEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_FPS_GOVERNOR"] == "1"
 
     /// PURE (unit-tested): inter-chunk pacing gap (ns) so `chunkFragments × datagramSize` bytes drain at
     /// `targetBps × rateMultiplier`, clamped to `[floorNanos, ceilNanos]`. `targetBps <= 0` ⇒ `fallbackBps`.
@@ -162,6 +169,36 @@ public actor AislopdeskVideoHostSession {
     private static let kfDup = ProcessInfo.processInfo.environment["AISLOPDESK_KF_DUP"] != "0"
     /// Throttle so a recovery-IDR burst is not byte-amplified: duplicate at most one keyframe per interval.
     private static let kfDupMinInterval: TimeInterval = 0.25
+    /// DELIVERY-KEYED RECOVERY-IDR COOLDOWN (component 2, 2026-06-11). DEFAULT **ON**;
+    /// `AISLOPDESK_RECOVERY_IDR_V2=0` restores the legacy sent-keyed 500 ms capturer gate byte-for-byte
+    /// (host-side only; the wire fields are unconditional and simply ignored in legacy mode). When ON,
+    /// the two IDR-issuing recovery paths (`.forceKeyframe` + the `.refreshLTR`→`.idr` fallback) pass
+    /// through ``RecoveryIDRPolicy`` — delivery-keyed cooldown + casualty bypass + token bucket — and
+    /// the capturer's F1 `minRecoveryIDRInterval` gate goes inert (0). An LTR refresh is NEVER gated.
+    /// Default-ON rationale: the suppression set is strictly narrower-or-provably-correct vs the F1
+    /// gate except the grace window (40-250 ms ≪ 500 ms), the sustained IDR rate cap is byte-identical
+    /// (2/s), and the wire change ships unconditionally anyway — one env flips back exactly.
+    private static let recoveryIDRV2 = ProcessInfo.processInfo.environment["AISLOPDESK_RECOVERY_IDR_V2"] != "0"
+    /// Tunables for the V2 policy: `AISLOPDESK_IDR_TOKENS` (bucket capacity, clamp 1...4),
+    /// `AISLOPDESK_IDR_REFILL_MS` (ms per token, clamp 100...5000 — default 500 = the old F1 spacing),
+    /// `AISLOPDESK_IDR_GRACE_MS` (pins floor=ceil for A/B, clamp 0...1000; unset = adaptive
+    /// clamp(0.75×smoothedRTT, 40, 250) ms).
+    private static let recoveryIDRConfig: RecoveryIDRPolicy.Config = {
+        var config = RecoveryIDRPolicy.Config()
+        let env = ProcessInfo.processInfo.environment
+        if let s = env["AISLOPDESK_IDR_TOKENS"], let v = Double(s), v.isFinite {
+            config.bucketCapacity = min(4, max(1, v))
+        }
+        if let s = env["AISLOPDESK_IDR_REFILL_MS"], let v = Double(s), v.isFinite {
+            config.refillTokensPerSecond = 1000.0 / min(5_000, max(100, v))
+        }
+        if let s = env["AISLOPDESK_IDR_GRACE_MS"], let v = Double(s), v.isFinite {
+            let pinned = min(1_000, max(0, v)) / 1000.0
+            config.graceFloorSeconds = pinned
+            config.graceCeilSeconds = pinned
+        }
+        return config
+    }()
     /// NETWORK-FEEDBACK TELEMETRY (the network-feedback channel). DEFAULT ON; disable with
     /// `AISLOPDESK_NETSTATS=0`. When ON, every outgoing video fragment is stamped with the host-relative
     /// send time and the host folds the client's periodic NetworkStats reports into a NetworkEstimate
@@ -235,6 +272,28 @@ public actor AislopdeskVideoHostSession {
     /// Host-side network estimate folded from the client's periodic NetworkStats reports. A pure value
     /// type — no reference capture, so no retain-cycle risk.
     private var networkEstimate = NetworkEstimate()
+    /// Component 2: delivery-keyed recovery-IDR admission (sent-keyframe ring + decode-acked id +
+    /// casualty bypass + token bucket). Pure value type, consulted ONLY by ``gateRecoveryIDR(lastDecoded:)``
+    /// when `AISLOPDESK_RECOVERY_IDR_V2` is on. Deliberately NOT reset on encoder rebuilds (see
+    /// ``resetLTRForNewEncoder()``).
+    private var recoveryIDRPolicy = RecoveryIDRPolicy(config: AislopdeskVideoHostSession.recoveryIDRConfig)
+    /// Component 5 (recovery-redundancy): collapses the client's byte-identical redundant copies
+    /// of one logical recovery request (3× spaced 3 ms) back to ONE host action. Gates ONLY the
+    /// `.forceKeyframe` / `.refreshLTR` arms — `.ack`/`.networkStats`/`.reshipCursorShape`
+    /// legitimately repeat. Also fixes the pre-existing frame-boundary-straddle double-
+    /// `ForceLTRRefresh` (the LTR path has no cooldown of its own).
+    private var recoveryDeduper = RecoveryRequestDeduper(windowSeconds: AislopdeskVideoHostSession.recoveryDedupWindow)
+    /// `AISLOPDESK_RECOVERY_DEDUP_MS` (default 25, clamp 0...200; 0 disables — every datagram
+    /// admitted). COUPLED to the client spacing: ≥ 2× the max copy spread ((copies−1)·spacing =
+    /// 12 ms at copies=5, spacing 3 ms) + reorder skew — duplicates do NOT refresh the window
+    /// timestamp, so the margin must absorb the whole spread — yet < every legitimate re-request
+    /// spacing (lossy escalation floor 30 ms). Internal (not private) so the coupling test can
+    /// assert against the RESOLVED constant.
+    static let recoveryDedupWindow: TimeInterval = {
+        if let s = ProcessInfo.processInfo.environment["AISLOPDESK_RECOVERY_DEDUP_MS"],
+           let v = Double(s), v >= 0, v <= 200 { return v / 1000.0 }
+        return 0.025
+    }()
     /// WF-2 ADAPTIVE BITRATE controller (only seeded when `AISLOPDESK_ABR=1`). A pure value type re-seeded
     /// at every encoder build so a resize re-anchors it to the new resolution's ceiling. `nil` ⇒ ABR
     /// off or no encoder yet ⇒ no actuation.
@@ -334,9 +393,14 @@ public actor AislopdeskVideoHostSession {
     /// flushed on media teardown). `nil` before start / after stop / when `AISLOPDESK_SEND_LANE=0`.
     private var sendLane: VideoSendLane?
     private var encodedConsumer: Task<Void, Never>?
-    /// Content-adaptive fps controller (created per encoder build with the resolution-aware per-frame
-    /// budget). `nil` until the capturer is built. Read in ``onEncodedFrame`` to feed back frame sizes.
-    private var adaptiveFPS: AdaptiveFPSController?
+    /// FPS GOVERNOR (only seeded when `AISLOPDESK_FPS_GOVERNOR=1`). A pure value type, re-seeded at the
+    /// INITIAL encoder build only (governor state deliberately persists across resize — path
+    /// knowledge, like the congestion controller's knee would be if it survived; the capturer/
+    /// encoder latches are re-applied at every install site instead). `nil` ⇒ governor off.
+    private var fpsGovernor: FPSGovernor?
+    /// The fps the governor currently has actuated (== `fps` until a step). Drives the capturer
+    /// gate latch + encoder hint re-application at resize and the streamCadence dup-send.
+    private var governedFps: Int
 
     /// - Parameters:
     ///   - window: the desktop-independent window to remote.
@@ -349,6 +413,7 @@ public actor AislopdeskVideoHostSession {
         self.captureSizeOverride = captureSizeOverride
         self.bitrate = bitrate
         self.fps = max(1, fps)
+        self.governedFps = max(1, fps)
         self.stateMachine = VideoSessionStateMachine(fullRange: Self.fullRange)
         // AISLOPDESK_FEC=0 (latency A/B, 2026-06-11): drop the 20% XOR parity entirely — Parsec ships
         // ZERO video FEC and relies on LTR/IDR recovery alone. Parity costs +20% datagrams per
@@ -642,23 +707,43 @@ public actor AislopdeskVideoHostSession {
 
     private func handleRecovery(_ data: Data) {
         switch recoveryRouter.route(datagram: data, mediaFlowing: stateMachine.mediaFlowing) {
-        case .forceKeyframe:
-            // Force an IDR on the next captured frame so a client that lost frames
-            // re-anchors immediately instead of waiting for the ~1s heartbeat IDR.
-            capturer?.requestKeyframe()
-        case .refreshLTR:
+        case .forceKeyframe(let lastDecoded):
+            // Component 5: drop byte-identical redundant copies (client sends 3× per logical
+            // request). A duplicate is dbg-logged and ignored — the first copy already acted.
+            guard recoveryDeduper.admit(data, now: ProcessInfo.processInfo.systemUptime) else {
+                dbg("recovery dup requestIDR suppressed")
+                break
+            }
+            // Force an IDR on the next captured frame so a client that lost frames re-anchors
+            // immediately instead of waiting for the ~1s heartbeat IDR — admission-gated by the
+            // delivery-keyed RecoveryIDRPolicy (component 2; legacy capturer gate when V2 off).
+            gateRecoveryIDR(lastDecoded: lastDecoded)
+        case .refreshLTR(let lastDecoded):
+            // Component 5: same dedup gate — REQUIRED here (no cooldown exists on the LTR path,
+            // so copies straddling a capture-frame boundary would encode a second ForceLTRRefresh).
+            guard recoveryDeduper.admit(data, now: ProcessInfo.processInfo.systemUptime) else {
+                dbg("recovery dup requestLTRRefresh suppressed")
+                break
+            }
             // WF-8: the client asked for an LTR refresh. Decide LTR-refresh-vs-IDR from the runtime
             // acked-token state under the ACKED-ONLY invariant. `.ltrRefresh` issues a cheap
             // ForceLTRRefresh P-frame against a token the client DECODED+ACKED; `.idr` falls back to a
             // real keyframe (when AISLOPDESK_LTR is off OR no token is acked yet — today's behaviour exactly).
+            // SELF-HEAL PREFERENCE KEPT: the `.ltrRefresh` arm is UNGATED — only the IDR fallback
+            // passes through the recovery-IDR admission policy.
             switch ltrController.recoveryDecision(request: .ltrRefresh, hasEnableLTR: Self.ltrEnabled) {
             case .ltrRefresh:
                 dbg("recovery refreshLTR → LTR refresh (acked tokens available)")
                 capturer?.requestLTRRefresh()
             case .idr:
-                capturer?.requestKeyframe()
+                gateRecoveryIDR(lastDecoded: lastDecoded)
             }
         case .ack(let streamSeq):
+            // Component 2: a keyframe decode-ack (the client now acks EVERY decoded keyframe, not
+            // just LTR-flagged frames) feeds the delivery-keyed cooldown. Unconditional — NOT gated
+            // on `Self.ltrEnabled`: ring-matching inside the policy rejects non-keyframe ids, and
+            // `ltrController.ackFrame` below already no-ops on unknown ids.
+            recoveryIDRPolicy.noteKeyframeDelivered(frameID: streamSeq)
             // WF-8: the `streamSeq` wire field carries a FRAME ID (the dead ack path is repurposed —
             // see RecoveryMessage.ack). Fold it: map frameID→token, add the token to the bounded acked
             // set, and stage it onto the encoder as an AcknowledgedLTRTokens option so a later
@@ -690,7 +775,9 @@ public actor AislopdeskVideoHostSession {
                                                        latestHostSendTs: report.latestHostSendTs,
                                                        clientHoldMs: report.clientHoldMs)
             networkEstimate.fold(rttMillis: rtt, framesReceived: report.framesReceived,
-                                 unrecovered: report.unrecovered, owdJitterMicros: report.owdJitterMicros)
+                                 unrecovered: report.unrecovered, owdJitterMicros: report.owdJitterMicros,
+                                 owdTrendState: report.owdTrendStateRaw,
+                                 owdTrendModifiedMilli: report.owdTrendModifiedMilliSigned)
             // WF-4 ADAPTIVE FEC: pick the per-frame group-size tier from the freshly-folded loss EWMA.
             // Hysteretic + one-step-clamped (anti-flap) inside the pure policy. Updated ONLY here, inside
             // a real report → it can't move before there is loss data (inert when no reports arrive).
@@ -717,18 +804,75 @@ public actor AislopdeskVideoHostSession {
                     dbg("abr: actuate target=\(target) ceiling=\(ctrl.ceiling) floor=\(ctrl.floor) current=\(ctrl.current) ticks=\(ctrl.ticks) knee=\(ctrl.kneeBps.map(String.init) ?? "-")")
                 }
             }
+            // FPS GOVERNOR: tick on the same ~50 ms report clock, AFTER the ABR block so it reacts
+            // to THIS tick's actuated rate. Congestion evidence reuses the ABR's own RTT constants
+            // (the two controllers agree on "congested") + ABR-below-ceiling as a debounced proxy.
+            // nil when `AISLOPDESK_FPS_GOVERNOR` is off ⇒ skipped entirely.
+            if var gov = fpsGovernor {
+                let congested = FPSGovernor.congestionEvidence(
+                    lastLossSample: networkEstimate.lastLossSample,
+                    smoothedRTTMillis: networkEstimate.smoothedRTTMillis,
+                    minRTTMillis: networkEstimate.minRTTMillis,
+                    abrCurrent: congestionController?.current, abrCeiling: congestionController?.ceiling)
+                let newFps = gov.onTick(targetBps: lastActuatedBitrate, congested: congested)
+                let offeredBps = Int(gov.bytesPerFrameEWMA * 8 * Double(governedFps))
+                fpsGovernor = gov
+                if newFps != governedFps {
+                    let old = governedFps
+                    governedFps = newFps
+                    actuateGovernedFps(newFps)
+                    dbg("fps-governor: \(old) → \(newFps) (offered≈\(offeredBps)bps target=\(lastActuatedBitrate) congested=\(congested))")
+                }
+            }
             // Precompute display strings so the log interpolation captures only plain Strings.
             let rttStr = rtt.map { String($0) } ?? "nil"
             let smoothedStr = String(format: "%.1f", networkEstimate.smoothedRTTMillis)
             let lossStr = String(format: "%.3f", networkEstimate.lossRate)
             let minRTTStr = networkEstimate.minRTTMillis.isFinite ? String(format: "%.1f", networkEstimate.minRTTMillis) : "inf"
             let rising = networkEstimate.owdGradientRising
-            log.info("netstats rx: rttSample=\(rttStr, privacy: .public)ms smoothedRTT=\(smoothedStr, privacy: .public)ms loss=\(lossStr, privacy: .public) rising=\(rising, privacy: .public)")
-            dbg("netstats rx: frames=\(report.framesReceived) fec=\(report.fecRecovered) lost=\(report.unrecovered) hostTs=\(report.latestHostSendTs) hold=\(report.clientHoldMs)ms jitter=\(report.owdJitterMicros)us → rtt=\(rttStr)ms smoothedRTT=\(smoothedStr)ms minRTT=\(minRTTStr)ms loss=\(lossStr) rising=\(rising)")
+            // Component 3 (delay-gradient): the client trendline verdict, for the A/B logs.
+            let trendStr = String(format: "%.2f", networkEstimate.owdTrendModified)
+            let tstate = report.owdTrendStateRaw == 1 ? "o" : (report.owdTrendStateRaw == 2 ? "u" : "n")
+            let tdeltas = report.owdTrendDeltas
+            // Component 4 (adaptive pacer depth): the client's presentation-health telemetry rides
+            // every report — late= (clean hitch signal), gaps= (superset incl. motion-stop
+            // boundaries), depth= (live pacer depth gauge; 0 = no pacer). LOG-ONLY this phase
+            // (component 3 owns the NetworkEstimate fold path), but it makes every feel-test a
+            // measurement session: promotions must co-occur with loss/RTT events, never clean.
+            log.info("netstats rx: rttSample=\(rttStr, privacy: .public)ms smoothedRTT=\(smoothedStr, privacy: .public)ms loss=\(lossStr, privacy: .public) rising=\(rising, privacy: .public) trend=\(trendStr, privacy: .public) tstate=\(tstate, privacy: .public) tdeltas=\(tdeltas, privacy: .public) late=\(report.pacerLateFrames, privacy: .public) gaps=\(report.pacerPresentGaps, privacy: .public) depth=\(report.pacerDepth, privacy: .public)")
+            dbg("netstats rx: frames=\(report.framesReceived) fec=\(report.fecRecovered) lost=\(report.unrecovered) hostTs=\(report.latestHostSendTs) hold=\(report.clientHoldMs)ms jitter=\(report.owdJitterMicros)us → rtt=\(rttStr)ms smoothedRTT=\(smoothedStr)ms minRTT=\(minRTTStr)ms loss=\(lossStr) rising=\(rising) trend=\(trendStr) tstate=\(tstate) tdeltas=\(tdeltas) late=\(report.pacerLateFrames) gaps=\(report.pacerPresentGaps) depth=\(report.pacerDepth)")
         case .drop(let reason):
             log.error("dropping recovery datagram: \(reason)")
         case .ignoreNotStreaming:
             break
+        }
+    }
+
+    /// Component 2: admission gate for the two IDR-issuing recovery paths (`.forceKeyframe` and the
+    /// `.refreshLTR`→`.idr` fallback). With V2 on, ``RecoveryIDRPolicy`` decides (delivery-keyed
+    /// cooldown + casualty bypass + token bucket); only `.grant` latches the capturer keyframe.
+    /// With V2 off, the latch is unconditional and the capturer's legacy F1 sent-keyed gate rules.
+    /// LTR refreshes never come through here (self-heal preference preserved).
+    private func gateRecoveryIDR(lastDecoded: UInt32?) {
+        // CAPTURE BRING-UP GUARD: with no capturer there is nothing to latch — consulting the
+        // policy anyway would burn a token AND latch `grantedAt` with NO keyframe ever emitted
+        // (a phantom grant whose pending-window then suppresses the client's real re-request
+        // once capture is up). Bail BEFORE the policy; the client's 2·RTT escalation re-requests.
+        guard let capturer else {
+            dbg("recovery IDR ignored — capturer not up yet (lastDecoded=\(lastDecoded.map(String.init) ?? "none"))")
+            return
+        }
+        guard Self.recoveryIDRV2 else {
+            capturer.requestKeyframe()
+            return
+        }
+        let verdict = recoveryIDRPolicy.decide(now: ProcessInfo.processInfo.systemUptime,
+                                               clientLastDecoded: lastDecoded,
+                                               smoothedRTTSeconds: networkEstimate.smoothedRTTMillis / 1000.0)
+        if case .grant = verdict {
+            capturer.requestKeyframe()
+        } else {
+            dbg("recovery IDR \(verdict) (lastDecoded=\(lastDecoded.map(String.init) ?? "none"))")
         }
     }
 
@@ -745,6 +889,31 @@ public actor AislopdeskVideoHostSession {
         lastActuatedBitrate = ceiling
         guard Self.abrEnabled else { return }
         congestionController = LiveCongestionController(ceiling: ceiling)
+    }
+
+    /// FPS GOVERNOR actuation: (1) latch the governed fps onto the capturer's cadence gate
+    /// (thread-safe), (2) hint the live encoder's `ExpectedFrameRate` (best-effort
+    /// VTSessionSetProperty — the gate enforces cadence regardless), (3) tell the client via
+    /// `streamCadence` (dup-sent ×2 for loss tolerance — the exact `onCursorShape` pattern).
+    private func actuateGovernedFps(_ newFps: Int) {
+        capturer?.setGovernedFPS(newFps)
+        encoder?.setExpectedFrameRate(newFps)
+        sendStreamCadence(UInt16(clamping: newFps))
+    }
+
+    /// Sends the `streamCadence(fps:)` control message, duplicated once ~25 ms later with a
+    /// `mediaFlowing` re-check (cursor-shape dup-send pattern): a cadence change often coincides
+    /// with congestion (the lossiest moment) and the client's application is idempotent.
+    private func sendStreamCadence(_ fps: UInt16) {
+        guard stateMachine.mediaFlowing else { return }
+        let bytes = scheduler.scheduleControl(.streamCadence(fps: fps)).bytes
+        dbg("→ sending streamCadence fps=\(fps) (+dup in 25ms)")
+        transport.send(bytes, on: .control)
+        Task { // inherits this actor's isolation; re-checks liveness after the gap
+            try? await Task.sleep(nanoseconds: 25_000_000)
+            guard stateMachine.mediaFlowing else { return }
+            transport.send(bytes, on: .control)
+        }
     }
 
     /// WF-8 self-audit fix: invalidate the LTR acked-set + frame map whenever a FRESH encoder /
@@ -765,6 +934,11 @@ public actor AislopdeskVideoHostSession {
         // until the client decodes+acks a new LTR frame on the rebuilt session (else every K-th frame
         // would be VT's IDR fallback). Re-armed by the next `.ack` fold.
         capturer?.setSelfHealEligible(false)
+        // Component 2: `recoveryIDRPolicy` is DELIBERATELY NOT reset here. The packetizer (and so
+        // frameIDs) persists across encoder rebuilds, so the sent-keyframe ring and the delivered id
+        // stay valid — and the token bucket MUST survive a rebuild (a resize storm during loss must
+        // not refill the recovery-IDR budget). If HW testing ever shows resize-recovery starvation,
+        // a one-line policy re-init here is the dial.
     }
 
     // MARK: Effects
@@ -777,6 +951,10 @@ public actor AislopdeskVideoHostSession {
         case .startCapture(_, let width, let height):
             dbg("effect startCapture \(width)x\(height) — bringing up live capture/encode")
             await startLiveComponents(width: Int(width), height: Int(height))
+            // FPS GOVERNOR: announce the session's content cadence up front (+dup) so the
+            // streamCadence message is the single cadence truth even before any governed step.
+            // OFF ⇒ no message at all (byte-identical wire).
+            if Self.fpsGovernorEnabled { sendStreamCadence(UInt16(clamping: governedFps)) }
         case .stopCapture:
             dbg("effect stopCapture")
             await teardownLiveComponents()
@@ -918,6 +1096,13 @@ public actor AislopdeskVideoHostSession {
         seedCongestionController(ceiling: ceiling)   // WF-2: re-anchor the controller to the new resolution's ceiling
         resetLTRForNewEncoder()                      // WF-8: the new VT session holds no acked LTRs — invalidate the acked-set
         self.capturer = newCapturer
+        // FPS GOVERNOR: a fresh capturer/encoder start at the base fps — re-apply the live
+        // governed state (governor state itself persists across resize: path knowledge). No
+        // client message — the cadence is unchanged.
+        if Self.fpsGovernorEnabled, governedFps != fps {
+            newCapturer.setGovernedFPS(governedFps)
+            newEncoder.setExpectedFrameRate(governedFps)
+        }
         let captureWindow = window
         do {
             nonisolated(unsafe) let w = captureWindow
@@ -1043,6 +1228,11 @@ public actor AislopdeskVideoHostSession {
         seedCongestionController(ceiling: ceiling)   // WF-2: re-anchor the controller to the rebuilt (old-size) ceiling
         resetLTRForNewEncoder()                      // WF-8: the rebuilt VT session holds no acked LTRs — invalidate the acked-set
         self.capturer = rebuiltCapturer
+        // FPS GOVERNOR: re-apply the live governed state to the rebuilt components (see applyResize).
+        if Self.fpsGovernorEnabled, governedFps != fps {
+            rebuiltCapturer.setGovernedFPS(governedFps)
+            rebuiltEncoder.setExpectedFrameRate(governedFps)
+        }
         let captureWindow = window
         do {
             nonisolated(unsafe) let w = captureWindow
@@ -1094,6 +1284,10 @@ public actor AislopdeskVideoHostSession {
         self.encoder = encoder
         seedCongestionController(ceiling: ceiling)   // WF-2: anchor the controller to this build's ceiling
         resetLTRForNewEncoder()                      // WF-8: anchor the LTR acked-set to this build (clears any prior-client acks on actor reuse)
+        // FPS GOVERNOR: fresh session ⇒ fresh governor at the base fps (nil when the flag is off ⇒
+        // no fold, no tick, no gate — byte-identical host).
+        fpsGovernor = Self.fpsGovernorEnabled ? FPSGovernor(baseFps: fps) : nil
+        governedFps = fps
 
         // Capturer: NV12 frames → encoder.encodeLive (zero-copy hand-off). The capture
         // closure captures the encoder DIRECTLY (not via the actor) so the hot per-frame
@@ -1102,17 +1296,7 @@ public actor AislopdeskVideoHostSession {
         // `@unchecked Sendable` and thread-safe for `encodeLive`. The encoded OUTPUT is
         // what hops back to the actor (`onEncodedFrame`) to packetize + send.
         let logCallback = log
-        // CONTENT-ADAPTIVE FPS: per-frame budget = resolution-aware ceiling / 8 / fps (the bytes a single
-        // frame may use to stay within the link at full fps). A frame above it ⇒ skip the next capture
-        // (≈half fps under heavy motion → fits the ~12Mbps link, no loss). Captured by the frameHandler
-        // (capture queue) + read in onEncodedFrame (actor) — both via the thread-safe controller.
-        let adaptiveFPS = AdaptiveFPSController(budgetBytes: ceiling / 8 / max(1, fps), enabled: Self.adaptiveFPSEnabled)
-        self.adaptiveFPS = adaptiveFPS
         let capturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
-            // CONTENT-ADAPTIVE FPS: drop this capture (don't encode) when the previous frame blew the
-            // per-frame budget. Reference-safe — the next encoded frame just deltas off the last ENCODED
-            // one. Forced frames (keyframe/crisp/compact/LTR) always ship.
-            if adaptiveFPS.shouldSkip(isForcedFrame: forceKeyframe || crisp || compact || ltrRefresh) { return }
             do {
                 if ltrRefresh {
                     try encoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
@@ -1255,9 +1439,13 @@ public actor AislopdeskVideoHostSession {
             dbg("encoded frame DROPPED (mediaFlowing=false)")
             return
         }
-        // CONTENT-ADAPTIVE FPS: feed back this frame's encoded size so the capturer can drop the next
-        // capture if it blew the per-frame link budget (heavy motion → ≈half fps → fits the link).
-        adaptiveFPS?.noteEncoded(bytes: avcc.count)
+        // FPS GOVERNOR: fold this frame's encoded size into the offered-load EWMA. Anchors
+        // (keyframe/crisp) are excluded — episodic 5-10× outliers would fake over-budget right
+        // after every recovery IDR; LTR refreshes ARE folded (steady-state stream cost).
+        if var gov = fpsGovernor {
+            gov.noteEncodedFrame(bytes: avcc.count, isAnchor: keyframe || crisp)
+            fpsGovernor = gov
+        }
         encodedFrameCount += 1
         if encodedFrameCount == 1 || encodedFrameCount % 15 == 0 {
             dbg("encoded+sent frame #\(encodedFrameCount) (\(avcc.count)B, keyframe=\(keyframe), crisp=\(crisp))")
@@ -1279,6 +1467,14 @@ public actor AislopdeskVideoHostSession {
         let isLTR = Self.ltrEnabled && ltrToken != nil
         if isLTR, let token = ltrToken {
             ltrController.recordLTRFrame(frameID: packetizer.peekNextFrameID, token: token)
+        }
+        // Component 2: record (keyframe frameID, sentAt) for the delivery-keyed recovery-IDR
+        // cooldown — EVERY keyframe (recovery, first-frame, static-crisp, heartbeat), peeked BEFORE
+        // packetize increments (the same race-free discipline as the LTR record above). kfDup's
+        // second copy reuses the same frameID, so there is nothing extra to record for it.
+        if keyframe {
+            recoveryIDRPolicy.noteKeyframeSent(frameID: packetizer.peekNextFrameID,
+                                               now: ProcessInfo.processInfo.systemUptime)
         }
         let fragments = packetizer.packetize(frame: avcc, keyframe: keyframe, crisp: crisp, hostSendTsMillis: sendTs, fecTier: tier, isLTR: isLTR)
         // Interleave transmission column-major across FEC groups so an adjacent-loss BURST spreads to

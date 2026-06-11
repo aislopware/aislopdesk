@@ -46,6 +46,7 @@ import Foundation
 /// type 7 listWindows:   (no body)
 /// type 8 windowList:    UInt16 count | per record: UInt32 id | UInt16 w | UInt16 h | lp app | lp title
 /// type 9 focusWindow:   (no body)
+/// type 10 streamCadence: UInt16 fps
 /// ```
 ///
 /// Liveness keepalive (additive after the resize pair — CONCURRENCY-HOST-1 crash-without-bye):
@@ -115,6 +116,12 @@ public enum VideoControlMessage: Equatable, Sendable {
     /// old host (unknown type → dropped). This is the "raise the focused pane's window" model that
     /// replaced the abandoned no-raise background-injection approach.
     case focusWindow
+    /// Host → client: the stream's CONTENT cadence changed (FPS governor, 2026-06-11). Sent once at
+    /// session start and on every governed fps step (duplicated ×2, ~25 ms apart, for loss
+    /// tolerance — the client's application is idempotent). The client rebases its deadline-pacer
+    /// content interval + adaptive-jitter seconds→frames conversion on it. Inert to an old peer
+    /// (unknown type → dropped).
+    case streamCadence(fps: UInt16)
 
     public var messageType: UInt8 {
         switch self {
@@ -127,6 +134,7 @@ public enum VideoControlMessage: Equatable, Sendable {
         case .listWindows: return 7
         case .windowList: return 8
         case .focusWindow: return 9
+        case .streamCadence: return 10
         }
     }
 
@@ -176,6 +184,8 @@ public enum VideoControlMessage: Equatable, Sendable {
             }
         case .focusWindow:
             break
+        case .streamCadence(let fps):
+            out.appendBE(fps)
         }
         return out
     }
@@ -235,6 +245,8 @@ public enum VideoControlMessage: Equatable, Sendable {
             return .windowList(windows)
         case 9:
             return .focusWindow
+        case 10:
+            return .streamCadence(fps: try reader.readUInt16())
         default:
             throw VideoProtocolError.malformed("unknown video control message type \(type)")
         }

@@ -63,6 +63,11 @@ public struct VideoClientStateMachine: Sendable {
         /// denominator (`decodedSize`) only once a decoded `CVPixelBuffer` actually arrives at
         /// that size (in-flight old-size frames may still be in the queue after the ack).
         case updateCaptureSize(VideoSize)
+        /// The host announced (FPS governor) the stream's CONTENT cadence — at session start and
+        /// on every governed step. The actor forwards it to the GUI layer (the pacer rebases its
+        /// deadline-mode interval + adaptive-jitter seconds→frames conversion). Duplicate
+        /// deliveries (the host dup-sends ×2 for loss tolerance) are idempotent.
+        case applyStreamCadence(UInt16)
     }
 
     /// `start()` was called: send the hello, move to `.connecting`.
@@ -107,6 +112,12 @@ public struct VideoClientStateMachine: Sendable {
             // is sent, so this branch is simply never reached.
             guard state == .streaming else { return [] }
             return [.updateCaptureSize(VideoSize(width: Double(cw), height: Double(ch)))]
+        case .streamCadence(let fps):
+            // FPS governor (host→client): rebase the content-cadence assumptions. Only meaningful
+            // while streaming (a stray/late cadence after teardown is inert); fps 0 is nonsense —
+            // dropped (the host never sends it; defensive against a corrupt body that still parsed).
+            guard state == .streaming, fps >= 1 else { return [] }
+            return [.applyStreamCadence(fps)]
         case .hello, .resizeRequest, .keepalive, .listWindows, .windowList, .focusWindow:
             // The client never receives a hello / resizeRequest / keepalive / listWindows / focusWindow
             // (all client→host). A `windowList` IS host→client but is handled out-of-band by the discovery
