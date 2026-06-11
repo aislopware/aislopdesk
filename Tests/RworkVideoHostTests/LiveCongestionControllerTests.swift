@@ -320,6 +320,56 @@ final class LiveCongestionControllerTests: XCTestCase {
         XCTAssertNil(ctrl.kneeBps, "an unconfirmed knee expires after its TTL")
     }
 
+    /// ESCALATING CAUTION (2026-06-11, 4G probe-cycle damping): every queue-corroborated decrease
+    /// that lands while a knee is STILL ALIVE confirms it and HALVES the above-knee climb step
+    /// (÷8 → ÷16 → ÷32) — on a stable-capacity path the probe-overshoot cycle amplitude decays
+    /// instead of re-bashing the same wall every 30-60s (measured live on 4G).
+    func testKneeEscalatingCaution() {
+        var ctrl = warmedController(ceiling: ceiling)
+        let fullStep = max(1, ceiling / LiveCongestionController.increaseDivisor)
+
+        // Climb with clean reports until the first increase AT/ABOVE the live knee; return its size.
+        func climbStepAboveKnee() -> Int? {
+            let clean = estimate(lossSamples: 0, folds: 1)
+            for _ in 0..<2_000 {
+                let before = ctrl.current
+                let after = ctrl.onReport(clean)
+                if after > before, let knee = ctrl.kneeBps, before >= knee { return after - before }
+            }
+            return nil
+        }
+
+        _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        XCTAssertEqual(ctrl.kneeConfirmations, 1, "first corroborated cut = first confirmation")
+        XCTAssertEqual(climbStepAboveKnee(), max(1, fullStep / LiveCongestionController.kneeCautionDivisor),
+                       "first cycle climbs at the base cautious step")
+
+        _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        XCTAssertEqual(ctrl.kneeConfirmations, 2, "re-hitting the wall while the knee is alive re-confirms it")
+        XCTAssertEqual(climbStepAboveKnee(), max(1, fullStep / (LiveCongestionController.kneeCautionDivisor * 2)),
+                       "second cycle climbs at HALF the cautious step")
+
+        _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        XCTAssertEqual(ctrl.kneeConfirmations, 3)
+        XCTAssertEqual(climbStepAboveKnee(), max(1, fullStep / (LiveCongestionController.kneeCautionDivisor * 4)),
+                       "third cycle climbs at a QUARTER of the cautious step")
+    }
+
+    /// Knee expiry (TTL) resets the confirmation count too: a genuinely shifted path starts the next
+    /// knee at BASE caution, never inheriting stale escalation.
+    func testKneeExpiryResetsEscalation() {
+        var ctrl = warmedController(ceiling: ceiling)
+        _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        XCTAssertEqual(ctrl.kneeConfirmations, 2)
+        let clean = estimate(lossSamples: 0, folds: 1)
+        for _ in 0..<(LiveCongestionController.kneeTTLTicks + 1) { _ = ctrl.onReport(clean) }
+        XCTAssertNil(ctrl.kneeBps)
+        XCTAssertEqual(ctrl.kneeConfirmations, 0, "expiry clears the escalation memory")
+        _ = ctrl.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+        XCTAssertEqual(ctrl.kneeConfirmations, 1, "a fresh knee starts at base caution")
+    }
+
     /// The absolute slack governs on a tiny baseline: smoothedRTT 3× the minRTT (well past the
     /// multiplicative gate) but only a few ms of ABSOLUTE inflation must never decrease.
     func testAbsoluteSlackGuardsTinyBaseline() {
