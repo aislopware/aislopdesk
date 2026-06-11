@@ -38,9 +38,19 @@ After the video path reached Parsec parity, this round made the TERMINAL path (h
 
 `AISLOPDESK_MUX_WINDOW` (⚠️ set identically in BOTH processes), `AISLOPDESK_MUX_HOST_QUEUE` (host-local), `AISLOPDESK_MUX_MERGE_CAP` (cross-clamped — safe at any in-range value).
 
+## Loopback feel-test (cua-driven, 2026-06-12 morning — Mac Studio rig)
+
+All interactive scenarios pass on the loopback rig (debug hostd :47421 + GUI app autoconnect, `AISLOPDESK_ECHO_PROBE=1`):
+
+- **Type-under-flood**: keys land instantly during a 41 s `yes` flood; RTT badge stays <1 ms; Ctrl-C → `^C` + fresh prompt in the very next frame.
+- **TUI (Neovim)**: dashboard (25 plugins), insert-mode typing, statusline, alt-screen enter/exit all render clean; scrollback restored exactly on exit.
+- **Pane maximize/restore**: `stty size` → `35 112` after maximize (host PTY tracked the reflow); restore returns the original grid, no garble, no crash (old maximize-rebuild bug stays fixed). Note: window drag-resize does NOT resize panes — infinite canvas, panes are 1:1; pane-level resize is maximize/restore (or future pane handles).
+- **Cross-pane isolation**: pane 2 inherits the connection (connect-once) and floods while pane 1 runs `echo hi` instantly at <1 ms RTT — one mux, no head-of-line across sub-channels.
+- **Echo probe over the whole session**: n=61, median **2.5 ms**, p95 9.8 ms, max 68 ms (single outlier during Neovim plugin load). hostd idle CPU 0.0 % after teardown (display-link/idle pause working), zero errors in hostd log.
+
 ## Follow-ups (ranked)
 
-1. **HW feel-test + deploy** (both ends; then type-under-flood, drag-resize, multi-pane flood on the real WAN).
+1. **Deploy both ends + WAN feel-test** — PARKED: user says the MacBook Pro will stay offline; loopback portion above is done. When the MacBook returns, deploy host + client together (see deploy section).
 2. **iOS real-device check** of the gated tick (type/echo, pan-scrollback, cursor blink) — simulator keeps the free-run deliberately; blink rides the renderer's own present path in theory, unverified on device.
 3. **Predictive-echo glitch caret** (docs/12 §B deferred design) — now HAS its RTT gate (`latencyMS` > ~30 ms). The remaining latency masker for WAN typing.
 4. ~~Echo-RTT AUTOTYPE instrumentation~~ — **DONE** (`411491d`): `AISLOPDESK_ECHO_PROBE=1` + check-macos step 4d. Loopback baseline: key→render-feed **12.4 ms**.
