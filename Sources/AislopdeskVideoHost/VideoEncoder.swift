@@ -292,6 +292,15 @@ public final class VideoEncoder: @unchecked Sendable {
         if pendingAckedTokens.count > 32 { pendingAckedTokens.removeFirst(pendingAckedTokens.count - 32) }
     }
 
+    /// STALE-LTR FIX (2026-06-12): drops every staged-but-not-yet-drained acked token. Called by
+    /// the host when an encoded KEYFRAME ships — the IDR clears the decoder's DPB (long-term
+    /// references included, HEVC spec), so a pre-IDR ack describes a reference the client no
+    /// longer holds and must never be fed to a later encode as `AcknowledgedLTRTokens`.
+    public func clearStagedAckedTokens() {
+        ackedLock.lock(); defer { ackedLock.unlock() }
+        pendingAckedTokens = []
+    }
+
     /// Atomically takes + clears the staged acked tokens (called once per encode under `ltrEnabled`).
     private func drainPendingAckedTokens() -> [Int64] {
         ackedLock.lock(); defer { ackedLock.unlock() }

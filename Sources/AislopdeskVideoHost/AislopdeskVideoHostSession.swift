@@ -1475,6 +1475,21 @@ public actor AislopdeskVideoHostSession {
         // with the isLTR wire bit so the client knows to ack on decode. Off ⇒ ltrToken nil ⇒ no record,
         // isLTR false ⇒ byte-identical wire. The packetizer persists across resize, so the frameID is
         // stable; record/peek/packetize all run here in encode order on the actor → race-free.
+        // STALE-LTR FIX (2026-06-12): an IDR resets the DECODER's reference world — the DPB,
+        // long-term references INCLUDED, is cleared by HEVC spec — so every token acked BEFORE
+        // this keyframe now describes a reference the client no longer holds. Without this reset
+        // a post-IDR ForceLTRRefresh could reference a pre-IDR acked token, which the client
+        // cannot decode: -12909 → invalidateSession → forced IDR → another stale refresh — a
+        // self-sustaining failure loop OBSERVED LIVE 2026-06-12 (ltr=true fec=false hard-fails
+        // on a loss-free wire, ~1/6s under scroll). Mirror of ``resetLTRForNewEncoder`` fired per
+        // ENCODED keyframe (any source: recovery grant, escalation, connect, crisp-IDR), BEFORE
+        // the record below so the keyframe's OWN token (post-IDR, valid) still registers; the
+        // client re-acks within ~one self-heal cadence and refreshes resume.
+        if keyframe {
+            ltrController.reset()
+            capturer?.setSelfHealEligible(false)
+            encoder?.clearStagedAckedTokens()
+        }
         let isLTR = Self.ltrEnabled && ltrToken != nil
         if isLTR, let token = ltrToken {
             ltrController.recordLTRFrame(frameID: packetizer.peekNextFrameID, token: token)
