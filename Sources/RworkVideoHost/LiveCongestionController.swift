@@ -41,11 +41,17 @@ import Foundation
 ///    before it may decrease — a one-report blip never acts. The per-report `owdGradientRising`
 ///    flag is deliberately NOT consulted: it compares only two adjacent jitter samples, so on a
 ///    steady link it flaps ~50/50 (measured live 2026-06-10) — a coin flip, not a signal.
-///  - RTT-triggered decreases respect the SAME hold-down that gates increases (max one RTT decrease
-///    per `holdTicks`): `smoothedRTTMillis` is an EWMA that decays over ~8+ reports, so without the
-///    cooldown one real inflation episode cascades ×0.85 every 50ms straight to the floor (the
-///    2026-06-09 "ABR collapse"). Loss-triggered decreases stay IMMEDIATE — raw-sample keyed,
-///    react-fast is correct there.
+///  - RTT-triggered decreases are PROPORTIONAL to the measured queue (DELAY-TARGETING, 2026-06-11):
+///    `factor = (minRTT + slack) / smoothedRTT` clamped to `[rttDecreaseFloorFactor,
+///    rttDecreaseCapFactor]` — a large standing queue cuts hard in one step, the post-congestion EWMA
+///    decay tail trims at most −5%, so the 2026-06-09 "×0.85 every 50ms to the floor" cascade is
+///    structurally impossible and the RTT path may re-decrease on the SHORT `rttHoldTicks` spacing
+///    (with a fresh streak each time) instead of the full increase hold-down. Loss-triggered
+///    decreases stay IMMEDIATE and fixed-factor — raw-sample keyed, react-fast is correct there.
+///  - A queue-corroborated decrease remembers the landed-on rate as the KNEE (ssthresh, `kneeBps`):
+///    additive increase at/above it runs ÷`kneeCautionDivisor` so recovery hovers under the rate that
+///    built the queue instead of re-bashing it every second (the felt 25↔40Mbps pumping). The knee
+///    expires after `kneeTTLTicks` without re-confirmation — path conditions drift.
 ///
 /// SAFE WHEN TELEMETRY OFF: with `loss == 0` and no valid RTT (`minRTTMillis == .infinity`) the
 /// congestion predicate is always false, so the controller can only additively increase — but it
@@ -94,6 +100,29 @@ public struct LiveCongestionController: Sendable, Equatable {
     public static let rttSlackMillis: Double = envDouble("RWORK_ABR_SLACK", 15.0, min: 0, max: 10_000)
     /// CONSECUTIVE inflated reports required before the RTT path decreases (~N × 50ms). `RWORK_ABR_RTT_N`.
     public static let rttStreakTicks: Int = envInt("RWORK_ABR_RTT_N", 3, min: 1, max: 100_000)
+    /// Reports between RTT-path decreases (~8 × 50ms ≈ 400ms). DELAY-TARGETING (2026-06-11): the full
+    /// `holdTicks` (~1s) between RTT decreases was the right anti-cascade guard for a FIXED ×0.85 step,
+    /// but it also meant a REAL persistent queue (scroll demand > path capacity, measured live: RTT
+    /// p90 80ms during scroll vs 11ms idle on the FPT↔Viettel path) drained at one small step per
+    /// second — multi-second 50–100ms latency episodes. The decrease is now PROPORTIONAL to the
+    /// measured queue (see ``onReport``), so the EWMA-tail cascade this hold guarded against is
+    /// self-limiting (a draining queue yields factors → ``rttDecreaseCapFactor``); a shorter
+    /// re-decrease spacing lets the controller actually chase a real queue. The streak also resets on
+    /// every decrease, so each re-decrease needs a FRESH `rttStreakTicks` run of inflated reports.
+    /// `RWORK_ABR_RTT_HOLD`.
+    public static let rttHoldTicks: Int = envInt("RWORK_ABR_RTT_HOLD", 8, min: 0, max: 100_000)
+    /// Hardest single proportional RTT decrease (0.6 = at most −40% in one step). `RWORK_ABR_RTT_DEC_MIN`.
+    public static let rttDecreaseFloorFactor: Double = envDouble("RWORK_ABR_RTT_DEC_MIN", 0.6, min: 0.05, max: 0.999)
+    /// Gentlest proportional RTT decrease — barely-over-threshold inflation still trims a little
+    /// (0.95 = −5%), and the post-congestion EWMA decay tail can never re-cut deeply. `RWORK_ABR_RTT_DEC_MAX`.
+    public static let rttDecreaseCapFactor: Double = envDouble("RWORK_ABR_RTT_DEC_MAX", 0.95, min: 0.05, max: 0.999)
+    /// Additive-increase divisor applied ON TOP of ``increaseDivisor`` at/above the remembered knee
+    /// (ssthresh): climbing back INTO the rate that just built a queue should be slow (probe), while
+    /// recovery below it stays fast. 8 ⇒ ~0.4% of ceiling per tick above the knee. `RWORK_ABR_KNEE_DIV`.
+    public static let kneeCautionDivisor: Int = envInt("RWORK_ABR_KNEE_DIV", 8, min: 1, max: 100_000)
+    /// Reports the knee memory survives without a fresh queue-corroborated decrease (~1200 × 50ms ≈
+    /// 60s). Path conditions drift; a stale knee must not cap the climb forever. `RWORK_ABR_KNEE_TTL`.
+    public static let kneeTTLTicks: Int = envInt("RWORK_ABR_KNEE_TTL", 1200, min: 1, max: 1_000_000)
     /// Floor as a fraction of the ceiling (also clamped to ``LiveBitratePolicy/minimumBitrate``). `RWORK_ABR_MINFRAC`.
     public static let minFrac: Double = envDouble("RWORK_ABR_MINFRAC", 0.25, min: 0.01, max: 1.0)
     /// Actuation churn gate (fraction of ceiling): the host skips a re-actuation smaller than this. `RWORK_ABR_MATERIAL`.
@@ -117,7 +146,26 @@ public struct LiveCongestionController: Sendable, Equatable {
     public private(set) var holdUntilTick = 0
     /// Consecutive reports whose smoothed RTT cleared BOTH inflation gates (factor + slack). The RTT
     /// path may decrease only once this reaches ``rttStreakTicks`` — one noisy report never acts.
+    /// Reset on EVERY decrease, so each re-decrease needs a fresh sustained run.
     public private(set) var rttInflatedStreak = 0
+    /// No RTT-path decrease is permitted until `ticks` reaches this (set on every decrease) — the
+    /// short re-decrease spacing (see ``rttHoldTicks``), distinct from the long increase hold-down.
+    public private(set) var rttHoldUntilTick = 0
+    /// The previous report's smoothed RTT — the one-report delay TREND. An RTT-path decrease
+    /// additionally requires the smoothed RTT to be NOT IMPROVING (within 1ms) vs the last report:
+    /// a queue that is already DRAINING (rate is under capacity, the level is just the backlog
+    /// flushing out) must not keep triggering cuts — that was the measured undershoot-to-the-floor
+    /// while a ~900ms warmup backlog drained. A standing or growing queue reads flat/rising and
+    /// keeps cutting. (This is the sound version of the abandoned per-report `owdGradientRising`
+    /// coin-flip: smoothed-EWMA vs smoothed-EWMA, not jitter-sample vs jitter-sample.)
+    public private(set) var prevSmoothedRTTMillis = 0.0
+    /// The remembered "knee" (ssthresh): the rate the controller landed on after the most recent
+    /// queue-corroborated decrease. Additive increase at/above this rate uses the cautious step
+    /// (÷``kneeCautionDivisor``) — the controller hovers under the rate that built a queue instead of
+    /// re-bashing the ceiling every recovery (the measured 25↔40Mbps pumping). `nil` = no knee known.
+    public private(set) var kneeBps: Int?
+    /// Tick at which the knee memory expires (refreshed by every queue-corroborated decrease).
+    public private(set) var kneeExpiresAtTick = 0
 
     /// Additive-increase step in bps (≥ 1 so a tiny ceiling still makes progress).
     private var increaseStep: Int { max(1, ceiling / Self.increaseDivisor) }
@@ -148,6 +196,8 @@ public struct LiveCongestionController: Sendable, Equatable {
     @discardableResult
     public mutating func onReport(_ e: NetworkEstimate) -> Int {
         ticks += 1
+        // Capture the trend input for the NEXT report whatever branch runs (including warmup).
+        defer { prevSmoothedRTTMillis = e.smoothedRTTMillis }
         // Cold-start guard: fold (advance `ticks`) but take no action, so an open-loop start with
         // `loss == 0` cannot trigger a spurious drop and the estimate's own gradient can warm up.
         guard ticks >= Self.warmupTicks else { return current }
@@ -173,7 +223,12 @@ public struct LiveCongestionController: Sendable, Equatable {
         rttInflatedStreak = rttInflated ? rttInflatedStreak + 1 : 0
         let rttCongested = rttInflated
             && rttInflatedStreak >= Self.rttStreakTicks
-            && ticks >= holdUntilTick
+            && ticks >= rttHoldUntilTick
+            && e.smoothedRTTMillis + 1.0 >= prevSmoothedRTTMillis   // not improving — see prevSmoothedRTTMillis
+
+        // Knee TTL: a knee that hasn't been re-confirmed by a queue-corroborated decrease within
+        // `kneeTTLTicks` is stale path knowledge — forget it so the climb is uncapped again.
+        if kneeBps != nil, ticks >= kneeExpiresAtTick { kneeBps = nil }
 
         // LOSS-TOLERANCE #4: sub-catastrophic loss acts only when CORROBORATED by RTT inflation on
         // the same report (queue evidence). Weather loss — the measured rate-independent ~1%/3–9%
@@ -186,32 +241,63 @@ public struct LiveCongestionController: Sendable, Equatable {
             // severe — the collapse is happening now, not the decaying tail of one that ended):
             // halve regardless of RTT (queue-less policer / true collapse), at most once per
             // hold-down window.
-            decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)))
+            decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)), queueCorroborated: rttInflated)
         } else if e.lastLossSample > Self.severeLossThreshold, lossEvidence {
             // Severe CORROBORATED loss: halve immediately.
-            decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)))
-        } else if (e.lastLossSample > Self.lossThreshold && lossEvidence) || rttCongested {
-            // Ordinary congestion: multiplicative decrease.
-            decrease(to: max(floor, Int(Double(current) * Self.decreaseFactor)))
+            decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)), queueCorroborated: rttInflated)
+        } else if rttCongested || (e.lastLossSample > Self.lossThreshold && lossEvidence) {
+            // Ordinary congestion. DELAY-TARGETING (2026-06-11): the RTT path sizes the decrease to
+            // the MEASURED queue instead of a fixed ×0.85 — `factor = (minRTT + slack) / smoothedRTT`,
+            // clamped to [rttDecreaseFloorFactor, rttDecreaseCapFactor]. A 70ms standing queue over a
+            // 10ms baseline cuts hard in ONE step (clamped −40%) instead of bleeding 50–100ms latency
+            // through four ×0.85-per-second steps; barely-over-threshold inflation (and the EWMA
+            // decay tail after the queue drains) trims at most −5% per step. The loss path keeps the
+            // classic ×0.85. When both fire, take the stronger evidence (lower target).
+            var target = Int.max
+            if rttCongested {
+                let drained = e.minRTTMillis + Self.rttSlackMillis
+                let factor = min(Self.rttDecreaseCapFactor,
+                                 max(Self.rttDecreaseFloorFactor, drained / e.smoothedRTTMillis))
+                target = min(target, Int(Double(current) * factor))
+            }
+            if e.lastLossSample > Self.lossThreshold && lossEvidence {
+                target = min(target, Int(Double(current) * Self.decreaseFactor))
+            }
+            decrease(to: max(floor, target), queueCorroborated: rttInflated)
         } else if ticks >= holdUntilTick && !rttInflated {
             // Clean link past the hold-down: probe up additively toward the ceiling. `!rttInflated`
             // keeps the probe from climbing INTO a building queue while the streak/hold-down is
             // still suppressing the decrease (minRTT re-baselines upward ~1%/fold, so a genuinely
-            // shifted path baseline un-sticks this on its own).
-            current = min(ceiling, current + increaseStep)
+            // shifted path baseline un-sticks this on its own). At/above the remembered knee the
+            // step is divided by `kneeCautionDivisor`: the controller hovers under the rate that
+            // built a queue instead of re-bashing it every recovery (25↔40Mbps pumping = the felt
+            // sawtooth).
+            let cautious = kneeBps.map { current >= $0 } ?? false
+            let step = cautious ? max(1, increaseStep / Self.kneeCautionDivisor) : increaseStep
+            current = min(ceiling, current + step)
         }
         return current
     }
 
-    /// Applies a computed multiplicative-decrease target and arms the anti-thrash hold-down — but ONLY
-    /// re-arms the hold-down when the target actually LOWERS `current`. At the floor the decrease is a
-    /// no-op (`next == current`), so without this guard a sustained congestion signal pinned at the
-    /// floor would keep extending the hold-down every report, pushing the additive-recovery start far
-    /// past the actual congestion and inflating dead time at the floor.
-    private mutating func decrease(to next: Int) {
+    /// Applies a computed decrease target and arms the anti-thrash hold-downs — but ONLY re-arms them
+    /// when the target actually LOWERS `current`. At the floor the decrease is a no-op
+    /// (`next == current`), so without this guard a sustained congestion signal pinned at the floor
+    /// would keep extending the hold-down every report, pushing the additive-recovery start far past
+    /// the actual congestion and inflating dead time at the floor.
+    ///
+    /// `queueCorroborated` (the report showed RTT inflation) additionally records the landed-on rate
+    /// as the knee (ssthresh) — see ``kneeBps``. A catastrophic halve at FLAT RTT is rate-independent
+    /// weather/policer evidence, not path-capacity knowledge, so it deliberately sets no knee.
+    private mutating func decrease(to next: Int, queueCorroborated: Bool) {
         if next < current {
             current = next
             holdUntilTick = ticks + Self.holdTicks
+            rttHoldUntilTick = ticks + Self.rttHoldTicks
+            rttInflatedStreak = 0
+            if queueCorroborated {
+                kneeBps = current
+                kneeExpiresAtTick = ticks + Self.kneeTTLTicks
+            }
         }
     }
 

@@ -420,10 +420,14 @@ struct ClosedLoopResult {
     var adverseUnrecSecondHalf = 0     // steady-state (after the FEC climb settles) — the fair A/B window
     var bitrateFellInAdverse = false
     var bitrateRecoveredAfter = false
-    /// Bitrate at the END of the recovery phase. The recovery VERDICT keys on this, not the phase
-    /// average: by AIMD design the climb starts only after the RTT-EWMA decays (~0.7s) + the
-    /// hold-down (~1s), so a short phase's AVERAGE understates a recovery that is clearly underway.
+    /// Bitrate at the END of the recovery phase. The recovery VERDICT keys on this vs the adverse
+    /// TROUGH, not the adverse phase average: by design the climb starts only after the RTT-EWMA
+    /// decays (~0.7s) + the hold-down (~1s), and DELAY-TARGETING (2026-06-11) deliberately climbs
+    /// CAUTIOUSLY above the remembered knee — "recovered" means the climb is underway (end above the
+    /// trough), not "back at the ceiling within a 1.5s window" (that fast reclimb WAS the pumping).
     var endBitrateMbps = 0.0
+    /// Lowest actuated bitrate during the adverse phase (the trough the recovery verdict compares to).
+    var adverseTroughMbps = Double.infinity
 }
 
 /// `fixedTier != nil` pins the FEC tier (non-adaptive baseline); `nil` lets AdaptiveFECPolicy drive it.
@@ -442,6 +446,7 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
     var cc = LiveCongestionController(ceiling: ceiling)
     var currentTier: UInt8 = fixedTier ?? AdaptiveFECPolicy.defaultTier   // 0 = g5
     var lastActuated = ceiling
+    var lastTarget = ceiling
 
     let sink = FrameSink()
     let decoded = Counter()
@@ -563,12 +568,17 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
                     phasePeakTier = maxTier(phasePeakTier, currentTier)
                     if enableABR {
                         let target = cc.onReport(est)
+                        lastTarget = target
                         if LiveCongestionController.isMaterialChange(previous: lastActuated, target: target, ceiling: cc.ceiling) {
                             lastActuated = target
                             _ = enc.setLiveBitrate(target)
                         }
                     }
                     phaseBitrateSum += Double(lastActuated) / 1_000_000.0; phaseBitrateN += 1
+                    // The recovery verdict keys on the controller TARGET, not the actuated rate: the
+                    // material-change gate deliberately hides sub-500k moves, and the cautious
+                    // above-knee climb is sub-500k per tick by design.
+                    if phase == 1 { result.adverseTroughMbps = min(result.adverseTroughMbps, Double(lastTarget) / 1_000_000.0) }
 
                     if verbose && (phaseEncN % (reportEvery * 5) == 0) {
                         print(String(format: "    f%-3d loss=%.3f unrec/win=%d  tier=%d(%@)  bitrate=%.1fMbps  depth=%d  enc~%dB",
@@ -586,12 +596,146 @@ func runClosedLoopAdaptation(framesPerPhase: Int, enableABR: Bool, enableFEC: Bo
     }
 
     result.adverseUnrecSecondHalf = adverseSecondHalfUnrec
-    result.endBitrateMbps = Double(lastActuated) / 1_000_000.0
+    result.endBitrateMbps = Double(lastTarget) / 1_000_000.0
     if result.phaseAvgBitrateMbps.count == 3 {
         result.bitrateFellInAdverse = result.phaseAvgBitrateMbps[1] < result.phaseAvgBitrateMbps[0] - 0.05
-        // Recovery = the END state climbed back above the adverse average (see endBitrateMbps doc).
-        result.bitrateRecoveredAfter = result.endBitrateMbps > result.phaseAvgBitrateMbps[1] + 0.05
+        // Recovery = the END state climbed back above the adverse TROUGH (see endBitrateMbps doc).
+        result.bitrateRecoveredAfter = result.adverseTroughMbps.isFinite
+            && result.endBitrateMbps > result.adverseTroughMbps + 0.05
     }
+    return result
+}
+
+// MARK: - Bottleneck-queue scenario (DELAY-TARGETING, 2026-06-11)
+
+/// Result of ``runBottleneckQueueScenario``.
+struct BottleneckResult {
+    var convergedAtMs: Double?      // first virtual time the actuated rate reached ≤ capacity
+    var tailAvgQueueMs = 0.0        // mean standing queue over the last 25% of the run
+    var tailMaxQueueMs = 0.0
+    var rebashCount = 0             // post-convergence climbs back above capacity × 1.35 (pumping)
+    var endActuatedMbps = 0.0
+    var capacityMbps = 0.0
+}
+
+/// The scenario the scripted ADVERSE phase cannot express: a REAL feedback loop. The link is a fluid
+/// bottleneck (capacity C, FIFO queue) — the queue grows when the encoder's actual bytes exceed C and
+/// drains otherwise, and the RTT the controller sees IS `base + queue/C`. This is the measured
+/// 2026-06-11 inter-ISP path shape (RTT 11ms idle → 80–110ms during scroll at loss=0.000): pure
+/// bufferbloat, zero loss. Open-loop (ABR off / old once-per-second ×0.85) lets the queue stand for
+/// seconds; the DELAY-TARGETING controller must (a) converge the rate under C quickly, (b) end with a
+/// near-drained queue, (c) not pump back above C over and over (knee memory).
+func runBottleneckQueueScenario(frames: Int, verbose: Bool) -> BottleneckResult {
+    var result = BottleneckResult()
+
+    let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: kWidth, pixelHeight: kHeight, fps: kFPS, floor: 2_000_000)
+    let capacityBps = ceiling * 55 / 100        // between the 25% floor and the ceiling — convergence is reachable
+    result.capacityMbps = Double(capacityBps) / 1_000_000.0
+    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
+    var est = NetworkEstimate()
+    var cc = LiveCongestionController(ceiling: ceiling)
+    var lastActuated = ceiling
+
+    let sink = FrameSink()
+    let decoded = Counter()
+    let enc: VideoEncoder
+    do {
+        enc = VideoEncoder(width: kWidth, height: kHeight, fps: kFPS, ltrEnabled: false,
+                           outputHandler: { avcc, kf, _, ltr in sink.append(avcc: avcc, keyframe: kf, ltr: ltr) })
+        try enc.createLiveSession()
+    } catch { print("  bottleneck encoder create FAILED: \(error)"); return result }
+    _ = enc.setLiveBitrate(ceiling)
+    let dec = VideoDecoder(decodedFrameHandler: { _ in decoded.value += 1 })
+    guard let pb = makePixelBuffer(width: kWidth, height: kHeight, fullRange: false) else { return result }
+
+    var owd = OWDJitterEstimator()
+    var winFrames: UInt32 = 0, winFec: UInt32 = 0, winUnrec: UInt32 = 0
+    var latestHostSendTs: UInt32 = 0
+    var latestObservedAtMs = 0.0
+
+    let frameIntervalMs = 1000.0 / Double(kFPS)
+    let baseOneWayMs = 5.0
+    var clockMs = 0.0
+    var queueMs = 0.0                           // standing bottleneck queue, in ms-of-drain-time
+    var encN = 0
+    var queueSamples: [(ms: Double, queue: Double, actuated: Int)] = []
+
+    for f in 0..<frames {
+        fillFrame(pb, f)
+        clockMs += frameIntervalMs
+        // The bottleneck drains continuously, one frame-interval per frame tick.
+        queueMs = max(0, queueMs - frameIntervalMs)
+        do {
+            try enc.encodeLive(pixelBuffer: pb, presentationTime: CMTime(value: Int64(f), timescale: Int32(kFPS)), forceKeyframe: f == 0)
+        } catch { continue }
+        enc.completeFrames()
+
+        for out in sink.drain() {
+            encN += 1
+            let sendTs = UInt32(clockMs)
+            let frags = pk.packetize(frame: out.avcc, keyframe: out.keyframe, hostSendTsMillis: sendTs, fecTier: 0, isLTR: false)
+            // FEEDBACK: this frame's wire bytes join the queue; its own delivery waits behind it.
+            let wireBytes = frags.reduce(0) { $0 + $1.encode().count }
+            queueMs += Double(wireBytes * 8) / Double(capacityBps) * 1000.0
+            let oneWay = baseOneWayMs + queueMs
+            let frameArrivalMs = clockMs + oneWay
+            let intraGap = frags.count > 1 ? 8.0 / Double(frags.count) : 0.0
+
+            for (localIdx, frag) in frags.enumerated() {
+                let arrivalMs = frameArrivalMs + Double(localIdx) * intraGap
+                guard let parsed = try? FrameFragment.decode(frag.encode()) else { continue }
+                owd.note(arrival: arrivalMs / 1000.0)
+                let ts = parsed.header.hostSendTsMillis
+                if ts != 0, latestHostSendTs == 0 || ts.distanceWrapped(from: latestHostSendTs) > 0 {
+                    latestHostSendTs = ts; latestObservedAtMs = arrivalMs
+                }
+                switch ra.ingest(parsed) {
+                case .completed(let frame):
+                    winFrames &+= 1
+                    if frame.recoveredViaFEC { winFec &+= 1 }
+                    try? dec.decode(frame)
+                case .dropped: winUnrec &+= 1
+                case .incomplete, .stale: break
+                }
+            }
+
+            if encN % 3 == 0 {                  // the ~50ms report cadence
+                let holdMs = latestHostSendTs == 0 ? 0 : UInt32(max(0, arrivalMsHold(now: clockMs + oneWay, observedAt: latestObservedAtMs)))
+                let report = NetworkStatsReport(framesReceived: winFrames, fecRecovered: winFec,
+                                                unrecovered: winUnrec, latestHostSendTs: latestHostSendTs,
+                                                clientHoldMs: holdMs, owdJitterMicros: owd.jitterMicros())
+                winFrames = 0; winFec = 0; winUnrec = 0
+                let wire = RecoveryMessage.networkStats(report).encode()
+                guard case .networkStats(let rx)? = try? RecoveryMessage.decode(wire) else { continue }
+                let hostNowMs = UInt32(clockMs + oneWay + baseOneWayMs)   // return path rides the un-queued direction
+                let rtt = NetworkEstimate.computeRTTMillis(hostNowMs: hostNowMs, latestHostSendTs: rx.latestHostSendTs, clientHoldMs: rx.clientHoldMs)
+                est.fold(rttMillis: rtt, framesReceived: rx.framesReceived, unrecovered: rx.unrecovered, owdJitterMicros: rx.owdJitterMicros)
+                let target = cc.onReport(est)
+                if LiveCongestionController.isMaterialChange(previous: lastActuated, target: target, ceiling: cc.ceiling) {
+                    lastActuated = target
+                    _ = enc.setLiveBitrate(target)
+                }
+                queueSamples.append((clockMs, queueMs, lastActuated))
+                if result.convergedAtMs == nil, lastActuated <= capacityBps { result.convergedAtMs = clockMs }
+                if verbose && encN % 30 == 0 {
+                    print(String(format: "    t=%5.0fms  queue=%5.1fms  smoothedRTT=%5.1fms  rate=%4.1fMbps  knee=%@",
+                                 clockMs, queueMs, est.smoothedRTTMillis, Double(lastActuated) / 1_000_000.0,
+                                 cc.kneeBps.map { String(format: "%.1fM", Double($0) / 1_000_000.0) } ?? "-"))
+                }
+            }
+        }
+    }
+
+    let tail = queueSamples.suffix(max(1, queueSamples.count / 4))
+    result.tailAvgQueueMs = tail.reduce(0.0) { $0 + $1.queue } / Double(tail.count)
+    result.tailMaxQueueMs = tail.reduce(0.0) { max($0, $1.queue) }
+    if let conv = result.convergedAtMs {
+        result.rebashCount = zip(queueSamples, queueSamples.dropFirst())
+            .filter { $0.0.ms >= conv && $0.0.actuated <= capacityBps * 135 / 100 && $0.1.actuated > capacityBps * 135 / 100 }
+            .count
+    }
+    result.endActuatedMbps = Double(lastActuated) / 1_000_000.0
     return result
 }
 
@@ -632,6 +776,18 @@ func runClosedLoopSuite(framesPerPhase: Int) {
     let weatherHeld = !weather.bitrateFellInAdverse
     print("    BITRATE  Mbps/phase  : clean=\(mbps(weather.phaseAvgBitrateMbps[0]))  weather=\(mbps(weather.phaseAvgBitrateMbps[1]))  after=\(mbps(weather.phaseAvgBitrateMbps[2]))")
 
+    print("\n  [D] DELAY-TARGETING bottleneck queue (capacity = 55% of ceiling, ZERO loss — the measured 2026-06-11 scroll shape)")
+    let bn = runBottleneckQueueScenario(frames: framesPerPhase * 5, verbose: true)
+    let bnConverged = bn.convergedAtMs.map { $0 <= 2_500 } ?? false
+    // The controller TARGETS the rttSlack (15ms) trim boundary, so the steady hover averages around
+    // it (± probe overshoot) — 25ms is the "queue is governed, not standing" gate (vs ~600-900ms
+    // ungoverned).
+    let bnDrained = bn.tailAvgQueueMs < 25.0
+    let bnNoPump = bn.rebashCount <= 1
+    print(String(format: "    capacity=%.1fMbps  converged at t=%@  end rate=%.1fMbps", bn.capacityMbps,
+                 bn.convergedAtMs.map { String(format: "%.0fms", $0) } ?? "NEVER", bn.endActuatedMbps))
+    print(String(format: "    tail (last 25%%) queue: avg=%.1fms max=%.1fms   re-bash climbs after convergence=%d", bn.tailAvgQueueMs, bn.tailMaxQueueMs, bn.rebashCount))
+
     print("\n  ===== CLOSED-LOOP VERDICT =====")
     print("    #2 ABR        : bitrate fell under CORROBORATED loss (RTT inflated)=\(on.bitrateFellInAdverse ? "YES" : "no")  recovered after=\(on.bitrateRecoveredAfter ? "YES" : "no")  \(on.bitrateFellInAdverse && on.bitrateRecoveredAfter ? "✅" : "⚠️")")
     print("    #2b weather   : bitrate HELD under uncorroborated weather loss (flat RTT)=\(weatherHeld ? "YES" : "no")  \(weatherHeld ? "✅" : "⚠️")")
@@ -641,6 +797,7 @@ func runClosedLoopSuite(framesPerPhase: Int) {
     print("    #4 adaptiveJit: playout depth grew under jitter=\(depthGrew ? "YES" : "no")  \(depthGrew ? "✅" : "⚠️")")
     let hwTracked = on.phaseAvgEncBytes[1] < on.phaseAvgEncBytes[0]
     print("    HW actuation  : encoded bytes shrank with bitrate=\(hwTracked ? "YES" : "no") (real VTSessionSetProperty took effect)  \(hwTracked ? "✅" : "⚠️")")
+    print("    #5 delay-targeting: converged ≤2.5s=\(bnConverged ? "YES" : "no")  tail queue <25ms=\(bnDrained ? "YES" : "no")  no pumping=\(bnNoPump ? "YES" : "no")  \(bnConverged && bnDrained && bnNoPump ? "✅" : "⚠️")")
 }
 
 // MARK: - Pure controller drive (no HW)
