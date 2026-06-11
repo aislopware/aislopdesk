@@ -98,6 +98,21 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// ABSOLUTE smoothed-RTT inflation over the baseline (ms) ALSO required before the RTT path may
     /// signal congestion — keeps LAN scheduling wobble (a few ms on a ~5ms baseline) sub-threshold. `RWORK_ABR_SLACK`.
     public static let rttSlackMillis: Double = envDouble("RWORK_ABR_SLACK", 15.0, min: 0, max: 10_000)
+    /// BASELINE-PROPORTIONAL slack (2026-06-11, cellular wobble fix): the effective slack is
+    /// `max(rttSlackMillis, slackFraction × minRTT)`. The fixed 15ms was tuned for ~5-10ms LAN
+    /// baselines; on the measured 4G path (minRTT ≈ 40-44ms) cellular scheduler wobble of ±50% is
+    /// RATE-INDEPENDENT path texture (identical at 3M and 11.5M actuated), yet 44→60ms tripped
+    /// `min+15` constantly → perpetual −5% trims pinned the average rate at ~3.5M on a path that
+    /// carries 8M+ (soft image, zero latency gain). 0.75 reclassifies the sub-`1.75×min` band as
+    /// weather while a REAL queue (smoothed ≥ ~1.75× baseline) still cuts; LAN/WiFi baselines are
+    /// unaffected (0.75×10ms < 15ms absolute floor). `RWORK_ABR_SLACK_FRAC`.
+    public static let rttSlackFraction: Double = envDouble("RWORK_ABR_SLACK_FRAC", 0.75, min: 0, max: 10)
+
+    /// The effective absolute-slack gate for a given path baseline (see ``rttSlackFraction``).
+    public static func effectiveSlackMillis(minRTTMillis: Double) -> Double {
+        guard minRTTMillis.isFinite else { return rttSlackMillis }
+        return max(rttSlackMillis, rttSlackFraction * minRTTMillis)
+    }
     /// CONSECUTIVE inflated reports required before the RTT path decreases (~N × 50ms). `RWORK_ABR_RTT_N`.
     public static let rttStreakTicks: Int = envInt("RWORK_ABR_RTT_N", 3, min: 1, max: 100_000)
     /// Reports between RTT-path decreases (~8 × 50ms ≈ 400ms). DELAY-TARGETING (2026-06-11): the full
@@ -226,9 +241,10 @@ public struct LiveCongestionController: Sendable, Equatable {
         // hold-down (the EWMA-decay anti-cascade cooldown — max one RTT decrease per `holdTicks`).
         // `owdGradientRising` is deliberately ignored: adjacent-sample jitter comparison is a coin
         // flip on a steady link, not congestion evidence.
+        let slack = Self.effectiveSlackMillis(minRTTMillis: e.minRTTMillis)
         let rttInflated = e.minRTTMillis.isFinite
             && e.smoothedRTTMillis > e.minRTTMillis * Self.rttInflateFactor
-            && e.smoothedRTTMillis > e.minRTTMillis + Self.rttSlackMillis
+            && e.smoothedRTTMillis > e.minRTTMillis + slack
         rttInflatedStreak = rttInflated ? rttInflatedStreak + 1 : 0
         let rttCongested = rttInflated
             && rttInflatedStreak >= Self.rttStreakTicks
@@ -264,7 +280,9 @@ public struct LiveCongestionController: Sendable, Equatable {
             // classic ×0.85. When both fire, take the stronger evidence (lower target).
             var target = Int.max
             if rttCongested {
-                let drained = e.minRTTMillis + Self.rttSlackMillis
+                // Drain target uses the SAME baseline-proportional slack as the gate, so the
+                // proportional cut sizes against the path's own wobble floor, not the LAN constant.
+                let drained = e.minRTTMillis + slack
                 let factor = min(Self.rttDecreaseCapFactor,
                                  max(Self.rttDecreaseFloorFactor, drained / e.smoothedRTTMillis))
                 target = min(target, Int(Double(current) * factor))
