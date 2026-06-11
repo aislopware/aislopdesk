@@ -22,6 +22,16 @@ public protocol TerminalSurface: AnyObject {
     /// Feeds inbound PTY/VT bytes (an `output` payload) into the renderer.
     func feed(_ bytes: Data)
 
+    /// Feeds a BATCH of output payloads, flushing the renderer ONCE at the end.
+    ///
+    /// The batch-drain ingest path uses this so a backlog of N wire chunks costs one
+    /// render flush instead of N. The default implementation simply feeds each chunk
+    /// (per-chunk flush — correct, just unbatched); renderers with a separate
+    /// write/flush split (GhosttySurface) override it to write all chunks and
+    /// refresh/present once. Must be fully synchronous (doc-18-§C: no suspension
+    /// between writes and the flush).
+    func feedBatch(_ chunks: ArraySlice<Data>)
+
     /// Sets the terminal grid size; mirrored to the host via `resize`.
     func setSize(cols: UInt16, rows: UInt16)
 
@@ -33,4 +43,14 @@ public protocol TerminalSurface: AnyObject {
     /// Called when the surface has bytes to send back to the host (keystrokes the
     /// renderer encoded). The client encodes these as ``WireMessage/input(_:)``.
     var onWrite: ((Data) -> Void)? { get set }
+}
+
+extension TerminalSurface {
+    /// Default: feed each chunk individually (per-chunk flush). Renderers with a
+    /// write/flush split override for one flush per batch.
+    public func feedBatch(_ chunks: ArraySlice<Data>) {
+        for chunk in chunks {
+            feed(chunk)
+        }
+    }
 }

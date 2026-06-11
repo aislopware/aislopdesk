@@ -287,9 +287,16 @@ Task {
         surface.feed(bytes)
     }
 
-    // 5. OUTPUT pump: host output → local stdout, immediately.
+    // 5. OUTPUT pump: host output → local stdout, batch-drained per wake.
     let outputTask = Task {
-        for await chunk in client.output {
+        for await _ in client.outputWakeups {
+            for chunk in await client.takeOutputBatch() {
+                writeAll(fd: STDOUT_FILENO, chunk)
+            }
+        }
+        // FINAL DRAIN: a tail appended just before the wake stream finished (exit/close)
+        // has no wake left to announce it.
+        for chunk in await client.takeOutputBatch() {
             writeAll(fd: STDOUT_FILENO, chunk)
         }
         // Output finished → remote child exited (or transport permanently closed).

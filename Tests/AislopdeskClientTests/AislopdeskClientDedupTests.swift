@@ -25,12 +25,13 @@ final class AislopdeskClientDedupTests: XCTestCase {
             )
         })
 
-        // Collect the surfaced output bytes.
+        // Collect the surfaced output bytes (wake + batch-drain, the consumer contract).
         let sink = ByteSink()
         let pump = Task {
-            for await chunk in client.output {
-                sink.append(chunk)
+            for await _ in client.outputWakeups {
+                for chunk in await client.takeOutputBatch() { sink.append(chunk) }
             }
+            for chunk in await client.takeOutputBatch() { sink.append(chunk) }
         }
 
         // Feed seq 1,2,3 (live), then a replayed tail 2,3,4 where 2,3 are duplicates of
@@ -72,7 +73,12 @@ final class AislopdeskClientDedupTests: XCTestCase {
         let client = AislopdeskClient(makeTransport: { FakeTransport() })
 
         let sink = ByteSink()
-        let pump = Task { for await chunk in client.output { sink.append(chunk) } }
+        let pump = Task {
+            for await _ in client.outputWakeups {
+                for chunk in await client.takeOutputBatch() { sink.append(chunk) }
+            }
+            for chunk in await client.takeOutputBatch() { sink.append(chunk) }
+        }
 
         // ── Phase 1: first connect (fresh session) — drive seq 1,2,3 → high-water = 3.
         try await client.connect(host: "h", port: 1)
