@@ -128,4 +128,69 @@ final class AdaptiveFECPolicyTests: XCTestCase {
         // loss 0.03 ≥ 0.02 demands level 2 (g5). From OFF (level 0) step to level 1 (g10/tier 2).
         XCTAssertEqual(AdaptiveFECPolicy.tier(forLossRate: 0.03, previousTier: 1), 2)
     }
+
+    // MARK: Relax dwell (2026-06-11, 4G burst-flap fix)
+
+    /// Escalation through the dwell-gated entry point stays IMMEDIATE — one level per report,
+    /// exactly like the plain function — and resets the relax streak.
+    func testDwellEscalationIsImmediate() {
+        var s = AdaptiveFECPolicy.TierState(tier: 1, relaxStreak: 10) // OFF, mid-dwell
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.03, state: s)
+        XCTAssertEqual(s.tier, 2, "OFF escalates to g10 on the FIRST lossy report")
+        XCTAssertEqual(s.relaxStreak, 0, "escalation resets the relax streak")
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.03, state: s)
+        XCTAssertEqual(s.tier, 0, "next lossy report escalates g10 → g5")
+    }
+
+    /// Relaxation fires only after `dwell` CONSECUTIVE relax-demanding reports.
+    func testDwellRelaxRequiresConsecutiveCleanReports() {
+        var s = AdaptiveFECPolicy.TierState(tier: 0) // g5
+        for i in 1..<AdaptiveFECPolicy.relaxDwellReports {
+            s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+            XCTAssertEqual(s.tier, 0, "still g5 after \(i) clean reports (< dwell)")
+            XCTAssertEqual(s.relaxStreak, i)
+        }
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+        XCTAssertEqual(s.tier, 2, "relaxes g5 → g10 exactly at the dwell")
+        XCTAssertEqual(s.relaxStreak, 0, "streak resets after the applied relax step")
+    }
+
+    /// THE 4G FLAP SCENARIO (measured live: bursts of ~3-6% loss every ~6-10s, EWMA decaying to
+    /// ~0 between bursts). With the dwell the tier must NEVER fall below g10 between bursts —
+    /// the OFF windows that let every burst land unprotected are gone.
+    func testDwellHoldsProtectionBetweenFourGBursts() {
+        var s = AdaptiveFECPolicy.TierState(tier: 1) // start OFF (clean path)
+        var sawOFFAfterFirstBurst = false
+        for _ in 0..<6 { // 6 burst cycles
+            // Burst: 3 lossy reports at ~5%.
+            for _ in 0..<3 { s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.05, state: s) }
+            // Between bursts: ~16 clean reports (~8s at 2 reports/s) — SHORTER than the dwell.
+            for _ in 0..<16 {
+                s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+                if s.tier == 1 { sawOFFAfterFirstBurst = true }
+            }
+        }
+        XCTAssertFalse(sawOFFAfterFirstBurst, "tier must never relax to OFF inside the 8s burst gaps")
+        XCTAssertNotEqual(s.tier, 1, "still protected at the end of the bursty period")
+    }
+
+    /// A genuinely clean path still reaches OFF — just one level per dwell window (g5 → g10 → OFF
+    /// over 2·dwell consecutive clean reports), preserving the standing-overhead saving.
+    func testDwellCleanPathStillReachesOff() {
+        var s = AdaptiveFECPolicy.TierState(tier: 0) // g5
+        for _ in 0..<(2 * AdaptiveFECPolicy.relaxDwellReports) {
+            s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.0, state: s)
+        }
+        XCTAssertEqual(s.tier, 1, "sustained clean reports relax g5 → g10 → OFF")
+    }
+
+    /// A hold report (loss inside the dead-band — neither escalate nor relax) RESETS the streak:
+    /// dwell means CONSECUTIVE relax demands, so an ambiguous report re-arms the full wait.
+    func testDwellHoldReportResetsStreak() {
+        var s = AdaptiveFECPolicy.TierState(tier: 0, relaxStreak: 20)
+        // 0.02 from g5/level-2: up demands L2 (hold), down demands L2 (hold) → dead-band hold.
+        s = AdaptiveFECPolicy.nextTierState(forLossRate: 0.02, state: s)
+        XCTAssertEqual(s.tier, 0)
+        XCTAssertEqual(s.relaxStreak, 0, "dead-band hold resets the consecutive-clean streak")
+    }
 }
