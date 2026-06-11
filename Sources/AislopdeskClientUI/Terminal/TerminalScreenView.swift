@@ -34,7 +34,35 @@ public struct TerminalScreenView: View {
             // The renderer seam — production GhosttyTerminalView, or the placeholder.
             TerminalRendererFactory.make(model: model, isFocused: isFocused)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Glitch caret (docs/31 #3): the dim "input received, echo pending" nudge.
+            // A SwiftUI sibling overlay, never an NSView sublayer — libghostty owns the
+            // renderer view's layer slot (the orphaned-CAMetalLayer freeze class), and
+            // the C API exposes no cursor readback, so the honest v1 anchors to the
+            // pane corner instead of pretending to know the cell.
+            if model.glitchCaretVisible {
+                GlitchCaretOverlay()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .allowsHitTesting(false)   // the pane has a history of scroll-swallowing chrome
+                    .transition(.opacity)
+            }
         }
+    }
+}
+
+/// The glitch-window speculative caret (docs/17 §2.4): a dim pulsing bar, deliberately
+/// distinct from libghostty's own block cursor — advisory "your keystroke was sent,
+/// the echo is in flight", never a position claim.
+struct GlitchCaretOverlay: View {
+    @State private var pulsing = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 1.5)
+            .fill(.secondary.opacity(pulsing ? 0.45 : 0.18))
+            .frame(width: 7, height: 15)
+            .padding(12)
+            .animation(.easeInOut(duration: 0.45).repeatForever(autoreverses: true), value: pulsing)
+            .onAppear { pulsing = true }
+            .accessibilityHidden(true)
     }
 }
 
