@@ -200,8 +200,23 @@ public final class TerminalViewModel {
     /// A no-op while disconnected (``inputSink`` is `nil`). Called on the main actor by
     /// the renderer's `GhosttySurface.onWrite` bridge.
     public func sendInput(_ data: Data) {
+        if Self.echoProbeEnabled { probeInputAt = ContinuousClock.now }
         inputSink?(data)
     }
+
+    // MARK: Echo probe (rig instrumentation — docs/31 follow-up #4)
+
+    /// `AISLOPDESK_ECHO_PROBE=1`: print a keystroke→first-output-ingest latency line per
+    /// echo to stderr, so `check-macos.sh --connect` (an idle pane + AUTOTYPE) emits real
+    /// keystroke-feel numbers instead of pass/fail — the A/B harness for smoothness work.
+    /// The measured span = wire out + host PTY round trip + wire back + client delivery up
+    /// to the render feed (the user-feel path minus the final present tick). Rig-only:
+    /// matching is positional (NEXT ingest after a send = the echo), correct for an idle
+    /// interactive pane, meaningless under an output flood. Zero hot-path cost when off
+    /// (one static-bool branch).
+    private static let echoProbeEnabled =
+        ProcessInfo.processInfo.environment["AISLOPDESK_ECHO_PROBE"] != nil
+    @ObservationIgnored private var probeInputAt: ContinuousClock.Instant?
 
     /// Mirrors a grid resize to the host (`TIOCSWINSZ`). A no-op while disconnected.
     /// Called on the main actor by the renderer's `GhosttySurface.onResize` bridge.
@@ -309,6 +324,12 @@ public final class TerminalViewModel {
     /// rebuild + replay reproduces the current screen. NO `await` may be introduced in
     /// here (doc-18-§C).
     private func ingestPass(_ chunks: ArraySlice<Data>) {
+        if Self.echoProbeEnabled, let sentAt = probeInputAt {
+            probeInputAt = nil
+            let elapsed = sentAt.duration(to: ContinuousClock.now).components
+            let ms = Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
+            FileHandle.standardError.write(Data(String(format: "[echo-probe] key→ingest %.1fms\n", ms).utf8))
+        }
         // FRESH-SESSION WIPE: the first output after a reconnect belongs to a brand-new host shell
         // (the mux path never resumes). Hard-reset the live surface and drop the dead session's
         // replay ring BEFORE this pass paints, so the user sees a clean shell instead of the old
