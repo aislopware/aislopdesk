@@ -22,6 +22,20 @@ import Foundation
 /// passes through. We never misclassify a partial sequence as content and we never get
 /// "stuck" — an unterminated OSC is bounded by a sane cap so a malformed stream cannot
 /// wedge the parser forever.
+///
+/// ## Fast path (the terminal-output ingest hot path)
+/// Same discipline as `HostOutputSniffer`: in the two "skim" states the fast path
+/// `memchr`s to the next byte that can change anything and routes ONLY that byte through
+/// ``step(_:into:)`` — it decides WHICH bytes reach `step()`, it never replaces a
+/// transition. In `.ground` the only interesting byte is `ESC` (this grammar ignores a
+/// ground `BEL`, unlike the sniffer's bell detection — content is skipped wholesale); in
+/// `.stringConsume` it is `ESC` or `BEL` (terminator), with the `BEL` scan bounded to the
+/// prefix before the next `ESC` (the sniffer's measured O(n²) guard: total scanned bytes
+/// stay ≤ 2× the input on escape-dense streams). All other states are buffering /
+/// classification states where every byte matters — they step per-byte.
+/// `TerminalModeTrackerFastPathTests` pins the fast path to the table with a chunking-
+/// invariance oracle (chunk-size-1 bypasses memchr) + a differential oracle against the
+/// frozen pre-fast-path copy in `Tests/.../Support/LegacyTerminalModeTracker.swift`.
 public final class TerminalModeTracker {
     /// The current terminal mode.
     public private(set) var mode: TerminalMode = .shellPrompt
@@ -86,8 +100,49 @@ public final class TerminalModeTracker {
     @discardableResult
     public func consume(_ bytes: Data) -> [TerminalModeEvent] {
         var events: [TerminalModeEvent] = []
-        for byte in bytes {
-            step(byte, into: &events)
+        bytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            let count = raw.count
+            var i = 0
+            while i < count {
+                switch state {
+                case .ground:
+                    // FAST PATH: in ground only ESC can change anything — content
+                    // (including BEL) is ignored for mode tracking. Skip to the next ESC.
+                    guard let escPointer = memchr(base + i, Int32(Self.esc), count - i) else {
+                        i = count
+                        break
+                    }
+                    let escOffset = base.distance(to: UnsafeRawPointer(escPointer))
+                    step(Self.esc, into: &events) // ground ESC → .escape
+                    i = escOffset + 1
+
+                case .stringConsume:
+                    // FAST PATH: only ESC (possible ST start) and BEL (terminator) matter;
+                    // every other byte is opaque string body. Route only the FIRST
+                    // interesting byte through step(). The BEL scan is bounded to the
+                    // prefix BEFORE the next ESC — an unbounded scan re-run on every
+                    // re-entry degrades to O(n²) on escape-dense streams (measured at
+                    // 29 MiB/s in the sniffer; see HostOutputSniffer.observe).
+                    let escPointer = memchr(base + i, Int32(Self.esc), count - i)
+                    let escOffset = escPointer.map { base.distance(to: UnsafeRawPointer($0)) } ?? count
+                    if let belPointer = memchr(base + i, Int32(Self.bel), escOffset - i) {
+                        let belOffset = base.distance(to: UnsafeRawPointer(belPointer))
+                        step(Self.bel, into: &events) // terminator → ground
+                        i = belOffset + 1
+                    } else if escOffset < count {
+                        step(Self.esc, into: &events) // → .stringConsumeEscape
+                        i = escOffset + 1
+                    } else {
+                        i = count
+                    }
+
+                case .escape, .csi, .osc, .oscEscape, .stringConsumeEscape:
+                    // Buffering / classification states: every byte matters — step per-byte.
+                    step(base.load(fromByteOffset: i, as: UInt8.self), into: &events)
+                    i += 1
+                }
+            }
         }
         return events
     }
