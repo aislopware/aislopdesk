@@ -75,6 +75,29 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// behaviour only; HW-verified path, not unit-tested).
     private static let crispWhenStatic = ProcessInfo.processInfo.environment["RWORK_CRISP"] != "0"
 
+    /// SELF-HEAL cadence (2026-06-11, Parsec-style ack-anchored healing — HW-validated in
+    /// `rwork-loopback-validate --ack-ref` arms L/M/N/O): every `selfHealEvery`-th LIVE delta is
+    /// encoded as a `ForceLTRRefresh` P-frame, which VideoToolbox anchors to the newest LTR the
+    /// client has ACKNOWLEDGED (proven: burst-killing the 5 frames before a refresh leaves the
+    /// refresh pixel-clean — it references the older acked LTR, MAD 0.2 vs noise floor 4.6). So ANY
+    /// whole-frame wire loss self-heals at the next cadence frame — ≤K frames, NO recovery
+    /// round-trip, no IDR cannon, and it works even when the loss ALSO ate the client's recovery
+    /// request (the weather-burst case the FPT↔Viettel path actually produces). Measured cost: a
+    /// refresh is ~1.49× a 1-back delta on full motion ⇒ +8.2% stream bytes at K=6 (vs FEC's +20%),
+    /// and a few hundred bytes on low motion. Safety: VT emits an IDR instead if no LTR is acked
+    /// (its own contract, arm N) and the cadence is additionally GATED on ``setSelfHealEligible(_:)``
+    /// (the session arms it only while client acks are flowing) so a stalled client can never turn
+    /// the cadence into a surprise-IDR-every-K stream. `RWORK_SELF_HEAL` overrides K (frames,
+    /// clamp 2…120); `0` disables. Requires `RWORK_LTR` (the session never arms eligibility
+    /// otherwise — acks don't flow when LTR is off).
+    static let selfHealEvery: Int = {
+        if let s = ProcessInfo.processInfo.environment["RWORK_SELF_HEAL"], let v = Int(s) {
+            if v == 0 { return 0 }
+            return min(120, max(2, v))
+        }
+        return 6
+    }()
+
     private let log = Logger(subsystem: "rwork.video.host", category: "WindowCapturer")
     private let frameQueue = DispatchQueue(label: "rwork.video.capture", qos: .userInteractive)
     private var stream: SCStream?
@@ -112,6 +135,14 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// Under the same `keyframeLock`. Never set when `RWORK_LTR` is off (the actor folds .refreshLTR to
     /// requestKeyframe()) ⇒ always-false drain ⇒ byte-identical.
     private var pendingLTRRefresh = false
+    /// SELF-HEAL eligibility — armed by the session actor while client LTR acks are flowing
+    /// (``setSelfHealEligible(_:)``), disarmed on every encoder rebuild (fresh VT session = zero
+    /// acked LTRs; a cadence refresh would then be VT's IDR fallback every K frames). Under
+    /// `keyframeLock` (set rarely off-queue, read once per frame — same discipline as the latches).
+    private var selfHealEligible = false
+    /// LIVE frames since the last re-anchor (keyframe or LTR refresh) — drives the self-heal
+    /// cadence. frameQueue-owned (only touched in the SCStream callback).
+    private var framesSinceAnchor = 0
 
     // VIDEO-HOST-1 static-IDR (always on). All of these are touched ONLY on `frameQueue`
     // (the SCStream callback queue + the timer queue are the same), or — for the latch —
@@ -139,6 +170,19 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// decision when the ACKED-ONLY gate holds). Thread-safe; called from the orchestrator actor.
     public func requestLTRRefresh() {
         keyframeLock.lock(); pendingLTRRefresh = true; keyframeLock.unlock()
+    }
+
+    /// SELF-HEAL gate. The session actor arms this when a client LTR ack folds (acks are flowing ⇒
+    /// VT holds an acknowledged LTR ⇒ a cadence `ForceLTRRefresh` is a small loss-immune P-frame)
+    /// and disarms it whenever a fresh encoder is installed (``RworkVideoHostSession`` resets the
+    /// LTR controller at the same sites). Thread-safe.
+    public func setSelfHealEligible(_ eligible: Bool) {
+        keyframeLock.lock(); selfHealEligible = eligible; keyframeLock.unlock()
+    }
+
+    private func selfHealIsEligible() -> Bool {
+        keyframeLock.lock(); defer { keyframeLock.unlock() }
+        return selfHealEligible
     }
 
     /// Atomically reads + clears the pending-forced-keyframe latch.
@@ -477,7 +521,20 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // alongside it is simply consumed (the keyframe re-anchors the client). If `forceKeyframe`
         // ended up false but an LTR refresh was latched, ship the small ForceLTRRefresh P-frame.
         // Always false when RWORK_LTR is off (the latch is never set) ⇒ byte-identical.
-        let ltrRefresh = ltrLatched && !forceKeyframe
+        var ltrRefresh = ltrLatched && !forceKeyframe
+        // SELF-HEAL cadence: every `selfHealEvery`-th live delta becomes an acked-LTR-anchored
+        // refresh (see the `selfHealEvery` doc — HW-validated loss self-healing). Counted against
+        // the last RE-ANCHOR (keyframe or any refresh) so a recovery-latched refresh restarts the
+        // window. Gated on eligibility (acks flowing) — ineligible frames don't advance the
+        // counter past the threshold meaninglessly; they keep counting so healing starts at most
+        // one frame after eligibility arms.
+        if Self.selfHealEvery > 0, !forceKeyframe, !ltrRefresh {
+            framesSinceAnchor += 1
+            if framesSinceAnchor >= Self.selfHealEvery, selfHealIsEligible() {
+                ltrRefresh = true
+            }
+        }
+        if forceKeyframe || ltrRefresh { framesSinceAnchor = 0 }
 
         // Hand the CVPixelBuffer to the encoder. The pixel buffer is retained by the
         // encoder for the duration of the encode; when this callback returns the

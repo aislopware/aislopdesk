@@ -659,6 +659,11 @@ public actor RworkVideoHostSession {
             // client never sends acks anyway, and this stays diagnostics-only.
             if Self.ltrEnabled, let token = ltrController.ackFrame(frameID: streamSeq) {
                 encoder?.stageAcknowledgedToken(token)
+                // SELF-HEAL: an ack just folded ⇒ VT holds an acknowledged LTR ⇒ the capturer's
+                // cadence ForceLTRRefresh is a small loss-immune P-frame, not an IDR fallback.
+                // Idempotent (lock-set of a Bool); disarmed at every encoder install
+                // (``resetLTRForNewEncoder``).
+                capturer?.setSelfHealEligible(true)
                 dbg("recovery ack frameID=\(streamSeq) → staged LTR token \(token)")
             }
             log.debug("recovery ack streamSeq=\(streamSeq, privacy: .public)")
@@ -744,6 +749,10 @@ public actor RworkVideoHostSession {
     /// populated), but reset unconditionally so the invariant holds the instant LTR is enabled.
     private func resetLTRForNewEncoder() {
         ltrController.reset()
+        // SELF-HEAL: a fresh VT session holds ZERO acknowledged LTRs — disarm the capturer's cadence
+        // until the client decodes+acks a new LTR frame on the rebuilt session (else every K-th frame
+        // would be VT's IDR fallback). Re-armed by the next `.ack` fold.
+        capturer?.setSelfHealEligible(false)
     }
 
     // MARK: Effects
