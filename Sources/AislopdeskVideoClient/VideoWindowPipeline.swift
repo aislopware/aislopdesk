@@ -169,10 +169,22 @@ final class VideoWindowPipeline {
         // latency). `AISLOPDESK_JITTER_DEPTH=2` restores the slack frame for a jittery link A/B.
         let jitterDepth = env["AISLOPDESK_JITTER_DEPTH"].flatMap(Int.init).map { min(8, max(1, $0)) } ?? 1
         let jitterMax = env["AISLOPDESK_JITTER_MAX"].flatMap(Int.init).map { min(16, max(1, $0)) } ?? 5
+        // Component 4 (adaptive pacer depth v2, 2026-06-11): late-EVENT driven 1↔2 depth boost
+        // (PacerDepthPolicy — pay latency only AFTER observed late presents, refund after a clean
+        // dwell). Default OFF until the HW feel-test: prior adaptive-jitter art backfired on feel,
+        // and the boost disables present-on-arrival while engaged. TELEMETRY is NOT gated by this —
+        // the policy's late/gap counters always run and ride every NetworkStats report.
+        let adaptiveDepth = env["AISLOPDESK_ADAPTIVE_DEPTH"].map { $0 == "1" || $0.lowercased() == "true" } ?? false
+        let depthPolicyConfig = PacerDepthPolicy.Config.fromEnvironment(env)
         // Adaptive jitter buffer (default OFF ⇒ fixed depth exactly as today). When on, the pacer
         // self-measures decoded-frame arrival jitter and floats the depth between 1 and jitterMax:
         // it shrinks toward the latency floor on a clean LAN and re-inflates on a real spike/underrun.
-        let adaptive = env["AISLOPDESK_ADAPTIVE_JITTER"].map { $0 == "1" || $0.lowercased() == "true" } ?? false
+        // v2 SUPERSEDES v1 (one writer of the live depth) — both set ⇒ v1 is forced off.
+        let adaptiveV1Requested = env["AISLOPDESK_ADAPTIVE_JITTER"].map { $0 == "1" || $0.lowercased() == "true" } ?? false
+        let adaptive = adaptiveV1Requested && !adaptiveDepth
+        if adaptiveV1Requested && adaptiveDepth, Self.dbgGapEnabled {
+            FileHandle.standardError.write(Data("Aislopdesk[video.client]: AISLOPDESK_ADAPTIVE_JITTER ignored — AISLOPDESK_ADAPTIVE_DEPTH (v2) supersedes v1\n".utf8))
+        }
         // Present-on-arrival for a starved display (FramePacer header; select-text/typing feedback
         // latency). Default ON — it only fires where the old hold-for-vsync was strictly worse;
         // `AISLOPDESK_PRESENT_ON_ARRIVAL=0` restores the pure vsync-paced pacer for A/B.
@@ -197,6 +209,7 @@ final class VideoWindowPipeline {
         let playoutMs = env["AISLOPDESK_PLAYOUT_MS"].flatMap(Double.init) ?? 20.0
         let contentFps = env["AISLOPDESK_CONTENT_FPS"].flatMap(Double.init) ?? 60.0
         let pacer = FramePacer(maxFrameRate: tickRate, targetDepth: jitterDepth, maxDepth: jitterMax, adaptiveJitter: adaptive, presentOnArrival: presentOnArrival,
+                               adaptiveDepth: adaptiveDepth, depthPolicyConfig: depthPolicyConfig,
                                deadlineMode: deadlineMode, contentFps: contentFps, playoutDelayMs: playoutMs) { [weak self] buffer in
             // CAD-2 (2026-06-09 smoothness): present SYNCHRONOUSLY on the display-link tick instead of
             // hopping through `Task { @MainActor }`. The FramePacer is driven by `NSView.displayLink` /
@@ -272,7 +285,21 @@ final class VideoWindowPipeline {
                 // before the first frame. `ColorRange` is Sendable; the renderer is @MainActor.
                 Task { @MainActor in self?.renderer?.colorRange = range }
             },
-            notifyDecodedPixelSize: notifyDecodedPixelSize
+            notifyDecodedPixelSize: notifyDecodedPixelSize,
+            applyStreamCadence: { fps in
+                // FPS GOVERNOR: rebase the pacer's content-cadence assumptions (deadline-mode
+                // interval + adaptive-jitter frames conversion + the depth-v2 policy's expected
+                // interval). `setContentFps` is lock-guarded and callable off-main, so no actor
+                // hop is needed. The default arrival-mode pacing is fps-agnostic
+                // (present-on-arrival) — this is a rhythm rebase only.
+                pacer.setContentFps(Double(fps))
+            },
+            readPacerTelemetry: {
+                // Component 4: synchronous lock-guarded drain (no main hop — the pacer carries its
+                // own NSLock). Strong `pacer` capture matches `submitDecodedFrame` above:
+                // session→hooks→pacer is acyclic.
+                pacer.drainTelemetry()
+            }
         )
 
         let session = AislopdeskVideoClientSession(

@@ -105,18 +105,32 @@ public actor AislopdeskVideoClientSession {
         /// to snap (a standalone window) → the session keeps the legacy connect-time
         /// host-follow negotiation (`startDecodePipeline` kicks the resize debounce) instead.
         public var notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)?
+        /// FPS GOVERNOR (2026-06-11): the host announced the stream's CONTENT cadence (fps) — at
+        /// session start and on every governed step. The pipeline rebases the pacer's deadline-mode
+        /// interval + adaptive-jitter seconds→frames conversion (`FramePacer.setContentFps`).
+        /// `nil` ⇒ ignore (a view with no pacer to rebase). Idempotent — the host dup-sends ×2.
+        public var applyStreamCadence: (@Sendable (Int) -> Void)?
+        /// Component 4 (adaptive pacer depth, 2026-06-11): SYNCHRONOUS, lock-guarded drain of the
+        /// pipeline-owned FramePacer's presentation-health counters (`FramePacer.drainTelemetry`).
+        /// Safe to call from the session actor with NO main hop — the pacer is `@unchecked
+        /// Sendable` behind its own NSLock. `nil` ⇒ no pacer attached (depth 0 on the wire).
+        public var readPacerTelemetry: (@Sendable () -> PacerTelemetrySnapshot)?
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
             applyCursor: @escaping @Sendable (CursorUpdate, CursorPlacement) -> Void,
             registerCursorShape: @escaping @Sendable (CGImage, VideoSize, UInt16) -> Void,
             setColorRange: @escaping @Sendable (ColorRange) -> Void,
-            notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)? = nil
+            notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)? = nil,
+            applyStreamCadence: (@Sendable (Int) -> Void)? = nil,
+            readPacerTelemetry: (@Sendable () -> PacerTelemetrySnapshot)? = nil
         ) {
             self.submitDecodedFrame = submitDecodedFrame
             self.applyCursor = applyCursor
             self.registerCursorShape = registerCursorShape
             self.setColorRange = setColorRange
             self.notifyDecodedPixelSize = notifyDecodedPixelSize
+            self.applyStreamCadence = applyStreamCadence
+            self.readPacerTelemetry = readPacerTelemetry
         }
     }
 
@@ -224,6 +238,26 @@ public actor AislopdeskVideoClientSession {
     /// code reset this on EVERY dropped frame, so 2·RTT never elapsed and the
     /// guaranteed-recovery forced IDR never fired (``LTREscalationTracker``).
     private var escalation = LTREscalationTracker()
+    /// Component 5 (recovery-redundancy): the loss-observing predicate gating the HALVED
+    /// escalation clock. Fed by every unrecoverable loss AND every FEC-recovered completion
+    /// (the early-warning channel), read by ``shouldEscalateToIDR()``.
+    private var lossWindow = LossObservationWindow()
+    /// Component 5: `AISLOPDESK_RECOVERY_REDUNDANCY` — total byte-identical copies per logical
+    /// recovery request (default 3, clamped 1...5 by the init; 1 = today's single send). Copies
+    /// are spaced 3 ms apart to decorrelate burst loss; the host's `RecoveryRequestDeduper`
+    /// collapses them to one action (spread ≤ half its 25 ms window at every legal copies count).
+    private static let recoveryRedundancy: RecoveryRequestRedundancy = {
+        let n = ProcessInfo.processInfo.environment["AISLOPDESK_RECOVERY_REDUNDANCY"].flatMap(Int.init) ?? 3
+        return RecoveryRequestRedundancy(copies: n)
+    }()
+    /// Component 5: `AISLOPDESK_FAST_ESCALATION` (default ON; "0" disables) — halve the IDR
+    /// escalation clock to `max(1·RTT, 30 ms)` while ``lossWindow`` is observing loss. Off ⇒
+    /// `observingLoss` is forced false and escalation is byte-identical to today.
+    private static let fastEscalationEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_FAST_ESCALATION"] != "0"
+    /// Component 2: the wrap-aware highest successfully-DECODED frameID. Carried (as
+    /// ``DecodeFrontier/wireValue``) on every `requestIDR` / `requestLTRRefresh` so the host's
+    /// delivery-keyed recovery-IDR cooldown can distinguish a delivered keyframe from a casualty.
+    private var frontier = DecodeFrontier()
     /// Smoothed RTT estimate gating the 2·RTT IDR-escalation timeout. 50 ms default
     /// until ``updateRTTEstimate(_:)`` feeds a measurement.
     private var rttEstimate: TimeInterval = 0.05
@@ -234,6 +268,11 @@ public actor AislopdeskVideoClientSession {
     /// RTT loop reverts to today's open-loop behaviour. The 4-byte header field is still parsed
     /// either way (the host writes 0 when disabled).
     private static let telemetryEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_NETSTATS"] != "0"
+    /// Component 3 (delay-gradient): DEFAULT ON; `AISLOPDESK_TREND=0` disables. The client computes a
+    /// libwebrtc-style trendline over per-FRAME one-way-delay variation and ships the detector
+    /// output in the NetworkStats report. PURE TELEMETRY: the host's gradient cut path is its own
+    /// default-OFF gate (`AISLOPDESK_ABR_GRAD`), so with this on the host merely logs trend fields.
+    private static let trendEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_TREND"] != "0"
     /// The newest `hostSendTsMillis` OBSERVED on a video fragment (0 = none / telemetry off). An
     /// OPAQUE token the client echoes back; never compared against the client clock.
     private var latestHostSendTs: UInt32 = 0
@@ -245,6 +284,12 @@ public actor AislopdeskVideoClientSession {
     private var latestHostSendTsObservedAt: Double = 0
     /// Pure inter-arrival jitter estimator (client-clock-only 2nd differences).
     private var owdJitter = OWDJitterEstimator()
+    /// Component 3 (delay-gradient): pure trendline detector over per-frame OWD variation
+    /// (clock-skew-immune deltas, like `owdJitter`). Fed one sample per frame via `trendSampler`.
+    private var owdTrend = TrendlineEstimator()
+    /// Admits exactly ONE trend sample per frame — the FIRST fragment of each wrap-aware strictly-
+    /// newer frameID (kfDup duplicates / reordered older frames / ts==0 are self-rejecting).
+    private var trendSampler = TrendSampler()
     /// Windowed counters reset after every report: frames completed / FEC-recovered / unrecovered.
     private var winFramesReceived: UInt32 = 0
     private var winFecRecovered: UInt32 = 0
@@ -385,13 +430,28 @@ public actor AislopdeskVideoClientSession {
         guard stateMachine.mediaFlowing, Self.telemetryEnabled else { return }
         let now = FramePacer.currentHostTimeSeconds()
         let holdMs: UInt32 = latestHostSendTs == 0 ? 0 : UInt32(min(Double(UInt32.max), max(0, (now - latestHostSendTsObservedAt) * 1000)))
+        // Component 4: drain the pacer's presentation-health window EXACTLY once per report (the
+        // drain IS the window reset, mirroring the win* counter pattern below). No pacer ⇒ zeros
+        // with depth 0 (the wire's "no pacer attached" gauge value).
+        let pacer = gui.readPacerTelemetry?() ?? PacerTelemetrySnapshot(lateFrames: 0, presentGaps: 0, depth: 0)
+        // STALE-TREND GATE: the estimator only mutates in note(), so across a content-idle gap a
+        // latched .overusing verdict would ride every 50 ms report until the NEXT arrival fires
+        // the idle reset (≥ resetGapMs later). When the last sample is older than the estimator's
+        // own reset gap, ship neutral/zero trend fields (state 0, trend 0) instead — the queue
+        // context behind the verdict no longer exists. Same clock as the note() feed (`now`).
+        let trendFresh = Self.trendEnabled && !owdTrend.isStale(nowMs: now * 1000)
         let report = NetworkStatsReport(
             framesReceived: winFramesReceived,
             fecRecovered: winFecRecovered,
             unrecovered: winUnrecovered,
             latestHostSendTs: latestHostSendTs,
             clientHoldMs: holdMs,
-            owdJitterMicros: owdJitter.jitterMicros())
+            owdJitterMicros: owdJitter.jitterMicros(),
+            owdTrendMilli: trendFresh ? owdTrend.wireTrendMilli : 0,
+            owdTrendFlags: trendFresh ? owdTrend.wireTrendFlags : 0,
+            pacerLateFrames: pacer.lateFrames,
+            pacerPresentGaps: pacer.presentGaps,
+            pacerDepth: pacer.depth)
         transport.send(RecoveryMessage.networkStats(report).encode(), on: .recovery)
         // Reset the window — counts are per-report.
         winFramesReceived = 0
@@ -554,7 +614,9 @@ public actor AislopdeskVideoClientSession {
         // estimator, and the NEWEST host-send-ts (wrap-aware max) is tracked to echo back so the
         // host can derive RTT in its own clock. A late kfDup duplicate carries an OLDER stamp, so
         // the wrap-aware comparison rejects it (latestHostSendTs never regresses). 0 = telemetry off.
-        owdJitter.note(arrival: FramePacer.currentHostTimeSeconds())
+        // ONE hoisted clock read shared by jitter / hold-anchor / trendline below.
+        let now = FramePacer.currentHostTimeSeconds()
+        owdJitter.note(arrival: now)
         // KHỰNG-ladder stage 4 (AISLOPDESK_VIDEO_DEBUG): a >28ms hole between fragment ingests ON THE
         // ACTOR while stage 3 (socket) was clean = the per-datagram Task hop / actor backlog ate
         // the time. Stage 3 also gapped ⇒ inherited, not actor-caused.
@@ -568,14 +630,26 @@ public actor AislopdeskVideoClientSession {
         let ts = fragment.header.hostSendTsMillis
         if ts != 0, latestHostSendTs == 0 || ts.distanceWrapped(from: latestHostSendTs) > 0 {
             latestHostSendTs = ts
-            latestHostSendTsObservedAt = FramePacer.currentHostTimeSeconds()
+            latestHostSendTsObservedAt = now
+        }
+        // Component 3 (delay-gradient): ONE sample per frame — the first fragment of each strictly-
+        // newer frameID (all fragments of a frame share one packetize-time stamp, so per-fragment
+        // samples would carry a built-in intra-frame slope; kfDup/reorder/ts==0 self-reject).
+        if Self.trendEnabled, trendSampler.shouldSample(frameID: fragment.header.frameID, sendTs: ts) {
+            owdTrend.note(arrivalMs: now * 1000, sendTs: ts)
         }
         let result = reassembler.ingest(fragment)
         switch result {
         case .completed(let frame):
             dbg("frame reassembled (keyframe=\(frame.keyframe)) → decoding")
             winFramesReceived &+= 1
-            if frame.recoveredViaFEC { winFecRecovered &+= 1 }
+            if frame.recoveredViaFEC {
+                winFecRecovered &+= 1
+                // Component 5: an FEC recovery is the EARLY-WARNING loss event — bursts produce
+                // several of these before the first unrecoverable frame, so the burst's first
+                // frozen episode already runs the halved escalation clock.
+                lossWindow.noteEvent(now: FramePacer.currentHostTimeSeconds())
+            }
             decode(frame)
         case .dropped(let lost):
             // R7 #3: when the INGESTED fragment's OWN frame becomes hopeless, `ingest()` returns
@@ -603,6 +677,8 @@ public actor AislopdeskVideoClientSession {
     private func signalRecovery(lostFrameID lost: UInt32) {
         // Network-feedback telemetry: count an unrecoverable loss (the loss-rate numerator).
         winUnrecovered &+= 1
+        // Component 5: feed the loss-observing window (gates the halved escalation clock).
+        lossWindow.noteEvent(now: FramePacer.currentHostTimeSeconds())
         // SELF-HEAL: record the loss boundary so a SUCCESSFULLY-decoded frame newer than every loss
         // (the host's cadence/recovery LTR refresh — a P-frame, never a keyframe) can end the episode
         // instead of letting the 2·RTT escalation fire a spurious IDR after a healed stream.
@@ -621,10 +697,14 @@ public actor AislopdeskVideoClientSession {
 
     /// Whether a forced-IDR escalation is due: an LTR refresh is already outstanding
     /// (the recovery episode is armed, not yet cleared by a keyframe) and at least
-    /// 2·RTT has elapsed since the FIRST request of the episode
-    /// (``LTREscalationTracker/shouldEscalate(now:rtt:policy:)``).
+    /// 2·RTT — or, while OBSERVING LOSS (component 5), `max(1·RTT, 30 ms)` — has elapsed
+    /// since the FIRST request of the episode
+    /// (``LTREscalationTracker/shouldEscalate(now:rtt:policy:observingLoss:)``).
+    /// The env gate (`AISLOPDESK_FAST_ESCALATION`) is applied HERE so the pure types stay env-free.
     private func shouldEscalateToIDR() -> Bool {
-        escalation.shouldEscalate(now: FramePacer.currentHostTimeSeconds(), rtt: rttEstimate, policy: recoveryPolicy)
+        let now = FramePacer.currentHostTimeSeconds()
+        return escalation.shouldEscalate(now: now, rtt: rttEstimate, policy: recoveryPolicy,
+                                         observingLoss: Self.fastEscalationEnabled && lossWindow.isObservingLoss(now: now))
     }
 
     /// Updates the smoothed RTT estimate that gates the IDR-escalation timeout. Fed by
@@ -642,14 +722,21 @@ public actor AislopdeskVideoClientSession {
             // The decoded NV12 size becomes the cursor-scale denominator.
             updateDecodedSize(from: frame)
             try decoder.decode(frame)
+            // Component 2: advance the decode frontier — the context every recovery request carries.
+            frontier.noteDecoded(frameID: frame.frameID)
             // WF-8: on a SUCCESSFUL decode of an LTR-flagged frame, ACK it so the host learns the
             // client now HOLDS this long-term reference and may ForceLTRRefresh against it (the
             // ACKED-ONLY invariant — we ack ONLY frames we actually decoded, never merely received
             // fragments of). The ack rides the dedicated `.recovery` channel; its `streamSeq` wire
             // field carries the FRAME ID for WF-8 (the dead ack path repurposed — see
-            // RecoveryMessage.ack). NO env gate: a host with AISLOPDESK_LTR off never sets the isLTR bit, so
-            // `frame.isLTR` is always false ⇒ no acks are ever sent ⇒ byte-identical to today.
-            if frame.isLTR {
+            // RecoveryMessage.ack).
+            // COMPONENT 2 EXTENSION: also ack every decoded KEYFRAME (one ~5-byte datagram per rare
+            // keyframe) — the host's delivery-keyed recovery-IDR cooldown folds it via a ring-matched
+            // `noteKeyframeDelivered` (an id that is not a sent keyframe is a no-op there, and
+            // `ltrController.ackFrame` already no-ops on unknown ids), so this is safe with
+            // AISLOPDESK_LTR off too. If VT happens to LTR-flag an IDR this is the same single ack as
+            // before — the host fold is idempotent.
+            if frame.isLTR || frame.keyframe {
                 transport.send(RecoveryMessage.ack(streamSeq: frame.frameID).encode(), on: .recovery)
             }
             dbgDecodeCount += 1
@@ -924,12 +1011,34 @@ public actor AislopdeskVideoClientSession {
 
     // MARK: Recovery (client → host)
 
+    /// Component 5: sends one logical recovery request as `recoveryRedundancy.copies`
+    /// BYTE-IDENTICAL datagrams — the first immediately (unchanged latency), the rest from a
+    /// short-lived (≤12 ms) Task spaced `spacing` apart to decorrelate burst loss. The payload is
+    /// encoded ONCE by the caller so every copy is byte-equal — the host
+    /// `RecoveryRequestDeduper`'s contract (and future-proof for any body layout change).
+    /// `transport.send` is sync fire-and-forget on a Sendable transport, so the Task captures
+    /// ONLY the transport (never self — it cannot delay session teardown; a send after stop()
+    /// is a logged no-op by the transport's fire-and-forget contract).
+    private func sendRecoveryRequest(_ payload: Data) {
+        transport.send(payload, on: .recovery)
+        let extra = Self.recoveryRedundancy.copies - 1
+        guard extra > 0 else { return }
+        let spacingNs = UInt64(max(0, Self.recoveryRedundancy.spacing) * 1_000_000_000)
+        Task { [transport] in
+            for _ in 0..<extra {
+                try? await Task.sleep(nanoseconds: spacingNs)
+                transport.send(payload, on: .recovery)
+            }
+        }
+    }
+
     private func requestRecovery(lostFrameID: UInt32) {
         // Prefer an LTR refresh over a forced IDR (doc 17 §3.6). Sent on the DEDICATED
         // `.recovery` channel — never `.input` — so the host does not mis-decode a
         // RecoveryMessage (type bytes 1/2/3) as a phantom InputEvent.
-        let message = recoveryPolicy.initialRequest(lostFrom: lostFrameID, lostTo: lostFrameID)
-        transport.send(message.encode(), on: .recovery)
+        let message = recoveryPolicy.initialRequest(lostFrom: lostFrameID, lostTo: lostFrameID,
+                                                    lastDecoded: frontier.wireValue)
+        sendRecoveryRequest(message.encode())
         // Arm the escalation clock on the FIRST request of the episode only; a request
         // sent for each subsequent dropped frame does NOT move it (BUG-H fix), so the
         // 2·RTT window measured from the first request can actually elapse.
@@ -937,7 +1046,9 @@ public actor AislopdeskVideoClientSession {
     }
 
     private func requestIDR() {
-        transport.send(RecoveryMessage.requestIDR.encode(), on: .recovery)
+        // Component 2: every IDR request carries the decode frontier so the host's delivery-keyed
+        // cooldown can grant the casualty bypass (frontier older than a sent keyframe past grace).
+        sendRecoveryRequest(RecoveryMessage.requestIDR(lastDecodedFrameID: frontier.wireValue).encode())
         // A forced IDR is still a recovery request: arm the clock if this is the first
         // request of the episode (e.g. an awaiting-keyframe delta drop), but keep the
         // original first-request time if recovery was already outstanding.
@@ -962,6 +1073,11 @@ public actor AislopdeskVideoClientSession {
             // sets; we only re-base the aspect-fit denominator once the new pixels land.
             pendingCaptureSize = size
             dbg("resizeAck → pending capture size \(Int(size.width))x\(Int(size.height)) (adopt on matching decoded frame)")
+        case .applyStreamCadence(let fps):
+            // FPS governor: forward the stream's content cadence to the GUI layer (the pipeline
+            // rebases the pacer). Idempotent — the host dup-sends ×2 for loss tolerance.
+            dbg("streamCadence → content fps \(fps)")
+            gui.applyStreamCadence?(Int(fps))
         }
     }
 
@@ -1100,11 +1216,13 @@ public struct LTREscalationTracker: Sendable, Equatable {
     }
 
     /// Whether to escalate to a forced IDR right now: a request is outstanding and at
-    /// least `2·RTT` (per `policy`) has elapsed since the FIRST request. Pure — does not
-    /// mutate; the caller decides whether to act.
-    public func shouldEscalate(now: TimeInterval, rtt: TimeInterval, policy: RecoveryPolicy) -> Bool {
+    /// least `2·RTT` (per `policy`) — or, while `observingLoss` (component 5),
+    /// `max(1·RTT, floor)` — has elapsed since the FIRST request. Pure — does not
+    /// mutate; the caller decides whether to act. `observingLoss` is defaulted so the
+    /// historical 3-arg call shape stays byte-identical to today.
+    public func shouldEscalate(now: TimeInterval, rtt: TimeInterval, policy: RecoveryPolicy, observingLoss: Bool = false) -> Bool {
         guard let firstRequestTime else { return false }
-        return policy.shouldEscalateToIDR(elapsedSinceRequest: now - firstRequestTime, rtt: rtt)
+        return policy.shouldEscalateToIDR(elapsedSinceRequest: now - firstRequestTime, rtt: rtt, observingLoss: observingLoss)
     }
 
     /// A keyframe decoded — the recovery episode is over unconditionally (a keyframe references

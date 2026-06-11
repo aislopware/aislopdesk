@@ -162,8 +162,8 @@ public struct VideoSessionStateMachine: Sendable {
             // Same session (same streamID, same window) — only the capture geometry
             // changes. The actor performs the live resize and sends the resizeAck.
             return [.resizeCapture(width: w, height: h, epoch: epoch)]
-        case .helloAck, .resizeAck:
-            // Host never receives a helloAck/resizeAck — defensive no-op.
+        case .helloAck, .resizeAck, .streamCadence:
+            // Host never receives a helloAck/resizeAck/streamCadence (all host→client) — defensive no-op.
             return []
         case .keepalive, .focusWindow:
             // `keepalive` (CONCURRENCY-HOST-1) carries NO state-machine semantics — its only effect
@@ -471,13 +471,17 @@ public struct RecoveryDatagramRouter: Sendable {
         /// Force an IDR keyframe on the next captured frame. This is the GUARANTEED-recovery
         /// escalation (`requestIDR`): a true keyframe unconditionally re-anchors a desynced client.
         /// Kept distinct from ``refreshLTR`` so the escalation can never degrade to an LTR refresh.
-        case forceKeyframe
+        /// Carries the client's decode frontier (`nil` ⇔ wire sentinel "nothing decoded yet") for
+        /// the actor's delivery-keyed `RecoveryIDRPolicy` (component 2, 2026-06-11).
+        case forceKeyframe(lastDecodedFrameID: UInt32?)
         /// WF-8: the client requested an LTR refresh (`requestLTRRefresh`). The ACTOR decides at
         /// runtime — via ``LTRController/recoveryDecision(request:hasEnableLTR:)`` — whether to issue a
         /// cheap `ForceLTRRefresh` (only when `AISLOPDESK_LTR` is on AND a token has been acknowledged: the
         /// ACKED-ONLY invariant) or fall back to a real IDR. When LTR is off this folds to
-        /// `requestKeyframe()` — exactly today's requestLTRRefresh→IDR behaviour.
-        case refreshLTR
+        /// `requestKeyframe()` — exactly today's requestLTRRefresh→IDR behaviour. Carries the
+        /// client's decode frontier like ``forceKeyframe(lastDecodedFrameID:)`` — consumed ONLY by
+        /// the `.idr` fallback path (an LTR refresh is never policy-gated).
+        case refreshLTR(lastDecodedFrameID: UInt32?)
         /// A durable-receipt ack: the host may advance its retransmit/LTR-pin window.
         /// No live effect yet (no retransmit buffer); recorded for the docs/escalation.
         case ack(streamSeq: UInt32)
@@ -507,15 +511,18 @@ public struct RecoveryDatagramRouter: Sendable {
             return .drop(reason: "undecodable recovery datagram")
         }
         switch message {
-        case .requestIDR:
+        case .requestIDR(let lastDecoded):
             // The guaranteed-recovery escalation: ALWAYS a real IDR (a keyframe unconditionally
-            // re-anchors a client that lost frames). Never an LTR refresh.
-            return .forceKeyframe
-        case .requestLTRRefresh:
+            // re-anchors a client that lost frames). Never an LTR refresh. The wire sentinel
+            // ("nothing decoded yet") maps to nil here so the actor's policy gets a clean Optional.
+            return .forceKeyframe(lastDecodedFrameID:
+                lastDecoded == RecoveryMessage.noFrameDecodedSentinel ? nil : lastDecoded)
+        case .requestLTRRefresh(_, _, let lastDecoded):
             // WF-8: defer the LTR-refresh-vs-IDR choice to the actor (it owns the runtime acked-token
             // state + the AISLOPDESK_LTR gate). With LTR off the actor folds this to a real IDR — today's
-            // behaviour exactly.
-            return .refreshLTR
+            // behaviour exactly. Same sentinel→nil mapping as `.requestIDR`.
+            return .refreshLTR(lastDecodedFrameID:
+                lastDecoded == RecoveryMessage.noFrameDecodedSentinel ? nil : lastDecoded)
         case .ack(let streamSeq):
             return .ack(streamSeq: streamSeq)
         case .requestCursorShape(let shapeID):
@@ -555,6 +562,18 @@ public struct NetworkEstimate: Sendable, Equatable {
     public private(set) var lastLossSample: Double = 0
     /// Whether the most recent OWD-jitter sample rose vs the previous (a congestion-onset hint).
     public private(set) var owdGradientRising: Bool = false
+    /// Component 3 (delay-gradient, 2026-06-11): the client trendline detector read OVERUSING on the
+    /// most recent report — monotone delay growth over a full regression window, sustained past the
+    /// adaptive threshold. THIS (not `owdGradientRising`, the abandoned 2-sample coin flip) is the
+    /// gradient signal ``LiveCongestionController``'s early-cut path consumes.
+    public private(set) var owdTrendOverusing = false
+    /// The detector's modified trend (ms-of-delay per ms, ×scale ×gain) from the most recent report
+    /// — logging/diagnostics only.
+    public private(set) var owdTrendModified: Double = 0
+    /// The RAW (un-smoothed) RTT sample of the MOST RECENT fold — the gradient cut's fresh LEVEL
+    /// corroboration (the queue NOW, no EWMA lag, no streak). EXPLICITLY `nil` when that report's
+    /// sample was rejected (freshness contract: corroboration may only use THIS report's evidence).
+    public private(set) var lastRTTSampleMillis: Double? = nil
 
     /// Last folded jitter sample (µs) for the rising-trend comparison.
     private var lastOWDJitterMicros: UInt32 = 0
@@ -591,7 +610,14 @@ public struct NetworkEstimate: Sendable, Equatable {
 
     /// Folds one report. `rttMillis == nil` (rejected by ``computeRTTMillis``) skips the RTT/min-RTT
     /// update but still folds loss + jitter (so disabling the RTT loop never blinds the rest).
-    public mutating func fold(rttMillis: Int?, framesReceived: UInt32, unrecovered: UInt32, owdJitterMicros: UInt32) {
+    /// Component 3: the trend params are DEFAULTED so pre-trend call sites (and tests) fold
+    /// byte-identically — state 0 reads "normal" and the gradient fields stay inert.
+    public mutating func fold(rttMillis: Int?, framesReceived: UInt32, unrecovered: UInt32, owdJitterMicros: UInt32,
+                              owdTrendState: UInt8 = 0, owdTrendModifiedMilli: Int32 = 0) {
+        // Freshness contract (gradient corroboration): the raw sample is per-fold, nil on reject.
+        lastRTTSampleMillis = rttMillis.map(Double.init)
+        owdTrendOverusing = owdTrendState == 1
+        owdTrendModified = Double(owdTrendModifiedMilli) / 1000
         if let rtt = rttMillis {
             let sample = Double(rtt)
             smoothedRTTMillis = smoothedRTTMillis == 0 ? sample : (smoothedRTTMillis * (1 - Self.rttAlpha) + sample * Self.rttAlpha)

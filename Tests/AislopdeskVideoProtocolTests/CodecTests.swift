@@ -159,15 +159,25 @@ final class CodecTests: XCTestCase {
         let cases: [RecoveryMessage] = [
             .ack(streamSeq: 0),
             .ack(streamSeq: .max),
-            .requestLTRRefresh(fromFrameID: 10, toFrameID: 14),
-            .requestIDR,
+            // Component 2: both loss-recovery requests carry the client's decode frontier
+            // (lastDecodedFrameID), incl. the "nothing decoded yet" wire sentinel.
+            .requestLTRRefresh(fromFrameID: 10, toFrameID: 14, lastDecodedFrameID: 9),
+            .requestLTRRefresh(fromFrameID: 0, toFrameID: 0, lastDecodedFrameID: RecoveryMessage.noFrameDecodedSentinel),
+            .requestIDR(lastDecodedFrameID: 0),
+            .requestIDR(lastDecodedFrameID: 0xCAFE_F00D),
+            .requestIDR(lastDecodedFrameID: RecoveryMessage.noFrameDecodedSentinel),
             .requestCursorShape(shapeID: 0),
             .requestCursorShape(shapeID: .max),
             // Network-feedback telemetry: a mix of 0 / .max / mid field values to exercise the
-            // 6-UInt32 body byte-for-byte (the network-feedback channel).
+            // 11-UInt32 body byte-for-byte (the network-feedback channel). Component 3 appends the
+            // trend fields: the defaulted-0 case, .max, and a NEGATIVE modified-trend Int32
+            // bit-pattern (an underusing/draining detector reading) with packed state+deltas flags.
+            // Component 4 appends the pacer presentation-health fields (late/gaps/depth) — the
+            // all-defaulted, .max and mid cases exercise them 0 / saturated / realistic.
             .networkStats(NetworkStatsReport(framesReceived: 0, fecRecovered: 0, unrecovered: 0, latestHostSendTs: 0, clientHoldMs: 0, owdJitterMicros: 0)),
-            .networkStats(NetworkStatsReport(framesReceived: .max, fecRecovered: .max, unrecovered: .max, latestHostSendTs: .max, clientHoldMs: .max, owdJitterMicros: .max)),
-            .networkStats(NetworkStatsReport(framesReceived: 600, fecRecovered: 12, unrecovered: 3, latestHostSendTs: 1_234_567, clientHoldMs: 7, owdJitterMicros: 850)),
+            .networkStats(NetworkStatsReport(framesReceived: .max, fecRecovered: .max, unrecovered: .max, latestHostSendTs: .max, clientHoldMs: .max, owdJitterMicros: .max, owdTrendMilli: .max, owdTrendFlags: .max, pacerLateFrames: .max, pacerPresentGaps: .max, pacerDepth: .max)),
+            .networkStats(NetworkStatsReport(framesReceived: 600, fecRecovered: 12, unrecovered: 3, latestHostSendTs: 1_234_567, clientHoldMs: 7, owdJitterMicros: 850, owdTrendMilli: UInt32(bitPattern: -987_654), owdTrendFlags: (42 << 8) | 2, pacerLateFrames: 3, pacerPresentGaps: 5, pacerDepth: 2)),
+            .networkStats(NetworkStatsReport(framesReceived: 600, fecRecovered: 12, unrecovered: 3, latestHostSendTs: 1_234_567, clientHoldMs: 7, owdJitterMicros: 850, owdTrendMilli: 1_000_000_000, owdTrendFlags: (255 << 8) | 1, pacerLateFrames: 1, pacerPresentGaps: 1, pacerDepth: 1)),
         ]
         for message in cases {
             XCTAssertEqual(try RecoveryMessage.decode(message.encode()), message)
@@ -192,23 +202,85 @@ final class CodecTests: XCTestCase {
         }
     }
 
-    /// A NetworkStats datagram with a body shorter than the fixed 24-byte (6×UInt32) payload must
+    /// A NetworkStats datagram with a body shorter than the fixed 44-byte (11×UInt32) payload must
     /// throw `.truncated` so the router drops it — a malformed stats packet never crashes the host.
+    /// (Component 3 grew the body 24→32: owdTrendMilli + owdTrendFlags appended; component 4 grew
+    /// it 32→44: pacerLateFrames/pacerPresentGaps/pacerDepth appended. Each previous full length —
+    /// 25 and 33 — is now itself a truncated prefix.)
     func testNetworkStatsRejectsTruncatedBody() {
-        let full = RecoveryMessage.networkStats(NetworkStatsReport(framesReceived: 1, fecRecovered: 2, unrecovered: 3, latestHostSendTs: 4, clientHoldMs: 5, owdJitterMicros: 6)).encode()
-        XCTAssertEqual(full.count, 25, "type byte + 6 UInt32 = 25 bytes")
+        let full = RecoveryMessage.networkStats(NetworkStatsReport(framesReceived: 1, fecRecovered: 2, unrecovered: 3, latestHostSendTs: 4, clientHoldMs: 5, owdJitterMicros: 6, owdTrendMilli: 7, owdTrendFlags: 8, pacerLateFrames: 9, pacerPresentGaps: 10, pacerDepth: 11)).encode()
+        XCTAssertEqual(full.count, 45, "type byte + 11 UInt32 = 45 bytes")
         // Type byte alone, and every prefix shorter than the full body, must throw.
-        for prefix in [1, 2, 5, 13, 24] {
+        for prefix in [1, 2, 5, 13, 24, 25, 32, 33, 44] {
             XCTAssertThrowsError(try RecoveryMessage.decode(full.prefix(prefix))) { error in
                 XCTAssertEqual(error as? VideoProtocolError, .truncated, "prefix \(prefix) should be .truncated")
             }
         }
     }
 
+    /// Component 2: the 12-byte requestLTRRefresh body (3×UInt32) and the 4-byte requestIDR body
+    /// (1×UInt32) both throw `.truncated` on every short prefix — the router drops, never crashes.
+    func testRecoveryRequestsRejectTruncatedBodies() {
+        let ltr = RecoveryMessage.requestLTRRefresh(fromFrameID: 1, toFrameID: 2, lastDecodedFrameID: 3).encode()
+        XCTAssertEqual(ltr.count, 13, "type byte + 3 UInt32 = 13 bytes")
+        // 9 = the PRE-component-2 full requestLTRRefresh length (type byte + 2 UInt32, before
+        // lastDecodedFrameID grew the body) — the most regression-prone boundary in the sweep.
+        for prefix in [1, 4, 8, 9, 12] {
+            XCTAssertThrowsError(try RecoveryMessage.decode(ltr.prefix(prefix))) { error in
+                XCTAssertEqual(error as? VideoProtocolError, .truncated, "LTR prefix \(prefix) should be .truncated")
+            }
+        }
+        let idr = RecoveryMessage.requestIDR(lastDecodedFrameID: 7).encode()
+        XCTAssertEqual(idr.count, 5, "type byte + 1 UInt32 = 5 bytes")
+        for prefix in [1, 2, 4] {
+            XCTAssertThrowsError(try RecoveryMessage.decode(idr.prefix(prefix))) { error in
+                XCTAssertEqual(error as? VideoProtocolError, .truncated, "IDR prefix \(prefix) should be .truncated")
+            }
+        }
+    }
+
+    /// Every RecoveryMessage type rejects TRAILING bytes with `.malformed`: the client emits
+    /// exact-width datagrams, and the host's `RecoveryRequestDeduper` keys on the RAW datagram
+    /// bytes — a decode that tolerated suffixes would let suffix-varied copies of one logical
+    /// request decode identically yet bypass the byte-keyed dedup (double-ForceLTRRefresh/IDR).
+    func testRecoveryMessagesRejectTrailingBytes() {
+        let messages: [RecoveryMessage] = [
+            .ack(streamSeq: 7),
+            .requestLTRRefresh(fromFrameID: 1, toFrameID: 2, lastDecodedFrameID: 3),
+            .requestIDR(lastDecodedFrameID: 9),
+            .requestCursorShape(shapeID: 4),
+            .networkStats(NetworkStatsReport(framesReceived: 1, fecRecovered: 2, unrecovered: 3,
+                                             latestHostSendTs: 4, clientHoldMs: 5, owdJitterMicros: 6)),
+        ]
+        for message in messages {
+            for junk in [Data([0x00]), Data([0xDE, 0xAD, 0xBE, 0xEF])] {
+                var padded = message.encode()
+                padded.append(junk)
+                XCTAssertThrowsError(try RecoveryMessage.decode(padded),
+                                     "\(message) + \(junk.count) trailing byte(s) must be rejected") { error in
+                    guard let e = error as? VideoProtocolError, case .malformed = e else {
+                        return XCTFail("expected .malformed for \(message), got \(error)")
+                    }
+                }
+            }
+            // The exact-width encoding (what the client actually emits) still decodes.
+            XCTAssertNoThrow(try RecoveryMessage.decode(message.encode()))
+        }
+    }
+
+    /// The sentinel must be the top of the UInt32 space (frameIDs start at 0 — 0 is a REAL id).
+    func testNoFrameDecodedSentinelValue() {
+        XCTAssertEqual(RecoveryMessage.noFrameDecodedSentinel, 0xFFFF_FFFF)
+    }
+
     func testRecoveryPolicyPrefersLTRThenEscalatesAfterTwoRTT() {
         let policy = RecoveryPolicy(idrTimeoutRTTMultiple: 2.0)
-        // First response to a loss is an LTR refresh, not an IDR.
-        XCTAssertEqual(policy.initialRequest(lostFrom: 5, lostTo: 8), .requestLTRRefresh(fromFrameID: 5, toFrameID: 8))
+        // First response to a loss is an LTR refresh, not an IDR — and it passes the client's
+        // decode frontier through verbatim (component 2).
+        XCTAssertEqual(policy.initialRequest(lostFrom: 5, lostTo: 8, lastDecoded: 4),
+                       .requestLTRRefresh(fromFrameID: 5, toFrameID: 8, lastDecodedFrameID: 4))
+        XCTAssertEqual(policy.initialRequest(lostFrom: 1, lostTo: 1, lastDecoded: RecoveryMessage.noFrameDecodedSentinel),
+                       .requestLTRRefresh(fromFrameID: 1, toFrameID: 1, lastDecodedFrameID: RecoveryMessage.noFrameDecodedSentinel))
         let rtt = 0.011 // 11ms measured
         XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: rtt, rtt: rtt))        // 1 RTT — wait
         XCTAssertFalse(policy.shouldEscalateToIDR(elapsedSinceRequest: 1.9 * rtt, rtt: rtt))  // <2 RTT — wait

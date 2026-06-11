@@ -102,6 +102,50 @@ final class NetworkEstimateTests: XCTestCase {
         XCTAssertEqual(est.lossRate, 0.0625, accuracy: 0.0001)
     }
 
+    // MARK: Component 3 (delay-gradient) — raw-sample freshness + trend folding
+
+    /// The gradient cut's LEVEL corroboration must be per-report fresh: a fold stores its raw RTT
+    /// sample, and a fold whose sample was REJECTED explicitly NILs it (never reuse stale evidence).
+    func testFoldStoresRawRTTSampleAndNilsOnReject() {
+        var est = NetworkEstimate()
+        XCTAssertNil(est.lastRTTSampleMillis)
+        est.fold(rttMillis: 80, framesReceived: 10, unrecovered: 0, owdJitterMicros: 0)
+        XCTAssertEqual(est.lastRTTSampleMillis, 80)
+        est.fold(rttMillis: 35, framesReceived: 10, unrecovered: 0, owdJitterMicros: 0)
+        XCTAssertEqual(est.lastRTTSampleMillis, 35, "the raw sample is the MOST RECENT fold's, not a max/EWMA")
+        est.fold(rttMillis: nil, framesReceived: 10, unrecovered: 0, owdJitterMicros: 0)
+        XCTAssertNil(est.lastRTTSampleMillis, "a rejected sample NILs the level evidence (freshness contract)")
+    }
+
+    func testFoldTrendFields() {
+        var est = NetworkEstimate()
+        XCTAssertFalse(est.owdTrendOverusing)
+        est.fold(rttMillis: 10, framesReceived: 1, unrecovered: 0, owdJitterMicros: 0,
+                 owdTrendState: 1, owdTrendModifiedMilli: 42_500)
+        XCTAssertTrue(est.owdTrendOverusing)
+        XCTAssertEqual(est.owdTrendModified, 42.5, accuracy: 0.0001)
+        est.fold(rttMillis: 10, framesReceived: 1, unrecovered: 0, owdJitterMicros: 0,
+                 owdTrendState: 2, owdTrendModifiedMilli: -500)
+        XCTAssertFalse(est.owdTrendOverusing, "underusing (2) is not overusing")
+        XCTAssertEqual(est.owdTrendModified, -0.5, accuracy: 0.0001)
+        est.fold(rttMillis: 10, framesReceived: 1, unrecovered: 0, owdJitterMicros: 0)
+        XCTAssertFalse(est.owdTrendOverusing, "defaulted params read state 0 = normal (per-report fresh)")
+        XCTAssertEqual(est.owdTrendModified, 0)
+    }
+
+    /// The defaulted trend params are the blast-radius cap: a pre-trend fold sequence and the same
+    /// sequence with explicit zeros produce Equatable-identical estimates.
+    func testDefaultedTrendParamsPreserveOldFoldBehavior() {
+        var a = NetworkEstimate()
+        var b = NetworkEstimate()
+        for i in 0..<20 {
+            a.fold(rttMillis: 50 + i, framesReceived: 100, unrecovered: UInt32(i % 3), owdJitterMicros: UInt32(i * 10))
+            b.fold(rttMillis: 50 + i, framesReceived: 100, unrecovered: UInt32(i % 3), owdJitterMicros: UInt32(i * 10),
+                   owdTrendState: 0, owdTrendModifiedMilli: 0)
+        }
+        XCTAssertEqual(a, b)
+    }
+
     func testOWDGradientWarmupThenRising() {
         var est = NetworkEstimate()
         // Warmup: the first two folds must NOT flip the gradient (no predecessor to compare yet).

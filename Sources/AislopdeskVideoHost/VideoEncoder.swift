@@ -337,6 +337,22 @@ public final class VideoEncoder: @unchecked Sendable {
         return changed
     }
 
+    /// FPS-GOVERNOR actuation (2026-06-11): live `ExpectedFrameRate` hint. Best-effort mid-session
+    /// `VTSessionSetProperty` — the same proven-live mechanism as ``setLiveBitrate(_:)``'s
+    /// AverageBitRate writes; a -12900 is tolerated (it is an RC-window-sizing HINT, not the
+    /// latency contract — the ``EncodeCadenceGate`` enforces the actual cadence regardless).
+    /// Deliberately NOT bracketed: the crisp/compact brackets save/restore only QP +
+    /// AverageBitRate + DataRateLimits, so there is no save/restore interplay to honour. And
+    /// `AverageBitRate` is deliberately NOT changed on an fps step — fewer frames sharing the same
+    /// bitrate = bigger, sharper frames (the Parsec behaviour the governor wants).
+    public func setExpectedFrameRate(_ fps: Int) {
+        bitrateLock.lock()
+        let sess = liveSession
+        bitrateLock.unlock()
+        guard let sess else { return }
+        set(sess, kVTCompressionPropertyKey_ExpectedFrameRate, max(1, fps) as CFNumber)
+    }
+
     deinit {
         if let liveSession { VTCompressionSessionInvalidate(liveSession) }
     }

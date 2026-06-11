@@ -40,12 +40,29 @@ final class LiveCongestionControllerTests: XCTestCase {
     }
 
     /// Drive the controller past warmup with neutral (no-action) reports so subsequent reports act.
-    private func warmedController(ceiling: Int, floor: Int? = nil) -> LiveCongestionController {
-        var ctrl = floor.map { LiveCongestionController(ceiling: ceiling, floor: $0) }
-            ?? LiveCongestionController(ceiling: ceiling)
+    /// `gradientCutEnabled` defaults to the production env default (OFF in the test environment).
+    private func warmedController(ceiling: Int, floor: Int? = nil,
+                                  gradientCutEnabled: Bool = LiveCongestionController.gradientCutEnabledDefault) -> LiveCongestionController {
+        var ctrl = floor.map { LiveCongestionController(ceiling: ceiling, floor: $0, gradientCutEnabled: gradientCutEnabled) }
+            ?? LiveCongestionController(ceiling: ceiling, gradientCutEnabled: gradientCutEnabled)
         let clean = estimate(lossSamples: 0, folds: 1)
         for _ in 0..<LiveCongestionController.warmupTicks { _ = ctrl.onReport(clean) }
         return ctrl
+    }
+
+    /// Component 3: an estimate whose SMOOTHED RTT is below both inflation gates (no streak, no
+    /// `rttInflated`) while the MOST RECENT fold carries the gradient evidence — the trend verdict
+    /// plus a raw `rawRTT` sample. With `rawRTT: 200` over the 50ms baseline the raw clears both
+    /// factor+slack gates but the smoothed EWMA (≈68.75) stays under `min + slack` (≈90) — exactly
+    /// the early-onset shape the gradient path exists for.
+    private func gradientEstimate(rawRTT: Int?, overusing: Bool, baselineFolds: Int = 8) -> NetworkEstimate {
+        var est = NetworkEstimate()
+        for _ in 0..<baselineFolds {
+            est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        }
+        est.fold(rttMillis: rawRTT, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100,
+                 owdTrendState: overusing ? 1 : 0, owdTrendModifiedMilli: overusing ? 80_000 : 0)
+        return est
     }
 
     // MARK: Construction / clamps
@@ -688,6 +705,155 @@ final class LiveCongestionControllerTests: XCTestCase {
                        "one additive tick is below the churn gate")
         XCTAssertTrue(LiveCongestionController.isMaterialChange(previous: ceiling - 2 * step, target: ceiling, ceiling: ceiling),
                       "two accumulated additive ticks cross the churn gate")
+    }
+
+    // MARK: Component 3 — delay-gradient early cut (AISLOPDESK_ABR_GRAD, instance-level A/B)
+
+    /// The default ships OFF (HW-feel-test convention) — and these tests assume `AISLOPDESK_ABR_GRAD`
+    /// is unset, like every other tunable in this file.
+    func testGradientFlagDefaultsOff() {
+        XCTAssertFalse(LiveCongestionController.gradientCutEnabledDefault,
+                       "AISLOPDESK_ABR_GRAD must be unset in the test environment; the default ships OFF")
+        XCTAssertFalse(LiveCongestionController(ceiling: ceiling).gradientCutEnabled)
+        XCTAssertTrue(LiveCongestionController(ceiling: ceiling, gradientCutEnabled: true).gradientCutEnabled,
+                      "the instance-level knob overrides the env default (harness A/B)")
+    }
+
+    /// THE point of the gradient path: ONE report with trend OVERUSING + a raw-RTT-corroborated
+    /// level cuts ×0.85 — while the smoothed EWMA is still under its gates (streak 0) and the
+    /// smoothed path would need ~3 more reports.
+    func testGradientOveruseCutsAfterOneReport() {
+        var ctrl = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        let est = gradientEstimate(rawRTT: 200, overusing: true)
+        // Precondition: the smoothed path is NOT yet authorized on this estimate.
+        let slack = LiveCongestionController.effectiveSlackMillis(minRTTMillis: est.minRTTMillis)
+        XCTAssertLessThanOrEqual(est.smoothedRTTMillis, est.minRTTMillis + slack,
+                                 "precondition: smoothed RTT below the absolute-slack gate")
+        let before = ctrl.current
+        let after = ctrl.onReport(est)
+        XCTAssertEqual(after, max(ctrl.floor, Int(Double(before) * LiveCongestionController.gradientDecreaseFactor)),
+                       "one overusing+corroborated report cuts ×gradientDecreaseFactor")
+        XCTAssertLessThan(after, before)
+    }
+
+    /// Trend evidence alone is NOT enough — the SAME report's raw RTT must clear the factor+slack
+    /// gates (a flat or rejected sample = no fresh level evidence = no cut).
+    func testGradientCutRequiresRawRTTCorroboration() {
+        var flatRaw = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        XCTAssertEqual(flatRaw.onReport(gradientEstimate(rawRTT: 50, overusing: true)), ceiling,
+                       "overusing at a FLAT raw RTT never cuts (the 4G-wobble guard)")
+        var rejectedRaw = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        XCTAssertEqual(rejectedRaw.onReport(gradientEstimate(rawRTT: nil, overusing: true)), ceiling,
+                       "a rejected raw sample (lastRTTSampleMillis nil) never authorizes a cut")
+    }
+
+    /// The no-cascade invariant extends to the gradient: a persisting overuse re-cuts at most once
+    /// per `cutHoldTicks` window — never per report.
+    func testGradientCutRespectsCutHoldSpacing() {
+        var ctrl = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        var est = NetworkEstimate()
+        for _ in 0..<8 { est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100) }
+        est.fold(rttMillis: 200, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100,
+                 owdTrendState: 1, owdTrendModifiedMilli: 80_000)
+        XCTAssertLessThan(ctrl.onReport(est), ceiling, "the first cut of the episode is immediate")
+        var cutTicks: [Int] = []
+        var last = ctrl.current
+        for i in 1...(LiveCongestionController.cutHoldTicks * 2) {
+            est.fold(rttMillis: 200, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100,
+                     owdTrendState: 1, owdTrendModifiedMilli: 80_000)
+            let after = ctrl.onReport(est)
+            if after < last { cutTicks.append(i) }
+            last = after
+        }
+        XCTAssertFalse(cutTicks.isEmpty, "a persisting overuse re-cuts at the window edge")
+        XCTAssertGreaterThanOrEqual(cutTicks[0], LiveCongestionController.cutHoldTicks,
+                                    "no second cut inside the cutHold window")
+        for pair in zip(cutTicks, cutTicks.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(pair.1 - pair.0, LiveCongestionController.cutHoldTicks,
+                                        "every consecutive cut pair is spaced by the shared window")
+        }
+    }
+
+    /// A/B purity: with the gate OFF (the production default), a controller fed overusing reports is
+    /// tick-for-tick identical to one fed the same telemetry without trend fields.
+    func testGradientDisabledIsByteIdenticalToToday() {
+        var withTrend = LiveCongestionController(ceiling: ceiling)   // env default = OFF
+        var noTrend = LiveCongestionController(ceiling: ceiling)
+        var estA = NetworkEstimate()
+        var estB = NetworkEstimate()
+        for i in 0..<60 {
+            let rtt = i % 5 == 0 ? 200 : 50
+            let lost: UInt32 = i % 7 == 0 ? 30 : 0
+            estA.fold(rttMillis: rtt, framesReceived: 1000, unrecovered: lost, owdJitterMicros: 100,
+                      owdTrendState: 1, owdTrendModifiedMilli: 99_000)
+            estB.fold(rttMillis: rtt, framesReceived: 1000, unrecovered: lost, owdJitterMicros: 100)
+            XCTAssertEqual(withTrend.onReport(estA), noTrend.onReport(estB),
+                           "tick \(i): disabled gradient must not change any decision")
+        }
+        XCTAssertEqual(withTrend, noTrend, "full controller state identical with the gate off")
+    }
+
+    /// Never probe up INTO a detected overuse: level-clean reports (no cut authorized) that still
+    /// read OVERUSING suppress the additive increase past the hold-down; the same reports without
+    /// the trend verdict climb.
+    func testGradientOveruseSuppressesAdditiveIncrease() {
+        var ctrl = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        let cut = ctrl.onReport(gradientEstimate(rawRTT: 200, overusing: true))
+        XCTAssertLessThan(cut, ceiling)
+        var est = NetworkEstimate()
+        for _ in 0..<8 { est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100) }
+        for _ in 0..<(LiveCongestionController.holdTicks + 10) {
+            est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100,
+                     owdTrendState: 1, owdTrendModifiedMilli: 80_000)
+            XCTAssertEqual(ctrl.onReport(est), cut,
+                           "overuse detected (flat raw ⇒ no cut authorized) ⇒ no climb either")
+        }
+        // Contrast: the detector clears ⇒ the very same level-clean reports climb.
+        est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100)
+        XCTAssertGreaterThan(ctrl.onReport(est), cut, "the suppression lifts the instant overuse clears")
+    }
+
+    /// A gradient-ONLY cut (smoothed not inflated ⇒ not queue-corroborated) sets NO knee — an onset
+    /// reflex is not capacity knowledge (the falsified-design history: knee-pinning from early cuts
+    /// caps the climb for kneeTTLTicks on rate-independent wobble).
+    func testGradientCutSetsNoKnee() {
+        var ctrl = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        _ = ctrl.onReport(gradientEstimate(rawRTT: 200, overusing: true))
+        XCTAssertLessThan(ctrl.current, ceiling, "precondition: the gradient cut landed")
+        XCTAssertNil(ctrl.kneeBps, "a gradient-only cut records no knee")
+    }
+
+    /// The two paths CHAIN on a real queue: gradient cut at t0 (early reflex), the smoothed EWMA
+    /// crosses its gates + the streak re-accumulates during the hold, and the PROPORTIONAL cut
+    /// (sized to the by-then-measured queue, knee-setting) fires exactly at the window edge.
+    func testGradientThenSustainedQueueProportionalCutNextWindow() {
+        var ctrl = warmedController(ceiling: ceiling, gradientCutEnabled: true)
+        var est = NetworkEstimate()
+        for _ in 0..<8 { est.fold(rttMillis: 50, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100) }
+        est.fold(rttMillis: 200, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100,
+                 owdTrendState: 1, owdTrendModifiedMilli: 80_000)
+        let afterGradient = ctrl.onReport(est)
+        XCTAssertEqual(afterGradient, Int(Double(ceiling) * LiveCongestionController.gradientDecreaseFactor))
+        XCTAssertNil(ctrl.kneeBps)
+        var cutTick: Int?
+        for i in 1...(LiveCongestionController.cutHoldTicks + 2) {
+            est.fold(rttMillis: 250, framesReceived: 1000, unrecovered: 0, owdJitterMicros: 100,
+                     owdTrendState: 1, owdTrendModifiedMilli: 80_000)
+            let before = ctrl.current
+            if ctrl.onReport(est) < before { cutTick = i; break }
+        }
+        XCTAssertEqual(cutTick, LiveCongestionController.cutHoldTicks,
+                       "the standing queue's next cut fires exactly at the shared window edge")
+        XCTAssertNotNil(ctrl.kneeBps, "the queue-corroborated follow-up cut sets the knee")
+    }
+
+    func testGradientDuringWarmupIsNoOp() {
+        var ctrl = LiveCongestionController(ceiling: ceiling, gradientCutEnabled: true)
+        let est = gradientEstimate(rawRTT: 200, overusing: true)
+        for _ in 0..<(LiveCongestionController.warmupTicks - 1) {
+            XCTAssertEqual(ctrl.onReport(est), ceiling, "no gradient action during warmup")
+        }
+        XCTAssertLessThan(ctrl.onReport(est), ceiling, "the first post-warmup overusing report cuts")
     }
 }
 #endif
