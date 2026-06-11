@@ -166,6 +166,14 @@ public struct LiveCongestionController: Sendable, Equatable {
     public private(set) var kneeBps: Int?
     /// Tick at which the knee memory expires (refreshed by every queue-corroborated decrease).
     public private(set) var kneeExpiresAtTick = 0
+    /// ESCALATING CAUTION (2026-06-11, 4G probe-cycle damping): how many queue-corroborated decreases
+    /// have CONFIRMED this knee while it was still alive. The first live 4G session showed the
+    /// cautious-but-constant climb above the knee still re-bashed the ~4-5Mbps capacity every
+    /// 30-60s — a felt RTT bump per cycle. Each re-confirmation ("we hit the wall at the same place
+    /// again") DOUBLES the above-knee caution (÷8 → ÷16 → ÷32 → ÷64, capped), so on a
+    /// stable-capacity path the oscillation amplitude decays toward a hover; a genuinely shifted
+    /// path lets the knee expire (TTL) which resets confirmations and restores the base climb.
+    public private(set) var kneeConfirmations = 0
 
     /// Additive-increase step in bps (≥ 1 so a tiny ceiling still makes progress).
     private var increaseStep: Int { max(1, ceiling / Self.increaseDivisor) }
@@ -227,8 +235,9 @@ public struct LiveCongestionController: Sendable, Equatable {
             && e.smoothedRTTMillis + 1.0 >= prevSmoothedRTTMillis   // not improving — see prevSmoothedRTTMillis
 
         // Knee TTL: a knee that hasn't been re-confirmed by a queue-corroborated decrease within
-        // `kneeTTLTicks` is stale path knowledge — forget it so the climb is uncapped again.
-        if kneeBps != nil, ticks >= kneeExpiresAtTick { kneeBps = nil }
+        // `kneeTTLTicks` is stale path knowledge — forget it (and its confirmation count) so the
+        // climb is uncapped again.
+        if kneeBps != nil, ticks >= kneeExpiresAtTick { kneeBps = nil; kneeConfirmations = 0 }
 
         // LOSS-TOLERANCE #4: sub-catastrophic loss acts only when CORROBORATED by RTT inflation on
         // the same report (queue evidence). Weather loss — the measured rate-independent ~1%/3–9%
@@ -273,7 +282,7 @@ public struct LiveCongestionController: Sendable, Equatable {
             // built a queue instead of re-bashing it every recovery (25↔40Mbps pumping = the felt
             // sawtooth).
             let cautious = kneeBps.map { current >= $0 } ?? false
-            let step = cautious ? max(1, increaseStep / Self.kneeCautionDivisor) : increaseStep
+            let step = cautious ? max(1, increaseStep / cautionDivisor()) : increaseStep
             current = min(ceiling, current + step)
         }
         return current
@@ -295,10 +304,20 @@ public struct LiveCongestionController: Sendable, Equatable {
             rttHoldUntilTick = ticks + Self.rttHoldTicks
             rttInflatedStreak = 0
             if queueCorroborated {
+                // ESCALATING CAUTION: a queue-corroborated decrease while a knee is STILL ALIVE means
+                // the climb re-hit the same wall — confirm (and slow the next climb 2×, capped).
+                // First knee (none alive) starts at one confirmation = the base cautious divisor.
+                kneeConfirmations = kneeBps != nil ? min(kneeConfirmations + 1, 4) : 1
                 kneeBps = current
                 kneeExpiresAtTick = ticks + Self.kneeTTLTicks
             }
         }
+    }
+
+    /// The effective above-knee additive-increase divisor: the base ``kneeCautionDivisor`` doubled
+    /// per knee re-confirmation beyond the first (8 → 16 → 32 → 64, capped at 4 confirmations).
+    private func cautionDivisor() -> Int {
+        Self.kneeCautionDivisor << max(0, min(kneeConfirmations - 1, 3))
     }
 
     // MARK: Actuation churn gate (pure — used by the host, unit-tested here)
