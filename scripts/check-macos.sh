@@ -130,8 +130,12 @@ fi
 pkill -f "$APP_PROC_PAT" 2>/dev/null || true
 if [[ "$CONNECT" == "1" ]]; then
   # Launch the bundle's binary DIRECTLY (not via `open`) so the auto-connect env vars are
-  # inherited — LaunchServices does not forward the shell environment.
-  AISLOPDESK_AUTOCONNECT_HOST=127.0.0.1 AISLOPDESK_AUTOCONNECT_PORT="$CONNECT_PORT" AISLOPDESK_AUTOTYPE="$AUTOTYPE" "$APP_BIN" >/dev/null 2>&1 &
+  # inherited — LaunchServices does not forward the shell environment. Stderr is kept (the
+  # AISLOPDESK_ECHO_PROBE seam prints keystroke→ingest latency lines there — step 4d).
+  APP_LOG="$WORK/app-stderr.log"
+  AISLOPDESK_AUTOCONNECT_HOST=127.0.0.1 AISLOPDESK_AUTOCONNECT_PORT="$CONNECT_PORT" \
+    AISLOPDESK_AUTOTYPE="$AUTOTYPE" AISLOPDESK_ECHO_PROBE=1 \
+    "$APP_BIN" >/dev/null 2>"$APP_LOG" &
 else
   open "$APP"
 fi
@@ -183,6 +187,18 @@ if [[ "$CONNECT" == "1" ]]; then
     echo "==> FAIL: auto-typed command never executed on host (no $OUT_EXPECT in $OUT_PROOF)" >&2
     echo "--- hostd log ---" >&2; cat "$HOSTD_LOG" >&2
     exit 1
+  fi
+
+  # ── 4d. (--connect) keystroke-echo latency numbers (AISLOPDESK_ECHO_PROBE) ─────────────────
+  # The probe prints one "key→ingest NN.Nms" line per echoed keystroke on the app's stderr —
+  # the user-feel span (wire out + host PTY + wire back + client delivery to the render feed).
+  # Informational, never a failure: the smoothness-work A/B number, not a gate.
+  if [[ -s "$APP_LOG" ]] && grep -q "echo-probe" "$APP_LOG"; then
+    SAMPLES="$(grep -o 'key→ingest [0-9.]*ms' "$APP_LOG" | grep -o '[0-9.]*' | sort -n)"
+    COUNT="$(echo "$SAMPLES" | grep -c . || true)"
+    MEDIAN="$(echo "$SAMPLES" | awk '{a[NR]=$1} END{ if (NR) printf "%.1f", a[int((NR+1)/2)] }')"
+    P95="$(echo "$SAMPLES" | awk '{a[NR]=$1} END{ if (NR) printf "%.1f", a[int(NR*0.95)>0?int(NR*0.95):1] }')"
+    echo "==> echo latency (n=$COUNT): median ${MEDIAN}ms, p95 ${P95}ms (key→render-feed, loopback)"
   fi
 fi
 
