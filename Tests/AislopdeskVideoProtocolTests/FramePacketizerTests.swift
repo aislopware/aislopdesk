@@ -57,6 +57,49 @@ final class FramePacketizerTests: XCTestCase {
         XCTAssertEqual(completed?.isLTR, true, "the reassembled frame is marked an LTR frame")
     }
 
+    // MARK: ackedAnchored flag (bit 7, 2026-06-12)
+
+    /// A `ForceLTRRefresh` product round-trips bit 7 through wire encode/decode and reassembly —
+    /// every fragment carries `.ackedAnchored`, the completed frame reports it, and bit 6 rides
+    /// independently (a refresh is BOTH an LTR frame and acked-anchored).
+    func testAckedAnchoredFlagRoundTripsThroughWireAndReassembly() throws {
+        var packetizer = VideoPacketizer()
+        let frame = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize + 200, 40]) // > 1 fragment
+        let fragments = packetizer.packetize(frame: frame, keyframe: false, isLTR: true, ackedAnchored: true)
+        XCTAssertGreaterThan(fragments.count, 1)
+        for fragment in fragments {
+            let decoded = try FrameFragment.decode(fragment.encode())
+            XCTAssertTrue(decoded.header.flags.contains(.ackedAnchored), "every fragment carries bit 7")
+            XCTAssertTrue(decoded.header.flags.contains(.isLTR), "bit 6 rides independently")
+        }
+        var reassembler = FrameReassembler()
+        var completed: ReassembledFrame?
+        for fragment in fragments {
+            let wire = try FrameFragment.decode(fragment.encode())
+            if case .completed(let f) = reassembler.ingest(wire) { completed = f }
+        }
+        XCTAssertEqual(completed?.avcc, frame)
+        XCTAssertEqual(completed?.ackedAnchored, true)
+        XCTAssertEqual(completed?.isLTR, true)
+    }
+
+    /// Ordinary frames leave bit 7 zero (byte-identical to omitting the argument) and the
+    /// reassembled frame reports `ackedAnchored == false` — plus bit 7 never collides with the
+    /// FEC tier bits / bit 6.
+    func testAckedAnchoredOffIsByteIdenticalAndDisjoint() throws {
+        var p1 = VideoPacketizer()
+        var p2 = VideoPacketizer()
+        let frame = makeAVCC(naluSizes: [200])
+        let omitted = p1.packetize(frame: frame, keyframe: false, fecTier: 2, isLTR: true)
+        let explicitOff = p2.packetize(frame: frame, keyframe: false, fecTier: 2, isLTR: true, ackedAnchored: false)
+        XCTAssertEqual(omitted.map { $0.encode() }, explicitOff.map { $0.encode() })
+        for fragment in omitted {
+            XCTAssertFalse(fragment.header.flags.contains(.ackedAnchored))
+            XCTAssertEqual(fragment.header.flags.rawValue & 0x80, 0, "bit 7 (0x80) is zero")
+            XCTAssertEqual(fragment.header.flags.fecTier, 2, "tier bits undisturbed")
+        }
+    }
+
     /// The OFF path is byte-identical: `isLTR: false` (the default) leaves bit 6 zero, the flags byte
     /// is identical to omitting the argument, and the reassembled frame reports `isLTR == false`. This
     /// is the wire-byte-equality guarantee for `AISLOPDESK_LTR` off.
