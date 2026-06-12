@@ -108,7 +108,10 @@ public struct WorkspacePersistence: @unchecked Sendable {
         // A corrupt / hand-edited file with an absurd item count would make the store eagerly allocate a
         // session per item on the main actor — fall back to default rather than freeze on launch (the same
         // bound the portable import enforces).
-        guard migrated.canvas.items.count <= WorkspaceTransfer.maxItems else { return resetToDefault() }
+        guard migrated.canvas.items.count <= WorkspaceTransfer.maxItems,
+              migrated.groups.count <= WorkspaceTransfer.maxItems,
+              migrated.snippets.count <= WorkspaceTransfer.maxItems,
+              migrated.layoutPresets.count <= WorkspaceTransfer.maxItems else { return resetToDefault() }
         var seen = Set<PaneID>()
         var repaired = migrated
         repaired.canvas = repaired.canvas.dedupingItemIDs(seen: &seen)
