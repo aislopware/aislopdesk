@@ -783,6 +783,90 @@ public final class WorkspaceStore {
         revealPane(PaneID(raw: uuid))
     }
 
+    // MARK: - Named layout presets (save / switch canvas contexts)
+
+    /// The saved layout names, in saved order — for the palette / menu listing.
+    public var layoutPresetNames: [String] { workspace.layoutPresets.map(\.name) }
+
+    /// Set when the user picks "Save Current Layout…"; the root view observes it to present a
+    /// name-entry alert, then calls ``saveLayoutPreset(name:)`` and ``clearSaveLayoutRequest()``.
+    public private(set) var pendingSaveLayout = false
+    /// Requests the save-layout name prompt (the command-layer entry point).
+    public func requestSaveLayout() { pendingSaveLayout = true }
+    /// The root view consumed the request (presented / dismissed the prompt).
+    public func clearSaveLayoutRequest() { pendingSaveLayout = false }
+
+    /// Snapshots the CURRENT canvas (panes + groups + focus, ephemeral dialog panes stripped) under
+    /// `name`. A re-save of an existing name OVERWRITES it (so "save monitoring" updates the layout you
+    /// already have). The video bindings travel in each pane's spec, so a restored remote pane
+    /// re-streams (or degrades to the picker if its window is gone). Metadata-only mutation → reconcile
+    /// just persists.
+    public func saveLayoutPreset(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        // Strip ephemeral (auto-managed) panes from the snapshot — a saved layout must not resurrect a
+        // dead system-dialog windowID.
+        let snapshotCanvas = strippingEphemeral(workspace.canvas)
+        let preset = LayoutPreset(
+            name: trimmed,
+            canvas: snapshotCanvas,
+            groups: workspace.groups,
+            focusedPane: snapshotCanvas.contains(workspace.focusedPane ?? PaneID()) ? workspace.focusedPane : snapshotCanvas.allIDs().first
+        )
+        if let i = workspace.layoutPresets.firstIndex(where: { $0.name == trimmed }) {
+            workspace.layoutPresets[i] = LayoutPreset(
+                id: workspace.layoutPresets[i].id, name: trimmed,
+                canvas: preset.canvas, groups: preset.groups, focusedPane: preset.focusedPane
+            )
+        } else {
+            workspace.layoutPresets.append(preset)
+        }
+        reconcile()   // metadata-only — persists the new preset list
+    }
+
+    /// Switches the live canvas to saved layout `name`: replaces the panes + groups + focus with the
+    /// snapshot (KEEPING the app connection + the saved presets themselves), then reconciles — which
+    /// tears down every current session and materializes the snapshot's. The pane ids are re-minted on
+    /// save's `strippingEphemeral`? No — the snapshot keeps the original ids; but a switch back-and-forth
+    /// would re-use ids across teardown, so the snapshot's items get FRESH ids here to avoid colliding
+    /// with the live registry mid-teardown (the same rule as reopen/restore). No-op for an unknown name.
+    public func switchToLayoutPreset(name: String) {
+        guard let preset = workspace.layoutPresets.first(where: { $0.name == name }) else { return }
+        // Re-mint pane ids so a switch can't collide a snapshot id with a still-tearing-down live
+        // session of the same id (the async-teardown race). Group ids are kept (groups carry no session).
+        var idMap: [PaneID: PaneID] = [:]
+        let remintedItems = preset.canvas.items.map { item -> CanvasItem in
+            let fresh = PaneID()
+            idMap[item.id] = fresh
+            return CanvasItem(id: fresh, spec: item.spec, frame: item.frame, z: item.z, groupID: item.groupID)
+        }
+        workspace.canvas = Canvas(items: remintedItems, camera: preset.canvas.camera)
+        workspace.groups = preset.groups
+        workspace.focusedPane = preset.focusedPane.flatMap { idMap[$0] } ?? remintedItems.first?.id
+        workspace.maximizedPane = nil
+        overviewActive = false
+        reconcile()
+    }
+
+    /// Deletes saved layout `name`. No-op if absent.
+    public func deleteLayoutPreset(name: String) {
+        guard workspace.layoutPresets.contains(where: { $0.name == name }) else { return }
+        workspace.layoutPresets.removeAll { $0.name == name }
+        reconcile()
+    }
+
+    /// A copy of `canvas` with every ephemeral (auto-managed) pane removed — the snapshot must not
+    /// carry a system-dialog windowID that would stream a dead window on restore.
+    private func strippingEphemeral(_ canvas: Canvas) -> Canvas {
+        let ephemeral = canvas.allIDs().filter { canvas.spec(for: $0)?.kind.isEphemeral == true }
+        guard !ephemeral.isEmpty else { return canvas }
+        var c = canvas
+        for id in ephemeral {
+            c = c.removing(id) ?? Canvas(items: [], camera: canvas.camera)
+        }
+        return c
+    }
+
     // MARK: - Viewport bookmarks (⇧⌘1–9 save, ⌘1–9 recall)
 
     /// Saves the current viewport into bookmark `slot` (1–9), named after the focused pane. The

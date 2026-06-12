@@ -46,6 +46,9 @@ public struct WorkspaceRootView: View {
     /// panes + their libghostty surfaces are preserved and only the per-channel reconnect runs.
     @State private var hasConnectedOnce = false
 
+    /// The in-flight "Save Current Layout…" name being typed (the alert's TextField binding).
+    @State private var saveLayoutName: String = ""
+
     /// The OUTER WINDOW's width on macOS, fed by ``WindowWidthReader`` (ITEM #6). `nil` until the
     /// reader observes a window (and always `nil` on iOS, which keeps its size-class-primary decision):
     /// the breakpoint then falls back to the detail GeometryReader width. Keying the macOS breakpoint
@@ -130,6 +133,25 @@ public struct WorkspaceRootView: View {
             Button("Close Pane", role: .destructive) { store.confirmPendingClose() }
         } message: {
             Text("A command is still running in this pane. Closing it ends the session and the command.")
+        }
+        // "Save Current Layout…" name prompt (store.pendingSaveLayout). The TextField defaults to a
+        // suggestion; an empty name is a no-op (saveLayoutPreset trims+guards).
+        .alert("Save Layout", isPresented: Binding(
+            get: { store.pendingSaveLayout },
+            set: { if !$0 { store.clearSaveLayoutRequest() } }
+        )) {
+            TextField("Layout name", text: $saveLayoutName)
+            Button("Save") {
+                store.saveLayoutPreset(name: saveLayoutName)
+                saveLayoutName = ""
+                store.clearSaveLayoutRequest()
+            }
+            Button("Cancel", role: .cancel) {
+                saveLayoutName = ""
+                store.clearSaveLayoutRequest()
+            }
+        } message: {
+            Text("Save the current panes, groups, and focus as a named layout you can switch back to.")
         }
     }
 

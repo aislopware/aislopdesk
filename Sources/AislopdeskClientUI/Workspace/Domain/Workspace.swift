@@ -43,6 +43,10 @@ public struct Workspace: Codable, Sendable, Equatable {
     /// Viewport bookmarks by slot (1–9): ⇧⌘n saves, ⌘n recalls — the single-key spatial jumps of the
     /// daily loop (terminal → browser pane → Claude pane) on a pan-only canvas.
     public var bookmarks: [Int: CanvasBookmark]
+    /// Named, savable canvas layouts ("ios-build", "monitoring", …): the user snapshots the current
+    /// canvas under a name and switches contexts in one action. Snapshot = canvas + groups + focus,
+    /// NOT the app connection (one host per session) — see ``LayoutPreset``.
+    public var layoutPresets: [LayoutPreset]
 
     public init(
         schemaVersion: Int = Workspace.currentSchemaVersion,
@@ -51,7 +55,8 @@ public struct Workspace: Codable, Sendable, Equatable {
         maximizedPane: PaneID? = nil,
         groups: [PaneGroup] = [],
         connection: ConnectionTarget? = nil,
-        bookmarks: [Int: CanvasBookmark] = [:]
+        bookmarks: [Int: CanvasBookmark] = [:],
+        layoutPresets: [LayoutPreset] = []
     ) {
         self.schemaVersion = schemaVersion
         self.canvas = canvas
@@ -60,6 +65,30 @@ public struct Workspace: Codable, Sendable, Equatable {
         self.groups = groups
         self.connection = connection
         self.bookmarks = bookmarks
+        self.layoutPresets = layoutPresets
+    }
+}
+
+// MARK: - LayoutPreset (a named saved canvas)
+
+/// A named snapshot of a canvas LAYOUT — the panes (with their video bindings by app+title), groups,
+/// and which pane was focused. Deliberately NOT the app connection (a layout is host-agnostic; the one
+/// connection persists separately) and never recursive (no nested presets). Restoring it rebuilds every
+/// session through the store's reconcile diff; a remote-window binding whose host window is gone
+/// degrades to the picker, exactly like a normal restore.
+public struct LayoutPreset: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var canvas: Canvas
+    public var groups: [PaneGroup]
+    public var focusedPane: PaneID?
+
+    public init(id: UUID = UUID(), name: String, canvas: Canvas, groups: [PaneGroup], focusedPane: PaneID?) {
+        self.id = id
+        self.name = name
+        self.canvas = canvas
+        self.groups = groups
+        self.focusedPane = focusedPane
     }
 }
 
@@ -89,7 +118,8 @@ public extension Workspace {
     /// ``defaultWorkspace()``. Single-user project: there is no backward-compatibility path by design.
     /// 5 (2026-06-12): `VideoEndpoint` gained `appName` (pane rebind by app+title).
     /// 6 (2026-06-12): ``Workspace/bookmarks`` (viewport bookmarks, ⇧⌘n/⌘n).
-    static let currentSchemaVersion = 6
+    /// 7 (2026-06-13): ``Workspace/layoutPresets`` (named savable canvas layouts).
+    static let currentSchemaVersion = 7
 
     /// The fresh-launch / decode-failure fallback: one terminal pane at the origin, focused, ungrouped.
     static func defaultWorkspace() -> Workspace {
