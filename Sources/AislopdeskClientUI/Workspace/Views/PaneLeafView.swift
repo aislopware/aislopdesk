@@ -45,6 +45,10 @@ struct PaneLeafView: View {
     /// preview paths still construct a leaf; when `nil` the remote-GUI leaf falls back to direct
     /// activation (no cap — only the no-store preview case).
     var store: WorkspaceStore? = nil
+    /// True when the OWNER already presents the `.failed`/`.unreachable` affordance (the canvas
+    /// ``PaneDeadScrim``) — suppresses the in-leaf orange failure banner so the reason is stated
+    /// once. The neutral "Session ended" banner is never suppressed (the scrim never covers it).
+    var suppressFailureBanner: Bool = false
 
     /// The concrete live session, when this is a production handle (the only thing that owns the
     /// proven per-session objects). `nil` for a faked handle / not-yet-materialized leaf.
@@ -67,9 +71,11 @@ struct PaneLeafView: View {
     private func content(for live: LivePaneSession) -> some View {
         switch live.kind {
         case .terminal:
-            TerminalPaneView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator)
+            TerminalPaneView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator,
+                             suppressFailureBanner: suppressFailureBanner)
         case .claudeCode:
-            ClaudeCodePaneView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator)
+            ClaudeCodePaneView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator,
+                               suppressFailureBanner: suppressFailureBanner)
         case .remoteGUI:
             RemoteGUIPaneView(live: live, store: store)
         }
@@ -156,6 +162,9 @@ private struct TerminalContentView: View {
     /// The single-focus arbiter forwarded to the iOS ``InputBarView`` → ``TerminalInputHost`` so the
     /// host registers under this pane's id (docs/22 §7). `nil` ⇒ direct-claim (compact / macOS).
     var focusCoordinator: PaneFocusCoordinator? = nil
+    /// True when the canvas ``PaneDeadScrim`` already presents the failure (suppresses the orange
+    /// banner branch only — the neutral "Session ended" notice always shows).
+    var suppressFailureBanner: Bool = false
 
     var body: some View {
         // Always the terminal composite (the app-global connect-gate guarantees the mux is up before the
@@ -241,10 +250,14 @@ private struct TerminalContentView: View {
     private var recoveryBanner: some View {
         if let connection = live.connection {
             if let reason = PaneRecoveryBanner.reason(for: connection.status) {
-                PaneRecoveryBanner(reason: reason) {
-                    Task { await connection.connect() }
+                // The canvas dead scrim states the same reason + reconnect for these states — never
+                // both at once (the iOS-compact carousel has no scrim and keeps the banner).
+                if !suppressFailureBanner {
+                    PaneRecoveryBanner(reason: reason) {
+                        Task { await connection.connect() }
+                    }
+                    .padding(8)
                 }
-                .padding(8)
             } else if let endedReason = PaneRecoveryBanner.sessionEndedReason(for: connection.status) {
                 // A cleanly-exited shell on an explicit-endpoint pane: a NEUTRAL "Session ended" notice +
                 // Reconnect, where the user is looking — instead of a frozen terminal dead-end (pass-3 #1).
@@ -322,8 +335,10 @@ private struct TerminalPaneView: View {
     let spec: PaneSpec
     var isFocused: Bool = true
     var focusCoordinator: PaneFocusCoordinator? = nil
+    var suppressFailureBanner: Bool = false
     var body: some View {
-        TerminalContentView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator)
+        TerminalContentView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator,
+                            suppressFailureBanner: suppressFailureBanner)
     }
 }
 
@@ -345,6 +360,8 @@ private struct ClaudeCodePaneView: View {
     var isFocused: Bool = true
     /// The single-focus arbiter forwarded to the embedded terminal composition (docs/22 §7).
     var focusCoordinator: PaneFocusCoordinator? = nil
+    /// Threaded through to the embedded terminal (see ``PaneLeafView/suppressFailureBanner``).
+    var suppressFailureBanner: Bool = false
     /// Per-pane VIEW state: whether the inspector is shown. Local to this leaf — lost on a true
     /// session swap (a new `PaneID`), preserved across reshape/zoom/focus (stable `.id`).
     @State private var showInspector = false
@@ -366,7 +383,8 @@ private struct ClaudeCodePaneView: View {
     private var content: some View {
         #if os(macOS)
         HStack(spacing: 0) {
-            TerminalContentView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator)
+            TerminalContentView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator,
+                                suppressFailureBanner: suppressFailureBanner)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if showInspector, let model = live.inspector {
                 Divider()
@@ -375,7 +393,8 @@ private struct ClaudeCodePaneView: View {
             }
         }
         #else
-        TerminalContentView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator)
+        TerminalContentView(live: live, spec: spec, isFocused: isFocused, focusCoordinator: focusCoordinator,
+                            suppressFailureBanner: suppressFailureBanner)
             .sheet(isPresented: $showInspector) {
                 if let model = live.inspector {
                     InspectorPanel(model: model)

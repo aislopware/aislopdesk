@@ -24,11 +24,6 @@ struct PaneChromeView<Content: View>: View {
     let isZoomed: Bool
     /// The store, for the chrome's mutations.
     let store: WorkspaceStore
-    /// The drag-to-move gesture attached to the HEADER only (so dragging the body still reaches the
-    /// terminal). Type-erased + optional: the canvas item passes one, a maximized / chrome-only caller
-    /// passes `nil`. `AnyGesture<Void>` because the chrome only needs to *attach* it — the
-    /// `@GestureState` preview + `.onEnded` commit live inside the gesture the caller built.
-    var moveHandleGesture: AnyGesture<Void>? = nil
     /// The wrapped content (the leaf view).
     @ViewBuilder let content: () -> Content
 
@@ -103,33 +98,24 @@ struct PaneChromeView<Content: View>: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         #if os(macOS)
-        // BUG-2 ("ở cạnh trên/header vẫn bị"): the header bar is hit-OPAQUE (it carries the drag-to-move +
-        // tap-to-focus gestures over the whole bar), so a scroll over it was SWALLOWED instead of panning
-        // the canvas — exactly like the resize-grip perimeter was before `gripBase`. Fix with the SAME
-        // pattern: make the bar's hit layer a `ScrollPanForwarder` (a real NSView that forwards scroll →
-        // `store.scrollPan`) that ALSO carries those gestures. As a `.background` BETWEEN the content and
-        // the material it becomes the front-most hit layer over the title/empty area (a real NSView child,
-        // so it wins scroll hit-testing the way the content NSView does), while button clicks — drawn in
-        // front — still work. Drag-to-move stays HEADER-only (a body drag still reaches libghostty), and
-        // the sub-2px tap (move gesture has minimumDistance 2) still focuses the pane.
+        // BUG-2 ("ở cạnh trên/header vẫn bị"): the header bar is hit-OPAQUE (it carries the
+        // tap-to-focus gesture over the whole bar), so a scroll over it was SWALLOWED instead of
+        // panning — exactly like the resize-grip perimeter was before `gripBase`. Fix with the SAME
+        // pattern: make the bar's hit layer a `ScrollPanForwarder` (a real NSView that forwards
+        // scroll → `store.scrollPan`) that ALSO carries the tap. (The canvas drag-to-move moved to
+        // the floating pill with the borderless canvas pane; this header now lives only on the
+        // compact carousel, where panes don't move.)
         .background {
             ScrollPanForwarder(store: store)
                 .contentShape(Rectangle())
                 .simultaneousGesture(TapGesture().onEnded { store.focus(id) })
-                .modifier(OptionalMoveGesture(gesture: moveHandleGesture))
         }
         .background(isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial))
         #else
         .background(isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial))
-        // Drag-to-move lives on the HEADER ONLY (region isolation, plain `.gesture` never
-        // `.highPriorityGesture`) so a drag on the terminal body still reaches libghostty's `mouseDown`
-        // (docs/30 §6.5). `contentShape` makes the whole header bar a drag/tap target.
         .contentShape(Rectangle())
-        // A plain CLICK on the title bar focuses the pane (the natural way to select a window). The move
-        // DragGesture has minimumDistance 2, so a sub-2px click never triggers its `.onEnded` focus —
-        // this tap covers it. `.simultaneousGesture` so it coexists with the drag and the chrome buttons.
+        // A plain TAP on the title bar focuses the pane (the natural way to select a window).
         .simultaneousGesture(TapGesture().onEnded { store.focus(id) })
-        .modifier(OptionalMoveGesture(gesture: moveHandleGesture))
         #endif
     }
 
@@ -209,38 +195,22 @@ struct PaneChromeView<Content: View>: View {
 
     // MARK: Status dot
 
-    /// The header status presentation, derived once from the live connection (production handle only).
-    /// A `.remoteGUI` / faked handle has no PATH-1 connection ⇒ `.none` ⇒ no dot.
-    private var connectionStatus: PaneConnectionStatus {
-        PaneConnectionStatus.from((handle as? LivePaneSession)?.connection?.status)
-    }
+    /// The header status presentation (the shared ``PanePresentation`` derivation — the canvas
+    /// floating handle and this header can never drift).
+    private var connectionStatus: PaneConnectionStatus { PanePresentation.connectionStatus(handle) }
 
-    /// Whether an OSC 133 command is currently executing in this pane's shell (production handle
-    /// only). Drives the amber running ring on the dot + the "running…" header label. A faked /
-    /// non-terminal handle reports idle.
-    private var isRunning: Bool {
-        (handle as? LivePaneSession)?.terminalModel?.shellActivity == .running
-    }
+    /// Whether an OSC 133 command is currently executing in this pane's shell (drives the amber
+    /// running ring on the dot + the "running…" header label).
+    private var isRunning: Bool { PanePresentation.isRunning(handle) }
 
-    /// The smoothed app-layer RTT for the latency badge (`nil` until the first ping/pong
-    /// completes — the badge stays hidden). Reading the `@Observable` connection's
-    /// `latencyMS` re-renders the header on each ~3s sample, which is cheap.
-    private var latencyMS: Double? {
-        (handle as? LivePaneSession)?.connection?.latencyMS
-    }
+    /// The smoothed app-layer RTT for the latency badge (`nil` until the first ping/pong completes).
+    /// Reading the `@Observable` connection's `latencyMS` re-renders the header on each ~3s sample.
+    private var latencyMS: Double? { PanePresentation.latencyMS(handle) }
 
-    /// The header label: prefer the LIVE OSC 0/2 terminal title (the shell's cwd / running command)
-    /// when the shell has set one, falling back to the static `spec.title`. Without this, split
-    /// same-kind panes all read the generic "Terminal" and are indistinguishable in a multi-pane tab
-    /// (and in the Cmd-K pane-jump list). Reading the `@Observable` model's `title` here re-renders the
-    /// header when the shell changes it. Empty/whitespace titles fall back so a pane is never blank.
-    private var displayTitle: String {
-        if let live = (handle as? LivePaneSession)?.terminalModel?.title,
-           !live.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return live
-        }
-        return spec.title
-    }
+    /// The header label: the LIVE OSC 0/2 terminal title when set, else `spec.title` (shared
+    /// ``PanePresentation`` rule). Reading the `@Observable` model's `title` here re-renders the
+    /// header when the shell changes it.
+    private var displayTitle: String { PanePresentation.displayTitle(handle, spec: spec) }
 
     /// The compact status detail shown beside the title for the in-flight / terminal states. For a
     /// reconnecting pane with a known next-retry instant it ticks a live "retrying in Ns" countdown via
@@ -296,19 +266,4 @@ struct PaneChromeView<Content: View>: View {
     }
 }
 
-// MARK: - Optional move gesture
-
-/// Attaches a (type-erased) drag-to-move gesture to the pane header only when one is provided.
-/// `.gesture(_:)` has no optional-taking overload, so this `ViewModifier` branches on the optional —
-/// the canvas item passes a gesture; a maximized / chrome-only caller passes `nil`.
-private struct OptionalMoveGesture: ViewModifier {
-    let gesture: AnyGesture<Void>?
-    func body(content: Content) -> some View {
-        if let gesture {
-            content.gesture(gesture)
-        } else {
-            content
-        }
-    }
-}
 #endif

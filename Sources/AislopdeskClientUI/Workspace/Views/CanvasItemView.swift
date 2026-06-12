@@ -7,12 +7,13 @@ import AppKit
 
 /// A transparent AppKit view that forwards a trackpad/wheel scroll to the canvas pan
 /// (``WorkspaceStore/scrollPan(by:)``). The pane's SwiftUI chrome — the resize-handle PERIMETER (the
-/// pane "edge") and the header — is hit-OPAQUE (`.contentShape`), so a scroll over it is SWALLOWED: it
-/// cannot fall through to the single background pan-catcher behind the panes, and the pan "stops at the
-/// edge of the pane". Used as the resize-grip fill + a pane background, this makes every NON-content part
-/// of a pane pan the canvas exactly like the empty background does. It overrides ONLY `scrollWheel`, so
-/// SwiftUI's resize / move / tap gestures (which use `mouseDown`/`mouseDragged`) still work unobstructed —
-/// the default `NSView` mouse handling propagates up to SwiftUI's recognizers untouched. Sign matches
+/// pane "edge"), the floating pill, the dead scrim — is hit-OPAQUE (`.contentShape`), so a scroll over
+/// it would be SWALLOWED: it cannot fall through to the single background pan-catcher behind the
+/// panes, and the pan "stops at the edge of the pane". Used as the resize-grip fill, the pill's hit
+/// fill, the scrim's hit fill, and a pane background, this makes every NON-content part of a pane pan
+/// the canvas exactly like the empty background does. It overrides ONLY `scrollWheel`, so SwiftUI's
+/// resize / move / tap gestures (which use `mouseDown`/`mouseDragged`) still work unobstructed — the
+/// default `NSView` mouse handling propagates up to SwiftUI's recognizers untouched. Sign matches
 /// ``CanvasView``'s `PanView` so panning over a pane feels identical to panning empty space.
 struct ScrollPanForwarder: NSViewRepresentable {
     let store: WorkspaceStore
@@ -35,25 +36,50 @@ struct ScrollPanForwarder: NSViewRepresentable {
 
 // MARK: - CanvasItemView (one positioned pane on the infinite plane)
 
-/// Renders one ``CanvasItem`` (docs/30 §6.4): the proven ``PaneChromeView`` + ``PaneLeafView``
-/// **verbatim**, plus the two canvas-only gestures — drag-to-move (on the header) and 8-anchor resize
-/// (on edge/corner grips). The parent ``CanvasView`` positions this view at the item's canvas-space
-/// frame (under one rigid camera `.offset`); this view only previews a live move/resize and commits
-/// once on `.onEnded` (the `SplitContainer` commit-on-end discipline — no per-frame store mutation, no
-/// `TIOCSWINSZ` storm).
+/// Renders one ``CanvasItem`` as a BORDERLESS floating window: the bare ``PaneLeafView`` content with
+/// a rounded clip + a static soft shadow (no header bar, no focus-ring border — docs/31 follow-up),
+/// plus the canvas-only affordances — the ``FloatingPaneHandle`` pill at the top centre (hold+drag
+/// moves the pane, click opens the ``PaneMenuView`` popover), the ``PaneDeadScrim`` on terminal
+/// connection failure, and the 8 invisible edge/corner resize grips. The parent ``CanvasView``
+/// positions this view at the item's canvas-space frame (under one rigid camera `.offset`); this view
+/// only previews a live move/resize and commits once on `.onEnded` (the `SplitContainer`
+/// commit-on-end discipline — no per-frame store mutation, no `TIOCSWINSZ` storm).
+///
+/// ### Smart snapping (CanvasSnap)
+/// Move + resize previews route through the pure ``CanvasSnap`` solver against `snapTargets` (the
+/// viewport-near sibling frames) + `snapViewport`: the `@GestureState` holds the full snapped
+/// ``CanvasSnap/Resolution`` (so the preview is magnetic AND the guides auto-vanish on any gesture
+/// end/cancel), while a plain `@State` chain mirrors the hysteresis token into the `.onEnded` commit —
+/// preview ≡ commit by construction, even inside the engage/release band. Guides render in THIS
+/// view's own overlay (item-local — no shared channel to go stale). Holding ⌘ (macOS) or the menu
+/// toggles disable snapping.
+///
+/// ### Drag-vs-click on the pill (one recognizer, no races)
+/// ONE `DragGesture(minimumDistance: 0)` with a dead zone (4pt macOS / 10pt iOS): below the dead zone
+/// nothing previews and `.onEnded` treats the gesture as a CLICK (focus + menu); once past it, the
+/// latch holds for the whole gesture (returning to the start pixel still commits a move, never opens
+/// the menu). NEVER SwiftUI `Menu` (it opens its tracking on mouseDown — the drag dies) and NEVER
+/// `NSMenu` (its event-tracking runloop stalls the video panes).
 ///
 /// ### Why the body keeps its click (docs/30 §6.5)
-/// The move gesture is attached to the HEADER only (inside ``PaneChromeView``), and the resize gesture
-/// only to the thin edge/corner grips — both plain `.gesture` (never `.highPriorityGesture`). The
-/// terminal body has NO ancestor gesture, so libghostty's own `mouseDown` (selection / mouse reporting)
-/// is never stolen; body focus comes from `onRequestFocus` (``wireFocusOnClick(for:)``, ported verbatim
-/// from the old `PaneTreeView`), and on iOS from a `.simultaneousGesture(Tap)`.
+/// The move gesture lives on the small floating pill only, and the resize gesture only on the thin
+/// edge/corner grips — both plain `.gesture` (never `.highPriorityGesture`). The terminal body has NO
+/// ancestor gesture, so libghostty's own `mouseDown` (selection / mouse reporting) is never stolen;
+/// body focus comes from `onRequestFocus` (``wireFocusOnClick(for:)``), a remote-GUI pane focuses via
+/// its `RemotePaneContext.onActivate`, and on iOS from a `.simultaneousGesture(Tap)`.
 struct CanvasItemView: View {
     let item: CanvasItem
     let store: WorkspaceStore
     /// The named coordinate space of the canvas plane (so a drag translation is the canvas-space delta,
     /// 1:1 since the camera is a pure translate).
     let coordSpace: String
+
+    /// The viewport SIZE (frame-stable — changes only on window resize). The full snap environment
+    /// (sibling target frames + the visible canvas rect) is deliberately NOT a stored input: it would
+    /// change every pan/scroll frame and re-evaluate EVERY pane body per frame (the BUG-1/BUG-2 class).
+    /// Instead ``snapEnvironment()`` reads the store INSIDE the gesture closures at solve time —
+    /// closures run outside body evaluation, so no observation dependency is registered.
+    var viewportSize: CGSize = .zero
 
     /// Non-nil ⇒ this pane is MAXIMIZED: render at this fixed size (the full viewport minus a small
     /// inset) instead of ``CanvasItem/frame``, and suppress the live move/resize offset. The parent
@@ -64,58 +90,136 @@ struct CanvasItemView: View {
     /// crashed the app on repeated maximize/restore cycles.
     var displaySize: CGSize? = nil
 
-    /// Live drag-to-move preview (rigid `.offset`; auto-resets on gesture end). The committed move
-    /// lands via ``WorkspaceStore/movePane(_:by:)`` on `.onEnded`.
-    @GestureState private var moveLive: CGSize = .zero
-    /// Live resize preview — the previewed canvas-space frame, or `nil` when not resizing. Auto-resets
-    /// on gesture end; the committed frame lands via ``WorkspaceStore/resizePane(_:to:)``.
-    @GestureState private var resizeLive: CGRect?
+    /// Live drag-to-move preview — the full snapped resolution, or `nil` when not dragging / inside
+    /// the dead zone. Auto-resets on ANY gesture end/cancel (no stuck preview, no stuck guides); the
+    /// committed move lands via ``WorkspaceStore/movePane(_:by:)`` on `.onEnded`.
+    @GestureState private var movePreview: CanvasSnap.Resolution?
+    /// Live resize preview — the full snapped resolution, or `nil` when not resizing. Auto-resets on
+    /// gesture end; the committed frame lands via ``WorkspaceStore/resizePane(_:to:)``.
+    @GestureState private var resizePreview: CanvasSnap.Resolution?
+    /// Hysteresis mirrors: `.updating` chains `previous` through the gesture state itself, while
+    /// `.onChanged` maintains these PLAIN copies for `.onEnded` (which cannot read `@GestureState`) —
+    /// both sequences see chain_{n−1} per event, so they are identical by construction.
+    @State private var moveChain: CanvasSnap.Resolution?
+    @State private var resizeChain: CanvasSnap.Resolution?
+    /// The snap config the LAST preview solve actually used, replayed by the `.onEnded` commit —
+    /// without this, releasing ⌘ between the final drag event and mouse-up would re-poll the modifier
+    /// and commit a frame the user never previewed (preview ≢ commit).
+    @State private var moveConfig: CanvasSnap.Config?
+    @State private var resizeConfig: CanvasSnap.Config?
+    /// Whether the pill's action popover is open (toggled by the click branch of the pill gesture).
+    @State private var menuShown = false
+
+    /// Interaction prefs (shared with ``PaneMenuView``'s toggles — also the iOS snap-disable path).
+    @AppStorage("canvas.snapPanes") private var snapPanes = true
+    @AppStorage("canvas.snapGrid") private var snapGrid = true
 
     private var isFocused: Bool { store.isFocused(item.id) }
 
+    /// The borderless pane's corner rounding (the macOS floating-window look without a border).
+    private static let cornerRadius: CGFloat = 6
+    /// Below this travel a pill gesture is a CLICK; past it, a latched MOVE (touch jitter needs more).
+    #if os(macOS)
+    private static let dragDeadZone: CGFloat = 4
+    #else
+    private static let dragDeadZone: CGFloat = 10
+    #endif
+
     var body: some View {
         let maximized = displaySize != nil
-        // Maximized → fixed viewport size (parent centres us); otherwise the live-resize preview, else
-        // the persisted frame.
-        let shown = displaySize.map { CGRect(origin: .zero, size: $0) } ?? (resizeLive ?? item.frame)
-        // Keep the ANCHORED edge pinned during a resize: the parent positions us at the original
-        // frame's centre, so shift by the centre delta of the previewed frame (zero when not resizing),
-        // plus the rigid move preview. A maximized pane can't be moved/resized → no live offset.
-        let offsetX = maximized ? 0 : (shown.midX - item.frame.midX) + moveLive.width
-        let offsetY = maximized ? 0 : (shown.midY - item.frame.midY) + moveLive.height
+        // Maximized → fixed viewport size (parent centres us); otherwise the live snapped preview
+        // (resize wins — the two gestures are on disjoint regions and cannot run together), else the
+        // persisted frame.
+        let shown = displaySize.map { CGRect(origin: .zero, size: $0) }
+            ?? resizePreview?.frame
+            ?? movePreview?.frame
+            ?? item.frame
+        // The parent positions us at the PERSISTED frame's centre; shift by the previewed centre
+        // delta (move: the snapped translation; resize: keeps the anchored edge pinned). A maximized
+        // pane can't be moved/resized → no live offset.
+        let offsetX = maximized ? 0 : shown.midX - item.frame.midX
+        let offsetY = maximized ? 0 : shown.midY - item.frame.midY
+        let status = PanePresentation.connectionStatus(store.handle(for: item.id))
 
-        return PaneChromeView(
-            id: item.id,
-            spec: item.spec,
+        return PaneLeafView(
             handle: store.handle(for: item.id),
+            spec: item.spec,
             isFocused: isFocused,
-            isZoomed: store.workspace.maximizedPane == item.id,
+            focusCoordinator: store.focusCoordinator,
             store: store,
-            moveHandleGesture: AnyGesture(moveGesture.map { _ in () })
-        ) {
-            PaneLeafView(
-                handle: store.handle(for: item.id),
-                spec: item.spec,
-                isFocused: isFocused,
-                focusCoordinator: store.focusCoordinator,
-                store: store
-            )
-        }
+            // The dead scrim (below) carries the failure reason + the reconnect tap for the SAME
+            // states — suppress the in-leaf orange banner so the pane doesn't say it twice (the
+            // neutral "Session ended" banner is untouched; the scrim never shows for it).
+            suppressFailureBanner: PaneDeadScrim.isShown(status)
+        )
+        // Maximized: inset the content below the pill so the terminal's FIRST ROW (where the prompt
+        // lives) is never occluded by it. Geometry-only (same view identity — guardrail 2 safe).
+        .padding(.top, maximized ? 34 : 0)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .frame(width: shown.width, height: shown.height)   // resize previews live (intended reflow)
         #if os(macOS)
-        // BUG-2: catch a scroll over the pane CHROME (header / focus-ring border / padding) and pan the
-        // canvas, instead of the opaque chrome swallowing it. Behind the content, so the video/terminal
-        // NSView (in front) still gets — and forwards — its own scroll. The resize-grip PERIMETER is the
-        // OVERLAY in front of this, so its grips forward via `gripBase` (below); together they make the
-        // whole pane pan like empty space.
+        // BUG-2: catch a scroll over any non-NSView pane region (placeholder / padding) and pan the
+        // canvas, instead of it being swallowed. Behind the content, so the video/terminal NSView (in
+        // front) still gets — and forwards — its own scroll. The resize-grip PERIMETER is the OVERLAY
+        // in front of this, so its grips forward via `gripBase` (below); together they make the whole
+        // pane pan like empty space.
         .background { ScrollPanForwarder(store: store) }
         #endif
+        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        // The pane's only remaining "chrome": a soft drop shadow that separates the borderless pane
+        // from the canvas (stronger on the focused pane — the key-window idiom, and a focus cue now
+        // that the ring border is gone). Drawn on a STATIC rounded rect BEHIND the content — never
+        // `.shadow` on the live terminal/video layer itself, which would add an offscreen shadow pass
+        // to every 60fps repaint.
+        .background {
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .fill(.background)
+                .shadow(color: .black.opacity(isFocused ? 0.30 : 0.15),
+                        radius: isFocused ? 20 : 8, x: 0, y: isFocused ? 6 : 2)
+        }
+        // Terminal connection failure dims the (stale) body into a big "click to reconnect" target.
+        // Declared BEFORE the grips + pill: the perimeter must keep RESIZING a dead pane (the grips
+        // win hit-testing where they overlap the scrim's edge), and the pill stays usable above it.
+        .overlay {
+            if PaneDeadScrim.isShown(status) {
+                PaneDeadScrim(status: status, store: store) { store.reconnect(item.id) }
+                    .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+            }
+        }
         .overlay { resizeHandles }
+        // The floating pill, frontmost (declared last → wins hit-testing over the top-edge grip
+        // sliver it overlaps — the same declared-last-wins pattern the corner grips use).
+        .overlay(alignment: .top) { pill(maximized: maximized) }
+        // The smart-snap alignment guides of OUR in-flight drag, item-local: they live in the gesture
+        // state, so a cancelled gesture cleans them up by construction. Gated off while maximized —
+        // a maximize mid-drag does NOT cancel the in-flight gesture (identity survives by design), so
+        // a frozen preview must not paint guides over the maximized pane.
+        .overlay {
+            if displaySize == nil, let resolution = resizePreview ?? movePreview, !resolution.guides.isEmpty {
+                SnapGuideOverlay(guides: resolution.guides, origin: shown.origin)
+            }
+        }
         .offset(x: offsetX, y: offsetY)
         // NOTE: the dragged pane floats above its siblings via the OUTER `.zIndex` in CanvasView (sibling
         // stacking lives there) — driven by `store.isFocused`, which the move/resize gestures set at drag
         // START (`raiseOnGestureStart`). A `.zIndex` here would be inert (no siblings at this level).
         .onAppear { wireFocusOnClick(for: item.id) }
+        // A maximize toggle mid-drag does NOT cancel the in-flight gesture (the pane keeps its SwiftUI
+        // identity by design — guardrail 2), but every gesture closure guards itself out while
+        // maximized; this drops the plain-@State mirrors so no stale hysteresis token / config can
+        // leak into the next drag (the proven livePan repair pattern).
+        .onChange(of: store.workspace.maximizedPane) { _, _ in
+            moveChain = nil
+            resizeChain = nil
+            moveConfig = nil
+            resizeConfig = nil
+        }
+        // General cancellation repair: ANY gesture that dies without `.onEnded` (system cancel, view
+        // dismantle) auto-resets the preview to nil — mirror that into the chain, or the NEXT pill
+        // gesture would see a stale non-nil chain, bypass the dead-zone click branch, and commit a
+        // zero-distance "move" instead of opening the menu.
+        .onChange(of: movePreview == nil) { _, gone in if gone { moveChain = nil; moveConfig = nil } }
+        .onChange(of: resizePreview == nil) { _, gone in if gone { resizeChain = nil; resizeConfig = nil } }
         #if os(iOS)
         // Absorb a touch on the body → focus this pane AND block the background pan from firing under
         // it (the bottom Color.clear pan layer never sees a touch that lands on a pane).
@@ -123,16 +227,129 @@ struct CanvasItemView: View {
         #endif
     }
 
+    // MARK: The pill (move/menu affordance — the header's replacement)
+
+    @ViewBuilder
+    private func pill(maximized: Bool) -> some View {
+        FloatingPaneHandle(
+            id: item.id,
+            spec: item.spec,
+            handle: store.handle(for: item.id),
+            isFocused: isFocused,
+            isMaximized: maximized,
+            store: store,
+            menuShown: $menuShown
+        )
+        .gesture(pillGesture)
+        .padding(.top, 6)
+    }
+
     // MARK: Gestures
 
-    /// Drag-to-move: live rigid preview via `@GestureState`, ONE commit on `.onEnded` (which also
-    /// raises + focuses). The translation is read in the canvas coordinate space (1:1 → it IS the
-    /// canvas delta). Attached to the header only (passed into ``PaneChromeView``).
-    private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 2, coordinateSpace: .named(coordSpace))
-            .updating($moveLive) { value, state, _ in state = value.translation }
-            .onChanged { _ in raiseOnGestureStart() }
-            .onEnded { value in store.movePane(item.id, by: value.translation) }
+    /// The smart-snap config for the CURRENT solve: the menu toggles select the classes; holding ⌘
+    /// (macOS) disables everything for a free drag (polled per solve — DragGesture carries no
+    /// modifiers — so pressing/releasing ⌘ mid-drag takes effect on the next pixel of travel).
+    private var snapConfig: CanvasSnap.Config {
+        #if os(macOS)
+        if NSEvent.modifierFlags.contains(.command) { return .disabled }
+        #endif
+        var config = CanvasSnap.Config()
+        config.snapsToPanes = snapPanes
+        config.snapsToGrid = snapGrid
+        return config
+    }
+
+    /// The smart-snap inputs, read AT SOLVE TIME inside the gesture closures (never a body input —
+    /// the visible canvas rect changes every pan frame, and as a stored property it would re-evaluate
+    /// every pane body per frame, the BUG-1/BUG-2 re-render class). Reading the `@Observable` store
+    /// here registers no observation dependency (closures run outside body evaluation). `livePan` is
+    /// deliberately ignored: a background-drag pan cannot be concurrent with a pill/grip drag (one
+    /// pointer); the wheel-scroll offset IS folded in, keeping viewport-edge snapping honest mid-drag.
+    private func snapEnvironment() -> (targets: [CGRect], viewport: CGRect?) {
+        let camera = store.workspace.canvas.camera
+        guard viewportSize.width > 0, viewportSize.height > 0 else { return ([], nil) }
+        let viewport = CGRect(
+            origin: CGPoint(x: camera.origin.x - store.liveCameraOffset.width,
+                            y: camera.origin.y - store.liveCameraOffset.height),
+            size: viewportSize
+        )
+        // Snapping to far-off-screen panes would be invisible surprise; a small margin keeps
+        // almost-visible neighbours snappable.
+        let region = viewport.insetBy(dx: -200, dy: -200)
+        let targets = store.workspace.canvas.items
+            .filter { $0.id != item.id && $0.frame.intersects(region) }
+            .map(\.frame)
+        return (targets, viewport)
+    }
+
+    /// The pill's single gesture: dead-zone-latched drag-to-move with a click branch.
+    /// `minimumDistance: 0` so a plain mouse-down is OURS from the first event (no second recognizer
+    /// to race); the dead zone keeps a click from nudging the pane, and the latch (preview != nil)
+    /// keeps a drag that returns near its origin from opening the menu.
+    private var pillGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordSpace))
+            .updating($movePreview) { value, state, _ in
+                // Maximized: click-only — and CLEAR a preview frozen by a maximize-mid-drag (the
+                // gesture itself is never cancelled; identity survives by design).
+                guard displaySize == nil else { state = nil; return }
+                if state == nil, !Self.pastDeadZone(value.translation) { return }
+                let (targets, viewport) = snapEnvironment()
+                state = CanvasSnap.move(
+                    item.frame.offsetBy(dx: value.translation.width, dy: value.translation.height),
+                    others: targets, viewport: viewport,
+                    config: snapConfig, previous: state
+                )
+            }
+            .onChanged { value in
+                guard displaySize == nil else { return }
+                if moveChain == nil, !Self.pastDeadZone(value.translation) { return }
+                raiseOnGestureStart()
+                let (targets, viewport) = snapEnvironment()
+                let config = snapConfig
+                moveConfig = config
+                moveChain = CanvasSnap.move(
+                    item.frame.offsetBy(dx: value.translation.width, dy: value.translation.height),
+                    others: targets, viewport: viewport,
+                    config: config, previous: moveChain
+                )
+            }
+            .onEnded { value in
+                let chain = moveChain
+                let config = moveConfig ?? snapConfig
+                moveChain = nil
+                moveConfig = nil
+                // Maximized: a click opens the menu; a DRAG does nothing (the pane cannot move, and
+                // surprising the user with the menu after a drag would be worse than a no-op).
+                if displaySize != nil {
+                    if !Self.pastDeadZone(value.translation) {
+                        store.focus(item.id)
+                        menuShown.toggle()
+                    }
+                    return
+                }
+                // CLICK: never latched into a move.
+                if chain == nil, !Self.pastDeadZone(value.translation) {
+                    store.focus(item.id)
+                    menuShown.toggle()
+                    return
+                }
+                // MOVE: one commit, recomputed from the RAW final translation with the last chain
+                // token AND the last previewed config — identical to the last preview (the solver is
+                // idempotent at a fixed input, and the config can't drift under a ⌘ release).
+                let (targets, viewport) = snapEnvironment()
+                let final = CanvasSnap.move(
+                    item.frame.offsetBy(dx: value.translation.width, dy: value.translation.height),
+                    others: targets, viewport: viewport,
+                    config: config, previous: chain
+                )
+                store.movePane(item.id, by: CGSize(width: final.frame.minX - item.frame.minX,
+                                                   height: final.frame.minY - item.frame.minY))
+            }
+    }
+
+    private static func pastDeadZone(_ translation: CGSize) -> Bool {
+        translation.width * translation.width + translation.height * translation.height
+            >= dragDeadZone * dragDeadZone
     }
 
     /// Floats this pane to the top the instant a move/resize drag begins (so it is never occluded by a
@@ -143,19 +360,50 @@ struct CanvasItemView: View {
         if !store.isFocused(item.id) { store.raisePane(item.id) }
     }
 
-    /// 8-anchor resize for `anchor`: live `.frame` preview (deliberately reflows for native feel), ONE
-    /// commit on `.onEnded`. The downstream `sendResize` dedup + host resize-debounce absorb the
-    /// intermediate sizes, so only the final frame is persisted.
+    /// 8-anchor resize for `anchor`: live `.frame` preview (deliberately reflows for native feel) with
+    /// the moving edge(s) magnetic via ``CanvasSnap/resize``, ONE commit on `.onEnded`. The downstream
+    /// `sendResize` dedup + host resize-debounce absorb the intermediate sizes, so only the final
+    /// frame is persisted.
     private func resizeGesture(_ anchor: ResizeAnchor) -> some Gesture {
         DragGesture(minimumDistance: 2, coordinateSpace: .named(coordSpace))
-            .updating($resizeLive) { value, state, _ in
-                state = CanvasGeometry.resizing(item.frame, anchor: anchor, by: value.translation, minSize: Canvas.minItemSize)
+            .updating($resizePreview) { value, state, _ in
+                // The grips are hit-disabled while maximized, but an IN-FLIGHT resize survives a
+                // maximize toggle (the gesture is never cancelled) — guard every closure so it can
+                // neither keep previewing nor commit onto the hidden restore frame.
+                guard displaySize == nil else { state = nil; return }
+                state = resizeResolution(anchor, translation: value.translation,
+                                         config: snapConfig, previous: state)
             }
-            .onChanged { _ in raiseOnGestureStart() }
+            .onChanged { value in
+                guard displaySize == nil else { return }
+                raiseOnGestureStart()
+                let config = snapConfig
+                resizeConfig = config
+                resizeChain = resizeResolution(anchor, translation: value.translation,
+                                               config: config, previous: resizeChain)
+            }
             .onEnded { value in
-                let f = CanvasGeometry.resizing(item.frame, anchor: anchor, by: value.translation, minSize: Canvas.minItemSize)
-                store.resizePane(item.id, to: f)
+                let chain = resizeChain
+                let config = resizeConfig ?? snapConfig
+                resizeChain = nil
+                resizeConfig = nil
+                guard displaySize == nil else { return }
+                store.resizePane(item.id, to: resizeResolution(anchor, translation: value.translation,
+                                                               config: config, previous: chain).frame)
             }
+    }
+
+    /// Geometry-resize then snap: the pure pipeline shared by the live preview and the commit.
+    private func resizeResolution(
+        _ anchor: ResizeAnchor,
+        translation: CGSize,
+        config: CanvasSnap.Config,
+        previous: CanvasSnap.Resolution?
+    ) -> CanvasSnap.Resolution {
+        let raw = CanvasGeometry.resizing(item.frame, anchor: anchor, by: translation, minSize: Canvas.minItemSize)
+        let (targets, viewport) = snapEnvironment()
+        return CanvasSnap.resize(raw, anchor: anchor, others: targets, viewport: viewport,
+                                 config: config, previous: previous)
     }
 
     // MARK: Resize handles
@@ -240,6 +488,58 @@ struct CanvasItemView: View {
             // terminal is smooth and never thrashes the canvas re-render cascade (BUG-2/BUG-1 fix).
             store?.scrollPan(by: delta)
         }
+    }
+}
+
+// MARK: - SnapGuideOverlay (the alignment guides of OUR in-flight drag)
+
+/// Renders the active ``CanvasSnap/Guide``s in the dragged pane's LOCAL coordinate space: local (0,0)
+/// corresponds to the previewed (snapped) frame's top-leading corner, so `local = canvas −
+/// previewOrigin` exactly. Guides routinely extend OUTSIDE the pane's bounds (they span the aligned
+/// neighbours) — nothing here clips, the canvas clips only at the viewport, and the dragged pane is
+/// focused (zIndex 1_000_000) so the lines render above every sibling. Solid 1pt accent lines;
+/// centre-alignment guides draw dashed (the Keynote distinction). No animation — animated guides read
+/// as lag. Never hit-testable.
+private struct SnapGuideOverlay: View {
+    let guides: [CanvasSnap.Guide]
+    /// The previewed frame's origin (canvas space) — the local-space anchor.
+    let origin: CGPoint
+
+    /// Visual overshoot past the guide's true span at each end (Figma-style).
+    private static let overshoot: CGFloat = 16
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(guides, id: \.self) { guide in
+                let vertical = guide.orientation == .vertical
+                let length = guide.end - guide.start + Self.overshoot * 2
+                GuideLineShape(vertical: vertical)
+                    .stroke(Color.accentColor.opacity(0.9),
+                            style: StrokeStyle(lineWidth: 1, dash: guide.kind == .center ? [4, 3] : []))
+                    .frame(width: vertical ? 1 : length, height: vertical ? length : 1)
+                    .position(
+                        x: vertical ? guide.position - origin.x : (guide.start + guide.end) / 2 - origin.x,
+                        y: vertical ? (guide.start + guide.end) / 2 - origin.y : guide.position - origin.y
+                    )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// A 1-D line through the middle of its frame (strokable with a dash, unlike a filled Rectangle).
+private struct GuideLineShape: Shape {
+    let vertical: Bool
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        if vertical {
+            path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        } else {
+            path.move(to: CGPoint(x: rect.minX, y: rect.midY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        }
+        return path
     }
 }
 #endif

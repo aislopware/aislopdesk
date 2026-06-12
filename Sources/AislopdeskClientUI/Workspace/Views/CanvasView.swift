@@ -24,6 +24,9 @@ struct CanvasView: View {
     /// only `.onEnded` / a scroll step commits via ``WorkspaceStore/commitCamera(_:)``.
     @State private var livePan: CGSize = .zero
 
+    /// Whether the background dot grid renders (the ``PaneMenuView`` "Show Grid" toggle).
+    @AppStorage("canvas.showGrid") private var showGrid = true
+
     private static let coordSpace = "canvas"
     /// Outward padding of a group's bounding box around its panes (so the frame doesn't touch the panes).
     private static let groupPadding: CGFloat = 16
@@ -40,6 +43,18 @@ struct CanvasView: View {
                 // Background pan/scroll catcher — only when NOT maximized (a maximized pane can't be panned).
                 if maxID == nil {
                     backgroundPanLayer(camera: camera)
+                    // The dot grid (every dot an honest snap site — 32pt dots over the 16pt snap
+                    // quantum), riding the SAME total offset the content applies so the dots are
+                    // pinned to canvas space. Non-interactive AND not an NSView — every event falls
+                    // through to the pan catcher below / the panes above.
+                    if showGrid {
+                        CanvasGridLayer(
+                            offset: CGSize(width: -camera.origin.x + livePan.width + store.liveCameraOffset.width,
+                                           height: -camera.origin.y + livePan.height + store.liveCameraOffset.height),
+                            viewport: geo.size
+                        )
+                        .allowsHitTesting(false)
+                    }
                 }
                 // ONE always-mounted content path: maximize is per-item GEOMETRY (the maximized pane is
                 // sized to the viewport, the others hidden-but-mounted), NOT a separate full-screen
@@ -99,6 +114,7 @@ struct CanvasView: View {
                     ? CGPoint(x: camera.origin.x + viewport.width / 2, y: camera.origin.y + viewport.height / 2)
                     : CGPoint(x: item.frame.midX, y: item.frame.midY)
                 CanvasItemView(item: item, store: store, coordSpace: Self.coordSpace,
+                               viewportSize: viewport,
                                displaySize: isMax ? maxSize : nil)
                     .position(x: pos.x, y: pos.y)
                     // Maximized pane on top of everything; otherwise the focused pane renders above the
@@ -207,6 +223,80 @@ struct CanvasView: View {
             store.updateViewportMembership(CanvasGeometry.viewportMembers(canvas.items, camera: camera, viewport: size))
             store.updateSolvedLayout(canvas.solvedLayout())   // canvas-space; FocusResolver consumes unchanged
         }
+    }
+}
+
+// MARK: - CanvasGridLayer (the dot grid riding the camera)
+
+/// The canvas background dot grid: 2pt dots every 32pt of CANVAS space — 2× the 16pt snap quantum
+/// (and the 16pt gutter), so every dot is an honest snap site and gutter-tiled panes sit exactly half
+/// a cell apart. A snapped pane's origin visibly lands on the lattice.
+///
+/// Cheap by construction for 60fps pans: the `SwiftUI.Canvas` draws ONE over-sized static tile
+/// (viewport + one spacing on each side) whose content depends only on its size + colour scheme — the
+/// per-frame pan only changes the `.offset` (a GPU transform, `offset mod spacing`, pixel-rounded so
+/// the dots never shimmer between pixel boundaries), never re-running the draw closure.
+private struct CanvasGridLayer: View {
+    /// The SAME total content offset ``CanvasView`` applies (−camera.origin + live pan/scroll).
+    let offset: CGSize
+    let viewport: CGSize
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+
+    /// Dot pitch — 2 × ``CanvasSnap/Config/gridSpacing`` (the dots are the visible super-grid of the
+    /// snap quantum; phase math stays exact because the quantum divides the pitch).
+    static let spacing: CGFloat = 32
+
+    var body: some View {
+        let s = Self.spacing
+        // The tile itself is an EquatableView whose inputs are frame-stable during a pan (size
+        // changes only on window resize; opacity only on a colour-scheme flip) — so the per-frame
+        // offset below diffs the tile as unchanged and the dot drawing never re-runs.
+        DotGridTile(
+            size: CGSize(width: viewport.width + 2 * s, height: viewport.height + 2 * s),
+            // Dark canvases swallow contrast — and with no pane borders the dots also help separate
+            // near-black terminal panes from the background.
+            opacity: colorScheme == .dark ? 0.11 : 0.07
+        )
+        .equatable()
+        .offset(x: phase(offset.width, s), y: phase(offset.height, s))
+    }
+
+    /// The tile offset for a content offset `value`: the positive residue mod `spacing`, shifted one
+    /// tile up-left so the over-sized tile always covers the viewport, and rounded to the PIXEL grid
+    /// (not the point grid) so a fractional pan never lands dots between pixels (shimmer/moiré).
+    private func phase(_ value: CGFloat, _ spacing: CGFloat) -> CGFloat {
+        let m = (value.truncatingRemainder(dividingBy: spacing) + spacing).truncatingRemainder(dividingBy: spacing)
+        let scale = max(1, displayScale)
+        return ((m - spacing) * scale).rounded() / scale
+    }
+}
+
+/// The static dot tile: pure function of (size, opacity), `Equatable` so SwiftUI provably skips the
+/// draw closure while only the parent's `.offset` changes per pan frame.
+private struct DotGridTile: View, Equatable {
+    let size: CGSize
+    let opacity: Double
+
+    private static let dotRadius: CGFloat = 1
+
+    var body: some View {
+        SwiftUI.Canvas { context, canvasSize in
+            var path = Path()
+            var y: CGFloat = 0
+            while y <= canvasSize.height {
+                var x: CGFloat = 0
+                while x <= canvasSize.width {
+                    path.addEllipse(in: CGRect(x: x - Self.dotRadius, y: y - Self.dotRadius,
+                                               width: Self.dotRadius * 2, height: Self.dotRadius * 2))
+                    x += CanvasGridLayer.spacing
+                }
+                y += CanvasGridLayer.spacing
+            }
+            context.fill(path, with: .color(.primary.opacity(opacity)))
+        }
+        .frame(width: size.width, height: size.height)
     }
 }
 

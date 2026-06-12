@@ -44,6 +44,11 @@ public struct WorkspaceCommands: Commands {
             Button("Command Palette") { paletteToggle?.toggle() }
                 .keyboardShortcut("k", modifiers: .command)
                 .disabled(paletteToggle == nil)
+            Divider()
+            // The canvas interaction prefs, surfaced app-globally for discoverability — the SAME
+            // @AppStorage keys the per-pane pill menu toggles, so the two surfaces cannot drift.
+            // Bound Toggles render as native checkmarked menu items.
+            SnapPreferenceToggles()
         }
         // The Pane menu reads as a workspace-level menu alongside the OS chrome. `CommandMenu`'s
         // trailing closure is a `@ViewBuilder` (Buttons + Dividers), not nested `Commands` — every
@@ -108,6 +113,24 @@ public struct WorkspaceCommands: Commands {
     /// `KeyboardShortcut`; `nil` when `command` has no default binding.
     private static func shortcut(for command: WorkspaceCommand) -> KeyboardShortcut? {
         CommandInterpreter.defaultBindings.first { $0.value == command }?.key.shortcut
+    }
+}
+
+// MARK: - Snap preference toggles (View menu)
+
+/// The canvas smart-snap / grid prefs as menu Toggles. A tiny standalone view so the `@AppStorage`
+/// bindings live in a `View` context (a `Commands` struct cannot host them directly); the keys are
+/// shared verbatim with ``PaneMenuView``'s in-popover toggles and ``CanvasItemView``/``CanvasView``'s
+/// consumers. On macOS, hold ⌘ during a drag for a one-off bypass.
+private struct SnapPreferenceToggles: View {
+    @AppStorage("canvas.snapPanes") private var snapPanes = true
+    @AppStorage("canvas.snapGrid") private var snapGrid = true
+    @AppStorage("canvas.showGrid") private var showGrid = true
+
+    var body: some View {
+        Toggle("Snap to Panes", isOn: $snapPanes)
+        Toggle("Snap to Grid", isOn: $snapGrid)
+        Toggle("Show Grid", isOn: $showGrid)
     }
 }
 
