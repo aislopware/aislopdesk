@@ -828,6 +828,40 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    // MARK: - Workspace export / import (portable backup / share)
+
+    /// Encodes the current workspace to a portable document (host connection stripped, ephemeral panes
+    /// stripped) — what the `.fileExporter` writes to disk.
+    public func exportWorkspaceData() -> Data {
+        WorkspaceTransfer.export(persistableWorkspace())
+    }
+
+    /// Imports a workspace document, REPLACING the live canvas (backup-restore / load-a-shared-setup). The
+    /// local host connection is KEPT (never adopt the file's). Returns whether the bytes were a valid
+    /// document; a hostile / foreign / future file leaves the live workspace untouched and returns `false`.
+    @discardableResult
+    public func importWorkspace(_ data: Data) -> Bool {
+        guard let imported = WorkspaceTransfer.decode(data) else { return false }
+        // An absolute swap of the whole tree — drop any in-flight live scroll (mirrors switchToLayoutPreset).
+        discardLiveScroll()
+        // Re-mint any imported pane id that collides with a CURRENT (possibly still-tearing-down) id, so the
+        // async-teardown race can't drop a freshly-materialized session (same rule as switchToLayoutPreset /
+        // reopen). dedupingItemIDs preserves each item's groupID, so group membership survives the re-mint.
+        var seen = Set(workspace.canvas.allIDs())
+        var ws = imported
+        ws.canvas = ws.canvas.dedupingItemIDs(seen: &seen)
+        ws.connection = workspace.connection            // keep the local host; never adopt the imported one
+        ws.maximizedPane = nil
+        // A re-minted focus id no longer exists → normalizingFocus repoints it to the first pane.
+        workspace = ws.normalizingFocus().normalizingGroups()
+        pendingClose = nil
+        pendingRename = nil
+        overviewActive = false
+        clearSelection()
+        reconcile()
+        return true
+    }
+
     /// Runs snippet `id`: resolves its `{{placeholders}}` from `values`, parses `<Token>` control keys to
     /// bytes, and feeds the result into the BROADCAST targets when broadcast is armed, else the focused
     /// pane. Returns how many panes it reached (0 = unknown id / empty body / no text-capable target).
