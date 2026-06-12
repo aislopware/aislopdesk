@@ -723,6 +723,65 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    /// The panes an Arrange (align / distribute) op targets: the multi-selection when ≥2 are selected,
+    /// else every pane on the canvas (so "Align Left" with no selection tidies the whole canvas edge).
+    func arrangeTargets() -> [PaneID] {
+        if selectedPanes.count >= 2 { return workspace.canvas.allIDs().filter { selectedPanes.contains($0) } }
+        return workspace.canvas.allIDs()
+    }
+
+    /// Aligns the Arrange targets to a shared edge/centre (the Pane ▸ Arrange menu).
+    public func alignPanes(to edge: AlignEdge) {
+        workspace.canvas = workspace.canvas.aligning(arrangeTargets(), to: edge)
+        reconcile()
+    }
+
+    /// Distributes the Arrange targets with equal gaps along an axis.
+    public func distributePanes(horizontal: Bool) {
+        workspace.canvas = workspace.canvas.distributing(arrangeTargets(), horizontal: horizontal)
+        reconcile()
+    }
+
+    // MARK: - Multi-selection (shift-click to select several panes)
+
+    /// The set of panes in the multi-selection (besides the single focused pane) — pure view state,
+    /// never reconciles or persists. Drives the Arrange ops' target set and a group move-together drag.
+    /// Empty = single-focus mode. Always a subset of the live canvas.
+    public private(set) var selectedPanes: Set<PaneID> = []
+
+    /// Toggles `id` in the multi-selection (shift-click on a pill). Toggling the SOLE selected pane off
+    /// clears the set. Ignores ids not on the canvas.
+    public func toggleSelection(_ id: PaneID) {
+        guard workspace.canvas.contains(id) else { return }
+        if selectedPanes.contains(id) { selectedPanes.remove(id) } else { selectedPanes.insert(id) }
+    }
+
+    /// Replaces the selection with exactly `ids` (clamped to live panes). `[]` clears it.
+    public func setSelection(_ ids: Set<PaneID>) {
+        selectedPanes = ids.filter { workspace.canvas.contains($0) }
+    }
+
+    /// Clears the multi-selection (a background click / Esc).
+    public func clearSelection() {
+        if !selectedPanes.isEmpty { selectedPanes = [] }
+    }
+
+    /// Whether `id` is in the multi-selection (the pill's selected cue).
+    public func isSelected(_ id: PaneID) -> Bool { selectedPanes.contains(id) }
+
+    /// Moves EVERY selected pane by `delta` (a group drag-to-move-together commit), raising the dragged
+    /// `anchor`. No-op when the selection is empty or `anchor` isn't selected (fall back to a single move).
+    public func moveSelection(by delta: CGSize, anchor: PaneID) {
+        guard selectedPanes.contains(anchor), selectedPanes.count > 1 else { return }
+        var canvas = workspace.canvas
+        for id in selectedPanes where canvas.contains(id) {
+            canvas = canvas.moving(id, by: delta)
+        }
+        workspace.canvas = canvas.raising(anchor)
+        workspace.focusedPane = anchor
+        reconcile()
+    }
+
     // MARK: - Overview (fit-all peek)
 
     /// Whether the temporary "see every pane at once" overview is showing (⌘\). Pure view-presentation
@@ -1211,6 +1270,12 @@ public final class WorkspaceStore {
     private func reconcile() {
         let leafIDs = allLeafIDs()
         let leafSet = Set(leafIDs)
+
+        // Prune the multi-selection to live panes (a closed/switched-away pane drops out) so the Arrange
+        // ops and the group drag never reference a ghost. Cheap small-set intersection.
+        if !selectedPanes.isEmpty, !selectedPanes.isSubset(of: leafSet) {
+            selectedPanes.formIntersection(leafSet)
+        }
 
         // 1. Orphans: remove from the registry synchronously (the registry is the source of truth for
         //    "what is live"), then drive teardown. Removing first guarantees the invariant holds the

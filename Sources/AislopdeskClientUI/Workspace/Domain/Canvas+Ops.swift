@@ -175,6 +175,71 @@ public extension Canvas {
     }
 }
 
+// MARK: - Arrange: align + distribute (pure)
+
+/// Which edge/centre the panes are aligned to.
+public enum AlignEdge: Sendable, CaseIterable { case left, right, top, bottom, centerHorizontal, centerVertical }
+
+public extension Canvas {
+    /// Aligns the panes named by `ids` to the shared edge/centre of THEIR bounding box (Figma's
+    /// align-left / align-centre / …). Only the moved axis changes; the perpendicular axis and every
+    /// size stay put. Panes not in `ids` are untouched. No-op for fewer than 2 targets.
+    func aligning(_ ids: [PaneID], to edge: AlignEdge) -> Canvas {
+        let targets = items.filter { ids.contains($0.id) }
+        guard targets.count >= 2 else { return self }
+        let box = targets.dropFirst().reduce(targets[0].frame) { $0.union($1.frame) }
+        let idSet = Set(ids)
+        return Canvas(items: items.map { item in
+            guard idSet.contains(item.id) else { return item }
+            var copy = item
+            var f = item.frame
+            switch edge {
+            case .left:             f.origin.x = box.minX
+            case .right:            f.origin.x = box.maxX - f.width
+            case .top:              f.origin.y = box.minY
+            case .bottom:           f.origin.y = box.maxY - f.height
+            case .centerHorizontal: f.origin.x = box.midX - f.width / 2
+            case .centerVertical:   f.origin.y = box.midY - f.height / 2
+            }
+            copy.frame = Canvas.sanitize(f)
+            return copy
+        }, camera: camera)
+    }
+
+    /// Distributes the panes named by `ids` so the GAPS between adjacent panes along `horizontal`/
+    /// vertical are equal (Figma's distribute-spacing). The two extreme panes stay put; the interior
+    /// ones move. No-op for fewer than 3 targets (nothing interior to redistribute).
+    func distributing(_ ids: [PaneID], horizontal: Bool) -> Canvas {
+        let targets = items.filter { ids.contains($0.id) }
+        guard targets.count >= 3 else { return self }
+        // Sort by the leading edge along the axis.
+        let sorted = targets.sorted { a, b in
+            horizontal ? a.frame.minX < b.frame.minX : a.frame.minY < b.frame.minY
+        }
+        let span = horizontal
+            ? (sorted.last!.frame.maxX - sorted.first!.frame.minX)
+            : (sorted.last!.frame.maxY - sorted.first!.frame.minY)
+        let sumSizes = sorted.reduce(CGFloat(0)) { $0 + (horizontal ? $1.frame.width : $1.frame.height) }
+        let gap = (span - sumSizes) / CGFloat(sorted.count - 1)
+        // Place each from the first's leading edge, cursor advancing by size + gap.
+        var cursor = horizontal ? sorted.first!.frame.minX : sorted.first!.frame.minY
+        var newOrigin: [PaneID: CGFloat] = [:]
+        for item in sorted {
+            newOrigin[item.id] = cursor
+            cursor += (horizontal ? item.frame.width : item.frame.height) + gap
+        }
+        let idSet = Set(ids)
+        return Canvas(items: items.map { item in
+            guard idSet.contains(item.id), let lead = newOrigin[item.id] else { return item }
+            var copy = item
+            var f = item.frame
+            if horizontal { f.origin.x = lead } else { f.origin.y = lead }
+            copy.frame = Canvas.sanitize(f)
+            return copy
+        }, camera: camera)
+    }
+}
+
 // MARK: - Camera / arrange (pure)
 
 public extension Canvas {

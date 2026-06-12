@@ -102,6 +102,7 @@ public struct WorkspaceCommands: Commands {
         commandButton("Center on Pane", .centerFocusedPane)
         commandButton("Center on All", .centerAll)
         commandButton("Tidy Layout", .tidy)
+        arrangeMenu
 
         Divider()
 
@@ -156,6 +157,24 @@ public struct WorkspaceCommands: Commands {
                 .modifier(OptionalShortcut(Self.shortcut(for: .saveBookmark(n))))
             }
         }
+    }
+
+    /// Align + distribute the Arrange targets (the multi-selection when ≥2 selected, else all panes).
+    /// Direct store calls (no chords needed); the items disable when no store is key.
+    @ViewBuilder
+    private var arrangeMenu: some View {
+        Menu("Arrange") {
+            Button("Align Left") { store?.alignPanes(to: .left) }
+            Button("Align Right") { store?.alignPanes(to: .right) }
+            Button("Align Top") { store?.alignPanes(to: .top) }
+            Button("Align Bottom") { store?.alignPanes(to: .bottom) }
+            Button("Align Center Horizontally") { store?.alignPanes(to: .centerHorizontal) }
+            Button("Align Center Vertically") { store?.alignPanes(to: .centerVertical) }
+            Divider()
+            Button("Distribute Horizontally") { store?.distributePanes(horizontal: true) }
+            Button("Distribute Vertically") { store?.distributePanes(horizontal: false) }
+        }
+        .disabled(store == nil)
     }
 
     // MARK: - Item builder
