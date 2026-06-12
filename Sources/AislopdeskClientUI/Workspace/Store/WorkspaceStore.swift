@@ -351,6 +351,29 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    /// Adds a `.remoteGUI` pane PRE-BOUND to host window `windowID` (the ⌘K palette host-window result):
+    /// the spec carries the video endpoint, so the pane streams immediately — skipping the
+    /// create-then-pick two-step. Placed/focused/in-view exactly like ``addPane(kind:inGroup:)``; the
+    /// video cap is still enforced at activation (the pane shows the gated placeholder if saturated).
+    /// Returns the new pane id.
+    @discardableResult
+    public func addRemoteWindowPane(windowID: UInt32, title: String, appName: String) -> PaneID {
+        let label = title.isEmpty ? (appName.isEmpty ? "Remote window" : appName) : title
+        let spec = PaneSpec(kind: .remoteGUI, title: label,
+                            video: VideoEndpoint(windowID: windowID, title: label, appName: appName))
+        let viewport = lastViewport
+        let (canvas, id) = workspace.canvas.adding(spec, near: workspace.focusedPane, viewport: viewport)
+        workspace.canvas = canvas
+        workspace.focusedPane = id
+        if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
+        let visible = CGRect(origin: workspace.canvas.camera.origin, size: viewport)
+        if let f = workspace.canvas.frame(of: id), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
+            workspace.canvas = workspace.canvas.centered(on: id, viewport: viewport)
+        }
+        reconcile()
+        return id
+    }
+
     /// Closes pane `id`. Focus re-points to a surviving neighbour; closing the LAST pane leaves an empty
     /// canvas (the "Add a pane" empty state). Reconcile tears down the removed session.
     public func closePane(_ id: PaneID) {
