@@ -742,6 +742,29 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    // MARK: - Clipboard history ring
+
+    /// Recent clipboard texts, most-recent-first (non-persisted session state — clipboard history is
+    /// transient and often sensitive). Fed by the macOS clipboard monitor and by every paste-as-
+    /// keystrokes; the pill's "Paste Recent" submenu replays any entry into a remote pane.
+    public private(set) var clipboardRing: [String] = []
+    /// How many clips to keep.
+    public static let clipboardRingCap = 20
+
+    /// Records `text` at the front of the ring (deduped — a repeat moves to front), capped at
+    /// ``clipboardRingCap``. Skips empty/whitespace. Pure ring bookkeeping.
+    public func recordClip(_ text: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        clipboardRing.removeAll { $0 == text }
+        clipboardRing.insert(text, at: 0)
+        if clipboardRing.count > Self.clipboardRingCap {
+            clipboardRing.removeLast(clipboardRing.count - Self.clipboardRingCap)
+        }
+    }
+
+    /// Clears the clipboard history (a privacy affordance).
+    public func clearClipboardRing() { clipboardRing = [] }
+
     // MARK: - Multi-selection (shift-click to select several panes)
 
     /// The set of panes in the multi-selection (besides the single focused pane) — pure view state,

@@ -45,6 +45,10 @@ public struct AislopdeskClientApp: App {
     /// open system dialogs (SecurityAgent password prompts etc.) and auto-spawns/closes ephemeral panes.
     /// Built once beside the store + connection; its poll loop is owned by a scene `.task`.
     @State private var dialogMonitor: SystemDialogMonitor
+    #if os(macOS)
+    /// Polls the pasteboard into the store's clipboard ring (the "Paste Recent" feature).
+    @State private var clipboardMonitor: ClipboardMonitor
+    #endif
     @Environment(\.scenePhase) private var scenePhase
     /// Serializes the iOS background/foreground lifecycle transitions so the LAST phase observed is the
     /// LAST applied: each `handleScenePhase` chains its work behind the previous transition's, so a
@@ -164,6 +168,9 @@ public struct AislopdeskClientApp: App {
         _store = State(initialValue: store)
         _connection = State(initialValue: appConnection)
         _dialogMonitor = State(initialValue: monitor)
+        #if os(macOS)
+        _clipboardMonitor = State(initialValue: ClipboardMonitor(store: store))
+        #endif
     }
 
     public var body: some Scene {
@@ -186,6 +193,14 @@ public struct AislopdeskClientApp: App {
                     guard !Self.hasAutomationEnvironment() || flag == "force" else { return }
                     await dialogMonitor.run()
                 }
+                #if os(macOS)
+                // The clipboard-ring poller, scoped to the scene. Skipped under automation (no need to
+                // capture the test rig's clipboard).
+                .task {
+                    guard !Self.hasAutomationEnvironment() else { return }
+                    await clipboardMonitor.run()
+                }
+                #endif
                 // AUTOMATION ONLY (env-gated): auto-connect the app connection so an autoconnect launch
                 // goes live without a manual gate click (check-macos.sh/check-video.sh). A normal launch
                 // shows the gate prefilled and waits for the user's Connect.

@@ -370,6 +370,10 @@ struct PaneMenuView: View {
                     row("Paste as Keystrokes", systemImage: "keyboard") {
                         pasteAsKeystrokes(into: remote)
                     }
+                    // PASTE RECENT: replay an older clip from the clipboard ring (not just the live board).
+                    if !store.clipboardRing.isEmpty {
+                        pasteRecentMenu(into: remote)
+                    }
                 }
             }
             renameRow
@@ -473,12 +477,41 @@ struct PaneMenuView: View {
 
     /// Reads the local clipboard and replays it into `remote` as HID keystrokes (the secure-field
     /// typing path). The payload is read here and handed straight to the model — it is NEVER logged
-    /// or stored anywhere observable (it is frequently a password).
+    /// or stored anywhere observable (it is frequently a password). Note: the LIVE board content is
+    /// already in the clipboard ring via the monitor, so we don't re-record it here.
     private func pasteAsKeystrokes(into remote: RemoteWindowModel) {
         #if os(macOS)
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
         remote.pasteAsKeystrokes(text)
         #endif
+    }
+
+    /// A submenu listing the recent clips; choosing one replays it into `remote` as keystrokes. Each
+    /// row shows a single-line preview (truncated) — never the full secret.
+    @ViewBuilder
+    private func pasteRecentMenu(into remote: RemoteWindowModel) -> some View {
+        Menu {
+            ForEach(Array(store.clipboardRing.enumerated()), id: \.offset) { _, clip in
+                Button(Self.clipPreview(clip)) {
+                    isPresented = false
+                    remote.pasteAsKeystrokes(clip)
+                }
+            }
+            Divider()
+            Button("Clear History", role: .destructive) { store.clearClipboardRing() }
+        } label: {
+            Label("Paste Recent", systemImage: "list.clipboard")
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 2)
+    }
+
+    /// A one-line, length-capped preview of a clip for a menu row (whitespace collapsed; never the
+    /// whole payload).
+    private static func clipPreview(_ clip: String) -> String {
+        let oneLine = clip.split(whereSeparator: \.isNewline).joined(separator: " ")
+        let trimmed = oneLine.trimmingCharacters(in: .whitespaces)
+        return trimmed.count > 40 ? String(trimmed.prefix(40)) + "…" : trimmed
     }
 
     // MARK: Sections
