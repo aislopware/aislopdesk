@@ -59,6 +59,9 @@ public actor AislopdeskClient {
         /// Per-command shell status (OSC 133 C/D, sniffed host-side). Drives the per-pane
         /// running/idle indicator + the long-command completion notification.
         case commandStatus(WireMessage.CommandStatus)
+        /// An EXPLICIT desktop notification the child requested (OSC 9 / OSC 777, sniffed
+        /// host-side). The client posts it as a local notification; clicking focuses the pane.
+        case notification(title: String, body: String)
         /// The remote child process exited with `code`. Terminal — ``output`` finishes
         /// right after this is surfaced.
         case exit(code: Int32)
@@ -402,6 +405,8 @@ public actor AislopdeskClient {
             eventBroadcaster.yield(.bell)
         case let .commandStatus(status):
             eventBroadcaster.yield(.commandStatus(status))
+        case let .notification(title, body):
+            eventBroadcaster.yield(.notification(title: title, body: body))
         case let .pong(timestampMS):
             recordPong(sentAtMS: timestampMS)
         default:

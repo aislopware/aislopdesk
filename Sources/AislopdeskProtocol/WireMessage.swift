@@ -90,6 +90,14 @@ public enum WireMessage: Equatable, Sendable {
     /// `running`/`idle` status — the whole point of the two-channel design.
     case commandStatus(CommandStatus)
 
+    /// An EXPLICIT desktop notification the child requested via OSC 9 (`ESC ] 9 ; <body> ST`) or
+    /// OSC 777 (`ESC ] 777 ; notify ; <title> ; <body> ST`). Unlike ``commandStatus`` (duration-gated,
+    /// implicit), this fires on demand — `make test && printf '\e]9;build done\e\\'` pushes a
+    /// notification for ANY command. The client posts it as a local `UNUserNotification`; clicking it
+    /// focuses the originating pane. Rides CONTROL like the other inline signals. An OSC 9 with no
+    /// explicit title carries an empty `title` (the client falls back to the pane title).
+    case notification(title: String, body: String)
+
     /// RTT probe reply (host → client, CONTROL channel): the client's ``ping(timestampMS:)``
     /// timestamp echoed verbatim. Riding CONTROL (unwindowed, fast-draining) means the
     /// probe measures the network + host control-loop — never a DATA-window stall — so the
@@ -123,6 +131,7 @@ public enum WireMessage: Equatable, Sendable {
         case .bell: return 22
         case .commandStatus: return 23
         case .pong: return 24
+        case .notification: return 25
         }
     }
 
@@ -131,7 +140,7 @@ public enum WireMessage: Equatable, Sendable {
         switch self {
         case .output, .exit, .input:
             return .data
-        case .hello, .resize, .ack, .bye, .ping, .helloAck, .title, .bell, .commandStatus, .pong:
+        case .hello, .resize, .ack, .bye, .ping, .helloAck, .title, .bell, .commandStatus, .pong, .notification:
             return .control
         }
     }

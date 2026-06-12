@@ -89,6 +89,18 @@ extension WireMessage {
         case 24: // pong
             return .pong(timestampMS: try reader.readUInt64())
 
+        case 25: // notification
+            let titleLen = Int(try reader.readUInt16())
+            let titleBytes = try reader.readBytes(titleLen)
+            let bodyBytes = reader.remaining()
+            guard let title = String(data: titleBytes, encoding: .utf8) else {
+                throw AislopdeskError.malformedBody("notification: invalid title UTF-8")
+            }
+            guard let body = String(data: bodyBytes, encoding: .utf8) else {
+                throw AislopdeskError.malformedBody("notification: invalid body UTF-8")
+            }
+            return .notification(title: title, body: body)
+
         default:
             throw AislopdeskError.unknownMessageType(type)
         }

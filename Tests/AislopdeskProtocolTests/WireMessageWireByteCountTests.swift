@@ -39,6 +39,9 @@ final class WireMessageWireByteCountTests: XCTestCase {
             .commandStatus(.idle(exitCode: 0, durationMS: 12)),
             .commandStatus(.idle(exitCode: nil, durationMS: 0)),
             .commandStatus(.idle(exitCode: -127, durationMS: UInt32.max)),
+            .notification(title: "", body: "done"),
+            .notification(title: "CI", body: "green ✅ — đa byte"),
+            .notification(title: "only title", body: ""),
         ]
         for message in messages {
             XCTAssertEqual(message.wireByteCount, message.encode().count,

@@ -612,6 +612,59 @@ final class HostOutputSnifferTests: XCTestCase {
                        [.commandStatus(.idle(exitCode: 1, durationMS: 7_000))])
     }
 
+    // MARK: - OSC 9 / OSC 777 explicit notifications
+
+    /// The `.notification` subsequence (the fused sniffer may interleave titles/bells/command status).
+    private func notificationsOnly(_ messages: [WireMessage]) -> [WireMessage] {
+        messages.filter { if case .notification = $0 { return true }; return false }
+    }
+
+    func testOSC9EmitsNotificationWithEmptyTitle() {
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]9;build done\u{07}")),
+                       [.notification(title: "", body: "build done")])
+    }
+
+    func testOSC9WithSTTerminator() {
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]9;tests passed\u{1B}\\")),
+                       [.notification(title: "", body: "tests passed")])
+    }
+
+    func testOSC777NotifySubcommandEmitsTitleAndBody() {
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]777;notify;CI;all green\u{07}")),
+                       [.notification(title: "CI", body: "all green")])
+    }
+
+    func testOSC777BodyMayContainSemicolons() {
+        // maxSplits keeps the body intact even with embedded ';'.
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]777;notify;Deploy;step 1;step 2 done\u{07}")),
+                       [.notification(title: "Deploy", body: "step 1;step 2 done")])
+    }
+
+    func testOSC777NonNotifySubcommandIgnored() {
+        XCTAssertEqual(notificationsOnly(observeWhole(bytes("\u{1B}]777;precmd;something\u{07}"))), [])
+    }
+
+    func testOSC9EmptyBodyIgnored() {
+        XCTAssertEqual(notificationsOnly(observeWhole(bytes("\u{1B}]9;\u{07}"))), [])
+    }
+
+    func testNotificationSplitAcrossChunksEquivalence() {
+        let raw = bytes("\u{1B}]777;notify;Title;Body text 🚀\u{07}")
+        let whole = observeWhole(raw)
+        for size in 1...raw.count {
+            XCTAssertEqual(observeChunked(raw, size: size), whole, "diverged at chunk size \(size)")
+        }
+    }
+
+    func testStringSequenceSwallowsEmbeddedNotification() {
+        // A `]9;…` embedded in a DCS string body must NOT fire a phantom notification (anti-spoof,
+        // same rationale as the command-status case).
+        let dcsSpoof = bytes("\u{1B}P\u{1B}]9;spoofed\u{07}\u{1B}\\")
+        XCTAssertEqual(notificationsOnly(observeWhole(dcsSpoof)), [])
+        // A real OSC 9 after the swallowed string still fires.
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]9;real\u{07}")), [.notification(title: "", body: "real")])
+    }
+
     /// R9 #4 (security): a `133;C/D` mark embedded inside a DCS/APC string body must NOT produce a phantom
     /// command-status — a conformant terminal swallows the string. So a hostile remote program cannot fake
     /// a running/idle badge (with an attacker-chosen exit code + duration).

@@ -321,6 +321,11 @@ Task {
                 // the output stream and the local terminal renders them natively, so the structured
                 // control event is a no-op here.
                 break
+            case .notification:
+                // OSC 9 / OSC 777 explicit notifications are a GUI-client affordance (a local
+                // UNUserNotification per pane). The interactive CLI's local terminal handles these
+                // escapes natively if it supports them, so the structured event is a no-op here.
+                break
             case let .exit(code):
                 exitState.setExit(code)
                 stderrLine("remote shell exited (code \(code))")

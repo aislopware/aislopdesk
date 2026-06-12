@@ -104,6 +104,10 @@ public final class HostOutputSniffer: @unchecked Sendable {
     /// re-impose 256 on the 133 branch to keep those payloads ignored byte-for-byte.
     private static let cmdOscCap = 256
 
+    /// Payload cap for the OSC 9 / OSC 777 notification path: a real notification line is short;
+    /// a multi-kilobyte one is not worth surfacing as a desktop alert (and bounds a hostile stream).
+    private static let notifyOscCap = 1024
+
     private static let esc: UInt8 = 0x1B
     private static let bel: UInt8 = 0x07
     private static let rightBracket: UInt8 = 0x5D  // ']'
@@ -376,9 +380,32 @@ public final class HostOutputSniffer: @unchecked Sendable {
                 break // A / B / unknown 133 subcommand — not surfaced.
             }
 
+        case "9":
+            // OSC 9 — iTerm2/ConEmu "post a notification" (`ESC ] 9 ; <body> ST`). The whole
+            // remainder after `9;` is the notification body; no explicit title (the client falls
+            // back to the pane title). A bounded payload like the 133 path (a notification body is
+            // small; a giant one is not worth fabricating an alert for).
+            guard oscBuffer.count <= Self.notifyOscCap else { return }
+            let bodyBytes = oscBuffer[oscBuffer.index(after: sep)...]
+            let body = String(decoding: bodyBytes, as: UTF8.self)
+            guard !body.isEmpty else { return }
+            messages.append(.notification(title: "", body: body))
+
+        case "777":
+            // OSC 777 — urxvt/ConEmu `ESC ] 777 ; notify ; <title> ; <body> ST`. Only the `notify`
+            // subcommand is a desktop notification; other 777 subcommands are ignored.
+            guard oscBuffer.count <= Self.notifyOscCap else { return }
+            let payload = String(decoding: oscBuffer, as: UTF8.self)
+            let fields = payload.split(separator: ";", maxSplits: 3, omittingEmptySubsequences: false)
+            guard fields.count >= 3, fields[1] == "notify" else { return }
+            let title = String(fields[2])
+            let body = fields.count >= 4 ? String(fields[3]) : ""
+            guard !title.isEmpty || !body.isEmpty else { return }
+            messages.append(.notification(title: title, body: body))
+
         default:
             // Any other Ps (OSC 1 icon, OSC 8 hyperlink, OSC 52 clipboard, OSC 4 palette …)
-            // is neither a title nor a command mark — skip.
+            // is neither a title, a command mark, nor a notification — skip.
             return
         }
     }
