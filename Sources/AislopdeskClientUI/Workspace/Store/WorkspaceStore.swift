@@ -763,6 +763,25 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    // MARK: - Command palette recents
+
+    /// The most-recently-run palette COMMANDS, most-recent-first (non-persisted session state). The
+    /// ⌘K palette surfaces these at the top when the query is empty, so the verbs you use most are one
+    /// keystroke away. Only true command verbs are tracked (not pane/group/window jumps — those are
+    /// covered by their own always-present sections).
+    public private(set) var recentCommands: [WorkspaceCommand] = []
+    /// How many recents to keep.
+    public static let recentCommandsCap = 5
+
+    /// Records a run command at the front of the recents ring (dedup-to-front, capped).
+    public func recordRecentCommand(_ command: WorkspaceCommand) {
+        recentCommands.removeAll { $0 == command }
+        recentCommands.insert(command, at: 0)
+        if recentCommands.count > Self.recentCommandsCap {
+            recentCommands.removeLast(recentCommands.count - Self.recentCommandsCap)
+        }
+    }
+
     // MARK: - Clipboard history ring
 
     /// Recent clipboard texts, most-recent-first (non-persisted session state — clipboard history is
