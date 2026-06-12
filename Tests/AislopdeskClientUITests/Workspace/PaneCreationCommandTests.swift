@@ -25,9 +25,10 @@ final class PaneCreationCommandTests: XCTestCase {
 
     func testPerKindCreationChords() {
         let interpreter = CommandInterpreter()
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "n", [.command])), .newPane(.terminal))
+        XCTAssertEqual(interpreter.feed(KeyChord(character: "n", [.command])), .newPaneDefault,
+                       "⌘N makes the user's DEFAULT kind (Settings ▸ Canvas)")
         XCTAssertEqual(interpreter.feed(KeyChord(character: "t", [.command])), .newPane(.terminal),
-                       "⌘T must survive as the terminal alias (Pane-menu item depends on it)")
+                       "⌘T always makes a Terminal (the alias the Pane-menu item depends on)")
         XCTAssertEqual(interpreter.feed(KeyChord(character: "n", [.command, .shift])), .newPane(.claudeCode))
         XCTAssertEqual(interpreter.feed(KeyChord(character: "n", [.command, .option])), .newPane(.remoteGUI))
         XCTAssertEqual(interpreter.feed(KeyChord(character: "d", [.command])), .duplicatePane)
@@ -35,16 +36,30 @@ final class PaneCreationCommandTests: XCTestCase {
                        "⇧⌘D tidy is untouched by the ⌘D duplicate binding")
     }
 
-    func testDefaultChordsAreDeterministicAndCanonicalFirst() {
-        let chords = CommandInterpreter.defaultChords(for: .newPane(.terminal))
-        XCTAssertEqual(chords.count, 2, "terminal creation carries exactly ⌘N + the ⌘T alias")
-        XCTAssertEqual(chords.first, KeyChord(character: "n", [.command]),
-                       "⌘N is the canonical (displayed) chord — sorted, not dictionary order")
-        XCTAssertEqual(chords.last, KeyChord(character: "t", [.command]))
-        // Single-chord commands keep working through the same path.
+    func testDefaultChordWiring() {
+        XCTAssertEqual(CommandInterpreter.defaultChords(for: .newPaneDefault),
+                       [KeyChord(character: "n", [.command])], "⌘N is the only chord for the default-kind pane")
+        XCTAssertEqual(CommandInterpreter.defaultChords(for: .newPane(.terminal)),
+                       [KeyChord(character: "t", [.command])], "terminal creation is now ⌘T only")
         XCTAssertEqual(CommandInterpreter.defaultChords(for: .duplicatePane),
                        [KeyChord(character: "d", [.command])])
         XCTAssertTrue(CommandInterpreter.defaultChords(for: .newGroup).count == 1)
+    }
+
+    func testNewPaneDefaultUsesSettingsKind() {
+        let key = SettingsKey.defaultPaneKindKey
+        UserDefaults.standard.removeObject(forKey: key)
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        let store = makeStore()
+        let before = store.workspace.canvas.items.count
+        apply(.newPaneDefault, to: store)   // default → terminal
+        XCTAssertEqual(store.workspace.canvas.spec(for: store.focusedPane!)?.kind, .terminal)
+
+        UserDefaults.standard.set(PaneKind.claudeCode.rawValue, forKey: key)
+        apply(.newPaneDefault, to: store)
+        XCTAssertEqual(store.workspace.canvas.spec(for: store.focusedPane!)?.kind, .claudeCode,
+                       "⌘N respects the Settings default kind")
+        XCTAssertEqual(store.workspace.canvas.items.count, before + 2)
     }
 
     // MARK: - apply(.newPane(kind))

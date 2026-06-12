@@ -42,6 +42,8 @@ public struct WorkspaceCommands: Commands {
         // for terminals; ⇧⌘N / ⌥⌘N create the other kinds directly (every prior creation path was
         // Terminal-only).
         CommandGroup(replacing: .newItem) {
+            commandButton("New Pane", .newPaneDefault)
+            Divider()
             commandButton("New Terminal Pane", .newPane(.terminal))
             commandButton("New Claude Code Pane", .newPane(.claudeCode))
             commandButton("New Remote Window Pane", .newPane(.remoteGUI))

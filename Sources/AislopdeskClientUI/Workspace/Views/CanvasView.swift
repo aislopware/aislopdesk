@@ -67,16 +67,23 @@ struct CanvasView: View {
             .clipped()
             .coordinateSpace(.named(Self.coordSpace))
             .overlay { if maxID == nil && !store.overviewActive { offscreenBeaconLayer(viewport: geo.size, camera: camera) } }
-            .overlay(alignment: .bottomTrailing) { if !store.overviewActive { recenterButton(viewport: geo.size) } }
+            .overlay(alignment: .bottomTrailing) {
+                if !store.overviewActive {
+                    // The Recenter button's `.transition(.opacity)` had no driver, so it popped. The
+                    // fade animation is scoped to the OVERLAY CONTENT (not the outer chain) so it can
+                    // never animate the canvas camera `.offset` — addPane's in-view recenter pans the
+                    // camera in the same update, and an outer-scoped animation would ease that pan with
+                    // the wrong (0.18s) curve. The committed camera feeds `needsRecenter`, so a live
+                    // pan doesn't churn it (it flips once on commit).
+                    recenterButton(viewport: geo.size)
+                        .animation(.easeInOut(duration: 0.18),
+                                   value: store.workspace.maximizedPane == nil
+                                       && !canvas.items.isEmpty
+                                       && canvas.needsRecenter(viewport: geo.size))
+                }
+            }
             .overlay { if store.overviewActive { overviewLayer(viewport: geo.size) } }
             .animation(.easeInOut(duration: 0.2), value: store.overviewActive)
-            // The Recenter button's `.transition(.opacity)` had no driver, so it popped. Key a fade to
-            // its visibility predicate. The committed camera (not the live drag offset) feeds
-            // `needsRecenter`, so a live pan doesn't churn this — it flips once on commit.
-            .animation(.easeInOut(duration: 0.18),
-                       value: store.workspace.maximizedPane == nil
-                           && !canvas.items.isEmpty
-                           && canvas.needsRecenter(viewport: geo.size))
             .onAppear { report(geo.size, camera: canvas.camera) }
             .onChange(of: geo.size) { _, s in report(s, camera: canvas.camera) }
             .onChange(of: canvas) { _, _ in report(geo.size, camera: canvas.camera) }
