@@ -67,4 +67,50 @@ final class AppLaunchSwitchTests: XCTestCase {
         let decoded = try JSONDecoder().decode(Workspace.self, from: data)
         XCTAssertEqual(decoded.layoutPresets.first?.triggerAppName, "Grafana")
     }
+
+    /// Hunt 2026-06-13, finding #3: across a disconnect the monitor's `lastApps` (and the store's auto-switch
+    /// latch) must be FORGOTTEN, so a reconnect re-evaluates from scratch. Without the fix, a trigger app
+    /// that was already in `lastApps` before the drop is diffed away as "already seen" on reconnect and its
+    /// layout switch is silently missed. Drives `AppLaunchMonitor.pollOnce()` directly across a connected →
+    /// disconnected → connected sequence via a stubbed discovery seam.
+    func testReconnectAfterDisconnectReFiresAutoSwitch() async {
+        // Force the feature on hermetically (default is ON, but don't depend on prior tests / user defaults).
+        UserDefaults.standard.set(true, forKey: SettingsKey.autoSwitchLayouts)
+        defer { UserDefaults.standard.removeObject(forKey: SettingsKey.autoSwitchLayouts) }
+
+        let store = twoPaneStore()
+        // A 1-pane layout triggered by Grafana (a switch is observable as the pane count dropping to 1).
+        store.closePane(store.workspace.canvas.allIDs().last!)
+        store.saveLayoutPreset(name: "single", triggerAppName: "Grafana")
+        store.addPane(kind: .terminal)                              // back to 2 live panes
+        XCTAssertEqual(store.workspace.canvas.items.count, 2)
+
+        var connected = true
+        let target = ConnectionTarget(host: "h", port: 7420, mediaPort: 9000, cursorPort: 9001)
+        RemoteWindowDiscovery.shared = { _, _, _ in
+            [RemoteWindowSummary(windowID: 1, appName: "Grafana", title: "", width: 100, height: 100)]
+        }
+        defer { RemoteWindowDiscovery.shared = nil }
+        let monitor = AppLaunchMonitor(store: store,
+                                       isConnected: { connected },
+                                       target: { target },
+                                       pollGap: .milliseconds(1))
+
+        // Connected, Grafana present → first poll auto-switches to the 1-pane layout (latches Grafana).
+        await monitor.pollOnce()
+        XCTAssertEqual(store.workspace.canvas.items.count, 1, "connected poll auto-switched on Grafana")
+
+        // User moves on (a 2-pane layout again), Grafana still running, then the connection drops.
+        store.addPane(kind: .terminal)
+        XCTAssertEqual(store.workspace.canvas.items.count, 2)
+        connected = false
+        await monitor.pollOnce()                                   // disconnected: clears latch + lastApps
+
+        // Reconnect with Grafana still present (a quit+relaunch during the gap is indistinguishable): the
+        // monitoring layout must snap back in rather than be diffed away as already-seen.
+        connected = true
+        await monitor.pollOnce()
+        XCTAssertEqual(store.workspace.canvas.items.count, 1,
+                       "reconnect re-evaluates and re-fires the auto-switch (no stale-lastApps miss)")
+    }
 }

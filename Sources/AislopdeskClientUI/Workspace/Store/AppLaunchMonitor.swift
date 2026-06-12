@@ -40,7 +40,19 @@ public final class AppLaunchMonitor {
         // Cheap early-out: nothing to do unless the feature is on and some preset carries a trigger.
         guard SettingsKey.autoSwitchLayoutsEnabled,
               store.workspace.layoutPresets.contains(where: { $0.triggerAppName != nil }),
-              isConnected(), let query = RemoteWindowDiscovery.shared else { return }
+              isConnected(), let query = RemoteWindowDiscovery.shared else {
+            // Not ready (feature off / no trigger / DISCONNECTED): treat it like the host's whole app set
+            // went absent — clear the auto-switch latch for every previously-seen app AND forget the
+            // last-seen set. So a later reconnect re-evaluates from scratch: present host apps are
+            // newly-appeared (lastApps reset) AND no longer latched, mirroring the connected
+            // app-gone→relaunch path. Without this, `lastApps` (and the latch) stay frozen at the
+            // pre-disconnect snapshot, so an app that quit+relaunched during the gap is diffed away as
+            // "already seen" and its layout switch is silently missed on reconnect. Idempotent once
+            // `lastApps` is empty (the latch clear then passes an empty set → no-op).
+            store.clearAutoSwitchLatch(forAbsentApps: lastApps)
+            lastApps = []
+            return
+        }
         let t = target()
         let windows = await query(t.host, t.mediaPort, t.cursorPort)
         if Task.isCancelled { return }

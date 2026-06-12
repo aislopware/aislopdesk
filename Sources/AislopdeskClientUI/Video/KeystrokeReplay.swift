@@ -36,10 +36,15 @@ public enum KeystrokeReplay {
     /// Encodes `text` into key strokes, skipping unmappable characters. Truncates at ``maxLength``
     /// (the overflow counts as skipped so the caller can surface "typed N, skipped M").
     public static func encode(_ text: String) -> Encoded {
+        // Normalize Windows / web / Git-on-Windows CRLF line endings to LF FIRST: Swift segments "\r\n" as a
+        // SINGLE extended-grapheme Character with no US-QWERTY mapping, so without this every CRLF line break
+        // would silently fall through to `skipped` (no Return key sent) and collapse multi-line clipboard
+        // text onto one line. A lone "\r" or "\n" already maps to Return; only the combined grapheme needs it.
+        let normalized = text.contains("\r\n") ? text.replacingOccurrences(of: "\r\n", with: "\n") : text
         var strokes: [ReplayStroke] = []
         var skipped = 0
         var count = 0
-        for ch in text {
+        for ch in normalized {
             if count >= maxLength { skipped += 1; continue }
             count += 1
             if let stroke = stroke(for: ch) {
