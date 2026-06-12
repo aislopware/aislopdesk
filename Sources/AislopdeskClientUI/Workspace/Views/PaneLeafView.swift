@@ -78,6 +78,13 @@ struct PaneLeafView: View {
                                suppressFailureBanner: suppressFailureBanner)
         case .remoteGUI:
             RemoteGUIPaneView(live: live, store: store)
+        case .systemDialog:
+            // Same live video view as a remote-GUI pane; a secure (password/auth) prompt gets the
+            // honest "view-only — type on the host" hint (synthetic keystrokes are OS-dropped).
+            RemoteGUIPaneView(live: live, store: store)
+                .overlay(alignment: .bottom) {
+                    if live.isSecureDialog { SecureDialogHintBar() }
+                }
         }
     }
 
@@ -109,9 +116,10 @@ struct PaneLeafView: View {
 
     private var kindLabel: String {
         switch spec.kind {
-        case .terminal:   return "terminal"
-        case .claudeCode: return "claude"
-        case .remoteGUI:  return "remote"
+        case .terminal:     return "terminal"
+        case .claudeCode:   return "claude"
+        case .remoteGUI:    return "remote"
+        case .systemDialog: return "dialog"
         }
     }
 
@@ -126,10 +134,27 @@ struct PaneLeafView: View {
     /// the chrome header, and the sidebar agree.
     static func icon(for kind: PaneKind) -> String {
         switch kind {
-        case .terminal:   return "terminal"
-        case .claudeCode: return "sparkles"
-        case .remoteGUI:  return "macwindow.on.rectangle"
+        case .terminal:     return "terminal"
+        case .claudeCode:   return "sparkles"
+        case .remoteGUI:    return "macwindow.on.rectangle"
+        case .systemDialog: return "lock.shield"
         }
+    }
+}
+
+/// The honest "view-only" hint shown over a SECURE system-dialog pane (a SecurityAgent password/auth
+/// prompt). macOS raises Secure Event Input for these, so the host CAN stream the pixels but synthetic
+/// keystrokes are OS-dropped — the password must be typed on the host. Mouse (Cancel/OK) still works.
+private struct SecureDialogHintBar: View {
+    var body: some View {
+        Label("View-only — type the password on the host", systemImage: "lock.shield")
+            .font(.caption2)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(.ultraThinMaterial, in: Capsule())
+            .foregroundStyle(.secondary)
+            .padding(.bottom, 8)
+            .allowsHitTesting(false)   // never swallow a click meant for the dialog's Cancel/OK
     }
 }
 

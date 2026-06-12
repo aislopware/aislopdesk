@@ -85,6 +85,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// store: resume re-opens at most what already satisfied `liveVideoCap`, so it cannot exceed it.
     private var wasVideoActiveBeforePause = false
 
+    /// SYSTEM-DIALOG: `true` when this is a ``PaneKind/systemDialog`` pane streaming a Secure-Event-Input
+    /// (password/auth) prompt — the pane shows a "view-only — type on the host" hint, the HW-proven truth.
+    /// A pure-live property the store sets via ``markSystemDialog(isSecure:)`` (never persisted).
+    public private(set) var isSecureDialog = false
+
     /// PANE REBIND: whether the one-shot stale-binding revalidation already ran for this session
     /// (only the RESTORED binding is suspect — see ``maybeRevalidateBinding(_:)``).
     private var didRevalidateBinding = false
@@ -161,7 +166,10 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             return makeTerminal(spec, claudeCode: false, makeClient: makeClient, makeInspector: makeInspector, target: target)
         case .claudeCode:
             return makeTerminal(spec, claudeCode: true, makeClient: makeClient, makeInspector: makeInspector, target: target)
-        case .remoteGUI:
+        case .remoteGUI, .systemDialog:
+            // A system-dialog pane uses the SAME video stack as a remote-GUI pane (it streams one host
+            // window by id); the differences — auto-management, no picker, skip revalidation, not
+            // persisted — live in the store/monitor and in `setVideoActive`, not in the session shape.
             return makeRemoteGUI(spec, target: target)
         }
     }
@@ -234,6 +242,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// See ``PaneSessionIDAdopting``. The store re-points a freshly-built session at its leaf id.
     func adopt(id: PaneID) { self.id = id }
 
+    /// SYSTEM-DIALOG: flag a just-spawned ``PaneKind/systemDialog`` session as a secure (password/auth)
+    /// prompt so the pane view shows the "view-only — type on the host" hint. Set by the store right after
+    /// materialization (the flag is pure-live, not carried in the persisted spec).
+    func markSystemDialog(isSecure: Bool) { isSecureDialog = isSecure }
+
     // MARK: - Inspector second channel
 
     /// Opens + subscribes the inspector second channel (full replay from seq 0), then folds its event
@@ -267,12 +280,15 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     // MARK: - PaneSessionHandle: video activation
 
     public func setVideoActive(_ active: Bool) {
-        guard kind == .remoteGUI, let model = remoteWindow else { return }
+        guard kind.isVideo, let model = remoteWindow else { return }
         if active {
             // Open only if configured; mirror the resulting active state.
             if model.active == nil, model.canOpen {
                 model.open()
-                maybeRevalidateBinding(model)
+                // A `.systemDialog` pane SKIPS stale-binding revalidation: its windowID is always fresh
+                // from the live poll, and revalidation re-resolves against the picker list — which
+                // EXCLUDES system apps — so it would wrongly unbind the dialog back to the picker form.
+                if !kind.isEphemeral { maybeRevalidateBinding(model) }
             }
             isVideoActive = model.active != nil
         } else {
@@ -333,9 +349,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     ///   fold then proceeds in the background `subscribeInspector()` loop.
     public func resume() async {
         await connection?.resume()
-        // Restore live video for a `.remoteGUI` pane that was active before pause (cap-safe: re-opens
+        // Restore live video for a video pane that was active before pause (cap-safe: re-opens
         // at most the set already admitted, so it cannot exceed liveVideoCap — no store consult needed).
-        if kind == .remoteGUI, wasVideoActiveBeforePause {
+        if kind.isVideo, wasVideoActiveBeforePause {
             wasVideoActiveBeforePause = false
             setVideoActive(true)
         }

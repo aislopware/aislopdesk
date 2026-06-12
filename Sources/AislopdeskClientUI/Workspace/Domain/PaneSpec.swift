@@ -46,6 +46,19 @@ public enum PaneKind: String, Codable, Sendable, Equatable {
     case claudeCode
     /// A remote-GUI video window (PATH 2 UDP media + cursor side-channel).
     case remoteGUI
+    /// An EPHEMERAL pane auto-spawned by the client's system-dialog monitor to stream a host SYSTEM
+    /// prompt (e.g. a SecurityAgent login/password dialog) in its own pane. Same video stack as
+    /// ``remoteGUI``, but auto-managed (spawn/close follow the host poll), NOT persisted, and it skips
+    /// the picker + stale-binding revalidation (its windowID is always fresh from the live poll).
+    case systemDialog
+}
+
+public extension PaneKind {
+    /// A video (PATH 2) pane — rides the shared UDP flow, counts against the live-video cap, renders the
+    /// remote-GUI view. Both the user-picked ``remoteGUI`` and the auto ``systemDialog`` are video kinds.
+    var isVideo: Bool { self == .remoteGUI || self == .systemDialog }
+    /// An auto-managed, never-persisted overlay pane (the system-dialog surface).
+    var isEphemeral: Bool { self == .systemDialog }
 }
 
 /// Which remote window a `.remoteGUI` (video) pane mirrors. The host + UDP ports are no longer here —

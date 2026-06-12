@@ -59,9 +59,9 @@ final class ResizeControlCodecTests: XCTestCase {
     }
 
     func testUnknownControlTypeStillRejected() {
-        // The accepted type set is 1..10 (9 = focusWindow, 10 = streamCadence — the FPS-governor
-        // content-cadence signal); anything beyond MUST still be rejected as malformed.
-        XCTAssertThrowsError(try VideoControlMessage.decode(Data([11])))
+        // The accepted type set is 1..12 (10 = streamCadence, 11 = listSystemDialogs, 12 =
+        // systemDialogList); anything beyond MUST still be rejected as malformed.
+        XCTAssertThrowsError(try VideoControlMessage.decode(Data([13])))
         XCTAssertThrowsError(try VideoControlMessage.decode(Data([99])))
     }
 

@@ -160,6 +160,44 @@ public final class RemoteWindowDiscovery {
     public static var shared: (@MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16) async -> [RemoteWindowSummary])?
 }
 
+/// One host-side SYSTEM dialog/prompt the client's monitor surfaces in its own pane (the user's case: a
+/// SecurityAgent login/password prompt). The cross-platform mirror of the protocol's `SystemDialogSummary`
+/// (kept here so `AislopdeskClientUI` needn't depend on `AislopdeskVideoProtocol`).
+public struct SystemDialogInfo: Sendable, Equatable, Identifiable {
+    public var windowID: UInt32
+    public var owner: String
+    public var title: String
+    public var width: UInt16
+    public var height: UInt16
+    /// `true` ⇒ a Secure-Event-Input (password/auth) dialog: view + click work, typing is OS-blocked.
+    public var isSecure: Bool
+    public var id: UInt32 { windowID }
+
+    public init(windowID: UInt32, owner: String, title: String, width: UInt16, height: UInt16, isSecure: Bool) {
+        self.windowID = windowID
+        self.owner = owner
+        self.title = title
+        self.width = width
+        self.height = height
+        self.isSecure = isSecure
+    }
+
+    /// A pane label: "owner — title" (title omitted when empty).
+    public var displayLabel: String {
+        title.isEmpty ? owner : "\(owner) — \(title)"
+    }
+}
+
+/// The **system-dialog discovery seam** (the "show system popups in their own pane" feature): the GUI app
+/// injects a closure that polls the host for its open system dialogs (implemented in
+/// `AislopdeskVideoClient.VideoWindowDiscovery.discoverSystemDialogs`), so the cross-platform monitor can
+/// auto-spawn dialog panes WITHOUT importing the gated video module. `nil` → no monitor activity.
+@MainActor
+public final class SystemDialogDiscovery {
+    /// App-registered system-dialog poll (set once at launch). `nil` → the monitor is inert.
+    public static var shared: (@MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16) async -> [SystemDialogInfo])?
+}
+
 /// The gated placeholder shown when the GUI video path is not active (no host
 /// capturing / no `AislopdeskVideoClient` view injected). It is NOT a substitute renderer
 /// — it explains that the secondary GUI video path is idle. The terminal path is the

@@ -180,7 +180,7 @@ public enum CanvasGeometry {
         let expanded = viewportRect.insetBy(dx: -margin, dy: -margin)
         return items.filter { item in
             if item.id == focused { return true }
-            if item.spec.kind != .remoteGUI { return true }
+            if !item.spec.kind.isVideo { return true }
             return item.frame.intersects(expanded)
         }
     }

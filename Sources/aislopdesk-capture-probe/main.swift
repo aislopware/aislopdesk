@@ -32,6 +32,7 @@ var seconds = 20.0
 var outDir = "/tmp/capture-probe"
 var maxHz = 4.0
 var listOnly = false
+var listAll = false
 var args = Array(CommandLine.arguments.dropFirst()).makeIterator()
 while let a = args.next() {
     switch a {
@@ -41,6 +42,7 @@ while let a = args.next() {
     case "--out": outDir = args.next() ?? outDir
     case "--max-hz": maxHz = args.next().flatMap(Double.init) ?? 4.0
     case "--list": listOnly = true
+    case "--list-all": listAll = true
     default: eprint("unknown arg: \(a)"); exit(1)
     }
 }
@@ -48,6 +50,18 @@ while let a = args.next() {
 let task = Task {
     do {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        if listAll {
+            // RAW dump — every window SCK exposes, NO title/system filtering. Answers "does SCK list
+            // SecurityAgent / system-dialog windows at all, and with what owner/pid/layer?".
+            for w in content.windows.sorted(by: { $0.windowLayer < $1.windowLayer }) {
+                let app = w.owningApplication
+                let f = w.frame
+                print("id=\(w.windowID) layer=\(w.windowLayer) onScreen=\(w.isOnScreen) pid=\(app?.processID ?? -1) " +
+                      "[\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))] " +
+                      "app=\(app?.applicationName ?? "?") bundle=\(app?.bundleIdentifier ?? "?") title=\(w.title ?? "<nil>")")
+            }
+            exit(0)
+        }
         if listOnly {
             for w in content.windows where w.title?.isEmpty == false {
                 print("id=\(w.windowID) [\(Int(w.frame.width))x\(Int(w.frame.height))] \(w.owningApplication?.applicationName ?? "?") — \(w.title ?? "")")

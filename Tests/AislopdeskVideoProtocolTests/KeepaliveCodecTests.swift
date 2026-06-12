@@ -25,12 +25,12 @@ final class KeepaliveCodecTests: XCTestCase {
     }
 
     /// WIRE-TOLERANCE contract: an "old decoder" (one that lacks a case) — simulated by any
-    /// decoder fed a type byte it does not implement, here type 11 (past the highest defined type 10
-    /// streamCadence) — THROWS `.malformed`, it does NOT crash. This is exactly the behaviour an old peer
+    /// decoder fed a type byte it does not implement, here type 99 (past the highest defined type 12
+    /// systemDialogList) — THROWS `.malformed`, it does NOT crash. This is exactly the behaviour an old peer
     /// exhibits when it receives a newer control type: it drops it cleanly (the host's `handleControl` /
     /// the client's `ReceivedDatagramRouter` both catch-and-drop).
     func testUnknownTypeThrowsNotCrash() {
-        XCTAssertThrowsError(try VideoControlMessage.decode(Data([11]))) { error in
+        XCTAssertThrowsError(try VideoControlMessage.decode(Data([99]))) { error in
             guard case VideoProtocolError.malformed = error else {
                 return XCTFail("an unknown type byte must throw .malformed, got \(error)")
             }

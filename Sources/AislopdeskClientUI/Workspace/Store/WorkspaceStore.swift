@@ -364,6 +364,35 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    // MARK: - System-dialog panes (ephemeral, auto-managed by the client monitor)
+
+    /// Spawns an EPHEMERAL ``PaneKind/systemDialog`` pane streaming host window `windowID` (a SecurityAgent
+    /// login/password prompt etc.) and returns its id so the monitor can ``closePane(_:)`` it when the
+    /// dialog goes away. Auto-streams (the spec carries the windowID, so no picker) and is NEVER persisted
+    /// (``persistableWorkspace()`` strips it). `isSecure` flags a password/auth dialog — the pane shows a
+    /// "view-only — type on the host" hint, the HW-proven truth (synthetic keystrokes are OS-dropped).
+    @discardableResult
+    public func addSystemDialogPane(windowID: UInt32, owner: String, title: String, isSecure: Bool) -> PaneID {
+        let label = title.isEmpty ? owner : "\(owner) — \(title)"
+        let spec = PaneSpec(kind: .systemDialog, title: label,
+                            video: VideoEndpoint(windowID: windowID, title: label, appName: owner))
+        let viewport = lastViewport
+        let (canvas, id) = workspace.canvas.adding(spec, near: workspace.focusedPane, viewport: viewport)
+        workspace.canvas = canvas
+        workspace.focusedPane = id
+        // A surfacing prompt exits maximize and is panned into view (it demands attention).
+        if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
+        let visible = CGRect(origin: workspace.canvas.camera.origin, size: viewport)
+        if let f = workspace.canvas.frame(of: id), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
+            workspace.canvas = workspace.canvas.centered(on: id, viewport: viewport)
+        }
+        reconcile()
+        // isSecure is a pure-live property (never persisted), so set it on the just-materialized session
+        // directly rather than threading it through the Codable spec.
+        (registry[id] as? LivePaneSession)?.markSystemDialog(isSecure: isSecure)
+        return id
+    }
+
     /// Focuses pane `id` (a pure focus change; leaf set unchanged). Maximize follows focus.
     ///
     /// BUG-1 (cursor freezes "khi click vào pane"): a click on a GUI pane runs `mouseDown → onActivate →
@@ -648,7 +677,7 @@ public final class WorkspaceStore {
     /// `true` if it is already active. Non-video panes return `false`.
     @discardableResult
     public func activateVideo(_ id: PaneID) -> Bool {
-        guard let handle = registry[id], handle.kind == .remoteGUI else { return false }
+        guard let handle = registry[id], handle.kind.isVideo else { return false }
         if handle.isVideoActive { return true }
         guard hasFreeVideoSlot(for: id) else { return false }
         handle.setVideoActive(true)
@@ -668,7 +697,7 @@ public final class WorkspaceStore {
     /// the explicit ``videoPromotionGeneration`` nudge on slot-freeing events, so this read need not be
     /// the only liveness trigger; it is the cap-vs-config discriminator for the display decision.
     public func hasFreeVideoSlot(for id: PaneID) -> Bool {
-        let activeOthers = registry.values.filter { $0.kind == .remoteGUI && $0.isVideoActive && $0.id != id }.count
+        let activeOthers = registry.values.filter { $0.kind.isVideo && $0.isVideoActive && $0.id != id }.count
         // Count panes whose video stack is still TEARING DOWN against the cap too (ITEM #3): an orphan
         // closed this same tick is already gone from the registry but its UDP / VTDecompression /
         // CVDisplayLink stack is not released until its async teardown completes, so admitting a new
@@ -862,7 +891,7 @@ public final class WorkspaceStore {
             // Hold the cap slot for an orphan that is STILL holding a live video stack (ITEM #3). Read
             // `isVideoActive` NOW, before the async teardown nils it, and record the id so
             // `activateVideo` keeps counting it until its teardown task actually releases the resources.
-            if orphan.kind == .remoteGUI && orphan.isVideoActive {
+            if orphan.kind.isVideo && orphan.isVideoActive {
                 tearingDownVideo.insert(orphan.id)
                 // Closing an ACTIVE video pane is a slot-freeing event (ITEM #2): once this orphan's
                 // teardown releases its stack, a previously-gated on-screen sibling should re-attempt
@@ -987,11 +1016,27 @@ public final class WorkspaceStore {
     /// where every `saveGeneration` bump and `saveImmediately()`'s own write happen — serializes the
     /// renames so `saveImmediately()` (which bumps the generation under cancel) reliably wins: any
     /// in-flight debounced task whose generation no longer matches simply returns without writing.
+    /// The workspace as it should be PERSISTED: ephemeral (auto-managed) panes — the system-dialog
+    /// overlays — are stripped so they never survive a relaunch (the monitor re-spawns the live ones on
+    /// reconnect). A stale dialog windowID restored next launch would otherwise stream a dead window.
+    /// Focus is re-normalized in case it pointed at a stripped pane. Identity passthrough when there are
+    /// none (the common case), so a normal save pays nothing.
+    private func persistableWorkspace() -> Workspace {
+        let ephemeral = workspace.canvas.allIDs().filter { workspace.canvas.spec(for: $0)?.kind.isEphemeral == true }
+        guard !ephemeral.isEmpty else { return workspace }
+        var w = workspace
+        for id in ephemeral {
+            w.canvas = w.canvas.removing(id) ?? Canvas(items: [], camera: w.canvas.camera)
+        }
+        return w.normalizingFocus()
+    }
+
     private func scheduleSave() {
         guard savingEnabled, let persistence else { return }
         saveTask?.cancel()
-        // Snapshot the (Sendable, value-typed) workspace now so the write reflects this mutation.
-        let snapshot = workspace
+        // Snapshot the (Sendable, value-typed) PERSISTABLE workspace now (ephemeral dialog panes stripped)
+        // so the write reflects this mutation.
+        let snapshot = persistableWorkspace()
         let debounce = saveDebounce
         saveGeneration &+= 1
         let generation = saveGeneration
@@ -1030,7 +1075,7 @@ public final class WorkspaceStore {
         saveGeneration &+= 1
         saveTask?.cancel()
         saveTask = nil
-        try? persistence.save(workspace)
+        try? persistence.save(persistableWorkspace())
     }
 
     // MARK: - Tree lookups
@@ -1081,9 +1126,10 @@ public final class WorkspaceStore {
 
     private func defaultTitle(for kind: PaneKind) -> String {
         switch kind {
-        case .terminal:   return "Terminal"
-        case .claudeCode: return "Claude Code"
-        case .remoteGUI:  return "Remote window"
+        case .terminal:     return "Terminal"
+        case .claudeCode:   return "Claude Code"
+        case .remoteGUI:    return "Remote window"
+        case .systemDialog: return "System dialog"
         }
     }
 }

@@ -34,6 +34,10 @@ public struct AislopdeskClientApp: App {
     /// The ONE app-global connection (docs/31): owns the single endpoint + status, fronted by the
     /// connect-gate. Built once beside the store + the shared mux registry.
     @State private var connection: AppConnection
+    /// Drives the "show system popups in their own pane" feature: while connected it polls the host for
+    /// open system dialogs (SecurityAgent password prompts etc.) and auto-spawns/closes ephemeral panes.
+    /// Built once beside the store + connection; its poll loop is owned by a scene `.task`.
+    @State private var dialogMonitor: SystemDialogMonitor
     @Environment(\.scenePhase) private var scenePhase
     /// Serializes the iOS background/foreground lifecycle transitions so the LAST phase observed is the
     /// LAST applied: each `handleScenePhase` chains its work behind the previous transition's, so a
@@ -120,8 +124,20 @@ public struct AislopdeskClientApp: App {
             if case .connected = appConnection?.status { return true }
             return false
         }
+        // The system-dialog monitor (the "system popups in their own pane" feature): polls the host while
+        // connected and auto-manages ephemeral dialog panes. `isConnected` reads the app connection status;
+        // `target` reads the live host/ports. Started by a scene `.task` (so its lifetime is the scene's).
+        let monitor = SystemDialogMonitor(
+            store: store,
+            isConnected: { [weak appConnection] in
+                if case .connected = appConnection?.status { return true }
+                return false
+            },
+            target: { [weak appConnection] in appConnection?.target ?? .default }
+        )
         _store = State(initialValue: store)
         _connection = State(initialValue: appConnection)
+        _dialogMonitor = State(initialValue: monitor)
     }
 
     public var body: some Scene {
@@ -129,6 +145,16 @@ public struct AislopdeskClientApp: App {
             WorkspaceRootView(store: store, connection: connection)
                 .onChange(of: scenePhase) { _, phase in
                     handleScenePhase(phase)
+                }
+                // The system-dialog monitor's poll loop, scoped to the scene's lifetime. Skipped under
+                // automation (deterministic check-* runs) and when AISLOPDESK_SYSTEM_DIALOG_PANES=0. Inert
+                // anyway with no discovery seam registered.
+                .task {
+                    let flag = ProcessInfo.processInfo.environment["AISLOPDESK_SYSTEM_DIALOG_PANES"]
+                    guard flag != "0" else { return }                       // explicitly disabled
+                    // Skipped during automation (deterministic check-* runs) UNLESS forced for an E2E test.
+                    guard !Self.hasAutomationEnvironment() || flag == "force" else { return }
+                    await dialogMonitor.run()
                 }
                 // AUTOMATION ONLY (env-gated): auto-connect the app connection so an autoconnect launch
                 // goes live without a manual gate click (check-macos.sh/check-video.sh). A normal launch

@@ -94,6 +94,22 @@ struct ClientAppMain {
                 }
             }
         }
+
+        // System-dialog poll seam (the "show system popups in their own pane" feature): inject the
+        // host system-dialog query so the cross-platform `SystemDialogMonitor` can auto-spawn dialog
+        // panes WITHOUT importing the gated video module. Maps the protocol's `SystemDialogSummary` →
+        // the UI's `SystemDialogInfo`. `nil` (no video module) ⇒ the monitor is inert.
+        MainActor.assumeIsolated {
+            SystemDialogDiscovery.shared = { host, mediaPort, cursorPort in
+                let dialogs = await VideoWindowDiscovery.discoverSystemDialogs(
+                    host: host, mediaPort: mediaPort, cursorPort: cursorPort
+                )
+                return dialogs.map {
+                    SystemDialogInfo(windowID: $0.windowID, owner: $0.owner, title: $0.title,
+                                     width: $0.width, height: $0.height, isSecure: $0.isSecure)
+                }
+            }
+        }
         #endif
 
         AislopdeskClientApp.main()
