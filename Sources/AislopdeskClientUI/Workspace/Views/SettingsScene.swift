@@ -18,6 +18,7 @@ public enum SettingsKey {
     // Features / advanced
     public static let systemDialogPanes = "features.systemDialogPanes"
     public static let autoSwitchLayouts = "features.autoSwitchLayouts"
+    public static let redactSecrets = "features.redactSecrets"
 
     /// Whether a layout with a trigger app auto-switches when that app launches on the host (default
     /// ON — assigning a trigger is itself the opt-in). Read at fire-time.
@@ -37,6 +38,12 @@ public enum SettingsKey {
     /// `AISLOPDESK_SYSTEM_DIALOG_PANES` env var still overrides for tests (`0` off / `force` on).
     public static var systemDialogPanesEnabled: Bool {
         UserDefaults.standard.object(forKey: systemDialogPanes) as? Bool ?? true
+    }
+    /// Whether to mask likely secrets (access keys, bearer tokens, `PASSWORD=…`) out of window titles and
+    /// notification bodies before they reach the sidebar/pill/Notification Center (default ON — security
+    /// by default; the escape hatch is for someone who genuinely wants raw titles). Read at fire-time.
+    public static var redactSecretsEnabled: Bool {
+        UserDefaults.standard.object(forKey: redactSecrets) as? Bool ?? true
     }
     /// The default kind for a generic "New Pane" (toolbar primary action / empty state), default
     /// `.terminal`. Per-kind shortcuts (⇧⌘N / ⌥⌘N) are unaffected.
@@ -117,6 +124,7 @@ private struct NotificationSettingsTab: View {
 private struct AdvancedSettingsTab: View {
     @AppStorage(SettingsKey.systemDialogPanes) private var systemDialogPanes = true
     @AppStorage(SettingsKey.autoSwitchLayouts) private var autoSwitchLayouts = true
+    @AppStorage(SettingsKey.redactSecrets) private var redactSecrets = true
 
     var body: some View {
         Form {
@@ -128,6 +136,11 @@ private struct AdvancedSettingsTab: View {
             Section("Layouts") {
                 Toggle("Auto-switch layout on host app launch", isOn: $autoSwitchLayouts)
                 Text("A saved layout with a trigger app switches in automatically when that app first opens a window on the host (set the trigger when you save a layout).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Privacy") {
+                Toggle("Redact secrets in titles & notifications", isOn: $redactSecrets)
+                Text("Masks likely access keys, bearer tokens and `PASSWORD=…` out of window titles and notification banners before they reach the sidebar or Notification Center.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
