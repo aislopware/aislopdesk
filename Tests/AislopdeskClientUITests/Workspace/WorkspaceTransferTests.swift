@@ -87,6 +87,26 @@ final class WorkspaceTransferTests: XCTestCase {
         }
     }
 
+    func testSameSessionReimportPreservesFocusAndBookmarkAnchors() {
+        // Self-review fix: exporting the live workspace then re-importing it into the SAME session collides
+        // EVERY pane id, so all are re-minted. Without an id-map, focus reset to pane-0 and bookmarks
+        // dangled. The id-map must carry focus + bookmark anchors through the re-mint.
+        let a = term(0, "alpha"), b = term(400, "beta")
+        let st = store([a, b], focus: a.id)
+        st.focus(b.id)
+        st.saveBookmark(1)                          // bookmark 1 anchors to the focused pane (B)
+        XCTAssertEqual(st.workspace.bookmarks[1]?.pane, b.id, "precondition: bookmark anchored to B")
+
+        let data = st.exportWorkspaceData()
+        XCTAssertTrue(st.importWorkspace(data), "re-import into the SAME store")
+
+        XCTAssertEqual(st.workspace.focusedPane.flatMap { st.workspace.canvas.spec(for: $0)?.title }, "beta",
+                       "focus follows the re-mint (it reset to pane-0 before the id-map fix)")
+        guard let anchor = st.workspace.bookmarks[1]?.pane else { return XCTFail("bookmark anchor lost") }
+        XCTAssertTrue(st.workspace.canvas.contains(anchor), "the bookmark anchor maps to a live re-minted pane")
+        XCTAssertEqual(st.workspace.canvas.spec(for: anchor)?.title, "beta", "anchor still points at beta")
+    }
+
     func testEphemeralPanesNeverExported() {
         let a = term(0, "a")
         let src = store([a], focus: a.id)

@@ -844,16 +844,27 @@ public final class WorkspaceStore {
         guard let imported = WorkspaceTransfer.decode(data) else { return false }
         // An absolute swap of the whole tree — drop any in-flight live scroll (mirrors switchToLayoutPreset).
         discardLiveScroll()
-        // Re-mint any imported pane id that collides with a CURRENT (possibly still-tearing-down) id, so the
-        // async-teardown race can't drop a freshly-materialized session (same rule as switchToLayoutPreset /
-        // reopen). dedupingItemIDs preserves each item's groupID, so group membership survives the re-mint.
-        var seen = Set(workspace.canvas.allIDs())
+        // Re-mint EVERY imported pane id through an explicit idMap (exactly as switchToLayoutPreset does):
+        // (1) a re-import into the SAME running session would otherwise collide a fresh pane with a
+        // still-tearing-down live session of the same id (the async-teardown race), and (2) — the reason a
+        // bare dedupingItemIDs was WRONG here — focus + bookmark anchors must FOLLOW the re-mint. With a
+        // map we remap `focusedPane` and every `bookmarks[].pane` so a same-session export→import keeps the
+        // focused pane and live bookmark anchors instead of resetting focus to pane-0 and dangling them.
+        var idMap: [PaneID: PaneID] = [:]
+        let reminted = imported.canvas.items.map { item -> CanvasItem in
+            let fresh = PaneID()
+            idMap[item.id] = fresh
+            return CanvasItem(id: fresh, spec: item.spec, frame: item.frame, z: item.z, groupID: item.groupID)
+        }
         var ws = imported
-        ws.canvas = ws.canvas.dedupingItemIDs(seen: &seen)
+        ws.canvas = Canvas(items: reminted, camera: imported.canvas.camera)
+        ws.focusedPane = imported.focusedPane.flatMap { idMap[$0] } ?? reminted.first?.id
+        ws.bookmarks = imported.bookmarks.mapValues { bm in
+            CanvasBookmark(pane: bm.pane.flatMap { idMap[$0] }, cameraOrigin: bm.cameraOrigin, name: bm.name)
+        }
         ws.connection = workspace.connection            // keep the local host; never adopt the imported one
         ws.maximizedPane = nil
-        // A re-minted focus id no longer exists → normalizingFocus repoints it to the first pane.
-        workspace = ws.normalizingFocus().normalizingGroups()
+        workspace = ws.normalizingGroups()              // group ids stay valid; normalize defensively
         pendingClose = nil
         pendingRename = nil
         overviewActive = false
