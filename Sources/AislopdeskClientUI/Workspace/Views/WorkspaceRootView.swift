@@ -48,6 +48,8 @@ public struct WorkspaceRootView: View {
 
     /// The in-flight "Save Current Layout…" name being typed (the alert's TextField binding).
     @State private var saveLayoutName: String = ""
+    /// The optional trigger-app name for the layout being saved (auto-switch on host app launch).
+    @State private var saveLayoutTriggerApp: String = ""
 
     /// The OUTER WINDOW's width on macOS, fed by ``WindowWidthReader`` (ITEM #6). `nil` until the
     /// reader observes a window (and always `nil` on iOS, which keeps its size-class-primary decision):
@@ -141,17 +143,18 @@ public struct WorkspaceRootView: View {
             set: { if !$0 { store.clearSaveLayoutRequest() } }
         )) {
             TextField("Layout name", text: $saveLayoutName)
+            TextField("Auto-switch when this host app launches (optional)", text: $saveLayoutTriggerApp)
             Button("Save") {
-                store.saveLayoutPreset(name: saveLayoutName)
-                saveLayoutName = ""
+                store.saveLayoutPreset(name: saveLayoutName, triggerAppName: saveLayoutTriggerApp)
+                saveLayoutName = ""; saveLayoutTriggerApp = ""
                 store.clearSaveLayoutRequest()
             }
             Button("Cancel", role: .cancel) {
-                saveLayoutName = ""
+                saveLayoutName = ""; saveLayoutTriggerApp = ""
                 store.clearSaveLayoutRequest()
             }
         } message: {
-            Text("Save the current panes, groups, and focus as a named layout you can switch back to.")
+            Text("Save the current panes, groups, and focus as a named layout you can switch back to. Optionally bind it to a host app so it switches in automatically when that app launches.")
         }
     }
 

@@ -923,27 +923,55 @@ public final class WorkspaceStore {
     /// already have). The video bindings travel in each pane's spec, so a restored remote pane
     /// re-streams (or degrades to the picker if its window is gone). Metadata-only mutation → reconcile
     /// just persists.
-    public func saveLayoutPreset(name: String) {
+    public func saveLayoutPreset(name: String, triggerAppName: String? = nil) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let trigger = (triggerAppName?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
         // Strip ephemeral (auto-managed) panes from the snapshot — a saved layout must not resurrect a
         // dead system-dialog windowID.
         let snapshotCanvas = strippingEphemeral(workspace.canvas)
-        let preset = LayoutPreset(
-            name: trimmed,
-            canvas: snapshotCanvas,
-            groups: workspace.groups,
-            focusedPane: snapshotCanvas.contains(workspace.focusedPane ?? PaneID()) ? workspace.focusedPane : snapshotCanvas.allIDs().first
-        )
+        let focus = snapshotCanvas.contains(workspace.focusedPane ?? PaneID()) ? workspace.focusedPane : snapshotCanvas.allIDs().first
         if let i = workspace.layoutPresets.firstIndex(where: { $0.name == trimmed }) {
             workspace.layoutPresets[i] = LayoutPreset(
                 id: workspace.layoutPresets[i].id, name: trimmed,
-                canvas: preset.canvas, groups: preset.groups, focusedPane: preset.focusedPane
+                canvas: snapshotCanvas, groups: workspace.groups, focusedPane: focus, triggerAppName: trigger
             )
         } else {
-            workspace.layoutPresets.append(preset)
+            workspace.layoutPresets.append(LayoutPreset(
+                name: trimmed, canvas: snapshotCanvas, groups: workspace.groups,
+                focusedPane: focus, triggerAppName: trigger))
         }
         reconcile()   // metadata-only — persists the new preset list
+    }
+
+    /// The preset whose `triggerAppName` matches `appName` (case-insensitive), or `nil`. Pure — the
+    /// app-launch matcher.
+    func presetForLaunchedApp(_ appName: String) -> LayoutPreset? {
+        let lower = appName.lowercased()
+        return workspace.layoutPresets.first { $0.triggerAppName?.lowercased() == lower }
+    }
+
+    /// The app name whose trigger last auto-switched a layout, so the same launch (still present in the
+    /// host window list across polls) doesn't re-switch every tick.
+    private var lastAutoSwitchedApp: String?
+
+    /// Auto-switches to the layout triggered by `appName` if one exists and we didn't already switch for
+    /// it. Returns whether a switch happened. The monitor calls this for each NEWLY-appeared host app.
+    @discardableResult
+    public func autoSwitchForLaunchedApp(_ appName: String) -> Bool {
+        guard lastAutoSwitchedApp?.lowercased() != appName.lowercased(),
+              let preset = presetForLaunchedApp(appName) else { return false }
+        lastAutoSwitchedApp = appName
+        switchToLayoutPreset(name: preset.name)
+        return true
+    }
+
+    /// Clears the auto-switch latch (e.g. when the triggering app's windows all close host-side), so a
+    /// later relaunch can auto-switch again.
+    public func clearAutoSwitchLatch(forAbsentApps absent: Set<String>) {
+        if let last = lastAutoSwitchedApp, absent.contains(where: { $0.lowercased() == last.lowercased() }) {
+            lastAutoSwitchedApp = nil
+        }
     }
 
     /// Switches the live canvas to saved layout `name`: replaces the panes + groups + focus with the

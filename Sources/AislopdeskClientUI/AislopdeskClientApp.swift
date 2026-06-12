@@ -49,6 +49,8 @@ public struct AislopdeskClientApp: App {
     /// Polls the pasteboard into the store's clipboard ring (the "Paste Recent" feature).
     @State private var clipboardMonitor: ClipboardMonitor
     #endif
+    /// Polls the host window list to auto-switch a layout when its trigger app launches.
+    @State private var appLaunchMonitor: AppLaunchMonitor
     @Environment(\.scenePhase) private var scenePhase
     /// Serializes the iOS background/foreground lifecycle transitions so the LAST phase observed is the
     /// LAST applied: each `handleScenePhase` chains its work behind the previous transition's, so a
@@ -165,9 +167,18 @@ public struct AislopdeskClientApp: App {
             },
             target: { [weak appConnection] in appConnection?.target ?? .default }
         )
+        let launchMonitor = AppLaunchMonitor(
+            store: store,
+            isConnected: { [weak appConnection] in
+                if case .connected = appConnection?.status { return true }
+                return false
+            },
+            target: { [weak appConnection] in appConnection?.target ?? .default }
+        )
         _store = State(initialValue: store)
         _connection = State(initialValue: appConnection)
         _dialogMonitor = State(initialValue: monitor)
+        _appLaunchMonitor = State(initialValue: launchMonitor)
         #if os(macOS)
         _clipboardMonitor = State(initialValue: ClipboardMonitor(store: store))
         #endif
@@ -201,6 +212,12 @@ public struct AislopdeskClientApp: App {
                     await clipboardMonitor.run()
                 }
                 #endif
+                // The layout auto-switch poller (host app launch → preset). Inert unless a preset has a
+                // trigger and the feature is on. Skipped under automation.
+                .task {
+                    guard !Self.hasAutomationEnvironment() else { return }
+                    await appLaunchMonitor.run()
+                }
                 // AUTOMATION ONLY (env-gated): auto-connect the app connection so an autoconnect launch
                 // goes live without a manual gate click (check-macos.sh/check-video.sh). A normal launch
                 // shows the gate prefilled and waits for the user's Connect.

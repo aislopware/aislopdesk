@@ -82,13 +82,19 @@ public struct LayoutPreset: Codable, Sendable, Equatable, Identifiable {
     public var canvas: Canvas
     public var groups: [PaneGroup]
     public var focusedPane: PaneID?
+    /// When set, this layout AUTO-SWITCHES the moment a host window owned by this app first appears
+    /// (case-insensitive match on the app name) — e.g. "monitoring" snaps in when you launch Grafana
+    /// on the host. `nil` = no trigger (manual switch only).
+    public var triggerAppName: String?
 
-    public init(id: UUID = UUID(), name: String, canvas: Canvas, groups: [PaneGroup], focusedPane: PaneID?) {
+    public init(id: UUID = UUID(), name: String, canvas: Canvas, groups: [PaneGroup],
+                focusedPane: PaneID?, triggerAppName: String? = nil) {
         self.id = id
         self.name = name
         self.canvas = canvas
         self.groups = groups
         self.focusedPane = focusedPane
+        self.triggerAppName = triggerAppName
     }
 }
 
@@ -119,7 +125,8 @@ public extension Workspace {
     /// 5 (2026-06-12): `VideoEndpoint` gained `appName` (pane rebind by app+title).
     /// 6 (2026-06-12): ``Workspace/bookmarks`` (viewport bookmarks, ⇧⌘n/⌘n).
     /// 7 (2026-06-13): ``Workspace/layoutPresets`` (named savable canvas layouts).
-    static let currentSchemaVersion = 7
+    /// 8 (2026-06-13): ``LayoutPreset/triggerAppName`` (auto-switch a layout on host app launch).
+    static let currentSchemaVersion = 8
 
     /// The fresh-launch / decode-failure fallback: one terminal pane at the origin, focused, ungrouped.
     static func defaultWorkspace() -> Workspace {
