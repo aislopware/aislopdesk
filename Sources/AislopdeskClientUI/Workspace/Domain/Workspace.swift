@@ -212,7 +212,10 @@ public extension Workspace {
         var copy = self
         var seenGroups = Set<PaneGroupID>()
         copy.groups = groups.filter { seenGroups.insert($0.id).inserted }
-        copy.snippets = snippets.map { Snippet(name: $0.name, body: $0.body) }
+        // Re-mint ONLY a DUPLICATE snippet id (keep the first occurrence's id), so a clean file round-trips
+        // verbatim — an unconditional re-mint made load() non-idempotent (every launch changed the ids).
+        var seenSnippetIDs = Set<UUID>()
+        copy.snippets = snippets.map { seenSnippetIDs.insert($0.id).inserted ? $0 : Snippet(name: $0.name, body: $0.body) }
         var seenPresetNames = Set<String>()
         copy.layoutPresets = layoutPresets.filter { seenPresetNames.insert($0.name).inserted }
         return copy

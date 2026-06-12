@@ -805,10 +805,17 @@ public final class WorkspaceStore {
     /// The saved snippets, persisted on the workspace (read-only view; mutate via the CRUD below).
     public var snippets: [Snippet] { workspace.snippets }
 
+    /// A non-blank snippet display name (trimmed; an empty/whitespace name falls back to "Snippet" so the
+    /// palette never shows a blank "Run …" row — reachable from CRUD and from a merge-imported file).
+    static func snippetName(_ raw: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "Snippet" : t
+    }
+
     /// Saves a new snippet and returns it. Metadata-only mutation (leaf set unchanged) → reconcile persists.
     @discardableResult
     public func addSnippet(name: String, body: String) -> Snippet {
-        let snippet = Snippet(name: name, body: body)
+        let snippet = Snippet(name: Self.snippetName(name), body: body)
         workspace.snippets.append(snippet)
         reconcile()
         return snippet
@@ -817,7 +824,7 @@ public final class WorkspaceStore {
     /// Edits an existing snippet's name + body. No-op for an unknown id.
     public func updateSnippet(_ id: UUID, name: String, body: String) {
         guard let i = workspace.snippets.firstIndex(where: { $0.id == id }) else { return }
-        workspace.snippets[i].name = name
+        workspace.snippets[i].name = Self.snippetName(name)
         workspace.snippets[i].body = body
         reconcile()
     }
@@ -904,7 +911,7 @@ public final class WorkspaceStore {
             // library (a snippet whose body already exists, or a preset whose canvas+groups already exist,
             // is a re-import — skip it). Without this, repeated identical merges accrued "X copy copy …".
             for s in imported.snippets where !workspace.snippets.contains(where: { $0.body == s.body }) {
-                let name = Self.uniqueName(base: s.name, existing: Set(workspace.snippets.map(\.name)))
+                let name = Self.uniqueName(base: Self.snippetName(s.name), existing: Set(workspace.snippets.map(\.name)))
                 workspace.snippets.append(Snippet(name: name, body: s.body))
             }
             for p in imported.layoutPresets

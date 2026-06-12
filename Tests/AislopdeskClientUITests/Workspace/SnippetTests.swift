@@ -81,6 +81,25 @@ final class SnippetTests: XCTestCase {
         (store.handle(for: id) as? FakePaneSession)?.sentBytes ?? []
     }
 
+    func testSnippetNameIsTrimmedAndBlankFallsBack() {
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        XCTAssertEqual(st.addSnippet(name: "  deploy  ", body: "x").name, "deploy", "name is trimmed")
+        XCTAssertEqual(st.addSnippet(name: "   ", body: "x").name, "Snippet", "a blank name falls back (no blank palette row)")
+        XCTAssertEqual(st.addSnippet(name: "", body: "x").name, "Snippet")
+    }
+
+    func testNormalizingCollectionsPreservesUniqueSnippetIdButRemintsDuplicates() {
+        // load() idempotency: a clean file's snippet ids must NOT churn on every launch.
+        let s = Snippet(name: "a", body: "b")
+        let clean = Workspace(canvas: Canvas(items: [term(0)]), focusedPane: nil, snippets: [s])
+        XCTAssertEqual(clean.normalizingCollections().snippets.first?.id, s.id, "a unique snippet id is preserved")
+        // A genuine duplicate id is still re-minted (palette entry-id safety).
+        let dup = Workspace(canvas: Canvas(items: [term(0)]), focusedPane: nil,
+                            snippets: [Snippet(id: s.id, name: "a", body: "b"), Snippet(id: s.id, name: "c", body: "d")])
+        XCTAssertEqual(Set(dup.normalizingCollections().snippets.map(\.id)).count, 2, "a duplicate snippet id is re-minted")
+    }
+
     func testCRUDPersistsOnWorkspace() {
         let a = term(0)
         let st = store([a], focus: a.id)
