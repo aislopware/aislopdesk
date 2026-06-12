@@ -239,7 +239,8 @@ struct CommandPaletteView: View {
     private func run(_ entry: Entry) {
         switch entry.kind {
         case let .command(command):
-            store.recordRecentCommand(command)   // surfaces at the top of the empty-query palette
+            // Recents are recorded inside apply() (the chokepoint for palette + menu + keyboard), so
+            // it is NOT recorded here — that would double-count the palette path only.
             apply(command, to: store)
         case let .group(id):
             // Jump to a group: pan the camera to frame its panes (groups are spatial clusters now).

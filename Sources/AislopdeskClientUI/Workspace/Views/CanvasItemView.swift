@@ -137,9 +137,12 @@ struct CanvasItemView: View {
             ?? item.frame
         // The parent positions us at the PERSISTED frame's centre; shift by the previewed centre
         // delta (move: the snapped translation; resize: keeps the anchored edge pinned). A maximized
-        // pane can't be moved/resized → no live offset.
-        let offsetX = maximized ? 0 : shown.midX - item.frame.midX
-        let offsetY = maximized ? 0 : shown.midY - item.frame.midY
+        // pane can't be moved/resized → no live offset. A NON-anchor pane in a live GROUP drag follows
+        // the anchor's broadcast delta so the whole cohort moves together on screen (the anchor uses
+        // its own gesture preview; `groupDragOffset` returns .zero for it).
+        let groupOffset = maximized ? .zero : store.groupDragOffset(for: item.id)
+        let offsetX = (maximized ? 0 : shown.midX - item.frame.midX) + groupOffset.width
+        let offsetY = (maximized ? 0 : shown.midY - item.frame.midY) + groupOffset.height
         let status = PanePresentation.connectionStatus(store.handle(for: item.id))
 
         return PaneLeafView(
@@ -295,6 +298,14 @@ struct CanvasItemView: View {
                 // gesture itself is never cancelled; identity survives by design).
                 guard displaySize == nil else { state = nil; return }
                 if state == nil, !Self.pastDeadZone(value.translation) { return }
+                // GROUP drag: the anchor moves RAW (no per-pane snap — snapping individual cohort
+                // members would scatter the group); the cohort stays rigid.
+                if store.isSelected(item.id), store.selectedPanes.count > 1 {
+                    state = CanvasSnap.Resolution(
+                        frame: item.frame.offsetBy(dx: value.translation.width, dy: value.translation.height),
+                        guides: [])
+                    return
+                }
                 let (targets, viewport) = snapEnvironment()
                 state = CanvasSnap.move(
                     item.frame.offsetBy(dx: value.translation.width, dy: value.translation.height),
@@ -306,6 +317,11 @@ struct CanvasItemView: View {
                 guard displaySize == nil else { return }
                 if moveChain == nil, !Self.pastDeadZone(value.translation) { return }
                 raiseOnGestureStart()
+                // GROUP drag: broadcast the raw delta so the OTHER selected panes follow live.
+                if store.isSelected(item.id), store.selectedPanes.count > 1 {
+                    store.updateGroupDrag(anchor: item.id, delta: value.translation)
+                    return
+                }
                 let (targets, viewport) = snapEnvironment()
                 let config = snapConfig
                 moveConfig = config
@@ -344,8 +360,9 @@ struct CanvasItemView: View {
                 }
                 // GROUP MOVE: if this pane is in a multi-selection, translate the WHOLE selection by the
                 // raw delta (group drags move together, un-snapped — snapping each pane would scatter the
-                // cohort). Otherwise the normal snap-aware single-pane move.
+                // cohort). Clear the live broadcast FIRST so there's no double-offset flash, then commit.
                 if store.isSelected(item.id), store.selectedPanes.count > 1 {
+                    store.endGroupDragLive()
                     store.moveSelection(by: value.translation, anchor: item.id)
                     return
                 }

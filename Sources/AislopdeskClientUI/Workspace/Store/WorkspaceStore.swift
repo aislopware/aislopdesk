@@ -832,6 +832,29 @@ public final class WorkspaceStore {
     /// Whether `id` is in the multi-selection (the pill's selected cue).
     public func isSelected(_ id: PaneID) -> Bool { selectedPanes.contains(id) }
 
+    /// The LIVE group-drag offset broadcast by the dragged anchor so the OTHER selected panes follow it
+    /// in real time (view-only state, like ``liveCameraOffset`` — never reconciles/persists). `nil`
+    /// between drags. Only selected panes read it, so a group drag re-renders just the cohort.
+    public struct GroupDragState: Equatable, Sendable { public let anchor: PaneID; public let delta: CGSize }
+    public private(set) var groupDragLive: GroupDragState?
+
+    /// The anchor broadcasts its live raw translation each gesture frame. Cleared (and ignored) unless
+    /// the anchor is in a multi-selection of ≥2.
+    public func updateGroupDrag(anchor: PaneID, delta: CGSize) {
+        guard selectedPanes.contains(anchor), selectedPanes.count > 1 else { groupDragLive = nil; return }
+        groupDragLive = GroupDragState(anchor: anchor, delta: delta)
+    }
+
+    /// Ends the live group drag (the gesture committed or cancelled).
+    public func endGroupDragLive() { groupDragLive = nil }
+
+    /// The live screen offset a NON-anchor selected pane should render at during a group drag (`.zero`
+    /// when no group drag, or for the anchor itself — its own gesture preview already moves it).
+    public func groupDragOffset(for id: PaneID) -> CGSize {
+        guard let gd = groupDragLive, gd.anchor != id, selectedPanes.contains(id) else { return .zero }
+        return gd.delta
+    }
+
     /// Moves EVERY selected pane by `delta` (a group drag-to-move-together commit), raising the dragged
     /// `anchor`. No-op when the selection is empty or `anchor` isn't selected (fall back to a single move).
     public func moveSelection(by delta: CGSize, anchor: PaneID) {
@@ -1367,6 +1390,11 @@ public final class WorkspaceStore {
         if !selectedPanes.isEmpty, !selectedPanes.isSubset(of: leafSet) {
             selectedPanes.formIntersection(leafSet)
         }
+        // Evict cached native sizes for panes that are gone (else the dict grows unbounded across a
+        // long session of open/close — the round-2 review's leak).
+        if !nativeFrameSize.isEmpty {
+            nativeFrameSize = nativeFrameSize.filter { leafSet.contains($0.key) }
+        }
 
         // 1. Orphans: remove from the registry synchronously (the registry is the source of truth for
         //    "what is live"), then drive teardown. Removing first guarantees the invariant holds the
@@ -1737,6 +1765,10 @@ public extension WorkspaceStore {
 /// a command with no valid target (no focused pane) is a graceful no-op.
 @MainActor
 public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
+    // Record action verbs into the palette recents from the ONE chokepoint every path funnels through
+    // (palette, menu bar, keyboard shortcut) — so a command you run by ⌘-key, not just from the
+    // palette, floats to the top next time. Navigation/transient verbs are excluded (isRecentsWorthy).
+    if command.isRecentsWorthy { store.recordRecentCommand(command) }
     switch command {
     case .newPaneDefault:
         store.addPane(kind: SettingsKey.defaultPaneKind)
