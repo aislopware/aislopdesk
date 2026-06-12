@@ -67,16 +67,8 @@ public enum WorkspaceTransfer {
         var ws = doc.workspace
         ws.connection = nil
         ws.canvas = ws.canvas.dedupingItemIDs(seen: &seen)
-        // Drop a duplicate-PaneGroupID group (keep first) — else two PaneGroups with one id reach a
-        // SwiftUI ForEach as duplicate Identifiable ids (undefined render results).
-        var seenGroups = Set<PaneGroupID>()
-        ws.groups = ws.groups.filter { seenGroups.insert($0.id).inserted }
-        // Re-mint EVERY snippet id (snippet ids are referenced by nothing) so a duplicate-UUID file can't
-        // produce two palette entries keyed by the same "snippet.<uuid>".
-        ws.snippets = ws.snippets.map { Snippet(name: $0.name, body: $0.body) }
-        // Drop a duplicate-NAME preset (keep first) — the layout palette entries are keyed by name.
-        var seenPresetNames = Set<String>()
-        ws.layoutPresets = ws.layoutPresets.filter { seenPresetNames.insert($0.name).inserted }
-        return ws.normalizingFocus().normalizingGroups()
+        // The side-collection repairs (group-id / snippet-id / preset-name dedup) are shared with the
+        // on-disk load — see Workspace.normalizingCollections().
+        return ws.normalizingCollections().normalizingFocus().normalizingGroups()
     }
 }
