@@ -27,6 +27,21 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case recallBookmark(Int)       // ⌘1–9  — jump back to bookmark n
 }
 
+public extension WorkspaceCommand {
+    /// Whether this command is worth surfacing in the ⌘K palette's "recents" — the action VERBS, not
+    /// the navigation/transient moves (focus, cycle, bookmarks) which have their own affordances and
+    /// would just churn the small recents ring. Recorded at the ``apply(_:to:)`` chokepoint so a verb
+    /// run by keyboard or menu (not just the palette) populates the recents.
+    var isRecentsWorthy: Bool {
+        switch self {
+        case .focus, .cycleFocus, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll:
+            return false
+        default:
+            return true
+        }
+    }
+}
+
 // MARK: - Key chords
 
 /// A keyboard chord: a normalized key token plus its modifier set. The join key of the bindings

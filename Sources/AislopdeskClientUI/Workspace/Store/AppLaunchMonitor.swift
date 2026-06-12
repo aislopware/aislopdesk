@@ -49,7 +49,14 @@ public final class AppLaunchMonitor {
         let goneApps = lastApps.subtracting(apps)
         lastApps = apps
         store.clearAutoSwitchLatch(forAbsentApps: goneApps)
-        for app in newApps where store.autoSwitchForLaunchedApp(app) { break }   // one switch per poll
+        // One switch per poll, with a DETERMINISTIC winner when several trigger apps appear at once
+        // (e.g. a multi-poll reconnect batch): iterate the presets in saved order, not the unordered
+        // newApps Set, so the same launch always picks the same layout.
+        for preset in store.workspace.layoutPresets {
+            guard let trigger = preset.triggerAppName,
+                  newApps.contains(where: { $0.lowercased() == trigger.lowercased() }) else { continue }
+            if store.autoSwitchForLaunchedApp(trigger) { break }
+        }
     }
 }
 #endif
