@@ -134,7 +134,7 @@ struct PaneChromeView<Content: View>: View {
                 store.toggleZoom()
             }
             chromeButton("xmark", help: store.isOnlyLeaf(id) ? "Close last pane" : "Close pane", role: .destructive) {
-                store.closePane(id)
+                store.requestClosePane(id)
             }
         }
         .font(.caption)

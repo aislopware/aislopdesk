@@ -91,6 +91,7 @@ public struct WorkspaceCommands: Commands {
         // keyless, so a failed/dropped pane had no discoverable in-place recovery).
         commandButton("Reconnect Pane", .reconnectPane)
         commandButton("Close Pane", .closePane)
+        commandButton("Reopen Closed Pane", .reopenClosedPane)
     }
 
     // MARK: - Item builder

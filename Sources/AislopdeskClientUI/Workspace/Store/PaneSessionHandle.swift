@@ -29,6 +29,12 @@ public protocol PaneSessionHandle: AnyObject, Identifiable {
 
     // MARK: Video activation gating (docs/22 §7)
 
+    /// Whether the pane's shell is currently running a foreground command — the close-guard signal
+    /// (⌘W on a busy shell asks before killing the session) and the pill's "running…" cue. `false`
+    /// for kinds with no shell. Default implementation returns `false` so non-terminal conformers
+    /// need not care.
+    var isShellBusy: Bool { get }
+
     /// Whether this session is currently holding live video resources (the 2-UDP-socket /
     /// VTDecompression / CVDisplayLink stack). Always `false` for non-`.remoteGUI` kinds.
     ///
@@ -60,6 +66,12 @@ public protocol PaneSessionHandle: AnyObject, Identifiable {
     /// `ConnectionViewModel` teardown order, closes the inspector channel, and stops any video stack.
     /// Called by `reconcile()` for every orphaned leaf id before it is dropped from the registry.
     func teardown() async
+}
+
+public extension PaneSessionHandle {
+    /// Default: no shell, never busy. ``LivePaneSession`` overrides with the terminal's live
+    /// `shellActivity`; test fakes override with a settable flag.
+    var isShellBusy: Bool { false }
 }
 
 // MARK: - ID adoption (store-internal)

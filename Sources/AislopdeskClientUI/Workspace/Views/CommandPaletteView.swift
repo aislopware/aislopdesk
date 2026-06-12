@@ -440,6 +440,7 @@ struct CommandPaletteView: View {
         CatalogItem(command: .renamePane, title: "Rename Pane", symbol: "pencil"),
         CatalogItem(command: .reconnectPane, title: "Reconnect Pane", symbol: "arrow.clockwise"),
         CatalogItem(command: .closePane, title: "Close Pane", symbol: "xmark"),
+        CatalogItem(command: .reopenClosedPane, title: "Reopen Closed Pane", symbol: "arrow.uturn.backward"),
         CatalogItem(command: .cycleFocus(forward: true), title: "Focus Next Pane", symbol: "arrow.forward.square"),
         CatalogItem(command: .cycleFocus(forward: false), title: "Focus Previous Pane", symbol: "arrow.backward.square"),
         CatalogItem(command: .focus(.left), title: "Focus Left", symbol: "arrow.left"),

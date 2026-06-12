@@ -14,9 +14,10 @@ enum PanePresentation {
         PaneConnectionStatus.from((handle as? LivePaneSession)?.connection?.status)
     }
 
-    /// Whether an OSC 133 command is currently executing in this pane's shell.
+    /// Whether an OSC 133 command is currently executing in this pane's shell (the protocol-level
+    /// ``PaneSessionHandle/isShellBusy`` — the same signal the store's busy-close guard consults).
     static func isRunning(_ handle: (any PaneSessionHandle)?) -> Bool {
-        (handle as? LivePaneSession)?.terminalModel?.shellActivity == .running
+        handle?.isShellBusy ?? false
     }
 
     /// The smoothed app-layer ping/pong RTT (`nil` until the first sample).
@@ -370,7 +371,9 @@ struct PaneMenuView: View {
             Divider().padding(.vertical, 4)
 
             row(store.isOnlyLeaf(id) ? "Close Last Pane" : "Close Pane", systemImage: "xmark", role: .destructive) {
-                store.closePane(id)
+                // Through the busy-shell guard: a pane mid-command parks behind the root view's
+                // confirmation dialog instead of killing the command outright.
+                store.requestClosePane(id)
             }
         }
         .padding(10)

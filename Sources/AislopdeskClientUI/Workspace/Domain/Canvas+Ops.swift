@@ -104,6 +104,17 @@ public extension Canvas {
         return (Canvas(items: items + [item], camera: camera), id)
     }
 
+    /// Re-adds a previously-closed pane at its EXACT former frame (the close-undo restore), frontmost.
+    /// A FRESH id is minted deliberately: the closed pane's session teardown is async, so reusing the
+    /// old ``PaneID`` could race the in-flight teardown's registry/cap bookkeeping — and a reopened
+    /// pane's session is a NEW session anyway (scrollback does not survive; the menu says "Reopen",
+    /// not "Undo"). `group` is the caller-validated group to rejoin (`nil` = ungrouped).
+    func restoring(_ spec: PaneSpec, frame: CGRect, group: PaneGroupID?) -> (Canvas, PaneID) {
+        let id = PaneID()
+        let item = CanvasItem(id: id, spec: spec, frame: Canvas.sanitize(frame), z: maxZ + 1, groupID: group)
+        return (Canvas(items: items + [item], camera: camera), id)
+    }
+
     /// Removes `id`; returns `nil` iff it was the **last** item (the tab empties — the exact
     /// `PaneNode.closing → nil` contract the store relies on to close the tab). Surviving items keep
     /// their z verbatim (z is order-independent, so no renumber is needed).

@@ -37,6 +37,12 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     enum Event: Equatable, Sendable { case pause, resume, teardown, adopt(PaneID), videoActive(Bool) }
     private(set) var events: [Event] = []
 
+    // MARK: Shell activity (the busy-close-guard signal)
+
+    /// Settable so a test can simulate a shell with a running command (``PaneSessionHandle/isShellBusy``).
+    /// Defaults `false` — every pre-existing test sees the idle-shell behaviour unchanged.
+    var isShellBusy: Bool = false
+
     // MARK: Video activation
 
     /// The video-activation flag the cap tests assert against (only meaningful for `.remoteGUI`).

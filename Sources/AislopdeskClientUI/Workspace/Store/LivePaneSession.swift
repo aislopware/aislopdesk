@@ -112,6 +112,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// `connection.terminalModel` so the view never reaches into the connection.
     public var terminalModel: TerminalViewModel? { connection?.terminalModel }
 
+    /// Whether an OSC 133 command is currently executing in this pane's shell — the
+    /// ``PaneSessionHandle/isShellBusy`` close-guard signal and the pill's "running…" cue. `false`
+    /// for panes with no terminal (`.remoteGUI` / `.systemDialog`).
+    public var isShellBusy: Bool { terminalModel?.shellActivity == .running }
+
     // MARK: Init
 
     /// The designated initializer is private — production builds a `LivePaneSession` only through
