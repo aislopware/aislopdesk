@@ -47,6 +47,9 @@ import Foundation
 /// type 8 windowList:    UInt16 count | per record: UInt32 id | UInt16 w | UInt16 h | lp app | lp title
 /// type 9 focusWindow:   (no body)
 /// type 10 streamCadence: UInt16 fps
+/// type 11 listSystemDialogs: (no body)
+/// type 12 systemDialogList:  UInt16 count | per record: UInt32 id | UInt16 w | UInt16 h
+///                            | UInt8 isSecure | lp owner | lp title
 /// ```
 ///
 /// Liveness keepalive (additive after the resize pair — CONCURRENCY-HOST-1 crash-without-bye):
@@ -77,6 +80,36 @@ public struct WindowSummary: Equatable, Sendable {
         self.title = title
         self.width = width
         self.height = height
+    }
+}
+
+/// One host-side SYSTEM dialog/prompt in a ``VideoControlMessage/systemDialogList(_:)`` response —
+/// a cross-process modal window NOT attached to any app the client is already streaming (the prime
+/// case: a `SecurityAgent` password / admin prompt, but also save/open panels and system alerts).
+/// The client POLLS `listSystemDialogs`, diffs the answer, and AUTO-SPAWNS an ephemeral pane that
+/// streams each dialog by its `windowID` — closing it again when the dialog leaves the list. This is
+/// the "show system popups in their own pane" feature (mirror of ``WindowSummary`` + the picker).
+public struct SystemDialogSummary: Equatable, Sendable {
+    /// Host CGWindowID — the client puts this in a `hello`'s `requestedWindowID` to stream the dialog.
+    public var windowID: UInt32
+    /// The owning process name (e.g. "SecurityAgent", "Open and Save Panel Service").
+    public var owner: String
+    /// The dialog title (often empty / "Untitled" for SecurityAgent — owner is the useful label).
+    public var title: String
+    public var width: UInt16
+    public var height: UInt16
+    /// HW-proven (probe 2026-06-12): a `SecurityAgent`-class dialog raises system Secure Event Input —
+    /// the host can CAPTURE it (pixels stream fine) but synthetic keystrokes are OS-dropped, so the
+    /// password can't be TYPED from the client. The pane shows a "view-only — type on the host" hint.
+    public var isSecure: Bool
+
+    public init(windowID: UInt32, owner: String, title: String, width: UInt16, height: UInt16, isSecure: Bool) {
+        self.windowID = windowID
+        self.owner = owner
+        self.title = title
+        self.width = width
+        self.height = height
+        self.isSecure = isSecure
     }
 }
 
@@ -122,6 +155,14 @@ public enum VideoControlMessage: Equatable, Sendable {
     /// content interval + adaptive-jitter seconds→frames conversion on it. Inert to an old peer
     /// (unknown type → dropped).
     case streamCadence(fps: UInt16)
+    /// Client → host: "what SYSTEM dialogs/prompts are open right now?" — a session-LESS poll (the host
+    /// answers with ``systemDialogList(_:)`` WITHOUT minting a session), mirroring ``listWindows``. The
+    /// client polls this on a slow cadence and diffs the result to auto-spawn/close ephemeral dialog
+    /// panes. Zero body. An old host drops it (unknown type) → the feature is simply inert.
+    case listSystemDialogs
+    /// Host → client: the currently-open system dialogs, in response to ``listSystemDialogs``. The client
+    /// streams each by sending a normal `hello` for its `windowID`.
+    case systemDialogList([SystemDialogSummary])
 
     public var messageType: UInt8 {
         switch self {
@@ -135,6 +176,8 @@ public enum VideoControlMessage: Equatable, Sendable {
         case .windowList: return 8
         case .focusWindow: return 9
         case .streamCadence: return 10
+        case .listSystemDialogs: return 11
+        case .systemDialogList: return 12
         }
     }
 
@@ -186,6 +229,19 @@ public enum VideoControlMessage: Equatable, Sendable {
             break
         case .streamCadence(let fps):
             out.appendBE(fps)
+        case .listSystemDialogs:
+            break
+        case .systemDialogList(let dialogs):
+            // Mirrors windowList; CALLER caps the list to fit one UDP datagram (control is not packetized).
+            out.appendBE(UInt16(truncatingIfNeeded: dialogs.count))
+            for d in dialogs {
+                out.appendBE(d.windowID)
+                out.appendBE(d.width)
+                out.appendBE(d.height)
+                out.append(d.isSecure ? 1 : 0)
+                out.appendLengthPrefixed(d.owner)
+                out.appendLengthPrefixed(d.title)
+            }
         }
         return out
     }
@@ -247,6 +303,24 @@ public enum VideoControlMessage: Equatable, Sendable {
             return .focusWindow
         case 10:
             return .streamCadence(fps: try reader.readUInt16())
+        case 11:
+            return .listSystemDialogs
+        case 12:
+            let count = Int(try reader.readUInt16())
+            var dialogs: [SystemDialogSummary] = []
+            // Same untrusted-count discipline as windowList: no reserveCapacity; each record read throws
+            // `.truncated` the instant the datagram runs short, so a bogus huge count can't over-read.
+            for _ in 0 ..< count {
+                let id = try reader.readUInt32()
+                let w = try reader.readUInt16()
+                let h = try reader.readUInt16()
+                let isSecure = try reader.readUInt8() != 0
+                let owner = try reader.readLengthPrefixed()
+                let title = try reader.readLengthPrefixed()
+                dialogs.append(SystemDialogSummary(windowID: id, owner: owner, title: title,
+                                                   width: w, height: h, isSecure: isSecure))
+            }
+            return .systemDialogList(dialogs)
         default:
             throw VideoProtocolError.malformed("unknown video control message type \(type)")
         }

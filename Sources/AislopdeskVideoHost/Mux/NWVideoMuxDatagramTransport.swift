@@ -338,14 +338,16 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         return true
     }
 
-    /// One-shot peek: does a control-channel payload decode as a `listWindows` discovery request? Like
-    /// the hello peek, only the control channel can carry it. Lets a session-LESS list request bootstrap
-    /// its reply flow so the daemon can answer it without minting a capture session (docs/31).
+    /// One-shot peek: does a control-channel payload decode as a session-LESS discovery request — either
+    /// `listWindows` (docs/31 picker) or `listSystemDialogs` (the system-popup-pane feature)? Like the
+    /// hello peek, only the control channel can carry these. Lets such a request bootstrap its reply flow
+    /// so the daemon can answer it without minting a capture session.
     private static func payloadIsListRequest(channel: VideoChannel, payload: Data) -> Bool {
-        guard channel == .control,
-              let msg = try? VideoControlMessage.decode(payload),
-              case .listWindows = msg else { return false }
-        return true
+        guard channel == .control, let msg = try? VideoControlMessage.decode(payload) else { return false }
+        switch msg {
+        case .listWindows, .listSystemDialogs: return true
+        default: return false
+        }
     }
 
     private func receiveCursor(on conn: NWConnection, live: Liveness, consecutiveErrors: Int = 0, onReceive: @escaping @Sendable (UInt32, VideoChannel, Data) -> Void) {

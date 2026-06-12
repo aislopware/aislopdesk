@@ -172,10 +172,10 @@ public struct VideoSessionStateMachine: Sendable {
             // (``AislopdeskVideoHostSession/handleControl`` raises the captured window) and likewise has
             // no SM/capture-state effect. Both are defensive no-ops here (no effects).
             return []
-        case .listWindows, .windowList:
-            // Window-list discovery is answered at the DAEMON level (session-less, no capture mint)
-            // and never reaches a session's state machine — defensive no-op here. `windowList` is
-            // host→client and never arrives at the host at all.
+        case .listWindows, .windowList, .listSystemDialogs, .systemDialogList:
+            // Window-list AND system-dialog-list discovery are answered at the DAEMON level (session-less,
+            // no capture mint) and never reach a session's state machine — defensive no-op here.
+            // `windowList`/`systemDialogList` are host→client and never arrive at the host at all.
             return []
         }
     }

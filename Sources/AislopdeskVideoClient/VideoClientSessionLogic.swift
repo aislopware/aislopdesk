@@ -118,10 +118,12 @@ public struct VideoClientStateMachine: Sendable {
             // dropped (the host never sends it; defensive against a corrupt body that still parsed).
             guard state == .streaming, fps >= 1 else { return [] }
             return [.applyStreamCadence(fps)]
-        case .hello, .resizeRequest, .keepalive, .listWindows, .windowList, .focusWindow:
-            // The client never receives a hello / resizeRequest / keepalive / listWindows / focusWindow
-            // (all client→host). A `windowList` IS host→client but is handled out-of-band by the discovery
-            // query (a transient lane), NOT by a streaming session's FSM — defensive no-op here.
+        case .hello, .resizeRequest, .keepalive, .listWindows, .windowList, .focusWindow,
+             .listSystemDialogs, .systemDialogList:
+            // The client never receives a hello / resizeRequest / keepalive / listWindows / focusWindow /
+            // listSystemDialogs (all client→host). `windowList` and `systemDialogList` ARE host→client but
+            // are handled out-of-band by the discovery / system-dialog-monitor queries (transient lanes),
+            // NOT by a streaming session's FSM — defensive no-op here.
             return []
         }
     }

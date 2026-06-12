@@ -31,6 +31,7 @@ import AislopdeskVideoProtocol
 
 struct VideoHostdArguments {
     var list = false
+    var listDialogs = false
     var windowID: UInt32?
     var windowTitle: String?
     var mediaPort: UInt16 = 9000
@@ -77,6 +78,7 @@ struct VideoHostdArguments {
         while i < argv.count {
             switch argv[i] {
             case "--list": a.list = true
+            case "--list-dialogs": a.listDialogs = true
             case "--window-id":
                 guard let v = next(), let n = UInt32(v) else { return nil }
                 a.windowID = n; i += 1
@@ -216,6 +218,37 @@ final class ListAnswerGuard: @unchecked Sendable {
     log("answered listWindows on chan=\(channelID): \(summaries.count) windows (\(reply.count) bytes)")
 }
 
+/// Enumerate the on-screen windows and classify the open SYSTEM dialogs (SecurityAgent login/password
+/// prompts etc.) via the pure ``SystemDialogDetector``, capped to a control-datagram-safe count.
+@Sendable func systemDialogSummaries() async -> [SystemDialogSummary] {
+    let windows = (try? await shareableWindows()) ?? []
+    let snaps = windows.map { w in
+        SystemDialogDetector.WindowSnapshot(
+            windowID: w.windowID,
+            ownerName: w.owningApplication?.applicationName ?? "",
+            bundleID: w.owningApplication?.bundleIdentifier ?? "",
+            isOnScreen: w.isOnScreen,
+            title: w.title ?? "",
+            frame: w.frame)
+    }
+    return SystemDialogDetector.detect(snaps).prefix(16).map {
+        SystemDialogSummary(windowID: $0.windowID, owner: $0.owner, title: $0.title,
+                            width: UInt16(clamping: $0.width), height: UInt16(clamping: $0.height), isSecure: $0.isSecure)
+    }
+}
+
+/// Answers a client `listSystemDialogs` poll (the system-popup-pane feature): enumerate → classify →
+/// reply `systemDialogList` on the request's channelID → RETIRE the session-less lane. Mirrors
+/// ``answerWindowList``; quiet on the common empty case (the client polls on a slow cadence).
+@Sendable func answerSystemDialogList(channelID: UInt32, mux: NWVideoMuxDatagramTransport, answerGuard: ListAnswerGuard) async {
+    defer { answerGuard.end(channelID) }
+    let dialogs = await systemDialogSummaries()
+    let reply = VideoControlMessage.systemDialogList(dialogs).encode()
+    mux.send(reply, on: .control, channelID: channelID)
+    mux.retire(channelID)
+    if !dialogs.isEmpty { log("answered listSystemDialogs on chan=\(channelID): \(dialogs.count) dialog(s)") }
+}
+
 // What is held for the process lifetime; SIGINT drives the orderly stop. Set by the bring-up
 // Task, read by the SIGINT Task — different threads, so a lock guards the shared vars (the
 // `@unchecked Sendable` would otherwise hide a real data race). The daemon always runs the
@@ -303,6 +336,23 @@ Task {
             } else {
                 log("shareable windows (\(windows.count)):")
                 for w in windows { log(describe(w)) }
+            }
+            exit(0)
+        }
+
+        // DIAGNOSTIC: print the SYSTEM dialogs the feature would surface (SecurityAgent prompts etc.) —
+        // exercises the SAME `systemDialogSummaries()` the `listSystemDialogs` wire answer uses, so it
+        // HW-proves the real-window detection without a client. Trigger e.g. an admin-password prompt,
+        // then run `aislopdesk-videohostd --list-dialogs`.
+        if args.listDialogs {
+            let dialogs = await systemDialogSummaries()
+            if dialogs.isEmpty {
+                log("no system dialogs open (trigger e.g. an admin/login-password prompt, then re-run)")
+            } else {
+                log("system dialogs (\(dialogs.count)):")
+                for d in dialogs {
+                    log("  id=\(d.windowID) [\(d.width)x\(d.height)] \(d.owner) secure=\(d.isSecure) — \(d.title.isEmpty ? "(untitled)" : d.title)")
+                }
             }
             exit(0)
         }
@@ -426,6 +476,12 @@ Task {
                 // Coalesce retransmits: only spawn an enumeration if one isn't already in flight for this id.
                 if listAnswerGuard.begin(channelID) {
                     Task { await answerWindowList(channelID: channelID, mux: mux, answerGuard: listAnswerGuard) }
+                }
+            } else if channel == .control, let msg = try? VideoControlMessage.decode(data), case .listSystemDialogs = msg {
+                // Session-LESS system-dialog poll (the system-popup-pane feature): enumerate + classify +
+                // reply, NEVER mint a session. Bootstraps its reply flow exactly like listWindows.
+                if listAnswerGuard.begin(channelID) {
+                    Task { await answerSystemDialogList(channelID: channelID, mux: mux, answerGuard: listAnswerGuard) }
                 }
             } else {
                 Task { await registry.dispatch(channelID: channelID, channel: channel, data: data) }
