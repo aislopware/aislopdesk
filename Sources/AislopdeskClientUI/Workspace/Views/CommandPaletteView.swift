@@ -251,6 +251,8 @@ struct CommandPaletteView: View {
         case let .hostWindow(summary):
             // Spawn a Remote Window pane already bound to this host window — no create-then-pick step.
             store.addRemoteWindowPane(windowID: summary.windowID, title: summary.title, appName: summary.appName)
+        case let .switchLayout(name):
+            store.switchToLayoutPreset(name: name)
         }
         dismiss()
     }
@@ -290,8 +292,8 @@ struct CommandPaletteView: View {
         let (scope, stripped) = Self.parseScope(raw)
         let all: [Entry]
         switch scope {
-        case .all:        all = commandEntries + groupEntries + paneEntries + hostWindowEntries
-        case .commands:   all = commandEntries
+        case .all:        all = commandEntries + layoutEntries + groupEntries + paneEntries + hostWindowEntries
+        case .commands:   all = commandEntries + layoutEntries
         case .panes:      all = groupEntries + paneEntries
         case .hostWindows: all = hostWindowEntries
         }
@@ -346,6 +348,20 @@ struct CommandPaletteView: View {
     /// camera on it. Built live from the canvas so it tracks adds/closes.
     private var paneEntries: [Entry] {
         Self.buildPaneEntries(workspace: store.workspace)
+    }
+
+    /// One "switch to layout" entry per saved named layout. Selecting one swaps the whole canvas.
+    private var layoutEntries: [Entry] {
+        store.layoutPresetNames.map { name in
+            Entry(
+                id: "layout.\(name)",
+                kind: .switchLayout(name),
+                title: "Switch to “\(name)”",
+                subtitle: "Saved layout",
+                symbol: "rectangle.on.rectangle.angled",
+                keywords: "layout preset workspace context"
+            )
+        }
     }
 
     /// One "open this host window" entry per discovered host window. Selecting one spawns a Remote
@@ -446,6 +462,8 @@ struct CommandPaletteView: View {
             case pane(PaneID)
             /// Spawn a Remote Window pane PRE-BOUND to this host window (skips the create-then-pick step).
             case hostWindow(RemoteWindowSummary)
+            /// Switch the canvas to a saved named layout.
+            case switchLayout(String)
         }
 
         let id: String

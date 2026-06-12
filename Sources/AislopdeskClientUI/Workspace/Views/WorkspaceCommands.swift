@@ -117,6 +117,26 @@ public struct WorkspaceCommands: Commands {
         // Viewport bookmarks: recall items are titled with the LIVE bookmark name (the focused
         // pane's title at save time) and disabled while their slot is empty; save items always
         // overwrite. The chords (⌘n / ⇧⌘n) derive from the bindings table like every other item.
+        // Named layout presets: switch to a saved canvas, or snapshot the current one.
+        Menu("Layouts") {
+            Button("Save Current Layout…") {
+                if let store { store.requestSaveLayout() }
+            }
+            .disabled(store == nil)
+            if let store, !store.layoutPresetNames.isEmpty {
+                Divider()
+                ForEach(store.layoutPresetNames, id: \.self) { name in
+                    Button("Switch to “\(name)”") { store.switchToLayoutPreset(name: name) }
+                }
+                Divider()
+                Menu("Delete Layout") {
+                    ForEach(store.layoutPresetNames, id: \.self) { name in
+                        Button(name, role: .destructive) { store.deleteLayoutPreset(name: name) }
+                    }
+                }
+            }
+        }
+
         Menu("Bookmarks") {
             ForEach(1..<10, id: \.self) { n in
                 Button(store?.workspace.bookmarks[n].map { "Go to \($0.name)" } ?? "Go to Bookmark \(n)") {
