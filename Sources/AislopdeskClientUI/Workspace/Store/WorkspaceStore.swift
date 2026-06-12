@@ -800,6 +800,53 @@ public final class WorkspaceStore {
         return targets.count
     }
 
+    // MARK: - Snippets (saved command macros, run from ⌘K)
+
+    /// The saved snippets, persisted on the workspace (read-only view; mutate via the CRUD below).
+    public var snippets: [Snippet] { workspace.snippets }
+
+    /// Saves a new snippet and returns it. Metadata-only mutation (leaf set unchanged) → reconcile persists.
+    @discardableResult
+    public func addSnippet(name: String, body: String) -> Snippet {
+        let snippet = Snippet(name: name, body: body)
+        workspace.snippets.append(snippet)
+        reconcile()
+        return snippet
+    }
+
+    /// Edits an existing snippet's name + body. No-op for an unknown id.
+    public func updateSnippet(_ id: UUID, name: String, body: String) {
+        guard let i = workspace.snippets.firstIndex(where: { $0.id == id }) else { return }
+        workspace.snippets[i].name = name
+        workspace.snippets[i].body = body
+        reconcile()
+    }
+
+    /// Deletes a snippet. No-op for an unknown id.
+    public func deleteSnippet(_ id: UUID) {
+        workspace.snippets.removeAll { $0.id == id }
+        reconcile()
+    }
+
+    /// Runs snippet `id`: resolves its `{{placeholders}}` from `values`, parses `<Token>` control keys to
+    /// bytes, and feeds the result into the BROADCAST targets when broadcast is armed, else the focused
+    /// pane. Returns how many panes it reached (0 = unknown id / empty body / no text-capable target).
+    /// Unresolved placeholders are left literal (visible) rather than blanked.
+    @discardableResult
+    public func runSnippet(_ id: UUID, values: [String: String] = [:]) -> Int {
+        guard let snippet = workspace.snippets.first(where: { $0.id == id }) else { return 0 }
+        let (text, _) = SnippetExpander.expand(snippet.body, values: values)
+        let bytes = SendKeysParser.encode(text)
+        guard !bytes.isEmpty else { return 0 }
+        let candidates = broadcastActive ? broadcastTargets() : (workspace.focusedPane.map { [$0] } ?? [])
+        var count = 0
+        for pid in candidates where workspace.canvas.spec(for: pid)?.kind.canReceiveText == true {
+            registry[pid]?.sendBytes(bytes)
+            count += 1
+        }
+        return count
+    }
+
     // MARK: - Command palette recents
 
     /// The most-recently-run palette COMMANDS, most-recent-first (non-persisted session state). The

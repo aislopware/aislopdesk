@@ -47,6 +47,9 @@ public struct Workspace: Codable, Sendable, Equatable {
     /// canvas under a name and switches contexts in one action. Snapshot = canvas + groups + focus,
     /// NOT the app connection (one host per session) — see ``LayoutPreset``.
     public var layoutPresets: [LayoutPreset]
+    /// Saved command macros runnable from ⌘K (`ssh {{host}}`, `git add -A<Enter>git commit<Enter>`, …).
+    /// See ``Snippet``. Persisted like ``layoutPresets``.
+    public var snippets: [Snippet]
 
     public init(
         schemaVersion: Int = Workspace.currentSchemaVersion,
@@ -56,7 +59,8 @@ public struct Workspace: Codable, Sendable, Equatable {
         groups: [PaneGroup] = [],
         connection: ConnectionTarget? = nil,
         bookmarks: [Int: CanvasBookmark] = [:],
-        layoutPresets: [LayoutPreset] = []
+        layoutPresets: [LayoutPreset] = [],
+        snippets: [Snippet] = []
     ) {
         self.schemaVersion = schemaVersion
         self.canvas = canvas
@@ -66,6 +70,7 @@ public struct Workspace: Codable, Sendable, Equatable {
         self.connection = connection
         self.bookmarks = bookmarks
         self.layoutPresets = layoutPresets
+        self.snippets = snippets
     }
 }
 
@@ -126,7 +131,8 @@ public extension Workspace {
     /// 6 (2026-06-12): ``Workspace/bookmarks`` (viewport bookmarks, ⇧⌘n/⌘n).
     /// 7 (2026-06-13): ``Workspace/layoutPresets`` (named savable canvas layouts).
     /// 8 (2026-06-13): ``LayoutPreset/triggerAppName`` (auto-switch a layout on host app launch).
-    static let currentSchemaVersion = 8
+    /// 9 (2026-06-13): ``Workspace/snippets`` (saved command macros runnable from ⌘K).
+    static let currentSchemaVersion = 9
 
     /// The fresh-launch / decode-failure fallback: one terminal pane at the origin, focused, ungrouped.
     static func defaultWorkspace() -> Workspace {

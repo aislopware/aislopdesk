@@ -47,6 +47,10 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     /// which panes received which text (and that video panes received nothing).
     private(set) var sentText: [String] = []
 
+    /// Every ``sendBytes(_:)`` payload, in call order — so snippet / send-keys tests can assert the exact
+    /// byte sequence delivered to a pane.
+    private(set) var sentBytes: [[UInt8]] = []
+
     // MARK: Video activation
 
     /// The video-activation flag the cap tests assert against (only meaningful for `.remoteGUI`).
@@ -93,6 +97,11 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
         // Mirror LivePaneSession: only the text-funnel kinds actually deliver; video panes are no-ops.
         guard kind.canReceiveText else { return }
         sentText.append(text)
+    }
+
+    func sendBytes(_ bytes: [UInt8]) {
+        guard kind.canReceiveText else { return }
+        sentBytes.append(bytes)
     }
 
     // MARK: PaneSessionHandle: video

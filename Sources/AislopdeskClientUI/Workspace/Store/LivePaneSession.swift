@@ -122,6 +122,10 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// A no-op when there is no input bar (a `.remoteGUI` / `.systemDialog` pane).
     public func sendText(_ text: String) { inputBar?.sendText(text) }
 
+    /// Snippet / send-keys primitive: feeds raw bytes (incl. control codes) into the shell via the input
+    /// bar, NOT recorded for echo-dedup (a programmatic send has no local pre-echo to suppress).
+    public func sendBytes(_ bytes: [UInt8]) { inputBar?.sendRaw(bytes, record: false) }
+
     // MARK: Init
 
     /// The designated initializer is private — production builds a `LivePaneSession` only through
