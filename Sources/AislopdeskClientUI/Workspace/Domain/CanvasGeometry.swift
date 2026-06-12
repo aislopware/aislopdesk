@@ -200,4 +200,60 @@ public enum CanvasGeometry {
         }
         return members
     }
+
+    // MARK: Off-screen beacons
+
+    /// One edge-clamped beacon for a pane whose frame is entirely outside the viewport: where to draw
+    /// the pill (`screenPoint`, inside the inset viewport) and which edge it sits on (for the arrow).
+    public struct OffscreenBeacon: Equatable, Sendable {
+        public let id: PaneID
+        /// On-screen point (viewport coordinates) at which to centre the beacon pill — already clamped
+        /// inside the `inset` margin on all sides.
+        public let screenPoint: CGPoint
+        /// The viewport edge the off-screen pane lies past (drives the little direction arrow).
+        public let edge: Edge
+        public enum Edge: Sendable { case top, bottom, left, right }
+    }
+
+    /// Projects every pane whose frame does NOT intersect the viewport onto the viewport border as an
+    /// ``OffscreenBeacon`` — a glass pill that says "a pane is over there" and pans to it on click.
+    /// The pane's CENTRE is projected to the viewport rectangle border and clamped `inset` points in
+    /// from each edge so the pill never clips. The dominant axis (which border the pane is most past)
+    /// picks the `edge`. Panes that intersect the viewport get no beacon (they are visible). Pure →
+    /// unit-tested with no view.
+    public static func offscreenBeacons(
+        _ items: [CanvasItem],
+        camera: CanvasCamera,
+        viewport: CGSize,
+        inset: CGFloat = 18
+    ) -> [OffscreenBeacon] {
+        let viewportRect = CGRect(origin: camera.origin, size: viewport)
+        let minX = inset, minY = inset
+        let maxX = max(inset, viewport.width - inset)
+        let maxY = max(inset, viewport.height - inset)
+        var beacons: [OffscreenBeacon] = []
+        for item in items where !item.frame.intersects(viewportRect) {
+            // The pane centre in SCREEN space (canvas centre − camera origin).
+            let sx = item.frame.midX - camera.origin.x
+            let sy = item.frame.midY - camera.origin.y
+            // How far past each edge (positive = past that edge).
+            let pastLeft = minX - sx
+            let pastRight = sx - maxX
+            let pastTop = minY - sy
+            let pastBottom = sy - maxY
+            // The dominant overflow picks the edge label.
+            let edge: OffscreenBeacon.Edge
+            let horizMax = max(pastLeft, pastRight)
+            let vertMax = max(pastTop, pastBottom)
+            if horizMax >= vertMax {
+                edge = pastLeft >= pastRight ? .left : .right
+            } else {
+                edge = pastTop >= pastBottom ? .top : .bottom
+            }
+            let clampedX = min(max(sx, minX), maxX)
+            let clampedY = min(max(sy, minY), maxY)
+            beacons.append(OffscreenBeacon(id: item.id, screenPoint: CGPoint(x: clampedX, y: clampedY), edge: edge))
+        }
+        return beacons
+    }
 }

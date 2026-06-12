@@ -66,6 +66,7 @@ struct CanvasView: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
             .coordinateSpace(.named(Self.coordSpace))
+            .overlay { if maxID == nil { offscreenBeaconLayer(viewport: geo.size, camera: camera) } }
             .overlay(alignment: .bottomTrailing) { recenterButton(viewport: geo.size) }
             .onAppear { report(geo.size, camera: canvas.camera) }
             .onChange(of: geo.size) { _, s in report(s, camera: canvas.camera) }
@@ -188,7 +189,31 @@ struct CanvasView: View {
         store.commitCamera(canvas.camera.translated(by: CGSize(width: -translation.width, height: -translation.height)))
     }
 
-    // MARK: Recenter affordance
+    // MARK: Off-screen beacons + recenter affordance
+
+    /// Edge-clamped "a pane is over there" pills for every pane entirely outside the viewport — click
+    /// pans to centre it. systemDialog beacons PULSE until focused (an off-screen password prompt must
+    /// not wait invisibly). Geometry is the pure ``CanvasGeometry/offscreenBeacons(_:camera:viewport:)``;
+    /// computed from the COMMITTED camera (not the live drag offset) so it never recomputes per pan frame.
+    @ViewBuilder
+    private func offscreenBeaconLayer(viewport: CGSize, camera: CanvasCamera) -> some View {
+        let beacons = CanvasGeometry.offscreenBeacons(canvas.items, camera: camera, viewport: viewport)
+        ForEach(beacons, id: \.id) { beacon in
+            let isDialog = canvas.spec(for: beacon.id)?.kind == .systemDialog
+            OffscreenBeaconPill(
+                title: beacon.id == store.focusedPane
+                    ? (canvas.spec(for: beacon.id).map { PanePresentation.displayTitle(store.handle(for: beacon.id), spec: $0) } ?? "Pane")
+                    : (canvas.spec(for: beacon.id)?.title ?? "Pane"),
+                kind: canvas.spec(for: beacon.id)?.kind ?? .terminal,
+                edge: beacon.edge,
+                pulsing: isDialog && store.focusedPane != beacon.id
+            ) {
+                store.revealPane(beacon.id)
+            }
+            .position(beacon.screenPoint)
+        }
+        .allowsHitTesting(true)
+    }
 
     @ViewBuilder
     private func recenterButton(viewport: CGSize) -> some View {
@@ -227,6 +252,55 @@ struct CanvasView: View {
 }
 
 // MARK: - CanvasGridLayer (the dot grid riding the camera)
+
+// MARK: - OffscreenBeaconPill
+
+/// One edge-clamped "a pane is over there" pill: a glass capsule with the pane's kind glyph, a
+/// direction arrow toward the off-screen pane, and a truncated title. Clicking pans the canvas to
+/// centre that pane. A `pulsing` beacon (an unfocused off-screen system-dialog/password prompt) gently
+/// breathes so it can't be missed.
+private struct OffscreenBeaconPill: View {
+    let title: String
+    let kind: PaneKind
+    let edge: CanvasGeometry.OffscreenBeacon.Edge
+    let pulsing: Bool
+    let onTap: () -> Void
+
+    @State private var pulse = false
+
+    private var arrow: String {
+        switch edge {
+        case .top:    return "chevron.up"
+        case .bottom: return "chevron.down"
+        case .left:   return "chevron.left"
+        case .right:  return "chevron.right"
+        }
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 5) {
+                Image(systemName: arrow).font(.caption2.weight(.bold))
+                Image(systemName: PaneLeafView.icon(for: kind)).font(.caption2)
+                Text(title).font(.caption2).lineLimit(1).frame(maxWidth: 120)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(pulsing ? Color.accentColor : Color.secondary.opacity(0.4),
+                                            lineWidth: pulsing ? 1.5 : 1))
+            .shadow(radius: 3, y: 1)
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(pulsing && pulse ? 1.08 : 1.0)
+        .opacity(pulsing && pulse ? 1.0 : (pulsing ? 0.82 : 0.95))
+        .animation(pulsing ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true) : .default, value: pulse)
+        .onAppear { if pulsing { pulse = true } }
+        .onChange(of: pulsing) { _, now in pulse = now }
+        .help(title)
+        .accessibilityLabel("Off-screen pane: \(title). Activate to jump to it.")
+    }
+}
 
 /// The canvas background dot grid: 2pt dots every 32pt of CANVAS space — 2× the 16pt snap quantum
 /// (and the 16pt gutter), so every dot is an honest snap site and gutter-tiled panes sit exactly half
