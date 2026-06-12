@@ -559,6 +559,7 @@ struct CommandPaletteView: View {
         CatalogItem(command: .centerAll, title: "Center on All", symbol: "dot.scope"),
         CatalogItem(command: .toggleZoom, title: "Maximize Pane", symbol: "arrow.up.left.and.arrow.down.right"),
         CatalogItem(command: .toggleOverview, title: "Overview", symbol: "rectangle.grid.2x2"),
+        CatalogItem(command: .toggleBroadcast, title: "Broadcast Input", symbol: "dot.radiowaves.left.and.right"),
         CatalogItem(command: .renamePane, title: "Rename Pane", symbol: "pencil"),
         CatalogItem(command: .reconnectPane, title: "Reconnect Pane", symbol: "arrow.clockwise"),
         CatalogItem(command: .closePane, title: "Close Pane", symbol: "xmark"),

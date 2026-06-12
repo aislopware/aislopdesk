@@ -21,6 +21,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case cycleFocus(forward: Bool) // ⌘] (forward) / ⌘[ (back)
     case toggleZoom                // ⇧⌘↩  — maximize the focused pane to the viewport
     case toggleOverview            // ⌘\   — fit-all overview (Mission Control for the canvas)
+    case toggleBroadcast           // ⇧⌘B — arm/disarm synchronized input to the pane group (tmux synchronize-panes)
     case renamePane                // ⌘R   — rename the focused pane
     case reconnectPane             // ⇧⌘R — re-dial the focused pane (primary failure recovery)
     case saveBookmark(Int)         // ⇧⌘1–9 — save the viewport as bookmark n
@@ -205,6 +206,10 @@ public extension CommandInterpreter {
 
         // Overview (fit-all "Mission Control"): ⌘\ — a free chord the terminal never needs.
         map[KeyChord(character: "\\", [.command])] = .toggleOverview
+
+        // Broadcast / synchronized input: ⇧⌘B arms fan-out of input to the pane group (tmux
+        // synchronize-panes). ⇧⌘ so it never shadows a terminal key (plain b / Ctrl-B reach the shell).
+        map[KeyChord(character: "b", [.command, .shift])] = .toggleBroadcast
 
         // Rename the focused pane: ⌘R.
         map[KeyChord(character: "r", [.command])] = .renamePane
