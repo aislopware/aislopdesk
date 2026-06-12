@@ -52,17 +52,69 @@ public final class AppConnection {
     /// The liveness-watch / reconnect supervisor.
     private var superviseTask: Task<Void, Never>?
 
-    /// Healthy-state liveness poll cadence + reconnect backoff ceiling.
+    /// Healthy-state liveness poll cadence + reconnect backoff ceiling (the ceiling lives on the
+    /// presenter so the "attempt N of M" copy can never drift from the real campaign length).
     private static let healthyPoll: Duration = .seconds(2)
-    private static let maxReconnectAttempts = 20
+    private static var maxReconnectAttempts: Int { ConnectionPresenter.maxReconnectAttempts }
 
-    public init(registry: ConnectionRegistry, seed: ConnectionTarget = .default) {
+    // MARK: Recent hosts (the gate's MRU menu)
+
+    /// Most-recent-first successful connect targets (deduped by host:port, capped at
+    /// ``recentTargetsLimit``) — the gate's "recent hosts" menu. Loaded from `defaults` at init,
+    /// re-saved on every successful connect.
+    public private(set) var recentTargets: [ConnectionTarget] = []
+
+    /// Where the MRU persists. Injectable so tests use a scratch suite; the app uses `.standard`.
+    private let defaults: UserDefaults
+    private static let recentTargetsKey = "connection.recentTargets"
+    static let recentTargetsLimit = 5
+
+    public init(registry: ConnectionRegistry, seed: ConnectionTarget = .default,
+                defaults: UserDefaults = .standard) {
         self.registry = registry
         self.target = seed
         self.host = seed.host
         self.port = String(seed.port)
         self.mediaPort = String(seed.mediaPort)
         self.cursorPort = String(seed.cursorPort)
+        self.defaults = defaults
+        self.recentTargets = Self.loadRecentTargets(from: defaults)
+    }
+
+    /// The persisted MRU, or `[]` (a fresh install / undecodable blob — best-effort, never throws).
+    static func loadRecentTargets(from defaults: UserDefaults) -> [ConnectionTarget] {
+        guard let data = defaults.data(forKey: recentTargetsKey) else { return [] }
+        return (try? JSONDecoder().decode([ConnectionTarget].self, from: data)) ?? []
+    }
+
+    /// Pure MRU push: dedupe by host:port (a re-connect with changed video ports REPLACES the entry —
+    /// host:port is the identity, ports are settings), insert at the front, cap at `limit`.
+    static func pushingRecent(
+        _ target: ConnectionTarget,
+        into list: [ConnectionTarget],
+        limit: Int = AppConnection.recentTargetsLimit
+    ) -> [ConnectionTarget] {
+        var out = list.filter { !($0.host == target.host && $0.port == target.port) }
+        out.insert(target, at: 0)
+        if out.count > limit { out.removeLast(out.count - limit) }
+        return out
+    }
+
+    /// Records a SUCCESSFUL connect into the MRU (failures don't pollute the menu) and persists it.
+    private func recordRecentTarget(_ t: ConnectionTarget) {
+        recentTargets = Self.pushingRecent(t, into: recentTargets)
+        if let data = try? JSONEncoder().encode(recentTargets) {
+            defaults.set(data, forKey: Self.recentTargetsKey)
+        }
+    }
+
+    /// Fills the form fields from a recent target (the gate's MRU menu pick). Form-only — the user
+    /// still presses Connect.
+    public func fillForm(from t: ConnectionTarget) {
+        host = t.host
+        port = String(t.port)
+        mediaPort = String(t.mediaPort)
+        cursorPort = String(t.cursorPort)
     }
 
     // MARK: Form validation (the gate's Connect button)
@@ -127,6 +179,7 @@ public final class AppConnection {
             try await registry.pin(host: t.host, port: t.port)
             guard gen == connectGeneration, !deliberatelyClosed else { return }
             status = .connected
+            recordRecentTarget(t)
             startSupervisor(t, generation: gen)
         } catch {
             guard gen == connectGeneration, !deliberatelyClosed else { return }

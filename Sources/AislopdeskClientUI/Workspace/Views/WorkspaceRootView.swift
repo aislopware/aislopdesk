@@ -98,6 +98,9 @@ public struct WorkspaceRootView: View {
                     .transition(.opacity)
             }
         }
+        // The fade's missing driver: `.transition(.opacity)` alone pops without an animation tied to
+        // the value that inserts/removes the gate. Value-scoped so nothing else animates off this.
+        .animation(.easeInOut(duration: 0.18), value: isConnected)
         // Latch "connected at least once" so the canvas mounts on first connect and stays mounted across
         // later drops (panes preserved; the gate just overlays). Seed it now in case we launch connected.
         .onChange(of: connection.status) { _, _ in if isConnected { hasConnectedOnce = true } }
@@ -214,11 +217,11 @@ public struct WorkspaceRootView: View {
                 Divider()
                 Button("Disconnect", role: .destructive) { Task { await connection.disconnect() } }
             } label: {
-                Label(connection.status.label, systemImage: "circle.fill")
+                Label(ConnectionPresenter.shortLabel(for: connection.status), systemImage: "circle.fill")
                     .labelStyle(.titleAndIcon)
                     .foregroundStyle(PaneConnectionStatus.from(connection.status).color)
             }
-            .help("Connection: \(connection.target.host) — \(connection.status.label)")
+            .help("Connection: \(connection.target.host) — \(ConnectionPresenter.headline(for: connection.status))")
         }
         ToolbarItem(placement: .primaryAction) {
             Menu {
