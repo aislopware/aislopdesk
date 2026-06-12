@@ -62,6 +62,14 @@ public protocol PaneSessionHandle: AnyObject, Identifiable {
     /// iOS foreground: resume the session (connection byte-exact resume + inspector re-subscribe).
     func resume() async
 
+    // MARK: Broadcast input (synchronize-panes)
+
+    /// Types `text` into this session's shell input funnel (the broadcast / synchronized-input target
+    /// primitive). A no-op for kinds with no text funnel (video panes) — see ``PaneKind/canReceiveText``.
+    /// Default implementation does nothing so non-terminal conformers need not care; ``LivePaneSession``
+    /// routes it to the per-pane `InputBarModel`, and test fakes record it.
+    func sendText(_ text: String)
+
     /// Tear the session down for good (the pane is closing). Delegates to the proven
     /// `ConnectionViewModel` teardown order, closes the inspector channel, and stops any video stack.
     /// Called by `reconcile()` for every orphaned leaf id before it is dropped from the registry.
@@ -72,6 +80,9 @@ public extension PaneSessionHandle {
     /// Default: no shell, never busy. ``LivePaneSession`` overrides with the terminal's live
     /// `shellActivity`; test fakes override with a settable flag.
     var isShellBusy: Bool { false }
+
+    /// Default: no text funnel (the video kinds). ``LivePaneSession`` overrides for terminal/Claude panes.
+    func sendText(_ text: String) {}
 }
 
 // MARK: - ID adoption (store-internal)

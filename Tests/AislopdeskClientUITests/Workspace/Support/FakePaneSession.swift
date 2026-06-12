@@ -43,6 +43,10 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     /// Defaults `false` — every pre-existing test sees the idle-shell behaviour unchanged.
     var isShellBusy: Bool = false
 
+    /// Every ``sendText(_:)`` payload, in call order — so broadcast/synchronized-input tests can assert
+    /// which panes received which text (and that video panes received nothing).
+    private(set) var sentText: [String] = []
+
     // MARK: Video activation
 
     /// The video-activation flag the cap tests assert against (only meaningful for `.remoteGUI`).
@@ -81,6 +85,14 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     func adopt(id: PaneID) {
         self.id = id
         events.append(.adopt(id))
+    }
+
+    // MARK: PaneSessionHandle: broadcast input
+
+    func sendText(_ text: String) {
+        // Mirror LivePaneSession: only the text-funnel kinds actually deliver; video panes are no-ops.
+        guard kind.canReceiveText else { return }
+        sentText.append(text)
     }
 
     // MARK: PaneSessionHandle: video

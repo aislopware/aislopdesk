@@ -762,6 +762,44 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    // MARK: - Broadcast / synchronized input (tmux synchronize-panes)
+
+    /// Whether broadcast input is ARMED: a submit in the focused pane's input bar is fanned to every
+    /// ``broadcastTargets()`` pane instead of only the focused one. Transient view state — never persisted
+    /// (a synchronized-typing mode should not survive a relaunch and surprise you).
+    public private(set) var broadcastActive: Bool = false
+
+    /// Arms / disarms broadcast input (⇧⌘B / Pane ▸ Broadcast Input).
+    public func toggleBroadcast() { broadcastActive.toggle() }
+
+    /// Sets broadcast mode explicitly (e.g. auto-disarm). Idempotent.
+    public func setBroadcast(_ active: Bool) { broadcastActive = active }
+
+    /// The panes a broadcast targets — resolved like ``arrangeTargets()`` but restricted to the kinds with
+    /// a text funnel (``PaneKind/canReceiveText``; the video panes have no input bar and are skipped): the
+    /// multi-selection when ≥2 are selected, else the focused pane's GROUP when it is grouped, else just
+    /// the focused pane. Deterministic canvas order. Pure — no mutation.
+    public func broadcastTargets() -> [PaneID] {
+        func textCapable(_ id: PaneID) -> Bool { workspace.canvas.spec(for: id)?.kind.canReceiveText == true }
+        if selectedPanes.count >= 2 {
+            return workspace.canvas.allIDs().filter { selectedPanes.contains($0) && textCapable($0) }
+        }
+        if let focused = workspace.focusedPane, let group = workspace.canvas.item(focused)?.groupID {
+            return workspace.canvas.ids(inGroup: group).filter(textCapable)
+        }
+        return workspace.focusedPane.flatMap { textCapable($0) ? [$0] : [] } ?? []
+    }
+
+    /// Types `text` into every broadcast target's shell (the synchronized-input fan-out — type a command
+    /// once, run it on every pane in the group). Returns how many panes it reached. Pure routing over the
+    /// live registry: no canvas mutation, no reconcile.
+    @discardableResult
+    public func broadcastText(_ text: String) -> Int {
+        let targets = broadcastTargets()
+        for id in targets { registry[id]?.sendText(text) }
+        return targets.count
+    }
+
     // MARK: - Command palette recents
 
     /// The most-recently-run palette COMMANDS, most-recent-first (non-persisted session state). The
@@ -1809,6 +1847,8 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
         store.toggleZoom()
     case .toggleOverview:
         store.toggleOverview()
+    case .toggleBroadcast:
+        store.toggleBroadcast()
     case .renamePane:
         // The rename UI is an inline text field (view `@State` in PaneSidebarView), so the command layer
         // cannot open it directly — it nudges `renameRequest`, which the sidebar observes via `.onChange`

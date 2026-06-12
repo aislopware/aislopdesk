@@ -59,6 +59,10 @@ public extension PaneKind {
     var isVideo: Bool { self == .remoteGUI || self == .systemDialog }
     /// An auto-managed, never-persisted overlay pane (the system-dialog surface).
     var isEphemeral: Bool { self == .systemDialog }
+    /// Whether this pane has a shell input funnel that text can be typed into — the recipient set for
+    /// broadcast/synchronized input (tmux `synchronize-panes`). Only the PTY-backed kinds; the video
+    /// kinds (`remoteGUI`/`systemDialog`) take input through the cursor/key side-channel, not a text bar.
+    var canReceiveText: Bool { self == .terminal || self == .claudeCode }
 }
 
 /// Which remote window a `.remoteGUI` (video) pane mirrors. The host + UDP ports are no longer here —

@@ -117,6 +117,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// for panes with no terminal (`.remoteGUI` / `.systemDialog`).
     public var isShellBusy: Bool { terminalModel?.shellActivity == .running }
 
+    /// Broadcast / synchronized-input target primitive: types `text` into this pane's shell by routing
+    /// to the per-pane ``InputBarModel`` (the same recorded-for-echo-dedup path a normal submit uses).
+    /// A no-op when there is no input bar (a `.remoteGUI` / `.systemDialog` pane).
+    public func sendText(_ text: String) { inputBar?.sendText(text) }
+
     // MARK: Init
 
     /// The designated initializer is private — production builds a `LivePaneSession` only through
