@@ -700,6 +700,36 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    // MARK: - Explicit pane notifications (OSC 9 / OSC 777)
+
+    /// The app's notification poster, wired after construction (the store is cross-platform headless;
+    /// the `UNUserNotificationCenter` poster is macOS-app-side). Called when a pane's child requests an
+    /// explicit notification (OSC 9 / OSC 777); the app posts it carrying the pane id so a click can
+    /// ``revealPane(_:)``. `nil` in tests / headless ⇒ the notification is dropped (no UN dependency).
+    public var onPaneNotification: ((_ paneID: PaneID, _ paneTitle: String, _ title: String, _ body: String) -> Void)?
+
+    /// Routes a child-requested notification from pane `id` to the app poster. Internal seam — wired
+    /// onto each terminal pane's connection in ``reconcile()``.
+    func handlePaneNotification(id: PaneID, paneTitle: String, title: String, body: String) {
+        onPaneNotification?(id, paneTitle, title, body)
+    }
+
+    /// Focuses + centres pane `id` (the notification-click reveal, and any "jump to this pane" caller).
+    /// A no-op if the pane is gone (it was closed before the click).
+    public func revealPane(_ id: PaneID) {
+        guard workspace.canvas.contains(id) else { return }
+        focus(id)
+        centerOnPane(id)
+    }
+
+    /// Reveals the pane whose id string (`PaneID.raw.uuidString`) matches — the entry point for the
+    /// notification-click handler, which only carries the string from `userInfo`. No-op on an
+    /// unparseable / unknown id (the pane was closed).
+    public func revealPane(byIDString idString: String) {
+        guard let uuid = UUID(uuidString: idString) else { return }
+        revealPane(PaneID(raw: uuid))
+    }
+
     // MARK: - Viewport bookmarks (⇧⌘1–9 save, ⌘1–9 recall)
 
     /// Saves the current viewport into bookmark `slot` (1–9), named after the focused pane. The
@@ -1117,6 +1147,11 @@ public final class WorkspaceStore {
                         spec.video = endpoint
                     }
                 }
+            }
+            // EXPLICIT NOTIFICATIONS (OSC 9 / OSC 777): route a terminal pane's child-requested
+            // notification to the app poster, tagged with this pane id so a click reveals it.
+            (handle as? LivePaneSession)?.connection?.onExplicitNotification = { [weak self] paneTitle, title, body in
+                self?.handlePaneNotification(id: id, paneTitle: paneTitle, title: title, body: body)
             }
         }
 

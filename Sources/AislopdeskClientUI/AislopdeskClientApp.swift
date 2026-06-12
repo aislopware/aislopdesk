@@ -8,6 +8,7 @@ import UIKit   // UIDevice.current.userInterfaceIdiom — the per-device live-vi
 #endif
 #if os(macOS)
 import AppKit  // NSApplication — AUTOMATION-ONLY window-front so an autoconnect launch goes live in one shot
+import UserNotifications   // explicit OSC 9/777 child notifications → local UNUserNotification
 #endif
 
 /// The Aislopdesk client app scene, shared by both Xcode app targets (ClientApp-macOS,
@@ -28,6 +29,12 @@ import AppKit  // NSApplication — AUTOMATION-ONLY window-front so an autoconne
 /// The terminal renderer + video factories are the gated seams, registered once in
 /// `Apps/Shared/AppMain.swift` (UNCHANGED) — this shell never imports `CGhostty`/`AislopdeskVideoClient`.
 public struct AislopdeskClientApp: App {
+    #if os(macOS)
+    /// Retains the notification click-router (the `UNUserNotificationCenter` delegate is held weakly).
+    /// Static because the App value type is recreated by SwiftUI; the router's lifetime is the process.
+    @MainActor static var notificationRouter: PaneNotificationRouter?
+    #endif
+
     /// The single workspace store. Built ONCE in ``init()`` (no `@State` double-init: we construct the
     /// store eagerly and seed the `@State` backing with it, never reassigning).
     @State private var store: WorkspaceStore
@@ -124,6 +131,26 @@ public struct AislopdeskClientApp: App {
             if case .connected = appConnection?.status { return true }
             return false
         }
+        #if os(macOS)
+        // EXPLICIT NOTIFICATIONS (OSC 9 / OSC 777): post a child-requested notification as a local
+        // macOS notification (gated by the user's @AppStorage toggle), tagged with the pane id; a
+        // click reveals (focus + centre) that pane. The router is installed as the UN delegate so the
+        // click routes back here. Headless / iOS: this whole block is absent, so the store hook stays
+        // nil and the notification is simply dropped.
+        let explicitNotifier = CommandCompletionNotifier()
+        let router = PaneNotificationRouter()
+        router.onReveal = { [weak store] idString in store?.revealPane(byIDString: idString) }
+        UNUserNotificationCenter.current().delegate = router
+        Self.notificationRouter = router   // retain it for the app's lifetime
+        store.onPaneNotification = { [weak store] paneID, paneTitle, title, body in
+            // Respect the user's toggle (default ON); read at fire-time so a settings change applies live.
+            guard UserDefaults.standard.object(forKey: "notifications.osc") as? Bool ?? true else { return }
+            _ = store   // keep the capture explicit; the poster is self-contained
+            explicitNotifier.notifyExplicit(
+                paneIDKey: paneID.raw.uuidString, paneTitle: paneTitle, title: title, body: body
+            )
+        }
+        #endif
         // The system-dialog monitor (the "system popups in their own pane" feature): polls the host while
         // connected and auto-manages ephemeral dialog panes. `isConnected` reads the app connection status;
         // `target` reads the live host/ports. Started by a scene `.task` (so its lifetime is the scene's).

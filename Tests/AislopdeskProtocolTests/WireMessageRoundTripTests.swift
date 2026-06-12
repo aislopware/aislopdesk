@@ -107,6 +107,19 @@ final class WireMessageRoundTripTests: XCTestCase {
         XCTAssertEqual(try roundTrip(.bell), .bell)
     }
 
+    func testNotificationRoundTripIncludingEmptyTitleAndUnicode() throws {
+        let cases: [WireMessage] = [
+            .notification(title: "", body: "build done"),                    // OSC 9: no title
+            .notification(title: "CI", body: "all green ✅"),                 // OSC 777: title + body
+            .notification(title: "日本語", body: "完了 🚀"),                   // multi-byte both fields
+            .notification(title: "only title", body: ""),                    // empty body
+            .notification(title: "semis;in;title", body: "and;in;body;too"), // length-prefix beats delimiters
+        ]
+        for message in cases {
+            XCTAssertEqual(try roundTrip(message), message)
+        }
+    }
+
     func testCommandStatusRoundTrip() throws {
         let cases: [WireMessage] = [
             .commandStatus(.running),

@@ -19,6 +19,28 @@ public enum CommandNotificationPolicy {
     }
 }
 
+/// The PURE content policy for an EXPLICIT (OSC 9 / OSC 777) child-requested notification — the
+/// title-fallback rule, split out so it is unit-tested without `UNUserNotificationCenter`.
+public enum ExplicitNotificationContent {
+    /// Resolves the displayed `(title, body)` for an explicit notification:
+    /// - OSC 777 carries its own title → use it.
+    /// - OSC 9 carries only a body (`explicitTitle == ""`) → the pane title is the title and the OSC
+    ///   body is the body; if the pane has no title either, the body becomes the title (so the alert
+    ///   is never blank) and the body line is dropped.
+    public static func resolve(paneTitle: String, explicitTitle: String, body: String) -> (title: String, body: String) {
+        let pane = paneTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicit = explicitTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !explicit.isEmpty {
+            return (explicit, body)
+        }
+        if !pane.isEmpty {
+            return (pane, body)
+        }
+        // No title anywhere: promote the body so the alert is never blank.
+        return (body, "")
+    }
+}
+
 #if os(macOS)
 import UserNotifications
 
@@ -78,6 +100,76 @@ final class CommandCompletionNotifier {
         content.body = "command finished (exit \(exitCode.map(String.init) ?? "?"), \(secs)s)"
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+    }
+
+    /// Posts an EXPLICIT (OSC 9 / OSC 777) child-requested notification, carrying `paneIDKey` in
+    /// `userInfo` so a click can focus the originating pane (see ``PaneNotificationRouter``). Lazy-auth
+    /// + best-effort like the long-command path; resolves the title fallback via the pure
+    /// ``ExplicitNotificationContent``.
+    func notifyExplicit(paneIDKey: String, paneTitle: String, title: String, body: String) {
+        let resolved = ExplicitNotificationContent.resolve(paneTitle: paneTitle, explicitTitle: title, body: body)
+        if granted != nil {
+            postExplicit(paneIDKey: paneIDKey, title: resolved.title, body: resolved.body)
+        } else {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { ok, _ in
+                Task { @MainActor [weak self] in
+                    self?.granted = ok
+                    self?.postExplicit(paneIDKey: paneIDKey, title: resolved.title, body: resolved.body)
+                }
+            }
+        }
+    }
+
+    /// Adds the explicit-notification request — a no-op unless authorization was granted.
+    private func postExplicit(paneIDKey: String, title: String, body: String) {
+        guard granted == true else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = [PaneNotificationRouter.paneIDUserInfoKey: paneIDKey]
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+    }
+}
+
+/// Routes a clicked notification (its `userInfo` pane-id) to a reveal closure the app wires to the
+/// store (focus + centre the originating pane). The app installs it as the
+/// `UNUserNotificationCenterDelegate` at launch; the key + parsing live here so they are one source
+/// of truth shared with ``CommandCompletionNotifier``.
+@MainActor
+public final class PaneNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
+    /// The `userInfo` key carrying the originating pane's id string. `nonisolated` so the
+    /// `nonisolated` delegate methods (and the poster) can read it without a main-actor hop.
+    public nonisolated static let paneIDUserInfoKey = "aislopdesk.paneID"
+
+    /// Called with the clicked notification's pane-id string. The app sets this to
+    /// `store.revealPane(byIDString:)`.
+    public var onReveal: ((String) -> Void)?
+
+    public override init() { super.init() }
+
+    /// Show the banner even while the app is foreground (otherwise an explicit notification fired while
+    /// the user is looking at a different pane would be silently dropped). `nonisolated` to satisfy the
+    /// delegate conformance; it touches no main-actor state.
+    public nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    /// A click on the notification → reveal the originating pane (hops to the main actor for the store).
+    public nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let key = response.notification.request.content.userInfo[Self.paneIDUserInfoKey] as? String
+        Task { @MainActor [weak self] in
+            if let key { self?.onReveal?(key) }
+        }
+        completionHandler()
     }
 }
 #endif

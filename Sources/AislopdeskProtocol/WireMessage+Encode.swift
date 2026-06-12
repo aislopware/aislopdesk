@@ -63,6 +63,14 @@ extension WireMessage {
         case let .title(string):
             frame.append(Data(string.utf8))
 
+        case let .notification(title, body):
+            // [UInt16 BE titleLen][title UTF-8][body UTF-8] — the title is length-prefixed so the
+            // body (which may contain anything, incl. no delimiter) is the unambiguous remainder.
+            let titleBytes = Data(title.utf8)
+            frame.appendBE(UInt16(truncatingIfNeeded: titleBytes.count))
+            frame.append(titleBytes)
+            frame.append(Data(body.utf8))
+
         case .bell:
             break // empty body
 
@@ -113,6 +121,7 @@ extension WireMessage {
         case .ping, .pong: body = 8                                   // timestampMS UInt64
         case .helloAck: body = Self.sessionIDByteCount + 8 + 1        // UUID + Int64 + Bool
         case let .title(string): body = string.utf8.count
+        case let .notification(title, bodyText): body = 2 + title.utf8.count + bodyText.utf8.count  // UInt16 len + title + body
         case .bell: body = 0
         case let .commandStatus(status):
             switch status {

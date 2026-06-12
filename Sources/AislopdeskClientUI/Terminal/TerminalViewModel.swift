@@ -604,6 +604,10 @@ public final class TerminalViewModel {
                 shellActivity = .idle
                 lastCommand = (exitCode, durationMS)
             }
+        case .notification:
+            // An explicit child notification (OSC 9 / OSC 777) is handled at the connection/store
+            // layer (it posts a local UNUserNotification). The terminal model holds no state for it.
+            break
         case let .exit(code):
             connectionStatus = .exited(code: code)
             // The shell died mid-"command" (e.g. `exit` itself emits OSC 133;C but never a

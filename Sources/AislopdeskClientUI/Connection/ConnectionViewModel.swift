@@ -48,6 +48,12 @@ public final class ConnectionViewModel {
     private let makeClient: @Sendable () -> AislopdeskClient
     private let backoff: ReconnectManager.Backoff
 
+    /// An EXPLICIT desktop notification the child requested (OSC 9 / OSC 777). The store wires this to
+    /// its pane-notification hook (so the click can focus + centre this pane). `nil` ⇒ no observer (the
+    /// notification is dropped). Carries the live pane title so the poster can fall back to it when an
+    /// OSC 9 omits a title.
+    public var onExplicitNotification: ((_ paneTitle: String, _ title: String, _ body: String) -> Void)?
+
     #if os(macOS)
     /// Posts a local notification when a LONG-running command (OSC 133;D, ≥ ~10s) completes.
     /// Best-effort + lazy-auth; macOS-only (iOS still builds). The in-app running indicator is
@@ -509,6 +515,11 @@ public final class ConnectionViewModel {
                 )
                 #endif
             }
+        case let .notification(title, body):
+            // An EXPLICIT child-requested notification (OSC 9 / OSC 777). Hand it to the store's
+            // pane-notification hook with the live pane title (the OSC-9 title fallback). The
+            // running/idle indicator is unaffected; this is a pure side-effect.
+            self.onExplicitNotification?(self.terminal.title ?? "", title, body)
         case let .rtt(milliseconds):
             self.latencyMS = milliseconds
         case .title, .bell:
