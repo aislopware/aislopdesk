@@ -17,6 +17,13 @@ public enum SettingsKey {
     public static let longCommandNotifications = "notifications.longCommand"
     // Features / advanced
     public static let systemDialogPanes = "features.systemDialogPanes"
+    public static let autoSwitchLayouts = "features.autoSwitchLayouts"
+
+    /// Whether a layout with a trigger app auto-switches when that app launches on the host (default
+    /// ON — assigning a trigger is itself the opt-in). Read at fire-time.
+    public static var autoSwitchLayoutsEnabled: Bool {
+        UserDefaults.standard.object(forKey: autoSwitchLayouts) as? Bool ?? true
+    }
 
     /// Whether explicit OSC 9/777 notifications should post (default ON). Read at fire-time.
     public static var oscNotificationsEnabled: Bool {
@@ -109,12 +116,18 @@ private struct NotificationSettingsTab: View {
 
 private struct AdvancedSettingsTab: View {
     @AppStorage(SettingsKey.systemDialogPanes) private var systemDialogPanes = true
+    @AppStorage(SettingsKey.autoSwitchLayouts) private var autoSwitchLayouts = true
 
     var body: some View {
         Form {
             Section("System dialogs") {
                 Toggle("Show system password dialogs in their own pane", isOn: $systemDialogPanes)
                 Text("A SecurityAgent / sudo prompt on the host auto-spawns an ephemeral pane (and an attention beacon if it lands off-screen). Type into it with Paste as Keystrokes.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Layouts") {
+                Toggle("Auto-switch layout on host app launch", isOn: $autoSwitchLayouts)
+                Text("A saved layout with a trigger app switches in automatically when that app first opens a window on the host (set the trigger when you save a layout).")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
