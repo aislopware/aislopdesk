@@ -13,6 +13,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case centerFocusedPane         // ⌥⌘C  — centre the camera on the focused pane (the pan-only "recenter")
     case centerAll                 // ⌥⇧⌘C — centre the camera on the bounding box of ALL panes
     case closePane                 // ⌘W
+    case reopenClosedPane          // ⇧⌘T  — restore the last closed pane (browser "reopen tab" idiom)
     case newGroup                  // ⌃⌘G  — create a new (empty) pane group
     case focus(FocusDirection)     // ⌥⌘←/→/↑/↓
     case cycleFocus(forward: Bool) // ⌘] (forward) / ⌘[ (back)
@@ -112,8 +113,11 @@ public extension CommandInterpreter {
         map[KeyChord(character: "t", [.command])] = .newPane
         map[KeyChord(character: "d", [.command, .shift])] = .tidy
 
-        // Close the focused pane: ⌘W.
+        // Close the focused pane: ⌘W. Reopen the last closed pane: ⇧⌘T (the browser idiom, sitting
+        // naturally beside ⌘T = new pane). NOT ⌘Z — that chord belongs to text-field undo (the inline
+        // rename fields), which a menu-level binding would shadow.
         map[KeyChord(character: "w", [.command])] = .closePane
+        map[KeyChord(character: "t", [.command, .shift])] = .reopenClosedPane
 
         // New group: ⌃⌘G (groups organize panes in the sidebar + draw a labeled box on the canvas).
         map[KeyChord(character: "g", [.control, .command])] = .newGroup

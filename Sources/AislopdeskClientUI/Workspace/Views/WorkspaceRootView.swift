@@ -108,6 +108,29 @@ public struct WorkspaceRootView: View {
         // (the terminal never receives it), and `focusedSceneValue` keeps it reachable while a pane has
         // keyboard focus (exactly like `\.workspaceStore`).
         .focusedSceneValue(\.commandPaletteToggle, CommandPaletteToggle { showCommandPalette.toggle() })
+        // The busy-shell close guard (store.pendingClose): ⌘W / a close affordance on a pane whose
+        // shell is mid-command parks here instead of killing the command. The dialog reads the pane's
+        // title at present-time; Cancel (the automatic dismiss) clears the pending id.
+        .confirmationDialog(
+            pendingCloseTitle,
+            isPresented: Binding(
+                get: { store.pendingClose != nil },
+                set: { if !$0 { store.cancelPendingClose() } }
+            )
+        ) {
+            Button("Close Pane", role: .destructive) { store.confirmPendingClose() }
+        } message: {
+            Text("A command is still running in this pane. Closing it ends the session and the command.")
+        }
+    }
+
+    /// The busy-close dialog title, naming the pane it would close (best-effort — falls back to a
+    /// generic title if the pane vanished while the dialog was up).
+    private var pendingCloseTitle: String {
+        if let id = store.pendingClose, let spec = store.workspace.canvas.spec(for: id) {
+            return "Close “\(PanePresentation.displayTitle(store.handle(for: id), spec: spec))”?"
+        }
+        return "Close Pane?"
     }
 
     // MARK: Detail (the ONE responsive switch — docs/22 §4)

@@ -165,7 +165,7 @@ struct PaneSidebarView: View {
             }
         }
         Divider()
-        Button("Close Pane", role: .destructive) { store.closePane(id) }
+        Button("Close Pane", role: .destructive) { store.requestClosePane(id) }
     }
 
     // MARK: Group header

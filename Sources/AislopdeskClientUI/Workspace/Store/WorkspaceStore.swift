@@ -348,6 +348,14 @@ public final class WorkspaceStore {
     /// canvas (the "Add a pane" empty state). Reconcile tears down the removed session.
     public func closePane(_ id: PaneID) {
         guard workspace.canvas.contains(id) else { return }
+        // Record the close for "Reopen Closed Pane" — spec + exact frame + group, but NOT the id (a
+        // reopen mints a fresh pane; the session is necessarily new). Ephemeral auto-managed panes
+        // (system dialogs) are skipped: the monitor owns their lifecycle, so "reopening" one would
+        // resurrect a dead window stream.
+        if let item = workspace.canvas.item(id), !item.spec.kind.isEphemeral {
+            recentlyClosed = RecentlyClosedPane(spec: item.spec, frame: item.frame, group: item.groupID)
+        }
+        if pendingClose == id { pendingClose = nil }
         // Capture a geometric neighbour BEFORE the close (so refocus follows what the user saw).
         let refocus = neighbourForRefocus(of: id)
         if let newCanvas = workspace.canvas.removing(id) {
@@ -362,6 +370,83 @@ public final class WorkspaceStore {
         }
         if workspace.maximizedPane == id { workspace.maximizedPane = nil }
         reconcile()
+    }
+
+    // MARK: - Close undo (single slot) + busy-shell close guard
+
+    /// Everything needed to bring the most recently closed pane back as it was: its spec (incl. a
+    /// committed video endpoint, so a reopened remote-window pane re-streams), its exact frame, and
+    /// its group. Deliberately NOT the ``PaneID`` — reopen mints a fresh pane (see
+    /// ``Canvas/restoring(_:frame:group:)``).
+    public struct RecentlyClosedPane: Equatable, Sendable {
+        public let spec: PaneSpec
+        public let frame: CGRect
+        public let group: PaneGroupID?
+    }
+
+    /// The single-slot "Reopen Closed Pane" record — the last non-ephemeral close. In-memory only
+    /// (deliberately not persisted: across a relaunch the layout file already restores every pane
+    /// that mattered). Single-slot is the honest scope: the menu item says "Reopen Closed Pane",
+    /// not "Undo History".
+    public private(set) var recentlyClosed: RecentlyClosedPane?
+
+    /// The pane awaiting close CONFIRMATION because its shell reported a running command (⌘W on a
+    /// busy shell — killing the session would kill the command). The view observes this and shows a
+    /// confirmation dialog; ``confirmPendingClose()`` / ``cancelPendingClose()`` resolve it.
+    public private(set) var pendingClose: PaneID?
+
+    /// The close entry point for every user-facing close affordance (⌘W, the pill menu, the sidebar
+    /// context menu): closes immediately when the pane's shell is idle, parks the close behind a
+    /// confirmation (``pendingClose``) when ``PaneSessionHandle/isShellBusy`` says a command is still
+    /// running. Direct ``closePane(_:)`` stays public for the auto-managed paths (the system-dialog
+    /// monitor) and tests — the guard is a UX gate, not an invariant.
+    public func requestClosePane(_ id: PaneID) {
+        guard workspace.canvas.contains(id) else { return }
+        if registry[id]?.isShellBusy == true {
+            pendingClose = id
+        } else {
+            closePane(id)
+        }
+    }
+
+    /// Confirms the parked busy-shell close. No-op when nothing is pending (e.g. the pane was
+    /// already closed by another path — `closePane` clears a matching `pendingClose`).
+    public func confirmPendingClose() {
+        guard let id = pendingClose else { return }
+        pendingClose = nil
+        closePane(id)
+    }
+
+    /// Dismisses the busy-shell close confirmation without closing.
+    public func cancelPendingClose() {
+        pendingClose = nil
+    }
+
+    /// Reopens the most recently closed pane at its exact former frame (frontmost, focused, back in
+    /// its group when that group still exists), guaranteed in view. The session is NEW by
+    /// construction — scrollback does not survive a close; the spec (incl. a committed video
+    /// endpoint) is what comes back. Single-shot: consumes the slot. Returns the new id, or `nil`
+    /// when there is nothing to reopen.
+    @discardableResult
+    public func reopenClosedPane() -> PaneID? {
+        guard let record = recentlyClosed else { return nil }
+        recentlyClosed = nil
+        // Rejoin the group only if it still exists — restoring a dangling groupID would strand the
+        // pane outside both the group views and the "ungrouped" listing.
+        let group = record.group.flatMap { gid in
+            workspace.groups.contains { $0.id == gid } ? gid : nil
+        }
+        let (canvas, id) = workspace.canvas.restoring(record.spec, frame: record.frame, group: group)
+        workspace.canvas = canvas
+        workspace.focusedPane = id
+        if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
+        // In-view guarantee, mirroring addPane: the pane may have been closed far off-viewport.
+        let visible = CGRect(origin: workspace.canvas.camera.origin, size: lastViewport)
+        if let f = workspace.canvas.frame(of: id), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
+            workspace.canvas = workspace.canvas.centered(on: id, viewport: lastViewport)
+        }
+        reconcile()
+        return id
     }
 
     // MARK: - System-dialog panes (ephemeral, auto-managed by the client monitor)
@@ -1258,9 +1343,13 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
     case .centerAll:
         store.centerOnAll()
     case .closePane:
+        // Routed through the busy-shell guard: an idle pane closes immediately; a pane mid-command
+        // parks behind the confirmation dialog (`pendingClose`) the root view hosts.
         if let pane = store.focusedPane {
-            store.closePane(pane)
+            store.requestClosePane(pane)
         }
+    case .reopenClosedPane:
+        store.reopenClosedPane()
     case .newGroup:
         // Create an empty group; the user assigns panes via the sidebar context menu / drag.
         store.addGroup(name: "Group")
