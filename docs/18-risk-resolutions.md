@@ -70,6 +70,12 @@
 ### A — input injection (Dissolved by decision: activate-then-control)
 - Your decision: **control 1 window at a time, must focus**. → raise + focus the target window (public API: `NSRunningApplication(...).activate` + AX `kAXRaiseAction` / set `kAXFocusedWindow`), it becomes **frontmost**, then `CGEventPost(kCGHIDEventTap)` or `postToPid`. Tag `eventSourceUserData` to filter self-injection.
 - **Why this beats "inject into background windows":** research found a background-injection route via the **SkyLight private API** (cua-driver/yabai `SLPSPostEventRecordTo`+`SLEventPostToPid`) — BUT it (1) uses **private symbols** (fragile, dlopen/dlsym), (2) **fails with Chromium/Electron on macOS 14** (keyboard dropped in the background), (3) is **unverified on macOS 26 Tahoe**. Activate-then-control uses **public APIs**, works **universally for every kind of app** (including Metal/OpenGL viewports the background route can't handle), and **avoids all 3 problems**. → **SPIKE 1 (the heaviest) is deleted.**
+- 📏 **MEASURED 2026-06-12 (cua-driver — the trycua background-injection tool — live on macOS 26.5.1 Tahoe / M1 Max).** Drove three real targets while each stayed backgrounded; `NSWorkspace.frontmostApplication` stayed on the terminal **the whole time** (focus-without-raise mechanically works on Tahoe):
+  - **AppKit mouse — PASS.** Clicked a backgrounded Calculator (z-order below the active app) to compute `6×7=42`; it never raised, focus never moved.
+  - **AppKit text — PASS.** Inserted a marker into a TextEdit window with `is_on_screen=false` via AX `kAXSelectedText`; `AXFrontmost=false` throughout.
+  - **Chromium keyboard — FAIL.** Typed into a backgrounded Chrome `<input autofocus>` (a self-reporting page that mirrors the value into `document.title`) via both the CGEvent character-synthesis fallback **and** the `press_key` NSMenu front-flip path — **neither landed** (title stayed `EMPTY`). Confirms the renderer drops background keyboard even on macOS 15+/Tahoe in practice through these paths.
+  - **Menu shortcut — FAIL.** `⌘Z` (undo) into a backgrounded window did not apply via either delivery path.
+  - **Verdict:** focus-without-raise is real, but coverage is **AppKit-only** in practice; **Chromium/Electron keyboard is unreliable backgrounded**. Since the coding workflow is **VS Code + Chrome** (both Electron/Chromium), the background route would be flaky exactly on the apps used most. → **USER DECISION confirmed: stick with activate-then-focus for stability.** Background injection is a multi-window / never-steal-focus play, **not a latency win** (the raise is already async/off the inject path — see [11 §input-to-photon]).
 
 ### B — coordinate mapping (SOLVED)
 Pipeline: client pixel → normalize → host window point → `CGEvent.postToPid`. Three mandatory fixes:
@@ -111,8 +117,8 @@ Resolves the "low-latency-RC needs a bitrate vs constant-quality" conflict with 
 ## Non-blocking watch items
 
 - ✅ **macOS 26 multi-NALU — MEASURED, downgraded:** on macOS 26.5 M1 Max, HEVC emits **1 NALU/CMSampleBuffer** (including IDR; param sets in the format desc). Not a corruption risk in single-slice config. **Still iterate length-prefixed NALUs** (standard AVCC, ~0 cost) for safety — but no longer a warning.
-- macOS 26 Tahoe per-window background input unverified — **moot for us** (we use activate-then-control, not that route).
-- macOS 14 + Chromium/Electron backgrounded keyboard drops — **moot for us** (focus before typing).
+- ✅ **macOS 26 Tahoe per-window background input — MEASURED 2026-06-12** (cua-driver, M1 Max / 26.5.1): focus-without-raise works, but **AppKit-only**; Chromium/Electron keyboard does **not** land backgrounded. **Moot for us** — we use activate-then-control. Full results in §A.
+- ✅ **Chromium/Electron backgrounded keyboard drops — CONFIRMED still true on Tahoe** (not just macOS 14): backgrounded Chrome `<input>` received nothing via CGEvent or NSMenu front-flip. **Moot for us** (focus before typing).
 
 ---
 
