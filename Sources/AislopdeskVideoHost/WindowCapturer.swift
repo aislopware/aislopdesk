@@ -446,6 +446,10 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         /// windows ride along per the SDK ("display bound windows… Child windows are included by
         /// default"), kept explicit via `includeChildWindows`. Non-included area is empty per the
         /// SDK ("Display including content filters do not contain the desktop and dock").
+        /// LATENCY (framewatch flasher, Studio loopback VD 2×, 2026-06-12, 3×~92 paired flips):
+        /// glass-to-glass p50 35.8/36.0ms vs `.window` 50.7/51.2ms (≈ one 60Hz slot saved — the
+        /// per-window composite path costs it), p90 equal (~53ms); matches `.displayExcluding`
+        /// (35.7ms) — the include-list adds nothing measurable.
         case displayIncluding
     }
 
