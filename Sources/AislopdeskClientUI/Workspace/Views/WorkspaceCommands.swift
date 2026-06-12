@@ -1,5 +1,9 @@
 #if canImport(SwiftUI)
 import SwiftUI
+#if os(macOS)
+import AppKit
+import UniformTypeIdentifiers
+#endif
 
 // MARK: - WorkspaceCommands (native menu-bar / hardware-keyboard shortcuts)
 
@@ -50,6 +54,15 @@ public struct WorkspaceCommands: Commands {
             Divider()
             commandButton("Duplicate Pane", .duplicatePane)
         }
+        #if os(macOS)
+        // Portable workspace backup / share, next to the OS's import/export menu slot.
+        CommandGroup(after: .importExport) {
+            Button("Export Workspace…") { exportWorkspace() }
+                .disabled(store == nil)
+            Button("Import Workspace…") { importWorkspace() }
+                .disabled(store == nil)
+        }
+        #endif
         // Surface the ⌘K command palette as a VISIBLE menu item in the View menu (it was a hidden
         // background button — the chord worked but nothing advertised it). Routed through the focused
         // scene's toggle so it targets the key window; disabled when no workspace window is key.
@@ -200,6 +213,31 @@ public struct WorkspaceCommands: Commands {
     private static func shortcut(for command: WorkspaceCommand) -> KeyboardShortcut? {
         CommandInterpreter.defaultChords(for: command).first?.shortcut
     }
+
+    #if os(macOS)
+    /// Writes a portable workspace document (host stripped) to a user-chosen file.
+    private func exportWorkspace() {
+        guard let store else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "workspace.aislopdesk.json"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? store.exportWorkspaceData().write(to: url)
+    }
+
+    /// Reads a workspace document and REPLACES the live canvas (keeping the local host). A non-document
+    /// file is silently ignored (the store's import returns false and leaves the workspace intact).
+    private func importWorkspace() {
+        guard let store else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        _ = store.importWorkspace(data)
+    }
+    #endif
 }
 
 // MARK: - Snap preference toggles (View menu)
