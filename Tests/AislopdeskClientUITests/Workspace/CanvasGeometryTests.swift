@@ -99,4 +99,60 @@ final class CanvasGeometryTests: XCTestCase {
                                          size: Canvas.defaultItemSize)
         assertRect(p, CGRect(origin: CGPoint(x: Canvas.cascadeStep, y: Canvas.cascadeStep), size: Canvas.defaultItemSize))
     }
+
+    // MARK: offscreenBeacons
+
+    private func item(_ id: PaneID, _ frame: CGRect, kind: PaneKind = .terminal) -> CanvasItem {
+        CanvasItem(id: id, spec: PaneSpec(kind: kind, title: "p"), frame: frame, z: 0)
+    }
+
+    func testNoBeaconForAVisiblePane() {
+        let id = PaneID()
+        let items = [item(id, CGRect(x: 100, y: 100, width: 200, height: 150))]
+        let beacons = CanvasGeometry.offscreenBeacons(items, camera: .zero,
+                                                      viewport: CGSize(width: 1280, height: 800))
+        XCTAssertTrue(beacons.isEmpty, "a pane intersecting the viewport gets no beacon")
+    }
+
+    func testBeaconEdgeAndClampForEachDirection() {
+        let vp = CGSize(width: 1000, height: 800)
+        let inset: CGFloat = 18
+        // A pane far to the RIGHT (off the right edge).
+        let right = PaneID()
+        let rb = CanvasGeometry.offscreenBeacons([item(right, CGRect(x: 5000, y: 300, width: 100, height: 100))],
+                                                 camera: .zero, viewport: vp, inset: inset)
+        XCTAssertEqual(rb.count, 1)
+        XCTAssertEqual(rb[0].edge, .right)
+        XCTAssertEqual(rb[0].screenPoint.x, vp.width - inset, accuracy: eps, "clamped to the right inset")
+        // ABOVE (off the top edge).
+        let up = PaneID()
+        let ub = CanvasGeometry.offscreenBeacons([item(up, CGRect(x: 400, y: -4000, width: 100, height: 100))],
+                                                 camera: .zero, viewport: vp, inset: inset)
+        XCTAssertEqual(ub[0].edge, .top)
+        XCTAssertEqual(ub[0].screenPoint.y, inset, accuracy: eps)
+        // LEFT.
+        let left = PaneID()
+        let lb = CanvasGeometry.offscreenBeacons([item(left, CGRect(x: -5000, y: 300, width: 100, height: 100))],
+                                                 camera: .zero, viewport: vp, inset: inset)
+        XCTAssertEqual(lb[0].edge, .left)
+        XCTAssertEqual(lb[0].screenPoint.x, inset, accuracy: eps)
+        // BELOW.
+        let down = PaneID()
+        let db = CanvasGeometry.offscreenBeacons([item(down, CGRect(x: 400, y: 6000, width: 100, height: 100))],
+                                                 camera: .zero, viewport: vp, inset: inset)
+        XCTAssertEqual(db[0].edge, .bottom)
+        XCTAssertEqual(db[0].screenPoint.y, vp.height - inset, accuracy: eps)
+    }
+
+    func testBeaconTracksCamera() {
+        // A pane at canvas (2000, 100): off-screen with camera at origin (right edge)…
+        let id = PaneID()
+        let items = [item(id, CGRect(x: 2000, y: 100, width: 200, height: 150))]
+        let vp = CGSize(width: 1280, height: 800)
+        XCTAssertEqual(CanvasGeometry.offscreenBeacons(items, camera: .zero, viewport: vp).count, 1)
+        // …but VISIBLE once the camera pans to it → no beacon.
+        let panned = CanvasCamera(origin: CGPoint(x: 1900, y: 0))
+        XCTAssertTrue(CanvasGeometry.offscreenBeacons(items, camera: panned, viewport: vp).isEmpty)
+    }
+
 }
