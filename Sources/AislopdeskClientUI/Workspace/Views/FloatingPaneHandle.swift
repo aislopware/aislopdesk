@@ -357,6 +357,14 @@ struct PaneMenuView: View {
             row("Center in View", systemImage: "scope") {
                 store.centerOnPane(id)
             }
+            // A streaming remote-window pane can swap which host window it mirrors WITHOUT
+            // close-and-recreate: `close()` re-enters the picker form (the SwiftUI dismantle of the
+            // live view is the proven teardown path), which auto-refreshes the window list on appear.
+            if let remote = (handle as? LivePaneSession)?.remoteWindow, remote.active != nil {
+                row("Change Window…", systemImage: "macwindow.on.rectangle") {
+                    remote.close()
+                }
+            }
             renameRow
 
             Divider().padding(.vertical, 4)

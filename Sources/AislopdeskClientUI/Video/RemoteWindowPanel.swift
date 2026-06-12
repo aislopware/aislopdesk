@@ -82,6 +82,20 @@ public final class RemoteWindowModel {
             : nil
     }
 
+    /// The window list narrowed by a filter query — every whitespace-separated token must match
+    /// case-insensitively in the title OR the app name (token-AND, the picker's filter-field policy;
+    /// 10+ windows on a busy host made the unfiltered list scroll-blind). Pure + static for tests.
+    public static func filtered(
+        _ windows: [RemoteWindowSummary], query: String
+    ) -> [RemoteWindowSummary] {
+        let tokens = query.lowercased().split(separator: " ").map(String.init)
+        guard !tokens.isEmpty else { return windows }
+        return windows.filter { window in
+            let haystack = "\(window.title.lowercased()) \(window.appName.lowercased())"
+            return tokens.allSatisfy { haystack.contains($0) }
+        }
+    }
+
     /// Picks a window from the list: fills ``windowID`` + ``title`` + ``appName`` (the caller then
     /// ``open()``s).
     public func pick(_ summary: RemoteWindowSummary) {
@@ -181,6 +195,11 @@ public final class RemoteWindowModel {
 /// live decode pipeline.
 public struct RemoteWindowPanel: View {
     @Bindable private var model: RemoteWindowModel
+    /// The picker's live filter (view state — resets when the pane re-enters the form).
+    @State private var filter: String = ""
+    /// Whether the manual-window-id fallback is expanded. Auto-expands whenever discovery errors —
+    /// the escape hatch must be VISIBLE exactly when it is needed, not folded behind a disclosure.
+    @State private var manualExpanded = false
     /// Whether to draw the inline Close row beneath the live video (docs/22 §7). Default `false`:
     /// in the workspace the pane chrome owns close.
     private let showCloseButton: Bool
@@ -237,6 +256,15 @@ public struct RemoteWindowPanel: View {
             // Keep an already-loaded list VISIBLE during a reload (the spinner is in the header) so a
             // Refresh doesn't flash the list away; only show the inline spinner on the FIRST load.
             if !model.availableWindows.isEmpty {
+                // Filter field: a busy host serves 10+ windows — scroll-blind without one. Token-AND
+                // over title + app name (RemoteWindowModel.filtered, pure + tested).
+                TextField("Filter by title or app", text: $filter)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.callout)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    #endif
                 windowList
             } else if model.isLoading {
                 HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading windows…").foregroundStyle(.secondary) }
@@ -250,7 +278,8 @@ public struct RemoteWindowPanel: View {
             }
 
             // Manual fallback — collapsed by default; the escape hatch when discovery is unavailable.
-            DisclosureGroup("Enter a window id manually") {
+            // AUTO-EXPANDS on a discovery error (below): visible exactly when it's needed.
+            DisclosureGroup("Enter a window id manually", isExpanded: $manualExpanded) {
                 VStack(alignment: .leading, spacing: 8) {
                     field("window id", text: $model.windowID, kind: .number)
                     field("title (optional)", text: $model.title, kind: .plain)
@@ -265,13 +294,27 @@ public struct RemoteWindowPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // Auto-discover on appear (manual Refresh re-runs it).
         .task { await model.refresh() }
+        // Reveal the manual fallback the moment discovery reports a problem (it stays open — a user
+        // who collapsed it mid-error can re-open it, but a NEW error re-reveals).
+        .onChange(of: model.loadError) { _, error in
+            if error != nil { manualExpanded = true }
+        }
+        .onAppear { if model.loadError != nil { manualExpanded = true } }
     }
 
-    /// The tappable list of discovered host windows. Choosing one fills the id+title and opens it.
+    /// The tappable list of discovered host windows (filter applied). Choosing one fills the
+    /// id+title and opens it.
     private var windowList: some View {
-        ScrollView {
+        let visible = RemoteWindowModel.filtered(model.availableWindows, query: filter)
+        return ScrollView {
             VStack(spacing: 0) {
-                ForEach(model.availableWindows) { window in
+                if visible.isEmpty {
+                    Text("No windows match “\(filter)”")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                }
+                ForEach(visible) { window in
                     Button {
                         model.pick(window)
                         model.open()
