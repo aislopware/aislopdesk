@@ -310,13 +310,20 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// WF-6 (#8): capture NV12 in the FULL-RANGE pixel-format variant when true (else the VideoRange
     /// variant — today). Threaded into ``makeConfiguration``; default false ⇒ byte-identical capture.
     private let fullRange: Bool
+    /// True when the daemon parked this window on the virtual display (the session's
+    /// `captureSizeOverride != nil`) — the no-env default then prefers `.displayIncluding`
+    /// (see ``resolveCaptureMode(envValue:preferDisplayAnchored:)``). Default false so the
+    /// check-video CLI / non-VD paths keep today's `.window` capture.
+    private let preferDisplayAnchored: Bool
 
     public init(
         fps: Int = 60,
         captureScale: Double = 1.0,
         fullRange: Bool = false,
+        preferDisplayAnchored: Bool = false,
         frameHandler: @escaping FrameHandler
     ) {
+        self.preferDisplayAnchored = preferDisplayAnchored
         self.fps = max(1, fps)
         self.captureHz = Self.resolveCaptureHz(envValue: ProcessInfo.processInfo.environment["AISLOPDESK_CAPTURE_HZ"], fps: max(1, fps))
         self.governedFPS = max(1, fps)
@@ -393,9 +400,9 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // POINTS, so divide the pixel dims by `captureScale`.
         // NOTE (HW 2026-06-08): with child windows included, the crop anchors a couple points off the
         // window's own top-left (a child window's geometry nudges the capture origin), so the image
-        // sits a hair to the right. The user chose to keep this (tooltip + tiny shift) over a pixel-
-        // perfect-but-tooltip-less capture (`includeChildWindows = false`); the offset is well under a
-        // glyph and not worth the dynamic re-anchoring it would take to chase.
+        // sits a hair to the right while the child is up. This residual only applies to `.window`
+        // mode: since 2026-06-12 a VD-parked window defaults to `.displayIncluding`, whose crop is
+        // DISPLAY-anchored — HW-probed dx=+1px here vs dx=0 there, tooltip kept (see ``CaptureMode``).
         let pointW = Double(width) / max(1.0, captureScale)
         let pointH = Double(height) / max(1.0, captureScale)
         config.sourceRect = CGRect(x: 0, y: 0, width: pointW, height: pointH)
@@ -421,6 +428,49 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         SCContentFilter(desktopIndependentWindow: window)
     }
 
+    /// How the SCStream sources the window's pixels.
+    public enum CaptureMode: Equatable, Sendable {
+        /// `SCContentFilter(desktopIndependentWindow:)` — follows the window anywhere, but the
+        /// capture is anchored to the BOUNDING rect (window ∪ child windows), so a child window
+        /// (Chrome's link-URL bubble) that overhangs the frame nudges the crop origin and the
+        /// whole image shifts ~1px while the child is up (the 2026-06-08 sourceRect-pin tradeoff).
+        case window
+        /// `SCContentFilter(display:excludingWindows:[])` cropped to the window frame
+        /// (display-local points). Immune to the child-window nudge, ~5ms faster p50 (framewatch
+        /// signed A/B, n=51, 2026-06-10) — but EVERYTHING overlapping the rect is captured, so it
+        /// is only correct when the window is alone on the display.
+        case displayExcluding
+        /// `SCContentFilter(display:including:[window])` cropped to the window frame. The crop is
+        /// display-anchored (no child-window nudge) AND only the target window + its children are
+        /// composited (occlusion-proof — N windows stacked on the shared VD can't bleed). Child
+        /// windows ride along per the SDK ("display bound windows… Child windows are included by
+        /// default"), kept explicit via `includeChildWindows`. Non-included area is empty per the
+        /// SDK ("Display including content filters do not contain the desktop and dock").
+        case displayIncluding
+    }
+
+    /// PURE mode resolution (unit-tested). `AISLOPDESK_DISPLAY_CAPTURE` forces a mode for A/B:
+    /// `window`/`0` → `.window`, `1`/`display` → `.displayExcluding`, `include` → `.displayIncluding`.
+    /// Unset: `.displayIncluding` when the daemon parked the window on the virtual display
+    /// (`preferDisplayAnchored` — HW-verified 2026-06-12: kills the tooltip 1px shift, keeps the
+    /// tooltip, no multi-window bleed), else `.window` (off-VD the window may move/overlap freely).
+    static func resolveCaptureMode(envValue: String?, preferDisplayAnchored: Bool) -> CaptureMode {
+        switch envValue {
+        case "window", "0": return .window
+        case "1", "display": return .displayExcluding
+        case "include", "display-include": return .displayIncluding
+        default: return preferDisplayAnchored ? .displayIncluding : .window
+        }
+    }
+
+    /// Display-anchor state for `.displayExcluding`/`.displayIncluding` (nil in `.window` mode):
+    /// the crop is a FIXED display-local rect, so a window MOVE makes it stale — the session feeds
+    /// geometry-watcher moves to ``updateDisplayAnchoredOrigin(windowFrameCG:)`` to re-anchor.
+    /// Guarded by `anchorLock` (set on start's executor, read from the session actor's geometry path).
+    private struct DisplayAnchor { let displayBounds: CGRect; let config: SCStreamConfiguration }
+    private var displayAnchor: DisplayAnchor?
+    private let anchorLock = NSLock()
+
     /// Starts capturing the given window at an explicit PIXEL size (`pixelWidth`×`pixelHeight`).
     /// Passing the window's backing-pixel size (points × display scale) captures at native
     /// Retina resolution — sharp text — instead of the soft point-resolution default. ⚠️
@@ -428,25 +478,33 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     public func start(window: SCWindow, pixelWidth: Int, pixelHeight: Int) async throws {
         let config = Self.makeConfiguration(width: pixelWidth, height: pixelHeight, fps: fps, captureScale: captureScale, fullRange: fullRange)
         var filter = Self.makeFilter(window: window)
-        // DISPLAY-CAPTURE (2026-06-10 loopback latency hunt, env AISLOPDESK_DISPLAY_CAPTURE=1):
-        // SCK's per-window composite path (`desktopIndependentWindow`) measured ~5ms SLOWER
-        // p50 than a display capture cropped to the same rect (framewatch signed A/B, n=51).
-        // When enabled, capture the DISPLAY containing the window with `sourceRect` pinned to
-        // the window's frame (display-local points). ⚠️ Anything overlapping that rect is
-        // captured too — intended for the VD path, where the window is parked alone at the
-        // display origin; default OFF.
-        if ProcessInfo.processInfo.environment["AISLOPDESK_DISPLAY_CAPTURE"] == "1" {
+        let mode = Self.resolveCaptureMode(envValue: ProcessInfo.processInfo.environment["AISLOPDESK_DISPLAY_CAPTURE"],
+                                           preferDisplayAnchored: preferDisplayAnchored)
+        if mode != .window {
+            // Re-resolve the SCWindow by id: the mint flow AX-moves the window onto the VD AFTER
+            // the `window` passed here was enumerated, so its `.frame` is the PRE-move one — the
+            // display-local crop must come from the live (post-move) frame.
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-            let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+            let liveWindow = content.windows.first(where: { $0.windowID == window.windowID }) ?? window
+            let center = CGPoint(x: liveWindow.frame.midX, y: liveWindow.frame.midY)
             if let display = content.displays.first(where: { CGDisplayBounds($0.displayID).contains(center) }) {
                 let db = CGDisplayBounds(display.displayID)
-                config.sourceRect = CGRect(x: window.frame.minX - db.minX, y: window.frame.minY - db.minY,
+                config.sourceRect = CGRect(x: liveWindow.frame.minX - db.minX, y: liveWindow.frame.minY - db.minY,
                                            width: Double(pixelWidth) / max(1.0, captureScale),
                                            height: Double(pixelHeight) / max(1.0, captureScale))
-                filter = SCContentFilter(display: display, excludingWindows: [])
-                log.notice("display-capture mode: display \(display.displayID) sourceRect \(Int(config.sourceRect.origin.x)),\(Int(config.sourceRect.origin.y)) \(Int(config.sourceRect.width))x\(Int(config.sourceRect.height))pt")
+                switch mode {
+                case .displayExcluding:
+                    filter = SCContentFilter(display: display, excludingWindows: [])
+                case .displayIncluding:
+                    filter = SCContentFilter(display: display, including: [liveWindow])
+                    if #available(macOS 14.2, *) { config.includeChildWindows = true }
+                case .window:
+                    break
+                }
+                anchorLock.withLock { displayAnchor = DisplayAnchor(displayBounds: db, config: config) }
+                log.notice("capture mode \(String(describing: mode)): display \(display.displayID) sourceRect \(Int(config.sourceRect.origin.x)),\(Int(config.sourceRect.origin.y)) \(Int(config.sourceRect.width))x\(Int(config.sourceRect.height))pt")
             } else {
-                log.error("display-capture: no display contains window center — falling back to window filter")
+                log.error("display-anchored capture: no display contains window center — falling back to window filter")
             }
         }
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
@@ -472,8 +530,30 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         self.idrTimer = timer
     }
 
+    /// Re-anchors a display-anchored crop after the window MOVED (geometry-watcher feed from the
+    /// session). No-op in `.window` mode (nil anchor) or for sub-half-point deltas. The crop jump
+    /// lands mid-GOP as a whole-frame delta, so force a keyframe right after for a clean re-anchor.
+    /// Rare + user-driven (a title-bar drag), never per-frame.
+    public func updateDisplayAnchoredOrigin(windowFrameCG frame: CGRect) async {
+        let anchor = anchorLock.withLock { displayAnchor }
+        guard let anchor, let stream else { return }
+        let newOrigin = CGPoint(x: frame.minX - anchor.displayBounds.minX,
+                                y: frame.minY - anchor.displayBounds.minY)
+        let current = anchor.config.sourceRect.origin
+        guard abs(newOrigin.x - current.x) >= 0.5 || abs(newOrigin.y - current.y) >= 0.5 else { return }
+        anchor.config.sourceRect = CGRect(origin: newOrigin, size: anchor.config.sourceRect.size)
+        do {
+            try await stream.updateConfiguration(anchor.config)
+            requestKeyframe()
+            log.notice("display-anchored crop re-anchored to \(Int(newOrigin.x)),\(Int(newOrigin.y))pt (window moved)")
+        } catch {
+            log.error("display-anchored re-anchor failed: \(String(describing: error))")
+        }
+    }
+
     public func stop() async {
         guard let stream else { return }
+        anchorLock.withLock { displayAnchor = nil }
         // VIDEO-HOST-1: cancel the timer + release the cached copy on `frameQueue` (the timer's
         // queue) BEFORE stopping capture, so no tick can race teardown. `cachedPixelBuffer = nil`
         // is sufficient — ARC releases the managed copy; no manual CVPixelBufferRelease.

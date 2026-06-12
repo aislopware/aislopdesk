@@ -172,6 +172,13 @@ let package = Package(
         // Parsec windows alike). GUI+TCC-gated at runtime; no video file is written.
         .executableTarget(name: "aislopdesk-framewatch"),
 
+        // Capture-mode probe: drives the REAL `WindowCapturer` (the production capture path,
+        // including the `AISLOPDESK_DISPLAY_CAPTURE` mode seam) against one window and dumps
+        // delivered frames as PNGs — the host-side instrument for geometric capture artifacts
+        // (the Chrome-tooltip 1px crop shift) where a client-side screenshot would be polluted
+        // by pane scaling. GUI+TCC-gated at runtime.
+        .executableTarget(name: "aislopdesk-capture-probe", dependencies: ["AislopdeskVideoHost"]),
+
         // MARK: Tests
         .testTarget(name: "AislopdeskProtocolTests", dependencies: ["AislopdeskProtocol"]),
         .testTarget(name: "AislopdeskTransportTests", dependencies: ["AislopdeskTransport"]),
