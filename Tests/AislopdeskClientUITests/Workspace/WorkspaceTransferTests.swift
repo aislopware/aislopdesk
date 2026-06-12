@@ -107,6 +107,31 @@ final class WorkspaceTransferTests: XCTestCase {
         XCTAssertEqual(st.workspace.canvas.spec(for: anchor)?.title, "beta", "anchor still points at beta")
     }
 
+    func testMergeAppendAddsImportedPanesBesideExistingAndUnionsSnippets() {
+        let src = store([term(0, "alpha"), term(400, "beta")], focus: PaneID())
+        src.addSnippet(name: "deploy", body: "make deploy<Enter>")
+        let data = src.exportWorkspaceData()
+
+        let dst = store([term(0, "keep")], focus: PaneID())
+        dst.addSnippet(name: "deploy", body: "other<Enter>")        // a name collision to exercise the suffix
+        XCTAssertTrue(dst.importWorkspace(data, mode: .mergeAppend))
+
+        let titles = Set(dst.workspace.canvas.allIDs().compactMap { dst.workspace.canvas.spec(for: $0)?.title })
+        XCTAssertEqual(titles, ["keep", "alpha", "beta"], "merge keeps the existing pane and adds the imported ones")
+        XCTAssertEqual(Set(dst.snippets.map(\.name)), ["deploy", "deploy copy"],
+                       "a snippet name collision gets a ‘copy’ suffix")
+        for id in dst.workspace.canvas.allIDs() {
+            XCTAssertNotNil(dst.handle(for: id), "registry==canvas holds after a merge (every pane materialized)")
+        }
+    }
+
+    func testUniqueNameSuffixing() {
+        XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: []), "work")
+        XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: ["work"]), "work copy")
+        XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: ["work", "work copy"]), "work copy 2")
+        XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: ["work", "work copy", "work copy 2"]), "work copy 3")
+    }
+
     func testEphemeralPanesNeverExported() {
         let a = term(0, "a")
         let src = store([a], focus: a.id)

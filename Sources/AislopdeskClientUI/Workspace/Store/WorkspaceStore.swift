@@ -836,41 +836,93 @@ public final class WorkspaceStore {
         WorkspaceTransfer.export(persistableWorkspace())
     }
 
-    /// Imports a workspace document, REPLACING the live canvas (backup-restore / load-a-shared-setup). The
-    /// local host connection is KEPT (never adopt the file's). Returns whether the bytes were a valid
-    /// document; a hostile / foreign / future file leaves the live workspace untouched and returns `false`.
+    /// How an import lands: REPLACE the live canvas (backup-restore) or MERGE the document's panes in
+    /// ADDITIVELY beside the current ones (combine two setups).
+    public enum WorkspaceImportMode: Sendable { case replace, mergeAppend }
+
+    /// Imports a workspace document. `.replace` swaps the whole canvas (backup-restore / load-a-shared
+    /// setup); `.mergeAppend` adds the document's panes/groups/snippets/presets beside the current ones.
+    /// In BOTH modes the local host connection is KEPT (never adopt the file's) and every imported pane id
+    /// is re-minted. Returns whether the bytes were a valid document; a hostile / foreign / future file
+    /// leaves the live workspace untouched and returns `false`.
     @discardableResult
-    public func importWorkspace(_ data: Data) -> Bool {
+    public func importWorkspace(_ data: Data, mode: WorkspaceImportMode = .replace) -> Bool {
         guard let imported = WorkspaceTransfer.decode(data) else { return false }
-        // An absolute swap of the whole tree — drop any in-flight live scroll (mirrors switchToLayoutPreset).
         discardLiveScroll()
-        // Re-mint EVERY imported pane id through an explicit idMap (exactly as switchToLayoutPreset does):
-        // (1) a re-import into the SAME running session would otherwise collide a fresh pane with a
-        // still-tearing-down live session of the same id (the async-teardown race), and (2) — the reason a
-        // bare dedupingItemIDs was WRONG here — focus + bookmark anchors must FOLLOW the re-mint. With a
-        // map we remap `focusedPane` and every `bookmarks[].pane` so a same-session export→import keeps the
-        // focused pane and live bookmark anchors instead of resetting focus to pane-0 and dangling them.
-        var idMap: [PaneID: PaneID] = [:]
-        let reminted = imported.canvas.items.map { item -> CanvasItem in
-            let fresh = PaneID()
-            idMap[item.id] = fresh
-            return CanvasItem(id: fresh, spec: item.spec, frame: item.frame, z: item.z, groupID: item.groupID)
+        switch mode {
+        case .replace:
+            // Re-mint EVERY imported pane id through an explicit idMap (exactly as switchToLayoutPreset
+            // does): (1) a re-import into the SAME running session would otherwise collide a fresh pane
+            // with a still-tearing-down live session of the same id (the async-teardown race), and (2) —
+            // the reason a bare dedupingItemIDs was WRONG here — focus + bookmark anchors must FOLLOW the
+            // re-mint. With the map we remap `focusedPane` and every `bookmarks[].pane`.
+            var idMap: [PaneID: PaneID] = [:]
+            let reminted = imported.canvas.items.map { item -> CanvasItem in
+                let fresh = PaneID()
+                idMap[item.id] = fresh
+                return CanvasItem(id: fresh, spec: item.spec, frame: item.frame, z: item.z, groupID: item.groupID)
+            }
+            var ws = imported
+            ws.canvas = Canvas(items: reminted, camera: imported.canvas.camera)
+            ws.focusedPane = imported.focusedPane.flatMap { idMap[$0] } ?? reminted.first?.id
+            ws.bookmarks = imported.bookmarks.mapValues { bm in
+                CanvasBookmark(pane: bm.pane.flatMap { idMap[$0] }, cameraOrigin: bm.cameraOrigin, name: bm.name)
+            }
+            ws.connection = workspace.connection        // keep the local host; never adopt the imported one
+            ws.maximizedPane = nil
+            workspace = ws.normalizingGroups()
+            pendingClose = nil
+            pendingRename = nil
+            overviewActive = false
+            clearSelection()
+        case .mergeAppend:
+            // Re-mint imported pane ids AND group ids (the imported groups are brand-new here), offset the
+            // frames by a cascade so the additions don't stack on top of the originals, then append the
+            // items + groups and union snippets/presets by name (collisions get a "… copy" suffix). Empty
+            // bookmark slots are filled (never clobber an existing bookmark). Focus is left on the current
+            // pane (a merge shouldn't yank focus to an import). reconcile() materializes the new sessions.
+            var idMap: [PaneID: PaneID] = [:]
+            var groupMap: [PaneGroupID: PaneGroupID] = [:]
+            for g in imported.groups { groupMap[g.id] = PaneGroupID() }
+            let cascade = CGSize(width: 64, height: 64)
+            let appended = imported.canvas.items.map { item -> CanvasItem in
+                let fresh = PaneID()
+                idMap[item.id] = fresh
+                let group = item.groupID.flatMap { groupMap[$0] }
+                return CanvasItem(id: fresh, spec: item.spec,
+                                  frame: item.frame.offsetBy(dx: cascade.width, dy: cascade.height),
+                                  z: item.z, groupID: group)
+            }
+            workspace.canvas = Canvas(items: workspace.canvas.items + appended, camera: workspace.canvas.camera)
+            workspace.groups += imported.groups.map { PaneGroup(id: groupMap[$0.id] ?? PaneGroupID(), name: $0.name) }
+            for s in imported.snippets {
+                let name = Self.uniqueName(base: s.name, existing: Set(workspace.snippets.map(\.name)))
+                workspace.snippets.append(Snippet(name: name, body: s.body))
+            }
+            for p in imported.layoutPresets {
+                let name = Self.uniqueName(base: p.name, existing: Set(workspace.layoutPresets.map(\.name)))
+                // Clear the trigger on a merged preset — two presets must not both auto-switch on one app.
+                workspace.layoutPresets.append(LayoutPreset(name: name, canvas: p.canvas, groups: p.groups,
+                                                            focusedPane: p.focusedPane, triggerAppName: nil))
+            }
+            for (slot, bm) in imported.bookmarks where workspace.bookmarks[slot] == nil {
+                workspace.bookmarks[slot] = CanvasBookmark(pane: bm.pane.flatMap { idMap[$0] },
+                                                           cameraOrigin: bm.cameraOrigin, name: bm.name)
+            }
         }
-        var ws = imported
-        ws.canvas = Canvas(items: reminted, camera: imported.canvas.camera)
-        ws.focusedPane = imported.focusedPane.flatMap { idMap[$0] } ?? reminted.first?.id
-        ws.bookmarks = imported.bookmarks.mapValues { bm in
-            CanvasBookmark(pane: bm.pane.flatMap { idMap[$0] }, cameraOrigin: bm.cameraOrigin, name: bm.name)
-        }
-        ws.connection = workspace.connection            // keep the local host; never adopt the imported one
-        ws.maximizedPane = nil
-        workspace = ws.normalizingGroups()              // group ids stay valid; normalize defensively
-        pendingClose = nil
-        pendingRename = nil
-        overviewActive = false
-        clearSelection()
         reconcile()
         return true
+    }
+
+    /// A name not already in `existing`: `base`, else `base copy`, `base copy 2`, … (the Finder idiom).
+    /// Pure — shared by the import merge's union-by-name.
+    static func uniqueName(base: String, existing: Set<String>) -> String {
+        if !existing.contains(base) { return base }
+        let copy = "\(base) copy"
+        if !existing.contains(copy) { return copy }
+        var n = 2
+        while existing.contains("\(copy) \(n)") { n += 1 }
+        return "\(copy) \(n)"
     }
 
     /// Runs snippet `id`: resolves its `{{placeholders}}` from `values`, parses `<Token>` control keys to
