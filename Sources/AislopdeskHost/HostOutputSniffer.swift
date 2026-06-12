@@ -389,6 +389,12 @@ public final class HostOutputSniffer: @unchecked Sendable {
             let bodyBytes = oscBuffer[oscBuffer.index(after: sep)...]
             let body = String(decoding: bodyBytes, as: UTF8.self)
             guard !body.isEmpty else { return }
+            // OSC 9 is overloaded: iTerm2/ConEmu use `ESC]9;4;<state>;<pct>` for the taskbar PROGRESS-BAR
+            // protocol (emitted continuously by winget, long builds, etc.), NOT a desktop notification.
+            // Surfacing those as alerts with body text like "4;1;50" floods the user with raw program
+            // output. Only the free-text iTerm2 form (`ESC]9;<message>`) is a real notification — skip the
+            // `9;4` progress subtype.
+            guard body != "4", !body.hasPrefix("4;") else { return }
             messages.append(.notification(title: "", body: body))
 
         case "777":

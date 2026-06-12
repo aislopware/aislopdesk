@@ -32,6 +32,24 @@ final class KeystrokeReplayTests: XCTestCase {
         XCTAssertEqual(KeystrokeReplay.encode(")").strokes, [ReplayStroke(keyCode: 29, shift: true)])
     }
 
+    func testCRLFLineEndingsTypeAsReturnNotSkipped() {
+        // Swift segments "\r\n" as ONE grapheme with no US-QWERTY mapping, so without CRLF normalization a
+        // Windows/web/Git clipboard newline would silently fall through to `skipped` (no Return sent),
+        // collapsing multi-line text onto one line. Normalization turns each CRLF into a single Return.
+        let crlf = KeystrokeReplay.encode("ab\r\ncd")
+        XCTAssertEqual(crlf.strokes, [
+            ReplayStroke(keyCode: 0, shift: false),   // a
+            ReplayStroke(keyCode: 11, shift: false),  // b
+            ReplayStroke(keyCode: 36, shift: false),  // Return (from \r\n)
+            ReplayStroke(keyCode: 8, shift: false),   // c
+            ReplayStroke(keyCode: 2, shift: false),   // d
+        ])
+        XCTAssertEqual(crlf.skipped, 0, "the CRLF newline is typed as Return, not dropped")
+        // A bare LF and a bare CR each still map to Return (unchanged).
+        XCTAssertEqual(KeystrokeReplay.encode("a\nb").strokes.count, 3)
+        XCTAssertEqual(KeystrokeReplay.encode("a\rb").strokes.count, 3)
+    }
+
     func testPunctuationAndWhitespace() {
         XCTAssertEqual(KeystrokeReplay.encode("-").strokes, [ReplayStroke(keyCode: 27, shift: false)])
         XCTAssertEqual(KeystrokeReplay.encode("_").strokes, [ReplayStroke(keyCode: 27, shift: true)])

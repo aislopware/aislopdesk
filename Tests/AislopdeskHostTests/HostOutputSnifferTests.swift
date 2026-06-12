@@ -648,6 +648,20 @@ final class HostOutputSnifferTests: XCTestCase {
         XCTAssertEqual(notificationsOnly(observeWhole(bytes("\u{1B}]9;\u{07}"))), [])
     }
 
+    func testOSC9ProgressBarSubtypeIsNotANotification() {
+        // ConEmu/iTerm2 OSC 9 is overloaded: `ESC]9;4;<state>;<pct>` is the taskbar PROGRESS-BAR protocol,
+        // emitted continuously by winget / long builds — NOT a desktop notification. It must be skipped so
+        // benign progress output doesn't flood the user with alerts whose body is raw text like "4;1;50".
+        XCTAssertEqual(notificationsOnly(observeWhole(bytes("\u{1B}]9;4;1;50\u{07}"))), [],
+                       "OSC 9;4 progress update is not a notification")
+        XCTAssertEqual(notificationsOnly(observeWhole(bytes("\u{1B}]9;4\u{07}"))), [],
+                       "OSC 9;4 bare progress-clear is not a notification")
+        // A genuine free-text OSC 9 whose body merely STARTS with '4' (not the `4;` progress subtype) fires.
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]9;42 tests passed\u{07}")),
+                       [.notification(title: "", body: "42 tests passed")],
+                       "free-text body that only starts with a digit is still a real notification")
+    }
+
     func testNotificationSplitAcrossChunksEquivalence() {
         let raw = bytes("\u{1B}]777;notify;Title;Body text 🚀\u{07}")
         let whole = observeWhole(raw)

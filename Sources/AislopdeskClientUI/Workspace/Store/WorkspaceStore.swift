@@ -344,10 +344,7 @@ public final class WorkspaceStore {
         if let group { workspace.canvas = workspace.canvas.assigning(id, toGroup: group) }
         // In-view guarantee: a new pane that lands off (or barely clipping) the current viewport would be
         // invisible — pan the camera to centre it unless its CENTRE is already inside the viewport.
-        let visible = CGRect(origin: workspace.canvas.camera.origin, size: viewport)
-        if let f = workspace.canvas.frame(of: id), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
-            workspace.canvas = workspace.canvas.centered(on: id, viewport: viewport)
-        }
+        recenterIfOffscreen(id, viewport: viewport)
         reconcile()
     }
 
@@ -366,10 +363,7 @@ public final class WorkspaceStore {
         workspace.canvas = canvas
         workspace.focusedPane = id
         if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
-        let visible = CGRect(origin: workspace.canvas.camera.origin, size: viewport)
-        if let f = workspace.canvas.frame(of: id), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
-            workspace.canvas = workspace.canvas.centered(on: id, viewport: viewport)
-        }
+        recenterIfOffscreen(id, viewport: viewport)
         reconcile()
         return id
     }
@@ -420,10 +414,7 @@ public final class WorkspaceStore {
             workspace.canvas = workspace.canvas.assigning(newID, toGroup: group)
         }
         // In-view guarantee, mirroring addPane.
-        let visible = CGRect(origin: workspace.canvas.camera.origin, size: lastViewport)
-        if let f = workspace.canvas.frame(of: newID), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
-            workspace.canvas = workspace.canvas.centered(on: newID, viewport: lastViewport)
-        }
+        recenterIfOffscreen(newID, viewport: lastViewport)
         reconcile()
         return newID
     }
@@ -497,10 +488,7 @@ public final class WorkspaceStore {
         workspace.focusedPane = id
         if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
         // In-view guarantee, mirroring addPane: the pane may have been closed far off-viewport.
-        let visible = CGRect(origin: workspace.canvas.camera.origin, size: lastViewport)
-        if let f = workspace.canvas.frame(of: id), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
-            workspace.canvas = workspace.canvas.centered(on: id, viewport: lastViewport)
-        }
+        recenterIfOffscreen(id, viewport: lastViewport)
         reconcile()
         return id
     }
@@ -523,10 +511,7 @@ public final class WorkspaceStore {
         workspace.focusedPane = id
         // A surfacing prompt exits maximize and is panned into view (it demands attention).
         if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
-        let visible = CGRect(origin: workspace.canvas.camera.origin, size: viewport)
-        if let f = workspace.canvas.frame(of: id), !visible.contains(CGPoint(x: f.midX, y: f.midY)) {
-            workspace.canvas = workspace.canvas.centered(on: id, viewport: viewport)
-        }
+        recenterIfOffscreen(id, viewport: viewport)
         reconcile()
         // isSecure is a pure-live property (never persisted), so set it on the just-materialized session
         // directly rather than threading it through the Codable spec.
@@ -706,6 +691,20 @@ public final class WorkspaceStore {
         scrollCommitTask?.cancel()
         scrollCommitTask = nil
         liveCameraOffset = .zero
+    }
+
+    /// In-view guarantee shared by every placement path (add / remote-window / duplicate / reopen /
+    /// system-dialog): if the just-placed pane's CENTRE falls outside the current viewport, pan the camera
+    /// to centre it. ``centered(on:viewport:)`` is an ABSOLUTE camera set, so it first discards any pending
+    /// live scroll (mirroring ``centerOnPane(_:)`` / ``centerOnAll()``) — else a late ``commitScrollPan()``
+    /// would fold a stale relative scroll delta on top of the freshly-centred camera, nudging the new pane
+    /// back off-centre and persisting the wrong camera.
+    private func recenterIfOffscreen(_ id: PaneID, viewport: CGSize) {
+        let visible = CGRect(origin: workspace.canvas.camera.origin, size: viewport)
+        guard let f = workspace.canvas.frame(of: id),
+              !visible.contains(CGPoint(x: f.midX, y: f.midY)) else { return }
+        discardLiveScroll()
+        workspace.canvas = workspace.canvas.centered(on: id, viewport: viewport)
     }
 
     /// Centres the camera on pane `id` ("Center on Pane" + the off-screen-focus reveal).
@@ -1005,6 +1004,11 @@ public final class WorkspaceStore {
     /// with the live registry mid-teardown (the same rule as reopen/restore). No-op for an unknown name.
     public func switchToLayoutPreset(name: String) {
         guard let preset = workspace.layoutPresets.first(where: { $0.name == name }) else { return }
+        // The preset's camera is set ABSOLUTELY below, so drop any in-flight live scroll first — else a
+        // late commitScrollPan() would fold a stale relative delta onto the restored camera, jumping the
+        // viewport away from the saved layout (mirrors the centerOnPane/centerOnAll/recenterIfOffscreen
+        // contract; pinned by LayoutPresetTests).
+        discardLiveScroll()
         // Re-mint pane ids so a switch can't collide a snapshot id with a still-tearing-down live
         // session of the same id (the async-teardown race). Group ids are kept (groups carry no session).
         var idMap: [PaneID: PaneID] = [:]
