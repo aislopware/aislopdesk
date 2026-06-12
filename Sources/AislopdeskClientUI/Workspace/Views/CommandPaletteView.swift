@@ -255,6 +255,11 @@ struct CommandPaletteView: View {
             store.addRemoteWindowPane(windowID: summary.windowID, title: summary.title, appName: summary.appName)
         case let .switchLayout(name):
             store.switchToLayoutPreset(name: name)
+        case let .snippet(id):
+            // Run the snippet with no placeholder values for now (a no-placeholder snippet runs verbatim;
+            // a parameterized one keeps its `{{slots}}` literal until the value sheet is wired). Routes to
+            // the focused pane, or the broadcast group when broadcast is armed.
+            store.runSnippet(id)
         }
         dismiss()
     }
@@ -294,8 +299,8 @@ struct CommandPaletteView: View {
         let (scope, stripped) = Self.parseScope(raw)
         let all: [Entry]
         switch scope {
-        case .all:        all = commandEntries + layoutEntries + groupEntries + paneEntries + hostWindowEntries
-        case .commands:   all = commandEntries + layoutEntries
+        case .all:        all = commandEntries + layoutEntries + snippetEntries + groupEntries + paneEntries + hostWindowEntries
+        case .commands:   all = commandEntries + layoutEntries + snippetEntries
         case .panes:      all = groupEntries + paneEntries
         case .hostWindows: all = hostWindowEntries
         }
@@ -390,6 +395,22 @@ struct CommandPaletteView: View {
                 subtitle: "Saved layout",
                 symbol: "rectangle.on.rectangle.angled",
                 keywords: "layout preset workspace context"
+            )
+        }
+    }
+
+    /// One entry per saved snippet. Selecting it runs the macro into the focused pane (or the broadcast
+    /// group). A parameterized snippet shows its placeholder names so it is discoverable.
+    private var snippetEntries: [Entry] {
+        store.snippets.map { snippet in
+            let slots = snippet.placeholders
+            return Entry(
+                id: "snippet.\(snippet.id.uuidString)",
+                kind: .snippet(snippet.id),
+                title: "Run “\(snippet.name)”",
+                subtitle: slots.isEmpty ? "Snippet" : "Snippet · needs \(slots.joined(separator: ", "))",
+                symbol: "scroll",
+                keywords: "snippet macro run send keys \(snippet.name)"
             )
         }
     }
@@ -494,6 +515,8 @@ struct CommandPaletteView: View {
             case hostWindow(RemoteWindowSummary)
             /// Switch the canvas to a saved named layout.
             case switchLayout(String)
+            /// Run a saved command snippet (by id) into the focused pane (or the broadcast group).
+            case snippet(UUID)
         }
 
         let id: String

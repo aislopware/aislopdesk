@@ -70,6 +70,12 @@ public protocol PaneSessionHandle: AnyObject, Identifiable {
     /// routes it to the per-pane `InputBarModel`, and test fakes record it.
     func sendText(_ text: String)
 
+    /// Feeds a RAW byte sequence into this session's shell (the snippet / send-keys primitive — bytes may
+    /// carry control codes the text path can't express). Not recorded for echo-dedup (no local pre-echo).
+    /// A no-op for kinds with no text funnel. Default does nothing; ``LivePaneSession`` routes to the
+    /// `InputBarModel`, test fakes record it.
+    func sendBytes(_ bytes: [UInt8])
+
     /// Tear the session down for good (the pane is closing). Delegates to the proven
     /// `ConnectionViewModel` teardown order, closes the inspector channel, and stops any video stack.
     /// Called by `reconcile()` for every orphaned leaf id before it is dropped from the registry.
@@ -83,6 +89,9 @@ public extension PaneSessionHandle {
 
     /// Default: no text funnel (the video kinds). ``LivePaneSession`` overrides for terminal/Claude panes.
     func sendText(_ text: String) {}
+
+    /// Default: no text funnel. ``LivePaneSession`` overrides for terminal/Claude panes.
+    func sendBytes(_ bytes: [UInt8]) {}
 }
 
 // MARK: - ID adoption (store-internal)

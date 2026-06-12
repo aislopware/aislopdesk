@@ -85,14 +85,16 @@ final class AppLaunchSwitchTests: XCTestCase {
         store.addPane(kind: .terminal)                              // back to 2 live panes
         XCTAssertEqual(store.workspace.canvas.items.count, 2)
 
-        var connected = true
+        // A @MainActor reference holder for the connected flag so the `isConnected` closure captures by
+        // reference (no "var mutated after capture by sendable closure" warning).
+        let link = ConnectionFlag()
         let target = ConnectionTarget(host: "h", port: 7420, mediaPort: 9000, cursorPort: 9001)
         RemoteWindowDiscovery.shared = { _, _, _ in
             [RemoteWindowSummary(windowID: 1, appName: "Grafana", title: "", width: 100, height: 100)]
         }
         defer { RemoteWindowDiscovery.shared = nil }
         let monitor = AppLaunchMonitor(store: store,
-                                       isConnected: { connected },
+                                       isConnected: { link.connected },
                                        target: { target },
                                        pollGap: .milliseconds(1))
 
@@ -103,14 +105,20 @@ final class AppLaunchSwitchTests: XCTestCase {
         // User moves on (a 2-pane layout again), Grafana still running, then the connection drops.
         store.addPane(kind: .terminal)
         XCTAssertEqual(store.workspace.canvas.items.count, 2)
-        connected = false
+        link.connected = false
         await monitor.pollOnce()                                   // disconnected: clears latch + lastApps
 
         // Reconnect with Grafana still present (a quit+relaunch during the gap is indistinguishable): the
         // monitoring layout must snap back in rather than be diffed away as already-seen.
-        connected = true
+        link.connected = true
         await monitor.pollOnce()
         XCTAssertEqual(store.workspace.canvas.items.count, 1,
                        "reconnect re-evaluates and re-fires the auto-switch (no stale-lastApps miss)")
     }
+}
+
+/// A tiny @MainActor reference holder for a mutable connected flag the monitor's `isConnected` closure
+/// reads — captured by reference so flipping it does not warn about mutating a captured `var`.
+@MainActor private final class ConnectionFlag {
+    var connected = true
 }
