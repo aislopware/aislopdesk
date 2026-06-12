@@ -19,8 +19,14 @@ This round deliberately expanded past UI/UX into protocol robustness, multiplexe
 - **Broadcast** — `WorkspaceStore.broadcastTargets()/broadcastText()`, `PaneSessionHandle.sendText/sendBytes`, `⇧⌘B`. *Pending:* the input-bar fan-out at submit (echo/CR dedup across N live shells) + macOS keystroke mirroring.
 - **Secret redaction** — pure `SecretRedactor` (AWS/GitHub/Slack/Google/JWT/stripe/npm + `key=value` + generic high-entropy backstop; no false-positives on paths/SHAs) at `displayTitle` + notification `postExplicit`, gated `SettingsKey.redactSecrets`. Fully wired.
 - **Snippets** — pure `SnippetExpander` + `SendKeysParser`, `Snippet` Codable (schema 9), store CRUD + `runSnippet`, palette entries. *Pending:* placeholder value-entry sheet + a snippet editor UI.
-- **Export/import** — pure `WorkspaceTransfer` (host stripped, hostile-file rejection), store replace-mode with id-remint, File-menu NS panels. *Pending:* merge-append mode.
+- **Export/import (+ merge)** — pure `WorkspaceTransfer` (host stripped, hostile-file rejection + dedup/cap hardening), store `.replace`/`.mergeAppend` with id-remint, File-menu NS panels (Export / Import / Merge). Fully wired.
 - **Paste guard** — pure `SecretPasteClassifier.assess → PasteRisk`, wired into the pill's paste via `deliverPaste` + a confirmationDialog. *Pending:* nothing required; the dialog is unverified-on-rig only.
+
+## Bug-hunt + hardening (5 adversarial passes, converged HIGH→MED→all-LOW)
+The import/decode surface these features added was fuzzed adversarially. Notable:
+- **HIGH crash (`bd6ef13`)** — an imported item with `z = Int.max` survived decode (only frames were sanitized, not `z`), then the next `maxZ + 1` (add-pane / raise) trapped Swift's checked arithmetic → deterministic crash from a hostile file + ⌘N. Fixed by clamping `z` in `CanvasItem.init(from:)` (covers import AND persistence-load).
+- Decode now also dedupes duplicate `PaneGroupID`s (SwiftUI `ForEach` identity), re-mints duplicate snippet ids, drops duplicate preset names, and caps every collection at `maxItems` (1024) — the import-DoS guard. `Workspace.normalizingCollections()` shares these repairs with `WorkspacePersistence.load()`.
+- A confirmation pass found only LOW refinements of the fix code (load idempotency: re-mint only *duplicate* snippet ids; broaden the load cap; trim+fallback blank snippet names) — the convergence signal.
 
 ## Discipline notes worth keeping
 - **GitHub push-protection** rejects a commit containing a contiguous vendor-token literal (even a fake one in a test). Assemble token fixtures at runtime (`"sk" + "_live_…"`, `["seg","seg","sig"].joined(separator:".")`) so no contiguous secret sits in source.
