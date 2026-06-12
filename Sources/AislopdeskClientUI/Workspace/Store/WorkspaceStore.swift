@@ -723,6 +723,36 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    // MARK: - Overview (fit-all peek)
+
+    /// Whether the temporary "see every pane at once" overview is showing (⌘\). Pure view-presentation
+    /// state — never reconciles, never persisted. Renders static pane cards over the dimmed canvas;
+    /// clicking a card jumps to that pane and exits.
+    public private(set) var overviewActive = false
+
+    /// Toggles the overview. A no-op (stays off) on an empty canvas — nothing to overview. Exiting a
+    /// maximize first if one is active (the two full-canvas modes are mutually exclusive).
+    public func toggleOverview() {
+        if overviewActive {
+            overviewActive = false
+        } else {
+            guard !workspace.canvas.items.isEmpty else { return }
+            if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
+            overviewActive = true
+        }
+    }
+
+    /// Exits the overview (Esc / a card tap routes through here). No-op when already off.
+    public func exitOverview() {
+        overviewActive = false
+    }
+
+    /// A card tap in the overview: jump to that pane (focus + centre) and exit the overview.
+    public func selectFromOverview(_ id: PaneID) {
+        overviewActive = false
+        revealPane(id)
+    }
+
     // MARK: - Explicit pane notifications (OSC 9 / OSC 777)
 
     /// The app's notification poster, wired after construction (the store is cross-platform headless;
@@ -1489,6 +1519,8 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
         store.move(forward ? .next : .previous)
     case .toggleZoom:
         store.toggleZoom()
+    case .toggleOverview:
+        store.toggleOverview()
     case .renamePane:
         // The rename UI is an inline text field (view `@State` in PaneSidebarView), so the command layer
         // cannot open it directly — it nudges `renameRequest`, which the sidebar observes via `.onChange`
