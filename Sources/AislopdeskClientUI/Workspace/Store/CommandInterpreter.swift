@@ -8,7 +8,8 @@ import Foundation
 /// (`.contextMenu`, swipe) emit the same cases. Keeping it a value type makes the chord → command
 /// mapping fully unit-testable with no view.
 public enum WorkspaceCommand: Sendable, Equatable {
-    case newPane(PaneKind)         // ⌘N/⌘T terminal, ⇧⌘N claudeCode, ⌥⌘N remoteGUI
+    case newPaneDefault            // ⌘N   — a pane of the user's default kind (Settings ▸ Canvas)
+    case newPane(PaneKind)         // ⌘T terminal, ⇧⌘N claudeCode, ⌥⌘N remoteGUI
     case duplicatePane             // ⌘D   — copy the focused pane's spec (incl. endpoint) beside it
     case tidy                      // ⇧⌘D  — pack panes into a grid
     case centerFocusedPane         // ⌥⌘C  — centre the camera on the focused pane (the pan-only "recenter")
@@ -145,11 +146,11 @@ public extension CommandInterpreter {
     static var defaultBindings: [KeyChord: WorkspaceCommand] {
         var map: [KeyChord: WorkspaceCommand] = [:]
 
-        // New pane, per kind. ⌘N is the macOS-native "new" (the File menu replaces the default
-        // New-Window item, so ⌘N makes a pane instead of an unwanted second window); ⌘T survives as
-        // the muscle-memory alias (the freed "new tab" chord — carried by the Pane-menu item).
-        // ⇧⌘N / ⌥⌘N create the other kinds directly — every prior path was Terminal-only.
-        map[KeyChord(character: "n", [.command])] = .newPane(.terminal)
+        // New pane. ⌘N is the macOS-native "new" (the File menu replaces the default New-Window item,
+        // so ⌘N makes a pane instead of an unwanted second window) — it creates the user's DEFAULT kind
+        // (Settings ▸ Canvas, default Terminal). ⌘T is the muscle-memory alias that always makes a
+        // Terminal (the freed "new tab" chord). ⇧⌘N / ⌥⌘N create the other kinds directly.
+        map[KeyChord(character: "n", [.command])] = .newPaneDefault
         map[KeyChord(character: "t", [.command])] = .newPane(.terminal)
         map[KeyChord(character: "n", [.command, .shift])] = .newPane(.claudeCode)
         map[KeyChord(character: "n", [.command, .option])] = .newPane(.remoteGUI)

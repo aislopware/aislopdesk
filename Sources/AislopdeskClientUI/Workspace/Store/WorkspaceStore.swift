@@ -845,6 +845,11 @@ public final class WorkspaceStore {
         workspace.focusedPane = preset.focusedPane.flatMap { idMap[$0] } ?? remintedItems.first?.id
         workspace.maximizedPane = nil
         overviewActive = false
+        // Every old pane id is now orphaned — clear any pending request keyed to one (else a busy-close
+        // confirmation or rename targeting a now-gone pane lingers as a phantom dialog, the closePane
+        // contract at the top of this type). Reconcile tears the old sessions down.
+        pendingClose = nil
+        pendingRename = nil
         reconcile()
     }
 
@@ -876,8 +881,13 @@ public final class WorkspaceStore {
     public func saveBookmark(_ slot: Int) {
         guard (1...9).contains(slot) else { return }
         commitScrollPan()
+        // The LIVE shell title (OSC 0/2 when set) names the bookmark — the same source the pill and
+        // sidebar show; the static spec.title is stale the moment the shell speaks.
         let name = workspace.focusedPane
-            .flatMap { workspace.canvas.spec(for: $0)?.title }
+            .flatMap { id -> String? in
+                guard let spec = workspace.canvas.spec(for: id) else { return nil }
+                return PanePresentation.displayTitle(handle(for: id), spec: spec)
+            }
             ?? "Bookmark \(slot)"
         workspace.bookmarks[slot] = CanvasBookmark(
             pane: workspace.focusedPane,
@@ -1572,6 +1582,8 @@ public extension WorkspaceStore {
 @MainActor
 public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
     switch command {
+    case .newPaneDefault:
+        store.addPane(kind: SettingsKey.defaultPaneKind)
     case let .newPane(kind):
         store.addPane(kind: kind)
     case .duplicatePane:

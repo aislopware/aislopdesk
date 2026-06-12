@@ -41,6 +41,35 @@ public enum ExplicitNotificationContent {
     }
 }
 
+/// A pure token-bucket rate limiter — bounds how many explicit (OSC 9/777) notifications a single
+/// remote shell can post, so a hostile or buggy process cannot flood the user's Notification Center.
+/// `capacity` tokens are available immediately; they refill at `refillPerSecond`. Each allowed
+/// notification consumes one. Deterministic (caller passes a monotonic `now`), so it is unit-tested
+/// with no clock.
+public struct NotificationRateLimiter: Sendable {
+    public let capacity: Double
+    public let refillPerSecond: Double
+    private var tokens: Double
+    private var lastRefill: TimeInterval
+
+    public init(capacity: Double = 5, refillPerSecond: Double = 0.5, now: TimeInterval) {
+        self.capacity = capacity
+        self.refillPerSecond = refillPerSecond
+        self.tokens = capacity
+        self.lastRefill = now
+    }
+
+    /// Refills by elapsed time then consumes a token if one is available. Returns whether the
+    /// notification is allowed (a burst beyond `capacity` is dropped until tokens refill).
+    public mutating func allow(now: TimeInterval) -> Bool {
+        tokens = min(capacity, tokens + max(0, now - lastRefill) * refillPerSecond)
+        lastRefill = now
+        guard tokens >= 1 else { return false }
+        tokens -= 1
+        return true
+    }
+}
+
 #if os(macOS)
 import UserNotifications
 
@@ -64,6 +93,11 @@ final class CommandCompletionNotifier {
     /// (the OS only prompts once, but caching avoids the repeated round-trip and lets a denied
     /// user fall straight through). `nil` until the first request resolves.
     private var granted: Bool?
+
+    /// Anti-flood limiter for EXPLICIT (OSC 9/777) notifications — a hostile remote process could
+    /// otherwise post unboundedly. ~5 burst, then ~1 per 2s. (The long-command path is naturally
+    /// rate-limited by the ~10s threshold, so it is not gated.)
+    private var explicitLimiter = NotificationRateLimiter(now: ProcessInfo.processInfo.systemUptime)
 
     init() {}
 
@@ -107,6 +141,10 @@ final class CommandCompletionNotifier {
     /// + best-effort like the long-command path; resolves the title fallback via the pure
     /// ``ExplicitNotificationContent``.
     func notifyExplicit(paneIDKey: String, paneTitle: String, title: String, body: String) {
+        // Anti-flood: drop a notification that exceeds the burst/refill budget (a hostile process must
+        // not be able to bury the user under alerts). Checked BEFORE auth so a flood can't even trigger
+        // the first auth prompt repeatedly.
+        guard explicitLimiter.allow(now: ProcessInfo.processInfo.systemUptime) else { return }
         let resolved = ExplicitNotificationContent.resolve(paneTitle: paneTitle, explicitTitle: title, body: body)
         if granted != nil {
             postExplicit(paneIDKey: paneIDKey, title: resolved.title, body: resolved.body)
