@@ -142,10 +142,9 @@ public struct AislopdeskClientApp: App {
         router.onReveal = { [weak store] idString in store?.revealPane(byIDString: idString) }
         UNUserNotificationCenter.current().delegate = router
         Self.notificationRouter = router   // retain it for the app's lifetime
-        store.onPaneNotification = { [weak store] paneID, paneTitle, title, body in
+        store.onPaneNotification = { paneID, paneTitle, title, body in
             // Respect the user's toggle (default ON); read at fire-time so a settings change applies live.
-            guard UserDefaults.standard.object(forKey: "notifications.osc") as? Bool ?? true else { return }
-            _ = store   // keep the capture explicit; the poster is self-contained
+            guard SettingsKey.oscNotificationsEnabled else { return }
             explicitNotifier.notifyExplicit(
                 paneIDKey: paneID.raw.uuidString, paneTitle: paneTitle, title: title, body: body
             )
@@ -178,7 +177,11 @@ public struct AislopdeskClientApp: App {
                 // anyway with no discovery seam registered.
                 .task {
                     let flag = ProcessInfo.processInfo.environment["AISLOPDESK_SYSTEM_DIALOG_PANES"]
-                    guard flag != "0" else { return }                       // explicitly disabled
+                    guard flag != "0" else { return }                       // env override: explicitly disabled
+                    // The user-facing toggle (Settings ▸ Advanced, default ON) gates it now; the env var
+                    // remains a test override (`0` off / `force` on). `force` bypasses both the toggle and
+                    // the automation skip below.
+                    if flag != "force", !SettingsKey.systemDialogPanesEnabled { return }
                     // Skipped during automation (deterministic check-* runs) UNLESS forced for an E2E test.
                     guard !Self.hasAutomationEnvironment() || flag == "force" else { return }
                     await dialogMonitor.run()
@@ -230,6 +233,12 @@ public struct AislopdeskClientApp: App {
         .commands { WorkspaceCommands() }
         #if os(macOS)
         .windowResizability(.contentSize)
+        #endif
+
+        #if os(macOS)
+        // The Settings scene (⌘,): canvas / notification / advanced prefs that retire the env-var gates
+        // into real, discoverable @AppStorage settings (SettingsKey is the shared source of truth).
+        Settings { SettingsView() }
         #endif
     }
 
