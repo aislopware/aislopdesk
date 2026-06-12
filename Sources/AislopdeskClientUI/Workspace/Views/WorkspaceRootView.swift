@@ -102,6 +102,12 @@ public struct WorkspaceRootView: View {
         // later drops (panes preserved; the gate just overlays). Seed it now in case we launch connected.
         .onChange(of: connection.status) { _, _ in if isConnected { hasConnectedOnce = true } }
         .onAppear { if isConnected { hasConnectedOnce = true } }
+        // ⌘R with the sidebar column collapsed was a silent no-op (the rename field lives in the
+        // sidebar). Reveal the rail first — Xcode's reveal-navigator-on-rename behaviour; the sidebar
+        // acts on the still-pending request when it mounts.
+        .onChange(of: store.pendingRename) { _, pending in
+            if pending != nil { columnVisibility = .all }
+        }
         // Toggle the palette with ⌘K. The chord lives on the VISIBLE menu-bar "Command Palette" item
         // (``WorkspaceCommands``) — discoverable + scene-targeted — reached through this focused-scene
         // value rather than a hidden background button. A ⌘-prefixed chord obeys the §5 conflict rule
@@ -177,9 +183,13 @@ public struct WorkspaceRootView: View {
         return false
     }
 
-    /// The window title: the focused pane's title, falling back to "Aislopdesk" when the canvas is empty.
+    /// The window title: the focused pane's LIVE title (OSC 0/2 when the shell set one — same source
+    /// as the pill and the sidebar rows), falling back to "Aislopdesk" when the canvas is empty.
     private var windowTitle: String {
-        store.focusedPane.flatMap { store.workspace.canvas.spec(for: $0)?.title } ?? "Aislopdesk"
+        guard let id = store.focusedPane, let spec = store.workspace.canvas.spec(for: id) else {
+            return "Aislopdesk"
+        }
+        return PanePresentation.displayTitle(store.handle(for: id), spec: spec)
     }
 
     private var emptyState: some View {

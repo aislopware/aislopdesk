@@ -54,10 +54,20 @@ struct PaneSidebarView: View {
         .searchable(text: $query, placement: .sidebar, prompt: "Search panes & groups")
         .safeAreaInset(edge: .bottom) { footer }
         .navigationTitle("Panes")
-        // ⌘R / menu / palette "Rename" → nudge → begin renaming the focused pane's row.
-        .onChange(of: store.renameRequest) { _, _ in
-            if let id = store.focusedPane { beginRenamePane(id) }
-        }
+        // ⌘R / menu / palette "Rename" → pending id → begin renaming that pane's row, then consume
+        // the request. `.onAppear` handles the collapsed-column case: the root view reveals the rail,
+        // this view mounts, and the still-pending id is acted on here (an `.onChange` alone would
+        // miss a request that fired while unmounted).
+        .onChange(of: store.pendingRename) { _, _ in actOnPendingRename() }
+        .onAppear { actOnPendingRename() }
+    }
+
+    /// Opens the inline rename field for a pending rename request and consumes it (clears it even
+    /// when the pane vanished in the interim — the request is moot then, not replayable).
+    private func actOnPendingRename() {
+        guard let id = store.pendingRename else { return }
+        if canvas.contains(id) { beginRenamePane(id) }
+        store.clearRenameRequest()
     }
 
     // MARK: Grouped layout (query empty)
@@ -86,7 +96,10 @@ struct PaneSidebarView: View {
         let matchingGroups = groups.filter { fuzzyMatches($0.name) }
         let matchingPanes = canvas.allIDs().filter { id in
             guard let spec = canvas.spec(for: id) else { return false }
-            return fuzzyMatches(spec.title)
+            // Match the LIVE title (find "vim" where the shell set it) OR the user's static name —
+            // a custom rename stays findable while the shell title churns.
+            return fuzzyMatches(PanePresentation.displayTitle(store.handle(for: id), spec: spec))
+                || fuzzyMatches(spec.title)
         }
         if !matchingGroups.isEmpty {
             Section("Groups") {
@@ -134,7 +147,10 @@ struct PaneSidebarView: View {
                         .onExitCommand { renamingPane = nil }
                         #endif
                 } else {
-                    Text(spec.title).lineLimit(1)
+                    // The LIVE title (OSC 0/2 — "vim", "make test"…) when the shell set one, like the
+                    // pill; the static spec.title was stale the moment the shell spoke. Rename still
+                    // edits spec.title (the user's name survives shell churn).
+                    Text(PanePresentation.displayTitle(store.handle(for: id), spec: spec)).lineLimit(1)
                 }
 
                 Spacer(minLength: 0)
