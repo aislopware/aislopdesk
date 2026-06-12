@@ -508,11 +508,13 @@ public final class ConnectionViewModel {
             // drives the notification side-effect.
             if case let .idle(exitCode, durationMS) = commandStatus {
                 #if os(macOS)
-                self.commandNotifier.notifyIfLong(
-                    paneTitle: self.terminal.title ?? "",
-                    exitCode: exitCode,
-                    durationMS: durationMS
-                )
+                if SettingsKey.longCommandNotificationsEnabled {
+                    self.commandNotifier.notifyIfLong(
+                        paneTitle: self.terminal.title ?? "",
+                        exitCode: exitCode,
+                        durationMS: durationMS
+                    )
+                }
                 #endif
             }
         case let .notification(title, body):

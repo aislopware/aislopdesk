@@ -201,7 +201,7 @@ public struct WorkspaceRootView: View {
         } description: {
             Text("Add a pane to get started.")
         } actions: {
-            Button("New Pane") { store.addPane(kind: .terminal) }
+            Button("New Pane") { store.addPane(kind: SettingsKey.defaultPaneKind) }
         }
     }
 
@@ -237,7 +237,7 @@ public struct WorkspaceRootView: View {
             } label: {
                 Label("New Pane", systemImage: "plus")
             } primaryAction: {
-                store.addPane(kind: .terminal)
+                store.addPane(kind: SettingsKey.defaultPaneKind)
             }
             .help("New pane")
         }
