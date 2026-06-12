@@ -28,11 +28,16 @@ enum PanePresentation {
     /// The display title: the LIVE OSC 0/2 terminal title when the shell has set one, else the static
     /// `spec.title` (whitespace-only titles fall back so a pane is never blank).
     static func displayTitle(_ handle: (any PaneSessionHandle)?, spec: PaneSpec) -> String {
+        let raw: String
         if let live = (handle as? LivePaneSession)?.terminalModel?.title,
            !live.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return live
+            raw = live
+        } else {
+            raw = spec.title
         }
-        return spec.title
+        // A remote shell controls the OSC title; mask any secret before it lands on the sidebar / pill /
+        // bookmark name (the title flows to several persistent surfaces). Gated so it is an opt-out.
+        return SettingsKey.redactSecretsEnabled ? SecretRedactor.redact(raw) : raw
     }
 }
 
