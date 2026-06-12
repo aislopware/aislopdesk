@@ -42,6 +42,13 @@ struct CommandPaletteView: View {
     /// (and so the local key handlers below receive the arrow/return/escape presses).
     @FocusState private var searchFocused: Bool
 
+    /// The host windows for the `#`-prefix / fuzzy host-window results, fetched async on open via the
+    /// ``RemoteWindowDiscovery`` seam and cached for this presentation. Empty until the query returns
+    /// (the palette stays instant even when the host is slow/offline — the rows just appear late).
+    @State private var hostWindows: [RemoteWindowSummary] = []
+    /// Guards against re-fetching on every keystroke (fetch once per open).
+    @State private var didFetchHostWindows = false
+
     var body: some View {
         if isPresented {
             ZStack {
@@ -88,6 +95,21 @@ struct CommandPaletteView: View {
         .onAppear {
             resetState()
             searchFocused = true
+            fetchHostWindowsIfNeeded()
+        }
+    }
+
+    /// Fetches the host's shareable windows once per presentation (async, non-blocking) so the
+    /// host-window section is populated without stalling the palette. Degrades to an empty section
+    /// when no discovery seam is registered or the host is unreachable.
+    private func fetchHostWindowsIfNeeded() {
+        guard !didFetchHostWindows, let query = RemoteWindowDiscovery.shared else { return }
+        didFetchHostWindows = true
+        let t = store.workspace.connection ?? .default
+        Task { @MainActor in
+            let windows = await query(t.host, t.mediaPort, t.cursorPort)
+            // Only apply if the palette is still up (the user may have dismissed it mid-fetch).
+            if isPresented { hostWindows = windows }
         }
     }
 
@@ -99,7 +121,7 @@ struct CommandPaletteView: View {
                 .foregroundStyle(.secondary)
                 .font(.system(size: 15, weight: .regular))
 
-            TextField("Run a command or jump to a pane or group…", text: $query)
+            TextField("Run a command, jump to a pane, or open a window  (> @ #)", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 16))
                 .focused($searchFocused)
@@ -226,6 +248,9 @@ struct CommandPaletteView: View {
             // the infinite canvas).
             store.focus(paneID)
             store.centerOnPane(paneID)
+        case let .hostWindow(summary):
+            // Spawn a Remote Window pane already bound to this host window — no create-then-pick step.
+            store.addRemoteWindowPane(windowID: summary.windowID, title: summary.title, appName: summary.appName)
         }
         dismiss()
     }
@@ -248,6 +273,8 @@ struct CommandPaletteView: View {
     private func resetState() {
         query = ""
         selection = 0
+        hostWindows = []
+        didFetchHostWindows = false
     }
 
     // MARK: - Entries (the catalog + the fuzzy filter)
@@ -257,8 +284,18 @@ struct CommandPaletteView: View {
     /// need to cache). An empty query shows the full catalog in catalog order; a non-empty query keeps
     /// only fuzzy-subsequence matches, ranked best-first.
     private var entries: [Entry] {
-        let all = commandEntries + groupEntries + paneEntries
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        // Prefix filters scope the search: '>' actions, '@' panes, '#' host windows. The prefix is
+        // stripped before fuzzy matching; an empty post-prefix query lists just that section.
+        let raw = query.trimmingCharacters(in: .whitespaces)
+        let (scope, stripped) = Self.parseScope(raw)
+        let all: [Entry]
+        switch scope {
+        case .all:        all = commandEntries + groupEntries + paneEntries + hostWindowEntries
+        case .commands:   all = commandEntries
+        case .panes:      all = groupEntries + paneEntries
+        case .hostWindows: all = hostWindowEntries
+        }
+        let trimmed = stripped
         guard !trimmed.isEmpty else { return all }
 
         let scored: [(entry: Entry, score: Int)] = all.compactMap { entry in
@@ -309,6 +346,37 @@ struct CommandPaletteView: View {
     /// camera on it. Built live from the canvas so it tracks adds/closes.
     private var paneEntries: [Entry] {
         Self.buildPaneEntries(workspace: store.workspace)
+    }
+
+    /// One "open this host window" entry per discovered host window. Selecting one spawns a Remote
+    /// Window pane pre-bound to it. Built from the async-fetched ``hostWindows`` cache.
+    private var hostWindowEntries: [Entry] {
+        hostWindows.map { window in
+            Entry(
+                id: "hostwin.\(window.windowID)",
+                kind: .hostWindow(window),
+                title: window.title.isEmpty ? window.appName : window.title,
+                subtitle: "Open “\(window.appName)” window  ·  \(window.width)×\(window.height)",
+                symbol: "macwindow.badge.plus",
+                keywords: "\(window.appName) window remote stream"
+            )
+        }
+    }
+
+    /// The palette search scope, selected by a leading prefix character.
+    enum Scope { case all, commands, panes, hostWindows }
+
+    /// Parses a leading scope prefix off `raw`: '>' → commands, '@' → panes/groups, '#' → host windows;
+    /// anything else → `.all` with the query unchanged. Pure (tested).
+    nonisolated static func parseScope(_ raw: String) -> (Scope, String) {
+        guard let first = raw.first else { return (.all, raw) }
+        let rest = String(raw.dropFirst()).trimmingCharacters(in: .whitespaces)
+        switch first {
+        case ">": return (.commands, rest)
+        case "@": return (.panes, rest)
+        case "#": return (.hostWindows, rest)
+        default:  return (.all, raw)
+        }
     }
 
     /// Pure builder for the per-pane jump entries (factored out so it is unit-testable without a view):
@@ -376,6 +444,8 @@ struct CommandPaletteView: View {
             case group(PaneGroupID)
             /// Jump to a pane: focuses it and centres the camera on it.
             case pane(PaneID)
+            /// Spawn a Remote Window pane PRE-BOUND to this host window (skips the create-then-pick step).
+            case hostWindow(RemoteWindowSummary)
         }
 
         let id: String
