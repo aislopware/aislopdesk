@@ -200,6 +200,59 @@ final class TerminalViewModelBatchTests: XCTestCase {
         await model.ingestBatch([Data("ok".utf8)])
         XCTAssertEqual(surface.flushes, 1)
     }
+
+    // MARK: Stale-batch guards after the backpressure park (review round)
+
+    func testCancelledPumpParkedAtBackpressurePaintsNothing() async {
+        let surface = BackpressureSurface()
+        let model = TerminalViewModel(surface: surface)
+        model.ingestOutput(Data("old".utf8))
+        model.markReconnecting()   // arm the one-shot wipe the dead pass must not consume
+        surface.writes.removeAll()
+        surface.flushes = 0
+
+        let ingest = Task { @MainActor in
+            await model.ingestBatch([Data("dead-session bytes".utf8)])
+        }
+        await Task.megaYield()
+        XCTAssertEqual(surface.flushes, 0, "parked before the first pass")
+
+        ingest.cancel()            // teardown/reconnect replaced this pump
+        surface.release()          // the gate drains; the resumed pump must bail
+        await ingest.value
+        XCTAssertEqual(surface.flushes, 0, "a cancelled pump paints NO pass after the park")
+        XCTAssertTrue(surface.writes.isEmpty)
+        // The wipe stays armed for the NEW session's first output.
+        await model.ingestBatch([Data("new".utf8)])
+        XCTAssertEqual(surface.writes.first, Self.ris,
+                       "the one-shot wipe survived the cancelled pump and fired for the new session")
+    }
+
+    func testStaleEpochBatchDropsInsteadOfConsumingWipe() async {
+        let surface = FlushRecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        model.ingestOutput(Data("old".utf8))
+        let staleEpoch = model.sessionEpoch
+        model.markReconnecting()   // supervisor reconnect: pump NOT cancelled, epoch bumped
+        surface.writes.removeAll()
+        surface.flushes = 0
+
+        await model.ingestBatch([Data("dead bytes taken before the drop".utf8)], epoch: staleEpoch)
+        XCTAssertEqual(surface.flushes, 0, "stale-epoch batch dropped without painting")
+        XCTAssertTrue(surface.writes.isEmpty)
+
+        await model.ingestBatch([Data("fresh shell".utf8)], epoch: model.sessionEpoch)
+        XCTAssertEqual(surface.writes.first, Self.ris,
+                       "the wipe was consumed by the NEW session's bytes, not the dead batch")
+        XCTAssertEqual(surface.writes.dropFirst().reduce(Data(), +), Data("fresh shell".utf8))
+    }
+
+    func testCurrentEpochBatchPaintsNormally() async {
+        let surface = FlushRecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        await model.ingestBatch([Data("hello".utf8)], epoch: model.sessionEpoch)
+        XCTAssertEqual(surface.writes, [Data("hello".utf8)])
+    }
 }
 
 private extension Task where Success == Never, Failure == Never {

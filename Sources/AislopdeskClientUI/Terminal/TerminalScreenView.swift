@@ -46,6 +46,10 @@ public struct TerminalScreenView: View {
                     .transition(.opacity)
             }
         }
+        // The visibility flips happen in plain (un-animated) model code — without an
+        // animation bound to the VALUE the .transition above would be skipped and the
+        // caret would pop. Scoped to this value so nothing else animates.
+        .animation(.easeInOut(duration: 0.15), value: model.glitchCaretVisible)
     }
 }
 

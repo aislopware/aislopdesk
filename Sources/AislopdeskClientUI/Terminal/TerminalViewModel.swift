@@ -393,7 +393,12 @@ public final class TerminalViewModel {
     public func observe(client: AislopdeskClient) async {
         connectionStatus = .connecting
         for await _ in client.outputWakeups {
-            await ingestBatch(client.takeOutputBatch())
+            // Epoch snapshot AFTER the take: a reconnect folding in while this batch is
+            // in hand bumps the epoch, and ingestBatch then drops the dead bytes instead
+            // of consuming the new session's one-shot wipe with them (review finding).
+            // Snapshotting BEFORE the take would fail the other way (drop NEW bytes).
+            let batch = await client.takeOutputBatch()
+            await ingestBatch(batch, epoch: sessionEpoch)
         }
         // FINAL DRAIN: a tail appended just before the wake stream finished (exit/close)
         // has no wake left to announce it — take it explicitly. ONLY on a natural finish:
@@ -401,8 +406,17 @@ public final class TerminalViewModel {
         // it would paint the dead session's tail into the freshly-reset pane and credit
         // those bytes to the wrong (new) transport (night-review finding).
         guard !Task.isCancelled else { return }
-        await ingestBatch(client.takeOutputBatch())
+        let tail = await client.takeOutputBatch()
+        await ingestBatch(tail, epoch: sessionEpoch)
     }
+
+    /// Monotonic SESSION boundary counter, bumped by ``markReconnecting()`` and
+    /// ``reset()``. The output pump snapshots it when it takes a batch and passes it to
+    /// ``ingestBatch(_:epoch:)``, which re-checks before EVERY pass — so a batch taken
+    /// from the DEAD session can never cross a reconnect boundary and paint (or consume
+    /// the one-shot fresh-session wipe) after the boundary, no matter how long the pump
+    /// was parked at a suspension point in between.
+    @ObservationIgnored private(set) var sessionEpoch = 0
 
     /// Max bytes fed to the surface per synchronous MainActor pass. Between passes the
     /// drain yields so input events / the display link / SwiftUI interleave — a multi-MB
@@ -422,13 +436,23 @@ public final class TerminalViewModel {
     /// flood would pile up un-parsed in the feed queue without bound. Parking here stops
     /// the take → stops the credit → the wire window holds the flood at the host,
     /// end-to-end. Synchronous surfaces (tests, headless) don't conform — no await.
-    public func ingestBatch(_ chunks: [Data]) async {
+    ///
+    /// STALE-BATCH GUARDS (review round): the backpressure park is a long suspension
+    /// that lands exactly when floods (and therefore drops/reconnects) happen, so after
+    /// EVERY await the batch must re-earn the right to paint: `Task.isCancelled` covers
+    /// a replaced pump (teardown/reconnect cancelled it), and the `epoch` check covers a
+    /// supervisor reconnect that does NOT cancel the pump — either way a dead session's
+    /// in-hand bytes must not consume the new session's one-shot wipe or pollute the
+    /// fresh replay ring.
+    public func ingestBatch(_ chunks: [Data], epoch: Int? = nil) async {
         guard !chunks.isEmpty else { return }
         var i = 0
         while i < chunks.count {
             if let backpressured = surface as? any FeedBackpressuring {
                 await backpressured.feedBackpressure()
+                if Task.isCancelled { return }
             }
+            if let epoch, epoch != sessionEpoch { return }
             var end = i
             var passBytes = 0
             repeat {
@@ -443,6 +467,7 @@ public final class TerminalViewModel {
                 // dead session's remaining passes (the new session's fresh-wipe ingest can
                 // interleave at the yield above — later dead passes would land AFTER it).
                 if Task.isCancelled { return }
+                if let epoch, epoch != sessionEpoch { return }
             }
         }
     }
@@ -623,7 +648,12 @@ public final class TerminalViewModel {
         // The reconnect will bring a FRESH host shell (no mux resume) — arm the one-shot wipe so the
         // next output clears the dead session's screen/scrollback before painting the new prompt.
         pendingFreshSessionReset = true
+        sessionEpoch += 1    // in-hand batches taken from the dead session stop painting
         clearGlitchCaret()   // keystrokes in flight died with the old session
+        // The dead session's terminal MODE is a lie for the fresh shell (a drop inside
+        // vim leaves .altScreen latched and would disarm the caret for the entire new
+        // session; a drop mid-DCS would swallow the new session's markers).
+        glitchModeTracker.reset()
     }
 
     /// Clears the pending-bell flag once the view has flashed.
@@ -645,6 +675,8 @@ public final class TerminalViewModel {
         ring.removeAll()     // stale scrollback must not survive into a new session
         ringByteCount = 0
         pendingFreshSessionReset = false  // deliberate connect already starts clean; no pending wipe
+        sessionEpoch += 1
         clearGlitchCaret()
+        glitchModeTracker.reset()  // same session-boundary truth as markReconnecting()
     }
 }
