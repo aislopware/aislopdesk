@@ -116,12 +116,8 @@ struct CanvasItemView: View {
 
     private var isFocused: Bool { store.isFocused(item.id) }
 
-    /// The pane's corner rounding — matches a plain (toolbar-less) Tahoe window: NSThemeFrame
-    /// reports 16 for titled windows and 26 for unified-toolbar ones (measured on macOS 26.5),
-    /// and a pane has no toolbar.
-    private static let cornerRadius: CGFloat = 16
-    /// Breathing room between the border stroke and the content — at radius 16 the corner curve
-    /// intrudes ~5pt diagonally, so anything less lets glyphs touch the stroke or get corner-clipped.
+    /// Breathing room between the border line and the content, so glyphs never sit flush
+    /// against the stroke.
     private static let contentPadding: CGFloat = 10
     /// Below this travel a pill gesture is a CLICK; past it, a latched MOVE (touch jitter needs more).
     #if os(macOS)
@@ -171,22 +167,15 @@ struct CanvasItemView: View {
         // pane pan like empty space.
         .background { ScrollPanForwarder(store: store) }
         #endif
-        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-        // A soft drop shadow that separates the pane from the canvas (stronger on the focused pane —
-        // the key-window idiom, and the primary focus cue). Drawn on a STATIC rounded rect BEHIND
-        // the content — never `.shadow` on the live terminal/video layer itself, which would add an
-        // offscreen shadow pass to every 60fps repaint.
-        .background {
-            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                .fill(.background)
-                .shadow(color: .black.opacity(isFocused ? 0.30 : 0.15),
-                        radius: isFocused ? 20 : 8, x: 0, y: isFocused ? 6 : 2)
-        }
-        // The pane border: a hairline stroke on the clip shape (the header stays gone — the pill is
-        // the only other chrome). Hit-testing off so it never steals the grips' edge slivers.
+        // The pane plate: a flat opaque fill behind the padded content (the border-to-content gap
+        // must cover the canvas dots) — no shadow, the border below carries the focus cue.
+        .background(.background)
+        // The pane border: a flat 1pt line, accent while focused (the header stays gone — the pill
+        // is the only other chrome). Hit-testing off so it never steals the grips' edge slivers.
         .overlay {
-            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                .strokeBorder(.separator, lineWidth: 1)
+            Rectangle()
+                .strokeBorder(isFocused ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator),
+                              lineWidth: 1)
                 .allowsHitTesting(false)
         }
         // Terminal connection failure dims the (stale) body into a big "click to reconnect" target.
@@ -195,7 +184,6 @@ struct CanvasItemView: View {
         .overlay {
             if PaneDeadScrim.isShown(status) {
                 PaneDeadScrim(status: status, store: store) { store.reconnect(item.id) }
-                    .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
             }
         }
         .overlay { resizeHandles }
