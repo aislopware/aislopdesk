@@ -125,6 +125,46 @@ final class WorkspaceTransferTests: XCTestCase {
         }
     }
 
+    // MARK: - Hostile-document hardening (final convergence hunt)
+
+    func testHostileMaxZIsClampedAndDoesNotCrashOnNextAddPane() {
+        // A doc whose item carries z = Int.max survives decode if z isn't clamped, then the next maxZ+1
+        // (addPane / raise) traps Swift's checked arithmetic → crash. The clamp neutralizes it.
+        let hostile = CanvasItem(id: PaneID(), spec: PaneSpec(kind: .terminal, title: "z"),
+                                 frame: CGRect(x: 0, y: 0, width: 300, height: 200), z: Int.max)
+        let data = WorkspaceTransfer.export(Workspace(canvas: Canvas(items: [hostile]), focusedPane: nil))
+        guard let decoded = WorkspaceTransfer.decode(data) else { return XCTFail("should decode") }
+        XCTAssertLessThan(decoded.canvas.items.first!.z, Int.max, "z is clamped on decode")
+
+        let st = store([term(0, "x")], focus: PaneID())
+        XCTAssertTrue(st.importWorkspace(data, mode: .replace))
+        st.addPane(kind: .terminal)   // computes maxZ+1 — must NOT trap
+        XCTAssertGreaterThanOrEqual(st.workspace.canvas.allIDs().count, 2, "add-pane after a hostile import is safe")
+    }
+
+    func testDuplicateGroupIDIsDroppedOnDecode() {
+        let g = PaneGroupID()
+        let ws = Workspace(canvas: Canvas(items: [term(0, "a")]), focusedPane: nil,
+                           groups: [PaneGroup(id: g, name: "A"), PaneGroup(id: g, name: "B")])
+        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { return XCTFail() }
+        XCTAssertEqual(decoded.groups.count, 1, "a duplicate group id is dropped (keep first) — no ForEach id collision")
+    }
+
+    func testDuplicateSnippetIDsAreRemintedOnDecode() {
+        let sid = UUID()
+        let ws = Workspace(canvas: Canvas(items: [term(0, "a")]), focusedPane: nil,
+                           snippets: [Snippet(id: sid, name: "x", body: "a"), Snippet(id: sid, name: "y", body: "b")])
+        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { return XCTFail() }
+        XCTAssertEqual(Set(decoded.snippets.map(\.id)).count, 2, "snippet ids are re-minted so palette entry ids can't collide")
+    }
+
+    func testOversizedDocumentIsRejected() {
+        let items = (0...WorkspaceTransfer.maxItems).map { term(CGFloat($0) * 10, "p\($0)") }   // maxItems + 1
+        let ws = Workspace(canvas: Canvas(items: items), focusedPane: nil)
+        XCTAssertNil(WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)),
+                     "a document beyond the item cap is rejected (import DoS guard)")
+    }
+
     func testUniqueNameSuffixing() {
         XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: []), "work")
         XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: ["work"]), "work copy")
