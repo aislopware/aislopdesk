@@ -184,3 +184,33 @@ final class RemoteWindowModelTests: XCTestCase {
         XCTAssertEqual(noSeam, .skipped, "no seam ⇒ no-op")
     }
 }
+
+// MARK: - Picker filter (RemoteWindowModel.filtered — pure)
+
+/// Pins the picker's filter-field policy: token-AND, case-insensitive, over title + app name.
+@MainActor
+final class RemoteWindowFilterTests: XCTestCase {
+    private let windows = [
+        RemoteWindowSummary(windowID: 1, appName: "Google Chrome", title: "Claude — research", width: 1800, height: 943),
+        RemoteWindowSummary(windowID: 2, appName: "Ghostty", title: "", width: 1408, height: 889),
+        RemoteWindowSummary(windowID: 3, appName: "Xcode", title: "Aislopdesk — WorkspaceStore.swift", width: 1600, height: 1000),
+        RemoteWindowSummary(windowID: 4, appName: "Google Chrome", title: "GitHub — aislopdesk", width: 1280, height: 800),
+    ]
+
+    func testEmptyQueryReturnsAll() {
+        XCTAssertEqual(RemoteWindowModel.filtered(windows, query: "").map(\.windowID), [1, 2, 3, 4])
+        XCTAssertEqual(RemoteWindowModel.filtered(windows, query: "   ").map(\.windowID), [1, 2, 3, 4])
+    }
+
+    func testMatchesTitleAndAppNameCaseInsensitively() {
+        XCTAssertEqual(RemoteWindowModel.filtered(windows, query: "claude").map(\.windowID), [1])
+        XCTAssertEqual(RemoteWindowModel.filtered(windows, query: "CHROME").map(\.windowID), [1, 4])
+        XCTAssertEqual(RemoteWindowModel.filtered(windows, query: "ghostty").map(\.windowID), [2],
+                       "an empty title still matches via the app name")
+    }
+
+    func testMultiTokenIsANDAcrossTitleAndApp() {
+        XCTAssertEqual(RemoteWindowModel.filtered(windows, query: "chrome github").map(\.windowID), [4])
+        XCTAssertTrue(RemoteWindowModel.filtered(windows, query: "chrome xcode").isEmpty)
+    }
+}
