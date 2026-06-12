@@ -61,6 +61,13 @@ public final class RemoteWindowModel {
     /// feel instant for a password. Injectable for deterministic tests (`.zero`).
     private let pasteInterval: Duration
 
+    /// The paste-guard verdict for typing `text` into this target (`targetIsSecure` = a known password /
+    /// SecurityAgent field). The caller confirms before ``pasteAsKeystrokes(_:)`` on a non-`.ok` risk —
+    /// e.g. a secret about to be typed into an echoing field, or a whole file into a password prompt.
+    public func assessPaste(_ text: String, targetIsSecure: Bool) -> PasteRisk {
+        SecretPasteClassifier.assess(text: text, targetIsSecure: targetIsSecure)
+    }
+
     /// Replays `text` as individual key events over the live ``keyInjector`` (US-QWERTY; unmappable
     /// characters are skipped). Down+up per stroke, Shift folded into both edges, paced by
     /// ``pasteInterval``. NEVER logs the payload — it is frequently a password. No-op when no sink is
