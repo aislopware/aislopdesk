@@ -42,6 +42,9 @@ public extension CanvasCamera {
 // MARK: - CanvasItem (frame as a readable {origin:{x,y}, size:{width,height}})
 
 public extension CanvasItem {
+    /// Safe magnitude for a decoded `z` so the frontmost-bump (`maxZ + 1`) can never overflow Int. Far
+    /// above any real stacking depth (a pane count is dozens), far below `Int.max`.
+    private static var zBound: Int { 1_000_000_000 }
     private enum CodingKeys: String, CodingKey { case id, spec, frame, z, groupID }
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -49,7 +52,10 @@ public extension CanvasItem {
             id: try c.decode(PaneID.self, forKey: .id),
             spec: try c.decode(PaneSpec.self, forKey: .spec),
             frame: try c.decode(WireRect.self, forKey: .frame).rect,
-            z: try c.decode(Int.self, forKey: .z),
+            // CLAMP z into a safe band (like the frame sanitize): a hostile / corrupt file with z = Int.max
+            // would otherwise survive decode and TRAP the very next `maxZ + 1` (addPane / raise / restore)
+            // on Swift's checked arithmetic — a deterministic crash purely from untrusted input.
+            z: min(max(try c.decode(Int.self, forKey: .z), -Self.zBound), Self.zBound),
             // Optional so an ungrouped pane (and any pre-group file) round-trips: absent ⇒ ungrouped.
             groupID: try c.decodeIfPresent(PaneGroupID.self, forKey: .groupID)
         )
