@@ -59,7 +59,9 @@ public struct WorkspaceCommands: Commands {
         CommandGroup(after: .importExport) {
             Button("Export Workspace…") { exportWorkspace() }
                 .disabled(store == nil)
-            Button("Import Workspace…") { importWorkspace() }
+            Button("Import Workspace…") { importWorkspace(mode: .replace) }
+                .disabled(store == nil)
+            Button("Merge Workspace from File…") { importWorkspace(mode: .mergeAppend) }
                 .disabled(store == nil)
         }
         #endif
@@ -226,16 +228,17 @@ public struct WorkspaceCommands: Commands {
         try? store.exportWorkspaceData().write(to: url)
     }
 
-    /// Reads a workspace document and REPLACES the live canvas (keeping the local host). A non-document
-    /// file is silently ignored (the store's import returns false and leaves the workspace intact).
-    private func importWorkspace() {
+    /// Reads a workspace document and applies it in `mode` (replace the canvas, or merge its panes in
+    /// beside the current ones), keeping the local host. A non-document file is silently ignored (the
+    /// store's import returns false and leaves the workspace intact).
+    private func importWorkspace(mode: WorkspaceStore.WorkspaceImportMode) {
         guard let store else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
-        _ = store.importWorkspace(data)
+        _ = store.importWorkspace(data, mode: mode)
     }
     #endif
 }
