@@ -59,12 +59,15 @@
 //      them concurrently with a queue-side write_output is the fork's own blessed
 //      topology (main API thread + one IO thread; Surface.zig draw comment).
 //    • TEARDOWN: `close()` nils the main-side pointer, clears the queue-side pointer
-//      box, then runs the gate's `closeBarrier()` (queue.sync) BEFORE
-//      `ghostty_surface_free` — core `Surface.deinit` joins its threads and DESTROYS
-//      `renderer_state.mutex`, so an in-flight write_output racing the free is a
-//      use-after-free of both the surface and the mutex. The barrier is what makes
-//      the free safe. NO-DEADLOCK RULE: feed-queue blocks must never block on main
-//      (`main.async` only) — `closeBarrier()` runs `queue.sync` FROM main.
+//      box, then DEFERS `ghostty_surface_free` into the gate's drain completion
+//      (`feedGate.close(onDrained:)` → main.async free) — core `Surface.deinit` joins
+//      its threads and DESTROYS `renderer_state.mutex`, so an in-flight write_output
+//      racing the free is a use-after-free of both the surface and the mutex; the
+//      drain ordering is what makes the free safe. The close is deliberately
+//      NON-BLOCKING: a feed block can transitively wait on MAIN (libghostty's VT
+//      handlers forever-push into the 64-slot app mailbox drained only by
+//      `ghostty_app_tick` on main), so a queue.sync barrier from main could deadlock
+//      the app. Our own blocks still must never block on main (`main.async` only).
 //    • The C write-callback fires on libghostty's dedicated IO thread (the fork's
 //      `External.zig`: "invoked on the IO thread"), NOT synchronously on main — even
 //      replies generated during a `feed()` are emitted off-main via the IO mailbox.
@@ -306,30 +309,58 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
 
     /// Frees the surface (header 1160). Idempotent. Must run on the main thread.
     ///
-    /// TEARDOWN ORDER (the barrier is load-bearing — see the header contract):
+    /// TEARDOWN ORDER (the deferred free is load-bearing — see the header contract):
     /// 1. nil the main-side pointer — key/text/resize/redraw stop immediately;
     /// 2. clear the feed queue's pointer box — not-yet-run feed blocks become no-ops;
-    /// 3. `closeBarrier()` — every IN-FLIGHT `write_output` has fully returned
-    ///    (`queue.sync` from main; feed blocks never block on main, so no deadlock);
-    /// 4. only then `ghostty_surface_free` (core deinit destroys the renderer mutex an
-    ///    in-flight write_output would dereference).
+    /// 3. `feedGate.close(onDrained:)` — NON-BLOCKING: an in-flight `write_output` can
+    ///    transitively wait on MAIN (libghostty's VT handlers do a blocking forever-push
+    ///    into the process-wide 64-slot app mailbox when it is full, and its ONLY
+    ///    consumer is `ghostty_app_tick` on main — review finding). A `queue.sync`
+    ///    barrier here would therefore deadlock the whole app (main waits for the feed
+    ///    block, the feed block waits for main to tick). Instead the free is DEFERRED
+    ///    into the gate's drain completion;
+    /// 4. `ghostty_surface_free` then runs on main strictly after every feed block has
+    ///    completed (core deinit destroys the renderer mutex an in-flight write_output
+    ///    would dereference). The completion captures `self` STRONGLY: the C surface's
+    ///    callbacks hold an UNRETAINED `userdata` pointer to this wrapper, so the
+    ///    wrapper must outlive the C surface — the capture guarantees deinit cannot run
+    ///    until after the free.
+    /// Sendable wrapper for the C pointer crossing into the drain completion (the raw
+    /// pointer itself is non-Sendable; ownership is unambiguous — close() is the only
+    /// producer and the deferred free the only consumer).
+    private struct SurfaceHandle: @unchecked Sendable { let pointer: ghostty_surface_t }
+
     public func close() {
         guard let s = surface else { return }
         surface = nil
         feedTarget.publish(nil)
-        feedGate.closeBarrier()
-        ghostty_surface_free(s)
+        let handle = SurfaceHandle(pointer: s)
+        feedGate.close { [self] in
+            DispatchQueue.main.async {
+                ghostty_surface_free(handle.pointer)
+                withExtendedLifetime(self) {}
+            }
+        }
     }
 
     // `isolated deinit` (Swift 6.2+) guarantees the body runs on this type's actor
     // (the main actor), so it may touch the @MainActor-isolated `surface` (a
-    // non-Sendable `ghostty_surface_t?`). Without it, Swift 6 strict concurrency
-    // rejects accessing `surface` from a nonisolated deinit. `close()` remains the
-    // explicit teardown path; this is the safety net — it MUST route through the same
-    // barrier'd teardown (a pending feed block racing the free is the same UAF).
-    // Feed blocks capture `self` weakly, so a pending block never delays this deinit.
+    // non-Sendable `ghostty_surface_t?`). SAFETY NET ONLY: the owning view's detach()
+    // always calls close() first, which (a) makes this a no-op and (b) keeps `self`
+    // alive past the deferred free — so reaching here with a LIVE surface means the
+    // wrapper leaked without teardown. In that state the deferred-free path is illegal
+    // (capturing `self` in deinit is resurrection) and letting the C surface outlive
+    // the wrapper is a dangling-`userdata` UAF, so the synchronous barrier is the only
+    // safe cleanup. Its main-dependent-block deadlock edge requires leak-without-
+    // detach AND a mailbox-parked feed block simultaneously — accepted for a path
+    // that should never execute.
     isolated deinit {
-        close()
+        if let s = surface {
+            surface = nil
+            feedTarget.publish(nil)
+            feedGate.closeBarrier()
+            ghostty_surface_free(s)
+        }
     }
 
     // MARK: TerminalSurface — Data IN (off-main: the per-surface serial feed queue)

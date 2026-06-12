@@ -189,4 +189,62 @@ final class SerialFeedGateTests: XCTestCase {
         gate.closeBarrier()
         XCTAssertEqual(gate.pendingFeedBytes, 0, "all accepted work drained")
     }
+
+    // MARK: Non-blocking close (the production teardown — review-round deadlock fix)
+
+    func testAsyncCloseRunsCompletionAfterInFlightWork() {
+        let gate = SerialFeedGate(label: "test.aclose")
+        let release = DispatchSemaphore(value: 0)
+        let workFinished = Flag()
+        let order = Recorder()
+
+        gate.enqueue(byteCount: 1) {
+            release.wait()   // stall — close() must NOT block on this
+            workFinished.set()
+            order.append(1)
+        }
+        let completion = expectation(description: "onDrained ran")
+        gate.close {
+            order.append(2)
+            completion.fulfill()
+        }
+        // close() returned while the block is still stalled — non-blocking proven.
+        XCTAssertFalse(workFinished.isSet, "close(onDrained:) did not wait for the in-flight block")
+        XCTAssertTrue(gate.isClosed)
+
+        release.signal()
+        wait(for: [completion], timeout: 5)
+        XCTAssertEqual(order.snapshot, [1, 2], "onDrained ran strictly AFTER the in-flight block")
+        XCTAssertEqual(gate.pendingFeedBytes, 0)
+    }
+
+    func testAsyncCloseResumesParkedWaiterImmediately() async {
+        let gate = SerialFeedGate(label: "test.aclose.waiter", highWaterBytes: 100, lowWaterBytes: 40)
+        let release = DispatchSemaphore(value: 0)
+        gate.enqueue(byteCount: 200) { release.wait() }   // park the queue above high water
+
+        let waiter = Task { await gate.waitUntilBelowHighWater() }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        // Close while the block is STILL stalled: the waiter must resume NOW (not when
+        // the queue eventually drains) — a closed gate has nothing to wait for.
+        gate.close {}
+        await waiter.value   // must not hang even though the queue is still parked
+        release.signal()     // let the block (and the deferred onDrained) finish
+        XCTAssertTrue(gate.isClosed)
+    }
+
+    func testAsyncClosePostCloseEnqueueNeverRuns() {
+        let gate = SerialFeedGate(label: "test.aclose.postclose")
+        let drained = expectation(description: "drained")
+        gate.close { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+
+        let recorder = Recorder()
+        gate.enqueue(byteCount: 64) { recorder.append(1) }
+        let settle = expectation(description: "settle")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { settle.fulfill() }
+        wait(for: [settle], timeout: 2)
+        XCTAssertEqual(recorder.snapshot, [], "post-close enqueue is a no-op")
+    }
 }

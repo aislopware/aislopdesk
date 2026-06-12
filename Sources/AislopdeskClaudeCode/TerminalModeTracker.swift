@@ -93,6 +93,21 @@ public final class TerminalModeTracker {
     private static let pm: UInt8 = 0x5E            // '^'
     private static let apc: UInt8 = 0x5F           // '_'
 
+    // MARK: Reset
+
+    /// Returns the tracker to its initial state (`.shellPrompt`, ground, empty
+    /// buffers), emitting no events. Call at a SESSION boundary: a reconnect always
+    /// brings a fresh host shell, so a mode (or partial-sequence parse state) carried
+    /// over from the dead session is a lie — a session that dropped inside vim leaves
+    /// `.altScreen` latched (a fresh shell never emits DECRST 1049), and a drop
+    /// mid-DCS leaves `.stringConsume` swallowing the new session's real markers.
+    public func reset() {
+        state = .ground
+        mode = .shellPrompt
+        csiBuffer.removeAll(keepingCapacity: false)
+        oscBuffer.removeAll(keepingCapacity: false)
+    }
+
     // MARK: Consume
 
     /// Feeds a chunk of output bytes and returns the marker events produced by this

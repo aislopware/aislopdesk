@@ -165,6 +165,31 @@ final class GlitchCaretTests: XCTestCase {
         XCTAssertTrue(hidden, "expiry force-hides a caret no echo ever answers")
     }
 
+    // MARK: Session-boundary tracker reset (review round)
+
+    func testDropWhileInAltScreenDoesNotDisarmTheNewSession() async {
+        let model = makeModel()
+        model.ingestOutput(Data("\u{1B}[?1049h".utf8))   // old session: inside vim
+        model.markReconnecting()                          // link drops while in alt-screen
+        model.handle(.reconnected(sessionID: UUID(), resumeFromSeq: 0))
+        model.ingestOutput(Data("fresh shell $ ".utf8))   // new session: plain prompt
+        model.sendInput(a)
+        let shown = await waitUntil { model.glitchCaretVisible }
+        XCTAssertTrue(shown, "the dead session's .altScreen latch must not survive the reconnect")
+    }
+
+    func testDropMidStringSequenceDoesNotSwallowNewSessionMarkers() async {
+        let model = makeModel()
+        model.ingestOutput(Data("\u{1B}Punterminated dcs body".utf8))   // drop mid-DCS
+        model.markReconnecting()
+        model.handle(.reconnected(sessionID: UUID(), resumeFromSeq: 0))
+        // The new session autostarts a TUI: the tracker must SEE this alt-screen enter
+        // (a stale .stringConsume would swallow it and let the caret arm inside the TUI).
+        model.ingestOutput(Data("\u{1B}[?1049h".utf8))
+        model.sendInput(a)
+        await assertStaysHidden(model, "alt-screen in the NEW session is tracked from clean state")
+    }
+
     // MARK: Lifecycle clears
 
     func testReconnectExitAndResetClearTheCaret() async {
