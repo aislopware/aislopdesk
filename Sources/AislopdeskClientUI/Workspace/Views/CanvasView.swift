@@ -192,7 +192,12 @@ struct CanvasView: View {
         // region, and scroll over a terminal still reaches libghostty's scrollback).
         CanvasBackingView(
             onLiveDrag: { livePan = $0 },
-            onCommitDrag: { translation in commitPan(translation); livePan = .zero },
+            onCommitDrag: { translation in
+                // A background click (negligible drag) clears the multi-selection — the standard
+                // "click empty space to deselect" idiom.
+                if abs(translation.width) < 3, abs(translation.height) < 3 { store.clearSelection() }
+                commitPan(translation); livePan = .zero
+            },
             // Scroll-pan goes through the debounced live accumulator (NOT a per-step commitCamera) so a pan
             // no longer thrashes the canvas re-render + report() cascade that froze the video/cursor.
             onScroll: { delta in store.scrollPan(by: delta) }

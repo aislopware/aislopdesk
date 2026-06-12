@@ -171,11 +171,13 @@ struct CanvasItemView: View {
         // must cover the canvas dots) — no shadow, the border below carries the focus cue.
         .background(.background)
         // The pane border: a flat 1pt line, accent while focused (the header stays gone — the pill
-        // is the only other chrome). Hit-testing off so it never steals the grips' edge slivers.
+        // is the only other chrome). A pane in the MULTI-SELECTION gets a thicker accent ring (so a
+        // shift-click cohort reads as one group). Hit-testing off so it never steals the grips' slivers.
         .overlay {
+            let selected = store.isSelected(item.id)
             Rectangle()
-                .strokeBorder(isFocused ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator),
-                              lineWidth: 1)
+                .strokeBorder(isFocused || selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.separator),
+                              lineWidth: selected ? 2.5 : 1)
                 .allowsHitTesting(false)
         }
         // Terminal connection failure dims the (stale) body into a big "click to reconnect" target.
@@ -327,10 +329,24 @@ struct CanvasItemView: View {
                     }
                     return
                 }
-                // CLICK: never latched into a move.
+                // CLICK: never latched into a move. SHIFT-click toggles the multi-selection instead of
+                // focusing + opening the menu (the cohort-building affordance).
                 if chain == nil, !Self.pastDeadZone(value.translation) {
-                    store.focus(item.id)
-                    menuShown.toggle()
+                    if Self.shiftHeld {
+                        store.toggleSelection(item.id)
+                    } else {
+                        // A plain click on a pane clears any multi-selection and focuses just this one.
+                        store.clearSelection()
+                        store.focus(item.id)
+                        menuShown.toggle()
+                    }
+                    return
+                }
+                // GROUP MOVE: if this pane is in a multi-selection, translate the WHOLE selection by the
+                // raw delta (group drags move together, un-snapped — snapping each pane would scatter the
+                // cohort). Otherwise the normal snap-aware single-pane move.
+                if store.isSelected(item.id), store.selectedPanes.count > 1 {
+                    store.moveSelection(by: value.translation, anchor: item.id)
                     return
                 }
                 // MOVE: one commit, recomputed from the RAW final translation with the last chain
@@ -350,6 +366,17 @@ struct CanvasItemView: View {
     private static func pastDeadZone(_ translation: CGSize) -> Bool {
         translation.width * translation.width + translation.height * translation.height
             >= dragDeadZone * dragDeadZone
+    }
+
+    /// Whether Shift is held RIGHT NOW (macOS). `DragGesture` carries no modifiers, so the pill reads
+    /// the live global modifier flags at commit time to tell a shift-click (toggle selection) from a
+    /// plain click. Always `false` off macOS (no multi-select-by-modifier there).
+    private static var shiftHeld: Bool {
+        #if os(macOS)
+        NSEvent.modifierFlags.contains(.shift)
+        #else
+        false
+        #endif
     }
 
     /// Floats this pane to the top the instant a move/resize drag begins (so it is never occluded by a
