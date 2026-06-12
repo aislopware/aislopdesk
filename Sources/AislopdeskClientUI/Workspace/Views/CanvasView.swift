@@ -66,8 +66,10 @@ struct CanvasView: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
             .coordinateSpace(.named(Self.coordSpace))
-            .overlay { if maxID == nil { offscreenBeaconLayer(viewport: geo.size, camera: camera) } }
-            .overlay(alignment: .bottomTrailing) { recenterButton(viewport: geo.size) }
+            .overlay { if maxID == nil && !store.overviewActive { offscreenBeaconLayer(viewport: geo.size, camera: camera) } }
+            .overlay(alignment: .bottomTrailing) { if !store.overviewActive { recenterButton(viewport: geo.size) } }
+            .overlay { if store.overviewActive { overviewLayer(viewport: geo.size) } }
+            .animation(.easeInOut(duration: 0.2), value: store.overviewActive)
             .onAppear { report(geo.size, camera: canvas.camera) }
             .onChange(of: geo.size) { _, s in report(s, camera: canvas.camera) }
             .onChange(of: canvas) { _, _ in report(geo.size, camera: canvas.camera) }
@@ -189,6 +191,46 @@ struct CanvasView: View {
         store.commitCamera(canvas.camera.translated(by: CGSize(width: -translation.width, height: -translation.height)))
     }
 
+    // MARK: Overview (fit-all peek)
+
+    /// The fit-all overview: a dimmed backdrop over the (still-mounted) canvas with a STATIC card per
+    /// pane at its scaled position. Static cards — not live-surface `scaleEffect` — deliberately avoid
+    /// transforming CAMetalLayer / libghostty surfaces (which tear/blank under SwiftUI scale); the live
+    /// canvas sits untouched beneath, so exiting is instant with no surface rebuild. Click a card to
+    /// jump+exit; Esc / a backdrop tap exits. (A live-thumbnail overview is a deferred HW-gated idea.)
+    @ViewBuilder
+    private func overviewLayer(viewport: CGSize) -> some View {
+        let layout = CanvasGeometry.overviewLayout(canvas.items, viewport: viewport)
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { store.exitOverview() }
+            ForEach(canvas.items) { item in
+                if let rect = layout.cards[item.id] {
+                    OverviewCard(
+                        title: PanePresentation.displayTitle(store.handle(for: item.id), spec: item.spec),
+                        kind: item.spec.kind,
+                        focused: store.focusedPane == item.id
+                    ) {
+                        store.selectFromOverview(item.id)
+                    }
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+                }
+            }
+        }
+        // Esc exits — a hidden focusable button catches the key without stealing the pane's responder
+        // when overview is off (the overlay only mounts while active).
+        .background(
+            Button("") { store.exitOverview() }
+                .keyboardShortcut(.escape, modifiers: [])
+                .opacity(0)
+        )
+        .transition(.opacity)
+    }
+
     // MARK: Off-screen beacons + recenter affordance
 
     /// Edge-clamped "a pane is over there" pills for every pane entirely outside the viewport — click
@@ -299,6 +341,43 @@ private struct OffscreenBeaconPill: View {
         .onChange(of: pulsing) { _, now in pulse = now }
         .help(title)
         .accessibilityLabel("Off-screen pane: \(title). Activate to jump to it.")
+    }
+}
+
+// MARK: - OverviewCard
+
+/// One static pane card in the fit-all overview: a rounded rect at the pane's scaled position carrying
+/// its kind glyph + title, accent-bordered when focused. Clicking it jumps to that pane and exits.
+private struct OverviewCard: View {
+    let title: String
+    let kind: PaneKind
+    let focused: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 6) {
+                Image(systemName: PaneLeafView.icon(for: kind))
+                    .font(.title3)
+                    .foregroundStyle(focused ? Color.accentColor : .secondary)
+                Text(title)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.primary)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(focused ? Color.accentColor : Color.secondary.opacity(0.35),
+                                  lineWidth: focused ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel("Pane \(title). Activate to jump to it.")
     }
 }
 

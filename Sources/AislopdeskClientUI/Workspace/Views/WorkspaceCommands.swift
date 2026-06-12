@@ -104,6 +104,7 @@ public struct WorkspaceCommands: Commands {
         Divider()
 
         commandButton("Maximize Pane", .toggleZoom)
+        commandButton("Overview", .toggleOverview)
         commandButton("Rename Pane…", .renamePane)
         // Recovery affordance: surface "Reconnect Pane" in the menu bar (it was palette-only +
         // keyless, so a failed/dropped pane had no discoverable in-place recovery).

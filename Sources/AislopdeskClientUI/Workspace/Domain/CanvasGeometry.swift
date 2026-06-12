@@ -201,6 +201,50 @@ public enum CanvasGeometry {
         return members
     }
 
+    // MARK: Overview (fit-all "Mission Control")
+
+    /// The overview layout for a temporary "see every pane at once" mode on the pan-only canvas: the
+    /// uniform scale that fits the bounding box of ALL panes into the viewport (with `padding` inset,
+    /// never magnified past 1×), and each pane's SCREEN-space card rect under that scale, with the
+    /// scaled bounding box centred in the viewport. Pure → unit-tested; the view renders static cards
+    /// at these rects (no live-surface scaleEffect, so no Metal/libghostty transform hazard).
+    public struct OverviewLayout: Equatable, Sendable {
+        public let scale: CGFloat
+        public let cards: [PaneID: CGRect]
+    }
+
+    public static func overviewLayout(
+        _ items: [CanvasItem],
+        viewport: CGSize,
+        padding: CGFloat = 48
+    ) -> OverviewLayout {
+        guard !items.isEmpty else { return OverviewLayout(scale: 1, cards: [:]) }
+        // Bounding box of every pane in canvas space.
+        let minX = items.map { $0.frame.minX }.min()!
+        let minY = items.map { $0.frame.minY }.min()!
+        let maxX = items.map { $0.frame.maxX }.max()!
+        let maxY = items.map { $0.frame.maxY }.max()!
+        let bbox = CGRect(x: minX, y: minY, width: max(1, maxX - minX), height: max(1, maxY - minY))
+        let availW = max(1, viewport.width - 2 * padding)
+        let availH = max(1, viewport.height - 2 * padding)
+        // Fit, never magnify past native (a single small pane stays its size, centred).
+        let scale = min(1, min(availW / bbox.width, availH / bbox.height))
+        let scaledW = bbox.width * scale
+        let scaledH = bbox.height * scale
+        let ox = (viewport.width - scaledW) / 2
+        let oy = (viewport.height - scaledH) / 2
+        var cards: [PaneID: CGRect] = [:]
+        for item in items {
+            cards[item.id] = CGRect(
+                x: ox + (item.frame.minX - bbox.minX) * scale,
+                y: oy + (item.frame.minY - bbox.minY) * scale,
+                width: item.frame.width * scale,
+                height: item.frame.height * scale
+            )
+        }
+        return OverviewLayout(scale: scale, cards: cards)
+    }
+
     // MARK: Off-screen beacons
 
     /// One edge-clamped beacon for a pane whose frame is entirely outside the viewport: where to draw
