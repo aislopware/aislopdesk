@@ -874,6 +874,11 @@ public final class WorkspaceStore {
             pendingClose = nil
             pendingRename = nil
             overviewActive = false
+            // A whole-canvas swap invalidates the close-undo (it points at the OLD workspace) and should
+            // not leave synchronized-input armed against the freshly-imported panes (its contract is "must
+            // not survive and surprise you") — clear both, matching switchToLayoutPreset.
+            recentlyClosed = nil
+            setBroadcast(false)
             clearSelection()
         case .mergeAppend:
             // Re-mint imported pane ids AND group ids (the imported groups are brand-new here), offset the
@@ -895,11 +900,15 @@ public final class WorkspaceStore {
             }
             workspace.canvas = Canvas(items: workspace.canvas.items + appended, camera: workspace.canvas.camera)
             workspace.groups += imported.groups.map { PaneGroup(id: groupMap[$0.id] ?? PaneGroupID(), name: $0.name) }
-            for s in imported.snippets {
+            // Union by name, but CONTENT-dedup first so re-merging the SAME document N times can't grow the
+            // library (a snippet whose body already exists, or a preset whose canvas+groups already exist,
+            // is a re-import — skip it). Without this, repeated identical merges accrued "X copy copy …".
+            for s in imported.snippets where !workspace.snippets.contains(where: { $0.body == s.body }) {
                 let name = Self.uniqueName(base: s.name, existing: Set(workspace.snippets.map(\.name)))
                 workspace.snippets.append(Snippet(name: name, body: s.body))
             }
-            for p in imported.layoutPresets {
+            for p in imported.layoutPresets
+            where !workspace.layoutPresets.contains(where: { $0.canvas == p.canvas && $0.groups == p.groups }) {
                 let name = Self.uniqueName(base: p.name, existing: Set(workspace.layoutPresets.map(\.name)))
                 // Clear the trigger on a merged preset — two presets must not both auto-switch on one app.
                 workspace.layoutPresets.append(LayoutPreset(name: name, canvas: p.canvas, groups: p.groups,
@@ -1203,7 +1212,16 @@ public final class WorkspaceStore {
         workspace.groups = preset.groups
         workspace.focusedPane = preset.focusedPane.flatMap { idMap[$0] } ?? remintedItems.first?.id
         workspace.maximizedPane = nil
+        // Viewport bookmarks (⇧⌘1–9) are workspace-GLOBAL and anchor to the PREVIOUS layout's panes +
+        // coordinate frame — the preset carries none. After a context swap they all dangle (their pane
+        // ids are gone AND their saved camera origins are in the old frame), so recall would jump to a
+        // stale coordinate. Clear them rather than mis-jump (cross-cutting hunt 2026-06-13 #1).
+        workspace.bookmarks = [:]
         overviewActive = false
+        // Disarm broadcast and forget the close-undo across a whole-canvas swap — a synchronized-typing
+        // mode and a "reopen the pane from the OLD workspace" both make no sense in the new layout.
+        setBroadcast(false)
+        recentlyClosed = nil
         // Every old pane id is now orphaned — clear any pending request keyed to one (else a busy-close
         // confirmation or rename targeting a now-gone pane lingers as a phantom dialog, the closePane
         // contract at the top of this type). Reconcile tears the old sessions down.
