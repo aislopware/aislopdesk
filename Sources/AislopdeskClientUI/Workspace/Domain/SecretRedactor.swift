@@ -41,7 +41,8 @@ public enum SecretRedactor {
     private static func mightContainSecret(_ text: String) -> Bool {
         if text.count < 16 { return false }
         if text.contains("=") || text.contains(":") { return true }
-        for needle in ["AKIA", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "xox", "AIza", "eyJ", "Bearer", "bearer"] {
+        for needle in ["AKIA", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "xox", "AIza", "eyJ", "Bearer", "bearer",
+                       "sk_live_", "sk_test_", "rk_live_", "rk_test_", "pk_live_", "npm_"] {
             if text.contains(needle) { return true }
         }
         // A long unbroken alphanumeric run is the generic-backstop trigger.
@@ -95,6 +96,9 @@ public enum SecretRedactor {
             Rule(regex: re(#"\bgithub_pat_[A-Za-z0-9_]{30,}\b"#), template: m),
             // 5. Slack tokens.
             Rule(regex: re(#"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"#), template: m),
+            // 5b. Stripe (sk/rk/pk _live_/_test_) + npm — underscores split the generic run, so name them.
+            Rule(regex: re(#"\b[srp]k_(?:live|test)_[A-Za-z0-9]{16,}\b"#), template: m),
+            Rule(regex: re(#"\bnpm_[A-Za-z0-9]{30,}\b"#), template: m),
             // 6. Google API key.
             Rule(regex: re(#"\bAIza[0-9A-Za-z\-_]{35}\b"#), template: m),
             // 7. JWT (three base64url segments).

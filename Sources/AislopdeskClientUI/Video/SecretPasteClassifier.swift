@@ -45,14 +45,15 @@ public enum SecretPasteClassifier {
         guard !t.isEmpty else { return false }
         // A shape SecretRedactor recognizes (AWS / GitHub / JWT / key=value / generic) is definitely secret.
         if SecretRedactor.redact(t) != t { return true }
-        // Otherwise: a single token (no whitespace, no '/' so a PATH is excluded), long enough, carrying a
-        // DIGIT and ≥3 character classes (a random key profile — a path / dotted host usually has no
-        // digit), with high per-character entropy. Tuned to favour false-negatives over false-positives.
+        // Otherwise: a single token (no whitespace, no '/' so a PATH is excluded), reasonably long, with
+        // ≥2 character classes and HIGH per-character entropy. No hard digit requirement (a random
+        // base64/url key often has none — and the redactor's own backstop already demands a digit, so
+        // requiring one here too left digit-free random keys uncovered on BOTH paths). The high entropy +
+        // length floor keeps camelCase identifiers and dictionary words out. Favours false-negatives.
         guard !t.contains(where: { $0 == " " || $0 == "\t" || $0.isNewline || $0 == "/" }),
-              t.count >= 16, t.count <= 256,
-              t.contains(where: \.isNumber),
-              charClassCount(t) >= 3 else { return false }
-        return shannonEntropyPerChar(t) >= 3.0
+              t.count >= 20, t.count <= 256,
+              charClassCount(t) >= 2 else { return false }
+        return shannonEntropyPerChar(t) >= 3.8
     }
 
     /// How many of {lower, upper, digit, symbol} appear in `s`.

@@ -36,6 +36,14 @@ final class SecretPasteClassifierTests: XCTestCase {
                        .secretIntoInsecureField)
     }
 
+    func testDigitFreeHighEntropyTokenIsFlagged() {
+        // A random base64 secret with no digit (or single-case) must still warn — the digit requirement
+        // was redundant with the redactor's own digit lookahead and left these uncovered on both paths.
+        let token = "AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGh"   // 34 chars, no digit, mixed case, high entropy
+        XCTAssertTrue(SecretPasteClassifier.looksSecret(token))
+        XCTAssertEqual(SecretPasteClassifier.assess(text: token, targetIsSecure: false), .secretIntoInsecureField)
+    }
+
     func testOrdinaryTextIntoInsecureFieldIsOK() {
         XCTAssertEqual(SecretPasteClassifier.assess(text: "ls -la", targetIsSecure: false), .ok)
         XCTAssertEqual(SecretPasteClassifier.assess(text: "git commit -m \"fix the thing\"", targetIsSecure: false), .ok)

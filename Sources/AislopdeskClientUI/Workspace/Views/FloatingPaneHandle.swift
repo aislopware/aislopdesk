@@ -336,6 +336,15 @@ struct PaneMenuView: View {
     /// column is hidden — the menu must not silently no-op). Mirrors `PaneSidebarView`'s commit rule.
     @State private var renaming = false
     @State private var renameDraft = ""
+    /// A paste the secret-aware guard flagged, parked behind a confirmation (nil = nothing pending).
+    @State private var pendingPaste: PendingPaste?
+
+    private struct PendingPaste: Identifiable {
+        let id = UUID()
+        let text: String
+        let risk: PasteRisk
+        let remote: RemoteWindowModel
+    }
 
     private var isZoomed: Bool { store.workspace.maximizedPane == id }
     private var status: PaneConnectionStatus { PanePresentation.connectionStatus(handle) }
@@ -412,6 +421,21 @@ struct PaneMenuView: View {
         }
         .padding(10)
         .frame(minWidth: 240, alignment: .leading)
+        .confirmationDialog(
+            "Paste as Keystrokes?",
+            isPresented: Binding(get: { pendingPaste != nil }, set: { if !$0 { pendingPaste = nil } }),
+            presenting: pendingPaste
+        ) { pending in
+            if pending.risk != .tooLarge {
+                Button("Paste Anyway", role: .destructive) {
+                    pending.remote.pasteAsKeystrokes(pending.text)
+                    pendingPaste = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingPaste = nil }
+        } message: { pending in
+            Text(Self.pasteWarning(pending.risk))
+        }
     }
 
     // MARK: Header (identity + live status — what the old header bar showed)
@@ -493,8 +517,34 @@ struct PaneMenuView: View {
     private func pasteAsKeystrokes(into remote: RemoteWindowModel) {
         #if os(macOS)
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
-        remote.pasteAsKeystrokes(text)
+        deliverPaste(text, into: remote)
         #endif
+    }
+
+    /// Routes a paste through the secret-aware guard: an `.ok` payload types immediately; a risky one
+    /// (a credential into an echoing field, a bulk blob into a password field, an over-long payload)
+    /// parks behind a confirmation the user can still proceed through.
+    private func deliverPaste(_ text: String, into remote: RemoteWindowModel) {
+        let secure = (handle as? LivePaneSession)?.isSecureDialog ?? false
+        let risk = remote.assessPaste(text, targetIsSecure: secure)
+        if risk == .ok {
+            remote.pasteAsKeystrokes(text)
+        } else {
+            pendingPaste = PendingPaste(text: text, risk: risk, remote: remote)
+        }
+    }
+
+    private static func pasteWarning(_ risk: PasteRisk) -> String {
+        switch risk {
+        case .secretIntoInsecureField:
+            return "The clipboard looks like a secret, but this isn’t a password field — it may be typed where it shows in plain text. Paste anyway?"
+        case .bulkIntoSecureField:
+            return "You’re about to type many lines / a large blob into a password field. That’s usually a mis-paste. Paste anyway?"
+        case .tooLarge:
+            return "The clipboard is too long to type as keystrokes safely."
+        case .ok:
+            return ""
+        }
     }
 
     /// A submenu listing the recent clips; choosing one replays it into `remote` as keystrokes. Each
@@ -505,7 +555,7 @@ struct PaneMenuView: View {
             ForEach(Array(store.clipboardRing.enumerated()), id: \.offset) { _, clip in
                 Button(Self.clipPreview(clip)) {
                     isPresented = false
-                    remote.pasteAsKeystrokes(clip)
+                    deliverPaste(clip, into: remote)
                 }
             }
             Divider()
