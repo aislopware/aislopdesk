@@ -1061,7 +1061,7 @@ public actor AislopdeskVideoHostSession {
         //    false ⇒ forced IDR on its first frame for free, and avoids the per-frame
         //    encoder-ref swap race entirely.
         let logCallback = log
-        let newCapturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
+        let newCapturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange, preferDisplayAnchored: captureSizeOverride != nil) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
             do {
                 if ltrRefresh {
                     try newEncoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
@@ -1220,7 +1220,7 @@ public actor AislopdeskVideoHostSession {
         }
 
         let logCallback = log
-        let rebuiltCapturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
+        let rebuiltCapturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange, preferDisplayAnchored: captureSizeOverride != nil) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
             do {
                 if ltrRefresh {
                     try rebuiltEncoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
@@ -1307,7 +1307,7 @@ public actor AislopdeskVideoHostSession {
         // `@unchecked Sendable` and thread-safe for `encodeLive`. The encoded OUTPUT is
         // what hops back to the actor (`onEncodedFrame`) to packetize + send.
         let logCallback = log
-        let capturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
+        let capturer = WindowCapturer(fps: fps, captureScale: captureScale, fullRange: Self.fullRange, preferDisplayAnchored: captureSizeOverride != nil) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
             do {
                 if ltrRefresh {
                     try encoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
@@ -1613,6 +1613,14 @@ public actor AislopdeskVideoHostSession {
         if let bounds = boundsFromGeometry(message) {
             cursorSampler?.updateWindowBounds(bounds)
             injector?.updateWindowBounds(bounds)
+            // Display-anchored capture crops at a fixed display-local rect — re-anchor it to the
+            // moved window (no-op in `.window` mode). Unstructured on purpose: the SCStream config
+            // update must not block the geometry fan-out; the capturer no-ops if torn down.
+            if let capturer {
+                let frameCG = CGRect(x: bounds.origin.x, y: bounds.origin.y,
+                                     width: bounds.size.width, height: bounds.size.height)
+                Task { await capturer.updateDisplayAnchoredOrigin(windowFrameCG: frameCG) }
+            }
         }
         transport.send(scheduler.scheduleGeometry(message).bytes, on: .geometry)
     }
