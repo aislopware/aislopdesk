@@ -239,6 +239,7 @@ struct CommandPaletteView: View {
     private func run(_ entry: Entry) {
         switch entry.kind {
         case let .command(command):
+            store.recordRecentCommand(command)   // surfaces at the top of the empty-query palette
             apply(command, to: store)
         case let .group(id):
             // Jump to a group: pan the camera to frame its panes (groups are spatial clusters now).
@@ -298,7 +299,17 @@ struct CommandPaletteView: View {
         case .hostWindows: all = hostWindowEntries
         }
         let trimmed = stripped
-        guard !trimmed.isEmpty else { return all }
+        // Empty query (the '.all' / '.commands' scopes): float the recently-run commands to the top so
+        // the verbs you use most are one keystroke away. Only on an empty query — once the user types,
+        // fuzzy ranking over the full list takes over (a recent command is already in `commandEntries`).
+        guard !trimmed.isEmpty else {
+            if scope == .all || scope == .commands {
+                let recents = recentEntries
+                let recentIDs = Set(recents.map(\.id))
+                return recents + all.filter { !recentIDs.contains($0.id) }
+            }
+            return all
+        }
 
         let scored: [(entry: Entry, score: Int)] = all.compactMap { entry in
             guard let score = Self.fuzzyScore(query: trimmed, in: entry.searchText) else { return nil }
@@ -348,6 +359,24 @@ struct CommandPaletteView: View {
     /// camera on it. Built live from the canvas so it tracks adds/closes.
     private var paneEntries: [Entry] {
         Self.buildPaneEntries(workspace: store.workspace)
+    }
+
+    /// The recently-run commands as entries, in recency order — surfaced at the top of an empty-query
+    /// palette. Each maps a stored ``WorkspaceCommand`` back to its catalog item for the title/glyph,
+    /// reusing the SAME `id` ("cmd.<title>") as ``commandEntries`` so the catalog section can dedup it.
+    /// A recent command no longer in the catalog (none today) is skipped.
+    private var recentEntries: [Entry] {
+        store.recentCommands.compactMap { command -> Entry? in
+            guard let item = Self.commandCatalog.first(where: { $0.command == command }) else { return nil }
+            return Entry(
+                id: "cmd.\(item.title)",
+                kind: .command(item.command),
+                title: item.title,
+                subtitle: "Recent",
+                symbol: item.symbol,
+                shortcutHint: Self.shortcutHint(for: item.command)
+            )
+        }
     }
 
     /// One "switch to layout" entry per saved named layout. Selecting one swaps the whole canvas.
