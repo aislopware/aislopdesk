@@ -105,10 +105,16 @@ public struct WorkspacePersistence: @unchecked Sendable {
         // duplicates in place — lossless, since restored sessions always start idle (UI/UX pass-3 #5).
         // Then repair a dangling/nil focusedPane + maximizedPane (focus never pinned to a ghost pane) and
         // any item pointing at a group that no longer exists (R13, ported to the single canvas).
+        // A corrupt / hand-edited file with an absurd item count would make the store eagerly allocate a
+        // session per item on the main actor — fall back to default rather than freeze on launch (the same
+        // bound the portable import enforces).
+        guard migrated.canvas.items.count <= WorkspaceTransfer.maxItems else { return resetToDefault() }
         var seen = Set<PaneID>()
         var repaired = migrated
         repaired.canvas = repaired.canvas.dedupingItemIDs(seen: &seen)
-        return repaired.normalizingFocus().normalizingGroups()
+        // Repair the side collections (duplicate group ids / snippet ids / preset names) too — shared with
+        // the portable import path so a corrupt persisted file gets the same defensive treatment.
+        return repaired.normalizingCollections().normalizingFocus().normalizingGroups()
     }
 
     /// Best-effort copy the unrestorable file aside BEFORE the next `save()` atomically overwrites it, so a

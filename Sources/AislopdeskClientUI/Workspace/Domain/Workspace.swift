@@ -201,6 +201,22 @@ public extension Workspace {
         )
         return copy
     }
+
+    /// Repairs the SIDE collections (groups / snippets / presets) against a corrupt or hand-edited file —
+    /// the same defensive contract the canvas gets from ``dedupingItemIDs``. Applied on BOTH the on-disk
+    /// load and a portable import: a duplicate ``PaneGroupID`` (two groups → one SwiftUI Identifiable id →
+    /// undefined render results) drops to the first occurrence; every ``Snippet`` id is re-minted (snippet
+    /// ids are referenced by nothing, and a duplicate id would collide the palette's id-keyed entries); a
+    /// duplicate preset NAME (the layout palette entries are name-keyed) drops to the first. Pure.
+    func normalizingCollections() -> Workspace {
+        var copy = self
+        var seenGroups = Set<PaneGroupID>()
+        copy.groups = groups.filter { seenGroups.insert($0.id).inserted }
+        copy.snippets = snippets.map { Snippet(name: $0.name, body: $0.body) }
+        var seenPresetNames = Set<String>()
+        copy.layoutPresets = layoutPresets.filter { seenPresetNames.insert($0.name).inserted }
+        return copy
+    }
 }
 
 // MARK: - Focus (pure)
