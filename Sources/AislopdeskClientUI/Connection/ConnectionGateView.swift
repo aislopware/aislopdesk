@@ -66,6 +66,21 @@ public struct ConnectionGateView: View {
                         .keyboardType(.numberPad)
                         #endif
                         .disabled(isBusy)
+                    // Recent hosts (most-recent-first, successful connects only): one pick fills the
+                    // whole form — the daily two-machine loop should never re-type an address.
+                    if !connection.recentTargets.isEmpty {
+                        Menu {
+                            ForEach(Array(connection.recentTargets.enumerated()), id: \.offset) { _, t in
+                                Button("\(t.host):\(String(t.port))") { connection.fillForm(from: t) }
+                            }
+                        } label: {
+                            Image(systemName: "clock.arrow.circlepath")
+                        }
+                        .fixedSize()
+                        .help("Recent hosts")
+                        .accessibilityLabel("Recent hosts")
+                        .disabled(isBusy)
+                    }
                 }
                 .onSubmit { connectIfPossible() }
 
@@ -102,14 +117,19 @@ public struct ConnectionGateView: View {
     }
 
     private var statusRow: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             if isBusy { ProgressView().controlSize(.small) }
             Circle()
                 .fill(PaneConnectionStatus.from(connection.status).color)
                 .frame(width: 8, height: 8)
-            Text(connection.status.label)
-                .font(.system(.caption, design: .monospaced))
+            // Human, actionable copy ("Connection refused — is aislopdesk-hostd running?"), with the
+            // raw transport payload preserved as a tooltip for debugging. The reconnect campaign is
+            // honest about its progress ("attempt 3 of 20") vs a first "Connecting…".
+            Text(ConnectionPresenter.headline(for: connection.status))
+                .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .help(ConnectionPresenter.rawDetail(for: connection.status) ?? "")
         }
         .accessibilityElement(children: .combine)
     }
