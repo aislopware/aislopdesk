@@ -69,18 +69,25 @@ public final class WorkspaceStore {
     /// new concurrency / Sendable surface).
     public private(set) var videoPromotionGeneration: Int = 0
 
-    /// Generation nudge that asks the sidebar to open the inline rename field on the FOCUSED pane. The
-    /// rename UI is view `@State` (``PaneSidebarView``), so the ⌘R / menu / palette "Rename" entry
-    /// points cannot open it directly — they bump this, and the sidebar observes it via `.onChange`.
-    /// Same plain-`Int` MainActor bookkeeping as ``videoPromotionGeneration`` (no `@Published`; the
-    /// store is `@Observable`). Bumped only when there IS a focused pane to rename.
-    public private(set) var renameRequest: Int = 0
+    /// The pane whose sidebar row should open its inline rename field — set by the ⌘R / menu /
+    /// palette "Rename" entry points, CONSUMED by the sidebar (``clearRenameRequest()``) once the
+    /// field is open. A pending ID rather than a counter nudge: when the sidebar column is collapsed
+    /// (the old ⌘R-silent-no-op), the root view observes this to REVEAL the column first, and the
+    /// just-mounted sidebar acts on the still-pending value — a fired-and-missed counter could not
+    /// be replayed safely.
+    public private(set) var pendingRename: PaneID?
 
     /// Requests the sidebar open the inline rename on the focused pane (the command-layer entry point
-    /// for "Rename"). No-op when no pane is focused. See ``renameRequest``.
+    /// for "Rename"). No-op when no pane is focused. See ``pendingRename``.
     public func requestRenameFocusedPane() {
-        guard workspace.focusedPane != nil else { return }
-        renameRequest &+= 1
+        guard let focused = workspace.focusedPane else { return }
+        pendingRename = focused
+    }
+
+    /// The sidebar consumed the rename request (its inline field is open) — or the request became
+    /// moot (pane gone).
+    public func clearRenameRequest() {
+        pendingRename = nil
     }
 
     /// Where the value tree is persisted (docs/22 §6). Injectable so tests point at a temp dir and a

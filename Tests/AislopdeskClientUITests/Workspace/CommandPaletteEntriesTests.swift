@@ -94,14 +94,17 @@ final class CommandPaletteEntriesTests: XCTestCase {
 
     // MARK: - apply(.renamePane) wiring
 
-    /// `apply(.renamePane)` bumps `renameRequest` so the sidebar opens its inline rename field on the
-    /// focused pane — the ⌘R / menu / palette "Rename Pane" entry point.
-    func testApplyRenamePaneBumpsRenameRequestWithFocusedPane() {
+    /// `apply(.renamePane)` records the focused pane as the PENDING rename target — the sidebar opens
+    /// its inline field on it (the root view reveals a collapsed sidebar column first), then consumes
+    /// the request via `clearRenameRequest()`.
+    func testApplyRenamePaneSetsPendingRenameToFocusedPane() {
         let store = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
-        XCTAssertNotNil(store.focusedPane)
-        let before = store.renameRequest
+        let focused = store.focusedPane
+        XCTAssertNotNil(focused)
         apply(.renamePane, to: store)
-        XCTAssertEqual(store.renameRequest, before + 1, "rename request bumps so the sidebar opens the field")
+        XCTAssertEqual(store.pendingRename, focused, "the focused pane is the pending rename target")
+        store.clearRenameRequest()
+        XCTAssertNil(store.pendingRename, "the sidebar consumes the request once its field opens")
     }
 
     /// With no focused pane, `apply(.renamePane)` is a graceful no-op (nothing to rename).
@@ -109,8 +112,7 @@ final class CommandPaletteEntriesTests: XCTestCase {
         let store = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
         store.closePane(store.focusedPane!)   // close the only pane → no focus
         XCTAssertNil(store.focusedPane)
-        let before = store.renameRequest
         apply(.renamePane, to: store)   // must not trap
-        XCTAssertEqual(store.renameRequest, before, "no focused pane → no rename request")
+        XCTAssertNil(store.pendingRename, "no focused pane → no rename request")
     }
 }

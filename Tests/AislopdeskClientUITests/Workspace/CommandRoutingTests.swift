@@ -266,12 +266,11 @@ final class CommandRoutingTests: XCTestCase {
         let store = makeStore()
         let before = store.workspace
         let sessionsBefore = store.allSessions.count
-        let renameBefore = store.renameRequest
 
         apply(.renamePane, to: store)
 
         XCTAssertEqual(store.workspace, before, "renamePane command must not mutate the canvas")
         XCTAssertEqual(store.allSessions.count, sessionsBefore, "renamePane command must not touch the registry")
-        XCTAssertEqual(store.renameRequest, renameBefore + 1, "renamePane nudged the inline-rename request")
+        XCTAssertEqual(store.pendingRename, store.focusedPane, "renamePane recorded the pending rename target")
     }
 }
