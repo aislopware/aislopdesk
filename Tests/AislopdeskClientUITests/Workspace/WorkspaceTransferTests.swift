@@ -233,6 +233,27 @@ final class WorkspaceTransferTests: XCTestCase {
         XCTAssertEqual(dst.workspace.canvas.allIDs().count, 2, "both panes present after a normal merge")
     }
 
+    func testMergeAdoptsAnchoredBookmarksButDropsForeignFrameCameraBookmarks() {
+        // A merged bookmark whose anchor pane survives the id remap is followable (recall re-derives the
+        // camera from the live pane) → adopt it. A bookmark with NO surviving anchor (pane == nil, or a pane
+        // absent from the import) keeps a cameraOrigin in the IMPORTED frame while the merged canvas is in the
+        // live frame → recalling it would pan into the void. Drop those, mirroring switchToLayoutPreset.
+        let dst = store([term(0, "live")], focus: PaneID())
+        let impPane = term(100, "imp")
+        let importWS = Workspace(
+            canvas: Canvas(items: [impPane]), focusedPane: nil,
+            bookmarks: [
+                1: CanvasBookmark(pane: impPane.id, cameraOrigin: CGPoint(x: 5000, y: 5000), name: "anchored"),
+                2: CanvasBookmark(pane: nil, cameraOrigin: CGPoint(x: 9999, y: 9999), name: "pure-camera"),
+            ])
+        XCTAssertTrue(dst.importWorkspace(WorkspaceTransfer.export(importWS), mode: .mergeAppend))
+
+        guard let adopted = dst.workspace.bookmarks[1] else { return XCTFail("the anchored bookmark is adopted") }
+        XCTAssertNotNil(adopted.pane, "the adopted bookmark keeps a (remapped) anchor")
+        XCTAssertTrue(dst.workspace.canvas.contains(adopted.pane!), "the adopted anchor is a LIVE pane")
+        XCTAssertNil(dst.workspace.bookmarks[2], "the foreign-frame pure-camera bookmark is dropped, not adopted")
+    }
+
     func testMergeRejectedWhenCombinedGroupsExceedCapElseNextLaunchWipesEverything() {
         // DATA-LOSS REGRESSION: mergeAppend used to cap ONLY the canvas, so a merge that pushed the combined
         // groups (or snippets, or presets) past maxItems produced an over-cap workspace that worked this
