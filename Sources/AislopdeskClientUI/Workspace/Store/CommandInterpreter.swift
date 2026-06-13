@@ -21,6 +21,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case focus(FocusDirection)     // ⌥⌘←/→/↑/↓
     case cycleFocus(forward: Bool) // ⌘] (forward) / ⌘[ (back)
     case switchRecentPane(forward: Bool) // ⌥⌘; (to the previously-focused pane) / ⌥⇧⌘; (back toward newer)
+    case cycleFocusInGroup(forward: Bool) // ⌃⌘] / ⌃⌘[ — cycle focus WITHIN the focused pane's group only
     case toggleZoom                // ⇧⌘↩  — maximize the focused pane to the viewport
     case toggleOverview            // ⌘\   — fit-all overview (Mission Control for the canvas)
     case toggleBroadcast           // ⇧⌘B — arm/disarm synchronized input to the pane group (tmux synchronize-panes)
@@ -42,7 +43,7 @@ public extension WorkspaceCommand {
     /// run by keyboard or menu (not just the palette) populates the recents.
     var isRecentsWorthy: Bool {
         switch self {
-        case .focus, .cycleFocus, .switchRecentPane, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll, .manageSnippets, .selectAllPanes:
+        case .focus, .cycleFocus, .switchRecentPane, .cycleFocusInGroup, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll, .manageSnippets, .selectAllPanes:
             return false
         default:
             return true
@@ -233,6 +234,12 @@ public extension CommandInterpreter {
         // chords. `forward:false` = toward the previous pane (the primary action).
         map[KeyChord(character: ";", [.option, .command])] = .switchRecentPane(forward: false)
         map[KeyChord(character: ";", [.option, .command, .shift])] = .switchRecentPane(forward: true)
+
+        // Cycle focus WITHIN the focused pane's group only: ⌃⌘] forward / ⌃⌘[ back — the companion to the
+        // whole-canvas ⌘]/⌘[, so a 3-pane cluster is navigable in isolation. ⌃⌘ (the newGroup prefix) is a
+        // safe ⌘-carrying chord; "]"/"[" are not Ctrl-letters the terminal needs.
+        map[KeyChord(character: "]", [.control, .command])] = .cycleFocusInGroup(forward: true)
+        map[KeyChord(character: "[", [.control, .command])] = .cycleFocusInGroup(forward: false)
 
         // Zoom toggle: ⇧⌘↩.
         map[KeyChord(.return, [.command, .shift])] = .toggleZoom
