@@ -34,10 +34,29 @@ let package = Package(
     targets: [
         // MARK: Libraries
 
+        // C-ABI shim onto the Rust `aislopdesk-ffi` staticlib (rust/aislopdesk-ffi).
+        // Exposes the hand-written header `aislopdesk_ffi.h` (a copy kept in sync by
+        // `rust/build-apple.sh`) as the `CAislopdeskFFI` module and links the prebuilt
+        // `libaislopdesk_ffi.a`. The Rust core is a byte-/bit-exact port of the Swift
+        // codecs/controllers (proven by golden vectors); Swift modules call into it via
+        // the `RustFFI` bridge so macOS/iOS and a future Android client run the identical
+        // algorithm bytes. `unsafeFlags` (the -L/-l for the vendored static archive) make
+        // the package non-consumable as a dependency — fine for a leaf app. macOS slice
+        // for now; iOS device/sim slices are a follow-up (see rust/build-apple.sh).
+        .target(
+            name: "CAislopdeskFFI",
+            path: "Sources/CAislopdeskFFI",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .unsafeFlags(["-Lrust/target/release", "-laislopdesk_ffi"])
+            ]
+        ),
+
         // Pure-Swift wire format: framing, MessageType, seq(Int64), Hello/Ack.
         // ZERO platform dependency (no Network/Darwin) so it builds for macOS + iOS
-        // and is unit-testable in isolation.
-        .target(name: "AislopdeskProtocol"),
+        // and is unit-testable in isolation. Codec bodies delegate to the Rust port via
+        // `CAislopdeskFFI` (see Sources/AislopdeskProtocol/RustFFI.swift).
+        .target(name: "AislopdeskProtocol", dependencies: ["CAislopdeskFFI"]),
 
         // NWConnection + TCP_NODELAY, dual data/control channel, ET-style replay
         // buffer, reconnect handshake. (Implemented in WF-2.)
