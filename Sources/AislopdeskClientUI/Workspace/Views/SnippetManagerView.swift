@@ -63,7 +63,7 @@ struct SnippetManagerView: View {
                 List(selection: $selectedID) {
                     ForEach(snippets) { snippet in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(snippet.name.isEmpty ? "Snippet" : snippet.name).lineLimit(1)
+                            Text(WorkspaceStore.snippetName(snippet.name)).lineLimit(1)
                             Text(snippet.body.isEmpty ? "empty" : snippet.body)
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
@@ -141,10 +141,7 @@ struct SnippetManagerView: View {
                 }
             }
             Section {
-                Button {
-                    store.beginRunSnippet(snippet.id)
-                    dismiss()
-                } label: {
+                Button { runNow(snippet) } label: {
                     Label("Run Now", systemImage: "play.fill")
                 }
                 .disabled(snippet.body.isEmpty)
@@ -154,6 +151,22 @@ struct SnippetManagerView: View {
     }
 
     // MARK: Actions
+
+    /// Runs the snippet from the manager. A no-placeholder snippet runs and the manager closes. A
+    /// PARAMETERIZED one needs the value-entry sheet — but presenting it in the same transaction the
+    /// manager sheet dismisses is the macOS "present while dismissing" race (SwiftUI drops the second
+    /// sheet). So dismiss the manager first, then arm the value sheet on the NEXT runloop turn, once the
+    /// manager has gone (and `requestSnippetManager` clears any stranded flag if it still slips through).
+    private func runNow(_ snippet: Snippet) {
+        let id = snippet.id
+        let parameterized = !snippet.placeholders.isEmpty
+        dismiss()
+        if parameterized {
+            DispatchQueue.main.async { store.beginRunSnippet(id) }
+        } else {
+            store.runSnippet(id)
+        }
+    }
 
     private func addSnippet() {
         let created = store.addSnippet(name: "New Snippet", body: "")

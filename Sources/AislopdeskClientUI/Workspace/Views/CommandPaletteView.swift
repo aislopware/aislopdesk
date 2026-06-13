@@ -432,7 +432,9 @@ struct CommandPaletteView: View {
             return Entry(
                 id: "snippet.\(snippet.id.uuidString)",
                 kind: .snippet(snippet.id),
-                title: "Run “\(snippet.name)”",
+                // Display-time name fallback (the live editor stores the name verbatim, so it can be blank
+                // mid-edit) — never show a blank "Run “”".
+                title: "Run “\(WorkspaceStore.snippetName(snippet.name))”",
                 subtitle: slots.isEmpty ? "Snippet" : "Snippet · needs \(slots.joined(separator: ", "))",
                 symbol: "scroll",
                 keywords: "snippet macro run send keys \(snippet.name)"

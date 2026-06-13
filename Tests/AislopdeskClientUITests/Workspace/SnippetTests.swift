@@ -227,6 +227,34 @@ final class SnippetTests: XCTestCase {
                       "Manage Snippets… is runnable from ⌘K")
     }
 
+    func testUpdateSnippetStoresNameVerbatimSoLiveEditingDoesNotChurn() {
+        // The live editor binds name straight through updateSnippet; a per-keystroke trim/substitute
+        // would eat a trailing space and snap a cleared field to "Snippet". updateSnippet must NOT
+        // normalize — the empty→"Snippet" fallback is display-time only.
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        let s = st.addSnippet(name: "x", body: "b")
+        st.updateSnippet(s.id, name: "my server ", body: "b")     // trailing space kept
+        XCTAssertEqual(st.snippets.first?.name, "my server ")
+        st.updateSnippet(s.id, name: "", body: "b")               // cleared, not snapped to "Snippet"
+        XCTAssertEqual(st.snippets.first?.name, "")
+        // The display fallback still produces a non-blank label.
+        XCTAssertEqual(WorkspaceStore.snippetName(st.snippets.first!.name), "Snippet")
+    }
+
+    func testRequestSnippetManagerClearsAStrandedPendingRun() {
+        // Belt-and-suspenders against the stacked-sheet race: opening the manager clears any value-entry
+        // flag a failed transition left armed-but-invisible.
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        let s = st.addSnippet(name: "ssh", body: "ssh {{host}}<Enter>")
+        _ = st.beginRunSnippet(s.id)
+        XCTAssertNotNil(st.pendingSnippetRun)
+        st.requestSnippetManager()
+        XCTAssertNil(st.pendingSnippetRun, "opening the manager clears a stranded value-entry flag")
+        XCTAssertTrue(st.snippetManagerPresented)
+    }
+
     func testManagerCRUDFlowMirrorsTheView() {
         // What the manager view does: add (seeds + selects), edit name+body, delete.
         let a = term(0)

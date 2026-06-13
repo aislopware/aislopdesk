@@ -347,7 +347,10 @@ private struct SnippetValuesSheet: View {
 
     /// One entry per placeholder name (seeded on appear), bound to the text fields.
     @State private var values: [String: String] = [:]
-    @FocusState private var firstFieldFocused: Bool
+    /// Index-typed focus (NOT a Bool): one shared Bool can't represent "field N is focused" distinctly,
+    /// so a `.focused($bool, equals: index == 0 ? true : bool)` self-reference focuses every field at once
+    /// for ≥2 placeholders. An `Int?` focus gives correct first-field autofocus + Tab traversal.
+    @FocusState private var focusedField: Int?
 
     private var snippet: Snippet? { store.snippets.first { $0.id == snippetID } }
 
@@ -374,7 +377,7 @@ private struct SnippetValuesSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         #endif
-                        .focused($firstFieldFocused, equals: index == 0 ? true : firstFieldFocused)
+                        .focused($focusedField, equals: index)
                         .onSubmit(run)
                     }
                 }
@@ -407,7 +410,7 @@ private struct SnippetValuesSheet: View {
         .onAppear {
             // Seed a field for every placeholder so the run resolves them all (no literal {{}} leaks).
             for name in slots where values[name] == nil { values[name] = "" }
-            firstFieldFocused = true
+            focusedField = 0
         }
     }
 
