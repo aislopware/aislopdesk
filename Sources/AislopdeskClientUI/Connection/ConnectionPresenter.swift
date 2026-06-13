@@ -38,6 +38,26 @@ public enum ConnectionPresenter {
         if lower.contains("reset") {
             return "Connection reset — the host daemon may have crashed. Restart aislopdesk-hostd."
         }
+        // The TCP connected but the aislopdesk handshake didn't complete — wrong daemon, a version
+        // mismatch, or a bad mux preamble (AislopdeskTransportError.handshakeFailed's errorDescription
+        // carries the word "handshake"). Distinct from "refused": something IS listening, it just isn't
+        // a compatible aislopdesk-hostd.
+        if lower.contains("handshake") {
+            return "The host answered but isn't a compatible aislopdesk host — check it's running aislopdesk-hostd and that the versions match."
+        }
+        // A clean drop mid-session (receiveFailed → "Connection lost", or an EOF / closed-by-peer): the
+        // link is gone, not refused. Auto-reconnect handles a transient drop; a terminal .failed here
+        // means it gave up — say so and offer Retry.
+        if lower.contains("connection lost") || lower.contains("connection closed")
+            || lower.contains("eof") || lower.contains("not connected") || lower.contains("enotconn")
+            || lower.contains("broken pipe") || lower.contains("epipe") {
+            return "Connection lost — the host or network dropped. Check the host is up, then Retry."
+        }
+        // A bare "Connection failed" (NWConnection failed before readiness with no more specific cause):
+        // enrich it with the first thing to check rather than leaving the terse transport phrase.
+        if lower == "connection failed" {
+            return "Couldn't reach the host — check the address and port, and that aislopdesk-hostd is running."
+        }
         return raw
     }
 

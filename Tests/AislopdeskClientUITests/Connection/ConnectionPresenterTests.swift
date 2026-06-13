@@ -36,6 +36,16 @@ final class ConnectionPresenterTests: XCTestCase {
         XCTAssertTrue(ConnectionPresenter
             .friendlyFailure("Connection reset by peer")
             .contains("Restart aislopdesk-hostd"))
+        // Handshake / version mismatch (AislopdeskTransportError.handshakeFailed's errorDescription).
+        XCTAssertTrue(ConnectionPresenter
+            .friendlyFailure("Handshake failed — is this an aislopdesk host?")
+            .contains("versions match"))
+        // A clean mid-session drop (receiveFailed → "Connection lost") and EOF/closed/pipe variants.
+        XCTAssertTrue(ConnectionPresenter.friendlyFailure("Connection lost").contains("dropped"))
+        XCTAssertTrue(ConnectionPresenter.friendlyFailure("read: EOF").contains("dropped"))
+        XCTAssertTrue(ConnectionPresenter.friendlyFailure("Broken pipe").contains("dropped"))
+        // A bare transport "Connection failed" is enriched with what to check.
+        XCTAssertTrue(ConnectionPresenter.friendlyFailure("Connection failed").contains("aislopdesk-hostd"))
     }
 
     func testFriendlyFailurePassesUnknownPayloadsThrough() {
