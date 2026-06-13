@@ -61,6 +61,18 @@ public final class RemoteWindowModel {
     /// feel instant for a password. Injectable for deterministic tests (`.zero`).
     private let pasteInterval: Duration
 
+    /// Transient "typed N, skipped M" result of the last paste-as-keystrokes — set only when some
+    /// characters had NO US-QWERTY mapping (accents / emoji / non-Latin) and were dropped, so the user
+    /// learns the paste was incomplete instead of silently losing them. Auto-clears after
+    /// ``pasteFeedbackDuration``; `nil` when the last paste mapped cleanly. The payload is never stored.
+    public struct PasteFeedback: Sendable, Equatable {
+        public var typed: Int
+        public var skipped: Int
+    }
+    public private(set) var pasteFeedback: PasteFeedback?
+    @ObservationIgnored private var pasteFeedbackTask: Task<Void, Never>?
+    private let pasteFeedbackDuration: Duration
+
     /// The paste-guard verdict for typing `text` into this target (`targetIsSecure` = a known password /
     /// SecurityAgent field). The caller confirms before ``pasteAsKeystrokes(_:)`` on a non-`.ok` risk —
     /// e.g. a secret about to be typed into an echoing field, or a whole file into a password prompt.
@@ -75,7 +87,12 @@ public final class RemoteWindowModel {
     @discardableResult
     public func pasteAsKeystrokes(_ text: String) -> KeystrokeReplay.Encoded {
         let encoded = KeystrokeReplay.encode(text)
-        guard let injector = keyInjector, !encoded.strokes.isEmpty else { return encoded }
+        // No sink → nothing was attempted, so nothing to report.
+        guard let injector = keyInjector else { return encoded }
+        // Surface "typed N, skipped M" when characters were dropped — BEFORE the empty-strokes return, so
+        // an ALL-unmappable paste (typed 0, skipped N) still tells the user nothing was sent.
+        notePasteFeedback(typed: encoded.strokes.count, skipped: encoded.skipped)
+        guard !encoded.strokes.isEmpty else { return encoded }
         pasteTask?.cancel()
         let interval = pasteInterval
         let strokes = encoded.strokes
@@ -90,18 +107,39 @@ public final class RemoteWindowModel {
         return encoded
     }
 
+    /// Records the transient paste feedback when characters were dropped, and schedules its auto-clear.
+    /// No feedback for a clean paste (every character mapped) — the success case needs no interruption.
+    private func notePasteFeedback(typed: Int, skipped: Int) {
+        guard skipped > 0 else { return }
+        pasteFeedback = PasteFeedback(typed: typed, skipped: skipped)
+        pasteFeedbackTask?.cancel()
+        let d = pasteFeedbackDuration
+        pasteFeedbackTask = Task { @MainActor [weak self] in
+            if d > .zero { try? await Task.sleep(for: d) }
+            if !Task.isCancelled { self?.pasteFeedback = nil }
+        }
+    }
+
+    /// Dismisses the paste feedback (tap-to-dismiss / a new clean paste need not wait out the timer).
+    public func dismissPasteFeedback() {
+        pasteFeedbackTask?.cancel()
+        pasteFeedback = nil
+    }
+
     public init(
         target: @escaping @MainActor () -> ConnectionTarget = { .default },
         windowID: String = "",
         title: String = "Remote window",
         appName: String = "",
-        pasteInterval: Duration = .milliseconds(6)
+        pasteInterval: Duration = .milliseconds(6),
+        pasteFeedbackDuration: Duration = .seconds(5)
     ) {
         self.target = target
         self.windowID = windowID
         self.title = title
         self.appName = appName
         self.pasteInterval = pasteInterval
+        self.pasteFeedbackDuration = pasteFeedbackDuration
     }
 
     // MARK: Discovery (picker)
@@ -267,6 +305,7 @@ public struct RemoteWindowPanel: View {
             if let descriptor = model.active {
                 VideoWindowFactory.make(descriptor, context: paneContext)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .bottom) { pasteFeedbackBanner }
                 if showCloseButton {
                     HStack {
                         Text(descriptor.title)
@@ -281,6 +320,31 @@ public struct RemoteWindowPanel: View {
             } else {
                 entryForm
             }
+        }
+    }
+
+    /// Transient notice when a paste-as-keystrokes dropped unmappable characters (accents / emoji /
+    /// non-Latin / over the length cap), so an incomplete paste is never silent. Tap to dismiss.
+    @ViewBuilder
+    private var pasteFeedbackBanner: some View {
+        if let fb = model.pasteFeedback {
+            Button {
+                model.dismissPasteFeedback()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("Typed \(fb.typed), skipped \(fb.skipped) unsupported character\(fb.skipped == 1 ? "" : "s")")
+                        .font(.caption.weight(.medium))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .foregroundStyle(.white)
+                .background(Color.orange.opacity(0.92), in: Capsule())
+                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .help("Some characters have no US-QWERTY keystroke and were skipped.")
         }
     }
 

@@ -133,4 +133,45 @@ final class KeystrokeReplayTests: XCTestCase {
         model.open()
         XCTAssertTrue(model.canPasteKeystrokes)
     }
+
+    // MARK: - "typed N, skipped M" feedback (dropped characters never silent)
+
+    private func streamingModel() -> RemoteWindowModel {
+        let model = RemoteWindowModel(pasteInterval: .zero)
+        model.pick(RemoteWindowSummary(windowID: 1, appName: "Term", title: "t", width: 10, height: 10))
+        model.open()
+        model.keyInjector = { _, _, _ in }
+        return model
+    }
+
+    func testPasteFeedbackSetWhenCharactersAreSkipped() {
+        let model = streamingModel()
+        XCTAssertNil(model.pasteFeedback)
+        _ = model.pasteAsKeystrokes("aé😀b")   // é + 😀 unmappable
+        XCTAssertEqual(model.pasteFeedback, RemoteWindowModel.PasteFeedback(typed: 2, skipped: 2),
+                       "feedback names what was typed and what was dropped")
+    }
+
+    func testNoPasteFeedbackWhenEverythingMaps() {
+        let model = streamingModel()
+        _ = model.pasteAsKeystrokes("Tr0ub4dor&3")   // a clean password — no skips
+        XCTAssertNil(model.pasteFeedback, "a clean paste shows no interruption")
+    }
+
+    func testDismissPasteFeedbackClearsIt() {
+        let model = streamingModel()
+        _ = model.pasteAsKeystrokes("é")   // all skipped
+        XCTAssertNotNil(model.pasteFeedback)
+        model.dismissPasteFeedback()
+        XCTAssertNil(model.pasteFeedback)
+    }
+
+    func testNoFeedbackWithoutASink() {
+        // Nothing is typed without an injector, so there is nothing to report.
+        let model = RemoteWindowModel(pasteInterval: .zero)
+        model.pick(RemoteWindowSummary(windowID: 1, appName: "Term", title: "t", width: 10, height: 10))
+        model.open()
+        _ = model.pasteAsKeystrokes("aé😀b")
+        XCTAssertNil(model.pasteFeedback)
+    }
 }
