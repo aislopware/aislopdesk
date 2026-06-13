@@ -491,14 +491,22 @@ struct CommandPaletteView: View {
     // MARK: - Fuzzy matching (case-insensitive subsequence)
 
     /// Scores `query` against `text` as a case-insensitive subsequence match, or `nil` if `query`'s
-    /// characters do not appear in order. Higher is better: contiguous runs and an early first match
-    /// are rewarded, so "sp" ranks "Split…" above a scattered match. Deliberately small and pure —
-    /// the catalog is tiny, so a hand-rolled scorer beats pulling in a dependency. `nonisolated` so it
-    /// runs from any context.
+    /// characters do not appear in order. Higher is better. The scorer rewards, in rough priority:
+    /// contiguous runs (`+8`), matches at a WORD START (index 0 or after a separator — `+10`, so "np"
+    /// ranks "New Pane" above "Open"), and an early first match (`+2`); and it PENALISES the gap skipped
+    /// before a non-contiguous match (`−1` per char, capped) so a tight match beats a scattered one
+    /// ("sp" → "Split…" over "Sidebar panel"). Deliberately small + pure — the catalog is tiny, so a
+    /// hand-rolled scorer beats a dependency. `nonisolated` so it runs from any context.
     nonisolated static func fuzzyScore(query: String, in text: String) -> Int? {
         let haystack = Array(text.lowercased())
         let needle = Array(query.lowercased())
         guard !needle.isEmpty else { return 0 }
+
+        /// A word boundary precedes index `j` when it is the start, or the prior char is not
+        /// alphanumeric (a space / punctuation / separator) — i.e. `j` begins a new word/token.
+        func isWordStart(_ j: Int) -> Bool {
+            j == 0 || !(haystack[j - 1].isLetter || haystack[j - 1].isNumber)
+        }
 
         var score = 0
         var hayIndex = 0
@@ -507,10 +515,16 @@ struct CommandPaletteView: View {
             var found = false
             while hayIndex < haystack.count {
                 if haystack[hayIndex] == ch {
-                    // Reward adjacency to the previous matched char (a contiguous run).
-                    if hayIndex == lastMatch + 1 { score += 8 } else { score += 1 }
-                    // Reward matches near the start of the string.
-                    if hayIndex < 4 { score += 2 }
+                    if hayIndex == lastMatch + 1 {
+                        score += 8                       // contiguous run
+                    } else {
+                        score += 1
+                        // Penalise the run skipped since the last match (a scattered match is weaker).
+                        let gap = hayIndex - lastMatch - 1
+                        score -= min(gap, 4)
+                    }
+                    if isWordStart(hayIndex) { score += 10 }   // word/token start — the strongest signal
+                    if hayIndex < 4 { score += 2 }             // near the very start of the string
                     lastMatch = hayIndex
                     hayIndex += 1
                     found = true
