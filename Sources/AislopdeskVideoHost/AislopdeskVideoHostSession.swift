@@ -1636,10 +1636,17 @@ public actor AislopdeskVideoHostSession {
 
     private func onGeometry(_ message: WindowGeometryMessage) {
         guard stateMachine.mediaFlowing else { return }
-        // Keep the cursor + input mapping origin in sync as the window moves.
+        // Keep the cursor + input mapping origin in sync as the window moves — BUT only while the capture
+        // is at the plain window frame. While DIALOG-EXPAND has the region expanded to window∪dialog
+        // (captureRegionGlobal != nil), the mapping origin is owned by applyCaptureRegion (it maps against
+        // the union); re-origining to the plain window frame here would desync input/cursor from the still-
+        // union-sized stream (clicks/cursor in the dialog area map to the wrong absolute point). The union
+        // poll (onAssociatedUnion → applyCaptureRegion) re-applies the correct mapping as things move.
         if let bounds = boundsFromGeometry(message) {
-            cursorSampler?.updateWindowBounds(bounds)
-            injector?.updateWindowBounds(bounds)
+            if CaptureRegionMath.shouldReoriginToWindowOnGeometry(activeRegionGlobal: captureRegionGlobal) {
+                cursorSampler?.updateWindowBounds(bounds)
+                injector?.updateWindowBounds(bounds)
+            }
             // Display-anchored capture crops at a fixed display-local rect — re-anchor it to the
             // moved window (no-op in `.window` mode). Unstructured on purpose: the SCStream config
             // update must not block the geometry fan-out; the capturer no-ops if torn down.

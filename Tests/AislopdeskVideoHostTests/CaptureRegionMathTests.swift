@@ -78,5 +78,17 @@ final class CaptureRegionMathTests: XCTestCase {
         XCTAssertFalse(CaptureRegionMath.shouldRetarget(current: a, desired: a.insetBy(dx: -3, dy: -3)))
         XCTAssertTrue(CaptureRegionMath.shouldRetarget(current: a, desired: CGRect(x: 30, y: 120, width: 880, height: 531)))
     }
+
+    // A window-move geometry event re-origins the input/cursor mapping ONLY when the capture is at the
+    // plain window frame. While a dialog-expand region is active, the union (applyCaptureRegion) owns the
+    // mapping; re-origining to the plain window frame would desync input/cursor from the union-sized
+    // stream (clicks/cursor in the dialog overhang map to the wrong absolute point).
+    func testGeometryReoriginSkippedWhileCaptureRegionExpanded() {
+        XCTAssertTrue(CaptureRegionMath.shouldReoriginToWindowOnGeometry(activeRegionGlobal: nil),
+                      "no active region → a window move re-origins the input/cursor mapping")
+        let union = CGRect(x: 20, y: 70, width: 880, height: 560)
+        XCTAssertFalse(CaptureRegionMath.shouldReoriginToWindowOnGeometry(activeRegionGlobal: union),
+                       "dialog-expand active → do NOT revert the mapping to the plain window frame")
+    }
 }
 #endif
