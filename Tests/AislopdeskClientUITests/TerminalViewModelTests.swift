@@ -146,6 +146,21 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertNil(model.lastCommand)
     }
 
+    func testDeliberateResetWipesStaleFramebufferOnFirstFreshOutput() {
+        // REGRESSION: a deliberate reconnect (⇧⌘R / the recovery banner's Retry) of an exited pane left the
+        // dead session's framebuffer on the ALWAYS-MOUNTED surface, then grafted the new prompt onto it,
+        // because reset() DISARMED the fresh-session wipe. reset() must arm the wipe like markReconnecting().
+        let surface = RecordingSurface()
+        let model = TerminalViewModel(surface: surface)
+        model.ingestOutput(Data("old-dead-session-screen".utf8))   // a prior session painted the surface
+        surface.feeds.removeAll()                                   // focus only on what happens post-reset
+        model.reset()                                               // deliberate connect/reconnect
+        model.ingestOutput(Data("$ ".utf8))                        // first output from the FRESH host shell
+        XCTAssertEqual(surface.feeds.first, Self.ris,
+                       "the first fresh-session output hard-resets the stale surface before painting")
+        XCTAssertTrue(surface.feeds.contains(Data("$ ".utf8)), "then the new prompt paints over the clean surface")
+    }
+
     func testOutputFeedsSurface() {
         final class CapturingSurface: TerminalSurface, @unchecked Sendable {
             var fed = Data()
