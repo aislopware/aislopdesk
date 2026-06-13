@@ -30,7 +30,12 @@ public enum FocusResolver {
             let ordered = solved.frames
                 .sorted { lhs, rhs in
                     if abs(lhs.value.minY - rhs.value.minY) > 0.5 { return lhs.value.minY < rhs.value.minY }
-                    return lhs.value.minX < rhs.value.minX
+                    if abs(lhs.value.minX - rhs.value.minX) > 0.5 { return lhs.value.minX < rhs.value.minX }
+                    // Coincident panes (same minY AND minX, e.g. stacked via the ⌘ overlap bypass or an
+                    // Align/Distribute op) would otherwise compare EQUAL — and a stable sort then preserves
+                    // the Dictionary's per-process-randomized iteration order, so ⌘]/⌘[ could visit them in
+                    // a different order each launch. Break the tie on the stable id, mirroring Canvas.allIDs().
+                    return lhs.key.raw.uuidString < rhs.key.raw.uuidString
                 }
                 .map(\.key)
             return cycle(ordered, from: pane, forward: dir == .next)
@@ -60,7 +65,12 @@ public enum FocusResolver {
     ) -> PaneID? {
         var best: (id: PaneID, overlap: CGFloat, distance: CGFloat)?
 
-        for (id, rect) in solved.frames where id != pane {
+        // Iterate in a STABLE id order (not raw Dictionary order, which is hash-seed-randomized per
+        // process). The replacement test below keeps the FIRST candidate on an exact overlap+distance tie,
+        // so a deterministic iteration order makes the directional pick deterministic too: two equally-good
+        // candidates (e.g. coincident panes on the requested side) always resolve to the smaller id.
+        for (id, rect) in solved.frames.sorted(by: { $0.key.raw.uuidString < $1.key.raw.uuidString })
+        where id != pane {
             guard isOnRequestedSide(candidate: rect, source: source, dir: dir) else { continue }
 
             let overlap = crossAxisOverlap(candidate: rect, source: source, dir: dir)
