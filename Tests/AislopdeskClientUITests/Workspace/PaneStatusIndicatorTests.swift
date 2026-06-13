@@ -287,4 +287,15 @@ final class PaneStatusIndicatorTests: XCTestCase {
         XCTAssertEqual(backoff.delay(forAttempt: 4), .seconds(2))
         XCTAssertEqual(backoff.delay(forAttempt: 10), .seconds(2), "saturates at the cap")
     }
+
+    // MARK: - Last-command result formatter (the pill tooltip surfacing OSC 133;D)
+
+    func testFormatCommandResultExitCodeAndDuration() {
+        XCTAssertEqual(PanePresentation.formatCommandResult(exitCode: 0, durationMS: 1234), "✓ 1.2s")
+        XCTAssertEqual(PanePresentation.formatCommandResult(exitCode: 1, durationMS: 500), "✗ exit 1 · 500ms")
+        XCTAssertEqual(PanePresentation.formatCommandResult(exitCode: 130, durationMS: 0), "✗ exit 130 · 0ms")
+        XCTAssertEqual(PanePresentation.formatCommandResult(exitCode: nil, durationMS: 340), "340ms",
+                       "no exit code reported → just the duration")
+        XCTAssertEqual(PanePresentation.formatCommandResult(exitCode: 0, durationMS: 125_000), "✓ 2m 5s")
+    }
 }

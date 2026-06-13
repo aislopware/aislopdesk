@@ -25,6 +25,31 @@ enum PanePresentation {
         (handle as? LivePaneSession)?.connection?.latencyMS
     }
 
+    /// A one-line summary of the most recently FINISHED command (OSC 133;D) on this pane — exit status
+    /// + duration — or `nil` when none has run. `lastCommand` was captured but never surfaced; this is
+    /// the formatter the pill tooltip uses so "did my last command pass, and how long?" is answerable.
+    static func lastCommandSummary(_ handle: (any PaneSessionHandle)?) -> String? {
+        guard let lc = (handle as? LivePaneSession)?.terminalModel?.lastCommand else { return nil }
+        return formatCommandResult(exitCode: lc.exitCode, durationMS: lc.durationMS)
+    }
+
+    /// Pure formatter for an OSC-133 command result: a green-check / cross prefix by exit status, plus a
+    /// human duration ("340ms" / "1.2s" / "2m 3s"). Exposed (and tested) independently of any handle.
+    static func formatCommandResult(exitCode: Int32?, durationMS: UInt32) -> String {
+        let ms = Int(durationMS)
+        let duration: String
+        if ms < 1000 {
+            duration = "\(ms)ms"
+        } else if ms < 60_000 {
+            duration = String(format: "%.1fs", Double(ms) / 1000)
+        } else {
+            let totalSeconds = ms / 1000
+            duration = "\(totalSeconds / 60)m \(totalSeconds % 60)s"
+        }
+        guard let code = exitCode else { return duration }   // host reported no exit code
+        return code == 0 ? "✓ \(duration)" : "✗ exit \(code) · \(duration)"
+    }
+
     /// The display title: the LIVE OSC 0/2 terminal title when the shell has set one, else the static
     /// `spec.title` (whitespace-only titles fall back so a pane is never blank).
     static func displayTitle(_ handle: (any PaneSessionHandle)?, spec: PaneSpec) -> String {
@@ -201,12 +226,14 @@ struct FloatingPaneHandle: View {
 
     private var helpText: String {
         let title = PanePresentation.displayTitle(handle, spec: spec)
+        // Surface the last command's exit + duration (OSC 133;D) — captured but previously invisible.
+        let lastCmd = PanePresentation.lastCommandSummary(handle).map { "\nLast command: \($0)" } ?? ""
         #if os(macOS)
-        return isMaximized
+        return (isMaximized
             ? "\(title) — click for actions"
-            : "\(title) — drag to move (hold ⌘ for a free drag), click for actions"
+            : "\(title) — drag to move (hold ⌘ for a free drag), click for actions") + lastCmd
         #else
-        return title
+        return title + lastCmd
         #endif
     }
 
