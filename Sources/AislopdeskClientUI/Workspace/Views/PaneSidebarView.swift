@@ -136,7 +136,10 @@ struct PaneSidebarView: View {
                     .frame(width: 18)
                     .accessibilityHidden(true)   // the title Text carries the row label
 
-                PaneStatusDot(status: PaneConnectionStatus.from(liveStatus(id)))
+                // Carry the RUNNING signal (the pulsing ring), like the pill — the sidebar dot was
+                // connection-only, so a command running in a background pane had no rail-level cue.
+                PaneStatusDot(status: PaneConnectionStatus.from(liveStatus(id)),
+                              running: PanePresentation.isRunning(store.handle(for: id)))
 
                 if renamingPane == id {
                     TextField("Pane name", text: $draft)
