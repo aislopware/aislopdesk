@@ -196,7 +196,18 @@ public struct HIDKeyboardState: Equatable, Sendable {
         return VirtualHIDKeyboard.bootReport(modifiers: modByte, keys: Array(pressed))
     }
 
-    /// The all-zero report (no keys, no modifiers) — sent on teardown so no key is left stuck down.
+    /// The all-zero report (no keys, no modifiers). Pure — does NOT clear the folded press state; a
+    /// caller that is actually RELEASING the keyboard must use ``releaseAll()`` so the in-memory model
+    /// matches the zero report it sends.
     public func releaseAllReport() -> [UInt8] { VirtualHIDKeyboard.bootReport(modifiers: 0, keys: []) }
+
+    /// Releases every key/modifier: CLEARS the folded press state AND returns the all-zero report to send
+    /// (teardown, or the virtual-HID→CGEvent backend switch). Without clearing ``pressed``, a later key
+    /// event would fold into the STALE set via ``apply(virtualKey:down:modifiers:)`` and re-assert the
+    /// previously-held key(s) as phantom presses into the NEXT secure field — a key the user never pressed.
+    public mutating func releaseAll() -> [UInt8] {
+        pressed.removeAll()
+        return releaseAllReport()
+    }
 }
 #endif

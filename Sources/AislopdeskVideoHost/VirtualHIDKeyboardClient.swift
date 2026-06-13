@@ -47,10 +47,12 @@ public final class VirtualHIDKeyboardClient: @unchecked Sendable {
         return n == report.count
     }
 
-    /// Release every key/modifier (sent on teardown so a held key can't stick on the host).
+    /// Release every key/modifier (sent on teardown / on the virtual-HID→CGEvent backend switch so a held
+    /// key can't stick on the host). Clears the folded state too (``HIDKeyboardState/releaseAll()``), so a
+    /// later keystroke can't re-assert a previously-held key as a phantom press into the next secure field.
     public func releaseAll() {
         lock.lock(); defer { lock.unlock() }
-        let report = state.releaseAllReport()
+        let report = state.releaseAll()
         _ = report.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, report.count, 0) }
     }
 
