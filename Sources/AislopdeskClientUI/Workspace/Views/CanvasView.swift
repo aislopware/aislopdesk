@@ -95,6 +95,12 @@ struct CanvasView: View {
                 // clear `livePan` — drop any stale pan so it never offsets the camera-anchored maximized
                 // pane off-centre (a `@State`, unlike `moveLive`, it does not auto-reset).
                 livePan = .zero
+                // Same dismantle hazard for the two live cohort broadcasts: maximize removes the whole
+                // `groupLayer` (the group-handle gesture, `if maxID == nil`) and short-circuits the cohort
+                // pill's `.onEnded` (`displaySize != nil`) before either can clear its store-side live
+                // offset — leaving the group / selected panes rendered permanently shifted. Clear both here.
+                store.endGroupHandleDrag()
+                store.endGroupDragLive()
                 report(geo.size, camera: canvas.camera)
             }
             // When the canvas view disappears (a regular→compact projection flip), clear membership so
@@ -116,12 +122,13 @@ struct CanvasView: View {
         let maxSize = CGSize(width: max(1, viewport.width - maxInset * 2),
                              height: max(1, viewport.height - maxInset * 2))
         return ZStack(alignment: .topLeading) {
-            // Group bounding boxes, BEHIND every pane (decorative; never intercepts clicks/pan). Hidden
-            // while a pane is maximized — the maximized pane covers the whole plane.
+            // Group bounding boxes, BEHIND every pane. The dashed frame is decorative (never intercepts);
+            // only the move handle + corner resize grips (which live in the clear padding RING outside the
+            // member panes) are hit-testable, so panes and the background pan stay interactive through it.
+            // Hidden while a pane is maximized — the maximized pane covers the whole plane.
             if maxID == nil {
                 groupLayer
                     .zIndex(-1)
-                    .allowsHitTesting(false)
             }
             ForEach(visible.sorted { $0.z < $1.z }) { item in
                 let isMax = (item.id == maxID)
@@ -138,6 +145,15 @@ struct CanvasView: View {
                     // pan-culling (the cull changes `visible`, not the full id list → no transaction).
                     .transition(.scale(scale: 0.92, anchor: .center).combined(with: .opacity))
                     .position(x: pos.x, y: pos.y)
+                    // Non-overlap MAKE-SPACE (and Tidy / Align / Distribute) spring: a NON-focused pane
+                    // whose canvas frame changed eases to its new slot — critically damped (no overshoot
+                    // past the slot, the research's reflow guidance). The focused (dragged / resized /
+                    // maximized) pane is EXCLUDED so ITS commit stays instant: it carries a live gesture
+                    // offset that resets to zero on `.onEnded`, and easing its `.position` from the OLD
+                    // frame while the offset snaps to zero would flash it back to its pre-drag origin. A
+                    // pure pan moves the camera `.offset`, not `pos`, so this never fires on scroll.
+                    .animation(store.isFocused(item.id) || isMax ? nil
+                               : .spring(response: 0.28, dampingFraction: 1), value: pos)
                     // Maximized pane on top of everything; otherwise the focused pane renders above the
                     // rest (the pane you are interacting with is on top; the dragged pane is usually the
                     // focused one and is raised on commit).
@@ -172,10 +188,8 @@ struct CanvasView: View {
         ZStack(alignment: .topLeading) {
             ForEach(store.workspace.groups) { group in
                 if let box = canvas.groupBoundingBox(group.id) {
-                    let padded = box.insetBy(dx: -Self.groupPadding, dy: -Self.groupPadding)
-                    CanvasGroupBox(name: group.name)
-                        .frame(width: padded.width, height: padded.height)
-                        .position(x: padded.midX, y: padded.midY)   // canvas-space; rides the same camera offset
+                    CanvasGroupView(store: store, group: group, unpaddedBox: box,
+                                    padding: Self.groupPadding, coordSpace: Self.coordSpace)
                 }
             }
         }
@@ -483,15 +497,152 @@ private struct DotGridTile: View, Equatable {
     }
 }
 
-// MARK: - CanvasGroupBox (the labeled frame drawn around a group's panes)
+// MARK: - CanvasGroupView (the interactive labeled frame around a group's panes)
 
-/// A decorative rounded rectangle with a name chip at its top-leading corner — the Figma-style group
-/// frame drawn behind a ``PaneGroup``'s panes (docs/31). Purely visual: it sizes to the padded group
-/// bounding box the parent computes and never intercepts hit-testing (the parent sets
-/// `.allowsHitTesting(false)`), so panes and the background pan stay fully interactive through it.
-private struct CanvasGroupBox: View {
-    let name: String
+/// The Figma-style group frame drawn behind a ``PaneGroup``'s panes (docs/31), now INTERACTIVE: the
+/// dashed box itself is decorative (`.allowsHitTesting(false)`), but the **name-chip move handle** (top
+/// leading) drags the whole group as a unit, and the **four corner resize grips** rescale its footprint
+/// — both routed through ``CanvasNonOverlap`` so the group slides flush / parts other groups (move) and
+/// shoves overlapped neighbours (resize). The grips + handle live in the clear PADDING RING outside the
+/// member panes, so panes and the background pan stay fully interactive through the box.
+///
+/// Live feel: a move broadcasts a raw offset so the members + box follow in real time (``WorkspaceStore``
+/// `groupHandleOffset` / `groupBoxOffset`); a resize previews only the box OUTLINE (the members remap on
+/// the single `.onEnded` commit, matching the commit-only make-space decision). ⌘ bypasses overlap.
+private struct CanvasGroupView: View {
+    let store: WorkspaceStore
+    let group: PaneGroup
+    /// The members' tight bounding box (canvas space). The drawn box is this padded out by `padding`.
+    let unpaddedBox: CGRect
+    let padding: CGFloat
+    let coordSpace: String
 
+    @AppStorage(SettingsKey.nonOverlap) private var nonOverlap = true
+    /// Previewed PADDED box during a resize drag (members stay put live; they remap on commit).
+    @GestureState private var resizePreview: CGRect?
+    /// The overlap config CAPTURED at gesture start, replayed at `.onEnded` so a ⌘ release between the
+    /// final drag event and mouse-up cannot flip the committed decision (the pane path's `moveNoOverlap`
+    /// discipline, for the group handle + grips).
+    @State private var moveOverlapConfig: CanvasNonOverlap.Config?
+    @State private var resizeOverlapConfig: CanvasNonOverlap.Config?
+
+    private var paddedBox: CGRect { unpaddedBox.insetBy(dx: -padding, dy: -padding) }
+    /// Padded box can't shrink below one min pane plus both rings.
+    private var minPaddedSize: CGSize {
+        CGSize(width: Canvas.minItemSize.width + 2 * padding, height: Canvas.minItemSize.height + 2 * padding)
+    }
+    private var overlapConfig: CanvasNonOverlap.Config {
+        #if os(macOS)
+        if NSEvent.modifierFlags.contains(.command) { return .disabled }
+        #endif
+        return nonOverlap ? CanvasNonOverlap.Config() : .disabled
+    }
+
+    /// Grip footprint == the padding ring depth, so the whole grip sits in the CLEAR ring and no part is
+    /// occluded by a member pane reaching the box corner (an 18pt grip overhung the 16pt ring by 2pt).
+    private var gripSize: CGFloat { padding }
+
+    var body: some View {
+        let liveMove = store.groupBoxOffset(for: group.id)
+        let shown = resizePreview ?? paddedBox.offsetBy(dx: liveMove.width, dy: liveMove.height)
+        ZStack(alignment: .topLeading) {
+            CanvasGroupFrame()
+                .frame(width: shown.width, height: shown.height)
+                .allowsHitTesting(false)
+            nameHandle
+            cornerGrip(.topLeading)
+            cornerGrip(.topTrailing)
+            cornerGrip(.bottomLeading)
+            cornerGrip(.bottomTrailing)
+        }
+        .frame(width: shown.width, height: shown.height, alignment: .topLeading)
+        .position(x: shown.midX, y: shown.midY)   // canvas-space; rides the same camera offset
+    }
+
+    // MARK: Move handle (the name chip)
+
+    private var nameHandle: some View {
+        Text(group.name)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.25), lineWidth: 0.5))
+            .contentShape(Capsule())
+            .padding(.leading, 10)
+            .padding(.top, -12)   // straddle the top stroke, like a fieldset legend
+            #if os(macOS)
+            .onHover { inside in if inside { NSCursor.openHand.push() } else { NSCursor.pop() } }
+            #endif
+            .gesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .named(coordSpace))
+                    .onChanged { v in
+                        if moveOverlapConfig == nil { moveOverlapConfig = overlapConfig }
+                        let cfg = moveOverlapConfig ?? overlapConfig
+                        // Broadcast the SLID offset (not the raw translation) so the members + box glide
+                        // flush along neighbours live — matching the rest-flush commit (preview ≡ commit).
+                        store.updateGroupHandleDrag(group.id, delta: store.groupSlideOffset(group.id, rawDelta: v.translation, config: cfg))
+                    }
+                    .onEnded { v in
+                        let cfg = moveOverlapConfig ?? overlapConfig
+                        moveOverlapConfig = nil
+                        // Instant commit (no `.animation(value: pos)` spring): the members already tracked
+                        // the pointer via their live offset, so springing `pos` from the old origin would
+                        // flash them backward.
+                        var instant = Transaction(); instant.disablesAnimations = true
+                        withTransaction(instant) {
+                            store.endGroupHandleDrag()
+                            store.moveGroupNonOverlapping(
+                                group.id,
+                                snappedBox: unpaddedBox.offsetBy(dx: v.translation.width, dy: v.translation.height),
+                                config: cfg)
+                        }
+                    }
+            )
+    }
+
+    // MARK: Corner resize grips (in the clear ring corners)
+
+    private func cornerGrip(_ alignment: Alignment) -> some View {
+        let anchor = Self.anchor(for: alignment)
+        return RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Color.accentColor.opacity(0.55))
+            .frame(width: gripSize, height: gripSize)
+            .contentShape(Rectangle())
+            #if os(macOS)
+            .onHover { inside in if inside { NSCursor.crosshair.push() } else { NSCursor.pop() } }
+            #endif
+            .gesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .named(coordSpace))
+                    .updating($resizePreview) { v, state, _ in
+                        state = CanvasGeometry.resizing(paddedBox, anchor: anchor, by: v.translation, minSize: minPaddedSize)
+                    }
+                    .onChanged { _ in if resizeOverlapConfig == nil { resizeOverlapConfig = overlapConfig } }
+                    .onEnded { v in
+                        let cfg = resizeOverlapConfig ?? overlapConfig
+                        resizeOverlapConfig = nil
+                        let newPadded = CanvasGeometry.resizing(paddedBox, anchor: anchor, by: v.translation, minSize: minPaddedSize)
+                        store.resizeGroupNonOverlapping(group.id, newBox: newPadded.insetBy(dx: padding, dy: padding), config: cfg)
+                    }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+    }
+
+    private static func anchor(for alignment: Alignment) -> ResizeAnchor {
+        switch alignment {
+        case .topLeading:     return .topLeft
+        case .topTrailing:    return .topRight
+        case .bottomLeading:  return .bottomLeft
+        default:              return .bottomRight
+        }
+    }
+}
+
+/// The bare decorative group frame: a dashed rounded rectangle with a faint fill (no name, no
+/// interaction — the parent ``CanvasGroupView`` overlays the interactive handle + grips).
+private struct CanvasGroupFrame: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
             .strokeBorder(Color.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 1.5, dash: [7, 5]))
@@ -499,18 +650,6 @@ private struct CanvasGroupBox: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(Color.secondary.opacity(0.05))
             )
-            .overlay(alignment: .topLeading) {
-                Text(name)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.regularMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.25), lineWidth: 0.5))
-                    .padding(.leading, 10)
-                    .padding(.top, -12)   // straddle the top stroke, like a fieldset legend
-            }
     }
 }
 

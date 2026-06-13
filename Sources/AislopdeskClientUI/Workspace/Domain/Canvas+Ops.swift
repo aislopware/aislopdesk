@@ -368,6 +368,98 @@ public extension Canvas {
     }
 }
 
+// MARK: - Non-overlap collision bodies + commit application (pure)
+
+public extension Canvas {
+    /// The collision bodies for a non-overlap drag (``CanvasNonOverlap``): every UNGROUPED pane as a
+    /// `.pane` body plus one `.group` body per group's derived bounding box — the "{ungrouped panes} ∪
+    /// {group boxes}" set, so group-vs-group / pane-vs-group non-overlap falls out of feeding the group
+    /// boxes into the SAME solver. `excludingPane` (the dragged pane) and `excludingGroup` (its own group,
+    /// so a member never collides with its own group box) are filtered out. Bounded to `region` (the
+    /// caller passes the viewport expanded by a small margin) so the body count stays ~O(visible).
+    func collisionBodies(
+        excludingPane: PaneID?,
+        excludingGroup: PaneGroupID?,
+        region: CGRect,
+        groups: [PaneGroup]
+    ) -> [CanvasNonOverlap.Body] {
+        var bodies: [CanvasNonOverlap.Body] = []
+        for item in items where item.groupID == nil && item.id != excludingPane && item.frame.intersects(region) {
+            bodies.append(CanvasNonOverlap.Body(id: .pane(item.id), rect: item.frame))
+        }
+        for group in groups where group.id != excludingGroup {
+            if let box = groupBoundingBox(group.id), box.intersects(region) {
+                bodies.append(CanvasNonOverlap.Body(id: .group(group.id), rect: box))
+            }
+        }
+        return bodies
+    }
+
+    /// Applies a ``CanvasNonOverlap/CommitResult`` to the canvas in ONE pure mutation: a `.pane` body sets
+    /// that pane's frame (move only — its size is preserved); a `.group` body distributes its box's shift
+    /// RIGIDLY to every member (so the derived box follows for free and the group's internal layout is
+    /// untouched). Every output frame is sanitized.
+    func applying(_ result: CanvasNonOverlap.CommitResult, groups: [PaneGroup]) -> Canvas {
+        var paneOrigin: [PaneID: CGPoint] = [:]
+        var groupDelta: [PaneGroupID: CGSize] = [:]
+        for (bodyID, newRect) in result.frames {
+            switch bodyID {
+            case .pane(let id):
+                paneOrigin[id] = newRect.origin
+            case .group(let gid):
+                if let box = groupBoundingBox(gid) {
+                    groupDelta[gid] = CGSize(width: newRect.minX - box.minX, height: newRect.minY - box.minY)
+                }
+            }
+        }
+        guard !paneOrigin.isEmpty || !groupDelta.isEmpty else { return self }
+        let newItems = items.map { item -> CanvasItem in
+            var copy = item
+            if let origin = paneOrigin[item.id] {
+                copy.frame = Canvas.sanitize(CGRect(origin: origin, size: item.frame.size))
+            } else if let gid = item.groupID, let d = groupDelta[gid] {
+                copy.frame = Canvas.sanitize(item.frame.offsetBy(dx: d.width, dy: d.height))
+            }
+            return copy
+        }
+        return Canvas(items: newItems, camera: camera)
+    }
+
+    /// Translates every member of `groupID` by `delta` (the group-handle drag-to-move). The derived
+    /// ``groupBoundingBox(_:)`` follows for free; the group's internal layout is untouched (a rigid move).
+    func movingGroup(_ groupID: PaneGroupID, by delta: CGSize) -> Canvas {
+        guard delta != .zero else { return self }
+        return Canvas(items: items.map { item in
+            guard item.groupID == groupID else { return item }
+            var copy = item
+            copy.frame = Canvas.sanitize(item.frame.offsetBy(dx: delta.width, dy: delta.height))
+            return copy
+        }, camera: camera)
+    }
+
+    /// Affinely remaps every member of `groupID` from its CURRENT bounding box into `newBox` (the
+    /// group-handle resize): each member's origin offset within the box and its size scale by the per-axis
+    /// ratio, so the group's footprint becomes `newBox` while its relative layout is preserved (the
+    /// "resize a grouped selection" semantics). Member sizes floor at ``minItemSize`` via `sanitize`.
+    /// Identity when the group is empty or degenerate.
+    func resizingGroup(_ groupID: PaneGroupID, toBox newBox: CGRect) -> Canvas {
+        guard let oldBox = groupBoundingBox(groupID), oldBox.width > 0, oldBox.height > 0 else { return self }
+        let sx = newBox.width / oldBox.width
+        let sy = newBox.height / oldBox.height
+        return Canvas(items: items.map { item in
+            guard item.groupID == groupID else { return item }
+            var copy = item
+            copy.frame = Canvas.sanitize(CGRect(
+                x: newBox.minX + (item.frame.minX - oldBox.minX) * sx,
+                y: newBox.minY + (item.frame.minY - oldBox.minY) * sy,
+                width: item.frame.width * sx,
+                height: item.frame.height * sy
+            ))
+            return copy
+        }, camera: camera)
+    }
+}
+
 // MARK: - SolvedLayout (FocusResolver reuse — the resolver is UNCHANGED)
 
 public extension Canvas {

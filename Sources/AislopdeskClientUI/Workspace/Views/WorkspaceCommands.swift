@@ -253,11 +253,13 @@ private struct SnapPreferenceToggles: View {
     @AppStorage("canvas.snapPanes") private var snapPanes = true
     @AppStorage("canvas.snapGrid") private var snapGrid = true
     @AppStorage("canvas.showGrid") private var showGrid = true
+    @AppStorage("canvas.nonOverlap") private var nonOverlap = true
 
     var body: some View {
         Toggle("Snap to Panes", isOn: $snapPanes)
         Toggle("Snap to Grid", isOn: $snapGrid)
         Toggle("Show Grid", isOn: $showGrid)
+        Toggle("Keep Windows From Overlapping", isOn: $nonOverlap)
     }
 }
 

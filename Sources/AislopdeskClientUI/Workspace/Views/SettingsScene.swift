@@ -11,6 +11,7 @@ public enum SettingsKey {
     public static let snapPanes = "canvas.snapPanes"
     public static let snapGrid = "canvas.snapGrid"
     public static let showGrid = "canvas.showGrid"
+    public static let nonOverlap = "canvas.nonOverlap"
     public static let defaultPaneKindKey = "canvas.defaultPaneKind"   // PaneKind.rawValue
     // Notifications
     public static let oscNotifications = "notifications.osc"
@@ -24,6 +25,13 @@ public enum SettingsKey {
     /// ON — assigning a trigger is itself the opt-in). Read at fire-time.
     public static var autoSwitchLayoutsEnabled: Bool {
         UserDefaults.standard.object(forKey: autoSwitchLayouts) as? Bool ?? true
+    }
+
+    /// Whether the dragged window/group slides along — and parts — its neighbours instead of overlapping
+    /// (default ON — a smart-layout QoL). The `⌘`-drag bypass still frees a single overlap drag. Read at
+    /// fire-time.
+    public static var nonOverlapEnabled: Bool {
+        UserDefaults.standard.object(forKey: nonOverlap) as? Bool ?? true
     }
 
     /// Whether explicit OSC 9/777 notifications should post (default ON). Read at fire-time.
@@ -77,6 +85,7 @@ private struct CanvasSettingsTab: View {
     @AppStorage(SettingsKey.snapPanes) private var snapPanes = true
     @AppStorage(SettingsKey.snapGrid) private var snapGrid = true
     @AppStorage(SettingsKey.showGrid) private var showGrid = true
+    @AppStorage(SettingsKey.nonOverlap) private var nonOverlap = true
     @AppStorage(SettingsKey.defaultPaneKindKey) private var defaultKind = PaneKind.terminal.rawValue
 
     var body: some View {
@@ -85,7 +94,8 @@ private struct CanvasSettingsTab: View {
                 Toggle("Snap to panes", isOn: $snapPanes)
                 Toggle("Snap to grid", isOn: $snapGrid)
                 Toggle("Show grid", isOn: $showGrid)
-                Text("Hold ⌘ while dragging to bypass snapping for one move.")
+                Toggle("Keep windows & groups from overlapping", isOn: $nonOverlap)
+                Text("Dragging a window slides it flush along its neighbours; dropping it into a cluster parts them to make room. Hold ⌘ while dragging to bypass snapping & overlap for one move.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("New panes") {
