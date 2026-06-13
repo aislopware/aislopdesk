@@ -628,6 +628,18 @@ public final class WorkspaceStore {
         focus(target)
     }
 
+    /// Cycles focus through ONLY the panes in the focused pane's group (the companion to the whole-canvas
+    /// ``move(_:)`` cycle), so a cluster is navigable in isolation. An ungrouped focused pane cycles the
+    /// ungrouped "bucket" (`groupID == nil`). A no-op when the bucket has fewer than two panes. Members are
+    /// taken in the canonical ``Canvas/ids(inGroup:)`` reading order, fed to the same ``FocusResolver/cycle``.
+    public func cycleFocusInGroup(forward: Bool) {
+        guard let focused = workspace.focusedPane else { return }
+        let groupID = workspace.canvas.item(focused)?.groupID
+        let members = workspace.canvas.ids(inGroup: groupID)
+        guard members.count > 1, let target = FocusResolver.cycle(members, from: focused, forward: forward) else { return }
+        focus(target)
+    }
+
     /// Toggles maximize on the focused pane (a presentation flag — no model surgery, registry untouched,
     /// docs/30 §1). Renders the one pane full-viewport (ignoring the camera / other panes).
     public func toggleZoom() {
@@ -2356,6 +2368,8 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
         store.move(forward ? .next : .previous)
     case let .switchRecentPane(forward):
         store.switchToRecentPane(forward: forward)
+    case let .cycleFocusInGroup(forward):
+        store.cycleFocusInGroup(forward: forward)
     case .toggleZoom:
         store.toggleZoom()
     case .toggleOverview:
