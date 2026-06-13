@@ -84,18 +84,34 @@ final class DecodeGateTests: XCTestCase {
         XCTAssertNil(g.maxLostFrameID)
     }
 
-    func testStaleKeyframeDowngradesToBrokenChain() {
-        var g = DecodeGate()
-        g.noteLoss(frameID: 100)
-        var g2 = g
-        g2.noteHardDecodeFailure()
-        XCTAssertEqual(g2.mode, .needKeyframe)
-        // An in-flight keyframe OLDER than the newest loss decodes: the session is alive again
-        // (needKeyframe → brokenChain) but the chain past the keyframe is still broken.
-        g2.noteDecodeSucceeded(frameID: 90, keyframe: true)
-        XCTAssertEqual(g2.mode, .brokenChain)
-        XCTAssertEqual(g2.verdict(frameID: 101, keyframe: false, ackedAnchored: false), .drop)
-        XCTAssertEqual(g2.verdict(frameID: 102, keyframe: false, ackedAnchored: true), .submit)
+    func testStaleKeyframeDowngradesToBrokenChainOnlyWhenSessionWasAlive() {
+        // A keyframe OLDER than the newest loss re-anchors the chain UP TO itself; losses past it remain.
+
+        // CASE 1 — the session was never torn down (brokenChain): the pre-loss acked LTRs survive in the
+        // DPB, so an acked-LTR refresh can still decode → the downgrade is safe, stay brokenChain.
+        var alive = DecodeGate()
+        alive.noteLoss(frameID: 100)
+        XCTAssertEqual(alive.mode, .brokenChain)
+        alive.noteDecodeSucceeded(frameID: 90, keyframe: true)
+        XCTAssertEqual(alive.mode, .brokenChain, "session never torn down → LTR recovery still valid")
+        XCTAssertEqual(alive.verdict(frameID: 101, keyframe: false, ackedAnchored: false), .drop)
+        XCTAssertEqual(alive.verdict(frameID: 102, keyframe: false, ackedAnchored: true), .submit)
+
+        // CASE 2 — the session was TORN DOWN (needKeyframe via invalidateSession): the DPB was wiped, so a
+        // stale keyframe rebuilds it empty. No pre-teardown acked LTR survives, so an acked-LTR refresh
+        // would reference a frame VT no longer holds (-12909) → another teardown/IDR round. STAY
+        // needKeyframe: only a keyframe NEWER than the loss may re-anchor.
+        var dead = DecodeGate()
+        dead.noteLoss(frameID: 100)
+        dead.noteHardDecodeFailure()
+        XCTAssertEqual(dead.mode, .needKeyframe)
+        dead.noteDecodeSucceeded(frameID: 90, keyframe: true)   // a stale keyframe rebuilds the session
+        XCTAssertEqual(dead.mode, .needKeyframe, "rebuilt-empty DPB → only a keyframe can re-anchor")
+        XCTAssertEqual(dead.verdict(frameID: 101, keyframe: false, ackedAnchored: false), .drop)
+        XCTAssertEqual(dead.verdict(frameID: 102, keyframe: false, ackedAnchored: true), .drop,
+                       "a stale acked-LTR refresh must NOT be admitted against a freshly-rebuilt session")
+        dead.noteDecodeSucceeded(frameID: 101, keyframe: true)  // a keyframe past the loss fully re-anchors
+        XCTAssertEqual(dead.mode, .open)
     }
 
     // MARK: needKeyframe (dead session)
