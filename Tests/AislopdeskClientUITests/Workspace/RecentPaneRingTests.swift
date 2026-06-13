@@ -107,4 +107,33 @@ final class RecentPaneRingTests: XCTestCase {
         store.switchToRecentPane(forward: false)   // "go to last pane" → b, where the user actually was
         XCTAssertEqual(store.focusedPane, b, "the outgoing pane is recorded as the most-recent-before")
     }
+
+    func testOpeningPanesPopulatesTheRingWithoutAnyClick() {
+        // REGRESSION: the creation/raise paths assigned `workspace.focusedPane` DIRECTLY, bypassing the MRU
+        // ring, so ⌥⌘; was a silent no-op until the user happened to click/arrow-focus between panes (the
+        // only `focus()` caller). Opening a pane must itself record the visit (outgoing-then-incoming).
+        let (store, ids) = makeStore(1)
+        let first = ids[0]
+        XCTAssertTrue(store.focusHistory.isEmpty, "a freshly restored single-pane store records nothing yet")
+        store.addPane(kind: .terminal)             // open a 2nd pane — NO focus()/click anywhere
+        let second = store.focusedPane
+        XCTAssertNotEqual(second, first)
+        store.switchToRecentPane(forward: false)   // "go to last pane" must land back on the first pane
+        XCTAssertEqual(store.focusedPane, first, "opening a pane records the ring so quick-switch jumps back")
+        store.switchToRecentPane(forward: true)    // and forward returns to the pane we just opened
+        XCTAssertEqual(store.focusedPane, second)
+    }
+
+    func testRaisingAndDuplicatingRecordTheRingToo() {
+        // The raise (drag-start / focus affordance) and duplicate creation paths also set focus directly.
+        let (store, ids) = makeStore(3)
+        let (a, b, c) = (ids[0], ids[1], ids[2])
+        store.raisePane(b)                         // raise b (was focused a) → ring [b, a]
+        store.raisePane(c)                         // raise c → ring [c, b, a]
+        XCTAssertEqual(store.focusHistory.prefix(3).map { $0 }, [c, b, a], "raise records like a user focus")
+        let dup = store.duplicatePane(a)           // duplicate a NEW pane, focused
+        XCTAssertEqual(store.focusedPane, dup)
+        store.switchToRecentPane(forward: false)   // go back to where we were (c)
+        XCTAssertEqual(store.focusedPane, c, "the duplicate's creation recorded the outgoing pane")
+    }
 }
