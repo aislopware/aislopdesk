@@ -30,6 +30,24 @@ final class CommandPaletteEntriesTests: XCTestCase {
         XCTAssertNil(CommandPaletteView.fuzzyScore(query: "xyz", in: "Reconnect Pane"))
     }
 
+    func testFuzzyRewardsWordStartsOverMidWordMatches() {
+        // "np" → "New Pane" (both letters begin a word) ranks above a mid-word scatter.
+        let wordStarts = CommandPaletteView.fuzzyScore(query: "np", in: "New Pane")!
+        let midWord = CommandPaletteView.fuzzyScore(query: "np", in: "Unzip")!   // n@1, p@4, mid-word
+        XCTAssertGreaterThan(wordStarts, midWord)
+        // A single letter at a word start beats the same letter buried mid-word.
+        XCTAssertGreaterThan(CommandPaletteView.fuzzyScore(query: "p", in: "Pane")!,
+                             CommandPaletteView.fuzzyScore(query: "p", in: "Snap")!)
+    }
+
+    func testFuzzyPenalisesScatteredMatches() {
+        // A tight (contiguous) match scores higher than the same letters spread far apart.
+        let tight = CommandPaletteView.fuzzyScore(query: "ab", in: "ab")!
+        let scattered = CommandPaletteView.fuzzyScore(query: "ab", in: "axxxxb")!
+        XCTAssertGreaterThan(tight, scattered)
+        XCTAssertNotNil(CommandPaletteView.fuzzyScore(query: "ab", in: "axxxxb"), "still matches, just lower")
+    }
+
     // MARK: - Keyword aliases (the verbs people actually type)
 
     /// The fuzzy haystack for a catalog command, mirroring `commandEntries` (title + keywords; commands
