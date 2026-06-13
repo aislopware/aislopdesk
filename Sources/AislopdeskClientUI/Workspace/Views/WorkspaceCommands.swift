@@ -106,7 +106,7 @@ public struct WorkspaceCommands: Commands {
         // Explicit "Group Selected Panes" — disabled until ≥1 pane is multi-selected (⌃⌘G also groups the
         // selection when there is one). Carries the ⌥⌘G hint from the bindings table like every other item.
         Button("Group Selected Panes") {
-            store?.groupSelection()
+            if let store { apply(.groupSelection, to: store) }
         }
         .disabled(store == nil || (store?.selectedPanes.isEmpty ?? true))
         .modifier(OptionalShortcut(Self.shortcut(for: .groupSelection)))
@@ -152,7 +152,7 @@ public struct WorkspaceCommands: Commands {
         // Named layout presets: switch to a saved canvas, or snapshot the current one.
         Menu("Layouts") {
             Button("Save Current Layout…") {
-                if let store { store.requestSaveLayout() }
+                if let store { apply(.saveLayout, to: store) }
             }
             .disabled(store == nil)
             if let store, !store.layoutPresetNames.isEmpty {
@@ -189,19 +189,20 @@ public struct WorkspaceCommands: Commands {
     }
 
     /// Align + distribute the Arrange targets (the multi-selection when ≥2 selected, else all panes).
-    /// Direct store calls (no chords needed); the items disable when no store is key.
+    /// Routed through `apply(_:to:)` (no chords needed) so the verbs land in the ⌘K recents ring like
+    /// every other action — the items disable when no store is key.
     @ViewBuilder
     private var arrangeMenu: some View {
         Menu("Arrange") {
-            Button("Align Left") { store?.alignPanes(to: .left) }
-            Button("Align Right") { store?.alignPanes(to: .right) }
-            Button("Align Top") { store?.alignPanes(to: .top) }
-            Button("Align Bottom") { store?.alignPanes(to: .bottom) }
-            Button("Align Center Horizontally") { store?.alignPanes(to: .centerHorizontal) }
-            Button("Align Center Vertically") { store?.alignPanes(to: .centerVertical) }
+            Button("Align Left") { if let store { apply(.align(.left), to: store) } }
+            Button("Align Right") { if let store { apply(.align(.right), to: store) } }
+            Button("Align Top") { if let store { apply(.align(.top), to: store) } }
+            Button("Align Bottom") { if let store { apply(.align(.bottom), to: store) } }
+            Button("Align Center Horizontally") { if let store { apply(.align(.centerHorizontal), to: store) } }
+            Button("Align Center Vertically") { if let store { apply(.align(.centerVertical), to: store) } }
             Divider()
-            Button("Distribute Horizontally") { store?.distributePanes(horizontal: true) }
-            Button("Distribute Vertically") { store?.distributePanes(horizontal: false) }
+            Button("Distribute Horizontally") { if let store { apply(.distribute(horizontal: true), to: store) } }
+            Button("Distribute Vertically") { if let store { apply(.distribute(horizontal: false), to: store) } }
         }
         .disabled(store == nil)
     }
