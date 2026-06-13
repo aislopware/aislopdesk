@@ -1071,6 +1071,14 @@ public final class WorkspaceStore {
             setBroadcast(false)
             clearSelection()
         case .mergeAppend:
+            // The MERGED canvas must obey the same size cap a single imported document does: decode()
+            // bounds the import to maxItems, but a live workspace already near the cap plus a max-size
+            // import would assemble ~2× maxItems items and make reconcile() materialize that many sessions
+            // on the main actor (the UI-freeze / OOM this cap exists to prevent). Reject the merge if the
+            // combined canvas would exceed maxItems; the live workspace is left untouched.
+            guard workspace.canvas.items.count + imported.canvas.items.count <= WorkspaceTransfer.maxItems else {
+                return false
+            }
             // Re-mint imported pane ids AND group ids (the imported groups are brand-new here), offset the
             // frames by a cascade so the additions don't stack on top of the originals, then append the
             // items + groups and union snippets/presets by name (collisions get a "… copy" suffix). Empty

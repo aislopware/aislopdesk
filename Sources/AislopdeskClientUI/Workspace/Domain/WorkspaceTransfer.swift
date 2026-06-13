@@ -62,10 +62,15 @@ public enum WorkspaceTransfer {
               doc.workspace.canvas.items.count <= maxItems,
               doc.workspace.groups.count <= maxItems,
               doc.workspace.snippets.count <= maxItems,
-              doc.workspace.layoutPresets.count <= maxItems else { return nil }
+              doc.workspace.layoutPresets.count <= maxItems,
+              doc.workspace.bookmarks.count <= maxItems else { return nil }
         var seen = Set<PaneID>()
         var ws = doc.workspace
         ws.connection = nil
+        // Bookmarks live in slots 1…9 (``WorkspaceStore/saveBookmark(_:)`` rejects anything else); a
+        // hand-edited document could carry junk slots that are dead weight (unreachable from the
+        // ⌘1…⌘9 recall chords). Drop them so the imported map only holds reachable bookmarks.
+        ws.bookmarks = ws.bookmarks.filter { (1...9).contains($0.key) }
         ws.canvas = ws.canvas.dedupingItemIDs(seen: &seen)
         // The side-collection repairs (group-id / snippet-id / preset-name dedup) are shared with the
         // on-disk load — see Workspace.normalizingCollections().

@@ -165,6 +165,55 @@ final class WorkspaceTransferTests: XCTestCase {
                      "a document beyond the item cap is rejected (import DoS guard)")
     }
 
+    func testOversizedBookmarksAreRejected() {
+        // The bookmarks dictionary is the same untrusted-input surface as items/groups/snippets — a
+        // hand-edited document with a huge bookmark map must be rejected, not iterated on the main actor.
+        let bookmarks = Dictionary(uniqueKeysWithValues:
+            (0...WorkspaceTransfer.maxItems).map { ($0, CanvasBookmark(pane: nil, cameraOrigin: .zero, name: "b\($0)")) })
+        let ws = Workspace(canvas: Canvas(items: [term(0, "a")]), focusedPane: nil, bookmarks: bookmarks)
+        XCTAssertNil(WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)),
+                     "a document beyond the bookmark cap is rejected (import DoS guard)")
+    }
+
+    func testOutOfRangeBookmarkSlotsAreDropped() {
+        // Bookmarks live in slots 1…9; a junk slot is dead weight (unreachable from ⌘1…⌘9) and is
+        // filtered out on import so only reachable bookmarks survive.
+        let bookmarks: [Int: CanvasBookmark] = [
+            1: CanvasBookmark(pane: nil, cameraOrigin: .zero, name: "valid"),
+            0: CanvasBookmark(pane: nil, cameraOrigin: .zero, name: "zero"),
+            42: CanvasBookmark(pane: nil, cameraOrigin: .zero, name: "junk"),
+        ]
+        let ws = Workspace(canvas: Canvas(items: [term(0, "a")]), focusedPane: nil, bookmarks: bookmarks)
+        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { return XCTFail() }
+        XCTAssertEqual(Set(decoded.bookmarks.keys), [1], "only the in-range (1…9) slot survives import")
+    }
+
+    func testMergeRejectedWhenCombinedCanvasExceedsCap() {
+        // A live workspace near the cap + a sizable import must not assemble a canvas past maxItems — that
+        // is what reconcile() would materialize as live sessions. The merge is rejected and the live
+        // workspace is left exactly as it was.
+        let liveItems = (0..<(WorkspaceTransfer.maxItems - 1)).map { term(CGFloat($0), "live\($0)") }
+        let dst = store(liveItems, focus: liveItems[0].id)
+        let before = dst.workspace.canvas.allIDs().count
+
+        // A small valid import (5 panes) that would push the combined total past the cap.
+        let importItems = (0..<5).map { term(CGFloat($0) * 10, "imp\($0)") }
+        let importData = WorkspaceTransfer.export(Workspace(canvas: Canvas(items: importItems), focusedPane: nil))
+
+        XCTAssertFalse(dst.importWorkspace(importData, mode: .mergeAppend),
+                       "a merge that would exceed maxItems is rejected")
+        XCTAssertEqual(dst.workspace.canvas.allIDs().count, before, "the live canvas is untouched on a rejected merge")
+    }
+
+    func testMergeWithinCapStillSucceeds() {
+        // Positive control: the cap does not block a normal merge.
+        let dst = store([term(0, "live")], focus: PaneID())
+        let importData = WorkspaceTransfer.export(
+            Workspace(canvas: Canvas(items: [term(100, "imp")]), focusedPane: nil))
+        XCTAssertTrue(dst.importWorkspace(importData, mode: .mergeAppend), "an in-cap merge succeeds")
+        XCTAssertEqual(dst.workspace.canvas.allIDs().count, 2, "both panes present after a normal merge")
+    }
+
     func testUniqueNameSuffixing() {
         XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: []), "work")
         XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: ["work"]), "work copy")
