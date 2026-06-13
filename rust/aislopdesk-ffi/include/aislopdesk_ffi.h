@@ -236,6 +236,18 @@ AisdStatus aisd_coord_backing_scale_factor(AisdRect window_bounds_cg,
 AisdPoint aisd_coord_window_point_from_pixel(AisdPoint pixel, AisdRect window_bounds_cg,
                                              double backing_scale_factor);
 
+/* ---- recovery_policy (pure scalar) ------------------------------------------------ */
+
+/* Whether the client should escalate a stalled LTR-refresh recovery to a forced IDR. The four
+ * multiples map onto aislopdesk-core RecoveryPolicy (idr_timeout_rtt_multiple,
+ * lossy_idr_timeout_rtt_multiple, lossy_escalation_floor [secs, env-resolved caller-side],
+ * lossy_escalation_floor_rtt_multiple). observing_loss read as a byte != 0. Returns 1 to
+ * escalate, 0 otherwise. Pure: no pointers, never fails. */
+uint8_t aisd_recovery_policy_should_escalate_to_idr(double idr_rtt_mult, double lossy_idr_rtt_mult,
+                                                    double lossy_floor_s, double lossy_floor_rtt_mult,
+                                                    double elapsed_since_request, double rtt,
+                                                    uint8_t observing_loss);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

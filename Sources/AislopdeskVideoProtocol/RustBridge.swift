@@ -142,4 +142,23 @@ enum RustVideoFFI {
     ) -> VideoPoint {
         point(aisd_coord_window_point_from_pixel(cPoint(pixel), cRect(windowBoundsCG), scale))
     }
+
+    // MARK: - recovery_policy (pure scalar; env-resolved floor stays Swift-side)
+
+    /// Whether the client should escalate a stalled LTR-refresh recovery to a forced IDR.
+    /// Wraps `aisd_recovery_policy_should_escalate_to_idr`.
+    static func recoveryShouldEscalateToIDR(
+        idrTimeoutRTTMultiple: Double,
+        lossyIdrTimeoutRTTMultiple: Double,
+        lossyEscalationFloor: Double,
+        lossyEscalationFloorRTTMultiple: Double,
+        elapsedSinceRequest: Double,
+        rtt: Double,
+        observingLoss: Bool
+    ) -> Bool {
+        aisd_recovery_policy_should_escalate_to_idr(
+            idrTimeoutRTTMultiple, lossyIdrTimeoutRTTMultiple, lossyEscalationFloor,
+            lossyEscalationFloorRTTMultiple, elapsedSinceRequest, rtt, observingLoss ? 1 : 0
+        ) != 0
+    }
 }
