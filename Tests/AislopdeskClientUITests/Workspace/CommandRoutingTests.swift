@@ -202,6 +202,18 @@ final class CommandRoutingTests: XCTestCase {
                        "⌥⇧⌘; walks back toward newer")
     }
 
+    func testGroupCycleAndRunLastSnippetChordsAreBound() {
+        // Pins both the modifier set AND the forward flag — a transposed ]/[ or a wrong modifier would
+        // otherwise slip past the cheat-sheet drift guard (which only checks each command HAS a row).
+        let interp = CommandInterpreter()
+        XCTAssertEqual(interp.feed(KeyChord(character: "]", [.control, .command])), .cycleFocusInGroup(forward: true),
+                       "⌃⌘] cycles forward within the group")
+        XCTAssertEqual(interp.feed(KeyChord(character: "[", [.control, .command])), .cycleFocusInGroup(forward: false),
+                       "⌃⌘[ cycles back within the group")
+        XCTAssertEqual(interp.feed(KeyChord(character: "r", [.option, .command])), .runLastSnippet,
+                       "⌥⌘R re-fires the last snippet")
+    }
+
     /// The pure group arithmetic the sidebar / store funnel through:
     /// `addGroup` → `assignPane` → `renameGroup` → `removeGroup` (members survive ungrouped).
     func testGroupArithmeticAssignsRenamesAndRemoves() {

@@ -589,22 +589,39 @@ public final class WorkspaceStore {
         focusHistory.insert(id, at: 0)
     }
 
-    /// Quick-switch through the focus-history MRU WITHOUT reordering it (browser back/forward). The
-    /// position is DERIVED from the focused pane's index in the ring on each call (no persistent cursor —
-    /// robust to the many paths that set `focusedPane` directly, e.g. close-refocus / bookmarks): `forward:
-    /// false` steps toward an OLDER pane (the "go to the previous pane" primary action), `forward: true`
-    /// steps back toward newer. Clamps at the ends; a no-op with fewer than two panes in the ring.
-    public func switchToRecentPane(forward: Bool) {
-        guard focusHistory.count > 1 else { return }
+    /// The pane a quick-switch step would land on, or `nil` when the step is a no-op (fewer than two panes
+    /// in the ring, or already at the end in that direction). Pure (no focus side-effect) so the
+    /// no-op guard is unit-testable in isolation. Position is DERIVED from the focused pane's index in the
+    /// ring each call (no persistent cursor); a focused pane absent from the ring (e.g. just after a
+    /// close-refocus) starts the walk at the front.
+    func recentPaneTarget(forward: Bool) -> PaneID? {
+        guard focusHistory.count > 1 else { return nil }
         let current = workspace.focusedPane.flatMap { focusHistory.firstIndex(of: $0) } ?? 0
         let next = forward ? current - 1 : current + 1
-        guard next >= 0, next < focusHistory.count else { return }
-        focus(focusHistory[next], recordVisit: false)
+        guard next >= 0, next < focusHistory.count else { return nil }
+        return focusHistory[next]
+    }
+
+    /// Quick-switch through the focus-history MRU WITHOUT reordering it (browser back/forward): `forward:
+    /// false` steps toward an OLDER pane (the "go to the previous pane" primary action), `forward: true`
+    /// steps back toward newer. Walks without recording, so a sequence of steps walks the ring. A whole-
+    /// canvas swap re-seeds the ring (``reseedFocusHistory()``) so a walk never targets a re-minted id.
+    public func switchToRecentPane(forward: Bool) {
+        if let target = recentPaneTarget(forward: forward) { focus(target, recordVisit: false) }
     }
 
     /// Drops `id` from the focus-history MRU (a pane closed) so it can never be a quick-switch target.
     private func pruneFocusHistory(_ id: PaneID) {
         focusHistory.removeAll { $0 == id }
+    }
+
+    /// Resets the focus-history MRU to just the current focused pane — for a WHOLE-CANVAS SWAP (layout-
+    /// preset switch / replace-import) that re-mints every pane id, leaving every prior ring entry a dead
+    /// id. Without this the quick-switch (⌥⌘;) would silently no-op post-swap (every walked-to id fails the
+    /// `canvas.contains` guard in `focusing`). Seeding with the new focused pane (not emptying) keeps the
+    /// ring honest as the user starts navigating the new layout.
+    private func reseedFocusHistory() {
+        focusHistory = workspace.focusedPane.map { [$0] } ?? []
     }
 
     /// Moves focus in `dir`, resolved geometrically against the last solved layout (docs/22 §2.1).
@@ -633,11 +650,18 @@ public final class WorkspaceStore {
     /// ungrouped "bucket" (`groupID == nil`). A no-op when the bucket has fewer than two panes. Members are
     /// taken in the canonical ``Canvas/ids(inGroup:)`` reading order, fed to the same ``FocusResolver/cycle``.
     public func cycleFocusInGroup(forward: Bool) {
-        guard let focused = workspace.focusedPane else { return }
-        let groupID = workspace.canvas.item(focused)?.groupID
-        let members = workspace.canvas.ids(inGroup: groupID)
-        guard members.count > 1, let target = FocusResolver.cycle(members, from: focused, forward: forward) else { return }
-        focus(target)
+        if let target = inGroupCycleTarget(forward: forward) { focus(target) }
+    }
+
+    /// The pane an in-group cycle would focus, or `nil` when it is a no-op (no focused pane, or the
+    /// focused pane's group/ungrouped-bucket has fewer than two members). Pure so the `count > 1` guard is
+    /// unit-testable in isolation (the cycle itself returns the SAME pane for a singleton, so only this
+    /// guard distinguishes "cycle" from "stay put").
+    func inGroupCycleTarget(forward: Bool) -> PaneID? {
+        guard let focused = workspace.focusedPane else { return nil }
+        let members = workspace.canvas.ids(inGroup: workspace.canvas.item(focused)?.groupID)
+        guard members.count > 1 else { return nil }
+        return FocusResolver.cycle(members, from: focused, forward: forward)
     }
 
     /// Toggles maximize on the focused pane (a presentation flag — no model surgery, registry untouched,
@@ -1139,6 +1163,7 @@ public final class WorkspaceStore {
             // not survive and surprise you") — clear both, matching switchToLayoutPreset.
             recentlyClosed = nil
             setBroadcast(false)
+            reseedFocusHistory()   // re-minted ids → the quick-switch ring would otherwise be all-dead
             clearSelection()
         case .mergeAppend:
             // The MERGED canvas must obey the same size cap a single imported document does: decode()
@@ -1591,6 +1616,7 @@ public final class WorkspaceStore {
         // mode and a "reopen the pane from the OLD workspace" both make no sense in the new layout.
         setBroadcast(false)
         recentlyClosed = nil
+        reseedFocusHistory()   // every old pane id is re-minted — drop the now-dead quick-switch ring
         // Every old pane id is now orphaned — clear any pending request keyed to one (else a busy-close
         // confirmation or rename targeting a now-gone pane lingers as a phantom dialog, the closePane
         // contract at the top of this type). Reconcile tears the old sessions down.

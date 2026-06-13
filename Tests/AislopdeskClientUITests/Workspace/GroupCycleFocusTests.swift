@@ -29,13 +29,18 @@ final class GroupCycleFocusTests: XCTestCase {
         XCTAssertNotEqual(store.focusedPane, c.id)
     }
 
-    func testSingletonGroupOrLoneUngroupedPaneIsNoOp() {
-        // A lone ungrouped pane: the ungrouped bucket has one member → no-op.
+    func testSingletonBucketHasNoCycleTarget() {
+        // A lone ungrouped pane: the ungrouped bucket has one member, so the `count > 1` guard fires. Assert
+        // the PURE target helper returns nil — FocusResolver.cycle would return the SAME pane for a
+        // singleton, so only this guard distinguishes "no-op" from "re-focus self" (a behavioral
+        // focusedPane==solo assertion would pass even with the guard removed).
         let solo = item(0)
         let store = WorkspaceStore(restoring: Workspace(canvas: Canvas(items: [solo]), focusedPane: solo.id),
                                    makeSession: { FakePaneSession($0) })
+        XCTAssertNil(store.inGroupCycleTarget(forward: true), "a singleton bucket has no cycle target (guard fired)")
+        XCTAssertNil(store.inGroupCycleTarget(forward: false))
         store.cycleFocusInGroup(forward: true)
-        XCTAssertEqual(store.focusedPane, solo.id, "nothing to cycle to")
+        XCTAssertEqual(store.focusedPane, solo.id, "and the public method leaves focus put")
     }
 
     func testUngroupedFocusedPaneCyclesTheUngroupedBucket() {
