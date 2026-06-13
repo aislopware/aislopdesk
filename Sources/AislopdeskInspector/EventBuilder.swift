@@ -278,8 +278,13 @@ public struct EventBuilder {
         guard use.name == "TodoWrite" || use.name == "TaskCreate" || use.name == "TaskUpdate" else {
             return nil
         }
-        // Both shapes carry a `todos` (TodoWrite) or `tasks` array of objects.
-        let array = use.input["todos"]?.arrayValue ?? use.input["tasks"]?.arrayValue ?? []
+        // Both shapes carry a `todos` (TodoWrite) or `tasks` array of objects. Distinguish "no array
+        // supplied" from "an explicitly empty array": a payload carrying NEITHER key (e.g. a partial
+        // single-task update) must NOT blank the whole panel — return nil (no event, list untouched).
+        // A present array (even empty) DOES replace the list — an empty `todos: []` is a legitimate clear.
+        guard let array = use.input["todos"]?.arrayValue ?? use.input["tasks"]?.arrayValue else {
+            return nil
+        }
         let items: [TodoItem] = array.compactMap { entry in
             guard case let .object(obj) = entry else { return nil }
             let content = obj["content"]?.stringValue

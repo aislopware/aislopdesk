@@ -74,6 +74,47 @@ final class TranscriptParsingTests: XCTestCase {
         XCTAssertEqual(todos[2].content, "Write tests")
     }
 
+    func testTaskPayloadWithoutArrayDoesNotBlankTheTodoPanel() {
+        var b = EventBuilder()
+        let write = AssistantLine(identity: LineIdentity(uuid: "a1"), toolUses: [
+            ToolUseBlock(id: "t1", name: "TodoWrite", input: .object([
+                "todos": .array([
+                    .object(["content": .string("Build"), "status": .string("in_progress")]),
+                    .object(["content": .string("Test"), "status": .string("pending")]),
+                ])
+            ]))
+        ])
+        _ = b.ingest(line: .assistant(write))
+        XCTAssertEqual(b.todos.count, 2, "the TodoWrite populated the panel")
+
+        // A later Task* payload carrying NEITHER `todos` nor `tasks` (e.g. a partial single-task update)
+        // must NOT wipe the panel — no event, list intact.
+        let partial = AssistantLine(identity: LineIdentity(uuid: "a2"), toolUses: [
+            ToolUseBlock(id: "t2", name: "TaskUpdate", input: .object(["status": .string("completed")]))
+        ])
+        let events = b.ingest(line: .assistant(partial))
+        XCTAssertFalse(events.contains { if case .todosUpdated = $0 { return true } else { return false } },
+                       "a payload with no todos/tasks array emits no todosUpdated event")
+        XCTAssertEqual(b.todos.count, 2, "the existing todo list is preserved, not blanked")
+
+        // An EXPLICITLY empty array IS a legitimate clear.
+        let clear = AssistantLine(identity: LineIdentity(uuid: "a3"), toolUses: [
+            ToolUseBlock(id: "t3", name: "TodoWrite", input: .object(["todos": .array([])]))
+        ])
+        _ = b.ingest(line: .assistant(clear))
+        XCTAssertEqual(b.todos.count, 0, "an explicit empty array clears the panel")
+    }
+
+    func testToolResultObjectBlockWithoutTextFlattensDeterministically() {
+        // A tool_result content block that is an object with multiple keys but NO `text` key must render
+        // deterministically (the whole object, keys sorted) — not `values.first`, whose Dictionary order
+        // is randomized per process, so a different / less-informative field surfaced each run.
+        let raw = #"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":[{"alpha":"A","bravo":"B","charlie":"C"}]}]}}"#
+        guard case let .user(line)? = TranscriptParser.parse(line: raw) else { return XCTFail("should parse a user line") }
+        XCTAssertEqual(line.toolResults.first?.content, "alpha: A\nbravo: B\ncharlie: C",
+                       "an object block without `text` renders all keys, sorted — stable across runs")
+    }
+
     func testIgnoredInternalTypeIsClassifiedNotUnknown() {
         // The file-history-snapshot line must classify as `.ignored`, not `.unknown`.
         let raw = #"{"type":"file-history-snapshot","uuid":"x","snapshot":{}}"#

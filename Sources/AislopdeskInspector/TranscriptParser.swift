@@ -166,7 +166,10 @@ public enum TranscriptParser {
         case let .some(.array(blocks)):
             return blocks.compactMap { block -> String? in
                 if case let .object(b) = block {
-                    return b["text"]?.stringValue ?? b.values.first?.displayString
+                    // No `text` key → render the WHOLE object deterministically (object displayString sorts
+                    // keys), NOT `b.values.first` (Dictionary iteration order is hash-seed-randomized per
+                    // process, so an arbitrary — possibly less informative — field surfaced each run).
+                    return b["text"]?.stringValue ?? JSONValue.object(b).displayString
                 }
                 return block.displayString
             }.joined(separator: "\n")
