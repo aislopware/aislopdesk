@@ -67,5 +67,16 @@ public enum CaptureRegionMath {
             || abs(desired.width - current.width) > minDelta
             || abs(desired.height - current.height) > minDelta
     }
+
+    /// Whether a window-move geometry event should re-origin the input/cursor mapping to the PLAIN window
+    /// frame. NO while a DIALOG-EXPAND capture region is active (`activeRegionGlobal != nil`): the mapping
+    /// origin is then owned by the union region (set in `applyCaptureRegion` against window∪dialog), and
+    /// the stream is still union-sized. Re-origining to the plain window frame would desync input/cursor
+    /// from that stream — a normalized client point in the dialog area (left/above the window) would map
+    /// to a wrong absolute point (clicks land wrong) and the cursor would report not-visible over the
+    /// dialog. The union poll (`onAssociatedUnion` → `applyCaptureRegion`) owns the mapping while expanded.
+    public static func shouldReoriginToWindowOnGeometry(activeRegionGlobal: CGRect?) -> Bool {
+        activeRegionGlobal == nil
+    }
 }
 #endif
