@@ -217,4 +217,42 @@ final class FocusResolverTests: XCTestCase {
         XCTAssertNil(FocusResolver.cycle([a, b], from: ghost, forward: true), "from not in list → nil")
         XCTAssertNil(FocusResolver.cycle([], from: a, forward: true), "empty list → nil")
     }
+
+    // MARK: - Determinism for coincident panes (no Dictionary-iteration-order dependence)
+
+    /// A `PaneID` with a controlled, ascending uuid so the total tie-break order is known.
+    private func pid(_ n: Int) -> PaneID {
+        PaneID(raw: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012X", n))!)
+    }
+
+    func testCycleOverCoincidentPanesIsDeterministicByID() {
+        // Stacked panes (the SAME canvas position — reachable via the ⌘ overlap bypass, or an
+        // Align/Distribute op that does not run the non-overlap solver) share minY AND minX, so the
+        // reading-order sort can only tie-break on the stable id. Without that tie-break the comparator
+        // returned "equal" and the stable sort preserved the Dictionary's per-process-randomized iteration
+        // order, so ⌘]/⌘[ could visit coincident panes in a different order each launch.
+        let ids = (1...8).map { pid($0) }                       // ascending by uuidString
+        let frame = CGRect(x: 100, y: 100, width: 300, height: 200)
+        let solved = layout(ids.map { ($0, frame) })
+        for i in ids.indices {
+            XCTAssertEqual(FocusResolver.neighbor(of: ids[i], .next, in: solved), ids[(i + 1) % ids.count],
+                           "next cycles coincident panes in ascending-id order, deterministically")
+            XCTAssertEqual(FocusResolver.neighbor(of: ids[i], .previous, in: solved),
+                           ids[(i - 1 + ids.count) % ids.count], "previous is the exact inverse")
+        }
+    }
+
+    func testDirectionalPickAmongExactTiesIsDeterministicByID() {
+        // A source with several COINCIDENT candidates to its right: all share the same cross-axis overlap
+        // and axial distance — an exact tie. The pick must resolve to the smallest id, not whichever the
+        // Dictionary happened to enumerate first.
+        let source = pid(1000)
+        let rightStack = (1...8).map { pid($0) }
+        let srcRect = CGRect(x: 0, y: 0, width: 200, height: 200)
+        let candRect = CGRect(x: 400, y: 0, width: 200, height: 200)   // all to the right, all the same rect
+        let solved = layout([(source, srcRect)] + rightStack.map { ($0, candRect) })
+        XCTAssertEqual(FocusResolver.neighbor(of: source, .right, in: solved),
+                       rightStack.min(by: { $0.raw.uuidString < $1.raw.uuidString }),
+                       "an exact directional tie resolves to the smallest id, deterministically")
+    }
 }
