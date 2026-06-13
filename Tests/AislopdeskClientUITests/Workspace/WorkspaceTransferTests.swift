@@ -233,6 +233,31 @@ final class WorkspaceTransferTests: XCTestCase {
         XCTAssertEqual(dst.workspace.canvas.allIDs().count, 2, "both panes present after a normal merge")
     }
 
+    func testMergeRejectedWhenCombinedGroupsExceedCapElseNextLaunchWipesEverything() {
+        // DATA-LOSS REGRESSION: mergeAppend used to cap ONLY the canvas, so a merge that pushed the combined
+        // groups (or snippets, or presets) past maxItems produced an over-cap workspace that worked this
+        // session — then load() (which guards EACH side collection <= maxItems) discarded the ENTIRE
+        // workspace to the default on the next launch. The merge must reject symmetrically, leaving the live
+        // workspace untouched, so what is persisted always survives a reload.
+        let liveGroups = (0..<(WorkspaceTransfer.maxItems - 1)).map { PaneGroup(id: PaneGroupID(), name: "g\($0)") }
+        let live = Workspace(canvas: Canvas(items: [term(0, "live")]), focusedPane: nil, groups: liveGroups)
+        let dst = WorkspaceStore(restoring: live, makeSession: { FakePaneSession($0) }, liveVideoCap: 5)
+        let beforeGroups = dst.workspace.groups.count
+
+        // A small valid import (5 groups) that would push the combined group count past the cap.
+        let importGroups = (0..<5).map { PaneGroup(id: PaneGroupID(), name: "imp\($0)") }
+        let importData = WorkspaceTransfer.export(
+            Workspace(canvas: Canvas(items: [term(100, "imp")]), focusedPane: nil, groups: importGroups))
+
+        XCTAssertFalse(dst.importWorkspace(importData, mode: .mergeAppend),
+                       "a merge that would exceed maxItems groups is rejected")
+        XCTAssertEqual(dst.workspace.groups.count, beforeGroups, "the live groups are untouched on a rejected merge")
+        // The invariant the rejection protects: whatever the merge leaves behind must itself survive a reload
+        // (i.e. obey the same per-collection cap decode() enforces).
+        XCTAssertLessThanOrEqual(dst.workspace.groups.count, WorkspaceTransfer.maxItems,
+                                 "the persisted workspace never exceeds the cap load() would reject")
+    }
+
     func testUniqueNameSuffixing() {
         XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: []), "work")
         XCTAssertEqual(WorkspaceStore.uniqueName(base: "work", existing: ["work"]), "work copy")

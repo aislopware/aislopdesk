@@ -1185,6 +1185,18 @@ public final class WorkspaceStore {
             guard workspace.canvas.items.count + imported.canvas.items.count <= WorkspaceTransfer.maxItems else {
                 return false
             }
+            // The SAME per-collection bound applies to groups / snippets / presets. decode() and the on-disk
+            // load() both reject — and resetToDefault() — a workspace whose groups, snippets, or layoutPresets
+            // exceed maxItems. So a merge that pushes any of those collections over the cap WORKS this session
+            // but makes the next launch's load() discard the ENTIRE workspace (every pane, group, bookmark,
+            // snippet, preset) back to the one-terminal default — surprising total data loss the user never
+            // caused by hand-editing. Reject symmetrically (groups are never deduped here, so the sum is the
+            // exact post-merge count; snippets/presets dedup, so the sum is a safe upper bound). Live untouched.
+            guard workspace.groups.count + imported.groups.count <= WorkspaceTransfer.maxItems,
+                  workspace.snippets.count + imported.snippets.count <= WorkspaceTransfer.maxItems,
+                  workspace.layoutPresets.count + imported.layoutPresets.count <= WorkspaceTransfer.maxItems else {
+                return false
+            }
             // Re-mint imported pane ids AND group ids (the imported groups are brand-new here), offset the
             // frames by a cascade so the additions don't stack on top of the originals, then append the
             // items + groups and union snippets/presets by name (collisions get a "… copy" suffix). Empty
