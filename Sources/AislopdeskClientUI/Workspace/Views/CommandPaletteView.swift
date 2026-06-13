@@ -371,12 +371,24 @@ struct CommandPaletteView: View {
     }
 
     /// The recently-run commands as entries, in recency order — surfaced at the top of an empty-query
-    /// palette. Each maps a stored ``WorkspaceCommand`` back to its catalog item for the title/glyph,
-    /// reusing the SAME `id` ("cmd.<title>") as ``commandEntries`` so the catalog section can dedup it.
-    /// A recent command no longer in the catalog (none today) is skipped.
+    /// palette. Delegates to the pure builder so the focused-pane visibility filter is unit-testable.
     private var recentEntries: [Entry] {
-        store.recentCommands.compactMap { command -> Entry? in
-            guard let item = Self.commandCatalog.first(where: { $0.command == command }) else { return nil }
+        Self.buildRecentEntries(commands: store.recentCommands,
+                                hasFocusedPane: store.workspace.focusedPane != nil)
+    }
+
+    /// Pure builder for the recents entries (factored out so the visibility filter is testable without a
+    /// view). Each maps a stored ``WorkspaceCommand`` back to its catalog item for the title/glyph, reusing
+    /// the SAME `id` ("cmd.<title>") as ``commandEntries`` so the catalog section dedups it.
+    ///
+    /// Applies the SAME focused-pane filter the catalog section uses (``visibleCommands(hasFocusedPane:)``):
+    /// a focus-requiring verb (Close/Rename/Reconnect/Duplicate/Maximize Pane) on an empty canvas is a
+    /// graceful no-op that "reads as broken" at the TOP of the palette — the exact case the catalog hides,
+    /// so the recents block must hide it too. A recent not resolvable in the catalog is skipped.
+    @MainActor static func buildRecentEntries(commands: [WorkspaceCommand], hasFocusedPane: Bool) -> [Entry] {
+        commands.compactMap { command -> Entry? in
+            guard hasFocusedPane || !command.requiresFocusedPane else { return nil }
+            guard let item = commandCatalog.first(where: { $0.command == command }) else { return nil }
             return Entry(
                 id: "cmd.\(item.title)",
                 kind: .command(item.command),

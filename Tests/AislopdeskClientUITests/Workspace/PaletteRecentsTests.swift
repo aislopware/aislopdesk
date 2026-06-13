@@ -39,6 +39,19 @@ final class PaletteRecentsTests: XCTestCase {
         XCTAssertTrue(store.recentCommands.contains(.saveLayout), "Save Current Layout is a recent")
     }
 
+    /// ⌘N (.newPaneDefault) opens a pane of the user's default kind, but the palette catalog has no
+    /// .newPaneDefault entry — recording it verbatim silently dropped it from the recents block AND wasted
+    /// a ring slot. apply() must record the RESOLVED .newPane(kind) so it resolves in the catalog and names
+    /// what was actually created.
+    func testNewPaneDefaultRecordsResolvedKindNotTheUnshowableDefault() {
+        let store = makeStore()
+        apply(.newPaneDefault, to: store)
+        XCTAssertFalse(store.recentCommands.contains(.newPaneDefault),
+                       ".newPaneDefault is never recorded verbatim (no catalog entry → would vanish + waste a slot)")
+        XCTAssertEqual(store.recentCommands.first, .newPane(SettingsKey.defaultPaneKind),
+                       "the resolved default kind is recorded so the recent resolves in the catalog")
+    }
+
     /// The negative control that proves the routing matters: calling the store methods DIRECTLY (the old
     /// menu wiring) records nothing — recents live only at the `apply()` chokepoint.
     func testDirectStoreCallsBypassRecents() {
