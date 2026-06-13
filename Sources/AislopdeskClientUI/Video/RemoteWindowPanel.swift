@@ -184,6 +184,16 @@ public final class RemoteWindowModel {
         }
     }
 
+    /// The message shown inside the discovered-window list when the active filter excludes every window.
+    /// The list renders only when discovery found ≥1 window (and an empty filter matches all), so this is
+    /// always a filter-exclusion case — name the filter AND point at the fix (clearing it reveals the
+    /// `totalCount` discovered windows), rather than the dead-end "no windows match". Pure for tests.
+    public static func windowFilterEmptyMessage(filter: String, totalCount: Int) -> String {
+        let trimmed = filter.trimmingCharacters(in: .whitespaces)
+        let windowWord = totalCount == 1 ? "window" : "windows"
+        return "No windows match “\(trimmed)” — clear the filter to see all \(totalCount) \(windowWord)."
+    }
+
     /// Picks a window from the list: fills ``windowID`` + ``title`` + ``appName`` (the caller then
     /// ``open()``s).
     public func pick(_ summary: RemoteWindowSummary) {
@@ -423,7 +433,7 @@ public struct RemoteWindowPanel: View {
         return ScrollView {
             VStack(spacing: 0) {
                 if visible.isEmpty {
-                    Text("No windows match “\(filter)”")
+                    Text(RemoteWindowModel.windowFilterEmptyMessage(filter: filter, totalCount: model.availableWindows.count))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(8)
