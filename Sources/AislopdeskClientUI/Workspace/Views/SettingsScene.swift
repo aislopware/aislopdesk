@@ -28,13 +28,6 @@ public enum SettingsKey {
         UserDefaults.standard.object(forKey: autoSwitchLayouts) as? Bool ?? true
     }
 
-    /// Whether the dragged window/group slides along — and parts — its neighbours instead of overlapping
-    /// (default ON — a smart-layout QoL). The `⌘`-drag bypass still frees a single overlap drag. Read at
-    /// fire-time.
-    public static var nonOverlapEnabled: Bool {
-        UserDefaults.standard.object(forKey: nonOverlap) as? Bool ?? true
-    }
-
     /// Whether explicit OSC 9/777 notifications should post (default ON). Read at fire-time.
     public static var oscNotificationsEnabled: Bool {
         UserDefaults.standard.object(forKey: oscNotifications) as? Bool ?? true

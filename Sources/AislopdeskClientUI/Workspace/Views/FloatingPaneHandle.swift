@@ -365,10 +365,10 @@ struct PaneMenuView: View {
 
     /// Interaction prefs (NOT document state): shared with ``CanvasItemView``'s solver config and
     /// ``CanvasView``'s grid — and the only snap-disable path on iOS (no ⌘ key there).
-    @AppStorage("canvas.snapPanes") private var snapPanes = true
-    @AppStorage("canvas.snapGrid") private var snapGrid = true
-    @AppStorage("canvas.showGrid") private var showGrid = true
-    @AppStorage("canvas.nonOverlap") private var nonOverlap = true
+    @AppStorage(SettingsKey.snapPanes) private var snapPanes = true
+    @AppStorage(SettingsKey.snapGrid) private var snapGrid = true
+    @AppStorage(SettingsKey.showGrid) private var showGrid = true
+    @AppStorage(SettingsKey.nonOverlap) private var nonOverlap = true
 
     @State private var groupSectionExpanded = false
     /// Inline rename, hosted HERE (the sidebar's inline-rename field is unreachable when the sidebar

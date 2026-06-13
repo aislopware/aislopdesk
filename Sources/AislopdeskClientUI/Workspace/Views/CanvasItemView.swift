@@ -117,9 +117,9 @@ struct CanvasItemView: View {
     @State private var resizeNoOverlap: CanvasNonOverlap.Config?
 
     /// Interaction prefs (shared with ``PaneMenuView``'s toggles — also the iOS snap-disable path).
-    @AppStorage("canvas.snapPanes") private var snapPanes = true
-    @AppStorage("canvas.snapGrid") private var snapGrid = true
-    @AppStorage("canvas.nonOverlap") private var nonOverlap = true
+    @AppStorage(SettingsKey.snapPanes) private var snapPanes = true
+    @AppStorage(SettingsKey.snapGrid) private var snapGrid = true
+    @AppStorage(SettingsKey.nonOverlap) private var nonOverlap = true
 
     private var isFocused: Bool { store.isFocused(item.id) }
 
