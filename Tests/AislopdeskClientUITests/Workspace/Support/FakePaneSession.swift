@@ -51,6 +51,12 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     /// byte sequence delivered to a pane.
     private(set) var sentBytes: [[UInt8]] = []
 
+    /// Optional re-entrancy probe: fired INSIDE ``sendBytes(_:)`` after recording, so a broadcast test can
+    /// simulate a sibling whose delivery re-enters the store's fan-out (the production loop a sibling's
+    /// `sendInput` → `broadcastTap` → `fanBroadcastInput` would form) and prove the reentrancy guard holds.
+    /// Default `nil` ⇒ inert for every existing test.
+    var onSendBytes: ((FakePaneSession, [UInt8]) -> Void)?
+
     // MARK: Video activation
 
     /// The video-activation flag the cap tests assert against (only meaningful for `.remoteGUI`).
@@ -102,6 +108,7 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     func sendBytes(_ bytes: [UInt8]) {
         guard kind.canReceiveText else { return }
         sentBytes.append(bytes)
+        onSendBytes?(self, bytes)
     }
 
     // MARK: PaneSessionHandle: video

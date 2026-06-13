@@ -924,6 +924,39 @@ public final class WorkspaceStore {
         return targets.count
     }
 
+    /// Reentrancy guard for ``fanBroadcastInput(from:_:)``: when a fan-out mirrors bytes into a SIBLING
+    /// target, that sibling's own `TerminalViewModel.sendInput` re-fires the broadcast tap — without this
+    /// guard each keystroke would cross-multiply across the group (N panes → N² sends → a feedback storm).
+    /// Set only for the synchronous duration of one fan-out (all on the main actor, so a flag suffices).
+    private var isFanningBroadcast = false
+
+    /// The live synchronized-input fan-out (tmux `synchronize-panes`): the SOURCE pane's terminal calls
+    /// this from ``TerminalViewModel/sendInput(_:)`` with the bytes it just sent to its own shell; when
+    /// broadcast is armed AND the source is part of the current target group, the SAME bytes are mirrored
+    /// into every OTHER target's shell — so a keystroke (macOS surface) or a composed line (iOS input bar),
+    /// both of which funnel through `sendInput`, types on every grouped pane at once.
+    ///
+    /// The source pane is intentionally skipped (it already delivered the bytes locally via its own
+    /// `inputSink`); siblings receive via ``PaneSessionHandle/sendBytes(_:)`` (→ their input funnel → their
+    /// `sendInput`), and the reentrancy guard keeps that re-entry from re-fanning. A no-op when disarmed,
+    /// when the source is not a target (you are typing in a non-broadcast pane), or when re-entered.
+    /// Returns the number of SIBLINGS reached (0 when it did nothing). Pure registry routing — no mutation.
+    @discardableResult
+    public func fanBroadcastInput(from sourceID: PaneID, _ data: Data) -> Int {
+        guard broadcastActive, !isFanningBroadcast, !data.isEmpty else { return 0 }
+        let targets = broadcastTargets()
+        guard targets.contains(sourceID), targets.count > 1 else { return 0 }
+        isFanningBroadcast = true
+        defer { isFanningBroadcast = false }
+        let bytes = Array(data)
+        var reached = 0
+        for id in targets where id != sourceID {
+            registry[id]?.sendBytes(bytes)
+            reached += 1
+        }
+        return reached
+    }
+
     // MARK: - Snippets (saved command macros, run from ⌘K)
 
     /// The saved snippets, persisted on the workspace (read-only view; mutate via the CRUD below).
