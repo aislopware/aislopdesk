@@ -83,6 +83,17 @@ struct CanvasView: View {
                 }
             }
             .overlay { if store.overviewActive { overviewLayer(viewport: geo.size) } }
+            // Synchronized-input indicator: broadcast is a global ARMED mode that silently changes what
+            // every keystroke does (it fans to the group). It MUST be visible while armed — a top-centre
+            // pill naming the reach, tap to disarm. Scoped fade so it never animates the camera offset.
+            .overlay(alignment: .top) {
+                if store.broadcastActive && !store.overviewActive && maxID == nil {
+                    broadcastBanner
+                        .padding(.top, 10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.18), value: store.broadcastActive)
             .animation(.easeInOut(duration: 0.2), value: store.overviewActive)
             .onAppear { report(geo.size, camera: canvas.camera) }
             .onChange(of: geo.size) { _, s in report(s, camera: canvas.camera) }
@@ -317,6 +328,33 @@ struct CanvasView: View {
             .help("Pan back to your panes")
             .transition(.opacity)
         }
+    }
+
+    /// The armed-broadcast indicator pill (top-centre): names how many panes a keystroke now reaches and
+    /// disarms on tap. The count is resolved live from ``WorkspaceStore/broadcastTargets()`` so it tracks
+    /// the focus/selection that defines the target group; "no panes" reads honestly when the focused pane
+    /// is not text-capable (e.g. a video pane is focused) so the mode never looks active-but-silent.
+    private var broadcastBanner: some View {
+        let count = store.broadcastTargets().count
+        return Button {
+            store.setBroadcast(false)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                Text(count == 0 ? "Broadcasting — no panes in range"
+                                : "Broadcasting to \(count) pane\(count == 1 ? "" : "s")")
+                    .font(.callout.weight(.medium))
+                Text("⇧⌘B").font(.caption2.monospaced()).opacity(0.7)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .foregroundStyle(.white)
+            .background(Color.accentColor, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.2), radius: 8, y: 3)
+        }
+        .buttonStyle(.plain)
+        .help("Synchronized input is on — typing fans out to every pane in the group. Click or press ⇧⌘B to stop.")
     }
 
     // MARK: Reporting (geometric focus + viewport + video-cap membership)

@@ -625,6 +625,10 @@ struct CanvasItemView: View {
             // terminal is smooth and never thrashes the canvas re-render cascade (BUG-2/BUG-1 fix).
             store?.scrollPan(by: delta)
         }
+        // Synchronized input (tmux synchronize-panes): when broadcast is armed, the bytes this pane sends
+        // are mirrored into the other target panes. The store no-ops when disarmed / when this pane is not
+        // a broadcast target, and guards its own re-entry — so this is inert for the common single-pane case.
+        model.broadcastTap = { [weak store] data in store?.fanBroadcastInput(from: id, data) }
     }
 }
 

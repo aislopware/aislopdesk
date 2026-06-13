@@ -146,6 +146,14 @@ public final class TerminalViewModel {
     /// `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers (never invoked).
     @ObservationIgnored public var onCanvasScroll: ((CGSize) -> Void)?
 
+    /// Synchronized-input tap (tmux `synchronize-panes`). When set, every OUT chunk this pane sends —
+    /// macOS surface keystrokes AND iOS input-bar submits both funnel through ``sendInput(_:)`` — is also
+    /// offered here so the store can MIRROR it into the other broadcast panes. The store's closure is the
+    /// authority on whether broadcast is armed and which siblings receive it (and guards its own re-entry,
+    /// so mirroring into a sibling does not loop back). Local delivery via ``inputSink`` is unchanged.
+    /// `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers (never invoked).
+    @ObservationIgnored public var broadcastTap: ((Data) -> Void)?
+
     // MARK: Replay byte-ring (surface-rebuild survival)
 
     /// Bounded FIFO of the COMPLETE `output` chunks fed to the surface, kept so a
@@ -204,6 +212,9 @@ public final class TerminalViewModel {
         if Self.echoProbeEnabled { probeInputAt = ContinuousClock.now }
         if glitchCaretMode != .off { noteGlitchCaretSend(data) }
         inputSink?(data)
+        // Synchronized input: offer the SAME bytes to the broadcast fan-out (no-op when disarmed). After
+        // the local send so the source pane echoes first; the store skips the source and guards re-entry.
+        broadcastTap?(data)
     }
 
     // MARK: Glitch caret (predictive-echo v1 — docs/12 §B → docs/17 §2.4, docs/31 #3)

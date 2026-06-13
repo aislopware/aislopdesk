@@ -10,6 +10,27 @@ import AislopdeskTerminal
 @MainActor
 final class TerminalViewModelTests: XCTestCase {
 
+    func testSendInputOffersBytesToBroadcastTapAfterLocalSink() {
+        let model = TerminalViewModel()
+        var localOrder: [String] = []
+        var sunk: [Data] = []
+        var tapped: [Data] = []
+        model.inputSink = { d in localOrder.append("local"); sunk.append(d) }
+        model.broadcastTap = { d in localOrder.append("tap"); tapped.append(d) }
+        model.sendInput(Data("x".utf8))
+        XCTAssertEqual(sunk, [Data("x".utf8)], "the local pane still receives via inputSink")
+        XCTAssertEqual(tapped, [Data("x".utf8)], "the same bytes are offered to the broadcast tap")
+        XCTAssertEqual(localOrder, ["local", "tap"], "local delivery happens before the fan-out")
+    }
+
+    func testSendInputWithoutTapIsUnchanged() {
+        let model = TerminalViewModel()
+        var sunk: [Data] = []
+        model.inputSink = { sunk.append($0) }
+        model.sendInput(Data("y".utf8))   // no broadcastTap wired → no-op, no crash
+        XCTAssertEqual(sunk, [Data("y".utf8)])
+    }
+
     func testFirstOutputFlipsConnectingToConnected() {
         let model = TerminalViewModel()
         XCTAssertEqual(model.connectionStatus, .idle)
