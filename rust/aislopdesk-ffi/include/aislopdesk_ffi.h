@@ -197,6 +197,45 @@ uint8_t aisd_adaptive_fec_tier(double loss, uint8_t previous_tier, uint8_t allow
 AisdTierState aisd_adaptive_fec_next_tier_state(double loss, AisdTierState state, int32_t dwell,
                                                 uint8_t allow_off, uint8_t saw_unrecovered_loss);
 
+/* ---- coordinate_mapping (pure scalar; screens borrowed in) ------------------------- */
+
+/* A 2-D point in host points (layout = Rust AisdPoint = Swift VideoPoint: x then y). */
+typedef struct AisdPoint {
+    double x;
+    double y;
+} AisdPoint;
+
+/* A rectangle (origin + size), flat (x, y, width, height) — all double. */
+typedef struct AisdRect {
+    double x;
+    double y;
+    double width;
+    double height;
+} AisdRect;
+
+/* A display: Cocoa-bottom-left frame + Retina backing scale. */
+typedef struct AisdScreenInfo {
+    AisdRect cocoa_frame;
+    double backing_scale_factor;
+} AisdScreenInfo;
+
+/* Map a normalised (0..1) window point to a host-window point in CG top-left space. */
+AisdPoint aisd_coord_window_point(AisdPoint normalized, AisdRect window_bounds);
+
+/* Flip a CG-top-left rect into Cocoa bottom-left space (cocoa_y = primary_height - cg_y - h). */
+AisdRect aisd_coord_cg_rect_to_cocoa(AisdRect cg_rect, double primary_height);
+
+/* Pick the screen a window lives on (largest overlap), writing its backing_scale_factor to
+ * *out_scale. AISD_OK => overlap (*out_scale written); AISD_EMPTY => no overlap (untouched);
+ * AISD_ERR_NULL => out_scale NULL, or screens NULL while screen_count != 0. screens borrowed. */
+AisdStatus aisd_coord_backing_scale_factor(AisdRect window_bounds_cg,
+                                           const AisdScreenInfo *screens, size_t screen_count,
+                                           double primary_height, double *out_scale);
+
+/* Pixel path: divide by backing_scale_factor to get points, then add the window origin. */
+AisdPoint aisd_coord_window_point_from_pixel(AisdPoint pixel, AisdRect window_bounds_cg,
+                                             double backing_scale_factor);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
