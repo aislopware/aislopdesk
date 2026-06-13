@@ -76,6 +76,17 @@ public protocol PaneSessionHandle: AnyObject, Identifiable {
     /// `InputBarModel`, test fakes record it.
     func sendBytes(_ bytes: [UInt8])
 
+    // MARK: Terminal bell (attention signal)
+
+    /// Whether the remote rang the terminal bell (BEL / `\a`) since it was last cleared — drives the
+    /// pill + sidebar "attention" badge on an UNFOCUSED pane (a build finished / error rang while you
+    /// were elsewhere). `false` for kinds with no terminal. Default implementation returns `false`.
+    var bellPending: Bool { get }
+
+    /// Clears the pending-bell flag (called when the pane is focused, so seeing it dismisses the badge).
+    /// Default does nothing; ``LivePaneSession`` routes to the terminal model.
+    func clearBell()
+
     /// Tear the session down for good (the pane is closing). Delegates to the proven
     /// `ConnectionViewModel` teardown order, closes the inspector channel, and stops any video stack.
     /// Called by `reconcile()` for every orphaned leaf id before it is dropped from the registry.
@@ -92,6 +103,12 @@ public extension PaneSessionHandle {
 
     /// Default: no text funnel. ``LivePaneSession`` overrides for terminal/Claude panes.
     func sendBytes(_ bytes: [UInt8]) {}
+
+    /// Default: no terminal, never rings. ``LivePaneSession`` overrides via its terminal model.
+    var bellPending: Bool { false }
+
+    /// Default: nothing to clear. ``LivePaneSession`` routes to the terminal model.
+    func clearBell() {}
 }
 
 // MARK: - ID adoption (store-internal)

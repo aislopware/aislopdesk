@@ -83,12 +83,22 @@ struct FloatingPaneHandle: View {
         let running = PanePresentation.isRunning(handle) && status.phase == .connected
         let latency = PanePresentation.latencyMS(handle)
         let laggy = laggyLatched && status.phase == .connected
+        // The terminal rang while this pane was UNFOCUSED → an attention badge until you look at it
+        // (focusing the pane clears it via store.focus → handle.clearBell).
+        let bellRang = (handle?.bellPending ?? false) && !isFocused
 
         HStack(spacing: 5) {
             Image(systemName: PaneLeafView.icon(for: spec.kind))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(isFocused ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
             PaneStatusDot(status: status, running: running)
+            if bellRang {
+                Image(systemName: "bell.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .help("The terminal rang the bell")
+                    .transition(.scale.combined(with: .opacity))
+            }
             // ONE expansion slot, in salience order: trouble > laggy RTT > running > quiet title.
             if trouble {
                 statusText(status)
@@ -128,7 +138,8 @@ struct FloatingPaneHandle: View {
         .contentShape(Rectangle())
         // Quiet when idle; fully opaque when it matters. A pane in trouble — or one actively running
         // a command — is NEVER 70%-transparent.
-        .opacity(trouble || running || hovering || menuShown || isFocused ? 1 : 0.7)
+        .opacity(trouble || running || bellRang || hovering || menuShown || isFocused ? 1 : 0.7)
+        .animation(.easeOut(duration: 0.12), value: bellRang)
         .animation(.easeOut(duration: 0.12), value: trouble)
         .animation(.easeOut(duration: 0.12), value: running)
         .animation(.easeOut(duration: 0.12), value: laggy)

@@ -126,6 +126,12 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// bar, NOT recorded for echo-dedup (a programmatic send has no local pre-echo to suppress).
     public func sendBytes(_ bytes: [UInt8]) { inputBar?.sendRaw(bytes, record: false) }
 
+    /// Whether the remote rang the bell since last cleared (drives the unfocused-pane attention badge).
+    public var bellPending: Bool { terminalModel?.bellPending ?? false }
+
+    /// Clears the pending bell (the store calls this when this pane is focused).
+    public func clearBell() { terminalModel?.clearBell() }
+
     // MARK: Init
 
     /// The designated initializer is private — production builds a `LivePaneSession` only through

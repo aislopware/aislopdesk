@@ -154,6 +154,14 @@ struct PaneSidebarView: View {
                 }
 
                 Spacer(minLength: 0)
+
+                // Attention badge: the terminal rang while this (unfocused) pane was in the background.
+                if (store.handle(for: id)?.bellPending ?? false) && store.focusedPane != id {
+                    Image(systemName: "bell.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Bell rang")
+                }
             }
             .contentShape(Rectangle())
             .tag(id)
