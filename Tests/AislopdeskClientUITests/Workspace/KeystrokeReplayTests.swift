@@ -158,6 +158,15 @@ final class KeystrokeReplayTests: XCTestCase {
         XCTAssertNil(model.pasteFeedback, "a clean paste shows no interruption")
     }
 
+    func testCleanPasteClearsAStaleSkipBanner() {
+        // A skipped paste shows the banner; a SUBSEQUENT clean paste must clear it (not leave it timing out).
+        let model = streamingModel()
+        _ = model.pasteAsKeystrokes("aé😀b")
+        XCTAssertNotNil(model.pasteFeedback)
+        _ = model.pasteAsKeystrokes("clean")
+        XCTAssertNil(model.pasteFeedback, "the prior skip warning is cleared by a clean paste")
+    }
+
     func testDismissPasteFeedbackClearsIt() {
         let model = streamingModel()
         _ = model.pasteAsKeystrokes("é")   // all skipped

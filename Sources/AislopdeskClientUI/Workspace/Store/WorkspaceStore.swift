@@ -1003,7 +1003,11 @@ public final class WorkspaceStore {
     /// Edits an existing snippet's name + body. No-op for an unknown id.
     public func updateSnippet(_ id: UUID, name: String, body: String) {
         guard let i = workspace.snippets.firstIndex(where: { $0.id == id }) else { return }
-        workspace.snippets[i].name = Self.snippetName(name)
+        // Store the name VERBATIM here — this is the live-editing path, so a per-keystroke trim/substitute
+        // would fight the typist (a trailing space gets deleted; clearing the field snaps to "Snippet").
+        // The empty→"Snippet" fallback is applied at DISPLAY time (palette/manager) and re-normalized once
+        // on add + import/load, where a one-shot clean-up is correct.
+        workspace.snippets[i].name = name
         workspace.snippets[i].body = body
         reconcile()
     }
@@ -1176,8 +1180,13 @@ public final class WorkspaceStore {
     /// get a snippet by hand-editing the workspace JSON. Transient — never persisted.
     public private(set) var snippetManagerPresented = false
 
-    /// Opens the snippet manager (⌘K "Manage Snippets…" / Pane ▸ Manage Snippets…).
-    public func requestSnippetManager() { snippetManagerPresented = true }
+    /// Opens the snippet manager (⌘K "Manage Snippets…" / Pane ▸ Manage Snippets…). Clears any stranded
+    /// `pendingSnippetRun` first so a value-entry sheet that a prior transition failed to present can
+    /// never sit armed-but-invisible behind the manager.
+    public func requestSnippetManager() {
+        pendingSnippetRun = nil
+        snippetManagerPresented = true
+    }
 
     /// Closes the snippet manager.
     public func dismissSnippetManager() { snippetManagerPresented = false }

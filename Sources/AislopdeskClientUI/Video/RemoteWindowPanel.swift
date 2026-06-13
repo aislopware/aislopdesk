@@ -108,9 +108,10 @@ public final class RemoteWindowModel {
     }
 
     /// Records the transient paste feedback when characters were dropped, and schedules its auto-clear.
-    /// No feedback for a clean paste (every character mapped) — the success case needs no interruption.
+    /// A CLEAN paste (every character mapped) clears any STALE banner from a prior skipped paste rather
+    /// than leaving it up to time out — a successful paste should not keep showing the old warning.
     private func notePasteFeedback(typed: Int, skipped: Int) {
-        guard skipped > 0 else { return }
+        guard skipped > 0 else { dismissPasteFeedback(); return }
         pasteFeedback = PasteFeedback(typed: typed, skipped: skipped)
         pasteFeedbackTask?.cancel()
         let d = pasteFeedbackDuration
