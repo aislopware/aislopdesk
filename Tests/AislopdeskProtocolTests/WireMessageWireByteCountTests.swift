@@ -42,6 +42,7 @@ final class WireMessageWireByteCountTests: XCTestCase {
             .notification(title: "", body: "done"),
             .notification(title: "CI", body: "green ✅ — đa byte"),
             .notification(title: "only title", body: ""),
+            .notification(title: String(repeating: "T", count: 70_000), body: "overlong title is clamped"),  // wireByteCount must track the clamp
         ]
         for message in messages {
             XCTAssertEqual(message.wireByteCount, message.encode().count,
