@@ -111,6 +111,18 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
         onSendBytes?(self, bytes)
     }
 
+    // MARK: PaneSessionHandle: terminal bell
+
+    /// Settable so a test can simulate a rung bell; `clearBell()` resets it (and records the clear).
+    var bellPending: Bool = false
+    /// How many times ``clearBell()`` was called (so a test can assert the store cleared on focus).
+    private(set) var clearBellCount = 0
+
+    func clearBell() {
+        clearBellCount += 1
+        bellPending = false
+    }
+
     // MARK: PaneSessionHandle: video
 
     func setVideoActive(_ active: Bool) {

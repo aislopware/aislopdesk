@@ -550,6 +550,8 @@ public final class WorkspaceStore {
     public func focus(_ id: PaneID) {
         guard workspace.focusedPane != id else { return }
         workspace = workspace.focusing(id)
+        // Seeing a pane dismisses its attention bell badge (the badge only shows on unfocused panes).
+        registry[id]?.clearBell()
         reconcile()
     }
 

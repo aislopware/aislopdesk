@@ -326,4 +326,37 @@ final class CommandRoutingTests: XCTestCase {
         XCTAssertEqual(store.allSessions.count, sessionsBefore, "renamePane command must not touch the registry")
         XCTAssertEqual(store.pendingRename, store.focusedPane, "renamePane recorded the pending rename target")
     }
+
+    // MARK: - Terminal bell badge (focus clears it; it persists on unfocused panes)
+
+    private func fake(_ store: WorkspaceStore, _ id: PaneID) -> FakePaneSession? {
+        store.handle(for: id) as? FakePaneSession
+    }
+
+    func testFocusClearsTheNewlyFocusedPanesBell() {
+        let store = makeStore()
+        apply(.newPane(.terminal), to: store)              // two panes; the new one is focused
+        let ids = paneIDs(store)
+        let other = ids.first { $0 != store.focusedPane }!
+        // The background pane rings.
+        fake(store, other)?.bellPending = true
+        XCTAssertTrue(fake(store, other)?.bellPending ?? false)
+        // Focusing it dismisses the badge.
+        store.focus(other)
+        XCTAssertEqual(fake(store, other)?.clearBellCount, 1, "focus cleared the bell")
+        XCTAssertFalse(fake(store, other)?.bellPending ?? true)
+    }
+
+    func testBellPersistsWhileTheRingingPaneStaysUnfocused() {
+        let store = makeStore()
+        apply(.newPane(.terminal), to: store)
+        let ids = paneIDs(store)
+        let focused = store.focusedPane!
+        let background = ids.first { $0 != focused }!
+        fake(store, background)?.bellPending = true
+        // Focusing the ALREADY-focused pane is a no-op and must not clear a different pane's bell.
+        store.focus(focused)
+        XCTAssertTrue(fake(store, background)?.bellPending ?? false, "an unfocused pane keeps its badge")
+        XCTAssertEqual(fake(store, background)?.clearBellCount, 0)
+    }
 }
