@@ -108,11 +108,16 @@ public struct DecodeGate: Sendable, Equatable {
     public mutating func noteDecodeSucceeded(frameID: UInt32, keyframe: Bool) {
         if keyframe {
             if let mx = maxLostFrameID, frameID.distanceWrapped(from: mx) <= 0 {
-                // The keyframe predates the newest loss: it re-anchored the chain UP TO itself,
-                // and the decoder session is provably alive again — downgrade needKeyframe to
-                // brokenChain, keep the loss record (conservative: deltas in (keyframe, loss)
-                // are droppable; an extra anchor wait beats feeding VT a post-loss delta).
-                mode = .brokenChain
+                // The keyframe predates the newest loss: it re-anchored the chain UP TO itself, but
+                // losses past it remain. Downgrade to brokenChain (which then admits an acked-LTR
+                // refresh) ONLY if the session was still ALIVE — i.e. we were in brokenChain, so the
+                // pre-loss acked LTRs survive in the DPB and an LTR refresh can decode. If the session
+                // had been TORN DOWN (needKeyframe: invalidateSession wiped the DPB), a stale keyframe
+                // rebuilds it with an empty/keyframe-only DPB — NO pre-teardown acked LTR survives, so
+                // admitting an ackedAnchored refresh would feed VT a reference it no longer holds
+                // (-12909) → another decode-fail / teardown / IDR round, the exact churn this gate
+                // prevents. Stay needKeyframe so only a keyframe NEWER than the loss can re-anchor.
+                if mode != .needKeyframe { mode = .brokenChain }
             } else {
                 reset()
             }
