@@ -404,12 +404,19 @@ public final class TerminalViewModel {
     public func observe(client: AislopdeskClient) async {
         connectionStatus = .connecting
         for await _ in client.outputWakeups {
-            // Epoch snapshot AFTER the take: a reconnect folding in while this batch is
-            // in hand bumps the epoch, and ingestBatch then drops the dead bytes instead
-            // of consuming the new session's one-shot wipe with them (review finding).
-            // Snapshotting BEFORE the take would fail the other way (drop NEW bytes).
+            // Epoch snapshot BEFORE the take, so a batch is tagged with the session it was taken FROM.
+            // `markReconnecting()` (epoch bump + fresh-wipe arm) runs on this same MainActor and can
+            // interleave while we are suspended in `takeOutputBatch()`. If we read `sessionEpoch` AFTER
+            // the take resumes (the old code) the DEAD session's in-hand bytes get tagged with the NEW
+            // epoch — the ingestBatch guard then passes them through and they consume the fresh-session
+            // wipe (painting stale output under the new prompt). Capturing before means dead bytes carry
+            // the OLD epoch and ingestBatch drops them; the fresh session's bytes arrive on a LATER wake,
+            // taken under the bumped epoch, and paint correctly. (The inverse risk — a take that returns
+            // NEW bytes under a stale snapshot — needs an entire network reconnect to complete inside the
+            // sub-µs `takeOutputBatch` actor hop, which cannot happen.)
+            let epoch = sessionEpoch
             let batch = await client.takeOutputBatch()
-            await ingestBatch(batch, epoch: sessionEpoch)
+            await ingestBatch(batch, epoch: epoch)
         }
         // FINAL DRAIN: a tail appended just before the wake stream finished (exit/close)
         // has no wake left to announce it — take it explicitly. ONLY on a natural finish:
@@ -417,8 +424,9 @@ public final class TerminalViewModel {
         // it would paint the dead session's tail into the freshly-reset pane and credit
         // those bytes to the wrong (new) transport (night-review finding).
         guard !Task.isCancelled else { return }
+        let tailEpoch = sessionEpoch
         let tail = await client.takeOutputBatch()
-        await ingestBatch(tail, epoch: sessionEpoch)
+        await ingestBatch(tail, epoch: tailEpoch)
     }
 
     /// Monotonic SESSION boundary counter, bumped by ``markReconnecting()`` and
