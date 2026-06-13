@@ -358,7 +358,7 @@ public final class WorkspaceStore {
         let near = group.flatMap { workspace.canvas.ids(inGroup: $0).last } ?? workspace.focusedPane
         let (canvas, id) = workspace.canvas.adding(newSpec, near: near, viewport: viewport)
         workspace.canvas = canvas
-        workspace.focusedPane = id
+        focusOnPlacement(id)
         // A new pane exits any maximize (the canvas layout changed).
         if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
         if let group { workspace.canvas = workspace.canvas.assigning(id, toGroup: group) }
@@ -381,7 +381,7 @@ public final class WorkspaceStore {
         let viewport = lastViewport
         let (canvas, id) = workspace.canvas.adding(spec, near: workspace.focusedPane, viewport: viewport)
         workspace.canvas = canvas
-        workspace.focusedPane = id
+        focusOnPlacement(id)
         if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
         recenterIfOffscreen(id, viewport: viewport)
         reconcile()
@@ -429,7 +429,7 @@ public final class WorkspaceStore {
             item.spec, near: id, viewport: lastViewport, size: item.frame.size
         )
         workspace.canvas = canvas
-        workspace.focusedPane = newID
+        focusOnPlacement(newID)
         if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
         if let group = item.groupID {
             workspace.canvas = workspace.canvas.assigning(newID, toGroup: group)
@@ -506,7 +506,7 @@ public final class WorkspaceStore {
         }
         let (canvas, id) = workspace.canvas.restoring(record.spec, frame: record.frame, group: group)
         workspace.canvas = canvas
-        workspace.focusedPane = id
+        focusOnPlacement(id)
         if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
         // In-view guarantee, mirroring addPane: the pane may have been closed far off-viewport.
         recenterIfOffscreen(id, viewport: lastViewport)
@@ -587,6 +587,17 @@ public final class WorkspaceStore {
     private func frontFocusHistory(_ id: PaneID) {
         focusHistory.removeAll { $0 == id }
         focusHistory.insert(id, at: 0)
+    }
+
+    /// Makes `id` the focused pane via a CREATION/RAISE path (which set the focus DIRECTLY rather than
+    /// through `focus(_:)`, the existing-pane re-render path) AND records the visit in the quick-switch
+    /// MRU ring. Without recording here, opening/raising panes never populated `focusHistory`, so
+    /// quick-switch (⌥⌘;) stayed dead until the user happened to CLICK between panes (the only `focus()`
+    /// caller). Records OUTGOING-then-incoming so "go to last pane" returns to where you actually were.
+    /// Ephemeral system-dialog panes deliberately do NOT use this (they must not pollute the ring).
+    private func focusOnPlacement(_ id: PaneID) {
+        recordFocusVisit(id)
+        workspace.focusedPane = id
     }
 
     /// The pane a quick-switch step would land on, or `nil` when the step is a no-op (fewer than two panes
@@ -679,7 +690,7 @@ public final class WorkspaceStore {
     public func movePane(_ id: PaneID, by delta: CGSize) {
         guard workspace.canvas.contains(id) else { return }
         workspace.canvas = workspace.canvas.moving(id, by: delta).raising(id)
-        workspace.focusedPane = id
+        focusOnPlacement(id)
         reconcile()
     }
 
@@ -710,7 +721,7 @@ public final class WorkspaceStore {
         guard let current = workspace.canvas.frame(of: id) else { return }
         guard config.enabled else {
             workspace.canvas = workspace.canvas.moving(id, to: snapped.origin).raising(id)
-            workspace.focusedPane = id
+            focusOnPlacement(id)
             reconcile()
             return
         }
@@ -728,7 +739,7 @@ public final class WorkspaceStore {
         // Keep the pane's own group members non-overlapping (the top-level solve treated the dragged
         // pane's group as one excluded body, so a sibling overlap is resolved here).
         if let groupID { workspace.canvas = reflowedWithinGroup(workspace.canvas, movedPane: id, groupID: groupID, config: config) }
-        workspace.focusedPane = id
+        focusOnPlacement(id)
         reconcile()
     }
 
@@ -860,7 +871,7 @@ public final class WorkspaceStore {
     public func raisePane(_ id: PaneID) {
         guard workspace.canvas.contains(id) else { return }
         workspace.canvas = workspace.canvas.raising(id)
-        workspace.focusedPane = id
+        focusOnPlacement(id)
         reconcile()
     }
 
@@ -1420,7 +1431,7 @@ public final class WorkspaceStore {
             canvas = canvas.moving(id, by: delta)
         }
         workspace.canvas = canvas.raising(anchor)
-        workspace.focusedPane = anchor
+        focusOnPlacement(anchor)
         reconcile()
     }
 
