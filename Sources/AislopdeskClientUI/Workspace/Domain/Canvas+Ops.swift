@@ -448,21 +448,45 @@ public extension Canvas {
     /// ratio, so the group's footprint becomes `newBox` while its relative layout is preserved (the
     /// "resize a grouped selection" semantics). Member sizes floor at ``minItemSize`` via `sanitize`.
     /// Identity when the group is empty or degenerate.
-    func resizingGroup(_ groupID: PaneGroupID, toBox newBox: CGRect) -> Canvas {
+    ///
+    /// A group box can never be smaller than a single pane: members floor at ``minItemSize``, so scaling
+    /// toward a sub-floor box would force members *larger* than the box and spill them outside it —
+    /// corrupting the non-overlap solver, which moves a group as a rigid unit. We therefore floor the box
+    /// to `minItemSize` and clamp every sanitized member back inside it, so the containment invariant
+    /// (`newBox.contains(member.frame)`) always holds.
+    func resizingGroup(_ groupID: PaneGroupID, toBox proposedBox: CGRect) -> Canvas {
         guard let oldBox = groupBoundingBox(groupID), oldBox.width > 0, oldBox.height > 0 else { return self }
+        let newBox = CGRect(
+            x: proposedBox.minX,
+            y: proposedBox.minY,
+            width: max(proposedBox.width, Canvas.minItemSize.width),
+            height: max(proposedBox.height, Canvas.minItemSize.height)
+        )
         let sx = newBox.width / oldBox.width
         let sy = newBox.height / oldBox.height
         return Canvas(items: items.map { item in
             guard item.groupID == groupID else { return item }
             var copy = item
-            copy.frame = Canvas.sanitize(CGRect(
+            let scaled = Canvas.sanitize(CGRect(
                 x: newBox.minX + (item.frame.minX - oldBox.minX) * sx,
                 y: newBox.minY + (item.frame.minY - oldBox.minY) * sy,
                 width: item.frame.width * sx,
                 height: item.frame.height * sy
             ))
+            copy.frame = Canvas.clamping(scaled, into: newBox)
             return copy
         }, camera: camera)
+    }
+
+    /// Clamps `frame` to fit entirely inside `box`: size is capped to the box (never re-floored, so the
+    /// `minItemSize` invariant the caller already established is preserved when the box is at-least a pane),
+    /// then the origin is pinned so the (possibly shrunk) frame stays within the box on both axes.
+    static func clamping(_ frame: CGRect, into box: CGRect) -> CGRect {
+        let w = Swift.min(frame.width, box.width)
+        let h = Swift.min(frame.height, box.height)
+        let x = Swift.min(Swift.max(frame.minX, box.minX), box.maxX - w)
+        let y = Swift.min(Swift.max(frame.minY, box.minY), box.maxY - h)
+        return CGRect(x: x, y: y, width: w, height: h)
     }
 }
 

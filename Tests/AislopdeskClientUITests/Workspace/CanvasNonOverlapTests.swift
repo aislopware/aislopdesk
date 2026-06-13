@@ -307,6 +307,42 @@ final class CanvasNonOverlapTests: XCTestCase {
         XCTAssertEqual(out.frame(of: g2), CGRect(x: 600, y: 0, width: 400, height: 400))
     }
 
+    func testResizingGroupToSubFloorBoxKeepsMembersContained() {
+        // A group of two minItemSize panes, shrunk to a single-pane box: members floor at minItemSize and
+        // cannot scale below it, so the naive affine remap would spill them OUTSIDE the box (and corrupt the
+        // non-overlap solver). Every resulting member frame must stay contained in the (floored) box.
+        let g1 = PaneID(), g2 = PaneID(), gid = PaneGroupID()
+        let min = Canvas.minItemSize
+        let canvas = Canvas(items: [
+            CanvasItem(id: g1, spec: spec(), frame: CGRect(origin: CGPoint(x: 0, y: 0), size: min), z: 0, groupID: gid),
+            CanvasItem(id: g2, spec: spec(), frame: CGRect(origin: CGPoint(x: min.width + 40, y: 0), size: min), z: 1, groupID: gid),
+        ])
+        let out = canvas.resizingGroup(gid, toBox: CGRect(x: 0, y: 0, width: 160, height: 160))
+        // The box is floored to at least minItemSize; both members must be fully inside it.
+        let box = out.groupBoundingBox(gid)!
+        for id in [g1, g2] {
+            let f = out.frame(of: id)!
+            XCTAssertGreaterThanOrEqual(f.minX, box.minX - 0.001, "member \(id) leaks left of the box")
+            XCTAssertGreaterThanOrEqual(f.minY, box.minY - 0.001, "member \(id) leaks above the box")
+            XCTAssertLessThanOrEqual(f.maxX, box.maxX + 0.001, "member \(id) leaks right of the box")
+            XCTAssertLessThanOrEqual(f.maxY, box.maxY + 0.001, "member \(id) leaks below the box")
+            XCTAssertGreaterThanOrEqual(f.width, min.width - 0.001, "member kept its minItemSize width floor")
+            XCTAssertGreaterThanOrEqual(f.height, min.height - 0.001, "member kept its minItemSize height floor")
+        }
+    }
+
+    func testResizingGroupFloorsBoxToMinItemSize() {
+        let g1 = PaneID(), gid = PaneGroupID()
+        let canvas = Canvas(items: [
+            CanvasItem(id: g1, spec: spec(), frame: CGRect(x: 0, y: 0, width: 400, height: 400), z: 0, groupID: gid),
+        ])
+        // Ask for a 10×10 box — far below the pane floor; the result must be at least minItemSize.
+        let out = canvas.resizingGroup(gid, toBox: CGRect(x: 0, y: 0, width: 10, height: 10))
+        let box = out.groupBoundingBox(gid)!
+        XCTAssertGreaterThanOrEqual(box.width, Canvas.minItemSize.width - 0.001)
+        XCTAssertGreaterThanOrEqual(box.height, Canvas.minItemSize.height - 0.001)
+    }
+
     // MARK: - Bypass
 
     func testDisabledConfigIsIdentity() {
