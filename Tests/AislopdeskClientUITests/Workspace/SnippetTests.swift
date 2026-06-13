@@ -153,4 +153,55 @@ final class SnippetTests: XCTestCase {
         XCTAssertEqual(decoded.snippets.first?.name, "g")
         XCTAssertEqual(decoded.snippets.first?.body, "git status<Enter>")
     }
+
+    // MARK: - beginRunSnippet: the placeholder-prompt gate (don't send literal {{slots}})
+
+    func testBeginRunSnippetRunsImmediatelyWhenNoPlaceholders() {
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        let s = st.addSnippet(name: "u", body: "uptime<Enter>")
+        XCTAssertEqual(st.beginRunSnippet(s.id), .ran(1), "a no-placeholder snippet runs at once")
+        XCTAssertNil(st.pendingSnippetRun, "no value sheet is armed")
+        XCTAssertEqual(bytes(st, a.id), [Array("uptime".utf8) + [0x0D]])
+    }
+
+    func testBeginRunSnippetArmsTheSheetForAParameterizedSnippetAndDoesNotSendLiteralSlots() {
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        let s = st.addSnippet(name: "ssh", body: "ssh {{user}}@{{host}}<Enter>")
+        XCTAssertEqual(st.beginRunSnippet(s.id), .needsValues(["user", "host"]),
+                       "placeholders are reported in first-appearance order")
+        XCTAssertEqual(st.pendingSnippetRun, s.id, "the value sheet is armed")
+        XCTAssertEqual(bytes(st, a.id), [], "NOTHING is sent until values are collected (no literal {{}})")
+    }
+
+    func testBeginRunSnippetUnknownId() {
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        XCTAssertEqual(st.beginRunSnippet(UUID()), .unknown)
+        XCTAssertNil(st.pendingSnippetRun)
+    }
+
+    func testClearSnippetRunRequestDisarms() {
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        let s = st.addSnippet(name: "ssh", body: "ssh {{host}}<Enter>")
+        _ = st.beginRunSnippet(s.id)
+        XCTAssertNotNil(st.pendingSnippetRun)
+        st.clearSnippetRunRequest()
+        XCTAssertNil(st.pendingSnippetRun)
+    }
+
+    func testRunAfterCollectingValuesResolvesEveryPlaceholder() {
+        // The sheet's run path: seed all slots (blanks for any untouched) so no literal {{}} can leak.
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        let s = st.addSnippet(name: "ssh", body: "ssh {{user}}@{{host}}<Enter>")
+        _ = st.beginRunSnippet(s.id)
+        let n = st.runSnippet(s.id, values: ["user": "root", "host": "h.local"])
+        st.clearSnippetRunRequest()
+        XCTAssertEqual(n, 1)
+        XCTAssertEqual(bytes(st, a.id), [Array("ssh root@h.local".utf8) + [0x0D]])
+        XCTAssertNil(st.pendingSnippetRun)
+    }
 }

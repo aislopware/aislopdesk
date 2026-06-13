@@ -1117,6 +1117,38 @@ public final class WorkspaceStore {
         return count
     }
 
+    /// The snippet whose `{{placeholder}}` values the UI is currently asking for (the value-entry sheet's
+    /// presentation binding), or `nil`. Transient — never persisted.
+    public private(set) var pendingSnippetRun: UUID?
+
+    /// What ``beginRunSnippet(_:)`` decided to do — so the call (palette / menu) and the tests can branch
+    /// without poking view state.
+    public enum SnippetRunOutcome: Equatable {
+        /// Ran immediately (no placeholders), reaching N text-capable panes.
+        case ran(Int)
+        /// Has unresolved `{{placeholders}}` — the value-entry sheet was armed for these names.
+        case needsValues([String])
+        /// No snippet with that id.
+        case unknown
+    }
+
+    /// The single entry point for "run this snippet" from the palette/menu. A snippet with NO placeholders
+    /// runs straight away (the prior behaviour); a PARAMETERIZED one arms ``pendingSnippetRun`` so the UI
+    /// can collect values first — fixing the bug where `ssh {{user}}@{{host}}` was injected verbatim
+    /// because the palette always called `runSnippet(id, values: [:])`. Pure decision over the snippet's
+    /// placeholders; the sheet finishes by calling ``runSnippet(_:values:)`` + ``clearSnippetRunRequest()``.
+    @discardableResult
+    public func beginRunSnippet(_ id: UUID) -> SnippetRunOutcome {
+        guard let snippet = workspace.snippets.first(where: { $0.id == id }) else { return .unknown }
+        let slots = snippet.placeholders
+        guard !slots.isEmpty else { return .ran(runSnippet(id)) }
+        pendingSnippetRun = id
+        return .needsValues(slots)
+    }
+
+    /// Dismisses the placeholder value-entry sheet (Cancel, or after a successful run).
+    public func clearSnippetRunRequest() { pendingSnippetRun = nil }
+
     // MARK: - Command palette recents
 
     /// The most-recently-run palette COMMANDS, most-recent-first (non-persisted session state). The
