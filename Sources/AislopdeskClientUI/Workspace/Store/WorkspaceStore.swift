@@ -2398,7 +2398,13 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
     // Record action verbs into the palette recents from the ONE chokepoint every path funnels through
     // (palette, menu bar, keyboard shortcut) — so a command you run by ⌘-key, not just from the
     // palette, floats to the top next time. Navigation/transient verbs are excluded (isRecentsWorthy).
-    if command.isRecentsWorthy { store.recordRecentCommand(command) }
+    //
+    // ⌘N (.newPaneDefault) opens a pane of the user's default kind; the catalog has no .newPaneDefault
+    // entry (only the explicit .newPane(kind) items), so recording it verbatim silently dropped it from
+    // the recents block AND wasted a ring slot. Record the RESOLVED kind instead — it resolves in the
+    // catalog and names what was actually created.
+    let recordable: WorkspaceCommand = (command == .newPaneDefault) ? .newPane(SettingsKey.defaultPaneKind) : command
+    if recordable.isRecentsWorthy { store.recordRecentCommand(recordable) }
     switch command {
     case .newPaneDefault:
         store.addPane(kind: SettingsKey.defaultPaneKind)

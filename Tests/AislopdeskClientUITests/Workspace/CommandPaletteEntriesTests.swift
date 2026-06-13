@@ -118,6 +118,24 @@ final class CommandPaletteEntriesTests: XCTestCase {
         }
     }
 
+    // MARK: - Recents entries (focused-pane visibility, mirroring the catalog filter)
+
+    func testRecentEntriesHideFocusRequiringVerbsWhenNoFocusedPane() {
+        // A focus-requiring verb run earlier (Close/Duplicate Pane) must not surface at the TOP of the
+        // palette on an empty canvas, where selecting it is a graceful no-op that "reads as broken" — the
+        // exact case the catalog section already hides via visibleCommands(hasFocusedPane:).
+        let recents: [WorkspaceCommand] = [.closePane, .duplicatePane, .tidy, .centerAll]
+
+        let withFocus = CommandPaletteView.buildRecentEntries(commands: recents, hasFocusedPane: true)
+        XCTAssertTrue(withFocus.contains { $0.title == "Close Pane" }, "with a focused pane the verb shows")
+
+        let noFocus = CommandPaletteView.buildRecentEntries(commands: recents, hasFocusedPane: false)
+        XCTAssertFalse(noFocus.contains { $0.title == "Close Pane" }, "no focused pane → focus-verb hidden")
+        XCTAssertFalse(noFocus.contains { $0.title == "Duplicate Pane" }, "…same for every focus-requiring verb")
+        XCTAssertTrue(noFocus.contains { $0.title == "Tidy Layout" }, "a non-focus-requiring recent still shows")
+        XCTAssertTrue(noFocus.contains { $0.title == "Center on All" })
+    }
+
     // MARK: - Bookmark recall entries (jump to a named viewport from ⌘K)
 
     func testBookmarkEntriesAppearForSavedBookmarks() {
