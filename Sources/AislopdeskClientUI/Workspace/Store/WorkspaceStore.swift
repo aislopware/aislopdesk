@@ -581,6 +581,130 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    /// The canvas-space region the non-overlap solver gathers collision bodies from: the visible
+    /// viewport (committed camera less any uncommitted live scroll, matching the view's solve-time
+    /// reading) expanded by the snap margin so almost-visible neighbours still participate.
+    private var collisionRegion: CGRect {
+        let camera = workspace.canvas.camera
+        let origin = CGPoint(x: camera.origin.x - liveCameraOffset.width,
+                             y: camera.origin.y - liveCameraOffset.height)
+        return CGRect(origin: origin, size: lastViewport).insetBy(dx: -200, dy: -200)
+    }
+
+    /// Drag-to-move commit under the non-overlap layout (``CanvasNonOverlap``): the dragged pane slides
+    /// flush to `snapped` (never overlapping a neighbour / group box), and if the drop shows insert-intent
+    /// the surrounded neighbours part to admit it — both committed in ONE canvas mutation (one persistence
+    /// write, one reconcile). `snapped` is the CanvasSnap output (the gesture's snapped target). A disabled
+    /// `config` (⌘ / setting off) degrades to a plain move-to, so the call site stays uniform.
+    public func movePaneNonOverlapping(_ id: PaneID, snapped: CGRect, config: CanvasNonOverlap.Config) {
+        guard let current = workspace.canvas.frame(of: id) else { return }
+        guard config.enabled else {
+            workspace.canvas = workspace.canvas.moving(id, to: snapped.origin).raising(id)
+            workspace.focusedPane = id
+            reconcile()
+            return
+        }
+        let groupID = workspace.canvas.item(id)?.groupID
+        let bodies = workspace.canvas.collisionBodies(
+            excludingPane: id, excludingGroup: groupID, region: collisionRegion, groups: workspace.groups)
+        if let result = CanvasNonOverlap.makeSpace(target: snapped, draggedID: .pane(id), bodies: bodies, config: config) {
+            // Insert-intent: pin the pane at the drop and part the surrounded neighbours around it.
+            workspace.canvas = workspace.canvas.applying(result, groups: workspace.groups).raising(id)
+        } else {
+            // Rest flush: slide the pane to its non-overlapping position; nobody else moves.
+            let slid = CanvasNonOverlap.slide(snapped, from: current.origin, bodies: bodies, config: config).frame
+            workspace.canvas = workspace.canvas.moving(id, to: slid.origin).raising(id)
+        }
+        // Keep the pane's own group members non-overlapping (the top-level solve treated the dragged
+        // pane's group as one excluded body, so a sibling overlap is resolved here).
+        if let groupID { workspace.canvas = reflowedWithinGroup(workspace.canvas, movedPane: id, groupID: groupID, config: config) }
+        workspace.focusedPane = id
+        reconcile()
+    }
+
+    /// Keeps the members of `groupID` non-overlapping after one of them moved/resized: pins the changed
+    /// pane and separates its siblings around it (the within-group reflow — members shouldn't overlap each
+    /// other any more than top-level windows do).
+    private func reflowedWithinGroup(_ canvas: Canvas, movedPane: PaneID, groupID: PaneGroupID,
+                                     config: CanvasNonOverlap.Config) -> Canvas {
+        guard config.enabled, let pinned = canvas.frame(of: movedPane) else { return canvas }
+        let siblings = canvas.items
+            .filter { $0.groupID == groupID && $0.id != movedPane }
+            .map { CanvasNonOverlap.Body(id: .pane($0.id), rect: $0.frame) }
+        guard !siblings.isEmpty else { return canvas }
+        let result = CanvasNonOverlap.separate(pinnedID: .pane(movedPane), pinnedRect: pinned,
+                                               bodies: siblings, config: config)
+        return canvas.applying(result, groups: workspace.groups)
+    }
+
+    /// Group-handle drag-to-move commit: the whole group slides as one rigid body to `snappedBox` (never
+    /// overlapping another group / ungrouped pane), and if the drop shows insert-intent the surrounded
+    /// bodies part to admit it — its members move rigidly to follow. A disabled config degrades to a plain
+    /// rigid move. `snappedBox` is the group's (unpadded) bounding-box target.
+    public func moveGroupNonOverlapping(_ groupID: PaneGroupID, snappedBox: CGRect, config: CanvasNonOverlap.Config) {
+        guard let oldBox = workspace.canvas.groupBoundingBox(groupID) else { return }
+        guard config.enabled else {
+            workspace.canvas = workspace.canvas.movingGroup(
+                groupID, by: CGSize(width: snappedBox.minX - oldBox.minX, height: snappedBox.minY - oldBox.minY))
+            reconcile()
+            return
+        }
+        let bodies = workspace.canvas.collisionBodies(
+            excludingPane: nil, excludingGroup: groupID, region: collisionRegion, groups: workspace.groups)
+        if let result = CanvasNonOverlap.makeSpace(target: snappedBox, draggedID: .group(groupID), bodies: bodies, config: config) {
+            workspace.canvas = workspace.canvas.applying(result, groups: workspace.groups)
+        } else {
+            let slid = CanvasNonOverlap.slide(snappedBox, from: oldBox.origin, bodies: bodies, config: config).frame
+            workspace.canvas = workspace.canvas.movingGroup(
+                groupID, by: CGSize(width: slid.minX - oldBox.minX, height: slid.minY - oldBox.minY))
+        }
+        reconcile()
+    }
+
+    /// The slid (non-overlapping) offset for a group-handle LIVE move preview: where the group's box would
+    /// glide to under `rawDelta`, as a delta from its current origin — so the members + box preview glide
+    /// FLUSH along neighbours exactly as the rest-flush commit lands them (preview ≡ commit, the same slide
+    /// the pane drag uses). Returns the raw delta when disabled or the group is gone.
+    public func groupSlideOffset(_ groupID: PaneGroupID, rawDelta: CGSize, config: CanvasNonOverlap.Config) -> CGSize {
+        guard config.enabled, let oldBox = workspace.canvas.groupBoundingBox(groupID) else { return rawDelta }
+        let bodies = workspace.canvas.collisionBodies(
+            excludingPane: nil, excludingGroup: groupID, region: collisionRegion, groups: workspace.groups)
+        let target = oldBox.offsetBy(dx: rawDelta.width, dy: rawDelta.height)
+        let slid = CanvasNonOverlap.slide(target, from: oldBox.origin, bodies: bodies, config: config).frame
+        return CGSize(width: slid.minX - oldBox.minX, height: slid.minY - oldBox.minY)
+    }
+
+    /// Group-handle resize commit: the group's members are affinely remapped into `newBox` (its new
+    /// footprint), then any OTHER group / ungrouped pane the grown box now overlaps is shoved clear
+    /// (gate-free separation — a resize must never leave an overlap). `newBox` is the group's new
+    /// (unpadded) bounding box.
+    public func resizeGroupNonOverlapping(_ groupID: PaneGroupID, newBox: CGRect, config: CanvasNonOverlap.Config) {
+        var canvas = workspace.canvas.resizingGroup(groupID, toBox: newBox)
+        // A heavy SHRINK floors several members at minItemSize while their origins were placed for the
+        // smaller scaled sizes → internal overlap. Reflow the members (pinning the top-leading one) so
+        // they spread back out gutter-clear before the box is used to push other groups.
+        if config.enabled, let anchor = topLeadingMember(of: groupID, in: canvas) {
+            canvas = reflowedWithinGroup(canvas, movedPane: anchor, groupID: groupID, config: config)
+        }
+        if config.enabled, let grown = canvas.groupBoundingBox(groupID) {
+            let bodies = canvas.collisionBodies(
+                excludingPane: nil, excludingGroup: groupID, region: collisionRegion, groups: workspace.groups)
+            let result = CanvasNonOverlap.separate(pinnedID: .group(groupID), pinnedRect: grown, bodies: bodies, config: config)
+            canvas = canvas.applying(result, groups: workspace.groups)
+        }
+        workspace.canvas = canvas
+        reconcile()
+    }
+
+    /// The spatial top-leading member of `groupID` (min Y, ties by min X) — the stable pin for a
+    /// within-group reflow where every member moved (a group resize).
+    private func topLeadingMember(of groupID: PaneGroupID, in canvas: Canvas) -> PaneID? {
+        canvas.items
+            .filter { $0.groupID == groupID }
+            .min { a, b in a.frame.minY != b.frame.minY ? a.frame.minY < b.frame.minY : a.frame.minX < b.frame.minX }?
+            .id
+    }
+
     /// 1:1 SNAP (remote-GUI panes): resizes pane `id` by the VIDEO-CONTENT delta `target −
     /// current` so its stream renders pixel-for-pixel — the pane chrome (header + divider) is a
     /// constant additive inset around the content, so adjusting the FRAME by the CONTENT delta
@@ -1063,6 +1187,34 @@ public final class WorkspaceStore {
         workspace.canvas = canvas.raising(anchor)
         workspace.focusedPane = anchor
         reconcile()
+    }
+
+    // MARK: - Group-handle live drag (move the whole PaneGroup as a unit)
+
+    /// The LIVE group-handle drag: the group being moved + its raw translation, broadcast so its member
+    /// panes (and the drawn group box) follow in real time — view-only, like ``groupDragLive`` but keyed
+    /// to a PaneGroup (not the ad-hoc multi-selection). `nil` between drags.
+    public struct GroupHandleDragState: Equatable, Sendable { public let group: PaneGroupID; public let delta: CGSize }
+    public private(set) var groupHandleDragLive: GroupHandleDragState?
+
+    /// The handle broadcasts its live raw translation each gesture frame.
+    public func updateGroupHandleDrag(_ groupID: PaneGroupID, delta: CGSize) {
+        groupHandleDragLive = GroupHandleDragState(group: groupID, delta: delta)
+    }
+    /// Ends the live group-handle drag (committed or cancelled).
+    public func endGroupHandleDrag() { groupHandleDragLive = nil }
+
+    /// The live screen offset a pane should render at during a group-handle move (`.zero` unless it is a
+    /// member of the group currently being handle-dragged). Read by ``CanvasItemView`` like
+    /// ``groupDragOffset(for:)``.
+    public func groupHandleOffset(for id: PaneID) -> CGSize {
+        guard let gh = groupHandleDragLive, workspace.canvas.item(id)?.groupID == gh.group else { return .zero }
+        return gh.delta
+    }
+    /// The live offset the DRAWN group box of `groupID` should render at during its own handle move.
+    public func groupBoxOffset(for groupID: PaneGroupID) -> CGSize {
+        guard let gh = groupHandleDragLive, gh.group == groupID else { return .zero }
+        return gh.delta
     }
 
     // MARK: - Overview (fit-all peek)

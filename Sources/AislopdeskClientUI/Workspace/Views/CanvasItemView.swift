@@ -110,9 +110,16 @@ struct CanvasItemView: View {
     /// Whether the pill's action popover is open (toggled by the click branch of the pill gesture).
     @State private var menuShown = false
 
+    /// The non-overlap config the LAST move/resize preview solve actually used, replayed by the
+    /// `.onEnded` commit so releasing ⌘ between the final drag event and mouse-up cannot commit a
+    /// non-overlap decision the user never previewed (the `moveConfig` discipline, extended to overlap).
+    @State private var moveNoOverlap: CanvasNonOverlap.Config?
+    @State private var resizeNoOverlap: CanvasNonOverlap.Config?
+
     /// Interaction prefs (shared with ``PaneMenuView``'s toggles — also the iOS snap-disable path).
     @AppStorage("canvas.snapPanes") private var snapPanes = true
     @AppStorage("canvas.snapGrid") private var snapGrid = true
+    @AppStorage("canvas.nonOverlap") private var nonOverlap = true
 
     private var isFocused: Bool { store.isFocused(item.id) }
 
@@ -140,9 +147,12 @@ struct CanvasItemView: View {
         // pane can't be moved/resized → no live offset. A NON-anchor pane in a live GROUP drag follows
         // the anchor's broadcast delta so the whole cohort moves together on screen (the anchor uses
         // its own gesture preview; `groupDragOffset` returns .zero for it).
+        // A pane follows TWO live cohort offsets: the multi-select group drag (`groupDragOffset`) and the
+        // PaneGroup-handle drag (`groupHandleOffset`, when it is a member of the group being handle-moved).
         let groupOffset = maximized ? .zero : store.groupDragOffset(for: item.id)
-        let offsetX = (maximized ? 0 : shown.midX - item.frame.midX) + groupOffset.width
-        let offsetY = (maximized ? 0 : shown.midY - item.frame.midY) + groupOffset.height
+        let handleOffset = maximized ? .zero : store.groupHandleOffset(for: item.id)
+        let offsetX = (maximized ? 0 : shown.midX - item.frame.midX) + groupOffset.width + handleOffset.width
+        let offsetY = (maximized ? 0 : shown.midY - item.frame.midY) + groupOffset.height + handleOffset.height
         let status = PanePresentation.connectionStatus(store.handle(for: item.id))
 
         return PaneLeafView(
@@ -218,13 +228,15 @@ struct CanvasItemView: View {
             resizeChain = nil
             moveConfig = nil
             resizeConfig = nil
+            moveNoOverlap = nil
+            resizeNoOverlap = nil
         }
         // General cancellation repair: ANY gesture that dies without `.onEnded` (system cancel, view
         // dismantle) auto-resets the preview to nil — mirror that into the chain, or the NEXT pill
         // gesture would see a stale non-nil chain, bypass the dead-zone click branch, and commit a
         // zero-distance "move" instead of opening the menu.
-        .onChange(of: movePreview == nil) { _, gone in if gone { moveChain = nil; moveConfig = nil } }
-        .onChange(of: resizePreview == nil) { _, gone in if gone { resizeChain = nil; resizeConfig = nil } }
+        .onChange(of: movePreview == nil) { _, gone in if gone { moveChain = nil; moveConfig = nil; moveNoOverlap = nil } }
+        .onChange(of: resizePreview == nil) { _, gone in if gone { resizeChain = nil; resizeConfig = nil; resizeNoOverlap = nil } }
         #if os(iOS)
         // Absorb a touch on the body → focus this pane AND block the background pan from firing under
         // it (the bottom Color.clear pan layer never sees a touch that lands on a pane).
@@ -262,6 +274,33 @@ struct CanvasItemView: View {
         config.snapsToPanes = snapPanes
         config.snapsToGrid = snapGrid
         return config
+    }
+
+    /// The non-overlap config for the CURRENT solve: enabled by the setting, but bypassed (`.disabled`)
+    /// while ⌘ is held (macOS) so one ⌘-drag frees BOTH snapping and overlap for a deliberate stack.
+    /// Polled per solve like ``snapConfig`` (the gesture carries no modifiers).
+    private var nonOverlapConfig: CanvasNonOverlap.Config {
+        #if os(macOS)
+        if NSEvent.modifierFlags.contains(.command) { return .disabled }
+        #endif
+        return nonOverlap ? CanvasNonOverlap.Config() : .disabled
+    }
+
+    /// The non-overlap collision bodies ({ungrouped panes} ∪ {group boxes}, excluding the dragged pane
+    /// and its own group), read AT SOLVE TIME inside the gesture closures from the SAME viewport math as
+    /// ``snapEnvironment()`` — so the live slide preview and the store's commit see the same bodies
+    /// (preview ≡ commit). Never a stored body input (the BUG-1/BUG-2 per-pan re-render class).
+    private func collisionEnvironment() -> [CanvasNonOverlap.Body] {
+        let camera = store.workspace.canvas.camera
+        guard viewportSize.width > 0, viewportSize.height > 0 else { return [] }
+        let viewport = CGRect(
+            origin: CGPoint(x: camera.origin.x - store.liveCameraOffset.width,
+                            y: camera.origin.y - store.liveCameraOffset.height),
+            size: viewportSize
+        )
+        let region = viewport.insetBy(dx: -200, dy: -200)
+        return store.workspace.canvas.collisionBodies(
+            excludingPane: item.id, excludingGroup: item.groupID, region: region, groups: store.workspace.groups)
     }
 
     /// The smart-snap inputs, read AT SOLVE TIME inside the gesture closures (never a body input —
@@ -307,11 +346,12 @@ struct CanvasItemView: View {
                     return
                 }
                 let (targets, viewport) = snapEnvironment()
-                state = CanvasSnap.move(
+                let snap = CanvasSnap.move(
                     item.frame.offsetBy(dx: value.translation.width, dy: value.translation.height),
                     others: targets, viewport: viewport,
                     config: snapConfig, previous: state
                 )
+                state = Self.previewResolution(snap: snap, item: item, config: nonOverlapConfig, bodies: collisionEnvironment)
             }
             .onChanged { value in
                 guard displaySize == nil else { return }
@@ -325,6 +365,7 @@ struct CanvasItemView: View {
                 let (targets, viewport) = snapEnvironment()
                 let config = snapConfig
                 moveConfig = config
+                moveNoOverlap = nonOverlapConfig
                 moveChain = CanvasSnap.move(
                     item.frame.offsetBy(dx: value.translation.width, dy: value.translation.height),
                     others: targets, viewport: viewport,
@@ -334,8 +375,10 @@ struct CanvasItemView: View {
             .onEnded { value in
                 let chain = moveChain
                 let config = moveConfig ?? snapConfig
+                let noOverlap = moveNoOverlap ?? nonOverlapConfig
                 moveChain = nil
                 moveConfig = nil
+                moveNoOverlap = nil
                 // Maximized: a click opens the menu; a DRAG does nothing (the pane cannot move, and
                 // surprising the user with the menu after a drag would be worse than a no-op).
                 if displaySize != nil {
@@ -362,8 +405,16 @@ struct CanvasItemView: View {
                 // raw delta (group drags move together, un-snapped — snapping each pane would scatter the
                 // cohort). Clear the live broadcast FIRST so there's no double-offset flash, then commit.
                 if store.isSelected(item.id), store.selectedPanes.count > 1 {
-                    store.endGroupDragLive()
-                    store.moveSelection(by: value.translation, anchor: item.id)
+                    // The cohort members tracked the pointer via their live `.offset`; committing their
+                    // frame must be INSTANT (no `.animation(value: pos)` spring) or each non-anchor member
+                    // flashes back to its pre-drag origin and glides forward (the offset drops to zero the
+                    // instant the spring starts from the old position). The anchor is exempt via `isFocused`;
+                    // this transaction covers the rest.
+                    var instant = Transaction(); instant.disablesAnimations = true
+                    withTransaction(instant) {
+                        store.endGroupDragLive()
+                        store.moveSelection(by: value.translation, anchor: item.id)
+                    }
                     return
                 }
                 // MOVE: one commit, recomputed from the RAW final translation with the last chain
@@ -375,9 +426,35 @@ struct CanvasItemView: View {
                     others: targets, viewport: viewport,
                     config: config, previous: chain
                 )
-                store.movePane(item.id, by: CGSize(width: final.frame.minX - item.frame.minX,
-                                                   height: final.frame.minY - item.frame.minY))
+                // NON-OVERLAP: route the snapped target through the slide + (insert-intent) make-space
+                // commit so the pane lands flush — or the neighbours part to admit it. A disabled config
+                // (⌘ / setting off) degrades to a plain move-to inside the store, so this stays uniform.
+                if noOverlap.enabled {
+                    store.movePaneNonOverlapping(item.id, snapped: final.frame, config: noOverlap)
+                } else {
+                    store.movePane(item.id, by: CGSize(width: final.frame.minX - item.frame.minX,
+                                                       height: final.frame.minY - item.frame.minY))
+                }
             }
+    }
+
+    /// Folds the non-overlap slide into a CanvasSnap move resolution for the live preview: the dragged
+    /// pane glides flush along its neighbours (only the dragged box moves — item-local). The snap GUIDES
+    /// are kept only when the slide did NOT move the box off the snapped position (else they would assert
+    /// an alignment the flush slide just broke — the flush slide is its own affordance). The snap
+    /// hysteresis sticks pass through verbatim (the slide is stateless; ``CanvasSnap`` reads only the
+    /// sticks from `previous`).
+    private static func previewResolution(
+        snap: CanvasSnap.Resolution,
+        item: CanvasItem,
+        config: CanvasNonOverlap.Config,
+        bodies: () -> [CanvasNonOverlap.Body]
+    ) -> CanvasSnap.Resolution {
+        guard config.enabled else { return snap }
+        let slid = CanvasNonOverlap.slide(snap.frame, from: item.frame.origin, bodies: bodies(), config: config).frame
+        let moved = abs(slid.minX - snap.frame.minX) > 0.5 || abs(slid.minY - snap.frame.minY) > 0.5
+        return CanvasSnap.Resolution(frame: slid, guides: moved ? [] : snap.guides,
+                                     stickX: snap.stickX, stickY: snap.stickY)
     }
 
     private static func pastDeadZone(_ translation: CGSize) -> Bool {
@@ -423,31 +500,47 @@ struct CanvasItemView: View {
                 raiseOnGestureStart()
                 let config = snapConfig
                 resizeConfig = config
+                resizeNoOverlap = nonOverlapConfig
                 resizeChain = resizeResolution(anchor, translation: value.translation,
                                                config: config, previous: resizeChain)
             }
             .onEnded { value in
                 let chain = resizeChain
                 let config = resizeConfig ?? snapConfig
+                let noOverlap = resizeNoOverlap ?? nonOverlapConfig
                 resizeChain = nil
                 resizeConfig = nil
+                resizeNoOverlap = nil
                 guard displaySize == nil else { return }
                 store.resizePane(item.id, to: resizeResolution(anchor, translation: value.translation,
-                                                               config: config, previous: chain).frame)
+                                                               config: config, previous: chain, noOverlap: noOverlap).frame)
             }
     }
 
-    /// Geometry-resize then snap: the pure pipeline shared by the live preview and the commit.
+    /// Geometry-resize → snap → non-overlap clamp: the pure pipeline shared by the live preview and the
+    /// commit. After ``CanvasSnap/resize`` magnetizes the moving edge, ``CanvasNonOverlap/clampResize``
+    /// stops it one gutter short of any neighbour (the growing edge yields rather than overlapping). The
+    /// snap guides are dropped when the clamp moved an edge (the flush stop is its own affordance).
+    /// `noOverlap` replays the last-previewed config at commit (the `⌘`-release preview≡commit discipline).
     private func resizeResolution(
         _ anchor: ResizeAnchor,
         translation: CGSize,
         config: CanvasSnap.Config,
-        previous: CanvasSnap.Resolution?
+        previous: CanvasSnap.Resolution?,
+        noOverlap: CanvasNonOverlap.Config? = nil
     ) -> CanvasSnap.Resolution {
         let raw = CanvasGeometry.resizing(item.frame, anchor: anchor, by: translation, minSize: Canvas.minItemSize)
         let (targets, viewport) = snapEnvironment()
-        return CanvasSnap.resize(raw, anchor: anchor, others: targets, viewport: viewport,
-                                 config: config, previous: previous)
+        let snapped = CanvasSnap.resize(raw, anchor: anchor, others: targets, viewport: viewport,
+                                        config: config, previous: previous)
+        let no = noOverlap ?? nonOverlapConfig
+        guard no.enabled else { return snapped }
+        let clamped = CanvasNonOverlap.clampResize(snapped.frame, anchor: anchor, bodies: collisionEnvironment(),
+                                                   minSize: Canvas.minItemSize, config: no)
+        let changed = abs(clamped.minX - snapped.frame.minX) > 0.5 || abs(clamped.maxX - snapped.frame.maxX) > 0.5
+            || abs(clamped.minY - snapped.frame.minY) > 0.5 || abs(clamped.maxY - snapped.frame.maxY) > 0.5
+        return CanvasSnap.Resolution(frame: clamped, guides: changed ? [] : snapped.guides,
+                                     stickX: snapped.stickX, stickY: snapped.stickY)
     }
 
     // MARK: Resize handles

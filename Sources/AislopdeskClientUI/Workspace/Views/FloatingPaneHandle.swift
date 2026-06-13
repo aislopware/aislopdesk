@@ -330,6 +330,7 @@ struct PaneMenuView: View {
     @AppStorage("canvas.snapPanes") private var snapPanes = true
     @AppStorage("canvas.snapGrid") private var snapGrid = true
     @AppStorage("canvas.showGrid") private var showGrid = true
+    @AppStorage("canvas.nonOverlap") private var nonOverlap = true
 
     @State private var groupSectionExpanded = false
     /// Inline rename, hosted HERE (the sidebar's inline-rename field is unreachable when the sidebar
@@ -650,6 +651,10 @@ struct PaneMenuView: View {
                 .help("Quantize free drags to the 16pt grid. Hold ⌘ while dragging to bypass.")
                 #endif
             Toggle("Show Grid", isOn: $showGrid)
+            Toggle("Keep From Overlapping", isOn: $nonOverlap)
+                #if os(macOS)
+                .help("Windows slide along each other and groups part to make room, instead of overlapping. Hold ⌘ while dragging to bypass.")
+                #endif
         }
         #if os(macOS)
         .toggleStyle(.checkbox)
