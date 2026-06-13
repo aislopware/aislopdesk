@@ -1,0 +1,82 @@
+import XCTest
+@testable import AislopdeskClientUI
+
+/// Pins the recent-pane MRU ring + quick-switch ("go to the previously-focused pane"): the ring records
+/// focus order (most-recent first, deduped, capped, pruned on close) and the quick-switch WALKS it like
+/// browser back/forward without reordering it mid-walk.
+@MainActor
+final class RecentPaneRingTests: XCTestCase {
+
+    /// A store with `n` terminal panes laid out left-to-right; returns the store + the pane ids.
+    private func makeStore(_ n: Int) -> (WorkspaceStore, [PaneID]) {
+        let items = (0..<n).map {
+            CanvasItem(id: PaneID(), spec: PaneSpec(kind: .terminal, title: "p\($0)"),
+                       frame: CGRect(x: CGFloat($0) * 400, y: 0, width: 360, height: 240), z: $0)
+        }
+        let store = WorkspaceStore(restoring: Workspace(canvas: Canvas(items: items), focusedPane: items[0].id),
+                                   makeSession: { FakePaneSession($0) })
+        return (store, items.map(\.id))
+    }
+
+    func testFocusRecordsMRUWithDedupAndSeededOutgoing() {
+        let (store, ids) = makeStore(3)
+        let (a, b, c) = (ids[0], ids[1], ids[2])
+        store.focus(b)   // from the restored-focus a → seeds a, fronts b
+        store.focus(c)
+        XCTAssertEqual(store.focusHistory, [c, b, a], "MRU: most-recent first, outgoing seeded")
+        store.focus(b)   // re-focus moves to front (dedup, no duplicate)
+        XCTAssertEqual(store.focusHistory, [b, c, a])
+    }
+
+    func testSwitchWalksTheRingWithoutReorderingThenForwardReturns() {
+        let (store, ids) = makeStore(3)
+        let (a, b, c) = (ids[0], ids[1], ids[2])
+        store.focus(b); store.focus(c)            // ring [c, b, a], focused c, cursor 0
+        store.switchToRecentPane(forward: false)  // → older: b
+        XCTAssertEqual(store.focusedPane, b, "go-to-previous lands on the prior pane")
+        XCTAssertEqual(store.focusHistory, [c, b, a], "the walk does NOT reorder the ring")
+        store.switchToRecentPane(forward: false)  // → older: a
+        XCTAssertEqual(store.focusedPane, a)
+        store.switchToRecentPane(forward: true)   // → newer: b
+        XCTAssertEqual(store.focusedPane, b)
+        XCTAssertEqual(store.focusHistory, [c, b, a], "still unreordered after a forward step")
+    }
+
+    func testSwitchClampsAtTheEndsAndNoopsBelowTwoPanes() {
+        let (store, ids) = makeStore(2)
+        let (a, b) = (ids[0], ids[1])
+        store.focus(b)                            // ring [b, a], cursor 0
+        store.switchToRecentPane(forward: true)   // already newest → no-op
+        XCTAssertEqual(store.focusedPane, b)
+        store.switchToRecentPane(forward: false)  // → a
+        store.switchToRecentPane(forward: false)  // already oldest → no-op
+        XCTAssertEqual(store.focusedPane, a)
+
+        let (solo, sids) = makeStore(1)
+        solo.switchToRecentPane(forward: false)   // empty/one-entry ring → no-op, no crash
+        XCTAssertEqual(solo.focusedPane, sids[0], "a single pane has nothing to switch to")
+    }
+
+    func testClosingAPaneDropsItFromTheRing() {
+        let (store, ids) = makeStore(3)
+        let (a, b, c) = (ids[0], ids[1], ids[2])
+        store.focus(b); store.focus(c)            // ring [c, b, a]
+        store.closePane(c)                         // close the current → c pruned
+        XCTAssertFalse(store.focusHistory.contains(c), "a closed pane is never a quick-switch target")
+        // The ring still holds the survivors; a switch never lands on the dead pane.
+        store.switchToRecentPane(forward: false)
+        XCTAssertNotEqual(store.focusedPane, c)
+        XCTAssertTrue(store.workspace.canvas.contains(store.focusedPane!), "switch lands on a live pane")
+    }
+
+    func testUserFocusAfterAWalkRecordsWhereYouWere() {
+        let (store, ids) = makeStore(3)
+        let (a, b, c) = (ids[0], ids[1], ids[2])
+        store.focus(b); store.focus(c)             // ring [c, b, a]
+        store.switchToRecentPane(forward: false)   // walk to b (ring unchanged, no record)
+        store.focus(a)                              // a USER focus: fronts the OUTGOING b, then a
+        XCTAssertEqual(store.focusHistory.first, a, "the user focus is the new MRU front")
+        store.switchToRecentPane(forward: false)   // "go to last pane" → b, where the user actually was
+        XCTAssertEqual(store.focusedPane, b, "the outgoing pane is recorded as the most-recent-before")
+    }
+}

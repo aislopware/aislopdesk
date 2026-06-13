@@ -400,6 +400,7 @@ public final class WorkspaceStore {
             recentlyClosed = RecentlyClosedPane(spec: item.spec, frame: item.frame, group: item.groupID)
         }
         if pendingClose == id { pendingClose = nil }
+        pruneFocusHistory(id)   // a closed pane must never be a quick-switch target
         // Capture a geometric neighbour BEFORE the close (so refocus follows what the user saw).
         let refocus = neighbourForRefocus(of: id)
         if let newCanvas = workspace.canvas.removing(id) {
@@ -548,11 +549,62 @@ public final class WorkspaceStore {
     /// EVERY click. Re-focusing the pane that is already focused (and already maximized-or-not the same) is
     /// a genuine no-op, so skip it entirely — no reassignment, no re-render, no freeze.
     public func focus(_ id: PaneID) {
+        focus(id, recordVisit: true)
+    }
+
+    /// Focuses `id`. `recordVisit` distinguishes a USER focus (click / directional move / palette jump —
+    /// moves the pane to the front of the focus-history MRU) from a quick-switch WALK
+    /// (``switchToRecentPane(forward:)``), which must NOT reorder the ring (browser back/forward).
+    private func focus(_ id: PaneID, recordVisit: Bool) {
         guard workspace.focusedPane != id else { return }
+        if recordVisit { recordFocusVisit(id) }
         workspace = workspace.focusing(id)
         // Seeing a pane dismisses its attention bell badge (the badge only shows on unfocused panes).
         registry[id]?.clearBell()
         reconcile()
+    }
+
+    // MARK: - Recent-pane MRU (quick-switch to the previously-focused pane)
+
+    /// Panes in most-recently-FOCUSED order (front = current), deduped, capped at ``focusHistoryCap``,
+    /// pruned when a pane closes. Session state (not persisted). Backs ``switchToRecentPane(forward:)`` —
+    /// the "go to last pane" idiom. Mirrors the ``recentCommands`` ring discipline.
+    public private(set) var focusHistory: [PaneID] = []
+    public static let focusHistoryCap = 16
+
+    /// Records a user focus visit. The pane we're LEAVING is fronted first, THEN the incoming pane — so
+    /// "go to last pane" returns to where you actually were, even when a quick-switch walk (which does not
+    /// record) had left the focus on the outgoing pane. Dedups + caps. (Also seeds the ring after a
+    /// restore, where the outgoing pane was never recorded via a `focus()` call.)
+    private func recordFocusVisit(_ id: PaneID) {
+        if let outgoing = workspace.focusedPane, outgoing != id { frontFocusHistory(outgoing) }
+        frontFocusHistory(id)
+        if focusHistory.count > Self.focusHistoryCap {
+            focusHistory.removeLast(focusHistory.count - Self.focusHistoryCap)
+        }
+    }
+
+    private func frontFocusHistory(_ id: PaneID) {
+        focusHistory.removeAll { $0 == id }
+        focusHistory.insert(id, at: 0)
+    }
+
+    /// Quick-switch through the focus-history MRU WITHOUT reordering it (browser back/forward). The
+    /// position is DERIVED from the focused pane's index in the ring on each call (no persistent cursor —
+    /// robust to the many paths that set `focusedPane` directly, e.g. close-refocus / bookmarks): `forward:
+    /// false` steps toward an OLDER pane (the "go to the previous pane" primary action), `forward: true`
+    /// steps back toward newer. Clamps at the ends; a no-op with fewer than two panes in the ring.
+    public func switchToRecentPane(forward: Bool) {
+        guard focusHistory.count > 1 else { return }
+        let current = workspace.focusedPane.flatMap { focusHistory.firstIndex(of: $0) } ?? 0
+        let next = forward ? current - 1 : current + 1
+        guard next >= 0, next < focusHistory.count else { return }
+        focus(focusHistory[next], recordVisit: false)
+    }
+
+    /// Drops `id` from the focus-history MRU (a pane closed) so it can never be a quick-switch target.
+    private func pruneFocusHistory(_ id: PaneID) {
+        focusHistory.removeAll { $0 == id }
     }
 
     /// Moves focus in `dir`, resolved geometrically against the last solved layout (docs/22 §2.1).
@@ -2302,6 +2354,8 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
         store.move(direction)
     case let .cycleFocus(forward):
         store.move(forward ? .next : .previous)
+    case let .switchRecentPane(forward):
+        store.switchToRecentPane(forward: forward)
     case .toggleZoom:
         store.toggleZoom()
     case .toggleOverview:

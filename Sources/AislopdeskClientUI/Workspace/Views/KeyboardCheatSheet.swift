@@ -51,6 +51,8 @@ enum KeyboardCheatSheet {
             (.focus(.down), "Focus down"),
             (.cycleFocus(forward: true), "Focus next pane"),
             (.cycleFocus(forward: false), "Focus previous pane"),
+            (.switchRecentPane(forward: false), "Go to previous pane (recent)"),
+            (.switchRecentPane(forward: true), "Forward through recent panes"),
         ]),
         ("Arrange & view", [
             (.tidy, "Tidy layout"),

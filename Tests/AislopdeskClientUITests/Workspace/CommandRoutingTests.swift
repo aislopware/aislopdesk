@@ -194,6 +194,14 @@ final class CommandRoutingTests: XCTestCase {
         XCTAssertEqual(interp.feed(KeyChord(character: "g", [.option, .command])), .groupSelection)
     }
 
+    func testRecentPaneSwitchChordsAreBound() {
+        let interp = CommandInterpreter()
+        XCTAssertEqual(interp.feed(KeyChord(character: ";", [.option, .command])), .switchRecentPane(forward: false),
+                       "⌥⌘; goes to the previously-focused pane")
+        XCTAssertEqual(interp.feed(KeyChord(character: ";", [.option, .command, .shift])), .switchRecentPane(forward: true),
+                       "⌥⇧⌘; walks back toward newer")
+    }
+
     /// The pure group arithmetic the sidebar / store funnel through:
     /// `addGroup` → `assignPane` → `renameGroup` → `removeGroup` (members survive ungrouped).
     func testGroupArithmeticAssignsRenamesAndRemoves() {
