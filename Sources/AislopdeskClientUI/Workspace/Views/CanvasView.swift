@@ -93,6 +93,18 @@ struct CanvasView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            // Multi-selection count: a small top-leading chip so the active selection (which Arrange /
+            // Group / Broadcast all act on) is visible; tap to deselect. Shown for ≥2 (a single focused
+            // pane already reads as focused).
+            .overlay(alignment: .topLeading) {
+                if store.selectedPanes.count >= 2 && !store.overviewActive && maxID == nil {
+                    selectionChip
+                        .padding(.leading, 12)
+                        .padding(.top, 12)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: store.selectedPanes.count >= 2)
             .animation(.easeInOut(duration: 0.18), value: store.broadcastActive)
             .animation(.easeInOut(duration: 0.2), value: store.overviewActive)
             .onAppear { report(geo.size, camera: canvas.camera) }
@@ -355,6 +367,27 @@ struct CanvasView: View {
         }
         .buttonStyle(.plain)
         .help("Synchronized input is on — typing fans out to every pane in the group. Click or press ⇧⌘B to stop.")
+    }
+
+    /// The multi-selection count chip (top-leading). Names how many panes are selected — the set that
+    /// Arrange / Group / Broadcast act on — and clears the selection on tap.
+    private var selectionChip: some View {
+        Button {
+            store.clearSelection()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.rectangle.stack")
+                Text("\(store.selectedPanes.count) selected").font(.callout.weight(.medium))
+                Image(systemName: "xmark.circle.fill").opacity(0.7)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 1))
+            .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+        }
+        .buttonStyle(.plain)
+        .help("\(store.selectedPanes.count) panes selected — click to deselect")
     }
 
     // MARK: Reporting (geometric focus + viewport + video-cap membership)

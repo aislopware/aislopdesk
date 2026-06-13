@@ -106,6 +106,7 @@ public struct WorkspaceCommands: Commands {
         }
         .disabled(store == nil || (store?.selectedPanes.isEmpty ?? true))
         .modifier(OptionalShortcut(Self.shortcut(for: .groupSelection)))
+        commandButton("Select All Panes", .selectAllPanes)
 
         Divider()
 
