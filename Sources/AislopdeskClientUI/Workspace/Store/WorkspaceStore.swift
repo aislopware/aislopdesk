@@ -1038,7 +1038,12 @@ public final class WorkspaceStore {
     @discardableResult
     public func importWorkspace(_ data: Data, mode: WorkspaceImportMode = .replace) -> Bool {
         guard let imported = WorkspaceTransfer.decode(data) else { return false }
-        discardLiveScroll()
+        // COMMIT (not discard) any in-flight scroll pan: a later path here can still bail (e.g. the
+        // mergeAppend cap rejects the document), and discarding would silently snap the canvas back to the
+        // pre-scroll origin even though "the live workspace is left untouched". Committing folds the pan
+        // into the camera so a rejected import truly leaves the view as the user had it; on the replace
+        // path the camera is overwritten by the imported one anyway, so committing is harmless there.
+        commitScrollPan()
         switch mode {
         case .replace:
             // Re-mint EVERY imported pane id through an explicit idMap (exactly as switchToLayoutPreset

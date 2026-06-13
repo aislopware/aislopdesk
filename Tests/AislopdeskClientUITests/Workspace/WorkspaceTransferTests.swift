@@ -205,6 +205,25 @@ final class WorkspaceTransferTests: XCTestCase {
         XCTAssertEqual(dst.workspace.canvas.allIDs().count, before, "the live canvas is untouched on a rejected merge")
     }
 
+    func testRejectedMergeCommitsInFlightScrollPanInsteadOfDroppingIt() {
+        // A rejected merge must truly leave the view "untouched" — importWorkspace runs the scroll-flush
+        // BEFORE it can bail, so it must COMMIT the in-flight pan (fold it into the camera), not DISCARD it
+        // (which snapped the canvas back to the pre-scroll origin).
+        let liveItems = (0..<(WorkspaceTransfer.maxItems - 1)).map { term(CGFloat($0), "live\($0)") }
+        let dst = store(liveItems, focus: liveItems[0].id)
+        let origin0 = dst.workspace.canvas.camera.origin
+        dst.scrollPan(by: CGSize(width: 120, height: 80))   // sets liveCameraOffset; debounced commit pending
+        XCTAssertNotEqual(dst.liveCameraOffset, .zero, "the pan is live (uncommitted) before the import")
+
+        let importData = WorkspaceTransfer.export(
+            Workspace(canvas: Canvas(items: (0..<5).map { term(CGFloat($0) * 10, "imp\($0)") }), focusedPane: nil))
+        XCTAssertFalse(dst.importWorkspace(importData, mode: .mergeAppend), "the over-cap merge is rejected")
+
+        XCTAssertEqual(dst.liveCameraOffset, .zero, "the pending pan was flushed by the import")
+        XCTAssertNotEqual(dst.workspace.canvas.camera.origin, origin0,
+                          "the pan was COMMITTED into the camera, not discarded (no silent snap-back)")
+    }
+
     func testMergeWithinCapStillSucceeds() {
         // Positive control: the cap does not block a normal merge.
         let dst = store([term(0, "live")], focus: PaneID())
