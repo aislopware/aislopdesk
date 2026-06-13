@@ -1,0 +1,24 @@
+[package]
+name = "aislopdesk-ffi"
+version = "0.1.0"
+description = "The C-ABI boundary over aislopdesk-core: a thin, hand-audited `extern \"C\"` surface that lets a non-Rust platform shell (Swift on Apple, a future JNI shim on Android) drive the exact same wire codecs the Rust core implements. This crate is the ONLY place `unsafe` is allowed; the core stays 100% safe."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "aislopdesk_ffi"
+# `rlib` so Rust integration tests can link the boundary and exercise it; `staticlib`
+# (`.a`) for linking into an Apple app or xcframework; `cdylib` (`.so`/`.dylib`) for a
+# future Android `cargo-ndk` build and for a plain dynamic consumer. The C header in
+# `include/aislopdesk_ffi.h` describes the symbols all three expose.
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+# The pure, safe, zero-dependency core. This crate adds NOTHING but the `unsafe` glue
+# that marshals C pointers/buffers to and from the core's safe Rust API.
+aislopdesk-core = { path = "../aislopdesk-core" }
+
+[lints]
+workspace = true
