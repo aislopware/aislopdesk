@@ -1230,9 +1230,17 @@ public final class WorkspaceStore {
                 workspace.layoutPresets.append(LayoutPreset(name: name, canvas: p.canvas, groups: p.groups,
                                                             focusedPane: p.focusedPane, triggerAppName: nil))
             }
+            // Adopt an imported bookmark into an empty slot ONLY when its anchor pane SURVIVES the id remap.
+            // recallBookmark FOLLOWS a live anchor (re-deriving the camera from the pane's current position),
+            // so an anchored bookmark stays correct. But a bookmark with NO surviving anchor (pane == nil — a
+            // pure-camera bookmark — or a pane id absent from the imported canvas) would fall back to its saved
+            // cameraOrigin, which is in the IMPORTED document's coordinate frame while the merged canvas lives
+            // in the live frame: recalling it (⌘<n>) would pan into empty space. There is no correct cross-frame
+            // translation (the two canvases are independent spaces), so drop it — exactly as switchToLayoutPreset
+            // clears all bookmarks for the same cross-frame reason.
             for (slot, bm) in imported.bookmarks where workspace.bookmarks[slot] == nil {
-                workspace.bookmarks[slot] = CanvasBookmark(pane: bm.pane.flatMap { idMap[$0] },
-                                                           cameraOrigin: bm.cameraOrigin, name: bm.name)
+                guard let pane = bm.pane.flatMap({ idMap[$0] }) else { continue }
+                workspace.bookmarks[slot] = CanvasBookmark(pane: pane, cameraOrigin: bm.cameraOrigin, name: bm.name)
             }
         }
         reconcile()
