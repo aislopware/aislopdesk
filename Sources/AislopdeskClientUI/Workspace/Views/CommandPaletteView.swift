@@ -256,10 +256,10 @@ struct CommandPaletteView: View {
         case let .switchLayout(name):
             store.switchToLayoutPreset(name: name)
         case let .snippet(id):
-            // Run the snippet with no placeholder values for now (a no-placeholder snippet runs verbatim;
-            // a parameterized one keeps its `{{slots}}` literal until the value sheet is wired). Routes to
-            // the focused pane, or the broadcast group when broadcast is armed.
-            store.runSnippet(id)
+            // A no-placeholder snippet runs immediately; a parameterized one arms the value-entry sheet
+            // (WorkspaceRootView) so its `{{slots}}` are resolved before injection rather than sent
+            // literally. Either way routes to the focused pane, or the broadcast group when armed.
+            store.beginRunSnippet(id)
         }
         dismiss()
     }

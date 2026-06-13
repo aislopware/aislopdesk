@@ -156,6 +156,17 @@ public struct WorkspaceRootView: View {
         } message: {
             Text("Save the current panes, groups, and focus as a named layout you can switch back to. Optionally bind it to a host app so it switches in automatically when that app launches.")
         }
+        // Snippet placeholder value-entry (store.pendingSnippetRun): a parameterized snippet armed from
+        // ⌘K asks for its `{{slot}}` values here BEFORE running, so `ssh {{user}}@{{host}}` is resolved
+        // rather than injected literally. A no-placeholder snippet never reaches this (it ran already).
+        .sheet(isPresented: Binding(
+            get: { store.pendingSnippetRun != nil },
+            set: { if !$0 { store.clearSnippetRunRequest() } }
+        )) {
+            if let id = store.pendingSnippetRun {
+                SnippetValuesSheet(store: store, snippetID: id)
+            }
+        }
     }
 
     /// The busy-close dialog title, naming the pane it would close (best-effort — falls back to a
@@ -266,6 +277,101 @@ public struct WorkspaceRootView: View {
             }
             .help("New pane")
         }
+    }
+}
+
+// MARK: - SnippetValuesSheet (resolve a parameterized snippet's placeholders before running)
+
+/// Collects one value per `{{placeholder}}` a snippet references, shows a live preview of the
+/// resolved command, then runs it. Presented by ``WorkspaceRootView`` whenever
+/// ``WorkspaceStore/pendingSnippetRun`` is armed (a parameterized snippet was chosen from ⌘K).
+///
+/// Every placeholder gets a field seeded to "" so the expansion resolves ALL slots — no literal
+/// `{{name}}` can leak to the shell (an intentionally-blank field expands to empty, which is a valid
+/// value, e.g. an optional flag). The snippet may vanish mid-sheet (deleted elsewhere); the body
+/// guards on that and dismisses.
+private struct SnippetValuesSheet: View {
+    let store: WorkspaceStore
+    let snippetID: UUID
+
+    /// One entry per placeholder name (seeded on appear), bound to the text fields.
+    @State private var values: [String: String] = [:]
+    @FocusState private var firstFieldFocused: Bool
+
+    private var snippet: Snippet? { store.snippets.first { $0.id == snippetID } }
+
+    var body: some View {
+        let snip = snippet
+        let slots = snip?.placeholders ?? []
+        // The command as it will actually be sent, given the current field values.
+        let preview = snip.map { SnippetExpander.expand($0.body, values: filledValues(slots)).text } ?? ""
+
+        return VStack(alignment: .leading, spacing: 14) {
+            Text(snip.map { "Run “\($0.name)”" } ?? "Run Snippet")
+                .font(.headline)
+
+            if slots.isEmpty {
+                Text("This snippet has no placeholders.").foregroundStyle(.secondary)
+            } else {
+                Form {
+                    ForEach(Array(slots.enumerated()), id: \.element) { index, name in
+                        TextField(name, text: Binding(
+                            get: { values[name] ?? "" },
+                            set: { values[name] = $0 }
+                        ))
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        #endif
+                        .focused($firstFieldFocused, equals: index == 0 ? true : firstFieldFocused)
+                        .onSubmit(run)
+                    }
+                }
+                .formStyle(.columns)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Will run").font(.caption2).foregroundStyle(.secondary)
+                Text(preview.isEmpty ? "—" : preview)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { store.clearSnippetRunRequest() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Run") { run() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(snip == nil)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 360)
+        .onAppear {
+            // Seed a field for every placeholder so the run resolves them all (no literal {{}} leaks).
+            for name in slots where values[name] == nil { values[name] = "" }
+            firstFieldFocused = true
+        }
+    }
+
+    /// The values dict guaranteed to contain every current slot (seeded blanks included), so
+    /// `SnippetExpander.expand` never leaves a literal placeholder.
+    private func filledValues(_ slots: [String]) -> [String: String] {
+        var v = values
+        for name in slots where v[name] == nil { v[name] = "" }
+        return v
+    }
+
+    private func run() {
+        guard let snip = snippet else { store.clearSnippetRunRequest(); return }
+        store.runSnippet(snip.id, values: filledValues(snip.placeholders))
+        store.clearSnippetRunRequest()
     }
 }
 
