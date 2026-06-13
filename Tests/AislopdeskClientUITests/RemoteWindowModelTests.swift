@@ -213,4 +213,17 @@ final class RemoteWindowFilterTests: XCTestCase {
         XCTAssertEqual(RemoteWindowModel.filtered(windows, query: "chrome github").map(\.windowID), [4])
         XCTAssertTrue(RemoteWindowModel.filtered(windows, query: "chrome xcode").isEmpty)
     }
+
+    func testFilterEmptyMessageIsActionable() {
+        // The empty-list message names the filter AND tells the user there ARE windows behind it (the list
+        // only renders when discovery found ≥1), with the fix (clear the filter) and correct pluralization.
+        let many = RemoteWindowModel.windowFilterEmptyMessage(filter: "xcode", totalCount: 4)
+        XCTAssertTrue(many.contains("“xcode”"), "names the filter token")
+        XCTAssertTrue(many.contains("clear the filter"), "points at the fix")
+        XCTAssertTrue(many.contains("4 windows"), "tells the user how many windows the filter hid")
+
+        let one = RemoteWindowModel.windowFilterEmptyMessage(filter: "  xcode  ", totalCount: 1)
+        XCTAssertTrue(one.contains("“xcode”"), "the filter is trimmed before display")
+        XCTAssertTrue(one.contains("1 window."), "singular when exactly one window is hidden")
+    }
 }
