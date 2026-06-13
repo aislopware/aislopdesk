@@ -612,6 +612,7 @@ struct CommandPaletteView: View {
         CatalogItem(command: .duplicatePane, title: "Duplicate Pane", symbol: "plus.square.on.square", keywords: "copy clone"),
         CatalogItem(command: .newGroup, title: "New Group", symbol: "square.on.square.dashed", keywords: "cluster organize folder"),
         CatalogItem(command: .groupSelection, title: "Group Selected Panes", symbol: "square.stack.3d.up", keywords: "cluster combine merge organize selection"),
+        CatalogItem(command: .selectAllPanes, title: "Select All Panes", symbol: "checkmark.rectangle.stack", keywords: "select all multi selection everything"),
         CatalogItem(command: .tidy, title: "Tidy Layout", symbol: "square.grid.2x2", keywords: "arrange pack grid clean up organize auto layout"),
         CatalogItem(command: .centerFocusedPane, title: "Center on Pane", symbol: "scope", keywords: "recenter focus jump go to camera"),
         CatalogItem(command: .centerAll, title: "Center on All", symbol: "dot.scope", keywords: "recenter fit zoom out frame everything camera"),

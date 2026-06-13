@@ -1249,6 +1249,13 @@ public final class WorkspaceStore {
         if !selectedPanes.isEmpty { selectedPanes = [] }
     }
 
+    /// Selects EVERY pane on the canvas (⌥⌘A) — the standard "select all" for then aligning /
+    /// distributing / grouping / broadcasting to the whole set at once. A no-op visual when the canvas
+    /// is empty (selects nothing).
+    public func selectAllPanes() {
+        setSelection(Set(workspace.canvas.allIDs()))
+    }
+
     /// Whether `id` is in the multi-selection (the pill's selected cue).
     public func isSelected(_ id: PaneID) -> Bool { selectedPanes.contains(id) }
 
@@ -2300,5 +2307,7 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
         store.distributePanes(horizontal: horizontal)
     case .saveLayout:
         store.requestSaveLayout()
+    case .selectAllPanes:
+        store.selectAllPanes()
     }
 }

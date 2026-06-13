@@ -162,6 +162,24 @@ final class ArrangeTests: XCTestCase {
         XCTAssertTrue(store.pendingSaveLayout, "the command opens the Save Current Layout… prompt")
     }
 
+    func testSelectAllPanesSelectsEveryPaneAndRoutes() {
+        let a = PaneID(), b = PaneID(), c = PaneID()
+        let store = makeStore(restoring: Workspace(canvas: Canvas(items: [
+            item(a, CGRect(x: 0, y: 0, width: 160, height: 120)),
+            item(b, CGRect(x: 200, y: 0, width: 160, height: 120)),
+            item(c, CGRect(x: 400, y: 0, width: 160, height: 120)),
+        ]), focusedPane: a))
+        apply(.selectAllPanes, to: store)
+        XCTAssertEqual(store.selectedPanes, Set([a, b, c]), "every pane is selected")
+    }
+
+    func testSelectAllPanesBoundToOptCmdANotBareCmdA() {
+        let interp = CommandInterpreter()
+        XCTAssertEqual(interp.feed(KeyChord(character: "a", [.option, .command])), .selectAllPanes)
+        // Bare ⌘A must stay UNBOUND — it is the focused terminal's select-all-text (the §5 conflict rule).
+        XCTAssertNil(interp.feed(KeyChord(character: "a", [.command])))
+    }
+
     func testToggleAndClearSelection() {
         let a = PaneID(), b = PaneID()
         let store = makeStore(restoring: Workspace(canvas: Canvas(items: [

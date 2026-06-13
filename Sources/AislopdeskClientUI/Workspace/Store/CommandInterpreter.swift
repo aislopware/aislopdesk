@@ -31,6 +31,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case align(AlignEdge)          // align the Arrange targets (selection ≥2, else all) to an edge/centre
     case distribute(horizontal: Bool) // even-space the Arrange targets horizontally / vertically
     case saveLayout                // open the "Save Current Layout…" prompt
+    case selectAllPanes            // ⌥⌘A — multi-select every pane on the canvas
 }
 
 public extension WorkspaceCommand {
@@ -40,7 +41,7 @@ public extension WorkspaceCommand {
     /// run by keyboard or menu (not just the palette) populates the recents.
     var isRecentsWorthy: Bool {
         switch self {
-        case .focus, .cycleFocus, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll, .manageSnippets:
+        case .focus, .cycleFocus, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll, .manageSnippets, .selectAllPanes:
             return false
         default:
             return true
@@ -204,6 +205,10 @@ public extension CommandInterpreter {
         // Centre the camera: ⌥⌘C on the focused pane, ⌥⇧⌘C on all panes (⌥⌘ avoids the ⌘C copy chord).
         map[KeyChord(character: "c", [.option, .command])] = .centerFocusedPane
         map[KeyChord(character: "c", [.option, .command, .shift])] = .centerAll
+
+        // Select all panes (multi-select): ⌥⌘A. NOT ⌘A — that bare chord is the focused terminal's
+        // select-all-text (libghostty performKeyEquivalent); the workspace table never binds ⌘C/V/A.
+        map[KeyChord(character: "a", [.option, .command])] = .selectAllPanes
 
         // Cycle focus: ⌘] forward / ⌘[ back.
         map[KeyChord(character: "]", [.command])] = .cycleFocus(forward: true)
