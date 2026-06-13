@@ -21,6 +21,30 @@ final class CommandPaletteEntriesTests: XCTestCase {
         XCTAssertTrue(hasReconnect, "the palette catalog must offer Reconnect Pane")
     }
 
+    func testFocusedPaneVerbsAreHiddenOnAnEmptyCanvas() {
+        let withFocus = CommandPaletteView.visibleCommands(hasFocusedPane: true).map(\.command)
+        let noFocus = CommandPaletteView.visibleCommands(hasFocusedPane: false).map(\.command)
+        // With a focused pane every verb shows.
+        XCTAssertTrue(withFocus.contains(.closePane))
+        XCTAssertTrue(withFocus.contains(.renamePane))
+        // With none, the focused-pane verbs are dropped…
+        XCTAssertFalse(noFocus.contains(.closePane), "no pane to close on an empty canvas")
+        XCTAssertFalse(noFocus.contains(.renamePane))
+        XCTAssertFalse(noFocus.contains(.duplicatePane))
+        XCTAssertFalse(noFocus.contains(.toggleZoom))
+        // …but creation / global verbs still show.
+        XCTAssertTrue(noFocus.contains(.newPane(.terminal)))
+        XCTAssertTrue(noFocus.contains(.toggleOverview))
+        XCTAssertTrue(noFocus.contains(.manageSnippets))
+    }
+
+    func testRequiresFocusedPanePredicate() {
+        XCTAssertTrue(WorkspaceCommand.closePane.requiresFocusedPane)
+        XCTAssertTrue(WorkspaceCommand.reconnectPane.requiresFocusedPane)
+        XCTAssertFalse(WorkspaceCommand.newPaneDefault.requiresFocusedPane)
+        XCTAssertFalse(WorkspaceCommand.selectAllPanes.requiresFocusedPane)
+    }
+
     func testFuzzyRanksReconnectForReconQuery() {
         // "recon" is a contiguous-prefix subsequence of "Reconnect Pane" ⇒ a positive (high) score.
         let score = CommandPaletteView.fuzzyScore(query: "recon", in: "Reconnect Pane")

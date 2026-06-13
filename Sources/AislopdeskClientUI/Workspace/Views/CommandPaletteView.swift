@@ -336,7 +336,9 @@ struct CommandPaletteView: View {
     /// so each entry's `shortcutHint` reverse-looks-up the (main-actor-isolated)
     /// ``CommandInterpreter/defaultBindings``. Cheap — the catalog is a fixed handful of verbs.
     private var commandEntries: [Entry] {
-        Self.commandCatalog.map { item in
+        // On an empty canvas (no focused pane) omit the commands that act on the focused pane — they
+        // would silently no-op, and "Close Pane" with nothing to close reads as broken.
+        Self.visibleCommands(hasFocusedPane: store.workspace.focusedPane != nil).map { item in
             Entry(
                 id: "cmd.\(item.title)",
                 kind: .command(item.command),
@@ -451,6 +453,11 @@ struct CommandPaletteView: View {
                 keywords: "\(window.appName) window remote stream"
             )
         }
+    }
+
+    /// The catalog commands to show, dropping the focused-pane verbs when there is none (pure + tested).
+    nonisolated static func visibleCommands(hasFocusedPane: Bool) -> [CatalogItem] {
+        commandCatalog.filter { hasFocusedPane || !$0.command.requiresFocusedPane }
     }
 
     /// The palette search scope, selected by a leading prefix character.
