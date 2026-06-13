@@ -120,6 +120,17 @@ final class WireMessageRoundTripTests: XCTestCase {
         }
     }
 
+    func testNotificationOverlongTitleClampsWithoutCorruptingBody() throws {
+        // A >64KiB title would wrap the UInt16 length field and mis-split title/body. The encoder clamps
+        // the title to the field's limit so the body is NEVER corrupted (encode/decode stay symmetric).
+        let body = "the body must survive intact — ✅"
+        let decoded = try roundTrip(.notification(title: String(repeating: "T", count: 70_000), body: body))
+        guard case let .notification(dTitle, dBody)? = decoded else { return XCTFail("not a notification") }
+        XCTAssertEqual(dBody, body, "the body is never corrupted by an overlong title (the wrap bug)")
+        XCTAssertLessThanOrEqual(Data(dTitle.utf8).count, Int(UInt16.max), "title clamped to the UInt16 length limit")
+        XCTAssertTrue(dTitle.allSatisfy { $0 == "T" }, "the clamped title is a valid prefix of the original")
+    }
+
     func testCommandStatusRoundTrip() throws {
         let cases: [WireMessage] = [
             .commandStatus(.running),

@@ -66,8 +66,11 @@ extension WireMessage {
         case let .notification(title, body):
             // [UInt16 BE titleLen][title UTF-8][body UTF-8] — the title is length-prefixed so the
             // body (which may contain anything, incl. no delimiter) is the unambiguous remainder.
-            let titleBytes = Data(title.utf8)
-            frame.appendBE(UInt16(truncatingIfNeeded: titleBytes.count))
+            // Clamp the title to the UInt16 length the field can hold (see clampedNotificationTitle): a
+            // raw `truncatingIfNeeded` would WRAP the length on a >64KiB title while still appending every
+            // byte, so the decoder would mis-split title/body and CORRUPT the body.
+            let titleBytes = Data(Self.clampedNotificationTitle(title).utf8)
+            frame.appendBE(UInt16(titleBytes.count))
             frame.append(titleBytes)
             frame.append(Data(body.utf8))
 
@@ -99,6 +102,21 @@ extension WireMessage {
         frame[s + 3] = UInt8(truncatingIfNeeded: payloadLength)
         return frame
     }
+
+    /// A notification title whose UTF-8 fits the wire's UInt16 length field (≤ 65535 bytes), clamped at a
+    /// Character boundary so it stays valid UTF-8. Identity for any sane title (the only producer caps the
+    /// OSC at 1KiB); only an absurd >64KiB title is shortened — preventing the length field from wrapping
+    /// and corrupting the body. Shared by ``encode()`` and ``wireByteCount`` so the two stay consistent.
+    static func clampedNotificationTitle(_ title: String) -> String {
+        guard title.utf8.count > Int(UInt16.max) else { return title }
+        var clamped = "", count = 0
+        for ch in title {
+            let n = String(ch).utf8.count
+            if count + n > Int(UInt16.max) { break }
+            clamped.append(ch); count += n
+        }
+        return clamped
+    }
 }
 
 extension WireMessage {
@@ -121,7 +139,7 @@ extension WireMessage {
         case .ping, .pong: body = 8                                   // timestampMS UInt64
         case .helloAck: body = Self.sessionIDByteCount + 8 + 1        // UUID + Int64 + Bool
         case let .title(string): body = string.utf8.count
-        case let .notification(title, bodyText): body = 2 + title.utf8.count + bodyText.utf8.count  // UInt16 len + title + body
+        case let .notification(title, bodyText): body = 2 + Self.clampedNotificationTitle(title).utf8.count + bodyText.utf8.count  // UInt16 len + (clamped) title + body
         case .bell: body = 0
         case let .commandStatus(status):
             switch status {
