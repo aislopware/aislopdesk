@@ -105,6 +105,18 @@ final class VirtualHIDKeyboardTests: XCTestCase {
         XCTAssertEqual(HIDKeyboardState().releaseAllReport(), [0, 0, 0, 0, 0, 0, 0, 0])
     }
 
+    func testReleaseAllClearsHeldKeysSoLaterKeysAreNotPhantomReasserted() {
+        // releaseAll() must CLEAR the folded press state, not merely return the zero report. Otherwise a
+        // key held when the keyboard was released re-appears in the NEXT key's report — a phantom press
+        // typed into the next secure (password) field, a key the user never pressed.
+        var s = HIDKeyboardState()
+        _ = s.apply(virtualKey: 0x00, down: true, modifiers: [])   // press 'a' (held, never released)
+        XCTAssertEqual(s.releaseAll(), [0, 0, 0, 0, 0, 0, 0, 0], "release ships the all-zero report")
+        // Type 'b' next: the report must contain ONLY 'b' (0x05), NOT the previously-held 'a' (0x04).
+        let r = s.apply(virtualKey: 0x0B, down: true, modifiers: [])
+        XCTAssertEqual(r, [0, 0, 0x05, 0, 0, 0, 0, 0], "the released 'a' is gone — no phantom re-assertion")
+    }
+
     // MARK: backend routing (virtual HID ONLY while secure input is active)
 
     func testBackendUsesVirtualHIDOnlyWhenSecureAndAvailable() {
