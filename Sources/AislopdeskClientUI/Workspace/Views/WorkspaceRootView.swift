@@ -156,17 +156,9 @@ public struct WorkspaceRootView: View {
         } message: {
             Text("Save the current panes, groups, and focus as a named layout you can switch back to. Optionally bind it to a host app so it switches in automatically when that app launches.")
         }
-        // Snippet placeholder value-entry (store.pendingSnippetRun): a parameterized snippet armed from
-        // ⌘K asks for its `{{slot}}` values here BEFORE running, so `ssh {{user}}@{{host}}` is resolved
-        // rather than injected literally. A no-placeholder snippet never reaches this (it ran already).
-        .sheet(isPresented: Binding(
-            get: { store.pendingSnippetRun != nil },
-            set: { if !$0 { store.clearSnippetRunRequest() } }
-        )) {
-            if let id = store.pendingSnippetRun {
-                SnippetValuesSheet(store: store, snippetID: id)
-            }
-        }
+        // Snippet sheets (value-entry + manager) live in their own modifier so the root body's modifier
+        // chain stays inside the Swift type-checker's budget.
+        .modifier(SnippetModals(store: store))
     }
 
     /// The busy-close dialog title, naming the pane it would close (best-effort — falls back to a
@@ -277,6 +269,40 @@ public struct WorkspaceRootView: View {
             }
             .help("New pane")
         }
+    }
+}
+
+// MARK: - SnippetModals (the snippet value-entry + manager sheets, factored off the root chain)
+
+/// Hosts the two snippet sheets as a single `ViewModifier` so ``WorkspaceRootView``'s body — already a
+/// long chain of overlays / alerts / confirmation dialogs — stays comfortably inside the Swift
+/// type-checker's per-expression budget (a chain this long otherwise trips "unable to type-check in
+/// reasonable time"). No state of its own beyond the store it observes.
+private struct SnippetModals: ViewModifier {
+    @Bindable var store: WorkspaceStore
+
+    func body(content: Content) -> some View {
+        content
+            // store.pendingSnippetRun: a parameterized snippet armed from ⌘K asks for its `{{slot}}`
+            // values here BEFORE running, so `ssh {{user}}@{{host}}` is resolved rather than injected
+            // literally. A no-placeholder snippet never reaches this (it ran already).
+            .sheet(isPresented: Binding(
+                get: { store.pendingSnippetRun != nil },
+                set: { if !$0 { store.clearSnippetRunRequest() } }
+            )) {
+                if let id = store.pendingSnippetRun {
+                    SnippetValuesSheet(store: store, snippetID: id)
+                }
+            }
+            // store.snippetManagerPresented: create / edit / delete command macros. Until this existed
+            // the snippet CRUD had no in-app caller — snippets could only be made by hand-editing the
+            // workspace JSON. Reached from ⌘K / Pane ▸ Manage Snippets…
+            .sheet(isPresented: Binding(
+                get: { store.snippetManagerPresented },
+                set: { if !$0 { store.dismissSnippetManager() } }
+            )) {
+                SnippetManagerView(store: store)
+            }
     }
 }
 

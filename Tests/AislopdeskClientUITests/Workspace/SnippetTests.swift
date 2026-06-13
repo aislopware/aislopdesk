@@ -204,4 +204,39 @@ final class SnippetTests: XCTestCase {
         XCTAssertEqual(bytes(st, a.id), [Array("ssh root@h.local".utf8) + [0x0D]])
         XCTAssertNil(st.pendingSnippetRun)
     }
+
+    // MARK: - Snippet manager (the in-app CRUD surface — previously JSON-only)
+
+    func testManageSnippetsCommandOpensTheManager() {
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        XCTAssertFalse(st.snippetManagerPresented)
+        apply(.manageSnippets, to: st)
+        XCTAssertTrue(st.snippetManagerPresented, "the command opens the manager")
+        st.dismissSnippetManager()
+        XCTAssertFalse(st.snippetManagerPresented)
+    }
+
+    func testManageSnippetsIsNotRecentsWorthy() {
+        // Opening a manager is not an action verb — it should not churn the palette recents ring.
+        XCTAssertFalse(WorkspaceCommand.manageSnippets.isRecentsWorthy)
+    }
+
+    func testManageSnippetsIsInThePaletteCatalog() {
+        XCTAssertTrue(CommandPaletteView.commandCatalog.contains { $0.command == .manageSnippets },
+                      "Manage Snippets… is runnable from ⌘K")
+    }
+
+    func testManagerCRUDFlowMirrorsTheView() {
+        // What the manager view does: add (seeds + selects), edit name+body, delete.
+        let a = term(0)
+        let st = store([a], focus: a.id)
+        let created = st.addSnippet(name: "New Snippet", body: "")
+        XCTAssertEqual(st.snippets.count, 1)
+        st.updateSnippet(created.id, name: "deploy", body: "make deploy<Enter>")
+        XCTAssertEqual(st.snippets.first?.name, "deploy")
+        XCTAssertEqual(st.snippets.first?.body, "make deploy<Enter>")
+        st.deleteSnippet(created.id)
+        XCTAssertTrue(st.snippets.isEmpty)
+    }
 }

@@ -1149,6 +1149,17 @@ public final class WorkspaceStore {
     /// Dismisses the placeholder value-entry sheet (Cancel, or after a successful run).
     public func clearSnippetRunRequest() { pendingSnippetRun = nil }
 
+    /// Whether the snippet manager (create / edit / delete) is presented. Until this existed, the snippet
+    /// CRUD (``addSnippet``/``updateSnippet``/``deleteSnippet``) had NO in-app caller — a user could only
+    /// get a snippet by hand-editing the workspace JSON. Transient — never persisted.
+    public private(set) var snippetManagerPresented = false
+
+    /// Opens the snippet manager (⌘K "Manage Snippets…" / Pane ▸ Manage Snippets…).
+    public func requestSnippetManager() { snippetManagerPresented = true }
+
+    /// Closes the snippet manager.
+    public func dismissSnippetManager() { snippetManagerPresented = false }
+
     // MARK: - Command palette recents
 
     /// The most-recently-run palette COMMANDS, most-recent-first (non-persisted session state). The
@@ -2250,5 +2261,7 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
         store.saveBookmark(slot)
     case let .recallBookmark(slot):
         store.recallBookmark(slot)
+    case .manageSnippets:
+        store.requestSnippetManager()
     }
 }

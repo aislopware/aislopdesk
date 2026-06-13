@@ -593,6 +593,7 @@ struct CommandPaletteView: View {
         CatalogItem(command: .focus(.right), title: "Focus Right", symbol: "arrow.right"),
         CatalogItem(command: .focus(.up), title: "Focus Up", symbol: "arrow.up"),
         CatalogItem(command: .focus(.down), title: "Focus Down", symbol: "arrow.down"),
+        CatalogItem(command: .manageSnippets, title: "Manage Snippets…", symbol: "scroll"),
     ]
 
     // MARK: - Shortcut hint rendering (chord → glyph string)
