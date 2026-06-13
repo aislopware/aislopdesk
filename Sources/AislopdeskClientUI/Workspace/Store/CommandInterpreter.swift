@@ -20,6 +20,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case groupSelection            // ⌥⌘G  — group the current multi-selection into a new group
     case focus(FocusDirection)     // ⌥⌘←/→/↑/↓
     case cycleFocus(forward: Bool) // ⌘] (forward) / ⌘[ (back)
+    case switchRecentPane(forward: Bool) // ⌥⌘; (to the previously-focused pane) / ⌥⇧⌘; (back toward newer)
     case toggleZoom                // ⇧⌘↩  — maximize the focused pane to the viewport
     case toggleOverview            // ⌘\   — fit-all overview (Mission Control for the canvas)
     case toggleBroadcast           // ⇧⌘B — arm/disarm synchronized input to the pane group (tmux synchronize-panes)
@@ -41,7 +42,7 @@ public extension WorkspaceCommand {
     /// run by keyboard or menu (not just the palette) populates the recents.
     var isRecentsWorthy: Bool {
         switch self {
-        case .focus, .cycleFocus, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll, .manageSnippets, .selectAllPanes:
+        case .focus, .cycleFocus, .switchRecentPane, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll, .manageSnippets, .selectAllPanes:
             return false
         default:
             return true
@@ -225,6 +226,13 @@ public extension CommandInterpreter {
         // Cycle focus: ⌘] forward / ⌘[ back.
         map[KeyChord(character: "]", [.command])] = .cycleFocus(forward: true)
         map[KeyChord(character: "[", [.command])] = .cycleFocus(forward: false)
+
+        // Recent-pane quick-switch (the "go to last pane" idiom every editor/terminal has): ⌥⌘;
+        // jumps to the previously-focused pane (steps toward OLDER in the focus-history MRU), ⌥⇧⌘;
+        // walks back toward newer. ⌥⌘-prefixed (";" is free for the terminal) and beside the other nav
+        // chords. `forward:false` = toward the previous pane (the primary action).
+        map[KeyChord(character: ";", [.option, .command])] = .switchRecentPane(forward: false)
+        map[KeyChord(character: ";", [.option, .command, .shift])] = .switchRecentPane(forward: true)
 
         // Zoom toggle: ⇧⌘↩.
         map[KeyChord(.return, [.command, .shift])] = .toggleZoom
