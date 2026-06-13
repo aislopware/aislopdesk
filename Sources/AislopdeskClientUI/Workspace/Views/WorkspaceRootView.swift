@@ -39,6 +39,10 @@ public struct WorkspaceRootView: View {
     /// zero-cost branch.
     @State private var showCommandPalette = false
 
+    /// Whether the ⌘/ keyboard-shortcut cheat sheet is presented. Window-level UI state like the palette;
+    /// a ⌘-prefixed chord, so the focused terminal never sees it (the §5 conflict rule).
+    @State private var showCheatSheet = false
+
     /// Whether the app has connected at least once this launch. The canvas (and its panes' auto-connect
     /// `.task`s) only MOUNT after the first successful connect — otherwise a pane behind the gate would
     /// open a channel and build the shared mux WITHOUT the gate's pin, leaving the gate stuck at
@@ -92,7 +96,9 @@ public struct WorkspaceRootView: View {
         // dimming backdrop, top-third placement. An unconditional overlay because the view renders an
         // empty branch when hidden (zero cost) — and an overlay, not a `.sheet`, so it owns its own
         // backdrop + placement rather than fighting sheet chrome.
-        .overlay { CommandPaletteView(store: store, isPresented: $showCommandPalette) }
+        // The ⌘K palette + ⌘/ cheat-sheet overlays, in their own modifier so the root body's chain stays
+        // inside the Swift type-checker's budget. Both render an empty branch when hidden (zero cost).
+        .modifier(WorkspaceOverlayModals(store: store, showPalette: $showCommandPalette, showCheatSheet: $showCheatSheet))
         // The app-global connect-gate (docs/31): a modal over the WHOLE shell — including the sidebar +
         // palette — whenever the one connection is not `.connected`. Placed here (above the regular↔compact
         // switch in `detail`) so a projection flip never re-mounts it. The canvas is unusable until
@@ -122,6 +128,7 @@ public struct WorkspaceRootView: View {
         // (the terminal never receives it), and `focusedSceneValue` keeps it reachable while a pane has
         // keyboard focus (exactly like `\.workspaceStore`).
         .focusedSceneValue(\.commandPaletteToggle, CommandPaletteToggle { showCommandPalette.toggle() })
+        .focusedSceneValue(\.cheatSheetToggle, CommandPaletteToggle { showCheatSheet.toggle() })
         // The busy-shell close guard (store.pendingClose): ⌘W / a close affordance on a pane whose
         // shell is mid-command parks here instead of killing the command. The dialog reads the pane's
         // title at present-time; Cancel (the automatic dismiss) clears the pending id.
@@ -269,6 +276,24 @@ public struct WorkspaceRootView: View {
             }
             .help("New pane")
         }
+    }
+}
+
+// MARK: - WorkspaceOverlayModals (the ⌘K palette + ⌘/ cheat-sheet overlays, factored off the root chain)
+
+/// Hosts the two floating overlays as a `ViewModifier` so ``WorkspaceRootView``'s body stays inside the
+/// Swift type-checker's per-expression budget (the same reason ``SnippetModals`` exists). Both views
+/// render nothing when their binding is false.
+private struct WorkspaceOverlayModals: ViewModifier {
+    let store: WorkspaceStore
+    @Binding var showPalette: Bool
+    @Binding var showCheatSheet: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .overlay { CommandPaletteView(store: store, isPresented: $showPalette) }
+            .overlay { KeyboardCheatSheetView(isPresented: $showCheatSheet) }
+            .animation(.easeOut(duration: 0.12), value: showCheatSheet)
     }
 }
 

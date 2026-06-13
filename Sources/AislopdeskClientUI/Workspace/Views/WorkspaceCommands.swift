@@ -37,6 +37,7 @@ import UniformTypeIdentifiers
 public struct WorkspaceCommands: Commands {
     @FocusedValue(\.workspaceStore) private var store: WorkspaceStore?
     @FocusedValue(\.commandPaletteToggle) private var paletteToggle: CommandPaletteToggle?
+    @FocusedValue(\.cheatSheetToggle) private var cheatSheetToggle: CommandPaletteToggle?
 
     public init() {}
 
@@ -72,6 +73,9 @@ public struct WorkspaceCommands: Commands {
             Button("Command Palette") { paletteToggle?.toggle() }
                 .keyboardShortcut("k", modifiers: .command)
                 .disabled(paletteToggle == nil)
+            Button("Keyboard Shortcuts") { cheatSheetToggle?.toggle() }
+                .keyboardShortcut("/", modifiers: .command)
+                .disabled(cheatSheetToggle == nil)
             Divider()
             // The canvas interaction prefs, surfaced app-globally for discoverability — the SAME
             // @AppStorage keys the per-pane pill menu toggles, so the two surfaces cannot drift.
