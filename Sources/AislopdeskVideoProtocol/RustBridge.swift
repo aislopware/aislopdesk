@@ -95,4 +95,51 @@ enum RustVideoFFI {
         )
         return (out.tier, Int(out.relax_streak), Int(out.sticky_relax_remaining))
     }
+
+    // MARK: - coordinate_mapping (pure scalar over flat structs; env-free)
+
+    private static func cPoint(_ p: VideoPoint) -> AisdPoint { AisdPoint(x: p.x, y: p.y) }
+    private static func point(_ c: AisdPoint) -> VideoPoint { VideoPoint(x: c.x, y: c.y) }
+    private static func cRect(_ r: VideoRect) -> AisdRect {
+        AisdRect(x: r.origin.x, y: r.origin.y, width: r.size.width, height: r.size.height)
+    }
+
+    /// Maps a normalised (0..1) window point to a host-window point in CG top-left space.
+    static func coordWindowPoint(normalized: VideoPoint, windowBounds: VideoRect) -> VideoPoint {
+        point(aisd_coord_window_point(cPoint(normalized), cRect(windowBounds)))
+    }
+
+    /// Flips a CG-top-left rect into Cocoa bottom-left space.
+    static func coordCGRectToCocoa(_ cgRect: VideoRect, primaryHeight: Double) -> VideoRect {
+        let r = aisd_coord_cg_rect_to_cocoa(cRect(cgRect), primaryHeight)
+        return VideoRect(x: r.x, y: r.y, width: r.width, height: r.height)
+    }
+
+    /// Picks the screen a window lives on (largest overlap) and returns its
+    /// `backingScaleFactor`, or `nil` for no overlap. The screens array is borrowed for the call.
+    static func coordBackingScaleFactor(
+        windowBoundsCG: VideoRect,
+        screens: [ScreenInfo],
+        primaryHeight: Double
+    ) -> Double? {
+        let cScreens = screens.map { s in
+            AisdScreenInfo(cocoa_frame: cRect(s.cocoaFrame), backing_scale_factor: s.backingScaleFactor)
+        }
+        var scale = 0.0
+        let status: AisdStatus = cScreens.withUnsafeBufferPointer { buf in
+            aisd_coord_backing_scale_factor(
+                cRect(windowBoundsCG), buf.baseAddress, buf.count, primaryHeight, &scale
+            )
+        }
+        return status == AISD_OK ? scale : nil
+    }
+
+    /// Pixel path: divide by `scale` to get points, then add the window origin.
+    static func coordWindowPoint(
+        pixel: VideoPoint,
+        windowBoundsCG: VideoRect,
+        backingScaleFactor scale: Double
+    ) -> VideoPoint {
+        point(aisd_coord_window_point_from_pixel(cPoint(pixel), cRect(windowBoundsCG), scale))
+    }
 }
