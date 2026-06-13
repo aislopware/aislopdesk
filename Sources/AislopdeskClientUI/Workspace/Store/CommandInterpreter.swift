@@ -47,6 +47,18 @@ public extension WorkspaceCommand {
             return true
         }
     }
+
+    /// Whether this command acts on "the focused pane" and is a graceful no-op without one — so the ⌘K
+    /// palette can OMIT it on an empty canvas (offering "Close Pane" with nothing to close reads as
+    /// broken). Creation / camera / global verbs do NOT require a focused pane and always show.
+    var requiresFocusedPane: Bool {
+        switch self {
+        case .duplicatePane, .closePane, .renamePane, .reconnectPane, .toggleZoom, .centerFocusedPane:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 // MARK: - Key chords
