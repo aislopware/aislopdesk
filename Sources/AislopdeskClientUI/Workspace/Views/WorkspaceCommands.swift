@@ -264,10 +264,10 @@ public struct WorkspaceCommands: Commands {
 /// shared verbatim with ``PaneMenuView``'s in-popover toggles and ``CanvasItemView``/``CanvasView``'s
 /// consumers. On macOS, hold ⌘ during a drag for a one-off bypass.
 private struct SnapPreferenceToggles: View {
-    @AppStorage("canvas.snapPanes") private var snapPanes = true
-    @AppStorage("canvas.snapGrid") private var snapGrid = true
-    @AppStorage("canvas.showGrid") private var showGrid = true
-    @AppStorage("canvas.nonOverlap") private var nonOverlap = true
+    @AppStorage(SettingsKey.snapPanes) private var snapPanes = true
+    @AppStorage(SettingsKey.snapGrid) private var snapGrid = true
+    @AppStorage(SettingsKey.showGrid) private var showGrid = true
+    @AppStorage(SettingsKey.nonOverlap) private var nonOverlap = true
 
     var body: some View {
         Toggle("Snap to Panes", isOn: $snapPanes)

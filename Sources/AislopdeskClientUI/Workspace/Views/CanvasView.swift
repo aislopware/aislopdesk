@@ -25,7 +25,7 @@ struct CanvasView: View {
     @State private var livePan: CGSize = .zero
 
     /// Whether the background dot grid renders (the ``PaneMenuView`` "Show Grid" toggle).
-    @AppStorage("canvas.showGrid") private var showGrid = true
+    @AppStorage(SettingsKey.showGrid) private var showGrid = true
 
     private static let coordSpace = "canvas"
     /// Outward padding of a group's bounding box around its panes (so the frame doesn't touch the panes).
