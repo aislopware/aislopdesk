@@ -55,4 +55,44 @@ enum RustVideoFFI {
             throw VideoProtocolError.truncated
         }
     }
+
+    // MARK: - adaptive_fec (pure scalar; env stays Swift-side, crosses as params)
+
+    /// Maps a wire FEC tier to the group size both ends must use, or `nil` for the OFF
+    /// (no-parity) tier. Wraps `aisd_adaptive_fec_group_size`. TOTAL over every tier.
+    static func adaptiveFECGroupSize(tier: UInt8, defaultGroupSize: Int) -> Int? {
+        var out = 0
+        let isParity = withUnsafeMutablePointer(to: &out) { p in
+            aisd_adaptive_fec_group_size(tier, defaultGroupSize, p)
+        }
+        return isParity != 0 ? out : nil
+    }
+
+    /// Picks the next wire tier from the EWMA loss and previous tier (plain decider). Wraps
+    /// `aisd_adaptive_fec_tier`.
+    static func adaptiveFECTier(loss: Double, previousTier: UInt8, allowOff: Bool) -> UInt8 {
+        aisd_adaptive_fec_tier(loss, previousTier, allowOff ? 1 : 0)
+    }
+
+    /// Dwell-gated tier step (production entry point). Wraps `aisd_adaptive_fec_next_tier_state`,
+    /// marshaling the value-type state through the flat `AisdTierState`.
+    static func adaptiveFECNextTierState(
+        loss: Double,
+        tier: UInt8,
+        relaxStreak: Int,
+        stickyRelaxRemaining: Int,
+        dwell: Int,
+        allowOff: Bool,
+        sawUnrecoveredLoss: Bool
+    ) -> (tier: UInt8, relaxStreak: Int, stickyRelaxRemaining: Int) {
+        let inState = AisdTierState(
+            tier: tier,
+            relax_streak: Int32(clamping: relaxStreak),
+            sticky_relax_remaining: Int32(clamping: stickyRelaxRemaining)
+        )
+        let out = aisd_adaptive_fec_next_tier_state(
+            loss, inState, Int32(clamping: dwell), allowOff ? 1 : 0, sawUnrecoveredLoss ? 1 : 0
+        )
+        return (out.tier, Int(out.relax_streak), Int(out.sticky_relax_remaining))
+    }
 }

@@ -173,6 +173,30 @@ AisdStatus aisd_cursor_update_encode(uint16_t shape_id, uint8_t visible, double 
  * (AISD_ERR_MALFORMED) or a short body (AISD_ERR_TRUNCATED). data may be NULL iff len == 0. */
 AisdStatus aisd_cursor_update_decode(const uint8_t *data, size_t len, AisdCursorUpdate *out);
 
+/* ---- adaptive_fec (pure scalar; WF-4 FEC tier policy) ----------------------------- */
+
+/* Tier-decision state for the dwell-gated adaptive-FEC variant. Field order MUST match the
+ * Rust #[repr(C)] struct AisdTierState (mirrors aislopdesk_core::TierState). */
+typedef struct AisdTierState {
+    uint8_t tier;                   /* current wire tier (0..=7 on the wire)             */
+    int32_t relax_streak;           /* consecutive reports that demanded relaxation       */
+    int32_t sticky_relax_remaining; /* reports left in the doubled-dwell window; 0 = off  */
+} AisdTierState;
+
+/* Map a wire tier to the FEC group size. Returns 1 and writes *out for a parity tier; returns
+ * 0 for the OFF tier (leaving *out untouched — treat as nil). TOTAL over every tier (unknown
+ * => default_group_size). A NULL out returns 0 without writing. */
+uint8_t aisd_adaptive_fec_group_size(uint8_t tier, size_t default_group_size, size_t *out);
+
+/* Pick the next wire tier from the EWMA loss and previous_tier (plain decider). allow_off is
+ * the OFF-tier escape hatch (0 = false, any nonzero = true), resolved caller-side. */
+uint8_t aisd_adaptive_fec_tier(double loss, uint8_t previous_tier, uint8_t allow_off);
+
+/* Dwell-gated tier step (production entry point). allow_off / saw_unrecovered_loss are bytes
+ * read != 0; the caller resolves allow_off and passes dwell. Returns the next state by value. */
+AisdTierState aisd_adaptive_fec_next_tier_state(double loss, AisdTierState state, int32_t dwell,
+                                                uint8_t allow_off, uint8_t saw_unrecovered_loss);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
