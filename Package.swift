@@ -184,6 +184,18 @@ let package = Package(
         // chain reaches even a SecurityAgent secure field. Run the bridge (sudo) first.
         .executableTarget(name: "aislopdesk-hid-probe", dependencies: ["AislopdeskVideoHost", "AislopdeskVideoProtocol"]),
 
+        // Golden-vector dumper: emits a deterministic JSON corpus from the REAL
+        // AislopdeskVideoProtocol codecs + the pure realtime controllers (public API only) so
+        // the Rust `aislopdesk-core` crate proves byte-/bit-identical parity in its
+        // `golden_parity` test. Pure value types only — constructs NO SCStream / encoder, so it
+        // touches no GUI/TCC: `swift run aislopdesk-corevectors > rust/aislopdesk-core/tests/vectors/golden_vectors.json`.
+        // IMPORTANT: run with no `AISLOPDESK_*` env set so the host/client controllers resolve
+        // their default tunables (the Rust port pins those defaults as compile-time consts).
+        .executableTarget(
+            name: "aislopdesk-corevectors",
+            dependencies: ["AislopdeskProtocol", "AislopdeskVideoProtocol", "AislopdeskVideoHost", "AislopdeskVideoClient"]
+        ),
+
         // MARK: Tests
         .testTarget(name: "AislopdeskProtocolTests", dependencies: ["AislopdeskProtocol"]),
         .testTarget(name: "AislopdeskTransportTests", dependencies: ["AislopdeskTransport"]),
