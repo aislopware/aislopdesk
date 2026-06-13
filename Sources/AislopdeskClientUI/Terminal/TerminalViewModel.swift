@@ -697,7 +697,13 @@ public final class TerminalViewModel {
         lastSentSize = nil   // a fresh session must re-assert its grid size
         ring.removeAll()     // stale scrollback must not survive into a new session
         ringByteCount = 0
-        pendingFreshSessionReset = false  // deliberate connect already starts clean; no pending wipe
+        // Arm the one-shot fresh-session wipe, exactly like markReconnecting(). The surface is ALWAYS
+        // mounted (TerminalScreenView is an overlay, never an if/else content swap), so a deliberate
+        // reconnect (⇧⌘R / the recovery banner's Retry) of an exited/failed pane keeps the dead session's
+        // framebuffer on screen — the new shell's prompt would graft onto the old screen. Arming the wipe
+        // makes the first fresh output RIS-clear the surface first. Harmless on a first-ever connect (the
+        // surface is already empty), and the deliberate path now matches the transient-reconnect path.
+        pendingFreshSessionReset = true
         sessionEpoch += 1
         clearGlitchCaret()
         glitchModeTracker.reset()  // same session-boundary truth as markReconnecting()
