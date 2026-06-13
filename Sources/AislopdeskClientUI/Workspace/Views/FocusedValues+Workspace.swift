@@ -45,6 +45,18 @@ extension FocusedValues {
         get { self[CommandPaletteToggleKey.self] }
         set { self[CommandPaletteToggleKey.self] = newValue }
     }
+
+    /// Key for the focused scene's keyboard-cheat-sheet toggle.
+    private struct CheatSheetToggleKey: FocusedValueKey {
+        typealias Value = CommandPaletteToggle
+    }
+
+    /// The key scene's ⌘/ cheat-sheet toggle (reuses ``CommandPaletteToggle``'s closure box — both are
+    /// just "toggle a view-`@State` overlay"). `nil` when no workspace window is key.
+    var cheatSheetToggle: CommandPaletteToggle? {
+        get { self[CheatSheetToggleKey.self] }
+        set { self[CheatSheetToggleKey.self] = newValue }
+    }
 }
 
 /// A tiny wrapper around the key window's command-palette toggle action, published as a focused scene
