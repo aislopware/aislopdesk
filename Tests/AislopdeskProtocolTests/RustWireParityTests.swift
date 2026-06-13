@@ -62,6 +62,21 @@ final class RustWireParityTests: XCTestCase {
         }
     }
 
+    /// Regression for the adversarial-review finding: a >64 KiB notification title whose
+    /// 65535-byte cut straddles a multi-scalar grapheme. `encode()` (Rust, scalar clamp),
+    /// `encodeNative()` (now scalar clamp), and `wireByteCount` must all agree byte-for-byte.
+    /// (Unreachable in production — the OSC producer caps titles at ~1 KiB — but it pins the
+    /// encode()↔wireByteCount flow-control parity contract.)
+    func testOverlongNotificationTitleClampParity() {
+        let title = String(repeating: "T", count: 65_534) + "e\u{0301}" // base+combining at the cut
+        let msg = WireMessage.notification(title: title, body: "x")
+        XCTAssertEqual(RustFFI.encodeFrame(msg), msg.encodeNative(), "notification clamp: Rust == native")
+        XCTAssertEqual(msg.wireByteCount, msg.encode().count, "wireByteCount must equal encode().count")
+        // Decoding the clamped frame must round-trip the clamped (not original) title identically.
+        let payload = Data(msg.encodeNative().dropFirst(4))
+        XCTAssertEqual(try? RustFFI.decodePayload(payload), try? WireMessage.decodeNative(payload: payload))
+    }
+
     func testDecodeErrorsMatchNative() {
         // (payload, human label) pairs that the native decoder rejects.
         let cases: [(Data, String)] = [

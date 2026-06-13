@@ -134,13 +134,21 @@ extension WireMessage {
     /// and corrupting the body. Shared by ``encode()`` and ``wireByteCount`` so the two stay consistent.
     static func clampedNotificationTitle(_ title: String) -> String {
         guard title.utf8.count > Int(UInt16.max) else { return title }
-        var clamped = "", count = 0
-        for ch in title {
-            let n = String(ch).utf8.count
+        // Clamp at a Unicode SCALAR boundary (not a grapheme cluster) so this matches the Rust
+        // core's `clamped_notification_title` (which iterates `char_indices`) byte-for-byte —
+        // keeping native `wireByteCount` consistent with the Rust `encode()` length even for a
+        // >64KiB title whose cut would straddle a multi-scalar grapheme. (Unreachable in
+        // production — the OSC producer caps titles at ~1KiB — but it keeps the encode()↔
+        // wireByteCount flow-control parity contract honest; see RustWireParityTests.)
+        var clamped = String.UnicodeScalarView()
+        var count = 0
+        for scalar in title.unicodeScalars {
+            let n = String(scalar).utf8.count
             if count + n > Int(UInt16.max) { break }
-            clamped.append(ch); count += n
+            clamped.append(scalar)
+            count += n
         }
-        return clamped
+        return String(clamped)
     }
 }
 

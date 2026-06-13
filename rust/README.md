@@ -161,12 +161,18 @@ Future tranches, in the verdict's port order:
 2. **Android build**: `cargo-ndk` producing `.so`s for `aarch64/armv7/x86_64-linux-android`
    plus a JNI shim, behind a foreground service for Doze. *(deferred)*
 
-> **On replacing Swift with this port.** The FFI boundary is the mechanism by which the
-> macOS/iOS app *could* call these Rust codecs instead of its native Swift ones. That swap
-> is a deliberate, per-call-site, benchmarked step — not a blanket rewrite: the 2026-06-11
-> verdict rejected a wholesale Swift→Rust hot-path replacement on performance grounds (the
-> Swift path is ~1.5 ms/frame and all latency is policy/architecture). The Rust port's
-> primary consumer remains the Android client, which has no Swift to replace.
+> **On replacing Swift with this port — landed (partially), see [`SWAP_STATUS.md`](SWAP_STATUS.md).**
+> The macOS/iOS app now calls these Rust codecs for the subsystems where it is provably safe
+> *and* benchmark-proven perf-neutral: the terminal wire codec (size-gated — bulk PTY data
+> stays native), the cursor codec, and the pure scalar policies (LiveBitrate, AdaptiveFEC,
+> CoordinateMapping, RecoveryPolicy). The swap is per-call-site, behind unchanged Swift APIs,
+> each proven by a native↔Rust differential + fuzz test. It is **deliberately not** a blanket
+> rewrite: bulk-buffer codecs stay native (FFI copies regress them 5–7× — measured), and the
+> stateful realtime controllers stay native because they are `Sendable + Equatable` value
+> types whose contract an opaque Rust handle would break. The 2026-06-11 verdict (no wholesale
+> hot-path rewrite) still holds. For those keep-native subsystems the Rust port remains the
+> source of truth for the **Android client**, which has no Swift contract / native fast path to
+> preserve.
 
 Each tranche keeps the same discipline: golden differential tests against the Swift suite,
 no shipped dependencies, no `unsafe` in the pure core (only in `aislopdesk-ffi`).
