@@ -26,6 +26,7 @@ public enum WorkspaceCommand: Sendable, Equatable {
     case reconnectPane             // ⇧⌘R — re-dial the focused pane (primary failure recovery)
     case saveBookmark(Int)         // ⇧⌘1–9 — save the viewport as bookmark n
     case recallBookmark(Int)       // ⌘1–9  — jump back to bookmark n
+    case manageSnippets            // open the snippet manager (create / edit / delete command macros)
 }
 
 public extension WorkspaceCommand {
@@ -35,7 +36,7 @@ public extension WorkspaceCommand {
     /// run by keyboard or menu (not just the palette) populates the recents.
     var isRecentsWorthy: Bool {
         switch self {
-        case .focus, .cycleFocus, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll:
+        case .focus, .cycleFocus, .saveBookmark, .recallBookmark, .centerFocusedPane, .centerAll, .manageSnippets:
             return false
         default:
             return true
