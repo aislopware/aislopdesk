@@ -45,16 +45,44 @@ final class RecentPaneRingTests: XCTestCase {
     func testSwitchClampsAtTheEndsAndNoopsBelowTwoPanes() {
         let (store, ids) = makeStore(2)
         let (a, b) = (ids[0], ids[1])
-        store.focus(b)                            // ring [b, a], cursor 0
-        store.switchToRecentPane(forward: true)   // already newest → no-op
+        store.focus(b)                            // ring [b, a], focused b = NEWEST
+        // The pure target helper makes the end-clamp guards directly testable (a behavioral focusedPane
+        // assertion would pass even with the guards removed, since focus(self) also early-returns).
+        XCTAssertNil(store.recentPaneTarget(forward: true), "at the newest end there is no newer target")
+        store.switchToRecentPane(forward: true)   // newest → no-op
         XCTAssertEqual(store.focusedPane, b)
-        store.switchToRecentPane(forward: false)  // → a
-        store.switchToRecentPane(forward: false)  // already oldest → no-op
+        store.switchToRecentPane(forward: false)  // → a (oldest)
+        XCTAssertEqual(store.focusedPane, a)
+        XCTAssertNil(store.recentPaneTarget(forward: false), "at the oldest end there is no older target")
+        store.switchToRecentPane(forward: false)  // oldest → no-op
         XCTAssertEqual(store.focusedPane, a)
 
         let (solo, sids) = makeStore(1)
-        solo.switchToRecentPane(forward: false)   // empty/one-entry ring → no-op, no crash
+        XCTAssertNil(solo.recentPaneTarget(forward: false), "an empty ring (no focus recorded yet) has no target")
+        XCTAssertTrue(solo.focusHistory.isEmpty, "a restored single-pane store has not recorded any visit yet")
+        solo.switchToRecentPane(forward: false)   // no-op, no crash
         XCTAssertEqual(solo.focusedPane, sids[0], "a single pane has nothing to switch to")
+    }
+
+    func testFullCanvasSwapReseedsTheRingSoQuickSwitchStaysLive() {
+        // A layout-preset switch (and replace-import) re-mints every pane id; without re-seeding, the ring
+        // would be all-dead and ⌥⌘; would silently no-op forever. After a swap the ring holds only the new
+        // focused pane, and rebuilds (landing on LIVE panes) as the user navigates.
+        let (store, ids) = makeStore(3)
+        store.focus(ids[1]); store.focus(ids[2])   // ring [2,1,0] of OLD ids
+        store.saveLayoutPreset(name: "L")          // snapshot current canvas
+        // Add a couple of panes so "L" differs, then switch back to L (re-mints all ids).
+        store.addPane(kind: .terminal)
+        store.switchToLayoutPreset(name: "L")
+        XCTAssertFalse(store.focusHistory.contains { !store.workspace.canvas.contains($0) },
+                       "no re-minted/dead id lingers in the quick-switch ring after a swap")
+        // Drive the new layout: focus another live pane, then quick-switch lands on a LIVE pane.
+        let live = store.workspace.canvas.allIDs()
+        if live.count > 1, let other = live.first(where: { $0 != store.focusedPane }) {
+            store.focus(other)
+            store.switchToRecentPane(forward: false)
+            XCTAssertTrue(store.workspace.canvas.contains(store.focusedPane!), "quick-switch lands on a live pane post-swap")
+        }
     }
 
     func testClosingAPaneDropsItFromTheRing() {
