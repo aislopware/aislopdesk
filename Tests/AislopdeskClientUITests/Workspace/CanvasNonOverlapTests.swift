@@ -307,40 +307,60 @@ final class CanvasNonOverlapTests: XCTestCase {
         XCTAssertEqual(out.frame(of: g2), CGRect(x: 600, y: 0, width: 400, height: 400))
     }
 
+    /// The floored version of a proposed group box: a group can never be smaller than a pane, so the
+    /// production code clamps the proposed box up to at least minItemSize per axis. Tests assert
+    /// containment against THIS box (NOT `groupBoundingBox`, which is the union of the members — asserting
+    /// members lie within their own union is a tautology that passes even against the un-fixed code).
+    private func flooredBox(_ proposed: CGRect) -> CGRect {
+        CGRect(x: proposed.minX, y: proposed.minY,
+               width: Swift.max(proposed.width, Canvas.minItemSize.width),
+               height: Swift.max(proposed.height, Canvas.minItemSize.height))
+    }
+
     func testResizingGroupToSubFloorBoxKeepsMembersContained() {
-        // A group of two minItemSize panes, shrunk to a single-pane box: members floor at minItemSize and
-        // cannot scale below it, so the naive affine remap would spill them OUTSIDE the box (and corrupt the
-        // non-overlap solver). Every resulting member frame must stay contained in the (floored) box.
+        // Two minItemSize panes, shrunk to a single-pane box: members floor at minItemSize and cannot
+        // scale below it, so the naive affine remap spilled the second member to maxX≈249 — OUTSIDE the
+        // box — and could feed the non-overlap solver overlapping input. Every member must stay inside the
+        // FLOORED PROPOSED box (asserted against that box, not the members' own union).
         let g1 = PaneID(), g2 = PaneID(), gid = PaneGroupID()
         let min = Canvas.minItemSize
         let canvas = Canvas(items: [
             CanvasItem(id: g1, spec: spec(), frame: CGRect(origin: CGPoint(x: 0, y: 0), size: min), z: 0, groupID: gid),
             CanvasItem(id: g2, spec: spec(), frame: CGRect(origin: CGPoint(x: min.width + 40, y: 0), size: min), z: 1, groupID: gid),
         ])
-        let out = canvas.resizingGroup(gid, toBox: CGRect(x: 0, y: 0, width: 160, height: 160))
-        // The box is floored to at least minItemSize; both members must be fully inside it.
-        let box = out.groupBoundingBox(gid)!
+        let proposed = CGRect(x: 0, y: 0, width: 160, height: 160)
+        let out = canvas.resizingGroup(gid, toBox: proposed)
+        let box = flooredBox(proposed)
         for id in [g1, g2] {
             let f = out.frame(of: id)!
-            XCTAssertGreaterThanOrEqual(f.minX, box.minX - 0.001, "member \(id) leaks left of the box")
-            XCTAssertGreaterThanOrEqual(f.minY, box.minY - 0.001, "member \(id) leaks above the box")
-            XCTAssertLessThanOrEqual(f.maxX, box.maxX + 0.001, "member \(id) leaks right of the box")
-            XCTAssertLessThanOrEqual(f.maxY, box.maxY + 0.001, "member \(id) leaks below the box")
+            XCTAssertGreaterThanOrEqual(f.minX, box.minX - 0.001, "member \(id) leaks left of the floored box")
+            XCTAssertGreaterThanOrEqual(f.minY, box.minY - 0.001, "member \(id) leaks above the floored box")
+            XCTAssertLessThanOrEqual(f.maxX, box.maxX + 0.001, "member \(id) leaks right of the floored box")
+            XCTAssertLessThanOrEqual(f.maxY, box.maxY + 0.001, "member \(id) leaks below the floored box")
             XCTAssertGreaterThanOrEqual(f.width, min.width - 0.001, "member kept its minItemSize width floor")
             XCTAssertGreaterThanOrEqual(f.height, min.height - 0.001, "member kept its minItemSize height floor")
         }
     }
 
-    func testResizingGroupFloorsBoxToMinItemSize() {
-        let g1 = PaneID(), gid = PaneGroupID()
+    func testResizingGroupFloorsASubFloorBoxToMinItemSize() {
+        // A MULTI-member group asked to shrink to a 10×10 box. A single member can't distinguish the
+        // box-floor (per-member sanitize alone floors it); with two members the naive remap spills the
+        // second past the floored width (box.maxX≈166 > 160), so asserting the resulting box never
+        // exceeds the floored proposed box is a real regression net.
+        let g1 = PaneID(), g2 = PaneID(), gid = PaneGroupID()
+        let min = Canvas.minItemSize
         let canvas = Canvas(items: [
-            CanvasItem(id: g1, spec: spec(), frame: CGRect(x: 0, y: 0, width: 400, height: 400), z: 0, groupID: gid),
+            CanvasItem(id: g1, spec: spec(), frame: CGRect(x: 0, y: 0, width: 200, height: 200), z: 0, groupID: gid),
+            CanvasItem(id: g2, spec: spec(), frame: CGRect(x: 300, y: 0, width: 200, height: 200), z: 1, groupID: gid),
         ])
-        // Ask for a 10×10 box — far below the pane floor; the result must be at least minItemSize.
-        let out = canvas.resizingGroup(gid, toBox: CGRect(x: 0, y: 0, width: 10, height: 10))
+        let proposed = CGRect(x: 0, y: 0, width: 10, height: 10)
+        let out = canvas.resizingGroup(gid, toBox: proposed)
+        let floored = flooredBox(proposed)
         let box = out.groupBoundingBox(gid)!
-        XCTAssertGreaterThanOrEqual(box.width, Canvas.minItemSize.width - 0.001)
-        XCTAssertGreaterThanOrEqual(box.height, Canvas.minItemSize.height - 0.001)
+        XCTAssertLessThanOrEqual(box.maxX, floored.maxX + 0.001, "the group box never exceeds the floored width")
+        XCTAssertLessThanOrEqual(box.maxY, floored.maxY + 0.001, "the group box never exceeds the floored height")
+        XCTAssertGreaterThanOrEqual(box.width, min.width - 0.001, "the box is floored to at least minItemSize wide")
+        XCTAssertGreaterThanOrEqual(box.height, min.height - 0.001, "the box is floored to at least minItemSize tall")
     }
 
     // MARK: - Bypass
