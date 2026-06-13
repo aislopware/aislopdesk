@@ -1,9 +1,25 @@
 # 36 — UI/UX + DX round (2026-06-13, autonomous)
 
-**Status: 17 items shipped to `main` (one commit each), test-first, full suite 2071 → 2119/0.**
-Base `afdd1f9` → HEAD `5750d5f`. An autonomous round: a 9-agent research workflow surveyed every
-client UX/DX surface and synthesised a ranked 58-item backlog; the highest-value, headlessly-testable
-items were implemented one-per-commit, each adversarially verified against the real code first.
+**Status: 17 items + 1 self-review pass shipped to `main` (one commit each), test-first, full suite
+2071 → 2122/0.** Base `afdd1f9` → HEAD `c6ea64a`. An autonomous round: a 9-agent research workflow
+surveyed every client UX/DX surface and synthesised a ranked 58-item backlog; the highest-value,
+headlessly-testable items were implemented one-per-commit, each adversarially verified against the real
+code first; then a 5-dimension review workflow over the whole round caught 4 real defects (1 MED + 3
+LOW, all in the new snippet/paste UI — SwiftUI presentation/focus behaviour tests can't catch), all
+fixed in `c6ea64a`.
+
+## Self-review pass (`c6ea64a`)
+A review workflow (5 reviewers by dimension → adversarial verify each finding) over `afdd1f9..HEAD`:
+- **MED** — snippet-manager "Run Now" on a parameterized snippet presented the value sheet while
+  dismissing the manager in one transaction → macOS drops the 2nd sheet (stranded `pendingSnippetRun`).
+  Fix: dismiss-then-defer-arm + `requestSnippetManager` clears a stranded flag.
+- **LOW** — snippet name field churned (per-keystroke `snippetName` trim/substitute) → store verbatim,
+  fallback at display only.
+- **LOW** — `SnippetValuesSheet` self-referential `.focused($bool, equals:)` focused all fields for ≥2
+  placeholders → index-typed `@FocusState`.
+- **LOW** — clean paste left a stale "skipped M" banner → `notePasteFeedback` clears on a clean paste.
+The other 3 reviewer candidates were adversarially rejected as not-real. Lesson: SwiftUI sheet/focus
+behaviour is the gap that headless tests miss — a review pass over new view code earns its keep.
 
 ## The research
 
