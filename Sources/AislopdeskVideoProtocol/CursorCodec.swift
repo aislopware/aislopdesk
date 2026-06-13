@@ -43,7 +43,16 @@ public struct CursorUpdate: Equatable, Sendable {
     /// Encoded size in bytes (fixed).
     public static let encodedSize = 36
 
+    /// Encodes the update via the Rust `aislopdesk-core` cursor codec (one source of truth with
+    /// the Android client) — byte-identical to ``encodeNative()`` (proven by golden vectors +
+    /// `CursorRustParityTests`). A 36-byte fixed message, so Rust is faster than building `Data`.
     public func encode() -> Data {
+        RustVideoFFI.encode(self)
+    }
+
+    /// The native Swift encoder, retained as the differential/benchmark baseline and the
+    /// fallback inside ``RustVideoFFI/encode(_:)``.
+    func encodeNative() -> Data {
         var out = Data(capacity: Self.encodedSize)
         out.append(Self.messageType)
         out.appendBE(shapeID)
@@ -55,7 +64,14 @@ public struct CursorUpdate: Equatable, Sendable {
         return out
     }
 
+    /// Decodes via the Rust cursor codec — behaviour-identical to ``decodeNative(_:)``
+    /// (re-proven by `CursorRustParityTests`).
     public static func decode(_ data: Data) throws -> CursorUpdate {
+        try RustVideoFFI.decodeCursor(data)
+    }
+
+    /// The native Swift decoder, retained as the differential baseline.
+    static func decodeNative(_ data: Data) throws -> CursorUpdate {
         var reader = VideoByteReader(data)
         let type = try reader.readUInt8()
         guard type == messageType else {

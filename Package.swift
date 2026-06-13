@@ -131,7 +131,7 @@ let package = Package(
         // Retina), and the client->host input-event codec. ZERO platform dependency
         // (no ScreenCaptureKit/VideoToolbox/AppKit) so it builds macOS + iOS and is
         // fully unit-testable in isolation — same discipline as AislopdeskProtocol.
-        .target(name: "AislopdeskVideoProtocol"),
+        .target(name: "AislopdeskVideoProtocol", dependencies: ["CAislopdeskFFI"]),
 
         // macOS-only host capture + encode + input injection. USES
         // ScreenCaptureKit / VideoToolbox / CoreGraphics / AppKit. COMPILED + code-
