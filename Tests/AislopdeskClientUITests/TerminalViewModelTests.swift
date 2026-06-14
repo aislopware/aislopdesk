@@ -1,6 +1,6 @@
-import XCTest
 import AislopdeskClient
 import AislopdeskTerminal
+import XCTest
 @testable import AislopdeskClientUI
 
 /// State-transition tests for the `@MainActor @Observable` ``TerminalViewModel``: it folds
@@ -9,14 +9,17 @@ import AislopdeskTerminal
 /// `observe(client:)` uses), so the transitions are deterministic and need no network.
 @MainActor
 final class TerminalViewModelTests: XCTestCase {
-
     func testSendInputOffersBytesToBroadcastTapAfterLocalSink() {
         let model = TerminalViewModel()
         var localOrder: [String] = []
         var sunk: [Data] = []
         var tapped: [Data] = []
-        model.inputSink = { d in localOrder.append("local"); sunk.append(d) }
-        model.broadcastTap = { d in localOrder.append("tap"); tapped.append(d) }
+        model.inputSink = { d in localOrder.append("local")
+            sunk.append(d)
+        }
+        model.broadcastTap = { d in localOrder.append("tap")
+            tapped.append(d)
+        }
         model.sendInput(Data("x".utf8))
         XCTAssertEqual(sunk, [Data("x".utf8)], "the local pane still receives via inputSink")
         XCTAssertEqual(tapped, [Data("x".utf8)], "the same bytes are offered to the broadcast tap")
@@ -27,7 +30,7 @@ final class TerminalViewModelTests: XCTestCase {
         let model = TerminalViewModel()
         var sunk: [Data] = []
         model.inputSink = { sunk.append($0) }
-        model.sendInput(Data("y".utf8))   // no broadcastTap wired → no-op, no crash
+        model.sendInput(Data("y".utf8)) // no broadcastTap wired → no-op, no crash
         XCTAssertEqual(sunk, [Data("y".utf8)])
     }
 
@@ -95,10 +98,10 @@ final class TerminalViewModelTests: XCTestCase {
     func testCommandStatusIdleClearsRunningAndRecordsLastCommand() {
         let model = TerminalViewModel()
         model.handle(.commandStatus(.running))
-        model.handle(.commandStatus(.idle(exitCode: 0, durationMS: 12_000)))
+        model.handle(.commandStatus(.idle(exitCode: 0, durationMS: 12000)))
         XCTAssertEqual(model.shellActivity, .idle)
         XCTAssertEqual(model.lastCommand?.exitCode, 0)
-        XCTAssertEqual(model.lastCommand?.durationMS, 12_000)
+        XCTAssertEqual(model.lastCommand?.durationMS, 12000)
     }
 
     func testCommandStatusIdlePreservesNilExit() {
@@ -140,7 +143,7 @@ final class TerminalViewModelTests: XCTestCase {
     func testResetClearsShellActivityAndLastCommand() {
         let model = TerminalViewModel()
         model.handle(.commandStatus(.running))
-        model.handle(.commandStatus(.idle(exitCode: 1, durationMS: 5_000)))
+        model.handle(.commandStatus(.idle(exitCode: 1, durationMS: 5000)))
         model.reset()
         XCTAssertEqual(model.shellActivity, .idle)
         XCTAssertNil(model.lastCommand)
@@ -152,12 +155,15 @@ final class TerminalViewModelTests: XCTestCase {
         // because reset() DISARMED the fresh-session wipe. reset() must arm the wipe like markReconnecting().
         let surface = RecordingSurface()
         let model = TerminalViewModel(surface: surface)
-        model.ingestOutput(Data("old-dead-session-screen".utf8))   // a prior session painted the surface
-        surface.feeds.removeAll()                                   // focus only on what happens post-reset
-        model.reset()                                               // deliberate connect/reconnect
-        model.ingestOutput(Data("$ ".utf8))                        // first output from the FRESH host shell
-        XCTAssertEqual(surface.feeds.first, Self.ris,
-                       "the first fresh-session output hard-resets the stale surface before painting")
+        model.ingestOutput(Data("old-dead-session-screen".utf8)) // a prior session painted the surface
+        surface.feeds.removeAll() // focus only on what happens post-reset
+        model.reset() // deliberate connect/reconnect
+        model.ingestOutput(Data("$ ".utf8)) // first output from the FRESH host shell
+        XCTAssertEqual(
+            surface.feeds.first,
+            Self.ris,
+            "the first fresh-session output hard-resets the stale surface before painting",
+        )
         XCTAssertTrue(surface.feeds.contains(Data("$ ".utf8)), "then the new prompt paints over the clean surface")
     }
 
@@ -214,9 +220,9 @@ final class TerminalViewModelTests: XCTestCase {
         var calls: [(cols: UInt16, rows: UInt16)] = []
         model.resizeSink = { calls.append((cols: $0, rows: $1)) }
         model.sendResize(cols: 80, rows: 24)
-        model.sendResize(cols: 80, rows: 24)   // duplicate (libghostty double-emits) → coalesced
-        model.sendResize(cols: 100, rows: 30)  // changed → forwarded
-        model.sendResize(cols: 100, rows: 30)  // duplicate → coalesced
+        model.sendResize(cols: 80, rows: 24) // duplicate (libghostty double-emits) → coalesced
+        model.sendResize(cols: 100, rows: 30) // changed → forwarded
+        model.sendResize(cols: 100, rows: 30) // duplicate → coalesced
         XCTAssertEqual(calls.count, 2, "consecutive duplicate resizes are coalesced")
         XCTAssertEqual(calls.first?.cols, 80)
         XCTAssertEqual(calls.last?.cols, 100)
@@ -227,7 +233,7 @@ final class TerminalViewModelTests: XCTestCase {
         var calls = 0
         model.resizeSink = { _, _ in calls += 1 }
         model.sendResize(cols: 80, rows: 24)
-        model.reset()                          // a fresh session must re-assert its grid size
+        model.reset() // a fresh session must re-assert its grid size
         model.sendResize(cols: 80, rows: 24)
         XCTAssertEqual(calls, 2, "reset re-arms coalescing so the same size re-sends on reconnect")
     }
@@ -241,9 +247,9 @@ final class TerminalViewModelTests: XCTestCase {
     func testPreConnectResizeIsFlushedWhenSinkWired() {
         let model = TerminalViewModel()
         var calls: [(cols: UInt16, rows: UInt16)] = []
-        model.sendResize(cols: 137, rows: 42)            // fires before connect → no sink yet
+        model.sendResize(cols: 137, rows: 42) // fires before connect → no sink yet
         XCTAssertTrue(calls.isEmpty, "no sink yet → nothing forwarded")
-        model.resizeSink = { calls.append((cols: $0, rows: $1)) }   // connect wires the sink
+        model.resizeSink = { calls.append((cols: $0, rows: $1)) } // connect wires the sink
         XCTAssertEqual(calls.count, 1, "wiring the sink flushes the pre-connect grid to the host")
         XCTAssertEqual(calls.first?.cols, 137)
         XCTAssertEqual(calls.first?.rows, 42)
@@ -289,9 +295,9 @@ final class TerminalViewModelTests: XCTestCase {
     func testRingEvictsOldestWholeChunksOverBound() {
         let model = TerminalViewModel()
         model.maxRingBytes = 10
-        model.ingestOutput(Data("aaaa".utf8))  // 4  → ring=[aaaa] (4)
-        model.ingestOutput(Data("bbbb".utf8))  // +4 → ring=[aaaa,bbbb] (8)
-        model.ingestOutput(Data("cccc".utf8))  // +4 → 12 > 10 → evict "aaaa" → ring=[bbbb,cccc] (8)
+        model.ingestOutput(Data("aaaa".utf8)) // 4  → ring=[aaaa] (4)
+        model.ingestOutput(Data("bbbb".utf8)) // +4 → ring=[aaaa,bbbb] (8)
+        model.ingestOutput(Data("cccc".utf8)) // +4 → 12 > 10 → evict "aaaa" → ring=[bbbb,cccc] (8)
         XCTAssertEqual(model.ringByteCount, 8, "evicted exactly the oldest WHOLE chunk to get back under bound")
 
         // Attach a fresh surface and confirm the evicted chunk is gone, the surviving two replay
@@ -313,7 +319,7 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(
             surface.feeds,
             [Self.decstr, Data("one".utf8), Data("two".utf8), Data("three".utf8)],
-            "replay = DECSTR prefix then ring chunks in FIFO order"
+            "replay = DECSTR prefix then ring chunks in FIFO order",
         )
     }
 
@@ -321,9 +327,9 @@ final class TerminalViewModelTests: XCTestCase {
         let model = TerminalViewModel()
         // First surface receives live output, then the representable is dismantled.
         let first = RecordingSurface()
-        model.attachSurface(first)              // empty ring → no replay
+        model.attachSurface(first) // empty ring → no replay
         XCTAssertTrue(first.feeds.isEmpty)
-        model.ingestOutput(Data("live".utf8))   // fed live to `first`
+        model.ingestOutput(Data("live".utf8)) // fed live to `first`
         XCTAssertEqual(first.feeds, [Data("live".utf8)])
         model.detachSurface()
 
@@ -333,7 +339,7 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(
             second.feeds,
             [Self.decstr, Data("live".utf8)],
-            "a rebuilt surface replays the prior output the host did not re-send"
+            "a rebuilt surface replays the prior output the host did not re-send",
         )
     }
 
@@ -341,7 +347,7 @@ final class TerminalViewModelTests: XCTestCase {
         let model = TerminalViewModel()
         let surface = RecordingSurface()
         model.attachSurface(surface)
-        model.ingestOutput(Data("x".utf8))     // fed live
+        model.ingestOutput(Data("x".utf8)) // fed live
         XCTAssertEqual(surface.feeds, [Data("x".utf8)])
 
         // Idempotent re-attach (SwiftUI updateNSView/updateUIView) of the SAME instance: the
@@ -370,17 +376,17 @@ final class TerminalViewModelTests: XCTestCase {
     func testSurfaceMutationDoesNotTriggerObservation() {
         final class Flag: @unchecked Sendable { var fired = false }
         let model = TerminalViewModel()
-        let surface = RecordingSurface()   // strong ref keeps the weak `model.surface` alive
+        let surface = RecordingSurface() // strong ref keeps the weak `model.surface` alive
         let flag = Flag()
         withObservationTracking {
             _ = model.surface
         } onChange: {
             flag.fired = true
         }
-        model.attachSurface(surface)   // writes self.surface from "inside an update" (simulated)
+        model.attachSurface(surface) // writes self.surface from "inside an update" (simulated)
         XCTAssertFalse(
             flag.fired,
-            "surface must be @ObservationIgnored — mutating it during a SwiftUI update must not invalidate the graph (else updateNSView→attach→attachSurface→invalidate→∞ hangs the main thread)"
+            "surface must be @ObservationIgnored — mutating it during a SwiftUI update must not invalidate the graph (else updateNSView→attach→attachSurface→invalidate→∞ hangs the main thread)",
         )
     }
 
@@ -394,27 +400,27 @@ final class TerminalViewModelTests: XCTestCase {
     func testReconnectWipesDeadSessionScreenAndRingBeforeFreshOutput() {
         let model = TerminalViewModel()
         let surface = RecordingSurface()
-        model.attachSurface(surface)                       // live surface, empty ring
-        model.ingestOutput(Data("OLD-SESSION".utf8))       // dead session output (ring + surface)
+        model.attachSurface(surface) // live surface, empty ring
+        model.ingestOutput(Data("OLD-SESSION".utf8)) // dead session output (ring + surface)
         XCTAssertEqual(surface.feeds, [Data("OLD-SESSION".utf8)])
         XCTAssertEqual(model.ringByteCount, Data("OLD-SESSION".utf8).count)
 
-        model.markReconnecting()                           // drop → reconnect campaign begins
+        model.markReconnecting() // drop → reconnect campaign begins
 
-        model.ingestOutput(Data("FRESH-PROMPT".utf8))      // first output of the fresh shell
+        model.ingestOutput(Data("FRESH-PROMPT".utf8)) // first output of the fresh shell
         XCTAssertEqual(
             surface.feeds,
             [Data("OLD-SESSION".utf8), Self.ris, Data("FRESH-PROMPT".utf8)],
-            "fresh-session reconnect feeds RIS before the new shell's first output"
+            "fresh-session reconnect feeds RIS before the new shell's first output",
         )
         XCTAssertEqual(
             model.ringByteCount, Data("FRESH-PROMPT".utf8).count,
-            "the dead session's bytes are dropped from the ring; only the fresh chunk remains"
+            "the dead session's bytes are dropped from the ring; only the fresh chunk remains",
         )
 
         // One-shot: a SECOND fresh chunk does NOT re-trigger RIS.
         model.ingestOutput(Data("MORE".utf8))
-        XCTAssertEqual(surface.feeds.filter { $0 == Self.ris }.count, 1, "RIS fires exactly once per reconnect")
+        XCTAssertEqual(surface.feeds.count(where: { $0 == Self.ris }), 1, "RIS fires exactly once per reconnect")
     }
 
     /// A normal FIRST connect (no reconnect campaign) must NOT inject a RIS — only a reconnect does.
@@ -442,13 +448,13 @@ final class TerminalViewModelTests: XCTestCase {
     func testLiveAttachStillFeedsNewChunks() {
         let model = TerminalViewModel()
         let surface = RecordingSurface()
-        model.attachSurface(surface)            // empty ring → no replay
+        model.attachSurface(surface) // empty ring → no replay
         model.ingestOutput(Data("a".utf8))
         model.ingestOutput(Data("b".utf8))
         XCTAssertEqual(
             surface.feeds,
             [Data("a".utf8), Data("b".utf8)],
-            "after attach, live output still feeds straight through to the surface"
+            "after attach, live output still feeds straight through to the surface",
         )
     }
 }

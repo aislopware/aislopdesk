@@ -44,7 +44,10 @@ public enum ShellIntegration {
     public static func isEnabled(parent: [String: String]) -> Bool {
         guard let raw = parent[optOutEnvKey]?.lowercased() else { return true }
         switch raw {
-        case "0", "false", "no", "off": return false
+        case "0",
+             "false",
+             "no",
+             "off": return false
         default: return true
         }
     }
@@ -69,7 +72,7 @@ public enum ShellIntegration {
     public static func makeEnvironmentOverrides(
         parent: [String: String],
         shellPath: String,
-        tmpDir: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        tmpDir: URL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
     ) -> [String: String]? {
         guard isEnabled(parent: parent), isZsh(shellPath: shellPath) else { return nil }
 
@@ -95,7 +98,7 @@ public enum ShellIntegration {
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [
-                .posixPermissions: 0o700
+                .posixPermissions: 0o700,
             ])
         } catch {
             return nil

@@ -75,7 +75,7 @@ public struct ClaudeCodeProfile: Sendable, Equatable {
     /// inherited key just because we also force one (the forced set and the inherited
     /// allowlist are disjoint, except `TERM`, which is intentionally forced).
     public func environment(
-        parent: [String: String] = ProcessInfo.processInfo.environment
+        parent: [String: String] = ProcessInfo.processInfo.environment,
     ) -> [String: String] {
         var env: [String: String] = [:]
 
@@ -146,7 +146,7 @@ public enum ClaudeAuthResolver {
     ///   path + a predicate that records it was a stat, not an open.
     public static func resolve(
         home: String,
-        existsCheck: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        existsCheck: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
     ) -> AuthStrategy {
         let path = credentialsPath(home: home)
         if existsCheck(path) {
@@ -160,7 +160,7 @@ public enum ClaudeAuthResolver {
     /// when `HOME` is absent (we cannot locate the file, so a token is needed).
     public static func resolve(
         parent: [String: String] = ProcessInfo.processInfo.environment,
-        existsCheck: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        existsCheck: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
     ) -> AuthStrategy {
         guard let home = parent["HOME"], !home.isEmpty else {
             return .setupToken(needed: true)

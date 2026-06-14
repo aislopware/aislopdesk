@@ -1,10 +1,9 @@
-import XCTest
 import Foundation
+import XCTest
 @testable import AislopdeskClaudeCode
 
 /// WF-7 dedup ring tests (input-box B1 echo suppression).
 final class InputDedupRingTests: XCTestCase {
-
     private func str(_ bytes: [UInt8]) -> String { String(decoding: bytes, as: UTF8.self) }
 
     // MARK: Exact echo suppressed

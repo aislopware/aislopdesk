@@ -1,5 +1,5 @@
-import Foundation
 import AislopdeskVideoProtocol
+import Foundation
 
 /// Depth v3 (2026-06-12): per-frame one-way-delay SPIKE detector — the promotion signal for the
 /// pacer's adaptive 1↔2 depth boost.
@@ -114,8 +114,10 @@ public struct OwdLateDetector: Sendable, Equatable {
         samples += 1
         guard samples >= config.warmupSamples, baseline.isFinite else { return nil }
 
-        let threshold = max(config.thresholdFloorMs,
-                            config.thresholdIntervalFraction * max(0, intervalMs))
+        let threshold = max(
+            config.thresholdFloorMs,
+            config.thresholdIntervalFraction * max(0, intervalMs),
+        )
         let deviation = owd - baseline
         return deviation > threshold ? deviation - threshold : nil
     }

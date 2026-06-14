@@ -39,14 +39,14 @@ public final class InspectorViewModel {
     /// dimension is bounded too (R13 #4): `subagentOrder` evicts the oldest agents' node + cards + index
     /// TOGETHER so `subagentTree` never references an orphan (drop-oldest, NOT terminal-status — a
     /// `.stopped` agent is still rendered, so status eviction would vanish a visible node).
-    static let toolCardCap = 20_000
-    static let toolCardRetain = 15_000
-    static let subagentCardCap = 10_000
-    static let subagentCardRetain = 7_500
-    static let messageCap = 20_000
-    static let messageRetain = 15_000
-    static let maxAgents = 2_000
-    static let maxAgentsRetain = 1_500
+    static let toolCardCap = 20000
+    static let toolCardRetain = 15000
+    static let subagentCardCap = 10000
+    static let subagentCardRetain = 7500
+    static let messageCap = 20000
+    static let messageRetain = 15000
+    static let maxAgents = 2000
+    static let maxAgentsRetain = 1500
     /// Insertion order of distinct agentIDs (drives the drop-oldest agent-count cap above).
     private var subagentOrder: [String] = []
 
@@ -134,7 +134,7 @@ public final class InspectorViewModel {
 
     /// Consumes an event stream until it finishes (driven from a SwiftUI `.task`).
     public func consume(_ events: AsyncThrowingStream<InspectorEvent, Error>) async {
-        feedState = .live   // reset-on-entry: an iOS resume opens a fresh feed → live again
+        feedState = .live // reset-on-entry: an iOS resume opens a fresh feed → live again
         // An iOS pause/resume reuses this SAME model and re-subscribes `fromSeq: 0`, so the host
         // replays its ENTIRE history into us again. Cards/subagents self-dedupe by id (upsert), but
         // these monotonic accumulators do NOT — without a reset, every resume DOUBLES the displayed
@@ -148,12 +148,12 @@ public final class InspectorViewModel {
         recentUnknownLines = []
         messages = []
         evictedToolCardCount = 0
-        droppedReplayEventCount = 0   // latest-wins; reset so a re-replay rebuilds it (R17 INSP-WIRE-1)
+        droppedReplayEventCount = 0 // latest-wins; reset so a re-replay rebuilds it (R17 INSP-WIRE-1)
         do {
             for try await event in events {
                 apply(event)
             }
-            feedState = .ended   // the host closed the feed cleanly (no live resubscribe on macOS)
+            feedState = .ended // the host closed the feed cleanly (no live resubscribe on macOS)
         } catch {
             feedState = .failed
             // Read-only viewer: a transport error (e.g. a true framing desync,
@@ -194,7 +194,7 @@ public final class InspectorViewModel {
                     return SubagentTreeNode(
                         node: node,
                         cards: subagentCards[node.id] ?? [],
-                        children: children
+                        children: children,
                     )
                 }
         }
@@ -212,7 +212,7 @@ public final class InspectorViewModel {
             if toolCards.count > Self.toolCardCap {
                 let drop = toolCards.count - Self.toolCardRetain
                 toolCards.removeFirst(drop)
-                evictedToolCardCount += drop   // track the truncation so the UI can disclose it (pass-3 #9)
+                evictedToolCardCount += drop // track the truncation so the UI can disclose it (pass-3 #9)
                 // Every surviving card's index shifted down by `drop` — rebuild the lookup from the
                 // surviving slice so a later upsert of a retained id still resolves in place.
                 toolCardIndex = Dictionary(uniqueKeysWithValues: toolCards.enumerated().map { ($1.id, $0) })

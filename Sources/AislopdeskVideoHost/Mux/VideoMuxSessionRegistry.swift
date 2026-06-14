@@ -1,6 +1,6 @@
 #if os(macOS)
-import Foundation
 import AislopdeskVideoProtocol
+import Foundation
 
 /// A lock-protected channelID → lane-sink table shared between the daemon's
 /// ``VideoMuxSessionRegistry`` (which READS it on `dispatch`) and the per-lane
@@ -22,15 +22,19 @@ public final class VideoMuxSinkTable: @unchecked Sendable {
     public func register(_ channelID: UInt32, _ onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
         lock.withLock { sinks[channelID] = onReceive }
     }
+
     public func unregister(_ channelID: UInt32) {
         lock.withLock { _ = sinks.removeValue(forKey: channelID) }
     }
+
     public func sink(_ channelID: UInt32) -> (@Sendable (VideoChannel, Data) -> Void)? {
         lock.withLock { sinks[channelID] }
     }
+
     public func contains(_ channelID: UInt32) -> Bool {
         lock.withLock { sinks[channelID] != nil }
     }
+
     public var count: Int { lock.withLock { sinks.count } }
 }
 
@@ -82,7 +86,8 @@ public actor VideoMuxSessionRegistry {
     /// ``AislopdeskVideoHostSession`` bound to a ``VideoMuxChannelTransport`` for `channelID` (whose
     /// `start` synchronously registers the lane sink into ``sinkTable``), and return it. Throws if
     /// the window is gone / the hello is malformed (the datagram is then dropped).
-    private let mintSession: @Sendable (_ channelID: UInt32, _ hello: VideoControlMessage) async throws -> AislopdeskVideoHostSession
+    private let mintSession: @Sendable (_ channelID: UInt32, _ hello: VideoControlMessage) async throws
+        -> AislopdeskVideoHostSession
 
     /// Called when a mint FAILS (window gone / malformed hello) so the shared transport forgets the
     /// flow it remembered for the bootstrap hello — otherwise that `channelMediaConn`/`channelCursorConn`
@@ -93,7 +98,7 @@ public actor VideoMuxSessionRegistry {
     public init(
         sinkTable: VideoMuxSinkTable = VideoMuxSinkTable(),
         forgetLane: @escaping @Sendable (UInt32) -> Void = { _ in },
-        mintSession: @escaping @Sendable (UInt32, VideoControlMessage) async throws -> AislopdeskVideoHostSession
+        mintSession: @escaping @Sendable (UInt32, VideoControlMessage) async throws -> AislopdeskVideoHostSession,
     ) {
         self.sinkTable = sinkTable
         self.forgetLane = forgetLane
@@ -105,7 +110,7 @@ public actor VideoMuxSessionRegistry {
     /// `hello`; otherwise drop. `decide` is the headless-testable core of `dispatch`.
     public func decide(channelID: UInt32, channel: VideoChannel, data: Data) -> DispatchDecision {
         if sinkTable.contains(channelID) { return .deliver(channelID: channelID) }
-        if minting.contains(channelID) { return .deliver(channelID: channelID) }   // mint already in flight
+        if minting.contains(channelID) { return .deliver(channelID: channelID) } // mint already in flight
         if channel == .control, let msg = try? VideoControlMessage.decode(data), case .hello = msg {
             return .mint(channelID: channelID)
         }
@@ -164,8 +169,8 @@ public actor VideoMuxSessionRegistry {
     /// VTCompressionSession / timers). Idempotent — a no-op `stop()` on an already-gone session.
     public func retireAndStop(_ channelID: UInt32) async {
         let session = sessions[channelID]
-        retire(channelID)                 // sink unregister + minting/sessions map clear
-        await session?.stop()             // stops SCStream / VTCompressionSession / timers
+        retire(channelID) // sink unregister + minting/sessions map clear
+        await session?.stop() // stops SCStream / VTCompressionSession / timers
     }
 
     /// Stops every live session (daemon shutdown). The shared transport is cancelled separately.

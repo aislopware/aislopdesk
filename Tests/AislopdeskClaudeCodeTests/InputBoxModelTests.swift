@@ -1,10 +1,9 @@
-import XCTest
 import Foundation
+import XCTest
 @testable import AislopdeskClaudeCode
 
 /// WF-7 input-box state-machine tests (A shell / B1 TUI-compose).
 final class InputBoxModelTests: XCTestCase {
-
     private let ESC = "\u{1B}"
     private let BEL = "\u{07}"
 
@@ -102,9 +101,9 @@ final class InputBoxModelTests: XCTestCase {
         for chunk in [
             "\(ESC)]133;A\(BEL)$ \(ESC)]133;B\(BEL)",
             "claude\n\(ESC)]133;C\(BEL)",
-            "\(ESC)[?1049h",   // fullscreen
+            "\(ESC)[?1049h", // fullscreen
             "drawing...",
-            "\(ESC)[?1049l",   // exit fullscreen
+            "\(ESC)[?1049l", // exit fullscreen
             "\(ESC)]133;D;0\(BEL)",
         ] {
             m.ingestOutput(Array(chunk.utf8))

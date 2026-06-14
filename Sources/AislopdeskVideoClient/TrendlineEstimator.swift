@@ -1,5 +1,5 @@
-import Foundation
 import AislopdeskVideoProtocol
+import Foundation
 
 /// PURE libwebrtc-trendline-style one-way-delay-GRADIENT detector (component 3, 2026-06-11).
 ///
@@ -31,7 +31,9 @@ import AislopdeskVideoProtocol
 public struct TrendlineEstimator: Sendable, Equatable {
     /// Detector output, encoded into bits 0-1 of the wire flags field.
     public enum State: UInt8, Sendable {
-        case normal = 0, overusing = 1, underusing = 2
+        case normal = 0
+        case overusing = 1
+        case underusing = 2
     }
 
     // MARK: Tunables (libwebrtc defaults; env-overridable AISLOPDESK_TREND_* for HW A/B)
@@ -78,7 +80,7 @@ public struct TrendlineEstimator: Sendable, Equatable {
     public private(set) var threshold = TrendlineEstimator.initialThreshold
 
     /// One regression point: x = arrival ms since the window's first arrival, y = smoothed delay.
-    private struct Sample: Sendable, Equatable {
+    private struct Sample: Equatable {
         var x: Double
         var y: Double
     }
@@ -139,7 +141,9 @@ public struct TrendlineEstimator: Sendable, Equatable {
         // OLS slope over the window (ms of delay per ms of arrival time).
         let n = Double(window.count)
         var meanX = 0.0, meanY = 0.0
-        for s in window { meanX += s.x; meanY += s.y }
+        for s in window { meanX += s.x
+            meanY += s.y
+        }
         meanX /= n
         meanY /= n
         var numer = 0.0, denom = 0.0

@@ -1,6 +1,6 @@
 #if canImport(SwiftUI)
-import SwiftUI
 import AislopdeskTerminal
+import SwiftUI
 
 /// The **seam** between the SwiftUI client and the terminal pixels.
 ///

@@ -1,5 +1,5 @@
-import Foundation
 import AislopdeskProtocol
+import Foundation
 
 /// The shared physical mux connection for one host: ONE CONTROL ``MuxByteLink`` + ONE DATA
 /// ``MuxByteLink``, each carrying many panes' logical channels multiplexed by `channelID`.
@@ -82,7 +82,7 @@ public actor MuxNWConnection {
         role: Role,
         controlLink: any MuxByteLink,
         dataLink: any MuxByteLink,
-        connectionID: UUID = UUID()
+        connectionID: UUID = UUID(),
     ) {
         self.role = role
         self.controlLink = controlLink
@@ -110,7 +110,7 @@ public actor MuxNWConnection {
     public func openChannel(
         sessionID: UUID,
         lastReceivedSeq: Int64,
-        channelClass: UInt8 = 0
+        channelClass: UInt8 = 0,
     ) async throws -> (data: MuxSubChannel, control: MuxSubChannel) {
         guard role == .client else {
             throw AislopdeskTransportError.invalidState("openChannel on a host mux connection")
@@ -127,7 +127,7 @@ public actor MuxNWConnection {
             channelID: id,
             sessionID: sessionID,
             lastReceivedSeq: lastReceivedSeq,
-            channelClass: channelClass
+            channelClass: channelClass,
         ))
         do {
             try await dataLink.send(openFrame)
@@ -241,8 +241,8 @@ public actor MuxNWConnection {
     /// Builds the data + control sub-channels for `id`, each with a `muxSend` that wraps this
     /// channel's framed bytes in a `.channelData` envelope and writes them on the matching link.
     private func registerChannels(id: UInt32) -> (data: MuxSubChannel, control: MuxSubChannel) {
-        let dataLink = self.dataLink
-        let controlLink = self.controlLink
+        let dataLink = dataLink
+        let controlLink = controlLink
         // DATA sub-channel ALWAYS carries the per-channel SEND window; the CONTROL sub-channel is
         // ALWAYS infinite (sendWindowBytes: nil) so resize/ack/bye/keepalive never block behind a
         // full data window (foot-gun #1/#3).
@@ -287,11 +287,11 @@ public actor MuxNWConnection {
             guard let self else { return }
             do {
                 for try await chunk in chunks {
-                    await self.ingest(chunk, on: link)
+                    await ingest(chunk, on: link)
                 }
-                await self.finishLink(link, error: nil)
+                await finishLink(link, error: nil)
             } catch {
-                await self.finishLink(link, error: error)
+                await finishLink(link, error: error)
             }
         }
     }
@@ -332,7 +332,8 @@ public actor MuxNWConnection {
         // growth the sibling `ChannelTable` fix closed; the EXPENSIVE PTY/fork was already bounded).
         // Refuse a NEW over-cap open here and RETURN without advancing the table or registering anything.
         if role == .host, link == .data, case let .channelOpen(id, _, _, _) = frame,
-           dataChannels[id] == nil, dataChannels.count >= MuxFlowControl.maxChannelsPerConnection {
+           dataChannels[id] == nil, dataChannels.count >= MuxFlowControl.maxChannelsPerConnection
+        {
             // Pipelined: emitted from the receive loop — must never suspend it (same
             // rationale as the windowAdjust grant below).
             let refusal = MuxEnvelopeCodec.encode(.channelOpenAck(channelID: id, accepted: false))
@@ -346,12 +347,12 @@ public actor MuxNWConnection {
         // it reaches `MuxRoutingCore.route` (which would `open(id)` a phantom controlTable entry).
         if link == .control, case .channelOpen = frame { return }
 
-        let decision: MuxRoutingDecision
-        if link == .control {
-            decision = MuxRoutingCore.route(frame, in: &controlTable)
-        } else {
-            decision = MuxRoutingCore.route(frame, in: &dataTable)
-        }
+        let decision: MuxRoutingDecision =
+            if link == .control {
+                MuxRoutingCore.route(frame, in: &controlTable)
+            } else {
+                MuxRoutingCore.route(frame, in: &dataTable)
+            }
 
         // windowAdjust RECEIPT (FIX #2): a peer grant replenishes THIS channel's DATA send window
         // (matched by channelID regardless of which link it arrived on — FIX #2 routes grants via the
@@ -390,7 +391,7 @@ public actor MuxNWConnection {
                     lastReceivedSeq: lastReceivedSeq,
                     channelClass: channelClass,
                     data: dataCh,
-                    control: controlCh
+                    control: controlCh,
                 )
                 if let handler = hostOpenHandler {
                     handler(open)
@@ -432,7 +433,7 @@ public actor MuxNWConnection {
                 // Peer closed this channel on this link — finish its inbound so the consumer ends.
                 // Await inline so a close never overtakes an earlier deliver (dropping the tail).
                 let target = (link == .control) ? controlChannels.removeValue(forKey: channelID)
-                                                 : dataChannels.removeValue(forKey: channelID)
+                    : dataChannels.removeValue(forKey: channelID)
                 if link == .data { dataReceiveWindows.removeValue(forKey: channelID) } // S2: drop credit state
                 if let target { await target.finish() }
                 // FIX #2: drive the host relay shutdown for a PEER channelClose. S1 has NO
@@ -526,7 +527,7 @@ public actor MuxNWConnection {
     /// Installs the host's connection-death hook (see ``linkDownHandler``). If the link ALREADY failed
     /// before the install, fires immediately so a connection that died during accept is still reaped.
     public func setLinkDownHandler(_ handler: @escaping @Sendable () -> Void) {
-        if linkFailed && !linkDownFired {
+        if linkFailed, !linkDownFired {
             linkDownFired = true
             handler()
             return

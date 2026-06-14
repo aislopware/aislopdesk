@@ -1,7 +1,7 @@
 #if os(iOS)
+import AislopdeskClient
 import SwiftUI
 import UIKit
-import AislopdeskClient
 
 /// The iOS input **host** that assembles the four inert table-stakes components (doc 17 §2.5)
 /// into one working input surface, replacing the plain SwiftUI `TextField` on iOS.
@@ -45,7 +45,7 @@ public struct TerminalInputHost: UIViewRepresentable {
     public init(
         model: InputBarModel,
         paneID: PaneID,
-        coordinator: PaneFocusCoordinator? = nil
+        coordinator: PaneFocusCoordinator? = nil,
     ) {
         self.model = model
         self.paneID = paneID
@@ -113,7 +113,7 @@ public struct TerminalInputHost: UIViewRepresentable {
         init(
             model: InputBarModel,
             paneID: PaneID,
-            focusCoordinator: PaneFocusCoordinator?
+            focusCoordinator: PaneFocusCoordinator?,
         ) {
             self.model = model
             self.paneID = paneID
@@ -179,9 +179,10 @@ public final class TerminalInputResponderView: UIView {
         let identity: String
         let press: InputRouting.KeyPress
         init(_ press: InputRouting.KeyPress) {
-            self.identity = (press.isSpecial ? "S:" : "C:") + press.charactersIgnoringModifiers
+            identity = (press.isSpecial ? "S:" : "C:") + press.charactersIgnoringModifiers
             self.press = press
         }
+
         static func == (a: RepeatKey, b: RepeatKey) -> Bool { a.identity == b.identity }
         func hash(into h: inout Hasher) { h.combine(identity) }
     }
@@ -190,7 +191,7 @@ public final class TerminalInputResponderView: UIView {
     /// Keyed by ``RepeatKey`` (modifier-independent physical id) so last-key-wins / release work even
     /// when a modifier is released before the letter (the runaway-repeat fix).
     private lazy var repeater = KeyRepeater<RepeatKey>(
-        scheduler: DispatchRepeatScheduler()
+        scheduler: DispatchRepeatScheduler(),
     ) { [weak self] key in
         guard let bytes = TerminalInputResponderView.encode(key.press) else { return }
         // The scheduler fires on a background queue; hop to main for the SwiftUI/UIKit send.
@@ -231,12 +232,24 @@ public final class TerminalInputResponderView: UIView {
 
         // Keyboard-frame notifications drive the accessory show/hide decision.
         let center = NotificationCenter.default
-        center.addObserver(self, selector: #selector(keyboardFrameChanged(_:)),
-                           name: UIResponder.keyboardWillShowNotification, object: nil)
-        center.addObserver(self, selector: #selector(keyboardFrameChanged(_:)),
-                           name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
-        center.addObserver(self, selector: #selector(keyboardWillHide(_:)),
-                           name: UIResponder.keyboardWillHideNotification, object: nil)
+        center.addObserver(
+            self,
+            selector: #selector(keyboardFrameChanged(_:)),
+            name: UIResponder.keyboardWillShowNotification,
+            object: nil,
+        )
+        center.addObserver(
+            self,
+            selector: #selector(keyboardFrameChanged(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+        )
+        center.addObserver(
+            self,
+            selector: #selector(keyboardWillHide(_:)),
+            name: UIResponder.keyboardWillHideNotification,
+            object: nil,
+        )
     }
 
     /// Soft-keyboard committed text (post-IME). If the accessory bar is visible and its Ctrl is ARMED,
@@ -272,36 +285,38 @@ public final class TerminalInputResponderView: UIView {
 
     // MARK: First responder + IME embedding
 
-    public override var canBecomeFirstResponder: Bool { true }
+    override public var canBecomeFirstResponder: Bool { true }
 
     /// We are a transparent lifecycle host; the embedded IME proxy is the **sole** first responder
     /// (it owns both text composition and the `pressesBegan` key interception). Becoming first
     /// responder here forwards straight to the proxy so there is never an ambiguous responder
     /// order between text input and key handling.
     @discardableResult
-    public override func becomeFirstResponder() -> Bool {
+    override public func becomeFirstResponder() -> Bool {
         proxy.becomeFirstResponder()
     }
 
-    public override func resignFirstResponder() -> Bool {
+    override public func resignFirstResponder() -> Bool {
         repeater.stop()
         return proxy.resignFirstResponder()
     }
 
     // MARK: inputAccessoryView (the accessory bar, gated by the decision)
 
-    public override var inputAccessoryView: UIView? {
+    override public var inputAccessoryView: UIView? {
         accessoryVisible ? accessoryBar : nil
     }
 
-    @objc private func keyboardFrameChanged(_ note: Notification) {
+    @objc
+    private func keyboardFrameChanged(_ note: Notification) {
         guard let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else {
             return
         }
         setAccessory(visible: accessoryDecision.shouldShowAccessoryBar(keyboardHeight: Double(frame.height)))
     }
 
-    @objc private func keyboardWillHide(_ note: Notification) {
+    @objc
+    private func keyboardWillHide(_ note: Notification) {
         setAccessory(visible: false)
     }
 
@@ -334,11 +349,11 @@ public final class TerminalInputResponderView: UIView {
     /// cursor byte table.
     private nonisolated static func arrowBytes(_ press: InputRouting.KeyPress) -> [UInt8]? {
         switch press.charactersIgnoringModifiers {
-        case UIKeyCommand.inputUpArrow:    return KeyboardAccessoryBar.Key.up.bytes
-        case UIKeyCommand.inputDownArrow:  return KeyboardAccessoryBar.Key.down.bytes
-        case UIKeyCommand.inputLeftArrow:  return KeyboardAccessoryBar.Key.left.bytes
-        case UIKeyCommand.inputRightArrow: return KeyboardAccessoryBar.Key.right.bytes
-        default: return nil
+        case UIKeyCommand.inputUpArrow: KeyboardAccessoryBar.Key.up.bytes
+        case UIKeyCommand.inputDownArrow: KeyboardAccessoryBar.Key.down.bytes
+        case UIKeyCommand.inputLeftArrow: KeyboardAccessoryBar.Key.left.bytes
+        case UIKeyCommand.inputRightArrow: KeyboardAccessoryBar.Key.right.bytes
+        default: nil
         }
     }
 }

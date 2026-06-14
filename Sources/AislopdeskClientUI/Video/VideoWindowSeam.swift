@@ -42,7 +42,7 @@ public struct RemoteWindowDescriptor: Sendable, Equatable {
         windowID: UInt32,
         host: String = "",
         mediaPort: UInt16 = 0,
-        cursorPort: UInt16 = 0
+        cursorPort: UInt16 = 0,
     ) {
         self.title = title
         self.windowID = windowID
@@ -87,11 +87,13 @@ public struct RemotePaneContext {
     /// `(keyCode, down, shift)`. `nil` (the standalone default) ⇒ no canvas to receive the sink.
     public var onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)?
 
-    public init(isActive: Bool = true,
-                onActivate: @escaping () -> Void = {},
-                onCanvasScroll: @escaping (CGSize) -> Void = { _ in },
-                onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)? = nil,
-                onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)? = nil) {
+    public init(
+        isActive: Bool = true,
+        onActivate: @escaping () -> Void = {},
+        onCanvasScroll: @escaping (CGSize) -> Void = { _ in },
+        onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)? = nil,
+        onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)? = nil,
+    ) {
         self.isActive = isActive
         self.onActivate = onActivate
         self.onCanvasScroll = onCanvasScroll
@@ -164,7 +166,8 @@ public struct RemoteWindowSummary: Sendable, Equatable, Identifiable {
 @MainActor
 public final class RemoteWindowDiscovery {
     /// App-registered window-list query (set once at launch). `nil` → the picker uses manual entry.
-    public static var shared: (@MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16) async -> [RemoteWindowSummary])?
+    public static var shared: (@MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16) async
+        -> [RemoteWindowSummary])?
 }
 
 /// One host-side SYSTEM dialog/prompt the client's monitor surfaces in its own pane (the user's case: a
@@ -202,7 +205,8 @@ public struct SystemDialogInfo: Sendable, Equatable, Identifiable {
 @MainActor
 public final class SystemDialogDiscovery {
     /// App-registered system-dialog poll (set once at launch). `nil` → the monitor is inert.
-    public static var shared: (@MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16) async -> [SystemDialogInfo])?
+    public static var shared: (@MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16) async
+        -> [SystemDialogInfo])?
 }
 
 /// The gated placeholder shown when the GUI video path is not active (no host

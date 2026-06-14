@@ -28,7 +28,7 @@ public enum HostEnvironment {
     ///   (`xterm-ghostty`), matching what the libghostty client renders.
     public static func curated(
         parent: [String: String] = ProcessInfo.processInfo.environment,
-        term: String = HostEnvironment.defaultTerm
+        term: String = HostEnvironment.defaultTerm,
     )
         -> [String: String]
     {
@@ -44,7 +44,18 @@ public enum HostEnvironment {
         // would have its ncurses search only the default dirs and FAIL to find the entry, so every TUI
         // degrades. Forwarding them makes the child's ncurses search the SAME dirs the probe used (only
         // forwarded when present), so a "resolvable" verdict is actually honoured.
-        for key in ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM_PROGRAM", "TERMINFO", "TERMINFO_DIRS"] {
+        for key in [
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "TERM_PROGRAM",
+            "TERMINFO",
+            "TERMINFO_DIRS",
+        ] {
             if let value = parent[key] { env[key] = value }
         }
 

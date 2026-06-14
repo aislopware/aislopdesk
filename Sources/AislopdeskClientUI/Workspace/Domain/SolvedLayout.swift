@@ -1,5 +1,5 @@
-import Foundation
 import CoreGraphics
+import Foundation
 
 // MARK: - Solved geometry (the focus source of truth)
 

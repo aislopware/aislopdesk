@@ -9,7 +9,6 @@ import XCTest
 /// `LivePaneSession`, so the seam is what is asserted here with the `FakePaneSession` test seam).
 @MainActor
 final class WorkspaceStoreReconnectGuardTests: XCTestCase {
-
     private func makeStore() -> WorkspaceStore {
         WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
     }
@@ -37,17 +36,17 @@ final class WorkspaceStoreReconnectGuardTests: XCTestCase {
         XCTAssertNil(store.handle(for: victim), "the closed pane is gone from the registry")
         XCTAssertFalse(
             store.paneStillRegistered(victim, as: handle),
-            "after closePane the stale handle no longer matches — reconnect's detached dial must be skipped"
+            "after closePane the stale handle no longer matches — reconnect's detached dial must be skipped",
         )
     }
 
     /// Identity, not key presence: a DIFFERENT handle for the SAME id (e.g. a re-materialized session)
     /// must fail the check, so a reconnect captured against the OLD handle never dials.
-    func testPaneStillRegisteredIsByIdentityNotKeyPresence() {
+    func testPaneStillRegisteredIsByIdentityNotKeyPresence() throws {
         let store = makeStore()
         let id0 = leafIDs(store)[0]
         store.addPane(kind: .terminal)
-        let id1 = leafIDs(store).first { $0 != id0 }!
+        let id1 = try XCTUnwrap(leafIDs(store).first { $0 != id0 })
 
         guard let h0 = store.handle(for: id0), let h1 = store.handle(for: id1) else {
             return XCTFail("both panes registered after split")
@@ -55,7 +54,7 @@ final class WorkspaceStoreReconnectGuardTests: XCTestCase {
         XCTAssertTrue(store.paneStillRegistered(id0, as: h0), "matching handle for its own id")
         XCTAssertFalse(
             store.paneStillRegistered(id0, as: h1),
-            "a different handle for the SAME id must not match (reference identity, not key presence)"
+            "a different handle for the SAME id must not match (reference identity, not key presence)",
         )
     }
 }

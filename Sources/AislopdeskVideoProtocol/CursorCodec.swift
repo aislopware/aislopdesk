@@ -90,7 +90,7 @@ public struct CursorUpdate: Equatable, Sendable {
             position: VideoPoint(x: x, y: y),
             shapeID: shapeID,
             hotspot: VideoPoint(x: hx, y: hy),
-            visible: visible
+            visible: visible,
         )
     }
 }

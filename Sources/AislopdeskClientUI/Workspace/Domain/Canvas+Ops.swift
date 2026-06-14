@@ -1,5 +1,5 @@
-import Foundation
 import CoreGraphics
+import Foundation
 
 // MARK: - Queries (drive reconcile + the coupling that replaces PaneNode reads)
 
@@ -68,7 +68,13 @@ public extension Canvas {
             if seen.contains(item.id) {
                 let fresh = PaneID()
                 seen.insert(fresh)
-                newItems.append(CanvasItem(id: fresh, spec: item.spec, frame: item.frame, z: item.z, groupID: item.groupID))
+                newItems.append(CanvasItem(
+                    id: fresh,
+                    spec: item.spec,
+                    frame: item.frame,
+                    z: item.z,
+                    groupID: item.groupID,
+                ))
             } else {
                 seen.insert(item.id)
                 newItems.append(item)
@@ -89,7 +95,7 @@ public extension Canvas {
         _ spec: PaneSpec,
         near: PaneID?,
         viewport: CGSize,
-        size: CGSize = Canvas.defaultItemSize
+        size: CGSize = Canvas.defaultItemSize,
     ) -> (Canvas, PaneID) {
         let id = PaneID()
         let nearFrame = near.flatMap { frame(of: $0) }
@@ -98,7 +104,7 @@ public extension Canvas {
             near: nearFrame,
             existing: items.map(\.frame),
             viewport: viewportRect,
-            size: size
+            size: size,
         )
         let item = CanvasItem(id: id, spec: spec, frame: Canvas.sanitize(placed), z: maxZ + 1)
         return (Canvas(items: items + [item], camera: camera), id)
@@ -121,7 +127,7 @@ public extension Canvas {
     func removing(_ id: PaneID) -> Canvas? {
         let survivors = items.filter { $0.id != id }
         if survivors.count == items.count { return self } // id absent — unchanged
-        if survivors.isEmpty { return nil }                // emptied the tab
+        if survivors.isEmpty { return nil } // emptied the tab
         return Canvas(items: survivors, camera: camera)
     }
 
@@ -150,7 +156,7 @@ public extension Canvas {
     func raising(_ id: PaneID) -> Canvas {
         guard let item = item(id) else { return self }
         let top = maxZ
-        if item.z == top, items.filter({ $0.z == top }).count == 1 { return self } // already uniquely top
+        if item.z == top, items.count(where: { $0.z == top }) == 1 { return self } // already uniquely top
         return mapItem(id) { $0.z = top + 1 }
     }
 
@@ -170,7 +176,7 @@ public extension Canvas {
                 transform(&copy)
                 return copy
             },
-            camera: camera
+            camera: camera,
         )
     }
 }
@@ -178,7 +184,8 @@ public extension Canvas {
 // MARK: - Arrange: align + distribute (pure)
 
 /// Which edge/centre the panes are aligned to.
-public enum AlignEdge: Sendable, CaseIterable, Equatable { case left, right, top, bottom, centerHorizontal, centerVertical }
+public enum AlignEdge: Sendable, CaseIterable,
+    Equatable { case left, right, top, bottom, centerHorizontal, centerVertical }
 
 public extension Canvas {
     /// Aligns the panes named by `ids` to the shared edge/centre of THEIR bounding box (Figma's
@@ -194,12 +201,12 @@ public extension Canvas {
             var copy = item
             var f = item.frame
             switch edge {
-            case .left:             f.origin.x = box.minX
-            case .right:            f.origin.x = box.maxX - f.width
-            case .top:              f.origin.y = box.minY
-            case .bottom:           f.origin.y = box.maxY - f.height
+            case .left: f.origin.x = box.minX
+            case .right: f.origin.x = box.maxX - f.width
+            case .top: f.origin.y = box.minY
+            case .bottom: f.origin.y = box.maxY - f.height
             case .centerHorizontal: f.origin.x = box.midX - f.width / 2
-            case .centerVertical:   f.origin.y = box.midY - f.height / 2
+            case .centerVertical: f.origin.y = box.midY - f.height / 2
             }
             copy.frame = Canvas.sanitize(f)
             return copy
@@ -321,7 +328,7 @@ public extension Canvas {
     private static func camera(centeredOn point: CGPoint, viewport: CGSize) -> CanvasCamera {
         CanvasCamera(origin: CGPoint(
             x: point.x - viewport.width / 2,
-            y: point.y - viewport.height / 2
+            y: point.y - viewport.height / 2,
         ))
     }
 }
@@ -369,7 +376,7 @@ public extension Canvas {
                 copy.groupID = nil
                 return copy
             },
-            camera: camera
+            camera: camera,
         )
     }
 }
@@ -387,7 +394,7 @@ public extension Canvas {
         excludingPane: PaneID?,
         excludingGroup: PaneGroupID?,
         region: CGRect,
-        groups: [PaneGroup]
+        groups: [PaneGroup],
     ) -> [CanvasNonOverlap.Body] {
         var bodies: [CanvasNonOverlap.Body] = []
         for item in items where item.groupID == nil && item.id != excludingPane && item.frame.intersects(region) {
@@ -410,9 +417,9 @@ public extension Canvas {
         var groupDelta: [PaneGroupID: CGSize] = [:]
         for (bodyID, newRect) in result.frames {
             switch bodyID {
-            case .pane(let id):
+            case let .pane(id):
                 paneOrigin[id] = newRect.origin
-            case .group(let gid):
+            case let .group(gid):
                 if let box = groupBoundingBox(gid) {
                     groupDelta[gid] = CGSize(width: newRect.minX - box.minX, height: newRect.minY - box.minY)
                 }
@@ -460,7 +467,7 @@ public extension Canvas {
             x: proposedBox.minX,
             y: proposedBox.minY,
             width: max(proposedBox.width, Canvas.minItemSize.width),
-            height: max(proposedBox.height, Canvas.minItemSize.height)
+            height: max(proposedBox.height, Canvas.minItemSize.height),
         )
         let sx = newBox.width / oldBox.width
         let sy = newBox.height / oldBox.height
@@ -471,7 +478,7 @@ public extension Canvas {
                 x: newBox.minX + (item.frame.minX - oldBox.minX) * sx,
                 y: newBox.minY + (item.frame.minY - oldBox.minY) * sy,
                 width: item.frame.width * sx,
-                height: item.frame.height * sy
+                height: item.frame.height * sy,
             ))
             copy.frame = Canvas.clamping(scaled, into: newBox)
             return copy

@@ -42,7 +42,6 @@ import Foundation
 /// `@unchecked Sendable`: all mutable state is guarded by ``lock``; the queue itself is
 /// thread-safe. Waiter continuations are resumed OUTSIDE the lock.
 public final class SerialFeedGate: @unchecked Sendable {
-
     private let queue: DispatchQueue
     private let lock = NSLock()
 
@@ -72,10 +71,10 @@ public final class SerialFeedGate: @unchecked Sendable {
     public init(
         label: String,
         highWaterBytes: Int = 512 * 1024,
-        lowWaterBytes: Int = 256 * 1024
+        lowWaterBytes: Int = 256 * 1024,
     ) {
         precondition(highWaterBytes > 0)
-        self.queue = DispatchQueue(label: label, qos: .userInitiated)
+        queue = DispatchQueue(label: label, qos: .userInitiated)
         self.highWaterBytes = highWaterBytes
         self.lowWaterBytes = max(0, min(lowWaterBytes, highWaterBytes - 1))
     }

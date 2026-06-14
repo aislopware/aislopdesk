@@ -1,6 +1,6 @@
-import Foundation
 import AislopdeskProtocol
 import AislopdeskTransport
+import Foundation
 
 /// One logical mux channel's host-side PTY relay.
 ///
@@ -120,13 +120,15 @@ final class MuxChannelSession: @unchecked Sendable {
             return .output(bytes: prefix, byteCount: prefix.count, control: control)
         }
         var byteCount = bytes.count
-        if case .chunk(let nextBytes, _)? = outFIFO.first,
-           byteCount + nextBytes.count <= cap {
+        if case let .chunk(nextBytes, _)? = outFIFO.first,
+           byteCount + nextBytes.count <= cap
+        {
             // Multi-chunk merge: one mutable accumulator, reserve once.
             var merged = Data(capacity: min(cap, byteCount + nextBytes.count))
             merged.append(bytes)
-            while case .chunk(let more, let moreControl)? = outFIFO.first,
-                  byteCount + more.count <= cap {
+            while case let .chunk(more, moreControl)? = outFIFO.first,
+                  byteCount + more.count <= cap
+            {
                 outFIFO.removeFirst()
                 merged.append(more)
                 byteCount += more.count
@@ -180,7 +182,7 @@ final class MuxChannelSession: @unchecked Sendable {
     /// Called once when the child exits so the owner can drop this channel from its map.
     var onExit: (@Sendable (UInt32) -> Void)?
 
-    private enum OutputItem: Sendable {
+    private enum OutputItem {
         case chunk(bytes: Data, control: [WireMessage])
         case exit(code: Int32)
     }
@@ -194,7 +196,7 @@ final class MuxChannelSession: @unchecked Sendable {
         control: MuxSubChannel,
         resizeDebounce: Duration = .milliseconds(16),
         replay: ReplayBuffer = ReplayBuffer(),
-        shimDir: URL? = nil
+        shimDir: URL? = nil,
     ) {
         self.channelID = channelID
         self.pty = pty
@@ -207,19 +209,21 @@ final class MuxChannelSession: @unchecked Sendable {
 
     func startRelay() {
         taskLock.lock()
-        guard !started else { taskLock.unlock(); return }
+        guard !started else { taskLock.unlock()
+            return
+        }
         started = true
         taskLock.unlock()
 
-        let pty = self.pty
-        let data = self.data
-        let control = self.control
+        let pty = pty
+        let data = data
+        let control = control
         let masterFD = pty.masterFD
 
         let (outputWakeups, outputWake) =
             AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         fifoLock.lock()
-        self.outputWakeContinuation = outputWake
+        outputWakeContinuation = outputWake
         fifoLock.unlock()
         outputTask = Task { [weak self] in
             for await _ in outputWakeups {
@@ -229,7 +233,7 @@ final class MuxChannelSession: @unchecked Sendable {
                     guard let self else { return }
                     switch frame {
                     case let .output(bytes, byteCount, controlMessages):
-                        let seq = self.nextSeq(for: bytes)
+                        let seq = nextSeq(for: bytes)
                         // `data.send` SUSPENDS on the per-channel credit window, so a flooding
                         // channel naturally slows here. After the write is accepted we dequeue
                         // the bytes and resume the read loop if the FIFO drained below the
@@ -237,13 +241,13 @@ final class MuxChannelSession: @unchecked Sendable {
                         // enqueued-not-yet-SENT; moving it to take-time would let the read
                         // loop refill while a merged frame is still unsent).
                         try? await data.send(.output(seq: seq, bytes: bytes))
-                        self.dequeueOutput(byteCount)
+                        dequeueOutput(byteCount)
                         // Hand sniffed control to its OWN sender: the data drain never awaits
                         // the control socket (a stalled control link froze data before this).
-                        if !controlMessages.isEmpty { self.enqueueControl(controlMessages) }
+                        if !controlMessages.isEmpty { enqueueControl(controlMessages) }
                     case let .exit(code):
                         try? await data.send(.exit(code: code))
-                        self.signalExitSent()   // R13 #7: release the exit task's await so onExit can run
+                        signalExitSent() // R13 #7: release the exit task's await so onExit can run
                     }
                 }
             }
@@ -255,7 +259,7 @@ final class MuxChannelSession: @unchecked Sendable {
         let (controlWakeups, controlWake) =
             AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         controlOutLock.lock()
-        self.controlWakeContinuation = controlWake
+        controlWakeContinuation = controlWake
         controlOutLock.unlock()
         controlSendTask = Task { [weak self] in
             for await _ in controlWakeups {
@@ -282,22 +286,22 @@ final class MuxChannelSession: @unchecked Sendable {
                 // Account the chunk in the bounded queue BEFORE enqueueing; if it pushes the FIFO
                 // to/over the bound, PAUSE the read loop so the kernel PTY buffer fills and
                 // backpressures the shell (the real flood fix).
-                self.enqueueOutput(chunk.count)
+                enqueueOutput(chunk.count)
                 // Append-then-yield (no lost wake): the pending bufferingNewest(1) wake always
                 // observes a complete FIFO. The continuation is read under fifoLock (teardown
                 // nils it); yield happens OUTSIDE the lock (it may resume the drain inline).
-                self.fifoLock.lock()
-                self.outFIFO.append(.chunk(bytes: chunk, control: controlMsgs))
-                let wake = self.outputWakeContinuation
-                self.fifoLock.unlock()
+                fifoLock.lock()
+                outFIFO.append(.chunk(bytes: chunk, control: controlMsgs))
+                let wake = outputWakeContinuation
+                fifoLock.unlock()
                 wake?.yield(())
             },
-            onEOF: { [weak self] in self?.signalEOFReached() }
+            onEOF: { [weak self] in self?.signalEOFReached() },
         )
         self.readLoop = readLoop
         // FIX #3: build the bounded-queue gate now that the read loop exists, so pause/resume is
         // applied ATOMICALLY with the accounting (no lost-wakeup freeze).
-        self.outputGate = PausableQueueGate(capacity: MuxFlowControl.hostQueueCapacityBytes) { paused in
+        outputGate = PausableQueueGate(capacity: MuxFlowControl.hostQueueCapacityBytes) { paused in
             readLoop.setPaused(paused)
         }
         readLoop.start()
@@ -474,7 +478,8 @@ final class MuxChannelSession: @unchecked Sendable {
     /// thread pool / the mux connection's receive loop. `concurrent` so simultaneous channel teardowns
     /// (a multi-pane link drop) tear down in parallel rather than ~0.5s × N serially.
     static let teardownQueue = DispatchQueue(
-        label: "aislopdesk.host.session-shutdown", qos: .utility, attributes: .concurrent)
+        label: "aislopdesk.host.session-shutdown", qos: .utility, attributes: .concurrent,
+    )
 
     /// NON-BLOCKING teardown: dispatches ``shutdown()`` to a background queue and returns IMMEDIATELY.
     ///
@@ -521,7 +526,7 @@ final class MuxChannelSession: @unchecked Sendable {
             guard let self else { return }
             // Past the sleep: `Task.cancel()` no longer helps, so the generation guard decides. Apply
             // only if still the latest scheduled resize (checked under the lock, atomic with the ioctl).
-            self.flushPendingResize(ifGeneration: generation)
+            flushPendingResize(ifGeneration: generation)
         }
         resizeLock.unlock()
     }
@@ -535,8 +540,12 @@ final class MuxChannelSession: @unchecked Sendable {
     ///   paths (ack/bye/close) pass `nil` to apply UNCONDITIONALLY (they must never strand a size).
     private func flushPendingResize(ifGeneration generation: UInt64? = nil) {
         resizeLock.lock()
-        if let generation, resizeGeneration != generation { resizeLock.unlock(); return }
-        guard let r = pendingResize else { resizeLock.unlock(); return }
+        if let generation, resizeGeneration != generation { resizeLock.unlock()
+            return
+        }
+        guard let r = pendingResize else { resizeLock.unlock()
+            return
+        }
         pendingResize = nil
         resizeLock.unlock()
         pty.setWindowSize(cols: r.cols, rows: r.rows, pxWidth: r.px, pxHeight: r.py)
@@ -651,9 +660,15 @@ final class MuxChannelSession: @unchecked Sendable {
 
     /// Marks the read loop as having drained the master to EOF (called from `onEOF`, and from
     /// ``shutdown()`` so a torn-down exit task never waits the full timeout).
-    private func signalEOFReached() { eofLock.lock(); eofReached = true; eofLock.unlock() }
+    private func signalEOFReached() { eofLock.lock()
+        eofReached = true
+        eofLock.unlock()
+    }
 
-    private func isEOFReached() -> Bool { eofLock.lock(); defer { eofLock.unlock() }; return eofReached }
+    private func isEOFReached() -> Bool { eofLock.lock()
+        defer { eofLock.unlock() }
+        return eofReached
+    }
 
     /// Awaits the read loop reaching EOF (so the final tail is fully enqueued) OR a bounded timeout —
     /// whichever first — before the exit task yields `.exit`. Polling (2 ms granularity): the exit task
@@ -667,9 +682,15 @@ final class MuxChannelSession: @unchecked Sendable {
         }
     }
 
-    private func signalExitSent() { exitSentLock.lock(); exitSent = true; exitSentLock.unlock() }
+    private func signalExitSent() { exitSentLock.lock()
+        exitSent = true
+        exitSentLock.unlock()
+    }
 
-    private func isExitSent() -> Bool { exitSentLock.lock(); defer { exitSentLock.unlock() }; return exitSent }
+    private func isExitSent() -> Bool { exitSentLock.lock()
+        defer { exitSentLock.unlock() }
+        return exitSent
+    }
 
     /// Awaits the drain having SENT `.exit` on the wire (or a bounded timeout / cancellation) before the
     /// exit task fires `onExit` (R13 #7). Mirrors ``awaitEOFOrTimeout`` (2 ms poll, runs once per pane).
@@ -690,6 +711,7 @@ final class MuxChannelSession: @unchecked Sendable {
     }
 
     // MARK: - Test seams (replay-backpressure wiring, R5 rank 2)
+
     // These drive the append/ack/online glue against a real ``PausableQueueGate`` WITHOUT a PTY or
     // read loop, so the "retained ≥ cap → pause; ack → resume" wiring is provable headlessly. Reached
     // via `@testable import`; never used in production.
@@ -697,7 +719,8 @@ final class MuxChannelSession: @unchecked Sendable {
     /// Installs a gate to receive the replay-pause signal (production builds it in ``startRelay()``).
     func _installGateForTesting(_ gate: PausableQueueGate) { outputGate = gate }
     /// Drives the real ``nextSeq(for:)`` glue (append + recompute + gate). Returns the assigned seq.
-    @discardableResult func _appendForTesting(_ bytes: Data) -> Int64 { nextSeq(for: bytes) }
+    @discardableResult
+    func _appendForTesting(_ bytes: Data) -> Int64 { nextSeq(for: bytes) }
     /// Drives the real ``acknowledge(upTo:)`` glue (ack + recompute + gate).
     func _ackForTesting(upTo seq: Int64) { acknowledge(upTo: seq) }
     /// Drives the real ``setClientOnline(_:)`` glue (offline-gate side).
@@ -726,6 +749,7 @@ final class MuxChannelSession: @unchecked Sendable {
         fifoLock.unlock()
         wake?.yield(())
     }
+
     func _enqueueExitForTesting(code: Int32) { enqueueExit(code: code) }
     func _enqueueControlForTesting(_ messages: [WireMessage]) { enqueueControl(messages) }
     func _takeControlBatchForTesting() -> [WireMessage]? { takeControlBatch() }

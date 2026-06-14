@@ -24,7 +24,6 @@ public enum PasteRisk: Sendable, Equatable {
 /// ``SecretRedactor`` to recognize known token shapes and adds a Shannon-entropy + charset-diversity
 /// heuristic for unrecognized high-entropy blobs.
 public enum SecretPasteClassifier {
-
     /// Classifies pasting `text` into a field that is (or isn't) a secure password input.
     public static func assess(text: String, targetIsSecure: Bool) -> PasteRisk {
         if text.count > KeystrokeReplay.maxLength { return .tooLarge }

@@ -1,6 +1,6 @@
-import Foundation
 import AislopdeskProtocol
 import AislopdeskTransport
+import Foundation
 
 /// The Aislopdesk client session driver — the real, working PATH 1 client.
 ///
@@ -216,11 +216,11 @@ public actor AislopdeskClient {
     ///     `WorkspaceStore.liveMakeSession` construction site, never on the hot path.
     public init(
         ackInterval: Duration = AislopdeskClient.defaultAckInterval,
-        makeTransport: @escaping @Sendable () -> any ClientTransporting
+        makeTransport: @escaping @Sendable () -> any ClientTransporting,
     ) {
         self.ackInterval = ackInterval
         self.makeTransport = makeTransport
-        (self.outputWakeStream, self.outputWakeContinuation) =
+        (outputWakeStream, outputWakeContinuation) =
             AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
     }
 
@@ -242,7 +242,7 @@ public actor AislopdeskClient {
     public func connect(
         host: String,
         port: UInt16,
-        handshakeTimeout: Duration = .seconds(10)
+        handshakeTimeout: Duration = .seconds(10),
     ) async throws {
         guard !closed else { throw ClientError.invalidState("connect after close") }
         self.host = host
@@ -270,7 +270,7 @@ public actor AislopdeskClient {
                 port: port,
                 resume: resume,
                 lastReceivedSeq: lastSeq,
-                handshakeTimeout: handshakeTimeout
+                handshakeTimeout: handshakeTimeout,
             )
         } catch {
             await transport.close()
@@ -296,7 +296,7 @@ public actor AislopdeskClient {
         let learnedID = await transport.sessionID
         let resumeFromSeq = await transport.resumeFromSeq
         let returning = await transport.returningClient
-        if let learnedID { self.sessionID = learnedID }
+        if let learnedID { sessionID = learnedID }
 
         // RESET DEDUP / ACK STATE ON EVERY (RE)CONNECT. The mux transport — the SOLE terminal
         // connectivity — has NO per-channel server-side resume: `HostServer.spawnMuxChannel` mints a
@@ -363,11 +363,11 @@ public actor AislopdeskClient {
             guard let self else { return }
             do {
                 for try await message in inbound {
-                    await self.handleInbound(message)
+                    await handleInbound(message)
                 }
-                await self.handleStreamEnded(error: nil)
+                await handleStreamEnded(error: nil)
             } catch {
-                await self.handleStreamEnded(error: error)
+                await handleStreamEnded(error: error)
             }
         }
     }
@@ -468,8 +468,7 @@ public actor AislopdeskClient {
         // self-inflicted and a real `.disconnected` would queue a redundant reconnect).
         // ReconnectManager watches `events` / observes the thrown connect error.
         guard !closed, !tearingDown else { return }
-        let reason: String
-        if let error { reason = String(describing: error) } else { reason = "stream ended (FIN)" }
+        let reason = if let error { String(describing: error) } else { "stream ended (FIN)" }
         eventBroadcaster.yield(.disconnected(reason: reason))
     }
 
@@ -486,7 +485,7 @@ public actor AislopdeskClient {
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
                 guard let self else { return }
-                await self.flushAckIfPending()
+                await flushAckIfPending()
             }
         }
     }
@@ -502,7 +501,7 @@ public actor AislopdeskClient {
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
                 guard let self else { return }
-                await self.sendPingProbe()
+                await sendPingProbe()
             }
         }
     }

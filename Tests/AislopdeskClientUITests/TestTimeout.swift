@@ -15,11 +15,13 @@ import Foundation
 /// standing up the E2E machinery it protects.
 func withTestTimeout<T: Sendable>(
     _ timeout: Duration,
-    _ body: @escaping @Sendable () async -> T
+    _ body: @escaping @Sendable () async -> T,
 ) async -> T? {
     await withTaskGroup(of: T?.self) { group in
         group.addTask { await body() }
-        group.addTask { try? await Task.sleep(for: timeout); return nil }
+        group.addTask { try? await Task.sleep(for: timeout)
+            return nil
+        }
         let first = await group.next() ?? nil
         group.cancelAll()
         return first

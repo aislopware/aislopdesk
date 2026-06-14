@@ -6,24 +6,29 @@ import XCTest
 /// subagent ids) grew them for the host's lifetime. A drop-oldest agent cap (the host analogue of the
 /// client's R13 #4) bounds them.
 final class EventBuilderAgentCapTests: XCTestCase {
-
     func testSubagentAgentIDDimensionIsBounded() {
         var builder = EventBuilder()
         let n = EventBuilder.maxAgents + 500
         for i in 0..<n {
             _ = builder.updateSubagent(SubagentNode(id: "agent-\(i)", agentType: "w"))
         }
-        XCTAssertLessThanOrEqual(builder.trackedAgentCount, EventBuilder.maxAgents,
-                                 "distinct subagent ids must drop-oldest at the cap")
-        XCTAssertGreaterThanOrEqual(builder.trackedAgentCount, EventBuilder.agentRetainTarget,
-                                    "a batch eviction retains at least the retain target")
+        XCTAssertLessThanOrEqual(
+            builder.trackedAgentCount,
+            EventBuilder.maxAgents,
+            "distinct subagent ids must drop-oldest at the cap",
+        )
+        XCTAssertGreaterThanOrEqual(
+            builder.trackedAgentCount,
+            EventBuilder.agentRetainTarget,
+            "a batch eviction retains at least the retain target",
+        )
     }
 
     func testReTouchingKnownAgentDoesNotGrowCount() {
         var builder = EventBuilder()
         _ = builder.updateSubagent(SubagentNode(id: "a"))
         let c1 = builder.trackedAgentCount
-        _ = builder.updateSubagent(SubagentNode(id: "a", status: .stopped))   // already known
+        _ = builder.updateSubagent(SubagentNode(id: "a", status: .stopped)) // already known
         XCTAssertEqual(builder.trackedAgentCount, c1, "re-updating a known agent adds no new entry")
     }
 }
@@ -33,14 +38,15 @@ final class EventBuilderAgentCapTests: XCTestCase {
 /// knows the timeline starts mid-transcript, rather than silently presenting a truncated history as
 /// complete.
 final class InspectorReplayTruncationTests: XCTestCase {
-
     func testReplayAfterRetentionDropPrependsTruncationMarker() async {
         let log = InspectorReplayLog(maxRetained: 100, retainTarget: 75)
-        for i in 0..<150 { await log.append(.unknownLine(raw: "e\(i)")) }   // forces baseSeq > 0
+        for i in 0..<150 { await log.append(.unknownLine(raw: "e\(i)")) } // forces baseSeq > 0
 
         let stream = await log.subscribe(fromSeq: 0)
         var first: InspectorEvent?
-        for await event in stream { first = event; break }
+        for await event in stream { first = event
+            break
+        }
 
         guard case let .historyTruncated(dropped)? = first else {
             return XCTFail("expected a historyTruncated marker first, got \(String(describing: first))")
@@ -50,11 +56,13 @@ final class InspectorReplayTruncationTests: XCTestCase {
 
     func testNoTruncationMarkerWhenNothingDropped() async {
         let log = InspectorReplayLog(maxRetained: 100, retainTarget: 75)
-        for i in 0..<10 { await log.append(.unknownLine(raw: "e\(i)")) }    // well under the cap → no drop
+        for i in 0..<10 { await log.append(.unknownLine(raw: "e\(i)")) } // well under the cap → no drop
 
         let stream = await log.subscribe(fromSeq: 0)
         var first: InspectorEvent?
-        for await event in stream { first = event; break }
+        for await event in stream { first = event
+            break
+        }
 
         guard let firstEvent = first else { return XCTFail("expected a replayed event") }
         if case .historyTruncated = firstEvent {

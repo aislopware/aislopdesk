@@ -16,10 +16,12 @@ public final class AppLaunchMonitor {
     /// The host app names present on the last poll (to diff for newly-appeared apps).
     private var lastApps: Set<String> = []
 
-    public init(store: WorkspaceStore,
-                isConnected: @escaping @MainActor () -> Bool,
-                target: @escaping @MainActor () -> ConnectionTarget,
-                pollGap: Duration = .seconds(3)) {
+    public init(
+        store: WorkspaceStore,
+        isConnected: @escaping @MainActor () -> Bool,
+        target: @escaping @MainActor () -> ConnectionTarget,
+        pollGap: Duration = .seconds(3),
+    ) {
         self.store = store
         self.isConnected = isConnected
         self.target = target
@@ -40,7 +42,8 @@ public final class AppLaunchMonitor {
         // Cheap early-out: nothing to do unless the feature is on and some preset carries a trigger.
         guard SettingsKey.autoSwitchLayoutsEnabled,
               store.workspace.layoutPresets.contains(where: { $0.triggerAppName != nil }),
-              isConnected(), let query = RemoteWindowDiscovery.shared else {
+              isConnected(), let query = RemoteWindowDiscovery.shared
+        else {
             // Not ready (feature off / no trigger / DISCONNECTED): treat it like the host's whole app set
             // went absent — clear the auto-switch latch for every previously-seen app AND forget the
             // last-seen set. So a later reconnect re-evaluates from scratch: present host apps are

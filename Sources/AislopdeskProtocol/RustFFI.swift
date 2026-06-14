@@ -151,7 +151,7 @@ enum RustFFI {
             return .hello(
                 protocolVersion: m.protocol_version,
                 sessionID: sessionID(from: m),
-                lastReceivedSeq: m.last_received_seq
+                lastReceivedSeq: m.last_received_seq,
             )
         case 11:
             return .resize(cols: m.cols, rows: m.rows, pxWidth: m.px_width, pxHeight: m.px_height)
@@ -165,7 +165,7 @@ enum RustFFI {
             return .helloAck(
                 sessionID: sessionID(from: m),
                 resumeFromSeq: m.resume_from_seq,
-                returningClient: m.returning_client != 0
+                returningClient: m.returning_client != 0,
             )
         case 21:
             return .title(stringFrom(m.data))

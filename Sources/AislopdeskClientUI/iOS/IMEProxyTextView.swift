@@ -51,8 +51,8 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
 
     private func configure() {
         delegate = self
-        isHidden = false                // must be in the hierarchy + focusable
-        alpha = 0.01                    // visually invisible but still receives input
+        isHidden = false // must be in the hierarchy + focusable
+        alpha = 0.01 // visually invisible but still receives input
         backgroundColor = .clear
         autocorrectionType = .no
         autocapitalizationType = .none
@@ -84,7 +84,7 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
     /// we surface it as a single Delete key press on the key-encoding path (→ DEL byte), the
     /// same authoritative path a hardware Backspace takes. We never call `super` (there is no
     /// document to mutate), so DEL is emitted exactly once.
-    public override func deleteBackward() {
+    override public func deleteBackward() {
         // During an active IME / Telex composition the document is NOT empty (the steady-state
         // "always empty" assumption only holds at rest). A backspace there is meant to edit the
         // MARKED TEXT — route it back to the text system (which mutates the composition and fires
@@ -109,17 +109,19 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
     }
 
     // MARK: Hardware keyboard (pressesBegan/Ended → InputRouting → owner's KeyRepeater)
+
     //
     // This view is the first responder, so it (not any ancestor) receives `UIPress` events.
     // Key-encoding presses are intercepted + consumed here; everything else (plain printable,
     // CJK composition triggers) falls through to `super` so the text system runs normally.
 
-    public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    override public func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var unhandled = Set<UIPress>()
         for press in presses {
             guard let key = press.key,
                   let classified = Self.classify(key),
-                  InputRouting.routesToKeyEncoding(classified) else {
+                  InputRouting.routesToKeyEncoding(classified)
+            else {
                 unhandled.insert(press)
                 continue
             }
@@ -128,11 +130,11 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
         if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
     }
 
-    public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    override public func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         handlePressesEnded(presses) { unhandled in super.pressesEnded(unhandled, with: event) }
     }
 
-    public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    override public func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         handlePressesEnded(presses) { unhandled in super.pressesCancelled(unhandled, with: event) }
     }
 
@@ -151,9 +153,9 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
                 unhandled.insert(press)
                 continue
             }
-            onKeyRelease?(classified)   // ALWAYS attempt a release (repeater no-ops if not held)
+            onKeyRelease?(classified) // ALWAYS attempt a release (repeater no-ops if not held)
             if !InputRouting.routesToKeyEncoding(classified) {
-                unhandled.insert(press)  // plain text key — the text system handles its release too
+                unhandled.insert(press) // plain text key — the text system handles its release too
             }
         }
         passUnhandled(unhandled)
@@ -169,7 +171,7 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
             option: key.modifierFlags.contains(.alternate),
             command: key.modifierFlags.contains(.command),
             shift: key.modifierFlags.contains(.shift),
-            isSpecial: Self.isSpecial(key)
+            isSpecial: isSpecial(key),
         )
     }
 
@@ -177,12 +179,19 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
     /// key-encoding path. Recognised by `UIKeyboardHIDUsage`.
     private static func isSpecial(_ key: UIKey) -> Bool {
         switch key.keyCode {
-        case .keyboardEscape, .keyboardTab, .keyboardReturnOrEnter, .keyboardReturn,
-             .keyboardDeleteOrBackspace, .keyboardDeleteForward,
-             .keyboardLeftArrow, .keyboardRightArrow, .keyboardUpArrow, .keyboardDownArrow:
-            return true
+        case .keyboardEscape,
+             .keyboardTab,
+             .keyboardReturnOrEnter,
+             .keyboardReturn,
+             .keyboardDeleteOrBackspace,
+             .keyboardDeleteForward,
+             .keyboardLeftArrow,
+             .keyboardRightArrow,
+             .keyboardUpArrow,
+             .keyboardDownArrow:
+            true
         default:
-            return false
+            false
         }
     }
 
@@ -191,15 +200,15 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
     /// iOS streams these while the user long-presses the spacebar and drags. We surface the
     /// points to the owner's ``FloatingCursorController`` (delta → arrow bytes) instead of moving
     /// a non-existent caret, so we deliberately do not call `super`.
-    public override func beginFloatingCursor(at point: CGPoint) {
+    override public func beginFloatingCursor(at point: CGPoint) {
         onFloatingCursorBegin?(point)
     }
 
-    public override func updateFloatingCursor(at point: CGPoint) {
+    override public func updateFloatingCursor(at point: CGPoint) {
         onFloatingCursorUpdate?(point)
     }
 
-    public override func endFloatingCursor() {
+    override public func endFloatingCursor() {
         onFloatingCursorEnd?()
     }
 }

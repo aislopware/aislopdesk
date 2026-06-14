@@ -1,6 +1,6 @@
-import XCTest
 import AislopdeskProtocol
 import AislopdeskTransport
+import XCTest
 @testable import AislopdeskHost
 
 /// Drain-merge semantics for the host output FIFO (`MuxChannelSession.takeMergedFrame`):
@@ -11,13 +11,12 @@ import AislopdeskTransport
 /// (final output strictly before exit) survives the merge. Driven WITHOUT a PTY or
 /// running drain via the `_…ForTesting` seams.
 final class MuxChannelSessionDrainMergeTests: XCTestCase {
-
     private func makeSession() -> MuxChannelSession {
         MuxChannelSession(
             channelID: 1,
-            pty: PTYProcess(),  // unspawned — relay never started; FIFO driven via seams
+            pty: PTYProcess(), // unspawned — relay never started; FIFO driven via seams
             data: MuxSubChannel(channelID: 1, channel: .data) { _, _ in },
-            control: MuxSubChannel(channelID: 1, channel: .control) { _, _ in }
+            control: MuxSubChannel(channelID: 1, channel: .control) { _, _ in },
         )
     }
 
@@ -48,7 +47,7 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         let cap = MuxFlowControl.hostMergeCapBytes
         let a = Data(repeating: 0x61, count: cap / 3)
         let b = Data(repeating: 0x62, count: cap / 3)
-        let c = Data(repeating: 0x63, count: cap / 2)   // a+b+c > cap → c starts frame 2
+        let c = Data(repeating: 0x63, count: cap / 2) // a+b+c > cap → c starts frame 2
         session._enqueueChunkForTesting(bytes: a)
         session._enqueueChunkForTesting(bytes: b)
         session._enqueueChunkForTesting(bytes: c)
@@ -77,8 +76,11 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         var reassembled = Data()
         var frames = 0
         while case let .output(bytes, byteCount, _)? = session.takeMergedFrame() {
-            XCTAssertLessThanOrEqual(bytes.count, MuxFlowControl.maxOutputFramePayloadBytes,
-                                     "every emitted frame respects the safe cap")
+            XCTAssertLessThanOrEqual(
+                bytes.count,
+                MuxFlowControl.maxOutputFramePayloadBytes,
+                "every emitted frame respects the safe cap",
+            )
             XCTAssertEqual(byteCount, bytes.count)
             reassembled.append(bytes)
             frames += 1
@@ -130,8 +132,11 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         session._enqueueControlForTesting([t1, running])
         session._enqueueControlForTesting([t2, idle])
 
-        XCTAssertEqual(session._takeControlBatchForTesting(), [t1, running, t2, idle],
-                       "control messages drain in exact enqueue order (running before its idle)")
+        XCTAssertEqual(
+            session._takeControlBatchForTesting(),
+            [t1, running, t2, idle],
+            "control messages drain in exact enqueue order (running before its idle)",
+        )
         XCTAssertNil(session._takeControlBatchForTesting(), "empty queue → nil (drain re-parks)")
     }
 
@@ -144,7 +149,10 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         session._enqueueControlForTesting(Array(repeating: .title("x"), count: cap - 1))
         // A 5-element batch at count==cap-1 would naively land at cap+4 — must clamp to exactly cap.
         session._enqueueControlForTesting(Array(repeating: .commandStatus(.running), count: 5))
-        XCTAssertEqual(session._takeControlBatchForTesting()?.count, cap,
-                       "the control queue is clamped to the cap, never cap+(K-1)")
+        XCTAssertEqual(
+            session._takeControlBatchForTesting()?.count,
+            cap,
+            "the control queue is clamped to the cap, never cap+(K-1)",
+        )
     }
 }

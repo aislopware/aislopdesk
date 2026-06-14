@@ -55,7 +55,7 @@ public enum HookParser {
                 sessionID: obj["session_id"]?.stringValue ?? obj["sessionId"]?.stringValue,
                 model: obj["model"]?.stringValue,
                 cwd: obj["cwd"]?.stringValue,
-                transcriptPath: obj["transcript_path"]?.stringValue ?? obj["transcriptPath"]?.stringValue
+                transcriptPath: obj["transcript_path"]?.stringValue ?? obj["transcriptPath"]?.stringValue,
             ))
 
         case "PostToolUse":
@@ -95,7 +95,7 @@ public enum HookParser {
                 description: obj["description"]?.stringValue,
                 status: .stopped,
                 lastAssistantMessage: obj["last_assistant_message"]?.stringValue
-                    ?? obj["lastAssistantMessage"]?.stringValue
+                    ?? obj["lastAssistantMessage"]?.stringValue,
             )
             return .subagentStop(node)
 

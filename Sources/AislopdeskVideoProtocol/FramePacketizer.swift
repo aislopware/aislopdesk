@@ -83,7 +83,15 @@ public struct FrameFragmentHeader: Equatable, Sendable {
     public var hostSendTsMillis: UInt32
     public var payloadLength: UInt16
 
-    public init(streamSeq: UInt32, frameID: UInt32, fragIndex: UInt16, fragCount: UInt16, flags: Flags, payloadLength: UInt16, hostSendTsMillis: UInt32 = 0) {
+    public init(
+        streamSeq: UInt32,
+        frameID: UInt32,
+        fragIndex: UInt16,
+        fragCount: UInt16,
+        flags: Flags,
+        payloadLength: UInt16,
+        hostSendTsMillis: UInt32 = 0,
+    ) {
         self.streamSeq = streamSeq
         self.frameID = frameID
         self.fragIndex = fragIndex
@@ -129,7 +137,7 @@ public struct FrameFragment: Equatable, Sendable {
         let frameID = try reader.readUInt32()
         let fragIndex = try reader.readUInt16()
         let fragCount = try reader.readUInt16()
-        let flags = FrameFragmentHeader.Flags(rawValue: try reader.readUInt8())
+        let flags = try FrameFragmentHeader.Flags(rawValue: reader.readUInt8())
         // Auto-bounds-checked (VideoByteReader throws .truncated on underflow): a datagram shorter
         // than the 19-byte header throws → the router drops the single packet, never crashes.
         let hostSendTsMillis = try reader.readUInt32()
@@ -137,7 +145,7 @@ public struct FrameFragment: Equatable, Sendable {
         let payload = try reader.readBytes(Int(payloadLength))
         let header = FrameFragmentHeader(
             streamSeq: streamSeq, frameID: frameID, fragIndex: fragIndex,
-            fragCount: fragCount, flags: flags, payloadLength: payloadLength, hostSendTsMillis: hostSendTsMillis
+            fragCount: fragCount, flags: flags, payloadLength: payloadLength, hostSendTsMillis: hostSendTsMillis,
         )
         return FrameFragment(header: header, payload: payload)
     }
@@ -193,7 +201,15 @@ public struct VideoPacketizer {
     ///     EVERY fragment so the client knows to ack it after a successful decode. Default false →
     ///     bit 6 stays zero → byte-identical to the pre-WF-8 wire.
     /// - Returns: data fragments + parity fragments, in send order.
-    public mutating func packetize(frame: Data, keyframe: Bool, crisp: Bool = false, hostSendTsMillis: UInt32 = 0, fecTier: UInt8 = AdaptiveFECPolicy.defaultTier, isLTR: Bool = false, ackedAnchored: Bool = false) -> [FrameFragment] {
+    public mutating func packetize(
+        frame: Data,
+        keyframe: Bool,
+        crisp: Bool = false,
+        hostSendTsMillis: UInt32 = 0,
+        fecTier: UInt8 = AdaptiveFECPolicy.defaultTier,
+        isLTR: Bool = false,
+        ackedAnchored: Bool = false,
+    ) -> [FrameFragment] {
         let frameID = nextFrameID
         nextFrameID &+= 1
 
@@ -206,7 +222,7 @@ public struct VideoPacketizer {
         } else {
             while offset < end {
                 let upper = frame.index(offset, offsetBy: Self.maxPayloadSize, limitedBy: end) ?? end
-                payloads.append(Data(frame[offset ..< upper]))
+                payloads.append(Data(frame[offset..<upper]))
                 offset = upper
             }
         }
@@ -214,14 +230,17 @@ public struct VideoPacketizer {
         // WF-4: the per-frame group size comes from the tier (nil = OFF → no parity). Tier 0 maps to
         // the configured `fec.groupSize` (5 in prod) so parity shape is identical to the pre-WF-4 path.
         let groupSize = AdaptiveFECPolicy.groupSize(forTier: fecTier, default: fec?.groupSize ?? 1)
-        let parityPayloads = (groupSize != nil ? fec?.parity(forDataFragments: payloads, groupSize: groupSize!) : nil) ?? []
+        let parityPayloads = (
+            groupSize != nil ? fec?.parity(forDataFragments: payloads, groupSize: groupSize!) : nil,
+        ) ??
+            []
         let fragCount = UInt16(payloads.count + parityPayloads.count)
 
         var baseFlags: FrameFragmentHeader.Flags = []
         if keyframe { baseFlags.insert(.keyframe) }
         if crisp { baseFlags.insert(.crisp) }
-        if isLTR { baseFlags.insert(.isLTR) }   // WF-8 bit 6 — disjoint from keyframe/crisp/tier
-        if ackedAnchored { baseFlags.insert(.ackedAnchored) }   // bit 7 — ForceLTRRefresh product
+        if isLTR { baseFlags.insert(.isLTR) } // WF-8 bit 6 — disjoint from keyframe/crisp/tier
+        if ackedAnchored { baseFlags.insert(.ackedAnchored) } // bit 7 — ForceLTRRefresh product
         // Stamp the tier into bits 3-5 BEFORE forking data/parity flags. Tier 0 leaves them zero.
         baseFlags.setFECTier(fecTier)
 
@@ -229,24 +248,46 @@ public struct VideoPacketizer {
         fragments.reserveCapacity(payloads.count + parityPayloads.count)
         var fragIndex: UInt16 = 0
         for payload in payloads {
-            fragments.append(makeFragment(frameID: frameID, fragIndex: fragIndex, fragCount: fragCount, flags: baseFlags, payload: payload, hostSendTsMillis: hostSendTsMillis))
+            fragments.append(makeFragment(
+                frameID: frameID,
+                fragIndex: fragIndex,
+                fragCount: fragCount,
+                flags: baseFlags,
+                payload: payload,
+                hostSendTsMillis: hostSendTsMillis,
+            ))
             fragIndex += 1
         }
         for payload in parityPayloads {
             var flags = baseFlags
             flags.insert(.parity)
-            fragments.append(makeFragment(frameID: frameID, fragIndex: fragIndex, fragCount: fragCount, flags: flags, payload: payload, hostSendTsMillis: hostSendTsMillis))
+            fragments.append(makeFragment(
+                frameID: frameID,
+                fragIndex: fragIndex,
+                fragCount: fragCount,
+                flags: flags,
+                payload: payload,
+                hostSendTsMillis: hostSendTsMillis,
+            ))
             fragIndex += 1
         }
         return fragments
     }
 
-    private mutating func makeFragment(frameID: UInt32, fragIndex: UInt16, fragCount: UInt16, flags: FrameFragmentHeader.Flags, payload: Data, hostSendTsMillis: UInt32) -> FrameFragment {
+    private mutating func makeFragment(
+        frameID: UInt32,
+        fragIndex: UInt16,
+        fragCount: UInt16,
+        flags: FrameFragmentHeader.Flags,
+        payload: Data,
+        hostSendTsMillis: UInt32,
+    ) -> FrameFragment {
         let seq = nextStreamSeq
         nextStreamSeq &+= 1
         let header = FrameFragmentHeader(
             streamSeq: seq, frameID: frameID, fragIndex: fragIndex,
-            fragCount: fragCount, flags: flags, payloadLength: UInt16(payload.count), hostSendTsMillis: hostSendTsMillis
+            fragCount: fragCount, flags: flags, payloadLength: UInt16(payload.count),
+            hostSendTsMillis: hostSendTsMillis,
         )
         return FrameFragment(header: header, payload: payload)
     }

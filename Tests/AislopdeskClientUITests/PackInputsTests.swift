@@ -1,5 +1,5 @@
-import XCTest
 import Foundation
+import XCTest
 @testable import AislopdeskClientUI
 
 /// Pure tests for ``ConnectionViewModel/packInputs(_:maxInputFrameBytes:)`` — the OUT-batch
@@ -22,7 +22,7 @@ final class PackInputsTests: XCTestCase {
     }
 
     func testOversizedInputSplitsAtCap() {
-        let big = Data((0..<10_000).map { UInt8($0 % 251) })
+        let big = Data((0..<10000).map { UInt8($0 % 251) })
         let packed = ConnectionViewModel.packInputs([.input(big)], maxInputFrameBytes: 4096)
         XCTAssertEqual(packed.count, 3, "10000 bytes at cap 4096 → 3 frames")
         for case let .input(d) in packed {
@@ -78,8 +78,11 @@ final class PackInputsTests: XCTestCase {
             .resize(cols: 110, rows: 35),
         ]
         let packed = ConnectionViewModel.packInputs(ConnectionViewModel.coalesceOut(events))
-        XCTAssertEqual(packed.last, .resize(cols: 110, rows: 35),
-                       "the final drag size still reaches the PTY after coalesce+pack")
+        XCTAssertEqual(
+            packed.last,
+            .resize(cols: 110, rows: 35),
+            "the final drag size still reaches the PTY after coalesce+pack",
+        )
         XCTAssertEqual(concatInputs(packed), Data("x".utf8))
     }
 }

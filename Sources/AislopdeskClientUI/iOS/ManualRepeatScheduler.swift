@@ -17,7 +17,7 @@ import Foundation
 public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
     private final class Item {
         var deadline: Duration
-        let interval: Duration?     // nil = one-shot
+        let interval: Duration? // nil = one-shot
         let work: @Sendable () -> Void
         var cancelled = false
         init(deadline: Duration, interval: Duration?, work: @escaping @Sendable () -> Void) {
@@ -30,9 +30,13 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
     private final class Handle: RepeatSchedulerHandle, @unchecked Sendable {
         weak var item: Item?
         let lock: NSLock
-        init(item: Item, lock: NSLock) { self.item = item; self.lock = lock }
+        init(item: Item, lock: NSLock) { self.item = item
+            self.lock = lock
+        }
+
         func cancel() {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            defer { lock.unlock() }
             item?.cancelled = true
         }
     }
@@ -45,19 +49,25 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
 
     /// The current synthetic time (sum of all ``advance(by:)`` calls).
     public var now: Duration {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return clock
     }
 
     public func schedule(after delay: Duration, _ work: @escaping @Sendable () -> Void) -> RepeatSchedulerHandle {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         let item = Item(deadline: clock + delay, interval: nil, work: work)
         items.append(item)
         return Handle(item: item, lock: lock)
     }
 
-    public func scheduleRepeating(every interval: Duration, _ work: @escaping @Sendable () -> Void) -> RepeatSchedulerHandle {
-        lock.lock(); defer { lock.unlock() }
+    public func scheduleRepeating(
+        every interval: Duration,
+        _ work: @escaping @Sendable () -> Void,
+    ) -> RepeatSchedulerHandle {
+        lock.lock()
+        defer { lock.unlock() }
         let item = Item(deadline: clock + interval, interval: interval, work: work)
         items.append(item)
         return Handle(item: item, lock: lock)
@@ -69,7 +79,8 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
     /// with the lock released so a `KeyRepeater` callback can re-enter (`stop`, re-`keyDown`).
     public func advance(by delta: Duration) {
         let target: Duration = {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            defer { lock.unlock() }
             clock = clock + delta
             return clock
         }()
@@ -77,7 +88,8 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
         // Fire in strict deadline order until no item is due at/under `target`.
         while true {
             let due: Item? = {
-                lock.lock(); defer { lock.unlock() }
+                lock.lock()
+                defer { lock.unlock() }
                 items.removeAll { $0.cancelled }
                 return items
                     .filter { !$0.cancelled && $0.deadline <= target }
@@ -102,7 +114,8 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
 
     /// Number of live (non-cancelled) scheduled items (diagnostics / tests).
     public var pendingCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return items.filter { !$0.cancelled }.count
+        lock.lock()
+        defer { lock.unlock() }
+        return items.count(where: { !$0.cancelled })
     }
 }

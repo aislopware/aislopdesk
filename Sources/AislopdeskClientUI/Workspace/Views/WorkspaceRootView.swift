@@ -70,16 +70,16 @@ public struct WorkspaceRootView: View {
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             PaneSidebarView(store: store)
-                #if os(macOS)
+            #if os(macOS)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
-                #endif
+            #endif
         } detail: {
             detail
                 .toolbar { detailToolbar }
                 .navigationTitle(windowTitle)
-                #if os(iOS)
+            #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
-                #endif
+            #endif
         }
         #if os(macOS)
         .frame(minWidth: 720, minHeight: 480)
@@ -98,7 +98,11 @@ public struct WorkspaceRootView: View {
         // backdrop + placement rather than fighting sheet chrome.
         // The ⌘K palette + ⌘/ cheat-sheet overlays, in their own modifier so the root body's chain stays
         // inside the Swift type-checker's budget. Both render an empty branch when hidden (zero cost).
-        .modifier(WorkspaceOverlayModals(store: store, showPalette: $showCommandPalette, showCheatSheet: $showCheatSheet))
+        .modifier(WorkspaceOverlayModals(
+            store: store,
+            showPalette: $showCommandPalette,
+            showCheatSheet: $showCheatSheet,
+        ))
         // The app-global connect-gate (docs/31): a modal over the WHOLE shell — including the sidebar +
         // palette — whenever the one connection is not `.connected`. Placed here (above the regular↔compact
         // switch in `detail`) so a projection flip never re-mounts it. The canvas is unusable until
@@ -136,8 +140,8 @@ public struct WorkspaceRootView: View {
             pendingCloseTitle,
             isPresented: Binding(
                 get: { store.pendingClose != nil },
-                set: { if !$0 { store.cancelPendingClose() } }
-            )
+                set: { if !$0 { store.cancelPendingClose() } },
+            ),
         ) {
             Button("Close Pane", role: .destructive) { store.confirmPendingClose() }
         } message: {
@@ -147,21 +151,25 @@ public struct WorkspaceRootView: View {
         // suggestion; an empty name is a no-op (saveLayoutPreset trims+guards).
         .alert("Save Layout", isPresented: Binding(
             get: { store.pendingSaveLayout },
-            set: { if !$0 { store.clearSaveLayoutRequest() } }
+            set: { if !$0 { store.clearSaveLayoutRequest() } },
         )) {
             TextField("Layout name", text: $saveLayoutName)
             TextField("Auto-switch when this host app launches (optional)", text: $saveLayoutTriggerApp)
             Button("Save") {
                 store.saveLayoutPreset(name: saveLayoutName, triggerAppName: saveLayoutTriggerApp)
-                saveLayoutName = ""; saveLayoutTriggerApp = ""
+                saveLayoutName = ""
+                saveLayoutTriggerApp = ""
                 store.clearSaveLayoutRequest()
             }
             Button("Cancel", role: .cancel) {
-                saveLayoutName = ""; saveLayoutTriggerApp = ""
+                saveLayoutName = ""
+                saveLayoutTriggerApp = ""
                 store.clearSaveLayoutRequest()
             }
         } message: {
-            Text("Save the current panes, groups, and focus as a named layout you can switch back to. Optionally bind it to a host app so it switches in automatically when that app launches.")
+            Text(
+                "Save the current panes, groups, and focus as a named layout you can switch back to. Optionally bind it to a host app so it switches in automatically when that app launches.",
+            )
         }
         // Snippet sheets (value-entry + manager) live in their own modifier so the root body's modifier
         // chain stays inside the Swift type-checker's budget.
@@ -179,7 +187,6 @@ public struct WorkspaceRootView: View {
 
     // MARK: Detail (the ONE responsive switch — docs/22 §4)
 
-    @ViewBuilder
     private var detail: some View {
         GeometryReader { geo in
             // ITEM #6: resolve the breakpoint against the OUTER WINDOW width on macOS (steadier than
@@ -188,7 +195,7 @@ public struct WorkspaceRootView: View {
             let compact = WorkspaceLayout.isCompact(
                 horizontalSizeClassCompact: horizontalSizeClass == .compact,
                 detailWidth: geo.size.width,
-                windowWidth: windowWidth
+                windowWidth: windowWidth,
             )
 
             Group {
@@ -313,7 +320,7 @@ private struct SnippetModals: ViewModifier {
             // literally. A no-placeholder snippet never reaches this (it ran already).
             .sheet(isPresented: Binding(
                 get: { store.pendingSnippetRun != nil },
-                set: { if !$0 { store.clearSnippetRunRequest() } }
+                set: { if !$0 { store.clearSnippetRunRequest() } },
             )) {
                 if let id = store.pendingSnippetRun {
                     SnippetValuesSheet(store: store, snippetID: id)
@@ -324,7 +331,7 @@ private struct SnippetModals: ViewModifier {
             // workspace JSON. Reached from ⌘K / Pane ▸ Manage Snippets…
             .sheet(isPresented: Binding(
                 get: { store.snippetManagerPresented },
-                set: { if !$0 { store.dismissSnippetManager() } }
+                set: { if !$0 { store.dismissSnippetManager() } },
             )) {
                 SnippetManagerView(store: store)
             }
@@ -371,7 +378,7 @@ private struct SnippetValuesSheet: View {
                     ForEach(Array(slots.enumerated()), id: \.element) { index, name in
                         TextField(name, text: Binding(
                             get: { values[name] ?? "" },
-                            set: { values[name] = $0 }
+                            set: { values[name] = $0 },
                         ))
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
@@ -423,7 +430,9 @@ private struct SnippetValuesSheet: View {
     }
 
     private func run() {
-        guard let snip = snippet else { store.clearSnippetRunRequest(); return }
+        guard let snip = snippet else { store.clearSnippetRunRequest()
+            return
+        }
         store.runSnippet(snip.id, values: filledValues(snip.placeholders))
         store.clearSnippetRunRequest()
     }
@@ -490,12 +499,14 @@ private struct WindowWidthReader: NSViewRepresentable {
             }
             stop()
             observedWindow = window
-            guard let window else { width.wrappedValue = nil; return }
+            guard let window else { width.wrappedValue = nil
+                return
+            }
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(windowDidResize(_:)),
                 name: NSWindow.didResizeNotification,
-                object: window
+                object: window,
             )
             publish(window)
         }
@@ -506,7 +517,8 @@ private struct WindowWidthReader: NSViewRepresentable {
             observedWindow = nil
         }
 
-        @objc private func windowDidResize(_ note: Notification) {
+        @objc
+        private func windowDidResize(_ note: Notification) {
             publish(note.object as? NSWindow ?? observedWindow)
         }
 

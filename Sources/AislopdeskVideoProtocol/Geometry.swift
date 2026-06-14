@@ -11,24 +11,31 @@ import CoreGraphics
 public struct VideoPoint: Equatable, Sendable {
     public var x: Double
     public var y: Double
-    public init(x: Double, y: Double) { self.x = x; self.y = y }
+    public init(x: Double, y: Double) { self.x = x
+        self.y = y
+    }
 }
 
 /// A pure 2-D size (points).
 public struct VideoSize: Equatable, Sendable {
     public var width: Double
     public var height: Double
-    public init(width: Double, height: Double) { self.width = width; self.height = height }
+    public init(width: Double, height: Double) { self.width = width
+        self.height = height
+    }
 }
 
 /// A pure rectangle (origin + size), in whatever coordinate space the caller states.
 public struct VideoRect: Equatable, Sendable {
     public var origin: VideoPoint
     public var size: VideoSize
-    public init(origin: VideoPoint, size: VideoSize) { self.origin = origin; self.size = size }
+    public init(origin: VideoPoint, size: VideoSize) { self.origin = origin
+        self.size = size
+    }
+
     public init(x: Double, y: Double, width: Double, height: Double) {
-        self.origin = VideoPoint(x: x, y: y)
-        self.size = VideoSize(width: width, height: height)
+        origin = VideoPoint(x: x, y: y)
+        size = VideoSize(width: width, height: height)
     }
 
     public var minX: Double { origin.x }
@@ -85,7 +92,11 @@ public enum AspectFit {
     ///   - mode: `.fit` (contain, letterbox) or `.fill` (cover, crop). Default `.fit`.
     /// - Returns: the centred displayed-video rect. Falls back to the full `viewSize`
     ///   rect for any non-positive dimension (degenerate input is placed sensibly).
-    public static func displayedVideoRect(viewSize: VideoSize, videoNativeSize: VideoSize, mode: VideoContentMode = .fit) -> VideoRect {
+    public static func displayedVideoRect(
+        viewSize: VideoSize,
+        videoNativeSize: VideoSize,
+        mode: VideoContentMode = .fit,
+    ) -> VideoRect {
         let vw = videoNativeSize.width, vh = videoNativeSize.height
         let Vw = viewSize.width, Vh = viewSize.height
         guard vw > 0, vh > 0, Vw > 0, Vh > 0 else {
@@ -120,7 +131,7 @@ public enum AspectFit {
         videoNativeSize: VideoSize,
         zoom: Double = 1,
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
-        mode: VideoContentMode = .fit
+        mode: VideoContentMode = .fit,
     ) -> VideoPoint {
         let su = videoNativeSize.width > 0 ? hostPoint.x / videoNativeSize.width : 0
         let sv = videoNativeSize.height > 0 ? hostPoint.y / videoNativeSize.height : 0
@@ -137,20 +148,26 @@ public enum AspectFit {
 }
 
 #if canImport(CoreGraphics)
-extension VideoPoint {
-    public init(_ p: CGPoint) { self.init(x: Double(p.x), y: Double(p.y)) }
-    public var cgPoint: CGPoint { CGPoint(x: x, y: y) }
+public extension VideoPoint {
+    init(_ p: CGPoint) { self.init(x: Double(p.x), y: Double(p.y)) }
+    var cgPoint: CGPoint { CGPoint(x: x, y: y) }
 }
 
-extension VideoSize {
-    public init(_ s: CGSize) { self.init(width: Double(s.width), height: Double(s.height)) }
-    public var cgSize: CGSize { CGSize(width: width, height: height) }
+public extension VideoSize {
+    init(_ s: CGSize) { self.init(width: Double(s.width), height: Double(s.height)) }
+    var cgSize: CGSize { CGSize(width: width, height: height) }
 }
 
-extension VideoRect {
-    public init(_ r: CGRect) {
-        self.init(x: Double(r.origin.x), y: Double(r.origin.y), width: Double(r.size.width), height: Double(r.size.height))
+public extension VideoRect {
+    init(_ r: CGRect) {
+        self.init(
+            x: Double(r.origin.x),
+            y: Double(r.origin.y),
+            width: Double(r.size.width),
+            height: Double(r.size.height),
+        )
     }
-    public var cgRect: CGRect { CGRect(x: minX, y: minY, width: size.width, height: size.height) }
+
+    var cgRect: CGRect { CGRect(x: minX, y: minY, width: size.width, height: size.height) }
 }
 #endif
