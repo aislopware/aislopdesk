@@ -120,11 +120,14 @@ final class Collector: NSObject, SCStreamOutput, @unchecked Sendable {
         let sum = dts.reduce(0, +)
         let n = Double(dts.count)
         let bin = { (lo: Double, hi: Double) in dts.count(where: { $0 > lo && $0 <= hi }) }
+        // `arrivals.count > 1` (guarded above) ⇒ first/last present and `dts`/`sorted` non-empty.
+        guard let firstArrival = arrivals.first, let lastArrival = arrivals.last,
+              let maxDt = sorted.last else { return }
         print(
-            "framewatch: frames=\(arrivals.count) span=\(String(format: "%.1f", (arrivals.last! - arrivals.first!)))s eff_fps=\(String(format: "%.1f", n / (sum / 1000)))",
+            "framewatch: frames=\(arrivals.count) span=\(String(format: "%.1f", lastArrival - firstArrival))s eff_fps=\(String(format: "%.1f", n / (sum / 1000)))",
         )
         print(
-            "framewatch: dt p50=\(String(format: "%.1f", sorted[Int(n * 0.5)]))ms p90=\(String(format: "%.1f", sorted[Int(n * 0.9)]))ms p99=\(String(format: "%.1f", sorted[min(dts.count - 1, Int(n * 0.99))]))ms max=\(String(format: "%.1f", sorted.last!))ms",
+            "framewatch: dt p50=\(String(format: "%.1f", sorted[Int(n * 0.5)]))ms p90=\(String(format: "%.1f", sorted[Int(n * 0.9)]))ms p99=\(String(format: "%.1f", sorted[min(dts.count - 1, Int(n * 0.99))]))ms max=\(String(format: "%.1f", maxDt))ms",
         )
         print(
             "framewatch: bins ≤20ms=\(bin(0, 20)) 20-28ms=\(bin(20, 28)) 28-42ms(1-slot)=\(bin(28, 42)) 42-60ms(2-slot)=\(bin(42, 60)) >60ms=\(bin(60, .infinity))",
@@ -317,8 +320,12 @@ Task {
             }
             let s = lats.sorted()
             let f = { (v: Double) in String(format: "%.1f", v) }
+            // `lats.count >= 5` (guarded above) ⇒ `s` is non-empty.
+            guard let minS = s.first, let maxS = s.last else {
+                preconditionFailure("sorted latencies non-empty after lats.count >= 5 guard")
+            }
             print(
-                "framewatch[latency]: glass-to-glass p50=\(f(s[s.count / 2]))ms p90=\(f(s[(s.count * 9) / 10]))ms min=\(f(s.first!))ms max=\(f(s.last!))ms n=\(s.count)",
+                "framewatch[latency]: glass-to-glass p50=\(f(s[s.count / 2]))ms p90=\(f(s[(s.count * 9) / 10]))ms min=\(f(minS))ms max=\(f(maxS))ms n=\(s.count)",
             )
             exit(0)
         }

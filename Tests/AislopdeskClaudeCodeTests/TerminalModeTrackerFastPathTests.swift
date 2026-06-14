@@ -136,7 +136,7 @@ final class TerminalModeTrackerFastPathTests: XCTestCase {
         // Escape-dense worst case for the bounded scans (every byte is ESC).
         streams.append(("all ESC", [UInt8](repeating: 0x1B, count: 257)))
         // Alternating ESC/BEL — adversarial for both memchrs at once.
-        streams.append(("ESC BEL alternating", (0..<128).map { $0 % 2 == 0 ? 0x1B : 0x07 }))
+        streams.append(("ESC BEL alternating", (0..<128).map { $0.isMultiple(of: 2) ? 0x1B : 0x07 }))
         // High-bit / invalid UTF-8 around a marker.
         var highBit: [UInt8] = Array("café 🚀 ".utf8)
         highBit += [0xFF, 0x80, 0xC0]

@@ -158,8 +158,7 @@ public actor AislopdeskClient {
 
     /// Highest output seq actually fed to the surface (== ``highestContiguousSeq`` while
     /// the stream is contiguous, which it always is here). Used as the dedup high-water
-    // MARK: any inbound `output` with `seq <= highestSeqFed` is a replay duplicate and
-
+    /// bound — any inbound `output` with `seq <= highestSeqFed` is a replay duplicate and
     /// is dropped.
     private var highestSeqFed: Int64 = 0
 
@@ -195,7 +194,7 @@ public actor AislopdeskClient {
     /// SELF-INFLICTED end, not a real drop. This flag lets `handleStreamEnded` suppress
     /// that spurious `.disconnected` (mirror of the `closed` guard), so `ReconnectManager`
     /// does not queue a redundant reconnect campaign. The real drop path
-    /// (``_forceDropForTesting()`` / transport failing on its own) leaves this `false`.
+    /// (``forceDropForTesting()`` / transport failing on its own) leaves this `false`.
     /// DEPTH counter (not a bare Bool) so two overlapping teardowns — a reentrant connect()/pause() whose
     /// teardownTransport awaits across another connect()/pause() — cannot clobber each other's suppression
     /// window: a shared Bool let the inner scope's `= false` clear the outer's `= true`, briefly un-
@@ -381,14 +380,14 @@ public actor AislopdeskClient {
     /// `@testable import` — this is the only way to prove the client-side dedup high-water
     /// mark independent of host replay behavior (the host always keys replay off
     /// `lastReceivedSeq`, so an e2e never feeds an already-fed seq).
-    func _handleInboundForTesting(_ message: WireMessage) async {
+    func handleInboundForTesting(_ message: WireMessage) async {
         await handleInbound(message)
     }
 
     /// Test-only: whether a transport is currently adopted (`self.transport != nil`). Used by the
     /// reconnect-race regression suite to assert that a connect superseded/closed/paused mid-handshake
     /// does NOT leave a zombie transport adopted on the client.
-    var _hasLiveTransportForTesting: Bool { transport != nil }
+    var hasLiveTransportForTesting: Bool { transport != nil }
 
     private func handleInbound(_ message: WireMessage) async {
         switch message {
@@ -601,7 +600,7 @@ public actor AislopdeskClient {
     ///
     /// Marked underscored + documented as test-only; the production drop path is the
     /// transport failing on its own (handled by ``handleStreamEnded(error:)``).
-    public func _forceDropForTesting() async {
+    public func forceDropForTesting() async {
         await teardownTransport()
     }
 

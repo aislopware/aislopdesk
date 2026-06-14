@@ -140,7 +140,7 @@ final class MuxConnectionLifecycleTests: XCTestCase {
         )
         // R7 #6: the ROUTER TABLE must also stay bounded — a refused open must NOT grow dataTable.states
         // (the cap check now runs BEFORE the router records the id). Without the fix it would be cap+25.
-        let tableCount = await host._dataTableStateCountForTesting
+        let tableCount = await host.dataTableStateCountForTesting
         XCTAssertLessThanOrEqual(
             tableCount,
             cap,

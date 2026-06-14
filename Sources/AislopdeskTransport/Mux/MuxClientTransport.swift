@@ -49,8 +49,11 @@ public actor MuxClientTransport: ClientTransporting {
     ) {
         self.acquire = acquire
         self.release = release
-        var continuation: AsyncThrowingStream<WireMessage, Error>.Continuation!
+        var continuation: AsyncThrowingStream<WireMessage, Error>.Continuation?
         inboundStream = AsyncThrowingStream { continuation = $0 }
+        guard let continuation else {
+            preconditionFailure("AsyncThrowingStream runs its builder synchronously; continuation is always set")
+        }
         inboundContinuation = continuation
     }
 

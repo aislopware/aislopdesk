@@ -29,9 +29,9 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         let session = makeSession()
         let title: WireMessage = .title("t1")
         let bell: WireMessage = .bell
-        session._enqueueChunkForTesting(bytes: Data("aaa".utf8), control: [title])
-        session._enqueueChunkForTesting(bytes: Data("bb".utf8), control: [])
-        session._enqueueChunkForTesting(bytes: Data("cccc".utf8), control: [bell])
+        session.enqueueChunkForTesting(bytes: Data("aaa".utf8), control: [title])
+        session.enqueueChunkForTesting(bytes: Data("bb".utf8), control: [])
+        session.enqueueChunkForTesting(bytes: Data("cccc".utf8), control: [bell])
 
         guard case let .output(bytes, byteCount, control)? = session.takeMergedFrame() else {
             XCTFail("expected one merged .output frame")
@@ -49,9 +49,9 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         let a = Data(repeating: 0x61, count: cap / 3)
         let b = Data(repeating: 0x62, count: cap / 3)
         let c = Data(repeating: 0x63, count: cap / 2) // a+b+c > cap → c starts frame 2
-        session._enqueueChunkForTesting(bytes: a)
-        session._enqueueChunkForTesting(bytes: b)
-        session._enqueueChunkForTesting(bytes: c)
+        session.enqueueChunkForTesting(bytes: a)
+        session.enqueueChunkForTesting(bytes: b)
+        session.enqueueChunkForTesting(bytes: c)
 
         guard case let .output(first, firstCount, _)? = session.takeMergedFrame() else {
             XCTFail("expected a merged first frame")
@@ -75,7 +75,7 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
     func testSingleOverCapChunkIsSplitAndReassemblesByteIdentical() {
         let session = makeSession()
         let big = Data(repeating: 0x7A, count: MuxFlowControl.hostMergeCapBytes * 2)
-        session._enqueueChunkForTesting(bytes: big)
+        session.enqueueChunkForTesting(bytes: big)
         var reassembled = Data()
         var frames = 0
         while case let .output(bytes, byteCount, _)? = session.takeMergedFrame() {
@@ -94,10 +94,10 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
 
     func testExitIsAMergeBarrier() {
         let session = makeSession()
-        session._enqueueChunkForTesting(bytes: Data("tail-a".utf8))
-        session._enqueueChunkForTesting(bytes: Data("tail-b".utf8))
-        session._enqueueExitForTesting(code: 7)
-        session._enqueueChunkForTesting(bytes: Data("late".utf8))
+        session.enqueueChunkForTesting(bytes: Data("tail-a".utf8))
+        session.enqueueChunkForTesting(bytes: Data("tail-b".utf8))
+        session.enqueueExitForTesting(code: 7)
+        session.enqueueChunkForTesting(bytes: Data("late".utf8))
 
         guard case let .output(tail, _, _)? = session.takeMergedFrame() else {
             XCTFail("expected the merged tail first")
@@ -120,7 +120,7 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
 
     func testExitAtHeadReturnsAlone() {
         let session = makeSession()
-        session._enqueueExitForTesting(code: 0)
+        session.enqueueExitForTesting(code: 0)
         guard case .exit(0)? = session.takeMergedFrame() else {
             XCTFail("expected .exit alone at head")
             return
@@ -136,15 +136,15 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         let running: WireMessage = .commandStatus(.running)
         let t2: WireMessage = .title("t2")
         let idle: WireMessage = .commandStatus(.idle(exitCode: 0, durationMS: 12))
-        session._enqueueControlForTesting([t1, running])
-        session._enqueueControlForTesting([t2, idle])
+        session.enqueueControlForTesting([t1, running])
+        session.enqueueControlForTesting([t2, idle])
 
         XCTAssertEqual(
-            session._takeControlBatchForTesting(),
+            session.takeControlBatchForTesting(),
             [t1, running, t2, idle],
             "control messages drain in exact enqueue order (running before its idle)",
         )
-        XCTAssertNil(session._takeControlBatchForTesting(), "empty queue → nil (drain re-parks)")
+        XCTAssertNil(session.takeControlBatchForTesting(), "empty queue → nil (drain re-parks)")
     }
 
     func testControlQueueNeverExceedsTheBoundOnABulkBatch() {
@@ -153,11 +153,11 @@ final class MuxChannelSessionDrainMergeTests: XCTestCase {
         let session = makeSession()
         let cap = MuxChannelSession.maxControlOutQueuedForTesting
         // Fill to cap-1.
-        session._enqueueControlForTesting(Array(repeating: .title("x"), count: cap - 1))
+        session.enqueueControlForTesting(Array(repeating: .title("x"), count: cap - 1))
         // A 5-element batch at count==cap-1 would naively land at cap+4 — must clamp to exactly cap.
-        session._enqueueControlForTesting(Array(repeating: .commandStatus(.running), count: 5))
+        session.enqueueControlForTesting(Array(repeating: .commandStatus(.running), count: 5))
         XCTAssertEqual(
-            session._takeControlBatchForTesting()?.count,
+            session.takeControlBatchForTesting()?.count,
             cap,
             "the control queue is clamped to the cap, never cap+(K-1)",
         )

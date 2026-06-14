@@ -107,11 +107,11 @@ final class RustWireParityTests: XCTestCase {
             let nativeResult = Result { try WireMessage.decodeNative(payload: payload) }
             switch (rustResult, nativeResult) {
             case let (.success(r), .success(n)):
-                XCTAssertEqual(r, n, "fuzz decode mismatch for \(payload as NSData)")
+                XCTAssertEqual(r, n, "fuzz decode mismatch for \(Array(payload))")
             case (.failure, .failure):
                 break // both reject — error-detail divergence (malformedBody string) is allowed
             default:
-                XCTFail("fuzz decode disagreement (one threw) for \(payload as NSData)")
+                XCTFail("fuzz decode disagreement (one threw) for \(Array(payload))")
             }
         }
     }

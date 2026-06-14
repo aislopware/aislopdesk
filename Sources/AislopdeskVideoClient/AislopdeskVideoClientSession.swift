@@ -67,7 +67,7 @@ public actor AislopdeskVideoClientSession {
     private func dbgPointer(_ kind: String, _ viewPoint: VideoPoint) {
         guard Self.debugStderr else { return }
         dbgPointerCount += 1
-        if kind == "move", dbgPointerCount % 30 != 0 { return }
+        if kind == "move", !dbgPointerCount.isMultiple(of: 30) { return }
         let r = AspectFit.displayedVideoRect(viewSize: layerSize, videoNativeSize: decodedSize, mode: contentMode)
         let n = InputEventEncoder.normalize(
             viewPoint: viewPoint,
@@ -639,7 +639,7 @@ public actor AislopdeskVideoClientSession {
 
     private func receiveMedia(channel: VideoChannel, data: Data) async {
         dbgMediaCount += 1
-        if dbgMediaCount == 1 || dbgMediaCount % 30 == 0 {
+        if dbgMediaCount == 1 || dbgMediaCount.isMultiple(of: 30) {
             dbg(
                 "media datagram #\(dbgMediaCount) received (channel=\(channel), \(data.count)B, mediaFlowing=\(stateMachine.mediaFlowing))",
             )
@@ -863,7 +863,7 @@ public actor AislopdeskVideoClientSession {
                 dbg("acked #\(frame.frameID) (kf=\(frame.keyframe) ltr=\(frame.isLTR)) — decoder now holds it")
             }
             dbgDecodeCount += 1
-            if dbgDecodeCount == 1 || dbgDecodeCount % 15 == 0 {
+            if dbgDecodeCount == 1 || dbgDecodeCount.isMultiple(of: 15) {
                 dbg("DECODED frame #\(dbgDecodeCount) (keyframe=\(frame.keyframe)) → submitted to pacer/render")
             }
             // SELF-HEAL: a successful NON-keyframe decode that is newer than every loss in the

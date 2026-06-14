@@ -364,12 +364,12 @@ struct ShapeRefreshPolicy {
     }
 
     mutating func shouldRefresh(seed: Int32?, tickCount: Int) -> Bool {
-        guard let seed else { return tickCount % fallbackDivisor == 0 }
+        guard let seed else { return tickCount.isMultiple(of: fallbackDivisor) }
         if seed != lastSeed {
             lastSeed = seed
             return true
         }
-        return tickCount % safetyDivisor == 0
+        return tickCount.isMultiple(of: safetyDivisor)
     }
 }
 #endif

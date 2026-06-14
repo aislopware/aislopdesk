@@ -232,7 +232,7 @@ public final class HostCommandStatusSniffer: @unchecked Sendable {
 
     private func finishOSC(into messages: inout [WireMessage]) {
         defer { oscBuffer.removeAll(keepingCapacity: true) }
-        let payload = String(decoding: oscBuffer, as: UTF8.self)
+        let payload = String(bytes: oscBuffer, encoding: .utf8) ?? ""
         // Expected: "133;A" | "133;B" | "133;C" | "133;D" | "133;D;<exit>" (+ extra ;k=v).
         let fields = payload.split(separator: ";", omittingEmptySubsequences: false)
         guard fields.count >= 2, fields[0] == "133" else { return }

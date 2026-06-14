@@ -163,7 +163,8 @@ public final class VirtualDisplay {
         for key in ["serialNum", "serialNumber"] {
             let setter = NSSelectorFromString("set" + key.prefix(1).uppercased() + key.dropFirst() + ":")
             if desc.responds(to: setter) {
-                desc.setValue(NSNumber(value: value), forKey: key)
+                // `value` (UInt32) bridges to `NSNumber` across the KVC `setValue(_:forKey:)` boundary.
+                desc.setValue(value, forKey: key)
                 return
             }
         }

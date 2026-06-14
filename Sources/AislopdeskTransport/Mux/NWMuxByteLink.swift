@@ -23,8 +23,10 @@ public final class NWMuxByteLink: MuxByteLink, @unchecked Sendable {
     public init(connection: NWConnection, label: String) {
         self.connection = connection
         queue = DispatchQueue(label: "aislopdesk.mux.link.\(label)")
-        var continuation: AsyncThrowingStream<Data, Error>.Continuation!
+        var continuation: AsyncThrowingStream<Data, Error>.Continuation?
         chunkStream = AsyncThrowingStream { continuation = $0 }
+        guard let continuation
+        else { preconditionFailure("AsyncThrowingStream build closure runs synchronously during init") }
         chunkContinuation = continuation
         receiveLoop()
     }

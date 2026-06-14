@@ -55,8 +55,8 @@ final class MuxSendPipeliningTests: XCTestCase {
     /// path (the same machinery a receive error drives) — pipelining swallows the per-call
     /// throw, so this path is the ONLY failure surfacing and must be provably wired.
     func testPipelinedSendFailureMarksConnectionDead() async throws {
-        /// Receive stays silent (link looks alive); the FIRST pipelined send finishes the
-        /// receive stream throwing — the documented NWMuxByteLink failure contract.
+        // Receive stays silent (link looks alive); the FIRST pipelined send finishes the
+        // receive stream throwing — the documented NWMuxByteLink failure contract.
         final class PipelinedFailLink: MuxByteLink, @unchecked Sendable {
             private let stream: AsyncThrowingStream<Data, Error>
             private let continuation: AsyncThrowingStream<Data, Error>.Continuation

@@ -706,8 +706,14 @@ struct MetalVideoLayerView: UIViewRepresentable {
 /// A `UIView` whose `layerClass` is `CAMetalLayer`, owning the client pipeline. Adds VNC-style
 /// pinch-to-zoom + one-finger pan (+ double-tap to reset) over the remote window.
 final class MetalLayerBackedView: UIView, UIGestureRecognizerDelegate {
-    override class var layerClass: AnyClass { CAMetalLayer.self }
-    var videoLayer: CAMetalLayer { layer as! CAMetalLayer }
+    override static var layerClass: AnyClass { CAMetalLayer.self }
+    var videoLayer: CAMetalLayer {
+        guard let metalLayer = layer as? CAMetalLayer else {
+            preconditionFailure("layerClass is CAMetalLayer, so the backing layer is always a CAMetalLayer")
+        }
+        return metalLayer
+    }
+
     private let pipeline = VideoWindowPipeline()
 
     private var zoom: CGFloat = 1

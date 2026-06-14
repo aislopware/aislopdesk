@@ -4,14 +4,14 @@ import Network
 
 /// Host side of the Aislopdesk transport: an `NWListener` that accepts the shared-mux (CONTROL + DATA)
 /// TCP socket pairs, pairs the two physical connections by their preamble `connectionID` into one
-/// ``MuxNWConnection``, and surfaces them on ``muxConnections_`` for the mux relay owner.
+/// ``MuxNWConnection``, and surfaces them on ``muxConnections`` for the mux relay owner.
 ///
 /// ## Handshake (shared-mux pairing)
 /// 1. A new connection arrives; the listener reads the 1-byte association preamble.
 /// 2. **MUX CONTROL** (`0x03`) / **MUX DATA** (`0x04`): each carries a 16-byte `connectionID`. The
 ///    first socket to arrive parks in `pendingMux`; the second with the same id completes the pair.
 ///    Once both are present they are wrapped into one ``MuxNWConnection`` (role `.host`), the
-///    receive loops are started, and it is yielded on ``muxConnections_``.
+///    receive loops are started, and it is yielded on ``muxConnections``.
 ///
 /// Each pane on a shared connection is a logical channel (SSH-style), opened via `channelOpen`; the
 /// per-channel PTY relay (``AislopdeskHost/MuxChannelSession``) is owned by the relay owner, not here.
@@ -76,15 +76,15 @@ public actor HostTransport {
         self.handshakeTimeout = handshakeTimeout
         self.pendingDataTimeout = pendingDataTimeout
         clock = ContinuousClock()
-        var muxC: AsyncStream<MuxNWConnection>.Continuation!
-        muxConnectionStream = AsyncStream { muxC = $0 }
-        muxConnectionContinuation = muxC
+        let (muxStream, muxCont) = AsyncStream.makeStream(of: MuxNWConnection.self)
+        muxConnectionStream = muxStream
+        muxConnectionContinuation = muxCont
     }
 
     /// Newly-accepted SHARED mux connections (CONTROL+DATA paired into one ``MuxNWConnection``,
     /// role `.host`, receive loops started). The mux relay owner (the host daemon) consumes these,
     /// installs a per-channel-open handler, and spawns a PTY per channel.
-    public nonisolated var muxConnections_: AsyncStream<MuxNWConnection> { muxConnectionStream }
+    public nonisolated var muxConnections: AsyncStream<MuxNWConnection> { muxConnectionStream }
 
     /// The port the listener actually bound to. `nil` until ``start(port:)`` resolves.
     public private(set) var boundPort: UInt16?
@@ -339,7 +339,7 @@ public actor HostTransport {
 
     /// Pairs the two physical mux sockets (CONTROL + DATA) that share `connectionID` into ONE
     /// shared ``MuxNWConnection`` (role `.host`), starts its receive loops, and yields it on
-    /// ``muxConnections_`` for the mux relay owner. The first socket to arrive parks in `pendingMux`;
+    /// ``muxConnections`` for the mux relay owner. The first socket to arrive parks in `pendingMux`;
     /// the second completes the pair.
     private func associateMux(_ connection: NWConnection, connectionID: UUID, isControl: Bool) {
         let link = NWMuxByteLink(connection: connection, label: isControl ? "host.control" : "host.data")

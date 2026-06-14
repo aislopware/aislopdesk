@@ -112,13 +112,13 @@ final class SubprocessE2ETests: XCTestCase {
             let chunk = handle.availableData // blocks until data or EOF
             if chunk.isEmpty {
                 // EOF (hostd died) — give up.
-                return parsePort(String(decoding: buffer, as: UTF8.self))
+                return parsePort(String(bytes: buffer, encoding: .utf8) ?? "")
             }
             buffer.append(chunk)
-            let text = String(decoding: buffer, as: UTF8.self)
+            let text = String(bytes: buffer, encoding: .utf8) ?? ""
             if let p = parsePort(text) { return p }
         }
-        return parsePort(String(decoding: buffer, as: UTF8.self))
+        return parsePort(String(bytes: buffer, encoding: .utf8) ?? "")
     }
 
     /// Extracts the port from a line like `…: listening on 0.0.0.0:54321 (shell=…)`.
@@ -156,7 +156,7 @@ final class SubprocessE2ETests: XCTestCase {
 
         var string: String { lock.lock()
             defer { lock.unlock() }
-            return String(decoding: data, as: UTF8.self)
+            return String(bytes: data, encoding: .utf8) ?? ""
         }
     }
 }

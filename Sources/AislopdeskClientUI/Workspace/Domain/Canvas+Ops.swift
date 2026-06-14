@@ -228,14 +228,16 @@ public extension Canvas {
         let sorted = targets.sorted { a, b in
             horizontal ? a.frame.minX < b.frame.minX : a.frame.minY < b.frame.minY
         }
+        // `sorted.count >= 3` (guarded above) so first/last are always present.
+        guard let firstItem = sorted.first, let lastItem = sorted.last else { return self }
         let span = horizontal
-            ? (sorted.last!.frame.maxX - sorted.first!.frame.minX)
-            : (sorted.last!.frame.maxY - sorted.first!.frame.minY)
+            ? (lastItem.frame.maxX - firstItem.frame.minX)
+            : (lastItem.frame.maxY - firstItem.frame.minY)
         let sumSizes = sorted.reduce(CGFloat(0)) { $0 + (horizontal ? $1.frame.width : $1.frame.height) }
         // Clamp to ≥ 0: a negative gap (panes wider than their span) would overlap them silently.
         let gap = max(0, (span - sumSizes) / CGFloat(sorted.count - 1))
         // Place each from the first's leading edge, cursor advancing by size + gap.
-        var cursor = horizontal ? sorted.first!.frame.minX : sorted.first!.frame.minY
+        var cursor = horizontal ? firstItem.frame.minX : firstItem.frame.minY
         var newOrigin: [PaneID: CGFloat] = [:]
         for item in sorted {
             newOrigin[item.id] = cursor

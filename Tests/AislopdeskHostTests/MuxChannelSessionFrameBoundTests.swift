@@ -44,7 +44,7 @@ final class MuxChannelSessionFrameBoundTests: XCTestCase {
         var big = Data()
         for i in 0..<(cap + 1000) { big.append(UInt8(i % 251)) }
         let bell: WireMessage = .bell
-        session._enqueueChunkForTesting(bytes: big, control: [bell])
+        session.enqueueChunkForTesting(bytes: big, control: [bell])
 
         guard case let .output(first, firstCount, control)? = session.takeMergedFrame() else {
             XCTFail("expected the split prefix")
@@ -70,8 +70,8 @@ final class MuxChannelSessionFrameBoundTests: XCTestCase {
         let cap = MuxFlowControl.maxOutputFramePayloadBytes
         let a = Data(repeating: 0x61, count: cap - 10)
         let b = Data(repeating: 0x62, count: 100)
-        session._enqueueChunkForTesting(bytes: a)
-        session._enqueueChunkForTesting(bytes: b)
+        session.enqueueChunkForTesting(bytes: a)
+        session.enqueueChunkForTesting(bytes: b)
         guard case let .output(first, _, _)? = session.takeMergedFrame() else {
             XCTFail("expected first frame")
             return

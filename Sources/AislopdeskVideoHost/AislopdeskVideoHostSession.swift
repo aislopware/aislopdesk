@@ -237,14 +237,14 @@ public actor AislopdeskVideoHostSession {
     /// sends tier 0 (the configured `fec.groupSize`, 5 in prod) → spare flag bits stay zero → the wire is
     /// byte-identical to the pre-WF-4 path. Needs telemetry reports to ever change tier (if the client
     /// sets `AISLOPDESK_NETSTATS=0` no reports arrive ⇒ the tier stays at the today-default tier 0, never OFF).
-    // DEFAULT ON since 2026-06-11 (self-heal era): on a clean path (loss EWMA <0.2%) the tier
-    // relaxes toward less parity — the standing 20% overhead is paid ONLY while loss exists. The
-    // ~1s one-step-per-report re-escalation window at loss onset is covered by AISLOPDESK_SELF_HEAL
-    // (any whole-frame loss self-heals ≤K frames with no round-trip) + client recovery + kfDup.
-    // FEC LADDER FLOOR (2026-06-11 telemetry round): relaxation now FLOORS at g10 (tier 2, ~10%
-    // overhead) — the measured 18 OFF-tier visits on the 0.1-0.6%-baseline path produced 102
-    // unrecovered losses / 65 decode-fails in 169s. `AISLOPDESK_FEC_ALLOW_OFF=1` restores the old
-    // walk to OFF; `AISLOPDESK_ADAPTIVE_FEC=0` restores the static always-g5 tier.
+    /// DEFAULT ON since 2026-06-11 (self-heal era): on a clean path (loss EWMA <0.2%) the tier
+    /// relaxes toward less parity — the standing 20% overhead is paid ONLY while loss exists. The
+    /// ~1s one-step-per-report re-escalation window at loss onset is covered by AISLOPDESK_SELF_HEAL
+    /// (any whole-frame loss self-heals ≤K frames with no round-trip) + client recovery + kfDup.
+    /// FEC LADDER FLOOR (2026-06-11 telemetry round): relaxation now FLOORS at g10 (tier 2, ~10%
+    /// overhead) — the measured 18 OFF-tier visits on the 0.1-0.6%-baseline path produced 102
+    /// unrecovered losses / 65 decode-fails in 169s. `AISLOPDESK_FEC_ALLOW_OFF=1` restores the old
+    /// walk to OFF; `AISLOPDESK_ADAPTIVE_FEC=0` restores the static always-g5 tier.
     private static let adaptiveFECEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_ADAPTIVE_FEC"] != "0"
     /// WF-6 (#8) FULL-RANGE COLOR. DEFAULT OFF; enable with `AISLOPDESK_FULL_RANGE=1`. ONE flag flips ALL
     /// FOUR atomic points together: (1) the capturer's NV12 pixel-format variant, (2) the encoder's
@@ -1673,7 +1673,7 @@ public actor AislopdeskVideoHostSession {
             fpsGovernor = gov
         }
         encodedFrameCount += 1
-        if encodedFrameCount == 1 || encodedFrameCount % 15 == 0 {
+        if encodedFrameCount == 1 || encodedFrameCount.isMultiple(of: 15) {
             dbg("encoded+sent frame #\(encodedFrameCount) (\(avcc.count)B, keyframe=\(keyframe), crisp=\(crisp))")
         }
         // Stamp the host-relative send time on every fragment of this frame (the network-feedback

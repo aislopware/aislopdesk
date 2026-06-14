@@ -58,11 +58,11 @@ final class CursorRustParityTests: XCTestCase {
             let n = Result { try CursorUpdate.decodeNative(data) }
             switch (r, n) {
             case let (.success(a), .success(b)):
-                XCTAssertEqual(a, b, "cursor fuzz value mismatch for \(data as NSData)")
+                XCTAssertEqual(a, b, "cursor fuzz value mismatch for \(Array(data))")
             case (.failure, .failure):
                 break
             default:
-                XCTFail("cursor fuzz disagreement (one threw) for \(data as NSData)")
+                XCTFail("cursor fuzz disagreement (one threw) for \(Array(data))")
             }
         }
     }

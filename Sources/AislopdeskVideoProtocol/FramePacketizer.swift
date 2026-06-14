@@ -230,10 +230,9 @@ public struct VideoPacketizer {
         // WF-4: the per-frame group size comes from the tier (nil = OFF → no parity). Tier 0 maps to
         // the configured `fec.groupSize` (5 in prod) so parity shape is identical to the pre-WF-4 path.
         let groupSize = AdaptiveFECPolicy.groupSize(forTier: fecTier, default: fec?.groupSize ?? 1)
-        let parityPayloads = (
-            groupSize != nil ? fec?.parity(forDataFragments: payloads, groupSize: groupSize!) : nil,
-        ) ??
-            []
+        let parityPayloads = groupSize.flatMap {
+            fec?.parity(forDataFragments: payloads, groupSize: $0)
+        } ?? []
         let fragCount = UInt16(payloads.count + parityPayloads.count)
 
         var baseFlags: FrameFragmentHeader.Flags = []

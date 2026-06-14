@@ -248,10 +248,11 @@ public enum CanvasGeometry {
     ) -> OverviewLayout {
         guard !items.isEmpty else { return OverviewLayout(scale: 1, cards: [:]) }
         // Bounding box of every pane in canvas space.
-        let minX = items.map(\.frame.minX).min()!
-        let minY = items.map(\.frame.minY).min()!
-        let maxX = items.map(\.frame.maxX).max()!
-        let maxY = items.map(\.frame.maxY).max()!
+        guard let minX = items.map(\.frame.minX).min(),
+              let minY = items.map(\.frame.minY).min(),
+              let maxX = items.map(\.frame.maxX).max(),
+              let maxY = items.map(\.frame.maxY).max()
+        else { return OverviewLayout(scale: 1, cards: [:]) }
         let bbox = CGRect(x: minX, y: minY, width: max(1, maxX - minX), height: max(1, maxY - minY))
         let availW = max(1, viewport.width - 2 * padding)
         let availH = max(1, viewport.height - 2 * padding)

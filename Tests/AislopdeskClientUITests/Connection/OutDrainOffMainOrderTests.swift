@@ -27,7 +27,7 @@ final class OutDrainOffMainOrderTests: XCTestCase {
             let byte = UInt8(i % 251)
             terminal.sendInput(Data([byte]))
             accumulated.append(byte)
-            if i % 37 == 0 { terminal.sendResize(cols: UInt16(80 + i % 40), rows: 24) }
+            if i.isMultiple(of: 37) { terminal.sendResize(cols: UInt16(80 + i % 40), rows: 24) }
         }
         let expected = accumulated
 
@@ -128,7 +128,7 @@ final class OutDrainOffMainOrderTests: XCTestCase {
             // Deterministic jitter: every 3rd send suspends, giving an unordered design
             // every opportunity to scramble. The single sequential drain must not.
             counter += 1
-            if counter % 3 == 0 { try? await Task.sleep(for: .milliseconds(2)) }
+            if counter.isMultiple(of: 3) { try? await Task.sleep(for: .milliseconds(2)) }
             recorder.recordInput(bytes)
         }
 

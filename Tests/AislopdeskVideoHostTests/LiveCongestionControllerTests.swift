@@ -960,8 +960,8 @@ final class LiveCongestionControllerTests: XCTestCase {
         var estA = NetworkEstimate()
         var estB = NetworkEstimate()
         for i in 0..<60 {
-            let rtt = i % 5 == 0 ? 200 : 50
-            let lost: UInt32 = i % 7 == 0 ? 30 : 0
+            let rtt = i.isMultiple(of: 5) ? 200 : 50
+            let lost: UInt32 = i.isMultiple(of: 7) ? 30 : 0
             estA.fold(
                 rttMillis: rtt,
                 framesReceived: 1000,

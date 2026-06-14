@@ -310,6 +310,9 @@ public final class FramePacer: @unchecked Sendable {
             jitter.note(arrival: now)
             let before = liveDepth
             let jitterMs = jitter.jitterSeconds * 1000
+            // `controller` is a value-type with a MUTATING method on an optional stored property;
+            // `guard let` would mutate a COPY and silently drop the depth update. adaptiveJitter ⇒ non-nil.
+            // swiftlint:disable:next force_unwrapping
             liveDepth = controller!.noteFrame(jitterSeconds: jitter.jitterSeconds)
             if Self.dbgEnabled, liveDepth != before {
                 depthChangeLine = "Aislopdesk[video.client]: jitter depth \(before)→\(liveDepth) (arrival jitter \(String(format: "%.1f", jitterMs))ms)\n"
@@ -512,6 +515,8 @@ public final class FramePacer: @unchecked Sendable {
             if Self.dbgEnabled { dbgNoteHold(since: submittedAt, now: now) }
             if adaptiveJitter, wasTransientDip {
                 let before = liveDepth
+                // Mutating value-type method on the optional stored property — see noteFrame above.
+                // swiftlint:disable:next force_unwrapping
                 liveDepth = controller!.noteUnderrun()
                 if Self.dbgEnabled, liveDepth != before {
                     FileHandle.standardError

@@ -54,7 +54,7 @@ final class FragmentInterleaverTests: XCTestCase {
             if let prev = lastPos[g] { minSpacing = min(minSpacing, pos - prev) }
             lastPos[g] = pos
         }
-        let expected = dataCount % groupSize == 0 ? numGroups : numGroups - 1
+        let expected = dataCount.isMultiple(of: groupSize) ? numGroups : numGroups - 1
         XCTAssertEqual(minSpacing, expected, "guaranteed recoverable adjacent-burst length")
         XCTAssertGreaterThanOrEqual(minSpacing, numGroups - 1)
     }

@@ -15,7 +15,7 @@ import XCTest
 /// yields bytes for 1,2,3,4 exactly once (the replayed 2,3 are dropped).
 final class AislopdeskClientDedupTests: XCTestCase {
     func testDeliverOutputDropsAlreadyFedSeqs() async throws {
-        // Inert transport factory: this test drives inbound via `_handleInboundForTesting` and never
+        // Inert transport factory: this test drives inbound via `handleInboundForTesting` and never
         // `connect()`s, so the factory is never invoked.
         let client = AislopdeskClient(makeTransport: {
             MuxClientTransport(
@@ -42,7 +42,7 @@ final class AislopdeskClientDedupTests: XCTestCase {
             4: Data("d".utf8),
         ]
         for seq in [1, 2, 3, 2, 3, 4] as [Int64] {
-            try await client._handleInboundForTesting(.output(seq: seq, bytes: XCTUnwrap(payloads[seq])))
+            try await client.handleInboundForTesting(.output(seq: seq, bytes: XCTUnwrap(payloads[seq])))
         }
 
         // Let the unbounded output stream flush the yielded chunks to the pump.
@@ -85,7 +85,7 @@ final class AislopdeskClientDedupTests: XCTestCase {
         // ── Phase 1: first connect (fresh session) — drive seq 1,2,3 → high-water = 3.
         try await client.connect(host: "h", port: 1)
         for seq in [1, 2, 3] as [Int64] {
-            await client._handleInboundForTesting(.output(seq: seq, bytes: Data("\(seq)".utf8)))
+            await client.handleInboundForTesting(.output(seq: seq, bytes: Data("\(seq)".utf8)))
         }
         let afterPhase1 = await client.highestContiguousSeq
         XCTAssertEqual(afterPhase1, 3, "phase-1 delivered seq 1..3")
@@ -93,7 +93,7 @@ final class AislopdeskClientDedupTests: XCTestCase {
         // ── Phase 2: reconnect. client.sessionID is preserved → the fake reports returningClient=true
         // (exactly the real mux path). The fresh shell then emits seq 1 again.
         try await client.connect(host: "h", port: 1)
-        await client._handleInboundForTesting(.output(seq: 1, bytes: Data("F".utf8)))
+        await client.handleInboundForTesting(.output(seq: 1, bytes: Data("F".utf8)))
 
         let afterReconnect = await client.highestContiguousSeq
         XCTAssertEqual(
@@ -118,7 +118,7 @@ final class AislopdeskClientDedupTests: XCTestCase {
     /// Minimal `ClientTransporting` stub that mirrors `MuxClientTransport`'s session-identity rules
     /// (mint a UUID on a new resume; `returningClient = resume != newSessionID`) so `AislopdeskClient.connect`
     /// exercises its real reconnect branch. Inbound is an inert stream — the test drives `output`
-    /// through `_handleInboundForTesting` directly.
+    /// through `handleInboundForTesting` directly.
     private actor FakeTransport: ClientTransporting {
         private var _sessionID: UUID?
         private var _resumeFromSeq: Int64 = 0

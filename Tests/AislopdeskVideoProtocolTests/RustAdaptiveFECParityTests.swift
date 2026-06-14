@@ -63,27 +63,33 @@ final class RustAdaptiveFECParityTests: XCTestCase {
         return nativeTier(forLevel: stepped)
     }
 
-    private struct NS: Equatable { var tier: UInt8
+    private struct NativeState: Equatable { var tier: UInt8
         var streak: Int
         var sticky: Int
     }
 
-    private static func nativeNext(_ loss: Double, _ s: NS, _ dwell: Int, _ allowOff: Bool, _ unrec: Bool) -> NS {
+    private static func nativeNext(
+        _ loss: Double,
+        _ s: NativeState,
+        _ dwell: Int,
+        _ allowOff: Bool,
+        _ unrec: Bool,
+    ) -> NativeState {
         let sticky = unrec ? (2 * 24) : max(0, s.sticky - 1)
         let effective = sticky > 0 ? 2 * dwell : dwell
         let current = nativeLevel(forTier: s.tier)
         let target = max(nativeTargetLevel(loss, current), nativeRelaxFloor(allowOff))
         if target > current {
-            return NS(tier: nativeTier(forLevel: current + 1), streak: 0, sticky: sticky)
+            return NativeState(tier: nativeTier(forLevel: current + 1), streak: 0, sticky: sticky)
         }
         if target < current {
             let streak = s.streak + 1
             if streak >= max(1, effective) {
-                return NS(tier: nativeTier(forLevel: current - 1), streak: 0, sticky: sticky)
+                return NativeState(tier: nativeTier(forLevel: current - 1), streak: 0, sticky: sticky)
             }
-            return NS(tier: s.tier, streak: streak, sticky: sticky)
+            return NativeState(tier: s.tier, streak: streak, sticky: sticky)
         }
-        return NS(tier: s.tier, streak: 0, sticky: sticky)
+        return NativeState(tier: s.tier, streak: 0, sticky: sticky)
     }
 
     // MARK: group_size — TOTAL over every UInt8, every reasonable default
@@ -139,9 +145,15 @@ final class RustAdaptiveFECParityTests: XCTestCase {
             let got = AdaptiveFECPolicy.nextTierState(
                 forLossRate: loss, state: s, dwell: dwell, allowOff: allowOff, sawUnrecoveredLoss: unrec,
             )
-            let want = Self.nativeNext(loss, NS(tier: prev, streak: streak, sticky: sticky), dwell, allowOff, unrec)
+            let want = Self.nativeNext(
+                loss,
+                NativeState(tier: prev, streak: streak, sticky: sticky),
+                dwell,
+                allowOff,
+                unrec,
+            )
             XCTAssertEqual(
-                NS(tier: got.tier, streak: got.relaxStreak, sticky: got.stickyRelaxRemaining), want,
+                NativeState(tier: got.tier, streak: got.relaxStreak, sticky: got.stickyRelaxRemaining), want,
                 "loss \(loss) state \(s) dwell \(dwell) allowOff \(allowOff) unrec \(unrec)",
             )
         }
@@ -151,14 +163,14 @@ final class RustAdaptiveFECParityTests: XCTestCase {
 
     func testNextTierStateSequenceParity() {
         var swiftS = AdaptiveFECPolicy.TierState(tier: 1)
-        var refS = NS(tier: 1, streak: 0, sticky: 0)
+        var refS = NativeState(tier: 1, streak: 0, sticky: 0)
         let losses: [Double] = (0..<400).map { i in i % 30 < 3 ? 0.05 : 0.0 }
         for (i, loss) in losses.enumerated() {
-            let unrec = (i % 47 == 0)
+            let unrec = i.isMultiple(of: 47)
             swiftS = AdaptiveFECPolicy.nextTierState(forLossRate: loss, state: swiftS, sawUnrecoveredLoss: unrec)
             refS = Self.nativeNext(loss, refS, AdaptiveFECPolicy.relaxDwellReports, false, unrec)
             XCTAssertEqual(
-                NS(tier: swiftS.tier, streak: swiftS.relaxStreak, sticky: swiftS.stickyRelaxRemaining), refS,
+                NativeState(tier: swiftS.tier, streak: swiftS.relaxStreak, sticky: swiftS.stickyRelaxRemaining), refS,
                 "report \(i)",
             )
         }

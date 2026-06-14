@@ -111,7 +111,8 @@ final class TranscriptParsingTests: XCTestCase {
         // A tool_result content block that is an object with multiple keys but NO `text` key must render
         // deterministically (the whole object, keys sorted) — not `values.first`, whose Dictionary order
         // is randomized per process, so a different / less-informative field surfaced each run.
-        let raw = #"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":[{"alpha":"A","bravo":"B","charlie":"C"}]}]}}"#
+        let raw = #"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"tool_result","# +
+            #""tool_use_id":"x","content":[{"alpha":"A","bravo":"B","charlie":"C"}]}]}}"#
         guard case let .user(line)? = TranscriptParser.parse(line: raw)
         else { XCTFail("should parse a user line")
             return

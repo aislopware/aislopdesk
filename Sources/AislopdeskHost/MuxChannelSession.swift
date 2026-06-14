@@ -717,31 +717,31 @@ final class MuxChannelSession: @unchecked Sendable {
     // via `@testable import`; never used in production.
 
     /// Installs a gate to receive the replay-pause signal (production builds it in ``startRelay()``).
-    func _installGateForTesting(_ gate: PausableQueueGate) { outputGate = gate }
+    func installGateForTesting(_ gate: PausableQueueGate) { outputGate = gate }
     /// Drives the real ``nextSeq(for:)`` glue (append + recompute + gate). Returns the assigned seq.
     @discardableResult
-    func _appendForTesting(_ bytes: Data) -> Int64 { nextSeq(for: bytes) }
+    func appendForTesting(_ bytes: Data) -> Int64 { nextSeq(for: bytes) }
     /// Drives the real ``acknowledge(upTo:)`` glue (ack + recompute + gate).
-    func _ackForTesting(upTo seq: Int64) { acknowledge(upTo: seq) }
+    func ackForTesting(upTo seq: Int64) { acknowledge(upTo: seq) }
     /// Drives the real ``setClientOnline(_:)`` glue (offline-gate side).
-    func _setClientOnlineForTesting(_ online: Bool) { setClientOnline(online) }
+    func setClientOnlineForTesting(_ online: Bool) { setClientOnline(online) }
 
     /// Exit-ordering EOF latch seams (R5 rank 5).
-    func _signalEOFForTesting() { signalEOFReached() }
-    func _isEOFReachedForTesting() -> Bool { isEOFReached() }
-    func _awaitEOFForTesting(timeout: Duration) async { await awaitEOFOrTimeout(timeout) }
+    func signalEOFForTesting() { signalEOFReached() }
+    func isEOFReachedForTesting() -> Bool { isEOFReached() }
+    func awaitEOFForTesting(timeout: Duration) async { await awaitEOFOrTimeout(timeout) }
 
     /// Exit-sent latch seams (R13 #7) — the drain signals once `.exit` is on the wire; the exit task
     /// awaits it before firing onExit so teardown can't cancel the drain before the exit code is sent.
-    func _signalExitSentForTesting() { signalExitSent() }
-    func _isExitSentForTesting() -> Bool { isExitSent() }
-    func _awaitExitSentForTesting(timeout: Duration) async { await awaitExitSentOrTimeout(timeout) }
+    func signalExitSentForTesting() { signalExitSent() }
+    func isExitSentForTesting() -> Bool { isExitSent() }
+    func awaitExitSentForTesting(timeout: Duration) async { await awaitExitSentOrTimeout(timeout) }
 
     /// Drain-merge seams: drive the output FIFO + ``takeMergedFrame()`` (and the control-out
     /// queue) WITHOUT a PTY or running drain, so merge/barrier/cap semantics are provable
     /// headlessly. The enqueue paths mirror the production producers exactly (append under
     /// the lock; the wake yield is a no-op pre-`startRelay` since the continuation is nil).
-    func _enqueueChunkForTesting(bytes: Data, control: [WireMessage] = []) {
+    func enqueueChunkForTesting(bytes: Data, control: [WireMessage] = []) {
         enqueueOutput(bytes.count)
         fifoLock.lock()
         outFIFO.append(.chunk(bytes: bytes, control: control))
@@ -750,9 +750,9 @@ final class MuxChannelSession: @unchecked Sendable {
         wake?.yield(())
     }
 
-    func _enqueueExitForTesting(code: Int32) { enqueueExit(code: code) }
-    func _enqueueControlForTesting(_ messages: [WireMessage]) { enqueueControl(messages) }
-    func _takeControlBatchForTesting() -> [WireMessage]? { takeControlBatch() }
+    func enqueueExitForTesting(code: Int32) { enqueueExit(code: code) }
+    func enqueueControlForTesting(_ messages: [WireMessage]) { enqueueControl(messages) }
+    func takeControlBatchForTesting() -> [WireMessage]? { takeControlBatch() }
     static var maxControlOutQueuedForTesting: Int { maxControlOutQueued }
 
     private static func writeAll(fd: Int32, data: Data) {

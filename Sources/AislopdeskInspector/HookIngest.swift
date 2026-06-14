@@ -107,7 +107,9 @@ public enum HookParser {
     /// Derives a stable subagent id from an `agent-<hash>.jsonl` path when the payload
     /// omits an explicit id (the filename hash *is* the agent id in doc 16's scheme).
     static func agentHash(_ path: String) -> String {
-        let file = (path as NSString).lastPathComponent
+        // `URL.lastPathComponent` mirrors `NSString.lastPathComponent` for every real agent path;
+        // guard the empty string (URL would resolve "" to the cwd, NSString yields "").
+        let file = path.isEmpty ? "" : URL(fileURLWithPath: path).lastPathComponent
         // agent-<hash>.jsonl  →  <hash>
         var name = file
         if name.hasSuffix(".jsonl") { name = String(name.dropLast(6)) }

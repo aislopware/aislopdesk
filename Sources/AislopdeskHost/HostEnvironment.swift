@@ -83,7 +83,7 @@ public enum HostEnvironment {
     /// The login-shell `argv[0]`: the shell's basename with a leading `-` (so it sources
     /// `.zprofile`/`.zshrc`; [12] §1.4).
     public static func loginArgv0(forShell shell: String) -> String {
-        let name = (shell as NSString).lastPathComponent
+        let name = URL(fileURLWithPath: shell).lastPathComponent
         return "-" + name
     }
 }

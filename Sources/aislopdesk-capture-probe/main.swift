@@ -123,12 +123,15 @@ let task = Task {
             let img = CIImage(cvPixelBuffer: pixelBuffer)
             let ms = Int((now - t0) * 1000)
             let url = URL(fileURLWithPath: "\(dir)/frame-\(String(format: "%03d", n))-\(ms)ms.png")
+            guard let srgb = CGColorSpace(name: CGColorSpace.sRGB) else {
+                preconditionFailure("CGColorSpace(name: .sRGB) is a built-in color space and is never nil")
+            }
             do {
                 try ciContext.writePNGRepresentation(
                     of: img,
                     to: url,
                     format: .RGBA8,
-                    colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    colorSpace: srgb,
                 )
             } catch { FileHandle.standardError.write(Data("png write failed: \(error)\n".utf8)) }
         }

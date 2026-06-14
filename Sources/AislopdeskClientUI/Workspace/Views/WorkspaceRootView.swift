@@ -168,7 +168,10 @@ public struct WorkspaceRootView: View {
             }
         } message: {
             Text(
-                "Save the current panes, groups, and focus as a named layout you can switch back to. Optionally bind it to a host app so it switches in automatically when that app launches.",
+                """
+                Save the current panes, groups, and focus as a named layout you can switch back to. \
+                Optionally bind it to a host app so it switches in automatically when that app launches.
+                """,
             )
         }
         // Snippet sheets (value-entry + manager) live in their own modifier so the root body's modifier
@@ -513,7 +516,9 @@ private struct WindowWidthReader: NSViewRepresentable {
 
         /// Removes the observer (called on dismantle / before re-scoping) so the reader never leaks.
         func stop() {
-            NotificationCenter.default.removeObserver(self)
+            NotificationCenter.default.removeObserver(
+                self, name: NSWindow.didResizeNotification, object: observedWindow,
+            )
             observedWindow = nil
         }
 

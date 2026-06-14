@@ -137,7 +137,8 @@ struct VideoHostdArguments {
 }
 
 let argv = CommandLine.arguments
-let program = (argv.first as NSString?)?.lastPathComponent ?? "aislopdesk-videohostd"
+let program = argv.first.map { $0.isEmpty ? "" : URL(fileURLWithPath: $0).lastPathComponent }
+    ?? "aislopdesk-videohostd"
 
 func die(_ message: String, code: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data("\(program): \(message)\n".utf8))
@@ -179,14 +180,14 @@ func shareableWindows() async throws -> [SCWindow] {
 
 func describe(_ w: SCWindow) -> String {
     let app = w.owningApplication?.applicationName ?? "?"
-    let title = (w.title?.isEmpty == false) ? w.title! : "(untitled)"
+    let title = w.title.flatMap { $0.isEmpty ? nil : $0 } ?? "(untitled)"
     let size = "\(Int(w.frame.width))x\(Int(w.frame.height))"
     return String(
         format: "  id=%-8u  %-22@  %@  [%@]",
         w.windowID,
-        app as NSString,
-        title as NSString,
-        size as NSString,
+        app,
+        title,
+        size,
     )
 }
 

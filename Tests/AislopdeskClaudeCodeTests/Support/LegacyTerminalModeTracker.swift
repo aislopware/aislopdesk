@@ -149,7 +149,7 @@ final class LegacyTerminalModeTracker {
         guard buffer.first == 0x3F else { return } // '?'
 
         let paramBytes = buffer.dropFirst().dropLast()
-        let params = String(decoding: paramBytes, as: UTF8.self)
+        let params = (String(bytes: paramBytes, encoding: .utf8) ?? "")
             .split(separator: ";", omittingEmptySubsequences: true)
             .compactMap { Int($0) }
 
@@ -171,7 +171,7 @@ final class LegacyTerminalModeTracker {
     }
 
     private func handleOSC(_ buffer: [UInt8], into events: inout [TerminalModeEvent]) {
-        let payload = String(decoding: buffer, as: UTF8.self)
+        let payload = String(bytes: buffer, encoding: .utf8) ?? ""
         let fields = payload.split(separator: ";", omittingEmptySubsequences: false)
         guard fields.count >= 2, fields[0] == "133" else { return }
 

@@ -74,7 +74,7 @@ final class InputBoxModelTests: XCTestCase {
         // output passes through untouched.
         m.recordComposeSent(Array("ls".utf8))
         let rendered = m.ingestOutput(Array("ls".utf8))
-        XCTAssertEqual(String(decoding: rendered, as: UTF8.self), "ls")
+        XCTAssertEqual(String(bytes: rendered, encoding: .utf8), "ls")
     }
 
     func testModeFlipResetsDedupState() {
@@ -87,7 +87,7 @@ final class InputBoxModelTests: XCTestCase {
         m.ingestOutput(Array("\(ESC)[?1049h".utf8)) // back to B1
         let rendered = m.ingestOutput(Array("partial".utf8))
         // The earlier record was cleared on the flip, so this is NOT suppressed.
-        XCTAssertEqual(String(decoding: rendered, as: UTF8.self), "partial")
+        XCTAssertEqual(String(bytes: rendered, encoding: .utf8), "partial")
     }
 
     // MARK: Full lifecycle transition trace

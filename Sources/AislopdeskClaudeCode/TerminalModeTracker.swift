@@ -288,6 +288,12 @@ public final class TerminalModeTracker {
 
         // Parameters between '?' and the final byte, split on ';'.
         let paramBytes = buffer.dropFirst().dropLast()
+        // Lossy UTF-8 decode is required: the state machine can append arbitrary (incl. non-UTF-8)
+        // bytes to `csiBuffer`, and the frozen differential oracle (`LegacyTerminalModeTracker`) decodes
+        // the same lossy way. The failable `String(bytes:encoding:)` would return nil on such bytes,
+        // dropping params that lossy decode still yields — diverging from the oracle. So we keep the
+        // lossy initializer here on purpose.
+        // swiftlint:disable:next optional_data_string_conversion
         let params = String(decoding: paramBytes, as: UTF8.self)
             .split(separator: ";", omittingEmptySubsequences: true)
             .compactMap { Int($0) }
@@ -313,6 +319,11 @@ public final class TerminalModeTracker {
     // MARK: OSC handling — OSC 133 prompt marks
 
     private func handleOSC(_ buffer: [UInt8], into events: inout [TerminalModeEvent]) {
+        // Lossy UTF-8 decode is required: `oscBuffer` can hold arbitrary (incl. non-UTF-8) bytes and the
+        // frozen differential oracle (`LegacyTerminalModeTracker`) decodes the same lossy way. The failable
+        // `String(bytes:encoding:)` would return nil on such bytes, changing which OSC 133 events fire and
+        // diverging from the oracle. So we keep the lossy initializer here on purpose.
+        // swiftlint:disable:next optional_data_string_conversion
         let payload = String(decoding: buffer, as: UTF8.self)
         // Expected: "133;A" | "133;B" | "133;C" | "133;D" | "133;D;<exit>" (+ extra ;k=v).
         let fields = payload.split(separator: ";", omittingEmptySubsequences: false)

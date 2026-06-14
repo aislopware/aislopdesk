@@ -187,12 +187,12 @@ public actor MuxNWConnection {
 
     /// Test-only: the number of id entries the DATA router table retains — used to assert a hostile
     /// channelOpen storm cannot grow the router table without bound past the channel cap (R7 #6).
-    var _dataTableStateCountForTesting: Int { dataTable.stateCount }
+    var dataTableStateCountForTesting: Int { dataTable.stateCount }
 
     /// Test-only: the number of id entries the CONTROL router table retains — used to assert a hostile
     /// `channelOpen` storm on the CONTROL link (never a legitimate frame there) cannot grow the control
     /// table at all (R11 — drops the frame before `MuxRoutingCore.route` would `open(id)` a phantom).
-    var _controlTableStateCountForTesting: Int { controlTable.stateCount }
+    var controlTableStateCountForTesting: Int { controlTable.stateCount }
 
     /// Tears down the whole shared connection (both links + all receive loops). Called by the
     /// registry only when the LAST channel closes. Finishes every remaining sub-channel's inbound.

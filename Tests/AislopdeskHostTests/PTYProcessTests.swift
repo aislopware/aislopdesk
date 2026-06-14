@@ -596,12 +596,12 @@ final class ByteSink: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         data.append(contentsOf: bytes)
-        return data.range(of: needle) != nil
+        return data.contains(needle)
     }
 
     func string() -> String {
         lock.lock()
         defer { lock.unlock() }
-        return String(decoding: data, as: UTF8.self)
+        return String(bytes: data, encoding: .utf8) ?? ""
     }
 }

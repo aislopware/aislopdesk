@@ -10,7 +10,7 @@ import Foundation
 // Runs until SIGINT.
 
 let arguments = CommandLine.arguments
-let programName = (arguments.first as NSString?)?.lastPathComponent ?? "aislopdesk-hostd"
+let programName = arguments.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "aislopdesk-hostd"
 
 guard let parsed = HostdArguments.parse(arguments) else {
     FileHandle.standardError.write(Data(

@@ -345,7 +345,7 @@ public final class HostOutputSniffer: @unchecked Sendable {
         // the old command sniffer).
         guard let sep = oscBuffer.firstIndex(of: Self.semicolon) else { return }
         let psBytes = oscBuffer[oscBuffer.startIndex..<sep]
-        let ps = String(decoding: psBytes, as: UTF8.self)
+        let ps = String(bytes: psBytes, encoding: .utf8) ?? ""
 
         switch ps {
         case "0",
@@ -354,7 +354,7 @@ public final class HostOutputSniffer: @unchecked Sendable {
             // (icon name + window title) and OSC 2 (window title only). OSC 1 is
             // icon-name-ONLY and is deliberately ignored — it never sets the window title.
             let titleBytes = oscBuffer[oscBuffer.index(after: sep)...]
-            let title = String(decoding: titleBytes, as: UTF8.self)
+            let title = String(bytes: titleBytes, encoding: .utf8) ?? ""
             // Trivial dedup: don't spam an identical title back-to-back.
             if title == lastTitle { return }
             lastTitle = title
@@ -368,7 +368,7 @@ public final class HostOutputSniffer: @unchecked Sendable {
             // C/D logic — verbatim from HostCommandStatusSniffer: full split on ';' with
             // empty fields KEPT. Expected: "133;A" | "133;B" | "133;C" | "133;D" |
             // "133;D;<exit>" (+ extra ;k=v).
-            let payload = String(decoding: oscBuffer, as: UTF8.self)
+            let payload = String(bytes: oscBuffer, encoding: .utf8) ?? ""
             let fields = payload.split(separator: ";", omittingEmptySubsequences: false)
             guard fields.count >= 2, fields[0] == "133" else { return }
 
@@ -396,7 +396,7 @@ public final class HostOutputSniffer: @unchecked Sendable {
             // small; a giant one is not worth fabricating an alert for).
             guard oscBuffer.count <= Self.notifyOscCap else { return }
             let bodyBytes = oscBuffer[oscBuffer.index(after: sep)...]
-            let body = String(decoding: bodyBytes, as: UTF8.self)
+            let body = String(bytes: bodyBytes, encoding: .utf8) ?? ""
             guard !body.isEmpty else { return }
             // OSC 9 is overloaded: iTerm2/ConEmu use `ESC]9;4;<state>;<pct>` for the taskbar PROGRESS-BAR
             // protocol (emitted continuously by winget, long builds, etc.), NOT a desktop notification.
@@ -410,7 +410,7 @@ public final class HostOutputSniffer: @unchecked Sendable {
             // OSC 777 — urxvt/ConEmu `ESC ] 777 ; notify ; <title> ; <body> ST`. Only the `notify`
             // subcommand is a desktop notification; other 777 subcommands are ignored.
             guard oscBuffer.count <= Self.notifyOscCap else { return }
-            let payload = String(decoding: oscBuffer, as: UTF8.self)
+            let payload = String(bytes: oscBuffer, encoding: .utf8) ?? ""
             let fields = payload.split(separator: ";", maxSplits: 3, omittingEmptySubsequences: false)
             guard fields.count >= 3, fields[1] == "notify" else { return }
             let title = String(fields[2])

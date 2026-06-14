@@ -905,10 +905,10 @@ public final class VideoEncoder: @unchecked Sendable {
             // safety net under the actor's ACKED-ONLY gate.
             if forceLTRRefresh { props[kVTEncodeFrameOptionKey_ForceLTRRefresh] = kCFBooleanTrue }
             // Feed the tokens the client has acknowledged (drained+cleared each encode → can't grow).
-            // Each NSNumber bridges to the CFNumberRef VT expects inside the CFArray.
+            // The [Int64] bridges element-wise to the CFNumberRefs VT expects inside the CFArray.
             let acked = drainPendingAckedTokens()
             if !acked.isEmpty {
-                props[kVTEncodeFrameOptionKey_AcknowledgedLTRTokens] = acked.map { NSNumber(value: $0) } as CFArray
+                props[kVTEncodeFrameOptionKey_AcknowledgedLTRTokens] = acked as CFArray
             }
         }
         // When ltrEnabled is false this is EXACTLY today's dict: [ForceKeyFrame:true] or nil.
@@ -991,7 +991,7 @@ public final class VideoEncoder: @unchecked Sendable {
            ) as? [[CFString: Any]],
            let first = attachments.first
         {
-            ltrToken = (first[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] as? NSNumber)?.int64Value
+            ltrToken = first[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] as? Int64
         }
 
         // CRITICAL: VTCompressionSession keeps the HEVC VPS/SPS/PPS parameter sets in the sample

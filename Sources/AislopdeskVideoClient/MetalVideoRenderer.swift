@@ -117,7 +117,7 @@ public final class MetalVideoRenderer {
         // actually allocated, not the requested drawableSize), layer bounds (pt), contentsScale,
         // gravity, native px. The "half-size top-left" symptom means drawable.texture ≠
         // bounds×scale or gravity isn't resize. Logged on frame 1 + every 120 frames.
-        if Self.renderDiag, renderDiagCount == 0 || renderDiagCount % 120 == 0 {
+        if Self.renderDiag, renderDiagCount == 0 || renderDiagCount.isMultiple(of: 120) {
             FileHandle.standardError
                 .write(
                     Data(

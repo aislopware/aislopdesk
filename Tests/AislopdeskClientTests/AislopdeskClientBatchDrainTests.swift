@@ -17,7 +17,7 @@ final class AislopdeskClientBatchDrainTests: XCTestCase {
 
         // Deliver 1..5 with NO takeOutputBatch — ack semantics must be wire-time.
         for seq in 1...5 {
-            await client._handleInboundForTesting(.output(seq: Int64(seq), bytes: Data("x".utf8)))
+            await client.handleInboundForTesting(.output(seq: Int64(seq), bytes: Data("x".utf8)))
         }
         let contiguous = await client.highestContiguousSeq
         XCTAssertEqual(contiguous, 5, "contiguous high-water tracks wire delivery, not consumption")
@@ -35,7 +35,7 @@ final class AislopdeskClientBatchDrainTests: XCTestCase {
         // Park no consumer; push a burst, then drain once.
         let chunks = (1...20).map { Data("chunk-\($0);".utf8) }
         for (i, chunk) in chunks.enumerated() {
-            await client._handleInboundForTesting(.output(seq: Int64(i + 1), bytes: chunk))
+            await client.handleInboundForTesting(.output(seq: Int64(i + 1), bytes: chunk))
         }
         let batch = await client.takeOutputBatch()
         XCTAssertEqual(batch, chunks, "whole backlog in one batch, FIFO order")
@@ -51,7 +51,7 @@ final class AislopdeskClientBatchDrainTests: XCTestCase {
 
         // Push a burst BEFORE any consumer exists: bufferingNewest(1) retains exactly one wake.
         for seq in 1...10 {
-            await client._handleInboundForTesting(.output(seq: Int64(seq), bytes: Data([UInt8(seq)])))
+            await client.handleInboundForTesting(.output(seq: Int64(seq), bytes: Data([UInt8(seq)])))
         }
 
         var wakes = 0
@@ -80,9 +80,9 @@ final class AislopdeskClientBatchDrainTests: XCTestCase {
 
         // Tail chunks immediately followed by exit — the wake stream finishes right after
         // the appends; the final drain must still deliver every byte.
-        await client._handleInboundForTesting(.output(seq: 1, bytes: Data("tail-".utf8)))
-        await client._handleInboundForTesting(.output(seq: 2, bytes: Data("bytes".utf8)))
-        await client._handleInboundForTesting(.exit(code: 0))
+        await client.handleInboundForTesting(.output(seq: 1, bytes: Data("tail-".utf8)))
+        await client.handleInboundForTesting(.output(seq: 2, bytes: Data("bytes".utf8)))
+        await client.handleInboundForTesting(.exit(code: 0))
 
         try await waitUntil(timeout: .seconds(5)) { sink.bytes == Data("tail-bytes".utf8) }
         XCTAssertEqual(sink.bytes, Data("tail-bytes".utf8), "no tail loss across the finish")
@@ -99,7 +99,7 @@ final class AislopdeskClientBatchDrainTests: XCTestCase {
     func testReconnectClearsUndrainedInbox() async throws {
         let client = AislopdeskClient(makeTransport: { RecordingTransport() })
         try await client.connect(host: "h", port: 1)
-        await client._handleInboundForTesting(.output(seq: 1, bytes: Data("dead-session".utf8)))
+        await client.handleInboundForTesting(.output(seq: 1, bytes: Data("dead-session".utf8)))
 
         // Reconnect WITHOUT draining: the stale entry must be gone afterwards.
         try await client.connect(host: "h", port: 1)
@@ -107,7 +107,7 @@ final class AislopdeskClientBatchDrainTests: XCTestCase {
         XCTAssertTrue(batch.isEmpty, "the dead session's undrained entries never cross a reconnect")
 
         // And the fresh session's first output still flows normally.
-        await client._handleInboundForTesting(.output(seq: 1, bytes: Data("fresh".utf8)))
+        await client.handleInboundForTesting(.output(seq: 1, bytes: Data("fresh".utf8)))
         let fresh = await client.takeOutputBatch()
         XCTAssertEqual(fresh, [Data("fresh".utf8)])
         await client.close()

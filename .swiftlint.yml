@@ -235,8 +235,8 @@ function_parameter_count:
   error: 10
 
 large_tuple:
-  warning: 3
-  error: 4
+  warning: 4   # 2-3 element tuples are idiomatic internal multi-returns here
+  error: 6
 
 nesting:
   type_level:
