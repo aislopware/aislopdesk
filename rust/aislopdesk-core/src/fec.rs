@@ -100,13 +100,19 @@ impl XorParityFec {
     }
 
     /// XOR of the length-prefixed encodings of a group, zero-padded to the longest.
+    ///
+    /// The inner XOR is written as `acc.iter_mut().zip(member)` (not indexed `acc[i] ^= b`):
+    /// `member.len() <= acc.len()` always (acc is sized to the longest member), so the zip
+    /// covers every member byte while eliding the per-iteration bounds check, which lets LLVM
+    /// autovectorise the accumulate to NEON on Apple Silicon. Result is byte-identical.
+    #[inline]
     fn xor_encoded(group: &[&[u8]]) -> Vec<u8> {
         let encoded: Vec<Vec<u8>> = group.iter().map(|m| Self::length_prefixed(m)).collect();
         let width = encoded.iter().map(Vec::len).max().unwrap_or(0);
         let mut acc = vec![0u8; width];
         for member in &encoded {
-            for (i, b) in member.iter().enumerate() {
-                acc[i] ^= b;
+            for (a, b) in acc.iter_mut().zip(member.iter()) {
+                *a ^= *b;
             }
         }
         acc
@@ -115,6 +121,7 @@ impl XorParityFec {
     /// `parity XOR (encoded survivors)` = the encoded form of the missing member,
     /// zero-padded. Trailing zeros beyond the embedded length are harmless because
     /// [`strip_length_prefix`](Self::strip_length_prefix) cuts to the declared length.
+    #[inline]
     fn xor_recover(parity: &[u8], survivors: &[&[u8]]) -> Vec<u8> {
         let encoded_survivors: Vec<Vec<u8>> =
             survivors.iter().map(|m| Self::length_prefixed(m)).collect();
@@ -122,12 +129,14 @@ impl XorParityFec {
             .len()
             .max(encoded_survivors.iter().map(Vec::len).max().unwrap_or(0));
         let mut acc = vec![0u8; width];
-        for (i, b) in parity.iter().enumerate() {
-            acc[i] ^= b;
+        // `iter_mut().zip()` (not indexed): each operand's len <= acc.len() (acc is sized to the
+        // max), so the zip is complete and bounds-check-free, enabling NEON autovectorisation.
+        for (a, b) in acc.iter_mut().zip(parity.iter()) {
+            *a ^= *b;
         }
         for member in &encoded_survivors {
-            for (i, b) in member.iter().enumerate() {
-                acc[i] ^= b;
+            for (a, b) in acc.iter_mut().zip(member.iter()) {
+                *a ^= *b;
             }
         }
         acc
