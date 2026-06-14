@@ -34,7 +34,7 @@ rust/
       error.rs            VideoProtocolError { Truncated, Malformed }
       seq.rs              wrap-aware u32 sequence distance
       nal_unit.rs         AVCC NAL-unit split/join
-      geometry.rs         VideoPoint/Size/Rect + aspect-fit (fit/fill, zoom/pan)
+      geometry.rs         VideoPoint/Size/Rect + aspect-fit (fit/fill, zoom/pan) + CGRect union/intersection/standardize
       fec.rs              FecScheme trait + XOR parity (single-loss recovery)
       adaptive_fec.rs     wire tier↔group-size + loss→tier decision (hysteresis/dwell)
       fragment.rs         19-byte fragment header/flags + host packetizer
@@ -65,6 +65,20 @@ rust/
       owd_late_detector.rs       per-frame one-way-delay spike detector (depth v3)
       trendline_estimator.rs     libwebrtc OLS delay-gradient detector + TrendSampler
       pacer_depth_policy.rs      adaptive 1↔2 jitter-depth (network-late driven)
+      --- host server logic (pure value types) ---
+      video_session.rs           host session state machine (hello/ack/bye/resize) + SizeNegotiation
+      video_mux_router.rs        N-session UDP-mux admit/retire/drain routing + bootstrap gate
+      input_router.rs            input-datagram route + activate-then-control raise policy
+      input_button_balance.rs    stuck-button pre-release / duplicate-up suppression
+      input_motion_coalescer.rs  order-preserving pointer-motion run coalescing
+      recovery_router.rs         recovery-channel route (IDR / LTR-refresh / ack / cursor / stats)
+      static_idr_decider.rs      static-window forced-IDR heartbeat cadence
+      udp_receive_loop_policy.rs UDP receive-loop re-arm + exponential backoff
+      capture_region.rs          dialog-expand capture-region union + retarget hysteresis
+      window_placement.rs        window→display placement clamp + fit check
+      window_parking_ledger.rs   VD window-park refcount + channel→window bookkeeping
+      virtual_display_geometry.rs HiDPI point/pixel/mm math + display placement / chip limit / refresh
+      system_dialog_detector.rs  system auth-dialog (SecurityAgent/coreauthd) classifier
       --- terminal (PTY) path ---
       terminal/
         error.rs           TerminalProtocolError { FrameTooLarge, Truncated, UnknownMessageType, MalformedBody }
@@ -142,6 +156,11 @@ Implemented:
 - the complete video-protocol wire surface (the ALVR boundary spine);
 - all 14 pure realtime controllers (ABR/congestion, fps governor, LTR, decode
   gate/sequencer, jitter-depth pacer policy, delay-gradient trendline, recovery admission);
+- the pure **host server logic** (PATH 2 server brain): the session state machine
+  (`video_session`), the N-session UDP-mux router (`video_mux_router`), the input/recovery
+  datagram routers + motion-coalescing + button-balance, the static-IDR + UDP-backoff
+  policies, and the virtual-display / window-parking / capture-region / system-dialog math —
+  everything a headless multi-session host runs that is NOT capture/encode/inject/AX;
 - the complete terminal/PTY path (PATH 1): the `WireMessage` framing, the SSH-style channel
   mux (`MuxEnvelope`/`MuxFrameDecoder`/`ChannelTable`), and the per-channel credit flow
   control (`FlowCreditPolicy`/`ReceiveWindowAccountant`/`BoundedQueuePolicy`) — see
