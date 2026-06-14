@@ -10,9 +10,9 @@ import AislopdeskTerminal
 ///
 /// 1. ``BuildStatusPlaceholderView`` — the no-framework case. It renders a clearly-labelled
 ///    BUILD-STATUS panel ("libghostty renderer not built — run
-///    ThirdParty/ghostty/build-libghostty.sh"). It is **NOT** a substitute terminal renderer:
-///    the libghostty-only policy (DECISIONS / doc 17) forbids any fallback VT engine, so the
-///    placeholder shows build status, not emulated text.
+///    ThirdParty/ghostty/build-libghostty.sh"). It shows build status, not emulated text —
+///    libghostty is the renderer (DECISIONS / doc 17), so the placeholder is telemetry, not
+///    a terminal.
 ///
 /// 2. `GhosttyTerminalView` (the documented extension point) — the production renderer: a
 ///    Metal-hosted ``AislopdeskTerminal/TerminalSurface`` conformer wrapping the gated
@@ -27,8 +27,8 @@ public protocol TerminalRenderingView: View {
     init(model: TerminalViewModel)
 }
 
-/// The no-framework BUILD-STATUS placeholder (libghostty-only policy: not a fallback VT
-/// renderer). Shown wherever the production `GhosttyTerminalView` has not been injected.
+/// The no-framework BUILD-STATUS placeholder — build-status telemetry, not a terminal.
+/// Shown wherever the production `GhosttyTerminalView` has not been injected.
 public struct BuildStatusPlaceholderView: TerminalRenderingView {
     private let model: TerminalViewModel
 

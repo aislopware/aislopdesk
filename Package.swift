@@ -115,7 +115,7 @@ let package = Package(
         // `GhosttyTerminalView` (Metal-hosted `GhosttySurface`, the gated binding under
         // ThirdParty/ghostty/integration, compiled only inside the Xcode app target with
         // the xcframework); the no-framework case shows a labelled BUILD-STATUS
-        // placeholder — NOT a substitute VT renderer (libghostty-only policy, DECISIONS).
+        // placeholder — build-status telemetry, not a terminal (libghostty is the renderer).
         //
         // The iOS UIKit native-feel table-stakes (doc 17 §2.5) live here too: all
         // timing/threshold/mapping LOGIC is in pure, `#if`-unguarded types

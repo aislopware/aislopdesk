@@ -5,7 +5,7 @@ import AislopdeskProtocol
 ///
 /// PATH 1 streams raw VT bytes from the host PTY to the client; **how** those bytes
 /// become pixels is hidden behind this protocol. The production renderer is
-/// **libghostty only** (no SwiftTerm fallback — `DECISIONS.md`): a
+/// **libghostty** (see `DECISIONS.md`): a
 /// `GhosttySurface` conforming to `TerminalSurface` lives in the GUI app target
 /// (WF-5), where it owns a `ghostty_surface_t` in a Metal view. The headless core
 /// here never links libghostty.

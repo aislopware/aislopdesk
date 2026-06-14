@@ -38,7 +38,7 @@
 - **B1 — overlay compose-box (Warp Ctrl-G style):** keep CC's TUI, add a native overlay, submit = a PTY write that fakes typing. **Cheap** but **fragile** (must hit the moment CC is at its prompt; conflicts with Shift+Tab/focus like Warp bugs #9179/#9365). No native cards.
 - **B2 — SDK pane (Oz style, "true Warp-style"):** do NOT run the TUI; drive CC via `claude -p --output-format stream-json --include-partial-messages`, parse NDJSON (`assistant`/`text_delta`, `tool_use`, `tool_result`, `result`) → native tool-call cards + a real input box. **Expensive (~4–8 weeks — writing a Claude Code frontend)** but this is what a real native input-box + cards means. ⚠️ Billing: the SDK is metered separately (Agent SDK credit) on subscriptions; verify headless OAuth runs on the remote host before committing.
 
-**✅ DECIDED: A + B1** (shell input box + overlay compose-box for Claude Code, keeping the TUI). **Do NOT build B2 (SDK pane)** (best-only; structured view = read-only inspector [16], not driving the agent). The B2 section below is kept only as context.
+**✅ DECIDED: A + B1** (shell input box + overlay compose-box for Claude Code, keeping the TUI); the structured view is the read-only inspector [16] (it does not drive the agent), so the SDK pane (B2) is not built. The B2 section below is kept only as context.
 
 **Implementing B1 (notes to avoid Warp-style bugs):**
 - Native overlay compose-box; submit = write bytes into the PTY + **DelayedEnter** (text first, `\r` after ~50ms).

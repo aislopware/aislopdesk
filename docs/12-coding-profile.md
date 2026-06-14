@@ -358,9 +358,9 @@ The `terminaloverlay.cc` engine is ~750 lines of C++. Two routes: (a) **CGo/C in
 
 ---
 
-### 4. Client renderer — libghostty (only)
+### 4. Client renderer — libghostty
 
-Renderer = **libghostty full surface**; the decision + external-backend patch recipe live in §3.1 "Client renderer — libghostty". **Do NOT use SwiftTerm** (best-only philosophy, no fallback). Wiring: `ghostty_surface_feed_data` ← network bytes; write-callback (`use_custom_io`) → PTY stdin; wrap behind a `TerminalRendering` protocol to isolate the C-ABI. (SwiftTerm `Pty.swift`/`LocalProcess.swift` remain only as a *citation* for the POSIX PTY pattern in Part B §1, not a dependency.)
+Renderer = **libghostty full surface**; the decision + external-backend patch recipe live in §3.1 "Client renderer — libghostty". Wiring: `ghostty_surface_feed_data` ← network bytes; write-callback (`use_custom_io`) → PTY stdin; wrap behind a `TerminalRendering` protocol to isolate the C-ABI. (SwiftTerm `Pty.swift`/`LocalProcess.swift` remain only as a *citation* for the POSIX PTY pattern in Part B §1, not a dependency.)
 
 ### 5. Resize / encoding / scrollback
 
@@ -406,7 +406,7 @@ The PTY/shell must live independently of the TCP connection: a **helper process 
 | Sandbox | host **non-sandboxed** Developer ID, Hardened Runtime, runs as the logged-in user |
 | Transport | **TCP** over Network.framework, type-prefix framing (ttyd-style), **no app-layer TLS** (the mesh encrypts, [13]). **NO mosh SSP/UDP** |
 | Local echo | ⏸️ DEFERRED (assume P2P; revisit only if relayed) |
-| Client emulator | **libghostty** full surface (self-owned patch, Metal GPU, ligatures OK) — **no SwiftTerm** |
+| Client emulator | **libghostty** full surface (self-owned patch, Metal GPU, ligatures OK) |
 | Scrollback | client-side (the libghostty surface keeps scrollback internally); stateless server + ET-style seq replay buffer for reconnect ([17 §2.3]) |
 | Reconnect | ET packet-framed sequence buffer (64MB cap; mind the 4MB disconnect SKIPPED); persistent PTY helper (v1) → tmux `-CC` (v2) |
 | iOS/roaming | eager reconnect on scenePhase `.active`; `NWPathMonitor` + `NSWorkspaceDidWakeNotification` |
@@ -589,7 +589,7 @@ Order = (value delivered for daily coding) × (certainty) ÷ (risk + effort). Th
 | # | Technique | Why it wins big | Apple | Difficulty | Risk |
 |---|----------|-------------------|-------|-----|--------|
 | **1** | **PTY bridge text-path** (`forkpty()`/`openpty()` + DispatchIO + VT byte stream over TCP, client render) | **Entirely sidesteps macOS's input-injection problem**: a keystroke is just bytes written to the PTY master fd — no CGEvent, no Accessibility, no activate-then-control, no TCC. Text crisp **by construction** (no video codec). Near-zero idle (a quiet PTY produces no byte flow). Bandwidth ~36–52 bytes/keystroke. | native | low | low |
-| **2** | **libghostty as the client renderer** (full surface + **self-owned external-backend patch**, ref daiimus External.zig; `ghostty_surface_feed_data` ← network, write-callback → host) | Ghostty-class rendering: Metal GPU, highest VT fidelity, Kitty graphics, ligatures. Proven on iOS (VVTerm/Moshi). Price: ~1–3 weeks standing up the Zig build + own patch + vendored XCFramework. Wrapped behind `TerminalRendering` to isolate the C-ABI. **No fallback** (best-only — no SwiftTerm). | native (via self-owned patch) | **high** | medium (ABI-instability tax + self-rebased patch; bus factor avoided) |
+| **2** | **libghostty as the client renderer** (full surface + **self-owned external-backend patch**, ref daiimus External.zig; `ghostty_surface_feed_data` ← network, write-callback → host) | Ghostty-class rendering: Metal GPU, highest VT fidelity, Kitty graphics, ligatures. Proven on iOS (VVTerm/Moshi). Price: ~1–3 weeks standing up the Zig build + own patch + vendored XCFramework. Wrapped behind `TerminalRendering` to isolate the C-ABI. | native (via self-owned patch) | **high** | medium (ABI-instability tax + self-rebased patch; bus factor avoided) |
 | **3** | **TCP stream transport over Network.framework** (`NWConnection`/`NWListener` + 1-byte type + 4-byte big-endian length framing, ttyd-style) | The simplest fit for LAN: RTT <1ms so TCP head-of-line blocking is negligible; perfect idle efficiency (no PTY output → no bytes flow). No need for mosh's SSP/UDP. | native | low | low |
 | **4** | **Persistent PTY via a helper process holding the master fd** (launchd agent `KeepAlive`, or tmux) | The shell survives every client disconnect (iPad sleep, lid close, Wi-Fi handoff). Because the master fd belongs to the helper process — not the TCP handler — closing the socket sends no SIGHUP to the shell. | native | medium | medium |
 | **5** | **ET-style packet-framed ring buffer + sequence-number ACK catchup** (BackedWriter/BackedReader) | Seamless reconnect after LAN interruptions. **Replay on packet boundaries** structurally eliminates the risk of a replay cutting mid-escape-sequence (emulator corruption). | partial | medium | medium |
@@ -614,7 +614,7 @@ This is the minimal set for a daily-usable tool, with the lowest risk and highes
 1. **PTY bridge on the host** — `openpty()` + `posix_spawn` (login_tty, `POSIX_SPAWN_SETSID`), set env `TERM=xterm-ghostty`, `LANG=en_US.UTF-8`, `COLORTERM=truecolor`, the `IUTF8` termios flag (confirmed present on Darwin: `IUTF8 = 0x00004000` in XNU `bsd/sys/termios.h`), prepend `-` to argv[0] for a login shell. Read the master fd with `DispatchIO(.stream, lowWater:1, highWater:131072)`.
 2. **Resize**: `ioctl(masterFd, TIOCSWINSZ, &winsize)` when the client reports a new size -> the kernel sends SIGWINCH (SwiftTerm `sizeChanged` delegate -> resize message -> host ioctl).
 3. **Transport**: `NWConnection`/`NWListener` TCP, 1-byte-type framing (0=terminal data, 1=resize) + 4-byte length. **No app-layer TLS** — the mesh encrypts; authorization via the mesh ACL ([13]).
-4. **Client libghostty** (full surface + **self-owned external-backend patch**, ref daiimus External.zig): `ghostty_surface_feed_data` ← NWConnection receive loop; write-callback (`use_custom_io=true`) -> NWConnection -> host PTY stdin. Build `GhosttyKit.xcframework` (zig), vendor + pin upstream SHA, re-apply the patch on bumps. Wrap behind `TerminalRendering`. **No fallback** (best-only — no SwiftTerm).
+4. **Client libghostty** (full surface + **self-owned external-backend patch**, ref daiimus External.zig): `ghostty_surface_feed_data` ← NWConnection receive loop; write-callback (`use_custom_io=true`) -> NWConnection -> host PTY stdin. Build `GhosttyKit.xcframework` (zig), vendor + pin upstream SHA, re-apply the patch on bumps. Wrap behind `TerminalRendering`.
 5. **Persistent PTY**: the host helper is a launchd agent with `KeepAlive=true` holding all master fds; PTYs survive disconnects.
 6. **Minimal reconnect**: iOS `scenePhase .active` -> reconnect; macOS client `NWPathMonitor.pathUpdateHandler` -> reconnect on Wi-Fi↔Ethernet changes.
 
@@ -689,7 +689,7 @@ Remove the input-injection gate from its project-blocking position. New spikes:
 #### Phase 1 — Terminal MVP (Mac host -> Mac client), **replacing the old "video MVP"**
 - [ ] PTY bridge host: spawn the shell, stream bytes, `TIOCSWINSZ` resize.
 - [ ] TCP transport framing (1-byte type + 4-byte length) over Network.framework.
-- [ ] libghostty client: full surface + **self-owned external-backend patch** (XCFramework build), `feed_data` ← network / write-callback → host, wrapped behind `TerminalRendering`. **No fallback** (best-only).
+- [ ] libghostty client: full surface + **self-owned external-backend patch** (XCFramework build), `feed_data` ← network / write-callback → host, wrapped behind `TerminalRendering`.
 - [ ] Bonjour discovery: host advertises / client lists (kept from [03]).
 - [ ] **Done:** open a host shell on a client Mac, type + run vim/tmux/git smoothly, absolutely crisp text, **not a single line of CGEvent/Accessibility**.
 

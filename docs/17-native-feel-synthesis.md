@@ -2,7 +2,7 @@
 
 > **STATUS: CURRENT.** Synthesized from 7 "families" of OSS + commercial solutions to lock in the **best** design for the 2 paths, prioritizing (a) lowest latency and (b) the feel of **using a local machine**, not a remote one. Corpus: [research/17-tui-gui-best-solution.json](research/17-tui-gui-best-solution.json). Decisions are in [DECISIONS.md](DECISIONS.md); this doc is the **why + mechanics**.
 >
-> Guiding philosophy (see [00](00-overview.md)): **one best choice, no fallbacks.**
+> Guiding philosophy (see [00](00-overview.md)): **commit to one best choice.**
 
 ## TL;DR (headline)
 
@@ -52,7 +52,7 @@ Every claim was verified back to source. Notable **corrections** (survey was wro
 ### 2.3 Reconnect: ET-style replay buffer (chosen over tmux)
 
 - **Eternal Terminal `BackedWriter`**: the host keeps a **64MB** circular buffer (`MAX_BACKUP_BYTES`, verified) of PTY output packets tagged with a monotonic **sequence number**. Client reconnects → sends the last seq it received → host `recover(lastValidSeq)` replays the tail. **Lossless resume**, no UDP needed, no tmux on the host.
-- **Why NOT to depend on tmux for reconnect**: the iOS family suggests tmux for session persistence, but making reconnect *depend* on tmux = a **hard dependency** (host must install tmux + manage named sessions). Following best-only, we **own** the replay buffer inside the app → reconnect needs no tmux. (For process survival we use a persistent daemon holding the master FD — [12 §6]; tmux remains a purely convenient **v2 option** for server-side scrollback + pane mapping, not required.)
+- **Why NOT to depend on tmux for reconnect**: the iOS family suggests tmux for session persistence, but making reconnect *depend* on tmux = a **hard dependency** (host must install tmux + manage named sessions). We **own** the replay buffer inside the app → reconnect needs no tmux. (For process survival we use a persistent daemon holding the master FD — [12 §6]; tmux remains a purely convenient **v2 option** for server-side scrollback + pane mapping, not required.)
 - ⚠️ Spike: validate the reconnect handshake through a real iOS background→foreground cycle (including `beginBackgroundTask` suspend timing) to confirm byte-exact resume.
 
 ### 2.4 Predictive echo: why NOT full Mosh (CHANGE) + glitch-caret (optional)
