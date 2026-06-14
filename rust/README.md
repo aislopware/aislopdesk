@@ -79,6 +79,8 @@ rust/
       window_parking_ledger.rs   VD window-park refcount + channel→window bookkeeping
       virtual_display_geometry.rs HiDPI point/pixel/mm math + display placement / chip limit / refresh
       system_dialog_detector.rs  system auth-dialog (SecurityAgent/coreauthd) classifier
+      virtual_hid_keyboard.rs    kVK_* → USB HID usage map + modifier byte + 8-byte boot report
+      host_output_sniffer.rs     PTY-output OSC/title/bell/OSC-133/notification byte state machine
       --- terminal (PTY) path ---
       terminal/
         error.rs           TerminalProtocolError { FrameTooLarge, Truncated, UnknownMessageType, MalformedBody }
