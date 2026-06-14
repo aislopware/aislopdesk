@@ -55,8 +55,14 @@ public final class NWVideoMuxClientFlow: @unchecked Sendable {
 
     public init(host: String, mediaPort: UInt16, cursorPort: UInt16) {
         let nwHost = NWEndpoint.Host(host)
-        mediaEndpoint = NWEndpoint.hostPort(host: nwHost, port: NWEndpoint.Port(rawValue: mediaPort)!)
-        cursorEndpoint = NWEndpoint.hostPort(host: nwHost, port: NWEndpoint.Port(rawValue: cursorPort)!)
+        guard let mediaNWPort = NWEndpoint.Port(rawValue: mediaPort) else {
+            preconditionFailure("mediaPort \(mediaPort) is not a valid NWEndpoint.Port (0 is reserved)")
+        }
+        guard let cursorNWPort = NWEndpoint.Port(rawValue: cursorPort) else {
+            preconditionFailure("cursorPort \(cursorPort) is not a valid NWEndpoint.Port (0 is reserved)")
+        }
+        mediaEndpoint = NWEndpoint.hostPort(host: nwHost, port: mediaNWPort)
+        cursorEndpoint = NWEndpoint.hostPort(host: nwHost, port: cursorNWPort)
     }
 
     /// Opens the shared media + cursor connections ONCE (idempotent). Subsequent lane opens reuse

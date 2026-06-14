@@ -347,7 +347,14 @@ public enum CanvasNonOverlap {
                 dy: -(size.height / 2 + config.gutter),
             )
             guard let hit = sweptCenter(c0: c0, velocity: velocity, box: expanded) else { continue }
-            if best == nil || hit.t < best!.t - 1e-9 || (abs(hit.t - best!.t) <= 1e-9 && body.id.orderKey < best!.key) {
+            let isBetter: Bool =
+                if let current = best {
+                    hit.t < current.t - 1e-9
+                        || (abs(hit.t - current.t) <= 1e-9 && body.id.orderKey < current.key)
+                } else {
+                    true
+                }
+            if isBetter {
                 best = (hit.t, hit.axis, hit.normal, body.id.orderKey)
             }
         }

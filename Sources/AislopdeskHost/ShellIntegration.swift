@@ -55,7 +55,7 @@ public enum ShellIntegration {
     /// Only zsh gets the shim. The hook is `TRAPWINCH` + `zle reset-prompt`, both zsh-specific;
     /// a bash/fish login shell is left untouched (its own startup is unaffected).
     public static func isZsh(shellPath: String) -> Bool {
-        (shellPath as NSString).lastPathComponent == "zsh"
+        shellPath.split(separator: "/").last.map(String.init) == "zsh"
     }
 
     /// Generates the shim directory and returns the env mutations the caller must layer onto the

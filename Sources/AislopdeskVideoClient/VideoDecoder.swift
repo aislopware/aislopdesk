@@ -305,7 +305,9 @@ private extension [Data] {
         func recurse(index: Int, pointers: [UnsafePointer<UInt8>], sizes: [Int]) -> R {
             if index == count { return body(pointers, sizes) }
             return self[index].withUnsafeBytes { raw -> R in
-                let base = raw.bindMemory(to: UInt8.self).baseAddress!
+                guard let base = raw.bindMemory(to: UInt8.self).baseAddress else {
+                    preconditionFailure("HEVC parameter-set Data must be non-empty (a zero-length NAL unit is invalid)")
+                }
                 return recurse(index: index + 1, pointers: pointers + [base], sizes: sizes + [self[index].count])
             }
         }

@@ -136,6 +136,9 @@ public enum AuthStrategy: Sendable, Equatable {
 public enum ClaudeAuthResolver {
     /// The conventional credentials path under a given `HOME`.
     public static func credentialsPath(home: String) -> String {
+        // NSString.appendingPathComponent is the Cocoa path API; the pure-Swift String has no exact
+        // equivalent (URL would change normalization/encoding) and this is privacy-critical.
+        // swiftlint:disable:next legacy_objc_type
         (home as NSString).appendingPathComponent(".claude/.credentials.json")
     }
 

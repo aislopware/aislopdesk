@@ -130,7 +130,8 @@ struct SnippetManagerView: View {
                     .autocorrectionDisabled()
                 #endif
                 Text(
-                    "Use `{{name}}` for values you fill at run time, and `<Enter>` / `<Tab>` / `<Esc>` / `<C-c>` / `<Up>` … for control keys.",
+                    "Use `{{name}}` for values you fill at run time, and `<Enter>` / `<Tab>` / "
+                        + "`<Esc>` / `<C-c>` / `<Up>` … for control keys.",
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }

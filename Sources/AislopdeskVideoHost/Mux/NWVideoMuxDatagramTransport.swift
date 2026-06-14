@@ -81,8 +81,11 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     }
 
     public init(mediaPort: UInt16, cursorPort: UInt16) {
-        self.mediaPort = NWEndpoint.Port(rawValue: mediaPort)!
-        self.cursorPort = NWEndpoint.Port(rawValue: cursorPort)!
+        guard let media = NWEndpoint.Port(rawValue: mediaPort),
+              let cursor = NWEndpoint.Port(rawValue: cursorPort)
+        else { preconditionFailure("NWEndpoint.Port(rawValue:) is total over UInt16 (the full valid port range)") }
+        self.mediaPort = media
+        self.cursorPort = cursor
     }
 
     // MARK: - Admission (driven by the daemon's session registry on hello / bye)

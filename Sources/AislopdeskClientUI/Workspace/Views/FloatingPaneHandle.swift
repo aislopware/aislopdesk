@@ -583,7 +583,8 @@ struct PaneMenuView: View {
     private static func pasteWarning(_ risk: PasteRisk) -> String {
         switch risk {
         case .secretIntoInsecureField:
-            "The clipboard looks like a secret, but this isn’t a password field — it may be typed where it shows in plain text. Paste anyway?"
+            "The clipboard looks like a secret, but this isn’t a password field — it may be typed "
+                + "where it shows in plain text. Paste anyway?"
         case .bulkIntoSecureField:
             "You’re about to type many lines / a large blob into a password field. That’s usually a mis-paste. Paste anyway?"
         case .tooLarge:

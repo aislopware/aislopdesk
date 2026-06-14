@@ -389,7 +389,9 @@ final class TerminalViewModelTests: XCTestCase {
         model.attachSurface(surface) // writes self.surface from "inside an update" (simulated)
         XCTAssertFalse(
             flag.fired,
-            "surface must be @ObservationIgnored — mutating it during a SwiftUI update must not invalidate the graph (else updateNSView→attach→attachSurface→invalidate→∞ hangs the main thread)",
+            "surface must be @ObservationIgnored — mutating it during a SwiftUI update must not "
+                + "invalidate the graph (else updateNSView→attach→attachSurface→invalidate→∞ "
+                + "hangs the main thread)",
         )
     }
 

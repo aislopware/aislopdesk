@@ -129,6 +129,11 @@ struct VideoByteReader {
     mutating func readLengthPrefixed() throws -> String {
         let len = try Int(readUInt16())
         let bytes = try readBytes(len)
+        // Lossy UTF-8 decode is the documented contract (a remote window title must never crash the
+        // receiver) and matches the Rust core's `String::from_utf8_lossy` for byte/bit parity. The failable
+        // `String(bytes:encoding:)` the lint rule prefers returns nil on invalid UTF-8, which would diverge
+        // from that parity, so the lossy initializer is kept on purpose.
+        // swiftlint:disable:next optional_data_string_conversion
         return String(decoding: bytes, as: UTF8.self)
     }
 }

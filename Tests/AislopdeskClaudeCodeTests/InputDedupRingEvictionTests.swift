@@ -19,7 +19,7 @@ final class InputDedupRingEvictionTests: XCTestCase {
         ring.recordSent(Data("second line here\n".utf8))
         let out2 = ring.filter(Data("lo\r\n".utf8))
 
-        let rendered = String(decoding: out1 + out2, as: UTF8.self)
+        let rendered = String(bytes: out1 + out2, encoding: .utf8)
         XCTAssertEqual(
             rendered, "echo hello\r\n",
             "the held 'echo hel' evicted unconfirmed must be FLUSHED (no byte loss / terminal corruption)",
@@ -47,7 +47,7 @@ final class InputDedupRingEvictionTests: XCTestCase {
         let ring = InputDedupRing(capacity: 4096)
         ring.recordSent(Data("ls\n".utf8))
         let out = ring.filter(Data("total 8\r\n".utf8)) // not the echo
-        XCTAssertEqual(String(decoding: out, as: UTF8.self), "total 8\r\n", "non-echo output is untouched")
+        XCTAssertEqual(String(bytes: out, encoding: .utf8), "total 8\r\n", "non-echo output is untouched")
     }
 
     func testResetClearsFlushBuffer() {
@@ -58,7 +58,7 @@ final class InputDedupRingEvictionTests: XCTestCase {
         ring.reset() // hard clear
         let out = ring.filter(Data("xyz".utf8))
         XCTAssertEqual(
-            String(decoding: out, as: UTF8.self),
+            String(bytes: out, encoding: .utf8),
             "xyz",
             "reset clears the flush buffer; subsequent output is untouched",
         )

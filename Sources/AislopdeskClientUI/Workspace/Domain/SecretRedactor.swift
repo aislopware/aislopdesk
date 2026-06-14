@@ -59,8 +59,8 @@ public enum SecretRedactor {
             "rk_test_",
             "pk_live_",
             "npm_",
-        ] {
-            if text.contains(needle) { return true }
+        ] where text.contains(needle) {
+            return true
         }
         // A long unbroken alphanumeric run is the generic-backstop trigger.
         var run = 0
@@ -103,7 +103,10 @@ public enum SecretRedactor {
             //    word must sit immediately before the delimiter).
             Rule(
                 regex: re(
-                    #"(?i)\b([A-Za-z0-9_]*(?:password|passwd|passphrase|secret|api[_-]?key|apikey|access[_-]?key|auth[_-]?token|client[_-]?secret|token))(\s*[=:]\s*)(\S+)"#,
+                    #"(?i)\b([A-Za-z0-9_]*"#
+                        + #"(?:password|passwd|passphrase|secret|api[_-]?key|apikey|"#
+                        + #"access[_-]?key|auth[_-]?token|client[_-]?secret|token))"#
+                        + #"(\s*[=:]\s*)(\S+)"#,
                 ),
                 template: "$1$2\(m)",
             ),

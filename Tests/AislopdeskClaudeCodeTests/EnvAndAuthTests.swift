@@ -171,11 +171,11 @@ final class EnvAndAuthTests: XCTestCase {
     /// junk bytes that the resolver must never read — we assert only on existence/path.
     private func makeFixtureHomeWithCredentials() throws -> String {
         let home = NSTemporaryDirectory() + "aislopdesk-auth-\(UUID().uuidString)"
-        let dir = (home as NSString).appendingPathComponent(".claude")
+        let dir = URL(fileURLWithPath: home).appendingPathComponent(".claude").path
         try FileManager.default.createDirectory(
             atPath: dir, withIntermediateDirectories: true,
         )
-        let path = (dir as NSString).appendingPathComponent(".credentials.json")
+        let path = URL(fileURLWithPath: dir).appendingPathComponent(".credentials.json").path
         // Obviously-fake fixture content; the resolver must never read this.
         try Data("{\"FIXTURE_ONLY\":true}".utf8).write(to: URL(fileURLWithPath: path))
         return home

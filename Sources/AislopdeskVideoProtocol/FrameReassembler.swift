@@ -387,7 +387,8 @@ public struct FrameReassembler {
 
         guard !dataFragments.contains(where: { $0 == nil }) else { return nil }
         var avcc = Data()
-        for fragment in dataFragments { avcc.append(fragment!) }
+        // The guard above proved every element is non-nil; `case let _?` unwraps each in order.
+        for case let fragment? in dataFragments { avcc.append(fragment) }
         return (avcc, hadHole)
     }
 

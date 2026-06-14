@@ -508,10 +508,17 @@ public final class InputInjector: @unchecked Sendable {
         else {
             return false
         }
+        // The copies above succeeded → posRef/sizeRef are non-nil AXValues by the AX contract.
+        // `as?` to a CoreFoundation type (AXValue) ALWAYS succeeds (a compile error), so the force
+        // cast is the only valid downcast — it traps on an OS-contract break, the original intent.
+        // swiftlint:disable:next force_cast
+        let posValue = posRef as! AXValue
+        // swiftlint:disable:next force_cast
+        let sizeValue = sizeRef as! AXValue
         var point = CGPoint.zero
         var size = CGSize.zero
-        AXValueGetValue(posRef as! AXValue, .cgPoint, &point)
-        AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        AXValueGetValue(posValue, .cgPoint, &point)
+        AXValueGetValue(sizeValue, .cgSize, &size)
         // Tolerate sub-point rounding between AX and CGWindowBounds.
         return abs(Double(point.x) - targetBounds.origin.x) < 2
             && abs(Double(point.y) - targetBounds.origin.y) < 2

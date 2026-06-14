@@ -536,8 +536,8 @@ struct CommandPaletteView: View {
         let needle = Array(query.lowercased())
         guard !needle.isEmpty else { return 0 }
 
-        /// A word boundary precedes index `j` when it is the start, or the prior char is not
-        /// alphanumeric (a space / punctuation / separator) — i.e. `j` begins a new word/token.
+        // A word boundary precedes index `j` when it is the start, or the prior char is not
+        // alphanumeric (a space / punctuation / separator) — i.e. `j` begins a new word/token.
         func isWordStart(_ j: Int) -> Bool {
             j == 0 || !(haystack[j - 1].isLetter || haystack[j - 1].isNumber)
         }

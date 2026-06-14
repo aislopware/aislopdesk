@@ -109,7 +109,7 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
         // DIALOG-EXPAND: throttled union enumeration (only when armed).
         if associatedUnionHandler != nil {
             unionPollCounter += 1
-            if unionPollCounter % Self.unionPollDivider == 0 { pollAssociatedUnion(targetFrameVR: bounds) }
+            if unionPollCounter.isMultiple(of: Self.unionPollDivider) { pollAssociatedUnion(targetFrameVR: bounds) }
         }
     }
 
@@ -168,17 +168,15 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
         // Heuristic match by position/size to the tracked CGWindowID (no public
         // AXUIElement <-> CGWindowID map — doc 05 §4).
         guard let bounds = currentBoundsCG() else { return }
-        for axWindow in axWindows {
-            if axWindowFrame(axWindow) == bounds {
-                var titleRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef) == .success,
-                   let title = titleRef as? String, title != lastTitle
-                {
-                    lastTitle = title
-                    geometryHandler(.title(title))
-                }
-                return
+        for axWindow in axWindows where axWindowFrame(axWindow) == bounds {
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef) == .success,
+               let title = titleRef as? String, title != lastTitle
+            {
+                lastTitle = title
+                geometryHandler(.title(title))
             }
+            return
         }
     }
 
@@ -232,10 +230,16 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
         else {
             return nil
         }
+        // `as?` to a CoreFoundation type (AXValue) always succeeds (compile error); the AX copies
+        // above succeeded so these are non-nil AXValues. Force cast traps on an OS-contract break.
+        // swiftlint:disable:next force_cast
+        let posValue = posRef as! AXValue
+        // swiftlint:disable:next force_cast
+        let sizeValue = sizeRef as! AXValue
         var point = CGPoint.zero
         var size = CGSize.zero
-        AXValueGetValue(posRef as! AXValue, .cgPoint, &point)
-        AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        AXValueGetValue(posValue, .cgPoint, &point)
+        AXValueGetValue(sizeValue, .cgSize, &size)
         return VideoRect(x: Double(point.x), y: Double(point.y), width: Double(size.width), height: Double(size.height))
     }
 }

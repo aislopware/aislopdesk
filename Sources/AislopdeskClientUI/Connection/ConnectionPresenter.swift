@@ -46,7 +46,8 @@ public enum ConnectionPresenter {
         // carries the word "handshake"). Distinct from "refused": something IS listening, it just isn't
         // a compatible aislopdesk-hostd.
         if lower.contains("handshake") {
-            return "The host answered but isn't a compatible aislopdesk host — check it's running aislopdesk-hostd and that the versions match."
+            return "The host answered but isn't a compatible aislopdesk host — check it's running "
+                + "aislopdesk-hostd and that the versions match."
         }
         // A clean drop mid-session (receiveFailed → "Connection lost", or an EOF / closed-by-peer): the
         // link is gone, not refused. Auto-reconnect handles a transient drop; a terminal .failed here

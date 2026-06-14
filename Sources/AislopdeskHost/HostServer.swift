@@ -7,7 +7,7 @@ import Foundation
 ///
 /// ## Lifecycle
 /// `start()` brings up the listener and starts consuming newly-accepted shared mux connections; for
-/// each ``MuxNWConnection`` yielded on `HostTransport.muxConnections_` it installs a
+/// each ``MuxNWConnection`` yielded on `HostTransport.muxConnections` it installs a
 /// per-channel-open handler. Every `channelOpen` the client sends mints a PTY + per-channel relay
 /// (``MuxChannelSession``) and acks. `stop()` cancels the listener and shuts every channel down.
 ///
@@ -135,7 +135,7 @@ public final class HostServer: @unchecked Sendable {
         Task.detached(priority: .utility) { [weak self] in
             _ = self?.resolveEffectiveTerm(requested: .ghostty, explicitOverride: false)
         }
-        let muxStream = transport.muxConnections_
+        let muxStream = transport.muxConnections
         muxAcceptTask = Task { [weak self] in
             for await muxConnection in muxStream {
                 await self?.handleNewMuxConnection(muxConnection)

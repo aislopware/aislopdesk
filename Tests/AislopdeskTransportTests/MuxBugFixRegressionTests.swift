@@ -123,7 +123,7 @@ final class MuxBugFixRegressionTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(120)) // let the control receive loop route them all
 
         XCTAssertEqual(opens.value, 0, "a control-link channelOpen must NOT spawn a session (never legitimate there)")
-        let controlTableCount = await host._controlTableStateCountForTesting
+        let controlTableCount = await host.controlTableStateCountForTesting
         XCTAssertEqual(controlTableCount, 0, "a control-link channelOpen storm must not grow the control router table")
     }
 
@@ -159,8 +159,8 @@ final class MuxBugFixRegressionTests: XCTestCase {
         ))
         try await Self.waitUntil(timeout: 20) { await host.hasLiveChannels }
 
-        let dataCount = await host._dataTableStateCountForTesting
-        let controlCount = await host._controlTableStateCountForTesting
+        let dataCount = await host.dataTableStateCountForTesting
+        let controlCount = await host.controlTableStateCountForTesting
         // ~2000 cycles ran; without the fix each table would hold ~2000 entries. Bounded now to
         // (ring cap 1024) + (the 1 live sentinel), with headroom.
         XCTAssertLessThanOrEqual(dataCount, 1100, "dataTable bounded by the eviction ring, not ~2000")

@@ -272,7 +272,7 @@ public final class HostTitleBellSniffer: @unchecked Sendable {
         // Split only on the FIRST ';': `Ps ; Pt` — the title text itself may contain ';'.
         guard let sep = oscBuffer.firstIndex(of: Self.semicolon) else { return }
         let psBytes = oscBuffer[oscBuffer.startIndex..<sep]
-        let ps = String(decoding: psBytes, as: UTF8.self)
+        let ps = String(bytes: psBytes, encoding: .utf8) ?? ""
         // We surface a title for OSC 0 (icon name + window title) and OSC 2 (window title
         // only). OSC 1 is icon-name-ONLY and is deliberately ignored — it never sets the
         // window title, so it should not change the client's displayed title. Any other Ps
@@ -280,7 +280,7 @@ public final class HostTitleBellSniffer: @unchecked Sendable {
         // not a title and is skipped.
         guard ps == "0" || ps == "2" else { return }
         let titleBytes = oscBuffer[oscBuffer.index(after: sep)...]
-        let title = String(decoding: titleBytes, as: UTF8.self)
+        let title = String(bytes: titleBytes, encoding: .utf8) ?? ""
         // Trivial dedup: don't spam an identical title back-to-back.
         if title == lastTitle { return }
         lastTitle = title

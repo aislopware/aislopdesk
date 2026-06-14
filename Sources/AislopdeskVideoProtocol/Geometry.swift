@@ -98,19 +98,19 @@ public enum AspectFit {
         mode: VideoContentMode = .fit,
     ) -> VideoRect {
         let vw = videoNativeSize.width, vh = videoNativeSize.height
-        let Vw = viewSize.width, Vh = viewSize.height
-        guard vw > 0, vh > 0, Vw > 0, Vh > 0 else {
-            return VideoRect(x: 0, y: 0, width: max(0, Vw), height: max(0, Vh))
+        let viewW = viewSize.width, viewH = viewSize.height
+        guard vw > 0, vh > 0, viewW > 0, viewH > 0 else {
+            return VideoRect(x: 0, y: 0, width: max(0, viewW), height: max(0, viewH))
         }
         // `.fit` scales to the SMALLER axis ratio (contain → the whole video sits inside,
         // bars on the longer axis). `.fill` scales to the LARGER axis ratio (cover → the
         // video fills the view, the longer axis overflows and is cropped). Both use a single
         // uniform `scale`, so neither distorts the aspect.
-        let scaleX = Vw / vw, scaleY = Vh / vh
+        let scaleX = viewW / vw, scaleY = viewH / vh
         let scale = (mode == .fit) ? min(scaleX, scaleY) : max(scaleX, scaleY)
         let w = vw * scale, h = vh * scale
-        let ox = (Vw - w) / 2
-        let oy = (Vh - h) / 2
+        let ox = (viewW - w) / 2
+        let oy = (viewH - h) / 2
         return VideoRect(x: ox, y: oy, width: w, height: h)
     }
 

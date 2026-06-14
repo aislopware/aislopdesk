@@ -181,10 +181,15 @@ public final class LoopbackByteChannel: ByteChannel, @unchecked Sendable {
 
     /// Creates a connected pair `(host, client)`.
     public static func pair() -> (LoopbackByteChannel, LoopbackByteChannel) {
-        var aCont: AsyncThrowingStream<Data, Error>.Continuation!
+        var aCont: AsyncThrowingStream<Data, Error>.Continuation?
         let aIn = AsyncThrowingStream<Data, Error> { aCont = $0 }
-        var bCont: AsyncThrowingStream<Data, Error>.Continuation!
+        var bCont: AsyncThrowingStream<Data, Error>.Continuation?
         let bIn = AsyncThrowingStream<Data, Error> { bCont = $0 }
+        guard let aCont, let bCont else {
+            preconditionFailure(
+                "AsyncThrowingStream runs its build closure synchronously, so the continuations are set",
+            )
+        }
         // `a.send` → `b.inbound` (bCont); `b.send` → `a.inbound` (aCont).
         let a = LoopbackByteChannel(inbound: aIn, peerInbound: bCont)
         let b = LoopbackByteChannel(inbound: bIn, peerInbound: aCont)

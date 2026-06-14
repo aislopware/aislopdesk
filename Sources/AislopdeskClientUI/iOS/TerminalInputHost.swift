@@ -275,7 +275,13 @@ public final class TerminalInputResponderView: UIView {
     /// performs the same cleanup directly without hopping the main actor.
     func teardown() {
         repeater.stop()
-        NotificationCenter.default.removeObserver(self)
+        // Remove exactly the observers registered in `configure` (rather than the blanket
+        // `removeObserver(self)`, which is reserved for `deinit`); equivalent here since these
+        // are the only notifications this object observes.
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: UIResponder.keyboardWillShowNotification, object: nil)
+        center.removeObserver(self, name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        center.removeObserver(self, name: UIResponder.keyboardWillHideNotification, object: nil)
     }
 
     deinit {

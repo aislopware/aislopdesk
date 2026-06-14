@@ -102,7 +102,11 @@ public enum WindowPlacement {
         guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
               let sizeVal = sizeRef else { return nil }
         var size = CGSize.zero
-        AXValueGetValue(sizeVal as! AXValue, .cgSize, &size)
+        // `as?` to a CoreFoundation type (AXValue) always succeeds (compile error); the copy above
+        // succeeded so sizeVal is a non-nil AXValue. Force cast traps on an OS-contract break.
+        // swiftlint:disable:next force_cast
+        let axValue = sizeVal as! AXValue
+        AXValueGetValue(axValue, .cgSize, &size)
         return size
     }
 }

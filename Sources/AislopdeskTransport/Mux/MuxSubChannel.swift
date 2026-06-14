@@ -120,8 +120,11 @@ public actor MuxSubChannel: MessageChannel {
         self.muxSend = muxSend
         self.consumedSink = consumedSink
         sendWindow = sendWindowBytes.map { FlowCreditPolicy(initialWindow: $0) }
-        var continuation: AsyncThrowingStream<WireMessage, Error>.Continuation!
+        var continuation: AsyncThrowingStream<WireMessage, Error>.Continuation?
         inboundStream = AsyncThrowingStream { continuation = $0 }
+        guard let continuation else {
+            preconditionFailure("AsyncThrowingStream runs its build closure synchronously, so the continuation is set")
+        }
         inboundContinuation = continuation
     }
 
@@ -212,12 +215,14 @@ public actor MuxSubChannel: MessageChannel {
             // sub-channel) would leak the parked task + its retained actors forever. The cancellation
             // handler on the park below wakes us; this re-check then throws.
             try Task.checkCancellation()
-            let available = sendWindow!.remaining
+            guard let available = sendWindow?.remaining else {
+                preconditionFailure("awaitChunkCredit requires flow ON (sendWindow != nil)")
+            }
             if available > 0 {
                 let take = min(available, maxWanted)
                 // PARTIAL consume: `take <= remaining` ⇒ always .allowed; never the all-or-nothing
                 // park that stranded an oversized frame (FIX #1).
-                guard case .allowed = sendWindow!.consume(take) else {
+                guard case .allowed = sendWindow?.consume(take) else {
                     // Unreachable (take <= remaining); re-loop defensively rather than trap.
                     continue
                 }
@@ -247,7 +252,7 @@ public actor MuxSubChannel: MessageChannel {
     /// sender so each can retry its ``FlowCreditPolicy/consume(_:)``. A no-op when flow is OFF.
     func grantCredit(_ bytesToAdd: Int) {
         guard sendWindow != nil else { return }
-        sendWindow!.adjust(bytesToAdd: bytesToAdd)
+        sendWindow?.adjust(bytesToAdd: bytesToAdd)
         wakeBlockedSenders()
     }
 

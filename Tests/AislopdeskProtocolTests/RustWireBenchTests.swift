@@ -39,15 +39,15 @@ final class RustWireBenchTests: XCTestCase {
         print("\n=== WireMessage encode: native vs Rust (ns/op, lower is better) ===")
         print(String(
             format: "%-22@ %12@ %12@ %8@",
-            "scenario" as NSString,
-            "native" as NSString,
-            "rust" as NSString,
-            "ratio" as NSString,
+            "scenario",
+            "native",
+            "rust",
+            "ratio",
         ))
         for (name, msg, iters) in scenarios {
             let native = nsPerOp(iters) { sink &+= msg.encodeNative().count }
             let rust = nsPerOp(iters) { sink &+= msg.encode().count }
-            print(String(format: "%-22@ %12.1f %12.1f %7.2fx", name as NSString, native, rust, rust / native))
+            print(String(format: "%-22@ %12.1f %12.1f %7.2fx", name, native, rust, rust / native))
             // Loose absolute ceiling: even 128 KiB through the FFI must stay well under 1 ms/op.
             XCTAssertLessThan(rust, 1_000_000, "rust encode \(name) absurdly slow")
         }
@@ -55,10 +55,10 @@ final class RustWireBenchTests: XCTestCase {
         print("\n=== WireMessage decode: native vs Rust (ns/op, lower is better) ===")
         print(String(
             format: "%-22@ %12@ %12@ %8@",
-            "scenario" as NSString,
-            "native" as NSString,
-            "rust" as NSString,
-            "ratio" as NSString,
+            "scenario",
+            "native",
+            "rust",
+            "ratio",
         ))
         for (name, msg, iters) in scenarios {
             let payload = Data(msg.encodeNative().dropFirst(4))
@@ -68,7 +68,7 @@ final class RustWireBenchTests: XCTestCase {
             let rust = nsPerOp(iters) {
                 sink &+= ((try? WireMessage.decode(payload: payload))?.messageType).map(Int.init) ?? 0
             }
-            print(String(format: "%-22@ %12.1f %12.1f %7.2fx", name as NSString, native, rust, rust / native))
+            print(String(format: "%-22@ %12.1f %12.1f %7.2fx", name, native, rust, rust / native))
             XCTAssertLessThan(rust, 1_000_000, "rust decode \(name) absurdly slow")
         }
         print("(sink: \(sink))\n")

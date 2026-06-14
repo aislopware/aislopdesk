@@ -63,7 +63,7 @@ final class PacerDepthPolicyTests: XCTestCase {
         for i in 0..<240 {
             arrival += 1.0 / 60.0
             dp.noteArrival(arrival)
-            present += (i % 2 == 0) ? 1.0 / 120.0 : 0.025
+            present += i.isMultiple(of: 2) ? 1.0 / 120.0 : 0.025
             XCTAssertNotEqual(dp.notePresent(present), .late, "tick-alternation gap must stay sub-late")
         }
         XCTAssertEqual(dp.drainCounters().lateFrames, 0)
@@ -145,7 +145,7 @@ final class PacerDepthPolicyTests: XCTestCase {
             t += 1.0 / 60.0
             dp.noteArrival(t)
             dp.notePresent(t)
-            if i % 20 == 0 { dp.noteNetworkLate(t) }
+            if i.isMultiple(of: 20) { dp.noteNetworkLate(t) }
             if dp.depth == 2, promotedAt == nil { promotedAt = t }
         }
         guard let promotedAt else { XCTFail("never promoted under a spiking burst")
@@ -162,7 +162,7 @@ final class PacerDepthPolicyTests: XCTestCase {
         var promoted = false
         var held = true
         for k in 0..<20 {
-            t = driveClean(&dp, from: t, frames: k % 2 == 0 ? 20 : 38) // ~333ms / ~633ms
+            t = driveClean(&dp, from: t, frames: k.isMultiple(of: 2) ? 20 : 38) // ~333ms / ~633ms
             dp.noteNetworkLate(t)
             if dp.depth == 2 { promoted = true }
             if promoted, dp.depth != 2 { held = false }
@@ -340,7 +340,7 @@ final class PacerDepthPolicyTests: XCTestCase {
         var dp = PacerDepthPolicy(adaptEnabled: true)
         var t = driveClean(&dp, from: 0, frames: 150)
         for i in 0..<600 { // ~10s, one 30ms wobble per second
-            t += (i % 60 == 0) ? 0.030 : 1.0 / 60.0
+            t += i.isMultiple(of: 60) ? 0.030 : 1.0 / 60.0
             dp.noteArrival(t)
             XCTAssertNotEqual(dp.notePresent(t), .late, "routine jitter within the slack must not be late")
         }

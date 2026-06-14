@@ -22,8 +22,13 @@ public actor NWByteChannel: ByteChannel {
 
     public init(connection: NWConnection) {
         self.connection = connection
-        var cont: AsyncThrowingStream<Data, Error>.Continuation!
+        var cont: AsyncThrowingStream<Data, Error>.Continuation?
         inboundStream = AsyncThrowingStream { cont = $0 }
+        guard let cont else {
+            preconditionFailure(
+                "AsyncThrowingStream's build closure runs synchronously, so the continuation is always set",
+            )
+        }
         inboundContinuation = cont
         // R17 INSP-WIRE-2: if the inbound consumer cancels its iteration WITHOUT calling close() (e.g.
         // its draining task is cancelled), cancel the NWConnection so its fd is released deterministically

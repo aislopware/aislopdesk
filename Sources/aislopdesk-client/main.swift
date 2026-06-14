@@ -51,7 +51,8 @@ struct Args {
     var noRaw: Bool
 }
 
-let programName = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? "aislopdesk-client"
+let programName = CommandLine.arguments.first
+    .map { URL(fileURLWithPath: $0).lastPathComponent } ?? "aislopdesk-client"
 
 func stderrLine(_ s: String) {
     FileHandle.standardError.write(Data("\(programName): \(s)\n".utf8))
@@ -132,9 +133,9 @@ final class ResizeBridge: @unchecked Sendable {
     private var continuation: AsyncStream<Void>.Continuation?
     let stream: AsyncStream<Void>
     init() {
-        var c: AsyncStream<Void>.Continuation!
-        stream = AsyncStream { c = $0 }
-        continuation = c
+        let (stream, continuation) = AsyncStream.makeStream(of: Void.self)
+        self.stream = stream
+        self.continuation = continuation
     }
 
     func signal() {

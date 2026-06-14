@@ -215,8 +215,9 @@ final class CanvasOpsTests: XCTestCase {
         let frames = tidy.items.map(\.frame)
         for i in frames.indices {
             for j in (i + 1)..<frames.count {
+                let overlap = frames[i].intersection(frames[j])
                 XCTAssertTrue(
-                    frames[i].intersection(frames[j]).isNull || frames[i].intersection(frames[j]).isEmpty,
+                    overlap.isNull || overlap.isEmpty,
                     "tidied items must not overlap",
                 )
             }

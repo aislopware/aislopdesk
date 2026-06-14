@@ -103,7 +103,10 @@ private struct CanvasSettingsTab: View {
                 Toggle("Show grid", isOn: $showGrid)
                 Toggle("Keep windows & groups from overlapping", isOn: $nonOverlap)
                 Text(
-                    "Dragging a window slides it flush along its neighbours; dropping it into a cluster parts them to make room. Hold ⌘ while dragging to bypass snapping & overlap for one move.",
+                    """
+                    Dragging a window slides it flush along its neighbours; dropping it into a cluster parts them to make room. \
+                    Hold ⌘ while dragging to bypass snapping & overlap for one move.
+                    """,
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }
@@ -131,7 +134,10 @@ private struct NotificationSettingsTab: View {
             Section("Desktop notifications") {
                 Toggle("Explicit notifications (OSC 9 / 777)", isOn: $osc)
                 Text(
-                    "A remote command can post a notification on demand, e.g. `printf '\\e]9;done\\e\\\\'`. Click it to jump to the pane.",
+                    """
+                    A remote command can post a notification on demand, e.g. \
+                    `printf '\\e]9;done\\e\\\\'`. Click it to jump to the pane.
+                    """,
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 Toggle("Long-running command finished (~10s+)", isOn: $longCommand)
@@ -153,26 +159,38 @@ private struct AdvancedSettingsTab: View {
             Section("System dialogs") {
                 Toggle("Show system password dialogs in their own pane", isOn: $systemDialogPanes)
                 Text(
-                    "A SecurityAgent / sudo prompt on the host auto-spawns an ephemeral pane (and an attention beacon if it lands off-screen). Type into it with Paste as Keystrokes.",
+                    """
+                    A SecurityAgent / sudo prompt on the host auto-spawns an ephemeral pane \
+                    (and an attention beacon if it lands off-screen). Type into it with Paste as Keystrokes.
+                    """,
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }
             Section("Layouts") {
                 Toggle("Auto-switch layout on host app launch", isOn: $autoSwitchLayouts)
                 Text(
-                    "A saved layout with a trigger app switches in automatically when that app first opens a window on the host (set the trigger when you save a layout).",
+                    """
+                    A saved layout with a trigger app switches in automatically when that app first opens a window \
+                    on the host (set the trigger when you save a layout).
+                    """,
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }
             Section("Privacy") {
                 Toggle("Redact secrets in titles, notifications & clipboard previews", isOn: $redactSecrets)
                 Text(
-                    "Masks likely access keys, bearer tokens and `PASSWORD=…` out of window titles, notification banners, and the “Paste Recent” menu previews before they’re shown.",
+                    """
+                    Masks likely access keys, bearer tokens and `PASSWORD=…` out of window titles, \
+                    notification banners, and the “Paste Recent” menu previews before they’re shown.
+                    """,
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 Toggle("Record clipboard history (for Paste Recent)", isOn: $recordClipboard)
                 Text(
-                    "Keeps a short ring of recently-copied text for the pill’s “Paste Recent”. Turn off to stop retaining any copied string; clear existing entries from that menu’s “Clear History”.",
+                    """
+                    Keeps a short ring of recently-copied text for the pill’s “Paste Recent”. \
+                    Turn off to stop retaining any copied string; clear existing entries from that menu’s “Clear History”.
+                    """,
                 )
                 .font(.caption).foregroundStyle(.secondary)
             }

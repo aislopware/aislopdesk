@@ -337,15 +337,13 @@ final class EncodeCadenceGateTests: XCTestCase {
         for (fps, expectStride) in [(30, 2), (20, 3), (15, 4)] {
             var gate = EncodeCadenceGate()
             var admittedSlots: [Int] = []
-            for i in 0..<48 {
-                if gate.admit(
-                    now: Double(i) * slot,
-                    targetIntervalSeconds: 1.0 / Double(fps),
-                    toleranceSeconds: tol,
-                    forced: false,
-                ) {
-                    admittedSlots.append(i)
-                }
+            for i in 0..<48 where gate.admit(
+                now: Double(i) * slot,
+                targetIntervalSeconds: 1.0 / Double(fps),
+                toleranceSeconds: tol,
+                forced: false,
+            ) {
+                admittedSlots.append(i)
             }
             XCTAssertGreaterThan(admittedSlots.count, 3)
             for pair in zip(admittedSlots, admittedSlots.dropFirst()) {
@@ -364,7 +362,7 @@ final class EncodeCadenceGateTests: XCTestCase {
         var admitted: [Double] = []
         // ±4 ms deterministic jitter on every delivery — inside the half-slot tolerance.
         for i in 0..<60 {
-            let jitter = (i % 2 == 0 ? -0.004 : 0.004)
+            let jitter = (i.isMultiple(of: 2) ? -0.004 : 0.004)
             let now = Double(i) * slot + (i == 0 ? 0 : jitter)
             if gate.admit(now: now, targetIntervalSeconds: interval, toleranceSeconds: tol, forced: false) {
                 admitted.append(Double(i) * slot) // nominal slot time — measures slot indices

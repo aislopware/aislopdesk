@@ -33,7 +33,7 @@ final class AislopdeskClientReconnectRaceTests: XCTestCase {
             await rec.releaseAll() // let the handshake complete and resume connect()
             _ = await connectTask.value
 
-            let live = await client._hasLiveTransportForTesting
+            let live = await client.hasLiveTransportForTesting
             XCTAssertFalse(live, "a connect superseded by close() must NOT adopt its transport (zombie)")
             let closes = await rec.totalCloseCount()
             XCTAssertEqual(
@@ -58,7 +58,7 @@ final class AislopdeskClientReconnectRaceTests: XCTestCase {
             await rec.releaseAll()
             _ = await connectTask.value
 
-            let liveAfterPause = await client._hasLiveTransportForTesting
+            let liveAfterPause = await client.hasLiveTransportForTesting
             XCTAssertFalse(liveAfterPause, "a connect superseded by pause() must NOT adopt its transport")
             let closesAfterPause = await rec.totalCloseCount()
             XCTAssertEqual(closesAfterPause, 1, "the transport built during the paused connect is closed")
@@ -68,7 +68,7 @@ final class AislopdeskClientReconnectRaceTests: XCTestCase {
             await rec.waitForStarted(2) // the resume's NEW transport reached the gate
             await rec.releaseAll()
             _ = await resumeTask.value
-            let liveAfterResume = await client._hasLiveTransportForTesting
+            let liveAfterResume = await client.hasLiveTransportForTesting
             XCTAssertTrue(liveAfterResume, "resume() after a paused-mid-connect adopts a live transport")
             await client.close()
         }
@@ -89,7 +89,7 @@ final class AislopdeskClientReconnectRaceTests: XCTestCase {
             _ = await c1.value
             _ = await c2.value
 
-            let live = await client._hasLiveTransportForTesting
+            let live = await client.hasLiveTransportForTesting
             XCTAssertTrue(live, "the winning (latest-generation) connect adopts its transport")
             let closes = await rec.totalCloseCount()
             XCTAssertEqual(closes, 1, "exactly the superseded transport is torn down (no zombie, no double-live)")

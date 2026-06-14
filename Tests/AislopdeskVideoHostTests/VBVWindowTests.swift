@@ -83,7 +83,10 @@ final class VBVWindowTests: XCTestCase {
     // of the requested rate (AverageBitRate alone steers — the Parsec rate-control model).
     func testDataRateLimitsDefaultIsPureVBRUnbound() {
         XCTAssertEqual(VideoEncoder.vbvWindowSeconds, 1.0, "test env must not set AISLOPDESK_VBV_WINDOW")
-        let arr = VideoEncoder.dataRateLimits(bytesPerSecond: 1_500_000) as NSArray
+        guard let arr = VideoEncoder.dataRateLimits(bytesPerSecond: 1_500_000) as? [Any] else {
+            XCTFail("dataRateLimits must bridge to an array")
+            return
+        }
         XCTAssertEqual(arr.count, 2)
         XCTAssertEqual(arr[0] as? Int, 1_000_000_000, "default = pure VBR: the hard cap must never bind")
         XCTAssertEqual(arr[1] as? Double, 1.0)

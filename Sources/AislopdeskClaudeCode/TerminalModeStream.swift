@@ -17,8 +17,9 @@ public final class TerminalModeStream: @unchecked Sendable {
     public let events: AsyncStream<TerminalModeEvent>
 
     public init() {
-        var cont: AsyncStream<TerminalModeEvent>.Continuation!
+        var cont: AsyncStream<TerminalModeEvent>.Continuation?
         events = AsyncStream { cont = $0 }
+        guard let cont else { preconditionFailure("AsyncStream build closure runs synchronously during init") }
         continuation = cont
     }
 

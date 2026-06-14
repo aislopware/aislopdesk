@@ -60,6 +60,9 @@ public struct LineAccumulator {
                 // Lossy UTF-8 (U+FFFD substitution) so a line with invalid bytes still SURFACES as a
                 // line (the caller maps an unparseable one to `.unknown`) rather than being silently
                 // dropped by a failed `String(data:encoding:)` — the never-miss-a-line contract (INSP-PARSE-3).
+                // The failable initializer the lint rule prefers returns nil on invalid UTF-8 (would drop the
+                // line and break the INSP-PARSE-3 regression test), so the lossy decode is mandatory here.
+                // swiftlint:disable:next optional_data_string_conversion
                 lines.append(String(decoding: bytes, as: UTF8.self))
             }
             searchStart = pending.index(after: nlIndex)

@@ -188,10 +188,10 @@ public struct GhosttyTerminfoProbe: Sendable {
 
         for base in searchDirectories(environment: environment) {
             for sub in [firstChar, hexDir] {
-                let candidate = (base as NSString)
-                    .appendingPathComponent(sub)
-                    .appending("/")
-                    .appending(term)
+                // `appendingPathComponent`-equivalent join: avoid a doubled slash when `base`
+                // already ends in one, and preserve relative bases verbatim (env dirs may be relative).
+                let baseWithSub = base.hasSuffix("/") ? base + sub : base + "/" + sub
+                let candidate = baseWithSub + "/" + term
                 if fileExists(candidate) { return true }
             }
         }
@@ -208,13 +208,15 @@ public struct GhosttyTerminfoProbe: Sendable {
             dirs.append(ti)
         }
         if let home = environment["HOME"], !home.isEmpty {
-            dirs.append((home as NSString).appendingPathComponent(".terminfo"))
+            dirs.append(home.hasSuffix("/") ? home + ".terminfo" : home + "/.terminfo")
         }
         if let tiDirs = environment["TERMINFO_DIRS"], !tiDirs.isEmpty {
-            for element in tiDirs.split(separator: ":", omittingEmptySubsequences: false) {
-                // An empty element in TERMINFO_DIRS means "the compiled-in default location";
-                // we approximate that with the system dirs appended below, so skip the blank.
-                if !element.isEmpty { dirs.append(String(element)) }
+            // An empty element in TERMINFO_DIRS means "the compiled-in default location";
+            // we approximate that with the system dirs appended below, so skip the blank.
+            for element in tiDirs.split(separator: ":", omittingEmptySubsequences: false)
+                where !element.isEmpty
+            {
+                dirs.append(String(element))
             }
         }
         // Conventional system locations (present on macOS + most Linux).

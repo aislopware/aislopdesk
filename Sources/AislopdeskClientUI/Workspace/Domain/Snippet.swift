@@ -33,13 +33,24 @@ public struct Snippet: Codable, Sendable, Equatable, Identifiable {
 /// surrounding whitespace inside the braces. Fully table-tested — no view, no store.
 public enum SnippetExpander {
     /// Matches one `{{ name }}` placeholder, capturing the trimmed name.
-    private static let pattern = try! NSRegularExpression(pattern: #"\{\{\s*([A-Za-z0-9_.\-]+)\s*\}\}"#)
+    private static let pattern: NSRegularExpression = {
+        // The pattern is a compile-time constant literal known to be valid, so this never fails in
+        // practice; treat a compile failure as a programmer error (same trap intent as the old `try!`).
+        guard let regex = try? NSRegularExpression(pattern: #"\{\{\s*([A-Za-z0-9_.\-]+)\s*\}\}"#) else {
+            preconditionFailure("Snippet placeholder regex literal failed to compile")
+        }
+        return regex
+    }()
 
     /// Replaces every `{{name}}` with `values[name]`. A name with no value is LEFT in place (so the user
     /// sees what is unresolved) and reported in `missing` (first-appearance order, deduped).
     public static func expand(_ body: String, values: [String: String]) -> (text: String, missing: [String]) {
         var missing: [String] = []
         var seenMissing = Set<String>()
+        // NSString is required: NSRegularExpression yields UTF-16 NSRanges, consumed via
+        // NSString.substring(with:)/.length — a pure-Swift rewrite needs error-prone UTF-16↔String
+        // index bookkeeping with behaviour-change risk.
+        // swiftlint:disable:next legacy_objc_type
         let ns = body as NSString
         let matches = pattern.matches(in: body, range: NSRange(location: 0, length: ns.length))
         var out = ""
@@ -62,6 +73,8 @@ public enum SnippetExpander {
 
     /// The distinct placeholder names in `body`, in first-appearance order.
     public static func placeholders(in body: String) -> [String] {
+        // NSString required for NSRegularExpression's UTF-16 NSRanges (see expand above).
+        // swiftlint:disable:next legacy_objc_type
         let ns = body as NSString
         var seen = Set<String>()
         var names: [String] = []

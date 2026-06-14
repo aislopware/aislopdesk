@@ -61,7 +61,7 @@ final class OwdLateDetectorTests: XCTestCase {
         var d = OwdLateDetector()
         var (arrival, send) = warm(&d)
         for i in 0..<50 {
-            arrival += 16.7 + (i % 3 == 0 ? 18 : (i % 3 == 1 ? -18 : 0))
+            arrival += 16.7 + (i.isMultiple(of: 3) ? 18 : (i % 3 == 1 ? -18 : 0))
             send &+= 17
             XCTAssertNil(
                 d.note(arrivalMs: arrival, sendTs: send, intervalMs: interval),

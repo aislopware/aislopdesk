@@ -17,8 +17,9 @@ public actor InspectorEngine {
     private let stream: AsyncStream<InspectorEvent>
 
     public init() {
-        var cont: AsyncStream<InspectorEvent>.Continuation!
+        var cont: AsyncStream<InspectorEvent>.Continuation?
         stream = AsyncStream { cont = $0 }
+        guard let cont else { preconditionFailure("AsyncStream build closure runs synchronously during init") }
         continuation = cont
     }
 

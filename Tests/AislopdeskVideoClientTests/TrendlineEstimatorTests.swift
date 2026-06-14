@@ -119,7 +119,7 @@ final class TrendlineEstimatorTests: XCTestCase {
         var ts: UInt32 = 5000
         est.note(arrivalMs: arrival, sendTs: ts)
         for i in 0..<500 {
-            arrival += (i % 2 == 0) ? 24 : 8 // owd alternates +8 / −8 around the same level
+            arrival += i.isMultiple(of: 2) ? 24 : 8 // owd alternates +8 / −8 around the same level
             ts &+= 16
             est.note(arrivalMs: arrival, sendTs: ts)
             XCTAssertNotEqual(est.state, .overusing, "zero-net-ramp jitter must never read overusing (sample \(i))")
@@ -250,7 +250,7 @@ final class TrendlineEstimatorTests: XCTestCase {
             var ts: UInt32 = 5000
             est.note(arrivalMs: arrival, sendTs: ts)
             for i in 0..<150 {
-                arrival += i % 3 == 0 ? 18.5 : 15.0
+                arrival += i.isMultiple(of: 3) ? 18.5 : 15.0
                 ts &+= 16
                 est.note(arrivalMs: arrival, sendTs: ts)
             }

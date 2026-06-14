@@ -83,7 +83,7 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
         let target: Duration = {
             lock.lock()
             defer { lock.unlock() }
-            clock = clock + delta
+            clock += delta
             return clock
         }()
 
@@ -103,7 +103,7 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
             // work itself is ordered after this fire.
             lock.lock()
             if let interval = item.interval {
-                item.deadline = item.deadline + interval
+                item.deadline += interval
             } else {
                 items.removeAll { $0 === item }
             }

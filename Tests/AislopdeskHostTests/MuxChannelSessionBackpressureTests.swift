@@ -43,13 +43,13 @@ final class MuxChannelSessionBackpressureTests: XCTestCase {
         let rec = PauseRec()
         let session = makeSession(replay: ReplayBuffer(maxBackupBytes: 100, offlineGateBytes: 40))
         // Queue cap huge so ONLY the replay source can drive the pause here.
-        session._installGateForTesting(PausableQueueGate(capacity: 1_000_000) { rec.apply($0) })
+        session.installGateForTesting(PausableQueueGate(capacity: 1_000_000) { rec.apply($0) })
 
-        let s1 = session._appendForTesting(Data(count: 60)) // retained 60 < 100 → run
+        let s1 = session.appendForTesting(Data(count: 60)) // retained 60 < 100 → run
         XCTAssertFalse(rec.isPaused, "under the cap → read loop runs")
-        session._appendForTesting(Data(count: 60)) // retained 120 ≥ 100 → pause
+        session.appendForTesting(Data(count: 60)) // retained 120 ≥ 100 → pause
         XCTAssertTrue(rec.isPaused, "retained past the 64 MiB-equivalent cap → read loop PAUSED (cap enforced)")
-        session._ackForTesting(upTo: s1) // release the first 60 → retained 60 < 100
+        session.ackForTesting(upTo: s1) // release the first 60 → retained 60 < 100
         XCTAssertFalse(rec.isPaused, "ack released enough of the backlog → resume")
     }
 
@@ -57,13 +57,13 @@ final class MuxChannelSessionBackpressureTests: XCTestCase {
     func testOfflineGateEngagesWhenClientGoesOffline() {
         let rec = PauseRec()
         let session = makeSession(replay: ReplayBuffer(maxBackupBytes: 1_000_000, offlineGateBytes: 50))
-        session._installGateForTesting(PausableQueueGate(capacity: 1_000_000) { rec.apply($0) })
+        session.installGateForTesting(PausableQueueGate(capacity: 1_000_000) { rec.apply($0) })
 
-        session._appendForTesting(Data(count: 60)) // retained 60 ≥ offlineGate(50) but ONLINE → no pause
+        session.appendForTesting(Data(count: 60)) // retained 60 ≥ offlineGate(50) but ONLINE → no pause
         XCTAssertFalse(rec.isPaused, "online: the offline gate does not apply")
-        session._setClientOnlineForTesting(false) // client unreachable → offline gate engages
+        session.setClientOnlineForTesting(false) // client unreachable → offline gate engages
         XCTAssertTrue(rec.isPaused, "offline + retained(60) ≥ offlineGate(50) → pause")
-        session._setClientOnlineForTesting(true) // back online, retained < the 1 MB cap → resume
+        session.setClientOnlineForTesting(true) // back online, retained < the 1 MB cap → resume
         XCTAssertFalse(rec.isPaused, "back online under the cap → resume")
     }
 
@@ -73,10 +73,10 @@ final class MuxChannelSessionBackpressureTests: XCTestCase {
     /// `.exit` is yielded right after the final tail, with no spurious delay on the common path.
     func testExitGateReturnsImmediatelyAfterEOFSignal() async {
         let session = makeSession(replay: ReplayBuffer())
-        session._signalEOFForTesting()
-        XCTAssertTrue(session._isEOFReachedForTesting())
+        session.signalEOFForTesting()
+        XCTAssertTrue(session.isEOFReachedForTesting())
         let start = ContinuousClock.now
-        await session._awaitEOFForTesting(timeout: .seconds(5))
+        await session.awaitEOFForTesting(timeout: .seconds(5))
         XCTAssertLessThan(
             start.duration(to: ContinuousClock.now),
             .milliseconds(150),
@@ -88,9 +88,9 @@ final class MuxChannelSessionBackpressureTests: XCTestCase {
     /// timeout so exit delivery can never hang forever.
     func testExitGateTimesOutWhenEOFNeverReached() async {
         let session = makeSession(replay: ReplayBuffer())
-        XCTAssertFalse(session._isEOFReachedForTesting())
+        XCTAssertFalse(session.isEOFReachedForTesting())
         let start = ContinuousClock.now
-        await session._awaitEOFForTesting(timeout: .milliseconds(120))
+        await session.awaitEOFForTesting(timeout: .milliseconds(120))
         let elapsed = start.duration(to: ContinuousClock.now)
         XCTAssertGreaterThanOrEqual(
             elapsed,
@@ -104,10 +104,10 @@ final class MuxChannelSessionBackpressureTests: XCTestCase {
     /// reaper resolves `waitForExit` first, then the read loop drains the tail and signals EOF).
     func testExitGateReleasesWhenEOFArrivesDuringWait() async {
         let session = makeSession(replay: ReplayBuffer())
-        let waitTask = Task { await session._awaitEOFForTesting(timeout: .seconds(5)) }
+        let waitTask = Task { await session.awaitEOFForTesting(timeout: .seconds(5)) }
         try? await Task.sleep(for: .milliseconds(30))
         let start = ContinuousClock.now
-        session._signalEOFForTesting() // the tail finished draining → EOF
+        session.signalEOFForTesting() // the tail finished draining → EOF
         await waitTask.value
         XCTAssertLessThan(
             start.duration(to: ContinuousClock.now),
@@ -122,10 +122,10 @@ final class MuxChannelSessionBackpressureTests: XCTestCase {
     /// onExit (→ teardown) fires right after — no spurious delay on the common path.
     func testExitSentGateReturnsImmediatelyAfterSignal() async {
         let session = makeSession(replay: ReplayBuffer())
-        session._signalExitSentForTesting()
-        XCTAssertTrue(session._isExitSentForTesting())
+        session.signalExitSentForTesting()
+        XCTAssertTrue(session.isExitSentForTesting())
         let start = ContinuousClock.now
-        await session._awaitExitSentForTesting(timeout: .seconds(5))
+        await session.awaitExitSentForTesting(timeout: .seconds(5))
         XCTAssertLessThan(
             start.duration(to: ContinuousClock.now),
             .milliseconds(150),
@@ -137,9 +137,9 @@ final class MuxChannelSessionBackpressureTests: XCTestCase {
     /// bounded timeout so teardown can never hang forever waiting to deliver an undeliverable code.
     func testExitSentGateTimesOutWhenNeverSent() async {
         let session = makeSession(replay: ReplayBuffer())
-        XCTAssertFalse(session._isExitSentForTesting())
+        XCTAssertFalse(session.isExitSentForTesting())
         let start = ContinuousClock.now
-        await session._awaitExitSentForTesting(timeout: .milliseconds(120))
+        await session.awaitExitSentForTesting(timeout: .milliseconds(120))
         let elapsed = start.duration(to: ContinuousClock.now)
         XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(100), "without an exit-sent signal it waits the timeout")
         XCTAssertLessThan(elapsed, .seconds(2), "but releases at the bounded timeout, not hang")
@@ -149,10 +149,10 @@ final class MuxChannelSessionBackpressureTests: XCTestCase {
     /// race: the drain finishes sending `.exit`, THEN the gate wakes and onExit fires).
     func testExitSentGateReleasesWhenSignalArrivesDuringWait() async {
         let session = makeSession(replay: ReplayBuffer())
-        let waitTask = Task { await session._awaitExitSentForTesting(timeout: .seconds(5)) }
+        let waitTask = Task { await session.awaitExitSentForTesting(timeout: .seconds(5)) }
         try? await Task.sleep(for: .milliseconds(30))
         let start = ContinuousClock.now
-        session._signalExitSentForTesting()
+        session.signalExitSentForTesting()
         await waitTask.value
         XCTAssertLessThan(
             start.duration(to: ContinuousClock.now),

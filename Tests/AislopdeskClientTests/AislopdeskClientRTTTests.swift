@@ -22,7 +22,7 @@ final class AislopdeskClientRTTTests: XCTestCase {
         XCTAssertNil(initial, "no RTT before the first pong")
 
         let nowMS = DispatchTime.now().uptimeNanoseconds / 1_000_000
-        await client._handleInboundForTesting(.pong(timestampMS: nowMS - 40))
+        await client.handleInboundForTesting(.pong(timestampMS: nowMS - 40))
         let first = await client.smoothedRTTMS
         XCTAssertNotNil(first)
         XCTAssertGreaterThanOrEqual(try XCTUnwrap(first), 40, "first sample seeds the EWMA directly")
@@ -30,7 +30,7 @@ final class AislopdeskClientRTTTests: XCTestCase {
 
         // Second sample pulls the EWMA by α=0.25.
         let secondNow = DispatchTime.now().uptimeNanoseconds / 1_000_000
-        await client._handleInboundForTesting(.pong(timestampMS: secondNow - 200))
+        await client.handleInboundForTesting(.pong(timestampMS: secondNow - 200))
         let second = await client.smoothedRTTMS
         XCTAssertNotNil(second)
         XCTAssertGreaterThan(try XCTUnwrap(second), try XCTUnwrap(first), "a slower sample raises the smoothed value")
@@ -45,7 +45,7 @@ final class AislopdeskClientRTTTests: XCTestCase {
         // point on), then race the collector against a bounded timeout.
         let events = client.events
         let nowMS = DispatchTime.now().uptimeNanoseconds / 1_000_000
-        await client._handleInboundForTesting(.pong(timestampMS: nowMS - 10))
+        await client.handleInboundForTesting(.pong(timestampMS: nowMS - 10))
 
         let sample: Double? = await withTaskGroup(of: Double?.self) { group in
             group.addTask {
@@ -74,7 +74,7 @@ final class AislopdeskClientRTTTests: XCTestCase {
     func testFutureTimestampIsIgnored() async {
         let client = makeClient()
         let futureMS = DispatchTime.now().uptimeNanoseconds / 1_000_000 + 60000
-        await client._handleInboundForTesting(.pong(timestampMS: futureMS))
+        await client.handleInboundForTesting(.pong(timestampMS: futureMS))
         let rtt = await client.smoothedRTTMS
         XCTAssertNil(rtt, "a nonsensical (future) echo is dropped, never a negative sample")
         await client.close()
