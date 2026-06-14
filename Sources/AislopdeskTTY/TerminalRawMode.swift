@@ -203,7 +203,7 @@ public enum TerminalRawMode {
         for sig in handledSignals {
             var action = sigaction()
             action.__sigaction_u.__sa_handler = { signo in
-                TerminalRawMode.restoreFromSignalHandler()
+                Self.restoreFromSignalHandler()
                 // Re-raise with the default disposition so we die with the right status.
                 signal(signo, SIG_DFL)
                 raise(signo)

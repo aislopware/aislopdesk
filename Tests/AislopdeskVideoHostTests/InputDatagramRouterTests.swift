@@ -16,13 +16,17 @@ final class InputDatagramRouterTests: XCTestCase {
     func testDropsUndecodableDatagram() {
         let garbage = Data([0xFF, 0x00, 0x01]) // unknown event type 0xFF
         let decision = router.route(datagram: garbage, mediaFlowing: true, needsRaise: false)
-        guard case .drop = decision else { return XCTFail("expected drop, got \(decision)") }
+        guard case .drop = decision else { XCTFail("expected drop, got \(decision)")
+            return
+        }
     }
 
     func testInjectsDecodableEvent() {
         let event = InputEvent.text("hi", tag: 9)
         let decision = router.route(datagram: event.encode(), mediaFlowing: true, needsRaise: false)
-        guard case let .inject(decoded, raiseFirst) = decision else { return XCTFail("expected inject") }
+        guard case let .inject(decoded, raiseFirst) = decision else { XCTFail("expected inject")
+            return
+        }
         XCTAssertEqual(decoded, event)
         XCTAssertFalse(raiseFirst, "text does not raise unless the latch is armed")
     }
@@ -33,7 +37,8 @@ final class InputDatagramRouterTests: XCTestCase {
         guard case let .inject(_, keyRaises) = router
             .route(datagram: key.encode(), mediaFlowing: true, needsRaise: true)
         else {
-            return XCTFail("expected inject for key")
+            XCTFail("expected inject for key")
+            return
         }
         XCTAssertTrue(keyRaises, "an armed latch raises a key event (it needs key focus)")
 
@@ -45,7 +50,8 @@ final class InputDatagramRouterTests: XCTestCase {
             mediaFlowing: true,
             needsRaise: true,
         ) else {
-            return XCTFail("expected inject for scroll")
+            XCTFail("expected inject for scroll")
+            return
         }
         XCTAssertFalse(scrollRaises, "an armed latch must NOT raise a scroll (latch-exempt)")
     }
@@ -74,7 +80,9 @@ final class InputDatagramRouterTests: XCTestCase {
     func testMouseDownAlwaysRaisesRegardlessOfLatch() {
         let event = InputEvent.mouseDown(button: .left, normalized: n, clickCount: 1, modifiers: [], tag: 0)
         let decision = router.route(datagram: event.encode(), mediaFlowing: true, needsRaise: false)
-        guard case let .inject(_, raiseFirst) = decision else { return XCTFail("expected inject") }
+        guard case let .inject(_, raiseFirst) = decision else { XCTFail("expected inject")
+            return
+        }
         XCTAssertTrue(raiseFirst, "a pointer button-down always raises+focuses first (doc 18 §A)")
     }
 
@@ -89,7 +97,9 @@ final class InputDatagramRouterTests: XCTestCase {
         ]
         for event in events {
             let decision = router.route(datagram: event.encode(), mediaFlowing: true, needsRaise: false)
-            guard case let .inject(_, raiseFirst) = decision else { return XCTFail("expected inject for \(event)") }
+            guard case let .inject(_, raiseFirst) = decision else { XCTFail("expected inject for \(event)")
+                return
+            }
             XCTAssertFalse(raiseFirst, "\(event) must not raise when the latch is clear")
         }
     }

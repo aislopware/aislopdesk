@@ -36,7 +36,7 @@ final class InMemoryMuxLink: MuxByteLink, @unchecked Sendable {
 
     var receiveChunks: AsyncThrowingStream<Data, Error> { inbound }
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data) {
         peerInbound?.yield(data)
     }
 
@@ -46,7 +46,7 @@ final class InMemoryMuxLink: MuxByteLink, @unchecked Sendable {
         peerInbound?.yield(data)
     }
 
-    func close() async {
+    func close() {
         peerInbound?.finish()
         outbound.finish()
     }

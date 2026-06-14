@@ -53,7 +53,7 @@ public protocol ClientTransporting: Sendable {
 
 public extension ClientTransporting {
     /// Default no-op: only windowed transports (the mux) account consumption.
-    func noteOutputConsumed(wireBytes: Int) async {}
+    func noteOutputConsumed(wireBytes _: Int) {}
     /// Default no-op: only the mux transport carries the RTT probe.
-    func sendPing(timestampMS: UInt64) async throws {}
+    func sendPing(timestampMS _: UInt64) {}
 }

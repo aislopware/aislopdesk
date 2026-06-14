@@ -394,7 +394,8 @@ public struct LiveCongestionController: Sendable, Equatable {
             // hold-down window.
             decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)), queueCorroborated: rttInflated)
             return Decision(target: current, reason: .catastrophic)
-        } else if rttCongested || lossCongested || gradientCongested {
+        }
+        if rttCongested || lossCongested || gradientCongested {
             // Ordinary congestion. DELAY-TARGETING (2026-06-11): the RTT path sizes the decrease to
             // the MEASURED queue instead of a fixed ×0.85 — `factor = (minRTT + slack) / smoothedRTT`,
             // clamped to [rttDecreaseFloorFactor, rttDecreaseCapFactor]. A 70ms standing queue over a
@@ -441,7 +442,8 @@ public struct LiveCongestionController: Sendable, Equatable {
             }
             decrease(to: max(floor, target), queueCorroborated: rttInflated)
             return Decision(target: current, reason: reason)
-        } else if ticks >= holdUntilTick, !rttInflated, !(gradientCutEnabled && e.owdTrendOverusing) {
+        }
+        if ticks >= holdUntilTick, !rttInflated, !(gradientCutEnabled && e.owdTrendOverusing) {
             // Clean link past the hold-down: probe up additively toward the ceiling. `!rttInflated`
             // keeps the probe from climbing INTO a building queue while the streak/hold-down is
             // still suppressing the decrease (minRTT re-baselines upward ~1%/fold, so a genuinely

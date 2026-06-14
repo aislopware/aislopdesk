@@ -49,7 +49,8 @@ final class InspectorReplayTruncationTests: XCTestCase {
         }
 
         guard case let .historyTruncated(dropped)? = first else {
-            return XCTFail("expected a historyTruncated marker first, got \(String(describing: first))")
+            XCTFail("expected a historyTruncated marker first, got \(String(describing: first))")
+            return
         }
         XCTAssertGreaterThan(dropped, 0, "the dropped-prefix count is surfaced to the client")
     }
@@ -64,7 +65,9 @@ final class InspectorReplayTruncationTests: XCTestCase {
             break
         }
 
-        guard let firstEvent = first else { return XCTFail("expected a replayed event") }
+        guard let firstEvent = first else { XCTFail("expected a replayed event")
+            return
+        }
         if case .historyTruncated = firstEvent {
             XCTFail("no truncation marker must be emitted when nothing was dropped")
         }

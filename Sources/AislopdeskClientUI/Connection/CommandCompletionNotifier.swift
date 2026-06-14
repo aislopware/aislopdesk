@@ -181,6 +181,7 @@ final class CommandCompletionNotifier {
 /// store (focus + centre the originating pane). The app installs it as the
 /// `UNUserNotificationCenterDelegate` at launch; the key + parsing live here so they are one source
 /// of truth shared with ``CommandCompletionNotifier``.
+@preconcurrency
 @MainActor
 public final class PaneNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     /// The `userInfo` key carrying the originating pane's id string. `nonisolated` so the
@@ -197,18 +198,18 @@ public final class PaneNotificationRouter: NSObject, UNUserNotificationCenterDel
     /// the user is looking at a different pane would be silently dropped). `nonisolated` to satisfy the
     /// delegate conformance; it touches no main-actor state.
     public nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void,
+        _: UNUserNotificationCenter,
+        willPresent _: UNNotification,
+        withCompletionHandler completionHandler: (UNNotificationPresentationOptions) -> Void,
     ) {
         completionHandler([.banner, .sound])
     }
 
     /// A click on the notification → reveal the originating pane (hops to the main actor for the store).
     public nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
+        _: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
-        withCompletionHandler completionHandler: @escaping () -> Void,
+        withCompletionHandler completionHandler: () -> Void,
     ) {
         let key = response.notification.request.content.userInfo[Self.paneIDUserInfoKey] as? String
         Task { @MainActor [weak self] in

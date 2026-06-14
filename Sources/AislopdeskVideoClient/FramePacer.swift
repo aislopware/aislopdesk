@@ -693,6 +693,7 @@ public final class FramePacer: @unchecked Sendable {
     /// from a test. `@MainActor`: `NSView.displayLink(target:selector:)` is main-actor
     /// API and the returned `CADisplayLink` is main-confined; the pipeline calls this on
     /// the main actor.
+    @preconcurrency
     @MainActor
     public func start(view: NSView) {
         guard displayLink == nil else { return }
@@ -710,6 +711,7 @@ public final class FramePacer: @unchecked Sendable {
     /// signature parity with the macOS path (and so the link's screen could be derived
     /// later); iOS constructs the `CADisplayLink` directly.
     /// ⚠️ GUI-only — needs a run loop + a screen; NEVER called from a test.
+    @preconcurrency
     @MainActor
     public func start(view: UIView) {
         guard displayLink == nil else { return }
@@ -737,6 +739,7 @@ public final class FramePacer: @unchecked Sendable {
     }
 
     /// Stops + releases the display link. `@MainActor`: the link is main-confined.
+    @preconcurrency
     @MainActor
     public func stop() {
         displayLink?.invalidate()

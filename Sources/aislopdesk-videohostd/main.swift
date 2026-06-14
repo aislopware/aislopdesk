@@ -71,8 +71,8 @@ struct VideoHostdArguments {
         """
     }
 
-    static func parse(_ argv: [String]) -> VideoHostdArguments? {
-        var a = VideoHostdArguments()
+    static func parse(_ argv: [String]) -> Self? {
+        var a = Self()
         var i = 1
         func next() -> String? { i + 1 < argv.count ? argv[i + 1] : nil }
         while i < argv.count {
@@ -502,7 +502,7 @@ Task {
             // window simply stays where it is and still streams. Per-pane so two panes can each be
             // moved onto the shared VD.
             let paneCaptureScale: Double
-            var paneSizeOverride: VideoSize? = nil
+            var paneSizeOverride: VideoSize?
             if vdDisplayID != 0, let movePid = w.owningApplication?.processID,
                let achieved = await WindowPlacement.moveWindowOntoDisplay(
                    windowID: requestedWindowID,

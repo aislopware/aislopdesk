@@ -4,7 +4,7 @@ import XCTest
 /// Encodes a mux frame, feeds the resulting envelope bytes through a fresh
 /// `MuxFrameDecoder`, and returns the decoded frame — the canonical round-trip helper
 /// (mirrors `WireMessageRoundTripTests.roundTrip`).
-private func roundTrip(_ frame: MuxFrame, file: StaticString = #filePath, line: UInt = #line) throws -> MuxFrame? {
+private func roundTrip(_ frame: MuxFrame, file _: StaticString = #filePath, line _: UInt = #line) throws -> MuxFrame? {
     var decoder = MuxFrameDecoder()
     decoder.append(MuxEnvelopeCodec.encode(frame))
     return try decoder.nextFrame()
@@ -66,7 +66,8 @@ final class MuxEnvelopeCodecTests: XCTestCase {
             XCTAssertEqual(decoded, frame)
             // And the carried bytes are byte-identical (the mux layer never mutated them).
             guard case let .channelData(_, decodedPayload) = decoded else {
-                return XCTFail("expected channelData, got \(String(describing: decoded))")
+                XCTFail("expected channelData, got \(String(describing: decoded))")
+                return
             }
             XCTAssertEqual(decodedPayload, payload)
         }

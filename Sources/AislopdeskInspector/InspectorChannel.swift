@@ -191,7 +191,7 @@ public final class LoopbackByteChannel: ByteChannel, @unchecked Sendable {
         return (a, b)
     }
 
-    public func send(_ data: Data) async throws {
+    public func send(_ data: Data) {
         outbound.yield(data)
     }
 

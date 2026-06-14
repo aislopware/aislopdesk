@@ -24,13 +24,13 @@ public struct FrameFragmentHeader: Equatable, Sendable {
         public let rawValue: UInt8
         public init(rawValue: UInt8) { self.rawValue = rawValue }
         /// This frame is a keyframe (IDR) — a fresh decode anchor.
-        public static let keyframe = Flags(rawValue: 1 << 0)
+        public static let keyframe = Self(rawValue: 1 << 0)
         /// This fragment is an FEC parity fragment, not original data.
-        public static let parity = Flags(rawValue: 1 << 1)
+        public static let parity = Self(rawValue: 1 << 1)
         /// This frame is a CRISP near-lossless static refresh (a QP-bumped keyframe from the live
         /// session, emitted when the window is at rest — Design A). Informational on the wire; the
         /// client treats it as an ordinary keyframe.
-        public static let crisp = Flags(rawValue: 1 << 2)
+        public static let crisp = Self(rawValue: 1 << 2)
 
         // WF-4 ADAPTIVE FEC: a 3-bit FEC tier index packed into bits 3,4,5 of the (otherwise
         // 3-bit-used) flags byte — NO new header field, NO size change. The tier signals the
@@ -48,7 +48,7 @@ public struct FrameFragmentHeader: Equatable, Sendable {
         /// that LTR (the ACKED-ONLY recovery invariant). Disjoint from keyframe/parity/crisp/tier;
         /// bit 7 stays reserved. Set only when the host has `AISLOPDESK_LTR` on AND the frame carried a
         /// token, so the OFF path leaves bit 6 zero → byte-identical wire.
-        public static let isLTR = Flags(rawValue: 1 << 6)
+        public static let isLTR = Self(rawValue: 1 << 6)
 
         /// ACKED-ANCHORED MARKER (bit 7, 2026-06-12): this frame was encoded via `ForceLTRRefresh`
         /// — it references ONLY long-term references the client ACKNOWLEDGED (decoded), so it is
@@ -59,7 +59,7 @@ public struct FrameFragmentHeader: Equatable, Sendable {
         /// the host exactly when the encode call carried `kVTEncodeFrameOptionKey_ForceLTRRefresh`
         /// (recovery refresh + self-heal cadence). Previously-reserved bit ⇒ old senders leave it
         /// zero (byte-identical wire when unused).
-        public static let ackedAnchored = Flags(rawValue: 1 << 7)
+        public static let ackedAnchored = Self(rawValue: 1 << 7)
 
         /// The 3-bit FEC tier (0..7) read from bits 3-5 — masks out keyframe/parity/crisp + bits 6,7.
         public var fecTier: UInt8 { (rawValue & Self.tierMask) >> Self.tierShift }
@@ -67,7 +67,7 @@ public struct FrameFragmentHeader: Equatable, Sendable {
         /// Sets the 3-bit FEC tier in bits 3-5, preserving every other flag bit. `t` is masked to
         /// 3 bits, so this can never disturb keyframe/parity/crisp or the reserved bits.
         public mutating func setFECTier(_ t: UInt8) {
-            self = Flags(rawValue: (rawValue & ~Self.tierMask) | ((t & 0b111) << Self.tierShift))
+            self = Self(rawValue: (rawValue & ~Self.tierMask) | ((t & 0b111) << Self.tierShift))
         }
     }
 
@@ -131,7 +131,7 @@ public struct FrameFragment: Equatable, Sendable {
 
     /// Parses one datagram. Throws ``VideoProtocolError`` on a short/inconsistent
     /// datagram (a corrupt single packet must not crash the receiver).
-    public static func decode(_ datagram: Data) throws -> FrameFragment {
+    public static func decode(_ datagram: Data) throws -> Self {
         var reader = VideoByteReader(datagram)
         let streamSeq = try reader.readUInt32()
         let frameID = try reader.readUInt32()
@@ -147,7 +147,7 @@ public struct FrameFragment: Equatable, Sendable {
             streamSeq: streamSeq, frameID: frameID, fragIndex: fragIndex,
             fragCount: fragCount, flags: flags, payloadLength: payloadLength, hostSendTsMillis: hostSendTsMillis,
         )
-        return FrameFragment(header: header, payload: payload)
+        return Self(header: header, payload: payload)
     }
 }
 

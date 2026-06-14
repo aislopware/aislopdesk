@@ -354,7 +354,7 @@ func runLTRHWScenario(frames: Int) -> ScenarioStats {
 
     var hostTs: UInt32 = 1
     var ltrFramesSeen = 0
-    var lastAckedToken: Int64? = nil
+    var lastAckedToken: Int64?
 
     func processOutputs() {
         for out in sink.drain() {
@@ -650,7 +650,7 @@ func runAckRefArm(
 
     for i in 0..<frames {
         // Deliver acks whose simulated round-trip elapsed (BEFORE this encode — an arriving datagram).
-        if ackRef && !neverAck {
+        if ackRef, !neverAck {
             for a in pendingAcks where a.dueAtFrame <= i {
                 if let tok = ltrCtl.ackFrame(frameID: a.frameID) { enc.stageAcknowledgedToken(tok) }
             }
@@ -1215,7 +1215,7 @@ func runClosedLoopAdaptation(
                 for (localIdx, frag) in frags.enumerated() {
                     globalFrag += 1
                     let arrivalMs = frameArrivalMs + Double(localIdx) * intraGap
-                    if loss > 0 && (globalFrag * 7 + 3) % 100 < loss { continue } // deterministic ~loss%
+                    if loss > 0, (globalFrag * 7 + 3) % 100 < loss { continue } // deterministic ~loss%
                     guard let parsed = try? FrameFragment.decode(frag.encode()) else { continue }
                     owd.note(arrival: arrivalMs / 1000.0)
                     let ts = parsed.header.hostSendTsMillis

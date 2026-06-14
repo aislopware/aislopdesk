@@ -25,8 +25,8 @@ final class TerminalViewModelBatchTests: XCTestCase {
             flushes += 1
         }
 
-        func setSize(cols: UInt16, rows: UInt16) {}
-        func handleInput(_ bytes: Data) {}
+        func setSize(cols _: UInt16, rows _: UInt16) {}
+        func handleInput(_: Data) {}
         var onWrite: ((Data) -> Void)?
     }
 
@@ -170,8 +170,8 @@ final class TerminalViewModelBatchTests: XCTestCase {
             flushes += 1
         }
 
-        func setSize(cols: UInt16, rows: UInt16) {}
-        func handleInput(_ bytes: Data) {}
+        func setSize(cols _: UInt16, rows _: UInt16) {}
+        func handleInput(_: Data) {}
         var onWrite: ((Data) -> Void)?
 
         func feedBackpressure() async {
@@ -282,6 +282,6 @@ private extension Task where Success == Never, Failure == Never {
     /// Yields enough times for already-runnable MainActor work to complete — the
     /// parked-ingest assertions need the ingest Task to reach its first await.
     static func megaYield() async {
-        for _ in 0..<20 { await Task.yield() }
+        for _ in 0..<20 { await yield() }
     }
 }

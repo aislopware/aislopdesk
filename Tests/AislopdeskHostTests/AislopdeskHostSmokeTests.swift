@@ -89,7 +89,8 @@ final class AislopdeskHostSmokeTests: XCTestCase {
         )
         // Spell the TERM out explicitly so a regression in the toggle is obvious.
         guard case let .claudeCode(profile) = parsed.launchMode else {
-            return XCTFail("expected claudeCode launch mode")
+            XCTFail("expected claudeCode launch mode")
+            return
         }
         XCTAssertEqual(profile.term, .xterm256)
         XCTAssertEqual(profile.term.rawValue, "xterm-256color")

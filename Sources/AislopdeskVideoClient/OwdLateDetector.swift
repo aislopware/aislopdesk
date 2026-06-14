@@ -55,8 +55,8 @@ public struct OwdLateDetector: Sendable, Equatable {
         public init() {}
 
         /// Env-tunable construction (absent/unparseable ⇒ default), clamped to sane bands. Pure.
-        public static func fromEnvironment(_ env: [String: String]) -> Config {
-            var c = Config()
+        public static func fromEnvironment(_ env: [String: String]) -> Self {
+            var c = Self()
             if let v = env["AISLOPDESK_OWD_LATE_FLOOR_MS"].flatMap(Double.init), v.isFinite {
                 c.thresholdFloorMs = min(200, max(1, v))
             }

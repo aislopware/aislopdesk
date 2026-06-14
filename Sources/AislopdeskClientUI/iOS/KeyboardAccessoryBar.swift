@@ -51,7 +51,7 @@ public final class KeyboardAccessoryBar: UIInputView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+    required init?(coder _: NSCoder) { fatalError("init(coder:) not supported") }
 
     private func buildButtons() {
         stack.axis = .horizontal
@@ -108,7 +108,7 @@ public final class KeyboardAccessoryBar: UIInputView {
     /// key arrives while ``controlArmed``.
     public func controlFold(_ scalar: UnicodeScalar) -> [UInt8] {
         defer { consumeControlArm() }
-        return KeyboardAccessoryBar.controlCode(for: scalar)
+        return Self.controlCode(for: scalar)
     }
 
     /// Consumes the one-shot Ctrl arm (after an armed letter has been folded) and clears its visual.

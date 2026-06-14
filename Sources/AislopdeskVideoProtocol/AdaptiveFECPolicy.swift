@@ -102,17 +102,11 @@ public enum AdaptiveFECPolicy {
     /// so `upLevel <= downLevel` always and the two `if`s below are mutually exclusive.
     private static func targetLevel(forLossRate loss: Double, currentLevel current: Int) -> Int {
         let upLevel =
-            if loss >= 0.10 { 4 }
-            else if loss >= 0.05 { 3 }
-            else if loss >= 0.02 { 2 }
-            else if loss >= 0.005 { 1 }
+            if loss >= 0.10 { 4 } else if loss >= 0.05 { 3 } else if loss >= 0.02 { 2 } else if loss >= 0.005 { 1 }
             else { 0 }
 
         let downLevel =
-            if loss < 0.002 { 0 }
-            else if loss < 0.012 { 1 }
-            else if loss < 0.035 { 2 }
-            else if loss < 0.08 { 3 }
+            if loss < 0.002 { 0 } else if loss < 0.012 { 1 } else if loss < 0.035 { 2 } else if loss < 0.08 { 3 }
             else { 4 }
 
         if upLevel > current { return upLevel } // loss has risen → demand more redundancy

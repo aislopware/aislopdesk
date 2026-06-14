@@ -109,8 +109,7 @@ public enum CanvasGeometry {
             else { right = left + minSize.width } // movesRight (or neither: pin left, grow right harmlessly)
         }
         if bottom - top < minSize.height {
-            if movesTop { top = bottom - minSize.height }
-            else { bottom = top + minSize.height }
+            if movesTop { top = bottom - minSize.height } else { bottom = top + minSize.height }
         }
 
         return Canvas.sanitize(CGRect(x: left, y: top, width: right - left, height: bottom - top))

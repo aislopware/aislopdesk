@@ -12,7 +12,8 @@ final class SubagentTreeTests: XCTestCase {
         // 1. SubagentStop hook arrives (links the subagent into the tree).
         let stop = HookParser.parse(Fixtures.data("hook-subagent-stop.json"))
         guard case let .subagentStop(node)? = stop else {
-            return XCTFail("expected SubagentStop, got \(String(describing: stop))")
+            XCTFail("expected SubagentStop, got \(String(describing: stop))")
+            return
         }
         XCTAssertEqual(node.id, "deadbeef")
         XCTAssertEqual(node.agentType, "Ariadne")

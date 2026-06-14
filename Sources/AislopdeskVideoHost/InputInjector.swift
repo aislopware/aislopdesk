@@ -129,6 +129,7 @@ public final class InputInjector: @unchecked Sendable {
     /// Raises + focuses the target window so it is frontmost before posting events
     /// (doc 18 §A). Combines AX raise (reorders even when full app activation is
     /// throttled on macOS 14+) with `activate()` (doc 05 §4 caveat).
+    @preconcurrency
     @MainActor
     public func raiseTargetWindow() {
         // CLICK-LATENCY: the AX chain below is ~6–10 SYNCHRONOUS cross-process IPC calls (each
@@ -395,7 +396,7 @@ public final class InputInjector: @unchecked Sendable {
         (virtualHIDAvailable && secureInputActive) ? .virtualHID : .cgEvent
     }
 
-    private func postKey(keyCode: UInt16, down: Bool, modifiers: InputModifiers, tag: UInt32) {
+    private func postKey(keyCode: UInt16, down: Bool, modifiers: InputModifiers, tag _: UInt32) {
         // Route through the DriverKit virtual keyboard ONLY while a secure field is up (Secure Event Input
         // active) — that's the one case CGEvent can't reach. Normal typing stays on CGEvent (the bridge
         // isn't even needed for it). `IsSecureEventInputEnabled()` is a cheap global-state read.
@@ -428,7 +429,7 @@ public final class InputInjector: @unchecked Sendable {
     /// BOTH the down and the up double-inserts the text (the up-event would emit the
     /// string a second time), so the key-up is posted bare — it just completes the
     /// keystroke so the target app sees a balanced down/up pair (CGEvent contract).
-    private func postText(_ string: String, tag: UInt32) {
+    private func postText(_ string: String, tag _: UInt32) {
         let units = Array(string.utf16)
         guard let down = CGEvent(keyboardEventSource: eventSource, virtualKey: 0, keyDown: true) else { return }
         units.withUnsafeBufferPointer { buffer in

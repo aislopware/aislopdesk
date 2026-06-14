@@ -90,6 +90,7 @@ public final class ReconnectManager: Sendable {
     /// instead of a frozen "reconnecting" dot (the previously-invisible WF3 give-up path).
     private let onGaveUp: (@Sendable () -> Void)?
 
+    @preconcurrency
     public init(
         client: AislopdeskClient,
         backoff: Backoff = Backoff(),

@@ -15,7 +15,8 @@ final class VideoClientStateMachineTests: XCTestCase {
         XCTAssertEqual(sm.state, .connecting)
         XCTAssertEqual(effects.count, 1)
         guard case let .sendControl(.hello(version, windowID, viewport)) = effects.first else {
-            return XCTFail("expected a hello effect, got \(effects)")
+            XCTFail("expected a hello effect, got \(effects)")
+            return
         }
         XCTAssertEqual(version, AislopdeskVideoProtocol.version)
         XCTAssertEqual(windowID, 42)

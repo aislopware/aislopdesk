@@ -90,24 +90,24 @@ final class TerminalViewModelPumpEpochTests: XCTestCase {
         func release() { released = true }
 
         func connect(
-            host: String,
-            port: UInt16,
+            host _: String,
+            port _: UInt16,
             resume: UUID,
-            lastReceivedSeq: Int64,
-            handshakeTimeout: Duration,
-        ) async throws {
+            lastReceivedSeq _: Int64,
+            handshakeTimeout _: Duration,
+        ) {
             _sessionID = (resume == WireMessage.newSessionID) ? UUID() : resume
         }
 
-        func sendInput(_ bytes: Data) async throws {}
-        func sendResize(cols: UInt16, rows: UInt16, pxWidth: UInt16, pxHeight: UInt16) async throws {}
-        func sendAck(seq: Int64) async throws {}
-        func sendBye() async throws {}
-        func close() async { released = true
+        func sendInput(_: Data) {}
+        func sendResize(cols _: UInt16, rows _: UInt16, pxWidth _: UInt16, pxHeight _: UInt16) {}
+        func sendAck(seq _: Int64) {}
+        func sendBye() {}
+        func close() { released = true
             continuation.finish()
         }
 
-        func noteOutputConsumed(wireBytes: Int) async {
+        func noteOutputConsumed(wireBytes _: Int) async {
             guard gateArmed else { return }
             gateArmed = false
             entered = true
@@ -126,8 +126,8 @@ final class TerminalViewModelPumpEpochTests: XCTestCase {
             flushes += 1
         }
 
-        func setSize(cols: UInt16, rows: UInt16) {}
-        func handleInput(_ bytes: Data) {}
+        func setSize(cols _: UInt16, rows _: UInt16) {}
+        func handleInput(_: Data) {}
         var onWrite: ((Data) -> Void)?
     }
 }

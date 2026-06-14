@@ -89,6 +89,7 @@ public actor MuxSubChannel: MessageChannel {
     /// Arms the per-channel send window with ``MuxFlowControl/initialWindowBytes`` — the DATA
     /// sub-channel path. The CONTROL sub-channel (infinite window, never gated) uses the
     /// designated init below with `sendWindowBytes: nil`.
+    @preconcurrency
     public init(
         channelID: UInt32,
         channel: Channel,

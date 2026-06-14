@@ -47,7 +47,7 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+    required init?(coder _: NSCoder) { fatalError("init(coder:) not supported") }
 
     private func configure() {
         delegate = self
@@ -87,7 +87,8 @@ public final class IMEProxyTextView: UITextView, UITextViewDelegate {
     override public func deleteBackward() {
         // During an active IME / Telex composition the document is NOT empty (the steady-state
         // "always empty" assumption only holds at rest). A backspace there is meant to edit the
-        // MARKED TEXT — route it back to the text system (which mutates the composition and fires
+        // MARK: D TEXT — route it back to the text system (which mutates the composition and fires
+
         // `textViewDidChange`, still withheld from `onText` until `markedTextRange == nil`), and
         // emit NO DEL. Emitting a DEL byte here would both swallow the composition edit and send a
         // spurious Delete to the host. Only emit the host DEL in the empty-document steady state.

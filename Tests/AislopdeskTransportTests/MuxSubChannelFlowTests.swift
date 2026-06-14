@@ -160,7 +160,8 @@ final class MuxSubChannelFlowTests: XCTestCase {
         decoder.append(sink.concatenated)
         let reassembled = try decoder.nextMessage()
         guard case let .input(bytes) = reassembled else {
-            return XCTFail("reassembled message must be the original .input, got \(String(describing: reassembled))")
+            XCTFail("reassembled message must be the original .input, got \(String(describing: reassembled))")
+            return
         }
         XCTAssertEqual(bytes, payload, "chunks reassemble to the EXACT original frame (no corruption)")
         XCTAssertNil(try decoder.nextMessage(), "exactly one frame reassembled (no trailing bytes)")
@@ -203,9 +204,10 @@ final class MuxSubChannelFlowTests: XCTestCase {
         let first = try decoder.nextMessage()
         let second = try decoder.nextMessage()
         guard case let .input(b1) = first, case let .input(b2) = second else {
-            return XCTFail(
+            XCTFail(
                 "expected two .input frames in order, got \(String(describing: first)), \(String(describing: second))",
             )
+            return
         }
         XCTAssertEqual(
             b1,
@@ -264,9 +266,10 @@ final class MuxSubChannelFlowTests: XCTestCase {
         let f2 = try decoder.nextMessage()
         XCTAssertNil(try decoder.nextMessage(), "exactly two frames reassembled — no trailing/garbled bytes")
         guard case let .input(b1) = f1, case let .input(b2) = f2 else {
-            return XCTFail(
+            XCTFail(
                 "expected two intact .input frames, got \(String(describing: f1)), \(String(describing: f2))",
             )
+            return
         }
         // Order is whichever took the gate first; both payloads must appear INTACT.
         XCTAssertEqual(

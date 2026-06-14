@@ -52,7 +52,7 @@ public struct Workspace: Codable, Sendable, Equatable {
     public var snippets: [Snippet]
 
     public init(
-        schemaVersion: Int = Workspace.currentSchemaVersion,
+        schemaVersion: Int = Self.currentSchemaVersion,
         canvas: Canvas,
         focusedPane: PaneID?,
         maximizedPane: PaneID? = nil,

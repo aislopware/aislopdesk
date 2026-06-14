@@ -129,6 +129,7 @@ public actor AislopdeskVideoClientSession {
         /// classifier, which natural sub-cadence content kept permanently "late"). Synchronous,
         /// lock-guarded, callable from the session actor like `readPacerTelemetry`.
         public var noteNetworkLate: (@Sendable () -> Void)?
+        @preconcurrency
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
             applyCursor: @escaping @Sendable (CursorUpdate, CursorPlacement) -> Void,
@@ -931,7 +932,7 @@ public actor AislopdeskVideoClientSession {
         }
     }
 
-    private func updateDecodedSize(from frame: ReassembledFrame) {
+    private func updateDecodedSize(from _: ReassembledFrame) {
         // The capture size negotiated in the helloAck is the authoritative frame size
         // (host window points). Keep it; the decoded CVPixelBuffer matches it.
         if decodedSize.width == 0 {
@@ -1007,7 +1008,7 @@ public actor AislopdeskVideoClientSession {
 
     // MARK: Inbound cursor (dedicated socket)
 
-    private func receiveCursor(_ data: Data) async {
+    private func receiveCursor(_ data: Data) {
         guard stateMachine.mediaFlowing else { return }
         let message: CursorChannelMessage
         do { message = try CursorChannelMessage.decode(data) } catch {
@@ -1260,7 +1261,7 @@ public actor AislopdeskVideoClientSession {
 
     // MARK: Effects
 
-    private func apply(_ effect: VideoClientStateMachine.Effect) async {
+    private func apply(_ effect: VideoClientStateMachine.Effect) {
         switch effect {
         case let .sendControl(message):
             transport.send(message.encode(), on: .control)

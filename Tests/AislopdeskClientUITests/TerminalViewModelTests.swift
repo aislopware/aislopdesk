@@ -109,6 +109,9 @@ final class TerminalViewModelTests: XCTestCase {
         model.handle(.commandStatus(.running))
         model.handle(.commandStatus(.idle(exitCode: nil, durationMS: 300)))
         XCTAssertEqual(model.shellActivity, .idle)
+        // `lastCommand?.exitCode` is `Int??`; the `?? nil` flattens it so `.some(nil)` (command
+        // exists, no exit code yet) reads as nil. Removing it would assert on the OUTER optional.
+        // swiftlint:disable:next redundant_nil_coalescing
         XCTAssertNil(model.lastCommand?.exitCode ?? nil)
         XCTAssertEqual(model.lastCommand?.durationMS, 300)
     }
@@ -171,8 +174,8 @@ final class TerminalViewModelTests: XCTestCase {
         final class CapturingSurface: TerminalSurface, @unchecked Sendable {
             var fed = Data()
             func feed(_ bytes: Data) { fed.append(bytes) }
-            func setSize(cols: UInt16, rows: UInt16) {}
-            func handleInput(_ bytes: Data) {}
+            func setSize(cols _: UInt16, rows _: UInt16) {}
+            func handleInput(_: Data) {}
             var onWrite: ((Data) -> Void)?
         }
         let surface = CapturingSurface()
@@ -275,8 +278,8 @@ final class TerminalViewModelTests: XCTestCase {
     private final class RecordingSurface: TerminalSurface, @unchecked Sendable {
         var feeds: [Data] = []
         func feed(_ bytes: Data) { feeds.append(bytes) }
-        func setSize(cols: UInt16, rows: UInt16) {}
-        func handleInput(_ bytes: Data) {}
+        func setSize(cols _: UInt16, rows _: UInt16) {}
+        func handleInput(_: Data) {}
         var onWrite: ((Data) -> Void)?
     }
 

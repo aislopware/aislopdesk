@@ -14,6 +14,7 @@ import Foundation
 /// resends the request every `retryInterval` until a reply arrives or `timeout` elapses, then releases
 /// the lane. An old host (no listWindows support) simply never replies → empty result → the UI falls back
 /// to manual entry.
+@preconcurrency
 @MainActor
 public enum VideoWindowDiscovery {
     /// Discovers the host's shareable windows. Returns `[]` on timeout / no registry / no host support

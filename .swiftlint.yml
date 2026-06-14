@@ -83,6 +83,12 @@ disabled_rules:
   - no_magic_numbers
   - number_separator
 
+  # ---- False-positive on this codebase's custom Int `count` properties ----
+  # empty_count rewrites `count == 0` -> `isEmpty`, but many types here have a plain
+  # `var count = 0` stat accumulator (NOT a collection), so the autocorrect produces a
+  # non-compiling `isEmpty`. The rule can't tell the two apart; net-negative here.
+  - empty_count
+
   # ---- Niche / leak-debug rule, not a production quality signal ----
   - required_deinit                         # would require an explicit deinit on EVERY class
 

@@ -153,7 +153,7 @@ final class MuxConnectionLifecycleTests: XCTestCase {
     /// the just-registered sub-channels (decoder + inbound continuation + window accountant) leak forever
     /// and keep `hasLiveChannels` true. We open a channel on a connection whose data link throws on send,
     /// then assert no ghost channel was left behind.
-    func testOpenChannelCleansUpPartialRegistrationOnSendFailure() async throws {
+    func testOpenChannelCleansUpPartialRegistrationOnSendFailure() async {
         let (cc, _) = InMemoryMuxLink.pair()
         let failingData = SendFailingMuxLink()
         let client = MuxNWConnection(role: .client, controlLink: cc, dataLink: failingData)
@@ -189,12 +189,12 @@ final class MuxConnectionLifecycleTests: XCTestCase {
         }
 
         var receiveChunks: AsyncThrowingStream<Data, Error> { stream }
-        func send(_ data: Data) async throws { throw AislopdeskTransportError.notConnected("send failed (test)") }
-        func sendPipelined(_ data: Data) {
+        func send(_: Data) throws { throw AislopdeskTransportError.notConnected("send failed (test)") }
+        func sendPipelined(_: Data) {
             continuation.finish(throwing: AislopdeskTransportError.sendFailed("pipelined send failed (test)"))
         }
 
-        func close() async {}
+        func close() {}
     }
 
     private final class IDRecorder: @unchecked Sendable {

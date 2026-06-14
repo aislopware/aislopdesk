@@ -497,7 +497,7 @@ final class MuxChannelSession: @unchecked Sendable {
     /// `completion` fires on the teardown queue after `shutdown()` returns — used by
     /// ``HostServer/stop()`` to await every detached teardown before the daemon exits.
     func shutdownDetached(completion: (@Sendable () -> Void)? = nil) {
-        MuxChannelSession.teardownQueue.async { [self] in
+        Self.teardownQueue.async { [self] in
             shutdown()
             completion?()
         }

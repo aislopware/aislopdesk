@@ -436,7 +436,7 @@ final class CanvasNonOverlapTests: XCTestCase {
         let g1 = PaneID(), g2 = PaneID(), gid = PaneGroupID()
         let min = Canvas.minItemSize
         let canvas = Canvas(items: [
-            CanvasItem(id: g1, spec: spec(), frame: CGRect(origin: CGPoint(x: 0, y: 0), size: min), z: 0, groupID: gid),
+            CanvasItem(id: g1, spec: spec(), frame: CGRect(origin: CGPoint.zero, size: min), z: 0, groupID: gid),
             CanvasItem(
                 id: g2,
                 spec: spec(),

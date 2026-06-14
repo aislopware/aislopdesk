@@ -17,6 +17,7 @@ import Foundation
 /// `commandRunning`, `lastExitCode`), the bound `compose` text field, and the wiring to
 /// `AislopdeskClient.sendInput` (recording sent bytes into the dedup ring in B1). The byte-level
 /// dedup + mode tracking stay in `AislopdeskClaudeCode` — this never re-implements them.
+@preconcurrency
 @MainActor
 @Observable
 public final class InputBarModel {

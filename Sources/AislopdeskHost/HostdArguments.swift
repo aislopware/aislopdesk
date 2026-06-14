@@ -54,7 +54,7 @@ public struct HostdArguments: Sendable, Equatable {
     /// Parses a full argv (including `argv[0]`, which is dropped). Returns `nil` for
     /// `--help`/`-h`, a missing flag value, or an unknown flag — the caller then prints
     /// ``usage(programName:)`` and exits non-zero.
-    public static func parse(_ args: [String]) -> HostdArguments? {
+    public static func parse(_ args: [String]) -> Self? {
         var port: UInt16 = 7420
         var shell: String?
         var claude = false
@@ -105,7 +105,7 @@ public struct HostdArguments: Sendable, Equatable {
         // `claude` session), OR implied by `--transcript` (a path to tail).
         let inspectorEnabled = inspector || claude || (transcript != nil)
 
-        return HostdArguments(
+        return Self(
             port: port,
             shell: shell,
             launchMode: launchMode,

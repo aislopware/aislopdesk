@@ -714,7 +714,7 @@ public final class VideoEncoder: @unchecked Sendable {
         //     @abstract says "set to kCFBooleanTrue"): if the Boolean form was rejected, RETRY the same
         //     refresh with the CFNumber form to see which the SDK actually accepts. Status captured;
         //     passing the "wrong" CFType yields a status (or is ignored), never a trap.
-        var enc2Number: OSStatus? = nil
+        var enc2Number: OSStatus?
         if enc2Boolean != noErr {
             enc2Number = VTCompressionSessionEncodeFrame(
                 session, imageBuffer: pixelBuffer,
@@ -983,7 +983,7 @@ public final class VideoEncoder: @unchecked Sendable {
         // (the instance `ltrEnabled`): when LTR is off this whole block is skipped → `ltrToken` stays
         // nil → the handler call is byte-identical to today. Mirror of the WF-7 probe's attachment
         // inspection (`LTRProbeBox.record`) — read the VALUE (an Int64 token) not just presence.
-        var ltrToken: Int64? = nil
+        var ltrToken: Int64?
         if readLTRToken,
            let attachments = CMSampleBufferGetSampleAttachmentsArray(
                sampleBuffer,

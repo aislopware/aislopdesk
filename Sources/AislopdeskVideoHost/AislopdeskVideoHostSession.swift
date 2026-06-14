@@ -574,8 +574,9 @@ public actor AislopdeskVideoHostSession {
                 // Gate on streaming (matches `InputDatagramRouter.route`) and decode here so the
                 // run can be coalesced. A malformed datagram is dropped, never crashes the receiver.
                 guard stateMachine.mediaFlowing else { continue }
-                do { try inputRun.append(InputEvent.decode(data)) }
-                catch { log.error("dropping input datagram: undecodable") }
+                do { try inputRun.append(InputEvent.decode(data)) } catch {
+                    log.error("dropping input datagram: undecodable")
+                }
             case .control:
                 let run = inputRun
                 inputRun = []
@@ -699,7 +700,7 @@ public actor AislopdeskVideoHostSession {
     // (verified across Sources + Tests) and a misleading docstring, so it was removed rather than kept
     // as a confusing public no-op.
 
-    private func inject(_ event: InputEvent, raiseFirst: Bool) async {
+    private func inject(_ event: InputEvent, raiseFirst: Bool) {
         guard let injector else { return }
         // CLICK-LATENCY FIX (the "click bị delay" bug, proven on-device). The AX raise is ~6–10
         // SYNCHRONOUS cross-process IPC calls; against an AX-slow target app each hits the messaging
@@ -1968,7 +1969,10 @@ public actor AislopdeskVideoHostSession {
         ) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
             do {
                 if ltrRefresh { try newEncoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts) }
-                else if crisp { try newEncoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                else if crisp { try newEncoder.encodeLiveCrispKeyframe(
+                    pixelBuffer: pixelBuffer,
+                    presentationTime: pts,
+                )
                 } else if compact { try newEncoder.encodeCompactKeyframe(
                     pixelBuffer: pixelBuffer,
                     presentationTime: pts,

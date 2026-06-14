@@ -57,7 +57,8 @@ final class RecoveryDatagramRouterTests: XCTestCase {
             datagram: RecoveryMessage.requestIDR(lastDecodedFrameID: 0).encode(),
             mediaFlowing: true,
         ) else {
-            return XCTFail("expected forceKeyframe")
+            XCTFail("expected forceKeyframe")
+            return
         }
     }
 
@@ -84,7 +85,8 @@ final class RecoveryDatagramRouterTests: XCTestCase {
     func testDropsUndecodableDatagram() {
         let garbage = Data([0x7F, 0x00]) // unknown recovery type 0x7F
         guard case .drop = router.route(datagram: garbage, mediaFlowing: true) else {
-            return XCTFail("expected drop")
+            XCTFail("expected drop")
+            return
         }
     }
 
@@ -108,7 +110,9 @@ final class RecoveryDatagramRouterTests: XCTestCase {
         )
         let decision = router.route(datagram: RecoveryMessage.networkStats(report).encode(), mediaFlowing: true)
         XCTAssertEqual(decision, .networkStats(report))
-        guard case let .networkStats(rx) = decision else { return XCTFail("expected networkStats") }
+        guard case let .networkStats(rx) = decision else { XCTFail("expected networkStats")
+            return
+        }
         XCTAssertEqual(rx.owdTrendStateRaw, 1)
         XCTAssertEqual(rx.owdTrendDeltas, 42)
         XCTAssertEqual(rx.owdTrendModifiedMilliSigned, -987)
@@ -143,7 +147,8 @@ final class RecoveryDatagramRouterTests: XCTestCase {
             owdJitterMicros: 6,
         )).encode()
         guard case .drop = router.route(datagram: full.prefix(10), mediaFlowing: true) else {
-            return XCTFail("expected a truncated stats body to drop")
+            XCTFail("expected a truncated stats body to drop")
+            return
         }
     }
 
@@ -172,7 +177,8 @@ final class RecoveryDatagramRouterTests: XCTestCase {
             // Confirms the collision the dedicated channel eliminates: LTR(type 2) looks
             // like a mouseDown to the input grammar.
             guard case .mouseDown = event else {
-                return XCTFail("expected the overlap to surface as a mouseDown, got \(event)")
+                XCTFail("expected the overlap to surface as a mouseDown, got \(event)")
+                return
             }
         }
         // (No assertion on drop-vs-inject: the point is recovery NEVER travels on .input.)
@@ -190,7 +196,8 @@ final class RecoveryDatagramRouterTests: XCTestCase {
         XCTAssertEqual(router.route(datagram: idr, mediaFlowing: true), .forceKeyframe(lastDecodedFrameID: 99))
         // 5 bytes is still too short for a mouseUp body → the input grammar drops it.
         guard case .drop = inputRouter.route(datagram: idr, mediaFlowing: true, needsRaise: false) else {
-            return XCTFail("expected the 5-byte requestIDR to drop under the input grammar")
+            XCTFail("expected the 5-byte requestIDR to drop under the input grammar")
+            return
         }
     }
 }

@@ -453,7 +453,7 @@ final class WorkspacePersistenceTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func tempURL(file: StaticString = #filePath, line: UInt = #line) throws -> URL {
+    private func tempURL(file _: StaticString = #filePath, line _: UInt = #line) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("WorkspacePersistenceTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -486,7 +486,8 @@ final class WorkspacePersistenceTests: XCTestCase {
         XCTAssertTrue(ws.groups.isEmpty, "default has no groups. \(message)", file: file, line: line)
         XCTAssertEqual(ws.maximizedPane, nil, "default is not maximized. \(message)", file: file, line: line)
         guard let item = ws.canvas.items.first else {
-            return XCTFail("default canvas must have one item. \(message)", file: file, line: line)
+            XCTFail("default canvas must have one item. \(message)", file: file, line: line)
+            return
         }
         XCTAssertEqual(item.spec.kind, .terminal, "default pane is a terminal. \(message)", file: file, line: line)
         XCTAssertEqual(

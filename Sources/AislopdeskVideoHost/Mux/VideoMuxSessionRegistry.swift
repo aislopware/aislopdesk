@@ -19,6 +19,7 @@ public final class VideoMuxSinkTable: @unchecked Sendable {
 
     public init() {}
 
+    @preconcurrency
     public func register(_ channelID: UInt32, _ onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
         lock.withLock { sinks[channelID] = onReceive }
     }
@@ -27,6 +28,7 @@ public final class VideoMuxSinkTable: @unchecked Sendable {
         lock.withLock { _ = sinks.removeValue(forKey: channelID) }
     }
 
+    @preconcurrency
     public func sink(_ channelID: UInt32) -> (@Sendable (VideoChannel, Data) -> Void)? {
         lock.withLock { sinks[channelID] }
     }
@@ -95,6 +97,7 @@ public actor VideoMuxSessionRegistry {
     /// `retire`; default no-op for tests that don't exercise it.
     private let forgetLane: @Sendable (UInt32) -> Void
 
+    @preconcurrency
     public init(
         sinkTable: VideoMuxSinkTable = VideoMuxSinkTable(),
         forgetLane: @escaping @Sendable (UInt32) -> Void = { _ in },

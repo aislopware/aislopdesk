@@ -458,8 +458,7 @@ public actor MuxNWConnection {
                     // then bounded by ChannelTable's eviction ring.
                     if let controlCh = controlChannels.removeValue(forKey: channelID) { await controlCh.finish() }
                     controlTable.remoteClose(channelID)
-                    if let hostCloseHandler { hostCloseHandler(channelID) }
-                    else { pendingHostCloses.append(channelID) }
+                    if let hostCloseHandler { hostCloseHandler(channelID) } else { pendingHostCloses.append(channelID) }
                 }
             }
         case .dropUnknownChannel:
@@ -480,6 +479,7 @@ public actor MuxNWConnection {
     /// Installs the host's per-channel-open handler (mint session + ack). Host-only. Replays any
     /// opens that raced ahead of the install (queued in `pendingHostOpens`) in arrival order, so a
     /// `channelOpen` buffered before the owner wired up is never lost.
+    @preconcurrency
     public func setHostOpenHandler(_ handler: @escaping @Sendable (MuxChannelOpen) -> Void) {
         hostOpenHandler = handler
         guard !pendingHostOpens.isEmpty else { return }
@@ -507,6 +507,7 @@ public actor MuxNWConnection {
     /// Installs the host's per-channel-close handler (shut session + free PTY/fd). Host-only. Replays
     /// any closes that raced ahead of the install (queued in `pendingHostCloses`) in arrival order, so a
     /// `channelClose` buffered before the owner wired up is never lost (no leaked shell).
+    @preconcurrency
     public func setHostCloseHandler(_ handler: @escaping @Sendable (UInt32) -> Void) {
         hostCloseHandler = handler
         guard !pendingHostCloses.isEmpty else { return }
@@ -526,6 +527,7 @@ public actor MuxNWConnection {
 
     /// Installs the host's connection-death hook (see ``linkDownHandler``). If the link ALREADY failed
     /// before the install, fires immediately so a connection that died during accept is still reaped.
+    @preconcurrency
     public func setLinkDownHandler(_ handler: @escaping @Sendable () -> Void) {
         if linkFailed, !linkDownFired {
             linkDownFired = true
@@ -536,7 +538,7 @@ public actor MuxNWConnection {
     }
 
     /// Sends a `channelOpenAck` for `id` on the DATA link (host → client). Host-only.
-    public func sendOpenAck(_ id: UInt32, accepted: Bool) async {
+    public func sendOpenAck(_ id: UInt32, accepted: Bool) {
         let frame = MuxEnvelopeCodec.encode(.channelOpenAck(channelID: id, accepted: accepted))
         dataLink.sendPipelined(frame)
     }
@@ -547,7 +549,7 @@ public actor MuxNWConnection {
     /// lets a test inject an explicit grant without driving a full echo loop. The receipt side
     /// applies the grant to the DATA send window regardless of arrival link (FIX #2). No-op (still
     /// byte-safe) when flow control is OFF, but only called by flow-on tests.
-    func grantWindowForTest(channelID: UInt32, bytesToAdd: UInt32) async {
+    func grantWindowForTest(channelID: UInt32, bytesToAdd: UInt32) {
         let frame = MuxEnvelopeCodec.encode(.windowAdjust(channelID: channelID, bytesToAdd: bytesToAdd))
         controlLink.sendPipelined(frame)
     }
@@ -562,8 +564,7 @@ public actor MuxNWConnection {
         for ch in channels.values {
             // Await inline so the link's FIN/error finishes each sub-channel AFTER its last
             // delivered frame, never racing ahead of in-flight data (which would drop the tail).
-            if let error { await ch.finish(throwing: error) }
-            else { await ch.finish() }
+            if let error { await ch.finish(throwing: error) } else { await ch.finish() }
         }
         // FIX #2 (SECONDARY — crash/link-drop leak, the TCP-mux analogue of CONCURRENCY-HOST-1):
         // when the whole shared DATA link drops WITHOUT a per-channel `channelClose` (peer crash /

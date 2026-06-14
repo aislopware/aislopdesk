@@ -33,6 +33,7 @@ public struct VideoWindowConnection: Sendable, Equatable {
 /// gesture recognizers to the layer-backed Metal view perturbed its geometry and swallowed
 /// the `mouseUp` of a trackpad three-finger-drag (→ a stuck remote button). The overlay
 /// touches none of that.
+@preconcurrency
 @MainActor
 public final class VideoPaneControls: ObservableObject {
     @Published public var mode: VideoContentMode = .fit
@@ -185,14 +186,14 @@ func videoViewDbg(_ message: @autoclosure () -> String) {
 /// `NSViewRepresentable` host backing the `CAMetalLayer` + cursor overlay on macOS.
 struct MetalVideoLayerView: NSViewRepresentable {
     let connection: VideoWindowConnection?
-    var controls: VideoPaneControls? = nil
+    var controls: VideoPaneControls?
     var isActive: Bool = true
     var onActivate: () -> Void = {}
     var onCanvasScroll: (CGSize) -> Void = { _ in }
-    var onStreamNativeSize: ((CGSize, CGSize) -> Void)? = nil
-    var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)? = nil
+    var onStreamNativeSize: ((CGSize, CGSize) -> Void)?
+    var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)?
 
-    func makeNSView(context: Context) -> MetalLayerBackedView {
+    func makeNSView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
         view.controls = controls
         view.isActive = isActive
@@ -211,7 +212,7 @@ struct MetalVideoLayerView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: MetalLayerBackedView, context: Context) {
+    func updateNSView(_ nsView: MetalLayerBackedView, context _: Context) {
         nsView.controls = controls
         if nsView.isActive != isActive { videoViewDbg("updateNSView isActive \(nsView.isActive)→\(isActive)") }
         nsView.isActive = isActive
@@ -221,7 +222,7 @@ struct MetalVideoLayerView: NSViewRepresentable {
         nsView.activate(connection: connection)
     }
 
-    static func dismantleNSView(_ nsView: MetalLayerBackedView, coordinator: ()) {
+    static func dismantleNSView(_ nsView: MetalLayerBackedView, coordinator _: ()) {
         nsView.deactivate()
     }
 }
@@ -290,7 +291,7 @@ final class MetalLayerBackedView: NSView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("not supported") }
+    required init?(coder _: NSCoder) { fatalError("not supported") }
     override func makeBackingLayer() -> CALayer { videoLayer }
 
     func activate(connection: VideoWindowConnection?) {
@@ -600,12 +601,12 @@ final class MetalLayerBackedView: NSView {
         trackingArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) {
+    override func mouseEntered(with _: NSEvent) {
         pointerInside = true
         applyLocalCursor()
     }
 
-    override func mouseExited(with event: NSEvent) {
+    override func mouseExited(with _: NSEvent) {
         pointerInside = false
         NSCursor.arrow.set() // leaving the pane → restore the normal pointer
     }
@@ -674,16 +675,16 @@ import UIKit
 /// `UIViewRepresentable` host backing the `CAMetalLayer` + cursor overlay on iOS.
 struct MetalVideoLayerView: UIViewRepresentable {
     let connection: VideoWindowConnection?
-    var controls: VideoPaneControls? = nil
+    var controls: VideoPaneControls?
     // Accepted for signature parity with the macOS representable (the shared `VideoWindowView.body`
     // constructs both). iOS pane activation already runs through the canvas's per-pane SwiftUI tap
     // gesture + a background `DragGesture` for panning, so these are currently unused on iOS.
     var isActive: Bool = true
     var onActivate: () -> Void = {}
     var onCanvasScroll: (CGSize) -> Void = { _ in }
-    var onStreamNativeSize: ((CGSize, CGSize) -> Void)? = nil
+    var onStreamNativeSize: ((CGSize, CGSize) -> Void)?
 
-    func makeUIView(context: Context) -> MetalLayerBackedView {
+    func makeUIView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
         view.controls = controls
         view.onStreamNativeSize = onStreamNativeSize // before activate — nil-ness picks snap vs host-follow
@@ -691,13 +692,13 @@ struct MetalVideoLayerView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: MetalLayerBackedView, context: Context) {
+    func updateUIView(_ uiView: MetalLayerBackedView, context _: Context) {
         uiView.controls = controls
         uiView.onStreamNativeSize = onStreamNativeSize
         uiView.activate(connection: connection)
     }
 
-    static func dismantleUIView(_ uiView: MetalLayerBackedView, coordinator: ()) {
+    static func dismantleUIView(_ uiView: MetalLayerBackedView, coordinator _: ()) {
         uiView.deactivate()
     }
 }
@@ -784,8 +785,8 @@ final class MetalLayerBackedView: UIView, UIGestureRecognizerDelegate {
 
     // Let pinch + pan run together (zoom while dragging).
     func gestureRecognizer(
-        _ g: UIGestureRecognizer,
-        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer,
+        _: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith _: UIGestureRecognizer,
     ) -> Bool { true }
 
     @objc

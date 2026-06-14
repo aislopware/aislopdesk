@@ -5,12 +5,12 @@ import Foundation
 public struct InputModifiers: OptionSet, Sendable, Equatable {
     public let rawValue: UInt8
     public init(rawValue: UInt8) { self.rawValue = rawValue }
-    public static let shift = InputModifiers(rawValue: 1 << 0)
-    public static let control = InputModifiers(rawValue: 1 << 1)
-    public static let option = InputModifiers(rawValue: 1 << 2)
-    public static let command = InputModifiers(rawValue: 1 << 3)
-    public static let capsLock = InputModifiers(rawValue: 1 << 4)
-    public static let function = InputModifiers(rawValue: 1 << 5)
+    public static let shift = Self(rawValue: 1 << 0)
+    public static let control = Self(rawValue: 1 << 1)
+    public static let option = Self(rawValue: 1 << 2)
+    public static let command = Self(rawValue: 1 << 3)
+    public static let capsLock = Self(rawValue: 1 << 4)
+    public static let function = Self(rawValue: 1 << 5)
 }
 
 /// Which mouse button an event concerns.
@@ -123,7 +123,7 @@ public enum InputEvent: Equatable, Sendable {
         return out
     }
 
-    public static func decode(_ data: Data) throws -> InputEvent {
+    public static func decode(_ data: Data) throws -> Self {
         var reader = VideoByteReader(data)
         let type = try reader.readUInt8()
         switch type {

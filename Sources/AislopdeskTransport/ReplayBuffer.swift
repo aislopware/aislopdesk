@@ -112,8 +112,8 @@ public struct ReplayBuffer: Sendable {
     public let offlineGateBytesCap: Int
 
     public init(
-        maxBackupBytes: Int = ReplayBuffer.maxBackupBytes,
-        offlineGateBytes: Int = ReplayBuffer.offlineGateBytes,
+        maxBackupBytes: Int = Self.maxBackupBytes,
+        offlineGateBytes: Int = Self.offlineGateBytes,
     ) {
         maxBackupBytesCap = max(0, maxBackupBytes)
         offlineGateBytesCap = max(0, offlineGateBytes)

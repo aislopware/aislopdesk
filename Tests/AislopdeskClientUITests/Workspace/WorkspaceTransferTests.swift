@@ -126,7 +126,9 @@ final class WorkspaceTransferTests: XCTestCase {
             "beta",
             "focus follows the re-mint (it reset to pane-0 before the id-map fix)",
         )
-        guard let anchor = st.workspace.bookmarks[1]?.pane else { return XCTFail("bookmark anchor lost") }
+        guard let anchor = st.workspace.bookmarks[1]?.pane else { XCTFail("bookmark anchor lost")
+            return
+        }
         XCTAssertTrue(st.workspace.canvas.contains(anchor), "the bookmark anchor maps to a live re-minted pane")
         XCTAssertEqual(st.workspace.canvas.spec(for: anchor)?.title, "beta", "anchor still points at beta")
     }
@@ -164,7 +166,9 @@ final class WorkspaceTransferTests: XCTestCase {
             z: Int.max,
         )
         let data = WorkspaceTransfer.export(Workspace(canvas: Canvas(items: [hostile]), focusedPane: nil))
-        guard let decoded = WorkspaceTransfer.decode(data) else { return XCTFail("should decode") }
+        guard let decoded = WorkspaceTransfer.decode(data) else { XCTFail("should decode")
+            return
+        }
         XCTAssertLessThan(try XCTUnwrap(decoded.canvas.items.first?.z), Int.max, "z is clamped on decode")
 
         let st = store([term(0, "x")], focus: PaneID())
@@ -180,7 +184,9 @@ final class WorkspaceTransferTests: XCTestCase {
             focusedPane: nil,
             groups: [PaneGroup(id: g, name: "A"), PaneGroup(id: g, name: "B")],
         )
-        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { return XCTFail() }
+        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { XCTFail()
+            return
+        }
         XCTAssertEqual(
             decoded.groups.count,
             1,
@@ -195,7 +201,9 @@ final class WorkspaceTransferTests: XCTestCase {
             focusedPane: nil,
             snippets: [Snippet(id: sid, name: "x", body: "a"), Snippet(id: sid, name: "y", body: "b")],
         )
-        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { return XCTFail() }
+        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { XCTFail()
+            return
+        }
         XCTAssertEqual(
             Set(decoded.snippets.map(\.id)).count,
             2,
@@ -234,7 +242,9 @@ final class WorkspaceTransferTests: XCTestCase {
             42: CanvasBookmark(pane: nil, cameraOrigin: .zero, name: "junk"),
         ]
         let ws = Workspace(canvas: Canvas(items: [term(0, "a")]), focusedPane: nil, bookmarks: bookmarks)
-        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { return XCTFail() }
+        guard let decoded = WorkspaceTransfer.decode(WorkspaceTransfer.export(ws)) else { XCTFail()
+            return
+        }
         XCTAssertEqual(Set(decoded.bookmarks.keys), [1], "only the in-range (1…9) slot survives import")
     }
 
@@ -306,7 +316,9 @@ final class WorkspaceTransferTests: XCTestCase {
         )
         XCTAssertTrue(dst.importWorkspace(WorkspaceTransfer.export(importWS), mode: .mergeAppend))
 
-        guard let adopted = dst.workspace.bookmarks[1] else { return XCTFail("the anchored bookmark is adopted") }
+        guard let adopted = dst.workspace.bookmarks[1] else { XCTFail("the anchored bookmark is adopted")
+            return
+        }
         XCTAssertNotNil(adopted.pane, "the adopted bookmark keeps a (remapped) anchor")
         XCTAssertTrue(try dst.workspace.canvas.contains(XCTUnwrap(adopted.pane)), "the adopted anchor is a LIVE pane")
         XCTAssertNil(dst.workspace.bookmarks[2], "the foreign-frame pure-camera bookmark is dropped, not adopted")

@@ -137,22 +137,22 @@ final class AislopdeskClientDedupTests: XCTestCase {
         }
 
         func connect(
-            host: String,
-            port: UInt16,
+            host _: String,
+            port _: UInt16,
             resume: UUID,
             lastReceivedSeq: Int64,
-            handshakeTimeout: Duration,
-        ) async throws {
+            handshakeTimeout _: Duration,
+        ) {
             _sessionID = (resume == WireMessage.newSessionID) ? UUID() : resume
             _resumeFromSeq = lastReceivedSeq
             _returningClient = (resume != WireMessage.newSessionID)
         }
 
-        func sendInput(_ bytes: Data) async throws {}
-        func sendResize(cols: UInt16, rows: UInt16, pxWidth: UInt16, pxHeight: UInt16) async throws {}
-        func sendAck(seq: Int64) async throws {}
-        func sendBye() async throws {}
-        func close() async { continuation.finish() }
+        func sendInput(_: Data) {}
+        func sendResize(cols _: UInt16, rows _: UInt16, pxWidth _: UInt16, pxHeight _: UInt16) {}
+        func sendAck(seq _: Int64) {}
+        func sendBye() {}
+        func close() { continuation.finish() }
     }
 
     private final class ByteSink: @unchecked Sendable {
@@ -169,7 +169,7 @@ final class AislopdeskClientDedupTests: XCTestCase {
         }
     }
 
-    private func waitUntil(timeout: Duration, _ condition: @escaping @Sendable () -> Bool) async throws {
+    private func waitUntil(timeout: Duration, _ condition: @Sendable () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             if condition() { return }

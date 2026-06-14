@@ -6,11 +6,11 @@ import XCTest
 /// `CaptureRegionMath` — the pure union/hysteresis logic behind DIALOG-EXPAND (a file-open dialog
 /// larger than the streamed window expands the capture region so it shows in full + is clickable).
 final class CaptureRegionMathTests: XCTestCase {
-    typealias Snap = CaptureRegionMath.WindowSnapshot
-    let display = CGRect(x: 0, y: 0, width: 1920, height: 1080)
-    let target = CGRect(x: 120, y: 120, width: 700, height: 500) // streamed window
-    let targetWID: UInt32 = 1783
-    let pid: Int32 = 407
+    private typealias Snap = CaptureRegionMath.WindowSnapshot
+    private let display = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    private let target = CGRect(x: 120, y: 120, width: 700, height: 500) // streamed window
+    private let targetWID: UInt32 = 1783
+    private let pid: Int32 = 407
 
     // No associated windows → region is just the (clamped) window frame.
     func testNoDialogReturnsWindowFrame() {

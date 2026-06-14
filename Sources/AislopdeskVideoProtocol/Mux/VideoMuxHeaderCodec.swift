@@ -117,7 +117,7 @@ public struct MuxFrameFragmentHeader: Equatable, Sendable {
     /// ``VideoProtocolError/truncated`` on a short/inconsistent datagram (a corrupt
     /// single packet must not crash the receiver — same contract as
     /// ``FrameFragment/decode(_:)``).
-    public static func decode(_ datagram: Data) throws -> (header: MuxFrameFragmentHeader, payload: Data) {
+    public static func decode(_ datagram: Data) throws -> (header: Self, payload: Data) {
         var reader = VideoByteReader(datagram)
         let channelID = try reader.readUInt32()
         let streamSeq = try reader.readUInt32()
@@ -127,7 +127,7 @@ public struct MuxFrameFragmentHeader: Equatable, Sendable {
         let flags = try FrameFragmentHeader.Flags(rawValue: reader.readUInt8())
         let payloadLength = try reader.readUInt16()
         let payload = try reader.readBytes(Int(payloadLength))
-        let header = MuxFrameFragmentHeader(
+        let header = Self(
             channelID: channelID, streamSeq: streamSeq, frameID: frameID,
             fragIndex: fragIndex, fragCount: fragCount, flags: flags, payloadLength: payloadLength,
         )

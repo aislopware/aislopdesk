@@ -61,7 +61,7 @@ public final class NWMuxByteLink: MuxByteLink, @unchecked Sendable {
         })
     }
 
-    public func close() async {
+    public func close() {
         connection.cancel()
         chunkContinuation.finish()
     }
@@ -101,6 +101,7 @@ public enum LiveMuxConnectionFactory {
     /// the client's default `handshakeTimeout` (`AislopdeskClient.connect`, `.seconds(10)`).
     public static let connectTimeout: Duration = .seconds(10)
 
+    @preconcurrency
     @MainActor
     public static func makeConnection(host: String, port: UInt16) async throws -> MuxNWConnection {
         try await makeConnection(host: host, port: port, timeout: connectTimeout)

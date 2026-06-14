@@ -73,7 +73,9 @@ final class RemoteWindowCloseButtonTests: XCTestCase {
             windowID: "42", title: "Safari",
         )
         model.open()
-        guard let d = model.active else { return XCTFail("open() should set active") }
+        guard let d = model.active else { XCTFail("open() should set active")
+            return
+        }
         XCTAssertEqual(d.host, "h.local", "host comes from the app target")
         XCTAssertEqual(d.mediaPort, 9000)
         XCTAssertEqual(d.cursorPort, 9001)

@@ -324,7 +324,7 @@ public final class TerminalModeTracker {
         case "C": events.append(.commandStarted)
         case "D":
             // `;D` or `;D;<exit>[;...]`. The exit code, if present, is field[2].
-            var exit: Int? = nil
+            var exit: Int?
             if fields.count >= 3 {
                 let raw = fields[2].split(separator: "=").first.map(String.init) ?? String(fields[2])
                 exit = Int(raw)

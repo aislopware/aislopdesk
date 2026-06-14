@@ -49,6 +49,7 @@ public final class PTYReadLoop: @unchecked Sendable {
     ///     its return (no-buffer relay). Bridging into an actor is the caller's job.
     ///   - onEOF: called once when the master reaches EOF / errors (the child closed
     ///     its tty — typically it has exited).
+    @preconcurrency
     public init(
         fd: Int32,
         onChunk: @escaping @Sendable (Data) -> Void,

@@ -100,6 +100,7 @@ public final class NWVideoMuxClientFlow: @unchecked Sendable {
 
     // MARK: - Lane registration (per channelID)
 
+    @preconcurrency
     public func registerLane(
         channelID: UInt32,
         onMedia: @escaping @Sendable (VideoChannel, Data) -> Void,

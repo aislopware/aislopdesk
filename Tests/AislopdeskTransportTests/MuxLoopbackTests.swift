@@ -64,6 +64,8 @@ final class MuxLoopbackTests: XCTestCase {
                 try? await Task.sleep(for: timeout)
                 return nil // timeout sentinel
             }
+            // `group.next()` is `[WireMessage]??`; the `?? nil` flattens the double-optional.
+            // swiftlint:disable:next redundant_nil_coalescing
             let first = await group.next() ?? nil
             group.cancelAll()
             return first ?? []
@@ -94,9 +96,13 @@ final class MuxLoopbackTests: XCTestCase {
         XCTAssertEqual(aMessages.count, 1, "channel A inbound must receive exactly its own echo")
         XCTAssertEqual(bMessages.count, 1, "channel B inbound must receive exactly its own echo")
         guard case let .output(_, aBytes) = aMessages.first
-        else { return XCTFail("A: expected output, got \(aMessages)") }
+        else { XCTFail("A: expected output, got \(aMessages)")
+            return
+        }
         guard case let .output(_, bBytes) = bMessages.first
-        else { return XCTFail("B: expected output, got \(bMessages)") }
+        else { XCTFail("B: expected output, got \(bMessages)")
+            return
+        }
         XCTAssertEqual(aBytes, Data("A-only".utf8), "channel A must receive ONLY A's bytes (no cross-talk)")
         XCTAssertEqual(bBytes, Data("B-only".utf8), "channel B must receive ONLY B's bytes (no cross-talk)")
     }
@@ -252,7 +258,9 @@ final class MuxLoopbackTests: XCTestCase {
         let bMessages = await bOut
         XCTAssertEqual(bMessages.count, 1, "sibling B's keystroke echo must arrive despite A's flood (no starvation)")
         guard case let .output(_, bBytes) = bMessages.first
-        else { return XCTFail("B: expected output, got \(bMessages)") }
+        else { XCTFail("B: expected output, got \(bMessages)")
+            return
+        }
         XCTAssertEqual(bBytes, Data("B-keystroke".utf8), "B must receive ONLY its own bytes")
 
         let aMessages = await aOut

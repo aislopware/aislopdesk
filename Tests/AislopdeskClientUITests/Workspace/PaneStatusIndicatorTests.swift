@@ -156,13 +156,17 @@ final class PaneStatusIndicatorTests: XCTestCase {
 
         // Simulate the drop the events loop produces on a transport FIN.
         vm.applyReconnectProgress(attempt: 0, nextRetry: nil) // a bare drop is reconnecting(0)
-        guard case let .reconnecting(a0, _) = vm.status else { return XCTFail("expected reconnecting") }
+        guard case let .reconnecting(a0, _) = vm.status else { XCTFail("expected reconnecting")
+            return
+        }
         XCTAssertEqual(a0, 0)
 
         // The supervisor reports a backoff attempt with a next-retry instant.
         let retryAt = Date().addingTimeInterval(0.5)
         vm.applyReconnectProgress(attempt: 2, nextRetry: retryAt)
-        guard case let .reconnecting(a2, next) = vm.status else { return XCTFail("expected reconnecting(2)") }
+        guard case let .reconnecting(a2, next) = vm.status else { XCTFail("expected reconnecting(2)")
+            return
+        }
         XCTAssertEqual(a2, 2)
         XCTAssertEqual(next, retryAt)
 

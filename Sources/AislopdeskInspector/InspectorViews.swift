@@ -307,7 +307,7 @@ struct SubagentNodeView: View {
                     ToolCardView(card: card)
                 }
                 ForEach(node.children) { child in
-                    SubagentNodeView(node: child)
+                    Self(node: child)
                         .padding(.leading, 12)
                 }
             }

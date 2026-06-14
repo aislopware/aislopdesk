@@ -77,7 +77,7 @@ public struct TrendlineEstimator: Sendable, Equatable {
     /// Total samples folded (saturates at 1000), shipped (capped 255) for host log context.
     public private(set) var numDeltas = 0
     /// The adaptive detection threshold (see kUp/kDown).
-    public private(set) var threshold = TrendlineEstimator.initialThreshold
+    public private(set) var threshold = Self.initialThreshold
 
     /// One regression point: x = arrival ms since the window's first arrival, y = smoothed delay.
     private struct Sample: Equatable {

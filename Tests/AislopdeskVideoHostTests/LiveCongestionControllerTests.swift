@@ -277,7 +277,9 @@ final class LiveCongestionControllerTests: XCTestCase {
                 break
             }
         }
-        guard let hard = firstDecrease else { return XCTFail("sustained 80ms over a 5ms baseline must decrease") }
+        guard let hard = firstDecrease else { XCTFail("sustained 80ms over a 5ms baseline must decrease")
+            return
+        }
         XCTAssertLessThan(
             hard.factor,
             LiveCongestionController.rttDecreaseFloorFactor,
@@ -395,7 +397,9 @@ final class LiveCongestionControllerTests: XCTestCase {
                 break
             }
         }
-        guard let cut = afterFirstCut else { return XCTFail("a rising queue must cut") }
+        guard let cut = afterFirstCut else { XCTFail("a rising queue must cut")
+            return
+        }
         // The queue now DRAINS: samples fall away BELOW the smoothed level, so the smoothed EWMA
         // falls monotonically — yet stays far above both inflation gates for many reports. (Samples
         // above the still-climbing EWMA would read as a RISING trend — that catchup phase may

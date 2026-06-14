@@ -186,10 +186,10 @@ public enum RecoveryMessage: Equatable, Sendable {
     /// datagram bytes — a decoder that tolerated suffixes would let suffix-varied copies of one
     /// logical request each decode identically yet bypass the byte-keyed dedup (re-triggering a
     /// second ForceLTRRefresh/IDR). No backcompat needed; both ends redeploy together.
-    public static func decode(_ data: Data) throws -> RecoveryMessage {
+    public static func decode(_ data: Data) throws -> Self {
         var reader = VideoByteReader(data)
         let type = try reader.readUInt8()
-        let message: RecoveryMessage
+        let message: Self
         switch type {
         case 1:
             message = try .ack(streamSeq: reader.readUInt32())
@@ -278,7 +278,7 @@ public struct RecoveryPolicy: Sendable {
     public init(
         idrTimeoutRTTMultiple: Double = 2.0,
         lossyIdrTimeoutRTTMultiple: Double = 1.0,
-        lossyEscalationFloor: TimeInterval = RecoveryPolicy.defaultLossyEscalationFloor,
+        lossyEscalationFloor: TimeInterval = Self.defaultLossyEscalationFloor,
         lossyEscalationFloorRTTMultiple: Double = 1.5,
     ) {
         self.idrTimeoutRTTMultiple = idrTimeoutRTTMultiple

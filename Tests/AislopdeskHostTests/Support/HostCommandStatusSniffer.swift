@@ -49,6 +49,7 @@ import Foundation
 public final class HostCommandStatusSniffer: @unchecked Sendable {
     /// - Parameter clock: the wall-clock source for C→D duration. Injectable so a test advances
     ///   it deterministically; defaults to `Date.init` in production.
+    @preconcurrency
     public init(clock: @escaping @Sendable () -> Date = { Date() }) {
         self.clock = clock
     }

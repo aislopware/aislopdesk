@@ -247,7 +247,7 @@ struct CanvasView: View {
     // MARK: Background pan
 
     @ViewBuilder
-    private func backgroundPanLayer(camera: CanvasCamera) -> some View {
+    private func backgroundPanLayer(camera _: CanvasCamera) -> some View {
         #if os(macOS)
         // macOS: a bottom NSView catches scroll-wheel / trackpad-scroll AND empty-background drag to pan
         // (a SwiftUI DragGesture cannot see scroll, and an overlay returning nil from hitTest would get
@@ -801,11 +801,11 @@ private struct CanvasBackingView: NSViewRepresentable {
     /// Called per scroll step with the camera delta to apply (already sign-adjusted for natural scroll).
     let onScroll: (CGSize) -> Void
 
-    func makeNSView(context: Context) -> NSView {
+    func makeNSView(context _: Context) -> NSView {
         PanView(onLiveDrag: onLiveDrag, onCommitDrag: onCommitDrag, onScroll: onScroll)
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
+    func updateNSView(_ nsView: NSView, context _: Context) {
         guard let v = nsView as? PanView else { return }
         v.onLiveDrag = onLiveDrag
         v.onCommitDrag = onCommitDrag
@@ -830,7 +830,7 @@ private struct CanvasBackingView: NSViewRepresentable {
         }
 
         @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
+        required init?(coder _: NSCoder) { fatalError("init(coder:) not used") }
 
         // Bottom layer: receives only events not consumed by a pane above it.
         override func scrollWheel(with event: NSEvent) {

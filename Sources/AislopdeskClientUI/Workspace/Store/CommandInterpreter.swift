@@ -91,10 +91,10 @@ public struct KeyChord: Hashable, Sendable {
         public let rawValue: Int
         public init(rawValue: Int) { self.rawValue = rawValue }
 
-        public static let shift = Modifiers(rawValue: 1 << 0)
-        public static let control = Modifiers(rawValue: 1 << 1)
-        public static let option = Modifiers(rawValue: 1 << 2)
-        public static let command = Modifiers(rawValue: 1 << 3)
+        public static let shift = Self(rawValue: 1 << 0)
+        public static let control = Self(rawValue: 1 << 1)
+        public static let option = Self(rawValue: 1 << 2)
+        public static let command = Self(rawValue: 1 << 3)
     }
 
     /// A normalized key token. Printable keys are lower-cased single characters (the chord is
@@ -135,6 +135,7 @@ public struct KeyChord: Hashable, Sendable {
 /// Per the WF2 scope this owns ONLY the pure chord → command mapping. It does **not** apply a
 /// command to a store (the store does not exist yet); `apply(_:to:)` lives with the store in a
 /// later workstream.
+@preconcurrency
 @MainActor
 public final class CommandInterpreter {
     /// The active bindings. Public + mutable so the UI (or a settings screen) can rebind; defaults

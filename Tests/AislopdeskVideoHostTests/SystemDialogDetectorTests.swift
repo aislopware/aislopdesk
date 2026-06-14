@@ -7,9 +7,9 @@ import XCTest
 /// prompts to surface in their own pane (the user's case: a SecurityAgent login/password dialog).
 /// Values mirror the HW probe (2026-06-12): SecurityAgent prompt at layer 1000, 260×312, onScreen.
 final class SystemDialogDetectorTests: XCTestCase {
-    typealias Snap = SystemDialogDetector.WindowSnapshot
+    private typealias Snap = SystemDialogDetector.WindowSnapshot
 
-    func snap(
+    private func snap(
         _ id: UInt32,
         owner: String,
         bundle: String,

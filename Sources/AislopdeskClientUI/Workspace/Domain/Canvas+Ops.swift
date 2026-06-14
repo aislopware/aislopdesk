@@ -106,7 +106,7 @@ public extension Canvas {
             viewport: viewportRect,
             size: size,
         )
-        let item = CanvasItem(id: id, spec: spec, frame: Canvas.sanitize(placed), z: maxZ + 1)
+        let item = CanvasItem(id: id, spec: spec, frame: Self.sanitize(placed), z: maxZ + 1)
         return (Canvas(items: items + [item], camera: camera), id)
     }
 
@@ -117,7 +117,7 @@ public extension Canvas {
     /// not "Undo"). `group` is the caller-validated group to rejoin (`nil` = ungrouped).
     func restoring(_ spec: PaneSpec, frame: CGRect, group: PaneGroupID?) -> (Canvas, PaneID) {
         let id = PaneID()
-        let item = CanvasItem(id: id, spec: spec, frame: Canvas.sanitize(frame), z: maxZ + 1, groupID: group)
+        let item = CanvasItem(id: id, spec: spec, frame: Self.sanitize(frame), z: maxZ + 1, groupID: group)
         return (Canvas(items: items + [item], camera: camera), id)
     }
 
@@ -135,20 +135,20 @@ public extension Canvas {
     /// (the store composes `raising` so the policy lives in one place).
     func moving(_ id: PaneID, by delta: CGSize) -> Canvas {
         mapItem(id) { item in
-            item.frame = Canvas.sanitize(item.frame.offsetBy(dx: delta.width, dy: delta.height))
+            item.frame = Self.sanitize(item.frame.offsetBy(dx: delta.width, dy: delta.height))
         }
     }
 
     /// Moves `id`'s frame origin to `origin` (clamped finite).
     func moving(_ id: PaneID, to origin: CGPoint) -> Canvas {
         mapItem(id) { item in
-            item.frame = Canvas.sanitize(CGRect(origin: origin, size: item.frame.size))
+            item.frame = Self.sanitize(CGRect(origin: origin, size: item.frame.size))
         }
     }
 
     /// Sets `id`'s frame (the corner/edge resize commit), sanitized so size ≥ ``minItemSize`` and finite.
     func resizing(_ id: PaneID, to frame: CGRect) -> Canvas {
-        mapItem(id) { item in item.frame = Canvas.sanitize(frame) }
+        mapItem(id) { item in item.frame = Self.sanitize(frame) }
     }
 
     /// Brings `id` to the front: `z = maxZ + 1`. A no-op (returns `self`) if `id` is already the top
@@ -208,7 +208,7 @@ public extension Canvas {
             case .centerHorizontal: f.origin.x = box.midX - f.width / 2
             case .centerVertical: f.origin.y = box.midY - f.height / 2
             }
-            copy.frame = Canvas.sanitize(f)
+            copy.frame = Self.sanitize(f)
             return copy
         }, camera: camera)
     }
@@ -247,7 +247,7 @@ public extension Canvas {
             var copy = item
             var f = item.frame
             if horizontal { f.origin.x = lead } else { f.origin.y = lead }
-            copy.frame = Canvas.sanitize(f)
+            copy.frame = Self.sanitize(f)
             return copy
         }, camera: camera)
     }
@@ -298,8 +298,8 @@ public extension Canvas {
         let count = items.count
         guard count > 1 else { return centeredOnAll(viewport: viewport) }
         let cols = Int(ceil(Double(count).squareRoot()))
-        let cellW = (items.map(\.frame.width).max() ?? Canvas.defaultItemSize.width) + gutter
-        let cellH = (items.map(\.frame.height).max() ?? Canvas.defaultItemSize.height) + gutter
+        let cellW = (items.map(\.frame.width).max() ?? Self.defaultItemSize.width) + gutter
+        let cellH = (items.map(\.frame.height).max() ?? Self.defaultItemSize.height) + gutter
 
         let order = allIDs()
         let positionByID: [PaneID: CGPoint] = Dictionary(uniqueKeysWithValues: order.enumerated().map { index, id in
@@ -311,7 +311,7 @@ public extension Canvas {
         let packed = items.map { item -> CanvasItem in
             guard let origin = positionByID[item.id] else { return item }
             var copy = item
-            copy.frame = Canvas.sanitize(CGRect(origin: origin, size: item.frame.size))
+            copy.frame = Self.sanitize(CGRect(origin: origin, size: item.frame.size))
             return copy
         }
         return Canvas(items: packed, camera: camera).centeredOnAll(viewport: viewport)
@@ -412,7 +412,7 @@ public extension Canvas {
     /// that pane's frame (move only — its size is preserved); a `.group` body distributes its box's shift
     /// RIGIDLY to every member (so the derived box follows for free and the group's internal layout is
     /// untouched). Every output frame is sanitized.
-    func applying(_ result: CanvasNonOverlap.CommitResult, groups: [PaneGroup]) -> Canvas {
+    func applying(_ result: CanvasNonOverlap.CommitResult, groups _: [PaneGroup]) -> Canvas {
         var paneOrigin: [PaneID: CGPoint] = [:]
         var groupDelta: [PaneGroupID: CGSize] = [:]
         for (bodyID, newRect) in result.frames {
@@ -429,9 +429,9 @@ public extension Canvas {
         let newItems = items.map { item -> CanvasItem in
             var copy = item
             if let origin = paneOrigin[item.id] {
-                copy.frame = Canvas.sanitize(CGRect(origin: origin, size: item.frame.size))
+                copy.frame = Self.sanitize(CGRect(origin: origin, size: item.frame.size))
             } else if let gid = item.groupID, let d = groupDelta[gid] {
-                copy.frame = Canvas.sanitize(item.frame.offsetBy(dx: d.width, dy: d.height))
+                copy.frame = Self.sanitize(item.frame.offsetBy(dx: d.width, dy: d.height))
             }
             return copy
         }
@@ -445,7 +445,7 @@ public extension Canvas {
         return Canvas(items: items.map { item in
             guard item.groupID == groupID else { return item }
             var copy = item
-            copy.frame = Canvas.sanitize(item.frame.offsetBy(dx: delta.width, dy: delta.height))
+            copy.frame = Self.sanitize(item.frame.offsetBy(dx: delta.width, dy: delta.height))
             return copy
         }, camera: camera)
     }
@@ -466,21 +466,21 @@ public extension Canvas {
         let newBox = CGRect(
             x: proposedBox.minX,
             y: proposedBox.minY,
-            width: max(proposedBox.width, Canvas.minItemSize.width),
-            height: max(proposedBox.height, Canvas.minItemSize.height),
+            width: max(proposedBox.width, Self.minItemSize.width),
+            height: max(proposedBox.height, Self.minItemSize.height),
         )
         let sx = newBox.width / oldBox.width
         let sy = newBox.height / oldBox.height
         return Canvas(items: items.map { item in
             guard item.groupID == groupID else { return item }
             var copy = item
-            let scaled = Canvas.sanitize(CGRect(
+            let scaled = Self.sanitize(CGRect(
                 x: newBox.minX + (item.frame.minX - oldBox.minX) * sx,
                 y: newBox.minY + (item.frame.minY - oldBox.minY) * sy,
                 width: item.frame.width * sx,
                 height: item.frame.height * sy,
             ))
-            copy.frame = Canvas.clamping(scaled, into: newBox)
+            copy.frame = Self.clamping(scaled, into: newBox)
             return copy
         }, camera: camera)
     }

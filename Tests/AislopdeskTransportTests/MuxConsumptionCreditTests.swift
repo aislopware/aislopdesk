@@ -32,7 +32,9 @@ final class MuxConsumptionCreditTests: XCTestCase {
 
         let ch = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
         try await Task.sleep(for: .milliseconds(80))
-        guard let hostData2 = hostSide.get() else { return XCTFail("host never saw the open") }
+        guard let hostData2 = hostSide.get() else { XCTFail("host never saw the open")
+            return
+        }
 
         // Host floods just under one window of threshold-crossing output (well past the
         // half-window grant threshold). The client demuxes + buffers it, but NOBODY consumes.
@@ -88,7 +90,9 @@ final class MuxConsumptionCreditTests: XCTestCase {
 
         let ch = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
         try await Task.sleep(for: .milliseconds(80))
-        guard let sender = hostSide.get() else { return XCTFail("host never saw the open") }
+        guard let sender = hostSide.get() else { XCTFail("host never saw the open")
+            return
+        }
 
         // Flood 4 windows' worth from the host. With no consumption the sender MUST park.
         let window = MuxFlowControl.initialWindowBytes
@@ -156,7 +160,7 @@ final class MuxConsumptionCreditTests: XCTestCase {
                 lock.lock()
                 defer { lock.unlock() }
                 decoder.append(inner)
-                while let message = (try? decoder.nextMessage()) ?? nil {
+                while let message = (try? decoder.nextMessage()) {
                     if case let .input(bytes) = message { inputs.append(bytes) }
                 }
             }

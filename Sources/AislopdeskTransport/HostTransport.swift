@@ -104,6 +104,7 @@ public actor HostTransport {
     ///     ready/failed, so a LATER failure otherwise vanishes and a long-lived host keeps showing
     ///     "running" while silently accepting nothing. Additive + defaulted nil: the headless daemon
     ///     is unaffected. A deliberate `stop()` (`.cancelled`) is NOT a failure and never fires it.
+    @preconcurrency
     public func start(
         port: UInt16,
         readinessTimeout: Duration = .seconds(10),
@@ -422,7 +423,7 @@ enum MuxPairing {
     static func decide(existingHasControl: Bool, existingHasData: Bool, isControl: Bool) -> Decision {
         let controlPresent = isControl ? true : existingHasControl
         let dataPresent = isControl ? existingHasData : true
-        if controlPresent && dataPresent {
+        if controlPresent, dataPresent {
             return Decision(paired: true, closesDisplacedSameSide: false)
         }
         // Re-park: the half on the arriving side displaces whatever was already parked on that side.

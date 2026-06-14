@@ -325,7 +325,7 @@ final class FECTests: XCTestCase {
         expectedGroupSize: Int,
         file: StaticString = #file,
         line: UInt = #line,
-    ) throws {
+    ) {
         let fec = XORParityFEC(groupSize: 5)
         var packetizer = VideoPacketizer(fec: fec)
         let frameBytes = adaptiveFrame(dataFragmentTarget: 6)

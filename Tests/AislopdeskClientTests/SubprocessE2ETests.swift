@@ -105,7 +105,7 @@ final class SubprocessE2ETests: XCTestCase {
     // MARK: - Helpers
 
     /// Reads hostd stderr until a "listening on …:<port>" line, returns the port.
-    private func awaitBoundPort(from handle: FileHandle, timeout: TimeInterval) throws -> UInt16? {
+    private func awaitBoundPort(from handle: FileHandle, timeout: TimeInterval) -> UInt16? {
         let deadline = Date().addingTimeInterval(timeout)
         var buffer = Data()
         while Date() < deadline {

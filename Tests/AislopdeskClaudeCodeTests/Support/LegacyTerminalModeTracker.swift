@@ -180,7 +180,7 @@ final class LegacyTerminalModeTracker {
         case "B": events.append(.commandStart)
         case "C": events.append(.commandStarted)
         case "D":
-            var exit: Int? = nil
+            var exit: Int?
             if fields.count >= 3 {
                 let raw = fields[2].split(separator: "=").first.map(String.init) ?? String(fields[2])
                 exit = Int(raw)

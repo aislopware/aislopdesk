@@ -59,10 +59,8 @@ public enum SecretPasteClassifier {
     private static func charClassCount(_ s: String) -> Int {
         var lower = false, upper = false, digit = false, symbol = false
         for c in s {
-            if c.isLowercase { lower = true }
-            else if c.isUppercase { upper = true }
-            else if c.isNumber { digit = true }
-            else { symbol = true }
+            if c.isLowercase { lower = true } else if c.isUppercase { upper = true }
+            else if c.isNumber { digit = true } else { symbol = true }
         }
         return (lower ? 1 : 0) + (upper ? 1 : 0) + (digit ? 1 : 0) + (symbol ? 1 : 0)
     }

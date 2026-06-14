@@ -85,7 +85,8 @@ final class TerminalRawModeTests: XCTestCase {
         // The slave (the controlled tty) must observe the new size — this is exactly what
         // a resize message carries from the client's local terminal to the host PTY.
         guard let ws = TerminalRawMode.windowSize(fd: slave) else {
-            return XCTFail("windowSize returned nil for a tty")
+            XCTFail("windowSize returned nil for a tty")
+            return
         }
         XCTAssertEqual(ws.cols, 120)
         XCTAssertEqual(ws.rows, 40)

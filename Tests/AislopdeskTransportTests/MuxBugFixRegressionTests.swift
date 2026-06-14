@@ -209,7 +209,7 @@ final class MuxBugFixRegressionTests: XCTestCase {
     // MARK: - helpers
 
     /// Polls `condition` (an async predicate) until true or the timeout elapses.
-    static func waitUntil(timeout: TimeInterval = 2, _ condition: @Sendable () async -> Bool) async throws {
+    private static func waitUntil(timeout: TimeInterval = 2, _ condition: @Sendable () async -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if await condition() { return }

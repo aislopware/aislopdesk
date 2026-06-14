@@ -55,19 +55,19 @@ struct PaneConnectionStatus: Equatable {
 
     /// Derives the presentation from a connection status (`nil` ⇒ `.none`, no dot). The single mapping
     /// site — both surfaces call this so the colour/label/pulse rules live in one place.
-    static func from(_ status: ConnectionViewModel.Status?) -> PaneConnectionStatus {
+    static func from(_ status: ConnectionViewModel.Status?) -> Self {
         switch status {
-        case .none: PaneConnectionStatus(phase: .none)
-        case .disconnected: PaneConnectionStatus(phase: .idle)
-        case .connecting: PaneConnectionStatus(phase: .connecting)
-        case .connected: PaneConnectionStatus(phase: .connected)
-        case let .reconnecting(attempt, next): PaneConnectionStatus(
+        case .none: Self(phase: .none)
+        case .disconnected: Self(phase: .idle)
+        case .connecting: Self(phase: .connecting)
+        case .connected: Self(phase: .connected)
+        case let .reconnecting(attempt, next): Self(
                 phase: .reconnecting,
                 attempt: attempt,
                 nextRetry: next,
             )
-        case .unreachable: PaneConnectionStatus(phase: .unreachable)
-        case let .failed(message): PaneConnectionStatus(phase: .failed, failureDetail: message)
+        case .unreachable: Self(phase: .unreachable)
+        case let .failed(message): Self(phase: .failed, failureDetail: message)
         }
     }
 
@@ -129,7 +129,7 @@ struct PaneConnectionStatus: Equatable {
     /// Pure + `nonisolated` so it is unit-tested without a view. When the worst phase is `.reconnecting`
     /// the fold carries through the lowest-attempt / soonest-`nextRetry` reconnecting leaf so the rail's
     /// dot still pulses with a representative countdown.
-    nonisolated static func fold(_ statuses: [ConnectionViewModel.Status?]) -> PaneConnectionStatus {
+    nonisolated static func fold(_ statuses: [ConnectionViewModel.Status?]) -> Self {
         let derived = statuses.map(from)
         func salience(_ p: Phase) -> Int {
             switch p {
@@ -144,7 +144,7 @@ struct PaneConnectionStatus: Equatable {
         }
         // The leaf with the highest salience wins; ties keep the first (stable, pre-order).
         guard let worst = derived.max(by: { salience($0.phase) < salience($1.phase) }) else {
-            return PaneConnectionStatus(phase: .none)
+            return Self(phase: .none)
         }
         return worst
     }

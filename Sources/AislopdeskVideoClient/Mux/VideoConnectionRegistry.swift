@@ -45,6 +45,7 @@ extension NWVideoMuxClientFlow: VideoMuxClientFlowing {}
 /// endpoint bookkeeping are plain main-actor reads. Acquiring / releasing a lane is
 /// synchronous bookkeeping (the flow's own socket ops are async inside `Network.framework`),
 /// so it fits the synchronous construction site.
+@preconcurrency
 @MainActor
 public final class VideoConnectionRegistry {
     private struct Entry {
@@ -70,6 +71,7 @@ public final class VideoConnectionRegistry {
     private let makeFlow: @MainActor (_ host: String, _ mediaPort: UInt16, _ cursorPort: UInt16)
         -> VideoMuxClientFlowing
 
+    @preconcurrency
     public init(
         makeFlow: @escaping @MainActor (String, UInt16, UInt16) -> VideoMuxClientFlowing,
     ) {
@@ -137,6 +139,7 @@ public struct VideoMuxAcquisition: Sendable {
     }
 }
 
+@preconcurrency
 @MainActor
 public enum VideoMuxInstaller {
     /// Installs the PRODUCTION shared-flow registry on the video pipeline — the one app-glue site
