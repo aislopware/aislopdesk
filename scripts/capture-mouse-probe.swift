@@ -48,16 +48,16 @@ final class ProbeView: NSView {
         FileHandle.standardError.write(Data(line.utf8))
     }
 
-    override func mouseDown(with e: NSEvent)         { log("mouseDown", e) }
-    override func mouseDragged(with e: NSEvent)      { log("mouseDragged", e) }
-    override func mouseUp(with e: NSEvent)           { log("mouseUp", e) }
-    override func mouseMoved(with e: NSEvent)        { log("mouseMoved", e) }
-    override func rightMouseDown(with e: NSEvent)    { log("rightMouseDown", e) }
+    override func mouseDown(with e: NSEvent) { log("mouseDown", e) }
+    override func mouseDragged(with e: NSEvent) { log("mouseDragged", e) }
+    override func mouseUp(with e: NSEvent) { log("mouseUp", e) }
+    override func mouseMoved(with e: NSEvent) { log("mouseMoved", e) }
+    override func rightMouseDown(with e: NSEvent) { log("rightMouseDown", e) }
     override func rightMouseDragged(with e: NSEvent) { log("rightMouseDragged", e) }
-    override func rightMouseUp(with e: NSEvent)      { log("rightMouseUp", e) }
-    override func otherMouseDown(with e: NSEvent)    { log("otherMouseDown", e) }
+    override func rightMouseUp(with e: NSEvent) { log("rightMouseUp", e) }
+    override func otherMouseDown(with e: NSEvent) { log("otherMouseDown", e) }
     override func otherMouseDragged(with e: NSEvent) { log("otherMouseDragged", e) }
-    override func otherMouseUp(with e: NSEvent)      { log("otherMouseUp", e) }
+    override func otherMouseUp(with e: NSEvent) { log("otherMouseUp", e) }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -65,7 +65,8 @@ final class ProbeView: NSView {
         addTrackingArea(NSTrackingArea(
             rect: bounds,
             options: [.mouseMoved, .activeAlways, .inVisibleRect],
-            owner: self, userInfo: nil))
+            owner: self, userInfo: nil,
+        ))
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -92,7 +93,8 @@ app.setActivationPolicy(.regular)
 let win = NSWindow(
     contentRect: NSRect(x: 240, y: 240, width: 560, height: 380),
     styleMask: [.titled, .closable, .miniaturizable],
-    backing: .buffered, defer: false)
+    backing: .buffered, defer: false,
+)
 win.title = "Aislopdesk mouse probe — click, 1-finger drag, 3-finger drag, then ⌘Q"
 win.acceptsMouseMovedEvents = true
 let view = ProbeView(frame: win.contentView!.bounds)
@@ -102,5 +104,6 @@ win.makeFirstResponder(view)
 win.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
 
-FileHandle.standardError.write(Data("capture-mouse-probe: window is up — focus it, do the gestures, ⌘Q to quit.\n".utf8))
+FileHandle.standardError
+    .write(Data("capture-mouse-probe: window is up — focus it, do the gestures, ⌘Q to quit.\n".utf8))
 app.run()
