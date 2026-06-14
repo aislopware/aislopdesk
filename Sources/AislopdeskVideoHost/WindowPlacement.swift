@@ -4,31 +4,6 @@ import CoreGraphics
 import Foundation
 import OSLog
 
-/// PURE placement arithmetic (feature #1): decide where/how to move a window fully onto a display.
-/// Headlessly unit-testable; the AX side effects live in ``WindowPlacement``.
-public enum WindowPlacementMath {
-    /// Clamp `windowSize` to `displayBounds` (resize DOWN only if larger — never enlarge) and place
-    /// at the display's top-left origin. macOS crops a window that overhangs a display, so an
-    /// oversized window must be shrunk before the move.
-    public static func placement(windowSize: CGSize, displayBounds: CGRect)
-        -> (origin: CGPoint, size: CGSize, needsResize: Bool)
-    {
-        let w = min(windowSize.width, displayBounds.width)
-        let h = min(windowSize.height, displayBounds.height)
-        // ½-pt tolerance so floating-point equality doesn't trigger a no-op resize.
-        let needsResize = (w + 0.5 < windowSize.width) || (h + 0.5 < windowSize.height)
-        return (displayBounds.origin, CGSize(width: w, height: h), needsResize)
-    }
-
-    /// True when `size` fits inside `bounds` (within a ½-pt tolerance). Used after the AX move to
-    /// confirm the window actually shrank to fit the VD — an app that refuses/clamps the resize
-    /// leaves an oversized window, which must NOT be reported as a successful 2× move (the capture
-    /// crop would exceed the framebuffer and the client's input mapping would desync).
-    public static func fits(_ size: CGSize, within bounds: CGRect) -> Bool {
-        size.width <= bounds.width + 0.5 && size.height <= bounds.height + 0.5
-    }
-}
-
 /// Moves a target window onto a display via Accessibility (feature #1 — put the remoted window on
 /// the HiDPI virtual display so it renders at real 2× backing). Best-effort + crash-free.
 ///
@@ -96,7 +71,7 @@ public enum WindowPlacement {
         }
 
         let bounds = CGDisplayBounds(displayID) // global points; VD origin is the target
-        let plan = WindowPlacementMath.placement(windowSize: originalFrame.size, displayBounds: bounds)
+        let plan = RustVideoHostFFI.windowPlacement(windowSize: originalFrame.size, displayBounds: bounds)
         if plan.needsResize { // shrink to fit BEFORE crossing displays
             setSize(axWindow, plan.size)
         }
@@ -109,7 +84,7 @@ public enum WindowPlacement {
         let achieved = axWindowFrame(axWindow)?.size ?? plan.size
         // If the app refused/clamped the shrink the window still overhangs the VD → a 2× move here
         // would over-crop the capture and desync input mapping. Roll back and fall back to 1×.
-        guard WindowPlacementMath.fits(achieved, within: bounds) else {
+        guard RustVideoHostFFI.windowFits(achieved, within: bounds) else {
             log
                 .error(
                     "move window \(windowID): achieved \(Int(achieved.width))×\(Int(achieved.height))pt overhangs VD — rolling back to 1×",

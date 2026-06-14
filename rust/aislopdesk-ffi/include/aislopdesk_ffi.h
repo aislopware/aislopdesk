@@ -248,6 +248,26 @@ uint8_t aisd_recovery_policy_should_escalate_to_idr(double idr_rtt_mult, double 
                                                     double elapsed_since_request, double rtt,
                                                     uint8_t observing_loss);
 
+/* ---- window_placement (pure, flat-struct; HiDPI VD-park path) --------------------- */
+
+/* Result of aisd_window_placement: the move-target origin (x, y), the shrink-clamped window
+ * size (width, height), and needs_resize (1 = window overhangs the display by >½ pt). */
+typedef struct AisdPlacement {
+    double x;
+    double y;
+    double width;
+    double height;
+    uint8_t needs_resize;
+} AisdPlacement;
+
+/* Clamp a window (window_w × window_h) DOWN to `display` and place it at the display top-left.
+ * Pure; never fails. */
+AisdPlacement aisd_window_placement(double window_w, double window_h, AisdRect display);
+
+/* Whether a window (size_w × size_h) fits inside `bounds` (½-pt tolerance). 1 = fits, 0 = not.
+ * Pure; never fails. */
+uint8_t aisd_window_fits(double size_w, double size_h, AisdRect bounds);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

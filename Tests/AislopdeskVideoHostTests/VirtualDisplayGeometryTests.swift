@@ -56,11 +56,11 @@ final class VirtualDisplayGeometryTests: XCTestCase {
         XCTAssertEqual(g.pixelWidth, 1)
     }
 
-    // MARK: WindowPlacementMath
+    // MARK: window placement (Rust core via FFI)
 
     // A window smaller than the display: no resize, placed at the display origin.
     func testPlacementFitsNoResize() {
-        let p = WindowPlacementMath.placement(
+        let p = RustVideoHostFFI.windowPlacement(
             windowSize: CGSize(width: 1200, height: 800),
             displayBounds: CGRect(x: 3840, y: 0, width: 1920, height: 1080),
         )
@@ -71,7 +71,7 @@ final class VirtualDisplayGeometryTests: XCTestCase {
 
     // A window larger than the display on one axis: clamp that axis, flag resize.
     func testPlacementClampsOversizedWidth() {
-        let p = WindowPlacementMath.placement(
+        let p = RustVideoHostFFI.windowPlacement(
             windowSize: CGSize(width: 2400, height: 900),
             displayBounds: CGRect(x: 0, y: 0, width: 1920, height: 1080),
         )
@@ -81,7 +81,7 @@ final class VirtualDisplayGeometryTests: XCTestCase {
 
     // Larger on both axes: clamp both.
     func testPlacementClampsBothAxes() {
-        let p = WindowPlacementMath.placement(
+        let p = RustVideoHostFFI.windowPlacement(
             windowSize: CGSize(width: 4000, height: 3000),
             displayBounds: CGRect(x: 100, y: 50, width: 1920, height: 1080),
         )
@@ -92,7 +92,7 @@ final class VirtualDisplayGeometryTests: XCTestCase {
 
     // Exactly display-sized: no resize (½-pt tolerance guards float equality).
     func testPlacementExactSizeNoResize() {
-        let p = WindowPlacementMath.placement(
+        let p = RustVideoHostFFI.windowPlacement(
             windowSize: CGSize(width: 1920, height: 1080),
             displayBounds: CGRect(x: 0, y: 0, width: 1920, height: 1080),
         )
@@ -100,16 +100,16 @@ final class VirtualDisplayGeometryTests: XCTestCase {
         XCTAssertEqual(p.size, CGSize(width: 1920, height: 1080))
     }
 
-    // MARK: WindowPlacementMath.fits
+    // MARK: window fits (Rust core via FFI)
 
     // A window that fits (≤ bounds, with ½-pt tolerance) passes; one that overhangs either axis fails.
     func testFitsWithinBounds() {
         let vd = CGRect(x: 3840, y: 0, width: 1920, height: 1080)
-        XCTAssertTrue(WindowPlacementMath.fits(CGSize(width: 1920, height: 1080), within: vd)) // exact
-        XCTAssertTrue(WindowPlacementMath.fits(CGSize(width: 1200, height: 800), within: vd)) // smaller
-        XCTAssertTrue(WindowPlacementMath.fits(CGSize(width: 1920.4, height: 1080), within: vd)) // within tol
-        XCTAssertFalse(WindowPlacementMath.fits(CGSize(width: 1921, height: 1080), within: vd)) // width over
-        XCTAssertFalse(WindowPlacementMath.fits(CGSize(width: 1920, height: 1200), within: vd)) // height over
+        XCTAssertTrue(RustVideoHostFFI.windowFits(CGSize(width: 1920, height: 1080), within: vd)) // exact
+        XCTAssertTrue(RustVideoHostFFI.windowFits(CGSize(width: 1200, height: 800), within: vd)) // smaller
+        XCTAssertTrue(RustVideoHostFFI.windowFits(CGSize(width: 1920.4, height: 1080), within: vd)) // within tol
+        XCTAssertFalse(RustVideoHostFFI.windowFits(CGSize(width: 1921, height: 1080), within: vd)) // width over
+        XCTAssertFalse(RustVideoHostFFI.windowFits(CGSize(width: 1920, height: 1200), within: vd)) // height over
     }
 
     // MARK: VirtualDisplayPlanner.originToRight

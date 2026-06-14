@@ -71,9 +71,13 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn section<'a>(root: &'a Value, key: &str) -> &'a Vec<Value> {
-    root[key]
+    let records = root[key]
         .as_array()
-        .unwrap_or_else(|| panic!("missing section {key}"))
+        .unwrap_or_else(|| panic!("missing section {key}"));
+    // Guard against a silently-dropped section: a future corpus regeneration that no longer
+    // emits `key` would otherwise make this section's test pass vacuously over an empty list.
+    assert!(!records.is_empty(), "golden section {key} is empty");
+    records
 }
 
 fn u64v(r: &Value, k: &str) -> u64 {
