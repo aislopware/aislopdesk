@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+# Android targets are added by the FFI build script when cross-compiling the .so:
+#   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android

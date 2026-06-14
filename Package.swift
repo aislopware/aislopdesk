@@ -1,5 +1,12 @@
 // swift-tools-version:6.2
+import Foundation
 import PackageDescription
+
+// Absolute path to this package's root, computed from the manifest's own location at
+// evaluation time. Used to make the Rust staticlib search path (`-L`) absolute so it resolves
+// in BOTH `swift build` (CWD = package root) AND an Xcode app build (CWD = DerivedData), where
+// a relative `-Lrust/target/release` is not found. Portable: recomputes if the repo moves.
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 
 // Aislopdesk — terminal-first remote-coding for Apple platforms.
 //
@@ -34,10 +41,29 @@ let package = Package(
     targets: [
         // MARK: Libraries
 
+        // C-ABI shim onto the Rust `aislopdesk-ffi` staticlib (rust/aislopdesk-ffi).
+        // Exposes the hand-written header `aislopdesk_ffi.h` (a copy kept in sync by
+        // `rust/build-apple.sh`) as the `CAislopdeskFFI` module and links the prebuilt
+        // `libaislopdesk_ffi.a`. The Rust core is a byte-/bit-exact port of the Swift
+        // codecs/controllers (proven by golden vectors); Swift modules call into it via
+        // the `RustFFI` bridge so macOS/iOS and a future Android client run the identical
+        // algorithm bytes. `unsafeFlags` (the -L/-l for the vendored static archive) make
+        // the package non-consumable as a dependency — fine for a leaf app. macOS slice
+        // for now; iOS device/sim slices are a follow-up (see rust/build-apple.sh).
+        .target(
+            name: "CAislopdeskFFI",
+            path: "Sources/CAislopdeskFFI",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .unsafeFlags(["-L\(packageRoot)/rust/target/release", "-laislopdesk_ffi"])
+            ]
+        ),
+
         // Pure-Swift wire format: framing, MessageType, seq(Int64), Hello/Ack.
         // ZERO platform dependency (no Network/Darwin) so it builds for macOS + iOS
-        // and is unit-testable in isolation.
-        .target(name: "AislopdeskProtocol"),
+        // and is unit-testable in isolation. Codec bodies delegate to the Rust port via
+        // `CAislopdeskFFI` (see Sources/AislopdeskProtocol/RustFFI.swift).
+        .target(name: "AislopdeskProtocol", dependencies: ["CAislopdeskFFI"]),
 
         // NWConnection + TCP_NODELAY, dual data/control channel, ET-style replay
         // buffer, reconnect handshake. (Implemented in WF-2.)
@@ -112,7 +138,7 @@ let package = Package(
         // Retina), and the client->host input-event codec. ZERO platform dependency
         // (no ScreenCaptureKit/VideoToolbox/AppKit) so it builds macOS + iOS and is
         // fully unit-testable in isolation — same discipline as AislopdeskProtocol.
-        .target(name: "AislopdeskVideoProtocol"),
+        .target(name: "AislopdeskVideoProtocol", dependencies: ["CAislopdeskFFI"]),
 
         // macOS-only host capture + encode + input injection. USES
         // ScreenCaptureKit / VideoToolbox / CoreGraphics / AppKit. COMPILED + code-
@@ -133,7 +159,7 @@ let package = Package(
 
         .target(
             name: "AislopdeskVideoHost",
-            dependencies: ["AislopdeskVideoProtocol", "CAislopdeskVirtualDisplay"],
+            dependencies: ["AislopdeskVideoProtocol", "CAislopdeskVirtualDisplay", "CAislopdeskFFI"],
             // macOS-only: SCStream + VTCompressionSession + AX/CGEvent are macOS APIs.
             // (AislopdeskVideoProtocol stays cross-platform; only this host layer is gated.)
             swiftSettings: []
@@ -183,6 +209,18 @@ let package = Package(
         // keyboard path) to type through aislopdesk-hid-bridge, verifying the host→bridge→virtual-keyboard
         // chain reaches even a SecurityAgent secure field. Run the bridge (sudo) first.
         .executableTarget(name: "aislopdesk-hid-probe", dependencies: ["AislopdeskVideoHost", "AislopdeskVideoProtocol"]),
+
+        // Golden-vector dumper: emits a deterministic JSON corpus from the REAL
+        // AislopdeskVideoProtocol codecs + the pure realtime controllers (public API only) so
+        // the Rust `aislopdesk-core` crate proves byte-/bit-identical parity in its
+        // `golden_parity` test. Pure value types only — constructs NO SCStream / encoder, so it
+        // touches no GUI/TCC: `swift run aislopdesk-corevectors > rust/aislopdesk-core/tests/vectors/golden_vectors.json`.
+        // IMPORTANT: run with no `AISLOPDESK_*` env set so the host/client controllers resolve
+        // their default tunables (the Rust port pins those defaults as compile-time consts).
+        .executableTarget(
+            name: "aislopdesk-corevectors",
+            dependencies: ["AislopdeskProtocol", "AislopdeskVideoProtocol", "AislopdeskVideoHost", "AislopdeskVideoClient"]
+        ),
 
         // MARK: Tests
         .testTarget(name: "AislopdeskProtocolTests", dependencies: ["AislopdeskProtocol"]),

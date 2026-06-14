@@ -47,10 +47,10 @@ public enum CoordinateMapping {
     ///   - windowBounds: `kCGWindowBounds` — the window rect in CG top-left points.
     /// - Returns: the absolute CG-space point to post the event at.
     public static func windowPoint(normalized: VideoPoint, windowBounds: VideoRect) -> VideoPoint {
-        VideoPoint(
-            x: windowBounds.origin.x + normalized.x * windowBounds.size.width,
-            y: windowBounds.origin.y + normalized.y * windowBounds.size.height
-        )
+        // Delegated to the Rust `aislopdesk-core` coordinate-mapping (single source of truth
+        // shared with the Android host); byte-identical to the former native arithmetic (pinned
+        // by `CoordinateMappingTests` + `RustCoordinateMappingParityTests`).
+        RustVideoFFI.coordWindowPoint(normalized: normalized, windowBounds: windowBounds)
     }
 
     /// Step 4 (helper) — flips a CG-top-left rect into Cocoa bottom-left space given
@@ -60,12 +60,8 @@ public enum CoordinateMapping {
     /// in Cocoa the primary's bottom is `y = 0`. A window whose CG top is `y` and
     /// height `h` therefore has Cocoa bottom-left `primaryHeight - y - h`.
     public static func cgRectToCocoa(_ cgRect: VideoRect, primaryHeight: Double) -> VideoRect {
-        VideoRect(
-            x: cgRect.origin.x,
-            y: primaryHeight - cgRect.origin.y - cgRect.size.height,
-            width: cgRect.size.width,
-            height: cgRect.size.height
-        )
+        // Delegated to the Rust core (see `windowPoint`).
+        RustVideoFFI.coordCGRectToCocoa(cgRect, primaryHeight: primaryHeight)
     }
 
     /// Step 4 — picks the screen a window lives on (largest-overlap) and returns its
@@ -84,15 +80,11 @@ public enum CoordinateMapping {
         screens: [ScreenInfo],
         primaryHeight: Double
     ) -> Double? {
-        let cocoaWindow = cgRectToCocoa(windowBoundsCG, primaryHeight: primaryHeight)
-        var best: (area: Double, scale: Double)?
-        for screen in screens {
-            let area = cocoaWindow.intersectionArea(screen.cocoaFrame)
-            if area > 0, best == nil || area > best!.area {
-                best = (area, screen.backingScaleFactor)
-            }
-        }
-        return best?.scale
+        // Delegated to the Rust core (see `windowPoint`); the screens array is borrowed for the
+        // call only. Returns nil for no overlap, exactly as the native loop did.
+        RustVideoFFI.coordBackingScaleFactor(
+            windowBoundsCG: windowBoundsCG, screens: screens, primaryHeight: primaryHeight
+        )
     }
 
     /// Convenience for the rare case the client sent **pixels** instead of
@@ -106,9 +98,7 @@ public enum CoordinateMapping {
         windowBoundsCG: VideoRect,
         backingScaleFactor scale: Double
     ) -> VideoPoint {
-        VideoPoint(
-            x: windowBoundsCG.origin.x + pixel.x / scale,
-            y: windowBoundsCG.origin.y + pixel.y / scale
-        )
+        // Delegated to the Rust core (see `windowPoint`).
+        RustVideoFFI.coordWindowPoint(pixel: pixel, windowBoundsCG: windowBoundsCG, backingScaleFactor: scale)
     }
 }

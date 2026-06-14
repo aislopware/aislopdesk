@@ -12,7 +12,32 @@ extension WireMessage {
     ///
     /// `payloadLength` counts `messageType` + `body` and excludes the 4 prefix
     /// bytes — exactly what ``FrameDecoder`` expects.
+    ///
+    /// Delegates to the Rust `aislopdesk-core` codec via the FFI (``RustFFI/encodeFrame(_:)``),
+    /// the single source of truth shared with the Android client — byte-identical to
+    /// ``encodeNative()`` (proven by golden vectors and re-proven through the wrapper by
+    /// `RustWireParityTests`). Large bulk `.output`/`.input` payloads stay on the native
+    /// zero-copy encoder, where Rust's extra FFI copies would regress the flood path (see
+    /// ``RustFFI/payloadThreshold``); the common case + all control traffic use the faster Rust path.
     public func encode() -> Data {
+        if exceedsRustCodecThreshold { return encodeNative() }
+        return RustFFI.encodeFrame(self)
+    }
+
+    /// True for the bulk DATA variants (`.output`/`.input`) whose payload is large enough that
+    /// the Rust codec's extra FFI buffer copies would regress the native zero-copy path.
+    private var exceedsRustCodecThreshold: Bool {
+        switch self {
+        case let .output(_, bytes): return bytes.count > RustFFI.payloadThreshold
+        case let .input(bytes): return bytes.count > RustFFI.payloadThreshold
+        default: return false
+        }
+    }
+
+    /// The native Swift frame encoder. Retained as the differential/benchmark baseline and as
+    /// the safety fallback inside ``RustFFI/encodeFrame(_:)``; ``encode()`` is the production
+    /// entry point and routes through Rust.
+    func encodeNative() -> Data {
         // Build the whole frame in ONE buffer: a 4-byte length placeholder, then [messageType][body…],
         // then BACK-PATCH the prefix with the payload length. This avoids an intermediate `body` Data
         // and the extra whole-payload copy it forced — notably the up-to-128 KiB `.output` payload under
@@ -109,13 +134,21 @@ extension WireMessage {
     /// and corrupting the body. Shared by ``encode()`` and ``wireByteCount`` so the two stay consistent.
     static func clampedNotificationTitle(_ title: String) -> String {
         guard title.utf8.count > Int(UInt16.max) else { return title }
-        var clamped = "", count = 0
-        for ch in title {
-            let n = String(ch).utf8.count
+        // Clamp at a Unicode SCALAR boundary (not a grapheme cluster) so this matches the Rust
+        // core's `clamped_notification_title` (which iterates `char_indices`) byte-for-byte —
+        // keeping native `wireByteCount` consistent with the Rust `encode()` length even for a
+        // >64KiB title whose cut would straddle a multi-scalar grapheme. (Unreachable in
+        // production — the OSC producer caps titles at ~1KiB — but it keeps the encode()↔
+        // wireByteCount flow-control parity contract honest; see RustWireParityTests.)
+        var clamped = String.UnicodeScalarView()
+        var count = 0
+        for scalar in title.unicodeScalars {
+            let n = String(scalar).utf8.count
             if count + n > Int(UInt16.max) { break }
-            clamped.append(ch); count += n
+            clamped.append(scalar)
+            count += n
         }
-        return clamped
+        return String(clamped)
     }
 }
 

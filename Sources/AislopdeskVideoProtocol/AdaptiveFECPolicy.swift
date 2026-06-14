@@ -37,13 +37,10 @@ public enum AdaptiveFECPolicy {
     /// - tier 4 → 2   (severe, 50% overhead).
     /// - tier 5,6,7 and any other value → `default` (reserved → safe default, forward-compatible).
     public static func groupSize(forTier tier: UInt8, default defaultGroupSize: Int) -> Int? {
-        switch tier {
-        case 1: return nil            // OFF (clean link, no parity)
-        case 2: return 10             // light (~10%)
-        case 3: return 3              // heavy (~33%)
-        case 4: return 2              // severe (50%)
-        default: return defaultGroupSize // 0 + reserved 5,6,7 (+ any other) → safe default
-        }
+        // Delegates to the Rust `aislopdesk-core` policy (single source of truth shared with the
+        // Android client) — byte-identical to the former native table (golden-vector
+        // `adaptiveGroupSize` + `AdaptiveFECPolicyTests` + `RustAdaptiveFECParityTests`). TOTAL.
+        RustVideoFFI.adaptiveFECGroupSize(tier: tier, defaultGroupSize: defaultGroupSize)
     }
 
     // MARK: B. Loss → tier decision (host only)
@@ -132,14 +129,9 @@ public enum AdaptiveFECPolicy {
     /// only ever calls this on a real netstats report (inert with no data).
     public static func tier(forLossRate loss: Double, previousTier: UInt8,
                             allowOff: Bool = allowOffTierDefault) -> UInt8 {
-        let current = level(forTier: previousTier)
-        let target = max(targetLevel(forLossRate: loss, currentLevel: current),
-                         relaxFloorLevel(allowOff: allowOff))
-        let stepped: Int
-        if target > current { stepped = current + 1 }
-        else if target < current { stepped = current - 1 }
-        else { stepped = current }
-        return tier(forLevel: stepped)
+        // Delegates to the Rust core (golden-vector `adaptiveTier` proves bit-exact parity with
+        // the former native ladder). Env stays Swift-side: `allowOff` crosses as a byte.
+        RustVideoFFI.adaptiveFECTier(loss: loss, previousTier: previousTier, allowOff: allowOff)
     }
 
     // MARK: Relax dwell (2026-06-11, 4G burst-flap fix)
@@ -195,21 +187,16 @@ public enum AdaptiveFECPolicy {
                                      dwell: Int = relaxDwellReports,
                                      allowOff: Bool = allowOffTierDefault,
                                      sawUnrecoveredLoss: Bool = false) -> TierState {
-        let sticky = sawUnrecoveredLoss ? stickyRelaxWindowReports : max(0, state.stickyRelaxRemaining - 1)
-        let effectiveDwell = sticky > 0 ? 2 * dwell : dwell
-        let current = level(forTier: state.tier)
-        let target = max(targetLevel(forLossRate: loss, currentLevel: current),
-                         relaxFloorLevel(allowOff: allowOff))
-        if target > current {
-            return TierState(tier: tier(forLevel: current + 1), relaxStreak: 0, stickyRelaxRemaining: sticky)
-        }
-        if target < current {
-            let streak = state.relaxStreak + 1
-            if streak >= max(1, effectiveDwell) {
-                return TierState(tier: tier(forLevel: current - 1), relaxStreak: 0, stickyRelaxRemaining: sticky)
-            }
-            return TierState(tier: state.tier, relaxStreak: streak, stickyRelaxRemaining: sticky)
-        }
-        return TierState(tier: state.tier, relaxStreak: 0, stickyRelaxRemaining: sticky)
+        // Delegates to the Rust core: marshal the value-type state through the flat
+        // `AisdTierState` and rebuild a Swift `TierState` from the result. The whole
+        // hysteresis/dwell/sticky decision lives in `aislopdesk-core::adaptive_fec`, the single
+        // source of truth shared with the Android host. Env stays Swift-side (`dwell` + `allowOff`
+        // cross as params). Public API unchanged.
+        let next = RustVideoFFI.adaptiveFECNextTierState(
+            loss: loss, tier: state.tier, relaxStreak: state.relaxStreak,
+            stickyRelaxRemaining: state.stickyRelaxRemaining,
+            dwell: dwell, allowOff: allowOff, sawUnrecoveredLoss: sawUnrecoveredLoss)
+        return TierState(tier: next.tier, relaxStreak: next.relaxStreak,
+                         stickyRelaxRemaining: next.stickyRelaxRemaining)
     }
 }
