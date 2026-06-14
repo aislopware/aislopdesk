@@ -7,7 +7,7 @@
 **Both relay STRUCTURED events to mobile, NOT raw TUI.**
 - **Local mode:** spawn `claude` with `stdio: inherit` → the full TUI appears in the **host's terminal**, NO byte stream goes down to mobile. fd 3 (the 4th pipe) = a side-channel capturing thinking-state.
 - **Mobile/remote:** uses the **official `@anthropic-ai/claude-agent-sdk`** (`query()`) → the SDK spawns `claude --output-format stream-json` itself; mobile receives **NDJSON events** (assistant/text_delta, tool_use, tool_result, result) + reads the **JSONL transcript** Claude writes to disk. Renders a **native UI (cards)**, NOT a terminal.
-- → **They concluded mobile needs a native UI, not a raw ANSI terminal.** That is the **SDK pane** approach — which we are **NOT doing** (best-only). Our structured view = the **read-only inspector [16]** (reads the JSONL transcript, does not drive the agent).
+- → **They concluded mobile needs a native UI, not a raw ANSI terminal.** That is the **SDK pane** approach; our structured view is the **read-only inspector [16]** instead (reads the JSONL transcript, does not drive the agent).
 
 ## How they hook into Claude Code (summary)
 

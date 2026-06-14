@@ -1,7 +1,7 @@
-# libghostty — Aislopdesk's ONLY terminal renderer
+# libghostty — Aislopdesk's terminal renderer
 
-Aislopdesk renders the terminal with **libghostty and nothing else**: no SwiftTerm, no
-fallback path (see [`docs/DECISIONS.md`](../../docs/DECISIONS.md) → *Terminal renderer*).
+Aislopdesk renders the terminal with **libghostty** (see
+[`docs/DECISIONS.md`](../../docs/DECISIONS.md) → *Terminal renderer*).
 The terminal path streams raw VT bytes from the host PTY to the client; libghostty parses
 + GPU-renders them in a Metal view. This directory is the build infra + Swift binding for
 that renderer.

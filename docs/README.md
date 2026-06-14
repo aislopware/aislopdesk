@@ -105,7 +105,7 @@ motion-to-photon is acceptable; fps is not a goal (mostly-static screens).
 |------|---------|
 | **PTY** | Pseudo-terminal master/slave fd pair; the host runs the shell in a PTY and relays the master fd |
 | **TUI** | Full-screen terminal app (vim, Claude Code interactive) |
-| **libghostty** | Ghostty's terminal engine (C ABI) — the client renderer, used exclusively (no fallback) |
+| **libghostty** | Ghostty's terminal engine (C ABI) — the client renderer |
 | **alt-screen** | Alternate screen buffer (DECSET 1049) — a TUI taking the whole screen |
 | **JSONL transcript** | Claude Code's per-line JSON log — the inspector's data source |
 | **A+B1** | External input box: A = shell input box, B1 = overlay → PTY (structured view = read-only inspector) |

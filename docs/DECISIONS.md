@@ -4,7 +4,7 @@
 > Status: ✅ decided · 🔬 needs a measurement spike · ⏸️ deferred · ❓ open.
 
 ## Philosophy
-- ✅ **Build the BEST thing, NO fallback.** Commit to a single best choice, don't keep a plan B alive in parallel: **libghostty-only** (drop SwiftTerm), **NO B2 SDK pane**, **cap fps ~24–30** (GUI path) — good enough for the use case while cutting bandwidth/latency/CPU.
+- ✅ **Commit to one good choice.** Renderer = **libghostty** (full surface); structured view = the **read-only inspector**; **GUI fps capped ~24–30** — enough for the use case while cutting bandwidth/latency/CPU.
 - ✅ **Phase 0 — de-risk gate BEFORE building production.** Do NOT park "could kill the architecture" unknowns in a later phase (if they break, all prior-phase work is wasted). Every architecture-defining spike runs in Phase 0; only build once it passes. **Most of Phase 0 has already been measured on M1 Max/macOS 26.5** (harness: [research/spikes/vtbench]). → [18 §0]
 
 ## Scope & architecture
@@ -28,7 +28,7 @@
 ## Terminal renderer (client)
 - ✅ **libghostty full surface** (not vt + own renderer). → [12]
 - ✅ **Own a minimal external-backend patch ourselves** (ref `daiimus/ghostty` External.zig; Lakr233 InMemorySession + build.yml as reference), build the XCFramework via Zig, pin the upstream SHA. Do NOT depend on the wiedymi fork (the weakest one). → [12]
-- ✅ **Do NOT use SwiftTerm** — libghostty-only (best-only, no fallback). SwiftTerm remains only as a *citation* for the POSIX PTY pattern (forkpty/DispatchIO) in [12] Part B. → [12]
+- ✅ **Renderer = libghostty** (full surface). SwiftTerm is referenced only as a *citation* for the POSIX PTY pattern (forkpty/DispatchIO) in [12] Part B — not a dependency. → [12]
 - ✅ **Route every key through `ghostty_surface_key`** (Ghostty encodes kitty/DECCKM itself); do NOT use the Lakr233 bypass path. → [12]
 - ✅ **Do NOT build a full Mosh shadow-framebuffer predictor (v1).** Opaque ghostty → would force a duplicate VT parser (desync risk); the Claude Code TUI uses alt-screen → the predictor is OFF there; the benefit exists only at the shell prompt, and at the mesh's low RTT Mosh itself withholds prediction. **Glitch-window caret (cursor column)** = cheap Phase 2 option. → [17]
 - ✅ **External-IO exists only in forks** (verified: NOT in upstream): `wiedymi/ghostty:custom-io` (VVTerm ships it) + `daiimus/ghostty:ios-external-backend` (Geistty ships it, has External.zig+resize+tests). The pattern is battle-tested. → [17]

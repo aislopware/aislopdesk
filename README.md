@@ -4,8 +4,8 @@
 macOS **host** paired with macOS / iOS **clients**. The everyday use case: run a shell and
 **Claude Code** on a remote machine and drive it from another device with feels-local
 responsiveness. The performance-critical core is Rust behind a C-ABI; the Swift/SwiftUI apps
-are the platform shell. The client terminal renderer is **libghostty** exclusively (no
-fallback renderer). Build floor: **macOS 26 / iOS 26** (`Package.swift` uses `.v26`).
+are the platform shell. The client terminal renderer is **libghostty**. Build floor:
+**macOS 26 / iOS 26** (`Package.swift` uses `.v26`).
 
 Aislopdesk adds **no app-layer encryption or auth**. It assumes deployment on a trusted
 private network — typically a WireGuard mesh (e.g. [NetBird](https://netbird.io) or

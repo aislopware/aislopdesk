@@ -4,7 +4,7 @@
 
 ## 1. What it is
 
-> **Philosophy: build the BEST thing, no fallbacks** — libghostty-only (no SwiftTerm), no B2 SDK pane, cap fps at ~24–30 (GUI). Commit to one good choice; don't keep a plan B alive.
+> **Philosophy: commit to one good choice.** The renderer is libghostty; the structured view is the read-only inspector; GUI fps caps at ~24–30.
 
 A **remote control/coding** app on Apple platforms (macOS host, macOS + iOS/iPadOS client), native Swift/SwiftUI; build floor **macOS 26 / iOS 26**, developed on Apple Silicon. **Use-case: daily coding** — running a shell + **Claude Code** remotely. NOT game-streaming. (Docs 01–11 were written under the old screen-sharing/video assumption → they are now **reference for the GUI video-path** or **superseded** — see [README](README.md).)
 
@@ -46,12 +46,12 @@ The performance-critical **core is Rust** — crate `rust/aislopdesk-core` (safe
 | Encryption | **None at the app layer** — the mesh provides E2E encryption + node auth + per-port ACLs | [13] |
 | Terminal transport | **Plain TCP** (reliable; only buffering needed) | [13], [12] |
 | Video transport | Plain UDP (QUIC dropped — WireGuard already encrypts) | [03] |
-| Terminal renderer | **libghostty** full surface + **self-owned external-backend patch** (ref daiimus External.zig). **NO SwiftTerm** (best-only) | [12] |
+| Terminal renderer | **libghostty** full surface + **self-owned external-backend patch** (ref daiimus External.zig) | [12] |
 | Host PTY | `openpty` + `posix_spawn(createSession)` (forkpty unsafe from Swift) | [12] |
 | Claude Code TERM | **`xterm-ghostty`** (kitty kbd + DEC2026; accept the paste risk #54700 + a fallback toggle) | [14] |
 | Claude Code fullscreen | `CLAUDE_CODE_NO_FLICKER=1` for the remote PTY | [14] |
 | Auth | **Subscription OAuth + `setup-token`** (or reuse `~/.claude/.credentials.json`); NO custom PKCE | [14] |
-| External input box | **A** (shell input box + block) **+ B1** (Claude Code keeps its TUI + overlay compose-box→PTY). **NO B2 SDK pane** (structured view = read-only inspector [16]) | [14] |
+| External input box | **A** (shell input box + block) **+ B1** (Claude Code keeps its TUI + overlay compose-box→PTY); structured view = read-only inspector [16] | [14] |
 | Inspector | **Read-only**, data = JSONL transcript + hooks; **CoT = placeholder-only** | [16] |
 | Codec (GUI path) | **HEVC Main 8-bit 4:2:0** + constant-quality (Apple Silicon); 10-bit optional. 4:4:4 dropped; AV1/VVC have no HW encode | [09] |
 | Native-feel TUI | **`TCP_NODELAY`** (Nagle +200ms) + dual channel + ET replay-buffer reconnect; **NO full Mosh predictor** (opaque ghostty → duplicate parser; optional glitch-caret only) | [17] |
