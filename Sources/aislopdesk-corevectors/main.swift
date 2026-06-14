@@ -1,7 +1,15 @@
 import AislopdeskProtocol // WireMessage, MuxEnvelopeCodec (terminal/PTY path)
 import AislopdeskVideoClient // TrendlineEstimator, OwdLateDetector, PacerDepthPolicy
 import AislopdeskVideoHost // NetworkEstimate, FPSGovernor (pure controllers)
+
+// `UDPReceiveLoopPolicy` is a byte-identical twin exported by BOTH the host and client modules. The
+// host module also exports a TYPE named `AislopdeskVideoHost`, so `AislopdeskVideoHost.UDPReceiveLoopPolicy`
+// resolves to that type, not the module — qualification is impossible; this scoped `import enum` is the
+// only disambiguator to the host copy (pairs with the wholesale import → duplicate_imports, silenced).
+// swiftlint:disable:next duplicate_imports
+import enum AislopdeskVideoHost.UDPReceiveLoopPolicy // host/client twin → host copy
 import AislopdeskVideoProtocol
+import CoreGraphics // CGRect/CGPoint/CGSize for the host geometry deciders
 import Foundation
 
 // aislopdesk-corevectors — emits a deterministic JSON corpus of golden vectors from the
@@ -783,6 +791,809 @@ root["muxEnvelopes"] = [
         .windowAdjust(channelID: 1, bytesToAdd: UInt32.max),
         ["channelId": UInt32(1), "bytesToAdd": UInt64(UInt32.max)],
     ),
+]
+
+// MARK: - Host pure-geometry deciders (FLOAT-determinism parity)
+
+//
+// The host capture-region / virtual-display / window-placement / system-dialog / size-negotiation
+// math is CoreGraphics-faithful (standardized width/height, CGRectNull) and float-heavy. These
+// vectors drive each pure decider through diverse + edge inputs and dump every float as an IEEE bit
+// pattern (inputs AND outputs), so JSON float formatting can never blur the comparison and the Rust
+// port is proven to reproduce Swift's arithmetic operation-for-operation. CGRectNull (∞,∞,0,0) is
+// dumped as its raw component bits and matched against Rust `VideoRect::NULL`.
+
+/// The four IEEE bit patterns of a `CGRect`'s raw components, under `<prefix>X/Y/W/H` keys.
+func rectBits(_ prefix: String, _ r: CGRect) -> [String: Any] {
+    [
+        prefix + "X": r.origin.x.bitPattern,
+        prefix + "Y": r.origin.y.bitPattern,
+        prefix + "W": r.size.width.bitPattern,
+        prefix + "H": r.size.height.bitPattern,
+    ]
+}
+
+// MARK: CaptureRegionMath.unionRegion / shouldRetarget
+
+func crWindowDict(_ w: CaptureRegionMath.WindowSnapshot) -> [String: Any] {
+    var d: [String: Any] = ["windowID": w.windowID, "ownerPID": Int(w.ownerPID), "layer": w.layer]
+    d.merge(rectBits("f", w.frame)) { a, _ in a }
+    return d
+}
+
+func crSnap(
+    _ id: UInt32,
+    _ pid: Int32,
+    _ layer: Int,
+    _ x: Double,
+    _ y: Double,
+    _ w: Double,
+    _ h: Double,
+) -> CaptureRegionMath.WindowSnapshot {
+    .init(windowID: id, ownerPID: pid, layer: layer, frame: CGRect(x: x, y: y, width: w, height: h))
+}
+
+func crUnionRecord(
+    _ name: String,
+    target: CGRect,
+    targetWindowID: UInt32,
+    targetPID: Int32,
+    windows: [CaptureRegionMath.WindowSnapshot],
+    display: CGRect,
+    minOverlapFraction: Double,
+) -> [String: Any] {
+    let out = CaptureRegionMath.unionRegion(
+        targetFrame: target,
+        targetWindowID: targetWindowID,
+        targetPID: targetPID,
+        windowsInFront: windows,
+        displayBounds: display,
+        minOverlapFraction: minOverlapFraction,
+    )
+    var r: [String: Any] = [
+        "name": name,
+        "targetWindowID": targetWindowID,
+        "targetPID": Int(targetPID),
+        "minOverlapBits": minOverlapFraction.bitPattern,
+        "windows": windows.map(crWindowDict),
+        "outOriginXBits": out.origin.x.bitPattern,
+        "outOriginYBits": out.origin.y.bitPattern,
+        "outWidthBits": out.size.width.bitPattern,
+        "outHeightBits": out.size.height.bitPattern,
+    ]
+    r.merge(rectBits("t", target)) { a, _ in a }
+    r.merge(rectBits("d", display)) { a, _ in a }
+    return r
+}
+
+let crDisplay = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+let crTarget = CGRect(x: 120, y: 120, width: 700, height: 500)
+let crWID: UInt32 = 1783
+let crPID: Int32 = 407
+root["captureUnion"] = [
+    crUnionRecord(
+        "noDialog",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "fileDialog",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(1794, crPID, 0, 30, 203, 880, 448)],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "otherPID",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(57, 388, 0, 0, 0, 1400, 900)],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "selfIgnored",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(crWID, crPID, 0, 120, 120, 700, 500)],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "nonZeroLayer",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(99, crPID, 25, 100, 100, 900, 700)],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "sliver",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(900, crPID, 0, 815, 120, 600, 500)],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "edgeTouch",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(201, crPID, 0, 820, 120, 200, 500)],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "clampedToDisplay",
+        target: CGRect(x: 0, y: 30, width: 700, height: 500),
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(1794, crPID, 0, -90, 100, 880, 448)],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "zeroAreaTarget",
+        target: CGRect(x: 120, y: 120, width: 0, height: 500),
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "offDisplay",
+        target: CGRect(x: 5000, y: 5000, width: 100, height: 100),
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "zeroAreaDisplay",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [],
+        display: CGRect.zero,
+        minOverlapFraction: 0.30,
+    ),
+    crUnionRecord(
+        "boundaryInclusive",
+        target: CGRect(x: 0, y: 0, width: 100, height: 100),
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(300, crPID, 0, 50, 0, 100, 100)],
+        display: crDisplay,
+        minOverlapFraction: 0.5,
+    ),
+    crUnionRecord(
+        "justBelowBoundary",
+        target: CGRect(x: 0, y: 0, width: 100, height: 100),
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(300, crPID, 0, 50, 0, 100, 100)],
+        display: crDisplay,
+        minOverlapFraction: 0.6,
+    ),
+    crUnionRecord(
+        "negativeSizeWindow",
+        target: crTarget,
+        targetWindowID: crWID,
+        targetPID: crPID,
+        windows: [crSnap(1794, crPID, 0, 910, 651, -880, -448)],
+        display: crDisplay,
+        minOverlapFraction: 0.30,
+    ),
+]
+
+func crRetargetRecord(_ name: String, current: CGRect, desired: CGRect, minDelta: Double) -> [String: Any] {
+    var r: [String: Any] = [
+        "name": name,
+        "minDeltaBits": minDelta.bitPattern,
+        "shouldRetarget": CaptureRegionMath.shouldRetarget(current: current, desired: desired, minDelta: minDelta),
+    ]
+    r.merge(rectBits("c", current)) { a, _ in a }
+    r.merge(rectBits("e", desired)) { a, _ in a }
+    return r
+}
+
+let crA = CGRect(x: 120, y: 120, width: 700, height: 500)
+root["captureRetarget"] = [
+    crRetargetRecord("identical", current: crA, desired: crA, minDelta: 8),
+    crRetargetRecord(
+        "subThreshold",
+        current: crA,
+        desired: CGRect(x: 117, y: 117, width: 706, height: 506),
+        minDelta: 8,
+    ),
+    crRetargetRecord(
+        "exactThreshold",
+        current: crA,
+        desired: CGRect(x: 128, y: 120, width: 700, height: 500),
+        minDelta: 8,
+    ),
+    crRetargetRecord("minXOver", current: crA, desired: CGRect(x: 128.5, y: 120, width: 700, height: 500), minDelta: 8),
+    crRetargetRecord("minYOver", current: crA, desired: CGRect(x: 120, y: 128.5, width: 700, height: 500), minDelta: 8),
+    crRetargetRecord(
+        "widthOver",
+        current: crA,
+        desired: CGRect(x: 120, y: 120, width: 708.5, height: 500),
+        minDelta: 8,
+    ),
+    crRetargetRecord(
+        "heightOver",
+        current: crA,
+        desired: CGRect(x: 120, y: 120, width: 700, height: 508.5),
+        minDelta: 8,
+    ),
+    crRetargetRecord(
+        "bigExpansion",
+        current: crA,
+        desired: CGRect(x: 30, y: 120, width: 880, height: 531),
+        minDelta: 8,
+    ),
+    crRetargetRecord(
+        "customZeroDelta",
+        current: crA,
+        desired: CGRect(x: 120, y: 120, width: 700.5, height: 500),
+        minDelta: 0,
+    ),
+]
+
+// MARK: VirtualDisplayGeometry / VirtualDisplayPlanner
+
+func vdGeomRecord(_ pw: Int, _ ph: Int, _ scale: Int, _ maxH: Int, _ ppi: Double) -> [String: Any] {
+    let g = VirtualDisplayGeometry(pointWidth: pw, pointHeight: ph, scale: scale, maxHorizontalPixels: maxH)
+    let mm = g.sizeInMillimeters(targetPPI: ppi)
+    return [
+        "pointWidth": pw,
+        "pointHeight": ph,
+        "scale": scale,
+        "maxHorizontalPixels": maxH,
+        "ppiBits": ppi.bitPattern,
+        "pixelWidth": g.pixelWidth,
+        "pixelHeight": g.pixelHeight,
+        "exceedsPixelLimit": g.exceedsPixelLimit,
+        "mmWidthBits": mm.width.bitPattern,
+        "mmHeightBits": mm.height.bitPattern,
+    ]
+}
+
+root["virtualDisplayGeometry"] = [
+    vdGeomRecord(1920, 1080, 2, 7680, 163),
+    vdGeomRecord(1440, 900, 1, 7680, 163),
+    vdGeomRecord(0, -5, 0, 0, 163), // clamp-to-1 on every field
+    vdGeomRecord(3840, 2160, 2, 7680, 163), // exact pixel-limit fit
+    vdGeomRecord(3841, 2160, 2, 7680, 163), // over the limit
+    vdGeomRecord(3072, 1920, 2, 6144, 163), // base-M exact fit
+    vdGeomRecord(3200, 1800, 2, 6144, 163), // base-M over
+    vdGeomRecord(2560, 1440, 2, 7680, 220), // hi-PPI
+    vdGeomRecord(2560, 1440, 2, 7680, 96), // lo-PPI
+    vdGeomRecord(1920, 1080, 2, 7680, Double.nan), // PPI clamp to 1 on NaN
+]
+
+func vdOriginRecord(_ name: String, _ rects: [CGRect]) -> [String: Any] {
+    let p = VirtualDisplayPlanner.originToRight(of: rects)
+    return [
+        "name": name,
+        "displays": rects.map { [
+            "xBits": $0.origin.x.bitPattern,
+            "yBits": $0.origin.y.bitPattern,
+            "wBits": $0.size.width.bitPattern,
+            "hBits": $0.size.height.bitPattern,
+        ] },
+        "outXBits": p.x.bitPattern,
+        "outYBits": p.y.bitPattern,
+    ]
+}
+
+root["vdOriginToRight"] = [
+    vdOriginRecord("empty", []),
+    vdOriginRecord("single", [CGRect(x: 0, y: 0, width: 1920, height: 1080)]),
+    vdOriginRecord(
+        "multi",
+        [CGRect(x: 0, y: 0, width: 1920, height: 1080), CGRect(x: 1920, y: 0, width: 2560, height: 1440)],
+    ),
+    vdOriginRecord(
+        "negativeWidth",
+        [CGRect(x: 1000, y: 0, width: -200, height: 1080), CGRect(x: 0, y: 0, width: 500, height: 500)],
+    ),
+    vdOriginRecord("fractional", [CGRect(x: 0, y: 0, width: 1512.5, height: 982.25)]),
+    vdOriginRecord("rightmostNotLast", [
+        CGRect(x: 0, y: 0, width: 1920, height: 1080),
+        CGRect(x: 5000, y: 0, width: 1000, height: 1080),
+        CGRect(x: 1920, y: 0, width: 800, height: 1080),
+    ]),
+]
+
+func vdChipRecord(_ brand: String) -> [String: Any] {
+    ["cpuBrand": brand, "limit": VirtualDisplayPlanner.chipPixelLimit(cpuBrand: brand)]
+}
+
+root["vdChipPixelLimit"] = [
+    vdChipRecord("Apple M1"),
+    vdChipRecord("Apple M1 Max"),
+    vdChipRecord("Apple M2 Pro"),
+    vdChipRecord("Apple M3"),
+    vdChipRecord("Apple M2 Ultra"),
+    vdChipRecord("Intel(R) Core(TM) i9"),
+    vdChipRecord(""),
+    vdChipRecord("apple mx"),
+]
+
+func vdRefreshRecord(_ fps: Int) -> [String: Any] {
+    ["fps": fps, "ratesBits": VirtualDisplayPlanner.refreshRates(fps: fps).map(\.bitPattern)]
+}
+
+root["vdRefreshRates"] = [
+    vdRefreshRecord(30),
+    vdRefreshRecord(60),
+    vdRefreshRecord(90),
+    vdRefreshRecord(120),
+    vdRefreshRecord(144),
+]
+
+// MARK: WindowPlacementMath.placement / fits
+
+func wpPlacementRecord(_ name: String, window: CGSize, display: CGRect) -> [String: Any] {
+    let p = WindowPlacementMath.placement(windowSize: window, displayBounds: display)
+    var r: [String: Any] = [
+        "name": name,
+        "winWBits": window.width.bitPattern,
+        "winHBits": window.height.bitPattern,
+        "outOriginXBits": p.origin.x.bitPattern,
+        "outOriginYBits": p.origin.y.bitPattern,
+        "outWidthBits": p.size.width.bitPattern,
+        "outHeightBits": p.size.height.bitPattern,
+        "needsResize": p.needsResize,
+    ]
+    r.merge(rectBits("d", display)) { a, _ in a }
+    return r
+}
+
+root["windowPlacement"] = [
+    wpPlacementRecord(
+        "smaller",
+        window: CGSize(width: 1200, height: 800),
+        display: CGRect(x: 3840, y: 0, width: 1920, height: 1080),
+    ),
+    wpPlacementRecord(
+        "clampWidth",
+        window: CGSize(width: 2400, height: 900),
+        display: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+    ),
+    wpPlacementRecord(
+        "clampBoth",
+        window: CGSize(width: 4000, height: 3000),
+        display: CGRect(x: 100, y: 50, width: 1920, height: 1080),
+    ),
+    wpPlacementRecord(
+        "exact",
+        window: CGSize(width: 1920, height: 1080),
+        display: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+    ),
+    wpPlacementRecord(
+        "halfPtBoundary",
+        window: CGSize(width: 1440.5, height: 900),
+        display: CGRect(x: 0, y: 0, width: 1440, height: 900),
+    ),
+    wpPlacementRecord(
+        "halfPtPlusEps",
+        window: CGSize(width: 1440.6, height: 900),
+        display: CGRect(x: 0, y: 0, width: 1440, height: 900),
+    ),
+    wpPlacementRecord(
+        "negativeOrigin",
+        window: CGSize(width: 800, height: 600),
+        display: CGRect(x: -1440, y: 300, width: 1440, height: 900),
+    ),
+    wpPlacementRecord(
+        "zeroAreaDisplay",
+        window: CGSize(width: 800, height: 600),
+        display: CGRect.zero,
+    ),
+    wpPlacementRecord(
+        "negativeSizeDisplay",
+        window: CGSize(width: 2000, height: 1500),
+        display: CGRect(x: 100, y: 200, width: -1440, height: -900),
+    ),
+    wpPlacementRecord(
+        "negativeWindowWidth",
+        window: CGSize(width: -100, height: 600),
+        display: CGRect(x: 0, y: 0, width: 1440, height: 900),
+    ),
+    wpPlacementRecord(
+        "fractionalPerAxis",
+        window: CGSize(width: 1000.25, height: 750.75),
+        display: CGRect(x: 0, y: 25, width: 1000, height: 700),
+    ),
+]
+
+func wpFitsRecord(_ name: String, size: CGSize, bounds: CGRect) -> [String: Any] {
+    var r: [String: Any] = [
+        "name": name,
+        "sizeWBits": size.width.bitPattern,
+        "sizeHBits": size.height.bitPattern,
+        "fits": WindowPlacementMath.fits(size, within: bounds),
+    ]
+    r.merge(rectBits("b", bounds)) { a, _ in a }
+    return r
+}
+
+let wpVD = CGRect(x: 3840, y: 0, width: 1920, height: 1080)
+root["windowFits"] = [
+    wpFitsRecord("exact", size: CGSize(width: 1920, height: 1080), bounds: wpVD),
+    wpFitsRecord("smaller", size: CGSize(width: 1200, height: 800), bounds: wpVD),
+    wpFitsRecord("withinTol", size: CGSize(width: 1920.4, height: 1080), bounds: wpVD),
+    wpFitsRecord("widthOver", size: CGSize(width: 1921, height: 1080), bounds: wpVD),
+    wpFitsRecord("heightOver", size: CGSize(width: 1920, height: 1200), bounds: wpVD),
+    wpFitsRecord(
+        "bothAtTol",
+        size: CGSize(width: 1440.5, height: 900.5),
+        bounds: CGRect(x: 0, y: 0, width: 1440, height: 900),
+    ),
+    wpFitsRecord(
+        "zeroBoundsAtTol",
+        size: CGSize(width: 0.5, height: 0.5),
+        bounds: CGRect.zero,
+    ),
+    wpFitsRecord(
+        "negativeSizeBounds",
+        size: CGSize(width: 1920, height: 1080),
+        bounds: CGRect(x: 0, y: 0, width: -1920, height: -1080),
+    ),
+]
+
+// MARK: SystemDialogDetector.classify / detect
+
+func sdWindowDict(_ w: SystemDialogDetector.WindowSnapshot) -> [String: Any] {
+    [
+        "windowID": w.windowID,
+        "ownerName": w.ownerName,
+        "bundleID": w.bundleID,
+        "isOnScreen": w.isOnScreen,
+        "title": w.title,
+        "fWBits": w.frame.size.width.bitPattern,
+        "fHBits": w.frame.size.height.bitPattern,
+    ]
+}
+
+func sdSnap(
+    _ id: UInt32,
+    _ owner: String,
+    _ bundle: String,
+    _ on: Bool,
+    _ w: Double,
+    _ h: Double,
+    _ title: String,
+) -> SystemDialogDetector.WindowSnapshot {
+    .init(
+        windowID: id,
+        ownerName: owner,
+        bundleID: bundle,
+        isOnScreen: on,
+        title: title,
+        frame: CGRect(x: 830, y: 201, width: w, height: h),
+    )
+}
+
+func sdDialogDict(_ d: SystemDialogDetector.Dialog) -> [String: Any] {
+    [
+        "windowID": d.windowID,
+        "owner": d.owner,
+        "title": d.title,
+        "width": d.width,
+        "height": d.height,
+        "isSecure": d.isSecure,
+    ]
+}
+
+func sdClassifyRecord(_ name: String, _ w: SystemDialogDetector.WindowSnapshot, minSize: Int) -> [String: Any] {
+    let d = SystemDialogDetector.classify(w, minSize: minSize)
+    return [
+        "name": name,
+        "minSize": minSize,
+        "window": sdWindowDict(w),
+        "dialog": d.map(sdDialogDict) ?? NSNull(),
+    ]
+}
+
+let sdMin = SystemDialogDetector.minSize // 60
+root["systemDialogClassify"] = [
+    sdClassifyRecord(
+        "securityAgentByBundle",
+        sdSnap(1966, "SecurityAgent", "com.apple.SecurityAgent", true, 260, 312, ""),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord("securityAgentByOwner", sdSnap(8, "SecurityAgent", "", true, 260, 312, ""), minSize: sdMin),
+    sdClassifyRecord("coreauthd", sdSnap(7, "coreauthd", "com.apple.coreauthd", true, 260, 312, ""), minSize: sdMin),
+    sdClassifyRecord(
+        "regularApp",
+        sdSnap(1783, "Google Chrome", "com.google.Chrome", true, 700, 500, ""),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord(
+        "offscreen",
+        sdSnap(1967, "SecurityAgent", "com.apple.SecurityAgent", false, 500, 500, ""),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord(
+        "roundingPasses595",
+        sdSnap(11, "SecurityAgent", "com.apple.SecurityAgent", true, 59.5, 59.5, ""),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord(
+        "roundingFails594",
+        sdSnap(12, "SecurityAgent", "com.apple.SecurityAgent", true, 59.4, 200, ""),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord(
+        "roundingUp605",
+        sdSnap(14, "SecurityAgent", "com.apple.SecurityAgent", true, 60.5, 60.5, ""),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord(
+        "negativeSizeStandardizes",
+        sdSnap(16, "SecurityAgent", "com.apple.SecurityAgent", true, -400, -200, ""),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord(
+        "emptyOwnerFallsBackToBundle",
+        sdSnap(18, "", "com.apple.SecurityAgent", true, 400, 200, ""),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord(
+        "customMinRejects",
+        sdSnap(22, "SecurityAgent", "com.apple.SecurityAgent", true, 80, 80, ""),
+        minSize: 100,
+    ),
+    sdClassifyRecord(
+        "customMinAccepts",
+        sdSnap(23, "SecurityAgent", "com.apple.SecurityAgent", true, 120, 120, ""),
+        minSize: 100,
+    ),
+    sdClassifyRecord(
+        "unicodeTitle",
+        sdSnap(26, "SecurityAgent", "com.apple.SecurityAgent", true, 400, 200, "Authenticate · 認証 🔐"),
+        minSize: sdMin,
+    ),
+    sdClassifyRecord("bothIdentifiersEmptyRejected", sdSnap(21, "", "", true, 400, 200, ""), minSize: sdMin),
+]
+
+func sdDetectRecord(_ name: String, _ windows: [SystemDialogDetector.WindowSnapshot], minSize: Int) -> [String: Any] {
+    [
+        "name": name,
+        "minSize": minSize,
+        "windows": windows.map(sdWindowDict),
+        "dialogs": SystemDialogDetector.detect(windows, minSize: minSize).map(sdDialogDict),
+    ]
+}
+
+root["systemDialogDetect"] = [
+    sdDetectRecord("mixed", [
+        sdSnap(1, "Google Chrome", "com.google.Chrome", true, 700, 500, ""),
+        sdSnap(1966, "SecurityAgent", "com.apple.SecurityAgent", true, 260, 312, ""),
+        sdSnap(1967, "SecurityAgent", "com.apple.SecurityAgent", false, 500, 500, ""),
+        sdSnap(3, "Finder", "com.apple.finder", true, 900, 600, ""),
+    ], minSize: sdMin),
+    sdDetectRecord("empty", [], minSize: sdMin),
+    sdDetectRecord("allRejected", [
+        sdSnap(1, "Google Chrome", "com.google.Chrome", true, 700, 500, ""),
+        sdSnap(2, "Finder", "com.apple.finder", true, 900, 600, ""),
+    ], minSize: sdMin),
+    sdDetectRecord("multipleAccepts", [
+        sdSnap(30, "SecurityAgent", "com.apple.SecurityAgent", true, 400, 200, ""),
+        sdSnap(31, "Google Chrome", "com.google.Chrome", true, 800, 600, ""),
+        sdSnap(32, "SecurityAgent", "com.apple.SecurityAgent", true, 50, 50, ""),
+        sdSnap(33, "coreauthd", "", true, 300, 150, ""),
+    ], minSize: sdMin),
+]
+
+// MARK: SizeNegotiation.clamp / isStaleEpoch
+
+func sizeClampRecord(_ name: String, desired: VideoSize, minS: VideoSize, maxS: VideoSize) -> [String: Any] {
+    let (w, h) = SizeNegotiation.clamp(desired: desired, min: minS, max: maxS)
+    return [
+        "name": name,
+        "desWBits": desired.width.bitPattern,
+        "desHBits": desired.height.bitPattern,
+        "minWBits": minS.width.bitPattern,
+        "minHBits": minS.height.bitPattern,
+        "maxWBits": maxS.width.bitPattern,
+        "maxHBits": maxS.height.bitPattern,
+        "w": w,
+        "h": h,
+    ]
+}
+
+let sgMin = VideoSize(width: 320, height: 240)
+let sgMax = VideoSize(width: 3840, height: 2160)
+root["sizeNegotiationClamp"] = [
+    sizeClampRecord("inside", desired: VideoSize(width: 1280, height: 800), minS: sgMin, maxS: sgMax),
+    sizeClampRecord("clampLow", desired: VideoSize(width: 100, height: 50), minS: sgMin, maxS: sgMax),
+    sizeClampRecord("clampHigh", desired: VideoSize(width: 9999, height: 9999), minS: sgMin, maxS: sgMax),
+    sizeClampRecord("swappedPolicy", desired: VideoSize(width: 1280, height: 800), minS: sgMax, maxS: sgMin),
+    sizeClampRecord(
+        "huge",
+        desired: VideoSize(width: 1_000_000, height: 1_000_000),
+        minS: sgMin,
+        maxS: VideoSize(width: 1_000_000, height: 1_000_000),
+    ),
+    sizeClampRecord("roundHalfUp", desired: VideoSize(width: 1280.5, height: 800.5), minS: sgMin, maxS: sgMax),
+    sizeClampRecord("roundDown", desired: VideoSize(width: 1280.4, height: 800.4), minS: sgMin, maxS: sgMax),
+    sizeClampRecord("nanInf", desired: VideoSize(width: Double.nan, height: Double.infinity), minS: sgMin, maxS: sgMax),
+    sizeClampRecord("negative", desired: VideoSize(width: -500, height: -1), minS: sgMin, maxS: sgMax),
+    sizeClampRecord(
+        "minEqMax",
+        desired: VideoSize(width: 10, height: 9999),
+        minS: VideoSize(width: 640, height: 480),
+        maxS: VideoSize(width: 640, height: 480),
+    ),
+    sizeClampRecord(
+        "zeroMin",
+        desired: VideoSize(width: 0, height: 0),
+        minS: VideoSize(width: 0, height: 0),
+        maxS: sgMax,
+    ),
+    sizeClampRecord(
+        "negativeMin",
+        desired: VideoSize(width: 0, height: 0),
+        minS: VideoSize(width: -100, height: -100),
+        maxS: sgMax,
+    ),
+]
+
+func epochRecord(_ epoch: UInt32, _ lastApplied: UInt32) -> [String: Any] {
+    ["epoch": epoch, "lastApplied": lastApplied, "stale": SizeNegotiation.isStaleEpoch(epoch, lastApplied: lastApplied)]
+}
+
+root["sizeNegotiationEpoch"] = [
+    epochRecord(5, 5),
+    epochRecord(3, 5),
+    epochRecord(0, 5),
+    epochRecord(6, 5),
+    epochRecord(UInt32.max, 5),
+    epochRecord(1, 0),
+    epochRecord(0, 0),
+]
+
+// MARK: StaticIDRDecider (drive sequence → per-check decision)
+
+func staticIdrScenario(
+    _ name: String,
+    heartbeat: Double,
+    quietWindow: Double,
+    ops: [(op: String, t: Double, forced: Bool, hasBuffer: Bool)],
+) -> [String: Any] {
+    var d = StaticIDRDecider(heartbeat: heartbeat, quietWindow: quietWindow)
+    var outOps: [[String: Any]] = []
+    for o in ops {
+        switch o.op {
+        case "complete":
+            d.onCompleteFrame(now: o.t)
+            outOps.append(["op": "complete", "tBits": o.t.bitPattern])
+        case "synthetic":
+            d.recordSynthetic(now: o.t)
+            outOps.append(["op": "synthetic", "tBits": o.t.bitPattern])
+        default: // "check"
+            let dec = d.shouldReencode(now: o.t, forcedLatched: o.forced, hasRetainedBuffer: o.hasBuffer)
+            outOps.append([
+                "op": "check",
+                "tBits": o.t.bitPattern,
+                "forced": o.forced,
+                "hasBuffer": o.hasBuffer,
+                "decision": dec,
+            ])
+        }
+    }
+    return [
+        "name": name,
+        "heartbeatBits": heartbeat.bitPattern,
+        "quietWindowBits": quietWindow.bitPattern,
+        "ops": outOps,
+    ]
+}
+
+root["staticIdrDrive"] = [
+    staticIdrScenario("production", heartbeat: 2.5, quietWindow: 1.0, ops: [
+        (op: "check", t: 0.5, forced: false, hasBuffer: false), // no buffer ⇒ false
+        (op: "check", t: 0.5, forced: true, hasBuffer: false), // no buffer beats forced ⇒ false
+        (op: "check", t: 0.5, forced: false, hasBuffer: true), // armed, none emitted, quiet ⇒ true
+        (op: "complete", t: 10.0, forced: false, hasBuffer: false),
+        (op: "check", t: 10.9, forced: false, hasBuffer: true), // within quiet window ⇒ false
+        (op: "check", t: 10.9, forced: true, hasBuffer: true), // quiet suppresses forced ⇒ false
+        (op: "check", t: 11.0, forced: false, hasBuffer: true), // quiet cleared, no synthetic ⇒ true
+        (op: "synthetic", t: 11.0, forced: false, hasBuffer: false),
+        (op: "check", t: 12.5, forced: false, hasBuffer: true), // sub-heartbeat since synthetic ⇒ false
+        (op: "check", t: 13.5, forced: false, hasBuffer: true), // one heartbeat since synthetic ⇒ true
+        (op: "check", t: 13.4, forced: true, hasBuffer: true), // forced once quiet ⇒ true
+        (op: "complete", t: 20.0, forced: false, hasBuffer: false),
+        (op: "check", t: 20.5, forced: true, hasBuffer: true), // re-entered quiet ⇒ false
+        (op: "check", t: 21.0, forced: false, hasBuffer: true), // quiet cleared, long past synthetic ⇒ true
+    ]),
+    staticIdrScenario("defaultQuiet", heartbeat: 1.0, quietWindow: 1.0, ops: [
+        (op: "check", t: 0.001, forced: false, hasBuffer: true), // armed ⇒ true
+        (op: "complete", t: 10.0, forced: false, hasBuffer: false),
+        (op: "check", t: 10.999, forced: false, hasBuffer: true), // within quiet ⇒ false
+        (op: "check", t: 11.0, forced: false, hasBuffer: true), // quiet boundary cleared ⇒ true
+        (op: "synthetic", t: 11.0, forced: false, hasBuffer: false),
+        (op: "check", t: 11.5, forced: false, hasBuffer: true), // sub-heartbeat ⇒ false
+        (op: "check", t: 12.0, forced: false, hasBuffer: true), // one heartbeat since synthetic ⇒ true
+    ]),
+]
+
+// MARK: UDPReceiveLoopPolicy.nextBackoff / shouldRearm
+
+// `UDPReceiveLoopPolicy` resolves to the host copy via the scoped `import enum` at the top of the
+// file (the Rust port unifies the host+client twins into one `udp_receive_loop_policy`).
+func udpBackoffRecord(_ n: Int) -> [String: Any] {
+    ["n": n, "backoffBits": UDPReceiveLoopPolicy.nextBackoff(consecutiveErrors: n).bitPattern]
+}
+
+root["udpBackoff"] = [0, 1, 2, 3, 4, 5, 8, 16, 17, 100].map(udpBackoffRecord)
+root["udpRearm"] = [
+    ["alive": true, "rearm": UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: true)],
+    ["alive": false, "rearm": UDPReceiveLoopPolicy.shouldRearm(connectionIsAlive: false)],
+]
+
+// MARK: InputMotionCoalescer.coalesce (encoded-hex in/out)
+
+func imcMove(_ id: Double) -> InputEvent { .mouseMove(normalized: VideoPoint(x: id, y: id), tag: 0) }
+func imcDrag(_ id: Double, _ b: MouseButton = .left) -> InputEvent {
+    .mouseDrag(button: b, normalized: VideoPoint(x: id, y: id), clickCount: 1, modifiers: .init(rawValue: 0), tag: 0)
+}
+
+func imcDown(_ b: MouseButton = .left) -> InputEvent {
+    .mouseDown(button: b, normalized: VideoPoint(x: 0, y: 0), clickCount: 1, modifiers: .init(rawValue: 0), tag: 0)
+}
+
+func imcUp(_ b: MouseButton = .left) -> InputEvent {
+    .mouseUp(button: b, normalized: VideoPoint(x: 0, y: 0), clickCount: 1, modifiers: .init(rawValue: 0), tag: 0)
+}
+
+func imcScroll(_ dy: Double) -> InputEvent { .scroll(dx: 0, dy: dy, normalized: VideoPoint(x: 0, y: 0), tag: 0) }
+func imcKey(_ kc: UInt16) -> InputEvent { .key(keyCode: kc, down: true, modifiers: .init(rawValue: 0), tag: 0) }
+func imcText(_ s: String) -> InputEvent { .text(s, tag: 0) }
+
+func imcRecord(_ name: String, _ batch: [InputEvent]) -> [String: Any] {
+    let out = InputMotionCoalescer.coalesce(batch)
+    return [
+        "name": name,
+        "inputHex": batch.map { hex($0.encode()) },
+        "outputHex": out.map { hex($0.encode()) },
+    ]
+}
+
+root["inputMotionCoalesce"] = [
+    imcRecord("empty", []),
+    imcRecord("singleMove", [imcMove(0.5)]),
+    imcRecord("singleBarrier", [imcDown()]),
+    imcRecord("pureMoveRun", [imcMove(0.1), imcMove(0.2), imcMove(0.3)]),
+    imcRecord("pureDragRun", [imcDrag(0.1), imcDrag(0.2), imcDrag(0.3)]),
+    imcRecord("moveDragBoundary", [imcMove(0.1), imcDrag(0.2), imcMove(0.3)]),
+    imcRecord("barrierFlush", [imcMove(0.1), imcMove(0.2), imcDown(), imcMove(0.3), imcUp()]),
+    imcRecord("downDragUp", [imcDown(), imcDrag(0.1), imcDrag(0.2), imcDrag(0.3), imcUp()]),
+    imcRecord("keyScrollText", [
+        imcMove(0.1), imcKey(10), imcMove(0.2), imcScroll(3.0), imcText("a"), imcMove(0.3), imcMove(0.4),
+    ]),
+    imcRecord("trailingMotion", [imcDown(), imcMove(0.1), imcMove(0.2)]),
+    imcRecord("sameClassSplitByBarrier", [imcMove(0.1), imcMove(0.2), imcKey(5), imcMove(0.3), imcMove(0.4)]),
+    imcRecord("dragKeepsLatestButton", [imcDrag(0.1, .left), imcDrag(0.2, .right)]),
+    imcRecord("alternatingMoveDrag", [imcMove(0.1), imcDrag(0.2), imcMove(0.3), imcDrag(0.4), imcMove(0.5)]),
+    imcRecord("adjacentBarriers", [imcDown(.right), imcUp(.right), imcKey(1), imcScroll(1.0), imcText("x")]),
 ]
 
 // MARK: emit

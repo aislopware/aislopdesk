@@ -9,6 +9,7 @@
 //! `swift run aislopdesk-corevectors > rust/aislopdesk-core/tests/vectors/golden_vectors.json`
 
 use aislopdesk_core::adaptive_fec;
+use aislopdesk_core::capture_region;
 use aislopdesk_core::coordinate_mapping::{self};
 use aislopdesk_core::cursor::{CursorShapeMessage, CursorUpdate};
 use aislopdesk_core::fec::{FecScheme, XorParityFec};
@@ -16,17 +17,24 @@ use aislopdesk_core::fps_governor::FpsGovernor;
 use aislopdesk_core::fragment::{Flags, FrameFragment, FrameFragmentHeader};
 use aislopdesk_core::geometry::{VideoPoint, VideoRect, VideoSize};
 use aislopdesk_core::input_event::{InputEvent, InputModifiers, MouseButton};
+use aislopdesk_core::input_motion_coalescer::InputMotionCoalescer;
 use aislopdesk_core::mux_header::{video_mux_header, MuxFrameFragmentHeader};
 use aislopdesk_core::nal_unit;
 use aislopdesk_core::network_estimate::NetworkEstimate;
 use aislopdesk_core::owd_late_detector::OwdLateDetector;
 use aislopdesk_core::pacer_depth_policy::{Config as PacerConfig, PacerDepthPolicy};
 use aislopdesk_core::recovery::{NetworkStatsReport, RecoveryMessage};
+use aislopdesk_core::static_idr_decider::StaticIDRDecider;
+use aislopdesk_core::system_dialog_detector;
 use aislopdesk_core::terminal::mux::{MuxEnvelopeCodec, MuxFrame};
 use aislopdesk_core::terminal::{CommandStatus, SessionId, WireMessage};
 use aislopdesk_core::trendline_estimator::TrendlineEstimator;
+use aislopdesk_core::udp_receive_loop_policy::UDPReceiveLoopPolicy;
 use aislopdesk_core::video_control::{SystemDialogSummary, VideoControlMessage, WindowSummary};
+use aislopdesk_core::video_session::SizeNegotiation;
+use aislopdesk_core::virtual_display_geometry::{self, VirtualDisplayGeometry};
 use aislopdesk_core::window_geometry::WindowGeometryMessage;
+use aislopdesk_core::window_placement;
 use aislopdesk_core::ycbcr::{self, ColorRange};
 use serde_json::Value;
 use std::fmt::Write as _;
@@ -104,6 +112,47 @@ fn opt_hex(v: &Value) -> Option<Vec<u8>> {
     } else {
         Some(hx(v.as_str().unwrap()))
     }
+}
+
+/// Reconstruct an `f64` from a dumped IEEE bit pattern (`<key>` holds a `u64`), so JSON float
+/// formatting can never blur a float INPUT — the byte-exact mirror of the bit-pattern outputs.
+fn f64b(r: &Value, k: &str) -> f64 {
+    f64::from_bits(u64v(r, k))
+}
+
+/// Reconstruct a `VideoRect` from four bit-pattern fields `<prefix>X/Y/W/H` (Swift `rectBits`).
+fn rectb(r: &Value, prefix: &str) -> VideoRect {
+    VideoRect::xywh(
+        f64b(r, &format!("{prefix}X")),
+        f64b(r, &format!("{prefix}Y")),
+        f64b(r, &format!("{prefix}W")),
+        f64b(r, &format!("{prefix}H")),
+    )
+}
+
+/// Assert a returned `VideoRect`'s four raw components are bit-identical to the dumped Swift
+/// `CGRect` components (`out*Bits` keys) — works for finite rects AND `CGRectNull` (`∞,∞,0,0`).
+fn assert_rect_bits(label: &str, got: VideoRect, r: &Value) {
+    assert_eq!(
+        got.origin.x.to_bits(),
+        u64v(r, "outOriginXBits"),
+        "{label}: origin.x bits"
+    );
+    assert_eq!(
+        got.origin.y.to_bits(),
+        u64v(r, "outOriginYBits"),
+        "{label}: origin.y bits"
+    );
+    assert_eq!(
+        got.size.width.to_bits(),
+        u64v(r, "outWidthBits"),
+        "{label}: size.width bits"
+    );
+    assert_eq!(
+        got.size.height.to_bits(),
+        u64v(r, "outHeightBits"),
+        "{label}: size.height bits"
+    );
 }
 
 /// Assert a Rust encoding equals the Swift golden bytes, with a labelled diff on mismatch.
@@ -837,5 +886,373 @@ fn mux_envelopes_parity() {
             frame,
             "decode mismatch for {kind}"
         );
+    }
+}
+
+// ----- host pure-geometry deciders (FLOAT-determinism parity) -----
+//
+// Each test replays the diverse + edge inputs the Swift dumper drove through the CoreGraphics-
+// faithful host deciders and asserts the Rust port reproduces every float bit-for-bit (inputs
+// AND outputs are IEEE bit patterns) and every int/bool exactly. CGRectNull (∞,∞,0,0) is matched
+// component-by-component against `VideoRect::NULL`.
+
+#[test]
+fn capture_region_union_parity() {
+    let root = load();
+    for r in section(&root, "captureUnion") {
+        let windows: Vec<capture_region::WindowSnapshot> = r["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| {
+                capture_region::WindowSnapshot::new(
+                    u32v(w, "windowID"),
+                    i32v(w, "ownerPID"),
+                    i64v(w, "layer"),
+                    rectb(w, "f"),
+                )
+            })
+            .collect();
+        let out = capture_region::union_region(
+            rectb(r, "t"),
+            u32v(r, "targetWindowID"),
+            i32v(r, "targetPID"),
+            &windows,
+            rectb(r, "d"),
+            f64b(r, "minOverlapBits"),
+        );
+        assert_rect_bits(&format!("captureUnion/{}", strv(r, "name")), out, r);
+    }
+}
+
+#[test]
+fn capture_region_retarget_parity() {
+    let root = load();
+    for r in section(&root, "captureRetarget") {
+        let got =
+            capture_region::should_retarget(rectb(r, "c"), rectb(r, "e"), f64b(r, "minDeltaBits"));
+        assert_eq!(
+            got,
+            boolv(r, "shouldRetarget"),
+            "captureRetarget/{}",
+            strv(r, "name")
+        );
+    }
+}
+
+#[test]
+fn virtual_display_geometry_parity() {
+    let root = load();
+    for r in section(&root, "virtualDisplayGeometry") {
+        let g = VirtualDisplayGeometry::new(
+            i64v(r, "pointWidth"),
+            i64v(r, "pointHeight"),
+            i64v(r, "scale"),
+            i64v(r, "maxHorizontalPixels"),
+        );
+        assert_eq!(g.pixel_width(), i64v(r, "pixelWidth"), "pixelWidth");
+        assert_eq!(g.pixel_height(), i64v(r, "pixelHeight"), "pixelHeight");
+        assert_eq!(
+            g.exceeds_pixel_limit(),
+            boolv(r, "exceedsPixelLimit"),
+            "exceedsPixelLimit"
+        );
+        let mm = g.size_in_millimeters(f64b(r, "ppiBits"));
+        assert_eq!(mm.width.to_bits(), u64v(r, "mmWidthBits"), "mmWidth bits");
+        assert_eq!(
+            mm.height.to_bits(),
+            u64v(r, "mmHeightBits"),
+            "mmHeight bits"
+        );
+    }
+}
+
+#[test]
+fn virtual_display_origin_to_right_parity() {
+    let root = load();
+    for r in section(&root, "vdOriginToRight") {
+        let displays: Vec<VideoRect> = r["displays"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                VideoRect::xywh(
+                    f64b(d, "xBits"),
+                    f64b(d, "yBits"),
+                    f64b(d, "wBits"),
+                    f64b(d, "hBits"),
+                )
+            })
+            .collect();
+        let p = virtual_display_geometry::origin_to_right(&displays);
+        assert_eq!(
+            p.x.to_bits(),
+            u64v(r, "outXBits"),
+            "originToRight/{} x",
+            strv(r, "name")
+        );
+        assert_eq!(
+            p.y.to_bits(),
+            u64v(r, "outYBits"),
+            "originToRight/{} y",
+            strv(r, "name")
+        );
+    }
+}
+
+#[test]
+fn virtual_display_chip_pixel_limit_parity() {
+    let root = load();
+    for r in section(&root, "vdChipPixelLimit") {
+        let got = virtual_display_geometry::chip_pixel_limit(strv(r, "cpuBrand"));
+        assert_eq!(
+            got,
+            i64v(r, "limit"),
+            "chipPixelLimit({:?})",
+            strv(r, "cpuBrand")
+        );
+    }
+}
+
+#[test]
+fn virtual_display_refresh_rates_parity() {
+    let root = load();
+    for r in section(&root, "vdRefreshRates") {
+        let got = virtual_display_geometry::refresh_rates(i64v(r, "fps"));
+        let expected = r["ratesBits"].as_array().unwrap();
+        assert_eq!(
+            got.len(),
+            expected.len(),
+            "refreshRates len fps={}",
+            i64v(r, "fps")
+        );
+        for (i, rate) in got.iter().enumerate() {
+            assert_eq!(
+                rate.to_bits(),
+                expected[i].as_u64().unwrap(),
+                "refreshRates fps={} [{i}]",
+                i64v(r, "fps")
+            );
+        }
+    }
+}
+
+#[test]
+fn window_placement_parity() {
+    let root = load();
+    for r in section(&root, "windowPlacement") {
+        let p = window_placement::placement(
+            VideoSize::new(f64b(r, "winWBits"), f64b(r, "winHBits")),
+            rectb(r, "d"),
+        );
+        let label = strv(r, "name");
+        assert_eq!(
+            p.origin.x.to_bits(),
+            u64v(r, "outOriginXBits"),
+            "windowPlacement/{label} origin.x"
+        );
+        assert_eq!(
+            p.origin.y.to_bits(),
+            u64v(r, "outOriginYBits"),
+            "windowPlacement/{label} origin.y"
+        );
+        assert_eq!(
+            p.size.width.to_bits(),
+            u64v(r, "outWidthBits"),
+            "windowPlacement/{label} width"
+        );
+        assert_eq!(
+            p.size.height.to_bits(),
+            u64v(r, "outHeightBits"),
+            "windowPlacement/{label} height"
+        );
+        assert_eq!(
+            p.needs_resize,
+            boolv(r, "needsResize"),
+            "windowPlacement/{label} needsResize"
+        );
+    }
+}
+
+#[test]
+fn window_fits_parity() {
+    let root = load();
+    for r in section(&root, "windowFits") {
+        let got = window_placement::fits(
+            VideoSize::new(f64b(r, "sizeWBits"), f64b(r, "sizeHBits")),
+            rectb(r, "b"),
+        );
+        assert_eq!(got, boolv(r, "fits"), "windowFits/{}", strv(r, "name"));
+    }
+}
+
+/// Builds a `system_dialog_detector::WindowSnapshot` from a dumped window record (frame size via
+/// bit patterns at a fixed origin; origin is irrelevant to the classifier's standardized read).
+fn sd_window(w: &Value) -> system_dialog_detector::WindowSnapshot {
+    system_dialog_detector::WindowSnapshot::new(
+        u32v(w, "windowID"),
+        strv(w, "ownerName").to_owned(),
+        strv(w, "bundleID").to_owned(),
+        boolv(w, "isOnScreen"),
+        strv(w, "title").to_owned(),
+        VideoRect::xywh(830.0, 201.0, f64b(w, "fWBits"), f64b(w, "fHBits")),
+    )
+}
+
+/// Asserts an `Option<Dialog>` matches the dumped `"dialog"` value (`null` ⇒ `None`).
+fn assert_dialog(label: &str, got: Option<system_dialog_detector::Dialog>, expected: &Value) {
+    if expected.is_null() {
+        assert!(got.is_none(), "{label}: expected None, got {got:?}");
+    } else {
+        let d = got.unwrap_or_else(|| panic!("{label}: expected Some, got None"));
+        assert_eq!(d.window_id, u32v(expected, "windowID"), "{label} windowID");
+        assert_eq!(d.owner, strv(expected, "owner"), "{label} owner");
+        assert_eq!(d.title, strv(expected, "title"), "{label} title");
+        assert_eq!(d.width, i64v(expected, "width"), "{label} width");
+        assert_eq!(d.height, i64v(expected, "height"), "{label} height");
+        assert_eq!(d.is_secure, boolv(expected, "isSecure"), "{label} isSecure");
+    }
+}
+
+#[test]
+fn system_dialog_classify_parity() {
+    let root = load();
+    for r in section(&root, "systemDialogClassify") {
+        let w = sd_window(&r["window"]);
+        let got = system_dialog_detector::classify(&w, i64v(r, "minSize"));
+        assert_dialog(
+            &format!("systemDialogClassify/{}", strv(r, "name")),
+            got,
+            &r["dialog"],
+        );
+    }
+}
+
+#[test]
+fn system_dialog_detect_parity() {
+    let root = load();
+    for r in section(&root, "systemDialogDetect") {
+        let windows: Vec<system_dialog_detector::WindowSnapshot> = r["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(sd_window)
+            .collect();
+        let got = system_dialog_detector::detect(&windows, i64v(r, "minSize"));
+        let expected = r["dialogs"].as_array().unwrap();
+        assert_eq!(
+            got.len(),
+            expected.len(),
+            "systemDialogDetect/{} count",
+            strv(r, "name")
+        );
+        for (i, d) in got.iter().enumerate() {
+            assert_dialog(
+                &format!("systemDialogDetect/{}[{i}]", strv(r, "name")),
+                Some(d.clone()),
+                &expected[i],
+            );
+        }
+    }
+}
+
+#[test]
+fn size_negotiation_clamp_parity() {
+    let root = load();
+    for r in section(&root, "sizeNegotiationClamp") {
+        let (w, h) = SizeNegotiation::clamp(
+            VideoSize::new(f64b(r, "desWBits"), f64b(r, "desHBits")),
+            VideoSize::new(f64b(r, "minWBits"), f64b(r, "minHBits")),
+            VideoSize::new(f64b(r, "maxWBits"), f64b(r, "maxHBits")),
+        );
+        assert_eq!(w, u16v(r, "w"), "sizeNegotiation/{} w", strv(r, "name"));
+        assert_eq!(h, u16v(r, "h"), "sizeNegotiation/{} h", strv(r, "name"));
+    }
+}
+
+#[test]
+fn size_negotiation_epoch_parity() {
+    let root = load();
+    for r in section(&root, "sizeNegotiationEpoch") {
+        let got = SizeNegotiation::is_stale_epoch(u32v(r, "epoch"), u32v(r, "lastApplied"));
+        assert_eq!(
+            got,
+            boolv(r, "stale"),
+            "isStaleEpoch({}, {})",
+            u32v(r, "epoch"),
+            u32v(r, "lastApplied")
+        );
+    }
+}
+
+#[test]
+fn static_idr_drive_parity() {
+    let root = load();
+    for sc in section(&root, "staticIdrDrive") {
+        let mut d =
+            StaticIDRDecider::new(f64b(sc, "heartbeatBits"), Some(f64b(sc, "quietWindowBits")));
+        for op in sc["ops"].as_array().unwrap() {
+            let t = f64b(op, "tBits");
+            match strv(op, "op") {
+                "complete" => d.on_complete_frame(t),
+                "synthetic" => d.record_synthetic(t),
+                "check" => {
+                    let got = d.should_reencode(t, boolv(op, "forced"), boolv(op, "hasBuffer"));
+                    assert_eq!(
+                        got,
+                        boolv(op, "decision"),
+                        "staticIdr/{} check t={t} forced={} hasBuffer={}",
+                        strv(sc, "name"),
+                        boolv(op, "forced"),
+                        boolv(op, "hasBuffer"),
+                    );
+                }
+                other => panic!("unknown staticIdr op {other}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn udp_receive_loop_policy_parity() {
+    let root = load();
+    for r in section(&root, "udpBackoff") {
+        let n = i64v(r, "n");
+        let got = UDPReceiveLoopPolicy::next_backoff(n);
+        assert_eq!(
+            got.to_bits(),
+            u64v(r, "backoffBits"),
+            "udp nextBackoff n={n}"
+        );
+    }
+    for r in section(&root, "udpRearm") {
+        assert_eq!(
+            UDPReceiveLoopPolicy::should_rearm(boolv(r, "alive")),
+            boolv(r, "rearm"),
+            "udp shouldRearm alive={}",
+            boolv(r, "alive")
+        );
+    }
+}
+
+#[test]
+fn input_motion_coalesce_parity() {
+    let root = load();
+    for r in section(&root, "inputMotionCoalesce") {
+        let input: Vec<InputEvent> = r["inputHex"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| InputEvent::decode(&hx(v.as_str().unwrap())).expect("decodable input event"))
+            .collect();
+        let out = InputMotionCoalescer::coalesce(&input);
+        let got: Vec<String> = out.iter().map(|e| to_hex(&e.encode())).collect();
+        let expected: Vec<String> = r["outputHex"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(got, expected, "inputMotionCoalesce/{}", strv(r, "name"));
     }
 }

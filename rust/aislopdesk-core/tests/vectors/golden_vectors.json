@@ -528,6 +528,501 @@
       "tier" : 4
     }
   ],
+  "captureRetarget" : [
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647503709213818880,
+      "eW" : 4649368480934526976,
+      "eX" : 4638144666238189568,
+      "eY" : 4638144666238189568,
+      "minDeltaBits" : 4620693217682128896,
+      "name" : "identical",
+      "shouldRetarget" : false
+    },
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647609262330085376,
+      "eW" : 4649421257492660224,
+      "eX" : 4637933560005656576,
+      "eY" : 4637933560005656576,
+      "minDeltaBits" : 4620693217682128896,
+      "name" : "subThreshold",
+      "shouldRetarget" : false
+    },
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647503709213818880,
+      "eW" : 4649368480934526976,
+      "eX" : 4638707616191610880,
+      "eY" : 4638144666238189568,
+      "minDeltaBits" : 4620693217682128896,
+      "name" : "exactThreshold",
+      "shouldRetarget" : false
+    },
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647503709213818880,
+      "eW" : 4649368480934526976,
+      "eX" : 4638725208377655296,
+      "eY" : 4638144666238189568,
+      "minDeltaBits" : 4620693217682128896,
+      "name" : "minXOver",
+      "shouldRetarget" : true
+    },
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647503709213818880,
+      "eW" : 4649368480934526976,
+      "eX" : 4638144666238189568,
+      "eY" : 4638725208377655296,
+      "minDeltaBits" : 4620693217682128896,
+      "name" : "minYOver",
+      "shouldRetarget" : true
+    },
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647503709213818880,
+      "eW" : 4649443247725215744,
+      "eX" : 4638144666238189568,
+      "eY" : 4638144666238189568,
+      "minDeltaBits" : 4620693217682128896,
+      "name" : "widthOver",
+      "shouldRetarget" : true
+    },
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647653242795196416,
+      "eW" : 4649368480934526976,
+      "eX" : 4638144666238189568,
+      "eY" : 4638144666238189568,
+      "minDeltaBits" : 4620693217682128896,
+      "name" : "heightOver",
+      "shouldRetarget" : true
+    },
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647881941213773824,
+      "eW" : 4650951777678524416,
+      "eX" : 4629137466983448576,
+      "eY" : 4638144666238189568,
+      "minDeltaBits" : 4620693217682128896,
+      "name" : "bigExpansion",
+      "shouldRetarget" : true
+    },
+    {
+      "cH" : 4647503709213818880,
+      "cW" : 4649368480934526976,
+      "cX" : 4638144666238189568,
+      "cY" : 4638144666238189568,
+      "eH" : 4647503709213818880,
+      "eW" : 4649372878981038080,
+      "eX" : 4638144666238189568,
+      "eY" : 4638144666238189568,
+      "minDeltaBits" : 0,
+      "name" : "customZeroDelta",
+      "shouldRetarget" : true
+    }
+  ],
+  "captureUnion" : [
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "noDialog",
+      "outHeightBits" : 4647503709213818880,
+      "outOriginXBits" : 4638144666238189568,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 4649368480934526976,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "fileDialog",
+      "outHeightBits" : 4647881941213773824,
+      "outOriginXBits" : 4629137466983448576,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 4650951777678524416,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+        {
+          "fH" : 4646588915539509248,
+          "fW" : 4650951777678524416,
+          "fX" : 4629137466983448576,
+          "fY" : 4641346444098273280,
+          "layer" : 0,
+          "ownerPID" : 407,
+          "windowID" : 1794
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "otherPID",
+      "outHeightBits" : 4647503709213818880,
+      "outOriginXBits" : 4638144666238189568,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 4649368480934526976,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+        {
+          "fH" : 4651127699538968576,
+          "fW" : 4653872080561897472,
+          "fX" : 0,
+          "fY" : 0,
+          "layer" : 0,
+          "ownerPID" : 388,
+          "windowID" : 57
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "selfIgnored",
+      "outHeightBits" : 4647503709213818880,
+      "outOriginXBits" : 4638144666238189568,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 4649368480934526976,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+        {
+          "fH" : 4647503709213818880,
+          "fW" : 4649368480934526976,
+          "fX" : 4638144666238189568,
+          "fY" : 4638144666238189568,
+          "layer" : 0,
+          "ownerPID" : 407,
+          "windowID" : 1783
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "nonZeroLayer",
+      "outHeightBits" : 4647503709213818880,
+      "outOriginXBits" : 4638144666238189568,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 4649368480934526976,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+        {
+          "fH" : 4649368480934526976,
+          "fW" : 4651127699538968576,
+          "fX" : 4636737291354636288,
+          "fY" : 4636737291354636288,
+          "layer" : 25,
+          "ownerPID" : 407,
+          "windowID" : 99
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "sliver",
+      "outHeightBits" : 4647503709213818880,
+      "outOriginXBits" : 4638144666238189568,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 4649368480934526976,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+        {
+          "fH" : 4647503709213818880,
+          "fW" : 4648488871632306176,
+          "fX" : 4650380031632080896,
+          "fY" : 4638144666238189568,
+          "layer" : 0,
+          "ownerPID" : 407,
+          "windowID" : 900
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "edgeTouch",
+      "outHeightBits" : 4647503709213818880,
+      "outOriginXBits" : 4638144666238189568,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 4649368480934526976,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+        {
+          "fH" : 4647503709213818880,
+          "fW" : 4641240890982006784,
+          "fX" : 4650424012097191936,
+          "fY" : 4638144666238189568,
+          "layer" : 0,
+          "ownerPID" : 407,
+          "windowID" : 201
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "clampedToDisplay",
+      "outHeightBits" : 4647767592004485120,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 4629137466983448576,
+      "outWidthBits" : 4650160129306525696,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 0,
+      "tY" : 4629137466983448576,
+      "windows" : [
+        {
+          "fH" : 4646588915539509248,
+          "fW" : 4650951777678524416,
+          "fX" : 13859405640767635456,
+          "fY" : 4636737291354636288,
+          "layer" : 0,
+          "ownerPID" : 407,
+          "windowID" : 1794
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "zeroAreaTarget",
+      "outHeightBits" : 4647503709213818880,
+      "outOriginXBits" : 4638144666238189568,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 0,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 0,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "offDisplay",
+      "outHeightBits" : 0,
+      "outOriginXBits" : 9218868437227405312,
+      "outOriginYBits" : 9218868437227405312,
+      "outWidthBits" : 0,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4636737291354636288,
+      "tW" : 4636737291354636288,
+      "tX" : 4662219572839972864,
+      "tY" : 4662219572839972864,
+      "windows" : [
+
+      ]
+    },
+    {
+      "dH" : 0,
+      "dW" : 0,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "zeroAreaDisplay",
+      "outHeightBits" : 0,
+      "outOriginXBits" : 9218868437227405312,
+      "outOriginYBits" : 9218868437227405312,
+      "outWidthBits" : 0,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4602678819172646912,
+      "name" : "boundaryInclusive",
+      "outHeightBits" : 4636737291354636288,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 4639481672377565184,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4636737291354636288,
+      "tW" : 4636737291354636288,
+      "tX" : 0,
+      "tY" : 0,
+      "windows" : [
+        {
+          "fH" : 4636737291354636288,
+          "fW" : 4636737291354636288,
+          "fX" : 4632233691727265792,
+          "fY" : 0,
+          "layer" : 0,
+          "ownerPID" : 407,
+          "windowID" : 300
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4603579539098121011,
+      "name" : "justBelowBoundary",
+      "outHeightBits" : 4636737291354636288,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 4636737291354636288,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4636737291354636288,
+      "tW" : 4636737291354636288,
+      "tX" : 0,
+      "tY" : 0,
+      "windows" : [
+        {
+          "fH" : 4636737291354636288,
+          "fW" : 4636737291354636288,
+          "fX" : 4632233691727265792,
+          "fY" : 0,
+          "layer" : 0,
+          "ownerPID" : 407,
+          "windowID" : 300
+        }
+      ]
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "minOverlapBits" : 4599075939470750515,
+      "name" : "negativeSizeWindow",
+      "outHeightBits" : 4647881941213773824,
+      "outOriginXBits" : 4629137466983448576,
+      "outOriginYBits" : 4638144666238189568,
+      "outWidthBits" : 4650951777678524416,
+      "targetPID" : 407,
+      "targetWindowID" : 1783,
+      "tH" : 4647503709213818880,
+      "tW" : 4649368480934526976,
+      "tX" : 4638144666238189568,
+      "tY" : 4638144666238189568,
+      "windows" : [
+        {
+          "fH" : 13869960952394285056,
+          "fW" : 13874323814533300224,
+          "fX" : 4651215660469190656,
+          "fY" : 4648937472376438784,
+          "layer" : 0,
+          "ownerPID" : 407,
+          "windowID" : 1794
+        }
+      ]
+    }
+  ],
   "coordWindowPoint" : [
     {
       "bh" : 600,
@@ -808,6 +1303,192 @@
       "tag" : 12,
       "text" : "gõ được 文字",
       "variant" : "text"
+    }
+  ],
+  "inputMotionCoalesce" : [
+    {
+      "inputHex" : [
+
+      ],
+      "name" : "empty",
+      "outputHex" : [
+
+      ]
+    },
+    {
+      "inputHex" : [
+        "01000000003fe00000000000003fe0000000000000"
+      ],
+      "name" : "singleMove",
+      "outputHex" : [
+        "01000000003fe00000000000003fe0000000000000"
+      ]
+    },
+    {
+      "inputHex" : [
+        "020000000000010000000000000000000000000000000000"
+      ],
+      "name" : "singleBarrier",
+      "outputHex" : [
+        "020000000000010000000000000000000000000000000000"
+      ]
+    },
+    {
+      "inputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "01000000003fc999999999999a3fc999999999999a",
+        "01000000003fd33333333333333fd3333333333333"
+      ],
+      "name" : "pureMoveRun",
+      "outputHex" : [
+        "01000000003fd33333333333333fd3333333333333"
+      ]
+    },
+    {
+      "inputHex" : [
+        "07000000000001003fb999999999999a3fb999999999999a",
+        "07000000000001003fc999999999999a3fc999999999999a",
+        "07000000000001003fd33333333333333fd3333333333333"
+      ],
+      "name" : "pureDragRun",
+      "outputHex" : [
+        "07000000000001003fd33333333333333fd3333333333333"
+      ]
+    },
+    {
+      "inputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "07000000000001003fc999999999999a3fc999999999999a",
+        "01000000003fd33333333333333fd3333333333333"
+      ],
+      "name" : "moveDragBoundary",
+      "outputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "07000000000001003fc999999999999a3fc999999999999a",
+        "01000000003fd33333333333333fd3333333333333"
+      ]
+    },
+    {
+      "inputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "01000000003fc999999999999a3fc999999999999a",
+        "020000000000010000000000000000000000000000000000",
+        "01000000003fd33333333333333fd3333333333333",
+        "030000000000010000000000000000000000000000000000"
+      ],
+      "name" : "barrierFlush",
+      "outputHex" : [
+        "01000000003fc999999999999a3fc999999999999a",
+        "020000000000010000000000000000000000000000000000",
+        "01000000003fd33333333333333fd3333333333333",
+        "030000000000010000000000000000000000000000000000"
+      ]
+    },
+    {
+      "inputHex" : [
+        "020000000000010000000000000000000000000000000000",
+        "07000000000001003fb999999999999a3fb999999999999a",
+        "07000000000001003fc999999999999a3fc999999999999a",
+        "07000000000001003fd33333333333333fd3333333333333",
+        "030000000000010000000000000000000000000000000000"
+      ],
+      "name" : "downDragUp",
+      "outputHex" : [
+        "020000000000010000000000000000000000000000000000",
+        "07000000000001003fd33333333333333fd3333333333333",
+        "030000000000010000000000000000000000000000000000"
+      ]
+    },
+    {
+      "inputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "0500000000000a0100",
+        "01000000003fc999999999999a3fc999999999999a",
+        "04000000000000000000000000400800000000000000000000000000000000000000000000",
+        "060000000061",
+        "01000000003fd33333333333333fd3333333333333",
+        "01000000003fd999999999999a3fd999999999999a"
+      ],
+      "name" : "keyScrollText",
+      "outputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "0500000000000a0100",
+        "01000000003fc999999999999a3fc999999999999a",
+        "04000000000000000000000000400800000000000000000000000000000000000000000000",
+        "060000000061",
+        "01000000003fd999999999999a3fd999999999999a"
+      ]
+    },
+    {
+      "inputHex" : [
+        "020000000000010000000000000000000000000000000000",
+        "01000000003fb999999999999a3fb999999999999a",
+        "01000000003fc999999999999a3fc999999999999a"
+      ],
+      "name" : "trailingMotion",
+      "outputHex" : [
+        "020000000000010000000000000000000000000000000000",
+        "01000000003fc999999999999a3fc999999999999a"
+      ]
+    },
+    {
+      "inputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "01000000003fc999999999999a3fc999999999999a",
+        "050000000000050100",
+        "01000000003fd33333333333333fd3333333333333",
+        "01000000003fd999999999999a3fd999999999999a"
+      ],
+      "name" : "sameClassSplitByBarrier",
+      "outputHex" : [
+        "01000000003fc999999999999a3fc999999999999a",
+        "050000000000050100",
+        "01000000003fd999999999999a3fd999999999999a"
+      ]
+    },
+    {
+      "inputHex" : [
+        "07000000000001003fb999999999999a3fb999999999999a",
+        "07000000000101003fc999999999999a3fc999999999999a"
+      ],
+      "name" : "dragKeepsLatestButton",
+      "outputHex" : [
+        "07000000000101003fc999999999999a3fc999999999999a"
+      ]
+    },
+    {
+      "inputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "07000000000001003fc999999999999a3fc999999999999a",
+        "01000000003fd33333333333333fd3333333333333",
+        "07000000000001003fd999999999999a3fd999999999999a",
+        "01000000003fe00000000000003fe0000000000000"
+      ],
+      "name" : "alternatingMoveDrag",
+      "outputHex" : [
+        "01000000003fb999999999999a3fb999999999999a",
+        "07000000000001003fc999999999999a3fc999999999999a",
+        "01000000003fd33333333333333fd3333333333333",
+        "07000000000001003fd999999999999a3fd999999999999a",
+        "01000000003fe00000000000003fe0000000000000"
+      ]
+    },
+    {
+      "inputHex" : [
+        "020000000001010000000000000000000000000000000000",
+        "030000000001010000000000000000000000000000000000",
+        "050000000000010100",
+        "040000000000000000000000003ff000000000000000000000000000000000000000000000",
+        "060000000078"
+      ],
+      "name" : "adjacentBarriers",
+      "outputHex" : [
+        "020000000001010000000000000000000000000000000000",
+        "030000000001010000000000000000000000000000000000",
+        "050000000000010100",
+        "040000000000000000000000003ff000000000000000000000000000000000000000000000",
+        "060000000078"
+      ]
     }
   ],
   "muxBare" : [
@@ -1240,6 +1921,737 @@
       "variant" : "networkStats"
     }
   ],
+  "sizeNegotiationClamp" : [
+    {
+      "desHBits" : 4650248090236747776,
+      "desWBits" : 4653344314980564992,
+      "h" : 800,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 4642648265865560064,
+      "minWBits" : 4644337115725824000,
+      "name" : "inside",
+      "w" : 1280
+    },
+    {
+      "desHBits" : 4632233691727265792,
+      "desWBits" : 4636737291354636288,
+      "h" : 240,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 4642648265865560064,
+      "minWBits" : 4644337115725824000,
+      "name" : "clampLow",
+      "w" : 320
+    },
+    {
+      "desHBits" : 4666722622711529472,
+      "desWBits" : 4666722622711529472,
+      "h" : 2160,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 4642648265865560064,
+      "minWBits" : 4644337115725824000,
+      "name" : "clampHigh",
+      "w" : 3840
+    },
+    {
+      "desHBits" : 4650248090236747776,
+      "desWBits" : 4653344314980564992,
+      "h" : 800,
+      "maxHBits" : 4642648265865560064,
+      "maxWBits" : 4644337115725824000,
+      "minHBits" : 4656968305305714688,
+      "minWBits" : 4660662664375042048,
+      "name" : "swappedPolicy",
+      "w" : 1280
+    },
+    {
+      "desHBits" : 4696837146684686336,
+      "desWBits" : 4696837146684686336,
+      "h" : 65535,
+      "maxHBits" : 4696837146684686336,
+      "maxWBits" : 4696837146684686336,
+      "minHBits" : 4642648265865560064,
+      "minWBits" : 4644337115725824000,
+      "name" : "huge",
+      "w" : 65535
+    },
+    {
+      "desHBits" : 4650252488283258880,
+      "desWBits" : 4653346514003820544,
+      "h" : 801,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 4642648265865560064,
+      "minWBits" : 4644337115725824000,
+      "name" : "roundHalfUp",
+      "w" : 1281
+    },
+    {
+      "desHBits" : 4650251608673956659,
+      "desWBits" : 4653346074199169434,
+      "h" : 800,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 4642648265865560064,
+      "minWBits" : 4644337115725824000,
+      "name" : "roundDown",
+      "w" : 1280
+    },
+    {
+      "desHBits" : 9218868437227405312,
+      "desWBits" : 9221120237041090560,
+      "h" : 240,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 4642648265865560064,
+      "minWBits" : 4644337115725824000,
+      "name" : "nanInf",
+      "w" : 320
+    },
+    {
+      "desHBits" : 13830554455654793216,
+      "desWBits" : 13870875746068594688,
+      "h" : 240,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 4642648265865560064,
+      "minWBits" : 4644337115725824000,
+      "name" : "negative",
+      "w" : 320
+    },
+    {
+      "desHBits" : 4666722622711529472,
+      "desWBits" : 4621819117588971520,
+      "h" : 480,
+      "maxHBits" : 4647151865492930560,
+      "maxWBits" : 4648840715353194496,
+      "minHBits" : 4647151865492930560,
+      "minWBits" : 4648840715353194496,
+      "name" : "minEqMax",
+      "w" : 640
+    },
+    {
+      "desHBits" : 0,
+      "desWBits" : 0,
+      "h" : 1,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 0,
+      "minWBits" : 0,
+      "name" : "zeroMin",
+      "w" : 1
+    },
+    {
+      "desHBits" : 0,
+      "desWBits" : 0,
+      "h" : 1,
+      "maxHBits" : 4656968305305714688,
+      "maxWBits" : 4660662664375042048,
+      "minHBits" : 13860109328209412096,
+      "minWBits" : 13860109328209412096,
+      "name" : "negativeMin",
+      "w" : 1
+    }
+  ],
+  "sizeNegotiationEpoch" : [
+    {
+      "epoch" : 5,
+      "lastApplied" : 5,
+      "stale" : true
+    },
+    {
+      "epoch" : 3,
+      "lastApplied" : 5,
+      "stale" : true
+    },
+    {
+      "epoch" : 0,
+      "lastApplied" : 5,
+      "stale" : true
+    },
+    {
+      "epoch" : 6,
+      "lastApplied" : 5,
+      "stale" : false
+    },
+    {
+      "epoch" : 4294967295,
+      "lastApplied" : 5,
+      "stale" : false
+    },
+    {
+      "epoch" : 1,
+      "lastApplied" : 0,
+      "stale" : false
+    },
+    {
+      "epoch" : 0,
+      "lastApplied" : 0,
+      "stale" : true
+    }
+  ],
+  "staticIdrDrive" : [
+    {
+      "heartbeatBits" : 4612811918334230528,
+      "name" : "production",
+      "ops" : [
+        {
+          "decision" : false,
+          "forced" : false,
+          "hasBuffer" : false,
+          "op" : "check",
+          "tBits" : 4602678819172646912
+        },
+        {
+          "decision" : false,
+          "forced" : true,
+          "hasBuffer" : false,
+          "op" : "check",
+          "tBits" : 4602678819172646912
+        },
+        {
+          "decision" : true,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4602678819172646912
+        },
+        {
+          "op" : "complete",
+          "tBits" : 4621819117588971520
+        },
+        {
+          "decision" : false,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4622325772547050701
+        },
+        {
+          "decision" : false,
+          "forced" : true,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4622325772547050701
+        },
+        {
+          "decision" : true,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4622382067542392832
+        },
+        {
+          "op" : "synthetic",
+          "tBits" : 4622382067542392832
+        },
+        {
+          "decision" : false,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4623226492472524800
+        },
+        {
+          "decision" : true,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4623789442425946112
+        },
+        {
+          "decision" : true,
+          "forced" : true,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4623733147430603981
+        },
+        {
+          "op" : "complete",
+          "tBits" : 4626322717216342016
+        },
+        {
+          "decision" : false,
+          "forced" : true,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4626463454704697344
+        },
+        {
+          "decision" : true,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4626604192193052672
+        }
+      ],
+      "quietWindowBits" : 4607182418800017408
+    },
+    {
+      "heartbeatBits" : 4607182418800017408,
+      "name" : "defaultQuiet",
+      "ops" : [
+        {
+          "decision" : true,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4562254508917369340
+        },
+        {
+          "op" : "complete",
+          "tBits" : 4621819117588971520
+        },
+        {
+          "decision" : false,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4622381504592439411
+        },
+        {
+          "decision" : true,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4622382067542392832
+        },
+        {
+          "op" : "synthetic",
+          "tBits" : 4622382067542392832
+        },
+        {
+          "decision" : false,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4622663542519103488
+        },
+        {
+          "decision" : true,
+          "forced" : false,
+          "hasBuffer" : true,
+          "op" : "check",
+          "tBits" : 4622945017495814144
+        }
+      ],
+      "quietWindowBits" : 4607182418800017408
+    }
+  ],
+  "systemDialogClassify" : [
+    {
+      "dialog" : {
+        "height" : 312,
+        "isSecure" : true,
+        "owner" : "SecurityAgent",
+        "title" : "",
+        "width" : 260,
+        "windowID" : 1966
+      },
+      "minSize" : 60,
+      "name" : "securityAgentByBundle",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4644196378237468672,
+        "fWBits" : 4643281584563159040,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 1966
+      }
+    },
+    {
+      "dialog" : {
+        "height" : 312,
+        "isSecure" : true,
+        "owner" : "SecurityAgent",
+        "title" : "",
+        "width" : 260,
+        "windowID" : 8
+      },
+      "minSize" : 60,
+      "name" : "securityAgentByOwner",
+      "window" : {
+        "bundleID" : "",
+        "fHBits" : 4644196378237468672,
+        "fWBits" : 4643281584563159040,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 8
+      }
+    },
+    {
+      "dialog" : {
+        "height" : 312,
+        "isSecure" : true,
+        "owner" : "coreauthd",
+        "title" : "",
+        "width" : 260,
+        "windowID" : 7
+      },
+      "minSize" : 60,
+      "name" : "coreauthd",
+      "window" : {
+        "bundleID" : "com.apple.coreauthd",
+        "fHBits" : 4644196378237468672,
+        "fWBits" : 4643281584563159040,
+        "isOnScreen" : true,
+        "ownerName" : "coreauthd",
+        "title" : "",
+        "windowID" : 7
+      }
+    },
+    {
+      "dialog" : null,
+      "minSize" : 60,
+      "name" : "regularApp",
+      "window" : {
+        "bundleID" : "com.google.Chrome",
+        "fHBits" : 4647503709213818880,
+        "fWBits" : 4649368480934526976,
+        "isOnScreen" : true,
+        "ownerName" : "Google Chrome",
+        "title" : "",
+        "windowID" : 1783
+      }
+    },
+    {
+      "dialog" : null,
+      "minSize" : 60,
+      "name" : "offscreen",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4647503709213818880,
+        "fWBits" : 4647503709213818880,
+        "isOnScreen" : false,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 1967
+      }
+    },
+    {
+      "dialog" : {
+        "height" : 60,
+        "isSecure" : true,
+        "owner" : "SecurityAgent",
+        "title" : "",
+        "width" : 60,
+        "windowID" : 11
+      },
+      "minSize" : 60,
+      "name" : "roundingPasses595",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4633570697866641408,
+        "fWBits" : 4633570697866641408,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 11
+      }
+    },
+    {
+      "dialog" : null,
+      "minSize" : 60,
+      "name" : "roundingFails594",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4641240890982006784,
+        "fWBits" : 4633556624117805875,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 12
+      }
+    },
+    {
+      "dialog" : {
+        "height" : 61,
+        "isSecure" : true,
+        "owner" : "SecurityAgent",
+        "title" : "",
+        "width" : 61,
+        "windowID" : 14
+      },
+      "minSize" : 60,
+      "name" : "roundingUp605",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4633711435354996736,
+        "fWBits" : 4633711435354996736,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 14
+      }
+    },
+    {
+      "dialog" : {
+        "height" : 200,
+        "isSecure" : true,
+        "owner" : "SecurityAgent",
+        "title" : "",
+        "width" : 400,
+        "windowID" : 16
+      },
+      "minSize" : 60,
+      "name" : "negativeSizeStandardizes",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 13864612927836782592,
+        "fWBits" : 13869116527464153088,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 16
+      }
+    },
+    {
+      "dialog" : {
+        "height" : 200,
+        "isSecure" : true,
+        "owner" : "com.apple.SecurityAgent",
+        "title" : "",
+        "width" : 400,
+        "windowID" : 18
+      },
+      "minSize" : 60,
+      "name" : "emptyOwnerFallsBackToBundle",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4641240890982006784,
+        "fWBits" : 4645744490609377280,
+        "isOnScreen" : true,
+        "ownerName" : "",
+        "title" : "",
+        "windowID" : 18
+      }
+    },
+    {
+      "dialog" : null,
+      "minSize" : 100,
+      "name" : "customMinRejects",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4635329916471083008,
+        "fWBits" : 4635329916471083008,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 22
+      }
+    },
+    {
+      "dialog" : {
+        "height" : 120,
+        "isSecure" : true,
+        "owner" : "SecurityAgent",
+        "title" : "",
+        "width" : 120,
+        "windowID" : 23
+      },
+      "minSize" : 100,
+      "name" : "customMinAccepts",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4638144666238189568,
+        "fWBits" : 4638144666238189568,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "",
+        "windowID" : 23
+      }
+    },
+    {
+      "dialog" : {
+        "height" : 200,
+        "isSecure" : true,
+        "owner" : "SecurityAgent",
+        "title" : "Authenticate · 認証 🔐",
+        "width" : 400,
+        "windowID" : 26
+      },
+      "minSize" : 60,
+      "name" : "unicodeTitle",
+      "window" : {
+        "bundleID" : "com.apple.SecurityAgent",
+        "fHBits" : 4641240890982006784,
+        "fWBits" : 4645744490609377280,
+        "isOnScreen" : true,
+        "ownerName" : "SecurityAgent",
+        "title" : "Authenticate · 認証 🔐",
+        "windowID" : 26
+      }
+    },
+    {
+      "dialog" : null,
+      "minSize" : 60,
+      "name" : "bothIdentifiersEmptyRejected",
+      "window" : {
+        "bundleID" : "",
+        "fHBits" : 4641240890982006784,
+        "fWBits" : 4645744490609377280,
+        "isOnScreen" : true,
+        "ownerName" : "",
+        "title" : "",
+        "windowID" : 21
+      }
+    }
+  ],
+  "systemDialogDetect" : [
+    {
+      "dialogs" : [
+        {
+          "height" : 312,
+          "isSecure" : true,
+          "owner" : "SecurityAgent",
+          "title" : "",
+          "width" : 260,
+          "windowID" : 1966
+        }
+      ],
+      "minSize" : 60,
+      "name" : "mixed",
+      "windows" : [
+        {
+          "bundleID" : "com.google.Chrome",
+          "fHBits" : 4647503709213818880,
+          "fWBits" : 4649368480934526976,
+          "isOnScreen" : true,
+          "ownerName" : "Google Chrome",
+          "title" : "",
+          "windowID" : 1
+        },
+        {
+          "bundleID" : "com.apple.SecurityAgent",
+          "fHBits" : 4644196378237468672,
+          "fWBits" : 4643281584563159040,
+          "isOnScreen" : true,
+          "ownerName" : "SecurityAgent",
+          "title" : "",
+          "windowID" : 1966
+        },
+        {
+          "bundleID" : "com.apple.SecurityAgent",
+          "fHBits" : 4647503709213818880,
+          "fWBits" : 4647503709213818880,
+          "isOnScreen" : false,
+          "ownerName" : "SecurityAgent",
+          "title" : "",
+          "windowID" : 1967
+        },
+        {
+          "bundleID" : "com.apple.finder",
+          "fHBits" : 4648488871632306176,
+          "fWBits" : 4651127699538968576,
+          "isOnScreen" : true,
+          "ownerName" : "Finder",
+          "title" : "",
+          "windowID" : 3
+        }
+      ]
+    },
+    {
+      "dialogs" : [
+
+      ],
+      "minSize" : 60,
+      "name" : "empty",
+      "windows" : [
+
+      ]
+    },
+    {
+      "dialogs" : [
+
+      ],
+      "minSize" : 60,
+      "name" : "allRejected",
+      "windows" : [
+        {
+          "bundleID" : "com.google.Chrome",
+          "fHBits" : 4647503709213818880,
+          "fWBits" : 4649368480934526976,
+          "isOnScreen" : true,
+          "ownerName" : "Google Chrome",
+          "title" : "",
+          "windowID" : 1
+        },
+        {
+          "bundleID" : "com.apple.finder",
+          "fHBits" : 4648488871632306176,
+          "fWBits" : 4651127699538968576,
+          "isOnScreen" : true,
+          "ownerName" : "Finder",
+          "title" : "",
+          "windowID" : 2
+        }
+      ]
+    },
+    {
+      "dialogs" : [
+        {
+          "height" : 200,
+          "isSecure" : true,
+          "owner" : "SecurityAgent",
+          "title" : "",
+          "width" : 400,
+          "windowID" : 30
+        },
+        {
+          "height" : 150,
+          "isSecure" : true,
+          "owner" : "coreauthd",
+          "title" : "",
+          "width" : 300,
+          "windowID" : 33
+        }
+      ],
+      "minSize" : 60,
+      "name" : "multipleAccepts",
+      "windows" : [
+        {
+          "bundleID" : "com.apple.SecurityAgent",
+          "fHBits" : 4641240890982006784,
+          "fWBits" : 4645744490609377280,
+          "isOnScreen" : true,
+          "ownerName" : "SecurityAgent",
+          "title" : "",
+          "windowID" : 30
+        },
+        {
+          "bundleID" : "com.google.Chrome",
+          "fHBits" : 4648488871632306176,
+          "fWBits" : 4650248090236747776,
+          "isOnScreen" : true,
+          "ownerName" : "Google Chrome",
+          "title" : "",
+          "windowID" : 31
+        },
+        {
+          "bundleID" : "com.apple.SecurityAgent",
+          "fHBits" : 4632233691727265792,
+          "fWBits" : 4632233691727265792,
+          "isOnScreen" : true,
+          "ownerName" : "SecurityAgent",
+          "title" : "",
+          "windowID" : 32
+        },
+        {
+          "bundleID" : "",
+          "fHBits" : 4639481672377565184,
+          "fWBits" : 4643985272004935680,
+          "isOnScreen" : true,
+          "ownerName" : "coreauthd",
+          "title" : "",
+          "windowID" : 33
+        }
+      ]
+    }
+  ],
   "terminalWireMessages" : [
     {
       "bytesHex" : "68656c6c6f",
@@ -1407,6 +2819,231 @@
     "wireTrendFlags" : 25601,
     "wireTrendMilli" : 140120
   },
+  "udpBackoff" : [
+    {
+      "backoffBits" : 0,
+      "n" : 0
+    },
+    {
+      "backoffBits" : 4572414629676717179,
+      "n" : 1
+    },
+    {
+      "backoffBits" : 4576918229304087675,
+      "n" : 2
+    },
+    {
+      "backoffBits" : 4581421828931458171,
+      "n" : 3
+    },
+    {
+      "backoffBits" : 4585925428558828667,
+      "n" : 4
+    },
+    {
+      "backoffBits" : 4590429028186199163,
+      "n" : 5
+    },
+    {
+      "backoffBits" : 4598175219545276416,
+      "n" : 8
+    },
+    {
+      "backoffBits" : 4598175219545276416,
+      "n" : 16
+    },
+    {
+      "backoffBits" : 4598175219545276416,
+      "n" : 17
+    },
+    {
+      "backoffBits" : 4598175219545276416,
+      "n" : 100
+    }
+  ],
+  "udpRearm" : [
+    {
+      "alive" : true,
+      "rearm" : true
+    },
+    {
+      "alive" : false,
+      "rearm" : false
+    }
+  ],
+  "vdChipPixelLimit" : [
+    {
+      "cpuBrand" : "Apple M1",
+      "limit" : 6144
+    },
+    {
+      "cpuBrand" : "Apple M1 Max",
+      "limit" : 7680
+    },
+    {
+      "cpuBrand" : "Apple M2 Pro",
+      "limit" : 7680
+    },
+    {
+      "cpuBrand" : "Apple M3",
+      "limit" : 6144
+    },
+    {
+      "cpuBrand" : "Apple M2 Ultra",
+      "limit" : 7680
+    },
+    {
+      "cpuBrand" : "Intel(R) Core(TM) i9",
+      "limit" : 7680
+    },
+    {
+      "cpuBrand" : "",
+      "limit" : 7680
+    },
+    {
+      "cpuBrand" : "apple mx",
+      "limit" : 6144
+    }
+  ],
+  "vdOriginToRight" : [
+    {
+      "displays" : [
+
+      ],
+      "name" : "empty",
+      "outXBits" : 0,
+      "outYBits" : 0
+    },
+    {
+      "displays" : [
+        {
+          "hBits" : 4652464705678344192,
+          "wBits" : 4656159064747671552,
+          "xBits" : 0,
+          "yBits" : 0
+        }
+      ],
+      "name" : "single",
+      "outXBits" : 4656159064747671552,
+      "outYBits" : 0
+    },
+    {
+      "displays" : [
+        {
+          "hBits" : 4652464705678344192,
+          "wBits" : 4656159064747671552,
+          "xBits" : 0,
+          "yBits" : 0
+        },
+        {
+          "hBits" : 4654048002422341632,
+          "wBits" : 4657847914607935488,
+          "xBits" : 4656159064747671552,
+          "yBits" : 0
+        }
+      ],
+      "name" : "multi",
+      "outXBits" : 4661647826793529344,
+      "outYBits" : 0
+    },
+    {
+      "displays" : [
+        {
+          "hBits" : 4652464705678344192,
+          "wBits" : 13864612927836782592,
+          "xBits" : 4652007308841189376,
+          "yBits" : 0
+        },
+        {
+          "hBits" : 4647503709213818880,
+          "wBits" : 4647503709213818880,
+          "xBits" : 0,
+          "yBits" : 0
+        }
+      ],
+      "name" : "negativeWidth",
+      "outXBits" : 4652007308841189376,
+      "outYBits" : 0
+    },
+    {
+      "displays" : [
+        {
+          "hBits" : 4651851178190045184,
+          "wBits" : 4654366860794396672,
+          "xBits" : 0,
+          "yBits" : 0
+        }
+      ],
+      "name" : "fractional",
+      "outXBits" : 4654366860794396672,
+      "outYBits" : 0
+    },
+    {
+      "displays" : [
+        {
+          "hBits" : 4652464705678344192,
+          "wBits" : 4656159064747671552,
+          "xBits" : 0,
+          "yBits" : 0
+        },
+        {
+          "hBits" : 4652464705678344192,
+          "wBits" : 4652007308841189376,
+          "xBits" : 4662219572839972864,
+          "yBits" : 0
+        },
+        {
+          "hBits" : 4652464705678344192,
+          "wBits" : 4650248090236747776,
+          "xBits" : 4656159064747671552,
+          "yBits" : 0
+        }
+      ],
+      "name" : "rightmostNotLast",
+      "outXBits" : 4663319084467748864,
+      "outYBits" : 0
+    }
+  ],
+  "vdRefreshRates" : [
+    {
+      "fps" : 30,
+      "ratesBits" : [
+        4633641066610819072,
+        4629137466983448576
+      ]
+    },
+    {
+      "fps" : 60,
+      "ratesBits" : [
+        4633641066610819072,
+        4629137466983448576
+      ]
+    },
+    {
+      "fps" : 90,
+      "ratesBits" : [
+        4636033603912859648,
+        4633641066610819072,
+        4629137466983448576
+      ]
+    },
+    {
+      "fps" : 120,
+      "ratesBits" : [
+        4638144666238189568,
+        4633641066610819072,
+        4629137466983448576
+      ]
+    },
+    {
+      "fps" : 144,
+      "ratesBits" : [
+        4639270566145032192,
+        4633641066610819072,
+        4629137466983448576
+      ]
+    }
+  ],
   "videoControl" : [
     {
       "hex" : "010007deadbeef40940000000000004089000000000000",
@@ -1503,6 +3140,210 @@
       "variant" : "systemDialogList"
     }
   ],
+  "virtualDisplayGeometry" : [
+    {
+      "exceedsPixelLimit" : false,
+      "maxHorizontalPixels" : 7680,
+      "mmHeightBits" : 4644628951744622164,
+      "mmWidthBits" : 4648474625199435851,
+      "pixelHeight" : 2160,
+      "pixelWidth" : 3840,
+      "pointHeight" : 1080,
+      "pointWidth" : 1920,
+      "ppiBits" : 4639939069214720000,
+      "scale" : 2
+    },
+    {
+      "exceedsPixelLimit" : false,
+      "maxHorizontalPixels" : 7680,
+      "mmHeightBits" : 4639138462858416454,
+      "mmWidthBits" : 4642099130634922097,
+      "pixelHeight" : 900,
+      "pixelWidth" : 1440,
+      "pointHeight" : 900,
+      "pointWidth" : 1440,
+      "ppiBits" : 4639939069214720000,
+      "scale" : 1
+    },
+    {
+      "exceedsPixelLimit" : false,
+      "maxHorizontalPixels" : 0,
+      "mmHeightBits" : 4594782323629686864,
+      "mmWidthBits" : 4594782323629686864,
+      "pixelHeight" : 1,
+      "pixelWidth" : 1,
+      "pointHeight" : -5,
+      "pointWidth" : 0,
+      "ppiBits" : 4639939069214720000,
+      "scale" : 0
+    },
+    {
+      "exceedsPixelLimit" : false,
+      "maxHorizontalPixels" : 7680,
+      "mmHeightBits" : 4649132551371992660,
+      "mmWidthBits" : 4652978224826806347,
+      "pixelHeight" : 4320,
+      "pixelWidth" : 7680,
+      "pointHeight" : 2160,
+      "pointWidth" : 3840,
+      "ppiBits" : 4639939069214720000,
+      "scale" : 2
+    },
+    {
+      "exceedsPixelLimit" : true,
+      "maxHorizontalPixels" : 7680,
+      "mmHeightBits" : 4649132551371992660,
+      "mmWidthBits" : 4652979595506332507,
+      "pixelHeight" : 4320,
+      "pixelWidth" : 7682,
+      "pointHeight" : 2160,
+      "pointWidth" : 3841,
+      "ppiBits" : 4639939069214720000,
+      "scale" : 2
+    },
+    {
+      "exceedsPixelLimit" : false,
+      "maxHorizontalPixels" : 6144,
+      "mmHeightBits" : 4648474625199435851,
+      "mmWidthBits" : 4651632670827708537,
+      "pixelHeight" : 3840,
+      "pixelWidth" : 6144,
+      "pointHeight" : 1920,
+      "pointWidth" : 3072,
+      "ppiBits" : 4639939069214720000,
+      "scale" : 2
+    },
+    {
+      "exceedsPixelLimit" : true,
+      "maxHorizontalPixels" : 6144,
+      "mmHeightBits" : 4648145662113157446,
+      "mmWidthBits" : 4651983564786405501,
+      "pixelHeight" : 3600,
+      "pixelWidth" : 6400,
+      "pointHeight" : 1800,
+      "pointWidth" : 3200,
+      "ppiBits" : 4639939069214720000,
+      "scale" : 2
+    },
+    {
+      "exceedsPixelLimit" : false,
+      "maxHorizontalPixels" : 7680,
+      "mmHeightBits" : 4644557177980343240,
+      "mmWidthBits" : 4648410826297854585,
+      "pixelHeight" : 2880,
+      "pixelWidth" : 5120,
+      "pointHeight" : 1440,
+      "pointWidth" : 2560,
+      "ppiBits" : 4641944578423783424,
+      "scale" : 2
+    },
+    {
+      "exceedsPixelLimit" : false,
+      "maxHorizontalPixels" : 7680,
+      "mmHeightBits" : 4649913838701903872,
+      "mmWidthBits" : 4653672702453394091,
+      "pixelHeight" : 2880,
+      "pixelWidth" : 5120,
+      "pointHeight" : 1440,
+      "pointWidth" : 2560,
+      "ppiBits" : 4636455816377925632,
+      "scale" : 2
+    },
+    {
+      "exceedsPixelLimit" : false,
+      "maxHorizontalPixels" : 7680,
+      "mmHeightBits" : 4677773264326492160,
+      "mmWidthBits" : 4681439036093497344,
+      "pixelHeight" : 2160,
+      "pixelWidth" : 3840,
+      "pointHeight" : 1080,
+      "pointWidth" : 1920,
+      "ppiBits" : 9221120237041090560,
+      "scale" : 2
+    }
+  ],
+  "windowFits" : [
+    {
+      "bH" : 4652464705678344192,
+      "bW" : 4656159064747671552,
+      "bX" : 4660662664375042048,
+      "bY" : 0,
+      "fits" : true,
+      "name" : "exact",
+      "sizeHBits" : 4652464705678344192,
+      "sizeWBits" : 4656159064747671552
+    },
+    {
+      "bH" : 4652464705678344192,
+      "bW" : 4656159064747671552,
+      "bX" : 4660662664375042048,
+      "bY" : 0,
+      "fits" : true,
+      "name" : "smaller",
+      "sizeHBits" : 4650248090236747776,
+      "sizeWBits" : 4652992471259676672
+    },
+    {
+      "bH" : 4652464705678344192,
+      "bW" : 4656159064747671552,
+      "bX" : 4660662664375042048,
+      "bY" : 0,
+      "fits" : true,
+      "name" : "withinTol",
+      "sizeHBits" : 4652464705678344192,
+      "sizeWBits" : 4656160823966275994
+    },
+    {
+      "bH" : 4652464705678344192,
+      "bW" : 4656159064747671552,
+      "bX" : 4660662664375042048,
+      "bY" : 0,
+      "fits" : false,
+      "name" : "widthOver",
+      "sizeHBits" : 4652464705678344192,
+      "sizeWBits" : 4656163462794182656
+    },
+    {
+      "bH" : 4652464705678344192,
+      "bW" : 4656159064747671552,
+      "bX" : 4660662664375042048,
+      "bY" : 0,
+      "fits" : false,
+      "name" : "heightOver",
+      "sizeHBits" : 4652992471259676672,
+      "sizeWBits" : 4656159064747671552
+    },
+    {
+      "bH" : 4651127699538968576,
+      "bW" : 4654048002422341632,
+      "bX" : 0,
+      "bY" : 0,
+      "fits" : true,
+      "name" : "bothAtTol",
+      "sizeHBits" : 4651132097585479680,
+      "sizeWBits" : 4654050201445597184
+    },
+    {
+      "bH" : 0,
+      "bW" : 0,
+      "bX" : 0,
+      "bY" : 0,
+      "fits" : true,
+      "name" : "zeroBoundsAtTol",
+      "sizeHBits" : 4602678819172646912,
+      "sizeWBits" : 4602678819172646912
+    },
+    {
+      "bH" : 13875836742533120000,
+      "bW" : 13879531101602447360,
+      "bX" : 0,
+      "bY" : 0,
+      "fits" : true,
+      "name" : "negativeSizeBounds",
+      "sizeHBits" : 4652464705678344192,
+      "sizeWBits" : 4656159064747671552
+    }
+  ],
   "windowGeometry" : [
     {
       "hex" : "0140240000000000004034000000000000",
@@ -1528,6 +3369,162 @@
       "hex" : "0468c3a96c6c6f20c2b720e7aa97e58fa3",
       "title" : "héllo · 窗口",
       "variant" : "title"
+    }
+  ],
+  "windowPlacement" : [
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 4660662664375042048,
+      "dY" : 0,
+      "name" : "smaller",
+      "needsResize" : false,
+      "outHeightBits" : 4650248090236747776,
+      "outOriginXBits" : 4660662664375042048,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 4652992471259676672,
+      "winHBits" : 4650248090236747776,
+      "winWBits" : 4652992471259676672
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "name" : "clampWidth",
+      "needsResize" : true,
+      "outHeightBits" : 4651127699538968576,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 4656159064747671552,
+      "winHBits" : 4651127699538968576,
+      "winWBits" : 4657496070887047168
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 4636737291354636288,
+      "dY" : 4632233691727265792,
+      "name" : "clampBoth",
+      "needsResize" : true,
+      "outHeightBits" : 4652464705678344192,
+      "outOriginXBits" : 4636737291354636288,
+      "outOriginYBits" : 4632233691727265792,
+      "outWidthBits" : 4656159064747671552,
+      "winHBits" : 4658815484840378368,
+      "winWBits" : 4661014508095930368
+    },
+    {
+      "dH" : 4652464705678344192,
+      "dW" : 4656159064747671552,
+      "dX" : 0,
+      "dY" : 0,
+      "name" : "exact",
+      "needsResize" : false,
+      "outHeightBits" : 4652464705678344192,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 4656159064747671552,
+      "winHBits" : 4652464705678344192,
+      "winWBits" : 4656159064747671552
+    },
+    {
+      "dH" : 4651127699538968576,
+      "dW" : 4654048002422341632,
+      "dX" : 0,
+      "dY" : 0,
+      "name" : "halfPtBoundary",
+      "needsResize" : false,
+      "outHeightBits" : 4651127699538968576,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 4654048002422341632,
+      "winHBits" : 4651127699538968576,
+      "winWBits" : 4654050201445597184
+    },
+    {
+      "dH" : 4651127699538968576,
+      "dW" : 4654048002422341632,
+      "dX" : 0,
+      "dY" : 0,
+      "name" : "halfPtPlusEps",
+      "needsResize" : true,
+      "outHeightBits" : 4651127699538968576,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 4654048002422341632,
+      "winHBits" : 4651127699538968576,
+      "winWBits" : 4654050641250248294
+    },
+    {
+      "dH" : 4651127699538968576,
+      "dW" : 4654048002422341632,
+      "dX" : 13877420039277117440,
+      "dY" : 4643985272004935680,
+      "name" : "negativeOrigin",
+      "needsResize" : false,
+      "outHeightBits" : 4648488871632306176,
+      "outOriginXBits" : 13877420039277117440,
+      "outOriginYBits" : 4643985272004935680,
+      "outWidthBits" : 4650248090236747776,
+      "winHBits" : 4648488871632306176,
+      "winWBits" : 4650248090236747776
+    },
+    {
+      "dH" : 0,
+      "dW" : 0,
+      "dX" : 0,
+      "dY" : 0,
+      "name" : "zeroAreaDisplay",
+      "needsResize" : true,
+      "outHeightBits" : 0,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 0,
+      "winHBits" : 4648488871632306176,
+      "winWBits" : 4650248090236747776
+    },
+    {
+      "dH" : 13874499736393744384,
+      "dW" : 13877420039277117440,
+      "dX" : 4636737291354636288,
+      "dY" : 4641240890982006784,
+      "name" : "negativeSizeDisplay",
+      "needsResize" : true,
+      "outHeightBits" : 4651127699538968576,
+      "outOriginXBits" : 4636737291354636288,
+      "outOriginYBits" : 4641240890982006784,
+      "outWidthBits" : 4654048002422341632,
+      "winHBits" : 4654311885213007872,
+      "winWBits" : 4656510908468559872
+    },
+    {
+      "dH" : 4651127699538968576,
+      "dW" : 4654048002422341632,
+      "dX" : 0,
+      "dY" : 0,
+      "name" : "negativeWindowWidth",
+      "needsResize" : false,
+      "outHeightBits" : 4648488871632306176,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 0,
+      "outWidthBits" : 13860109328209412096,
+      "winHBits" : 4648488871632306176,
+      "winWBits" : 13860109328209412096
+    },
+    {
+      "dH" : 4649368480934526976,
+      "dW" : 4652007308841189376,
+      "dX" : 0,
+      "dY" : 4627730092099895296,
+      "name" : "fractionalPerAxis",
+      "needsResize" : true,
+      "outHeightBits" : 4649368480934526976,
+      "outOriginXBits" : 0,
+      "outOriginYBits" : 4627730092099895296,
+      "outWidthBits" : 4652007308841189376,
+      "winHBits" : 4649814882655404032,
+      "winWBits" : 4652009507864444928
     }
   ],
   "ycbcr" : [
