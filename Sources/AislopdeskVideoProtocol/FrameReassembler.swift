@@ -417,7 +417,7 @@ public struct FrameReassembler {
         return true
     }
 
-    private mutating func retire(_ frameID: UInt32, completed: Bool) {
+    private mutating func retire(_ frameID: UInt32, completed _: Bool) {
         pending[frameID] = nil
         retired.insert(frameID)
         if let high = highestRetiredFrameID {

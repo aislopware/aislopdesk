@@ -28,7 +28,7 @@ public enum HostEnvironment {
     ///   (`xterm-ghostty`), matching what the libghostty client renders.
     public static func curated(
         parent: [String: String] = ProcessInfo.processInfo.environment,
-        term: String = HostEnvironment.defaultTerm,
+        term: String = Self.defaultTerm,
     )
         -> [String: String]
     {

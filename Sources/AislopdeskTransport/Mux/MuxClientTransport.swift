@@ -42,6 +42,7 @@ public actor MuxClientTransport: ClientTransporting {
     private var connectedPort: UInt16?
     private var forwarders: [Task<Void, Never>] = []
 
+    @preconcurrency
     public init(
         acquire: @escaping @Sendable (String, UInt16, UUID, Int64) async throws -> MuxAcquisition,
         release: @escaping @Sendable (String, UInt16, UInt32) async -> Void,
@@ -60,7 +61,7 @@ public actor MuxClientTransport: ClientTransporting {
         port: UInt16,
         resume: UUID,
         lastReceivedSeq: Int64,
-        handshakeTimeout: Duration,
+        handshakeTimeout _: Duration,
     ) async throws {
         let id = resume == WireMessage.newSessionID ? UUID() : resume
         let acquisition = try await acquire(host, port, id, lastReceivedSeq)

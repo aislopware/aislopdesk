@@ -9,6 +9,7 @@ import Foundation
 ///
 /// `@MainActor` + `@Observable` so SwiftUI tracks changes automatically. It is built
 /// in the library target and compiles on macOS + iOS.
+@preconcurrency
 @MainActor
 @Observable
 public final class InspectorViewModel {
@@ -263,11 +264,11 @@ public final class InspectorViewModel {
 public struct SubagentTreeNode: Identifiable, Sendable, Equatable {
     public var node: SubagentNode
     public var cards: [ToolCard]
-    public var children: [SubagentTreeNode]
+    public var children: [Self]
 
     public var id: String { node.id }
 
-    public init(node: SubagentNode, cards: [ToolCard], children: [SubagentTreeNode]) {
+    public init(node: SubagentNode, cards: [ToolCard], children: [Self]) {
         self.node = node
         self.cards = cards
         self.children = children

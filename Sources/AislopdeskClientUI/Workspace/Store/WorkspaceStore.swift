@@ -25,6 +25,7 @@ import Network
 /// Sessions are built through the injected `makeSession` factory — NOT a fake `AislopdeskClient` (which is
 /// impossible) and NEVER a real `HostServer` (forbidden, pool deadlock). Tests inject a
 /// `FakePaneSession`; production injects ``LivePaneSession/make(_:makeClient:makeInspector:)``.
+@preconcurrency
 @MainActor
 @Observable
 public final class WorkspaceStore {
@@ -227,6 +228,7 @@ public final class WorkspaceStore {
     ///     default) ⇒ no disk writes, so the pure/fake test seam never touches the filesystem; the app
     ///     passes a real ``WorkspacePersistence``.
     ///   - saveDebounce: the mutation-coalescing window before a write (default 600ms).
+    @preconcurrency
     public init(
         restoring: Workspace? = nil,
         makeSession: @escaping @MainActor (PaneSpec) -> any PaneSessionHandle,
@@ -2484,6 +2486,7 @@ public extension WorkspaceStore {
 ///
 /// Commands that act on "the focused pane" read it from the store's current `workspace.focusedPane`;
 /// a command with no valid target (no focused pane) is a graceful no-op.
+@preconcurrency
 @MainActor
 public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
     // Record action verbs into the palette recents from the ONE chokepoint every path funnels through

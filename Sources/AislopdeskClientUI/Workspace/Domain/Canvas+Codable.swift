@@ -121,7 +121,7 @@ public extension Canvas {
         // `dedupingItemIDs`, since the registry is keyed 1:1 by PaneID.)
         let sanitized = rawItems.map { item -> CanvasItem in
             var copy = item
-            copy.frame = Canvas.sanitize(item.frame)
+            copy.frame = Self.sanitize(item.frame)
             return copy
         }
         self.init(items: sanitized, camera: camera)

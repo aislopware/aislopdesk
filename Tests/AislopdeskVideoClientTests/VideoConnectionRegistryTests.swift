@@ -21,14 +21,14 @@ final class VideoConnectionRegistryTests: XCTestCase {
         func startIfNeeded() { lock.withLock { startCount += 1 } }
         func registerLane(
             channelID: UInt32,
-            onMedia: @escaping @Sendable (VideoChannel, Data) -> Void,
-            onCursor: @escaping @Sendable (Data) -> Void,
+            onMedia _: @Sendable (VideoChannel, Data) -> Void,
+            onCursor _: @Sendable (Data) -> Void,
         ) {
             lock.withLock { _ = lanes.insert(channelID) }
         }
 
         func unregisterLane(channelID: UInt32) { lock.withLock { _ = lanes.remove(channelID) } }
-        func send(_ datagram: Data, on channel: VideoChannel, channelID: UInt32) { lock.withLock { sends.append((
+        func send(_: Data, on channel: VideoChannel, channelID: UInt32) { lock.withLock { sends.append((
             channel,
             channelID,
         )) } }

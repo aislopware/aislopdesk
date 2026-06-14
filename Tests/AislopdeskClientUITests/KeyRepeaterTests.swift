@@ -191,7 +191,7 @@ final class KeyRepeaterTests: XCTestCase {
         struct IdKey: Hashable {
             let identity: String
             let payload: String
-            static func == (a: IdKey, b: IdKey) -> Bool { a.identity == b.identity }
+            static func == (a: Self, b: Self) -> Bool { a.identity == b.identity }
             func hash(into h: inout Hasher) { h.combine(identity) }
         }
         let scheduler = ManualRepeatScheduler()

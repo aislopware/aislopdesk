@@ -17,8 +17,8 @@ import AppKit
 /// ``CanvasView``'s `PanView` so panning over a pane feels identical to panning empty space.
 struct ScrollPanForwarder: NSViewRepresentable {
     let store: WorkspaceStore
-    func makeNSView(context: Context) -> NSView { ForwardingView(store: store) }
-    func updateNSView(_ nsView: NSView, context: Context) { (nsView as? ForwardingView)?.store = store }
+    func makeNSView(context _: Context) -> NSView { ForwardingView(store: store) }
+    func updateNSView(_ nsView: NSView, context _: Context) { (nsView as? ForwardingView)?.store = store }
 
     final class ForwardingView: NSView {
         weak var store: WorkspaceStore?
@@ -27,7 +27,7 @@ struct ScrollPanForwarder: NSViewRepresentable {
         }
 
         @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("not used") }
+        required init?(coder _: NSCoder) { fatalError("not used") }
         override func scrollWheel(with event: NSEvent) {
             let dx: CGFloat, dy: CGFloat
             if event.hasPreciseScrollingDeltas { dx = event.scrollingDeltaX

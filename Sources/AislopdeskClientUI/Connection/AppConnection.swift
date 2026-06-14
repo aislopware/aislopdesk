@@ -12,6 +12,7 @@ import Foundation
 /// gate ("reconnecting…") and retries with backoff until it is back (or gives up to `.unreachable`, with a
 /// manual Retry). The per-pane ``ConnectionViewModel`` still re-opens each channel on the rebuilt mux —
 /// the two cooperate via the registry's dead-eviction single-flight, so the mux is rebuilt exactly once.
+@preconcurrency
 @MainActor
 @Observable
 public final class AppConnection {
@@ -170,7 +171,7 @@ public final class AppConnection {
 
     /// The shared establish path used by ``connect()`` and ``resume()``: unpin a stale endpoint, pin the
     /// new one, and (on success) start the supervisor. Guarded by `gen`/`deliberatelyClosed`.
-    private func establish(_ t: ConnectionTarget, generation gen: Int, isRetry: Bool) async {
+    private func establish(_ t: ConnectionTarget, generation gen: Int, isRetry _: Bool) async {
         // Host changed since the last pin → release the old shared connection first.
         if let prev = pinnedTarget, prev.host != t.host || prev.port != t.port {
             await registry.unpin(host: prev.host, port: prev.port)

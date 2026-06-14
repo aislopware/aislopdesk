@@ -15,7 +15,7 @@ final class VideoMuxSessionRegistryTests: XCTestCase {
     /// A registry whose mint factory FAILS the test if ever called from a `decide`-only path.
     private func makeRegistry(_ table: VideoMuxSinkTable = VideoMuxSinkTable()) -> VideoMuxSessionRegistry {
         VideoMuxSessionRegistry(sinkTable: table) { _, _ in
-            throw VideoMuxSessionRegistryTests.MintNotExpected()
+            throw Self.MintNotExpected()
         }
     }
 

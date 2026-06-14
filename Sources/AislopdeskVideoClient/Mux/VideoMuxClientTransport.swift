@@ -29,6 +29,7 @@ public final class VideoMuxClientTransport: VideoClientTransport, @unchecked Sen
     private var flow: VideoMuxClientFlowing?
     private var channelID: UInt32?
 
+    @preconcurrency
     public init(
         host: String,
         mediaPort: UInt16,
@@ -43,10 +44,11 @@ public final class VideoMuxClientTransport: VideoClientTransport, @unchecked Sen
         self.release = release
     }
 
+    @preconcurrency
     public func start(
         onMedia: @escaping @Sendable (VideoChannel, Data) -> Void,
         onCursor: @escaping @Sendable (Data) -> Void,
-    ) async throws {
+    ) async {
         let acquisition = await acquire()
         stateLock.withLock {
             flow = acquisition.flow

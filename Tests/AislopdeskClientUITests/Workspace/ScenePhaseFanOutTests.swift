@@ -95,7 +95,8 @@ final class ScenePhaseFanOutTests: XCTestCase {
         // exactly the store's contract (the LivePaneSession internally fans that to connection+inspector).
         let (store, fakes) = makeMultiPaneStore()
         guard let claude = fakes.first(where: { $0.kind == .claudeCode }) else {
-            return XCTFail("expected a claudeCode pane in the fixture")
+            XCTFail("expected a claudeCode pane in the fixture")
+            return
         }
 
         await store.pauseAll()
@@ -173,7 +174,8 @@ final class ScenePhaseFanOutTests: XCTestCase {
         let gate = ContinuationGate()
         let store = WorkspaceStore(makeSession: { GatedFakePaneSession($0, gate: gate) }, liveVideoCap: 2)
         guard let gated = store.allSessions.first as? GatedFakePaneSession else {
-            return XCTFail("expected the single gated session")
+            XCTFail("expected the single gated session")
+            return
         }
 
         // Launch pauseAll on a child task; it should suspend inside the gated pause().
@@ -205,7 +207,8 @@ final class ScenePhaseFanOutTests: XCTestCase {
         let gate = ContinuationGate()
         let store = WorkspaceStore(makeSession: { GatedFakePaneSession($0, gate: gate) }, liveVideoCap: 2)
         guard let gated = store.allSessions.first as? GatedFakePaneSession else {
-            return XCTFail("expected the single gated session")
+            XCTFail("expected the single gated session")
+            return
         }
 
         let resumeAllFinished = Flag()
@@ -401,7 +404,7 @@ private final class GatedFakePaneSession: @MainActor PaneSessionHandle, @MainAct
         resumeCount += 1
     }
 
-    func teardown() async {
+    func teardown() {
         teardownCount += 1
     }
 }

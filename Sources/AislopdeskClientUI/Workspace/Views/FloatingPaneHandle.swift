@@ -171,9 +171,10 @@ struct FloatingPaneHandle: View {
             .animation(.easeOut(duration: 0.12), value: hovering)
             // The latch: engage past 110ms, release under 90ms; drop instantly when not connected.
             .onChange(of: latency ?? 0) { _, ms in
-                if status.phase != .connected { laggyLatched = false }
-                else if !laggyLatched, ms > 110 { laggyLatched = true }
-                else if laggyLatched, ms < 90 { laggyLatched = false }
+                if status.phase != .connected { laggyLatched = false } else if !laggyLatched,
+                                                                               ms > 110 { laggyLatched = true }
+                else if laggyLatched,
+                        ms < 90 { laggyLatched = false }
             }
             .onHover { inside in
                 hovering = inside

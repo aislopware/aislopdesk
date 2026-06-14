@@ -54,6 +54,7 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
         return clock
     }
 
+    @preconcurrency
     public func schedule(after delay: Duration, _ work: @escaping @Sendable () -> Void) -> RepeatSchedulerHandle {
         lock.lock()
         defer { lock.unlock() }
@@ -62,6 +63,7 @@ public final class ManualRepeatScheduler: RepeatScheduler, @unchecked Sendable {
         return Handle(item: item, lock: lock)
     }
 
+    @preconcurrency
     public func scheduleRepeating(
         every interval: Duration,
         _ work: @escaping @Sendable () -> Void,

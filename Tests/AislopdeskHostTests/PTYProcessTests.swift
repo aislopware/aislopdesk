@@ -77,7 +77,7 @@ final class PTYProcessTests: XCTestCase {
 
         // Cooked-mode line discipline echoes and the shell evaluates the command.
         let cmd = "echo HELLO_$((1+1))\n"
-        PTYProcessTests.write(pty.masterFD, cmd)
+        Self.write(pty.masterFD, cmd)
 
         let output = readUntil(fd: pty.masterFD, needle: "HELLO_2")
         XCTAssertTrue(output.contains("HELLO_2"), "expected 'HELLO_2', got: \(output)")
@@ -170,7 +170,7 @@ final class PTYProcessTests: XCTestCase {
         // (1) Controlling terminal: `tty </dev/tty` only resolves (to the alias `/dev/tty`) if the
         // slave is genuinely this session's controlling terminal — the WF10 defect made `/dev/tty`
         // report "Device not configured"/"not a tty" for interactive zsh.
-        PTYProcessTests.write(pty.masterFD, "tty </dev/tty\n")
+        Self.write(pty.masterFD, "tty </dev/tty\n")
         let ttyOut = readUntil(fd: pty.masterFD, needle: "/dev/tty", timeout: 5.0)
         XCTAssertTrue(
             ttyOut.contains("/dev/tty"),
@@ -191,7 +191,7 @@ final class PTYProcessTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.3)
         pty.setWindowSize(cols: 132, rows: 40)
         Thread.sleep(forTimeInterval: 0.3)
-        PTYProcessTests.write(pty.masterFD, "print -r -- AISLOPDESK_COLS=$COLUMNS\n")
+        Self.write(pty.masterFD, "print -r -- AISLOPDESK_COLS=$COLUMNS\n")
         let colsOut = readUntil(fd: pty.masterFD, needle: "AISLOPDESK_COLS=132", timeout: 5.0)
         XCTAssertTrue(
             colsOut.contains("AISLOPDESK_COLS=132"),
@@ -205,12 +205,12 @@ final class PTYProcessTests: XCTestCase {
         try pty.spawn("/bin/sh", environment: curatedEnv(), cols: 80, rows: 24)
 
         pty.setWindowSize(cols: 80, rows: 24)
-        PTYProcessTests.write(pty.masterFD, "stty size\n")
+        Self.write(pty.masterFD, "stty size\n")
         let first = readUntil(fd: pty.masterFD, needle: "24 80")
         XCTAssertTrue(first.contains("24 80"), "expected '24 80', got: \(first)")
 
         pty.setWindowSize(cols: 120, rows: 40)
-        PTYProcessTests.write(pty.masterFD, "stty size\n")
+        Self.write(pty.masterFD, "stty size\n")
         let second = readUntil(fd: pty.masterFD, needle: "40 120")
         XCTAssertTrue(second.contains("40 120"), "expected '40 120' after resize, got: \(second)")
 
@@ -271,7 +271,7 @@ final class PTYProcessTests: XCTestCase {
         // The PTY's APPLIED winsize must converge to the FINAL size (120x40) — NOT any intermediate
         // (80x24 … 110x36). If the debounce dropped the trailing size, or applied an intermediate
         // last, this poll never reaches 120x40 and XCTFails at the deadline (bounded, never hangs).
-        let final = PTYProcessTests.pollWindowSize(fd: pty.masterFD, untilCols: 120, rows: 40)
+        let final = Self.pollWindowSize(fd: pty.masterFD, untilCols: 120, rows: 40)
         XCTAssertEqual(
             final.cols,
             120,
@@ -311,7 +311,7 @@ final class PTYProcessTests: XCTestCase {
         }
         wait(for: [exp], timeout: 5)
 
-        let final = PTYProcessTests.pollWindowSize(fd: pty.masterFD, untilCols: 132, rows: 50)
+        let final = Self.pollWindowSize(fd: pty.masterFD, untilCols: 132, rows: 50)
         XCTAssertEqual(
             final.cols,
             132,
@@ -362,7 +362,7 @@ final class PTYProcessTests: XCTestCase {
         // is ~0 (we allow tiny slack for transient runtime fds, but a per-spawn leak would
         // show ~N).
         let n = 40
-        let before = PTYProcessTests.openFDCount()
+        let before = Self.openFDCount()
         for _ in 0..<n {
             let pty = PTYProcess()
             try pty.spawn("/bin/sh", arguments: ["-c", "printf hi; exit 0"], environment: curatedEnv())
@@ -381,7 +381,7 @@ final class PTYProcessTests: XCTestCase {
         }
         // Give any in-flight teardown a beat to release fds.
         Thread.sleep(forTimeInterval: 0.2)
-        let after = PTYProcessTests.openFDCount()
+        let after = Self.openFDCount()
         let delta = after - before
         XCTAssertLessThan(
             delta, n / 2,
@@ -534,7 +534,7 @@ final class PTYProcessTests: XCTestCase {
     /// round-trip: it asserts the size the HOST applied (TIOCSWINSZ) directly — no shell, no DATA
     /// sub-channel, so neither the unbounded-read hang nor the CONTROL-vs-DATA ordering race can occur.
     /// A `read()` is never issued, so the kernel can never block us; the loop is guaranteed to return.
-    static func pollWindowSize(
+    private static func pollWindowSize(
         fd: Int32, untilCols cols: UInt16, rows: UInt16, maxIterations: Int = 400, step: TimeInterval = 0.005,
     ) -> (cols: UInt16, rows: UInt16) {
         var ws = winsize()
@@ -550,7 +550,7 @@ final class PTYProcessTests: XCTestCase {
 
     /// Counts the process's currently-open file descriptors by listing `/dev/fd`
     /// (macOS exposes one entry per open fd). Used by the fd-leak regression test.
-    static func openFDCount() -> Int {
+    private static func openFDCount() -> Int {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: "/dev/fd") else { return -1 }
         return entries.count
@@ -567,7 +567,7 @@ final class PTYProcessTests: XCTestCase {
     /// the reaper reaps the child; only THEN is `close()` non-blocking. Bounded: `waitForExit` is awaited under
     /// a hard 5s `expectation` ceiling so a stuck child fails the test instead of hanging the suite.
     private func drainExitAndShutdown(_ session: MuxChannelSession, pty: PTYProcess) {
-        PTYProcessTests.write(pty.masterFD, "exit\n")
+        Self.write(pty.masterFD, "exit\n")
         let exited = expectation(description: "child-exit")
         Task {
             _ = await pty.waitForExit()
@@ -577,7 +577,7 @@ final class PTYProcessTests: XCTestCase {
         session.shutdown() // now safe: reader at EOF + child reaped → close() does not block.
     }
 
-    static func write(_ fd: Int32, _ string: String) {
+    private static func write(_ fd: Int32, _ string: String) {
         let data = Array(string.utf8)
         var offset = 0
         while offset < data.count {

@@ -34,6 +34,7 @@ import UIKit
 /// the macOS build + tests are unaffected; the actual `becomeFirstResponder`/`resignFirstResponder`
 /// calls are gated `#if os(iOS)`. The pure generation logic in ``FocusGenerationGuard`` is shared
 /// and unit-tested on macOS.
+@preconcurrency
 @MainActor
 public final class PaneFocusCoordinator {
     /// The thing the coordinator drives: one pane's first-responder surface. On iOS this is
@@ -45,6 +46,7 @@ public final class PaneFocusCoordinator {
     /// `becomeFocus()` must claim it. Implementations return the actual result so the coordinator
     /// can keep its bookkeeping honest (a `become` that UIKit refuses leaves no host marked
     /// focused).
+    @preconcurrency
     @MainActor
     public protocol FocusableInputHost: AnyObject {
         /// Resign first-responder status immediately. Returns whether the resign took effect.

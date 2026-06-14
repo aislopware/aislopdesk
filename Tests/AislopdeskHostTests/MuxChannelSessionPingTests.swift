@@ -18,7 +18,7 @@ final class MuxChannelSessionPingTests: XCTestCase {
                 lock.lock()
                 defer { lock.unlock() }
                 decoder.append(inner)
-                while let m = (try? decoder.nextMessage()) ?? nil { messages.append(m) }
+                while let m = (try? decoder.nextMessage()) { messages.append(m) }
             }
 
             var all: [WireMessage] { lock.lock()

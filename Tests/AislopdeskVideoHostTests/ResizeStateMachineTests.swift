@@ -108,7 +108,9 @@ final class ResizeStateMachineTests: XCTestCase {
             resolveResizeSize: resolveResize,
         )
         guard case let .sendControl(.helloAck(_, streamID, _, _, _, _)) = reconnect[0]
-        else { return XCTFail("expected reconnect ack") }
+        else { XCTFail("expected reconnect ack")
+            return
+        }
         XCTAssertEqual(streamID, 8, "the resize between hello and bye did NOT consume a streamID")
     }
 

@@ -17,5 +17,5 @@ public struct SolvedLayout: Sendable, Equatable {
     }
 
     /// Empty layout (no panes) — the degenerate base case.
-    public static let empty = SolvedLayout(frames: [:])
+    public static let empty = Self(frames: [:])
 }

@@ -25,6 +25,7 @@ import simd
 ///
 /// `@MainActor`-isolated: it owns + presents to a `CAMetalLayer`, which is main-thread
 /// state. The frame pacer renders through a main-actor hop each vsync.
+@preconcurrency
 @MainActor
 public final class MetalVideoRenderer {
     private let log = Logger(subsystem: "aislopdesk.video.client", category: "MetalVideoRenderer")

@@ -695,7 +695,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     // MARK: SCStreamOutput
 
     public func stream(
-        _ stream: SCStream,
+        _: SCStream,
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType,
     ) {
@@ -925,7 +925,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
 
     // MARK: SCStreamDelegate
 
-    public func stream(_ stream: SCStream, didStopWithError error: Error) {
+    public func stream(_: SCStream, didStopWithError error: Error) {
         log.error("SCStream stopped with error: \(error.localizedDescription)")
     }
 

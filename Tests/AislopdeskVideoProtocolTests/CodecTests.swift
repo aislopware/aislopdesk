@@ -286,7 +286,9 @@ final class CodecTests: XCTestCase {
             let message = RecoveryMessage.ack(streamSeq: frameID)
             let decoded = try RecoveryMessage.decode(message.encode())
             XCTAssertEqual(decoded, message)
-            guard case let .ack(got) = decoded else { return XCTFail("expected ack") }
+            guard case let .ack(got) = decoded else { XCTFail("expected ack")
+                return
+            }
             XCTAssertEqual(got, frameID)
         }
     }

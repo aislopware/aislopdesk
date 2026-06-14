@@ -186,8 +186,7 @@ public struct HIDKeyboardState: Equatable, Sendable {
         }
         guard let usage = VirtualHIDKeyboard.hidUsage(forVirtualKey: vk) else { return nil }
         let changed: Bool =
-            if down { pressed.insert(usage).inserted }
-            else { pressed.remove(usage) != nil }
+            if down { pressed.insert(usage).inserted } else { pressed.remove(usage) != nil }
         // Always emit when a regular key toggles; also re-emit if only the modifier byte differs is
         // handled by the caller sending the modifier event. A no-op repeat (autorepeat down on an
         // already-pressed key) still re-emits so the host sees the key held.

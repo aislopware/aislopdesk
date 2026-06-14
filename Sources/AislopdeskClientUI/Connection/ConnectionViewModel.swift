@@ -14,6 +14,7 @@ import Foundation
 ///
 /// `@MainActor @Observable`: bound directly to ``ConnectionView``. The terminal byte handling
 /// is delegated to the injected ``TerminalViewModel`` (one source of truth for live state).
+@preconcurrency
 @MainActor
 @Observable
 public final class ConnectionViewModel {
@@ -205,6 +206,7 @@ public final class ConnectionViewModel {
     private var outWakeContinuation: AsyncStream<Void>.Continuation?
     private var outDrainTask: Task<Void, Never>?
 
+    @preconcurrency
     public init(
         terminal: TerminalViewModel,
         target: @escaping @MainActor () -> ConnectionTarget = { .default },

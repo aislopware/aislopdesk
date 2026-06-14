@@ -117,7 +117,7 @@ public final class PTYProcess: @unchecked Sendable {
         // setBlocking(true): clear O_NONBLOCK on the master before spawn (Happy #301).
         // The slave is already open (openpty opened it), so this never hits the
         // posix_openpt EINVAL caveat from [12] §1.1.
-        PTYProcess.setBlocking(master)
+        Self.setBlocking(master)
 
         // --- Build ALL C strings in the PARENT, before fork() ---
         // The forked child must do NO Swift-runtime work (no allocation/ARC) before execve,
@@ -152,7 +152,7 @@ public final class PTYProcess: @unchecked Sendable {
         // Swift-runtime work before `execve` (only `login_tty`/`close`/`execve`/`_exit`), so
         // running in a forked child is safe here (the `DECISIONS.md` forkpty caveat is about
         // running the Swift/ObjC runtime in the child, which we do not).
-        let childPID = PTYProcess.rawFork()
+        let childPID = Self.rawFork()
         if childPID == 0 {
             // ===== CHILD: raw syscalls only, no Swift runtime. =====
             // login_tty(slave) atomically: setsid(); ioctl(slave, TIOCSCTTY, 0);

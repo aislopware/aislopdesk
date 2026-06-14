@@ -64,7 +64,9 @@ final class AppConnectionTests: XCTestCase {
 
         await c.connect()
 
-        guard case .failed = c.status else { return XCTFail("expected .failed, got \(c.status)") }
+        guard case .failed = c.status else { XCTFail("expected .failed, got \(c.status)")
+            return
+        }
         XCTAssertEqual(
             c.target,
             ConnectionTarget(host: "10.0.0.5", port: 7420, mediaPort: 9000, cursorPort: 9001),

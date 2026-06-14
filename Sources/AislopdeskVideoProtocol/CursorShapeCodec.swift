@@ -62,7 +62,7 @@ public struct CursorShapeMessage: Equatable, Sendable {
         return out
     }
 
-    public static func decode(_ data: Data) throws -> CursorShapeMessage {
+    public static func decode(_ data: Data) throws -> Self {
         var reader = VideoByteReader(data)
         let type = try reader.readUInt8()
         guard type == messageType else {
@@ -75,7 +75,7 @@ public struct CursorShapeMessage: Equatable, Sendable {
         let hy = try reader.readFiniteFloat64("cursorShape.hotspot.y")
         let bitmapLength = try reader.readUInt32()
         let bitmap = try reader.readBytes(Int(bitmapLength))
-        return CursorShapeMessage(
+        return Self(
             shapeID: shapeID,
             size: VideoSize(width: Double(width), height: Double(height)),
             hotspot: VideoPoint(x: hx, y: hy),
@@ -101,7 +101,7 @@ public enum CursorChannelMessage: Equatable, Sendable {
     }
 
     /// Routes a received cursor datagram by its leading type byte.
-    public static func decode(_ data: Data) throws -> CursorChannelMessage {
+    public static func decode(_ data: Data) throws -> Self {
         guard let first = data.first else { throw VideoProtocolError.truncated }
         switch first {
         case CursorUpdate.messageType: return try .update(CursorUpdate.decode(data))

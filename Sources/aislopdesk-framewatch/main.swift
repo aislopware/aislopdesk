@@ -62,7 +62,7 @@ final class Collector: NSObject, SCStreamOutput, @unchecked Sendable {
     private(set) var arrivals: [Double] = []
     private(set) var checksums: [UInt64] = []
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+    func stream(_: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid,
               let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         // SCK also delivers idle/status frames — only count COMPLETE content frames.
@@ -149,7 +149,7 @@ final class LumaFlipDetector: NSObject, SCStreamOutput, @unchecked Sendable {
     let label: String
     init(label: String) { self.label = label }
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+    func stream(_: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid,
               let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         if let infos = CMSampleBufferGetSampleAttachmentsArray(
@@ -268,7 +268,7 @@ Task {
             // (SCK filter-kind A/B). e.g. --title-a "FLASHER@display" --title-b "FLASHER".
             func resolve(_ q: String) -> (SCWindow, SCDisplay?)? {
                 var qEff = q
-                var disp: SCDisplay? = nil
+                var disp: SCDisplay?
                 if q.hasSuffix("@display") {
                     qEff = String(q.dropLast("@display".count))
                     guard let w = findWindow(content, query: qEff) else { return nil }
@@ -302,7 +302,7 @@ Task {
             // A) reads as negative latency instead of zero pairs.
             var lats: [Double] = []
             for a in fa {
-                var best: Double? = nil
+                var best: Double?
                 for b in fb where b.toLight == a.toLight {
                     let d = (b.time - a.time) * 1000
                     if abs(d) < 450, abs(d) < abs(best ?? .infinity) { best = d }

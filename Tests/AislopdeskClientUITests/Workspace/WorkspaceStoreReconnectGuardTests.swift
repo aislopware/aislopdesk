@@ -26,7 +26,8 @@ final class WorkspaceStoreReconnectGuardTests: XCTestCase {
         let victim = leafIDs(store).first { $0 != original } ?? leafIDs(store)[1]
 
         guard let handle = store.handle(for: victim) else {
-            return XCTFail("victim pane should be registered after split")
+            XCTFail("victim pane should be registered after split")
+            return
         }
         XCTAssertTrue(store.paneStillRegistered(victim, as: handle), "a live pane is still registered")
 
@@ -49,7 +50,8 @@ final class WorkspaceStoreReconnectGuardTests: XCTestCase {
         let id1 = try XCTUnwrap(leafIDs(store).first { $0 != id0 })
 
         guard let h0 = store.handle(for: id0), let h1 = store.handle(for: id1) else {
-            return XCTFail("both panes registered after split")
+            XCTFail("both panes registered after split")
+            return
         }
         XCTAssertTrue(store.paneStillRegistered(id0, as: h0), "matching handle for its own id")
         XCTAssertFalse(

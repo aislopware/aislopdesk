@@ -27,7 +27,9 @@ final class RemoteWindowModelTests: XCTestCase {
     func testOpenBuildsDescriptorFromAppTarget() {
         let m = RemoteWindowModel(target: { self.target }, windowID: "42", title: "Safari")
         m.open()
-        guard let d = m.active else { return XCTFail("open() should set active") }
+        guard let d = m.active else { XCTFail("open() should set active")
+            return
+        }
         XCTAssertEqual(d.windowID, 42)
         XCTAssertEqual(d.host, "h.local", "host comes from the app target")
         XCTAssertEqual(d.mediaPort, 9000)

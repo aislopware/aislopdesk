@@ -75,7 +75,7 @@ public enum CanvasSnap {
         }
 
         /// Everything off — the escape hatch for the "hold ⌘ to drag freely" modifier.
-        public static let disabled = Config(snapsToPanes: false, snapsToGrid: false)
+        public static let disabled = Self(snapsToPanes: false, snapsToGrid: false)
     }
 
     // MARK: Guides
@@ -87,7 +87,7 @@ public enum CanvasSnap {
         case edge
         case center
         case viewportEdge
-        public static func < (lhs: GuideKind, rhs: GuideKind) -> Bool { lhs.rawValue < rhs.rawValue }
+        public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
     }
 
     /// One alignment guide line the view draws while a pane-derived snap is ACTIVE: a 1-D position on
@@ -338,7 +338,7 @@ public enum CanvasSnap {
     /// All MOVE candidates for one axis (gutter + edge + center per other rect, plus viewport).
     private static func moveCandidates(
         axis: Axis,
-        proposed: CGRect,
+        proposed _: CGRect,
         others: [CGRect],
         viewport: CGRect?,
         config: Config,

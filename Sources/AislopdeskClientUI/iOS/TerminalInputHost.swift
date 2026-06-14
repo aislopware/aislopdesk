@@ -74,7 +74,7 @@ public struct TerminalInputHost: UIViewRepresentable {
         return view
     }
 
-    public func updateUIView(_ uiView: TerminalInputResponderView, context: Context) {
+    public func updateUIView(_: TerminalInputResponderView, context _: Context) {
         // Nothing to refresh: sends funnel through InputBarModel.sendSink → the pane's
         // TerminalViewModel OUT FIFO, which always targets the LIVE client (the sink is
         // re-wired by ConnectionViewModel.connect across reconnects).
@@ -98,6 +98,7 @@ public struct TerminalInputHost: UIViewRepresentable {
     /// the reentrant client actor — the iOS keyboard path and the gesture/clipboard path
     /// now share a single FIFO. Record-then-enqueue is synchronous in call order, so the
     /// B1 echo-dedup ring matches wire order by construction.
+    @preconcurrency
     @MainActor
     public final class Coordinator {
         let model: InputBarModel
@@ -183,7 +184,7 @@ public final class TerminalInputResponderView: UIView {
             self.press = press
         }
 
-        static func == (a: RepeatKey, b: RepeatKey) -> Bool { a.identity == b.identity }
+        static func == (a: Self, b: Self) -> Bool { a.identity == b.identity }
         func hash(into h: inout Hasher) { h.combine(identity) }
     }
 
@@ -209,7 +210,7 @@ public final class TerminalInputResponderView: UIView {
     }
 
     @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+    required init?(coder _: NSCoder) { fatalError("init(coder:) not supported") }
 
     private func configure() {
         backgroundColor = .clear
@@ -316,7 +317,7 @@ public final class TerminalInputResponderView: UIView {
     }
 
     @objc
-    private func keyboardWillHide(_ note: Notification) {
+    private func keyboardWillHide(_: Notification) {
         setAccessory(visible: false)
     }
 
@@ -367,6 +368,7 @@ public final class TerminalInputResponderView: UIView {
 /// proxy). The view is held **weakly** so a dismantled host is never resurrected or leaked — the
 /// coordinator's registry also boxes the adapter weakly, and the `TerminalInputHost.Coordinator`
 /// retains it for the host's lifetime.
+@preconcurrency
 @MainActor
 public final class FocusInputHostAdapter: PaneFocusCoordinator.FocusableInputHost {
     private weak var view: TerminalInputResponderView?

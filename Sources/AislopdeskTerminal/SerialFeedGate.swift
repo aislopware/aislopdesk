@@ -97,6 +97,7 @@ public final class SerialFeedGate: @unchecked Sendable {
     /// accounting; `work` runs on the serial queue, strictly after every previously
     /// enqueued block. After ``closeBarrier()`` this is a no-op (nothing runs, nothing
     /// is counted).
+    @preconcurrency
     public func enqueue(byteCount: Int, _ work: @escaping @Sendable () -> Void) {
         lock.lock()
         if closed {
@@ -127,6 +128,7 @@ public final class SerialFeedGate: @unchecked Sendable {
     /// thread (see the class doc for why blocking main here can deadlock). Calling it
     /// again schedules another `onDrained` after the drain — the caller guards against
     /// double-free (GhosttySurface nils its pointer before closing).
+    @preconcurrency
     public func close(onDrained: @escaping @Sendable () -> Void) {
         lock.lock()
         closed = true

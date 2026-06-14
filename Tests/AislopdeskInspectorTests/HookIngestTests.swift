@@ -7,7 +7,8 @@ final class HookIngestTests: XCTestCase {
     func testSessionStartHookGivesTranscriptPath() {
         let hook = HookParser.parse(Fixtures.data("hook-session-start.json"))
         guard case let .sessionStart(info)? = hook else {
-            return XCTFail("expected .sessionStart, got \(String(describing: hook))")
+            XCTFail("expected .sessionStart, got \(String(describing: hook))")
+            return
         }
         XCTAssertEqual(info.sessionID, "11111111-2222-3333-4444-555555555555")
         XCTAssertEqual(info.model, "claude-opus-4-8")
@@ -29,7 +30,8 @@ final class HookIngestTests: XCTestCase {
     func testPostToolUseHookFoldsToCompletedCard() {
         let hook = HookParser.parse(Fixtures.data("hook-post-tool-use.json"))
         guard case let .postToolUse(use, result)? = hook else {
-            return XCTFail("expected .postToolUse, got \(String(describing: hook))")
+            XCTFail("expected .postToolUse, got \(String(describing: hook))")
+            return
         }
         XCTAssertEqual(use.id, "toolu_hook_01")
         XCTAssertEqual(use.name, "Write")
@@ -46,7 +48,8 @@ final class HookIngestTests: XCTestCase {
     func testSubagentStopHookFoldsToStoppedNode() {
         let hook = HookParser.parse(Fixtures.data("hook-subagent-stop.json"))
         guard case let .subagentStop(node)? = hook else {
-            return XCTFail("expected .subagentStop, got \(String(describing: hook))")
+            XCTFail("expected .subagentStop, got \(String(describing: hook))")
+            return
         }
         XCTAssertEqual(
             HookParser.subagentTranscriptPath(Fixtures.data("hook-subagent-stop.json")),

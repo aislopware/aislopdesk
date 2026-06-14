@@ -21,6 +21,7 @@ import AppKit
 /// `@MainActor`-isolated: it mutates a `CALayer`, which must be touched on the main
 /// thread. The orchestrator actor talks to it through main-actor-hops (the position
 /// path) so the hot cursor update lands on the layer at refresh.
+@preconcurrency
 @MainActor
 public final class ClientCursorCompositor {
     /// The cursor overlay layer (caller adds it above the Metal layer).

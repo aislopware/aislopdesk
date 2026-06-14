@@ -113,7 +113,9 @@ final class TranscriptParsingTests: XCTestCase {
         // is randomized per process, so a different / less-informative field surfaced each run.
         let raw = #"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":[{"alpha":"A","bravo":"B","charlie":"C"}]}]}}"#
         guard case let .user(line)? = TranscriptParser.parse(line: raw)
-        else { return XCTFail("should parse a user line") }
+        else { XCTFail("should parse a user line")
+            return
+        }
         XCTAssertEqual(
             line.toolResults.first?.content,
             "alpha: A\nbravo: B\ncharlie: C",
@@ -126,7 +128,8 @@ final class TranscriptParsingTests: XCTestCase {
         let raw = #"{"type":"file-history-snapshot","uuid":"x","snapshot":{}}"#
         let line = TranscriptParser.parse(line: raw)
         guard case let .ignored(type) = line else {
-            return XCTFail("expected .ignored, got \(String(describing: line))")
+            XCTFail("expected .ignored, got \(String(describing: line))")
+            return
         }
         XCTAssertEqual(type, "file-history-snapshot")
     }

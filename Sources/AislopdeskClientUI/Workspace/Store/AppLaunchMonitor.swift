@@ -7,6 +7,7 @@ import Foundation
 /// host-window query the picker uses), diffs the app-name set across polls, and fires
 /// ``WorkspaceStore/autoSwitchForLaunchedApp(_:)`` for each NEWLY-appeared app. Inert unless the
 /// feature toggle is on AND at least one preset has a trigger (so a user with no triggers pays nothing).
+@preconcurrency
 @MainActor
 public final class AppLaunchMonitor {
     private weak var store: WorkspaceStore?
@@ -16,6 +17,7 @@ public final class AppLaunchMonitor {
     /// The host app names present on the last poll (to diff for newly-appeared apps).
     private var lastApps: Set<String> = []
 
+    @preconcurrency
     public init(
         store: WorkspaceStore,
         isConnected: @escaping @MainActor () -> Bool,

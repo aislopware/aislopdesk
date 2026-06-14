@@ -32,7 +32,9 @@ final class ReceivedDatagramRouterTests: XCTestCase {
         var packetizer = VideoPacketizer()
         let frags = packetizer.packetize(frame: NALUnit.join([Data([1, 2, 3, 4])]), keyframe: true)
         let routed = router.route(channel: .video, data: frags[0].encode(), mediaFlowing: true)
-        guard case let .videoFragment(f) = routed else { return XCTFail("expected videoFragment, got \(routed)") }
+        guard case let .videoFragment(f) = routed else { XCTFail("expected videoFragment, got \(routed)")
+            return
+        }
         XCTAssertEqual(f, try FrameFragment.decode(frags[0].encode()))
     }
 

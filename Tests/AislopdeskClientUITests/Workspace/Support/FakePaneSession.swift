@@ -134,7 +134,7 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
 
     // MARK: PaneSessionHandle: lifecycle
 
-    func pause() async {
+    func pause() {
         pauseCount += 1
         events.append(.pause)
         // Mirror LivePaneSession: suspend live video and remember it for resume (.remoteGUI only).
@@ -145,7 +145,7 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
         }
     }
 
-    func resume() async {
+    func resume() {
         resumeCount += 1
         events.append(.resume)
         // Mirror LivePaneSession: re-activate video that was active before pause (.remoteGUI only).

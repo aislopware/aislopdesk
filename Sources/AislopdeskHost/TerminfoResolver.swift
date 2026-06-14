@@ -65,7 +65,7 @@ public enum TerminfoResolver {
     ///   caller can log it — gated — exactly once at session start).
     public static func effectiveTerm(
         requested: ClaudeCodeProfile.Term,
-        explicitOverride: Bool,
+        explicitOverride _: Bool,
         isGhosttyResolvable: Bool,
     ) -> (term: ClaudeCodeProfile.Term, fellBack: Bool) {
         // An explicit operator choice of xterm-256color is authoritative — never re-probe,
@@ -125,6 +125,7 @@ public struct GhosttyTerminfoProbe: Sendable {
     /// Returns `true` iff the host can resolve `xterm-ghostty`.
     public let isGhosttyResolvable: @Sendable () -> Bool
 
+    @preconcurrency
     public init(isGhosttyResolvable: @escaping @Sendable () -> Bool) {
         self.isGhosttyResolvable = isGhosttyResolvable
     }
@@ -140,7 +141,7 @@ public struct GhosttyTerminfoProbe: Sendable {
     /// 2. If the directory probe is inconclusive, run `/usr/bin/infocmp xterm-ghostty`
     ///    and treat **exit status 0** as resolvable. `infocmp` consults the same database
     ///    ncurses will, so its verdict matches what the spawned TUI apps will see.
-    public static let live = GhosttyTerminfoProbe {
+    public static let live = Self {
         liveProbe(
             term: "xterm-ghostty",
             environment: ProcessInfo.processInfo.environment,
@@ -155,7 +156,7 @@ public struct GhosttyTerminfoProbe: Sendable {
         term: String,
         environment: [String: String],
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
-        infocmpExitStatus: (String) -> Int32? = GhosttyTerminfoProbe.runInfocmp,
+        infocmpExitStatus: (String) -> Int32? = Self.runInfocmp,
     ) -> Bool {
         // 1. Direct terminfo-database search (pure stat, no subprocess).
         if terminfoEntryExists(term: term, environment: environment, fileExists: fileExists) {

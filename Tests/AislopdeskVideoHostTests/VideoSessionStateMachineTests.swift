@@ -36,7 +36,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
 
         // Ack first, then start capture — in that order.
         XCTAssertEqual(effects.count, 2)
-        guard case let .sendControl(ack) = effects[0] else { return XCTFail("expected sendControl first") }
+        guard case let .sendControl(ack) = effects[0] else { XCTFail("expected sendControl first")
+            return
+        }
         XCTAssertEqual(
             ack,
             .helloAck(
@@ -63,13 +65,17 @@ final class VideoSessionStateMachineTests: XCTestCase {
         )
         let accept = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
         guard case .sendControl(.helloAck(true, _, _, _, _, let frAccept)) = accept[0]
-        else { return XCTFail("expected accept ack") }
+        else { XCTFail("expected accept ack")
+            return
+        }
         XCTAssertTrue(frAccept, "accept ack carries the host's full-range flag")
 
         // Duplicate hello while streaming → re-ack must echo the SAME range.
         let again = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
         guard case .sendControl(.helloAck(true, _, _, _, _, let frReAck)) = again[0]
-        else { return XCTFail("expected re-ack") }
+        else { XCTFail("expected re-ack")
+            return
+        }
         XCTAssertTrue(frReAck, "re-ack echoes the same full-range value")
 
         // A reject (here: a wrong-window resolveCaptureSize → nil) always sends fullRange:false.
@@ -77,7 +83,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
         _ = rej.start()
         let reject = rej.handleControl(hello, windowBoundsCG: bounds) { _, _ in nil }
         guard case .sendControl(.helloAck(false, _, _, _, _, let frReject)) = reject[0]
-        else { return XCTFail("expected reject ack") }
+        else { XCTFail("expected reject ack")
+            return
+        }
         XCTAssertFalse(frReject, "a reject never advertises full-range")
     }
 
@@ -92,7 +100,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
             viewport: VideoSize(width: 800, height: 600),
         )
         let accept = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
-        guard case let .sendControl(.helloAck(_, _, _, _, _, fr)) = accept[0] else { return XCTFail("expected ack") }
+        guard case let .sendControl(.helloAck(_, _, _, _, _, fr)) = accept[0] else { XCTFail("expected ack")
+            return
+        }
         XCTAssertFalse(fr, "default host is video-range (OFF)")
     }
 
@@ -138,7 +148,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
         XCTAssertFalse(sm.mediaFlowing)
         XCTAssertEqual(effects.count, 1)
         guard case let .sendControl(.helloAck(accepted, _, _, _, _, _)) = effects[0]
-        else { return XCTFail("expected reject ack") }
+        else { XCTFail("expected reject ack")
+            return
+        }
         XCTAssertFalse(accepted)
     }
 
@@ -155,7 +167,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
         XCTAssertEqual(sm.state, .listening)
         XCTAssertEqual(effects.count, 1)
         guard case let .sendControl(.helloAck(accepted, _, _, _, _, _)) = effects[0]
-        else { return XCTFail("expected reject") }
+        else { XCTFail("expected reject")
+            return
+        }
         XCTAssertFalse(accepted)
     }
 
@@ -175,7 +189,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
         // Re-ack only — NO second startCapture.
         XCTAssertEqual(again.count, 1)
         guard case let .sendControl(.helloAck(accepted, streamID, _, _, _, _)) = again[0]
-        else { return XCTFail("expected re-ack") }
+        else { XCTFail("expected re-ack")
+            return
+        }
         XCTAssertTrue(accepted)
         XCTAssertEqual(streamID, 3, "re-ack keeps the same streamID, does not mint a new one")
     }
@@ -225,7 +241,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
         )
         let first = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
         guard case let .sendControl(.helloAck(_, firstStreamID, _, _, _, _)) = first[0]
-        else { return XCTFail("expected first ack") }
+        else { XCTFail("expected first ack")
+            return
+        }
         XCTAssertEqual(firstStreamID, 5)
 
         // Client says bye, then reconnects with a fresh hello — no daemon restart.
@@ -242,7 +260,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
         // Ack (with an ADVANCED streamID) first, then a fresh startCapture.
         XCTAssertEqual(reconnect.count, 2)
         guard case let .sendControl(.helloAck(accepted, streamID, w, h, _, _)) = reconnect[0]
-        else { return XCTFail("expected reconnect ack") }
+        else { XCTFail("expected reconnect ack")
+            return
+        }
         XCTAssertTrue(accepted)
         XCTAssertEqual(streamID, 6, "the second hello mints a fresh, advanced streamID")
         XCTAssertEqual(w, 800)
@@ -306,7 +326,9 @@ final class VideoSessionStateMachineTests: XCTestCase {
             let accept = sm.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
             XCTAssertEqual(sm.state, .streaming)
             guard case let .sendControl(.helloAck(accepted, streamID, _, _, _, _)) = accept[0]
-            else { return XCTFail("expected ack") }
+            else { XCTFail("expected ack")
+                return
+            }
             XCTAssertTrue(accepted)
             seenStreamIDs.append(streamID)
             XCTAssertEqual(accept[1], .startCapture(windowID: 42, width: 800, height: 600))
@@ -363,13 +385,17 @@ final class VideoSessionStateMachineTests: XCTestCase {
             viewport: VideoSize(width: 10, height: 10),
         )
         let e1 = a.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
-        guard case let .sendControl(.helloAck(_, s1, _, _, _, _)) = e1[0] else { return XCTFail() }
+        guard case let .sendControl(.helloAck(_, s1, _, _, _, _)) = e1[0] else { XCTFail()
+            return
+        }
         XCTAssertEqual(s1, 1)
 
         var b = VideoSessionStateMachine(nextStreamID: 2)
         _ = b.start()
         let e2 = b.handleControl(hello, windowBoundsCG: bounds, resolveCaptureSize: acceptAll)
-        guard case let .sendControl(.helloAck(_, s2, _, _, _, _)) = e2[0] else { return XCTFail() }
+        guard case let .sendControl(.helloAck(_, s2, _, _, _, _)) = e2[0] else { XCTFail()
+            return
+        }
         XCTAssertEqual(s2, 2)
     }
 }

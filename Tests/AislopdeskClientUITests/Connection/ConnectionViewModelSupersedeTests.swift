@@ -76,11 +76,11 @@ final class ConnectionViewModelSupersedeTests: XCTestCase {
         }
 
         func connect(
-            host: String,
-            port: UInt16,
-            resume: UUID,
-            lastReceivedSeq: Int64,
-            handshakeTimeout: Duration,
+            host _: String,
+            port _: UInt16,
+            resume _: UUID,
+            lastReceivedSeq _: Int64,
+            handshakeTimeout _: Duration,
         ) async throws {
             if released { _sessionID = UUID()
                 return
@@ -98,11 +98,11 @@ final class ConnectionViewModelSupersedeTests: XCTestCase {
             }
         }
 
-        func sendInput(_ bytes: Data) async throws {}
-        func sendResize(cols: UInt16, rows: UInt16, pxWidth: UInt16, pxHeight: UInt16) async throws {}
-        func sendAck(seq: Int64) async throws {}
-        func sendBye() async throws {}
-        func close() async { continuation.finish() }
+        func sendInput(_: Data) {}
+        func sendResize(cols _: UInt16, rows _: UInt16, pxWidth _: UInt16, pxHeight _: UInt16) {}
+        func sendAck(seq _: Int64) {}
+        func sendBye() {}
+        func close() { continuation.finish() }
     }
 
     private final class GateRecorder: @unchecked Sendable {

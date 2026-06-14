@@ -36,7 +36,7 @@ public final class KeyRepeater<Key: Hashable & Sendable>: @unchecked Sendable {
             self.repeatInterval = repeatInterval
         }
 
-        public static var standard: Timing { Timing() }
+        public static var standard: Self { Self() }
     }
 
     private let timing: Timing
@@ -50,6 +50,7 @@ public final class KeyRepeater<Key: Hashable & Sendable>: @unchecked Sendable {
     private var heldKey: Key?
     private var handle: RepeatSchedulerHandle?
 
+    @preconcurrency
     public init(
         timing: Timing = .standard,
         scheduler: RepeatScheduler,
@@ -192,6 +193,7 @@ public final class DispatchRepeatScheduler: RepeatScheduler, @unchecked Sendable
         self.queue = queue
     }
 
+    @preconcurrency
     public func schedule(after delay: Duration, _ work: @escaping @Sendable () -> Void) -> RepeatSchedulerHandle {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + delay.timeIntervalSeconds, repeating: .infinity)
@@ -201,6 +203,7 @@ public final class DispatchRepeatScheduler: RepeatScheduler, @unchecked Sendable
         return handle
     }
 
+    @preconcurrency
     public func scheduleRepeating(
         every interval: Duration,
         _ work: @escaping @Sendable () -> Void,

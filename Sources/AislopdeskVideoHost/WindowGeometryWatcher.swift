@@ -158,6 +158,7 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
 
     /// Emits a title change if the window's title differs from the last seen value.
     /// Driven by the AX `kAXTitleChangedNotification` in production.
+    @preconcurrency
     @MainActor
     public func checkTitle() {
         let appEl = AXUIElementCreateApplication(pid)
@@ -196,6 +197,7 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
     /// already require). `AXUIElementSetMessagingTimeout` caps a hung target (mirrors
     /// ``InputInjector/raiseTargetWindow()``) so a beachballing app fails fast instead of
     /// stalling the resize path.
+    @preconcurrency
     @MainActor
     public func resizeWindow(toPoints desiredPoints: VideoSize) -> VideoSize? {
         let appEl = AXUIElementCreateApplication(pid)

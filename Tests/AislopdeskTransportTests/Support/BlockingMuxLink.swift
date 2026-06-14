@@ -222,7 +222,7 @@ final class BlockingMuxLink: MuxByteLink, @unchecked Sendable {
         outPipe.setGateClosed(closed)
     }
 
-    func send(_ data: Data) async throws {
+    func send(_ data: Data) async {
         await outPipe.send(data)
     }
 
@@ -234,7 +234,7 @@ final class BlockingMuxLink: MuxByteLink, @unchecked Sendable {
         outPipe.enqueueUnbounded(data)
     }
 
-    func close() async {
+    func close() {
         outPipe.finish()
         inPipe.finish()
     }

@@ -47,6 +47,7 @@ import Foundation
 public final class HostOutputSniffer: @unchecked Sendable {
     /// - Parameter clock: the wall-clock source for the OSC 133 C→D duration. Injectable so
     ///   a test advances it deterministically; defaults to `Date.init` in production.
+    @preconcurrency
     public init(clock: @escaping @Sendable () -> Date = { Date() }) {
         self.clock = clock
     }

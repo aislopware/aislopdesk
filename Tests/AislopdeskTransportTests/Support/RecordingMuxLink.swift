@@ -44,7 +44,7 @@ final class RecordingMuxLink: MuxByteLink, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         decoder.append(data)
-        while let frame = (try? decoder.nextFrame()) ?? nil {
+        while let frame = (try? decoder.nextFrame()) {
             if case .windowAdjust = frame { windowAdjusts += 1 }
         }
     }

@@ -67,12 +67,12 @@ final class MuxSendPipeliningTests: XCTestCase {
             }
 
             var receiveChunks: AsyncThrowingStream<Data, Error> { stream }
-            func send(_ data: Data) async throws {} // awaited sends (openChannel) succeed
-            func sendPipelined(_ data: Data) {
+            func send(_: Data) {} // awaited sends (openChannel) succeed
+            func sendPipelined(_: Data) {
                 continuation.finish(throwing: AislopdeskTransportError.sendFailed("pipelined write failed (test)"))
             }
 
-            func close() async {}
+            func close() {}
         }
 
         let (controlA, _) = InMemoryMuxLink.pair()

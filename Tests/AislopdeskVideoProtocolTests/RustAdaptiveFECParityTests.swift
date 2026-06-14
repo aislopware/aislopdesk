@@ -36,11 +36,11 @@ final class RustAdaptiveFECParityTests: XCTestCase {
 
     private static func nativeTargetLevel(_ loss: Double, _ current: Int) -> Int {
         let up =
-            if loss >= 0.10 { 4 } else if loss >= 0.05 { 3 } else if loss >= 0.02 { 2 }
-            else if loss >= 0.005 { 1 } else { 0 }
+            if loss >= 0.10 { 4 } else if loss >= 0.05 { 3 } else if loss >= 0.02 { 2 } else if loss >= 0.005 { 1 }
+            else { 0 }
         let down =
-            if loss < 0.002 { 0 } else if loss < 0.012 { 1 } else if loss < 0.035 { 2 }
-            else if loss < 0.08 { 3 } else { 4 }
+            if loss < 0.002 { 0 } else if loss < 0.012 { 1 } else if loss < 0.035 { 2 } else if loss < 0.08 { 3 }
+            else { 4 }
         if up > current { return up }
         if down < current { return down }
         return current

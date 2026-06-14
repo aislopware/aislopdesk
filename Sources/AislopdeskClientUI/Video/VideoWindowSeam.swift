@@ -103,11 +103,12 @@ public struct RemotePaneContext {
 
     /// The standalone default (no canvas around it): always active, no-op callbacks — for previews / sheet
     /// hosts that render a `RemoteWindowPanel` directly.
-    public static var standalone: RemotePaneContext { RemotePaneContext() }
+    public static var standalone: Self { Self() }
 }
 
 /// Injects the production remote-GUI-window video view when the app target provides
 /// one. `nil` → the gated placeholder is shown.
+@preconcurrency
 @MainActor
 public final class VideoWindowFactory {
     /// App-registered factory (set once at launch). `nil` → use the placeholder. Receives the descriptor
@@ -163,6 +164,7 @@ public struct RemoteWindowSummary: Sendable, Equatable, Identifiable {
 ///         .map { RemoteWindowSummary(windowID: $0.windowID, appName: $0.appName, title: $0.title, width: $0.width, height: $0.height) }
 /// }
 /// ```
+@preconcurrency
 @MainActor
 public final class RemoteWindowDiscovery {
     /// App-registered window-list query (set once at launch). `nil` → the picker uses manual entry.
@@ -202,6 +204,7 @@ public struct SystemDialogInfo: Sendable, Equatable, Identifiable {
 /// injects a closure that polls the host for its open system dialogs (implemented in
 /// `AislopdeskVideoClient.VideoWindowDiscovery.discoverSystemDialogs`), so the cross-platform monitor can
 /// auto-spawn dialog panes WITHOUT importing the gated video module. `nil` → no monitor activity.
+@preconcurrency
 @MainActor
 public final class SystemDialogDiscovery {
     /// App-registered system-dialog poll (set once at launch). `nil` → the monitor is inert.

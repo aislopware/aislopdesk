@@ -9,6 +9,7 @@ import SwiftUI
 /// wire (docs/31): ``refresh()`` queries them via ``RemoteWindowDiscovery`` and the panel shows a PICKER;
 /// tapping a row ``pick(_:)``s it and opens. A manual window-id field stays as a fallback for when
 /// discovery is unavailable (no host support / empty list / timeout).
+@preconcurrency
 @MainActor
 @Observable
 public final class RemoteWindowModel {
@@ -130,6 +131,7 @@ public final class RemoteWindowModel {
         pasteFeedback = nil
     }
 
+    @preconcurrency
     public init(
         target: @escaping @MainActor () -> ConnectionTarget = { .default },
         windowID: String = "",

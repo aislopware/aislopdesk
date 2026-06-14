@@ -122,8 +122,8 @@ public struct PacerDepthPolicy: Sendable, Equatable {
 
         /// Env-tunable construction (`AISLOPDESK_DEPTH_*`), each clamped to a sane band; absent /
         /// unparseable values keep the default. Pure — unit-testable headlessly.
-        public static func fromEnvironment(_ env: [String: String]) -> Config {
-            var c = Config()
+        public static func fromEnvironment(_ env: [String: String]) -> Self {
+            var c = Self()
             if let v = env["AISLOPDESK_DEPTH_PROMOTE_LATES"].flatMap(Int.init) {
                 // lateTimes ring holds 4 — a count above that could never be satisfied.
                 c.promoteLateCount = min(4, max(1, v))

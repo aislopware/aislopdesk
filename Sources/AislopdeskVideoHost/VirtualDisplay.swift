@@ -24,6 +24,7 @@ import OSLog
 ///
 /// HW-GATED: needs a window server + a run loop; not exercised in tests (the pure pixel/point math
 /// is in ``VirtualDisplayGeometry``, which IS unit-tested).
+@preconcurrency
 @MainActor
 public final class VirtualDisplay {
     private let log = Logger(subsystem: "aislopdesk.video.host", category: "VirtualDisplay")

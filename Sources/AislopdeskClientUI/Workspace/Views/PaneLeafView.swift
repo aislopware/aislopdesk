@@ -507,7 +507,7 @@ enum RemoteGUIDisplay: Equatable {
     ///   admits the now-configured pane and flips `admitted` true — F1: the form must not disappear
     ///   the instant the endpoint becomes valid);
     /// - else (configured AND no free slot) ⇒ `.gated` (admission was genuinely refused by the cap).
-    static func resolve(admitted: Bool, configured: Bool, hasFreeSlot: Bool) -> RemoteGUIDisplay {
+    static func resolve(admitted: Bool, configured: Bool, hasFreeSlot: Bool) -> Self {
         if admitted { return .live }
         guard configured else { return .entryForm }
         return hasFreeSlot ? .entryForm : .gated

@@ -15,7 +15,8 @@ final class HostChannelRouterTests: XCTestCase {
     ) {
         let decision = router.route(.channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0))
         guard case .lifecycle(id, .open) = decision else {
-            return XCTFail("expected peer-open lifecycle for \(id), got \(decision)", file: file, line: line)
+            XCTFail("expected peer-open lifecycle for \(id), got \(decision)", file: file, line: line)
+            return
         }
     }
 
@@ -55,7 +56,8 @@ final class HostChannelRouterTests: XCTestCase {
         peerOpen(1, in: &router)
         let decision = router.route(.channelData(channelID: 7, payload: Data("never-opened".utf8)))
         guard case .dropUnknownChannel(7, _) = decision else {
-            return XCTFail("expected dropUnknownChannel, got \(decision)")
+            XCTFail("expected dropUnknownChannel, got \(decision)")
+            return
         }
         // Known channel still routes.
         XCTAssertEqual(
@@ -71,10 +73,12 @@ final class HostChannelRouterTests: XCTestCase {
 
         let closeDecision = router.route(.channelClose(channelID: 1))
         guard case .lifecycle(1, .halfClosed) = closeDecision else {
-            return XCTFail("expected A to half-close, got \(closeDecision)")
+            XCTFail("expected A to half-close, got \(closeDecision)")
+            return
         }
         guard case .dropUnknownChannel(1, _) = router.route(.channelData(channelID: 1, payload: Data())) else {
-            return XCTFail("A must not deliver after close")
+            XCTFail("A must not deliver after close")
+            return
         }
         XCTAssertEqual(
             router.route(.channelData(channelID: 3, payload: Data("B-live".utf8))),
@@ -89,7 +93,8 @@ final class HostChannelRouterTests: XCTestCase {
         peerOpen(1, in: &router)
         let inner = WireMessage.input(Data("ls -la\n".utf8)).encode()
         guard case let .deliverData(1, payload) = router.route(.channelData(channelID: 1, payload: inner)) else {
-            return XCTFail("expected deliverData")
+            XCTFail("expected deliverData")
+            return
         }
         XCTAssertEqual(payload, inner, "host router must not parse the channelData body")
     }

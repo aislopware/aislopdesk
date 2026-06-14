@@ -101,7 +101,7 @@ public enum CanvasNonOverlap {
         }
 
         /// Everything off — the ⌘ / setting-off bypass (matches ``CanvasSnap/Config/disabled``).
-        public static let disabled = Config(enabled: false)
+        public static let disabled = Self(enabled: false)
     }
 
     // MARK: Results
@@ -305,9 +305,8 @@ public enum CanvasNonOverlap {
         guard overlapX > 0, overlapY > 0 else { return nil }
         if overlapX < overlapY || (overlapX == overlapY && abs(a.midX - b.midX) >= abs(a.midY - b.midY)) {
             return CGVector(dx: a.midX <= b.midX ? -overlapX : overlapX, dy: 0)
-        } else {
-            return CGVector(dx: 0, dy: a.midY <= b.midY ? -overlapY : overlapY)
         }
+        return CGVector(dx: 0, dy: a.midY <= b.midY ? -overlapY : overlapY)
     }
 
     /// Pops a box at `origin` (size `size`) gutter-clear of every body, iterating a few passes so a box
@@ -386,9 +385,8 @@ public enum CanvasNonOverlap {
         let t = Swift.max(0, entry)
         if xs.entry > ys.entry {
             return (t, .x, CGVector(dx: velocity.dx > 0 ? -1 : 1, dy: 0))
-        } else {
-            return (t, .y, CGVector(dx: 0, dy: velocity.dy > 0 ? -1 : 1))
         }
+        return (t, .y, CGVector(dx: 0, dy: velocity.dy > 0 ? -1 : 1))
     }
 
     // MARK: - Small helpers

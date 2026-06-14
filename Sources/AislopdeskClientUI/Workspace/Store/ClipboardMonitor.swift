@@ -10,6 +10,7 @@ import Foundation
 /// `NSPasteboard.changeCount` is cheap: a single integer read per tick, and the string is fetched only
 /// when the count actually advances. Modeled on ``SystemDialogMonitor``: the app scene owns a
 /// `.task { await monitor.run() }`; the loop ends when that task is cancelled.
+@preconcurrency
 @MainActor
 public final class ClipboardMonitor {
     private weak var store: WorkspaceStore?

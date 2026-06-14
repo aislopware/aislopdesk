@@ -148,7 +148,9 @@ final class PacerDepthPolicyTests: XCTestCase {
             if i % 20 == 0 { dp.noteNetworkLate(t) }
             if dp.depth == 2, promotedAt == nil { promotedAt = t }
         }
-        guard let promotedAt else { return XCTFail("never promoted under a spiking burst") }
+        guard let promotedAt else { XCTFail("never promoted under a spiking burst")
+            return
+        }
         XCTAssertLessThanOrEqual(promotedAt - onset, 1.5, "promotion must land ≤1.5s after onset")
     }
 
@@ -191,7 +193,9 @@ final class PacerDepthPolicyTests: XCTestCase {
             dp.notePresent(t)
             if dp.depth == 1, demotedAt == nil { demotedAt = t }
         }
-        guard let demotedAt else { return XCTFail("never demoted on a clean link") }
+        guard let demotedAt else { XCTFail("never demoted on a clean link")
+            return
+        }
         XCTAssertGreaterThanOrEqual(demotedAt - lastLate, 2.5)
         XCTAssertLessThanOrEqual(
             demotedAt - lastLate,
@@ -219,7 +223,9 @@ final class PacerDepthPolicyTests: XCTestCase {
             dph.notePresent(th)
             if dph.depth == 1, demotedAtH == nil { demotedAtH = th }
         }
-        guard let demotedAtH else { return XCTFail("min-hold arm never demoted") }
+        guard let demotedAtH else { XCTFail("min-hold arm never demoted")
+            return
+        }
         XCTAssertGreaterThanOrEqual(demotedAtH - promotedAt, 1.5, "min-hold must dominate a shorter dwell")
         XCTAssertLessThanOrEqual(demotedAtH - promotedAt, 1.5 + 2.0 / 60.0)
     }
@@ -253,7 +259,9 @@ final class PacerDepthPolicyTests: XCTestCase {
     /// dwell anchored at the lone late. Tolerance 0 keeps the strict anchoring.
     func testDemoteToleratesOneLateInWindow() {
         let tolerant = demoteTimeWithOneMidDwellLate(tolerance: 1)
-        guard let demoted = tolerant.demotedAt else { return XCTFail("tolerance 1 never demoted") }
+        guard let demoted = tolerant.demotedAt else { XCTFail("tolerance 1 never demoted")
+            return
+        }
         XCTAssertLessThan(
             demoted - tolerant.lateAt,
             2.5,
@@ -261,7 +269,9 @@ final class PacerDepthPolicyTests: XCTestCase {
         )
 
         let strict = demoteTimeWithOneMidDwellLate(tolerance: 0)
-        guard let strictDemoted = strict.demotedAt else { return XCTFail("tolerance 0 never demoted") }
+        guard let strictDemoted = strict.demotedAt else { XCTFail("tolerance 0 never demoted")
+            return
+        }
         XCTAssertGreaterThanOrEqual(
             strictDemoted - strict.lateAt,
             2.5,

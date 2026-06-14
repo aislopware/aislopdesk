@@ -45,7 +45,7 @@ public struct VideoRect: Equatable, Sendable {
 
     /// The area of intersection with `other` (0 when disjoint). Used by the
     /// multi-monitor coordinate-mapping screen pick.
-    public func intersectionArea(_ other: VideoRect) -> Double {
+    public func intersectionArea(_ other: Self) -> Double {
         let ix = max(0, min(maxX, other.maxX) - max(minX, other.minX))
         let iy = max(0, min(maxY, other.maxY) - max(minY, other.minY))
         return ix * iy

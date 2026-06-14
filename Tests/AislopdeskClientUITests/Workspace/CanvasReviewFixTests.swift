@@ -75,7 +75,7 @@ final class CanvasReviewFixTests: XCTestCase {
         let nan = CanvasCamera(origin: CGPoint(x: CGFloat.nan, y: 50)).sanitized()
         XCTAssertEqual(nan.origin, CGPoint(x: 0, y: 50))
         let inf = CanvasCamera(origin: CGPoint(x: CGFloat.infinity, y: -CGFloat.infinity)).sanitized()
-        XCTAssertEqual(inf.origin, CGPoint(x: 0, y: 0))
+        XCTAssertEqual(inf.origin, CGPoint.zero)
         // Extreme-but-finite is clamped to the coordinate bound.
         let huge = CanvasCamera(origin: CGPoint(x: 1e300, y: -1e300)).sanitized()
         XCTAssertEqual(huge.origin, CGPoint(x: Canvas.coordinateBound, y: -Canvas.coordinateBound))

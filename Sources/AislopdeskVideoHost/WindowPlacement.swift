@@ -43,6 +43,7 @@ public enum WindowPlacement {
     /// resized down to fit the VD must NOT be captured/acked at its stale pre-move size, or the
     /// SCStream over-crops AND the client's input mapping desyncs (the post-resize point size feeds
     /// both `captureWidth/Height` and the SCStream size). NEVER crashes. Main-actor (AX is main-thread).
+    @preconcurrency
     @MainActor
     public static func moveWindowOntoDisplay(
         windowID: CGWindowID,

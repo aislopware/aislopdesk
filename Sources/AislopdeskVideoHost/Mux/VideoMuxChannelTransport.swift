@@ -30,6 +30,7 @@ public final class VideoMuxChannelTransport: VideoDatagramTransport, @unchecked 
     /// Called when this lane retires (bye / stop) so the daemon's registry clears its bookkeeping.
     private let onRetire: @Sendable (UInt32) -> Void
 
+    @preconcurrency
     public init(
         channelID: UInt32,
         shared: NWVideoMuxDatagramTransport,
@@ -42,7 +43,8 @@ public final class VideoMuxChannelTransport: VideoDatagramTransport, @unchecked 
         self.onRetire = onRetire
     }
 
-    public func start(onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) async throws {
+    @preconcurrency
+    public func start(onReceive: @escaping @Sendable (VideoChannel, Data) -> Void) {
         // Register the lane sink SYNCHRONOUSLY (so the triggering hello is deliverable the moment
         // session.start() returns) + admit the lane so the shared router routes its datagrams. No
         // socket opened here — the shared transport already bound them once.
@@ -54,7 +56,7 @@ public final class VideoMuxChannelTransport: VideoDatagramTransport, @unchecked 
         shared.send(datagram, on: channel, channelID: channelID)
     }
 
-    public func stop() async {
+    public func stop() {
         retireLane()
     }
 

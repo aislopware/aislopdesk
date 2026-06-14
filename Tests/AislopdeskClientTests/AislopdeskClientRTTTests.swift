@@ -58,6 +58,9 @@ final class AislopdeskClientRTTTests: XCTestCase {
                 try? await Task.sleep(for: .seconds(2))
                 return nil
             }
+            // `group.next()` is `Double??`; the `?? nil` flattens the double-optional to `Double?`
+            // (NOT redundant here — the rule misjudges double-optionals).
+            // swiftlint:disable:next redundant_nil_coalescing
             let first = await group.next() ?? nil
             group.cancelAll()
             return first

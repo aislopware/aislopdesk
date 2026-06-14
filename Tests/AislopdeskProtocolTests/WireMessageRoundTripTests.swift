@@ -5,8 +5,8 @@ import XCTest
 /// and returns the decoded message — the canonical round-trip helper.
 private func roundTrip(
     _ message: WireMessage,
-    file: StaticString = #filePath,
-    line: UInt = #line,
+    file _: StaticString = #filePath,
+    line _: UInt = #line,
 ) throws -> WireMessage? {
     var decoder = FrameDecoder()
     decoder.append(message.encode())
@@ -132,7 +132,9 @@ final class WireMessageRoundTripTests: XCTestCase {
         // the title to the field's limit so the body is NEVER corrupted (encode/decode stay symmetric).
         let body = "the body must survive intact — ✅"
         let decoded = try roundTrip(.notification(title: String(repeating: "T", count: 70000), body: body))
-        guard case let .notification(dTitle, dBody)? = decoded else { return XCTFail("not a notification") }
+        guard case let .notification(dTitle, dBody)? = decoded else { XCTFail("not a notification")
+            return
+        }
         XCTAssertEqual(dBody, body, "the body is never corrupted by an overlong title (the wrap bug)")
         XCTAssertLessThanOrEqual(Data(dTitle.utf8).count, Int(UInt16.max), "title clamped to the UInt16 length limit")
         XCTAssertTrue(dTitle.allSatisfy { $0 == "T" }, "the clamped title is a valid prefix of the original")

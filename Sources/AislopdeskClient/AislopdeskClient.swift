@@ -158,7 +158,8 @@ public actor AislopdeskClient {
 
     /// Highest output seq actually fed to the surface (== ``highestContiguousSeq`` while
     /// the stream is contiguous, which it always is here). Used as the dedup high-water
-    /// mark: any inbound `output` with `seq <= highestSeqFed` is a replay duplicate and
+    // MARK: any inbound `output` with `seq <= highestSeqFed` is a replay duplicate and
+
     /// is dropped.
     private var highestSeqFed: Int64 = 0
 
@@ -214,6 +215,7 @@ public actor AislopdeskClient {
     ///   - makeTransport: the session-transport factory. Vends a logical channel over a shared
     ///     ``MuxNWConnection`` (a `MuxClientTransport`) — wired at the
     ///     `WorkspaceStore.liveMakeSession` construction site, never on the hot path.
+    @preconcurrency
     public init(
         ackInterval: Duration = AislopdeskClient.defaultAckInterval,
         makeTransport: @escaping @Sendable () -> any ClientTransporting,
@@ -227,6 +229,7 @@ public actor AislopdeskClient {
     /// Attaches a feeder that mirrors every delivered `output` payload to a terminal
     /// surface (in addition to the ``output`` stream). The closure runs on the actor;
     /// for the GUI surface WF-5 will hop to `@MainActor` inside it.
+    @preconcurrency
     public func setSurfaceFeed(_ feed: @escaping @Sendable (Data) -> Void) {
         surfaceFeed = feed
     }

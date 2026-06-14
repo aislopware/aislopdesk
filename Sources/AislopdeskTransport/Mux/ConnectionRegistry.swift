@@ -21,6 +21,7 @@ import Foundation
 /// The physical ``MuxNWConnection`` is built via an injected `makeConnection` factory, so the
 /// pool's refcount/teardown logic is provable with an in-memory connection (no socket, no
 /// `HostServer`). Production injects a factory that opens real `NWConnection`-backed links.
+@preconcurrency
 @MainActor
 public final class ConnectionRegistry {
     /// One shared connection's pool entry: the connection + the set of live channel ids on it.
@@ -58,6 +59,7 @@ public final class ConnectionRegistry {
 
     /// - Parameters:
     ///   - makeConnection: factory for a fresh shared connection (production: real NWConnections).
+    @preconcurrency
     public init(
         makeConnection: @escaping @MainActor (String, UInt16) async throws -> MuxNWConnection,
     ) {

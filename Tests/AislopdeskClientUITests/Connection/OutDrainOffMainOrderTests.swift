@@ -115,16 +115,16 @@ final class OutDrainOffMainOrderTests: XCTestCase {
         }
 
         func connect(
-            host: String,
-            port: UInt16,
-            resume: UUID,
-            lastReceivedSeq: Int64,
-            handshakeTimeout: Duration,
-        ) async throws {
+            host _: String,
+            port _: UInt16,
+            resume _: UUID,
+            lastReceivedSeq _: Int64,
+            handshakeTimeout _: Duration,
+        ) {
             _sessionID = UUID()
         }
 
-        func sendInput(_ bytes: Data) async throws {
+        func sendInput(_ bytes: Data) async {
             // Deterministic jitter: every 3rd send suspends, giving an unordered design
             // every opportunity to scramble. The single sequential drain must not.
             counter += 1
@@ -132,16 +132,16 @@ final class OutDrainOffMainOrderTests: XCTestCase {
             recorder.recordInput(bytes)
         }
 
-        func sendResize(cols: UInt16, rows: UInt16, pxWidth: UInt16, pxHeight: UInt16) async throws {
+        func sendResize(cols: UInt16, rows: UInt16, pxWidth _: UInt16, pxHeight _: UInt16) {
             recorder.recordResize(cols, rows)
         }
 
-        func sendAck(seq: Int64) async throws {}
-        func sendBye() async throws {}
-        func close() async { continuation.finish() }
+        func sendAck(seq _: Int64) {}
+        func sendBye() {}
+        func close() { continuation.finish() }
     }
 
-    private func waitUntil(timeout: Duration, _ condition: @escaping @Sendable () -> Bool) async throws {
+    private func waitUntil(timeout: Duration, _ condition: @Sendable () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             if condition() { return }

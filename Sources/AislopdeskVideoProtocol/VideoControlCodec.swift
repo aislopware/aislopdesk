@@ -253,7 +253,7 @@ public enum VideoControlMessage: Equatable, Sendable {
         return out
     }
 
-    public static func decode(_ data: Data) throws -> VideoControlMessage {
+    public static func decode(_ data: Data) throws -> Self {
         var reader = VideoByteReader(data)
         let type = try reader.readUInt8()
         switch type {

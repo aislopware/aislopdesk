@@ -208,7 +208,8 @@ final class ShellIntegrationTests: XCTestCase {
         let zshrc = try String(contentsOf: dir.appendingPathComponent(".zshrc"), encoding: .utf8)
         // The FIRST statement of the precmd function must capture $? before anything clobbers it.
         guard let funcRange = zshrc.range(of: "__aislopdesk_osc133_precmd() {") else {
-            return XCTFail("precmd function not found")
+            XCTFail("precmd function not found")
+            return
         }
         let afterBrace = zshrc[funcRange.upperBound...]
         let firstNonEmptyLine = afterBrace

@@ -47,14 +47,16 @@ final class MuxChannelSessionFrameBoundTests: XCTestCase {
         session._enqueueChunkForTesting(bytes: big, control: [bell])
 
         guard case let .output(first, firstCount, control)? = session.takeMergedFrame() else {
-            return XCTFail("expected the split prefix")
+            XCTFail("expected the split prefix")
+            return
         }
         XCTAssertEqual(first.count, cap, "prefix is exactly the safe cap")
         XCTAssertEqual(firstCount, cap)
         XCTAssertEqual(control, [bell], "the chunk's sniffed control rides the first part")
 
         guard case let .output(second, secondCount, control2)? = session.takeMergedFrame() else {
-            return XCTFail("expected the remainder")
+            XCTFail("expected the remainder")
+            return
         }
         XCTAssertEqual(secondCount, 1000)
         XCTAssertEqual(control2, [], "control is not duplicated onto the remainder")
@@ -71,12 +73,14 @@ final class MuxChannelSessionFrameBoundTests: XCTestCase {
         session._enqueueChunkForTesting(bytes: a)
         session._enqueueChunkForTesting(bytes: b)
         guard case let .output(first, _, _)? = session.takeMergedFrame() else {
-            return XCTFail("expected first frame")
+            XCTFail("expected first frame")
+            return
         }
         XCTAssertLessThanOrEqual(first.count, cap, "merged frame never exceeds the safe cap")
         XCTAssertEqual(first, a, "b did not fit → not absorbed")
         guard case let .output(second, _, _)? = session.takeMergedFrame() else {
-            return XCTFail("expected second frame")
+            XCTFail("expected second frame")
+            return
         }
         XCTAssertEqual(second, b)
     }

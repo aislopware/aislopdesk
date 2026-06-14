@@ -194,7 +194,7 @@ public enum FrameDecodability: Equatable, Sendable {
     case requestKeyframe
 
     /// Triage a frame by its keyframe flag and reassembled byte count.
-    public static func classify(keyframe: Bool, byteCount: Int) -> FrameDecodability {
+    public static func classify(keyframe: Bool, byteCount: Int) -> Self {
         if byteCount > 0 { return .decodable }
         return keyframe ? .requestKeyframe : .dropSilently
     }
@@ -377,16 +377,19 @@ public struct ReceivedDatagramRouter: Sendable {
     public func route(channel: VideoChannel, data: Data, mediaFlowing: Bool) -> Routed {
         switch channel {
         case .control:
-            do { return try .control(VideoControlMessage.decode(data)) }
-            catch { return .drop(reason: "undecodable control datagram") }
+            do { return try .control(VideoControlMessage.decode(data)) } catch {
+                return .drop(reason: "undecodable control datagram")
+            }
         case .video:
             guard mediaFlowing else { return .ignore }
-            do { return try .videoFragment(FrameFragment.decode(data)) }
-            catch { return .drop(reason: "undecodable video fragment") }
+            do { return try .videoFragment(FrameFragment.decode(data)) } catch {
+                return .drop(reason: "undecodable video fragment")
+            }
         case .geometry:
             guard mediaFlowing else { return .ignore }
-            do { return try .geometry(WindowGeometryMessage.decode(data)) }
-            catch { return .drop(reason: "undecodable geometry datagram") }
+            do { return try .geometry(WindowGeometryMessage.decode(data)) } catch {
+                return .drop(reason: "undecodable geometry datagram")
+            }
         case .cursor,
              .input,
              .recovery:

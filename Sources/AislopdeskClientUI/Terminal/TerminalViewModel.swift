@@ -15,6 +15,7 @@ import Foundation
 ///
 /// `@MainActor` so it is safe to mutate from SwiftUI and to drive a `@MainActor`
 /// `GhosttySurface`; `@Observable` so the views update automatically.
+@preconcurrency
 @MainActor
 @Observable
 public final class TerminalViewModel {

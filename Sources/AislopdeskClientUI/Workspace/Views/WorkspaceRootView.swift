@@ -472,7 +472,7 @@ private struct WindowWidthReader: NSViewRepresentable {
         context.coordinator.observe(nsView.window)
     }
 
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+    static func dismantleNSView(_: NSView, coordinator: Coordinator) {
         coordinator.stop()
     }
 

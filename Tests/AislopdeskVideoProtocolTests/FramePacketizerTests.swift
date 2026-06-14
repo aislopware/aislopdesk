@@ -23,7 +23,8 @@ final class FramePacketizerTests: XCTestCase {
         var reassembler = FrameReassembler()
         let result = reassembler.ingest(fragments[0])
         guard case let .completed(reassembled) = result else {
-            return XCTFail("expected completed, got \(result)")
+            XCTFail("expected completed, got \(result)")
+            return
         }
         XCTAssertEqual(reassembled.avcc, frame)
         XCTAssertTrue(reassembled.keyframe)
@@ -272,7 +273,8 @@ final class FramePacketizerTests: XCTestCase {
         XCTAssertEqual(fragments[0].payload.count, 0)
         var reassembler = FrameReassembler()
         guard case let .completed(frame) = reassembler.ingest(fragments[0]) else {
-            return XCTFail("empty frame should complete")
+            XCTFail("empty frame should complete")
+            return
         }
         XCTAssertEqual(frame.avcc.count, 0)
     }

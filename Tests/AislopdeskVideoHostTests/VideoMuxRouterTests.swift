@@ -68,7 +68,8 @@ final class VideoMuxRouterTests: XCTestCase {
         var router = VideoMuxRouter()
         router.admit(3)
         guard case .drop = router.route(channelID: 3, channel: .video, bytesCount: 0) else {
-            return XCTFail("expected drop for an empty datagram")
+            XCTFail("expected drop for an empty datagram")
+            return
         }
     }
 }

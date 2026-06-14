@@ -111,8 +111,9 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     /// channelID, to `onReceive(channelID, channel, payload)`. The daemon dispatches that to the
     /// per-channel session. A datagram for an unadmitted/retired channelID is dropped (per-channel
     /// loss isolation), never delivered, never fatal.
+    @preconcurrency
     public func start(onReceive: @escaping @Sendable (_ channelID: UInt32, _ channel: VideoChannel, _ data: Data)
-        -> Void) async throws
+        -> Void) throws
     {
         let params = NWParameters.udp
         params.includePeerToPeer = false
@@ -194,7 +195,10 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         // Bind locals so the os_log interpolation captures no `self` (see NWVideoMuxClientFlow).
         let mediaPortValue = mediaPort.rawValue
         let cursorPortValue = cursorPort.rawValue
-        log.info("NWVideoMuxDatagramTransport listening media=\(mediaPortValue) cursor=\(cursorPortValue) (shared mux flow)")
+        log
+            .info(
+                "NWVideoMuxDatagramTransport listening media=\(mediaPortValue) cursor=\(cursorPortValue) (shared mux flow)",
+            )
     }
 
     /// One reaper scan (on `queue`): for each dead lane the decider reports, hold the lane in a
@@ -316,7 +320,7 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
     private func routeMedia(
         _ data: Data,
         on conn: NWConnection,
-        onReceive: @escaping @Sendable (UInt32, VideoChannel, Data) -> Void,
+        onReceive: @Sendable (UInt32, VideoChannel, Data) -> Void,
     ) {
         guard let (channelID, rest) = try? VideoMuxHeaderCodec.decode(data), rest.count >= 1 else { return }
         let tag = rest[rest.startIndex]
@@ -468,7 +472,7 @@ public final class NWVideoMuxDatagramTransport: @unchecked Sendable {
         })
     }
 
-    public func stop() async {
+    public func stop() {
         // R14 lock-domain fix: read+nil the listener refs UNDER the lock (their write moved under the lock
         // in start()), then cancel OUTSIDE the lock. cancel() is idempotent and the refs are read nowhere
         // else, so this is behavior-preserving — it just closes the lock-free read/nil hole.

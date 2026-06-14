@@ -57,6 +57,7 @@ public final class VideoSendLane: @unchecked Sendable {
     private var wakeup: AsyncStream<Void>.Continuation?
     private let send: @Sendable (Data, VideoChannel) -> Void
 
+    @preconcurrency
     public init(send: @escaping @Sendable (Data, VideoChannel) -> Void) {
         self.send = send
         let (wakeups, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))

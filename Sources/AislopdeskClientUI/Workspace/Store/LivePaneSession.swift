@@ -23,6 +23,7 @@ import Foundation
 /// ``make(_:makeClient:makeInspector:)`` BUILDS the `ConnectionViewModel` (host/port pre-filled from
 /// `spec.endpoint`) but does **not** call `connect()`. The view triggers `connect()` lazily on appear
 /// (WF4/WF5) so restoring a 12-pane workspace does not slam 12 sockets at launch.
+@preconcurrency
 @MainActor
 @Observable
 public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiable, PaneSessionIDAdopting {
@@ -172,6 +173,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     ///   - makeInspector: builds the read-only `InspectorClient` (NWConnection #2) for a `.claudeCode`
     ///     pane's endpoint, or returns `nil` when no second channel is available. Retained for the
     ///     `resume()` rebuild.
+    @preconcurrency
     public static func make(
         _ spec: PaneSpec,
         makeClient: @escaping @Sendable () -> AislopdeskClient,

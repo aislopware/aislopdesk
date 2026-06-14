@@ -68,7 +68,9 @@ final class InputEventEncoderTests: XCTestCase {
             clickCount: 2,
             modifiers: [.shift, .command],
         )
-        guard case let .mouseDown(button, n, clicks, mods, tag) = event else { return XCTFail("not a mouseDown") }
+        guard case let .mouseDown(button, n, clicks, mods, tag) = event else { XCTFail("not a mouseDown")
+            return
+        }
         XCTAssertEqual(button, .right)
         XCTAssertEqual(n.x, 1.0, accuracy: 1e-9) // clamped
         XCTAssertEqual(n.y, 0.5, accuracy: 1e-9)
@@ -89,7 +91,9 @@ final class InputEventEncoderTests: XCTestCase {
             clickCount: 1,
             modifiers: [.shift],
         )
-        guard case let .mouseDrag(button, n, clicks, mods, tag) = event else { return XCTFail("not a mouseDrag") }
+        guard case let .mouseDrag(button, n, clicks, mods, tag) = event else { XCTFail("not a mouseDrag")
+            return
+        }
         XCTAssertEqual(button, .left)
         XCTAssertEqual(n.x, 0.5, accuracy: 1e-9)
         XCTAssertEqual(n.y, 0.5, accuracy: 1e-9)

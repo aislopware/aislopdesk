@@ -13,6 +13,7 @@ import Foundation
 /// **Lifecycle:** the app scene owns a `.task { await monitor.run() }`; `run()` loops until that task is
 /// cancelled (scene teardown), then closes every pane it spawned. Inert when no discovery seam is
 /// registered (headless / no video module) or while disconnected.
+@preconcurrency
 @MainActor
 public final class SystemDialogMonitor {
     private weak var store: WorkspaceStore?
@@ -31,6 +32,7 @@ public final class SystemDialogMonitor {
     /// How long a manually-closed dialog pane stays closed before a still-present dialog re-spawns it.
     private let respawnSuppression: TimeInterval
 
+    @preconcurrency
     public init(
         store: WorkspaceStore,
         isConnected: @escaping @MainActor () -> Bool,
