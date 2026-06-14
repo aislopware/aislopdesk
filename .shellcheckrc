@@ -1,0 +1,7 @@
+# ShellCheck — strictest practical config for the repo's shell scripts.
+# `enable=all` turns on every optional check (the ones off by default), e.g.
+# require-variable-braces, quote-safe-variables, check-unassigned-uppercase.
+enable=all
+
+# Allow `source`/`.` of files that ShellCheck can locate, so cross-file checks work.
+external-sources=true
