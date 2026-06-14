@@ -1,4 +1,4 @@
-//! Wrap-aware sequence arithmetic — a port of Swift `UInt32.distanceWrapped(from:)`.
+//! Wrap-aware sequence arithmetic — the canonical `UInt32.distanceWrapped(from:)` logic (the Swift shell mirrors it).
 //!
 //! `frame_id` / `stream_seq` / `channel_id` are monotonic `u32`s that wrap at 2³². To
 //! compare two of them you cannot use plain `<`; instead take their wrapping difference

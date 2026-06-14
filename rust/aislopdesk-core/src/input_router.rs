@@ -1,6 +1,8 @@
-//! Host-side input-datagram routing + window-raise policy — a port of the
-//! `InputDatagramRouter` and `InputInjectorRaisePolicy` types from Swift
-//! `Sources/AislopdeskVideoHost/VideoSessionLogic.swift`.
+//! Host-side input-datagram routing + window-raise policy.
+//!
+//! The canonical `InputDatagramRouter` and `InputInjectorRaisePolicy` logic; the native Swift
+//! shell keeps copies (`Sources/AislopdeskVideoHost/VideoSessionLogic.swift`) that track this
+//! (golden parity).
 //!
 //! Both are PURE decision logic, kept apart from the live `InputInjector` (which posts
 //! real `CGEvent`s and runs Accessibility IPC) so the routing + raise rules are testable
@@ -37,7 +39,7 @@ use crate::input_event::InputEvent;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputDatagramRouter;
 
-/// The decision for one received input datagram (mirrors Swift `InputDatagramRouter.Decision`).
+/// The decision for one received input datagram. The Swift shell's `InputDatagramRouter.Decision` mirrors this.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
     /// Inject this event. `raise_first` is true when the window must be raised + focused
@@ -50,7 +52,7 @@ pub enum Decision {
         raise_first: bool,
     },
     /// Drop a malformed/undecodable datagram (a corrupt single packet must never crash the
-    /// receiver — same contract as the reassembler). `reason` mirrors Swift's `String`.
+    /// receiver — same contract as the reassembler). `reason` is a plain `String`.
     Drop {
         /// Human-readable reason the datagram was dropped.
         reason: String,
@@ -60,7 +62,7 @@ pub enum Decision {
 }
 
 impl InputDatagramRouter {
-    /// Builds a stateless router (mirrors Swift's `InputDatagramRouter()`).
+    /// Builds a stateless router (the Swift shell's `InputDatagramRouter()` mirrors this).
     #[must_use]
     pub const fn new() -> Self {
         Self
@@ -76,7 +78,7 @@ impl InputDatagramRouter {
     ///   fresh click sequence re-raises (a pointer button-down always raises; pure
     ///   moves/keys/scrolls/text do not, to avoid focus thrash).
     #[must_use]
-    // `route` is an instance method to mirror Swift's `InputDatagramRouter.route` (the actor
+    // `route` is an instance method to match the Swift shell's `InputDatagramRouter.route` (the actor
     // holds a `let router = InputDatagramRouter()`); the type is a stateless namespace handle,
     // so `self` is intentionally unused.
     #[allow(clippy::unused_self)]
@@ -143,7 +145,7 @@ impl InputDatagramRouter {
 /// CHEAP non-AX frontmost-app read, whether the full AX raise is actually needed. Pure ⇒
 /// headlessly testable without AX/TCC.
 ///
-/// A namespace type with no instances (mirrors Swift's caseless `enum`).
+/// A namespace type with no instances (the Swift shell's caseless `enum` mirrors this).
 #[derive(Debug, Clone, Copy)]
 pub struct InputInjectorRaisePolicy;
 
@@ -156,7 +158,7 @@ impl InputInjectorRaisePolicy {
     /// correctness is never weakened: a click on a genuinely-backgrounded window still raises.
     ///
     /// `frontmost_pid`/`target_pid` are `pid_t` on Apple platforms, which is `Int32` ⇒ `i32`
-    /// here; a `None` frontmost mirrors Swift's `pid_t?`.
+    /// here; a `None` frontmost is the no-frontmost-app case (the Swift shell's `pid_t?` nil).
     #[must_use]
     pub const fn should_raise(
         frontmost_pid: Option<i32>,
@@ -264,7 +266,7 @@ mod tests {
         }
     }
 
-    // ---- mirror of InputDatagramRouterTests.swift -------------------------------------
+    // ---- Input routing cases (the Swift `InputDatagramRouterTests` suite cross-checks the same). ----
 
     #[test]
     fn ignores_when_not_streaming() {
@@ -498,7 +500,7 @@ mod tests {
         assert!(!InputDatagramRouter::raise_first(&scroll(), true));
     }
 
-    // ---- mirror of InputInjectorRaisePolicyTests.swift --------------------------------
+    // ---- Raise-policy cases (the Swift `InputInjectorRaisePolicyTests` suite cross-checks the same). ----
 
     #[test]
     fn skips_raise_when_already_frontmost_and_not_first() {

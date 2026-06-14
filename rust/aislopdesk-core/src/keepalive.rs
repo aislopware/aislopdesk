@@ -1,4 +1,4 @@
-//! Keepalive / idle-timeout timing contract — a port of Swift `KeepaliveTiming`.
+//! Keepalive / idle-timeout timing contract — the canonical `KeepaliveTiming` values (the Swift shell mirrors it).
 //!
 //! UDP has no FIN, so a client that vanishes without a `bye` would leave the host's flow
 //! slot pinned. A client keepalive heartbeat + a host idle-timeout reaper reclaim a dead

@@ -1,15 +1,15 @@
 //! Pure point<->pixel<->millimeter arithmetic + display-placement / chip-capability
 //! math for a `HiDPI` virtual display.
 //!
-//! A port of Swift
-//! `AislopdeskVideoHost/VirtualDisplayGeometry.swift`
-//! (`VirtualDisplayGeometry` struct + `VirtualDisplayPlanner` enum).
+//! The canonical `VirtualDisplayGeometry` / `VirtualDisplayPlanner` logic. The native
+//! Swift shell keeps a copy (`AislopdeskVideoHost/VirtualDisplayGeometry.swift`) that
+//! tracks this (golden parity).
 //!
 //! No CoreGraphics, no IPC, no private API: just the math that decides the VD's POINT
 //! mode size, the PIXEL framebuffer, `sizeInMillimeters` (target PPI), global origin,
-//! per-chip pixel ceiling, and advertised refresh-rate modes. Equivalence with Swift is
-//! proven by the `golden_parity` integration test (float outputs compared as IEEE bit
-//! patterns; integer/bool outputs compared exactly).
+//! per-chip pixel ceiling, and advertised refresh-rate modes. The `golden_parity`
+//! integration test proves the Swift shell tracks this (float outputs compared as IEEE
+//! bit patterns; integer/bool outputs compared exactly).
 //!
 //! The `HiDPI` rule (from the `CGVirtualDisplay` research / `FreeDisplay` / force-hidpi /
 //! Chromium): mode width/height are POINTS; `maxPixelsWide/High = points × scale`;
@@ -19,7 +19,7 @@
 
 use crate::geometry::{VideoPoint, VideoRect, VideoSize};
 
-/// Port of Swift `VirtualDisplayGeometry` (an `Equatable, Sendable` value type).
+/// The Swift shell's `VirtualDisplayGeometry` mirrors this (an `Equatable, Sendable` value type).
 ///
 /// Swift `Int` is 64-bit on the targets, so all integer fields are `i64` to preserve
 /// the same overflow domain for `point_width * scale`.
@@ -43,8 +43,8 @@ impl VirtualDisplayGeometry {
     /// Swift `sizeInMillimeters` default `targetPPI = 163`.
     pub const DEFAULT_TARGET_PPI: f64 = 163.0;
 
-    /// Mirrors Swift `init(pointWidth:pointHeight:scale:maxHorizontalPixels:)`:
-    /// clamps every field to a minimum of 1 via `max(1, …)`.
+    /// The Swift shell's `init(pointWidth:pointHeight:scale:maxHorizontalPixels:)` mirrors
+    /// this: clamps every field to a minimum of 1 via `max(1, …)`.
     ///
     /// Swift exposes `scale` and `maxHorizontalPixels` as default arguments
     /// ([`Self::DEFAULT_SCALE`] / [`Self::DEFAULT_MAX_HORIZONTAL_PIXELS`]); pass those
@@ -95,7 +95,8 @@ impl VirtualDisplayGeometry {
     pub fn size_in_millimeters(&self, target_ppi: f64) -> VideoSize {
         // Swift `max(1.0, targetPPI)` == the free `max`'s `y >= x ? y : x` with x = 1.0,
         // i.e. `target_ppi >= 1.0 ? target_ppi : 1.0`. The explicit ternary (rather than
-        // `1.0_f64.max(target_ppi)`) keeps Swift-exact NaN semantics: NaN -> 1.0.
+        // `1.0_f64.max(target_ppi)`) propagates NaN → 1.0 (unlike `f64::max`); the Swift
+        // shell uses the same semantics.
         let ppi = if target_ppi >= 1.0 { target_ppi } else { 1.0 };
         // PRESERVE op order: `Double(pixel) / ppi * 25.4` (left-to-right) for bit parity.
         VideoSize::new(
@@ -105,11 +106,11 @@ impl VirtualDisplayGeometry {
     }
 }
 
-// ----- Port of Swift `enum VirtualDisplayPlanner` (a stateless namespace). -----
-// Mirrors the crate convention of free functions for stateless namespaces
+// ----- `VirtualDisplayPlanner` logic (a stateless namespace; the Swift shell mirrors it). -----
+// Follows the crate convention of free functions for stateless namespaces
 // (cf. `nal_unit::join`, `coordinate_mapping::window_point`, `mux_header::encode`).
 
-/// Port of `VirtualDisplayPlanner.originToRight(of:)`: the VD's global origin, flush to
+/// The canonical `VirtualDisplayPlanner.originToRight(of:)`: the VD's global origin, flush to
 /// the RIGHT of the rightmost existing display, at `y = 0`. Empty input -> `(0, 0)`.
 ///
 /// Placing the VD past every real display guarantees it never overlaps one — macOS
@@ -133,7 +134,7 @@ pub fn origin_to_right(existing_displays: &[VideoRect]) -> VideoPoint {
     VideoPoint::new(max_x, 0.0)
 }
 
-/// Port of `VirtualDisplayPlanner.chipPixelLimit(cpuBrand:)`: the `CGVirtualDisplay` max
+/// The canonical `VirtualDisplayPlanner.chipPixelLimit(cpuBrand:)`: the `CGVirtualDisplay` max
 /// horizontal framebuffer pixels for the running chip, from its `machdep.cpu.brand_string`.
 ///
 /// A Pro/Max/Ultra die has the larger display-pipe budget (7680); a base "Apple M…" die
@@ -155,7 +156,7 @@ pub fn chip_pixel_limit(cpu_brand: &str) -> i64 {
     }
 }
 
-/// Port of `VirtualDisplayPlanner.refreshRates(fps:)`: always `[60, 30]`, plus `fps`
+/// The canonical `VirtualDisplayPlanner.refreshRates(fps:)`: always `[60, 30]`, plus `fps`
 /// when `fps > 60`; deduped + sorted DESCENDING. Returned as `f64` (Swift `[Double]`).
 ///
 /// `WindowServer` composites a VD-parked window at most at the VD's refresh, so a window
@@ -183,7 +184,7 @@ pub fn refresh_rates(fps: i64) -> Vec<f64> {
 mod tests {
     use super::*;
 
-    // ----- VirtualDisplayGeometry (mirrors the Swift unit tests 1:1) -----
+    // ----- VirtualDisplayGeometry cases -----
 
     // 2× HiDPI: a 1920×1080-POINT display is backed by 3840×2160 PIXELS.
     #[test]
@@ -267,7 +268,7 @@ mod tests {
     #[test]
     fn ppi_clamp_nan_yields_one_in_this_call_order() {
         let g = VirtualDisplayGeometry::new(1920, 1080, 2, 7680);
-        // NaN >= 1.0 is false → ppi = 1.0, so the result is finite (matches Swift).
+        // NaN >= 1.0 is false → ppi = 1.0, so the result is finite; the Swift shell matches this.
         let mm = g.size_in_millimeters(f64::NAN);
         let expected = g.pixel_width() as f64 / 1.0 * 25.4;
         assert!(mm.width.is_finite());
@@ -288,7 +289,7 @@ mod tests {
         );
     }
 
-    // ----- VirtualDisplayPlanner.originToRight (mirrors the Swift unit tests 1:1) -----
+    // ----- VirtualDisplayPlanner.originToRight cases -----
 
     // Single display: the VD lands flush to the right of it (the historical (mainWidth, 0)).
     #[test]
@@ -362,7 +363,7 @@ mod tests {
         assert_eq!(origin_to_right(&displays), VideoPoint::new(1512.5, 0.0));
     }
 
-    // ----- VirtualDisplayPlanner.chipPixelLimit (mirrors the Swift unit tests 1:1) -----
+    // ----- VirtualDisplayPlanner.chipPixelLimit cases -----
 
     #[test]
     fn chip_pixel_limit_base_pro_max_ultra() {
@@ -406,7 +407,7 @@ mod tests {
         );
     }
 
-    // ----- VirtualDisplayPlanner.refreshRates (mirrors the Swift unit tests 1:1) -----
+    // ----- VirtualDisplayPlanner.refreshRates cases -----
 
     // At 60fps (or below): just the 60/30 baseline (descending, deduped).
     #[test]

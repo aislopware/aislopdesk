@@ -1,5 +1,5 @@
-//! Content/congestion-adaptive FPS governor — a port of Swift `FPSGovernor`, plus its actuator
-//! `EncodeCadenceGate` and the time-equivalent `SelfHealCadence`.
+//! Content/congestion-adaptive FPS governor — the canonical `FPSGovernor` logic (the Swift shell mirrors it),
+//! plus its actuator `EncodeCadenceGate` and the time-equivalent `SelfHealCadence`.
 //!
 //! Under a bandwidth-starved link `VideoToolbox` can only coarsen QP so far; past the entropy floor a
 //! dense stream's offered load exceeds the actuated rate. The governor drops the FRAME RATE (each
@@ -13,8 +13,8 @@
 //! over-budget AND congestion (one rung per hold window), step UP slow on a clean run with a strict
 //! projected fit. Pure + deterministic; "time" is the count of folded reports.
 //!
-//! Tunables: the Swift source resolves these from `AISLOPDESK_FPS_GOV_*` env vars at startup; the
-//! portable core uses the compile-time defaults below (identical when no override is set).
+//! Tunables: the Swift shell resolves these from `AISLOPDESK_FPS_GOV_*` env vars at startup; this
+//! core uses the compile-time defaults below (identical to the shell's values when no env override is set).
 
 use crate::live_congestion_controller::{
     effective_slack_millis, LOSS_THRESHOLD, RTT_INFLATE_FACTOR,

@@ -1,4 +1,4 @@
-//! YCbCr→RGB coefficients — a port of Swift `YCbCrConversion`.
+//! YCbCr→RGB coefficients — the canonical `YCbCrConversion` logic (the Swift shell mirrors it).
 //!
 //! The single source of truth for the BT.709 coefficients the client's Metal shader
 //! applies, so the headlessly-testable numbers and the GPU's literals stay in lockstep.

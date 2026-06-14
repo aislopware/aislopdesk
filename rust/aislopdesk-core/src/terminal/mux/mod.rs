@@ -1,4 +1,4 @@
-//! The TCP-mux layer — a port of `Sources/AislopdeskProtocol/Mux`.
+//! The TCP-mux layer — the canonical mux logic; the Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! Multiplexes many logical channels over one physical TCP connection (SSH-style channel
 //! framing) and runs per-channel credit flow control. Every type here is a pure value type

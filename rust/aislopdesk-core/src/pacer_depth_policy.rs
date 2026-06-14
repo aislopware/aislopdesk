@@ -1,4 +1,4 @@
-//! Adaptive pacer-depth policy (v3) — a port of Swift `PacerDepthPolicy`.
+//! Adaptive pacer-depth policy (v3) — the canonical `PacerDepthPolicy` logic (the Swift shell mirrors it).
 //!
 //! Pays one frame of presentation slack (depth 1 → 2) only AFTER observed NETWORK-late events
 //! (one-way-delay spikes from [`OwdLateDetector`](crate::owd_late_detector), fed via
@@ -8,9 +8,9 @@
 //! classifier conflated network lateness with content cadence and pinned the depth). Pure + headless
 //! — all time is injected as client-monotonic seconds.
 //!
-//! Tunables: the Swift source resolves `AISLOPDESK_DEPTH_*` env vars at startup; the portable core
-//! uses the compile-time defaults (identical when unset), and [`Config::from_environment`] applies
-//! the same clamps to a caller-supplied map.
+//! Tunables: the Swift shell resolves `AISLOPDESK_DEPTH_*` env vars at startup; this core uses the
+//! compile-time defaults (identical to the shell's values when no env override is set);
+//! [`Config::from_environment`] applies the same clamps to a caller-supplied map.
 
 use std::collections::HashMap;
 
@@ -98,7 +98,7 @@ impl Config {
     /// Env-tunable construction, each value clamped to a sane band; absent / unparsable values keep
     /// the default. Pure: the caller supplies the `AISLOPDESK_DEPTH_*` map.
     ///
-    /// Deviation (same as the other env helpers): Swift's `Double(String)` accepts hex-float; Rust's
+    /// Documented divergence from the Swift shell (same as the other env helpers): Swift's `Double(String)` accepts hex-float; Rust's
     /// `parse::<f64>` rejects it → that knob keeps its default. Decimal values parse identically.
     #[must_use]
     pub fn from_environment(env: &HashMap<&str, &str>) -> Self {

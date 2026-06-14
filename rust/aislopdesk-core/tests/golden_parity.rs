@@ -1,9 +1,10 @@
 //! Cross-language golden-vector parity.
 //!
-//! Replays the JSON corpus emitted by the Swift `aislopdesk-corevectors` dumper (the REAL
-//! `AislopdeskVideoProtocol` codecs) and asserts the Rust `aislopdesk-core` port produces
-//! byte- and bit-identical output. This is the load-bearing proof that the two
-//! implementations agree on the wire — not just internally self-consistent.
+//! `aislopdesk-core` is the canonical implementation; this test pins its output. It replays
+//! the checked-in golden corpus and asserts this core reproduces it byte- and bit-identically.
+//! Regenerating that corpus with the Swift `aislopdesk-corevectors` dumper (which drives the
+//! Swift shell's copies through the REAL `AislopdeskVideoProtocol` codecs) confirms those copies
+//! still track the core — the load-bearing proof that the two implementations agree on the wire.
 //!
 //! Regenerate the corpus after any wire change:
 //! `swift run aislopdesk-corevectors > rust/aislopdesk-core/tests/vectors/golden_vectors.json`
@@ -157,12 +158,12 @@ fn assert_rect_bits(label: &str, got: VideoRect, r: &Value) {
     );
 }
 
-/// Assert a Rust encoding equals the Swift golden bytes, with a labelled diff on mismatch.
+/// Assert this core's encoding equals the golden corpus bytes, with a labelled diff on mismatch.
 fn assert_hex(label: &str, got: &[u8], expected_hex: &str) {
     assert_eq!(
         to_hex(got),
         expected_hex,
-        "{label}: Rust bytes differ from Swift golden"
+        "{label}: core bytes differ from the golden corpus"
     );
 }
 
@@ -594,9 +595,9 @@ fn adaptive_fec_parity() {
 
 // ----- realtime-controller FLOAT-determinism parity -----
 //
-// Each test replays the SAME deterministic input sequence the Swift dumper drove and asserts the
-// resulting f64 state is bit-identical (IEEE bit patterns), proving the port reproduces Swift's
-// floating-point arithmetic operation-for-operation.
+// Each test replays the SAME deterministic input sequence the dumper drove and asserts the
+// resulting f64 state is bit-identical (IEEE bit patterns), proving this core and the Swift shell
+// agree on the floating-point arithmetic operation-for-operation.
 
 #[test]
 fn network_estimate_fold_parity() {
@@ -894,7 +895,7 @@ fn mux_envelopes_parity() {
 // ----- host pure-geometry deciders (FLOAT-determinism parity) -----
 //
 // Each test replays the diverse + edge inputs the Swift dumper drove through the CoreGraphics-
-// faithful host deciders and asserts the Rust port reproduces every float bit-for-bit (inputs
+// faithful host deciders and asserts this core reproduces every float bit-for-bit (inputs
 // AND outputs are IEEE bit patterns) and every int/bool exactly. CGRectNull (∞,∞,0,0) is matched
 // component-by-component against `VideoRect::NULL`.
 
@@ -1261,7 +1262,7 @@ fn input_motion_coalesce_parity() {
 
 // ----- VirtualHIDKeyboard (boot-keyboard report parity) -----
 //
-// Replays the Swift `VirtualHIDKeyboard` / `HIDKeyboardState` golden vectors: the
+// Replays the `VirtualHIDKeyboard` / `HIDKeyboardState` golden vectors: the
 // keycode→HID-usage table over the full vk byte range, the modifier byte for every
 // `InputModifiers` raw-bit combination, the boot-report layout, and a scripted
 // `HIDKeyboardState` transcript comparing each returned report's bytes (never the internal
@@ -1345,7 +1346,7 @@ fn vhid_state_transcript_parity() {
 // ----- HostOutputSniffer (outbound-PTY control-message parity) -----
 //
 // Each scenario replays its scripted (chunk, now_ms) steps on a fresh sniffer and asserts the
-// encoded WireMessage hex array matches the Swift sniffer's, in byte order. The Swift dumper
+// encoded WireMessage hex array matches the golden corpus, in byte order. The dumper
 // drove a deterministic scripted clock so the OSC 133 C→D duration equals `now_ms - start`.
 
 #[test]

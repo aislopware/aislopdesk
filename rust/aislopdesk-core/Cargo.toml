@@ -1,7 +1,7 @@
 [package]
 name = "aislopdesk-core"
 version = "0.1.0"
-description = "Portable, side-effect-free core of Aislopdesk: wire codecs, FEC, packetizer/reassembler, and realtime controllers. A byte/behaviour-identical Rust port of the Swift pure-algorithm targets, intended for reuse by a future Android client."
+description = "Portable, side-effect-free core of Aislopdesk and the single source of truth for its logic: wire codecs, FEC, packetizer/reassembler, realtime controllers, host server-logic, and the terminal/PTY protocol. Safe Rust; the Swift apps and a future Android client track it over a C ABI."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -1,5 +1,5 @@
-//! Client→host loss-recovery / acknowledgement codec — a port of the codec half of
-//! Swift `RecoverySignaling` (`NetworkStatsReport`, `RecoveryMessage`).
+//! Client→host loss-recovery / acknowledgement codec — the canonical `RecoverySignaling`
+//! logic (`NetworkStatsReport`, `RecoveryMessage`; the Swift shell mirrors it).
 //!
 //! Recovery prefers an LTR refresh over a forced IDR. A `NetworkStats` report rides the
 //! same channel. Every body is fixed-width; the decoder additionally REJECTS trailing

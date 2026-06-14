@@ -1,5 +1,5 @@
-//! Pure admit / backpressure decision for a BOUNDED per-channel producer queue — a port
-//! of Swift `AislopdeskProtocol.BoundedQueuePolicy`.
+//! Pure admit / backpressure decision for a BOUNDED per-channel producer queue — the canonical
+//! `BoundedQueuePolicy` logic. The Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! The decider behind the host PTY-read backpressure: the per-channel relay reads the PTY
 //! into a queue and drains it onto the channel's send window. Without a bound, the

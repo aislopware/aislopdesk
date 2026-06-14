@@ -1,8 +1,8 @@
 //! Pure re-arm + backoff decision for a UDP `receiveMessage` loop (BUG-L / F3).
 //!
-//! A port of
-//! Swift `UDPReceiveLoopPolicy` (`AislopdeskVideoHost/Mux/UDPReceiveLoopPolicy.swift`, with a
-//! byte-identical twin in `AislopdeskVideoClient/Mux/UDPReceiveLoopPolicy.swift`).
+//! The canonical `UDPReceiveLoopPolicy` logic; the native Swift shell keeps copies
+//! (`AislopdeskVideoHost/Mux/UDPReceiveLoopPolicy.swift` and
+//! `AislopdeskVideoClient/Mux/UDPReceiveLoopPolicy.swift`) that track this (golden parity).
 //!
 //! The receive loop must keep itself armed across TRANSIENT per-datagram errors (an ICMP
 //! port-unreachable surfaces as a receive error even while the flow/connection stays `.ready`)
@@ -18,28 +18,27 @@
 //! first error-free datagram, so `next_backoff(0)` is `0.0` — the normal hot path is never
 //! delayed.
 //!
-//! Both functions are pure + unit-testable (no socket / clock). Client + host live in separate
-//! Swift modules and each owns an identical copy; the behaviour contract is the agreement, not a
-//! shared type — this port unifies the two copies into one.
+//! Both functions are pure + unit-testable (no socket / clock). Client + host Swift shell modules
+//! each own an identical copy; the behaviour contract is the agreement — this canonical core
+//! unifies both copies into one.
 //!
 //! [`should_rearm`]: UDPReceiveLoopPolicy::should_rearm
 //! [`next_backoff`]: UDPReceiveLoopPolicy::next_backoff
 
 /// Stateless namespace for the UDP receive-loop re-arm + backoff policy.
 ///
-/// Modelled as a caseless
-/// enum (cannot be constructed), mirroring the Swift `enum UDPReceiveLoopPolicy` used purely as a
-/// namespace for `static` functions.
+/// Modelled as a caseless enum (cannot be constructed); the Swift shell's
+/// `enum UDPReceiveLoopPolicy` used purely as a namespace for `static` functions mirrors this.
 pub enum UDPReceiveLoopPolicy {}
 
 impl UDPReceiveLoopPolicy {
-    /// Smallest re-arm delay after the first consecutive error (5 ms). Mirrors Swift
-    /// `baseBackoff` (internal there; exposed here as a documented contract value for the Android
-    /// consumer and the tests).
+    /// Smallest re-arm delay after the first consecutive error (5 ms). The Swift shell's
+    /// `baseBackoff` mirrors this (internal there; exposed here as a documented contract value
+    /// for the Android consumer and the tests).
     pub const BASE_BACKOFF: f64 = 0.005;
 
-    /// Capped re-arm delay so a long ECONNREFUSED storm settles at ~250 ms, not a spin. Mirrors
-    /// Swift `maxBackoff`.
+    /// Capped re-arm delay so a long ECONNREFUSED storm settles at ~250 ms, not a spin. The
+    /// Swift shell's `maxBackoff` mirrors this.
     pub const MAX_BACKOFF: f64 = 0.25;
 
     /// The largest shift exponent applied to [`BASE_BACKOFF`](Self::BASE_BACKOFF), capping
@@ -95,14 +94,14 @@ impl UDPReceiveLoopPolicy {
 mod tests {
     use super::*;
 
-    /// Mirror of `UDPReceiveLoopPolicyTests`' `accuracy: 1e-9`.
+    /// Same accuracy threshold as the Swift `UDPReceiveLoopPolicyTests` (`accuracy: 1e-9`).
     const EPS: f64 = 1e-9;
 
     fn approx(a: f64, b: f64) {
         assert!((a - b).abs() <= EPS, "{a} !~= {b}");
     }
 
-    // MARK: BUG-L — re-arm iff the flow is alive (mirrors the Swift host + client tests 1:1).
+    // MARK: BUG-L — re-arm iff the flow is alive (the Swift `UDPReceiveLoopPolicyTests` suite cross-checks the same).
 
     #[test]
     fn rearms_while_flow_alive() {
@@ -114,7 +113,7 @@ mod tests {
         assert!(!UDPReceiveLoopPolicy::should_rearm(false));
     }
 
-    // MARK: F3 — consecutive-error backoff (no busy-loop), mirrors the Swift tests 1:1.
+    // MARK: F3 — consecutive-error backoff (no busy-loop) cases (the Swift `UDPReceiveLoopPolicyTests` suite cross-checks the same).
 
     #[test]
     fn no_backoff_without_error() {

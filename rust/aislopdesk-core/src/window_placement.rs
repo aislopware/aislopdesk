@@ -1,9 +1,8 @@
 //! Pure window-placement arithmetic.
 //!
-//! A port of the Swift `WindowPlacementMath`
-//! enum (`Sources/AislopdeskVideoHost/WindowPlacement.swift`, the `#if os(macOS)`
-//! file). Only the PURE math is ported; the surrounding `WindowPlacement` enum is
-//! Accessibility (AX) side-effect code and is intentionally NOT portable.
+//! The canonical `WindowPlacementMath` logic (`Sources/AislopdeskVideoHost/WindowPlacement.swift`,
+//! the `#if os(macOS)` file). Only the PURE math lives here; the surrounding `WindowPlacement`
+//! enum is Accessibility (AX) side-effect code and is intentionally NOT portable to this core.
 //!
 //! Feature #1 (`HiDPI` virtual-display parking): decide where/how to move a window
 //! fully onto a display. [`placement`] clamps the window DOWN to the display bounds
@@ -21,9 +20,9 @@
 //! * `CGRect.origin` is the RAW stored origin (NOT standardized), so [`placement`]
 //!   returns `display_bounds.origin` verbatim — including negative coordinates from
 //!   a display placed to the left of / above the main display.
-//! * The `min(x, y)` clamp mirrors Swift's global `min` (`{ y < x ? y : x }`) with a
-//!   ternary rather than [`f64::min`]: the two agree for every finite input, but the
-//!   ternary propagates a NaN operand exactly as Swift would for a future caller.
+//! * The `min(x, y)` clamp uses the same ternary form as Swift's global `min`
+//!   (`{ y < x ? y : x }`) rather than [`f64::min`]: the two agree for every finite input,
+//!   but the ternary propagates a NaN operand (unlike `f64::min`); the Swift shell does the same.
 //! * The ½-pt tolerance math is byte-for-byte: `0.5` is exactly representable and is
 //!   added to exactly-representable inputs, so there is no rounding error. NO
 //!   rounding (`.rounded()`) appears anywhere in this module.
@@ -31,9 +30,9 @@
 use crate::geometry::{VideoRect, VideoSize};
 // NOTE: VideoPoint is reused only via VideoRect::origin (no direct construction here).
 
-/// Result of [`placement`] — mirrors the Swift labeled tuple
+/// Result of [`placement`]. The Swift shell returns the equivalent labeled tuple
 /// `(origin: CGPoint, size: CGSize, needsResize: Bool)`. `Copy` (all-`Copy` fields),
-/// matching the Swift value tuple.
+/// matching the Swift value type.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Placement {
     /// The move target = the display's top-left origin. Equals `display_bounds.origin`
@@ -56,8 +55,8 @@ pub struct Placement {
 /// CG-semantic asymmetry preserved EXACTLY:
 ///   * `window_size.width`/`.height` are RAW `CGSize` fields (NOT standardized).
 ///   * `display_bounds.width()`/`.height()` are CG-standardized (abs) — see geometry.
-///   * `min(a, b)` mirrors Swift's global `min(x, y) == { y < x ? y : x }` (matters
-///     only for NaN, which is not vectorable; finite inputs agree with `f64::min`).
+///   * `min(a, b)` uses the same form as Swift's global `min(x, y) == { y < x ? y : x }`
+///     (matters only for NaN, which is not vectorable; finite inputs agree with `f64::min`).
 #[must_use]
 pub fn placement(window_size: VideoSize, display_bounds: VideoRect) -> Placement {
     let dw = display_bounds.width(); // CG-standardized (abs)
@@ -100,7 +99,7 @@ mod tests {
     use super::*;
     use crate::geometry::{VideoPoint, VideoRect, VideoSize};
 
-    // ---- mirrors of the Swift VirtualDisplayGeometryTests (1:1) ----
+    // ---- placement and fits cases (the Swift `VirtualDisplayGeometryTests` suite cross-checks the same) ----
 
     /// `testPlacementFitsNoResize`: a window smaller than the display is not resized
     /// and is placed at the display origin.

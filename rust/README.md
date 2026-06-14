@@ -1,19 +1,24 @@
 # aislopdesk-core (Rust)
 
-The portable, side-effect-free **core** of Aislopdesk: the wire codecs (terminal
-`WireMessage` + the video protocol), FEC + frame reassembly, the realtime controllers
-(congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer,
-delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY
-protocol incl. the SSH-style channel mux + per-channel flow control. Safe Rust, zero
-runtime dependencies.
+The portable, side-effect-free **core** of Aislopdesk and the **single source of truth**
+for its logic: the wire codecs (terminal `WireMessage` + the video protocol), FEC + frame
+reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode
+gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission),
+coordinate mapping, the pure host server-logic (session state machine, the N-session
+UDP-mux router, input/recovery routing, motion coalescing, virtual-display / window /
+capture-region / system-dialog math, the virtual-HID keymap, the PTY-output sniffer), and
+the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control. Safe
+Rust, zero runtime dependencies.
 
 The Swift/SwiftUI apps are the platform shell (ScreenCaptureKit capture, VideoToolbox
-codec, Metal, input injection, PTY spawn, UI). They call this core over a C-ABI boundary:
-`aislopdesk-ffi` → the `CAislopdeskFFI` SwiftPM target → `libaislopdesk_ffi.a` (built by
-`rust/build-apple.sh`, macOS arm64 slice; iOS slices are a follow-up). The same core is
-the basis for an **Android client** over C-ABI / JNI — the ALVR split: Rust owns
-reassembly/FEC/jitter/ABR/recovery; the platform shell owns capture, the socket, and the
-hardware codec.
+codec, Metal, input injection, PTY spawn, AX, UI). They either call this core over a C-ABI
+boundary — `aislopdesk-ffi` → the `CAislopdeskFFI` SwiftPM target → `libaislopdesk_ffi.a`
+(built by `rust/build-apple.sh`, macOS arm64 slice; iOS slices are a follow-up) — or, for
+the surfaces still implemented natively in Swift for performance, keep a copy that **tracks
+this core** (held in agreement, verified by golden parity; never the reverse). The same
+core is the basis for an **Android client** over C-ABI / JNI — the ALVR split: Rust owns
+reassembly/FEC/jitter/ABR/recovery and the server brain; the platform shell owns capture,
+the socket, and the hardware codec.
 
 ## Why a C-ABI boundary
 
@@ -119,11 +124,13 @@ rust/
 
 ## Verification
 
-`aislopdesk-corevectors` (a Swift executable) emits a deterministic JSON corpus exercising
-every codec/decision family through its public API. The Rust `golden_parity` integration
-test replays it and asserts **byte-identical** encoder output and **bit-identical** numeric
-output (coordinate math, YCbCr coefficients, and the controllers' EWMA / OLS-regression /
-median / threshold float state, all via IEEE bit patterns). Regenerate after any
+The Rust core is the canonical implementation; cross-language agreement is proven by a
+golden corpus. `aislopdesk-corevectors` (a Swift executable) regenerates the deterministic
+JSON corpus by driving the Swift shell's copies through their public API; the Rust
+`golden_parity` integration test asserts this core reproduces that corpus **byte-identically**
+(encoder output) and **bit-identically** (coordinate math, YCbCr coefficients, and the
+controllers' EWMA / OLS-regression / median / threshold float state, all via IEEE bit
+patterns) — i.e. the Swift copies still track the core. Regenerate after any
 wire/controller change:
 
 ```sh
@@ -167,7 +174,7 @@ Implemented:
   mux (`MuxEnvelope`/`MuxFrameDecoder`/`ChannelTable`), and the per-channel credit flow
   control (`FlowCreditPolicy`/`ReceiveWindowAccountant`/`BoundedQueuePolicy`) — see
   [`terminal`](aislopdesk-core/src/terminal). Kept in its own namespace (own error type +
-  big-endian reader) to mirror the module boundary;
+  big-endian reader) to keep the module boundary explicit;
 - the **C-ABI boundary** (`aislopdesk-ffi`): the `extern "C"` surface — `staticlib` for
   Apple, `cdylib` for a dynamic/Android consumer — with a hand-maintained C header and a
   real C smoke test. It covers the terminal path's streaming `FrameDecoder` (opaque

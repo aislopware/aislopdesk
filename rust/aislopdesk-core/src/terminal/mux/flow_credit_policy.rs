@@ -1,5 +1,5 @@
-//! Pure SSH-window-style flow-control credit math for one direction of one channel — a
-//! port of Swift `AislopdeskProtocol.FlowCreditPolicy`.
+//! Pure SSH-window-style flow-control credit math for one direction of one channel — the
+//! canonical `FlowCreditPolicy` logic. The Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! Mirrors the SSH per-channel window: the sender may transmit at most
 //! [`remaining`](FlowCreditPolicy::remaining) bytes before it must wait for the peer to

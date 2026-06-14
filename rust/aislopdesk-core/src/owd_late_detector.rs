@@ -1,4 +1,4 @@
-//! Per-frame one-way-delay SPIKE detector — a port of Swift `OwdLateDetector` (depth v3).
+//! Per-frame one-way-delay SPIKE detector — the canonical `OwdLateDetector` logic (the Swift shell mirrors it).
 //!
 //! The signal the pacer's adaptive depth absorbs is NETWORK DELAY VARIATION: a frame whose one-way
 //! delay spikes past the path's baseline would miss its present slot at depth 1; a standing slack
@@ -46,7 +46,7 @@ impl Config {
     /// Env-tunable construction (absent/unparsable ⇒ default), clamped to sane bands. Pure: the
     /// three raw values are passed explicitly (mirroring the [`crate::recovery_policy`] pattern).
     ///
-    /// Deviation, identical to [`crate::recovery_policy::escalation_floor_seconds`]: Swift's
+    /// Documented divergence from the Swift shell, identical to [`crate::recovery_policy::escalation_floor_seconds`]: Swift's
     /// `Double(String)` accepts hex-float notation that Rust's `parse::<f64>` rejects → the floor /
     /// fraction fall back to default for a hex-valued knob (no operator writes ms/percent in
     /// hex-float). The integer warmup parses identically in both languages.

@@ -1,4 +1,4 @@
-//! Clock-skew-free network estimate — a port of Swift `NetworkEstimate`.
+//! Clock-skew-free network estimate — the canonical `NetworkEstimate` logic (the Swift shell mirrors it).
 //!
 //! The host folds the client's periodic `NetworkStatsReport` into EWMA-smoothed RTT, a windowed
 //! min-RTT baseline, an EWMA loss rate plus the raw per-report loss sample, an OWD-jitter rising

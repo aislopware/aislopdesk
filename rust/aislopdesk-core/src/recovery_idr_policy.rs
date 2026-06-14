@@ -1,4 +1,5 @@
-//! Delivery-keyed recovery-IDR admission policy — a port of Swift `RecoveryIDRPolicy`.
+//! Delivery-keyed recovery-IDR admission policy — the canonical `RecoveryIDRPolicy` logic
+//! (the Swift shell mirrors it).
 //!
 //! The single authority on whether a client recovery request may force a real IDR. The legacy
 //! gate keyed its cooldown on keyframe SEND time: when both kfDup copies of a recovery IDR were
@@ -195,8 +196,8 @@ impl RecoveryIdrPolicy {
     }
 
     fn refill(&mut self, now: f64) {
-        // Mirrors the Swift `defer { lastRefillAt = now }`: the stamp advances on EVERY call, the
-        // refill only when a strictly-later `now` has a prior stamp to measure against.
+        // The Swift shell's `defer { lastRefillAt = now }` pattern matches this: the stamp advances
+        // on EVERY call, the refill only when a strictly-later `now` has a prior stamp to measure against.
         if let Some(last) = self.last_refill_at {
             if now > last {
                 self.tokens = self

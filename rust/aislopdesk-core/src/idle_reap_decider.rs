@@ -1,5 +1,5 @@
-//! Pure idle-timeout reap decision for a UDP video flow/lane — a port of Swift
-//! `IdleReapDecider`.
+//! Pure idle-timeout reap decision for a UDP video flow/lane — the canonical `IdleReapDecider`
+//! logic (the Swift shell mirrors it).
 //!
 //! UDP has no FIN, so a client that crashes without a `bye` would pin its flow slot forever.
 //! The caller stamps `now` and acts on the returned ids; the side effects (timers, session
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 /// Per-flow liveness state. `Copy` so [`record`](IdleReapDecider::record) can hand back a value
-/// exactly like Swift's value-type `Record`.
+/// exactly like the Swift shell's value-type `Record`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Record {
     /// Host time (seconds, monotonic) of the most recent inbound datagram of ANY kind.

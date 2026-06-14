@@ -1,5 +1,7 @@
-//! Pure, order-preserving pointer-motion coalescer (the input-latency fix) — a port of
-//! Swift `InputMotionCoalescer` (in `AislopdeskVideoHost/VideoSessionLogic.swift`).
+//! Pure, order-preserving pointer-motion coalescer (the input-latency fix).
+//!
+//! The canonical `InputMotionCoalescer` logic; the native Swift shell keeps a copy
+//! (`AislopdeskVideoHost/VideoSessionLogic.swift`) that tracks this (golden parity).
 //!
 //! A remote pointer stream is ~99% motion: a real loopback trace was 1664 `mouseMove` +
 //! 163 `mouseDrag` against only 11 `mouseDown` (≈150:1). The host injects every event
@@ -22,8 +24,8 @@
 
 use crate::input_event::InputEvent;
 
-/// Pure, order-preserving pointer-motion coalescer. A stateless namespace (Swift `struct`
-/// with only `static` members); all behaviour lives in [`coalesce`](Self::coalesce).
+/// Pure, order-preserving pointer-motion coalescer. A stateless namespace (like the Swift
+/// shell's `struct` with only `static` members); all behaviour lives in [`coalesce`](Self::coalesce).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InputMotionCoalescer;
 
@@ -103,7 +105,7 @@ mod tests {
     use crate::geometry::VideoPoint;
     use crate::input_event::{InputModifiers, MouseButton};
 
-    // --- builders mirroring the Swift test helpers ---
+    // --- event builders used by tests below (the Swift test helpers follow the same shape) ---
     // Distinct positions so we can assert WHICH motion survived (latest-wins). x == y == id.
 
     fn move_ev(id: f64) -> InputEvent {
@@ -184,7 +186,7 @@ mod tests {
         InputMotionCoalescer::coalesce(b)
     }
 
-    // --- 1:1 mirror of InputMotionCoalescerTests.swift ---
+    // --- Coalescer cases (the Swift `InputMotionCoalescerTests` suite cross-checks the same). ---
 
     #[test]
     fn collapses_consecutive_moves_to_latest() {
@@ -411,7 +413,7 @@ mod tests {
         assert_eq!(coalesce(&[down(), up()]), vec![down(), up()]);
     }
 
-    // --- test helpers (mirror the Swift private helpers) ---
+    // --- test helpers (the Swift `InputMotionCoalescerTests` private helpers follow the same shape) ---
 
     fn is_move(e: &InputEvent) -> bool {
         matches!(e, InputEvent::MouseMove { .. })
@@ -447,9 +449,9 @@ mod tests {
         }
     }
 
-    /// Deterministic RNG (`SplitMix64`) so the fuzz invariants reproduce exactly. Mirrors the
-    /// Swift test's `SeededRNG`. The exact value sequence need not match Swift — the test
-    /// asserts STRUCTURAL invariants over many batches, not a golden output.
+    /// Deterministic RNG (`SplitMix64`) so the fuzz invariants reproduce exactly. The Swift
+    /// test's `SeededRNG` follows the same shape. The exact value sequence need not match — the
+    /// test asserts STRUCTURAL invariants over many batches, not a golden output.
     struct SeededRng {
         state: u64,
     }

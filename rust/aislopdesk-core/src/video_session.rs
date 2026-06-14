@@ -1,7 +1,9 @@
-//! Pure, platform-free host video-session orchestration — a port of the session-logic
-//! half of Swift `VideoSessionLogic.swift`.
+//! Pure, platform-free host video-session orchestration — the canonical session-logic core.
 //!
-//! This module ports exactly three of that file's types — [`VideoSessionState`],
+//! The native Swift shell keeps a copy (`Sources/AislopdeskVideoHost/VideoSessionLogic.swift`)
+//! that tracks this (golden parity).
+//!
+//! This module covers exactly three types — [`VideoSessionState`],
 //! [`VideoSessionStateMachine`], and [`SizeNegotiation`] — the pure decision core the host
 //! actor (`AislopdeskVideoHostSession`) delegates to. There is NO `ScreenCaptureKit` /
 //! `VideoToolbox` / Network here: the state machine validates the client `hello`, decides the
@@ -9,16 +11,16 @@
 //! [`Effect`]s the actor performs. The same discipline as
 //! [`crate::video_control`], so the transitions + the size clamp are unit-testable in isolation.
 //!
-//! The other pure types in the Swift source (`InputDatagramRouter`,
-//! `InputInjectorRaisePolicy`, `InputButtonBalance`, `InputMotionCoalescer`,
-//! `RecoveryDatagramRouter`, `NetworkEstimate`, `StaticIDRDecider`, `VideoSendScheduler`)
-//! live in their own modules — see [`crate::network_estimate`] and the input/recovery
-//! controllers — and are intentionally NOT re-ported here.
+//! The companion pure types (`InputDatagramRouter`, `InputInjectorRaisePolicy`,
+//! `InputButtonBalance`, `InputMotionCoalescer`, `RecoveryDatagramRouter`, `NetworkEstimate`,
+//! `StaticIDRDecider`, `VideoSendScheduler`) live in their own modules — see
+//! [`crate::network_estimate`] and the input/recovery controllers — and are intentionally
+//! kept out of scope here.
 
 use crate::geometry::{VideoRect, VideoSize};
 use crate::video_control::VideoControlMessage;
 
-/// Lifecycle state of a host video session. Mirrors Swift `VideoSessionState`.
+/// Lifecycle state of a host video session. The Swift shell's `VideoSessionState` mirrors this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoSessionState {
     /// Sockets not yet bound; nothing flowing.
@@ -31,8 +33,8 @@ pub enum VideoSessionState {
     Stopped,
 }
 
-/// Side effects the actor must perform after a transition. Mirrors Swift
-/// `VideoSessionStateMachine.Effect`.
+/// Side effects the actor must perform after a transition. The Swift shell's
+/// `VideoSessionStateMachine.Effect` mirrors this.
 ///
 /// `Effect` is `PartialEq` but not `Eq`: it wraps a [`VideoControlMessage`], whose `f64`
 /// fields make total equality impossible — exactly the crate-wide rule for float-carrying
@@ -71,8 +73,8 @@ pub enum Effect {
 ///
 /// It validates the client `hello`,
 /// decides the `helloAck`, and gates whether media may flow — with NO live component. The
-/// actor advances it and acts on the returned [`Effect`]s. Mirrors Swift
-/// `VideoSessionStateMachine`.
+/// actor advances it and acts on the returned [`Effect`]s. The Swift shell's
+/// `VideoSessionStateMachine` mirrors this.
 #[derive(Debug, Clone)]
 pub struct VideoSessionStateMachine {
     state: VideoSessionState,
@@ -101,15 +103,15 @@ impl Default for VideoSessionStateMachine {
 }
 
 impl VideoSessionStateMachine {
-    /// The Swift `nextStreamID` default argument value (the first session mints stream id 1).
+    /// Default `next_stream_id` (the first accepted session mints stream id 1).
     pub const DEFAULT_NEXT_STREAM_ID: u32 = 1;
-    /// The Swift `fullRange` default argument value (video-range, the wire-byte-identical OFF path).
+    /// Default `full_range` (video-range, the wire-byte-identical OFF path).
     pub const DEFAULT_FULL_RANGE: bool = false;
 
     /// Builds a fresh state machine in [`VideoSessionState::Idle`]. `next_stream_id` is the id
     /// the first accepted session will mint; `full_range` stamps the negotiated luma range into
     /// every accept ack. See [`DEFAULT_NEXT_STREAM_ID`](Self::DEFAULT_NEXT_STREAM_ID) /
-    /// [`DEFAULT_FULL_RANGE`](Self::DEFAULT_FULL_RANGE) (or [`Default`]) for the Swift defaults.
+    /// [`DEFAULT_FULL_RANGE`](Self::DEFAULT_FULL_RANGE) (or [`Default`]) for the canonical defaults.
     #[must_use]
     pub const fn new(next_stream_id: u32, full_range: bool) -> Self {
         Self {
@@ -176,8 +178,8 @@ impl VideoSessionStateMachine {
         Vec::new()
     }
 
-    /// Convenience for the hello/bye call sites that never carry an in-session resize: mirrors
-    /// the Swift `resolveResizeSize` default argument (`{ _, _ in nil }`). Equivalent to
+    /// Convenience for the hello/bye call sites that never carry an in-session resize: matches
+    /// the Swift shell's `resolveResizeSize` default argument (`{ _, _ in nil }`). Equivalent to
     /// [`handle_control`](Self::handle_control) with a resolver that always rejects resizes.
     pub fn handle_control_no_resize(
         &mut self,
@@ -375,8 +377,8 @@ const fn reject_hello_ack(window_bounds_cg: VideoRect) -> VideoControlMessage {
     }
 }
 
-/// Pure host-side size negotiation for the in-session resize feature — a port of Swift
-/// `SizeNegotiation`.
+/// Pure host-side size negotiation for the in-session resize feature — the canonical
+/// `SizeNegotiation`. The Swift shell's `SizeNegotiation` mirrors this.
 ///
 /// Turns a client `resizeRequest`'s desired size into the `u16` capture dimensions the host
 /// will adopt, clamped to the host's allowed `min`/`max` window size and rounded to a
@@ -390,7 +392,7 @@ impl SizeNegotiation {
     /// Clamps `desired` into `[min, max]` per axis and rounds to a `u16`-safe, non-zero
     /// integer. Identity (within rounding) when `desired` is already inside the bounds.
     ///
-    /// Mirrors the actor's hello clamp (`u16(max(1, min(u16::MAX, v.round())))`) but bounded by
+    /// Matches the actor's hello clamp (`u16(max(1, min(u16::MAX, v.round())))`) but bounded by
     /// the host's min/max policy rather than a single window size. The min is floored at 1 and
     /// the max ceilinged at `u16::MAX` so a degenerate (zero / out-of-range) policy can never
     /// yield 0 or overflow.
@@ -402,8 +404,8 @@ impl SizeNegotiation {
         )
     }
 
-    /// One axis of [`clamp`](Self::clamp). Float op order + global-min/max NaN semantics mirror
-    /// Swift exactly (see [`swift_min`]/[`swift_max`]).
+    /// One axis of [`clamp`](Self::clamp). Float op order + global-min/max NaN semantics are
+    /// canonical (see [`swift_min`]/[`swift_max`]); the Swift shell matches these exactly.
     fn clamp_axis(value: f64, lo: f64, hi: f64) -> u16 {
         // Floor the lower bound at 1 and ceiling the upper at u16::MAX, then order them (a
         // swapped/degenerate policy must still clamp into a valid window).
@@ -418,8 +420,8 @@ impl SizeNegotiation {
             lower
         };
         let clamped = swift_min(swift_max(v, lower), upper);
-        // `clamped` is integer-valued and in [1, u16::MAX]; `as u16` truncates toward zero
-        // exactly like Swift `UInt16(Double)` (no saturation triggered, no NaN).
+        // `clamped` is integer-valued and in [1, u16::MAX]; `as u16` truncates toward zero;
+        // the Swift shell's `UInt16(Double)` does the same (no saturation triggered, no NaN).
         clamped as u16
     }
 
@@ -433,9 +435,9 @@ impl SizeNegotiation {
     }
 }
 
-/// Swift's global `min(x, y) == { y < x ? y : x }` — used so NaN handling is byte-identical to
-/// the Swift clamp even on hostile policy bounds (Rust's `f64::min` returns the non-NaN
-/// operand, which would diverge). Finite inputs agree with `f64::min`.
+/// `min(x, y) == { y < x ? y : x }` — propagates a NaN operand (unlike `f64::min`, which
+/// returns the non-NaN operand and would diverge on hostile policy bounds). Finite inputs
+/// agree with `f64::min`. The Swift shell does the same, so the two stay bit-identical.
 #[inline]
 const fn swift_min(x: f64, y: f64) -> f64 {
     if y < x {
@@ -445,8 +447,8 @@ const fn swift_min(x: f64, y: f64) -> f64 {
     }
 }
 
-/// Swift's global `max(x, y) == { y >= x ? y : x }` — the NaN-faithful mirror of `f64::max`
-/// (see [`swift_min`]). Finite inputs agree with `f64::max`.
+/// `max(x, y) == { y >= x ? y : x }` — the NaN-faithful counterpart of `f64::max`
+/// (see [`swift_min`]); the Swift shell does the same. Finite inputs agree with `f64::max`.
 #[inline]
 const fn swift_max(x: f64, y: f64) -> f64 {
     if y >= x {
@@ -460,13 +462,13 @@ const fn swift_max(x: f64, y: f64) -> f64 {
 mod tests {
     use super::*;
 
-    // ----- shared fixtures (mirror the Swift test harnesses) -----
+    // ----- shared test fixtures -----
 
     const fn bounds() -> VideoRect {
         VideoRect::xywh(10.0, 20.0, 800.0, 600.0)
     }
 
-    /// `acceptAll` from the Swift tests: every window resolves to 800×600.
+    /// `acceptAll` resolver (named after its Swift shell test counterpart): every window resolves to 800×600.
     // The `Option` is required: this is passed as the `Fn(u32, VideoSize) -> Option<(u16, u16)>`
     // resolver to `handle_control`, so it must match that callback signature (a None-returning
     // resolver is the reject path other tests exercise).
@@ -527,7 +529,7 @@ mod tests {
         }
     }
 
-    // ===== VideoSessionStateMachineTests (mirrored 1:1) =====
+    // ===== VideoSessionStateMachine cases (the Swift `VideoSessionStateMachineTests` suite cross-checks the same) =====
 
     #[test]
     fn start_goes_idle_to_listening() {
@@ -859,7 +861,7 @@ mod tests {
         assert_eq!(s2, 2);
     }
 
-    // ===== ResizeStateMachineTests (mirrored 1:1) =====
+    // ===== Resize state-machine cases (the Swift `ResizeStateMachineTests` suite cross-checks the same) =====
 
     #[test]
     fn resize_while_streaming_emits_resize_capture_clamped_with_epoch() {
@@ -1144,7 +1146,7 @@ mod tests {
         );
     }
 
-    // ===== SizeNegotiationTests (mirrored 1:1) =====
+    // ===== Size-negotiation cases (the Swift `SizeNegotiationTests` suite cross-checks the same) =====
 
     const fn min_size() -> VideoSize {
         VideoSize::new(320.0, 240.0)

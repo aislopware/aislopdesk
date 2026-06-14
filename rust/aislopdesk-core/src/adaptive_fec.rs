@@ -1,4 +1,4 @@
-//! Adaptive FEC (WF-4) — a port of Swift `AdaptiveFECPolicy`.
+//! Adaptive FEC (WF-4) — the canonical `AdaptiveFECPolicy` logic (the Swift shell mirrors it).
 //!
 //! Two PURE concerns:
 //!  * **wire codec** — [`group_size`] maps a 3-bit on-wire tier to the group size both
@@ -61,7 +61,7 @@ pub fn allow_off_tier_from_env() -> bool {
 /// Internal redundancy LEVEL (0 = least redundancy … 4 = most): 0=OFF, 1=g10, 2=g5
 /// (default), 3=g3, 4=g2. The wire tier numbering is NOT the redundancy order (tier 0
 /// must be g5 for byte-identity), so these maps translate between them.
-#[allow(clippy::match_same_arms)] // explicit documentary mapping (mirrors the Swift table).
+#[allow(clippy::match_same_arms)] // explicit documentary mapping (matches the Swift shell's table).
 const fn level_for_tier(tier: u8) -> i32 {
     match tier {
         1 => 0, // OFF
@@ -73,7 +73,7 @@ const fn level_for_tier(tier: u8) -> i32 {
     }
 }
 
-#[allow(clippy::match_same_arms)] // explicit documentary mapping (mirrors the Swift table).
+#[allow(clippy::match_same_arms)] // explicit documentary mapping (matches the Swift shell's table).
 const fn tier_for_level(level: i32) -> u8 {
     match level {
         0 => 1, // OFF

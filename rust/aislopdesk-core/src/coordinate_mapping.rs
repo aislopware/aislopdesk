@@ -1,4 +1,4 @@
-//! Coordinate-mapping math — a port of Swift `CoordinateMapping`.
+//! Coordinate-mapping math — the canonical `CoordinateMapping` logic (the Swift shell mirrors it).
 //!
 //! The client streams normalised (0..1) window coordinates; the host maps them to a
 //! host-window point in CG top-left space (no Y flip, no scale — `kCGWindowBounds` and

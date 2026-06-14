@@ -1,5 +1,5 @@
 //! Pure value-type bookkeeping for the set of logical channels on one mux connection —
-//! a port of Swift `AislopdeskProtocol.ChannelTable`.
+//! the canonical `ChannelTable` logic. The Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! Allocates **odd** channel ids (1, 3, 5, …) — even ids and 0 are reserved for the peer
 //! — using a monotonic counter that NEVER reuses a live id (an id is "live" until it

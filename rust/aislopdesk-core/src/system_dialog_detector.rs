@@ -1,5 +1,7 @@
-//! Pure classifier behind the "show system popups/prompts in their own pane" feature —
-//! a port of Swift `SystemDialogDetector` (Sources/AislopdeskVideoHost/SystemDialogDetector.swift).
+//! Pure classifier behind the "show system popups/prompts in their own pane" feature.
+//!
+//! The canonical `SystemDialogDetector` logic; the native Swift shell keeps a copy
+//! (`Sources/AislopdeskVideoHost/SystemDialogDetector.swift`) that tracks this (golden parity).
 //!
 //! A SYSTEM dialog is a cross-process modal window that NO app-pane would ever capture — the
 //! prime case (the user's ask) being a `SecurityAgent` login/admin **password** prompt. The host
@@ -15,7 +17,7 @@
 //! **Scope (v1):** system AUTH prompts only — `SecurityAgent` / `coreauthd`. The allowlists below
 //! are the single expansion point — adding a new system-prompt source is one entry.
 //!
-//! Swift gates the source with `#if os(macOS)` (it imports CoreGraphics + is host-only). This port
+//! Swift gates the source with `#if os(macOS)` (it imports CoreGraphics + is host-only). This core
 //! is PLATFORM-INDEPENDENT pure logic (string membership + geometry), so it is NOT cfg-gated.
 //!
 //! Stateless: no map/ledger, no refcounting. Membership lookups only + an order-preserving filter,
@@ -26,9 +28,9 @@ use crate::geometry::VideoRect;
 /// One enumerated on-screen window (the fields [`classify`] reads).
 ///
 /// Built from an `SCWindow` on
-/// the host; kept as a plain value so the classifier is pure + testable off-device. Mirrors Swift
-/// `WindowSnapshot` (Equatable, Sendable). `PartialEq` only — `frame` holds `f64` (no `Eq`),
-/// matching `CGRect`'s float `==` (NaN != NaN).
+/// the host; kept as a plain value so the classifier is pure + testable off-device.
+/// The Swift shell's `WindowSnapshot` mirrors this (Equatable, Sendable). `PartialEq` only —
+/// `frame` holds `f64` (no `Eq`), matching `CGRect`'s float `==` (NaN != NaN).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSnapshot {
     /// The CoreGraphics window id (`SCWindow.windowID`).
@@ -67,8 +69,8 @@ impl WindowSnapshot {
     }
 }
 
-/// A classified system dialog (shape mirrors the wire `SystemDialogSummary`). Mirrors Swift
-/// `Dialog` (Equatable, Sendable). All-exact fields → derive `Eq`.
+/// A classified system dialog (shape mirrors the wire `SystemDialogSummary`). The Swift
+/// shell's `Dialog` mirrors this (Equatable, Sendable). All-exact fields → derive `Eq`.
 ///
 /// NOTE: Swift `Dialog.width`/`height` are `Int` (= `Int64` on the 64-bit host) → `i64` here.
 /// (The wire `SystemDialogSummary` later narrows to `u16`; that narrowing is NOT this module.)
@@ -89,24 +91,24 @@ pub struct Dialog {
 }
 
 /// Secure auth processes — raise Secure Event Input (view + click, no typing). Matched by bundle
-/// id OR owner name. Membership-only; order irrelevant. Mirrors Swift `secureBundleIDs`.
+/// id OR owner name. Membership-only; order irrelevant. The Swift shell's `secureBundleIDs` mirrors this.
 const SECURE_BUNDLE_IDS: &[&str] = &["com.apple.SecurityAgent", "com.apple.coreauthd"];
 /// Secure auth owner names (the name is the resilient signal across macOS builds; `SCWindow` gives
-/// both). Mirrors Swift `secureOwnerNames`.
+/// both). The Swift shell's `secureOwnerNames` mirrors this.
 const SECURE_OWNER_NAMES: &[&str] = &["SecurityAgent", "coreauthd"];
 /// Non-secure system-prompt bundle ids (view + FULL interaction). EMPTY in v1 — the expansion
-/// point. Mirrors Swift `systemBundleIDs`.
+/// point. The Swift shell's `systemBundleIDs` mirrors this.
 const SYSTEM_BUNDLE_IDS: &[&str] = &[];
-/// Non-secure system-prompt owner names. EMPTY in v1 — the expansion point. Mirrors Swift
-/// `systemOwnerNames`.
+/// Non-secure system-prompt owner names. EMPTY in v1 — the expansion point. The Swift shell's
+/// `systemOwnerNames` mirrors this.
 const SYSTEM_OWNER_NAMES: &[&str] = &[];
 
 /// Reject sub-`MIN_SIZE` windows (offscreen helpers, 1×1 indicators) — a real prompt is well above
-/// this. Mirrors Swift `minSize = 60`.
+/// this. The Swift shell's `minSize` default is `60`.
 pub const MIN_SIZE: i64 = 60;
 
-/// Classify one window, or `None` if it is not a surfaced system dialog. Pure. Direct port of
-/// `classify(_:minSize:)`.
+/// Classify one window, or `None` if it is not a surfaced system dialog. Pure. The canonical
+/// `classify(_:minSize:)` implementation.
 ///
 /// Rust has no default args → the caller passes `min_size`; use [`classify_default`] for the Swift
 /// `minSize: minSize` default.
@@ -125,8 +127,8 @@ pub fn classify(w: &WindowSnapshot, min_size: i64) -> Option<Dialog> {
     }
     let is_secure = SECURE_BUNDLE_IDS.contains(&w.bundle_id.as_str())
         || SECURE_OWNER_NAMES.contains(&w.owner_name.as_str());
-    // `is_system && !is_secure` is UNREACHABLE in v1 (the system allowlists are empty); ported
-    // faithfully so growing the allowlists is a one-line change.
+    // `is_system && !is_secure` is UNREACHABLE in v1 (the system allowlists are empty); kept
+    // in full so growing the allowlists is a one-line change.
     let is_system = is_secure
         || SYSTEM_BUNDLE_IDS.contains(&w.bundle_id.as_str())
         || SYSTEM_OWNER_NAMES.contains(&w.owner_name.as_str());
@@ -148,14 +150,14 @@ pub fn classify(w: &WindowSnapshot, min_size: i64) -> Option<Dialog> {
     })
 }
 
-/// [`classify`] with the default [`MIN_SIZE`] (mirrors Swift's `minSize: minSize` default arg).
+/// [`classify`] with the default [`MIN_SIZE`] (the Swift shell uses `minSize: minSize` as the default arg).
 #[must_use]
 pub fn classify_default(w: &WindowSnapshot) -> Option<Dialog> {
     classify(w, MIN_SIZE)
 }
 
-/// Classify a whole snapshot list into the system dialogs to surface (input ORDER PRESERVED). Port
-/// of `detect(_:minSize:)` (Swift `compactMap`).
+/// Classify a whole snapshot list into the system dialogs to surface (input ORDER PRESERVED). The
+/// canonical `detect(_:minSize:)` implementation (Swift `compactMap`; the Swift shell mirrors this).
 #[must_use]
 pub fn detect(windows: &[WindowSnapshot], min_size: i64) -> Vec<Dialog> {
     windows
@@ -174,8 +176,9 @@ pub fn detect_default(windows: &[WindowSnapshot]) -> Vec<Dialog> {
 mod tests {
     use super::*;
 
-    /// Mirrors the Swift `snap(...)` test helper. Frame origin (830, 201) like the HW probe; the
-    /// classifier reads only the standardized extent, so the origin is irrelevant.
+    /// Test helper (matches the Swift `SystemDialogDetectorTests.swift` `snap(...)` convention).
+    /// Frame origin (830, 201) like the HW probe; the classifier reads only the standardized
+    /// extent, so the origin is irrelevant.
     fn snap(
         id: u32,
         owner: &str,
@@ -195,7 +198,7 @@ mod tests {
         )
     }
 
-    // ----- 1:1 mirror of SystemDialogDetectorTests.swift -----
+    // ----- SystemDialogDetector cases (the Swift `SystemDialogDetectorTests` suite cross-checks the same) -----
 
     // The HW-probed SecurityAgent password prompt → surfaced + flagged secure.
     #[test]

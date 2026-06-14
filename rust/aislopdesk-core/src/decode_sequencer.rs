@@ -1,4 +1,4 @@
-//! In-order decode admission — a port of Swift `DecodeSequencer`.
+//! In-order decode admission — the canonical `DecodeSequencer` logic (the Swift shell mirrors it).
 //!
 //! The reassembler completes frames in arrival/recovery order, not frame-id order (frame N−1
 //! waits for late parity while small frame N completes first). Feeding completion-order straight

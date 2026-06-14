@@ -1,5 +1,5 @@
-//! Error type for the terminal-path (PTY) wire codecs — a port of Swift
-//! `AislopdeskProtocol.AislopdeskError`.
+//! Error type for the terminal-path (PTY) wire codecs — the canonical `AislopdeskError`
+//! logic. The Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! These are decode-time faults: a frame too large to be legitimate, a truncated body
 //! that can never complete, an unknown message type, or a body whose contents do not
@@ -7,8 +7,8 @@
 //! **not** an error — the decoder simply waits (see [`FrameDecoder`](super::FrameDecoder)).
 //!
 //! This is a SEPARATE type from [`VideoProtocolError`](crate::VideoProtocolError): the
-//! Swift `AislopdeskProtocol` and `AislopdeskVideoProtocol` targets are independent
-//! modules with independent error types, and this port preserves that boundary. The
+//! Swift `AislopdeskProtocol` and `AislopdeskVideoProtocol` shells are independent
+//! modules with independent error types; this core preserves that boundary. The
 //! variant is the contract callers branch on; the `MalformedBody` / `FrameTooLarge`
 //! payloads are diagnostic and *not* part of the wire format.
 

@@ -1,6 +1,5 @@
-//! The terminal (PTY) protocol message — a port of Swift
-//! `AislopdeskProtocol.WireMessage` (+ its `encode` / `decode` / `wireByteCount`
-//! extensions).
+//! The terminal (PTY) protocol message — the canonical `WireMessage` (encode / decode /
+//! wireByteCount). The Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! Wire layout of a frame is `[u32 BE payloadLength][u8 messageType][body…]` where
 //! `payloadLength` counts `messageType` + `body` (it excludes the 4 prefix bytes). All
@@ -182,7 +181,7 @@ impl WireMessage {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         // Build [messageType][body…] first, then prepend the big-endian length prefix.
-        // Byte-identical to Swift's single-buffer back-patch.
+        // Byte-identical encoding (the Swift shell's single-buffer back-patch matches it).
         let mut w = ByteWriter::new();
         w.put_u8(self.message_type());
 
@@ -264,7 +263,7 @@ impl WireMessage {
     pub fn wire_byte_count(&self) -> usize {
         // Each arm states a DISTINCT field layout; several coincidentally sum to the same
         // byte count (Resize = 4×u16, Ack = i64, Ping/Pong = u64 all = 8). Keeping them
-        // separate mirrors the Swift source 1:1 and documents each size at its variant.
+        // separate (the Swift shell's layout matches this) documents each size at its variant.
         #[allow(clippy::match_same_arms)]
         let body: usize = match self {
             Self::Output { bytes, .. } => 8 + bytes.len(), // seq i64 + payload
@@ -397,7 +396,7 @@ impl WireMessage {
 /// only producer caps the OSC at 1 KiB); only an absurd >64 KiB title is shortened —
 /// preventing the length field from wrapping and corrupting the body.
 ///
-/// Deviation note (unreachable): Swift clamps at a `Character` (grapheme-cluster)
+/// Documented divergence (unreachable): the Swift shell clamps at a `Character` (grapheme-cluster)
 /// boundary, this clamps at a Rust `char` (Unicode-scalar) boundary. They agree for every
 /// title that does not exceed 64 KiB (clamp never fires) and for all-ASCII titles; they
 /// could differ only if the 65535-byte cut fell *inside* a multi-scalar grapheme of a

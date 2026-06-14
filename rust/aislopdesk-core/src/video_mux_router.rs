@@ -1,9 +1,8 @@
 //! Pure per-datagram mux routing for the HOST side of the GUI video path (PATH 2).
 //!
-//! A
-//! port of Swift `Sources/AislopdeskVideoHost/Mux/VideoMuxRouter.swift` (the
-//! [`VideoChannel`] enum is ported from
-//! `Sources/AislopdeskVideoHost/VideoDatagramTransport.swift`).
+//! The canonical `VideoMuxRouter` logic. The native Swift shell keeps copies in
+//! `Sources/AislopdeskVideoHost/Mux/VideoMuxRouter.swift` (with [`VideoChannel`] in
+//! `Sources/AislopdeskVideoHost/VideoDatagramTransport.swift`) that track this (golden parity).
 //!
 //! When several remote-window sessions share one host UDP socket, each datagram is fronted
 //! by a `u32` `channel_id` (see [`crate::mux_header`]). This router decides which session a
@@ -46,8 +45,7 @@ use std::collections::BTreeSet;
 
 /// The logical sub-streams that share one PATH 2 UDP session (doc 17 §3.3/§3.6/§3.8).
 ///
-/// A
-/// port of Swift `VideoChannel` (raw `UInt8`, `CaseIterable`). The cursor channel is its own
+/// Canonical `VideoChannel` (raw `UInt8`, `CaseIterable`); the Swift shell mirrors it. The cursor channel is its own
 /// UDP socket so video backpressure never delays the cursor; the router treats every channel
 /// as an independent lane. The admit/retire decision is per-`channel_id`, NOT per-channel —
 /// the channel is carried through purely for the IO layer.
@@ -70,7 +68,7 @@ pub enum VideoChannel {
 }
 
 impl VideoChannel {
-    /// Every channel in declaration order (mirrors Swift `CaseIterable.allCases`).
+    /// Every channel in declaration order. The Swift shell's `CaseIterable.allCases` mirrors this.
     pub const ALL: [Self; 6] = [
         Self::Control,
         Self::Video,
@@ -80,14 +78,14 @@ impl VideoChannel {
         Self::Recovery,
     ];
 
-    /// The wire tag byte (mirrors Swift `rawValue`).
+    /// The wire tag byte. The Swift shell's `rawValue` mirrors this.
     #[must_use]
     pub const fn raw_value(self) -> u8 {
         self as u8
     }
 
-    /// Decodes a wire tag byte back to a channel, or `None` for an out-of-range tag (mirrors
-    /// Swift `VideoChannel(rawValue:)`).
+    /// Decodes a wire tag byte back to a channel, or `None` for an out-of-range tag. The Swift
+    /// shell's `VideoChannel(rawValue:)` mirrors this.
     #[must_use]
     pub const fn from_raw(raw: u8) -> Option<Self> {
         match raw {
@@ -102,8 +100,8 @@ impl VideoChannel {
     }
 }
 
-/// The decision for one received muxed datagram — a port of Swift `VideoMuxRouter.Decision`.
-/// A closed enum the IO layer acts on; a single bad packet is never a fatal condition.
+/// The decision for one received muxed datagram. The Swift shell's `VideoMuxRouter.Decision`
+/// mirrors this. A closed enum the IO layer acts on; a single bad packet is never a fatal condition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     /// Route the datagram to the session bound to `channel_id`.
@@ -120,15 +118,15 @@ pub enum Decision {
     /// datagram (incl. a hello) until [`VideoMuxRouter::end_drain`] transitions it to retired.
     DropDraining,
     /// Drop for another reason (e.g. an empty/zero-byte datagram). `reason` is a short
-    /// human-readable explanation (never a fatal condition). Mirrors Swift `.drop(reason:)`.
+    /// human-readable explanation (never a fatal condition). The Swift shell's `.drop(reason:)` mirrors this.
     Drop {
         /// Human-readable reason the datagram was dropped.
         reason: String,
     },
 }
 
-/// What the transport's bootstrap arm should do with a NOT-yet-admitted datagram — a port of
-/// Swift `VideoMuxRouter.BootstrapAction`.
+/// What the transport's bootstrap arm should do with a NOT-yet-admitted datagram. The Swift
+/// shell's `VideoMuxRouter.BootstrapAction` mirrors this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootstrapAction {
     /// Remember the lane's reply flow and deliver the datagram to the registry (it mints/admits).
@@ -139,10 +137,9 @@ pub enum BootstrapAction {
 
 /// PURE per-datagram mux router for the HOST side of the GUI video path (PATH 2).
 ///
-/// A port of
-/// Swift `VideoMuxRouter`. Uses [`BTreeSet`] for the lane sets so iteration/pruning is
-/// deterministic (the Swift `Set` membership result is order-independent, so the observable
-/// behaviour is identical).
+/// The canonical `VideoMuxRouter`. Uses [`BTreeSet`] for the lane sets so iteration/pruning is
+/// deterministic (Swift's `Set` membership result is order-independent, so the observable
+/// behaviour is identical). The Swift shell's `VideoMuxRouter` mirrors this.
 #[derive(Debug, Clone, Default)]
 pub struct VideoMuxRouter {
     /// Currently-admitted lanes (one per live session). Routable for data.
@@ -158,19 +155,19 @@ pub struct VideoMuxRouter {
 }
 
 impl VideoMuxRouter {
-    /// FIX #4: cap the `retired` set at 512 entries (mirrors Swift `retiredCap`).
+    /// FIX #4: cap the `retired` set at 512 entries. The Swift shell's `retiredCap` mirrors this.
     pub const RETIRED_CAP: usize = 512;
     /// FIX #4: prune the `retired` set to within 256 of the wrap-aware high-water mark
-    /// (mirrors Swift `retiredPruneWindow`). An [`i32`] to compare directly against the signed
-    /// [`distance_wrapped`] result.
+    /// (the Swift shell's `retiredPruneWindow` mirrors this). An [`i32`] to compare directly
+    /// against the signed [`distance_wrapped`] result.
     pub const RETIRED_PRUNE_WINDOW: i32 = 256;
-    /// The default for the `payload_is_list_request` argument of [`bootstrap_action`] — mirrors
-    /// the Swift `payloadIsListRequest: Bool = false` default argument.
+    /// The default for the `payload_is_list_request` argument of [`bootstrap_action`]; matches
+    /// the Swift shell's `payloadIsListRequest: Bool = false` default argument.
     ///
     /// [`bootstrap_action`]: VideoMuxRouter::bootstrap_action
     pub const BOOTSTRAP_PAYLOAD_IS_LIST_REQUEST_DEFAULT: bool = false;
 
-    /// Builds an empty router (mirrors Swift's `VideoMuxRouter()`).
+    /// Builds an empty router. The Swift shell's `VideoMuxRouter()` mirrors this.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -300,8 +297,8 @@ impl VideoMuxRouter {
         }
     }
 
-    /// [`bootstrap_action`](Self::bootstrap_action) with the Swift default
-    /// `payload_is_list_request: false` — mirrors the 3-argument Swift call sites.
+    /// [`bootstrap_action`](Self::bootstrap_action) with the Swift shell default
+    /// `payload_is_list_request: false`, matching the 3-argument Swift shell call sites.
     #[must_use]
     pub fn bootstrap_action_default(
         decision: &Decision,
@@ -323,7 +320,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     // ---------------------------------------------------------------------------------------
-    // Mirror of VideoMuxRouterTests.swift (pure admit / retire / route).
+    // Admit / retire / route cases (the Swift `VideoMuxRouterTests` suite cross-checks the same).
     // ---------------------------------------------------------------------------------------
 
     #[test]
@@ -428,7 +425,8 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Mirror of VideoMuxRouterReadmitTests.swift (FIX #2 / #4 / #6 / #4b).
+    // Readmit / retire-set-bound cases covering FIX #2 / #4 / #6 / #4b
+    // (the Swift `VideoMuxRouterReadmitTests` suite cross-checks the same).
     // ---------------------------------------------------------------------------------------
 
     #[test]
@@ -689,8 +687,9 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Mirror of VideoMuxDatagramRoutingTests.swift — the router-decision + per-lane-sink
-    // pipeline. The Swift harness frames via VideoMuxHeaderCodec and delivers through a
+    // Router-decision + per-lane-sink pipeline cases
+    // (the Swift `VideoMuxDatagramRoutingTests` suite cross-checks the same).
+    // The Swift harness frames via VideoMuxHeaderCodec and delivers through a
     // VideoMuxSinkTable; those host-side types are out of this module's scope, so this
     // harness reconstructs only the router decision + a sink registry keyed by channel_id.
     // The OLD bootstrap rule (deliver ANY control on an unadmitted lane) is preserved.
@@ -853,7 +852,8 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------
-    // Mirror of VideoMuxReadmitRoutingTests.swift — the FIX #2/#6 deliver+stamp pipeline.
+    // FIX #2/#6 deliver+stamp pipeline cases
+    // (the Swift `VideoMuxReadmitRoutingTests` suite cross-checks the same).
     // The Swift harness decodes a VideoControlMessage to peek `hello`; that codec is out of
     // this module's scope, so this harness takes the already-decoded `is_hello` boolean (the
     // exact pure input bootstrap_action consumes), and a `conn` id instead of an object identity.

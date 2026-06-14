@@ -1,5 +1,7 @@
-//! Pure decider for the static-window forced-IDR heartbeat (VIDEO-HOST-1) — a port of
-//! Swift `StaticIDRDecider` (`Sources/AislopdeskVideoHost/VideoSessionLogic.swift`).
+//! Pure decider for the static-window forced-IDR heartbeat (VIDEO-HOST-1).
+//!
+//! The canonical `StaticIDRDecider` logic; the native Swift shell keeps a copy
+//! (`Sources/AislopdeskVideoHost/VideoSessionLogic.swift`) that tracks this (golden parity).
 //!
 //! Holds the cadence anchors and answers a single question: *given the clock and what
 //! was last encoded, should the frameQueue timer re-encode the cached buffer as a forced
@@ -32,12 +34,12 @@
 
 /// Pure decider for the static-window forced-IDR heartbeat.
 ///
-/// `Copy` (four `f64`s) so it behaves like Swift's `Sendable, Equatable` value struct.
-/// `PartialEq` mirrors Swift's synthesized `Equatable`: two deciders are equal iff all
-/// four fields (both config anchors and both clock anchors) match.
+/// `Copy` (four `f64`s) so it behaves like the Swift shell's `Sendable, Equatable` value struct.
+/// `PartialEq`: two deciders are equal iff all four fields match; the Swift shell's synthesized
+/// `Equatable` mirrors this.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StaticIDRDecider {
-    /// Heartbeat cadence (seconds). Mirrors `WindowCapturer.heartbeatIDRInterval` (1.0).
+    /// Heartbeat cadence (seconds). Matches `WindowCapturer.heartbeatIDRInterval` (1.0) in the Swift shell.
     heartbeat: f64,
     /// Quiet window (seconds): suppress a synthetic re-encode if a REAL `.complete` frame
     /// was encoded within this window — a live screen drives IDRs through the normal path,
@@ -53,8 +55,8 @@ impl StaticIDRDecider {
     /// Builds a decider with the given `heartbeat` cadence (seconds).
     ///
     /// `quiet_window` is `Some(secs)` to set it explicitly, or `None` to take the Swift
-    /// default of one cadence (`quiet_window == heartbeat`). Mirrors Swift
-    /// `init(heartbeat:quietWindow:)` where `quietWindow` defaults to `nil ?? heartbeat`.
+    /// default of one cadence (`quiet_window == heartbeat`). The Swift shell's
+    /// `init(heartbeat:quietWindow:)` matches this, where `quietWindow` defaults to `nil ?? heartbeat`.
     #[must_use]
     pub fn new(heartbeat: f64, quiet_window: Option<f64>) -> Self {
         Self {
@@ -92,19 +94,19 @@ impl StaticIDRDecider {
 
     /// The capture path encoded a REAL frame at `now`. Re-anchors the live clock so the
     /// timer stays quiet while the screen is live, and a heartbeat measures from the last
-    /// real frame. Mirrors Swift `onCompleteFrame(now:)`.
+    /// real frame. The Swift shell's `onCompleteFrame(now:)` mirrors this.
     pub const fn on_complete_frame(&mut self, now: f64) {
         self.last_complete_encode = now;
     }
 
     /// The timer fired a synthetic re-encode at `now`. Re-anchors the synthetic clock.
-    /// Mirrors Swift `recordSynthetic(now:)`.
+    /// The Swift shell's `recordSynthetic(now:)` mirrors this.
     pub const fn record_synthetic(&mut self, now: f64) {
         self.last_synthetic_encode = now;
     }
 
-    /// Decision for a frameQueue timer tick. PURE (no mutation). Mirrors Swift
-    /// `shouldReencode(now:forcedLatched:hasRetainedBuffer:)` branch-for-branch.
+    /// Decision for a frameQueue timer tick. PURE (no mutation). The Swift shell's
+    /// `shouldReencode(now:forcedLatched:hasRetainedBuffer:)` mirrors this branch-for-branch.
     ///
     /// * `forced_latched`: a client recovery/keyframe request is pending (drained by caller).
     /// * `has_retained_buffer`: a cached `.complete` pixel buffer exists to re-encode.
@@ -364,7 +366,7 @@ mod tests {
         assert_eq!(d.heartbeat(), 2.0);
     }
 
-    // ---- Added edge cases beyond the mirrored Swift suite ----
+    // ---- Additional edge cases ----
 
     // now == 0.0 with an armed buffer and nothing emitted: lastComplete==0 skips the quiet guard,
     // not forced, lastSynthetic==0 ⇒ fire. (The Swift comment says "now > 0" but the branch order

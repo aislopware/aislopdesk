@@ -1,4 +1,4 @@
-//! Long-Term-Reference (LTR) recovery bookkeeping — a port of Swift `LTRController` (WF-8).
+//! Long-Term-Reference (LTR) recovery bookkeeping — the canonical `LtrController` logic (the Swift shell mirrors it).
 //!
 //! A low-latency HEVC `VTCompressionSession` can emit LTR frames carrying an acknowledgement
 //! token; the host can then recover a client that lost frames with a CHEAP P-frame referencing an

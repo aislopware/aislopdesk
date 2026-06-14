@@ -1,4 +1,4 @@
-//! The client's decode frontier — a port of Swift `DecodeFrontier`.
+//! The client's decode frontier — the canonical `DecodeFrontier` logic (the Swift shell mirrors it).
 //!
 //! Tracks the wrap-aware highest `frame_id` that has SUCCESSFULLY decoded. Every recovery
 //! request (`request_idr` / `request_ltr_refresh`) carries [`wire_value`](DecodeFrontier::wire_value)

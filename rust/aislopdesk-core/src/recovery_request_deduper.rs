@@ -1,5 +1,5 @@
-//! Host-side dedup window for recovery-request datagrams — a port of Swift
-//! `RecoveryRequestDeduper`.
+//! Host-side dedup window for recovery-request datagrams — the canonical
+//! `RecoveryRequestDeduper` logic (the Swift shell mirrors it).
 //!
 //! The client sends each logical `request_ltr_refresh` / `request_idr` as N byte-identical
 //! copies spaced a few ms apart (see [`RecoveryRequestRedundancy`](crate::recovery_policy));
@@ -59,10 +59,10 @@ impl RecoveryRequestDeduper {
         if self.window_seconds <= 0.0 {
             return true;
         }
-        // Exact complement of Swift's `removeAll { now - acceptedAt > windowSeconds }` (retain =
-        // NOT remove). The negated comparison is INTENTIONAL (not `<=`): for a degenerate
-        // `now == NaN` it KEEPS every entry exactly as Swift does (`NaN > w` is false ⇒ removeAll
-        // keeps), where a bare `<=` would instead drop them all (NaN <= w is false).
+        // Exact complement of the Swift shell's `removeAll { now - acceptedAt > windowSeconds }`
+        // (retain = NOT remove). The negated comparison is INTENTIONAL (not `<=`): for a degenerate
+        // `now == NaN` it KEEPS every entry; the Swift shell does the same (`NaN > w` is false ⇒
+        // removeAll keeps), where a bare `<=` would instead drop them all (NaN <= w is false).
         #[allow(clippy::neg_cmp_op_on_partial_ord)]
         self.entries
             .retain(|(_, accepted_at)| !(now - accepted_at > self.window_seconds));
@@ -111,9 +111,9 @@ mod tests {
 
     #[test]
     fn nan_now_keeps_entries_like_swift() {
-        // Degenerate/unreachable, but exact-port fidelity: Swift's `removeAll` keeps every entry
-        // when `now == NaN` (`NaN > w` is false), so the duplicate is still seen and dropped. A
-        // bare `now - acc <= w` predicate would instead drop all and re-admit.
+        // Degenerate/unreachable, but NaN-behaviour fidelity: the Swift shell's `removeAll` keeps
+        // every entry when `now == NaN` (`NaN > w` is false), so the duplicate is still seen and
+        // dropped. A bare `now - acc <= w` predicate would instead drop all and re-admit.
         let mut d = RecoveryRequestDeduper::default();
         let wire = ltr_wire(50, 50, 49);
         assert!(d.admit(&wire, 100.000));

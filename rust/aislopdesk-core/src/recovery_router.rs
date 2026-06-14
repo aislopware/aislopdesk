@@ -1,6 +1,7 @@
-//! Pure routing decision for the DEDICATED recovery channel (client→host loss
-//! recovery, doc 17 §3.6) — a port of Swift `RecoveryDatagramRouter`
-//! (`Sources/AislopdeskVideoHost/VideoSessionLogic.swift`).
+//! Pure routing decision for the DEDICATED recovery channel (client→host loss recovery, doc 17 §3.6).
+//!
+//! The canonical `RecoveryDatagramRouter` logic; the native Swift shell keeps a copy
+//! (`Sources/AislopdeskVideoHost/VideoSessionLogic.swift`) that tracks this (golden parity).
 //!
 //! Decode the [`RecoveryMessage`] and decide the host action. Kept separate from the
 //! input router because recovery and input share neither a channel nor a wire grammar —
@@ -20,7 +21,7 @@ use crate::recovery::{NetworkStatsReport, RecoveryMessage};
 
 /// The decision for one received recovery datagram.
 ///
-/// Mirrors the Swift `RecoveryDatagramRouter.Decision` enum 1:1.
+/// The Swift shell's `RecoveryDatagramRouter.Decision` enum mirrors this 1:1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     /// Force an IDR keyframe on the next captured frame. This is the GUARANTEED-recovery
@@ -72,12 +73,12 @@ pub enum Decision {
 }
 
 /// Routes a datagram received on the dedicated recovery channel. Stateless pure decision
-/// logic — a zero-sized value type, exactly like the Swift `struct`.
+/// logic — a zero-sized value type, exactly like the Swift shell's `struct`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RecoveryDatagramRouter;
 
 impl RecoveryDatagramRouter {
-    /// Builds a router. Stateless, so this is purely API parity with Swift's `init()`.
+    /// Builds a router. Stateless — the Swift shell's `init()` is API-equivalent.
     #[must_use]
     pub const fn new() -> Self {
         Self
@@ -85,11 +86,11 @@ impl RecoveryDatagramRouter {
 
     /// Decides what to do with one raw recovery datagram.
     ///
-    /// A non-streaming session ignores the datagram before any decode (mirrors the Swift
-    /// `guard mediaFlowing`); an undecodable datagram drops; otherwise the decoded
+    /// A non-streaming session ignores the datagram before any decode (the Swift shell's
+    /// `guard mediaFlowing` matches this); an undecodable datagram drops; otherwise the decoded
     /// [`RecoveryMessage`] maps to its [`Decision`].
     #[must_use]
-    // `route` is an instance method to mirror Swift's `RecoveryDatagramRouter.route` (the actor
+    // `route` is an instance method to match the Swift shell's `RecoveryDatagramRouter.route` (the actor
     // holds a `let router = RecoveryDatagramRouter()`); the type is a stateless namespace handle,
     // so `self` is intentionally unused.
     #[allow(clippy::unused_self)]
@@ -150,7 +151,7 @@ mod tests {
         RecoveryDatagramRouter::new()
     }
 
-    // MARK: mirror of Swift `RecoveryDatagramRouterTests`
+    // MARK: Recovery routing cases (the Swift `RecoveryDatagramRouterTests` suite cross-checks the same).
 
     #[test]
     fn ignores_when_not_streaming() {
@@ -356,10 +357,9 @@ mod tests {
 
     // MARK: Never-run wire-collision regression
     //
-    // The Swift tests cross-check against `InputDatagramRouter`, which is not part of this
-    // crate yet; the input router's whole decision is `InputEvent::decode` (Ok ⇒ inject,
-    // Err ⇒ drop), so we exercise the byte-grammar collision directly through
-    // `InputEvent::decode` — the load-bearing part of the regression.
+    // Wire-collision cases: the byte-grammar collision between the recovery and input channels
+    // is exercised directly through `InputEvent::decode` — the load-bearing part of the regression.
+    // (The Swift `RecoveryDatagramRouterTests` cross-checks these against `InputDatagramRouter`.)
 
     /// THE original bug: recovery rode the `.input` channel, where the host decodes every
     /// datagram as an `InputEvent`. `RecoveryMessage`'s leading type bytes (1/2/3) overlap
@@ -385,7 +385,7 @@ mod tests {
 
         // The SAME bytes, fed to the input grammar (type byte 2 = mouseDown), surface the
         // collision the dedicated channel eliminates: if the input grammar decodes them at
-        // all it can only be a mouseDown (mirrors Swift's `if case .mouseDown`). The 13-byte
+        // all it can only be a mouseDown (the Swift shell's `if case .mouseDown` matches this). The 13-byte
         // LTR body is in fact too short for a 24-byte mouseDown, so it truncates here — but
         // the point is recovery NEVER travels on `.input`.
         if let Ok(event) = InputEvent::decode(&ltr) {

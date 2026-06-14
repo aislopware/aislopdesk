@@ -1,6 +1,6 @@
 //! Error type for the video-path wire codecs.
 //!
-//! Mirrors Swift `AislopdeskVideoProtocol.VideoProtocolError`. The variant is the
+//! The Swift shell's `AislopdeskVideoProtocol.VideoProtocolError` mirrors this. The variant is the
 //! contract that callers branch on (truncated vs malformed); the `Malformed` payload
 //! is a human-readable field hint that is *not* part of the wire format, so parity
 //! tests assert on the variant, not the string.

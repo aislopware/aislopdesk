@@ -1,6 +1,7 @@
-//! Per-datagram video header, fragment codec, and the host packetizer — a port of
-//! Swift `FramePacketizer.swift` (`FrameFragmentHeader`, `FrameFragment`,
-//! `VideoPacketizer`).
+//! Per-datagram video header, fragment codec, and the host packetizer.
+//!
+//! The canonical `FramePacketizer.swift` logic (`FrameFragmentHeader`, `FrameFragment`,
+//! `VideoPacketizer`); the Swift shell mirrors it.
 //!
 //! Wire header is a fixed **19 bytes, big-endian**:
 //! ```text
@@ -22,7 +23,7 @@ use crate::fec::FecScheme;
 
 /// Per-datagram fragment flags (bit set over the flags byte).
 ///
-/// Mirrors the Swift `OptionSet`. Bits: 0 keyframe, 1 parity, 2 crisp, 3-5 FEC tier,
+/// The Swift shell's `OptionSet` mirrors this. Bits: 0 keyframe, 1 parity, 2 crisp, 3-5 FEC tier,
 /// 6 isLTR, 7 ackedAnchored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags(pub u8);
@@ -138,7 +139,7 @@ impl FrameFragment {
 
     /// Parses one datagram. Returns a [`crate::VideoProtocolError`] on a short /
     /// inconsistent datagram — a corrupt single packet must not crash the receiver.
-    /// Trailing bytes beyond the declared payload length are ignored (matches Swift).
+    /// Trailing bytes beyond the declared payload length are ignored (the Swift shell matches this).
     pub fn decode(datagram: &[u8]) -> Result<Self> {
         let mut r = ByteReader::new(datagram);
         let stream_seq = r.read_u32()?;
@@ -166,8 +167,8 @@ impl FrameFragment {
 
 /// Optional per-frame parameters for [`VideoPacketizer::packetize`].
 ///
-/// Mirrors the Swift
-/// default arguments (`crisp=false`, `host_send_ts_millis=0`, tier 0, `is_ltr=false`,
+/// The Swift shell's default arguments match these
+/// (`crisp=false`, `host_send_ts_millis=0`, tier 0, `is_ltr=false`,
 /// `acked_anchored=false`). The defaults reproduce the pre-WF-4/WF-8 wire byte-for-byte.
 #[derive(Debug, Clone, Copy)]
 pub struct PacketizeOptions {
