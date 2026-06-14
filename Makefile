@@ -9,7 +9,7 @@
 # Tools are pinned/installed via `make install-tools`.
 
 SWIFT_PATHS  := Sources Tests Apps
-SHELL_FILES  := $(shell git ls-files '*.sh')
+SHELL_FILES  := $(shell git ls-files '*.sh' | grep -v '^ThirdParty/')
 PY_FILES     := $(shell git ls-files '*.py')
 RUST_DIR     := rust
 SHFMT_FLAGS  := -i 2 -ci -sr
