@@ -71,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: brew install swiftlint swiftformat
-      - run: swiftformat Sources Tests Apps --lint
+      - run: swiftformat Package.swift Sources Tests Apps --lint
       - run: swiftlint --strict --quiet
 
   # ----------------------------------------------- Swift build & test -------
