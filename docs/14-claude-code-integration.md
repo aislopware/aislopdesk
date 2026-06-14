@@ -1,6 +1,6 @@
 # 14 — Claude Code integration (+ Warp, herdr)
 
-> Output of the research workflow (13 agents + adversarial verify). Use-case: running/controlling **Claude Code** (Anthropic CLI agent) through the remote-coding tool (libghostty/NetBird terminal path). Full sources: [research/claude-code-warp-herdr-corpus.json](research/claude-code-warp-herdr-corpus.json).
+> Output of the research workflow (13 agents + adversarial verify). Use-case: running/controlling **Claude Code** (Anthropic CLI agent) over the terminal path (libghostty renderer). Full sources: [research/claude-code-warp-herdr-corpus.json](research/claude-code-warp-herdr-corpus.json).
 >
 > *As-of: Claude Code v2.1.x (2026-06). Claims tied to a version + undocumented flags → verify on the target CC version.*
 
@@ -52,7 +52,7 @@
 
 ---
 
-## Integrating Claude Code + Warp + HERDR into the remote-coding tool (libghostty/NetBird)
+## Integrating Claude Code + Warp + HERDR into the remote-coding tool (libghostty terminal path)
 
 The analysis below is based on the adversarially verified corpus; **refuted**/**uncertain** claims are flagged at each load-bearing spot.
 
@@ -63,13 +63,13 @@ The analysis below is based on the adversarially verified corpus; **refuted**/**
 > **Decision: run the real TUI, do NOT drive via the Agent SDK (B2 dropped).** The SDK tier analysis below remains as context only.
 
 #### 1.1. What Claude Code is (terminal-wise)
-Claude Code is a **native binary** (x64/ARM64, installed to `~/.local/bin/claude`), NOT a Node.js TUI wrapper — npm is only a distribution channel ([code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup)). It needs a **real PTY** on Unix (reads terminal dimensions, emits escape sequences, uses the alt-screen). That's good news for your architecture: a raw byte stream over NetBird works *if* the transport layer is faithful to PTY signals (SIGWINCH/`TIOCSWINSZ`) and doesn't strip escape sequences.
+Claude Code is a **native binary** (x64/ARM64, installed to `~/.local/bin/claude`), NOT a Node.js TUI wrapper — npm is only a distribution channel ([code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup)). It needs a **real PTY** on Unix (reads terminal dimensions, emits escape sequences, uses the alt-screen). Good for this architecture: a raw byte stream over the terminal path works *if* the transport is faithful to PTY signals (SIGWINCH/`TIOCSWINSZ`) and doesn't strip escape sequences.
 
 There are **two render modes**:
 - **Inline-scrollback (default)**: appends to the host terminal's scrollback. This mode has the well-known SIGWINCH bug — every resize writes a new frame without erasing the old one, flooding the scrollback ([issue #49086](https://github.com/anthropics/claude-code/issues/49086), [#20094](https://github.com/anthropics/claude-code/issues/20094)).
 - **Fullscreen alt-screen (opt-in)**: `CLAUDE_CODE_NO_FLICKER=1` or `/tui fullscreen` (needs v2.1.89+) — uses the alternate screen buffer like vim, flat memory, fewer bytes/frame, adds mouse support ([code.claude.com/docs/en/fullscreen](https://code.claude.com/docs/en/fullscreen)).
 
-> **For a remote PTY at any non-trivial latency, fullscreen mode is the only correct mode.** It isolates redraws to the alt-screen and reduces bytes/frame — directly helping over WireGuard. Enable it by default.
+> **For a remote PTY at any non-trivial latency, fullscreen mode is the only correct mode.** It isolates redraws to the alt-screen and reduces bytes/frame. Enable it by default.
 
 #### 1.2. TUI requirements — MUST support (in priority order)
 
@@ -81,7 +81,7 @@ There are **two render modes**:
 | 4 | **Enable fullscreen mode by default** (`CLAUDE_CODE_NO_FLICKER=1`) | As above |
 | 5 | **Forward SGR mouse tracking reports** | Fullscreen mode requests mouse; click-to-position, click-expand tool results, drag-select → OSC 52 copy |
 | 6 | **Pass OSC 52 + OSC 8 untouched** through the TCP byte stream | Clipboard copy + clickable hyperlinks. Do NOT rewrite/strip ([#21586](https://github.com/anthropics/claude-code/issues/21586), [fullscreen](https://code.claude.com/docs/en/fullscreen)) |
-| 7 | **Forward SIGWINCH + update the PTY ioctl, debounce ~50ms** | Reduces redraw floods over WireGuard |
+| 7 | **Forward SIGWINCH + update the PTY ioctl, debounce ~50ms** | Reduces redraw floods over the network |
 | 8 | **Forward Ctrl+C / Ctrl+D / Esc / double-Esc WITHOUT translation** | They have Claude Code-specific behavior (Esc = stop turn, double-Esc = rewind menu), not POSIX defaults ([interactive-mode](https://code.claude.com/docs/en/interactive-mode)) |
 | 9 | **Bracketed paste** (mode 2004) wrappers `ESC[200~`/`ESC[201~` | Pastes >10,000 characters collapse into a `[Pasted text]` placeholder; `-p` mode caps stdin at 10MB ([headless](https://code.claude.com/docs/en/headless)) |
 
@@ -91,7 +91,7 @@ There are **two render modes**:
 
 - **❌ Image paste via OSC 5522 — REFUTED, do NOT ship.** The original corpus said "Ghostty PR in progress"; the adversarial verdict shows this is WRONG in both directions: Ghostty PR #10560 was **MERGED 2026-02-16 (shipped in 1.3.0)** but is **parse-only, it does NOT implement the behavior** ([PR #10560](https://github.com/ghostty-org/ghostty/pull/10560), [1.3.0 release notes](https://ghostty.org/docs/install/release-notes/1-3-0)). The actually accepted implementation is [issue #10549](https://github.com/ghostty-org/ghostty/issues/10549) with the comment "we can figure out how to impl this later" — **no PR yet**. Claude Code issue #42712 could NOT be verified (GitHub returns ISSUE NOT FOUND). → **Don't ship an image-paste feature relying on Ghostty's OSC 5522 semantics: Ghostty will silently parse and ignore it.** Document it as a known limitation; interim workaround: macOS native Ctrl+V (not Cmd+V), or Kitty (full support).
 
-#### 1.4. Should we go deeper via the Agent SDK? — **YES, for a separate dedicated pane.** (just-run-TUI vs SDK-driven)
+#### 1.4. Going deeper via the Agent SDK (just-run-TUI vs SDK-driven) — analysis only; **SUPERSEDED by the A+B1 decision (B2/SDK pane dropped)**
 
 Three integration tiers:
 - **TUI tier (PTY passthrough)** — the full interactive experience, but pushing ANSI pixels over the network is latency-sensitive. Issue [#20286](https://github.com/anthropics/claude-code/issues/20286) shows that at ~500ms RTT a permission dialog arrived 30+ minutes late (that's a VS Code-specific serialization issue; your raw PTY doesn't have that bug, but the React renderer still re-renders per token → many small writes → typing latency).
@@ -118,7 +118,7 @@ The key point for you: you do **not** use Warp's proprietary DCS protocol. You u
 #### 2.2. Transferability classification
 
 **MUST-HAVE:**
-1. **OSC 133 shell-integration injection on the remote host** — because the PTY runs over NetBird TCP (direct P2P), escape sequences flow intact, **no side channel or remote-server binary needed** (totally unlike Warp SSH). This is the enabling primitive for block grouping, exit-code coloring, prompt-jump.
+1. **OSC 133 shell-integration injection on the remote host** — because the PTY runs over plain TCP on the trusted private network (direct P2P), escape sequences flow intact, **no side channel or remote-server binary needed** (totally unlike Warp SSH). This is the enabling primitive for block grouping, exit-code coloring, prompt-jump.
 2. **Claude Code lifecycle hooks in the style of `claude-code-warp`** — pattern: a shell-script hook for 6 events (SessionStart, Stop, Notification, PermissionRequest, UserPromptSubmit, PostToolUse), emitting OSC 777 → drives a "agent running / needs permission / done" status pane. ⚠️ **CONFIRMED but partially outdated:** the `\033]777;notify;warp://cli-agent;<JSON>\007` format is correct for CC **< 2.1.141**; from **CC ≥ 2.1.141** the plugin switched to a `terminalSequence` JSON field on stdout (because the Stop hook validator rejects unknown fields), bypassing `/dev/tty`. **The implementation must handle BOTH paths** ([warpdotdev/claude-code-warp](https://github.com/warpdotdev/claude-code-warp), `emit-terminal-sequence.sh`).
 3. **Bidirectional PTY fidelity including control sequences** (Ctrl+C/Z/D, arbitrary byte writes). Warp's #1 Terminal-Bench (52%, a self-reported claim — flagged as a **marketing claim**) demonstrates this is the most important capability for agentic-coding correctness; a PTY that drops/delays control sequences will break Claude Code mid-task ([full-terminal-use](https://docs.warp.dev/agent-platform/capabilities/full-terminal-use/)).
 
@@ -156,7 +156,7 @@ It is NOT a Claude Code plugin/framework. Architecture: a **background server ma
 
 #### 3.3. Should the tool host/manage a herd of agents? — **YES, but only as the transport+rendering layer; do NOT build an orchestration product.**
 
-Your tool is uniquely positioned to **natively host a herd of Claude Code agents**, because PTY-over-NetBird already provides the core primitive every other tool builds on. Concrete opportunities, in order of value:
+Your tool is uniquely positioned to **natively host a herd of Claude Code agents**, because the PTY transport already provides the core primitive every other tool builds on. Concrete opportunities, in order of value:
 1. **Git worktree per agent** — every serious tool uses it. Host supports create/list/switch worktree (trivial shell) + exposes each worktree as a PTY session in the UI.
 2. **Agent supervisor pane** (sidebar with blocked/working/done state) — the common pattern of herdr/Claude Squad/Conductor. State detection uses 3 signals like herdr: process detection + Claude Code hooks (Stop/TeammateIdle/TaskCompleted) + screen heuristics.
 3. **HERDR compatibility** — speak the NDJSON socket protocol natively, so the macOS/iPad client renders herdr's workspace/tab/pane model with ghostty surfaces. You become a **first-class client** instead of a plain SSH terminal.
@@ -189,7 +189,7 @@ These are the sufficient conditions for the Claude Code TUI to work correctly �
 11. Fill Agent Teams' **Ghostty split-pane gap** (parse tmux commands or implement CustomPaneBackend if #26572 lands).
 
 #### Fit into the hybrid terminal+GUI architecture
-- **Terminal path (PTY/NetBird/libghostty)**: P0 + P1.7/P1.8 — the backbone. The block model + OSC 133 live in the client-side VT parser of libghostty's external backend.
+- **Terminal path (PTY over plain TCP / libghostty)**: P0 + P1.7/P1.8 — the backbone. The block model + OSC 133 live in the client-side VT parser of libghostty's external backend.
 - **GUI path (ScreenCaptureKit + VideoToolbox)**: orthogonal, used for GUI windows; doesn't touch the PTY layer.
 - **The SDK pane (P1.6)** is a *third tier* next to the two paths above: not PTY, not video — native SwiftUI consuming a JSON stream. This is exactly where Warp's "rich-content blocks" map to, and where the multi-agent supervisor (P2) displays state.
 

@@ -21,6 +21,8 @@ The app splits into **two separate data paths**, routed per window/feature:
 
 > Prior-art lesson: VS Code Remote, JetBrains Gateway (dropped Projector pixel-streaming), Blink Shell — **nobody pixel-mirrors the code path**; semantic/text streaming wins. Pixels are only a fallback for GUI windows.
 
+> **Implementation note (current build).** The performance-critical core — both wire codecs (terminal WireMessage + the video protocol), FEC + frame reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control — lives in the Rust crate `rust/aislopdesk-core` (safe Rust, zero runtime deps, `#![forbid(unsafe_code)]`), exposed over a C-ABI (`rust/aislopdesk-ffi`, header `aislopdesk_ffi.h`, linked via the `CAislopdeskFFI` target). The Swift/SwiftUI apps are the platform shell (ScreenCaptureKit capture, VideoToolbox codec, Metal render, input injection, PTY spawn, UI) and call the core through that boundary; the same core backs a future Android client over C-ABI/JNI. Platform floor: macOS 26 / iOS 26 (Apple Silicon). The design rationale below still holds — read "we build X" as "the shell wires X to the Rust core."
+
 
 ---
 
@@ -34,7 +36,7 @@ The app splits into **two separate data paths**, routed per window/feature:
 
 Every successful remote-coding tool converges on the same observation: **semantic/text streaming beats pixel streaming for the code path, and pixel streaming is kept only as a fallback for GUI windows** where no semantic option exists. JetBrains abandoned Projector (serializing AWT draw commands over WebSocket) in favor of the thin-client RD protocol because streaming draw commands still has higher latency than a dedicated semantic protocol (JetBrains says it outright: Projector has "higher UI latency and significantly more network bandwidth"). The best iPad→Mac setup today pairs Blink Shell (mosh/SSH) for the text path with VS Code Server (Remote Tunnels / code-server) for the IDE path — **neither side pixel-mirrors** ([JetBrains Gateway blog](https://blog.jetbrains.com/blog/2021/12/03/dive-into-jetbrains-gateway/), [blink.sh](https://blink.sh/), [code.visualstudio.com/docs/remote/vscode-server](https://code.visualstudio.com/docs/remote/vscode-server)).
 
-PaneCast's hybrid architecture mirrors exactly that:
+Aislopdesk's hybrid architecture mirrors exactly that:
 
 | | **TERMINAL text-path** | **GUI video-path** |
 |--|------------------------|--------------------|
@@ -121,7 +123,7 @@ Use **libghostty** (the Ghostty engine) for both macOS + iOS — Ghostty-class r
 
 > 🔑 **Integration approach (settled): SELF-OWN a minimal external-backend patch — do NOT depend on someone else's fork.** The trade-off was weighed: research recommended the SwiftTerm-engine+own-renderer path (mature, no immature lib), BUT we prioritize **Ghostty-class rendering**, so we keep full libghostty and **own a small patch ourselves** instead of depending on a fork. Why "depend on a fork" was rejected: both external-IO forks are **proven in shipping apps** ([17 §2.2] — VVTerm on `wiedymi/ghostty:custom-io`, Geistty on `daiimus/ghostty:ios-external-backend`) but both are **bus-factor 1**; `wiedymi:custom-io` lacks a resize callback, `daiimus` has **External.zig + resize callback + tests** (→ the better reference). Owning the patch (ref daiimus) = we control rebases, no dependence on anyone else.
 
-**Data path (per VVTerm, confirmed by reading the source):** network bytes (NetBird/WireGuard TCP) → `ghostty_surface_feed_data()` → Ghostty's VT parse + Metal render; keystrokes go out via `ghostty_surface_set_write_callback` (`use_custom_io = true`) → write to `NWConnection` → PTY stdin on the host. Resize via the surface API → host `ioctl(TIOCSWINSZ)`.
+**Data path (per VVTerm, confirmed by reading the source):** network bytes (plain TCP over the trusted mesh) → `ghostty_surface_feed_data()` → Ghostty's VT parse + Metal render; keystrokes go out via `ghostty_surface_set_write_callback` (`use_custom_io = true`) → write to `NWConnection` → PTY stdin on the host. Resize via the surface API → host `ioctl(TIOCSWINSZ)`.
 
 > ✅ **Decision (verdict FLIPPED from SwiftTerm to libghostty, verified 2026).** All three old objections to libghostty have collapsed:
 > - **iOS proven in production** — VVTerm (`vivy-company/vvterm`, source read: `ghostty_surface_new` on `GHOSTTY_PLATFORM_IOS`, **full surface**, not vt), Moshi (getmoshi.app, Ghostty 1.3.1), Echo, RootShell (`kitknox/rootshell`). Mitchell Hashimoto endorses.
@@ -186,7 +188,7 @@ The terminal path does **not** need the complexity of mosh SSP (state-diff UDP) 
 payload bytes (raw PTY data / {cols,rows} for resize)
 ```
 
-`NWConnection(.tcp)` over Network.framework: `NWListener` on the host, `NWConnection` on the client; manual 4-byte length framing or `NWProtocolFramer`. **No app-layer TLS** — WireGuard encrypts ([13]). Idle efficiency is excellent: the PTY master fd produces no bytes while the shell is idle → no bytes flow.
+`NWConnection(.tcp)` over Network.framework: `NWListener` on the host, `NWConnection` on the client; manual 4-byte length framing or `NWProtocolFramer`. **No app-layer TLS** — the trusted mesh encrypts ([13]). The framing + mux + flow-control logic is implemented in the Rust core's terminal namespace behind the C-ABI. Idle efficiency is excellent: the PTY master fd produces no bytes while the shell is idle → no bytes flow.
 
 > **Local echo / prediction — NOT needed on LAN (verdict: confirmed).** Mosh's prediction engine in Adaptive mode is **completely dormant** when SRTT < ~60ms: `srtt_trigger` only turns on when `send_interval > 30ms`, and on LAN `send_interval` clamps to the 20ms floor. If we ever want instant echo, we must explicitly use `DisplayPreference = Always` (verified from `terminaloverlay.cc:434` + `transportsender.h:49`). With a PTY-over-LAN round-trip of 1–5ms, the server echo arrives before the user can notice → **drop prediction for v1**. The prediction engine is transport-agnostic (proven by nosshtradamus running it over SSH/TCP), so it can be added later if Wi-Fi needs it.
 
@@ -194,12 +196,7 @@ payload bytes (raw PTY data / {cols,rows} for resize)
 
 ### 6. App Sandbox — a hard architectural constraint
 
-**The host component must NOT be sandboxed.** A sandboxed app **cannot** `forkpty()`/`execvp()` an arbitrary login shell — the sandbox blocks exec of external processes not declared in entitlements, and no entitlement whitelists an arbitrary shell. Apple-accepted patterns:
-
-1. **A non-sandboxed app via Developer ID** (outside the Mac App Store) — most dev tools (Xcode, VS Code, iTerm2, Terminal.app) are not sandboxed. **This is the standard route for dev tools** and removes every constraint on forkpty/PTY/sockets.
-2. Or a non-sandboxed LaunchAgent/XPC helper talking to a sandboxed app.
-
-Since the video path already needs non-sandboxed for Accessibility/CGEvent (see [06](06-permissions-distribution.md)), the decision "host = non-sandboxed Developer ID app" unifies both paths. The client viewer (render + send bytes only) **can** ship on the Mac App Store.
+**The host component must NOT be sandboxed** — a sandboxed app cannot `forkpty()`/`execvp()` an arbitrary login shell (no entitlement whitelists one). Route: a **non-sandboxed Developer ID app** (like Xcode, VS Code, iTerm2, Terminal.app), or a non-sandboxed LaunchAgent/XPC helper behind a sandboxed app. The video path already needs non-sandboxed for Accessibility/CGEvent (see [06](06-permissions-distribution.md)), so "host = non-sandboxed Developer ID app" unifies both paths; the client viewer (render + send bytes) **can** ship on the Mac App Store. Full detail: Part B §1.5.
 
 ---
 
@@ -322,7 +319,7 @@ Simplest for LAN, and lets resize ride alongside data:
   type 1 = resize {cols, rows}
 ```
 
-ttyd uses exactly this pattern: server→client `'0'`=OUTPUT, client→server `'0'`=INPUT, `'1'`=RESIZE ([ttyd/protocol.c](https://github.com/tsl0922/ttyd/blob/main/src/protocol.c)). **No JSON on the hot path** (terminal bytes). Transport is `NWConnection(.tcp)`: `NWListener` on the host, `NWConnection` on the client; manual 4-byte length framing or `NWProtocolFramer`. The SSH RFC 4254 channel model (multiplexing, flow-control windows) is **overkill** for LAN one-connection-per-session — borrow only the `window-change` payload structure (cols/rows uint32) if needed ([RFC 4254](https://datatracker.ietf.org/doc/html/rfc4254)).
+ttyd uses exactly this pattern: server→client `'0'`=OUTPUT, client→server `'0'`=INPUT, `'1'`=RESIZE ([ttyd/protocol.c](https://github.com/tsl0922/ttyd/blob/main/src/protocol.c)). **No JSON on the hot path** (terminal bytes). Transport is `NWConnection(.tcp)`: `NWListener` on the host, `NWConnection` on the client; manual 4-byte length framing or `NWProtocolFramer`. The framing, an **SSH-style channel mux + per-channel flow-control window** (RFC 4254's `window-change` payload — cols/rows uint32 — carries resize), and the dual data/control channels are implemented in the Rust core's terminal namespace behind the C-ABI ([RFC 4254](https://datatracker.ietf.org/doc/html/rfc4254)).
 
 > 📋 **Claim to verify during implementation:** `NWProtocolFramer` handles arbitrary byte sequences (not treated as text) and has no min-MTU constraint fragmenting small keystrokes. Test before locking in.
 
@@ -332,7 +329,7 @@ Natural idle efficiency: the master FD **produces no bytes while the shell is id
 
 ### 3. Mosh-style predictive local echo — ⏸️ DEFERRED (assume P2P)
 
-> ⏸️ **DEFERRED for v1** (final decision: assume NetBird direct P2P ~1–5ms, drop prediction — see [13 §4], Phase 5). The analysis below is kept as **reference** in case relays become common later.
+> ⏸️ **DEFERRED for v1** (final decision: assume direct P2P over the trusted mesh ~1–5ms, drop prediction — see [13 §4], Phase 5). The analysis below is kept as **reference** in case relays become common later.
 >
 > 🔎 **Update (see [17 §2.4]):** the reasons *not* to build a full predictor go beyond low RTT: (1) `ghostty_surface_t` is opaque → it would force a **second VT parser** maintaining a shadow framebuffer (desync risk); (2) **the Claude Code TUI uses the alt-screen** → Mosh disables prediction there anyway, so the benefit shrinks to the bare shell prompt. The cheap Phase 2 substitute = a **glitch-window caret** (track only the cursor column, no shadow parser).
 
@@ -407,7 +404,7 @@ The PTY/shell must live independently of the TCP connection: a **helper process 
 | Async I/O | `DispatchIO(.stream)` lowWater=1, highWater=128KB, close in the cleanupHandler |
 | Resize | `ioctl(TIOCSWINSZ)` → SIGWINCH |
 | Sandbox | host **non-sandboxed** Developer ID, Hardened Runtime, runs as the logged-in user |
-| Transport | **TCP** over Network.framework, type-prefix framing (ttyd-style), **no app-layer TLS** (WireGuard encrypts, [13]). **NO mosh SSP/UDP** |
+| Transport | **TCP** over Network.framework, type-prefix framing (ttyd-style), **no app-layer TLS** (the mesh encrypts, [13]). **NO mosh SSP/UDP** |
 | Local echo | ⏸️ DEFERRED (assume P2P; revisit only if relayed) |
 | Client emulator | **libghostty** full surface (self-owned patch, Metal GPU, ligatures OK) — **no SwiftTerm** |
 | Scrollback | client-side (the libghostty surface keeps scrollback internally); stateless server + ET-style seq replay buffer for reconnect ([17 §2.3]) |
@@ -421,6 +418,8 @@ Primary sources: [SwiftTerm Pty.swift / LocalProcess.swift / Terminal.swift / Ap
 ## GUI video path (4:2:0 is good enough) — simplified
 
 > Re-scope: the "text crispness" requirement has been **dropped** for the video path. Every GUI window (VS Code, Xcode, browser...) goes through **ScreenCaptureKit → VideoToolbox HEVC 4:2:0 → Network.framework → decode → Metal**. The terminal path (PTY text) carries all of the most demanding text, so the video codec no longer has to strain for text. This document replaces the "optimize motion-to-photon < 16ms" mindset of the earlier docs with an **idle-efficiency + encode-on-change** mindset for a mostly static screen.
+
+> **Implementation note.** Over plain UDP the built video path adds **FEC** (XOR parity + adaptive tiering: `FECScheme` + `AdaptiveFECPolicy`), **adaptive bitrate / congestion control** (`LiveCongestionController` + `LiveBitratePolicy`), **LTR** loss recovery, a client-side **cursor** side-channel (strip from capture, composite client-side → pointer latency = RTT), a **window-geometry** channel, and display-refresh frame pacing. The packetization/FEC/reassembly and all of those controllers run in the Rust core (`rust/aislopdesk-core`) behind the C-ABI; the codec config below is what the Swift shell drives on top. (FEC + ABR exist *because* the link is not loss-free — they are not optional.)
 
 ---
 
@@ -614,7 +613,7 @@ This is the minimal set for a daily-usable tool, with the lowest risk and highes
 
 1. **PTY bridge on the host** — `openpty()` + `posix_spawn` (login_tty, `POSIX_SPAWN_SETSID`), set env `TERM=xterm-ghostty`, `LANG=en_US.UTF-8`, `COLORTERM=truecolor`, the `IUTF8` termios flag (confirmed present on Darwin: `IUTF8 = 0x00004000` in XNU `bsd/sys/termios.h`), prepend `-` to argv[0] for a login shell. Read the master fd with `DispatchIO(.stream, lowWater:1, highWater:131072)`.
 2. **Resize**: `ioctl(masterFd, TIOCSWINSZ, &winsize)` when the client reports a new size -> the kernel sends SIGWINCH (SwiftTerm `sizeChanged` delegate -> resize message -> host ioctl).
-3. **Transport**: `NWConnection`/`NWListener` TCP, 1-byte-type framing (0=terminal data, 1=resize) + 4-byte length. **No app-layer TLS** — WireGuard encrypts; authorization via NetBird ACL ([13]).
+3. **Transport**: `NWConnection`/`NWListener` TCP, 1-byte-type framing (0=terminal data, 1=resize) + 4-byte length. **No app-layer TLS** — the mesh encrypts; authorization via the mesh ACL ([13]).
 4. **Client libghostty** (full surface + **self-owned external-backend patch**, ref daiimus External.zig): `ghostty_surface_feed_data` ← NWConnection receive loop; write-callback (`use_custom_io=true`) -> NWConnection -> host PTY stdin. Build `GhosttyKit.xcframework` (zig), vendor + pin upstream SHA, re-apply the patch on bumps. Wrap behind `TerminalRendering`. **No fallback** (best-only — no SwiftTerm).
 5. **Persistent PTY**: the host helper is a launchd agent with `KeepAlive=true` holding all master fds; PTYs survive disconnects.
 6. **Minimal reconnect**: iOS `scenePhase .active` -> reconnect; macOS client `NWPathMonitor.pathUpdateHandler` -> reconnect on Wi-Fi↔Ethernet changes.
@@ -631,10 +630,10 @@ This is the minimal set for a daily-usable tool, with the lowest risk and highes
 
 Doc 05 opens with "This is the project's biggest technical risk". With hybrid, **that statement is now true only for the GUI video path**:
 
-- **The terminal path touches no CGEvent/AX/activate-then-control at all.** Input = bytes written to the PTY master fd via `DispatchIO.write`. No TCC Accessibility, no `CGEventPostToPid`, no `AXUIElement`↔`CGWindowID` matching heuristics (the "genuinely fragile" point doc 05 §4 admits itself), no macOS 14 cooperative-activation caveat (doc 05 §4 → "macOS 14+ caveat" — "FAILS when triggered by a timer/network" is exactly the remote-control case). **That entire risk chain vanishes for the bulk of the coding workflow (terminal/Neovim/tmux/git/build).**
+- **The terminal path touches no CGEvent/AX/activate-then-control at all.** Input = bytes written to the PTY master fd via `DispatchIO.write`. No TCC Accessibility, no `CGEventPostToPid`, no `AXUIElement`↔`CGWindowID` matching heuristics (the "genuinely fragile" point doc 05 §4 admits itself), no cooperative-activation caveat (doc 05 §4: activation "FAILS when triggered by a timer/network" — exactly the remote-control case). **That entire risk chain vanishes for the bulk of the coding workflow (terminal/Neovim/tmux/git/build).**
 - **Consequence for the Phase 0 gate:** the 0.4–0.6 spikes in [07-roadmap.md] (AXRaise on the right window, CGEventPostToPid clicking accurately, measuring the activation rate from a network callback) **are no longer project-blocking gates**. They drop to prerequisites for the **GUI video path (a later phase)**, not survival conditions for the MVP.
 - **What to change in doc 05:** add a banner at the top of the file: "Applies to the GUI window path; the terminal path sidesteps injection entirely — see PTY bridge". Keep the technical content (still valid for VS Code/Xcode windows) but lower the risk priority.
-- **Electron correction (already reflected in the [05] banner):** keyboard injection via `CGEventPostToPid` IS accepted by Electron/VS Code; only the **mouse** is rejected (needs SkyLight SPI) — test on macOS 14/15.
+- **Electron correction (already reflected in the [05] banner):** keyboard injection via `CGEventPostToPid` IS accepted by Electron/VS Code; only the **mouse** is rejected (needs SkyLight SPI) — verify on the target OS (macOS 26).
 
 #### 3.2. [09-codec-choice.md] — the 4:4:4 / text-crispness problem is **dropped outright**
 
@@ -714,11 +713,11 @@ Remove the input-injection gate from its project-blocking position. New spikes:
 - [ ] **Done:** "mirror this window" for VS Code/Xcode when GUI is needed.
 
 #### Phase 5 — Security & polish
-- [ ] **Security = rely on NetBird (WireGuard mesh), do NOT encrypt at the app layer** — see [13](13-netbird-transport.md). WireGuard already provides E2E encryption + node auth; adding TLS/QUIC-crypto would be **redundant** (double encryption, pointless latency). → **Drop** Network.framework TLS / CryptoKit ECDH at the app layer.
-  - **Authorization** uses **NetBird ACL** (deny-by-default, per-port): only open the app port from the client group → the host group. WireGuard authenticates the *node*; the ACL constrains *peer→port*.
-  - ⚠️ **The NetBird mesh IS the security boundary** (unlike a bare LAN): PTY=RCE is confined to authorized peers (you control membership). Still worth having: a light app-level device allowlist + per-user auth if multiple users share the machine (NetBird OIDC).
+- [ ] **Security = rely on the trusted private network (a WireGuard mesh, e.g. NetBird/Tailscale), do NOT encrypt at the app layer** — see [13](13-network-transport.md). WireGuard already provides E2E encryption + node auth; adding TLS/QUIC-crypto would be **redundant** (double encryption, pointless latency). → **Drop** Network.framework TLS / CryptoKit ECDH at the app layer.
+  - **Authorization** uses the **mesh ACL** (deny-by-default, per-port): only open the app port from the client group → the host group. WireGuard authenticates the *node*; the ACL constrains *peer→port*.
+  - ⚠️ **The mesh IS the security boundary** (unlike a bare LAN): PTY=RCE is confined to authorized peers (you control membership). Still worth having: a light app-level device allowlist + per-user auth if multiple users share the machine (mesh OIDC/SSO).
 - [ ] File transfer (NWProtocolFramer multiplexed channel, or OSC 1337 for small files).
 - [ ] Hardened Runtime + Developer ID + notarization (the host helper **cannot** be sandboxed since it spawns shells — ship outside MAS).
-- [ ] ~~Speculative local echo~~ — **NOT needed.** Assume NetBird direct P2P (~5–20ms, loss~0) → terminal = **TCP byte stream + libghostty render, no mosh/SSP, no predictive echo**. SSP's benefits only materialize when relayed, and we are **not engineering for relay** ([13 §4](13-netbird-transport.md)).
+- [ ] ~~Speculative local echo~~ — **NOT needed.** Assume direct P2P over the mesh (~5–20ms, loss~0) → terminal = **TCP byte stream + libghostty render, no mosh/SSP, no predictive echo**. SSP's benefits only materialize when relayed, and we are **not engineering for relay** ([13 §4](13-network-transport.md)).
 
 **Why the phases were inverted (corpus summary):** the terminal path is (a) simpler than [video+injection] — just a byte stream, sidestepping input injection (the libghostty renderer is a one-time effort); (b) higher value — daily coding is terminal/Neovim/tmux/git/build, exactly what every prior-art tool (Blink, code-server, JetBrains Gateway dropping Projector) converged on: "semantic/text streaming beats pixel streaming"; (c) it dodges the hardest problem — input injection. The GUI video path is the fallback for windows with no semantic alternative, exactly where Phase 4 places it.

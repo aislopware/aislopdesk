@@ -1,31 +1,34 @@
 # aislopdesk-core (Rust)
 
-The portable, side-effect-free **core** of Aislopdesk, reimplemented in safe Rust as a
-byte- and behaviour-identical port of the Swift pure-algorithm targets. Its purpose is
-to let a future **Android client** link the exact same wire codecs, FEC, reassembly, and
-recovery logic that the macOS/iOS app runs — over a C ABI / JNI boundary (the ALVR
-pattern: Rust owns reassembly/FEC/jitter/ABR/recovery; the platform shell owns capture,
-the socket, and the hardware codec).
+The portable, side-effect-free **core** of Aislopdesk: the wire codecs (terminal
+`WireMessage` + the video protocol), FEC + frame reassembly, the realtime controllers
+(congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer,
+delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY
+protocol incl. the SSH-style channel mux + per-channel flow control. Safe Rust, zero
+runtime dependencies.
 
-This crate is a **parallel source of truth**, not a replacement. The Swift app keeps
-running its native implementations untouched, so the existing hot path takes **zero
-performance risk**. Equivalence with Swift is *proven*, not assumed (see Parity below).
+The Swift/SwiftUI apps are the platform shell (ScreenCaptureKit capture, VideoToolbox
+codec, Metal, input injection, PTY spawn, UI). They call this core over a C-ABI boundary:
+`aislopdesk-ffi` → the `CAislopdeskFFI` SwiftPM target → `libaislopdesk_ffi.a` (built by
+`rust/build-apple.sh`, macOS arm64 slice; iOS slices are a follow-up). The same core is
+the basis for an **Android client** over C-ABI / JNI — the ALVR split: Rust owns
+reassembly/FEC/jitter/ABR/recovery; the platform shell owns capture, the socket, and the
+hardware codec.
 
-## Why this approach
+## Why a C-ABI boundary
 
-Per the 2026-06-11 research verdict (`memory/rust-restart-research-verdict.md`): a full
-Rust rewrite was rejected 3/3 — the Swift hot path is ~1.5 ms/frame and all the latency
-is policy/architecture, so a language swap buys nothing. What *is* worth sharing for
-Android is the ~5.5k LOC of pure, side-effect-free algorithm code. That is what lives
-here. C ABI (cbindgen) was chosen over uniffi (callback ifaces soft-deprecated, its
-serialization unfit for 60 fps); libsignal and ALVR both use the same C-ABI boundary.
+The boundary is a **hand-written, zero-dependency C header** (`aislopdesk_ffi.h`),
+mirroring the `#[repr(C)]` surface by hand. cbindgen was considered but the header is
+hand-maintained to keep the crate dependency-free. C ABI over uniffi (its callback
+interfaces are soft-deprecated and its serialization is unfit for 60 fps); libsignal and
+ALVR use the same C-ABI boundary.
 
 ## Layout
 
 ```
 rust/
   Cargo.toml              workspace (lints: forbid unsafe, pedantic clippy, no warnings)
-  aislopdesk-core/        the pure port (rlib, zero runtime dependencies)
+  aislopdesk-core/        the core (rlib, zero runtime dependencies)
     src/
       bytes.rs            big-endian wire reader/writer (zero-copy reads)
       error.rs            VideoProtocolError { Truncated, Malformed }
@@ -47,7 +50,7 @@ rust/
       ycbcr.rs            BT.709 YCbCr→RGB coefficients (f32, GPU-exact)
       keepalive.rs        keepalive / idle-timeout timing contract
       mux_header.rs       UDP channel-mux header (additive)
-      --- realtime controllers (pure value types, ported from Host/Client) ---
+      --- realtime controllers (pure value types) ---
       network_estimate.rs        folded RTT/loss/OWD-trend estimate (EWMA, min-RTT baseline)
       live_congestion_controller.rs  AIMD ABR (proportional RTT cut, knee, cut-cascade guard)
       live_bitrate_policy.rs     resolution-aware live bitrate ceiling
@@ -62,7 +65,7 @@ rust/
       owd_late_detector.rs       per-frame one-way-delay spike detector (depth v3)
       trendline_estimator.rs     libwebrtc OLS delay-gradient detector + TrendSampler
       pacer_depth_policy.rs      adaptive 1↔2 jitter-depth (network-late driven)
-      --- terminal (PTY) path: a port of `Sources/AislopdeskProtocol` ---
+      --- terminal (PTY) path ---
       terminal/
         error.rs           TerminalProtocolError { FrameTooLarge, Truncated, UnknownMessageType, MalformedBody }
         reader.rs          terminal-local big-endian forward reader
@@ -79,7 +82,7 @@ rust/
           flow_control.rs           shared window/queue sizing constants + env resolvers
     tests/
       golden_parity.rs    cross-language byte/bit parity test
-      vectors/golden_vectors.json   corpus emitted by the Swift dumper
+      vectors/golden_vectors.json   corpus emitted by the corevectors dumper
   aislopdesk-ffi/         the C-ABI boundary (rlib + staticlib + cdylib)
     src/lib.rs            extern "C" surface over the core; the ONLY crate that may use `unsafe`
     include/aislopdesk_ffi.h   hand-maintained C header (mirrors the #[repr(C)] surface)
@@ -91,29 +94,36 @@ rust/
 
 ## Invariants
 
-- **No `unsafe`** — enforced crate-wide by `#![forbid(unsafe_code)]`. Any FFI will live
-  in a separate boundary crate.
+- **No `unsafe`** in the core — enforced crate-wide by `#![forbid(unsafe_code)]`. The only
+  crate permitted `unsafe` is the `aislopdesk-ffi` boundary.
 - **No dependencies** in the shipped library (dev-only `serde_json` for the parity test).
-- **Never panics on untrusted input** — every decoder of network bytes returns
-  `Result`; a corrupt datagram is dropped, never a crash. (The one documented panic is
-  host-side `packetize` on a >77 MB frame, mirroring the Swift trap — unreachable from
-  the wire.)
+- **Never panics on untrusted input** — every decoder of network bytes returns `Result`; a
+  corrupt datagram is dropped, never a crash. (The one documented panic is host-side
+  `packetize` on a >77 MB frame — unreachable from the wire.)
 
-## Parity — the "no mistakes" guarantee
+## Verification
 
-`Sources/aislopdesk-corevectors` (a Swift executable) emits a deterministic JSON corpus
-from the **real** `AislopdeskVideoProtocol` codecs using only their public API. The Rust
-`golden_parity` integration test replays it and asserts **byte-identical** encoder output
-and **bit-identical** numeric output (coordinate math, YCbCr coefficients, and the
-controllers' EWMA / OLS-regression / median / threshold float state, all via IEEE bit
-patterns) across every codec/decision family. Regenerate after any wire/controller change:
+`aislopdesk-corevectors` (a Swift executable) emits a deterministic JSON corpus exercising
+every codec/decision family through its public API. The Rust `golden_parity` integration
+test replays it and asserts **byte-identical** encoder output and **bit-identical** numeric
+output (coordinate math, YCbCr coefficients, and the controllers' EWMA / OLS-regression /
+median / threshold float state, all via IEEE bit patterns). Regenerate after any
+wire/controller change:
 
 ```sh
 swift run aislopdesk-corevectors > rust/aislopdesk-core/tests/vectors/golden_vectors.json
 ```
 
-In addition, every Swift unit test has a mirrored Rust unit test (round-trips, edge
-cases, FEC recovery, reassembly scenarios, ABR/FEC decision tables, hostile-input drops).
+On top of the golden corpus:
+
+- **Per-subsystem differential + fuzz tests** across the codec and controller families
+  (round-trips, edge cases, FEC recovery, reassembly scenarios, ABR/FEC decision tables,
+  hostile-input drops).
+- **`aislopdesk-ffi`**: 27 tests, `clippy --all-targets` clean, `fmt` clean, and a real C
+  smoke test (`-Werror` against the `.a`) proving ABI agreement.
+- **Full app suite** green (~2188 tests, 0 failures).
+- **HW loopback E2E** (`aislopdesk-loopback-validate --smoke`, unsandboxed): real HEVC
+  encode → packetize → reassemble → decode (10/10) plus the controller drive, 0 failures.
 
 ## Develop
 
@@ -122,57 +132,38 @@ cd rust
 cargo test                  # unit + golden-parity
 cargo clippy --all-targets  # pedantic, zero warnings expected
 cargo fmt --check
+./build-apple.sh            # libaislopdesk_ffi.a (macOS arm64) for CAislopdeskFFI
 ```
 
 ## Roadmap
 
-Ported so far:
+Implemented:
 
-- the complete `AislopdeskVideoProtocol` wire surface (the ALVR boundary spine);
-- all 14 pure realtime controllers from `AislopdeskVideoHost`/`Client` (ABR/congestion,
-  fps governor, LTR, decode gate/sequencer, jitter-depth pacer policy, delay-gradient
-  trendline, recovery admission);
-- the complete `AislopdeskProtocol` terminal/PTY path (PATH 1): the `WireMessage` framing,
-  the SSH-style channel mux (`MuxEnvelope`/`MuxFrameDecoder`/`ChannelTable`), and the
-  per-channel credit flow control (`FlowCreditPolicy`/`ReceiveWindowAccountant`/
-  `BoundedQueuePolicy`) — see [`terminal`](aislopdesk-core/src/terminal).
-
-Every one is a side-effect-free value type with its Swift unit suite mirrored 1:1, and for
-the wire/float-heavy ones a byte/bit-exact golden vector. The terminal namespace is kept
-separate from the video path (its own error type + big-endian reader) to mirror the Swift
-module boundary exactly.
-
+- the complete video-protocol wire surface (the ALVR boundary spine);
+- all 14 pure realtime controllers (ABR/congestion, fps governor, LTR, decode
+  gate/sequencer, jitter-depth pacer policy, delay-gradient trendline, recovery admission);
+- the complete terminal/PTY path (PATH 1): the `WireMessage` framing, the SSH-style channel
+  mux (`MuxEnvelope`/`MuxFrameDecoder`/`ChannelTable`), and the per-channel credit flow
+  control (`FlowCreditPolicy`/`ReceiveWindowAccountant`/`BoundedQueuePolicy`) — see
+  [`terminal`](aislopdesk-core/src/terminal). Kept in its own namespace (own error type +
+  big-endian reader) to mirror the module boundary;
 - the **C-ABI boundary** (`aislopdesk-ffi`): the `extern "C"` surface — `staticlib` for
   Apple, `cdylib` for a dynamic/Android consumer — with a hand-maintained C header and a
-  real C smoke test proving cross-language linkage + ABI agreement. This is the *one* crate
-  allowed to use `unsafe`; the core stays 100% safe. The surface today covers the terminal
-  path's streaming `FrameDecoder` (opaque handle), the `WireMessage` codec (a flat
-  `#[repr(C)]` struct + `encode`), and wrap-aware `seq` arithmetic — enough to prove every
-  hard boundary pattern (opaque handles, Rust-owned buffers, status codes, null-safety).
+  real C smoke test. It covers the terminal path's streaming `FrameDecoder` (opaque
+  handle), the `WireMessage` codec (a flat `#[repr(C)]` struct + `encode`), and wrap-aware
+  `seq` arithmetic — enough to exercise every hard boundary pattern (opaque handles,
+  Rust-owned buffers, status codes, null-safety).
 
-Future tranches, in the verdict's port order:
+Next:
 
-1. **Widen the FFI surface**: extend the boundary over the video pipeline — `Reassembler`/
-   FEC and the realtime controllers — as the coarse "Rust owns the pipeline" boundary (the
-   shell pumps datagrams in and gets assembled NAL units + encoder decisions out via a
-   zero-copy callback), then the remaining terminal mux/flow-control. The header can move
-   to `cbindgen` generation (with a CI check that it matches the curated header) once the
-   surface is large enough to warrant it. *(partially landed)*
+1. **Widen the FFI surface**: extend the boundary over the video pipeline — `Reassembler` /
+   FEC and the realtime controllers — as a coarse "Rust owns the pipeline" seam (the shell
+   pumps datagrams in and gets assembled NAL units + encoder decisions out via a zero-copy
+   callback), then the remaining terminal mux/flow-control. The header can move to `cbindgen`
+   generation (with a CI check that it matches the curated header) once the surface is large
+   enough to warrant it.
 2. **Android build**: `cargo-ndk` producing `.so`s for `aarch64/armv7/x86_64-linux-android`
-   plus a JNI shim, behind a foreground service for Doze. *(deferred)*
+   plus a JNI shim, behind a foreground service for Doze.
 
-> **On replacing Swift with this port — landed (partially), see [`SWAP_STATUS.md`](SWAP_STATUS.md).**
-> The macOS/iOS app now calls these Rust codecs for the subsystems where it is provably safe
-> *and* benchmark-proven perf-neutral: the terminal wire codec (size-gated — bulk PTY data
-> stays native), the cursor codec, and the pure scalar policies (LiveBitrate, AdaptiveFEC,
-> CoordinateMapping, RecoveryPolicy). The swap is per-call-site, behind unchanged Swift APIs,
-> each proven by a native↔Rust differential + fuzz test. It is **deliberately not** a blanket
-> rewrite: bulk-buffer codecs stay native (FFI copies regress them 5–7× — measured), and the
-> stateful realtime controllers stay native because they are `Sendable + Equatable` value
-> types whose contract an opaque Rust handle would break. The 2026-06-11 verdict (no wholesale
-> hot-path rewrite) still holds. For those keep-native subsystems the Rust port remains the
-> source of truth for the **Android client**, which has no Swift contract / native fast path to
-> preserve.
-
-Each tranche keeps the same discipline: golden differential tests against the Swift suite,
-no shipped dependencies, no `unsafe` in the pure core (only in `aislopdesk-ffi`).
+Each tranche keeps the same discipline: golden + differential tests, no shipped
+dependencies, no `unsafe` in the core (only in `aislopdesk-ffi`).

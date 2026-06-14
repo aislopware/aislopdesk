@@ -2,7 +2,7 @@
 
 > **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
-Runs on **both macOS and iOS/iPadOS** (shared code). Pipeline: received NALU → `VTDecompressionSession` → `CVPixelBuffer` → Metal render.
+Runs on **both macOS and iOS/iPadOS** (shared code). Platform floor: macOS 26 / iOS 26. Pipeline: NALU (reassembled + FEC-recovered by the Rust core) → `VTDecompressionSession` → `CVPixelBuffer` → Metal render. The Rust core hands the shell decoded-ready access units; this doc covers the Swift shell's decode + present.
 
 ---
 
@@ -119,7 +119,7 @@ metalLayer.maximumDrawableCount = 2     // 2 = lowest latency (VALID on iOS — 
 // Per frame: create 2 textures (Y plane .r8Unorm, UV plane .rg8Unorm) from NV12 → YCbCr→RGB shader → present
 ```
 
-NV12→RGB fragment shader (BT.601/709) — see the snippet in the research. iOS has no `displaySyncEnabled` (always presents at vsync; ProMotion 120Hz brings the worst case down to 8.3ms).
+NV12→RGB fragment shader uses BT.601/709 coefficients (same coefficients the Rust core's YCbCr math is bit-checked against). iOS has no `displaySyncEnabled` (always presents at vsync; ProMotion 120Hz brings the worst case down to 8.3ms).
 
 ### Option B — AVSampleBufferDisplayLayer (simplest)
 
@@ -150,12 +150,12 @@ displayLayer.enqueue(sampleBuffer)   // displays when PTS <= timebase
 
 ## 4b. Frame pacing — render-on-arrival + Pacer
 
-On LAN, **default to render-on-arrival, NO jitter buffer** (see [10 §2–3](10-latency-optimization.md)). If judder appears due to vsync phase mismatch, add a Moonlight-style Pacer:
+The pacing **policy** (decode gate / sequencer / jitter-depth) lives in the Rust core; the Swift shell owns the vsync tick + present. On a low-loss link, **default to render-on-arrival, NO jitter buffer** (see [10 §2–3](10-latency-optimization.md)). If judder appears due to vsync phase mismatch, add a Moonlight-style Pacer:
 - **2 queues + a dedicated render thread**, vsync tick via **`CVDisplayLink`** (macOS) / **`CADisplayLink`** (iOS) — replacing Windows' `WaitForVBlank`.
 - Cap render-ahead at **3 frames**; frame-drop based on a 500ms window history (drop aggressively if the queue is *continuously* >1).
 - `AVSampleBufferDisplayLayer` self-paces via PTS → simple path; for Metal rendering, build your own CVDisplayLink source.
 
-**CAMetalDisplayLink (macOS 14+/iOS 17+):** precise vsync tick; set `preferredFrameLatency = 1.0` (only 1.0 or 2.0 are accepted; iOS default is 2 → setting 1 saves ~8–16 ms). **NOT** limited to Apple Silicon (runs on every Mac with macOS 14+). Render the newest frame right before `targetTimestamp` (beam-racing).
+**CAMetalDisplayLink:** precise vsync tick (always available on the macOS 26 / iOS 26 floor); set `preferredFrameLatency = 1.0` (only 1.0 or 2.0 accepted; iOS default is 2 → setting 1 saves ~8–16 ms). Runs on every Mac, not Apple-Silicon-only. Render the newest frame right before `targetTimestamp` (beam-racing).
 
 **LTR ack:** the client must report which frames it received back to the host (over the control channel) so the host can drive LTR recovery — see [10 §1](10-latency-optimization.md).
 
@@ -179,5 +179,5 @@ Capability check: `VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)`.
 
 - [ ] (P1, macOS) Decode + render frames received from the host → pixels on screen.
 - [ ] Rendering behind a `VideoRenderer` protocol (Metal + AVSampleBuffer impls).
-- [ ] (P3, iOS) Build `PaneCastClientKit` + rendering for iOS, test on a real device (Simulator has no HW decode).
+- [ ] (P3, iOS) Build `AislopdeskVideoClient` + rendering for iOS, test on a real device (Simulator has no HW decode).
 - [ ] Measure glass-to-glass latency (host timestamp → client display).

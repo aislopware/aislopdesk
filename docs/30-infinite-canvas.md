@@ -1,6 +1,6 @@
 # Pan-Only Infinite Canvas — Implementation Spec of Record
 
-Status: spec of record. Replaces the split-tiling workspace with a pan-only infinite canvas. Built against the actual code (paths + line numbers verified). The governing physical constraint and the architectural seam are both load-bearing and both preserved:
+Status: spec of record; shipped as written, except the v2 persistence carries **no migration** (§4.3). Replaces the split-tiling workspace with a pan-only infinite canvas. Built against the actual code (paths + line numbers verified). The governing physical constraint and the architectural seam are both load-bearing and preserved:
 
 - **Physical**: a libghostty terminal surface sizes itself from its hosting view's `bounds × contentsScale` in **points** and pins `layer.bounds == view.bounds` (`GhosttyTerminalView.layout()`), with mouse coords mapped 1:1 with a y-flip. Therefore the camera is a **pure translate** — never a `scaleEffect`/`CGAffineTransform` on any ancestor of a surface — and a pane's on-screen size always equals its canvas-space size (resize = change the frame → existing reflow path).
 - **Architectural** (docs/22): tree-of-intent (pure value types) + table-of-liveness (`WorkspaceStore.registry` + `reconcile()`). The invariant is unchanged:
@@ -23,7 +23,7 @@ Status: spec of record. Replaces the split-tiling workspace with a pan-only infi
 
 **Culling policy.** **Kind-aware.** Terminal/`claudeCode` panes are **never culled** (kept mounted, translated off-viewport by the camera offset). Reason from the libghostty research: removing a terminal host view closes the surface; on revisit a fresh surface replays the retained byte ring (capped 256KB), which can show a **stale frame for an alt-screen TUI** (vim/tmux) until the host repaints — which on a static screen may be never. Keeping them mounted (the OS occludes off-screen views; `setFocus(true)` stays, so they repaint on pan-back with zero replay cost) trades a bounded number of idle Metal surfaces (acceptable at the "few dozen panes" scale) for zero stale-frame risk. **`.remoteGUI` (video) panes ARE culled** off-viewport (plus margin), where culling is beneficial (frees a `liveVideoCap` slot) and the `.onAppear/.onDisappear` activate/deactivate gate is built for it. The focused pane is never culled regardless of kind. This requires one defensive store change so the video-cap teardown decision means "off-screen" not just "off active tab" (§5 `isPaneVisible`), because on a canvas an off-viewport pane is still `isPaneOnActiveTab == true`.
 
-**Migration strategy.** Schema bumps **v1 → v2**, a **wire-shape change** (`Tab.root` → `Tab.canvas`) that `WorkspaceSchemaMigration` cannot do (it migrates an *already-decoded* value — its own doc-comment, `WorkspaceSchemaMigration.swift:18-26`, flags the pre-decode raw-JSON branch as the next step). So `WorkspacePersistence.load()` gets a **pre-decode `schemaVersion` peek**: a v1/v0 payload is decoded against a **quarantined legacy `PaneNode`** shape, then each tab's tree is flattened to canvas items by running the **real `LayoutSolver.solve`** at a nominal viewport to seed each leaf's frame (so a migrated user's panes appear roughly where they were tiled), preserving every `PaneID`/`TabID`/`PaneSpec`/`maximizedPane`. `PaneNode`, `PaneNode+Codable`, and `LayoutSolver` are **retained but quarantined** (`internal`, `Legacy/` group, referenced only by migration) — deleting them would lose the proven frame-seeder. Lossless by construction; never discards on a recoverable shape; the existing `.corrupt` sidecar covers hard failure.
+**Persistence — no migration.** There is no released persisted format and no users (product owner, 2026-06-06), so the schema bumps to **v2** with no v1→v2 migration. `WorkspacePersistence.load()` decodes the v2 canvas shape directly and, on any failure, resets to default (writing the `.corrupt` sidecar so the original bytes stay recoverable). No legacy `PaneNode`/`LayoutSolver` is retained. See §4.3.
 
 ---
 
@@ -135,7 +135,7 @@ public extension Tab {
 }
 ```
 
-`Workspace` is unchanged in shape except `currentSchemaVersion` 1 → 2 (`Workspace.swift:36`). `Workspace.normalizingTabFocus()` (`Workspace.swift:79`) changes `copy.tabs[i].root.allLeafIDs()` → `copy.tabs[i].canvas.allIDs()`.
+`Workspace` is unchanged in shape except `currentSchemaVersion = 2` (`Workspace.swift:36`). `Workspace.normalizingTabFocus()` (`Workspace.swift:79`) changes `copy.tabs[i].root.allLeafIDs()` → `copy.tabs[i].canvas.allIDs()`.
 
 ---
 
@@ -229,21 +229,19 @@ public enum CanvasGeometry {
 ```
 
 ### SolvedLayout from a Canvas (FocusResolver reuse — resolver UNCHANGED)
-`SolvedLayout`, `DividerHandle`, and `FocusResolver` are reused verbatim. `SolvedLayout`/`DividerHandle` are **extracted** to a new `Domain/SolvedLayout.swift` so the types survive independent of the quarantined `LayoutSolver`. Build the layout in **canvas space** (camera-independent → directional focus stable across pans; off-screen panes remain keyboard-navigable), `dividers: []`:
+`SolvedLayout` becomes just `{ frames: [PaneID: CGRect] }` (no dividers — the divider concept is gone) in a new `Domain/SolvedLayout.swift`; `FocusResolver` is reused verbatim. Build the layout in **canvas space** (camera-independent → directional focus stable across pans; off-screen panes stay keyboard-navigable):
 
 ```swift
 public extension Canvas {
-    /// SolvedLayout for FocusResolver: canvas-space item frames, no dividers (divider concept gone).
-    func solvedLayout() -> SolvedLayout {
-        SolvedLayout(frames: framesByID(), dividers: [])
-    }
+    /// SolvedLayout for FocusResolver: canvas-space item frames.
+    func solvedLayout() -> SolvedLayout { SolvedLayout(frames: framesByID()) }
 }
 ```
-`FocusResolver.neighbor(of:_:in:)` and `cycle(_:from:forward:)` consume only `frames` and work unchanged. Overlap ties (cascaded/raised panes) are already discriminated by `crossAxisOverlap` then `axialDistance`; identical-frame ties resolve to iteration order — made deterministic by feeding z-ascending order. No resolver edit.
+`FocusResolver.neighbor(of:_:in:)` and `cycle(_:from:forward:)` consume only `frames` and work unchanged. Overlap ties (cascaded/raised panes) are discriminated by `crossAxisOverlap` then `axialDistance`; identical-frame ties resolve to iteration order — deterministic via z-ascending feed. No resolver edit.
 
 ---
 
-## 4. Codable + schemaVersion v2 + the v1→v2 migration
+## 4. Codable + schemaVersion v2 + persistence
 
 ### 4.1 Codable for the new types
 `CanvasCamera`, `CanvasItem`, `Canvas` are flat (no recursion) → **synthesized `Codable` is safe** (`CGRect`/`CGPoint`/`CGSize` are Codable via CoreGraphics). The hand-written discriminated codec that `PaneNode+Codable` needed (recursive `indirect enum`) is no longer required.
@@ -290,90 +288,15 @@ Wire shape (stable, `.sortedKeys`):
 ### 4.2 schemaVersion
 `Workspace.currentSchemaVersion = 2` (`Workspace.swift:36`).
 
-### 4.3 Retaining legacy `PaneNode` (quarantined)
-`PaneNode.swift`, `PaneNode+Codable.swift`, `LayoutSolver.swift` are **moved to `Sources/AislopdeskClientUI/Workspace/Legacy/`** and made `internal` (drop `public`). Referenced by **nothing** except the migration below. The structural mutation ops (`splitting`/`closing`/`settingFractions`) stay (they compile inside the legacy file) but are dead; only the decode + `allLeafIDs()` + `spec(for:)` + `LayoutSolver.solve` surface is exercised. Add a top-of-file doc: "LEGACY — v1 persistence decode + migration frame-seed ONLY; not used at runtime." `SplitAxis` (used by `DividerHandle`/`LayoutSolver`) stays with the legacy/solver code; `DividerHandle` moves to `Domain/SolvedLayout.swift` (it is part of `SolvedLayout`'s type, always `[]` now).
-
-### 4.4 The v1→v2 migration (pre-decode raw-JSON peek)
-New file `Sources/AislopdeskClientUI/Workspace/Legacy/WorkspaceV1Migration.swift`:
-
-```swift
-import Foundation
-import CoreGraphics
-
-/// The PRE-DECODE wire-reshape migration (the step WorkspaceSchemaMigration cannot do — see its
-/// doc, lines 18-26). v1 persisted `Tab.root: PaneNode`; v2 persists `Tab.canvas: Canvas`. The v2
-/// decoder cannot parse a v1 `root`, so we decode the LEGACY shape and reshape it. Pure + total.
-enum WorkspaceV1Migration {
-    /// Nominal canvas size each v1 tree is solved at to SEED item frames (panes land roughly where
-    /// they were tiled).
-    static let seedViewport = CGSize(width: 1280, height: 800)
-
-    /// Peek schemaVersion off the raw object (do NOT full-decode).
-    static func peekSchemaVersion(_ data: Data) -> Int? {
-        (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["schemaVersion"] as? Int
-    }
-
-    /// If `data` is a v1/v0 payload, decode the legacy shape, reshape each tab → Canvas, return a
-    /// CURRENT-shape Workspace (schemaVersion 2). nil if not a recognizable legacy payload.
-    static func migrateIfLegacy(_ data: Data) -> Workspace? {
-        guard let v = peekSchemaVersion(data), v < 2,
-              let legacy = try? JSONDecoder().decode(LegacyWorkspaceV1.self, from: data) else { return nil }
-        // v0 active-tab normalization folded in (port of upgradeV0toV1) on the way out.
-        var ws = Workspace(schemaVersion: 2, tabs: legacy.tabs.map(reshape), activeTabID: legacy.activeTabID)
-        let activeOK = ws.activeTabID.map { id in ws.tabs.contains { $0.id == id } } ?? false
-        if !activeOK { ws.activeTabID = ws.tabs.first?.id }
-        return ws
-    }
-
-    /// One legacy tab → a Canvas tab: solve the tree at `seedViewport`, emit each leaf at its solved
-    /// rect (PRESERVING PaneID + spec), z = pre-order index. zoomedPane → maximizedPane (same flag).
-    private static func reshape(_ t: LegacyTabV1) -> Tab {
-        let solved = LayoutSolver.solve(t.root, in: seedViewport, minLeaf: Canvas.minItemSize)
-        let items: [CanvasItem] = t.root.allLeafIDs().enumerated().compactMap { (z, id) in
-            guard let spec = t.root.spec(for: id), let frame = solved.frames[id] else { return nil }
-            return CanvasItem(id: id, spec: spec, frame: Canvas.sanitize(frame), z: z)
-        }
-        // v1 trees always have ≥1 leaf; guard total anyway.
-        let safe = items.isEmpty
-            ? [CanvasItem(id: t.focusedPane, spec: PaneSpec(kind: .terminal, title: t.name),
-                          frame: CGRect(origin: .zero, size: Canvas.defaultItemSize), z: 0)]
-            : items
-        return Tab(id: t.id, name: t.name, canvas: Canvas(items: safe, camera: .zero),
-                   focusedPane: t.focusedPane, maximizedPane: t.zoomedPane)
-    }
-}
-
-// Legacy decode-only mirrors (the v1 wire shape; the live model never sees them).
-private struct LegacyWorkspaceV1: Decodable { let schemaVersion: Int; let tabs: [LegacyTabV1]; let activeTabID: TabID? }
-private struct LegacyTabV1: Decodable { let id: TabID; let name: String; let root: PaneNode
-                                        let focusedPane: PaneID; let zoomedPane: PaneID? }
-```
-
-`WorkspacePersistence.load()` (`WorkspacePersistence.swift:91-117`) gains the pre-decode branch (the only change to that file besides `dedupingLeafIDs → dedupingItemIDs`):
+### 4.3 Persistence — decode-or-reset (no migration)
+There is no released persisted format and no users (product owner, 2026-06-06), so v2 ships **without a v1→v2 migration** — no legacy `PaneNode`/`LayoutSolver` retention, no pre-decode reshape. `WorkspacePersistence.load()` decodes the v2 canvas shape and `resetToDefault()`s on any failure (which writes the `.corrupt` sidecar so the original bytes stay recoverable). An older incompatible on-disk shape simply fails to decode and resets:
 
 ```swift
 public func load() -> Workspace {
-    guard let data = try? Data(contentsOf: fileURL) else { return .defaultWorkspace() }
-
-    // PRE-DECODE wire-reshape: a v1/v0 file's `root: PaneNode` can't decode into v2's `canvas`. Peek
-    // the version; if legacy, reshape (solve the tree → seed item frames) BEFORE the v2 decode. Prefer
-    // recovery over reset: try v2, then legacy, and only resetToDefault() when BOTH fail.
-    let peeked = WorkspaceV1Migration.peekSchemaVersion(data)
-    let decoded: Workspace?
-    switch peeked {
-    case .some(0), .some(1):
-        decoded = WorkspaceV1Migration.migrateIfLegacy(data)
-    case .some(2), .none:
-        decoded = (try? JSONDecoder().decode(Workspace.self, from: data))
-            ?? WorkspaceV1Migration.migrateIfLegacy(data)   // unversioned-but-v1-shaped fallback
-    case .some:                                              // future (>2): unreadable by this build
-        decoded = nil
-    }
-    guard let value = decoded else { return resetToDefault() }
-
-    guard let migrated = WorkspaceSchemaMigration.migrate(value, from: value.schemaVersion) else {
-        return resetToDefault()
-    }
+    guard let data = try? Data(contentsOf: fileURL),
+          let value = try? JSONDecoder().decode(Workspace.self, from: data),
+          let migrated = WorkspaceSchemaMigration.migrate(value, from: value.schemaVersion)
+    else { return resetToDefault() }                  // resetToDefault writes the .corrupt sidecar
     var seen = Set<PaneID>()
     var repaired = migrated
     repaired.tabs = repaired.tabs.map { tab in
@@ -383,7 +306,7 @@ public func load() -> Workspace {
 }
 ```
 
-`WorkspaceSchemaMigration.steps` keeps `[0: upgradeV0toV1]` (harmless; legacy files take the pre-decode branch). `migrate(value, from: value.schemaVersion)` with `value.schemaVersion == 2` is the identity fast path. **Lossless guarantees**: every v1 `PaneID`/`TabID` survives (focus/active-tab references stay valid); every `spec` (kind/title/endpoint/video) survives; `maximizedPane` carries `zoomedPane`; relative tiled adjacency is preserved (solved rects); sessions start idle.
+`dedupingItemIDs` re-mints duplicate `PaneID`s (the registry is keyed 1:1 by PaneID); `Canvas.sanitize` (decode, §4.1) clamps every frame finite + ≥ `minItemSize`. `WorkspaceSchemaMigration.migrate` is the identity fast path at v2.
 
 ---
 
@@ -605,7 +528,7 @@ struct CanvasView: View {
         store.updateViewport(size)
         store.updateViewportMembership(CanvasGeometry.viewportMembers(canvas.items, camera: camera, viewport: size))
         if let maxID = activeTab?.maximizedPane, canvas.contains(maxID) {
-            store.updateSolvedLayout(SolvedLayout(frames: [maxID: CGRect(origin: .zero, size: size)], dividers: []))
+            store.updateSolvedLayout(SolvedLayout(frames: [maxID: CGRect(origin: .zero, size: size)]))
         } else {
             store.updateSolvedLayout(canvas.solvedLayout())   // canvas-space; FocusResolver consumes unchanged
         }
@@ -787,18 +710,17 @@ case .toggleZoom:         store.toggleZoom()
 - `Sources/AislopdeskClientUI/Workspace/Domain/Canvas+Ops.swift` — queries + mutations + camera/arrange + `solvedLayout()`.
 - `Sources/AislopdeskClientUI/Workspace/Domain/Canvas+Codable.swift` — defensive `init(from:)`/`encode(to:)` + `sanitize`.
 - `Sources/AislopdeskClientUI/Workspace/Domain/CanvasGeometry.swift` — `ResizeAnchor`, `resizing`, `placement`, `screenRect`, `visibleItems`, `viewportMembers`.
-- `Sources/AislopdeskClientUI/Workspace/Domain/SolvedLayout.swift` — `SolvedLayout` + `DividerHandle` (extracted from LayoutSolver so they survive the quarantine).
-- `Sources/AislopdeskClientUI/Workspace/Legacy/WorkspaceV1Migration.swift` — pre-decode peek + legacy mirrors + reshape.
+- `Sources/AislopdeskClientUI/Workspace/Domain/SolvedLayout.swift` — the `SolvedLayout { frames: [PaneID: CGRect] }` type `FocusResolver` consumes.
 - `Sources/AislopdeskClientUI/Workspace/Views/CanvasView.swift` — pannable plane + `CanvasScrollCatcher` + recenter button + maximize branch.
 - `Sources/AislopdeskClientUI/Workspace/Views/CanvasItemView.swift` — positioned pane + move/resize gestures + handles.
-- Tests: `CanvasOpsTests.swift`, `CanvasGeometryTests.swift`, `CanvasCullingTests.swift`, `WorkspaceV1MigrationTests.swift`, `CanvasFocusTests.swift`.
+- Tests: `CanvasOpsTests.swift`, `CanvasGeometryTests.swift`, `CanvasCullingTests.swift`, `CanvasFocusTests.swift`.
 
 **Modify**
 - `Domain/Tab.swift` — `root`→`canvas`, `zoomedPane`→`maximizedPane`, `Tab.make`.
 - `Domain/Workspace.swift` — `currentSchemaVersion=2`; `normalizingTabFocus` `.root`→`.canvas`.
 - `Domain/CompactLayoutResolver.swift` — `pages`/`selectedIndex` → canvas reads (z-order).
 - `Store/WorkspaceStore.swift` — §5 reads; delete `split`/`setFractions`; add `addPane`/`movePane`/`resizePane`/`raisePane`/`commitCamera`/`centerOnPane`/`centerOnAll`/`tidyActiveTab`/`updateViewport`/`updateViewportMembership`/`isPaneVisible`/`lastViewport`/`paneIDsInViewport`; rework `closePane`; `apply(_:to:)` cases.
-- `Store/WorkspacePersistence.swift` — pre-decode peek branch in `load()` + `dedupingLeafIDs`→`dedupingItemIDs`.
+- `Store/WorkspacePersistence.swift` — decode the v2 canvas shape; `dedupingLeafIDs`→`dedupingItemIDs`; reset + `.corrupt` sidecar on failure.
 - `Store/CommandInterpreter.swift` — `WorkspaceCommand` cases + `defaultBindings`.
 - `Views/WorkspaceRootView.swift` — regular branch → `CanvasView` (:111).
 - `Views/PaneChromeView.swift` — additive `moveHandleGesture` on header; `splitMenu`×2 → one `addMenu`; zoom label "Maximize".
@@ -808,11 +730,9 @@ case .toggleZoom:         store.toggleZoom()
 - `Views/WorkspaceCommands.swift` — Pane menu labels/items.
 - `Views/TabSidebarView.swift` — canvas reads (:83,:167,:178-179).
 
-**Move to `Legacy/` (internal, decode/migration-only — NOT deleted)**
-- `Domain/PaneNode.swift` → `Legacy/PaneNode.swift`; `Domain/PaneNode+Codable.swift` → `Legacy/PaneNode+Codable.swift`; `Domain/LayoutSolver.swift` → `Legacy/LayoutSolver.swift` (top-of-file "LEGACY" doc; `SplitAxis` rides with it).
-
 **Delete**
 - `Views/PaneTreeView.swift`, `Views/SplitContainer.swift` (incl. `DividerHandleView`).
+- `Domain/PaneNode.swift`, `Domain/PaneNode+Codable.swift`, `Domain/LayoutSolver.swift` (+ `SplitAxis`, `DividerHandle`) — the split model is fully replaced; nothing retains it.
 
 ---
 
@@ -822,46 +742,43 @@ case .toggleZoom:         store.toggleZoom()
 - `CanvasOpsTests`: `allIDs` z-order determinism (ties by id); `adding` (z=maxZ+1, focus-target exists, frame from `placement`); `moving`/`resizing` (min-floor clamp, opposite-edge pin, finite clamp for NaN/inf delta); `raising` (idempotent at top, brings to front); `removing` (→ nil on last == tab-empties contract, survivor z preserved); `hitTest` (z-desc, overlapping stack → frontmost); `dedupingItemIDs` (re-mints dups, first kept); `contains`/`frame`/`spec`/`itemCount`/`maxZ`; `panned` (no /scale); `centered` (item center → viewport center); `centeredOnAll` (bbox; empty → identity; bbox > viewport stays centered, NOT shrunk); `tidied` (grid, no overlap, z preserved, camera recentered); `needsRecenter`.
 - `CanvasGeometryTests`: `screenRect` 1:1 (width/height verbatim, translate only); `resizing` table-driven over all 8 `ResizeAnchor` (anchored edges move, opposite pinned, floor clamps); `placement` (≤25% overlap, cascaded from focus, terminates via the step cap, viewport-center when `near: nil`).
 - `CanvasCullingTests`: `visibleItems` (terminals always present; video culled outside viewport+margin; focused video never culled; pure determinism); `viewportMembers` (intersection-only, no margin, no kind filter).
-- `WorkspaceV1MigrationTests`: a hand-authored **v1 JSON fixture** (3-leaf nested split, endpoints + a `zoomedPane` + non-first `activeTabID`/`focusedPane`) → `load()` → schemaVersion==2; every PaneID/TabID survives; item count == leaf count; every spec preserved; `maximizedPane`==v1 `zoomedPane`; frames finite, ≥ minItemSize, preserve tiled adjacency (left.minX < right.minX for a horizontal split); round-trip (save migrated → reload → identical). Plus: v0 fixture (dangling activeTabID repaired); future-v3 → `resetToDefault` + `.corrupt` sidecar; hard-corrupt → default + sidecar; duplicate-id v1 → re-minted (no collapsed sessions); unversioned-but-v1-shaped → legacy branch.
 - `CanvasFocusTests`: build `Canvas` with known frames; `canvas.solvedLayout()` feeds `FocusResolver.neighbor` to the correct left/right/up/down + cycle; overlap-tie deterministic; off-viewport target navigable (canvas-space, camera-independent). **`FocusResolverTests` kept verbatim** (it already builds `SolvedLayout` from explicit frames).
 
 ### 9.2 FakePaneSession store tests (adapt — the seam stays)
 - `WorkspaceStoreReconcileTests`: build tabs with `Canvas`; assert `Set(registry.keys)==Set(activeTab.canvas.allIDs())` after `addPane`/`closePane`/`movePane`/`resizePane`/`raisePane`/`commitCamera`/`center*`/`tidy`; `move/resize/raise/pan/center/tidy/commitCamera` are registry no-ops (no materialize/teardown); `addPane` materializes exactly one; `closePane` of last item closes the tab; `.adopt(leafID)` first event after add.
 - `LiveVideoCapTests` (extend, not rewrite): the `isPaneVisible` fix — a video pane reported OUT of `updateViewportMembership` deactivates (frees a slot + bumps `videoPromotionGeneration`); a pane still in the set self-cancels the spurious teardown; empty set → falls back to `isPaneOnActiveTab` (no regression).
-- `WorkspacePersistenceTests` (extend): v1→v2 load fixture; v2 byte-stable round-trip; corrupt/non-finite frame → sanitized/default + `.corrupt` sidecar; duplicate-id re-mint.
+- `WorkspacePersistenceTests` (extend): v2 byte-stable round-trip; corrupt/non-finite frame → sanitized/default + `.corrupt` sidecar; duplicate-id re-mint; an older incompatible shape fails to decode → default + sidecar.
 - `CompactLayoutResolverTests` (adapt): pages == `canvas.allIDs()` z-order; `selectedIndex` from `focusedPane`.
 - `CommandRoutingTests`/`CommandInterpreterTests` (adapt): `⌘D→.newPane`, `⇧⌘D→.tidy`, `⌥⌘C→.centerFocusedPane`, focus/cycle/zoom/tab chords unchanged; no bare-key binding; `apply(.newPane)` materializes a pane, `apply(.centerFocusedPane)` moves only the camera.
 - `CommandPaletteEntriesTests`, `ScenePhaseFanOutTests`, `WorkspaceStoreReconnectGuardTests`, `WorkspaceTests`: adapt the few `.root`/`split` references.
 
 ### 9.3 Delete
-`PaneNodeTests`, `LayoutSolverTests`, `FractionTests` (split-specific). Keep a thin `LayoutSolverSeedTests` asserting the seeding the migration relies on (so the migration's frame source stays covered), and a thin `PaneNodeDecodeTests` asserting the legacy decoder still parses a v1 fixture.
+`PaneNodeTests`, `LayoutSolverTests`, `FractionTests` — split-specific; the split model and its types are removed.
 
 ---
 
 ## 10. Ordered implementation steps (build checklist — each independently buildable+testable)
 
-1. **Domain types + Codable.** Create `Canvas.swift`, `Canvas+Codable.swift`, `SolvedLayout.swift` (extract `SolvedLayout`/`DividerHandle`). No callers yet. Build the Domain target. *Depends on: nothing.*
-2. **Pure ops + geometry.** Create `Canvas+Ops.swift`, `CanvasGeometry.swift`. Write `CanvasOpsTests` + `CanvasGeometryTests` + `CanvasCullingTests`; run green. *Depends on: 1.*
-3. **Quarantine legacy.** Move `PaneNode.swift`/`PaneNode+Codable.swift`/`LayoutSolver.swift` → `Legacy/`, drop `public`. Build (everything still references them via the old paths — this step will break the build; do it together with step 4's migration + step 6's store reads, OR keep them `public` in `Legacy/` until step 7 then tighten). Practical order: keep them `public` in `Legacy/` now; tighten to `internal` after step 7. *Depends on: 1.*
-4. **Migration.** Create `Legacy/WorkspaceV1Migration.swift`; wire the pre-decode peek into `WorkspacePersistence.load()` (+ `dedupingItemIDs`). Write `WorkspaceV1MigrationTests`. *Depends on: 1, 3, and `Tab.canvas` (step 5).* — co-land with 5.
-5. **Tab + Workspace.** `Tab.root`→`canvas`, `zoomedPane`→`maximizedPane`, `Tab.make`; `Workspace.currentSchemaVersion=2`, `normalizingTabFocus`. This breaks the store + views (expected). *Depends on: 1.*
-6. **Store.** Apply all §5 edits (reads, delete split/setFractions, new mutations, viewport/membership/`isPaneVisible`, `closePane`). `apply(_:to:)` left referencing old command cases until step 8 — temporarily stub `.newPane`/`.tidy`/`.centerFocusedPane` once 8 lands; OR co-land 6+8. Build the store. *Depends on: 2, 5.*
-7. **CompactLayoutResolver + coupled-view reads.** `CompactLayoutResolver`, `TabSidebarView`, `CommandPaletteView` canvas reads. *Depends on: 5, 6.*
-8. **Commands.** `WorkspaceCommand` cases + `defaultBindings` + `apply(_:to:)` + `WorkspaceCommands` menu. Write `CommandRoutingTests`. *Depends on: 6.*
-9. **PaneChromeView.** Additive `moveHandleGesture` on header; `splitMenu`×2 → `addMenu`; zoom→"Maximize". *Depends on: 6.*
-10. **CanvasItemView.** New file — chrome+leaf, move/resize gestures, handles, focus wiring. *Depends on: 2, 6, 9.*
-11. **CanvasView + CanvasScrollCatcher.** New file — pannable plane, culling, maximize branch, reporters, recenter button, macOS scroll catcher, iOS bg pan. *Depends on: 2, 6, 10.*
-12. **Mount switch.** `WorkspaceRootView` regular branch → `CanvasView`; `PaneCarouselView` reads + `addPane`. Delete `PaneTreeView.swift`/`SplitContainer.swift`. *Depends on: 7, 11.*
-13. **PaneLeafView teardown guard** → `isPaneVisible`. Extend `LiveVideoCapTests`. *Depends on: 6.*
-14. **Adapt remaining store/persistence/compact tests** (`WorkspaceStoreReconcileTests`, `WorkspacePersistenceTests`, `CompactLayoutResolverTests`, `WorkspaceTests`, etc.); delete `PaneNodeTests`/`LayoutSolverTests`/`FractionTests`; keep the thin seed/decode tests. *Depends on: all above.*
-15. **Tighten legacy to `internal`**; full sweep green; iOS + macOS build. *Depends on: all above.*
-16. **HW-validation pass** (§6.8 items 1–6) via cua/Maestro — gate before any merge/commit.
+1. **Domain types + Codable.** Create `Canvas.swift`, `Canvas+Codable.swift`, `SolvedLayout.swift` (`{ frames }`). No callers yet. Build the Domain target. *Depends on: nothing.*
+2. **Pure ops + geometry.** Create `Canvas+Ops.swift`, `CanvasGeometry.swift`; write + green `CanvasOpsTests` + `CanvasGeometryTests` + `CanvasCullingTests`. *Depends on: 1.*
+3. **Tab + Workspace.** `Tab.root`→`canvas`, `zoomedPane`→`maximizedPane`, `Tab.make`; `Workspace.currentSchemaVersion=2`, `normalizingTabFocus`. Breaks the store + views (expected). *Depends on: 1.*
+4. **Store.** All §5 edits (reads, delete split/setFractions, new mutations, viewport/membership/`isPaneVisible`, `closePane`). Co-land with step 5's command cases, or temporarily stub `.newPane`/`.tidy`/`.centerFocusedPane`. *Depends on: 2, 3.*
+5. **Commands.** `WorkspaceCommand` cases + `defaultBindings` + `apply(_:to:)` + `WorkspaceCommands` menu; write `CommandRoutingTests`. *Depends on: 4.*
+6. **CompactLayoutResolver + coupled-view reads.** `CompactLayoutResolver`, `TabSidebarView`, `CommandPaletteView`. *Depends on: 3, 4.*
+7. **PaneChromeView.** Additive `moveHandleGesture` on header; `splitMenu`×2 → `addMenu`; zoom→"Maximize". *Depends on: 4.*
+8. **CanvasItemView.** New file — chrome+leaf, move/resize gestures, handles, focus wiring. *Depends on: 2, 4, 7.*
+9. **CanvasView + CanvasScrollCatcher.** New file — pannable plane, culling, maximize branch, reporters, recenter button, macOS scroll catcher, iOS bg pan. *Depends on: 2, 4, 8.*
+10. **Mount switch.** `WorkspaceRootView` regular branch → `CanvasView`; `PaneCarouselView` reads + `addPane`. Delete `PaneTreeView.swift`/`SplitContainer.swift` + `PaneNode`/`LayoutSolver`. *Depends on: 6, 9.*
+11. **PaneLeafView teardown guard** → `isPaneVisible`; extend `LiveVideoCapTests`. *Depends on: 4.*
+12. **Adapt remaining store/persistence/compact tests** (`WorkspaceStoreReconcileTests`, `WorkspacePersistenceTests`, `CompactLayoutResolverTests`, `WorkspaceTests`, …); delete `PaneNodeTests`/`LayoutSolverTests`/`FractionTests`. *Depends on: all above.*
+13. **Full sweep green; iOS + macOS build.** *Depends on: all above.*
+14. **HW-validation pass** (§6.8 items 1–6) via cua/Maestro — gate before any merge/commit.
 
 ---
 
 ## 11. Top risks + mitigations
 
-1. **v1→v2 migration data-loss / launch-brick** (the project's recurring failure mode — R13 nuke-to-default). A wrong peek branch would silently discard every existing user's workspace. *Mitigation:* the peek tries v2 then legacy and only `resetToDefault()`s when both fail; `resetToDefault` writes the `.corrupt` sidecar (original bytes recoverable, never destroyed); `migrateIfLegacy`/`reshape` are pure + total (no force-unwrap, no throw; degenerate leaf → default item; zero-item tab → single terminal); `Canvas.sanitize` clamps every frame finite + ≥ minItemSize at two layers (reshape + decode); id-preservation + `dedupingItemIDs` asserted by `WorkspaceV1MigrationTests`; the existing `savingEnabled` gate defers the first save past the restore reconcile, so a migration bug surfaces as a recoverable in-memory default with the sidecar intact, never an overwrite of the good v1 file.
+1. **On-disk shape change resets old workspaces.** v2 is a wire-shape change with no migration, so an older incompatible file fails to decode. *Mitigation:* there are no released formats/users (acceptable by design); `load()` decodes v2 and only `resetToDefault()`s on failure; `resetToDefault` writes the `.corrupt` sidecar (original bytes recoverable, never destroyed); `Canvas.sanitize` clamps every frame finite + ≥ minItemSize on decode; `dedupingItemIDs` re-mints duplicate ids; the existing `savingEnabled` gate defers the first save past the restore reconcile, so a decode bug surfaces as a recoverable in-memory default with the sidecar intact, never an overwrite.
 2. **macOS chrome-header `DragGesture` stealing libghostty body `mouseDown`** (breaks text selection/mouse-reporting; the surface is documented-delicate). *Mitigation:* region isolation, never priority — the move gesture is attached only to the header HStack, a plain `.gesture` (never `.highPriorityGesture`), and the body has zero ancestor gestures; `minimumDistance: 2` so a header click still focuses; the `onRequestFocus` focus path is kept verbatim. HW item #1 is the mandatory acceptance test; fallback is a small dedicated drag glyph.
 3. **Culling unmounting a terminal surface → stale-frame replay for alt-screen TUIs.** *Mitigation:* terminals are **never culled** (kept mounted, translated off-viewport, `setFocus(true)`); only `.remoteGUI` panes cull; the focused pane is never culled. Encoded in the pure `visibleItems`, unit-tested.
 4. **Off-viewport video pane never freeing its cap slot** (`isPaneOnActiveTab` == "on active tab" ≠ "on screen" on a canvas). *Mitigation:* the `isPaneVisible` signal (active-tab AND in-viewport) gates the teardown re-check, with an empty-set fallback that keeps every non-canvas path byte-identical; tested in `LiveVideoCapTests` + HW item #6.
@@ -872,9 +789,3 @@ case .toggleZoom:         store.toggleZoom()
 
 ### Source anchors (verified)
 `Sources/AislopdeskClientUI/Workspace/Domain/{Tab.swift,Workspace.swift,LayoutSolver.swift,CompactLayoutResolver.swift,PaneNode.swift,PaneNode+Codable.swift}`, `Sources/AislopdeskClientUI/Workspace/Store/{WorkspaceStore.swift,WorkspacePersistence.swift,WorkspaceSchemaMigration.swift,CommandInterpreter.swift}`, `Sources/AislopdeskClientUI/Workspace/Views/{PaneTreeView.swift,SplitContainer.swift,PaneChromeView.swift,PaneCarouselView.swift,PaneLeafView.swift,WorkspaceRootView.swift,CommandPaletteView.swift,TabSidebarView.swift,WorkspaceCommands.swift}`, and the libghostty spine `ThirdParty/ghostty/integration/GhosttySurface/GhosttyTerminalView.swift` (`layout()` bounds×scale + `layer.bounds==view.bounds`; `mouseDown` y-flip) + `Sources/AislopdeskClientUI/Terminal/TerminalViewModel.swift` (`sendResize` dedup).
-
----
-
-## Addendum — migration dropped (2026-06-06)
-
-Per the product owner, the app has **no released persisted format and no users**, so the v1(split-tiling)→v2(canvas) backward-compat migration in §4.4 was **not built / removed**: there is no `WorkspaceV1Migration`, no quarantined legacy `PaneNode` / `LayoutSolver`, and `WorkspacePersistence.load()` simply decodes the canvas shape and falls back to the default (writing the `.corrupt` sidecar) on any failure — an older incompatible on-disk shape just fails to decode and resets. The now-dead `DividerHandle` / `SplitAxis` / `SolvedLayout.dividers` were also removed (the canvas has no dividers); `SolvedLayout` is just `{ frames: [PaneID: CGRect] }`, consumed by `FocusResolver` unchanged. Everything else in this spec shipped as written.

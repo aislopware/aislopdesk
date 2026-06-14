@@ -1,12 +1,12 @@
 # 17 — Best-solution synthesis: lowest latency + "real machine" feel (TUI & GUI per-window)
 
-> **STATUS: CURRENT.** Synthesized from re-researching 7 "families" of OSS + commercial solutions (15 agents, ~1.48M tokens) to lock in the **best** design for the 2 paths, prioritizing (a) lowest latency and (b) the feeling of **using a local machine**, not a remote one. Corpus: [research/17-tui-gui-best-solution.json](research/17-tui-gui-best-solution.json). The resulting decisions have been pushed into [DECISIONS.md](DECISIONS.md); this doc is the **why + detailed mechanics**.
+> **STATUS: CURRENT.** Synthesized from 7 "families" of OSS + commercial solutions to lock in the **best** design for the 2 paths, prioritizing (a) lowest latency and (b) the feel of **using a local machine**, not a remote one. Corpus: [research/17-tui-gui-best-solution.json](research/17-tui-gui-best-solution.json). Decisions are in [DECISIONS.md](DECISIONS.md); this doc is the **why + mechanics**.
 >
 > Guiding philosophy (see [00](00-overview.md)): **one best choice, no fallbacks.**
 
 ## TL;DR (headline)
 
-1. **PATH 1 (terminal) is already nearly local** at NetBird's 5–20ms RTT. Raw VT byte-stream over **plain TCP + `TCP_NODELAY`** + **libghostty external-IO** = full fidelity, no protocol round-trips. **Do NOT build a Mosh shadow-framebuffer predictor for v1** (see §2.4). Add: **dual data/control channels** + an **ET-style replay buffer** so reconnects lose no bytes.
+1. **PATH 1 (terminal) is already nearly local** at a private-mesh 5–20ms RTT. Raw VT byte-stream over **plain TCP + `TCP_NODELAY`** + **libghostty external-IO** = full fidelity, no protocol round-trips. **Do NOT build a Mosh shadow-framebuffer predictor for v1** (see §2.4). Add: **dual data/control channels** + an **ET-style replay buffer** so reconnects lose no bytes.
 2. **PATH 2 (GUI per-window), the highest-value decision = client-side cursor rendering**: split the pointer out of the video, send position+bitmap over a separate UDP side-channel, composite on the client at display-refresh → **pointer latency = RTT**, fully independent of encode/decode. This is the boundary between "feels remote" and "feels local".
 3. **PATH 2 sharp text for editor windows**: **lossy-first → lossless-upgrade** (encode at quality ~0.65 and send immediately, then re-encode the dirty-rect with `kVTCompressionPropertyKey_Lossless` when idle) — both fast and pixel-perfect once the user stops to read.
 4. **PATH 2's unresolved risk** = **mapping the client's video-region coordinates → the host's window/screen** for CGEvent injection (Retina scaling + window moves). Must spike before committing to PATH 2.
@@ -36,7 +36,7 @@ Every claim was verified back to source. Notable **corrections** (survey was wro
 ### 2.1 Transport: raw TCP + `TCP_NODELAY` (mandatory) + dual channels
 
 - Raw PTY byte-stream over **plain TCP** (decided in [13]). **NEW ADD: enable `TCP_NODELAY` right after `connect()`** on every socket. Nagle coalescing of 1-character writes can add **up to 200ms** to echo — this is the single omission that showed up in every terminal stack surveyed. One `setsockopt` line, **high** impact.
-- **Dual channels**: the data channel (PTY bytes) separated from the control channel (`TIOCSWINSZ` resize + intent/disconnect). Lesson from Zellij: a Claude Code output burst must not delay the resize-ack. Low effort (a 2nd framed channel or sub-stream multiplexing).
+- **Dual channels**: the data channel (PTY bytes) separated from the control channel (`TIOCSWINSZ` resize + intent/disconnect). Lesson from Zellij: a Claude Code output burst must not delay the resize-ack. Low effort (a 2nd framed channel or sub-stream multiplexing). The wire framing + channel mux + per-channel flow control are implemented in the Rust core's terminal namespace (behind the C-ABI), called by the Swift host/client.
 - **No-buffer relay** (lesson from NoMachine NX): don't insert a ring buffer between `posix_spawn`→TCP write; lockless relay, relay thread set to **`QOS_CLASS_USER_INTERACTIVE`**.
 
 ### 2.2 Renderer: libghostty external-IO — the truth about the forks
@@ -62,10 +62,10 @@ This is an important and **counter-intuitive** conclusion:
 - Mosh's `PredictionEngine` (speculative local echo on a **shadow VT framebuffer**) is the classic technique making typing feel "instant" on slow links (mosh.org: median SSH 503ms vs mosh near-instant, EV-DO ~500ms RTT). But:
   1. `ghostty_surface_t` is an **opaque `void*`** (verified — no cell-reading function in the C API). To predict, you **must** build a **2nd VT parser** running in parallel maintaining a shadow framebuffer → maintenance burden + **desync** risk (a parser less complete than libghostty → mispredictions + jarring snaps).
   2. Mosh **disables prediction itself in full-screen apps** using cursor positioning (vim/emacs/htop). **Claude Code's TUI also uses alt-screen + cursor positioning** → prediction would be **OFF** inside Claude Code itself. The benefit only remains at a **bare shell prompt**.
-  3. In **adaptive mode**, Mosh **withholds prediction on fast links** (SRTT_TRIGGER_HIGH=30ms → corresponding to raw SRTT ~60ms). NetBird at 5–20ms RTT → prediction would be almost always off by Mosh's own design.
+  3. In **adaptive mode**, Mosh **withholds prediction on fast links** (SRTT_TRIGGER_HIGH=30ms → corresponding to raw SRTT ~60ms). A 5–20ms private-mesh RTT → prediction would be almost always off by Mosh's own design.
 - ⚠️ Correction from source verification (don't let other docs copy it wrong): the underline threshold gates on **`send_interval`** (= `ceil(SRTT/2)` clamped to [20,250]ms), **not** raw SRTT; `FLAG_TRIGGER_HIGH=80` ⇒ raw SRTT ~160ms. **CR (0x0d) DOES call `become_tentative()`** (it is not excluded); only CSI `C`/`D` (←/→) are predicted, every other CSI → tentative.
 - **Decision**: do **not** build a full shadow-framebuffer predictor for v1 — saving 5–20ms only at the shell prompt isn't worth the desync risk. **Cheap option (Phase 2)**: a **glitch-window speculative caret** — track only the **cursor column**, nudge a dim caret when no echo arrives within ~150–250ms ("input received" feedback while Claude Code stalls) without a shadow VT parser. 80% of the benefit at ~0 desync risk.
-- ⚠️ Spike #1 (also decides the above): **measure real end-to-end echo latency on the NetBird mesh** (PTY relay → TCP → shell echo → libghostty render) at both 5ms and 20ms RTT. This single number decides whether a predictor is ever needed.
+- ⚠️ Spike #1 (also decides the above): **measure real end-to-end echo latency on the private mesh** (PTY relay → TCP → shell echo → libghostty render) at both 5ms and 20ms RTT. This single number decides whether a predictor is ever needed.
 
 ### 2.5 iOS native feel: table stakes (ADD)
 
@@ -85,7 +85,7 @@ Missing any item below means it "works" but does **not** feel like a native iOS 
 
 ### 3.1 Capture: SCContentFilter(window:) + NV12 zero-copy + queueDepth
 
-- **`SCContentFilter(window:)`** per-window: on macOS 14+ it captures the window's **backing store** → correct even when occluded (verify on the target OS).
+- **`SCContentFilter(window:)`** per-window captures the window's **backing store** → correct even when occluded (verify on macOS 26).
 - **`pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` (NV12)** → **zero-copy** hand-off to `VTCompressionSession`, **avoiding the BGRA→NV12 step** (FFmpeg-wrapped paths like Lumen must convert because they go through avcodec). ⚠️ Lumen actually uses `32BGRA` + captures a **virtual display**, not per-window — don't blindly copy Lumen's config.
 - **`showsCursor = false`** on `SCStreamConfiguration` → the cursor is **excluded from the frame** (this is the per-window-correct way; do **NOT** use system-wide `CGDisplayHideCursor`). This is the prerequisite for the client-side cursor (§3.3).
 - **queueDepth — a real tension, spike it, don't lock it blindly:**
@@ -137,7 +137,9 @@ Solves the "fast vs readable" problem for coding (extending the "4:4:4 dropped, 
 
 ### 3.6 Transport + loss: UDP seq + FEC + LTR (refine)
 
-- Plain UDP over NetBird (no DTLS/QUIC — WireGuard is already ChaCha20-Poly1305; inner crypto is pure overhead). A **4-byte sequence number/packet** for ordering/loss detection.
+> The packet seq, FEC + frame reassembly, LTR/recovery admission, and congestion/ABR all live in the Rust core's video protocol (behind the C-ABI); the Swift video host/client own only capture, the socket, and the HW codec.
+
+- Plain UDP over the trusted mesh (no DTLS/QUIC — a WireGuard mesh is already ChaCha20-Poly1305; inner crypto is pure overhead). A **4-byte sequence number/packet** for ordering/loss detection.
 - **Reed-Solomon FEC at ~20% parity/frame** (Sunshine's default).
 - **Prefer LTR-frame recovery over forced IDR**: `kVTCompressionPropertyKey_EnableLTR` + `ForceLTRRefresh` on loss → avoids the keyframe's bandwidth/latency spike. Needs a small **client→host ACK channel** (cheap at our RTT), with an IDR fallback after a 2-RTT timeout. ⚠️ Correction: the invalidation direction is **client→server** (the client sends the RFI range; the server marks the ref frame invalid).
 - Cap the encode queue at **2–3 frames in flight**; drop oldest; **never** backpressure SCKit's callback thread.
@@ -181,7 +183,7 @@ A **dedicated** metadata channel carrying window **move/resize/title** → the c
 | **iOS UIKit table stakes** (key-repeat/IME/floating-cursor/accessory) | TUI | Medium-high — "works" → "native iOS" | Medium |
 | **Dual data/control channels** | TUI | Medium — output bursts don't delay resize | Low |
 | **Glitch-window speculative caret** (cursor column) | TUI | Medium — feedback during stalls, ~0 desync risk | Low |
-| **LTR + ~20% Reed-Solomon FEC** instead of forced IDR | GUI | Medium — avoids spikes; near-irrelevant at NetBird loss rates but ~0 cost, hardens WiFi | Medium |
+| **LTR + ~20% Reed-Solomon FEC** instead of forced IDR | GUI | Medium — avoids spikes; near-irrelevant at mesh loss rates but ~0 cost, hardens WiFi | Medium |
 | **QoS `USER_INTERACTIVE`** on PTY-relay & capture+encode threads | both | Medium — keeps the latency-critical path scheduled first | Trivial |
 
 ---
@@ -207,7 +209,7 @@ A **dedicated** metadata channel carrying window **move/resize/title** → the c
 
 The 8 spikes in the first draft have been researched to solutions + skeptic-verified ([18]): #2 threading, #3 coordinate, #7 reconnect, #8 rate-control = **SOLVED**; #5 cursor-strip, #4 decode, #6 concurrent-encoder = **BOUNDED** (spikes with decision rules). What remains is **measurement on hardware** (Phase 4, all expected to PASS):
 
-1. **Real PATH 1 echo latency on NetBird** at 5ms & 20ms RTT → decides whether a predictor is needed. *(most important for PATH 1; unresolved because it needs measurement)*
+1. **Real PATH 1 echo latency on the mesh** at 5ms & 20ms RTT → decides whether a predictor is needed. *(most important for PATH 1; unresolved because it needs measurement)*
 2. **SPIKE F** decode→display p99 < 1 frame (33ms@30fps) on a real client.
 3. **SPIKE G** N HW `VTCompressionSession`s per chip @1080p/1440p → concurrent-window bound.
 4. **SPIKE D** `showsCursor=false` cleanly strips the per-window cursor (window on-screen).

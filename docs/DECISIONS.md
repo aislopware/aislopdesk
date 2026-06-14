@@ -13,27 +13,27 @@
 - ✅ **Terminal-first:** the terminal path is the MVP; GUI video moves to Phase 4. → [12 roadmap]
 
 ## Network / transport
-- ✅ **NetBird (WireGuard mesh), assume direct P2P.** Relay = degraded fallback, only surface it + warn, do NOT engineer a workaround. → [13]
-- ✅ **MEASURED (2 real machines, M1 Max ↔ M2 Pro):** RTT **avg 11ms** (8.5–14.5), 0% loss, **direct P2P OVER THE INTERNET** (NAT hole-punch, local 192.168 ↔ remote public IP, not same-LAN). The "5–20ms direct P2P" assumption is validated. → [18 §0]
-- ✅ **No app-layer encryption** — WireGuard E2E + NetBird ACL (deny-by-default per-port). → [13]
+- ✅ **Assume a trusted WireGuard mesh (e.g. NetBird/Tailscale), direct P2P.** Relay = degraded fallback: surface it + warn, do NOT engineer a workaround. → [13]
+- ✅ **MEASURED (2 real machines, M1 Max ↔ M2 Pro, over a WireGuard mesh):** RTT **avg 11ms** (8.5–14.5), 0% loss, **direct P2P OVER THE INTERNET** (NAT hole-punch, local 192.168 ↔ remote public IP, not same-LAN). Validates the "5–20ms direct P2P" assumption. → [18 §0]
+- ✅ **No app-layer encryption** — the mesh provides WireGuard E2E + deny-by-default per-port ACLs. → [13]
 - ✅ **Terminal = plain TCP** (reliable; escape sequences may split across reads → only buffering is needed, no loss-recovery). → [13], [12]
 - ✅ **`TCP_NODELAY` mandatory** on every PATH 1 socket right after connect — Nagle coalescing 1-character writes can add +200ms/keystroke (high impact, one setsockopt line). → [17]
 - ✅ **Dual data/control channel** (PTY bytes ‖ `TIOCSWINSZ` resize+intent) — burst output doesn't delay the resize-ack (Zellij lesson). → [17]
-- ✅ **GUI video = plain UDP** — drop QUIC (TLS is redundant on top of WireGuard). → [03], [13]
-- ✅ **Do NOT pin `requiredInterfaceType=.wiredEthernet`** (NetBird utun = `.other` → it would break). → [13]
+- ✅ **GUI video = plain UDP** — drop QUIC (TLS is redundant on top of the WireGuard tunnel). → [03], [13]
+- ✅ **Do NOT pin `requiredInterfaceType`** (a userspace-WG interface shows up as `.other` → pinning would break it). → [13]
 - ✅ **serviceClass/DSCP has no effect through the tunnel** (WireGuard zeroes DSCP) → app-layer adaptive rate. → [13]
-- ✅ **Discovery:** Bonjour is same-LAN only; over the mesh use NetBird DNS/IP. → [13]
-- ✅ **A lightweight control plane is still needed** despite P2P (push notification + offline-queue): NetBird mgmt + APNs/FCM directly. → [13 §5b], [15]
+- ✅ **Discovery:** mDNS/Bonjour is same-LAN only (does not traverse the mesh) → connect by mesh DNS/IP. → [13]
+- ✅ **A lightweight control plane is still needed** despite P2P (push notification + offline-queue): mesh management + APNs/FCM directly. → [13 §5b], [15]
 
 ## Terminal renderer (client)
 - ✅ **libghostty full surface** (not vt + own renderer). → [12]
 - ✅ **Own a minimal external-backend patch ourselves** (ref `daiimus/ghostty` External.zig; Lakr233 InMemorySession + build.yml as reference), build the XCFramework via Zig, pin the upstream SHA. Do NOT depend on the wiedymi fork (the weakest one). → [12]
 - ✅ **Do NOT use SwiftTerm** — libghostty-only (best-only, no fallback). SwiftTerm remains only as a *citation* for the POSIX PTY pattern (forkpty/DispatchIO) in [12] Part B. → [12]
 - ✅ **Route every key through `ghostty_surface_key`** (Ghostty encodes kitty/DECCKM itself); do NOT use the Lakr233 bypass path. → [12]
-- ✅ **Do NOT build a full Mosh shadow-framebuffer predictor (v1).** Opaque ghostty → would force a duplicate VT parser (desync risk); the Claude Code TUI uses alt-screen → the predictor is OFF there; the benefit exists only at the shell prompt, and at NetBird's low RTT Mosh itself withholds prediction. **Glitch-window caret (cursor column)** = cheap Phase 2 option. → [17]
+- ✅ **Do NOT build a full Mosh shadow-framebuffer predictor (v1).** Opaque ghostty → would force a duplicate VT parser (desync risk); the Claude Code TUI uses alt-screen → the predictor is OFF there; the benefit exists only at the shell prompt, and at the mesh's low RTT Mosh itself withholds prediction. **Glitch-window caret (cursor column)** = cheap Phase 2 option. → [17]
 - ✅ **External-IO exists only in forks** (verified: NOT in upstream): `wiedymi/ghostty:custom-io` (VVTerm ships it) + `daiimus/ghostty:ios-external-backend` (Geistty ships it, has External.zig+resize+tests). The pattern is battle-tested. → [17]
 - ✅ **Threading (C) = SOLVED:** feed_data/refresh/draw **main thread only**; TCP-rx bg thread → `await MainActor.run`; CVDisplayLink cb → `DispatchQueue.main.async`. Avoid actor-suspension escapes. → [18 C]
-- ✅ **Echo-latency PATH 1 = MEASURED** (2 machines, NetBird P2P): round-trip p50 **9.2ms** / p99 17.8ms → feels-local, **predictor NOT needed** (confirms the decision to drop Mosh). → [18 §0]
+- ✅ **Echo-latency PATH 1 = MEASURED** (2 machines, WireGuard-mesh P2P): round-trip p50 **9.2ms** / p99 17.8ms → feels-local, **predictor NOT needed** (confirms dropping Mosh). → [18 §0]
 - 🔬 Remaining spikes: alt-screen e2e, iOS XCFramework binary size, shell-integration OSC e2e. → [12], [17]
 
 ## Host PTY
@@ -70,7 +70,7 @@
 ## PATH 2 native-feel (GUI video) — from [17]
 - ✅ **Client-side cursor rendering (HIGHEST impact):** `showsCursor=false` strips the cursor from capture; the host samples `NSEvent` ~120Hz and sends position+shape over a **separate UDP socket, <64B** (do NOT multiplex with video); the client composites a Metal quad at display-refresh → **pointer latency = RTT**. (Parsec US 9,798,436 + Moonlight + Selkies.) → [17]
 - ✅ **Concrete idle-skip:** read `SCStreamFrameInfo.status==.idle` → return immediately; heartbeat IDR ~1s. → [17]
-- ✅ **Loss recovery = LTR-refresh + ~20% Reed-Solomon FEC** instead of forced-IDR (needs a client→host ACK, fallback IDR 2-RTT); 4B seq-number/packet. → [17]
+- ✅ **Loss recovery = LTR-refresh + XOR-parity FEC with adaptive tiering** (`FECScheme` + `AdaptiveFECPolicy`) instead of forced-IDR (needs a client→host ACK, fallback IDR 2-RTT); 4B seq-number/packet. → [17]
 - ✅ **Client frame pacing = `CADisplayLink`/VSync** (NOT decode-completion); show-last-frame when the queue is empty; `CVMetalTextureCache` zero-copy; `CAMetalLayer.maximumDrawableCount=2`. → [17]
 - ✅ **Separate window-geometry channel** (move/resize/title) → the client repositions its `NSWindow` before the next video frame. → [17]
 - ✅ **1 `VTCompressionSession`/window**, gate `RequireHardwareAcceleratedVideoEncoder=true`. 📏 **MEASURED on 2 machines: ~6 windows 1080p@30fps / encode-engine** (M2 Pro 1 engine→~6 @184fps; M1 Max 2 engines→~8–10 @340fps; 32-session ceiling). The research claim "2–4" is WRONG. The client only decodes → encode only constrains the host role. 1–3 windows = non-issue. Query `UsingHardware` once at creation (polling = crashes mediaserverd; -12900 under low-latency); recreate on resize; retry -12905. → [18 G]
@@ -95,4 +95,4 @@
 - 🔬 Remaining = **coordinate mapping** client video-region → host window/screen (Retina + y-flip + window-move). → [17 §3.9]
 
 ## Security / auth
-- ✅ **NO app-layer auth — plain.** Personal use only, inside a NetBird/Tailscale mesh → the boundary = WireGuard membership + NetBird ACL (deny-by-default per-port). Drop pairing/token to cut latency. **Accepted residual risk:** the PTY accepting bytes = RCE bounded by mesh membership; if one mesh peer is compromised, the host is exposed — accepted for personal use. → [13]
+- ✅ **NO app-layer auth — plain.** Personal use only, inside a trusted WireGuard mesh (e.g. NetBird/Tailscale) → the boundary = mesh membership + deny-by-default per-port ACLs, not the app. Drop pairing/token to cut latency. **Accepted residual risk:** the PTY accepting bytes = RCE bounded by mesh membership; a compromised peer exposes the host — accepted for personal use. → [13]

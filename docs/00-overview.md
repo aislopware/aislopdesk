@@ -6,7 +6,7 @@
 
 > **Philosophy: build the BEST thing, no fallbacks** — libghostty-only (no SwiftTerm), no B2 SDK pane, cap fps at ~24–30 (GUI). Commit to one good choice; don't keep a plan B alive.
 
-A **remote control/coding** app on Apple platforms (macOS host, macOS + iOS/iPadOS client), native Swift. **Use-case: daily coding** — running a shell + **Claude Code** remotely. NOT game-streaming. (Docs 01–11 were written under the old screen-sharing/video assumption → they are now **reference for the GUI video-path** or **superseded** — see [README](README.md).)
+A **remote control/coding** app on Apple platforms (macOS host, macOS + iOS/iPadOS client), native Swift/SwiftUI; build floor **macOS 26 / iOS 26**, developed on Apple Silicon. **Use-case: daily coding** — running a shell + **Claude Code** remotely. NOT game-streaming. (Docs 01–11 were written under the old screen-sharing/video assumption → they are now **reference for the GUI video-path** or **superseded** — see [README](README.md).)
 
 ## 2. Architecture: 3 data paths
 
@@ -17,10 +17,10 @@ A **remote control/coding** app on Apple platforms (macOS host, macOS + iOS/iPad
 │        │ raw VT byte stream                           │
 │  (3) INSPECTOR (read-only companion)                  │
 │      tail JSONL transcript + hooks → typed events     │
-│  (2) GUI VIDEO PATH (Phase 4)                         │
+│  (2) GUI VIDEO PATH (secondary)                       │
 │      ScreenCaptureKit → VideoToolbox HEVC 4:2:0       │
 └───────│──────────────│─────────────────│──────────────┘
-        │ TCP          │ NWConn #2       │ UDP        (all via NetBird WireGuard P2P)
+        │ TCP          │ NWConn #2       │ UDP   (over a trusted private mesh, e.g. WireGuard)
 ┌───────▼──────────────▼─────────────────▼──────────────┐
 │  CLIENT (macOS / iOS / iPadOS)                        │
 │  (1) libghostty surface (full TUI render) ← sends keys│
@@ -30,17 +30,20 @@ A **remote control/coding** app on Apple platforms (macOS host, macOS + iOS/iPad
 └───────────────────────────────────────────────────────┘
 ```
 
-- **(1) Terminal path (PRIMARY)** — full TUI fidelity. Host PTY ([12], [02]) → **plain TCP** over NetBird → **libghostty** client renderer ([12 §renderer]). This is the core.
+- **(1) Terminal path (PRIMARY)** — full TUI fidelity. Host PTY ([12], [02]) → **plain TCP** (on a trusted private network) → **libghostty** client renderer ([12 §renderer]). This is the core.
 - **(3) Read-only inspector (DIFFERENTIATOR)** — a companion for viewing things that are hard to read in scrollback (subagent content, tool I/O, todos, workflow). Data = **tailing the Claude Code JSONL transcript** + hooks → events over a **second NWConnection**. Read-only, so it avoids all the costs of driving the agent. ([16])
-- **(2) GUI video path (Phase 4, secondary)** — only for GUI windows (VS Code/Xcode...). ScreenCaptureKit + VideoToolbox HEVC. ([01], [02], [04], [09])
+- **(2) GUI video path (secondary)** — only for GUI windows (VS Code/Xcode...). ScreenCaptureKit → VideoToolbox HEVC over plain UDP, with FEC + ABR/congestion control + client-side cursor + LTR recovery. ([01], [02], [04], [09])
+
+### Core / shell split
+The performance-critical **core is Rust** — crate `rust/aislopdesk-core` (safe, zero-dep, `#![forbid(unsafe_code)]`): the wire codecs (terminal WireMessage + video protocol), FEC + frame reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control. It is exposed over a **C-ABI** (`rust/aislopdesk-ffi`, the only crate allowed `unsafe`; rlib + staticlib + cdylib + hand-written `aislopdesk_ffi.h`, linked through the `CAislopdeskFFI` target). The **Swift/SwiftUI apps are the platform shell** — capture (ScreenCaptureKit), HW codec (VideoToolbox), Metal, input injection, PTY spawn, UI — calling the core across that boundary. The same core is the basis for a future **Android client** over C-ABI/JNI.
 
 ## 3. Major decisions (summary — details in [DECISIONS.md](DECISIONS.md))
 
 | Area | Decision | Doc |
 |----------|-----------|-----|
 | Use-case | Daily coding (Claude Code), not game-streaming | [12] |
-| Network | **NetBird (WireGuard mesh), assume direct P2P**; relay = degraded (not engineered for) | [13] |
-| Encryption | **None** at the app layer — WireGuard E2E + NetBird ACLs handle it | [13] |
+| Network | **Trusted private network** (WireGuard mesh, e.g. NetBird/Tailscale); security boundary = the network, not the app | [13] |
+| Encryption | **None at the app layer** — the mesh provides E2E encryption + node auth + per-port ACLs | [13] |
 | Terminal transport | **Plain TCP** (reliable; only buffering needed) | [13], [12] |
 | Video transport | Plain UDP (QUIC dropped — WireGuard already encrypts) | [03] |
 | Terminal renderer | **libghostty** full surface + **self-owned external-backend patch** (ref daiimus External.zig). **NO SwiftTerm** (best-only) | [12] |
@@ -65,7 +68,7 @@ A **remote control/coding** app on Apple platforms (macOS host, macOS + iOS/iPad
 ## 5. Further reading
 - ⭐ **Best-solution synthesis (lowest latency + real-machine feel, TUI & GUI)** → [17](17-native-feel-synthesis.md) — OSS/commercial research, gap-analysis, open spikes
 - ⭐ **Risk resolutions (how each risk is resolved + spike plan)** → [18](18-risk-resolutions.md) — 0 blockers; PATH 1 build-ready, PATH 2 gated on 3 light spikes
-- Implementing the terminal path (P1) → [12](12-coding-profile.md) + [13](13-netbird-transport.md) + [14](14-claude-code-integration.md) + [16](16-readonly-inspector.md)
+- Implementing the terminal path (P1) → [12](12-coding-profile.md) + [13](13-network-transport.md) + [14](14-claude-code-integration.md) + [16](16-readonly-inspector.md)
 - Prior art (mobile/desktop apps for Claude Code) → [15](15-prior-art-happy-happier.md)
 - GUI video path (P4) → [01](01-architecture.md) + [02](02-host-capture-encode.md) + [04](04-client-decode-render.md) + [05](05-input-window-control.md) + [09](09-codec-choice.md)
 - Latency reference (GUI path) → [10](10-latency-optimization.md) + [11](11-absolute-latency.md)

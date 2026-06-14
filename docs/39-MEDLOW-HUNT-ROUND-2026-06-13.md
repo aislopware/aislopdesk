@@ -1,5 +1,7 @@
 # 39 — MED/LOW adversarial hunt + fixes (2026-06-13, autonomous, continuation)
 
+> **Historical session log (2026-06-13). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 **Status: shipped to `main`. Base `c600da6` → HEAD `68fffaf` (11 commits). Full suite 2153 → 2166/0.**
 A continuation of the autonomous loop. After the HIGH-only hunt converged (0 findings, docs not written —
 see memory), the user asked to "check MED + LOW too." A 9-finder adversarial hunt + a 3-lens

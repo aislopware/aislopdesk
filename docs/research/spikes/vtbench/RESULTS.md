@@ -1,12 +1,12 @@
 # VideoToolbox de-risk harness — MEASURED results
 
-**Measured on 2 real machines (same NetBird mesh):**
+**Measured on 2 real machines over a trusted private network (a WireGuard mesh — NetBird in this run):**
 - **HOST: Apple M1 Max** · macOS 26.5 (25F71) · arm64 · Swift 6.3.2
-- **CLIENT: Apple M2 Pro** · macOS 26.5 · arm64 (the machine that will be the client; harness run inside the Terminal.app GUI)
+- **CLIENT: Apple M2 Pro** · macOS 26.5 · arm64 (run inside the Terminal.app GUI)
 
-Both are Apple Silicon + macOS 26 (the watch-item OS), so the numbers are directly load-bearing. *(Note: the header printed by the harness hard-codes "M1 Max" — when run on the M2 Pro the numbers are still the M2 Pro's.)*
+Both are Apple Silicon + macOS 26, so the numbers are directly load-bearing. *(The harness header hard-codes "M1 Max"; on the M2 Pro the numbers are still the M2 Pro's.)*
 
-> ⚠️ **Environment warning:** the HW VideoToolbox encode harness **HANGS when run over SSH** (no window-server session). **It must be run from the Terminal.app GUI.** Decode-only is less session-sensitive, but should still be run from the GUI.
+> ⚠️ **Run from the Terminal.app GUI.** The HW VideoToolbox encode harness **HANGS over SSH** (no window-server session). Decode-only is less session-sensitive but should still run from the GUI.
 
 ## Cross-machine summary (host vs client)
 
@@ -19,13 +19,12 @@ Both are Apple Silicon + macOS 26 (the watch-item OS), so the numbers are direct
 | **NALU/CMSampleBuffer** | **1** | **1** | multi-NALU watch-item downgraded (both machines) |
 | **`Lossless` property key** | -12900 | -12900 | not available; use Quality=1.0 all-intra |
 
-## Network (NetBird mesh, host M1 Max ↔ client M2 Pro)
+## Network (WireGuard mesh, host M1 Max ↔ client M2 Pro)
 
 - **RTT: min 8.5 / avg 11.1 / max 14.5ms, 0% loss, stddev 1.7ms** (20 pings).
-- **Connection type: direct P2P** (`netbird status -d`: Connection type P2P).
-- Network path: local `192.168.100.240` ↔ remote **public `116.104.177.173`** → **P2P over the internet (NAT hole-punch), NOT same-LAN**. → the "5–20ms direct P2P" assumption is validated under real internet conditions.
-- **App-level echo round-trip** (single-byte TCP ping-pong, `TCP_NODELAY`, `echolat.py`, 280 samples): **p50 9.2ms · p99 17.8ms · min 7.5ms** (max 139ms = a single stray outlier — WiFi/scheduling blip). Matches the ping RTT.
-- → **PATH 1 echo measured ≈ 9ms typical, ~18ms p99** = absolutely feels-local; **confirms the Mosh predictor is NOT needed**. The 40–80ms GUI target has ample headroom (9 network + 7 encode + 1 decode + vsync).
+- **Direct P2P** (the mesh reports a P2P connection): local `192.168.100.240` ↔ remote **public `116.104.177.173`** → NAT hole-punched **over the internet, NOT same-LAN**. The "5–20ms direct P2P" assumption holds under real internet conditions.
+- **App-level echo round-trip** (single-byte TCP ping-pong, `TCP_NODELAY`, `echolat.py`, 280 samples): **p50 9.2ms · p99 17.8ms · min 7.5ms** (max 139ms = one stray WiFi/scheduling blip). Matches the ping RTT.
+- → **PATH 1 echo ≈ 9ms typical / ~18ms p99** = feels-local; **the Mosh predictor is NOT needed**. The 40–80ms GUI target has ample headroom (9 network + 7 encode + 1 decode + vsync).
 
 Reproduce:
 ```
@@ -40,7 +39,7 @@ swiftc -O concurrency-throughput.swift -o t && ./t
 - **p50 = 0.73ms, p99 = 1.12ms, max = 3.15ms.** → **single-frame, NOT 2-frame-buffered. PASS** (≪ 33ms frame @30fps).
 - Decode is a non-issue on Apple Silicon. Remaining motion-to-photon is display pacing (CADisplayLink/Metal + one vsync), which is well-understood.
 
-### G — concurrent hardware HEVC encoders (research claimed "2–4"; that was WRONG)
+### G — concurrent hardware HEVC encoders (earlier "2–4" estimate was WRONG)
 - **Session-creation ceiling: 32** simultaneous HW-backed HEVC sessions; the 33rd fails with `-12903`.
 - **Sustained throughput** (each stream encodes back-to-back, low-latency-RC, 1080p):
 
@@ -53,10 +52,9 @@ swiftc -O concurrency-throughput.swift -o t && ./t
   | 8 | 338 | 42 | 33.2ms | YES (edge) |
   | 12 | 339 | 28 | 45.7ms | NO |
 
-- Aggregate encode throughput saturates ~**340 fps** (M1 Max = **2** encode engines). → **~8–10 simultaneous 1080p windows at 30fps**.
-- **Confirmed on CLIENT M2 Pro (1 encode engine):** saturates ~**184 fps** → sustains **~6 windows @1080p30** (K=6 = 31fps/stream edge; K=8 = NO). Throughput scales ~linearly with engine count (M2 Pro 1 engine ≈ ½ of M1 Max 2 engines).
-- **Real rule (measured, 2 machines): a HOST sustains ~6 live 1080p30 windows per video-encode-engine** (base/Pro/M2-Pro=1→~6, Max=2→~10, Ultra=4→~20 extrapolated). The research "2–4 total" was wrong — it conflated *engine throughput* with *session count* (creation ceiling is 32). For a coding tool (1–3 windows) this is a **non-issue on every chip**.
-- Note: a machine acting purely as **client only decodes** (~0.9ms) — encode throughput only constrains a machine in the **host** role.
+- Aggregate throughput saturates ~**340 fps** on M1 Max (**2** encode engines) → **~8–10 simultaneous 1080p30 windows**. **CLIENT M2 Pro (1 engine)** saturates ~**184 fps** → **~6 windows** (K=6 = 31fps/stream edge; K=8 = NO). Throughput scales ~linearly with engine count.
+- **Real rule (measured, 2 machines): a host sustains ~6 live 1080p30 windows per video-encode-engine** (1 engine→~6, Max 2→~10, Ultra 4→~20 extrapolated). The "2–4 total" estimate conflated *engine throughput* with *session count* (creation ceiling is 32). For a coding tool (1–3 windows) this is a **non-issue on every chip**.
+- A machine in the **client** role only decodes (~0.9ms); encode throughput constrains only the **host**.
 
 ### E — rate control: low-latency-RC vs constant-quality (decides the live-frame encoder)
 - **Low-latency-RC HEVC** (`EnableLowLatencyRateControl`+`AverageBitRate`): encode **p50 7.5ms / p99 8.2ms**, HW.

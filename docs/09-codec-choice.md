@@ -2,16 +2,16 @@
 
 > **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
-> ⚠️ **Re-scope (hybrid):** text-heavy content (terminal/code) goes over the **PTY path — NOT through a codec, absolutely crisp** ([12](12-coding-profile.md)). Video is only for **GUI windows**, where **HEVC 4:2:0 8-bit quality-mode (`Quality≈0.6`, Apple Silicon) is sufficient**. → The **4:4:4 / text-crispness problem below is NO LONGER central** (drop the "software 4:4:4 tier"; 10-bit demoted to optional). The sections below are kept as codec background for the GUI path.
+> ⚠️ **Scope (hybrid):** text/code goes over the **PTY path — no codec, absolutely crisp** ([12](12-coding-profile.md)). The codec is **only for GUI windows**, where **HEVC 4:2:0 8-bit is sufficient**. The 4:4:4 / text-crispness problem below is therefore **not central** (no software 4:4:4 tier; 10-bit is optional). The sections below are codec background for the GUI path.
 
-> In-depth research for the context: **Apple-only, LAN, low-latency, content is screen/text** (not camera video). Deciding factors: **hardware support on Apple** + the peculiarities of screen content.
+> Context for the decision: **Apple-only, private LAN, low-latency, screen/text content** (not camera video). Deciding factors: **Apple hardware support** + the peculiarities of screen content.
 
 ## TL;DR
 
-**Default (GUI video-path): HEVC Main 8-bit 4:2:0 + constant-quality (Quality≈0.6, Apple Silicon), no B-frames.** 10-bit = optional; low-latency RC = optional/uncertain (`AllowFrameReordering=false` is already enough). H.264 fallback. **4:4:4 dropped** (Apple HW does not encode it; crisp text already goes over the PTY path). AV1/VVC have no HW encode → ruled out.
+**Default (GUI video-path): HEVC Main 8-bit 4:2:0, constant-quality (`Quality≈0.6`, Apple Silicon), low-latency rate control, no B-frames (`AllowFrameReordering=false`).** 10-bit = optional. H.264 fallback. **4:4:4 dropped** (Apple HW does not encode it; crisp text goes over the PTY path). AV1/VVC have no HW encode → ruled out.
 
 Two things to remember:
-1. The assumption "low-latency mode is H.264-only" is **WRONG on Apple Silicon** — HEVC works too → there is no longer a latency reason to pick H.264.
+1. "Low-latency mode is H.264-only" is **WRONG on Apple Silicon** — HEVC supports it too → no latency reason to pick H.264.
 2. The real quality ceiling for text is **chroma 4:2:0** (Apple HW has no 4:4:4), not the H.264-vs-HEVC choice.
 
 ---
@@ -27,7 +27,7 @@ Two things to remember:
 
 ### Correcting an important assumption
 
-Apple's WWDC21 said "low-latency mode is H.264-only" — **outdated**. Evidence: FFmpeg `videotoolboxenc.c` gates conditionally:
+Apple's WWDC21 "low-latency mode is H.264-only" is **outdated**. Evidence: FFmpeg `videotoolboxenc.c` gates conditionally:
 
 ```c
 if ((flags & AV_CODEC_FLAG_LOW_DELAY) &&
@@ -104,7 +104,7 @@ Rule of thumb: **HEVC gives equivalent text sharpness at ~60–70% of the H.264 
 
 ## 7. Final decision + remaining work
 
-**Default:** HEVC Main **8-bit** 4:2:0 + **constant-quality** (`Quality≈0.6`, Apple Silicon); 10-bit optional; `EnableLowLatencyRateControl` optional/feature-detect; `RealTime=true`, `AllowFrameReordering=false`, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, long GOP + force IDR/LTR. (4:4:4 dropped — text goes over the PTY path.)
+**Default:** HEVC Main **8-bit** 4:2:0 + **constant-quality** (`Quality≈0.6`, Apple Silicon); 10-bit optional; `EnableLowLatencyRateControl` feature-detected (works with HEVC on Apple Silicon); `RealTime=true`, `AllowFrameReordering=false`, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, long GOP + force IDR/LTR. (4:4:4 dropped — text goes over the PTY path.)
 
 **Fall back to H.264 when:** old / non-Apple clients / weak browser decode; the host is an **Intel Mac** (low-latency is H.264-only); maximum compatibility is required.
 

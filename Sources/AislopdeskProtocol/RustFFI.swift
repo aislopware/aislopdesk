@@ -1,15 +1,15 @@
 import CAislopdeskFFI
 import Foundation
 
-/// Swift-side bridge to the Rust `aislopdesk-ffi` C ABI.
+/// Swift-side bridge that routes the terminal wire codec to the Rust core over the C ABI.
 ///
 /// All `import CAislopdeskFFI` (and the unsafe pointer marshaling it requires) is
 /// contained in this file; the rest of `AislopdeskProtocol` calls these typed, safe
-/// wrappers. The Rust core is a byte-/bit-exact port of the Swift codecs (proven by the
-/// `golden_parity` test against the `aislopdesk-corevectors` dumper, and re-proven through
-/// these wrappers by `RustWireParityTests`), so they are drop-in replacements for the
-/// native Swift implementations — the swap exists so the macOS/iOS app and a future Android
-/// client run *the identical algorithm bytes*, from one source of truth.
+/// wrappers, which forward `WireMessage` encode/decode to the codec in the Rust core
+/// (`aislopdesk-core`). Cross-language golden parity (the `golden_parity` test against the
+/// `aislopdesk-corevectors` corpus, re-checked through these wrappers by
+/// `RustWireParityTests`) pins the codec's byte/bit output, so the macOS/iOS app and a
+/// future Android client run *the identical algorithm bytes* from the one shared core.
 ///
 /// Memory contract (mirrors `aislopdesk_ffi.h`): buffers passed *in* are borrowed for the
 /// call only (`cap == 0`, Rust copies and never frees them); any `AisdBytes` the library
@@ -17,13 +17,15 @@ import Foundation
 /// `aisd_wire_message_free` before the wrapper returns.
 enum RustFFI {
     /// Bulk DATA payloads (`.output`/`.input` bytes, or a decode payload) larger than this
-    /// route through the native Swift codec instead of Rust.
+    /// are framed in the Swift shell's zero-copy buffer path rather than marshaled across
+    /// the C ABI into the core.
     ///
-    /// Benchmarked (`RustWireBenchTests`, Mac Studio): the Rust path is *faster* for control
-    /// messages and small data (≈0.2–0.5×) but the FFI's extra buffer copies make it regress
-    /// the hand-optimized native zero-copy path above ~16 KiB (≈5–7× at 64–128 KiB). 8 KiB
-    /// keeps a safety margin below that crossover, so the common case + all control traffic
-    /// get the Rust speedup while a bulk PTY-output flood never regresses (the no-perf-rule).
+    /// Benchmarked (`RustWireBenchTests`, Mac Studio): routing to the core is *faster* for
+    /// control messages and small data (≈0.2–0.5×), but the FFI's extra buffer copies regress
+    /// the shell's hand-optimized zero-copy framing above ~16 KiB (≈5–7× at 64–128 KiB).
+    /// 8 KiB keeps a safety margin below that crossover, so the common case + all control
+    /// traffic get the core's speedup while a bulk PTY-output flood stays on the zero-copy
+    /// path (the no-perf-rule).
     static let payloadThreshold = 8 * 1024
 
     /// Wrap-aware signed 32-bit sequence distance `a - b` (positive ⇒ `a` is ahead).
@@ -34,8 +36,8 @@ enum RustFFI {
     // MARK: - WireMessage encode / decode
 
     /// Encodes a ``WireMessage`` into a complete length-prefixed wire frame via the Rust
-    /// codec. Byte-identical to ``WireMessage/encodeNative()``. Falls back to the native
-    /// encoder on the (unreachable, for any valid message) FFI failure rather than aborting.
+    /// core's codec. On the (unreachable, for any valid message) FFI failure it falls back
+    /// to the in-process ``WireMessage/encodeNative()`` encoder rather than aborting the send.
     static func encodeFrame(_ message: WireMessage) -> Data {
         var m = AisdWireMessage()
         m.tag = message.messageType
@@ -72,7 +74,7 @@ enum RustFFI {
             m.resume_from_seq = resumeFromSeq
             m.returning_client = returningClient ? 1 : 0
         case let .title(string):
-            // Pass the RAW UTF-8; the Rust encoder applies the same UInt16 title clamp.
+            // Pass the RAW UTF-8; the Rust encoder applies the UInt16 title clamp.
             buf0 = Data(string.utf8)
         case let .notification(title, body):
             buf0 = Data(title.utf8)
@@ -109,8 +111,8 @@ enum RustFFI {
     }
 
     /// Decodes a complete payload (`[type byte][body…]`, no length prefix) into a
-    /// ``WireMessage`` via the Rust codec. Throws the same ``AislopdeskError`` cases as
-    /// ``WireMessage/decodeNative(payload:)``.
+    /// ``WireMessage`` via the Rust core's codec. Throws the same ``AislopdeskError`` cases
+    /// the in-process ``WireMessage/decodeNative(payload:)`` reader does.
     static func decodePayload(_ payload: Data) throws -> WireMessage {
         var out = AisdWireMessage()
         let status: AisdStatus = payload.withUnsafeBytes { raw in
@@ -128,7 +130,7 @@ enum RustFFI {
             throw AislopdeskError.malformedBody("rust: malformed body")
         default:
             // AISD_ERR_TRUNCATED (incl. an empty payload) and any unexpected status map to
-            // .truncated, exactly as the native reader fails on a short/empty body.
+            // .truncated, exactly as the decoder rejects a short/empty body.
             throw AislopdeskError.truncated
         }
     }

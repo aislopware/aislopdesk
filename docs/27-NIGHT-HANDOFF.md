@@ -1,5 +1,7 @@
 # Night Handoff — 2026-06-05
 
+> **Historical session log (2026-06-05). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 Autonomous overnight session. Branch **`fix/terminal-render-connect-once`** (off `main`), **UNCOMMITTED**. All work delivered via 10 sequential "ultracode" workflows, each **hardware-tested on the Mac Studio via cua-computer-use** (driven as a user — screenshots, not subjective scripts), with a definitive root cause for every fix.
 
 ## TL;DR
@@ -120,4 +122,4 @@ Debug seams left ON: `AISLOPDESK_RENDER_DEBUG=1` (terminal render log), `AISLOPD
 - **OSC 133 shell integration** (research §B): emit/parse command marks via the existing `ShellIntegration` shim → per-command running/done indicator in the pane + a notification when a long-running command completes. Composes cleanly now that the shim + ctty work.
 
 ---
-*Generated autonomously. Verification evidence (screenshots, logs) under `/tmp/aislopdesk-hw/`, `/tmp/wf*-*.png`, `.work/video-verify/`. Memory: `memory/aislopdesk-hw-validation-2026-06-05.md`.*
+*Generated autonomously. Verification evidence (screenshots, logs) under `/tmp/aislopdesk-hw/`, `/tmp/wf*-*.png`, `.work/video-verify/`.*

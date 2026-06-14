@@ -1,5 +1,7 @@
 # 35 — Non-overlapping windows & groups (smart-layout QoL)
 
+> **Historical session log. Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 A default-ON QoL setting (`canvas.nonOverlap`) so window/group boundaries never overlap on the infinite
 canvas: dragging a window **slides flush** along its neighbours instead of overlapping ("trượt theo
 boundary"), and dropping it into a cluster **parts the neighbours** to make room ("tự dịch ra"). Groups

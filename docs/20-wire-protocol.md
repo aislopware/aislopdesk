@@ -1,19 +1,18 @@
 # 20 — Aislopdesk wire protocol (PATH 1 terminal + PATH 2 GUI video)
 
-> **STATUS: CURRENT.** §1–8 document the **PATH 1** terminal byte pipeline implemented in
-> `Sources/AislopdeskProtocol` (WF-1) over TCP. **§9 documents the PATH 2 GUI video path** (WF-9):
-> a separate, plain-UDP protocol implemented in `Sources/AislopdeskVideoProtocol` (pure, cross-
-> platform, unit-tested) and driven by `AislopdeskVideoHost` / `AislopdeskVideoClient`. PATH 2 is an
-> entirely distinct protocol from PATH 1 — different transport (UDP vs TCP), different
-> message set, its own version constant — and does **not** share PATH 1's `WireMessage`,
-> `FrameDecoder`, or `Channel`.
+> **STATUS: CURRENT.** §1–8 spec the **PATH 1** terminal byte pipeline (TCP); §9 specs the
+> independent **PATH 2** GUI video path (plain UDP). The two paths share nothing — different
+> transport (UDP vs TCP), different message set, separate version constants, and no shared
+> `WireMessage` / `FrameDecoder` / `Channel`.
 >
-> The PATH 1 description below begins with the original framing contract. Binding
-> decisions it realizes: dual data/control channel + plain TCP + `TCP_NODELAY` + ET-style
-> replay-buffer reconnect ([DECISIONS.md](DECISIONS.md), [17](17-native-feel-synthesis.md) §2,
-> [18](18-risk-resolutions.md) H). The protocol module is **pure Swift, zero platform
-> dependency** (no `Network`, no `Darwin`) so it builds for macOS + iOS and is unit-testable
-> in isolation.
+> The framing, codecs, channel mux and flow control are implemented in the **Rust core**
+> (`rust/aislopdesk-core`, `terminal` namespace — safe Rust, zero deps, never panics on untrusted
+> input) and exposed over the C-ABI (`rust/aislopdesk-ffi`, header `aislopdesk_ffi.h`, linked via
+> the `CAislopdeskFFI` target). The Swift `AislopdeskProtocol` module is the thin shell over that
+> boundary and `AislopdeskTransport` drives the sockets. The wire format below is the contract both
+> ends implement. Binding decisions it realizes: dual data/control channel + plain TCP +
+> `TCP_NODELAY` + ET-style replay-buffer reconnect ([DECISIONS.md](DECISIONS.md),
+> [17](17-native-feel-synthesis.md) §2, [18](18-risk-resolutions.md) H).
 
 ## 1. Channels (dual TCP)
 
@@ -109,26 +108,23 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
   client.
 - **`title`** payload must be valid UTF-8; a non-UTF-8 body decodes to
   `AislopdeskError.malformedBody`.
-- **`title` (21) and `bell` (22) are PRODUCED by the host**, by a non-destructive OSC/BEL
-  sniffer (`HostTitleBellSniffer` in `AislopdeskHost`, wired into `HostSession`'s output relay).
-  As the host relays the raw PTY byte stream it ALSO observes a copy of those exact bytes
-  and emits these control messages:
-  - **`title`** ← **OSC 0** (`ESC ] 0 ; <text> <term>`, icon + window title) or **OSC 2**
-    (`ESC ] 2 ; <text> <term>`, window title), where `<term>` is `BEL` (`0x07`) **or** `ST`
-    (`ESC \`). **OSC 1** (icon-name only) is deliberately ignored — it never sets the window
-    title. Identical consecutive titles are coalesced (de-duped).
-  - **`bell`** ← a **standalone** `BEL` (`0x07`) seen outside any escape sequence. A `BEL`
-    that *terminates* an OSC string is the OSC's terminator and fires `title` (if OSC 0/2),
-    **never** `bell` — the sniffer's state machine distinguishes the two structurally.
+- **`title` (21) and `bell` (22) are PRODUCED by the host** by a non-destructive OSC/BEL sniffer
+  (`HostTitleBellSniffer` in `AislopdeskHost`, wired into `HostSession`'s output relay): as it
+  relays the raw PTY stream it observes a copy of the bytes and emits:
+  - **`title`** ← **OSC 0** (`ESC ] 0 ; <text> <term>`, icon + window) or **OSC 2**
+    (`ESC ] 2 ; <text> <term>`, window), `<term>` = `BEL` (`0x07`) **or** `ST` (`ESC \`). **OSC 1**
+    (icon-name only) is ignored — it never sets the window title. Identical consecutive titles are
+    de-duped.
+  - **`bell`** ← a **standalone** `BEL` outside any escape sequence. A `BEL` that *terminates* an
+    OSC string is that OSC's terminator and fires `title` (if OSC 0/2), **never** `bell` — the
+    state machine distinguishes the two structurally.
 
-  The sniffer is **non-destructive** (the raw bytes are forwarded to the client unchanged —
-  libghostty is the real terminal; the sniffer only observes) and **streaming-safe** (a true
-  byte-at-a-time state machine that holds partial state across read chunks, bounds the
-  buffered OSC payload to defend against an unterminated/hostile OSC, and re-syncs on a stray
-  `ESC` without swallowing the next sequence's introducer). The client surfaces both as
-  `AislopdeskClient.Event.title` / `.bell` (and the `aislopdesk-client` CLI / `TerminalViewModel`
-  consume them). These ride the head-of-line-independent CONTROL channel and are **not**
-  sequenced/replayed.
+  The sniffer only observes (raw bytes reach the client unchanged — libghostty is the real
+  terminal) and is **streaming-safe**: a byte-at-a-time state machine that holds partial state
+  across read chunks, bounds the buffered OSC payload against an unterminated/hostile OSC, and
+  re-syncs on a stray `ESC` without swallowing the next introducer. The client surfaces both as
+  `AislopdeskClient.Event.title` / `.bell`. They ride the head-of-line-independent CONTROL channel
+  and are **not** sequenced/replayed.
 
 ## 5. Seq / ack / replay semantics
 
@@ -154,8 +150,9 @@ WF-2) retains un-acked `output` messages so a reconnect is lossless:
   growing unbounded; below the gate it keeps buffering (`BUFFERED_ONLY`). A long background
   build must not overflow the buffer and silently lose output.
 - Seq is **`Int64`** (ET proto2 used int32, which truncates on very long sessions).
-- **No crypto layer.** WireGuard already encrypts; the buffer stores **raw bytes**. ET's
-  `CryptoHandler` (libsodium secretbox + nonce reset) is deliberately **not** ported — do not
+- **No app-layer crypto.** Deployment assumes a trusted private network — typically a WireGuard
+  mesh (e.g. NetBird/Tailscale) providing E2E encryption + node auth — so the buffer stores **raw
+  bytes**. ET's `CryptoHandler` (libsodium secretbox + nonce reset) is deliberately omitted; do not
   reintroduce it ([18](18-risk-resolutions.md) H).
 
 ### Equivalence to Eternal Terminal
@@ -166,7 +163,7 @@ output with a monotonically increasing sequence and replays the tail after the l
 client-acknowledged sequence on reconnect (`recover(lastValidSeq)`); Aislopdesk does the same at
 the granularity of one `output` message. The reconnect handshake (`hello.lastReceivedSeq` →
 host replays `seq > lastReceivedSeq`) mirrors ET's reconnect path, minus the crypto handler,
-over plain TCP inside the WireGuard tunnel.
+over plain TCP on the trusted private network.
 
 ## 6. Errors (`AislopdeskError`)
 
@@ -178,6 +175,10 @@ over plain TCP inside the WireGuard tunnel.
 | `malformedBody(String)` | Right-length body with invalid contents (e.g. bad UTF-8 in `title`); reason string attached. |
 
 ## 7. Public API (`AislopdeskProtocol`)
+
+The Swift `AislopdeskProtocol` module is the shell surface over the Rust core's terminal codecs:
+the encode/decode and the streaming `FrameDecoder` run in `aislopdesk-core` behind the C-ABI, and
+these Swift types wrap that boundary.
 
 - `enum Channel { case data, control }`
 - `enum WireMessage: Equatable, Sendable` — all cases above; `var messageType: UInt8`,
@@ -288,11 +289,12 @@ half-close the host intends, so a clean finish is always a disconnect that recon
 
 # PATH 2 — GUI video transport (UDP)
 
-> **STATUS: CURRENT.** Documents the wire format implemented in `Sources/AislopdeskVideoProtocol`
-> (WF-9) and the transport topology realized by `AislopdeskVideoHost.NWVideoDatagramTransport` /
-> `AislopdeskVideoClient.NWVideoClientTransport`. This is the secondary GUI video path (doc 17 §3,
-> doc 18 measured spike config); it is **independent of PATH 1** — its own protocol over plain
-> UDP inside the WireGuard tunnel, with NO TCP, no `WireMessage`, no `FrameDecoder`.
+> **STATUS: CURRENT.** The wire format, packetization, FEC and recovery logic live in the **Rust
+> core** (`rust/aislopdesk-core` video codecs, exposed via the C-ABI); `AislopdeskVideoHost`
+> (`NWVideoDatagramTransport`) and `AislopdeskVideoClient` (`NWVideoClientTransport`) are the Swift
+> shells that capture/encode/decode/render and drive the sockets. This secondary GUI video path
+> (doc 17 §3, doc 18 measured spike config) is **independent of PATH 1** — its own protocol over
+> plain UDP, with NO TCP, no `WireMessage`, no `FrameDecoder`.
 
 ## 9. Path-2 overview
 
@@ -364,7 +366,7 @@ before any media flows. `[UInt8 type][body]`, big-endian:
   until the geometry channel updates it. ("Negotiated" elsewhere in the code/comments means this
   single host-decides-and-reports step — the host sizes capture to the client viewport and reports
   it back — **not** a two-way negotiation; the protocol version itself is strictly non-negotiated,
-  per §9 line 307 / §4.)
+  per §9 / §4.)
 - The host starts capture/encode **only on an accepted `hello`**; a duplicate `hello` is re-acked
   idempotently. Either side sends `bye` for a clean teardown.
 
@@ -373,7 +375,8 @@ before any media flows. `[UInt8 type][body]`, big-endian:
 An encoded HEVC frame (AVCC: length-prefixed NAL units, with the IDR carrying inline VPS/SPS/PPS —
 the client self-configures its `CMVideoFormatDescription` from those parameter sets, no
 out-of-band parameter exchange) is fragmented into datagrams ≤ **1200 bytes**
-(`VideoPacketizer.maxDatagramSize`, doc 17 §3.6 to stay under MTU with WireGuard overhead).
+(`VideoPacketizer.maxDatagramSize`, doc 17 §3.6 — under the runtime MTU including WireGuard-mesh
+overhead).
 
 **Fragment header — fixed 15 bytes, big-endian:**
 

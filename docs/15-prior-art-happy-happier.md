@@ -26,15 +26,15 @@
 
 ## Lessons WORTH borrowing for our tool
 
-> ℹ️ The items below are **observations from prior art**. Final decisions (auth, transport, control-plane, dedup) = single source in [DECISIONS.md](DECISIONS.md) + [14](14-claude-code-integration.md)/[13](13-netbird-transport.md).
+> ℹ️ The items below are **observations from prior art**. Final decisions (auth, transport, control-plane, dedup) = single source in [DECISIONS.md](DECISIONS.md) + [14](14-claude-code-integration.md)/[13](13-network-transport.md).
 
 1. **SessionStart hook to obtain the session UUID + transcript path — use `--plugin-dir`, NOT `--settings`.** Happier's production-hardened lesson: PATH wrappers (cmux...) silently swallow `--settings` (last-write-wins). Parse **both** `session_id`/`sessionId` + `transcript_path`/`transcriptPath` (the schema has changed across versions). Needed even though we relay the PTY — to map resume/handoff (file-watching JSONL races when multiple processes share a project dir).
-2. **Keep the 2 credential layers separate:** transport auth (NetBird keypair / setup-token) is independent of Claude auth. **The safest Claude auth: reuse `~/.claude/.credentials.json`** (have `claude` logged in already) instead of running PKCE ourselves — because happy's `user:inference` scope is NOT yet confirmed to grant Pro/Max quota vs API-billed only (⚠️ relevant to the auth decision in [14](14-claude-code-integration.md)).
-3. **Replay-safe session resume:** dedupe by uuid (happy's `sessionScanner`) + a server-side monotonic `seq` → after a NetBird reconnect you know which messages were missed.
+2. **Keep the 2 credential layers separate:** network/transport auth (the WireGuard mesh's node auth, or a setup-token) is independent of Claude auth. **The safest Claude auth: reuse `~/.claude/.credentials.json`** (have `claude` logged in already) instead of running PKCE ourselves — because happy's `user:inference` scope is NOT yet confirmed to grant Pro/Max quota vs API-billed only (⚠️ relevant to the auth decision in [14](14-claude-code-integration.md)).
+3. **Replay-safe session resume:** dedupe by uuid (happy's `sessionScanner`) + a server-side monotonic `seq` → after a network reconnect you know which messages were missed.
 4. **Keypair challenge→token auth** (no password/email) for machine registration — fits a setup-token flow.
 5. **Push notifications + presence suppression** ("Claude ready", suppressed while actively viewing). **Use APNs/FCM directly from the host** (not Expo Push — privacy). → needs a **lightweight control plane** (see below).
-6. **tmux as the persistence layer** for headless sessions (happier's `startHappyHeadlessInTmux`) → the libghostty client attaches/detaches, surviving disconnects.
-7. **E2E-encrypt the app layer** for all metadata/transcripts if a history/signaling server is added later (NetBird covers the byte path, but for storage wrap the key per-session).
+6. **tmux as the persistence layer** for headless sessions (happier's `startHappyHeadlessInTmux`). Our equivalent: host-side sessions survive disconnects via the seq-numbered replay buffer, so the libghostty client detaches/reattaches byte-exact.
+7. **E2E-encrypt the app layer** for stored metadata/transcripts if a history/signaling server is added later (the mesh encrypts the byte path in transit; for at-rest storage wrap the key per-session).
 
 ## Pitfalls they hit — we avoid
 
@@ -46,11 +46,11 @@
 
 ## What we do DIFFERENTLY / BETTER
 1. **Full TUI fidelity via libghostty** — they do NOT stream the TUI to mobile; we relay the raw PTY (`TERM=xterm-ghostty`) preserving colors/cursor/compose-box. A fundamental difference.
-2. **P2P, no relay SPOF** — happy/happier die if their relay goes down; NetBird P2P removes the relay from the byte path (near-zero latency, one fewer trust boundary).
+2. **No relay SPOF** — happy/happier die if their relay goes down. Aislopdesk connects directly over a trusted private network (a WireGuard mesh, e.g. NetBird/Tailscale), so no relay sits in the byte path: near-zero latency, one fewer trust boundary.
 3. **A single PTY codepath** instead of 2 launchers (local TUI + remote SDK).
 
 ## ⚠️ 3 points to weigh (honest; may adjust the architecture)
 
-1. **iOS: raw TUI vs a structured-event layer.** Both happy and happier concluded that **mobile needs a native UI, not raw ANSI** (pinch-zooming a terminal on a small screen is bad). → **Consider layering structured events on top of the PTY for iOS** (parse additional events from the byte stream libghostty already has — incremental); we use the **read-only inspector [16]** for the structured view (read-only, doesn't drive) + **keep the libghostty TUI as primary** (full fidelity) on both desktop and iOS. (Do NOT build an SDK-driven pane.)
-2. **A lightweight control plane is still needed despite P2P.** NetBird covers the byte path, BUT **push notifications** ("Claude needs input" while the app is backgrounded) + **"host offline → queue the prompt"** need a control plane. Don't fantasize that P2P removes 100% of servers — it only removes the relay from the *byte path*. (The NetBird management server + APNs/FCM directly from the host may be enough.)
+1. **iOS: raw TUI vs a structured-event layer.** happy/happier concluded mobile needs a native UI, not raw ANSI (pinch-zooming a terminal on a small screen is bad). → We keep the **libghostty TUI as primary** (full fidelity) on desktop and iOS, plus the **read-only inspector [16]** for the structured view (reads the JSONL transcript, never drives). Do NOT build an SDK-driven pane.
+2. **A lightweight control plane is still needed despite direct connectivity.** The mesh covers the byte path, BUT **push notifications** ("Claude needs input" while backgrounded) + **"host offline → queue the prompt"** need a control plane. Direct/P2P connectivity only removes the relay from the *byte path*, not every server. (The mesh's own management plane + APNs/FCM directly from the host may be enough.)
 3. **OAuth scope uncertainty** (lesson 2 above) — affects the auth decision in doc 14.

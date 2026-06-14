@@ -1,5 +1,7 @@
 # 33 — UI/UX + unique-features round (2026-06-12/13)
 
+> **Historical session log (2026-06-12/13). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 **Status: DONE — 25 features across 2 research rounds + 2 adversarial self-reviews, all shipped to `main` with headless tests. Full suite 1972/0. Several runtime FEELs are HW-pending (no 2-machine rig from automation).**
 
 Base `faedc76` → HEAD `dac9813`. Each item is its own commit. Two ranked backlogs (5-agent research, then 22-agent review+research), implemented one-per-commit; two adversarial review passes (16 + 14 raw findings → 9 confirmed, all low-severity, all fixed).

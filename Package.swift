@@ -44,9 +44,9 @@ let package = Package(
         // C-ABI shim onto the Rust `aislopdesk-ffi` staticlib (rust/aislopdesk-ffi).
         // Exposes the hand-written header `aislopdesk_ffi.h` (a copy kept in sync by
         // `rust/build-apple.sh`) as the `CAislopdeskFFI` module and links the prebuilt
-        // `libaislopdesk_ffi.a`. The Rust core is a byte-/bit-exact port of the Swift
-        // codecs/controllers (proven by golden vectors); Swift modules call into it via
-        // the `RustFFI` bridge so macOS/iOS and a future Android client run the identical
+        // `libaislopdesk_ffi.a`. The Rust core (`aislopdesk-core`) implements the wire
+        // codecs + realtime controllers; Swift modules call into it over the C-ABI via
+        // the `RustFFI` bridge, so macOS/iOS and a future Android client run the identical
         // algorithm bytes. `unsafeFlags` (the -L/-l for the vendored static archive) make
         // the package non-consumable as a dependency — fine for a leaf app. macOS slice
         // for now; iOS device/sim slices are a follow-up (see rust/build-apple.sh).
@@ -61,7 +61,7 @@ let package = Package(
 
         // Pure-Swift wire format: framing, MessageType, seq(Int64), Hello/Ack.
         // ZERO platform dependency (no Network/Darwin) so it builds for macOS + iOS
-        // and is unit-testable in isolation. Codec bodies delegate to the Rust port via
+        // and is unit-testable in isolation. Codec bodies delegate to the Rust core via
         // `CAislopdeskFFI` (see Sources/AislopdeskProtocol/RustFFI.swift).
         .target(name: "AislopdeskProtocol", dependencies: ["CAislopdeskFFI"]),
 
@@ -210,13 +210,14 @@ let package = Package(
         // chain reaches even a SecurityAgent secure field. Run the bridge (sudo) first.
         .executableTarget(name: "aislopdesk-hid-probe", dependencies: ["AislopdeskVideoHost", "AislopdeskVideoProtocol"]),
 
-        // Golden-vector dumper: emits a deterministic JSON corpus from the REAL
-        // AislopdeskVideoProtocol codecs + the pure realtime controllers (public API only) so
-        // the Rust `aislopdesk-core` crate proves byte-/bit-identical parity in its
-        // `golden_parity` test. Pure value types only — constructs NO SCStream / encoder, so it
-        // touches no GUI/TCC: `swift run aislopdesk-corevectors > rust/aislopdesk-core/tests/vectors/golden_vectors.json`.
-        // IMPORTANT: run with no `AISLOPDESK_*` env set so the host/client controllers resolve
-        // their default tunables (the Rust port pins those defaults as compile-time consts).
+        // Golden-vector dumper: emits the golden reference corpus for the Rust core's
+        // parity test — a deterministic JSON corpus from the AislopdeskVideoProtocol codecs
+        // + the pure realtime controllers (public API only) that the Rust `aislopdesk-core`
+        // crate asserts byte-/bit-identical against in its `golden_parity` test. Pure value
+        // types only — constructs NO SCStream / encoder, so it touches no GUI/TCC:
+        // `swift run aislopdesk-corevectors > rust/aislopdesk-core/tests/vectors/golden_vectors.json`.
+        // IMPORTANT: run with no `AISLOPDESK_*` env set so the controllers resolve their
+        // default tunables (the Rust core pins those defaults as compile-time consts).
         .executableTarget(
             name: "aislopdesk-corevectors",
             dependencies: ["AislopdeskProtocol", "AislopdeskVideoProtocol", "AislopdeskVideoHost", "AislopdeskVideoClient"]

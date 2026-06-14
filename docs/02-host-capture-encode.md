@@ -2,7 +2,7 @@
 
 > **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
-Host-side pipeline: **ScreenCaptureKit (capture one window)** → **VideoToolbox (low-latency HW encode)** → NALUs for transport.
+Host-side pipeline (Swift platform shell): **ScreenCaptureKit (capture one window)** → **VideoToolbox (low-latency HW encode)** → NALUs handed to the Rust core (`rust/aislopdesk-core`, via the C-ABI) for packetization + FEC + ABR → transport ([03](03-transport-protocol.md)). This doc covers only the capture + encode shell.
 
 ---
 
@@ -52,9 +52,9 @@ config.queueDepth = 3          // real default is 8 (not 3); 2–3 for low laten
 config.showsCursor = false   // strip the cursor → draw it client-side for instant feel (see 10 §7)
 ```
 
-> ⚠️ **scaleFactor:** there is no API to read the scale directly from `SCShareableContent`. Query it from `NSScreen` (match by `displayID`). Hardcoding `×2` will be wrong on non-Retina external displays.
+> ⚠️ **scaleFactor:** no API reads the scale from `SCShareableContent` — query `NSScreen` by `displayID`. Hardcoding `×2` breaks on non-Retina external displays.
 
-> ⚠️ **minimumFrameInterval & queueDepth (corrections from [11](11-absolute-latency.md)):** macOS 15+ changed the default `minimumFrameInterval` to `1/60` (silently, not in the release notes) → **must set it explicitly**. We cap at **~24–30fps** (not 60/120 — coding tool, not game-streaming); ProMotion 120 **dropped**. The real `queueDepth` default is **8**; there is no hard floor of 3 (the "3" was a mix-up with the old CGDisplayStream) → use **2–3** for low latency if you release the IOSurface within the deadline `minimumFrameInterval × (queueDepth−1)`.
+> ⚠️ **minimumFrameInterval & queueDepth (from [11](11-absolute-latency.md)):** macOS 15+ silently defaults `minimumFrameInterval` to `1/60` → **set it explicitly**; we cap at **~24–30fps** (coding tool, not game-streaming — ProMotion 120 dropped). `queueDepth` really defaults to **8** (no floor of 3 — that was a CGDisplayStream mix-up) → use **2–3** for low latency, releasing the IOSurface within `minimumFrameInterval × (queueDepth−1)`.
 
 ### 1.4 Receiving frames
 
@@ -119,7 +119,7 @@ VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_AllowFrameReorderi
 // Infinite GOP + on-demand IDR — NO periodic timer-based keyframes (every keyframe = a useless latency spike).
 // Recovery via LTR (see 10-latency-optimization.md §1); only force an IDR when no acked LTR remains.
 VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: Int.max as CFNumber)
-VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
+VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 30 as CFNumber) // match the ~30fps capture cap
 VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_EnableLTR, value: kCFBooleanTrue) // LTR recovery — verify the symbol against the SDK
 VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_AverageBitRate, value: (8_000_000/8) as CFNumber) // bytes/s!
 VTCompressionSessionPrepareToEncodeFrames(session!)
@@ -131,7 +131,7 @@ VTCompressionSessionSetOutputHandler(session!) { status, flags, sb in
 }
 ```
 
-### 2.2 HEVC 10-bit (our default codec)
+### 2.2 HEVC 8-bit 4:2:0 (our default codec)
 
 > ✅ **Correcting an old assumption:** on **Apple Silicon**, `EnableLowLatencyRateControl` supports **HEVC as well** (confirmed via FFmpeg `videotoolboxenc.c`: gate `H264 || (arm64 && HEVC)`). Only **Intel Macs** are limited to H.264. → Use low-latency mode for HEVC too, but **feature-detect at session creation** (Apple hasn't pinned a version in the docs).
 
@@ -150,7 +150,7 @@ VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, val
 VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse)
 // MaxFrameDelayCount=0 → force one-in-one-out (synchronous emit). NOT "no-limit" (that's -1):
 VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
-// Note: low-latency mode requires an explicit bitrate (no automatic ABR) — fine for LAN.
+// Note: low-latency mode has no VT-internal ABR — the Rust core's ABR/congestion controller drives AverageBitRate at runtime.
 ```
 
 HEVC HW encode is always available on Apple Silicon & Intel Macs with a T2.
@@ -207,12 +207,11 @@ func handleEncoded(_ sb: CMSampleBuffer) {
 
 ## 3. Gotchas (from research)
 
-- `EnableLowLatencyRateControl`: on **Apple Silicon** it supports **both H.264 and HEVC**; on **Intel Macs** H.264 only. **Feature-detect at session creation**; don't gate by OS version (Apple hasn't pinned a version for HEVC).
-- Low-latency mode requires an **explicit bitrate** (no automatic ABR).
-- Querying `UsingHardwareAcceleratedVideoEncoder` in low-latency mode returns error `-12900` — a known quirk; the HW encoder still runs.
-- `AverageBitRate` is measured in **bytes/second**, not bits.
-- VideoToolbox always emits **AVCC**; convert it yourself if Annex-B is needed.
-- Parameter sets must be sent **before** the first IDR and **re-sent whenever they change** (e.g. a resolution change). On a lossy LAN, attach parameter sets to **every** keyframe so a new/recovering client can decode.
+- `EnableLowLatencyRateControl`: Apple Silicon supports H.264 **and** HEVC; Intel = H.264 only. **Feature-detect at session creation** (don't gate by OS version — Apple hasn't pinned one for HEVC).
+- Low-latency mode has no VT-internal ABR — the app drives `AverageBitRate` from the Rust core's ABR/congestion controller at runtime.
+- `UsingHardwareAcceleratedVideoEncoder` returns `-12900` in low-latency mode — known quirk; the HW encoder still runs.
+- `AverageBitRate` is **bytes/second**, not bits. VideoToolbox emits **AVCC** — convert to Annex-B yourself if the protocol needs it.
+- Send parameter sets **before** the first IDR and **re-send on change** (e.g. resolution). Under packet loss, attach them to **every** keyframe so a recovering client can decode.
 
 ## 4. Phase 0 spike tasks
 

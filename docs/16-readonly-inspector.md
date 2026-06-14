@@ -6,9 +6,9 @@
 
 ## Why this direction wins (differentiator)
 
-- **Read-only = avoids the ENTIRE cost of an SDK-driven interactive pane:** no reimplementing slash/model/permissions (the TUI handles all input), no duplicate prompts, no worrying about `--bare`/`settingSources` (we **observe** the transcript, we don't **drive** the agent). No input path from inspector → claude → absolutely safe.
-- **Same session as the TUI** (not a second SDK session). It reads the transcript of the very `claude` process that is running.
-- **Better than Happy/Happier:** they only have structured (losing TUI fidelity); we have the **full TUI + inspector** = best of both.
+- **Read-only avoids the entire cost of an SDK-driven interactive pane:** no reimplementing slash/model/permissions (the TUI handles all input), no duplicate prompts, no `--bare`/`settingSources` concerns. We **observe** the transcript, never **drive** the agent — no inspector → `claude` input path, so it is read-only by construction.
+- **Same session as the TUI** (not a second SDK session): reads the transcript of the very `claude` process that is running.
+- **Better than Happy/Happier** (structured only, losing TUI fidelity): we keep the **full TUI + inspector**.
 
 ## Data source: tail the JSONL transcript (+ supplementary hooks)
 
@@ -39,7 +39,7 @@ CC ≥ **v2.1.154** (released 2026-05-28, **research preview**). It is a **JS or
 
 ## Design for our stack
 
-**Data flow:** host spawns `claude` (PTY) + registers a `SessionStart` hook (POST to a local listener) → the inspector daemon opens `transcript_path`, FSEvents-watches it + watches `subagents/` → parses into typed events → a **SECOND NWConnection** (length-prefixed JSON frames) multiplexed over the same NetBird tunnel beside the PTY byte stream → a client-side Swift actor keeps an ordered store → SwiftUI read-only views. (Optional: PostToolUse/SubagentStop HTTP hooks for low-latency push, backfilled by JSONL later.)
+**Data flow:** host spawns `claude` (PTY) + registers a `SessionStart` hook (POST to a local listener) → the inspector daemon opens `transcript_path`, FSEvents-watches it + watches `subagents/` → parses into typed events → a **second length-prefixed TCP/NWConnection** (JSON frames), separate from the PTY byte stream → a client-side Swift actor keeps an ordered store → SwiftUI read-only views. (Optional: PostToolUse/SubagentStop HTTP hooks for low-latency push, backfilled by JSONL later.)
 
 **Views:** tool-call card (input+output+diff+duration, joined via `tool_use_id`) · subagent tree (collapsible, attached via `agentId`, sorted by timestamp **within a level**) · thinking block (empty-aware) · todos/workflow panel · message timeline.
 
@@ -59,7 +59,7 @@ CC ≥ **v2.1.154** (released 2026-05-28, **research preview**). It is a **JS or
 
 ## Settled decisions
 1. **CoT/thinking = PLACEHOLDER ONLY** ✅ — render "Thinking (not persisted)" + a signature fingerprint when `thinking===""`. Do **NOT** pursue the undocumented `--thinking-display summarized` flag (fragile). → drop the P4 "CoT text" phase; if Anthropic later persists thinking by default it will display naturally (the render slot already exists).
-2. **Transport = length-prefixed NWConnection** (a second one, multiplexed over the NetBird tunnel) — consistent with the PTY path. WebSocket only if a high event rate causes problems (measure later).
+2. **Transport = a second length-prefixed TCP/NWConnection** — plain TCP, consistent with the PTY path, over the same trusted private network (e.g. a WireGuard mesh such as NetBird/Tailscale). WebSocket only if a high event rate causes problems (measure later).
 3. **Workflow panel / Agent Teams = defer** (research preview / experimental off-by-default).
 
 ## Confidence (honest)
