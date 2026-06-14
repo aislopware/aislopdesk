@@ -55,9 +55,9 @@ repos:
         name: swiftformat (apply)
         entry: swiftformat
         language: system
-        # product trees only — matches `make fmt-swift` (Sources/Tests/Apps); the
-        # standalone probe/spike .swift scripts under scripts/ & docs/ are out of scope.
-        files: '^(Sources|Tests|Apps)/.*\.swift$'
+        # product trees + the package manifest — matches `make fmt-swift`. The standalone
+        # probe/spike .swift scripts under scripts/ & docs/ stay out of scope.
+        files: '^(Package\.swift|(Sources|Tests|Apps)/.*\.swift)$'
 
       - id: rustfmt
         name: rustfmt (apply)

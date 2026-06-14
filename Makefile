@@ -9,6 +9,9 @@
 # Tools are pinned/installed via `make install-tools`.
 
 SWIFT_PATHS  := Sources Tests Apps
+# Format (SwiftFormat) also covers the package manifest; the SwiftLint scope stays
+# Sources/Tests/Apps (Package.swift is config, not linted).
+SWIFTFMT_PATHS := Package.swift $(SWIFT_PATHS)
 SHELL_FILES  := $(shell git ls-files '*.sh' | grep -v '^ThirdParty/')
 PY_FILES     := $(shell git ls-files '*.py')
 RUST_DIR     := rust
@@ -28,7 +31,7 @@ help: ## Show this help
 fmt: fmt-swift fmt-rust fmt-shell fmt-python ## Auto-format all languages
 
 fmt-swift: ## Format Swift (SwiftFormat)
-	swiftformat $(SWIFT_PATHS)
+	swiftformat $(SWIFTFMT_PATHS)
 
 fmt-rust: ## Format Rust (rustfmt)
 	cd $(RUST_DIR) && cargo fmt
@@ -54,7 +57,7 @@ fix: fmt ## Format + apply all safe lint autofixes
 lint: lint-swift lint-rust lint-shell lint-python ## Run every linter strictly
 
 lint-swift: ## SwiftFormat --lint + SwiftLint --strict
-	swiftformat $(SWIFT_PATHS) --lint
+	swiftformat $(SWIFTFMT_PATHS) --lint
 	swiftlint --strict --quiet
 
 lint-rust: ## rustfmt --check + clippy -D warnings + cargo-deny + cargo-machete
