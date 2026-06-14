@@ -92,9 +92,11 @@ test: ## swift test + rust test
 	cd $(RUST_DIR) && cargo test --workspace
 
 # ---------------------------------------------------------------------------- #
-.PHONY: install-tools
-install-tools: ## Install all required tools (brew + cargo)
-	brew install swiftlint swiftformat shellcheck shfmt ruff cargo-deny pre-commit
+.PHONY: install-tools hooks
+install-tools: hooks ## Install all required tools (brew + cargo) and the git hooks
+	brew install swiftlint swiftformat shellcheck shfmt ruff cargo-deny prek
 	cargo install cargo-machete
 	rustup component add rustfmt clippy
-	pre-commit install
+
+hooks: ## Install the prek git hooks (pre-commit + pre-push)
+	prek install
