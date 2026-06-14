@@ -296,15 +296,17 @@ public struct RecoveryPolicy: Sendable {
     /// ABOVE the floor; the floor just guarantees an LTR refresh gets the time it physically needs
     /// before the IDR sledgehammer.
     public func shouldEscalateToIDR(elapsedSinceRequest: TimeInterval, rtt: TimeInterval, observingLoss: Bool) -> Bool {
-        let multiple = observingLoss ? lossyIdrTimeoutRTTMultiple : idrTimeoutRTTMultiple
-        let deadline: TimeInterval
-        if observingLoss {
-            let floor = max(lossyEscalationFloor, lossyEscalationFloorRTTMultiple * rtt)
-            deadline = max(multiple * rtt, floor)
-        } else {
-            deadline = multiple * rtt
-        }
-        return elapsedSinceRequest >= deadline
+        // Delegated to the Rust `aislopdesk-core` recovery policy (single source of truth shared
+        // with the Android client); byte-identical to the former native clock (pinned by the
+        // existing recovery tests + `RustRecoveryPolicyParityTests`). The env-resolved lossy floor
+        // (`lossyEscalationFloor`, from AISLOPDESK_ESCALATION_FLOOR_MS) stays Swift-side, passed in.
+        RustVideoFFI.recoveryShouldEscalateToIDR(
+            idrTimeoutRTTMultiple: idrTimeoutRTTMultiple,
+            lossyIdrTimeoutRTTMultiple: lossyIdrTimeoutRTTMultiple,
+            lossyEscalationFloor: lossyEscalationFloor,
+            lossyEscalationFloorRTTMultiple: lossyEscalationFloorRTTMultiple,
+            elapsedSinceRequest: elapsedSinceRequest, rtt: rtt, observingLoss: observingLoss
+        )
     }
 }
 

@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = ["aislopdesk-core", "aislopdesk-ffi"]
+
+# Shared metadata for every crate in the portable core. The Rust workspace is the
+# Android-bound reimplementation of Aislopdesk's pure, side-effect-free algorithms
+# (wire codecs, FEC, packetizer/reassembler, controllers). It is a *parallel* source
+# of truth to the Swift `Sources/AislopdeskVideoProtocol` (etc.) targets — proven
+# byte/behaviour-identical by the golden-vector parity tests — so the macOS/iOS app
+# keeps using its native Swift implementations untouched (zero perf risk) while a
+# future Android client links this crate over a C ABI / JNI.
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "UNLICENSED"
+publish = false
+
+# Release profile tuned for the realtime media path: maximum optimisation, fat LTO,
+# single codegen unit, abort-on-panic (a parser of untrusted UDP bytes must never
+# unwind across the FFI boundary — every fallible path already returns Result, so a
+# panic is a bug, not a control-flow channel).
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# The parity/unit tests need unwinding (panic = "unwind") so `#[should_panic]` and
+# assertion failures report cleanly; only the shipped library aborts.
+[profile.test]
+opt-level = 1
+
+# Lints applied to every workspace crate (each opts in with `[lints] workspace = true`).
+# The core is held to pedantic Clippy with documented public API; `unsafe` is forbidden
+# in the pure crate via a crate-level attribute (the FFI crate relaxes that one lint).
+[workspace.lints.rust]
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Wire codecs unavoidably cast between integer widths exactly as the Swift source does
+# (`UInt8(truncatingIfNeeded:)`, `Int(uint16)`); these are deliberate and audited, so the
+# blanket cast lints would be pure noise. Truncation/wrap that MATTERS is written explicitly.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+cast_possible_wrap = "allow"
+# The realtime controllers fold integer counters (bytes-per-frame, RTT millis, frame/tick
+# counts, pixel throughput) into f64 EWMA/threshold math exactly as the Swift source does.
+# Every such value is a bounded small magnitude far inside f64's 2^53 exact-integer range,
+# so the precision-loss the lint warns about cannot occur for these domains.
+cast_precision_loss = "allow"
+# `match` on a single wire tag byte reads clearer than the suggested alternatives.
+module_name_repetitions = "allow"
+# Every decoder shares ONE error contract — `Truncated` when bytes run out, `Malformed`
+# for an out-of-range field — documented once at crate level. A per-function `# Errors`
+# block on ~100 codec methods would be pure boilerplate restating that single contract.
+missing_errors_doc = "allow"
+# Several structs faithfully mirror the Swift wire/domain structs where each bool is a
+# distinct on-wire/decode flag (keyframe, parity, crisp, isLTR, ackedAnchored, …). They
+# are flag records by nature; collapsing them into a bitset would diverge from the source.
+struct_excessive_bools = "allow"
+# The wire/domain vocabulary uses systematically-similar short names by design — cb/cr
+# (chroma), dx/dy (deltas), bw/bh (bounds), from/to (ranges). Renaming them to satisfy
+# the heuristic would make the codecs read LESS like their spec, not more.
+similar_names = "allow"
+# Exact float equality is INTENTIONAL: the whole purpose of this crate is bit-exact
+# parity with the Swift source, and the tests pin coefficients/offsets to exact values.
+# The library code itself never compares floats with `==` (only ordered comparisons).
+float_cmp = "allow"
