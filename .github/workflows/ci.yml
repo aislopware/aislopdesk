@@ -54,9 +54,9 @@ jobs:
           curl -sS https://webi.sh/shfmt | sh || (cd /tmp && curl -sSL -o shfmt https://github.com/mvdan/sh/releases/latest/download/shfmt_v3.13.1_linux_amd64 && chmod +x shfmt && sudo mv shfmt /usr/local/bin/)
           pipx install ruff || pip install ruff
       - name: ShellCheck
-        run: shellcheck $(git ls-files '*.sh')
+        run: shellcheck $(git ls-files '*.sh' | grep -v '^ThirdParty/')
       - name: shfmt (diff)
-        run: shfmt -i 2 -ci -sr -d $(git ls-files '*.sh')
+        run: shfmt -i 2 -ci -sr -d $(git ls-files '*.sh' | grep -v '^ThirdParty/')
       - name: Ruff lint + format check
         run: |
           ruff check $(git ls-files '*.py')
