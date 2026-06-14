@@ -1,5 +1,7 @@
-//! Pure button-balance bookkeeping for input injection — a port of Swift
-//! `InputButtonBalance` (in `Sources/AislopdeskVideoHost/VideoSessionLogic.swift`).
+//! Pure button-balance bookkeeping for input injection.
+//!
+//! The canonical `InputButtonBalance` logic; the native Swift shell keeps a copy
+//! (`Sources/AislopdeskVideoHost/VideoSessionLogic.swift`) that tracks this (golden parity).
 //!
 //! The reorder fix (ordered inbound consumer) keeps a single interaction's
 //! down→drag→up in order, but it cannot conjure a `mouseUp` that the wire DROPPED or a
@@ -21,8 +23,8 @@
 use crate::input_event::{InputEvent, MouseButton};
 use std::collections::BTreeSet;
 
-/// What to do before injecting an event — the byte-identical mirror of Swift
-/// `InputButtonBalance.Plan`.
+/// What to do before injecting an event. The Swift shell's `InputButtonBalance.Plan` mirrors this
+/// byte-identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Plan {
     /// Emit a synthetic release of THIS button before the real event (`None` ⇒ none). Set
@@ -38,8 +40,8 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Builds a plan. Mirrors Swift's `init(preRelease:suppress:)`; the Swift default
-    /// arguments are `pre_release: None, suppress: false` — use [`Plan::default`] for that.
+    /// Builds a plan. The Swift shell's `init(preRelease:suppress:)` matches this; the Swift
+    /// default arguments are `pre_release: None, suppress: false` — use [`Plan::default`] for that.
     #[must_use]
     pub const fn new(pre_release: Option<MouseButton>, suppress: bool) -> Self {
         Self {
@@ -97,20 +99,20 @@ impl InputButtonBalance {
         }
     }
 
-    /// Whether `button` is currently held. Mirrors Swift `held.contains(_)`.
+    /// Whether `button` is currently held. The Swift shell's `held.contains(_)` mirrors this.
     #[must_use]
     pub fn held_contains(&self, button: MouseButton) -> bool {
         self.held.contains(&button.raw())
     }
 
-    /// Whether no button is held. Mirrors Swift `held.isEmpty`.
+    /// Whether no button is held. The Swift shell's `held.isEmpty` mirrors this.
     #[must_use]
     pub fn held_is_empty(&self) -> bool {
         self.held.is_empty()
     }
 
     /// The held buttons in ascending wire-value order (Left, Right, Other) — a
-    /// deterministic snapshot of Swift's `held` set for introspection / tests. Every stored
+    /// deterministic snapshot of the Swift shell's `held` set for introspection / tests. Every stored
     /// key is a valid raw value (only `mouseDown`/`mouseUp` insert), so the parse never drops.
     #[must_use]
     pub fn held(&self) -> Vec<MouseButton> {
@@ -161,7 +163,7 @@ mod tests {
         }
     }
 
-    // ---- 1:1 mirrors of InputButtonBalanceTests.swift ----
+    // ---- Button-balance cases (the Swift `InputButtonBalanceTests` suite cross-checks the same). ----
 
     #[test]
     fn clean_click_never_pre_releases() {

@@ -1,6 +1,7 @@
-//! Pure refcount + channel→window bookkeeping for the window-parking manager — a port of
-//! Swift `WindowParkingLedger` (`Sources/AislopdeskVideoHost/WindowParkingLedger.swift`,
-//! macOS feature #1).
+//! Pure refcount + channel→window bookkeeping for the window-parking manager.
+//!
+//! The canonical `WindowParkingLedger` logic; the native Swift shell keeps a copy
+//! (`Sources/AislopdeskVideoHost/WindowParkingLedger.swift`, macOS feature #1) that tracks this.
 //!
 //! NO AX, NO IPC, NO geometry math — only the DECISIONS: when to AX-move a window onto the
 //! virtual display (first park), when to REUSE an already-parked window (another lane, or a
@@ -9,7 +10,7 @@
 //! their geometry.
 //!
 //! Register `pub mod window_parking_ledger;` in `lib.rs` (alphabetical, after `video_control`,
-//! before `window_geometry`). The Swift origin is internal + `macOS`-only; the Rust port is
+//! before `window_geometry`). The Swift shell copy is internal + `macOS`-only; this core is
 //! unconditional (the platform `#if os(macOS)` guard is irrelevant to a portable crate).
 
 use crate::geometry::{VideoRect, VideoSize};
@@ -23,7 +24,7 @@ pub type ChannelId = u32;
 pub type Pid = i32;
 
 /// A window parked on the VD: the frame to restore to, the achieved on-VD size to capture at,
-/// and how many lanes currently hold it. Mirrors Swift `Parked` (value type → `Copy`).
+/// and how many lanes currently hold it. The Swift shell's `Parked` mirrors this (value type → `Copy`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Parked {
     /// Owning process (`pid_t`).
@@ -36,8 +37,8 @@ pub struct Parked {
     pub refcount: i64,
 }
 
-/// A window that must be AX-restored (its last lane released it, or a drain). Mirrors Swift
-/// `RestoreTarget`.
+/// A window that must be AX-restored (its last lane released it, or a drain). The Swift shell's
+/// `RestoreTarget` mirrors this.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RestoreTarget {
     /// The `CGWindowID` to restore.
@@ -48,7 +49,7 @@ pub struct RestoreTarget {
     pub original_frame: VideoRect,
 }
 
-/// The outcome of a [`park`](WindowParkingLedger::park) request. Mirrors Swift `ParkDecision`.
+/// The outcome of a [`park`](WindowParkingLedger::park) request. The Swift shell's `ParkDecision` mirrors this.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ParkDecision {
     /// Already parked — refcount bumped (or unchanged for a same-lane retransmit); the caller
@@ -62,7 +63,7 @@ pub enum ParkDecision {
 /// Pure refcount ledger. `Default` gives the empty ledger (Swift's `= [:]` field initializers).
 ///
 /// `BTreeMap<u32,_>` (not `HashMap`): the lookup/insert/remove/equality LOGIC is identical to a
-/// Swift `Dictionary`, but `BTreeMap` gives the Rust port a DETERMINISTIC (sorted-by-key)
+/// Swift `Dictionary`, but `BTreeMap` gives this core a DETERMINISTIC (sorted-by-key)
 /// [`drain_all`](Self::drain_all) order across runs (a `HashMap` with `RandomState` would
 /// randomize it, breaking reproducible unit tests). See [`drain_all`](Self::drain_all) for the
 /// cross-language ordering caveat.
@@ -79,13 +80,13 @@ impl WindowParkingLedger {
         Self::default()
     }
 
-    /// Read-only view of the parked map (mirrors Swift `private(set) var parked`).
+    /// Read-only view of the parked map (the Swift shell exposes this as `private(set) var parked`).
     #[must_use]
     pub const fn parked(&self) -> &BTreeMap<WindowId, Parked> {
         &self.parked
     }
 
-    /// Read-only view of the channel→window bindings (mirrors `private(set) var channelWindow`).
+    /// Read-only view of the channel→window bindings (the Swift shell exposes this as `private(set) var channelWindow`).
     #[must_use]
     pub const fn channel_window(&self) -> &BTreeMap<ChannelId, WindowId> {
         &self.channel_window
@@ -117,7 +118,7 @@ impl WindowParkingLedger {
     /// Commit a successful first move (after [`park`](Self::park) returned
     /// [`NeedsMove`](ParkDecision::NeedsMove)). NOTE: this is a plain dictionary assignment — it
     /// OVERWRITES any existing `parked[window_id]`, RESETTING refcount to 1 (it does NOT
-    /// accumulate). Mirrors Swift exactly.
+    /// accumulate). The Swift shell matches this exactly.
     pub fn record_move(
         &mut self,
         channel_id: ChannelId,
@@ -148,7 +149,7 @@ impl WindowParkingLedger {
         let p = self.parked.get_mut(&window_id)?; // missing → None (binding already removed)
         p.refcount -= 1;
         if p.refcount <= 0 {
-            // `<= 0` defensive, mirrors Swift; NLL ends the `p` borrow at the condition above.
+            // `<= 0` defensive; the Swift shell uses the same guard; NLL ends the `p` borrow at the condition above.
             let removed = self.parked.remove(&window_id)?;
             Some(RestoreTarget {
                 window_id,
@@ -164,8 +165,8 @@ impl WindowParkingLedger {
     /// parked window (a window held by N lanes yields ONE target, not N), then clears both maps.
     /// Idempotent (a second drain returns `vec![]`).
     ///
-    /// ORDER CAVEAT: Swift returns these in `Dictionary`'s unspecified (hash-seed-randomized)
-    /// order; this `BTreeMap` port returns them sorted ascending by `window_id`. NEITHER order is
+    /// ORDER CAVEAT: The Swift shell returns these in `Dictionary`'s unspecified (hash-seed-randomized)
+    /// order; this core (`BTreeMap`) returns them sorted ascending by `window_id`. NEITHER order is
     /// load-bearing (the caller AX-restores each independently), so the golden-parity test MUST
     /// compare the two as a set / sorted-by-`window_id` projection, never positionally.
     #[must_use]
@@ -197,7 +198,7 @@ mod tests {
     use super::*;
     use crate::geometry::{VideoRect, VideoSize};
 
-    // ---- Swift-test fixtures (mirror `WindowParkingLedgerTests`) ----
+    // ---- Test fixtures (the Swift `WindowParkingLedgerTests` suite uses the same values) ----
     fn frame_a() -> VideoRect {
         VideoRect::xywh(100.0, 200.0, 1600.0, 1000.0)
     }
@@ -226,7 +227,7 @@ mod tests {
         assert_eq!(a.height.to_bits(), b.height.to_bits(), "height bits");
     }
 
-    // ===== 1:1 mirrors of the Swift XCTest cases =====
+    // ===== Core behavior cases (the Swift `WindowParkingLedgerTests` XCTest suite cross-checks the same) =====
 
     // First park of a window → needsMove; after recordMove it is counted.
     #[test]

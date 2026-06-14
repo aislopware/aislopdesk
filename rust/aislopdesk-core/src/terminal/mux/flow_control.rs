@@ -1,17 +1,16 @@
-//! Shared constants for TCP-mux per-channel credit flow control (always on) — a port of
-//! Swift `AislopdeskProtocol.MuxFlowControl`.
+//! Shared constants for TCP-mux per-channel credit flow control (always on) — the canonical
+//! `MuxFlowControl` constants. The Swift `AislopdeskProtocol` shell tracks them (golden parity).
 //!
 //! The numbers here are deliberately in ONE place so both ends agree without negotiation:
 //! a sender's initial [`FlowCreditPolicy`](super::FlowCreditPolicy) window, a receiver's
 //! [`ReceiveWindowAccountant`](super::ReceiveWindowAccountant) window, and the host's
 //! [`BoundedQueuePolicy`](super::BoundedQueuePolicy) capacity are all sized from here.
 //!
-//! In the Swift host these are env-tunable (`AISLOPDESK_MUX_*`). This port pins the shipped
+//! The Swift host exposes these as env-tunable (`AISLOPDESK_MUX_*`); this core pins the shipped
 //! defaults as compile-time constants (the unset-env values) and exposes pure resolvers
 //! ([`resolve_initial_window_bytes`] etc.) plus `*_from_env` wrappers, so the math stays
 //! deterministic and testable while a host that wants the env seam can still opt in. The
-//! `⚠️ MUST be set identically in BOTH processes` caveat from the Swift source applies to
-//! any host using the env seam.
+//! `⚠️ MUST be set identically in BOTH processes` caveat applies to any host using the env seam.
 
 /// Initial per-channel send/receive window, in bytes (64 KiB).
 ///
@@ -69,8 +68,7 @@ const FRAME_OVERHEAD_MARGIN: usize = 16;
 /// half-window grant threshold so a low `initial_window` can never reintroduce the
 /// frame ≥ window/2 dead zone on the input direction.
 ///
-/// See the progress invariant in the
-/// Swift source.
+/// See the credit progress invariant (tested in this module).
 #[must_use]
 pub fn max_data_message_payload_bytes(initial_window_bytes: usize) -> usize {
     (16 * 1024).min((initial_window_bytes / 2).saturating_sub(FRAME_OVERHEAD_MARGIN))
@@ -91,9 +89,10 @@ pub fn max_output_frame_payload_bytes(
 }
 
 /// Parses a decimal byte count and accepts it only within `[lo, hi]`; otherwise (absent,
-/// unparseable, or out of range) returns `fallback`. Mirrors the Swift `envInt` discipline
-/// (a typo can never produce a degenerate window/queue). Parses as `i64` so a leading-minus
-/// value is rejected by the bound check exactly as Swift's `Int(s)` path does.
+/// unparseable, or out of range) returns `fallback`. Uses the same discipline as the Swift
+/// shell's `envInt` resolver (a typo can never produce a degenerate window/queue). Parses
+/// as `i64` so a leading-minus value is rejected by the bound check, matching the Swift
+/// shell's `Int(s)` parse path.
 fn resolve_bounded(raw: Option<&str>, fallback: usize, lo: usize, hi: usize) -> usize {
     match raw.and_then(|s| s.parse::<i64>().ok()) {
         Some(v) if v >= lo as i64 && v <= hi as i64 => v as usize,

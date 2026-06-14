@@ -1,6 +1,7 @@
-//! The host-side outbound-PTY output sniffer — a byte-at-a-time terminal-output state
-//! machine, a port of Swift `HostOutputSniffer`
-//! (Sources/AislopdeskHost/HostOutputSniffer.swift).
+//! The host-side outbound-PTY output sniffer — a byte-at-a-time terminal-output state machine.
+//!
+//! The canonical `HostOutputSniffer` logic; the native Swift shell keeps a copy
+//! (`Sources/AislopdeskHost/HostOutputSniffer.swift`) that tracks this (golden parity).
 //!
 //! It scans the OUTBOUND PTY byte stream (host → client) for the three inline host→client
 //! CONTROL messages and emits them as [`crate::terminal::WireMessage`] values, in byte
@@ -13,13 +14,13 @@
 //!   host-measured C→D duration in milliseconds).
 //! - [`WireMessage::Notification`] — OSC 9 (iTerm2/ConEmu) and OSC 777 (urxvt/ConEmu `notify`).
 //!
-//! ## Provenance (exact-parity port)
-//! [`HostOutputSniffer::step`] is the 8-state transition table VERBATIM from the Swift
-//! source (`.ground` / `.escape` / `.osc` / `.oscEscape` / `.oscDiscard` /
+//! ## Provenance
+//! [`HostOutputSniffer::step`] is the canonical 8-state transition table
+//! (`.ground` / `.escape` / `.osc` / `.oscEscape` / `.oscDiscard` /
 //! `.oscDiscardEscape` / `.stringConsume` / `.stringConsumeEscape`), including the
 //! DCS/SOS/PM/APC string-swallowing anti-spoof, the cap-bounded OSC buffer, the stray-ESC
 //! re-entry fix, and [`HostOutputSniffer::finish_osc`]'s Ps-prefix dispatch with the
-//! EXACT-PARITY 256-byte command cap.
+//! 256-byte command cap. The Swift shell's `HostOutputSniffer` implements the same table.
 //!
 //! ## Streaming-safe
 //! A true byte-at-a-time machine: state persists across chunks, so any split (mid-ESC,
@@ -28,27 +29,27 @@
 //! swallowed without buffering, so a hostile stream can never wedge the sniffer or make it
 //! buffer unboundedly.
 //!
-//! ## Deviations from the Swift source (documented, output-identical)
-//! - **No `NSLock`.** The Swift type is `@unchecked Sendable` and guards its mutable state
-//!   with a lock so it can be captured in a `@Sendable` closure; in practice `observe` is
-//!   only ever called from the single serial `PTYReadLoop` queue. This port is `&mut self`
+//! ## Documented differences from the Swift shell (output-identical)
+//! - **No `NSLock`.** The Swift shell's type is `@unchecked Sendable` and guards its mutable
+//!   state with a lock so it can be captured in a `@Sendable` closure; in practice `observe` is
+//!   only ever called from the single serial `PTYReadLoop` queue. This core is `&mut self`
 //!   (single-owner) and drops the lock entirely.
-//! - **No `memchr` fast path.** Swift skims `.ground` / `.oscDiscard` / `.stringConsume`
-//!   with `memchr` to route only `ESC`/`BEL` through `step()` — a pure performance
-//!   optimization that *never replaces a transition* (Swift's permanent
-//!   `testChunkingInvarianceOracle` pins it to the per-byte path). This port runs the
+//! - **No `memchr` fast path.** The Swift shell skims `.ground` / `.oscDiscard` /
+//!   `.stringConsume` with `memchr` to route only `ESC`/`BEL` through `step()` — a pure
+//!   performance optimization that *never replaces a transition* (Swift's permanent
+//!   `testChunkingInvarianceOracle` pins it to the per-byte path). This core runs the
 //!   per-byte path directly: byte- and behaviour-identical, just not micro-optimized.
-//! - **Clock as a parameter, not an injected closure.** Swift injects a `() -> Date` clock
-//!   and measures the OSC 133 C→D duration from it. This port takes the time as
+//! - **Clock as a parameter, not an injected closure.** The Swift shell injects a `() -> Date`
+//!   clock and measures the OSC 133 C→D duration from it. This core takes the time as
 //!   `now_ms: u64` (the caller's monotonic milliseconds) on each [`HostOutputSniffer::observe`]
 //!   call: it captures the start ms when the `C` marker is processed and computes
-//!   `duration = now_ms - start` (saturating) at `D`, clamped to `u32` exactly like Swift's
-//!   `durationMS`. See the crate's golden-vector dumper notes for the scripted-clock mapping
-//!   that makes the two agree.
+//!   `duration = now_ms - start` (saturating) at `D`, clamped to `u32`; the Swift shell's
+//!   `durationMS` does the same. See the crate's golden-vector dumper notes for the
+//!   scripted-clock mapping that makes the two agree.
 
 use crate::terminal::{CommandStatus, WireMessage};
 
-/// Parser state for the byte-at-a-time machine — a verbatim port of the Swift `State` enum.
+/// Parser state for the byte-at-a-time machine. The Swift shell's `State` enum mirrors this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     /// Outside any escape sequence (opaque content). A `BEL` here is a real terminal bell.
@@ -74,7 +75,7 @@ enum State {
 }
 
 /// The FUSED host-side outbound-PTY output sniffer. See the module docs for the full
-/// grammar; a port of Swift `HostOutputSniffer`.
+/// grammar — the canonical `HostOutputSniffer` (the Swift shell mirrors it).
 ///
 /// Drive it by feeding chunks of the outbound byte stream to [`observe`](Self::observe);
 /// state persists across calls so chunk boundaries are irrelevant to the emitted messages.
@@ -87,7 +88,7 @@ pub struct HostOutputSniffer {
     /// The last title emitted, for trivial coalescing (don't spam identical titles).
     last_title: Option<String>,
     /// The `now_ms` captured when the foreground command started (set on `133;C`, cleared
-    /// on `133;D`); `None` when idle. Mirrors Swift's `runningSince: Date?`.
+    /// on `133;D`); `None` when idle. The Swift shell's `runningSince: Date?` mirrors this.
     start_ms: Option<u64>,
 }
 
@@ -101,18 +102,18 @@ impl Default for HostOutputSniffer {
 
 impl HostOutputSniffer {
     /// Hard cap on the buffered OSC payload (the title sniffer's cap). A real title is tiny;
-    /// anything longer is abandoned and the parser resyncs. Mirrors Swift `oscCap`.
+    /// anything longer is abandoned and the parser resyncs. The Swift shell's `oscCap` mirrors this.
     const OSC_CAP: usize = 4096;
 
     /// EXACT-PARITY guard for the 133 path: the old command sniffer capped ITS buffer at
     /// 256, so a `133;…` payload of 257..=4096 bytes never reached its `finishOSC`. The fused
     /// machine buffers up to 4096, so [`finish_osc`](Self::finish_osc) re-imposes 256 on the
-    /// 133 branch. Mirrors Swift `cmdOscCap`.
+    /// 133 branch. The Swift shell's `cmdOscCap` mirrors this.
     const CMD_OSC_CAP: usize = 256;
 
     /// Payload cap for the OSC 9 / OSC 777 notification path: a real notification line is
     /// short; a multi-kilobyte one is not worth surfacing (and bounds a hostile stream).
-    /// Mirrors Swift `notifyOscCap`.
+    /// The Swift shell's `notifyOscCap` mirrors this.
     const NOTIFY_OSC_CAP: usize = 1024;
 
     const ESC: u8 = 0x1B;
@@ -126,7 +127,7 @@ impl HostOutputSniffer {
     const PM: u8 = 0x5E; // '^'
     const APC: u8 = 0x5F; // '_'
 
-    /// Builds a fresh sniffer in the ground state. Equivalent to Swift `HostOutputSniffer()`.
+    /// Builds a fresh sniffer in the ground state. The Swift shell's `HostOutputSniffer()` matches this.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -145,8 +146,8 @@ impl HostOutputSniffer {
     /// `now_ms` is the caller's monotonic clock in milliseconds, used to stamp the OSC 133
     /// C→D duration: the value seen when a `C` marker completes is the start, and the value
     /// seen when the matching `D` completes yields `duration = now_ms - start` (saturating,
-    /// clamped to `u32`). It is otherwise ignored. Mirrors Swift's `@discardableResult
-    /// observe(_:)` (the result may be ignored).
+    /// clamped to `u32`). It is otherwise ignored. The Swift shell's `@discardableResult
+    /// observe(_:)` mirrors this (the result may be ignored).
     pub fn observe(&mut self, bytes: &[u8], now_ms: u64) -> Vec<WireMessage> {
         let mut messages = Vec::new();
         for &byte in bytes {
@@ -155,9 +156,9 @@ impl HostOutputSniffer {
         messages
     }
 
-    /// One byte through the state machine — the Swift `step(_:into:)` transition table
-    /// verbatim. `now_ms` is threaded through only so [`finish_osc`](Self::finish_osc) can
-    /// stamp a C/D duration.
+    /// One byte through the state machine — the canonical transition table. `now_ms` is
+    /// threaded through only so [`finish_osc`](Self::finish_osc) can stamp a C/D duration.
+    /// The Swift shell's `step(_:into:)` matches this exactly.
     fn step(&mut self, byte: u8, now_ms: u64, messages: &mut Vec<WireMessage>) {
         match self.state {
             State::Ground => match byte {
@@ -252,7 +253,8 @@ impl HostOutputSniffer {
 
     /// Fused OSC dispatch on the Ps prefix: OSC 0/2 (title), OSC 133 C/D (command status),
     /// OSC 9 / OSC 777 (notification). Consumes the buffered payload (always cleared on exit,
-    /// mirroring Swift's `defer { oscBuffer.removeAll() }`). A port of Swift `finishOSC(into:)`.
+    /// matching the Swift shell's `defer { oscBuffer.removeAll() }`). The Swift shell's
+    /// `finishOSC(into:)` mirrors this.
     fn finish_osc(&mut self, now_ms: u64, messages: &mut Vec<WireMessage>) {
         // Take the buffer out — leaves `self.osc_buffer` empty (the Swift `defer`-clear) and
         // frees `self` for the `last_title` / `start_ms` mutations below.
@@ -379,7 +381,7 @@ impl HostOutputSniffer {
 
     /// Parses the optional exit code from a `133;D[;<exit>[;k=v…]]` field list (field[2],
     /// tolerating a trailing `=value`), truncated to `i32`. Returns `None` when
-    /// absent/unparsable. A port of Swift `parseExit`.
+    /// absent/unparsable. The Swift shell's `parseExit` mirrors this.
     #[must_use]
     fn parse_exit(fields: &[&str]) -> Option<i32> {
         if fields.len() < 3 {
@@ -413,7 +415,7 @@ impl HostOutputSniffer {
 mod tests {
     use super::*;
 
-    // Control bytes, mirroring the Swift test constants.
+    // Control bytes used in the test harness.
     const ESC: u8 = 0x1B;
     const BEL: u8 = 0x07;
 
@@ -426,7 +428,7 @@ mod tests {
         out
     }
 
-    /// `ESC ] 133 ; <mark> BEL` — mirrors the Swift `osc133(_:)` helper.
+    /// `ESC ] 133 ; <mark> BEL` — matches the Swift shell's `osc133(_:)` helper.
     fn osc133(mark: &str) -> Vec<u8> {
         cat(&[b"\x1b]133;", mark.as_bytes(), &[BEL]])
     }
@@ -488,7 +490,7 @@ mod tests {
     }
 
     // =====================================================================================
-    // Ported from HostOutputSnifferTests — title / bell
+    // Title / bell cases (the Swift `HostOutputSnifferTests` suite cross-checks the same).
     // =====================================================================================
 
     #[test]
@@ -737,7 +739,7 @@ mod tests {
     }
 
     // =====================================================================================
-    // Ported from HostOutputSnifferTests — command status (with the now_ms clock parameter)
+    // Command-status cases (the Swift `HostOutputSnifferTests` suite cross-checks the same).
     // =====================================================================================
 
     #[test]
@@ -864,7 +866,7 @@ mod tests {
     }
 
     // =====================================================================================
-    // Ported from HostOutputSnifferTests — OSC 9 / OSC 777 notifications
+    // OSC 9 / OSC 777 notification cases (the Swift `HostOutputSnifferTests` suite cross-checks the same).
     // =====================================================================================
 
     #[test]
@@ -955,7 +957,7 @@ mod tests {
     }
 
     // =====================================================================================
-    // Ported from HostOutputSnifferCharacterizationTests — expected-value asserts
+    // Characterization cases — expected-value asserts (the Swift `HostOutputSnifferCharacterizationTests` suite cross-checks the same).
     // =====================================================================================
 
     #[test]
@@ -1113,7 +1115,7 @@ mod tests {
     }
 
     // =====================================================================================
-    // Added edge cases (beyond the Swift suite)
+    // Edge cases beyond the Swift shell's test suite.
     // =====================================================================================
 
     #[test]
@@ -1126,7 +1128,7 @@ mod tests {
 
     #[test]
     fn duration_clamps_to_u32_max() {
-        // A huge gap clamps to u32::MAX, exactly like Swift's `ms >= UInt32.max` branch.
+        // A huge gap clamps to u32::MAX; the Swift shell's `ms >= UInt32.max` branch does the same.
         let mut s = HostOutputSniffer::new();
         let _ = s.observe(&osc133("C"), 0);
         assert_eq!(

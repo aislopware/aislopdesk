@@ -1,5 +1,5 @@
-//! Pure receiver-side accounting for ONE direction of ONE channel — a port of Swift
-//! `AislopdeskProtocol.ReceiveWindowAccountant`.
+//! Pure receiver-side accounting for ONE direction of ONE channel — the canonical
+//! `ReceiveWindowAccountant` logic. The Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! The symmetric peer of [`FlowCreditPolicy`](super::FlowCreditPolicy) (which lives on the
 //! SENDER): the receiver re-credits the sender by emitting a window-adjust once it has

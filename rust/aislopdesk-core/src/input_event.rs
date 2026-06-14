@@ -1,4 +1,4 @@
-//! Client→host input event codec — a port of Swift `InputEventCodec`.
+//! Client→host input event codec — the canonical `InputEventCodec` logic (the Swift shell mirrors it).
 //!
 //! Positions are in normalised window space (0..1); the client never sends raw pixels.
 //! Every event carries a `tag` the host stamps on its synthetic event so it can filter

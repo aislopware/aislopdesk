@@ -1,7 +1,7 @@
-//! Session identifier — a port of the `UUID` used on the terminal-path wire.
+//! Session identifier for the terminal-path wire.
 //!
 //! Swift carries the session id as a `Foundation.UUID` (its 16 raw bytes, canonical
-//! order). This crate is zero-dependency, so the port models it as a plain 16-byte
+//! order). This crate is zero-dependency, so this core models it as a plain 16-byte
 //! newtype: the wire only ever reads/writes the raw bytes, and the only distinguished
 //! value is the all-zero [`SessionId::NEW_SESSION`] (Swift `WireMessage.newSessionID`),
 //! which `hello` / `channelOpen` use to request a brand-new session.
@@ -11,12 +11,12 @@
 pub struct SessionId(pub [u8; 16]);
 
 impl SessionId {
-    /// Number of bytes a session id occupies on the wire (its 16 raw bytes). Matches
-    /// Swift `WireMessage.sessionIDByteCount` / `MuxEnvelopeCodec.sessionIDByteCount`.
+    /// Number of bytes a session id occupies on the wire (its 16 raw bytes). The Swift shell's
+    /// `WireMessage.sessionIDByteCount` / `MuxEnvelopeCodec.sessionIDByteCount` match this.
     pub const BYTE_COUNT: usize = 16;
 
-    /// The all-zero id (`hello` / `channelOpen` use it to request a NEW session). Mirrors
-    /// Swift `WireMessage.newSessionID`.
+    /// The all-zero id (`hello` / `channelOpen` use it to request a NEW session). The Swift shell's
+    /// `WireMessage.newSessionID` mirrors this.
     pub const NEW_SESSION: Self = Self([0u8; 16]);
 
     /// Builds a session id from exactly 16 raw bytes.

@@ -1,16 +1,16 @@
-//! UDP-side mux foundation for the GUI video path — a port of Swift
-//! `VideoMuxHeaderCodec` / `MuxFrameFragmentHeader`.
+//! UDP-side mux foundation for the GUI video path — the canonical
+//! `VideoMuxHeaderCodec` / `MuxFrameFragmentHeader` logic (the Swift shell mirrors it).
 //!
 //! A `u32` BE channelID prefix lets several logical lanes share one UDP socket. These
 //! are NEW, additive types beside [`FrameFragment`](crate::fragment::FrameFragment); the
 //! live transport does not yet construct them.
 //!
-//! ⚠️ Faithful-port note: Swift defines `MuxFrameFragmentHeader.size = channelIDLength +
-//! FrameFragmentHeader.size = 4 + 19 = 23`, but its `encode`/`decode` only read/write a
+//! ⚠️ Wire-contract note: the canonical `SIZE` is `channelIDLength +
+//! FrameFragmentHeader.size = 4 + 19 = 23`, but encode/decode only reads/writes a
 //! 19-byte header (channelID + the pre-`hostSendTsMillis` fields, NO `host_send_ts`). The
 //! `size` constant predates the `hostSendTsMillis` field being added to the standalone
-//! header and was never reconciled — a harmless artifact because the type is unwired. We
-//! reproduce the Swift constant value (23) AND the 19-byte wire exactly for parity.
+//! header and was never reconciled — a harmless artifact because the type is unwired. The
+//! Swift shell carries the same constant value (23) and the same 19-byte wire exactly for parity.
 
 use crate::bytes::{ByteReader, ByteWriter};
 use crate::error::Result;
@@ -66,13 +66,12 @@ pub struct MuxFrameFragmentHeader {
 }
 
 impl MuxFrameFragmentHeader {
-    /// Header size constant as defined in Swift: `channelIDLength + FrameFragmentHeader
-    /// .size` = `4 + 19 = 23`. See the module note: the ENCODED header is 19 bytes; this
+    /// Canonical header size constant: `channelIDLength + FrameFragmentHeader.size` = `4 + 19 = 23`. See the module note: the ENCODED header is 19 bytes; this
     /// constant carries the historical artifact verbatim for parity.
     pub const SIZE: usize = CHANNEL_ID_LENGTH + FrameFragmentHeader::SIZE;
 
-    /// Max payload bytes per fragment against [`SIZE`](Self::SIZE) (`1200 - 23 = 1177`),
-    /// matching Swift's `maxPayloadSize`.
+    /// Max payload bytes per fragment against [`SIZE`](Self::SIZE) (`1200 - 23 = 1177`);
+    /// the Swift shell's `maxPayloadSize` matches this.
     pub const MAX_PAYLOAD_SIZE: usize = VideoPacketizer::MAX_DATAGRAM_SIZE - Self::SIZE;
 
     /// Serialises `header + payload` (channelID first, then the standalone field order,
@@ -96,7 +95,7 @@ impl MuxFrameFragmentHeader {
     }
 
     /// Parses one muxed datagram into `(header, payload)`. Trailing bytes beyond the
-    /// declared payload length are ignored (matches Swift).
+    /// declared payload length are ignored (the Swift shell matches this).
     pub fn decode(datagram: &[u8]) -> Result<(Self, Vec<u8>)> {
         let mut r = ByteReader::new(datagram);
         let channel_id = r.read_u32()?;

@@ -1,5 +1,5 @@
-//! libwebrtc-trendline-style one-way-delay GRADIENT detector — a port of Swift
-//! `TrendlineEstimator` (component 3), plus its `TrendSampler` admission gate and wire packing.
+//! libwebrtc-trendline-style one-way-delay GRADIENT detector — the canonical `TrendlineEstimator`
+//! logic (the Swift shell mirrors it), plus its `TrendSampler` admission gate and wire packing.
 //!
 //! The queue's *slope* is visible earlier than its *level*: this regresses per-FRAME delay
 //! variation against arrival time and flags OVERUSE the way GCC/libwebrtc does, so the host can
@@ -10,8 +10,8 @@
 //! signals. The cross-machine clock offset cancels in the deltas. An idle-gap reset clears stale
 //! queue context. Pure + deterministic + `PartialEq` — the caller injects every arrival.
 //!
-//! Tunables: the Swift source resolves `window_size` / `threshold_gain` from `AISLOPDESK_TREND_*`
-//! env vars at startup; the portable core uses the compile-time defaults (identical when unset).
+//! Tunables: the Swift shell resolves `window_size` / `threshold_gain` from `AISLOPDESK_TREND_*`
+//! env vars at startup; this core uses the compile-time defaults (identical to the shell's values when no env override is set).
 
 use crate::seq::distance_wrapped;
 
@@ -224,9 +224,8 @@ impl TrendlineEstimator {
             };
             self.threshold +=
                 k * (self.modified_trend.abs() - self.threshold) * d_arrival.min(MAX_ADAPT_DT_MS);
-            // `max().min()` mirrors Swift's `min(thresholdMax, max(thresholdMin, threshold))`
-            // exactly (identical to `clamp` for the finite values reachable here; intentionally
-            // NOT `clamp`, which would propagate NaN where Swift's min/max drop it).
+            // `max().min()` (NOT `clamp`) drops NaN the way Swift's `min`/`max` do
+            // (identical to `clamp` for finite values reachable here); the Swift shell matches this.
             #[allow(clippy::manual_clamp)]
             {
                 self.threshold = self.threshold.max(THRESHOLD_MIN).min(THRESHOLD_MAX);
@@ -258,9 +257,8 @@ impl TrendlineEstimator {
     // Wire packing (NetworkStatsReport.owd_trend_milli / owd_trend_flags).
 
     /// `modified_trend × 1000` rounded, clamped to ±1e9, as an `i32` bit-pattern. Uses
-    /// `max().min()` (not `f64::clamp`) to reproduce Swift's `min(1e9, max(-1e9, milli))` exactly,
-    /// including its NaN-dropping (`clamp` would propagate NaN): identical for every finite input,
-    /// and a NaN argument to this public fn yields the same `-1e9` byte as Swift.
+    /// `max().min()` (not `f64::clamp`): drops NaN the way Swift's `min(1e9, max(-1e9, …))` does
+    /// (identical for every finite input; the Swift shell matches this); a NaN argument yields `-1e9`.
     #[must_use]
     pub fn pack_trend_milli(modified_trend: f64) -> u32 {
         let milli = (modified_trend * 1000.0).round();
@@ -565,8 +563,8 @@ mod tests {
             (-500_i32) as u32
         );
         assert_eq!(TrendlineEstimator::pack_trend_milli(0.0), 0);
-        // NaN parity with Swift's `min(1e9, max(-1e9, NaN))` = -1e9 (NaN-dropping), not clamp's
-        // NaN-propagation. Unreachable through `note()`, but this is a public fn.
+        // NaN drops to -1e9 via `max(-1e9, NaN)` (not clamp's NaN-propagation); the Swift shell matches this.
+        // Unreachable through `note()`, but this is a public fn.
         assert_eq!(
             TrendlineEstimator::pack_trend_milli(f64::NAN),
             (-1_000_000_000_i32) as u32

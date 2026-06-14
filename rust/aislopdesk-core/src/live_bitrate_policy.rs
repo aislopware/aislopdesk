@@ -1,5 +1,5 @@
-//! Resolution-aware live-bitrate policy for the HEVC encoder — a port of Swift
-//! `LiveBitratePolicy`.
+//! Resolution-aware live-bitrate policy for the HEVC encoder — the canonical `LiveBitratePolicy`
+//! logic (the Swift shell mirrors it).
 //!
 //! Sizes the live budget to the ACTUAL encoded pixel throughput (area × fps) at a fixed
 //! bits-per-pixel-per-frame density, so a window at any capture scale is provisioned
@@ -25,7 +25,7 @@ pub const MINIMUM_BITRATE: i64 = 1_000_000;
 /// finite value in `(0, 1]`; anything else (absent, unparsable, ≤0, >1, NaN, ∞) yields
 /// [`DEFAULT_BITS_PER_PIXEL_PER_FRAME`].
 ///
-/// Deviation from Swift, identical in spirit to [`crate::recovery_policy::escalation_floor_seconds`]:
+/// Documented divergence from the Swift shell, identical in spirit to [`crate::recovery_policy::escalation_floor_seconds`]:
 /// Swift's `Double(String)` accepts C hex-float notation (e.g. `"0x1.0p-3"`), which Rust's
 /// `str::parse::<f64>` rejects → falls back to the default. No operator writes a fractional
 /// density knob in hex-float, so the only realistic inputs (decimals) parse identically.
@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(bits_per_pixel_per_frame(Some("inf")), 0.15);
         assert_eq!(bits_per_pixel_per_frame(Some("0.25")), 0.25);
         assert_eq!(bits_per_pixel_per_frame(Some("1.0")), 1.0);
-        // INTENTIONAL deviation (documented): hex-float falls back to the default.
+        // Documented divergence from the Swift shell: hex-float falls back to the default.
         assert_eq!(bits_per_pixel_per_frame(Some("0x1.0p-3")), 0.15);
     }
 }

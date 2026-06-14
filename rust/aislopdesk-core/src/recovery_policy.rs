@@ -1,6 +1,5 @@
-//! Client-side recovery DECISION logic — a port of the policy half of Swift
-//! `RecoverySignaling` (`RecoveryPolicy`, `RecoveryRequestRedundancy`,
-//! `LossObservationWindow`).
+//! Client-side recovery DECISION logic — the canonical `RecoveryPolicy`, `RecoveryRequestRedundancy`,
+//! and `LossObservationWindow` logic (the Swift shell's `RecoverySignaling` mirrors this).
 //!
 //! Pure deciders; the timer/transport lives above this crate.
 
@@ -12,7 +11,7 @@ const DEFAULT_ESCALATION_FLOOR_SECS: f64 = 0.06;
 /// Pure env resolution for the lossy floor: parses `AISLOPDESK_ESCALATION_FLOOR_MS`,
 /// default 60 ms, clamped to 20..=500 ms; absent/garbage/out-of-band keep the default.
 ///
-/// INTENTIONAL deviation from Swift parity (documented, tested): Swift's
+/// Documented divergence from the Swift shell (documented, tested): Swift's
 /// `Double(String)` additionally accepts C hex-float notation (e.g. `"0x64"` → 100.0),
 /// which Rust's `str::parse::<f64>` rejects → falls back to the default here. This knob
 /// is a milliseconds value and is only ever set to a plain decimal like `"60"`; matching
@@ -244,7 +243,7 @@ mod tests {
         approx(escalation_floor_seconds(Some("600")), 0.06); // above clamp → default
         approx(escalation_floor_seconds(Some("100")), 0.1);
         approx(escalation_floor_seconds(Some("inf")), 0.06);
-        // INTENTIONAL deviation from Swift (documented on the fn): hex-float notation that
+        // Documented divergence from the Swift shell (see the fn doc): hex-float notation that
         // Swift's `Double(String)` would honour is rejected here → default. No operator sets
         // a milliseconds knob in hex-float form.
         approx(escalation_floor_seconds(Some("0x64")), 0.06);

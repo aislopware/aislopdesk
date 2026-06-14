@@ -1,5 +1,5 @@
-//! Forward-error-correction over a frame's data fragments — a port of Swift
-//! `FECScheme` / `XORParityFEC`.
+//! Forward-error-correction over a frame's data fragments — the canonical
+//! `FECScheme` / `XORParityFEC` logic (the Swift shell mirrors it).
 //!
 //! v1 ships a correct, fully-tested XOR/parity scheme that recovers exactly one lost
 //! fragment per group; the [`FecScheme`] trait lets production swap in a Reed-Solomon

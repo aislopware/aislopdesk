@@ -1,4 +1,4 @@
-//! Pre-emptive drop-until-anchor decode admission — a port of Swift `DecodeGate`.
+//! Pre-emptive drop-until-anchor decode admission — the canonical `DecodeGate` logic (the Swift shell mirrors it).
 //!
 //! A delta that (transitively) references an unrecoverably-lost frame cannot decode — `VideoToolbox`
 //! throws -12909 and tears the decompression session down, which wipes the decoder's reference

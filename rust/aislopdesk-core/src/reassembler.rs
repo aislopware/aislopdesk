@@ -1,4 +1,4 @@
-//! Frame reassembly with loss detection and FEC — a port of Swift `FrameReassembler`.
+//! Frame reassembly with loss detection and FEC — the canonical `FrameReassembler` logic (the Swift shell mirrors it).
 //!
 //! The stream is plain UDP, so fragments may be lost or reordered. A frame is declared
 //! lost (`Dropped`) only once it cannot complete — i.e. a NEWER frame's fragments arrive

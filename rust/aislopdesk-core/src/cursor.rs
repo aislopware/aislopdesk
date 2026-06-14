@@ -1,4 +1,4 @@
-//! Cursor side-channel codecs — a port of Swift `CursorCodec` / `CursorShapeCodec`.
+//! Cursor side-channel codecs — the canonical `CursorCodec` / `CursorShapeCodec` logic (the Swift shell mirrors it).
 //!
 //! The host strips the cursor from the video and streams its position + shape over a
 //! separate small UDP socket so pointer latency = RTT. The hot [`CursorUpdate`] is tiny

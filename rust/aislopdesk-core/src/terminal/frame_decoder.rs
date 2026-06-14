@@ -1,5 +1,7 @@
 //! Incremental, streaming decoder that turns arbitrary chunks of TCP bytes into whole
-//! [`WireMessage`] values — a port of Swift `AislopdeskProtocol.FrameDecoder`.
+//! [`WireMessage`] values.
+//!
+//! The canonical `FrameDecoder` logic; the Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! TCP is a byte stream with no message boundaries: one read may deliver half a frame,
 //! three frames, or a frame split across many reads. [`FrameDecoder`] buffers raw bytes

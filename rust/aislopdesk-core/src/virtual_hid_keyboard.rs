@@ -1,5 +1,7 @@
-//! Virtual-HID keyboard core — a port of Swift `VirtualHIDKeyboard` /
-//! `HIDKeyboardState` (`Sources/AislopdeskVideoHost/VirtualHIDKeyboard.swift`).
+//! Virtual-HID keyboard core.
+//!
+//! The canonical `VirtualHIDKeyboard` / `HIDKeyboardState` logic; the native Swift shell keeps a
+//! copy (`Sources/AislopdeskVideoHost/VirtualHIDKeyboard.swift`) that tracks this (golden parity).
 //!
 //! This is the device-independent half of the "type into a macOS `SecurityAgent`
 //! login/password dialog from the remote client" path. Secure Event Input
@@ -16,8 +18,8 @@
 //! dext consumes. Everything is pure (no I/O); the socket transport to the Karabiner
 //! daemon lives above this crate.
 //!
-//! The Swift source is gated `#if os(macOS)` because it is compiled into the host
-//! target; the Rust port carries no platform gate — the keycode/usage math is portable
+//! The Swift shell copy is gated `#if os(macOS)` because it is compiled into the host
+//! target; this core carries no platform gate — the keycode/usage math is portable
 //! and is exactly what a future Android host would reuse over the FFI boundary.
 
 use crate::input_event::InputModifiers;
@@ -28,16 +30,16 @@ use std::collections::BTreeSet;
 /// USB HID Keyboard/Keypad usage (usage page `0x07`) for a macOS virtual keycode
 /// (`kVK_*`), or `None` if unmapped.
 ///
-/// Mirrors Swift `VirtualHIDKeyboard.hidUsage(forVirtualKey:)` and the `keyMap` table
-/// verbatim. Covers the full ANSI set plus the keys a password entry needs (letters, digits,
-/// symbols, return, delete, tab, space, escape, arrows, function keys). The source maps
-/// the modifier keys too (so a held modifier can be recognised), but
+/// The Swift shell's `VirtualHIDKeyboard.hidUsage(forVirtualKey:)` and `keyMap` table
+/// mirror this. Covers the full ANSI set plus the keys a password entry needs (letters,
+/// digits, symbols, return, delete, tab, space, escape, arrows, function keys). Modifier
+/// keys are mapped too (so a held modifier can be recognised), but
 /// [`HIDKeyboardState`] reflects modifiers via the report's modifier BYTE, not the key
 /// array — see [`is_modifier_key`].
 #[must_use]
 pub const fn hid_usage(vk: u16) -> Option<u8> {
     // Source: the kVK_* constants <-> the USB HID Usage Tables §10 Keyboard/Keypad.
-    // ANSI layout. Transcribed verbatim from the Swift `keyMap` literal.
+    // ANSI layout, matching the Swift shell's `keyMap` literal.
     let usage = match vk {
         // Letters (kVK_ANSI_A=0x00 ... the famously non-alphabetical Apple order).
         0x00 => 0x04, // a
@@ -124,15 +126,15 @@ pub const fn hid_usage(vk: u16) -> Option<u8> {
 }
 
 /// Whether a macOS virtual keycode is a modifier key
-/// (shift/control/option/command/fn/capsLock). Mirrors Swift
-/// `VirtualHIDKeyboard.isModifierKey(_:)` and the `modifierKeys` set.
+/// (shift/control/option/command/fn/capsLock). The Swift shell's
+/// `VirtualHIDKeyboard.isModifierKey(_:)` and `modifierKeys` set mirror this.
 ///
 /// Such a key is carried in the report's modifier BYTE (derived from
 /// [`InputModifiers`] via [`modifier_byte`]), NOT the key array.
 #[must_use]
 // The ten modifier keycodes happen to be contiguous (0x36..=0x3F), but they are kept as
-// the explicit per-keycode list — each labelled with its kVK_* name — to transcribe the
-// Swift `modifierKeys` set verbatim for parity review, rather than collapse to a range.
+// the explicit per-keycode list — each labelled with its kVK_* name — matching the
+// Swift shell's `modifierKeys` set exactly, rather than collapse to a range.
 #[allow(clippy::manual_range_patterns)]
 pub const fn is_modifier_key(vk: u16) -> bool {
     matches!(
@@ -151,7 +153,7 @@ pub const fn is_modifier_key(vk: u16) -> bool {
 }
 
 /// The HID boot-keyboard MODIFIER byte (report byte 0) for our [`InputModifiers`].
-/// Mirrors Swift `VirtualHIDKeyboard.modifierByte(_:)`.
+/// The Swift shell's `VirtualHIDKeyboard.modifierByte(_:)` mirrors this.
 ///
 /// Bits (left variants): ctrl `0x01`, shift `0x02`, alt/option `0x04`, GUI/command
 /// `0x08`. `CapsLock` + Fn are NOT HID modifier-byte bits (`CapsLock` is a lock key; the
@@ -176,8 +178,8 @@ pub const fn modifier_byte(m: InputModifiers) -> u8 {
 }
 
 /// Build an 8-byte boot-protocol keyboard report:
-/// `[modifiers, 0x00, k1, k2, k3, k4, k5, k6]`. Mirrors Swift
-/// `VirtualHIDKeyboard.bootReport(modifiers:keys:)`.
+/// `[modifiers, 0x00, k1, k2, k3, k4, k5, k6]`. The Swift shell's
+/// `VirtualHIDKeyboard.bootReport(modifiers:keys:)` mirrors this.
 ///
 /// The HID boot keyboard reports at most 6 concurrent non-modifier keys; if more than 6
 /// are held the spec says fill all six key slots with `0x01` (`ErrorRollOver`). Keys are
@@ -201,13 +203,13 @@ pub fn boot_report(modifiers: u8, keys: &[u8]) -> Vec<u8> {
 }
 
 /// Folds a stream of key down/up events into HID boot-keyboard reports — the stateful
-/// half that the host's virtual-HID backend drives. A port of Swift `HIDKeyboardState`.
+/// half that the host's virtual-HID backend drives — the canonical `HIDKeyboardState`.
 ///
 /// HID keyboard reports carry the FULL set of currently pressed keys plus the modifier
 /// byte, so this tracks pressed non-modifier usages and rebuilds the report on each
 /// change. Pure value type (no I/O). The pressed set is a [`BTreeSet`] so iteration —
 /// and therefore the report — is deterministic regardless of insertion order (the Swift
-/// source uses an unordered `Set` and sorts inside [`boot_report`]).
+/// shell uses an unordered `Set` and sorts inside [`boot_report`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HIDKeyboardState {
     /// Currently-pressed non-modifier HID usages.
@@ -215,30 +217,29 @@ pub struct HIDKeyboardState {
 }
 
 impl HIDKeyboardState {
-    /// A fresh state with no keys held. Mirrors Swift `HIDKeyboardState.init()`.
+    /// A fresh state with no keys held. The Swift shell's `HIDKeyboardState.init()` mirrors this.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The currently-pressed non-modifier HID usages (introspection / parity with the
-    /// Swift `private(set) var pressed`).
+    /// The currently-pressed non-modifier HID usages (introspection; matches the
+    /// Swift shell's `private(set) var pressed`).
     #[must_use]
     pub const fn pressed(&self) -> &BTreeSet<u8> {
         &self.pressed
     }
 
     /// Apply one key event and return the report to send, or `None` if the event maps
-    /// to nothing (an unmapped key). Mirrors Swift
-    /// `HIDKeyboardState.apply(virtualKey:down:modifiers:)`.
+    /// to nothing (an unmapped key). The Swift shell's
+    /// `HIDKeyboardState.apply(virtualKey:down:modifiers:)` mirrors this.
     ///
     /// Modifiers come from the authoritative [`InputModifiers`] carried on every event —
     /// a held Shift is reflected in the report's modifier byte, not the key array, so a
     /// modifier key never enters [`pressed`](Self::pressed()). A modifier keycode emits a
     /// report so a lone press/release still lands. A no-op repeat (autorepeat down on an
     /// already-pressed key) still re-emits so the host sees the key held; releasing a key
-    /// that was never pressed likewise still re-emits (the `changed` flag is discarded in
-    /// the Swift source).
+    /// that was never pressed likewise still re-emits (the `changed` flag is discarded).
     #[must_use]
     pub fn apply(
         &mut self,
@@ -261,14 +262,14 @@ impl HIDKeyboardState {
         Some(boot_report(mod_byte, &self.pressed_keys()))
     }
 
-    /// The all-zero report (no keys, no modifiers). Mirrors Swift
-    /// `HIDKeyboardState.releaseAllReport()`.
+    /// The all-zero report (no keys, no modifiers). The Swift shell's
+    /// `HIDKeyboardState.releaseAllReport()` mirrors this.
     ///
     /// Pure — does NOT clear the folded press state; a caller actually RELEASING the
     /// keyboard must use [`release_all`](Self::release_all) so the in-memory model
     /// matches the zero report it sends.
     #[must_use]
-    // Instance method to mirror Swift's `HIDKeyboardState.releaseAllReport()` (a
+    // Instance method matching the Swift shell's `HIDKeyboardState.releaseAllReport()` (a
     // non-mutating method on the value type); the all-zero report is independent of
     // state, so `self` is intentionally unused.
     #[allow(clippy::unused_self)]
@@ -278,7 +279,7 @@ impl HIDKeyboardState {
 
     /// Releases every key/modifier: CLEARS the folded press state AND returns the
     /// all-zero report to send (teardown, or the virtual-HID -> `CGEvent` backend switch).
-    /// Mirrors Swift `HIDKeyboardState.releaseAll()`.
+    /// The Swift shell's `HIDKeyboardState.releaseAll()` mirrors this.
     ///
     /// Without clearing [`pressed`](Self::pressed()), a later key event would fold into the
     /// STALE set via [`apply`](Self::apply) and re-assert the previously-held key(s) as
@@ -301,12 +302,12 @@ impl HIDKeyboardState {
 mod tests {
     use super::*;
 
-    // Convenience modifier-set builders mirroring the Swift `OptionSet` literals.
+    // Convenience modifier-set builders matching the Swift shell's `OptionSet` literals.
     const fn mods(raw: u8) -> InputModifiers {
         InputModifiers(raw)
     }
 
-    // MARK: keycode -> HID usage (mirrors Swift `VirtualHIDKeyboardTests`).
+    // MARK: keycode -> HID usage (the Swift `VirtualHIDKeyboardTests` suite cross-checks the same).
 
     #[test]
     fn letter_mapping() {
@@ -594,7 +595,7 @@ mod tests {
 
     #[test]
     fn release_of_unpressed_key_still_emits_report() {
-        // Swift discards the `changed` flag and always emits for a mapped key.
+        // The `changed` flag is discarded; always emit for any mapped key.
         let mut s = HIDKeyboardState::new();
         let r = s.apply(0x00, false, InputModifiers::default()); // 'a' up, never pressed
         assert_eq!(r, Some(vec![0, 0, 0, 0, 0, 0, 0, 0]));

@@ -1,5 +1,5 @@
-//! Forward-only big-endian reader for the terminal path — a port of Swift
-//! `AislopdeskProtocol.BigEndianReader`.
+//! Forward-only big-endian reader for the terminal path — the canonical `BigEndianReader`
+//! logic. The Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! All multi-byte integers on the wire are big-endian ("network byte order"); assembly
 //! is byte-by-byte so the code is alignment-safe and endian-explicit, with no `unsafe`.

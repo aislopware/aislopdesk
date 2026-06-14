@@ -1,5 +1,7 @@
-//! Pure capture-region geometry for the host DIALOG-EXPAND feature — a port of Swift
-//! `CaptureRegionMath` (Sources/AislopdeskVideoHost/CaptureRegionMath.swift).
+//! Pure capture-region geometry for the host DIALOG-EXPAND feature.
+//!
+//! The canonical `CaptureRegionMath` logic; the native Swift shell keeps a copy
+//! (`Sources/AislopdeskVideoHost/CaptureRegionMath.swift`) that tracks this (golden parity).
 //!
 //! Decides the capture region = target window frame ∪ any associated panel windows (a
 //! file-open / print / share dialog the OS attaches to the window), clamped to the
@@ -25,15 +27,15 @@
 use crate::geometry::VideoRect;
 
 /// Minimum overlap fraction (of the smaller rect's area) for a same-pid front window to
-/// count as an attached panel. Mirrors Swift's default argument `0.30`.
+/// count as an attached panel. The Swift shell uses this as the default argument (`0.30`).
 pub const DEFAULT_MIN_OVERLAP_FRACTION: f64 = 0.30;
 
-/// Per-edge hysteresis threshold (points) for [`should_retarget`]. Mirrors Swift's
-/// default argument `8`.
+/// Per-edge hysteresis threshold (points) for [`should_retarget`]. The Swift shell uses
+/// this as the default argument (`8`).
 pub const DEFAULT_MIN_DELTA: f64 = 8.0;
 
-/// One on-screen window, as read from `CGWindowListCopyWindowInfo` (CG top-left points) —
-/// a port of Swift `CaptureRegionMath.WindowSnapshot`.
+/// One on-screen window, as read from `CGWindowListCopyWindowInfo` (CG top-left points).
+/// The Swift shell's `CaptureRegionMath.WindowSnapshot` mirrors this.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowSnapshot {
     /// `kCGWindowNumber` (Swift `UInt32`).
@@ -90,7 +92,7 @@ pub fn union_region(
     // CGRect.width / .height are standardized (always ≥ 0).
     let target_area = target_frame.width() * target_frame.height();
     // `guard targetArea > 0 else { return targetFrame.intersection(displayBounds) }`.
-    // `!(x > 0.0)` (not `x <= 0.0`) reproduces Swift's NaN-skips-guard semantics.
+    // `!(x > 0.0)` (not `x <= 0.0`) gives NaN-skips-guard semantics (the Swift shell matches this).
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(target_area > 0.0) {
         return target_frame
@@ -162,7 +164,7 @@ pub fn should_retarget(current: VideoRect, desired: VideoRect, min_delta: f64) -
 /// union-sized. Re-origining to the plain window frame would desync input/cursor from that
 /// stream — a normalized client point in the dialog area (left/above the window) would map
 /// to a wrong absolute point (clicks land wrong) and the cursor would report not-visible
-/// over the dialog. Mirrors Swift `activeRegionGlobal == nil`.
+/// over the dialog. The Swift shell's `activeRegionGlobal == nil` mirrors this.
 #[must_use]
 pub const fn should_reorigin_to_window_on_geometry(
     active_region_global: Option<VideoRect>,
@@ -183,7 +185,7 @@ mod tests {
         VideoRect::xywh(x, y, w, h)
     }
 
-    // ----- 1:1 mirror of Tests/AislopdeskVideoHostTests/CaptureRegionMathTests.swift -----
+    // ----- CaptureRegionMath cases (the Swift `CaptureRegionMathTests` suite cross-checks the same) -----
 
     /// `testNoDialogReturnsWindowFrame`: no associated windows → just the (clamped) frame.
     #[test]
@@ -543,7 +545,7 @@ mod tests {
         ))));
     }
 
-    /// The Swift default-argument constants are mirrored exactly.
+    /// Default constants match the Swift shell's default arguments.
     #[test]
     fn default_constants_match_swift() {
         assert_eq!(DEFAULT_MIN_OVERLAP_FRACTION, 0.30);

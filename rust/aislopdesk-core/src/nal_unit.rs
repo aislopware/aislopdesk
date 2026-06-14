@@ -1,4 +1,4 @@
-//! Length-prefixed (AVCC / HVCC) NAL-unit iteration — a port of Swift `NALUnit`.
+//! Length-prefixed (AVCC / HVCC) NAL-unit iteration — the canonical `NALUnit` logic (the Swift shell mirrors it).
 //!
 //! `VideoToolbox` emits an encoded frame as one or more NAL units, each preceded by a
 //! big-endian length prefix (4 bytes in the configs Aislopdesk ships). The host hands
@@ -12,7 +12,7 @@ pub const LENGTH_PREFIX_SIZE: usize = 4;
 /// prefixes stripped), returned as zero-copy borrows into `avcc`.
 ///
 /// Parsing is defensive: a prefix that claims more bytes than remain, or a
-/// non-positive length, terminates iteration without panicking (matching the Swift
+/// non-positive length, terminates iteration without panicking (matching the Swift shell's
 /// `split` which simply `break`s on a bad prefix — a truncated tail is treated as "no
 /// more whole NALUs", never a crash).
 #[must_use]
@@ -66,7 +66,7 @@ where
 mod tests {
     use super::*;
 
-    /// Mirrors `NALUnitTests`: split/join round-trips, and defensive parsing of a
+    /// Covers the same cases as the Swift shell's `NALUnitTests`: split/join round-trips, and defensive parsing of a
     /// truncated / zero-length / over-long prefix.
     #[test]
     fn split_join_round_trip() {

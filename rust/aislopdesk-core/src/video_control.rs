@@ -1,5 +1,5 @@
-//! Session bring-up control messages for the GUI video path — a port of Swift
-//! `VideoControlCodec`.
+//! Session bring-up control messages for the GUI video path — the canonical
+//! `VideoControlCodec` logic (the Swift shell mirrors it).
 //!
 //! PATH 2 is plain UDP with no TCP handshake; a tiny control exchange (hello/helloAck/
 //! bye, plus resize, keepalive, window/dialog discovery, and cadence) runs over the same

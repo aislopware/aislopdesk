@@ -1,22 +1,22 @@
-//! Big-endian wire read/write helpers — a faithful port of Swift
-//! `AislopdeskVideoProtocol.VideoWireBytes` (the `Data.appendBE` family +
-//! `VideoByteReader`).
+//! Big-endian wire read/write helpers — the canonical
+//! `AislopdeskVideoProtocol.VideoWireBytes` logic (the `Data.appendBE` family +
+//! `VideoByteReader`; the Swift shell mirrors it).
 //!
 //! All multi-byte integers on the wire are big-endian ("network byte order").
 //! Assembly is byte-by-byte so the code is alignment-safe and endian-explicit, with
-//! no `unsafe` and no third-party dependency — matching the Swift source exactly.
+//! no `unsafe` and no third-party dependency.
 //!
-//! The one intentional improvement over the Swift reader: [`ByteReader::read_bytes`]
-//! and [`ByteReader::remaining`] return *borrows* into the input rather than copying
-//! into a fresh buffer. This is byte-identical in behaviour and strictly faster
-//! (zero-copy); callers that need ownership call `.to_vec()`.
+//! One deliberate refinement in this core (the Swift shell's reader returns a fresh `Data`):
+//! [`ByteReader::read_bytes`] and [`ByteReader::remaining`] return *borrows* into the
+//! input rather than copying into a fresh buffer. This is byte-identical in behaviour
+//! and strictly faster (zero-copy); callers that need ownership call `.to_vec()`.
 
 use crate::error::{Result, VideoProtocolError};
 
 /// Largest UTF-8 byte length a `u16`-length-prefixed string can carry on the wire.
 const MAX_LENGTH_PREFIXED_BYTES: usize = u16::MAX as usize;
 
-/// A growable big-endian wire encoder. Mirrors the `Data.appendBE(_:)` extensions.
+/// A growable big-endian wire encoder. The Swift shell's `Data.appendBE(_:)` extensions mirror this.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ByteWriter {
     buf: Vec<u8>,
@@ -116,9 +116,10 @@ impl ByteWriter {
     }
 }
 
-/// A forward-only big-endian reader over a byte slice. Mirrors `VideoByteReader`;
-/// every read consumes from the current offset and returns
-/// [`VideoProtocolError::Truncated`] when the buffer is exhausted.
+/// A forward-only big-endian reader over a byte slice.
+///
+/// The Swift shell's `VideoByteReader` mirrors this; every read consumes from the current
+/// offset and returns [`VideoProtocolError::Truncated`] when the buffer is exhausted.
 #[derive(Debug, Clone)]
 pub struct ByteReader<'a> {
     data: &'a [u8],

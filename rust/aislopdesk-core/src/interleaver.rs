@@ -1,5 +1,5 @@
-//! Burst-resilient transmission-order interleaver — a port of Swift
-//! `FragmentInterleaver`.
+//! Burst-resilient transmission-order interleaver — the canonical `FragmentInterleaver`
+//! logic (the Swift shell mirrors it).
 //!
 //! [`XorParityFec`](crate::fec::XorParityFec) recovers exactly one lost fragment per
 //! group of `group_size` CONSECUTIVE data fragments. Sending fragments in that same

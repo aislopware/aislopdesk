@@ -1,4 +1,4 @@
-//! Pure 2-D geometry + aspect-fit math — a port of Swift `Geometry.swift`.
+//! Pure 2-D geometry + aspect-fit math — the canonical geometry logic (the Swift shell's `Geometry.swift` mirrors it).
 //!
 //! These types mirror `CGPoint`/`CGSize`/`CGRect` without any platform dependency so
 //! the renderer's forward transform and the input encoder's inverse transform derive
@@ -96,12 +96,12 @@ impl VideoRect {
         ix * iy
     }
 
-    // ----- CoreGraphics CGRect-faithful geometry (host-side ports) -----
+    // ----- CoreGraphics CGRect-faithful geometry (host-side) -----
     //
     // The host capture-region / placement / virtual-display math uses CGRect's
     // `union`/`intersection`/`isNull`/standardized `width`/`height`/`maxX`. These mirror
-    // CoreGraphics exactly so `CaptureRegionMath`, `WindowPlacementMath`,
-    // `SystemDialogDetector`, and `VirtualDisplayPlanner` port byte/behaviour-identically.
+    // CoreGraphics exactly; the Swift shell's `CaptureRegionMath`, `WindowPlacementMath`,
+    // `SystemDialogDetector`, and `VirtualDisplayPlanner` track this core byte/behaviour-identically.
     // NOTE: the RAW `min_x`/`max_x`/`max_y` above intentionally do NOT standardize (their
     // only caller, the coordinate-mapping screen pick, deals exclusively in positive rects).
     // The methods below DO standardize, matching CG — keep the two families distinct.
@@ -207,7 +207,7 @@ pub enum VideoContentMode {
 }
 
 /// Aspect-fit geometry — the single source of truth for where the decoded video is
-/// drawn inside the layer. A port of Swift `AspectFit`.
+/// drawn inside the layer (the Swift shell's `AspectFit` mirrors it).
 pub mod aspect_fit {
     use super::{VideoContentMode, VideoPoint, VideoRect, VideoSize};
 

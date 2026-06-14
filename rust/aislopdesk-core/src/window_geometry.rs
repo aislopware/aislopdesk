@@ -1,4 +1,4 @@
-//! Window-geometry metadata channel codec — a port of Swift `WindowGeometryCodec`.
+//! Window-geometry metadata channel codec — the canonical `WindowGeometryCodec` logic (the Swift shell mirrors it).
 //!
 //! A separate channel carrying a remote GUI window's move / resize / bounds / title so
 //! the client window can reposition before the next video frame.

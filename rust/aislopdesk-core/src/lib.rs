@@ -1,24 +1,25 @@
 //! # aislopdesk-core
 //!
-//! The portable, side-effect-free core of Aislopdesk: the wire codecs, forward-error
-//! correction, packetizer/reassembler, and realtime-media controllers, reimplemented
-//! in 100% safe Rust as a byte- and behaviour-identical port of the Swift
-//! `AislopdeskVideoProtocol` and `AislopdeskProtocol` (terminal/PTY path, see
-//! [`terminal`]) targets.
+//! The portable, side-effect-free core of Aislopdesk and the **single source of truth**
+//! for its logic: the wire codecs, forward-error correction, packetizer/reassembler,
+//! the realtime-media controllers, the pure host server-logic (the session / mux /
+//! routing brain), and the terminal/PTY protocol (see [`terminal`]) — all in 100% safe
+//! Rust.
 //!
 //! ## Why this crate exists
 //!
-//! The macOS/iOS app keeps running its native Swift implementations untouched — this
-//! crate is a *parallel* source of truth, not a replacement — so the existing hot
-//! path takes **zero performance risk**. The crate exists so a future Android client
-//! can link the exact same algorithms over a C ABI / JNI boundary (the ALVR pattern:
-//! Rust owns reassembly/FEC/jitter/ABR/recovery; the platform shell owns capture,
-//! the socket, and the hardware codec).
+//! This crate *defines* the algorithms. The macOS/iOS app is the platform shell that
+//! either calls into this core over the C ABI, or — for the surfaces still implemented
+//! natively in Swift for performance — keeps a copy that **tracks this core** (held in
+//! agreement with it, never the reverse). The same core lets a future Android client
+//! link the exact same algorithms over the C ABI / JNI boundary (the ALVR pattern:
+//! Rust owns reassembly/FEC/jitter/ABR/recovery and the server brain; the platform
+//! shell owns capture, the socket, and the hardware codec).
 //!
-//! Equivalence with the Swift source is *proven*, not assumed: the `golden_parity`
-//! integration test replays JSON vectors emitted by the Swift `aislopdesk-corevectors`
-//! dumper and asserts byte-identical output, and every Swift unit test is mirrored
-//! here.
+//! Cross-language agreement is *proven*, not assumed: the `golden_parity` integration
+//! test asserts this core reproduces the checked-in golden corpus byte-for-byte and
+//! bit-for-bit; regenerating that corpus with the Swift `aislopdesk-corevectors` dumper
+//! confirms the native Swift copies still track the core.
 //!
 //! ## Invariants
 //!
@@ -84,6 +85,6 @@ pub mod ycbcr;
 
 pub use error::{Result, VideoProtocolError};
 
-/// Wire protocol version for the video path (bumped on any breaking change). Mirrors
-/// Swift `AislopdeskVideoProtocol.version`.
+/// Wire protocol version for the video path (bumped on any breaking change). The Swift
+/// shell's `AislopdeskVideoProtocol.version` tracks this.
 pub const VIDEO_PROTOCOL_VERSION: u16 = 1;

@@ -1,5 +1,5 @@
-//! AIMD congestion controller for the live HEVC stream — a port of Swift
-//! `LiveCongestionController` (WF-2 adaptive bitrate).
+//! AIMD congestion controller for the live HEVC stream — the canonical `LiveCongestionController`
+//! (WF-2 adaptive bitrate; the Swift shell mirrors it).
 //!
 //! Additive-Increase / Multiplicative-Decrease over the folded [`NetworkEstimate`]: on congestion
 //! (raw loss over threshold WITH RTT corroboration, or sustained RTT inflation, or an enabled
@@ -7,16 +7,16 @@
 //! CLIMBS additively. Sustained catastrophic loss halves. Pure + deterministic — "time" is the
 //! count of folded reports (`ticks`).
 //!
-//! Key stability properties (see the Swift source for the full rationale): loss keys on the RAW
+//! Key stability properties: loss keys on the RAW
 //! per-report sample (no EWMA-tail cascade); RTT needs both a multiplicative factor AND an absolute
 //! (baseline-proportional) slack, sustained for a streak, and a not-improving trend; ONE
 //! multiplicative cut per `cut_hold_ticks` window (loss included); RTT cuts are PROPORTIONAL to the
 //! measured queue; a queue-corroborated cut remembers the knee (ssthresh) and climbs cautiously
 //! above it.
 //!
-//! Tunables: the Swift source resolves these from `AISLOPDESK_ABR_*` env vars once at startup. The
-//! portable core uses the compile-time defaults below — byte-identical to the Swift values when no
-//! env override is set (the configuration these tests and the golden vectors exercise).
+//! Tunables: the Swift shell resolves these from `AISLOPDESK_ABR_*` env vars at startup; this core
+//! uses the compile-time defaults below (identical to the shell's values when no env override is set;
+//! the configuration these tests and golden vectors exercise).
 
 use crate::live_bitrate_policy::MINIMUM_BITRATE;
 use crate::network_estimate::NetworkEstimate;
@@ -210,13 +210,13 @@ impl LiveCongestionController {
     pub fn decide(&mut self, e: &NetworkEstimate) -> Decision {
         self.ticks += 1;
         let decision = self.decide_inner(e);
-        // Mirrors the Swift `defer { prevSmoothedRTTMillis = e.smoothedRTTMillis }`: captured for
+        // The Swift shell's `defer { prevSmoothedRTTMillis = e.smoothedRTTMillis }` matches this: captured for
         // the NEXT report whatever branch ran (including warmup).
         self.prev_smoothed_rtt_millis = e.smoothed_rtt_millis();
         decision
     }
 
-    #[allow(clippy::too_many_lines)] // one faithful translation of the Swift control law
+    #[allow(clippy::too_many_lines)] // the canonical control law
     fn decide_inner(&mut self, e: &NetworkEstimate) -> Decision {
         if self.ticks < WARMUP_TICKS {
             return Decision {

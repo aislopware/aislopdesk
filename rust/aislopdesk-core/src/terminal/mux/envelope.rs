@@ -1,5 +1,5 @@
-//! The TCP-mux envelope — a port of Swift `AislopdeskProtocol.MuxEnvelope`
-//! (`MuxFrameType` / `MuxFrame` / `MuxEnvelopeCodec`).
+//! The TCP-mux envelope — the canonical `MuxEnvelope` logic (`MuxFrameType` / `MuxFrame` /
+//! `MuxEnvelopeCodec`). The Swift `AislopdeskProtocol` shell tracks it (golden parity).
 //!
 //! The mux layer multiplexes many logical channels over one physical TCP connection
 //! (SSH-style: `CHANNEL_OPEN` / `CHANNEL_DATA` / `CHANNEL_CLOSE` / `CHANNEL_WINDOW_ADJUST`).
@@ -43,8 +43,8 @@ impl MuxFrameType {
         }
     }
 
-    /// Maps a wire type byte to its case, or `None` for an unrecognized byte (mirrors
-    /// Swift's failable `MuxFrameType(rawValue:)`).
+    /// Maps a wire type byte to its case, or `None` for an unrecognized byte. The Swift
+    /// shell's failable `MuxFrameType(rawValue:)` mirrors this.
     #[must_use]
     pub const fn from_raw(byte: u8) -> Option<Self> {
         match byte {
