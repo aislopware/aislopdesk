@@ -24,9 +24,9 @@
 //
 // If NOTHING types: System Settings > Privacy & Security > Accessibility -> enable Terminal.
 
-import Foundation
-import CoreGraphics
 import AppKit
+import CoreGraphics
+import Foundation
 
 // US-QWERTY virtual keycodes (kVK_ANSI_*).
 let KC: [Character: CGKeyCode] = [
@@ -38,15 +38,15 @@ let KC: [Character: CGKeyCode] = [
 let KC_RETURN: CGKeyCode = 36
 
 // xkey's self-event sentinels — we must NEVER post these as userData (xkey would skip).
-let XKEY_MARKER: Int64 = 0x584B4559   // "XKEY"
-let XKEY_HID_SEEN: Int64 = 0x584B4849 // "XKHI"
+let XKEY_MARKER: Int64 = 0x584B_4559 // "XKEY"
+let XKEY_HID_SEEN: Int64 = 0x584B_4849 // "XKHI"
 
 enum PostMode { case hid, session, pid }
 
 struct Variant {
     let name: String
-    let stateID: CGEventSourceStateID?   // nil => CGEvent source = nil
-    let setUserData: Bool                 // stamp a nonzero (non-sentinel) tag like Aislopdesk does
+    let stateID: CGEventSourceStateID? // nil => CGEvent source = nil
+    let setUserData: Bool // stamp a nonzero (non-sentinel) tag like Aislopdesk does
     let post: PostMode
     let delayMs: UInt32
 }
@@ -55,13 +55,37 @@ struct Variant {
 func makeVariants() -> [Variant] {
     [
         // current production path, at three paces (timing bisect):
-        Variant(name: "aislopdesk@12  (hid + userData, .hidSystemState)",  stateID: .hidSystemState, setUserData: true,  post: .hid,     delayMs: 12),
-        Variant(name: "aislopdesk@60",                                      stateID: .hidSystemState, setUserData: true,  post: .hid,     delayMs: 60),
-        Variant(name: "aislopdesk@150",                                     stateID: .hidSystemState, setUserData: true,  post: .hid,     delayMs: 150),
+        Variant(
+            name: "aislopdesk@12  (hid + userData, .hidSystemState)",
+            stateID: .hidSystemState,
+            setUserData: true,
+            post: .hid,
+            delayMs: 12,
+        ),
+        Variant(name: "aislopdesk@60", stateID: .hidSystemState, setUserData: true, post: .hid, delayMs: 60),
+        Variant(name: "aislopdesk@150", stateID: .hidSystemState, setUserData: true, post: .hid, delayMs: 150),
         // tap/source bisect at a settled pace (60ms):
-        Variant(name: "session@60 (post .cgSessionEventTap)",          stateID: .hidSystemState, setUserData: true,  post: .session, delayMs: 60),
-        Variant(name: "private@60 (.privateState source, no userData)",stateID: .privateState,   setUserData: false, post: .hid,     delayMs: 60),
-        Variant(name: "nouser@60  (no userData stamp)",                stateID: .hidSystemState, setUserData: false, post: .hid,     delayMs: 60),
+        Variant(
+            name: "session@60 (post .cgSessionEventTap)",
+            stateID: .hidSystemState,
+            setUserData: true,
+            post: .session,
+            delayMs: 60,
+        ),
+        Variant(
+            name: "private@60 (.privateState source, no userData)",
+            stateID: .privateState,
+            setUserData: false,
+            post: .hid,
+            delayMs: 60,
+        ),
+        Variant(
+            name: "nouser@60  (no userData stamp)",
+            stateID: .hidSystemState,
+            setUserData: false,
+            post: .hid,
+            delayMs: 60,
+        ),
     ]
 }
 
@@ -77,14 +101,14 @@ func makeSource(_ stateID: CGEventSourceStateID?) -> CGEventSource? {
 func injectKey(_ code: CGKeyCode, _ v: Variant, source: CGEventSource?, frontPid: pid_t) {
     for down in [true, false] {
         guard let ev = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { continue }
-        ev.flags = []                       // plain lowercase letter: no modifiers
+        ev.flags = [] // plain lowercase letter: no modifiers
         if v.setUserData {
-            ev.setIntegerValueField(.eventSourceUserData, value: 0x52574B31) // "RWK1" — nonzero, NOT an xkey sentinel
+            ev.setIntegerValueField(.eventSourceUserData, value: 0x5257_4B31) // "RWK1" — nonzero, NOT an xkey sentinel
         }
         switch v.post {
-        case .hid:     ev.post(tap: .cghidEventTap)
+        case .hid: ev.post(tap: .cghidEventTap)
         case .session: ev.post(tap: .cgSessionEventTap)
-        case .pid:     if frontPid != 0 { ev.postToPid(frontPid) } else { ev.post(tap: .cghidEventTap) }
+        case .pid: if frontPid != 0 { ev.postToPid(frontPid) } else { ev.post(tap: .cghidEventTap) }
         }
         usleep(v.delayMs * 1000)
     }
@@ -100,8 +124,10 @@ func runVariant(_ v: Variant, word: [Character], appendReturn: Bool) {
 }
 
 func activateTextEdit() -> Bool {
-    guard let te = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.apple.TextEdit" }) else {
-        FileHandle.standardError.write(Data("⚠️  TextEdit is not running — open a blank TextEdit document first.\n".utf8))
+    guard let te = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.apple.TextEdit" })
+    else {
+        FileHandle.standardError
+            .write(Data("⚠️  TextEdit is not running — open a blank TextEdit document first.\n".utf8))
         return false
     }
     te.activate(options: [.activateAllWindows])
@@ -110,14 +136,14 @@ func activateTextEdit() -> Bool {
 
 // ---- main ----
 let args = CommandLine.arguments
-let word: [Character] = ["d", "d", "a", "a"]   // expect "đâ"
+let word: [Character] = ["d", "d", "a", "a"] // expect "đâ"
 
 let ok = activateTextEdit()
 usleep(1_500_000)
 let nowFront = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
 FileHandle.standardError.write(Data("inject-telex-probe: frontmost=\(nowFront) (TextEdit focused=\(ok))\n".utf8))
 
-if args.count > 1 && args[1] == "word" {
+if args.count > 1, args[1] == "word" {
     // Type an arbitrary Telex phrase using the FIXED production pattern (no userData,
     // .hidSystemState, HID tap, 60ms) — mirrors exactly what the patched host now does.
     // Usage: swift scripts/inject-telex-probe.swift word "tieesng vieejt"  -> expect "tiếng việt"
@@ -126,9 +152,10 @@ if args.count > 1 && args[1] == "word" {
     FileHandle.standardError.write(Data("WORD (fixed pattern) — typing telex \"\(telex)\" into TextEdit\n".utf8))
     runVariant(v, word: Array(telex.lowercased()), appendReturn: false)
     FileHandle.standardError.write(Data("done — check TextEdit for the composed Vietnamese.\n".utf8))
-} else if args.count > 1 && args[1] == "sweep" {
+} else if args.count > 1, args[1] == "sweep" {
     let variants = makeVariants()
-    FileHandle.standardError.write(Data("SWEEP — injecting \"ddaa\" (expect \"đâ\") once per variant, one TextEdit line each:\n".utf8))
+    FileHandle.standardError
+        .write(Data("SWEEP — injecting \"ddaa\" (expect \"đâ\") once per variant, one TextEdit line each:\n".utf8))
     for (i, v) in variants.enumerated() {
         FileHandle.standardError.write(Data("  line \(i + 1): \(v.name)\n".utf8))
     }
@@ -138,15 +165,18 @@ if args.count > 1 && args[1] == "word" {
         runVariant(v, word: word, appendReturn: i < variants.count - 1) // Return between lines, not after last
         usleep(300_000) // let xkey's async correction settle before the next variant
     }
-    FileHandle.standardError.write(Data("done — read the \(variants.count) lines in TextEdit, map to the list above.\n".utf8))
+    FileHandle.standardError
+        .write(Data("done — read the \(variants.count) lines in TextEdit, map to the list above.\n".utf8))
 } else {
     let name = args.count > 1 ? args[1] : "aislopdesk"
     let delay = args.count > 2 ? (UInt32(args[2]) ?? 12) : 12
-    let stateID: CGEventSourceStateID? = (name == "private") ? .privateState : (name == "nilsrc" ? nil : .hidSystemState)
+    let stateID: CGEventSourceStateID? = (name == "private") ? .privateState :
+        (name == "nilsrc" ? nil : .hidSystemState)
     let post: PostMode = (name == "session") ? .session : (name == "postpid" ? .pid : .hid)
     let setUD = !(name == "nouser" || name == "private" || name == "nilsrc")
     let v = Variant(name: name, stateID: stateID, setUserData: setUD, post: post, delayMs: delay)
-    FileHandle.standardError.write(Data("single variant=\(name) delayMs=\(delay) — injecting \"ddaa\", expect \"đâ\"\n".utf8))
+    FileHandle.standardError
+        .write(Data("single variant=\(name) delayMs=\(delay) — injecting \"ddaa\", expect \"đâ\"\n".utf8))
     runVariant(v, word: word, appendReturn: false)
     FileHandle.standardError.write(Data("done — check TextEdit.\n".utf8))
 }

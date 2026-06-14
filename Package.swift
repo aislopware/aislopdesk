@@ -55,8 +55,8 @@ let package = Package(
             path: "Sources/CAislopdeskFFI",
             publicHeadersPath: "include",
             linkerSettings: [
-                .unsafeFlags(["-L\(packageRoot)/rust/target/release", "-laislopdesk_ffi"])
-            ]
+                .unsafeFlags(["-L\(packageRoot)/rust/target/release", "-laislopdesk_ffi"]),
+            ],
         ),
 
         // Pure-Swift wire format: framing, MessageType, seq(Int64), Hello/Ack.
@@ -74,7 +74,10 @@ let package = Package(
         // Also hosts the inspector's second-connection server (InspectorServer):
         // AislopdeskHost depends on AislopdeskInspector for the wire types + replay log. This is
         // acyclic — AislopdeskInspector depends ONLY on AislopdeskProtocol, never on AislopdeskHost.
-        .target(name: "AislopdeskHost", dependencies: ["AislopdeskTransport", "AislopdeskProtocol", "AislopdeskInspector"]),
+        .target(
+            name: "AislopdeskHost",
+            dependencies: ["AislopdeskTransport", "AislopdeskProtocol", "AislopdeskInspector"],
+        ),
 
         // Shared client: connection mgr, reconnect, input encoding. (WF-4.)
         .target(name: "AislopdeskClient", dependencies: ["AislopdeskTransport", "AislopdeskProtocol"]),
@@ -126,7 +129,13 @@ let package = Package(
         // Builds for macOS 26 + iOS 26 (the deployment floor — no fallback below that).
         .target(
             name: "AislopdeskClientUI",
-            dependencies: ["AislopdeskClient", "AislopdeskTransport", "AislopdeskInspector", "AislopdeskClaudeCode", "AislopdeskTerminal"]
+            dependencies: [
+                "AislopdeskClient",
+                "AislopdeskTransport",
+                "AislopdeskInspector",
+                "AislopdeskClaudeCode",
+                "AislopdeskTerminal",
+            ],
         ),
 
         // MARK: PATH 2 — GUI video path (Phase 4 / WF-9)
@@ -154,7 +163,7 @@ let package = Package(
         .target(
             name: "CAislopdeskVirtualDisplay",
             path: "Sources/CAislopdeskVirtualDisplay",
-            publicHeadersPath: "include"
+            publicHeadersPath: "include",
         ),
 
         .target(
@@ -162,7 +171,7 @@ let package = Package(
             dependencies: ["AislopdeskVideoProtocol", "CAislopdeskVirtualDisplay", "CAislopdeskFFI"],
             // macOS-only: SCStream + VTCompressionSession + AX/CGEvent are macOS APIs.
             // (AislopdeskVideoProtocol stays cross-platform; only this host layer is gated.)
-            swiftSettings: []
+            swiftSettings: [],
         ),
 
         // macOS + iOS client decode + Metal render + client-side cursor. USES
@@ -177,20 +186,29 @@ let package = Package(
         .executableTarget(name: "aislopdesk-hostd", dependencies: ["AislopdeskHost"]),
 
         // Interactive remote terminal client. Sources under Sources/aislopdesk-client.
-        .executableTarget(name: "aislopdesk-client", dependencies: ["AislopdeskClient", "AislopdeskTransport", "AislopdeskTerminal", "AislopdeskTTY"]),
+        .executableTarget(
+            name: "aislopdesk-client",
+            dependencies: ["AislopdeskClient", "AislopdeskTransport", "AislopdeskTerminal", "AislopdeskTTY"],
+        ),
 
         // GUI video path (PATH 2) host daemon: enumerate shareable windows, bind the UDP
         // media+cursor sockets, run `AislopdeskVideoHostSession`. macOS-only at runtime
         // (ScreenCaptureKit/VideoToolbox); the `main.swift` is `#if os(macOS)`-gated with a
         // clear non-macOS error. COMPILED + reviewed; live behaviour is GUI+TCC-gated.
-        .executableTarget(name: "aislopdesk-videohostd", dependencies: ["AislopdeskVideoHost", "AislopdeskVideoProtocol"]),
+        .executableTarget(
+            name: "aislopdesk-videohostd",
+            dependencies: ["AislopdeskVideoHost", "AislopdeskVideoProtocol"],
+        ),
 
         // Headless closed-loop validation harness: synthetic CVPixelBuffer -> REAL HW
         // VideoEncoder -> VideoPacketizer (FEC tier + isLTR + hostSendTs) -> deterministic
         // fragment loss -> FrameReassembler (FEC recovery) -> REAL HW VideoDecoder, plus the
         // pure WF-1..WF-8 controllers driven on synthetic telemetry. Runs from a normal
         // (non-GUI, non-TCC) executable; its stdout IS the validation evidence. macOS-only.
-        .executableTarget(name: "aislopdesk-loopback-validate", dependencies: ["AislopdeskVideoHost", "AislopdeskVideoClient", "AislopdeskVideoProtocol"]),
+        .executableTarget(
+            name: "aislopdesk-loopback-validate",
+            dependencies: ["AislopdeskVideoHost", "AislopdeskVideoClient", "AislopdeskVideoProtocol"],
+        ),
 
         // Frame-cadence watcher: SCK desktopIndependentWindow capture of ANY window (foreground
         // or background) that logs per-frame arrival timestamps + content checksums and prints a
@@ -208,7 +226,10 @@ let package = Package(
         // Virtual-HID probe: drives the REAL `VirtualHIDKeyboardClient` (videohostd's virtual-HID
         // keyboard path) to type through aislopdesk-hid-bridge, verifying the host→bridge→virtual-keyboard
         // chain reaches even a SecurityAgent secure field. Run the bridge (sudo) first.
-        .executableTarget(name: "aislopdesk-hid-probe", dependencies: ["AislopdeskVideoHost", "AislopdeskVideoProtocol"]),
+        .executableTarget(
+            name: "aislopdesk-hid-probe",
+            dependencies: ["AislopdeskVideoHost", "AislopdeskVideoProtocol"],
+        ),
 
         // Golden-vector dumper: emits the golden reference corpus for the Rust core's
         // parity test — a deterministic JSON corpus from the AislopdeskVideoProtocol codecs
@@ -220,16 +241,31 @@ let package = Package(
         // default tunables (the Rust core pins those defaults as compile-time consts).
         .executableTarget(
             name: "aislopdesk-corevectors",
-            dependencies: ["AislopdeskProtocol", "AislopdeskVideoProtocol", "AislopdeskVideoHost", "AislopdeskVideoClient"]
+            dependencies: [
+                "AislopdeskProtocol",
+                "AislopdeskVideoProtocol",
+                "AislopdeskVideoHost",
+                "AislopdeskVideoClient",
+            ],
         ),
 
         // MARK: Tests
+
         .testTarget(name: "AislopdeskProtocolTests", dependencies: ["AislopdeskProtocol"]),
         .testTarget(name: "AislopdeskTransportTests", dependencies: ["AislopdeskTransport"]),
         .testTarget(name: "AislopdeskHostTests", dependencies: ["AislopdeskHost", "AislopdeskInspector"]),
         // AislopdeskClientTests exercises the REAL PATH 1 e2e: a HostServer (AislopdeskHost) +
         // AislopdeskClient over loopback, so it depends on AislopdeskHost + AislopdeskTTY too.
-        .testTarget(name: "AislopdeskClientTests", dependencies: ["AislopdeskClient", "AislopdeskHost", "AislopdeskTransport", "AislopdeskTerminal", "AislopdeskTTY"]),
+        .testTarget(
+            name: "AislopdeskClientTests",
+            dependencies: [
+                "AislopdeskClient",
+                "AislopdeskHost",
+                "AislopdeskTransport",
+                "AislopdeskTerminal",
+                "AislopdeskTTY",
+            ],
+        ),
         // Fixture-based tests for the inspector: JSONL parsing, tool-card pairing,
         // subagent tree, the append-follow tailer, transport round-trip, hook ingest.
         // The `Fixtures/` tree is read off disk via `#filePath` (see Fixtures.swift),
@@ -237,14 +273,14 @@ let package = Package(
         .testTarget(
             name: "AislopdeskInspectorTests",
             dependencies: ["AislopdeskInspector", "AislopdeskProtocol"],
-            exclude: ["Fixtures"]
+            exclude: ["Fixtures"],
         ),
         // WF-7 logic: env/auth (AislopdeskHost) + mode sniffer / dedup ring / input-box model
         // (AislopdeskClaudeCode). Byte-sequence + fixture based; the sniffer tests feed the
         // SAME stream at adversarial split boundaries and assert identical results.
         .testTarget(
             name: "AislopdeskClaudeCodeTests",
-            dependencies: ["AislopdeskClaudeCode", "AislopdeskHost", "AislopdeskProtocol"]
+            dependencies: ["AislopdeskClaudeCode", "AislopdeskHost", "AislopdeskProtocol"],
         ),
         // WF-8 client UI: the iOS table-stakes PURE logic (key-repeat cadence via an
         // injected scheduler, floating-cursor delta→arrow mapping, accessory-bar show/hide
@@ -254,7 +290,15 @@ let package = Package(
         // triple build, not here.
         .testTarget(
             name: "AislopdeskClientUITests",
-            dependencies: ["AislopdeskClientUI", "AislopdeskClient", "AislopdeskTransport", "AislopdeskHost", "AislopdeskInspector", "AislopdeskClaudeCode", "AislopdeskTerminal"]
+            dependencies: [
+                "AislopdeskClientUI",
+                "AislopdeskClient",
+                "AislopdeskTransport",
+                "AislopdeskHost",
+                "AislopdeskInspector",
+                "AislopdeskClaudeCode",
+                "AislopdeskTerminal",
+            ],
         ),
         // WF-9 GUI video path: ONLY the PURE AislopdeskVideoProtocol is unit-tested
         // (packetize/reassemble incl. fragment-loss → drop + recovery, FEC real
@@ -282,6 +326,9 @@ let package = Package(
         // / Metal / CVDisplayLink / CADisplayLink / live UDP socket is instantiated here
         // (the hang-safety rule): the decode/render/display-link components are COMPILED +
         // code-reviewed only.
-        .testTarget(name: "AislopdeskVideoClientTests", dependencies: ["AislopdeskVideoClient", "AislopdeskVideoProtocol"]),
-    ]
+        .testTarget(
+            name: "AislopdeskVideoClientTests",
+            dependencies: ["AislopdeskVideoClient", "AislopdeskVideoProtocol"],
+        ),
+    ],
 )
