@@ -84,14 +84,14 @@ public final class TerminalModeTracker {
 
     private static let esc: UInt8 = 0x1B
     private static let bel: UInt8 = 0x07
-    private static let leftBracket: UInt8 = 0x5B   // '['
-    private static let rightBracket: UInt8 = 0x5D  // ']'
-    private static let backslash: UInt8 = 0x5C     // '\'
+    private static let leftBracket: UInt8 = 0x5B // '['
+    private static let rightBracket: UInt8 = 0x5D // ']'
+    private static let backslash: UInt8 = 0x5C // '\'
     // String-sequence introducers (R9 #4): DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`.
-    private static let dcs: UInt8 = 0x50           // 'P'
-    private static let sos: UInt8 = 0x58           // 'X'
-    private static let pm: UInt8 = 0x5E            // '^'
-    private static let apc: UInt8 = 0x5F           // '_'
+    private static let dcs: UInt8 = 0x50 // 'P'
+    private static let sos: UInt8 = 0x58 // 'X'
+    private static let pm: UInt8 = 0x5E // '^'
+    private static let apc: UInt8 = 0x5F // '_'
 
     // MARK: Reset
 
@@ -152,7 +152,11 @@ public final class TerminalModeTracker {
                         i = count
                     }
 
-                case .escape, .csi, .osc, .oscEscape, .stringConsumeEscape:
+                case .escape,
+                     .csi,
+                     .osc,
+                     .oscEscape,
+                     .stringConsumeEscape:
                     // Buffering / classification states: every byte matters — step per-byte.
                     step(base.load(fromByteOffset: i, as: UInt8.self), into: &events)
                     i += 1
@@ -184,7 +188,10 @@ public final class TerminalModeTracker {
             case Self.rightBracket:
                 state = .osc
                 oscBuffer.removeAll(keepingCapacity: true)
-            case Self.dcs, Self.sos, Self.pm, Self.apc:
+            case Self.dcs,
+                 Self.sos,
+                 Self.pm,
+                 Self.apc:
                 // R9 #4: a DCS/SOS/PM/APC string body is opaque to a conformant terminal — swallow it to
                 // ST/BEL so an embedded `ESC[?1049h` / `ESC]133;…` can't flip the tracked mode.
                 state = .stringConsume

@@ -1,7 +1,7 @@
-import XCTest
-import Foundation
 import AislopdeskProtocol
 import AislopdeskTransport
+import Foundation
+import XCTest
 @testable import AislopdeskClient
 
 /// Focused unit test for the client-side dedup high-water mark
@@ -14,14 +14,13 @@ import AislopdeskTransport
 /// dedup branch is actually hit: feed seq 1,2,3 then replay 2,3,4 and assert `output`
 /// yields bytes for 1,2,3,4 exactly once (the replayed 2,3 are dropped).
 final class AislopdeskClientDedupTests: XCTestCase {
-
     func testDeliverOutputDropsAlreadyFedSeqs() async throws {
         // Inert transport factory: this test drives inbound via `_handleInboundForTesting` and never
         // `connect()`s, so the factory is never invoked.
         let client = AislopdeskClient(makeTransport: {
             MuxClientTransport(
                 acquire: { _, _, _, _ in throw AislopdeskTransportError.notConnected("inert test transport") },
-                release: { _, _, _ in }
+                release: { _, _, _ in },
             )
         })
 
@@ -43,15 +42,18 @@ final class AislopdeskClientDedupTests: XCTestCase {
             4: Data("d".utf8),
         ]
         for seq in [1, 2, 3, 2, 3, 4] as [Int64] {
-            await client._handleInboundForTesting(.output(seq: seq, bytes: payloads[seq]!))
+            try await client._handleInboundForTesting(.output(seq: seq, bytes: XCTUnwrap(payloads[seq])))
         }
 
         // Let the unbounded output stream flush the yielded chunks to the pump.
         try await waitUntil(timeout: .seconds(5)) { sink.bytes == Data("abcd".utf8) }
 
         // The replayed 2,3 must have been dropped: exactly a,b,c,d once each, in order.
-        XCTAssertEqual(sink.bytes, Data("abcd".utf8),
-                       "dedup must drop the replayed seq 2,3 — each byte delivered exactly once, in order")
+        XCTAssertEqual(
+            sink.bytes,
+            Data("abcd".utf8),
+            "dedup must drop the replayed seq 2,3 — each byte delivered exactly once, in order",
+        )
 
         // Contiguous + dedup high-water marks both at 4 (we accepted 1..4, dropped re-sends).
         let contiguous = await client.highestContiguousSeq
@@ -97,12 +99,15 @@ final class AislopdeskClientDedupTests: XCTestCase {
         XCTAssertEqual(
             afterReconnect, 1,
             "reconnect must RESET the dedup high-water so the fresh shell's seq-1 output is accepted "
-            + "(without the fix it stays 3 and seq-1 is dropped as a stale duplicate)"
+                + "(without the fix it stays 3 and seq-1 is dropped as a stale duplicate)",
         )
 
         try await waitUntil(timeout: .seconds(5)) { sink.bytes == Data("123F".utf8) }
-        XCTAssertEqual(sink.bytes, Data("123F".utf8),
-                       "the fresh shell's seq-1 byte 'F' is delivered after reconnect, not swallowed")
+        XCTAssertEqual(
+            sink.bytes,
+            Data("123F".utf8),
+            "the fresh shell's seq-1 byte 'F' is delivered after reconnect, not swallowed",
+        )
 
         pump.cancel()
         await client.close()
@@ -131,11 +136,18 @@ final class AislopdeskClientDedupTests: XCTestCase {
             continuation = c
         }
 
-        func connect(host: String, port: UInt16, resume: UUID, lastReceivedSeq: Int64, handshakeTimeout: Duration) async throws {
+        func connect(
+            host: String,
+            port: UInt16,
+            resume: UUID,
+            lastReceivedSeq: Int64,
+            handshakeTimeout: Duration,
+        ) async throws {
             _sessionID = (resume == WireMessage.newSessionID) ? UUID() : resume
             _resumeFromSeq = lastReceivedSeq
             _returningClient = (resume != WireMessage.newSessionID)
         }
+
         func sendInput(_ bytes: Data) async throws {}
         func sendResize(cols: UInt16, rows: UInt16, pxWidth: UInt16, pxHeight: UInt16) async throws {}
         func sendAck(seq: Int64) async throws {}
@@ -146,8 +158,15 @@ final class AislopdeskClientDedupTests: XCTestCase {
     private final class ByteSink: @unchecked Sendable {
         private let lock = NSLock()
         private var data = Data()
-        func append(_ d: Data) { lock.lock(); data.append(d); lock.unlock() }
-        var bytes: Data { lock.lock(); defer { lock.unlock() }; return data }
+        func append(_ d: Data) { lock.lock()
+            data.append(d)
+            lock.unlock()
+        }
+
+        var bytes: Data { lock.lock()
+            defer { lock.unlock() }
+            return data
+        }
     }
 
     private func waitUntil(timeout: Duration, _ condition: @escaping @Sendable () -> Bool) async throws {

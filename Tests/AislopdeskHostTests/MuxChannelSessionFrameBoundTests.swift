@@ -1,7 +1,7 @@
-import XCTest
-import Foundation
 import AislopdeskProtocol
 import AislopdeskTransport
+import Foundation
+import XCTest
 @testable import AislopdeskHost
 
 /// The credit progress invariant at the host drain (night-review HIGH): every emitted
@@ -10,13 +10,12 @@ import AislopdeskTransport
 /// re-grant COMPLETE decoded frames, and a partial prefix > the grant threshold is
 /// uncreditable forever.
 final class MuxChannelSessionFrameBoundTests: XCTestCase {
-
     private func makeSession() -> MuxChannelSession {
         MuxChannelSession(
             channelID: 1,
             pty: PTYProcess(),
             data: MuxSubChannel(channelID: 1, channel: .data) { _, _ in },
-            control: MuxSubChannel(channelID: 1, channel: .control) { _, _ in }
+            control: MuxSubChannel(channelID: 1, channel: .control) { _, _ in },
         )
     }
 
@@ -25,11 +24,11 @@ final class MuxChannelSessionFrameBoundTests: XCTestCase {
     func testMaxOutputFrameWireSizeStaysUnderGrantThreshold() {
         let maxFrame = WireMessage.output(
             seq: Int64.max,
-            bytes: Data(repeating: 0x61, count: MuxFlowControl.maxOutputFramePayloadBytes)
+            bytes: Data(repeating: 0x61, count: MuxFlowControl.maxOutputFramePayloadBytes),
         )
         XCTAssertLessThanOrEqual(
             maxFrame.wireByteCount, MuxFlowControl.initialWindowBytes / 2,
-            "frame WIRE bytes (payload + header) must fit window/2 — the 13-byte dead zone regression"
+            "frame WIRE bytes (payload + header) must fit window/2 — the 13-byte dead zone regression",
         )
         XCTAssertLessThanOrEqual(MuxFlowControl.maxOutputFramePayloadBytes, MuxFlowControl.hostMergeCapBytes)
         // Input direction too (paste split).

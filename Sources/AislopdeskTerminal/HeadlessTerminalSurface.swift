@@ -1,5 +1,5 @@
-import Foundation
 import AislopdeskProtocol
+import Foundation
 
 /// A non-rendering ``TerminalSurface`` that simply accumulates the bytes fed to it.
 ///

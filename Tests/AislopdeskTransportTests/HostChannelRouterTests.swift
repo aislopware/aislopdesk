@@ -1,14 +1,18 @@
-import XCTest
 import AislopdeskProtocol
+import XCTest
 @testable import AislopdeskTransport
 
 /// PURE host-side demux tests for `HostChannelRouter`. The host is the responder: it
 /// registers peer-initiated channels from `channelOpen`, then services their data.
 /// Same Decision contract as the client `MuxRouter`. No socket, no per-channel decoder.
 final class HostChannelRouterTests: XCTestCase {
-
     /// Registers a peer-initiated channel via channelOpen and asserts it opened.
-    private func peerOpen(_ id: UInt32, in router: inout HostChannelRouter, file: StaticString = #filePath, line: UInt = #line) {
+    private func peerOpen(
+        _ id: UInt32,
+        in router: inout HostChannelRouter,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+    ) {
         let decision = router.route(.channelOpen(channelID: id, sessionID: UUID(), lastReceivedSeq: 0, channelClass: 0))
         guard case .lifecycle(id, .open) = decision else {
             return XCTFail("expected peer-open lifecycle for \(id), got \(decision)", file: file, line: line)
@@ -31,13 +35,19 @@ final class HostChannelRouterTests: XCTestCase {
 
         let a = Data("client->host A".utf8)
         let b = Data("client->host B".utf8)
-        XCTAssertEqual(router.route(.channelData(channelID: 1, payload: a)),
-                       .deliverData(channelID: 1, payload: a))
-        XCTAssertEqual(router.route(.channelData(channelID: 3, payload: b)),
-                       .deliverData(channelID: 3, payload: b))
+        XCTAssertEqual(
+            router.route(.channelData(channelID: 1, payload: a)),
+            .deliverData(channelID: 1, payload: a),
+        )
+        XCTAssertEqual(
+            router.route(.channelData(channelID: 3, payload: b)),
+            .deliverData(channelID: 3, payload: b),
+        )
         // And interleave back to A.
-        XCTAssertEqual(router.route(.channelData(channelID: 1, payload: a)),
-                       .deliverData(channelID: 1, payload: a))
+        XCTAssertEqual(
+            router.route(.channelData(channelID: 1, payload: a)),
+            .deliverData(channelID: 1, payload: a),
+        )
     }
 
     func testUnknownChannelDataIsDroppedNotCrashed() {
@@ -48,8 +58,10 @@ final class HostChannelRouterTests: XCTestCase {
             return XCTFail("expected dropUnknownChannel, got \(decision)")
         }
         // Known channel still routes.
-        XCTAssertEqual(router.route(.channelData(channelID: 1, payload: Data("ok".utf8))),
-                       .deliverData(channelID: 1, payload: Data("ok".utf8)))
+        XCTAssertEqual(
+            router.route(.channelData(channelID: 1, payload: Data("ok".utf8))),
+            .deliverData(channelID: 1, payload: Data("ok".utf8)),
+        )
     }
 
     func testCloseOnChannelALeavesChannelBRoutable() {
@@ -64,8 +76,10 @@ final class HostChannelRouterTests: XCTestCase {
         guard case .dropUnknownChannel(1, _) = router.route(.channelData(channelID: 1, payload: Data())) else {
             return XCTFail("A must not deliver after close")
         }
-        XCTAssertEqual(router.route(.channelData(channelID: 3, payload: Data("B-live".utf8))),
-                       .deliverData(channelID: 3, payload: Data("B-live".utf8)))
+        XCTAssertEqual(
+            router.route(.channelData(channelID: 3, payload: Data("B-live".utf8))),
+            .deliverData(channelID: 3, payload: Data("B-live".utf8)),
+        )
         XCTAssertFalse(router.isOpen(1))
         XCTAssertTrue(router.isOpen(3))
     }

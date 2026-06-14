@@ -1,5 +1,4 @@
 import XCTest
-
 @testable import AislopdeskVideoProtocol
 
 /// Differential parity: every Rust-backed `AdaptiveFECPolicy` entry point must equal the prior
@@ -13,35 +12,35 @@ final class RustAdaptiveFECParityTests: XCTestCase {
 
     private static func nativeLevel(forTier tier: UInt8) -> Int {
         switch tier {
-        case 1: return 0
-        case 2: return 1
-        case 0: return 2
-        case 3: return 3
-        case 4: return 4
-        default: return 2
+        case 1: 0
+        case 2: 1
+        case 0: 2
+        case 3: 3
+        case 4: 4
+        default: 2
         }
     }
 
     private static func nativeTier(forLevel level: Int) -> UInt8 {
         switch level {
-        case 0: return 1
-        case 1: return 2
-        case 2: return 0
-        case 3: return 3
-        case 4: return 4
-        default: return 0
+        case 0: 1
+        case 1: 2
+        case 2: 0
+        case 3: 3
+        case 4: 4
+        default: 0
         }
     }
 
     private static func nativeRelaxFloor(_ allowOff: Bool) -> Int { allowOff ? 0 : 1 }
 
     private static func nativeTargetLevel(_ loss: Double, _ current: Int) -> Int {
-        let up: Int
-        if loss >= 0.10 { up = 4 } else if loss >= 0.05 { up = 3 } else if loss >= 0.02 { up = 2 }
-        else if loss >= 0.005 { up = 1 } else { up = 0 }
-        let down: Int
-        if loss < 0.002 { down = 0 } else if loss < 0.012 { down = 1 } else if loss < 0.035 { down = 2 }
-        else if loss < 0.08 { down = 3 } else { down = 4 }
+        let up =
+            if loss >= 0.10 { 4 } else if loss >= 0.05 { 3 } else if loss >= 0.02 { 2 }
+            else if loss >= 0.005 { 1 } else { 0 }
+        let down =
+            if loss < 0.002 { 0 } else if loss < 0.012 { 1 } else if loss < 0.035 { 2 }
+            else if loss < 0.08 { 3 } else { 4 }
         if up > current { return up }
         if down < current { return down }
         return current
@@ -49,11 +48,11 @@ final class RustAdaptiveFECParityTests: XCTestCase {
 
     private static func nativeGroupSize(forTier tier: UInt8, default def: Int) -> Int? {
         switch tier {
-        case 1: return nil
-        case 2: return 10
-        case 3: return 3
-        case 4: return 2
-        default: return def
+        case 1: nil
+        case 2: 10
+        case 3: 3
+        case 4: 2
+        default: def
         }
     }
 
@@ -64,7 +63,10 @@ final class RustAdaptiveFECParityTests: XCTestCase {
         return nativeTier(forLevel: stepped)
     }
 
-    private struct NS: Equatable { var tier: UInt8; var streak: Int; var sticky: Int }
+    private struct NS: Equatable { var tier: UInt8
+        var streak: Int
+        var sticky: Int
+    }
 
     private static func nativeNext(_ loss: Double, _ s: NS, _ dwell: Int, _ allowOff: Bool, _ unrec: Bool) -> NS {
         let sticky = unrec ? (2 * 24) : max(0, s.sticky - 1)
@@ -92,7 +94,7 @@ final class RustAdaptiveFECParityTests: XCTestCase {
                 XCTAssertEqual(
                     AdaptiveFECPolicy.groupSize(forTier: tier, default: def),
                     Self.nativeGroupSize(forTier: tier, default: def),
-                    "tier \(tier) default \(def)"
+                    "tier \(tier) default \(def)",
                 )
             }
         }
@@ -103,7 +105,9 @@ final class RustAdaptiveFECParityTests: XCTestCase {
     func testTierParityFuzz() {
         var losses: [Double] = [-1, -0.0, 0, 1, 2, .infinity, .greatestFiniteMagnitude]
         var l = 0.0
-        while l <= 0.2 { losses.append(l); l += 0.0005 }
+        while l <= 0.2 { losses.append(l)
+            l += 0.0005
+        }
         var rng = SystemRandomNumberGenerator()
         for _ in 0..<5000 { losses.append(Double.random(in: 0...0.5, using: &rng)) }
         for loss in losses {
@@ -112,7 +116,7 @@ final class RustAdaptiveFECParityTests: XCTestCase {
                     XCTAssertEqual(
                         AdaptiveFECPolicy.tier(forLossRate: loss, previousTier: prev, allowOff: allowOff),
                         Self.nativeTier(loss, prev, allowOff),
-                        "loss \(loss) prev \(prev) allowOff \(allowOff)"
+                        "loss \(loss) prev \(prev) allowOff \(allowOff)",
                     )
                 }
             }
@@ -133,11 +137,12 @@ final class RustAdaptiveFECParityTests: XCTestCase {
             let unrec = Bool.random(using: &rng)
             let s = AdaptiveFECPolicy.TierState(tier: prev, relaxStreak: streak, stickyRelaxRemaining: sticky)
             let got = AdaptiveFECPolicy.nextTierState(
-                forLossRate: loss, state: s, dwell: dwell, allowOff: allowOff, sawUnrecoveredLoss: unrec)
+                forLossRate: loss, state: s, dwell: dwell, allowOff: allowOff, sawUnrecoveredLoss: unrec,
+            )
             let want = Self.nativeNext(loss, NS(tier: prev, streak: streak, sticky: sticky), dwell, allowOff, unrec)
             XCTAssertEqual(
                 NS(tier: got.tier, streak: got.relaxStreak, sticky: got.stickyRelaxRemaining), want,
-                "loss \(loss) state \(s) dwell \(dwell) allowOff \(allowOff) unrec \(unrec)"
+                "loss \(loss) state \(s) dwell \(dwell) allowOff \(allowOff) unrec \(unrec)",
             )
         }
     }
@@ -154,7 +159,7 @@ final class RustAdaptiveFECParityTests: XCTestCase {
             refS = Self.nativeNext(loss, refS, AdaptiveFECPolicy.relaxDwellReports, false, unrec)
             XCTAssertEqual(
                 NS(tier: swiftS.tier, streak: swiftS.relaxStreak, sticky: swiftS.stickyRelaxRemaining), refS,
-                "report \(i)"
+                "report \(i)",
             )
         }
     }

@@ -79,7 +79,7 @@ public struct CursorShapeMessage: Equatable, Sendable {
             shapeID: shapeID,
             size: VideoSize(width: Double(width), height: Double(height)),
             hotspot: VideoPoint(x: hx, y: hy),
-            bitmap: bitmap
+            bitmap: bitmap,
         )
     }
 }
@@ -95,8 +95,8 @@ public enum CursorChannelMessage: Equatable, Sendable {
 
     public func encode() -> Data {
         switch self {
-        case .update(let u): return u.encode()
-        case .shape(let s): return s.encode()
+        case let .update(u): u.encode()
+        case let .shape(s): s.encode()
         }
     }
 
@@ -104,8 +104,8 @@ public enum CursorChannelMessage: Equatable, Sendable {
     public static func decode(_ data: Data) throws -> CursorChannelMessage {
         guard let first = data.first else { throw VideoProtocolError.truncated }
         switch first {
-        case CursorUpdate.messageType: return .update(try CursorUpdate.decode(data))
-        case CursorShapeMessage.messageType: return .shape(try CursorShapeMessage.decode(data))
+        case CursorUpdate.messageType: return try .update(CursorUpdate.decode(data))
+        case CursorShapeMessage.messageType: return try .shape(CursorShapeMessage.decode(data))
         default: throw VideoProtocolError.malformed("unknown cursor channel type \(first)")
         }
     }

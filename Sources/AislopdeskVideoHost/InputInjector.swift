@@ -1,10 +1,10 @@
 #if os(macOS)
-import Foundation
+import AislopdeskVideoProtocol
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox // IsSecureEventInputEnabled()
 import CoreGraphics
-import Carbon.HIToolbox   // IsSecureEventInputEnabled()
-import AislopdeskVideoProtocol
+import Foundation
 
 /// Injects remote input into a tracked window using the **activate-then-control**
 /// model (doc 18 §A — Dissolved-by-decision; doc 05).
@@ -99,8 +99,8 @@ public final class InputInjector: @unchecked Sendable {
         self.pid = pid
         self.windowID = windowID
         self.windowBoundsCG = windowBoundsCG
-        self.virtualHID = Self.virtualHIDEnabled ? VirtualHIDKeyboardClient() : nil
-        self.eventSource = CGEventSource(stateID: .hidSystemState)
+        virtualHID = Self.virtualHIDEnabled ? VirtualHIDKeyboardClient() : nil
+        eventSource = CGEventSource(stateID: .hidSystemState)
         if let eventSource {
             // Default local-events suppression interval is 0.25s: after a posted (or warped)
             // event, subsequent synthetic events landing inside that window can be eaten —
@@ -113,11 +113,15 @@ public final class InputInjector: @unchecked Sendable {
     }
 
     public func updateWindowBounds(_ bounds: VideoRect) {
-        boundsLock.lock(); windowBoundsCG = bounds; boundsLock.unlock()
+        boundsLock.lock()
+        windowBoundsCG = bounds
+        boundsLock.unlock()
     }
 
     private var bounds: VideoRect {
-        boundsLock.lock(); defer { boundsLock.unlock() }; return windowBoundsCG
+        boundsLock.lock()
+        defer { boundsLock.unlock() }
+        return windowBoundsCG
     }
 
     // MARK: Activate-then-control
@@ -135,10 +139,20 @@ public final class InputInjector: @unchecked Sendable {
         // a click on a genuinely-backgrounded window, a different frontmost app, or an unreadable
         // frontmost still runs the full raise, so activate-then-control focus correctness is preserved.
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let willRaise = InputInjectorRaisePolicy.shouldRaise(frontmostPID: frontmostPID, targetPID: pid, firstInteraction: !hasRaisedTargetOnce)
+        let willRaise = InputInjectorRaisePolicy.shouldRaise(
+            frontmostPID: frontmostPID,
+            targetPID: pid,
+            firstInteraction: !hasRaisedTargetOnce,
+        )
         if Self.inputTrace {
             let f = frontmostPID.map(String.init) ?? "nil"
-            FileHandle.standardError.write(Data("aislopdesk-videohostd[inject]: raise decision frontmost=\(f) target=\(pid) first=\(!hasRaisedTargetOnce) -> \(willRaise ? "RAISE(full AX chain)" : "SKIP(no AX)")\n".utf8))
+            FileHandle.standardError
+                .write(
+                    Data(
+                        "aislopdesk-videohostd[inject]: raise decision frontmost=\(f) target=\(pid) first=\(!hasRaisedTargetOnce) -> \(willRaise ? "RAISE(full AX chain)" : "SKIP(no AX)")\n"
+                            .utf8,
+                    ),
+                )
         }
         guard willRaise else { return }
         // THROTTLE redundant back-to-back raises within one click (see ``lastRaiseAt``): the first raise
@@ -179,9 +193,11 @@ public final class InputInjector: @unchecked Sendable {
         // SAFETY auto-release: clear a button left stuck by a lost/never-sent `mouseUp` BEFORE
         // posting a fresh `mouseDown` on it, so a click never begins inside a phantom selection.
         let plan = balanceLock.withLock { balance.plan(for: event) }
-        if let stuck = plan.preRelease, case .mouseDown(_, let n, _, let mods, let tag) = event {
+        if let stuck = plan.preRelease, case let .mouseDown(_, n, _, mods, tag) = event {
             if Self.inputTrace {
-                FileHandle.standardError.write(Data("aislopdesk-videohostd[inject]: SAFETY pre-release of stuck \(stuck) before mouseDown\n".utf8))
+                FileHandle.standardError
+                    .write(Data("aislopdesk-videohostd[inject]: SAFETY pre-release of stuck \(stuck) before mouseDown\n"
+                            .utf8))
             }
             postMouseButton(button: stuck, normalized: n, down: false, clickCount: 1, modifiers: mods, tag: tag)
         }
@@ -189,24 +205,39 @@ public final class InputInjector: @unchecked Sendable {
             // A duplicate up from the client's loss-resilient 3× send (button already
             // released) — drop it so the host never posts a spurious extra *MouseUp.
             if Self.inputTrace {
-                FileHandle.standardError.write(Data("aislopdesk-videohostd[inject]: suppressed duplicate mouseUp (button not held)\n".utf8))
+                FileHandle.standardError
+                    .write(Data("aislopdesk-videohostd[inject]: suppressed duplicate mouseUp (button not held)\n".utf8))
             }
             return
         }
         switch event {
-        case .mouseMove(let n, let tag):
+        case let .mouseMove(n, tag):
             postMouseMove(normalized: n, tag: tag)
-        case .mouseDown(let button, let n, let clickCount, let mods, let tag):
-            postMouseButton(button: button, normalized: n, down: true, clickCount: clickCount, modifiers: mods, tag: tag)
-        case .mouseUp(let button, let n, let clickCount, let mods, let tag):
-            postMouseButton(button: button, normalized: n, down: false, clickCount: clickCount, modifiers: mods, tag: tag)
-        case .mouseDrag(let button, let n, let clickCount, let mods, let tag):
+        case let .mouseDown(button, n, clickCount, mods, tag):
+            postMouseButton(
+                button: button,
+                normalized: n,
+                down: true,
+                clickCount: clickCount,
+                modifiers: mods,
+                tag: tag,
+            )
+        case let .mouseUp(button, n, clickCount, mods, tag):
+            postMouseButton(
+                button: button,
+                normalized: n,
+                down: false,
+                clickCount: clickCount,
+                modifiers: mods,
+                tag: tag,
+            )
+        case let .mouseDrag(button, n, clickCount, mods, tag):
             postMouseDrag(button: button, normalized: n, clickCount: clickCount, modifiers: mods, tag: tag)
-        case .scroll(let dx, let dy, _, let tag):
+        case let .scroll(dx, dy, _, tag):
             postScroll(dx: dx, dy: dy, tag: tag)
-        case .key(let keyCode, let down, let mods, let tag):
+        case let .key(keyCode, down, mods, tag):
             postKey(keyCode: keyCode, down: down, modifiers: mods, tag: tag)
-        case .text(let string, let tag):
+        case let .text(string, tag):
             postText(string, tag: tag)
         }
     }
@@ -220,9 +251,9 @@ public final class InputInjector: @unchecked Sendable {
     /// event) is cancelled. Together with the suppression interval = 0 set in `init`, this
     /// makes warp-then-post safe so absolute positioning never eats the following event.
     private func warp(to pt: CGPoint) {
-        if Self.injectToPid { return }  // test seam: don't hijack the global cursor (same-machine loopback)
+        if Self.injectToPid { return } // test seam: don't hijack the global cursor (same-machine loopback)
         CGWarpMouseCursorPosition(pt)
-        CGAssociateMouseAndMouseCursorPosition(boolean_t(1))   // re-associate (true)
+        CGAssociateMouseAndMouseCursorPosition(boolean_t(1)) // re-associate (true)
     }
 
     private func postMouseMove(normalized: VideoPoint, tag: UInt32) {
@@ -235,7 +266,12 @@ public final class InputInjector: @unchecked Sendable {
         // stuck, turning every later hover into a phantom `.leftMouseDragged` (runaway
         // selection until the next click). Stateless = no phantom drag.
         warp(to: pt)
-        if let event = CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left) {
+        if let event = CGEvent(
+            mouseEventSource: eventSource,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: pt,
+            mouseButton: .left,
+        ) {
             stampAndPost(event, tag: tag)
         }
     }
@@ -250,16 +286,27 @@ public final class InputInjector: @unchecked Sendable {
     /// dragged with no active session, then anchors when the down lands and extends to the
     /// final drag — so the selection range stays correct even if early drag samples are lost
     /// or reordered.
-    private func postMouseDrag(button: MouseButton, normalized: VideoPoint, clickCount: UInt8, modifiers: InputModifiers, tag: UInt32) {
+    private func postMouseDrag(
+        button: MouseButton,
+        normalized: VideoPoint,
+        clickCount: UInt8,
+        modifiers: InputModifiers,
+        tag: UInt32,
+    ) {
         let pt = target(normalized)
         warp(to: pt)
         let (type, cgButton): (CGEventType, CGMouseButton)
         switch button {
-        case .left:  (type, cgButton) = (.leftMouseDragged, .left)
+        case .left: (type, cgButton) = (.leftMouseDragged, .left)
         case .right: (type, cgButton) = (.rightMouseDragged, .right)
         case .other: (type, cgButton) = (.otherMouseDragged, .center)
         }
-        guard let event = CGEvent(mouseEventSource: eventSource, mouseType: type, mouseCursorPosition: pt, mouseButton: cgButton) else { return }
+        guard let event = CGEvent(
+            mouseEventSource: eventSource,
+            mouseType: type,
+            mouseCursorPosition: pt,
+            mouseButton: cgButton,
+        ) else { return }
         // A real drag carries the originating click's clickState (1 = drag-select, 2 =
         // word-by-word). A freshly-created dragged event defaults to clickState 0, which some
         // selection engines treat as "not part of a drag" → nothing selects. Match the down:
@@ -269,7 +316,14 @@ public final class InputInjector: @unchecked Sendable {
         stampAndPost(event, tag: tag)
     }
 
-    private func postMouseButton(button: MouseButton, normalized: VideoPoint, down: Bool, clickCount: UInt8, modifiers: InputModifiers, tag: UInt32) {
+    private func postMouseButton(
+        button: MouseButton,
+        normalized: VideoPoint,
+        down: Bool,
+        clickCount: UInt8,
+        modifiers: InputModifiers,
+        tag: UInt32,
+    ) {
         let pt = target(normalized)
         // Warp before posting so a tap with no preceding move still lands at `pt` and the
         // visible cursor agrees with where the click registers. Safe now that the
@@ -281,7 +335,12 @@ public final class InputInjector: @unchecked Sendable {
         case .right: (cgButton, downType, upType) = (.right, .rightMouseDown, .rightMouseUp)
         case .other: (cgButton, downType, upType) = (.center, .otherMouseDown, .otherMouseUp)
         }
-        guard let event = CGEvent(mouseEventSource: eventSource, mouseType: down ? downType : upType, mouseCursorPosition: pt, mouseButton: cgButton) else { return }
+        guard let event = CGEvent(
+            mouseEventSource: eventSource,
+            mouseType: down ? downType : upType,
+            mouseCursorPosition: pt,
+            mouseButton: cgButton,
+        ) else { return }
         // A single click needs clickState = 1 to register reliably (focus / insertion point);
         // 2 = double, 3 = triple. It MUST be set on BOTH the down and the up edge with the
         // SAME value — a freshly-created CGEvent does not reliably carry clickState = 1, so
@@ -298,9 +357,14 @@ public final class InputInjector: @unchecked Sendable {
         // whole host process. `AislopdeskVideoProtocol` already rejects non-finite deltas at
         // decode; this clamp is the defence-in-depth backstop for a finite-but-huge value,
         // and it can never trap.
-        guard let event = CGEvent(scrollWheelEvent2Source: eventSource, units: .pixel, wheelCount: 2,
-                                  wheel1: Self.scaledScrollDelta(dy, gain: Self.scrollGain),
-                                  wheel2: Self.scaledScrollDelta(dx, gain: Self.scrollGain), wheel3: 0) else { return }
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: eventSource,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: Self.scaledScrollDelta(dy, gain: Self.scrollGain),
+            wheel2: Self.scaledScrollDelta(dx, gain: Self.scrollGain),
+            wheel3: 0,
+        ) else { return }
         stampAndPost(event, tag: tag)
     }
 
@@ -335,8 +399,10 @@ public final class InputInjector: @unchecked Sendable {
         // Route through the DriverKit virtual keyboard ONLY while a secure field is up (Secure Event Input
         // active) — that's the one case CGEvent can't reach. Normal typing stays on CGEvent (the bridge
         // isn't even needed for it). `IsSecureEventInputEnabled()` is a cheap global-state read.
-        let backend = Self.keyboardBackend(virtualHIDAvailable: virtualHID != nil,
-                                           secureInputActive: IsSecureEventInputEnabled())
+        let backend = Self.keyboardBackend(
+            virtualHIDAvailable: virtualHID != nil,
+            secureInputActive: IsSecureEventInputEnabled(),
+        )
         // TRANSITION GUARD: if the previous key went through the virtual keyboard and this one falls back
         // to CGEvent (the secure field just dismissed), flush any key still held on the virtual device so
         // a key whose DOWN was HID but whose UP is now CGEvent can't leave a stuck key (esp. a modifier).
@@ -348,8 +414,10 @@ public final class InputInjector: @unchecked Sendable {
 
         // VIRTUAL-HID: a mapped key is fully handled here — do NOT also post a CGEvent (would double-type).
         // An UNMAPPED key (send returns false) falls through to CGEvent so nothing is silently dropped.
-        if backend == .virtualHID, let virtualHID, virtualHID.send(keyCode: keyCode, down: down, modifiers: modifiers) { return }
-        guard let event = CGEvent(keyboardEventSource: eventSource, virtualKey: CGKeyCode(keyCode), keyDown: down) else { return }
+        if backend == .virtualHID, let virtualHID,
+           virtualHID.send(keyCode: keyCode, down: down, modifiers: modifiers) { return }
+        guard let event = CGEvent(keyboardEventSource: eventSource, virtualKey: CGKeyCode(keyCode), keyDown: down)
+        else { return }
         event.flags = cgFlags(modifiers)
         postKeyboardEvent(event)
     }
@@ -413,7 +481,7 @@ public final class InputInjector: @unchecked Sendable {
     private func stampAndPost(_ event: CGEvent, tag: UInt32) {
         event.setIntegerValueField(.eventSourceUserData, value: Int64(tag))
         if Self.injectToPid, pid != 0 {
-            event.postToPid(pid)   // test seam: deliver to the target app without moving the cursor
+            event.postToPid(pid) // test seam: deliver to the target app without moving the cursor
         } else {
             event.post(tap: .cghidEventTap)
         }
@@ -435,7 +503,8 @@ public final class InputInjector: @unchecked Sendable {
         var posRef: CFTypeRef?
         var sizeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success else {
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success
+        else {
             return false
         }
         var point = CGPoint.zero

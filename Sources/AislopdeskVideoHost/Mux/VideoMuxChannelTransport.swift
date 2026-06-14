@@ -1,6 +1,6 @@
 #if os(macOS)
-import Foundation
 import AislopdeskVideoProtocol
+import Foundation
 
 /// A per-channel ``VideoDatagramTransport`` view over the ONE shared
 /// ``NWVideoMuxDatagramTransport`` — the seam that lets an UNCHANGED
@@ -34,7 +34,7 @@ public final class VideoMuxChannelTransport: VideoDatagramTransport, @unchecked 
         channelID: UInt32,
         shared: NWVideoMuxDatagramTransport,
         sinkTable: VideoMuxSinkTable,
-        onRetire: @escaping @Sendable (UInt32) -> Void
+        onRetire: @escaping @Sendable (UInt32) -> Void,
     ) {
         self.channelID = channelID
         self.shared = shared

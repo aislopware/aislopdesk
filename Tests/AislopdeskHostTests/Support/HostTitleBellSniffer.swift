@@ -1,5 +1,5 @@
-import Foundation
 import AislopdeskProtocol
+import Foundation
 
 /// A **non-destructive** sniffer over the host's outbound PTY byte stream that observes
 /// (never consumes) the bytes the host relays to the client and emits the two
@@ -58,7 +58,6 @@ import AislopdeskProtocol
 /// `onChunk` sink), so calls are already serialized; the lock makes the type safe to
 /// capture in the `@Sendable` `onChunk` closure regardless.
 public final class HostTitleBellSniffer: @unchecked Sendable {
-
     public init() {}
 
     // MARK: Parser state
@@ -103,15 +102,15 @@ public final class HostTitleBellSniffer: @unchecked Sendable {
 
     private static let esc: UInt8 = 0x1B
     private static let bel: UInt8 = 0x07
-    private static let rightBracket: UInt8 = 0x5D  // ']'
-    private static let backslash: UInt8 = 0x5C     // '\'
-    private static let semicolon: UInt8 = 0x3B     // ';'
+    private static let rightBracket: UInt8 = 0x5D // ']'
+    private static let backslash: UInt8 = 0x5C // '\'
+    private static let semicolon: UInt8 = 0x3B // ';'
     // String-sequence introducers (R9 #4): DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`. A real
     // terminal swallows their body to the ST/BEL terminator without ringing a bell or changing the title.
-    private static let dcs: UInt8 = 0x50           // 'P'
-    private static let sos: UInt8 = 0x58           // 'X'
-    private static let pm: UInt8 = 0x5E            // '^'
-    private static let apc: UInt8 = 0x5F           // '_'
+    private static let dcs: UInt8 = 0x50 // 'P'
+    private static let sos: UInt8 = 0x58 // 'X'
+    private static let pm: UInt8 = 0x5E // '^'
+    private static let apc: UInt8 = 0x5F // '_'
 
     // MARK: Observe
 
@@ -155,7 +154,10 @@ public final class HostTitleBellSniffer: @unchecked Sendable {
             case Self.rightBracket:
                 state = .osc
                 oscBuffer.removeAll(keepingCapacity: true)
-            case Self.dcs, Self.sos, Self.pm, Self.apc:
+            case Self.dcs,
+                 Self.sos,
+                 Self.pm,
+                 Self.apc:
                 // R9 #4 (security): DCS/SOS/PM/APC introduce a STRING sequence whose body a conformant
                 // terminal swallows to its ST/BEL terminator WITHOUT ringing a bell or changing the title.
                 // Consume the whole string + terminator, emitting NOTHING — else a malicious remote program

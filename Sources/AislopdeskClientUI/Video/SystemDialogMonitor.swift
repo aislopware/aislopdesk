@@ -31,12 +31,14 @@ public final class SystemDialogMonitor {
     /// How long a manually-closed dialog pane stays closed before a still-present dialog re-spawns it.
     private let respawnSuppression: TimeInterval
 
-    public init(store: WorkspaceStore,
-                isConnected: @escaping @MainActor () -> Bool,
-                target: @escaping @MainActor () -> ConnectionTarget,
-                pollGap: Duration = .seconds(2),
-                respawnSuppression: TimeInterval = 10,
-                clock: @escaping () -> Date = { Date() }) {
+    public init(
+        store: WorkspaceStore,
+        isConnected: @escaping @MainActor () -> Bool,
+        target: @escaping @MainActor () -> ConnectionTarget,
+        pollGap: Duration = .seconds(2),
+        respawnSuppression: TimeInterval = 10,
+        clock: @escaping () -> Date = { Date() },
+    ) {
         self.store = store
         self.isConnected = isConnected
         self.target = target
@@ -91,11 +93,12 @@ public final class SystemDialogMonitor {
         let now = clock()
         for d in dialogs where spawned[d.windowID] == nil {
             if let closedAt = manuallyClosedAt[d.windowID], now.timeIntervalSince(closedAt) < respawnSuppression {
-                continue   // still inside the grace window — leave it closed
+                continue // still inside the grace window — leave it closed
             }
             manuallyClosedAt.removeValue(forKey: d.windowID)
             spawned[d.windowID] = store.addSystemDialogPane(
-                windowID: d.windowID, owner: d.owner, title: d.title, isSecure: d.isSecure)
+                windowID: d.windowID, owner: d.owner, title: d.title, isSecure: d.isSecure,
+            )
         }
     }
 

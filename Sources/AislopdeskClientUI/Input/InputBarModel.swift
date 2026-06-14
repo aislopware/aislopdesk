@@ -1,6 +1,6 @@
-import Foundation
 import AislopdeskClaudeCode
 import AislopdeskClient
+import Foundation
 
 /// The external input affordance's view-model — a thin `@MainActor @Observable` shell around
 /// ``AislopdeskClaudeCode/InputBoxModel`` (which owns ALL the logic: the A/B1 affordance derived
@@ -46,7 +46,7 @@ public final class InputBarModel {
 
     public init(box: InputBoxModel = InputBoxModel()) {
         self.box = box
-        self.affordance = box.affordance
+        affordance = box.affordance
     }
 
     /// Feeds an inbound `output` chunk through the model so the affordance + dedup track the

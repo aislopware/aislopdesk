@@ -1,18 +1,17 @@
-import XCTest
-import Foundation
 import AislopdeskProtocol
 import AislopdeskTransport
+import Foundation
+import XCTest
 @testable import AislopdeskClient
 
 /// The client's RTT fold: a `.pong` (our monotonic timestamp echoed back) becomes an
 /// EWMA-smoothed `smoothedRTTMS` and a broadcast `.rtt` event (the latency-badge datum).
 final class AislopdeskClientRTTTests: XCTestCase {
-
     private func makeClient() -> AislopdeskClient {
         AislopdeskClient(makeTransport: {
             MuxClientTransport(
                 acquire: { _, _, _, _ in throw AislopdeskTransportError.notConnected("inert") },
-                release: { _, _, _ in }
+                release: { _, _, _ in },
             )
         })
     }
@@ -26,21 +25,21 @@ final class AislopdeskClientRTTTests: XCTestCase {
         await client._handleInboundForTesting(.pong(timestampMS: nowMS - 40))
         let first = await client.smoothedRTTMS
         XCTAssertNotNil(first)
-        XCTAssertGreaterThanOrEqual(first!, 40, "first sample seeds the EWMA directly")
-        XCTAssertLessThan(first!, 500, "sample is sane (now - sentAt, same monotonic clock)")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(first), 40, "first sample seeds the EWMA directly")
+        XCTAssertLessThan(try XCTUnwrap(first), 500, "sample is sane (now - sentAt, same monotonic clock)")
 
         // Second sample pulls the EWMA by α=0.25.
         let secondNow = DispatchTime.now().uptimeNanoseconds / 1_000_000
         await client._handleInboundForTesting(.pong(timestampMS: secondNow - 200))
         let second = await client.smoothedRTTMS
         XCTAssertNotNil(second)
-        XCTAssertGreaterThan(second!, first!, "a slower sample raises the smoothed value")
-        XCTAssertLessThan(second!, 200, "EWMA absorbs the outlier rather than jumping to it")
+        XCTAssertGreaterThan(try XCTUnwrap(second), try XCTUnwrap(first), "a slower sample raises the smoothed value")
+        XCTAssertLessThan(try XCTUnwrap(second), 200, "EWMA absorbs the outlier rather than jumping to it")
 
         await client.close()
     }
 
-    func testPongBroadcastsRTTEvent() async throws {
+    func testPongBroadcastsRTTEvent() async {
         let client = makeClient()
         // Subscribe BEFORE the fold (a broadcaster child sees events from its subscription
         // point on), then race the collector against a bounded timeout.
@@ -69,9 +68,9 @@ final class AislopdeskClientRTTTests: XCTestCase {
         await client.close()
     }
 
-    func testFutureTimestampIsIgnored() async throws {
+    func testFutureTimestampIsIgnored() async {
         let client = makeClient()
-        let futureMS = DispatchTime.now().uptimeNanoseconds / 1_000_000 + 60_000
+        let futureMS = DispatchTime.now().uptimeNanoseconds / 1_000_000 + 60000
         await client._handleInboundForTesting(.pong(timestampMS: futureMS))
         let rtt = await client.smoothedRTTMS
         XCTAssertNil(rtt, "a nonsensical (future) echo is dropped, never a negative sample")

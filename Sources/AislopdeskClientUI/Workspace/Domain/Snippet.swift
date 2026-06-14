@@ -51,7 +51,7 @@ public enum SnippetExpander {
             if let value = values[name] {
                 out += value
             } else {
-                out += ns.substring(with: whole)   // keep the literal {{name}} so the gap is visible
+                out += ns.substring(with: whole) // keep the literal {{name}} so the gap is visible
                 if seenMissing.insert(name).inserted { missing.append(name) }
             }
             cursor = whole.location + whole.length
@@ -89,7 +89,8 @@ public enum SendKeysParser {
             if s == "<" {
                 // Look for a closing '>' within a bounded window (token names are short).
                 if let close = findClose(scalars, from: i + 1),
-                   let bytes = token(String(String.UnicodeScalarView(scalars[(i + 1)..<close]))) {
+                   let bytes = token(String(String.UnicodeScalarView(scalars[(i + 1)..<close])))
+                {
                     out += bytes
                     i = close + 1
                     continue
@@ -107,11 +108,11 @@ public enum SendKeysParser {
 
     /// Index of the next '>' after `from`, within a small window (a token name is short), or `nil`.
     private static func findClose(_ scalars: [Unicode.Scalar], from: Int) -> Int? {
-        let limit = min(scalars.count, from + 12)   // longest token ("Backspace") + slack
+        let limit = min(scalars.count, from + 12) // longest token ("Backspace") + slack
         var j = from
         while j < limit {
             if scalars[j] == ">" { return j }
-            if scalars[j] == "<" { return nil }      // a nested '<' means the first wasn't a token open
+            if scalars[j] == "<" { return nil } // a nested '<' means the first wasn't a token open
             j += 1
         }
         return nil
@@ -123,19 +124,26 @@ public enum SendKeysParser {
     private static func token(_ raw: String) -> [UInt8]? {
         let name = raw.lowercased()
         switch name {
-        case "enter", "cr", "return": return [0x0D]
-        case "nl", "lf", "newline":   return [0x0A]
-        case "tab":                   return [0x09]
-        case "esc", "escape":         return [esc]
-        case "space":                 return [0x20]
-        case "bs", "backspace":       return [0x7F]
-        case "del", "delete":         return [esc, 0x5B, 0x33, 0x7E]   // ESC [ 3 ~
-        case "up":                    return [esc, 0x5B, 0x41]          // ESC [ A
-        case "down":                  return [esc, 0x5B, 0x42]
-        case "right":                 return [esc, 0x5B, 0x43]
-        case "left":                  return [esc, 0x5B, 0x44]
-        case "home":                  return [esc, 0x5B, 0x48]
-        case "end":                   return [esc, 0x5B, 0x46]
+        case "enter",
+             "cr",
+             "return": return [0x0D]
+        case "nl",
+             "lf",
+             "newline": return [0x0A]
+        case "tab": return [0x09]
+        case "esc",
+             "escape": return [esc]
+        case "space": return [0x20]
+        case "bs",
+             "backspace": return [0x7F]
+        case "del",
+             "delete": return [esc, 0x5B, 0x33, 0x7E] // ESC [ 3 ~
+        case "up": return [esc, 0x5B, 0x41] // ESC [ A
+        case "down": return [esc, 0x5B, 0x42]
+        case "right": return [esc, 0x5B, 0x43]
+        case "left": return [esc, 0x5B, 0x44]
+        case "home": return [esc, 0x5B, 0x48]
+        case "end": return [esc, 0x5B, 0x46]
         default:
             // Ctrl chord: <C-x> → control byte (x masked to 0x1F). Meta chord: <M-x> → ESC + x.
             if name.hasPrefix("c-"), name.count == 3, let ch = name.last, let a = ch.asciiValue {

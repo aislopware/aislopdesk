@@ -36,7 +36,6 @@ import UIKit
 /// and unit-tested on macOS.
 @MainActor
 public final class PaneFocusCoordinator {
-
     /// The thing the coordinator drives: one pane's first-responder surface. On iOS this is
     /// satisfied by the ``TerminalInputResponderView`` (or a thin adapter the Integrate phase
     /// supplies); modelling it as a protocol keeps the coordinator testable and lets the byte
@@ -49,9 +48,11 @@ public final class PaneFocusCoordinator {
     @MainActor
     public protocol FocusableInputHost: AnyObject {
         /// Resign first-responder status immediately. Returns whether the resign took effect.
-        @discardableResult func resignFocus() -> Bool
+        @discardableResult
+        func resignFocus() -> Bool
         /// Become first responder. Returns whether the claim took effect.
-        @discardableResult func becomeFocus() -> Bool
+        @discardableResult
+        func becomeFocus() -> Bool
     }
 
     /// The pure generation guard. A stale `becomeFocus` callback is rejected by token, so the last
@@ -162,7 +163,7 @@ public final class PaneFocusCoordinator {
         // weak self + weak host: a dismantle between schedule and fire must not resurrect either.
         DispatchQueue.main.async { [weak self, weak host] in
             guard let self, let host else { return }
-            self.claimIfCurrent(host, id: id, token: token)
+            claimIfCurrent(host, id: id, token: token)
         }
         #else
         claimIfCurrent(host, id: id, token: token)
@@ -172,8 +173,8 @@ public final class PaneFocusCoordinator {
     /// The generation-reject gate: claim first responder for `host` only if `token` is still the
     /// current generation AND `id` is still the intended focus. A stale callback is dropped.
     private func claimIfCurrent(_ host: FocusableInputHost, id: PaneID, token: Int) {
-        guard guardState.isCurrent(token) else { return }       // superseded by a newer focus()
-        guard focusedPane == id else { return }                 // intent moved on
+        guard guardState.isCurrent(token) else { return } // superseded by a newer focus()
+        guard focusedPane == id else { return } // intent moved on
         // The host may have unregistered (dismantled) between schedule and fire.
         guard hosts[id]?.value === host else { return }
         if !host.becomeFocus() {

@@ -14,7 +14,7 @@ final class InMemoryMuxLink: MuxByteLink, @unchecked Sendable {
 
     private init(
         inbound: AsyncThrowingStream<Data, Error>,
-        outbound: AsyncThrowingStream<Data, Error>.Continuation
+        outbound: AsyncThrowingStream<Data, Error>.Continuation,
     ) {
         self.inbound = inbound
         self.outbound = outbound

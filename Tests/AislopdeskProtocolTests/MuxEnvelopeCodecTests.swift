@@ -11,7 +11,6 @@ private func roundTrip(_ frame: MuxFrame, file: StaticString = #filePath, line: 
 }
 
 final class MuxEnvelopeCodecTests: XCTestCase {
-
     func testChannelOpenRoundTrip() throws {
         let cases: [MuxFrame] = [
             .channelOpen(channelID: 1, sessionID: WireMessage.newSessionID, lastReceivedSeq: 0, channelClass: 0),
@@ -55,11 +54,11 @@ final class MuxEnvelopeCodecTests: XCTestCase {
     /// for byte, including when it happens to be a real (inner) WireMessage frame.
     func testChannelDataBodyRoundTripsByteIdentically() throws {
         let payloads: [Data] = [
-            Data(),                                         // empty
+            Data(), // empty
             Data("ls -la\n".utf8),
-            Data([0x00, 0xff, 0x80, 0x7f]),                 // NUL + high bit
+            Data([0x00, 0xFF, 0x80, 0x7F]), // NUL + high bit
             WireMessage.output(seq: 42, bytes: Data("vt output ✅".utf8)).encode(), // a real inner frame
-            Data((0 ..< 4096).map { UInt8($0 & 0xFF) }),    // 4 KiB
+            Data((0..<4096).map { UInt8($0 & 0xFF) }), // 4 KiB
         ]
         for payload in payloads {
             let frame = MuxFrame.channelData(channelID: 9, payload: payload)
@@ -86,13 +85,13 @@ final class MuxEnvelopeCodecTests: XCTestCase {
     /// `testFrameLayoutLengthPrefixExcludesPrefixBytes`.)
     func testEnvelopeLayoutLengthPrefixExcludesPrefixBytes() {
         // windowAdjust body = 4 bytes => inner = 4 (channelID) + 1 (type) + 4 (body) = 9.
-        let frame = MuxFrame.windowAdjust(channelID: 0x01020304, bytesToAdd: 0x0A0B0C0D)
+        let frame = MuxFrame.windowAdjust(channelID: 0x0102_0304, bytesToAdd: 0x0A0B_0C0D)
         let bytes = MuxEnvelopeCodec.encode(frame)
         XCTAssertEqual(bytes.count, 4 + 9)
         let prefix = (UInt32(bytes[0]) << 24) | (UInt32(bytes[1]) << 16) | (UInt32(bytes[2]) << 8) | UInt32(bytes[3])
         XCTAssertEqual(prefix, 9)
         // channelID big-endian right after the prefix.
-        XCTAssertEqual(Array(bytes[4 ..< 8]), [0x01, 0x02, 0x03, 0x04])
+        XCTAssertEqual(Array(bytes[4..<8]), [0x01, 0x02, 0x03, 0x04])
         // Then the mux-type byte (windowAdjust == 5).
         XCTAssertEqual(bytes[8], MuxFrameType.windowAdjust.rawValue)
     }
@@ -103,7 +102,7 @@ final class MuxEnvelopeCodecTests: XCTestCase {
         // inner = [channelID(4)][type 0xFF] — a valid-length run with an unknown type.
         var inner = Data()
         inner.appendBE(UInt32(7)) // channelID
-        inner.append(0xFF)        // unknown mux type
+        inner.append(0xFF) // unknown mux type
         var frame = Data()
         frame.appendBE(UInt32(inner.count))
         frame.append(inner)
@@ -120,7 +119,7 @@ final class MuxEnvelopeCodecTests: XCTestCase {
     func testCompleteFrameWithShortBodyThrowsTruncated() {
         // windowAdjust (type 5) needs a 4-byte UInt32 after channelID+type; supply 2.
         var inner = Data()
-        inner.appendBE(UInt32(3))             // channelID
+        inner.appendBE(UInt32(3)) // channelID
         inner.append(MuxFrameType.windowAdjust.rawValue)
         inner.append(contentsOf: [0x00, 0x10]) // only 2 of 4 body bytes
         var frame = Data()

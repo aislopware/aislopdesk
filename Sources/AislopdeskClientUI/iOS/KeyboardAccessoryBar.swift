@@ -18,19 +18,22 @@ public final class KeyboardAccessoryBar: UIInputView {
     public enum Key: Equatable {
         case escape
         case tab
-        case control          // sticky modifier
-        case up, down, left, right
+        case control // sticky modifier
+        case up
+        case down
+        case left
+        case right
 
         /// The byte sequence for a non-modifier key. `control` returns `[]` (it is sticky).
         public var bytes: [UInt8] {
             switch self {
-            case .escape: return [0x1B]
-            case .tab:    return [0x09]
-            case .control: return []
-            case .up:     return [0x1B, 0x5B, 0x41] // ESC [ A
-            case .down:   return [0x1B, 0x5B, 0x42] // ESC [ B
-            case .right:  return [0x1B, 0x5B, 0x43] // ESC [ C
-            case .left:   return [0x1B, 0x5B, 0x44] // ESC [ D
+            case .escape: [0x1B]
+            case .tab: [0x09]
+            case .control: []
+            case .up: [0x1B, 0x5B, 0x41] // ESC [ A
+            case .down: [0x1B, 0x5B, 0x42] // ESC [ B
+            case .right: [0x1B, 0x5B, 0x43] // ESC [ C
+            case .left: [0x1B, 0x5B, 0x44] // ESC [ D
             }
         }
     }
@@ -62,8 +65,15 @@ public final class KeyboardAccessoryBar: UIInputView {
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
-        for (title, key) in [("esc", Key.escape), ("tab", .tab), ("ctrl", .control),
-                             ("←", .left), ("↓", .down), ("↑", .up), ("→", .right)] {
+        for (title, key) in [
+            ("esc", Key.escape),
+            ("tab", .tab),
+            ("ctrl", .control),
+            ("←", .left),
+            ("↓", .down),
+            ("↑", .up),
+            ("→", .right),
+        ] {
             let button = UIButton(type: .system)
             button.setTitle(title, for: .normal)
             button.titleLabel?.font = .monospacedSystemFont(ofSize: 14, weight: .medium)
@@ -81,7 +91,9 @@ public final class KeyboardAccessoryBar: UIInputView {
         }
         onKey?(key.bytes)
         // Ctrl is one-shot after a key (matches hardware behaviour for a single combo).
-        if controlArmed { controlArmed = false; updateControlVisual() }
+        if controlArmed { controlArmed = false
+            updateControlVisual()
+        }
     }
 
     private func updateControlVisual() {
@@ -103,7 +115,9 @@ public final class KeyboardAccessoryBar: UIInputView {
     /// Used by the soft-keyboard text path, which folds the first scalar via the pure
     /// ``KeyEncoding/foldArmedControl(_:armed:)`` and then consumes the arm here (R13 #6).
     public func consumeControlArm() {
-        if controlArmed { controlArmed = false; updateControlVisual() }
+        if controlArmed { controlArmed = false
+            updateControlVisual()
+        }
     }
 
     /// Pure mapping of a key to its ASCII control code (delegates to the platform-agnostic, headless-

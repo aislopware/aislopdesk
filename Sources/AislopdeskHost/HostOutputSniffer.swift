@@ -1,5 +1,5 @@
-import Foundation
 import AislopdeskProtocol
+import Foundation
 
 /// The FUSED host-side output sniffer: ONE pass over the outbound PTY byte stream replacing
 /// the back-to-back pair ``HostTitleBellSniffer`` + ``HostCommandStatusSniffer``. It emits
@@ -45,7 +45,6 @@ import AislopdeskProtocol
 /// (the `onChunk` sink), so calls are already serialized; the lock makes the type safe to
 /// capture in the `@Sendable` `onChunk` closure regardless.
 public final class HostOutputSniffer: @unchecked Sendable {
-
     /// - Parameter clock: the wall-clock source for the OSC 133 C→D duration. Injectable so
     ///   a test advances it deterministically; defaults to `Date.init` in production.
     public init(clock: @escaping @Sendable () -> Date = { Date() }) {
@@ -110,15 +109,15 @@ public final class HostOutputSniffer: @unchecked Sendable {
 
     private static let esc: UInt8 = 0x1B
     private static let bel: UInt8 = 0x07
-    private static let rightBracket: UInt8 = 0x5D  // ']'
-    private static let backslash: UInt8 = 0x5C     // '\'
-    private static let semicolon: UInt8 = 0x3B     // ';'
+    private static let rightBracket: UInt8 = 0x5D // ']'
+    private static let backslash: UInt8 = 0x5C // '\'
+    private static let semicolon: UInt8 = 0x3B // ';'
     // String-sequence introducers (R9 #4): DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`. A real
     // terminal swallows their body to the ST/BEL terminator without ringing a bell or changing the title.
-    private static let dcs: UInt8 = 0x50           // 'P'
-    private static let sos: UInt8 = 0x58           // 'X'
-    private static let pm: UInt8 = 0x5E            // '^'
-    private static let apc: UInt8 = 0x5F           // '_'
+    private static let dcs: UInt8 = 0x50 // 'P'
+    private static let sos: UInt8 = 0x58 // 'X'
+    private static let pm: UInt8 = 0x5E // '^'
+    private static let apc: UInt8 = 0x5F // '_'
 
     // MARK: Observe
 
@@ -162,7 +161,8 @@ public final class HostOutputSniffer: @unchecked Sendable {
                         i = count
                     }
 
-                case .oscDiscard, .stringConsume:
+                case .oscDiscard,
+                     .stringConsume:
                     // FAST PATH: in both skim states the ONLY interesting bytes are ESC and
                     // BEL — every other byte is swallowed with no transition. (Verified
                     // against step(): BEL DOES terminate `.stringConsume` in this grammar,
@@ -183,7 +183,11 @@ public final class HostOutputSniffer: @unchecked Sendable {
                         i = count
                     }
 
-                case .escape, .osc, .oscEscape, .oscDiscardEscape, .stringConsumeEscape:
+                case .escape,
+                     .osc,
+                     .oscEscape,
+                     .oscDiscardEscape,
+                     .stringConsumeEscape:
                     // Buffering / classification states: every byte matters — step per-byte.
                     step(base.load(fromByteOffset: i, as: UInt8.self), into: &messages)
                     i += 1
@@ -219,7 +223,10 @@ public final class HostOutputSniffer: @unchecked Sendable {
             case Self.rightBracket:
                 state = .osc
                 oscBuffer.removeAll(keepingCapacity: true)
-            case Self.dcs, Self.sos, Self.pm, Self.apc:
+            case Self.dcs,
+                 Self.sos,
+                 Self.pm,
+                 Self.apc:
                 // R9 #4 (security): DCS/SOS/PM/APC introduce a STRING sequence whose body a conformant
                 // terminal swallows to its ST/BEL terminator WITHOUT ringing a bell or changing the title.
                 // Consume the whole string + terminator, emitting NOTHING — else a malicious remote program
@@ -340,7 +347,8 @@ public final class HostOutputSniffer: @unchecked Sendable {
         let ps = String(decoding: psBytes, as: UTF8.self)
 
         switch ps {
-        case "0", "2":
+        case "0",
+             "2":
             // Title path — verbatim from HostTitleBellSniffer. We surface a title for OSC 0
             // (icon name + window title) and OSC 2 (window title only). OSC 1 is
             // icon-name-ONLY and is deliberately ignored — it never sets the window title.

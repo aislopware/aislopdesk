@@ -1,6 +1,5 @@
 import Foundation
 import XCTest
-
 @testable import AislopdeskProtocol
 
 /// Differential equivalence between the native Swift wire codec and the Rust-backed codec
@@ -68,7 +67,7 @@ final class RustWireParityTests: XCTestCase {
     /// (Unreachable in production — the OSC producer caps titles at ~1 KiB — but it pins the
     /// encode()↔wireByteCount flow-control parity contract.)
     func testOverlongNotificationTitleClampParity() {
-        let title = String(repeating: "T", count: 65_534) + "e\u{0301}" // base+combining at the cut
+        let title = String(repeating: "T", count: 65534) + "e\u{0301}" // base+combining at the cut
         let msg = WireMessage.notification(title: title, body: "x")
         XCTAssertEqual(RustFFI.encodeFrame(msg), msg.encodeNative(), "notification clamp: Rust == native")
         XCTAssertEqual(msg.wireByteCount, msg.encode().count, "wireByteCount must equal encode().count")
@@ -92,7 +91,7 @@ final class RustWireParityTests: XCTestCase {
         for (payload, label) in cases {
             XCTAssertTrue(
                 sameErrorCase(rust: payload, native: payload),
-                "decode error parity for \(label)"
+                "decode error parity for \(label)",
             )
         }
     }

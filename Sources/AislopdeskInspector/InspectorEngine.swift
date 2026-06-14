@@ -18,8 +18,8 @@ public actor InspectorEngine {
 
     public init() {
         var cont: AsyncStream<InspectorEvent>.Continuation!
-        self.stream = AsyncStream { cont = $0 }
-        self.continuation = cont
+        stream = AsyncStream { cont = $0 }
+        continuation = cont
     }
 
     /// The combined, ordered event stream the host serialises to the client.

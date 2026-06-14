@@ -1,5 +1,5 @@
-import Foundation
 import AislopdeskClaudeCode
+import Foundation
 
 /// VERBATIM copy of `TerminalModeTracker` as it stood BEFORE the memchr fast path
 /// (2026-06-12, docs/31 follow-up #6) — the naive `for byte in bytes { step(byte) }`
@@ -36,13 +36,13 @@ final class LegacyTerminalModeTracker {
 
     private static let esc: UInt8 = 0x1B
     private static let bel: UInt8 = 0x07
-    private static let leftBracket: UInt8 = 0x5B   // '['
-    private static let rightBracket: UInt8 = 0x5D  // ']'
-    private static let backslash: UInt8 = 0x5C     // '\'
-    private static let dcs: UInt8 = 0x50           // 'P'
-    private static let sos: UInt8 = 0x58           // 'X'
-    private static let pm: UInt8 = 0x5E            // '^'
-    private static let apc: UInt8 = 0x5F           // '_'
+    private static let leftBracket: UInt8 = 0x5B // '['
+    private static let rightBracket: UInt8 = 0x5D // ']'
+    private static let backslash: UInt8 = 0x5C // '\'
+    private static let dcs: UInt8 = 0x50 // 'P'
+    private static let sos: UInt8 = 0x58 // 'X'
+    private static let pm: UInt8 = 0x5E // '^'
+    private static let apc: UInt8 = 0x5F // '_'
 
     // MARK: Consume — the pre-fast-path naive loop, verbatim
 
@@ -75,7 +75,10 @@ final class LegacyTerminalModeTracker {
             case Self.rightBracket:
                 state = .osc
                 oscBuffer.removeAll(keepingCapacity: true)
-            case Self.dcs, Self.sos, Self.pm, Self.apc:
+            case Self.dcs,
+                 Self.sos,
+                 Self.pm,
+                 Self.apc:
                 state = .stringConsume
             case Self.esc:
                 state = .escape
