@@ -1,5 +1,7 @@
 # 36 — UI/UX + DX round (2026-06-13, autonomous)
 
+> **Historical session log (2026-06-13). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 **Status: 17 items + 1 self-review pass shipped to `main` (one commit each), test-first, full suite
 2071 → 2122/0.** Base `afdd1f9` → HEAD `c6ea64a`. An autonomous round: a 9-agent research workflow
 surveyed every client UX/DX surface and synthesised a ranked 58-item backlog; the highest-value,

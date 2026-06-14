@@ -6,15 +6,13 @@
 >
 > **Correction (needs testing):** keyboard injection via `CGEventPostToPid` **is** accepted by Electron/VS Code text areas; only **mouse** is rejected by the renderer IPC (requires the SkyLight `SLEventPostToPid` private SPI).
 
-> This is the biggest technical risk of the **GUI video-path**. Read the "limitations" section carefully before designing.
-
 ## 0. Blunt conclusion
 
 **Activate-then-control is the CORRECT and nearly the ONLY trustworthy model on modern macOS.** Reasons:
 
 1. **You cannot reliably inject mouse events into a background window.** macOS hit-tests synthesized mouse events against the window z-order under the pointer — exactly like physical input. `CGEventPostToPid` puts the event into the process's queue, but **AppKit still hit-tests internally** and a non-frontmost window usually won't handle the click.
 2. **Therefore you must raise/focus the target window first**, then post the event → which is exactly the chosen model.
-3. **macOS 14 changed activation to cooperative/advisory** — the system can refuse, especially when triggered by network/timer events (which is precisely the remote-control case).
+3. **Modern macOS makes activation cooperative/advisory** — the system can refuse, especially when triggered by network/timer events (precisely the remote-control case).
 4. **Incompatible with App Sandbox** → ship outside the Mac App Store, Developer-ID + notarize.
 5. **Prefer AX actions (`AXPress`, set `AXValue`) over synthesized clicks** when the UI exposes Accessibility — they bypass hit-testing & focus, far more robust.
 
@@ -62,6 +60,8 @@ let target = CGPoint(x: windowBounds.origin.x + remotePoint.x,
 - **Retina:** `kCGWindowBounds` & CGEvent are both in **points**; the scale factor does NOT enter the math. ONLY divide by scale if the client sends **pixel** coordinates from a ScreenCaptureKit frame (frames are in pixels). **Don't double-apply scale.**
 - The client should send **normalized (0–1)** coordinates → multiply by `windowBounds.width/height` → fully sidesteps the pixel/point ambiguity.
 
+> The normalize → window-rect mapping (and pixel/point scale handling) is computed by the Rust core's coordinate-mapping module behind the C-ABI; the Swift shell supplies the live window rect and posts the resulting CGEvent.
+
 ---
 
 ## 3. Keyboard
@@ -86,19 +86,19 @@ let target = axWindows.first { /* match by title / compare frame against SCWindo
 
 AXUIElementPerformAction(target, kAXRaiseAction as CFString)
 AXUIElementSetAttributeValue(appEl, kAXMainWindowAttribute as CFString, target)
-NSRunningApplication(processIdentifier: pid)?.activate()   // see the macOS 14 caveat below
+NSRunningApplication(processIdentifier: pid)?.activate()   // see the activation caveat below
 ```
 
 > ⚠️ **There is no public API to map `AXUIElement` ↔ `CGWindowID`.** Window matching is a **heuristic** (title + comparing `kAXPositionAttribute`/`kAXSizeAttribute` against the CG `frame`). This is the genuinely fragile point of the "one specific window" design — code defensively (multiple windows with the same title, windows moving between query and raise).
 
-### macOS 14+ cooperative activation caveat (important for remote control)
+### Cooperative activation caveat (important for remote control)
 
-`activate(ignoringOtherApps:)` is deprecated; the new `activate()` is **advisory** — the system may refuse. Community reports: **works when triggered by a user action, FAILS when triggered by a timer/network** — exactly the remote-control case (activation driven by an incoming network event).
+`activate(ignoringOtherApps:)` is deprecated; `activate()` is **advisory** — the system may refuse. Community reports: **works when triggered by a user action, FAILS when triggered by a timer/network** — exactly the remote-control case (activation driven by an incoming network event).
 
 Mitigations:
-- `activateIgnoringOtherApps:` (deprecated) still works on macOS 14 and is stronger — accept the warning.
+- `activateIgnoringOtherApps:` (deprecated) still works and is stronger — accept the warning.
 - `AXRaise` reorders the window even when full app activation is throttled → **combining `AXRaise` + `activate()` is the most reliable**.
-- **Must test on the exact shipping versions (14/15/26)** — activation policy keeps tightening.
+- **Test on the shipping floor (macOS 26)** — activation policy keeps tightening.
 
 ---
 

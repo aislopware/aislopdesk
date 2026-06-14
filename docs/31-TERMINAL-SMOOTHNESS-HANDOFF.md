@@ -1,5 +1,7 @@
 # 31 — Terminal-path smoothness overhaul (2026-06-12 overnight)
 
+> **Historical session log (2026-06-12). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 **Status: DONE + reviewed + loopback-verified. ⚠️ NOT DEPLOYED — read the deploy section before restarting anything.**
 
 After the video path reached Parsec parity, this round made the TERMINAL path (host PTY → TCP mux → libghostty) as smooth as the architecture allows. 9 commits on `main` (`1021def..58fa8ed`), full suite 1726/0, macOS + iOS apps build, `check-macos.sh --connect` PASS, cua loopback rig verified (flood + instant Ctrl-C + live RTT badge).

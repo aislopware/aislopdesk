@@ -1,5 +1,7 @@
 # 24 — Code-Hardening Pass Handoff
 
+> **Historical session log. Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 > **STATUS: CURRENT.** This records the autonomous code-hardening pass (2026-06-03) on branch
 > **`feat/aislopdesk-code-hardening`** (15 commits over `main`), which resolved every deferred
 > followup from [`23-workspace-ui-handoff.md`](23-workspace-ui-handoff.md), the known video-host

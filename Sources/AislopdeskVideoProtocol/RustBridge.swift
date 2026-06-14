@@ -4,17 +4,17 @@ import Foundation
 /// Swift-side bridge from `AislopdeskVideoProtocol` to the Rust `aislopdesk-ffi` C ABI.
 ///
 /// All `import CAislopdeskFFI` for the video wire codecs is contained here; the codec types
-/// call these typed wrappers so their public APIs are unchanged (the strangler swap). The
-/// Rust core is a byte-/bit-exact port of these Swift codecs (proven by golden vectors and
-/// re-proven through these wrappers by the `Rust*ParityTests`), so they are drop-in
-/// replacements — one source of truth shared with the Android client.
+/// call these typed wrappers so their public Swift APIs stay stable. The Rust core is the
+/// canonical implementation of the video wire codecs; its byte-/bit-exact output is verified
+/// by golden vectors and re-checked through these wrappers by the `Rust*ParityTests`. The same
+/// core is the basis for the Android client over the same C ABI.
 ///
 /// Memory contract (mirrors `aislopdesk_ffi.h`): buffers passed *in* are borrowed for the
 /// call only; any `AisdBytes` the library returns owns a Rust allocation and is released with
 /// `aisd_bytes_free` before the wrapper returns.
 enum RustVideoFFI {
-    /// Encodes a cursor update (fixed 36 bytes) via the Rust codec. Falls back to the native
-    /// encoder on the (unreachable) FFI failure.
+    /// Encodes a cursor update (fixed 36 bytes) through the Rust core. The guard defensively
+    /// returns the in-process Swift encoding on the (unreachable) FFI failure.
     static func encode(_ update: CursorUpdate) -> Data {
         var out = AisdBytes()
         let status = aisd_cursor_update_encode(
@@ -33,9 +33,9 @@ enum RustVideoFFI {
         return Data(bytes: ptr, count: out.len)
     }
 
-    /// Decodes a cursor update via the Rust codec, throwing the same ``VideoProtocolError``
-    /// cases as the native decoder (`.malformed` for wrong type / non-finite, `.truncated`
-    /// for a short body).
+    /// Decodes a cursor update through the Rust core, throwing the ``VideoProtocolError`` cases
+    /// that ``CursorUpdate`` decoding defines (`.malformed` for wrong type / non-finite,
+    /// `.truncated` for a short body).
     static func decodeCursor(_ data: Data) throws -> CursorUpdate {
         var out = AisdCursorUpdate(shape_id: 0, visible: 0, x: 0, y: 0, hotspot_x: 0, hotspot_y: 0)
         let status: AisdStatus = data.withUnsafeBytes { raw in

@@ -1,5 +1,7 @@
 # 34 — Beyond-UI/UX features round (2026-06-13)
 
+> **Historical session log (2026-06-13). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 **Status: 5 net-new features + a bug-hunt of the prior round + an adversarial self-review, all shipped to `main` with headless tests. Full suite 1972 → 2024/0.** Continuation of the loop the user asked for ("keep going, expand beyond UI/UX, use a loop, don't stop early"). Base `4b76d93`.
 
 This round deliberately expanded past UI/UX into protocol robustness, multiplexer power-features, security/privacy, and portability — picking features whose **core logic is unit-testable headlessly** (the rig is unavailable from automation), with the HW-feel surface (an alert, a sheet, the on-device echo) noted as pending.

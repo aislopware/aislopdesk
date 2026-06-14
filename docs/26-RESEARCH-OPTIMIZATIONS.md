@@ -1,5 +1,7 @@
 # 26 — Aislopdesk Optimization Report (cross-product research synthesis)
 
+> **Historical session log. Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 Synthesis of 5 parallel research dossiers (terminal-mux UX, remote-desktop video tech,
 host menu-bar GUI, connection resilience, dev-agent UX) into a single prioritized,
 de-duplicated optimization backlog for Aislopdesk.

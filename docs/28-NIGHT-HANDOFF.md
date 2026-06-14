@@ -1,5 +1,7 @@
 # Night Handoff — 2026-06-05 (session 2)
 
+> **Historical session log (2026-06-05). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 Autonomous bug-hunt + UX pass. Branch: **`main`**, **UNCOMMITTED** (you didn't ask to commit).
 Driven by one comprehensive 8-finder "ultracode" bug-hunt workflow (each finding adversarially
 verified) + independent deep reading, then fixes with regression tests, then **hardware validation
@@ -166,4 +168,4 @@ Tests: `MuxBugFixRegressionTests.swift` (new), `ConnectionRegistryTests.swift`,
 
 ---
 *Generated autonomously. HW evidence under `/tmp/aislopdesk-*.png`. Bug-hunt workflow result:
-the session task output. Memory: `memory/aislopdesk-bughunt-2026-06-05.md`.*
+the session task output.*

@@ -1,5 +1,7 @@
 # 37 — Bug-hunt + DX hardening round (2026-06-13, autonomous, continuation)
 
+> **Historical session log (2026-06-13). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 **Status: 9 backlog items + a self-review pass (3 fixes) shipped to `main`, one commit each, test-first;
 base `077acce` → HEAD `54f84f3`. Full suite 2122 → 2137/0.** A continuation of the autonomous loop
 (after docs/36). A fresh 8-reader discovery workflow (`w5k83m7d5`) produced a ranked 15-item backlog;

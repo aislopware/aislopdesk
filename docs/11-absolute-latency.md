@@ -1,30 +1,34 @@
-# 11 — Absolute Latency (deepest multi-layer research)
+# 11 — Absolute Latency (latency-floor research)
 
-> **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path.** Architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
-> ⚠️ **This floor analysis applies ONLY to the GUI video-path** and is largely **over-engineering for the coding profile** ([12](12-coding-profile.md)): motion-to-photon <16ms, 120fps/ProMotion, beam-racing → **DROP**. Terminal path latency = network RTT (~1–5ms LAN), no vsync. **Keep the API corrections** (queueDepth default 8, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, disable AWDL, idle-skip/dirtyRects) — still valid for the GUI path. **NetBird note ([13](13-netbird-transport.md)):** `serviceClass`/DSCP and `requiredInterfaceType=.wiredEthernet` in this doc **do NOT apply** (running over a WireGuard tunnel — DSCP gets zeroed, utun is `.other`).
+> ⚠️ **Scope.** This floor analysis covers ONLY the GUI video-path and is mostly **over-engineering for the coding profile** ([12](12-coding-profile.md)) — motion-to-photon <16 ms, 120 fps/ProMotion, beam-racing all **DROP**. Terminal-path latency = network RTT (~1–5 ms LAN), no vsync. **Keep the API corrections** (queueDepth default 8, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, disable AWDL, idle-skip/dirtyRects) — still valid for the GUI path.
 
-> Synthesized from a **73-agent** workflow (15 dimensions + 14 gaps + adversarial verify, ~6M tokens). Goal: **absolute floor latency** glass-to-glass for the Apple/LAN/per-window stack. Full raw corpus: [research/latency-research-corpus.json](research/latency-research-corpus.json).
+> **Net-model note ([13](13-network-transport.md)).** The apps assume a trusted private network — typically a userspace-WireGuard mesh (NetBird/Tailscale as examples). Over such a tunnel DSCP is zeroed and the WG interface (utun) shows as `.other`, so `serviceClass`/DSCP marking and `requiredInterfaceType=.wiredEthernet` in this doc **do NOT apply** there.
 
-## Floor summary (needs Phase-0 validation)
+Goal: the absolute glass-to-glass (G2G) floor for the Apple/LAN/per-window stack (`ScreenCaptureKit → VideoToolbox HEVC → UDP/QUIC → VideoToolbox decode → Metal/CAMetalLayer`). **Every number is derived, not yet measured on this stack** → see the Phase-0 checklist at the end. Raw corpus: [research/latency-research-corpus.json](research/latency-research-corpus.json).
 
-| Scenario | Theoretical floor | Realistic |
+## Floor summary
+
+| Configuration | Floor G2G | Realistic G2G |
 |---|---:|---:|
-| 60fps, wired GigE | ~14 ms | ~22–26 ms |
-| 120fps, wired (ProMotion both ends) | ~10 ms | ~14–16 ms |
-| 60fps, Wi-Fi 6/6E (light load) | — | +2–5 ms vs wired |
-| 120fps, Wi-Fi 6E (6GHz) | — | ~17–26 ms |
+| 120 fps wired, 120 Hz both ends | ~10 ms | ~14–16 ms |
+| 60 fps wired, 60 Hz both ends | ~14 ms | ~22–26 ms |
+| 120 fps Wi-Fi 6E (6 GHz) | ~12 ms | ~17–26 ms |
+| 60 fps Wi-Fi 6/6E | ~16 ms | ~24–41 ms |
 
-The two **dominant** stages are **capture (waiting on the compositor vsync at the host)** and **render + scanout (vsync at the client)** — the network all but disappears on wired GigE (one-way <0.1 ms). Every number is **derived**, not yet measured on this native Swift stack → see the Phase-0 checklist at the end.
+The **two dominant stages are both vsync**: capture (waiting on the host compositor) and render+scanout (vsync at the client). On wired GigE the network all but disappears (one-way <0.1 ms). To compress the floor, **raise the refresh rate (60→120 Hz saves ~12 ms: ~8 ms capture + ~4 ms scanout), not the network.**
 
-> ⚠️ **Important CORRECTIONS to the old design** (details in §"Verified API claims"):
-> - `minimumFrameInterval`: **macOS 15+ silently defaults to 1/60** (caps at 60fps even on ProMotion) → **must set explicitly**; use `(1/fps)×0.9` (OBS PR#11896), **NOT** `kCMTimeZero` (refuted).
-> - `queueDepth`: the actual default is **8** (not 3); **2 is valid** for low latency.
-> - HEVC: `AllowOpenGOP` defaults to **true** → **must set `false`**; `MaxFrameDelayCount=0` forces one-in-one-out.
-> - 10-bit capture: `'x420'` (`420YpCbCr10BiPlanarVideoRange`) is **NOT** supported by `SCStreamConfiguration`; HDR requires a **macOS 15 preset** or `'xf44'` (4:4:4).
-> - **AWDL / peer-to-peer (`includePeerToPeer`) is HARMFUL** for video (40–336 ms spikes) → disable; use AP ch44/149 or the 6GHz band.
-> - **VRR / adaptive-sync requires fullscreen** → a single-window (windowed) app gets NO benefit.
-> - **Slice / sub-frame pipelining is NOT available** through the public VideoToolbox API (output is frame-granular) → drop from the design.
+> ⚠️ **Load-bearing API corrections** (details in §"Verified API claims"):
+> - `minimumFrameInterval`: macOS 15+ silently defaults to **1/60** (caps at 60 fps even on ProMotion) → must set explicitly; use `(1/fps)×0.9` (OBS PR#11896), **NOT** `kCMTimeZero` (refuted).
+> - `queueDepth`: real default is **8** (not 3); **2 is valid** for low latency.
+> - HEVC: `AllowOpenGOP` defaults to **true** → set `false`; `MaxFrameDelayCount=0` forces one-in-one-out (its default is `-1`, not 0).
+> - 10-bit capture: `'x420'` is **NOT** in `SCStreamConfiguration`'s list; HDR needs a macOS-15 preset or `'xf44'` (4:4:4).
+> - **AWDL / `includePeerToPeer` is HARMFUL** for video (40–336 ms spikes) → disable.
+> - **VRR/adaptive-sync requires fullscreen** → a windowed app gets no benefit.
+> - **Slice/sub-frame pipelining is NOT available** via the public VideoToolbox API (frame-granular output) → drop.
+
+> **Cross-cutting measurement caveat.** Streamer overlays (Moonlight stats, Virtual Desktop indicator) **under-report true G2G by ~40 ms** — they catch network+decode but miss capture compositor delay, compositor buffering, and display scanout (Visser/Greendayle). Treat every self-reported number as a lower bound; measure with an LED+photodiode rig (~21  ns) or a 240/1000 fps camera.
 
 ## Table of contents
 - [Latency budget & theoretical floor](#latency-budget--theoretical-floor)
@@ -36,683 +40,505 @@ The two **dominant** stages are **capture (waiting on the compositor vsync at th
 
 ## Latency budget & theoretical floor
 
-This section decomposes the glass-to-glass (G2G) budget into discrete stages for the `ScreenCaptureKit -> VideoToolbox HEVC -> Network.framework UDP/QUIC -> VideoToolbox decode -> Metal/CAMetalLayer` stack. The goal is to show exactly where every millisecond goes, which stage dominates, and the absolute realistic floor achievable on Apple Silicon + LAN.
+**Baseline constants:** vsync @60 Hz = 16.67 ms, @120 Hz = 8.33 ms (avg scanout = half a frame: 8.3/4.2 ms). GigE one-way <0.1 ms (~12 µs to serialize 1500 B). Wi-Fi 6/6E one-way 0.5–2.5 ms light load. mach tick on Apple Silicon = 41.67 ns (numer=125, denom=3; confirmed on M1, **verify M2/M3/M4**).
 
-A few foundational principles to internalize before reading the tables:
+### Budget @60 fps — wired GigE, 60 Hz both ends
 
-- **Vsync is an incompressible floor at both ends.** Capture depends on one WindowServer compositor vsync cycle (8.33 ms @120Hz, 16.67 ms @60Hz); display depends on one scanout vsync cycle at the client (half a frame on average, one frame worst-case). These are two costs no API can eliminate — they can only be reduced by raising the refresh rate.
-- **On wired LAN, the network all but disappears from the budget.** GigE serialization of one 1500-byte frame is ~12 µs; one-way LAN total < 0.1 ms. The network is NOT the dominant stage on wired — the pipeline is dominated by display timing at both ends.
-- **Moonlight's overlay numbers always read LOWER than the true G2G.** Christoff Visser / Greendayle measured Virtual Desktop under-reporting by ~40 ms versus true motion-to-photon; the overlay captures network+decode but misses capture compositor delay, compositor buffering, and display scanout. Every "self-reported" number in the corpus must be read as a lower bound.
-
----
-
-### Conventions & baseline constants
-
-| Constant | Value | Source |
-|---|---|---|
-| Vsync period @60Hz | 16.67 ms | By definition (1/60) |
-| Vsync period @120Hz | 8.33 ms | By definition (1/120) |
-| Average scanout contribution (half frame) | 8.3 ms @60Hz / 4.2 ms @120Hz | blurbusters.com (display-compositor-macos) |
-| GigE one-way LAN | < 0.1 ms | basicitnetworking / Cloudflare (~60 µs on 10GbE localhost) |
-| Wi-Fi 6/6E one-way (light load) | 0.5–2.5 ms | routerhaus / Cudy (5GHz 5–15ms RTT; 6GHz 3–8ms RTT) |
-| mach tick Apple Silicon | 41.67 ns (numer=125, denom=3) | Eclectic Light, confirmed on M1; **claim_to_verify for M2/M3/M4** |
-
----
-
-### Budget @60fps — WIRED GigE (60Hz display at both ends)
-
-| Stage | Floor | Realistic | Dominant? | Notes & sources |
+| Stage | Floor | Realistic | Dominant? | Notes |
 |---|---:|---:|:---:|---|
-| **Capture (SCK compositor vsync)** | 0 | ~16.67 ms | ◆ DOMINANT | One WindowServer compositor cycle; incompressible. CPU cost is only ~1.9% of one core (WWDC22 10156). Set `minimumFrameInterval`, `queueDepth=3`, skip idle frames to avoid backlog. |
-| **Encode (VideoToolbox HEVC HW)** | ~3.3 ms | 15–18 ms | ◆ possibly dominant | HEVC ~18 ms/frame @1080p60 on M4 (Lumen README, self-reported); H.264 ~15 ms. Theoretical ceiling ~3.3 ms from ~300fps throughput @1080p — **but that is throughput, NOT single-frame latency** (open question, no official measurement from Apple). Still within the 16.67 ms budget. |
-| **Transmit (UDP/QUIC, wired)** | < 0.1 ms | < 0.5 ms | ✗ | Serialization ~12 µs/1500B + NIC + propagation. QUIC-TLS adds AES-128-GCM ~6.5 µs/frame on M1 (negligible). Plain UDP ~0 crypto. |
-| **Decode (VideoToolbox HEVC HW)** | ~1 ms | 1–3 ms | ✗ | M2 Mac 2–3 ms, drops to 1.2 ms when the renderer is not the bottleneck (Moonlight #1249). M2 iPad ~1 ms (#1087, "felt" — not measured with Instruments). `flags=0` sync decode, do not set `EnableTemporalProcessing`. |
-| **Render + vsync (Metal direct)** | 4.2 ms | 8.3–16.7 ms | ◆ DOMINANT | Average scanout 8.3 ms, worst-case 16.67 ms @60Hz. Metal direct path (CVMetalTextureCache -> CAMetalLayer), do NOT use AVSampleBufferDisplayLayer (adds ≥1 frame of buffering, Moonlight #1885). `maximumDrawableCount=2` (valid on iOS/iPadOS — the "not recommended" claim was refuted), `displaySyncEnabled` + `CAMetalDisplayLink preferredFrameLatency=1`. |
-| **TOTAL G2G video** | **~13 ms** | **~22–36 ms** | | Floor = 16.67 (capture) + 3.3 (encode ceiling) + 0.1 (net) + 1 (decode) + but since the capture+render vsync pair dominates, the practical floor ≈ **14 ms**; realistic ≈ **22 ms** |
+| **Capture (SCK compositor vsync)** | 0 | ~16.67 ms | ◆ | One WindowServer cycle; incompressible. CPU only ~1.9% of a core (WWDC22 10156). Set `minimumFrameInterval`, `queueDepth=2–3`, skip idle frames. |
+| **Encode (VideoToolbox HEVC HW)** | ~3.3 ms | 15–18 ms | ◆ | HEVC ~18 ms/frame @1080p60 on M4 (Lumen, self-reported). The ~3.3 ms ceiling is **throughput** (~300 fps @1080p), NOT single-frame latency — no Apple measurement exists. |
+| **Transmit (UDP/QUIC, wired)** | <0.1 ms | <0.5 ms | ✗ | ~12 µs/1500 B + NIC. QUIC AES-128-GCM ~6.5 µs/frame on M1 (negligible). Plain UDP ~0. |
+| **Decode (VideoToolbox HEVC HW)** | ~1 ms | 1–3 ms | ✗ | M2 Mac 2–3 ms, ~1.2 ms when render isn't the bottleneck (Moonlight #1249). `flags=0` sync, no `EnableTemporalProcessing`. |
+| **Render + vsync (Metal direct)** | 4.2 ms | 8.3–16.7 ms | ◆ | Avg scanout 8.3 ms @60 Hz. `CVMetalTextureCache → CAMetalLayer`; **NOT** AVSampleBufferDisplayLayer (≥1 frame buffering, #1885). `maximumDrawableCount=2`, `displaySyncEnabled` + `CAMetalDisplayLink preferredFrameLatency=1`. |
+| **TOTAL G2G** | **~14 ms** | **~22–26 ms** | | Capture+render vsync pair dominates. |
 
-The realistic 22 ms matches the corpus realworld-floor: "Theoretical glass-to-glass floor at 60fps wired Apple Silicon: ~14–26 ms (capture 1ms + encode 2–4ms + network <0.1ms + decode 1–3ms + display 8.3–16.7ms)".
+> **Capture-stage subtlety:** the 16.67 ms is worst case (pixels change right after a compositor grab); average is half a vsync. The "1 ms capture" figure elsewhere is SCK's *callback overhead* after compositing, NOT the vsync wait. SCK's vsync-to-callback latency on Apple Silicon **has never been published by Apple** — the most important open question of the capture floor.
 
-> **Important note on the capture stage:** The 16.67 ms capture figure assumes the worst case (pixels change right after the compositor just grabbed a frame). The average is half a vsync. The corpus theoretical floor's "1 ms capture" is actually SCK's *callback overhead* after the compositor has already composited — it does NOT include the wait for the compositor vsync. This is the biggest source of confusion: SCK's vsync-to-callback latency on Apple Silicon **has never been published by Apple** (the most important open question of the capture-floor dimension).
+### Budget @120 fps — wired GigE, 120 Hz both ends
 
----
+Same stages; deltas vs @60 fps:
 
-### Budget @120fps — WIRED GigE (120Hz/ProMotion display at both ends)
-
-| Stage | Floor | Realistic | Dominant? | Notes & sources |
-|---|---:|---:|:---:|---|
-| **Capture (SCK compositor vsync)** | 0 | ~8.33 ms | ◆ DOMINANT | One cycle @120Hz. **MUST set `minimumFrameInterval` explicitly** — the macOS 15+ default silently changed to 1/60, capping capture at 60fps even on ProMotion (confirmed: macOS 14.5 SDK = default 0, macOS 15.5 SDK = default 1/60). OBS PR#11896 uses `(1/target_fps × 0.9)`, NOT `kCMTimeZero` (the "kCMTimeZero" claim was refuted — that header comment does not exist). |
-| **Encode (VideoToolbox HEVC HW)** | ~3.3 ms | 8–18 ms | ◆ DOMINANT (tight) | Budget is only 8.33 ms/frame. HEVC ~18 ms (Lumen M4) **exceeds the 120fps budget** → need to verify encode is actually < 8.33 ms or accept encode overlapping multiple frames. This is the tightest constraint at 120fps. |
-| **Transmit** | < 0.1 ms | < 0.5 ms | ✗ | As above. |
-| **Decode** | ~1 ms | 1–3 ms | ✗ | 2.37–2.69 ms average on M4 Pro with the Metal renderer (Moonlight #1696). |
-| **Render + vsync (Metal direct)** | 4.2 ms (worst 8.33) | 4.2–8.3 ms | ◆ DOMINANT | Half-frame scanout = 4.2 ms @120Hz. `CAMetalDisplayLink preferredFrameLatency=1` (only 1.0 or 2.0 are valid — confirmed from the SDK doc). Beam-racing: render the latest frame just before `targetTimestamp`. |
-| **TOTAL G2G video** | **~10 ms** | **~14–16 ms** | | Corpus floor: "~10–16 ms (capture 1ms + encode 2–4ms + network <0.1ms + decode 1–3ms + display 4.2–8.3ms)" |
-
----
-
-### Budget @60fps — Wi-Fi 6/6E (light load)
-
-| Stage | Realistic (Wi-Fi) | Δ vs wired | Notes |
-|---|---:|---:|---|
-| Capture | ~16.67 ms | 0 | Unchanged (host-side) |
-| Encode | 15–18 ms | 0 | Unchanged |
-| **Transmit** | **2–5 ms** | **+2–5 ms** | Wi-Fi 5GHz 5–15ms RTT → ~2.5–7.5ms one-way; 6GHz 3–8ms RTT → ~1.5–4ms one-way, jitter down ~80% (Cudy). **`serviceClass=.interactiveVideo` is mandatory** (→ AC_VI), enable WMM on the AP, do NOT enable `includePeerToPeer` (AWDL 40–336 ms spikes). |
-| Decode | 1–3 ms | 0 | Unchanged (client-side) |
-| Render+vsync | 8.3–16.7 ms | 0 | Unchanged |
-| **TOTAL G2G video** | **~24–41 ms** | **+2–5 ms** | Wi-Fi adds ~2–5 ms under ideal conditions |
-
-> **AWDL warning (latency bomb).** AWDL runs in the background on every Apple machine, channel-hopping roughly every 10–12s and causing 50–200 ms spikes (networkweather; Visser/RIPE91 measured 20ms ±25ms variance, RTT 3–90ms). **Mandatory mitigation:** configure the AP to use the AWDL social channel, 5GHz ch44 or ch149 (confirmed via OWL/Seemoo reverse-engineering, never officially confirmed by Apple), or use the 6GHz band. Otherwise the Wi-Fi budget can periodically jump by +50–200 ms.
-
----
-
-### Budget @120fps — Wi-Fi 6E (light load, 6GHz)
-
-| Stage | Realistic | Notes |
+| Stage | Realistic | Note |
 |---|---:|---|
-| Capture | ~8.33 ms | Needs an explicit `minimumFrameInterval` |
-| Encode | 8–18 ms | Tightest constraint at 120fps |
-| Transmit | 1.5–4 ms | 6GHz beats 5GHz (no AWDL contention, clean channel) |
-| Decode | 1–3 ms | |
-| Render+vsync | 4.2–8.3 ms | |
-| **TOTAL G2G video** | **~17–26 ms** | 6GHz is the best Wi-Fi option for 120fps |
+| **Capture** | ~8.33 ms | **MUST set `minimumFrameInterval` explicitly** — macOS 15+ default silently became 1/60, capping at 60 fps even on ProMotion (confirmed: 14.5 SDK default 0, 15.5 SDK default 1/60). Use `(1/fps)×0.9` (OBS PR#11896), not `kCMTimeZero` (refuted). |
+| **Encode** | 8–18 ms | ◆ **tightest constraint** — budget is only 8.33 ms/frame; HEVC ~18 ms (Lumen M4) exceeds it. Verify encode <8.33 ms or accept multi-frame overlap. |
+| **Decode** | 1–3 ms | 2.37–2.69 ms avg on M4 Pro + Metal (#1696). |
+| **Render + vsync** | 4.2–8.3 ms | ◆ Half-frame scanout = 4.2 ms @120 Hz. `preferredFrameLatency=1` (only 1.0/2.0 valid). Beam-race the latest frame just before `targetTimestamp`. |
+| **TOTAL G2G** | **~14–16 ms** | floor ~10 ms |
 
----
+### Wi-Fi delta
 
-### Input-to-photon (full remote-control round trip)
+Wi-Fi changes only the transmit stage (host capture/encode and client decode/render are unchanged): **+2–5 ms** @5 GHz (5–15 ms RTT), **+1.5–4 ms** @6 GHz (cleaner, no AWDL contention, jitter down ~80%). `serviceClass=.interactiveVideo` (→ AC_VI) + WMM on the AP; do **NOT** set `includePeerToPeer`.
 
-This is a 6-stage chain, distinct from one-way video G2G: client captures input → send → host injects → host display changes → returns to the client as video. Most important takeaway: **the local cursor is decoupled from the video loop**.
+> **AWDL latency bomb.** AWDL runs in the background on every Apple machine, channel-hopping ~every 10–12 s → 50–200 ms spikes (Visser/RIPE91: 20 ms ±25 ms, RTT 3–90 ms). **Mitigation:** put the AP on the AWDL social channel (5 GHz ch44/ch149, per OWL/Seemoo RE — never Apple-confirmed) or use 6 GHz. Otherwise the Wi-Fi budget periodically jumps +50–200 ms.
 
-| Stage | macOS host cursor | iOS touch client | Notes & sources |
+### Input-to-photon (full round trip)
+
+6-stage chain (client input → send → host inject → host display changes → returns as video), distinct from one-way G2G. **Key takeaway: the local cursor is decoupled from the video loop.**
+
+| Stage | macOS host cursor | iOS touch client | Notes |
 |---|---:|---:|---|
-| **1. Client input capture** | 1–3 ms (USB HID 1ms @1000Hz; passive CGEventTap +0.1–0.3ms) | 8–17 ms @120Hz (touch HW at 240Hz, UIKit coalesces to the frame boundary) | iOS 120Hz touch-to-UIKit **has no official measurement**; estimating "8–17ms" by halving the 60Hz figure is *methodologically unsound* (DXOMARK measured the iPhone 15 Pro Max at ~67ms end-to-end, NOT half the 60Hz value). Use `coalescedTouches`/`predictedTouches`. |
-| **2. Network send** | 0.05–0.2 ms wired | as above | Send button events immediately, batch motion at ~1ms cadence. |
-| **3. Host inject (CGEventPostToPid)** | 0.2–2 ms | — | NOT a "Mach IPC round-trip" as originally assumed (refuted) — it is a CoreGraphics/WindowServer multi-hop injection, **no Apple Silicon benchmark exists**. For comparison: XPC/UDS small-msg ~11µs on Intel → the full path has more hops. |
-| **4. Activate-then-control** | 0.1–0.3 ms (2 Mach msgs, once per session) | — | `SLPSPostEventRecordTo` flips the active state without raising the window (avoids the 100–300ms Space switch). **Note:** on macOS 14 this function can SIGABRT because `CGSEncodeEventRecord` mis-serializes a buffer filled with 0xFF (paneru #123) — needs an OS-version guard. Tahoe 26: CGEventPost from an unsigned daemon is blocked → needs code-signing or a DriverKit virtual HID. |
-| **5. Return video (host display→client)** | 3–15 ms | 3–15 ms | = the entire encode→net→decode pipeline above (without double-counting scanout). |
-| **6. Client display** | 8–13 ms @120Hz | 8–17 ms @120/60Hz | Same as render+vsync above. |
+| **1. Input capture** | 1–3 ms (USB HID 1 ms @1000 Hz; passive CGEventTap +0.1–0.3 ms) | 8–17 ms @120 Hz | iOS 120 Hz touch-to-UIKit **has no official measurement**; halving the 60 Hz figure is unsound (DXOMARK measured iPhone 15 Pro Max ~67 ms end-to-end). Use `coalescedTouches`/`predictedTouches`. |
+| **2. Network send** | 0.05–0.2 ms wired | — | Button events immediately; batch motion at ~1 ms. |
+| **3. Host inject (CGEventPostToPid)** | 0.2–2 ms | — | **NOT** a Mach IPC round-trip (refuted) — a CoreGraphics/WindowServer multi-hop; **no Apple Silicon benchmark exists**. |
+| **4. Activate-then-control** | 0.1–0.3 ms (2 Mach msgs/session) | — | `SLPSPostEventRecordTo` flips active state without raising (avoids 100–300 ms Space switch). **macOS 14 SIGABRT risk** (`CGSEncodeEventRecord` mis-serializes a 0xFF buffer, paneru #123) → OS-version guard. macOS 26: CGEventPost from an unsigned daemon is blocked → needs code-signing or a DriverKit virtual HID. |
+| **5. Return video** | 3–15 ms | 3–15 ms | = the encode→net→decode pipeline above. |
+| **6. Client display** | 8–13 ms @120 Hz | 8–17 ms | = render+vsync above. |
 
-**Input-to-photon results:**
-- **WITHOUT a local cursor:** ~14–36 ms G2G (wired, 120Hz, cursor excluded) — matches the corpus.
-- **WITH a local cursor overlay:** the cursor appears in **~2–5 ms** (input capture + draw, fed from the input channel, NOT through the video round trip); the window-update confirmation (the video frame showing the result) arrives in ~15–25 ms. **This is the highest-value optimization for perceived responsiveness** — RDP/PCoIP/NoMachine all do it. Set `SCStreamConfiguration.showsCursor = false` and draw the cursor client-side from the input stream.
+- **No local cursor:** ~14–36 ms G2G (wired, 120 Hz, cursor excluded).
+- **With local cursor overlay:** cursor appears in **~2–5 ms** (fed from the input channel, not the video round trip); the window-update confirmation arrives ~15–25 ms. **Highest-value perceived-responsiveness optimization** (RDP/PCoIP/NoMachine all do it). Set `showsCursor=false`, draw the cursor client-side.
+- On LAN, RTT ~1 ms < one frame → **no motion prediction needed** (only for WAN RTT >20 ms).
 
-On LAN, RTT ~1ms < one frame period, so **NO motion prediction/extrapolation is needed** (only for WAN RTT > 20ms).
+### Comparison vs real systems
 
----
+| System | Published figure | Scope / reliability |
+|---|---|---|
+| **Parsec** | 4–8 ms @240 fps wired | encode+transmit+decode **display-to-display** (no input), 1000 fps camera; extreme stress demo (Parsec recommends 60 fps). NOT full G2G. |
+| **Parsec encode** | NVENC H.264 median 5.8 ms | fleet median across all Nvidia GPUs, 2018, uncontrolled. Apple Silicon encode latency has **no official benchmark**. |
+| **Moonlight + Sunshine** | ~10–20 ms @60 fps wired | community overlay — under-reports; true G2G higher. |
+| **Moonlight decode (AS)** | M2 iPad ~1 ms, M2 Mac 2–3 ms | "felt"/overlay; ~2.7 ms via Metal vs 4–6 ms via AVSBDL. |
+| **Lumen (M4)** | H.264 ~15 ms / HEVC ~18 ms @1080p60 | README self-reported, methodology unstated. |
+| **ALVR (VR)** | target <50 ms; actual 70–140 ms wireless | adds compositor+tracking; not comparable. |
+| **NeSt-VR** | VF-RTT 4–5 ms Wi-Fi | transmission round-trip only, peer-reviewed. |
 
-### Absolute realistic floor & comparison against real systems
+### Caveats & uncertainties
 
-**Theoretical floor, Apple Silicon + wired LAN (Metal direct render, HEVC HW, low-latency mode):**
-
-| Configuration | Floor G2G video | Realistic G2G video |
-|---|---:|---:|
-| **120fps wired, display 120Hz** | **~10 ms** | **~14–16 ms** |
-| **60fps wired, display 60Hz** | **~14 ms** | **~22–26 ms** |
-| **120fps Wi-Fi 6E** | ~12 ms | ~17–26 ms |
-| **60fps Wi-Fi 6** | ~16 ms | ~24–41 ms |
-
-**Where every millisecond goes:** In both wired configurations, **the two vsync stages (capture compositor + display scanout) account for most of the floor** — about 12.5 ms (@60Hz: 8.3+4.2 on average, up to 33ms if both hit worst-case) versus only ~4 ms for encode+decode combined and < 0.5 ms for the network. **Encode is the only potentially-dominant stage we can control via API** (low-latency RC, no B-frames, MaxFrameDelayCount=0). The network is nearly free on wired. Conclusion: **to compress the floor, raise the refresh rate (60→120Hz), not the network** — moving 60→120Hz saves ~8ms in capture + ~4ms in scanout = ~12ms.
-
-**Comparison against real systems (sourced measurements):**
-
-| System | Published figure | Measurement scope | Reliability assessment |
-|---|---:|---|---|
-| **Parsec** | 4–8 ms @240fps wired LAN | encode+transmit+decode **display-to-display**, does NOT include input injection, measured with a 1000fps camera | An extreme stress-test demo (Parsec recommends 60fps in practice); NOT full G2G. ~7ms overhead @60fps vs local. |
-| **Parsec encode** | NVENC H.264 median 5.8 ms | fleet median across **all Nvidia GPUs** (not just Pascal), 2018, NOT a controlled benchmark | Apple Silicon Media Engine encode latency **has no official benchmark at all** |
-| **Moonlight + Sunshine** | ~10–20 ms total @60fps wired | community measured, overlay | Overlay under-reports — true G2G is higher |
-| **Moonlight decode (Apple Silicon)** | M2 iPad ~1ms, M2 Mac 2–3ms | "felt"/overlay, not Instruments | M2 Mac 4–6ms via FFmpeg+VT+AVSampleBufferDisplayLayer; down to ~2.7ms with Metal |
-| **Lumen (Sunshine fork, M4)** | encode H.264 ~15ms / HEVC ~18ms @1080p60; 1ms encode-to-network | README self-reported, methodology not stated | Self-reported encode numbers, not independently verified |
-| **ALVR (VR)** | target < 50ms motion-to-photon; actual 70–140ms wireless | measured by Greendayle | The VR domain adds compositor+tracking; not directly comparable |
-| **NeSt-VR (paper)** | VF-RTT 4–5 ms Wi-Fi | measured, peer-reviewed | Transmission round-trip stage only |
-
----
-
-### Caveats & uncertainties to remember
-
-1. **macOS 26 Tahoe decode regression.** Moonlight #1696 reports decode latency jumping to ~80ms on Intel/macOS 26, ~20ms on M4 with the Metal renderer; disabling the Metal renderer → ~2.7ms. Suspected cause is CAMetalDisplayLink "presentation wait timed out", not HW decode. **Must test on the macOS 26 target before trusting the ~14ms floor.**
-
-2. **Encode single-frame latency is the biggest unsolved open question.** The ~3.3ms ceiling comes from *throughput* (~300fps @1080p HEVC), NOT single-frame latency. Apple has not published one. At 120fps (8.33ms budget) this constraint can break — measure on the target hardware with `CACurrentMediaTime()` before `VTCompressionSessionEncodeFrame` and inside the output handler.
-
-3. **HEVC low-latency rate control on Apple Silicon is empirical, NOT documented.** `kVTVideoEncoderSpecification_EnableLowLatencyRateControl` is documented by Apple for H.264 only (WWDC21); HEVC support is confirmed only via an FFmpeg patch (`TARGET_CPU_ARM64`), with no official guarantee. Querying `kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder` returns `kVTPropertyNotSupportedErr` (-12900) in low-latency mode — that is API incompleteness, NOT evidence of a software fallback. The real error gating for missing HW is -12902.
-
-4. **SCK capture vsync-to-callback latency has never been publicly measured.** The entire capture stage (8.33/16.67 ms) is inferred from compositor architecture, not an Apple number. `SCStreamFrameInfoDisplayTime` shares a clock domain with `CACurrentMediaTime()` (both rooted in `mach_absolute_time` — confirmed), but there is a forum report of negative latency (May 2025) that may be a stamping bug of its own; convert correctly with `mach_timebase_info`.
-
-5. **AVSampleBufferDisplayLayer extra-frame buffering is a macOS observation (discrete GPU).** The "1+ frame" Δ from Moonlight #1885 was measured on a Radeon Pro 580; **no iOS benchmark** compares Metal vs AVSampleBufferDisplayLayer. On iOS, Moonlight only uses AVSampleBufferDisplayLayer (no Metal path to A/B). Even so, the Metal-direct recommendation stands because it bypasses the compositor queue.
-
-6. **`maximumDrawableCount=2` is VALID on iOS/iPadOS** (the "Apple does not recommend it" claim was refuted — there is only a warning that `nextDrawable` returns nil more often, which applies on every platform). It is the right choice for minimum G2G; handle nil drawables + drop frames.
+1. **macOS 26 decode regression.** Moonlight #1696 reports decode jumping to ~80 ms (Intel) / ~20 ms (M4 + Metal); disabling the Metal renderer → ~2.7 ms. Suspected cause is CAMetalDisplayLink "presentation wait timed out", **not** HW decode. **Test on the macOS 26 target before trusting the ~14 ms floor.**
+2. **Encode single-frame latency** is the biggest unsolved open question — the ~3.3 ms ceiling is throughput, not latency; at 120 fps (8.33 ms budget) it can break. Measure with `CACurrentMediaTime()` around `VTCompressionSessionEncodeFrame`.
+3. **HEVC low-latency RC on Apple Silicon is empirical, not documented.** `EnableLowLatencyRateControl` is Apple-documented for H.264 only; HEVC is confirmed only via an FFmpeg ARM64 patch. Querying `UsingHardwareAcceleratedVideoEncoder` returns `-12900` in low-latency mode = API incompleteness, NOT a software fallback (real missing-HW error is `-12902`).
+4. **SCK capture vsync-to-callback latency** has never been publicly measured — the whole capture stage is inferred from compositor architecture. `SCStreamFrameInfoDisplayTime` shares a clock domain with `CACurrentMediaTime()` (both `mach_absolute_time`); convert via `mach_timebase_info`.
+5. **AVSBDL extra-frame buffering** ("1+ frame", #1885) was measured on a Radeon Pro 580 (macOS dGPU); **no iOS benchmark**. Metal-direct still wins (bypasses the compositor queue).
+6. **`maximumDrawableCount=2` is VALID on iOS/iPadOS** (the "not recommended" claim was refuted — only a platform-neutral warning that `nextDrawable` returns nil more often). Right choice for minimum G2G; handle nil + drop frames.
 
 ---
 
 ## Per-stage absolute-minimum configuration
 
-This section lists the configuration **down to the exact symbol** for each stage of the glass-to-glass pipeline. Each setting comes with a one-line rationale. The spelling of every VideoToolbox and ScreenCaptureKit symbol below was verified directly against `MacOSX.sdk` (the installed Xcode: SCK `SCStream.h`, VT `VTCompressionProperties.h`). Any symbol that **could not be verified** from a header is explicitly marked `[UNVERIFIED]`.
-
-> Conventions: `[VERIFIED-SDK]` = confirmed from a header on this machine; `[VERIFIED-CORPUS]` = corpus-confirmed but the header was not re-checked this time; `[UNVERIFIED]` = indirect/community sources only, needs a runtime test; `[PRIVATE]` = private/undocumented symbol, use at your own risk.
-
----
+Configuration down to the exact symbol per pipeline stage. Symbol spellings were verified against the installed `MacOSX.sdk`. Markers: `[VERIFIED-SDK]` = confirmed from a header on this machine; `[VERIFIED-CORPUS]` = corpus-confirmed, header not re-checked; `[UNVERIFIED]` = community-only, needs a runtime test; `[PRIVATE]` = private/undocumented, use at your own risk.
 
 ### 1. Capture — ScreenCaptureKit
 
-Use `SCStream` with `SCContentFilter(desktopIndependentWindow:)`. This is the only public single-window capture path available on macOS 14+ (CGDisplayStream / CGWindowListCreateImage were obsoleted in the macOS 15 SDK) [capture-floor].
+`SCStream` + `SCContentFilter(desktopIndependentWindow:)` — the only public single-window path (CGDisplayStream / CGWindowListCreateImage were obsoleted in the macOS 15 SDK).
 
 | Setting | Value | Rationale |
 |---|---|---|
-| `SCContentFilter(desktopIndependentWindow:)` `[VERIFIED-CORPUS]` | target window | A filter specialized for single-window, display-independent capture that does not composite other windows → less work in the WindowServer capture path. |
-| `config.minimumFrameInterval` `[VERIFIED-SDK]` (`SCStream.h:222`, type `CMTime`) | `CMTimeMake(1, targetFPS)` (e.g. `CMTimeMake(1, 120)`); do **not** use a float approximation | On macOS 15+ the default **changed to 1/60** even on ProMotion → silent 60fps cap. **Verified (corpus, confirmed):** setting this value explicitly is mandatory. **Important correction:** the original claim that `kCMTimeZero` enables the native refresh rate was **REFUTED** — OBS PR #11896 actually uses `target_frame_period × 0.9` (a concrete CMTime), **not** `kCMTimeZero`, and no SDK header says `kCMTimeZero` → native refresh. Recommendation: set exactly `1/targetFPS`, or `1/(targetFPS × 1.1)` (an interval ~10% shorter) per the OBS empirical fix if you see dropped frames. `kCMTimeZero` is untested for this purpose. |
-| `config.queueDepth` `[VERIFIED-SDK]` (`SCStream.h:279`, type `NSInteger`) | `3` (for LAN low-latency) | **Correction (corpus REFUTED the claim "range 3–8, default 3"):** the header actually says **default = 8** with only a soft upper bound `"should not exceed 8 frames"`, and **no** hard floor of 3. Production code uses `queueDepth=1` and `=2` successfully (daylight-mirror's 3→2 cut P95 RTT 21.6→18.8ms). Each extra surface = up to 1 extra frame-interval of backlog. IOSurface release deadline = `minimumFrameInterval × (queueDepth−1)`; at 120fps queueDepth=3 → 16.7ms. Choose 2–3 for minimum latency if encode meets the deadline. |
-| `config.pixelFormat` `[VERIFIED-SDK]` (`SCStream.h:234`, type `OSType`) | `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` (`'420v'`) 8-bit | NV12 goes straight into the VideoToolbox HW encoder with **no** color-conversion pass. BGRA forces one GPU blit (~0.5–2ms at 4K). |
-| `config.pixelFormat` (HDR/10-bit) | **Correction:** use a preset, do **not** assign `'x420'` directly | **REFUTED:** `kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange` (`'x420'`, 4:2:0 video-range) is **not** in SCK's documented pixelFormat list. The header lists exactly 6 values, of which the only 10-bit YCbCr is `'xf44'` (4:4:4 full-range). The official HDR path: use an `SCStreamConfiguration` preset (`SCStreamConfigurationPresetCaptureHDRLocalDisplay`, macOS 15.0+ `[VERIFIED-SDK SCStream.h:194`]) — the preset sets `captureDynamicRange`, `pixelFormat`, `colorSpace`, `colorMatrix` itself. |
-| `config.showsCursor` `[VERIFIED-SDK]` (`SCStream.h:254`, `BOOL`) | `false` | Do not composite the cursor into the frame; the client draws its own cursor overlay from the input stream (see the Input stage). |
-| `config.captureResolution` `[VERIFIED-SDK]` (`SCStream.h:325`, `SCCaptureResolutionType`, macOS 14.0+) | `.nominal` (= `SCCaptureResolutionNominal`) | Point resolution instead of 2× Retina; on 4K Retina this cuts pixel count 4× → encode + memory bandwidth shrink accordingly. |
-| `config.ignoreShadowsSingleWindow` `[VERIFIED-SDK]` (`SCStream.h:320`, `BOOL`, macOS 14.0+) | `true` | Strips the WindowServer-composited window shadow → smaller capture bounding box. |
-| `config.captureDynamicRange` `[VERIFIED-SDK]` (`SCStream.h:370`, `SCCaptureDynamicRange`, macOS 15.0+) | `SCCaptureDynamicRangeSDR` (default) for SDR | HDR is Apple Silicon only; keep SDR when streaming SDR to avoid triggering the EDR pipeline downstream. |
-| `addStreamOutput(_:type:sampleHandlerQueue:)` `[VERIFIED-CORPUS]` | `DispatchQueue(label:..., qos: .userInteractive)` | High-priority callback delivery, less scheduling jitter under load. |
+| `SCContentFilter(desktopIndependentWindow:)` `[VERIFIED-CORPUS]` | target window | Single-window, display-independent capture → less WindowServer work. |
+| `config.minimumFrameInterval` `[VERIFIED-SDK]` (`CMTime`) | `CMTimeMake(1, targetFPS)`; **not** a float | macOS 15+ default changed to 1/60 → silent 60 fps cap; setting it explicitly is mandatory. `kCMTimeZero=native-refresh` is **REFUTED** (OBS PR#11896 uses `target_frame_period × 0.9`, no header says `kCMTimeZero`). Use `1/targetFPS`, or `1/(targetFPS×1.1)` per the OBS fix if frames drop. |
+| `config.queueDepth` `[VERIFIED-SDK]` (`NSInteger`) | `2–3` for LAN | "range 3–8, default 3" is **REFUTED**: header default = **8**, soft ceiling "≤8", **no** hard floor of 3. Production uses 1 and 2 (daylight-mirror 3→2 cut P95 RTT 21.6→18.8 ms). IOSurface release deadline = `minimumFrameInterval × (queueDepth−1)`. |
+| `config.pixelFormat` `[VERIFIED-SDK]` (`OSType`) | `'420v'` 8-bit (`kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`) | NV12 goes straight into the HW encoder, no color-conversion pass. BGRA forces a GPU blit (~0.5–2 ms @4K). |
+| `config.pixelFormat` (HDR/10-bit) | use a **preset**, don't assign `'x420'` | **REFUTED:** `'x420'` (4:2:0 video-range) is NOT in SCK's list; the only 10-bit YCbCr is `'xf44'` (4:4:4 full-range). HDR path: `SCStreamConfigurationPresetCaptureHDRLocalDisplay` `[VERIFIED-SDK]` (macOS 15.0+) sets dynamicRange/format/colorSpace/colorMatrix itself. |
+| `config.showsCursor` `[VERIFIED-SDK]` (`BOOL`) | `false` | Client draws its own cursor overlay (see Input). |
+| `config.captureResolution` `[VERIFIED-SDK]` (macOS 14.0+) | `.nominal` | Point resolution; on 4K Retina cuts pixel count 4×. |
+| `config.ignoreShadowsSingleWindow` `[VERIFIED-SDK]` (macOS 14.0+) | `true` | Strips the composited shadow → smaller bounding box. |
+| `config.captureDynamicRange` `[VERIFIED-SDK]` (macOS 15.0+) | `SDR` for SDR | Keep SDR when streaming SDR to avoid triggering the EDR pipeline. |
+| `addStreamOutput(...sampleHandlerQueue:)` `[VERIFIED-CORPUS]` | `DispatchQueue(qos: .userInteractive)` | High-priority delivery, less jitter under load. |
 
-**Inside the `stream(_:didOutputSampleBuffer:of:)` callback:**
-- Read `SCStreamFrameInfoStatus` first; only process `SCFrameStatusComplete`/`SCFrameStatusStarted`, return immediately on `SCFrameStatusIdle`/`Blank`/`Suspended` to avoid queue buildup from idle callbacks.
-- Take the capture timestamp from the `SCStreamFrameInfoDisplayTime` attachment `[VERIFIED-SDK SCStream.h:401`, macOS 12.3+] — **these are mach_absolute_time ticks** (header `SCStream.h:398–399` explicitly says "mach absolute time when the event occurred"). **Correction (corpus REFUTED):** `displayTime` is in the **same clock domain** as `CACurrentMediaTime()` (both based on `mach_absolute_time()`); just convert ticks → seconds via `mach_timebase_info` (Apple Silicon: numer=125, denom=3), **no** cross-domain conversion needed.
-- `stream.synchronizationClock` `[VERIFIED-SDK SCStream.h:453`, `CMClockRef`, macOS 13.0+] to align DTS/PTS with the encoder.
+**In `stream(_:didOutputSampleBuffer:of:)`:**
+- Read `SCStreamFrameInfoStatus` first; process only `Complete`/`Started`, return immediately on `Idle`/`Blank`/`Suspended` to avoid idle-callback backlog.
+- Take the timestamp from `SCStreamFrameInfoDisplayTime` `[VERIFIED-SDK]` — these are mach_absolute_time ticks in the **same clock domain** as `CACurrentMediaTime()` (REFUTED the "cross-domain" claim); just convert ticks→seconds via `mach_timebase_info`.
+- Use `stream.synchronizationClock` `[VERIFIED-SDK]` (macOS 13.0+) to align DTS/PTS.
 
-> **Load-bearing note:** a pixel changing in the app → the composited IOSurface that SCK sees has an irreducible floor = one WindowServer vsync cycle (8.33ms @120Hz, 16.67ms @60Hz). This is **not** an Apple-published number — it is inferred from the compositing architecture. There is no public path lower than SCK on macOS 14+.
-
----
+> Irreducible floor: pixel-change → IOSurface SCK sees = one WindowServer vsync (8.33/16.67 ms). Not Apple-published; inferred from the compositing architecture. No public path lower than SCK.
 
 ### 2. Encode — VideoToolbox
 
-Project default codec: HEVC Main 10, 4:2:0, no B-frames, infinite GOP + on-demand IDR, low-latency RC.
+Default codec: HEVC Main 10, 4:2:0, no B-frames, infinite GOP + on-demand IDR, low-latency RC.
 
-**In the `encoderSpecification` dict at `VTCompressionSessionCreate` (set BEFORE session creation, NOT via `VTSessionSetProperty`):**
-
-| Symbol | Value | Rationale |
-|---|---|---|
-| `kVTVideoEncoderSpecification_EnableLowLatencyRateControl` `[VERIFIED-SDK VTCompressionProperties.h:1202`, macOS 11.3+] | `kCFBooleanTrue` | One-in-one-out pipeline, no frame reorder, faster RC. **Important (UNCERTAIN→corrected):** Apple **documents H.264 only** for this key (WWDC21 + the header never mention HEVC). HEVC on Apple Silicon works in practice per the FFmpeg patch (gated `TARGET_CPU_ARM64 && AV_CODEC_ID_HEVC`, merged 2025) but it is **not an Apple guarantee** — there is a risk of silent regression through an OS update. Verify at runtime with `VTCopySupportedPropertyDictionaryForEncoder`. |
-| `kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder` `[VERIFIED-CORPUS]` | `kCFBooleanTrue` | Fail fast when no Media Engine is present instead of falling back to software (5–20× slower). |
-
-**Manual HEVC low-latency config (because `EnableLowLatencyRateControl` is documented for H.264 only) — via `VTSessionSetProperty` after session creation:**
+**`encoderSpecification` dict (set at `VTCompressionSessionCreate`, before any property):**
 
 | Symbol | Value | Rationale |
 |---|---|---|
-| `kVTCompressionPropertyKey_RealTime` `[VERIFIED-CORPUS]` | `kCFBooleanTrue` | Do not defer frames for batch optimization. |
-| `kVTCompressionPropertyKey_AllowFrameReordering` `[VERIFIED-CORPUS]` | `kCFBooleanFalse` | Disable B-frames; mandatory for LAN remoting. |
-| `kVTCompressionPropertyKey_AllowOpenGOP` `[VERIFIED-SDK VTCompressionProperties.h:197`, macOS 10.14+] | `kCFBooleanFalse` | **HEVC defaults to `kCFBooleanTrue`** (header `:190–191` confirms, verified) → must disable explicitly so IDRs are independently decodable, with no cross-GOP dependency. |
-| `kVTCompressionPropertyKey_MaxFrameDelayCount` `[VERIFIED-SDK VTCompressionProperties.h:576`, macOS 10.8+] | `0` | **Correction (corpus REFUTED "0=default"):** the default is `kVTUnlimitedFrameDelayCount = -1` (`enum` at `:577`, verified), allowing arbitrary buffering. Setting `0` → frame N must be emitted before the encode call for frame N returns = synchronous immediate emit. The sentence "A value of zero implies default behavior" belongs to the **adjacent** property `MaxH264SliceBytes` (`:586`), not this one. |
-| `kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality` `[VERIFIED-SDK VTCompressionProperties.h:324`, macOS 11.0+] | `kCFBooleanTrue` | The HW encoder prioritizes quality by default; flip it to cut encode time (header `:62–65` lists it in the ultra-low-latency recipe). |
-| `kVTCompressionPropertyKey_MaxKeyFrameInterval` `[VERIFIED-CORPUS]` | a very large value (`INT_MAX`) | Infinite GOP; IDR only on demand via `kVTEncodeFrameOptionKey_ForceKeyFrame`. |
-| `kVTCompressionPropertyKey_ExpectedFrameRate` `[VERIFIED-CORPUS]` | target fps (60 or 120) | Helps the encoder pre-configure internal timing. |
-| `kVTCompressionPropertyKey_MaximumRealTimeFrameRate` `[VERIFIED-SDK VTCompressionProperties.h:668`, macOS 15.0+] | `120` | Hints the peak burst rate so the encoder does not under-configure the pipeline for bursts. |
+| `EnableLowLatencyRateControl` `[VERIFIED-SDK]` (macOS 11.3+) | `true` | One-in-one-out, no reorder. **Apple documents H.264 only**; HEVC works on Apple Silicon per the FFmpeg patch (gated `TARGET_CPU_ARM64`, 2025) but is **not an Apple guarantee** — verify at runtime with `VTCopySupportedPropertyDictionaryForEncoder`. |
+| `RequireHardwareAcceleratedVideoEncoder` `[VERIFIED-CORPUS]` | `true` | Fail fast instead of a 5–20× slower software fallback. |
+
+**Manual HEVC low-latency config (`VTSessionSetProperty` after create):**
+
+| Symbol | Value | Rationale |
+|---|---|---|
+| `RealTime` `[VERIFIED-CORPUS]` | `true` | No batch deferral. |
+| `AllowFrameReordering` `[VERIFIED-CORPUS]` | `false` | No B-frames; mandatory for LAN. |
+| `AllowOpenGOP` `[VERIFIED-SDK]` (macOS 10.14+) | `false` | **HEVC defaults to `true`** → must disable so each IDR is independently decodable. |
+| `MaxFrameDelayCount` `[VERIFIED-SDK]` (macOS 10.8+) | `0` | **REFUTED "0=default":** default is `kVTUnlimitedFrameDelayCount = -1`. `0` → frame N emitted before its encode call returns = synchronous emit. ("Zero implies default" belongs to the adjacent `MaxH264SliceBytes`.) |
+| `PrioritizeEncodingSpeedOverQuality` `[VERIFIED-SDK]` (macOS 11.0+) | `true` | HW prioritizes quality by default; flip to cut encode time. |
+| `MaxKeyFrameInterval` `[VERIFIED-CORPUS]` | `INT_MAX` | Infinite GOP; IDR only on demand via `ForceKeyFrame`. |
+| `ExpectedFrameRate` `[VERIFIED-CORPUS]` | target fps | Pre-configures internal timing. |
+| `MaximumRealTimeFrameRate` `[VERIFIED-SDK]` (macOS 15.0+) | `120` | Hints peak burst rate. |
 
 **Rate control (mutually exclusive with low-latency mode):**
 
 | Symbol | Value | Rationale |
 |---|---|---|
-| `kVTCompressionPropertyKey_AverageBitRate` `[VERIFIED-CORPUS]` | `<target_bps>` | Soft target; auto-bitrate is **not** supported in low-latency mode. |
-| `kVTCompressionPropertyKey_DataRateLimits` `[VERIFIED-CORPUS]` | `[bytes, seconds]` | Hard cap against burst overflow stalling the network. |
-| Do **NOT** set `kVTCompressionPropertyKey_ConstantBitRate` | — | Mutually exclusive with `EnableLowLatencyRateControl` → `kVTPropertyNotSupportedErr`. |
-| `kVTCompressionPropertyKey_MaxAllowedFrameQP` `[VERIFIED-SDK VTCompressionProperties.h:1214`, macOS 12.0+] | `36–40` for screen-share | Caps frame size; QP ≤40 keeps text legible and stops bloated IDRs from spiking transmission. |
-| `kVTCompressionPropertyKey_SpatialAdaptiveQPLevel` `[VERIFIED-SDK VTCompressionProperties.h:1540`, **macOS 15.0+, macOS-only**] | `kVTQPModulationLevel_Disable` | Header `:1524` explicitly says "ignored when EnableLowLatencyRateControl is set to true" — disable for correctness / to spend no time on QP analysis. |
+| `AverageBitRate` `[VERIFIED-CORPUS]` | `<target_bps>` | Soft target; auto-bitrate unsupported in low-latency mode. |
+| `DataRateLimits` `[VERIFIED-CORPUS]` | `[bytes, seconds]` | Hard cap against burst overflow. |
+| `ConstantBitRate` | **do NOT set** | Mutually exclusive with low-latency → `kVTPropertyNotSupportedErr`. |
+| `MaxAllowedFrameQP` `[VERIFIED-SDK]` (macOS 12.0+) | `36–40` | Caps frame size; QP ≤40 keeps text legible, stops bloated IDRs. |
+| `SpatialAdaptiveQPLevel` `[VERIFIED-SDK]` (macOS 15.0+, macOS-only) | `Disable` | Header says "ignored when EnableLowLatencyRateControl is true". |
 
 **LTR recovery (instead of periodic IDR):**
 
 | Symbol | Value | Rationale |
 |---|---|---|
-| `kVTCompressionPropertyKey_EnableLTR` `[VERIFIED-SDK VTCompressionProperties.h:1247`, macOS 12.0+] | `kCFBooleanTrue` | An LTR-P frame is much smaller than an IDR → cheaper recovery on packet loss. The header is **codec-agnostic** (not limited to H.264) → usable with HEVC on Apple Silicon (corpus REFUTED the "not yet confirmed" claim). |
-| `kVTEncodeFrameOptionKey_ForceLTRRefresh` `[VERIFIED-SDK VTCompressionProperties.h:1277`] | see rationale | **Contradiction within the header itself (confirmed):** the type annotation says `// CFNumberRef, Optional` but the `@abstract` (`:1265`) says "Set this option to kCFBooleanTrue". Runtime behavior unclear → **test both `kCFBooleanTrue` and `@(1)` (CFNumberRef)** to determine which one the encoder accepts. |
-| `kVTEncodeFrameOptionKey_AcknowledgedLTRTokens` `[VERIFIED-CORPUS]` | CFArray of CFNumberRef | Client feeds back ACKed tokens in the per-frame options. |
+| `EnableLTR` `[VERIFIED-SDK]` (macOS 12.0+) | `true` | LTR-P ≪ IDR → cheaper loss recovery. Header is **codec-agnostic** → usable with HEVC on Apple Silicon (REFUTED "not yet confirmed"). |
+| `ForceLTRRefresh` `[VERIFIED-SDK]` | test both | **Internal header contradiction (confirmed):** annotation says `// CFNumberRef, Optional`, abstract says "Set to kCFBooleanTrue" → **test both `kCFBooleanTrue` and `@(1)`** at runtime. |
+| `AcknowledgedLTRTokens` `[VERIFIED-CORPUS]` | CFArray of CFNumberRef | Client feeds back ACKed tokens. |
 
-**H.264 fallback only:**
+**H.264 fallback only:** `H264EntropyMode = CABAC` (with High profile; ~7% better, decode delta sub-ms) `[VERIFIED-CORPUS]`; `MaxH264SliceBytes ≈ 1300` (MTU-aligned, one slice/packet; **no HEVC equivalent**) `[VERIFIED-SDK]`.
 
-| Symbol | Value | Rationale |
-|---|---|---|
-| `kVTCompressionPropertyKey_H264EntropyMode` `[VERIFIED-CORPUS]` | `kVTH264EntropyMode_CABAC` (with High profile) | CABAC ~7% better compression; on the Apple Silicon HW decoder the CABAC-vs-CAVLC decode latency delta is sub-ms. |
-| `kVTCompressionPropertyKey_MaxH264SliceBytes` `[VERIFIED-SDK VTCompressionProperties.h:588`, H.264-only, macOS 10.8+] | `~1300` (MTU-aligned) | One slice per UDP packet; **no HEVC equivalent** exists in VideoToolbox. |
+**Init & pre-warm:** call `VTCompressionSessionPrepareToEncodeFrames` once after setting properties, before frame 1, to kill the first-frame alloc spike. On macOS 26+, query `SupportedPresetDictionaries`, then use `kVTCompressionPreset_VideoConferencing` `[VERIFIED-SDK]` (macOS 26.0+; header requires `EnableLowLatencyRateControl=true`).
 
-**Initialization & pre-warm:**
-- `VTCompressionSessionPrepareToEncodeFrames(session)` `[VERIFIED-CORPUS]` — call ONCE after setting properties, before the first frame, to eliminate the first-frame allocation spike (resource alloc, ref buffers, HW queue init).
-- macOS 26+: if available, use `kVTCompressionPreset_VideoConferencing` `[VERIFIED-SDK VTCompressionProperties.h:1606`, macOS 26.0+] — header `:1602` explicitly says "requires setting kVTVideoEncoderSpecification_EnableLowLatencyRateControl to kCFBooleanTrue". Query via `kVTCompressionPropertyKey_SupportedPresetDictionaries` before applying.
-
-> **Measurements (corpus, uncertain):** H.264 1080p60 ~15ms/frame, HEVC ~18ms/frame on M4 (Lumen README — self-reported, methodology unclear). Apple does **not** publish per-frame encode latency. WWDC21: the "up to 100ms reduction" at 720p30 is from removing the reorder buffer, **not** raw encode time.
-
----
+> Measurements (uncertain): H.264 ~15 ms/frame, HEVC ~18 ms @1080p60 on M4 (Lumen, self-reported). Apple publishes no per-frame encode latency. WWDC21's "up to 100 ms reduction" @720p30 is from removing the reorder buffer, not raw encode time.
 
 ### 3. Transport — Network.framework + BSD sockets
 
-LAN-only, no NAT. Foundational choice: plain UDP for video (~0 encryption overhead) or QUIC datagram if Wi-Fi needs congestion control.
+LAN-only, no NAT. Plain UDP for video (~0 crypto) or QUIC datagram if Wi-Fi needs congestion control.
 
 **Network.framework (`NWParameters`):**
 
 | Symbol | Value | Rationale |
 |---|---|---|
-| `parameters.serviceClass = .interactiveVideo` `[VERIFIED-CORPUS]` | video flow | Maps to `NET_SERVICE_TYPE_VI` → Wi-Fi 802.11e **AC_VI** (UP 5). **Correction (corpus UNCERTAIN):** on macOS this **only** sets the Wi-Fi L2 User Priority, it does **NOT** set IP-header DSCP unless the interface has Cisco Fastlane (requires MDM). The public C enum `nw_service_class_interactive_video` = **2** (not `NET_SERVICE_TYPE_VI`=3); the translation table is private. |
-| `parameters.serviceClass = .responsiveData` `[VERIFIED-CORPUS]` | input/control flow | A separate low-latency control channel. |
-| `parameters.requiredInterfaceType = .wiredEthernet` `[VERIFIED-CORPUS]` ⚠️ do **NOT** use on NetBird (utun=`.other`, it will break — [13](13-netbird-transport.md)) | — | Pins Ethernet, avoiding cellular/Wi-Fi fallback and Happy Eyeballs probing. |
-| `parameters.includePeerToPeer = false` `[VERIFIED-CORPUS]` (default) | — | Do **not** set `true`: it activates AWDL → channel-hopping causes 40–336ms spikes (DTS warning thread/751839). Infrastructure Wi-Fi beats AWDL when available. |
-| `parameters.multipathServiceType = .disabled` `[VERIFIED-CORPUS]` | — | Avoids path-probing on a single-interface LAN. |
-| `parameters.allowFastOpen = true` `[VERIFIED-CORPUS]` | — | Enables QUIC 0-RTT resumption on reconnect; UDP has no handshake so it is trivial. |
-| `connection.shouldCalculateReceiveTime = true` `[VERIFIED-CORPUS]` | — | Kernel receive timestamp (`NWProtocolIP.Metadata.receiveTime`) for one-way latency measurement. |
+| `serviceClass = .interactiveVideo` `[VERIFIED-CORPUS]` | video flow | Maps to Wi-Fi 802.11e **AC_VI** (UP 5). On macOS this sets only the Wi-Fi L2 UP, **NOT** IP DSCP, unless Cisco Fastlane (MDM). The public enum `nw_service_class_interactive_video = 2` ≠ `NET_SERVICE_TYPE_VI = 3`; the mapping is private. |
+| `serviceClass = .responsiveData` `[VERIFIED-CORPUS]` | input/control | Separate low-latency control channel. |
+| `requiredInterfaceType = .wiredEthernet` `[VERIFIED-CORPUS]` | — | Pins Ethernet, avoids cellular/Wi-Fi fallback + Happy Eyeballs. ⚠️ Do **NOT** pin over a userspace-WireGuard mesh (utun=`.other` → breaks); leave the default ([13](13-network-transport.md)). |
+| `includePeerToPeer = false` `[VERIFIED-CORPUS]` (default) | — | `true` activates AWDL → 40–336 ms spikes. Infrastructure Wi-Fi beats AWDL. |
+| `multipathServiceType = .disabled` `[VERIFIED-CORPUS]` | — | No path-probing on a single-interface LAN. |
+| `allowFastOpen = true` `[VERIFIED-CORPUS]` | — | QUIC 0-RTT resume on reconnect; trivial for UDP. |
+| `shouldCalculateReceiveTime = true` `[VERIFIED-CORPUS]` | — | Kernel receive timestamp for one-way latency. |
 
-**QUIC datagram (if QUIC is chosen, iOS 16+/macOS 13+):**
-
-| Symbol | Value | Rationale |
-|---|---|---|
-| `NWProtocolQUIC.Options.isDatagram = true` `[VERIFIED-CORPUS]` | — | Unreliable datagram, congestion-aware. |
-| `quicOptions.maxDatagramFrameSize = 1200` `[VERIFIED-CORPUS]` | — | Below path MTU, avoids QUIC fragmenting. |
-| `quicOptions.idleTimeout = 30000` (ms) `[VERIFIED-CORPUS]` + keepalive | — | Keeps the connection alive through short network blips → reconnect costs no handshake. |
+**QUIC datagram (iOS 16+/macOS 13+):** `isDatagram = true`; `maxDatagramFrameSize = 1200` (below MTU); `idleTimeout = 30000` ms + keepalive (reconnect costs no handshake) — all `[VERIFIED-CORPUS]`.
 
 **Per-packet & receive:**
-- `NWProtocolIP.Metadata().serviceClass = .interactiveVideo` for video datagrams; `.signaling` for IDR-request/control to avoid head-of-line queuing.
-- `NWProtocolIP.Metadata().ecn = .ect1` `[VERIFIED-CORPUS]` — ECT(1) is the L4S codepoint (RFC 9331); only beneficial if the AP/switch has an L4S AQM.
-- **Receive pattern (critical):** inside the completion handler of `connection.receiveMessage(completion:)`, finish processing and then **call `receiveMessage` again (chain, not loop)** on a serial queue. `NWConnection.receiveMessage` delivers only **1 datagram per callback** (DTS confirmed, thread/116500, 2019) — calling it in a loop creates unbounded queued reads.
-- `connection.maximumDatagramSize` `[VERIFIED-CORPUS]` — query after `.ready` (typically 1472 on Ethernet); fragment slices ≤ this value, since IP fragmentation adds 1–5ms jitter and doubles the loss probability.
+- `NWProtocolIP.Metadata().serviceClass = .interactiveVideo` for video; `.signaling` for IDR-request/control (no head-of-line queuing). `.ecn = .ect1` (L4S, RFC 9331) only helps with an L4S AQM.
+- **Receive pattern (critical):** in the `receiveMessage(completion:)` handler, finish, then **call `receiveMessage` again (chain, not loop)** on a serial queue — it delivers **1 datagram per callback** (DTS thread/116500); a loop creates unbounded queued reads.
+- `connection.maximumDatagramSize` (typically 1472 on Ethernet) — fragment slices ≤ this; IP fragmentation adds 1–5 ms jitter + doubles loss probability.
 
-**BSD socket path (if batch receive is needed — `NWConnection` has no batch-receive):**
+**BSD socket path (for batch receive — `NWConnection` has none):**
 
 | Symbol | Value | Rationale |
 |---|---|---|
-| `setsockopt(SOL_SOCKET, SO_NET_SERVICE_TYPE, NET_SERVICE_TYPE_VI)` `[VERIFIED-CORPUS]` (`=3`) | or `NET_SERVICE_TYPE_RV`=5 | Wi-Fi AC_VI. `RV` (5) is described in XNU `socket.h` as "Responsive Multimedia A/V — E.g. screen sharing". |
-| `setsockopt(IPPROTO_IP, IP_TOS, dscp<<2)` `[VERIFIED-CORPUS]` | AF41 = `34<<2` | **The only reliable way to set DSCP on Ethernet** (corpus correction): the kernel does **not** zero out a user-set `ip_tos` on non-Fastlane interfaces. `SO_NET_SERVICE_TYPE` alone does not set DSCP. |
-| `setsockopt(SOL_SOCKET, SO_NOSIGPIPE, 1)` `[VERIFIED-CORPUS]` (`=0x1022`) | — | macOS has no `MSG_NOSIGNAL`; mandatory to keep SIGPIPE from killing the process. |
-| `setsockopt(IPPROTO_IP, IP_BOUND_IF, if_nametoindex("en0"))` `[VERIFIED-CORPUS]` | — | Equivalent of Linux `SO_BINDTODEVICE`; pins the wired NIC, avoiding VPN/Wi-Fi routing. |
-| `sendmsg_x` (syscall 481) / `recvmsg_x` (syscall 480) `[PRIVATE, VERIFIED-CORPUS]` | `struct msghdr_x` array | Batch UDP, collapses N syscalls → 1. **Stable & callable on macOS 14+** (confirmed: syscall numbers are in the public `usr/include/sys/syscall.h`, symbols exported from `libSystem.B.tbd`). **PRIVATE:** `msghdr_x` exists only in `socket_private.h`, must forward-declare it yourself. **macOS 13 hang bug → only use on macOS 14+.** |
+| `SO_NET_SERVICE_TYPE = NET_SERVICE_TYPE_VI` `[VERIFIED-CORPUS]` (=3) | or `RV`=5 | Wi-Fi AC_VI. `RV` (5) = "Responsive Multimedia A/V — screen sharing" (XNU `socket.h`). |
+| `IP_TOS = dscp<<2` `[VERIFIED-CORPUS]` | AF41 = `34<<2` | **The only reliable way to set DSCP on Ethernet** — the kernel does NOT zero a user-set `ip_tos` on non-Fastlane interfaces. `SO_NET_SERVICE_TYPE` alone does not set DSCP. |
+| `SO_NOSIGPIPE = 1` `[VERIFIED-CORPUS]` | — | macOS has no `MSG_NOSIGNAL`; mandatory so SIGPIPE doesn't kill the process. |
+| `IP_BOUND_IF = if_nametoindex("en0")` `[VERIFIED-CORPUS]` | — | Linux `SO_BINDTODEVICE` equivalent; pins the wired NIC, avoids VPN/Wi-Fi routing. |
+| `sendmsg_x` (481) / `recvmsg_x` (480) `[PRIVATE, VERIFIED-CORPUS]` | `msghdr_x` array | Batch UDP, N syscalls → 1. **Stable on macOS 14+** (numbers in public `syscall.h`, symbols in `libSystem`). `msghdr_x` lives only in `socket_private.h` (forward-declare it). **macOS 13 hang → use only on 14+.** |
 
-> **Measurements:** Wired GigE one-way <0.1ms (1500-byte serialize ~12µs). Network.framework user-space path: ~30% less receive CPU vs BSD sockets (WWDC18 715) — **but** on **macOS 14** it is disabled with a BSD-socket fallback when the built-in firewall is **on** (DTS confirmed on 14.4.1); on **macOS 15.3+** the firewall no longer forces the fallback (corpus correction). Verify with `sudo skywalkctl flow -n -P <pid>`.
-
----
+> Network.framework user-space path: ~30% less receive CPU than BSD (WWDC18 715) — but on macOS 14 it falls back to BSD when the built-in firewall is on; macOS 15.3+ no longer forces fallback. Verify with `sudo skywalkctl flow -n -P <pid>`.
 
 ### 4. Decode — VideoToolbox
 
-`VTDecompressionSession`, rendering straight to Metal (see the Render stage), **not** through any internal-queue path that adds buffering.
+`VTDecompressionSession` rendering straight to Metal — not any internal-queue path.
 
 | Symbol | Value | Rationale |
 |---|---|---|
-| `VTDecompressionSessionDecodeFrame(..., flags: 0, ...)` `[VERIFIED-CORPUS]` | flags = `0` | Clears both `kVTDecodeFrame_EnableAsynchronousDecompression` and `kVTDecodeFrame_EnableTemporalProcessing` → synchronous: the callback fires before the call returns, eliminating the internal queue/reorder buffer. **Note (corpus uncertain):** the HW decoder may dispatch internally async and set `kVTDecodeInfo_Asynchronous` in the callback infoFlags while the caller thread still blocks — undocumented behavior, not a guarantee violation. |
-| Do **NOT** set `kVTDecodeFrame_EnableTemporalProcessing` | — | This bit licenses the decoder to delay callbacks for display-order sorting → extra pipeline depth even though the stream has no B-frames. |
-| `kVTDecompressionPropertyKey_RealTime` `[VERIFIED-CORPUS]` | `kCFBooleanTrue` | Default = true (header confirmed unchanged through macOS 26.5) but set it explicitly; real-time QoS for the decode pipeline. Do **NOT** set `kVTDecompressionPropertyKey_MaximizePowerEfficiency` at the same time (undefined behavior). |
-| `kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder` `[VERIFIED-CORPUS]` | `kCFBooleanTrue` (in the decoderSpecification dict) | Hard fail instead of a silent software fallback (HEVC Main10 in software is >30ms). |
-| Verify after create: `kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder` `[VERIFIED-CORPUS]` | == `kCFBooleanTrue` | Confirms the Media Engine is in use. |
+| `VTDecompressionSessionDecodeFrame(..., flags: 0, ...)` `[VERIFIED-CORPUS]` | `0` | Clears async + temporal-processing → synchronous: callback fires before the call returns, no reorder buffer. (HW may dispatch internally async, setting `kVTDecodeInfo_Asynchronous` while the caller still blocks — undocumented, not a violation.) |
+| `kVTDecodeFrame_EnableTemporalProcessing` | **do NOT set** | Licenses display-order callback delays → extra depth even with no B-frames. |
+| `RealTime` `[VERIFIED-CORPUS]` | `true` | Default true (through macOS 26.5) but set explicitly. Do **NOT** set with `MaximizePowerEfficiency` (undefined). |
+| `RequireHardwareAcceleratedVideoDecoder` `[VERIFIED-CORPUS]` | `true` | Hard fail vs a silent software fallback (HEVC Main10 SW >30 ms). |
+| verify `UsingHardwareAcceleratedVideoDecoder` `[VERIFIED-CORPUS]` | `== true` | Confirms the Media Engine is in use. |
 
-**imageBufferAttributes (destination):**
+**imageBufferAttributes (destination):** `kCVPixelBufferMetalCompatibilityKey: true` (IOSurface-backed, zero-copy); `kCVPixelBufferPoolMinimumBufferCountKey: 3–6` (ALVR uses 3 min); pixel format **must match the decoder native** (`420...VideoRange` 8/10-bit) — a mismatch forces a `VTPixelTransferSession` blit (**Apple-documented**, WWDC14 513, not "undocumented"). On visionOS 2, ALVR notes setting pixelFormat *at all* copies; on macOS only a *non-native* request triggers the blit (unconfirmed for native requests).
 
-| Key | Value | Rationale |
-|---|---|---|
-| `kCVPixelBufferMetalCompatibilityKey` `[VERIFIED-CORPUS]` | `true` | Forces IOSurface-backed buffers → zero-copy `CVMetalTextureCacheCreateTextureFromImage`. |
-| `kCVPixelBufferPoolMinimumBufferCountKey` `[VERIFIED-CORPUS]` | `3`–`6` | ALVR visionOS uses 3 minimum; enough in-flight buffers to prevent pool-exhaustion stalls. |
-| pixel format | match decoder native (`420YpCbCr8...VideoRange` 8-bit / `420YpCbCr10BiPlanarVideoRange` 10-bit) | Do **NOT** request another format → avoids a VT-internal conversion blit. **Correction:** the copy/conversion is **Apple-documented** (WWDC14 session 513: format mismatch → "extra buffer copy"), not "undocumented". |
-| Do **NOT** set `kCVPixelBufferPixelFormatTypeKey` (if targeting visionOS) | — | ALVR notes: "setting pixelFormat *at all* causes a copy to uncompressed MTLTexture buffer" on visionOS 2. On macOS: only a format-incompatible request triggers the `VTPixelTransferSession` blit — not confirmed for native-format requests. |
+**Encode-side bitstream for 1-in-1-out decode:** H.264 SPS VUI `bitstream_restriction_flag=1, num_reorder_frames=0, max_dec_frame_buffering=1` (without these the HW decoder buffers 4 frames/keyframe in Main, W3C #732); HEVC SPS `sps_max_num_reorder_pics[0]=0`.
 
-**Encode-side bitstream for 1-in-1-out decode (set at encode time):**
-- H.264 SPS VUI: `bitstream_restriction_flag=1`, `num_reorder_frames=0`, `max_dec_frame_buffering=1`. Without these fields, Apple's HW decoder buffers 4 frames per keyframe with the MAIN profile (W3C WebCodecs #732).
-- HEVC SPS: `sps_max_num_reorder_pics[0]=0`.
-
-**Recovery:** on a decode error → check `VTDecompressionSessionCanAcceptFormatDescription`; if OK, request an IDR and keep the session alive (an IDR request = 1 LAN RTT <1ms). **Avoid** session teardown+recreate (~30–100ms stall, corpus-inferred — not Apple-published).
-
-> **Measurements:** ~1–3ms HW decode on M-series (Moonlight #1087/#1249). The macOS 26 Tahoe 80ms regression (#1696) is a render-path issue (Metal/AVSampleBufferDisplayLayer presentation timeout), **not** the HW decode engine.
-
----
+**Recovery:** on decode error → `VTDecompressionSessionCanAcceptFormatDescription`; if OK, request an IDR (1 LAN RTT <1 ms) and keep the session alive. **Avoid** teardown+recreate (~30–100 ms, inferred). The macOS 26 ~80 ms regression (#1696) is a render-path issue, not the HW decode engine.
 
 ### 5. Render — Metal + display (macOS & iOS)
 
-**Use `CAMetalLayer` + `CVMetalTextureCache`, NOT `AVSampleBufferDisplayLayer`** for the low-latency path (AVSBDL adds ≥1 frame of buffering, Moonlight #1885).
+Use `CAMetalLayer` + `CVMetalTextureCache`, **NOT** `AVSampleBufferDisplayLayer` (AVSBDL adds ≥1 frame, #1885).
 
 **macOS (`CAMetalLayer`):**
 
 | Symbol | Value | Rationale |
 |---|---|---|
-| `CAMetalLayer.displaySyncEnabled = false` `[VERIFIED-CORPUS]` | (vsync-off) | Present as soon as the GPU finishes, dropping the entire vsync wait (up to 16.7ms@60Hz); accept tearing. Or `true` + `CAMetalDisplayLink` for vsync-on low-latency. |
-| `CAMetalLayer.maximumDrawableCount = 2` `[VERIFIED-CORPUS]` | `2` (macOS) | **Correction (corpus REFUTED):** Apple does **NOT** say "2 is not recommended on iOS" — the only constraint is value ∈ {2,3}, applied uniformly on every platform. 3 drawables → 16–50ms backlog; 2 → converges to ~16ms. The only warning from an Apple engineer: value 2 increases the chance `nextDrawable` returns nil. |
-| `CAMetalLayer.framebufferOnly = true` `[VERIFIED-CORPUS]` (default) | — | Enables lossless compression + the compositor fast path. |
-| `CAMetalLayer.presentsWithTransaction = false` `[VERIFIED-CORPUS]` (default) | — | Do NOT sync with the CA transaction (adds up to 1 CA frame); only enable when Metal must sync with a UIKit overlay. |
-| `CAMetalDisplayLink` `[VERIFIED-SDK QuartzCore header]` (macOS 14.0+ / iOS 17.0+) | replaces CVDisplayLink | **Correction (corpus REFUTED):** the header is `API_AVAILABLE(macos(14.0), ios(17.0), tvos(17.0))` — **NOT** restricted to Apple Silicon. Moonlight adding its own `isAppleSilicon()` guard was their own choice, not an API requirement. |
-| `CAMetalDisplayLink.preferredFrameLatency = 1.0` `[VERIFIED-CORPUS]` | `1.0` | **Correction (corpus confirmed):** the unit is **frames** (Float); valid values are only `1.0` or `2.0`. `1.0` = 1 display cycle = the API minimum. The system may exceed the requested latency (windowed macOS). |
-| `CAMetalDisplayLink.preferredFrameRateRange = CAFrameRateRangeMake(fps, fps, fps)` `[VERIFIED-CORPUS]` | lock to stream fps | Prevents ProMotion downclocking from causing jitter. |
-| `commandBuffer.waitUntilScheduled` (NOT `waitUntilCompleted`) `[VERIFIED-CORPUS]` | — | `Completed` blocks until pixels hit the framebuffer (5–15ms stall in direct mode); `scheduled` only waits for submission (Zed 120fps blog). |
+| `displaySyncEnabled = false` `[VERIFIED-CORPUS]` | vsync-off | Present as soon as the GPU finishes, dropping the whole vsync wait (≤16.7 ms @60 Hz); accept tearing. Or `true` + `CAMetalDisplayLink` for vsync-on low-latency. |
+| `maximumDrawableCount = 2` `[VERIFIED-CORPUS]` | `2` | **REFUTED** "2 not recommended on iOS" — only constraint is value ∈ {2,3}, uniform on every platform. 3 → 16–50 ms backlog; 2 → ~16 ms. Value 2 raises the chance `nextDrawable` returns nil. |
+| `framebufferOnly = true` `[VERIFIED-CORPUS]` (default) | — | Lossless compression + compositor fast path. |
+| `presentsWithTransaction = false` `[VERIFIED-CORPUS]` (default) | — | Don't sync with the CA transaction (≤1 CA frame); enable only when Metal must sync a UIKit overlay. |
+| `CAMetalDisplayLink` `[VERIFIED-SDK]` (macOS 14.0+/iOS 17.0+) | replaces CVDisplayLink | **REFUTED** "Apple Silicon only" — `API_AVAILABLE(macos(14.0), ios(17.0), tvos(17.0))`, no AS restriction. Moonlight's `isAppleSilicon()` guard was their own choice. |
+| `preferredFrameLatency = 1.0` `[VERIFIED-CORPUS]` | `1.0` | Unit is **frames** (Float); only 1.0/2.0 valid. 1.0 = API minimum; system may exceed it (windowed macOS). |
+| `preferredFrameRateRange = (fps,fps,fps)` `[VERIFIED-CORPUS]` | lock to stream fps | Prevents ProMotion downclock jitter. |
+| `commandBuffer.waitUntilScheduled` `[VERIFIED-CORPUS]` | NOT `waitUntilCompleted` | `Completed` blocks until pixels hit the framebuffer (5–15 ms stall); `scheduled` only waits for submission (Zed 120 fps blog). |
 
-**iOS/iPadOS:**
+**iOS/iPadOS:** Info.plist `CADisableMinimumFrameDurationOnPhone = true` `[VERIFIED-CORPUS]` (**mandatory** to unlock 120 Hz on iPhone); `CAMetalLayer.opaque = true` `[VERIFIED-CORPUS]` (Flutter/Impeller measured 21–26 ms → ~13 ms presentation delay — **one isolated observation, not an Apple guarantee**; set it anyway, cheap/safe); `maximumDrawableCount = 2`; `preferredFrameRateRange(60,60,60)` for a 60 fps stream on a 120 Hz client (60 divides 120 → double-pump, zero judder — avoid preferred:120 for 60 fps); `UIUpdateLink.requiresContinuousUpdates = true` `[VERIFIED-CORPUS]` (iOS 18+ UIKit path; pure Metal uses `CAMetalDisplayLink`).
 
-| Symbol | Value | Rationale |
-|---|---|---|
-| Info.plist `CADisableMinimumFrameDurationOnPhone = true` `[VERIFIED-CORPUS]` | — | **Mandatory** to unlock ProMotion 120Hz on iPhone; without it → 60Hz cap regardless of API calls. |
-| `CAMetalLayer.opaque = true` (= `CALayer.isOpaque`) `[VERIFIED-CORPUS]` | `true` | **Uncertain:** Flutter/Impeller measured presentation delay dropping 21–26ms → ~13ms, but that is **one** isolated observation, **not** an Apple-documented guarantee; the mechanism is the compositor skipping alpha-blending. Set it because it is cheap and safe. |
-| `CAMetalLayer.maximumDrawableCount = 2` `[VERIFIED-CORPUS]` | `2` | Minimum pipeline depth (handle nil drawables). Valid on iOS (see the correction above). |
-| `CAMetalDisplayLink.preferredFrameRateRange = CAFrameRateRange(minimum:60, maximum:60, preferred:60)` `[VERIFIED-CORPUS]` | for a 60fps stream on a 120Hz client | 60 divides 120 evenly → every frame double-pumps at 16.67ms, zero judder. **Avoid** preferred:120 for a 60fps stream (only double-scans, wasting power). |
-| `UIUpdateLink` `[VERIFIED-CORPUS]` (iOS 18+, UIKit path) | `requiresContinuousUpdates = true` | Low-latency mode for UIKit-hosted content; with pure Metal `CAMetalLayer` use `CAMetalDisplayLink`. |
+**Zero-copy decode→render:** `CVMetalTextureCacheCreate` once; per biplanar YCbCr frame call `CVMetalTextureCacheCreateTextureFromImage` twice — plane 0 (`.r8Unorm`/`.r16Unorm`) for Y, plane 1 (`.rg8Unorm`/`.rg16Unorm`) for CbCr (same IOSurface, zero GPU copy). Pin the IOSurface while the GPU uses it (strong `CVMetalTexture` ref in `addCompletedHandler`).
 
-**Zero-copy decode→render (both platforms):**
-- `CVMetalTextureCacheCreate(nil, nil, device, nil, &cache)` once at startup.
-- For each biplanar YCbCr frame: call `CVMetalTextureCacheCreateTextureFromImage` twice — planeIndex 0 (`.r8Unorm` 8-bit / `.r16Unorm` 10-bit) for Y; planeIndex 1 (`.rg8Unorm` / `.rg16Unorm`) for CbCr. Same IOSurface, zero GPU copy.
-- Pin the IOSurface while the GPU is using it: hold a strong `CVMetalTexture` ref inside `commandBuffer.addCompletedHandler` (CVMetalTextureCache manages use-counts internally), or manually `IOSurfaceIncrementUseCount`/`Decrement`.
+**Beam-racing:** in the `CAMetalDisplayLink` callback, render the **latest available** frame (don't wait for the one matching `targetTimestamp`), commit before `targetTimestamp`. Moonlight waits `((targetTimestamp − now)*1000)/2` ms.
 
-**Beam-racing pacing:** in the `CAMetalDisplayLink` callback, render the **latest available frame** (do not wait for the frame matching `targetTimestamp` exactly), commit before `targetTimestamp`. Moonlight computes `waitTimeMs = ((targetTimestamp − CACurrentMediaTime())*1000)/2` to wait for the newest frame as close to the deadline as possible.
+**Color/EDR — skip the compositor color-match pass:** `colorspace = nil` `[VERIFIED-CORPUS]` (pass-through, Apple "fastest"; or match `NSScreen.colorSpace`); `wantsExtendedDynamicRangeContent = false` for SDR (avoids the EDR pass, WWDC21 10161); `edrMetadata = nil`. SDR: `pixelFormat = .bgra8Unorm`. HDR: `.bgra10a2Unorm` (32 bit/px) + PQ/HLG, **not** `.rgba16Float` (64 bit/px). Only `rgba16Float` and `bgra10a2Unorm` support EDR.
 
-**Color/EDR — skip the compositor color-match pass:**
-- `CAMetalLayer.colorspace = nil` `[VERIFIED-CORPUS]` — pass-through, skips the color-match pass (Apple WWDC16 605: "fastest approach"). Or match the native `NSScreen.colorSpace` (Chromium research: "no additional GPU power"). Setting sRGB-tagged on a P3 display → "nontrivial-but-not-excessive" cost per frame.
-- `CAMetalLayer.wantsExtendedDynamicRangeContent = false` `[VERIFIED-CORPUS]` for SDR — avoids the EDR processing pass (WWDC21 10161 "extra processing pass... increases latency and bandwidth"). Available iOS 16+.
-- `CAMetalLayer.edrMetadata = nil` — do not assign `CAEDRMetadata` (adds 1 compositor pass).
-- SDR path: `pixelFormat = .bgra8Unorm` (32 bit/px). HDR path: `.bgra10a2Unorm` (32 bit/px, same as 8-bit) + PQ/HLG colorspace, **not** `.rgba16Float` (64 bit/px, double the bandwidth). Only 2 formats support EDR: `rgba16Float` and `bgra10a2Unorm`.
+> **macOS requires fullscreen for Adaptive-Sync/VRR scheduling** (WWDC21 10147): a windowed app gets no VRR scheduling — only a fullscreen window goes through the `NSScreen.minimum/maximumRefreshInterval` path.
 
-> **macOS requires fullscreen for Adaptive Sync/VRR scheduling** (WWDC21 10147, confirmed): a single-window/windowed app gets **no** VRR scheduling — only a fullscreen window (`NSFullScreenWindowMask`) goes through the `NSScreen.minimumRefreshInterval/maximumRefreshInterval` path.
+### 6. Input — CGEvent injection + local cursor
 
----
-
-### 6. Input — CGEvent / Accessibility injection + local cursor
-
-Activate-then-control model. The host injects input into the target window without raising it; the client draws a local cursor.
+Activate-then-control: the host injects input without raising the window; the client draws a local cursor.
 
 | Symbol / technique | Configuration | Rationale |
 |---|---|---|
-| **Local cursor overlay** `[VERIFIED-CORPUS]` | client draws the cursor from the input stream, NOT encoded into the video | Cursor feedback in ~0–2ms instead of waiting ~15–25ms for the video round trip. The highest-value perceived-latency optimization. Host: `config.showsCursor = false`. |
-| `CGEventPostToPid(pid, event)` `[VERIFIED-CORPUS]` (macOS 10.11+) | NOT `CGEventPost` | Delivers the event straight to the target PID, bypassing the global HID stream, without moving the system cursor or needing the window foregrounded. **Correction (corpus uncertain):** this is **not** a pure "Mach IPC round-trip" — it routes through CoreGraphics→WindowServer→app event tap (≥2 hops). Actual latency on Apple Silicon is **unmeasured** (no public benchmark); the 50–200µs estimate is unsubstantiated. |
-| `SLPSPostEventRecordTo` `[PRIVATE, VERIFIED-CORPUS]` (SkyLight, dlopen/dlsym) | call twice (old PSN + target PSN) | Activate-without-raise: flips the AppKit-active state for input routing, avoiding the 100–300ms Space switch. **Warning:** paneru #123 shows a SIGABRT on macOS 14.2.1 — but the root cause is `CGSEncodeEventRecord` mis-serializing a buffer (0xFF fill → ObjC class pointer), **not** `SLPSPostEventRecordTo` being restricted. Fix: skip `make_key_window()` on macOS 14. Tahoe 26 unclear. |
-| DriverKit virtual HID `[VERIFIED-CORPUS]` | `com.apple.developer.driverkit.userclient-access` entitlement | Injects at the IOHIDSystem layer (the real hardware path), bypassing the `CGXSenderCanSynthesizeEvents()` gate. **Required on macOS Tahoe 26**: an unsigned daemon's `CGEventPost` gets dropped for modifier+key combos → 2–3s input lag (input-leap #2367). |
-| `CGEventTap` `[VERIFIED-CORPUS]` (client capture) | `kCGHIDEventTap`, `kCGHeadInsertEventTap`, `kCGEventTapOptionListenOnly` | Passive tap at the HID level (earliest in userspace), immune to `tapDisabledByTimeout` (because listen-only). QoS `.userInteractive` for the run loop. |
-| `kTCCServicePostEvent` + Accessibility | entitlement | Required for `CGEventPostToPid` on macOS 14+. The app **must be code-signed** (no bare daemon) to pass the Tahoe 26 gate. |
+| **Local cursor overlay** `[VERIFIED-CORPUS]` | client draws from the input stream | Feedback ~0–2 ms vs ~15–25 ms via the video round trip. Highest-value perceived-latency lever. Host `showsCursor = false`. |
+| `CGEventPostToPid` `[VERIFIED-CORPUS]` (macOS 10.11+) | NOT `CGEventPost` | Delivers straight to the PID, no system-cursor move, no foregrounding. **Not** a pure Mach IPC round-trip (≥2 hops CoreGraphics→WindowServer→app tap); Apple Silicon latency **unmeasured** (the 50–200 µs estimate is unsubstantiated). |
+| `SLPSPostEventRecordTo` `[PRIVATE, VERIFIED-CORPUS]` (SkyLight) | call twice (old + target PSN) | Activate-without-raise: avoids the 100–300 ms Space switch. paneru #123 SIGABRT root cause is `CGSEncodeEventRecord` mis-serializing a 0xFF buffer, NOT this call → skip `make_key_window()` on macOS 14. macOS 26 unclear. |
+| DriverKit virtual HID `[VERIFIED-CORPUS]` | `com.apple.developer.driverkit.userclient-access` | Injects at IOHIDSystem (real HW path), bypassing `CGXSenderCanSynthesizeEvents()`. **Required on macOS 26:** an unsigned daemon's `CGEventPost` is dropped for modifier+key combos → 2–3 s lag (input-leap #2367). |
+| `CGEventTap` `[VERIFIED-CORPUS]` (client capture) | `kCGHIDEventTap`, `kCGHeadInsertEventTap`, `ListenOnly` | Passive HID-level tap (earliest in userspace), immune to `tapDisabledByTimeout`. Run loop QoS `.userInteractive`. |
+| `kTCCServicePostEvent` + Accessibility | entitlement | Required for `CGEventPostToPid` on macOS 14+. App **must be code-signed** to pass the macOS 26 gate. |
 
-**Input protocol:**
-- Button/key events: send **immediately** (zero queuing), in their own datagram.
-- Motion events: batch at a 1ms cadence (matching USB HID 1000Hz polling). Do NOT batch buttons with motion.
-- iOS touch: `event.coalescedTouches(for:)` `[VERIFIED-CORPUS]` collects all 240Hz/120Hz samples; send them all instead of just the last sample. `event.predictedTouches(for:)` for extrapolation.
-- **NO** motion prediction on LAN: RTT <1 frame (8.3ms@120Hz) → prediction costs complexity for ~0ms gain. The local cursor overlay already removes visual lag.
-
----
+**Input protocol:** button/key events sent immediately in their own datagram; motion batched at ~1 ms (USB HID 1000 Hz) — don't batch buttons with motion. iOS: `coalescedTouches(for:)` sends all 240/120 Hz samples, `predictedTouches(for:)` for extrapolation. **No motion prediction on LAN** (RTT < 1 frame; the local cursor already removes visual lag).
 
 ### 7. Threading — RT scheduling (Apple Silicon)
 
-Three overlapping mechanisms; on Apple Silicon **os_workgroup is the primary mechanism** for guaranteed P-core scheduling.
+On Apple Silicon **os_workgroup is the primary mechanism** for guaranteed P-core scheduling.
 
 | Symbol / API | Configuration | Rationale |
 |---|---|---|
-| `thread_policy_set(..., THREAD_TIME_CONSTRAINT_POLICY, ...)` `[VERIFIED-CORPUS]` | `period`, `computation`, `constraint`, `preemptible` in mach ticks | Puts the thread into the kernel RT band, bypassing QoS decay. 60fps: `period=16_666_666ns × denom/numer`, `computation=period/2`, `constraint=period×0.85`, `preemptible=1`. Convert ns→ticks with `mach_timebase_info` (Apple Silicon numer=125, denom=3). **Must be called BEFORE `os_workgroup_join`.** |
-| `os_workgroup_interval_create("...", OS_CLOCK_MACH_ABSOLUTE_TIME, NULL)` `[VERIFIED-CORPUS]` | + `os_workgroup_interval_start/finish` every frame | Reports deadlines to the performance controller → keeps the P-cluster active between frames, preventing frequency off-ramp+on-ramp. **PREREQUISITE confirmed:** the joining thread must already have `THREAD_TIME_CONSTRAINT_POLICY`, otherwise `EINVAL` ("thread is not realtime") — **applies only to workgroup type `WORK_INTERVAL_TYPE_COREAUDIO`**; for other workgroup types EINVAL just means "cancelled". |
-| `pthread_attr_setschedpolicy(SCHED_RR)` + priority `47–48` `[VERIFIED-CORPUS]` | render/encode threads only | Prevents priority decay; **incompatible with QoS** (a permanent opt-out). Only for threads with a fixed time window, not 100%-continuous ones. |
-| `DispatchQueue(qos: .userInteractive)` `[VERIFIED-CORPUS]` | SCK callback queue, VT callback queue | P-core preference + priority inheritance. Sufficient as a baseline; combine with `THREAD_TIME_CONSTRAINT_POLICY` for the most critical threads. |
-| `mach_wait_until(deadline)` `[VERIFIED-CORPUS]` | NOT `usleep()` on RT threads | **Correction (corpus uncertain):** the "<600µs 99.9%" figure actually comes from a GitHub comment, micropython #8621 (hardware unknown), **not** Apple forum thread/120403; Apple TN2169 only sets a 500µs soft floor on an idle machine. On Apple Silicon, default threads land on E-cores → need affinity/workgroup. |
-| `os_unfair_lock` `[VERIFIED-CORPUS]` | instead of `dispatch_semaphore` for cross-thread signaling | Participates in QoS priority inheritance (boosts a low-QoS holder); semaphores do not donate priority. |
-| **NO** `yield()`/`sched_yield()` `[VERIFIED-CORPUS]` | — | **Confirmed (XNU source):** tanks priority to 0 (DEPRESSPRI=MINPRI=0), defers up to 10ms. **Applies to SCHED_RR too** (= TH_MODE_FIXED, no exemption). One yield on a hot thread = blown frame deadline. |
-| **NO** `THREAD_AFFINITY_POLICY` on Apple Silicon `[VERIFIED-CORPUS]` | — | Returns `KERN_NOT_SUPPORTED` (46) on ARM. Use workgroups + RT policy to steer onto P-cores instead of pinning cores. |
+| `thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY)` `[VERIFIED-CORPUS]` | `period/computation/constraint/preemptible` in ticks | Kernel RT band, bypasses QoS decay. 60 fps: period=16.67 ms, computation=period/2, constraint=period×0.85, preemptible=1. Convert ns→ticks via `mach_timebase_info`. **Call BEFORE `os_workgroup_join`.** |
+| `os_workgroup_interval_create(..., OS_CLOCK_MACH_ABSOLUTE_TIME, ...)` `[VERIFIED-CORPUS]` | + `start/finish` per frame | Reports deadlines → keeps the P-cluster warm, preventing freq off/on-ramp. Joining thread must already have RT policy, else `EINVAL` — **but only for `WORK_INTERVAL_TYPE_COREAUDIO`**; other types EINVAL just means "cancelled". |
+| `pthread_attr_setschedpolicy(SCHED_RR)` + prio 47–48 `[VERIFIED-CORPUS]` | render/encode threads | Prevents priority decay; **incompatible with QoS** (permanent opt-out). Fixed-window threads only. |
+| `DispatchQueue(qos: .userInteractive)` `[VERIFIED-CORPUS]` | SCK + VT callback queues | P-core preference + priority inheritance. Baseline; combine with RT policy for the most critical threads. |
+| `mach_wait_until(deadline)` `[VERIFIED-CORPUS]` | NOT `usleep()` | The "<600 µs 99.9%" figure is misattributed (micropython #8621, HW unknown), not Apple forum 120403; TN2169 only sets a 500 µs soft floor on an idle machine. Default threads land on E-cores → need affinity/workgroup. |
+| `os_unfair_lock` `[VERIFIED-CORPUS]` | not `dispatch_semaphore` | Donates QoS to a low-QoS holder; semaphores don't. |
+| **NO** `yield()`/`sched_yield()` `[VERIFIED-CORPUS]` | — | **XNU-confirmed:** tanks priority to 0 (DEPRESSPRI=MINPRI=0), defers ≤10 ms. **Applies to SCHED_RR too.** One yield = blown deadline. |
+| **NO** `THREAD_AFFINITY_POLICY` `[VERIFIED-CORPUS]` | — | Returns `KERN_NOT_SUPPORTED` (46) on ARM. Use workgroups + RT policy instead. |
 
-**Swift caveat `[VERIFIED-CORPUS]`:** avoid Swift on the RT hot path — CoW mutation, the `swift_beginAccess` exclusivity check (16-byte heap alloc), nested function captures, and thrown errors can all allocate → stalling the RT thread. Write the inner loop in C/ObjC or allocation-free Swift.
-
-> **There is no dedicated public os_workgroup for ScreenCaptureKit or VideoToolbox** (only the audio workgroup via `kAudioDevicePropertyIOThreadOSWorkgroup`). The video pipeline creates its own interval workgroup.
-
----
+> **Swift caveat** `[VERIFIED-CORPUS]`: avoid Swift on the RT hot path — CoW mutation, `swift_beginAccess` (16-byte heap alloc), nested captures, thrown errors can all allocate → stall the RT thread. Write the inner loop in C/ObjC or allocation-free Swift. There is no dedicated public os_workgroup for SCK or VideoToolbox (only the audio workgroup); the video pipeline creates its own interval workgroup.
 
 ### 8. Memory — zero-copy (Apple Silicon unified memory)
 
-The whole SCK→VT encode→network→VT decode→Metal pipeline stays zero-copy because every stage operates on the same physical IOSurface.
+The whole SCK→VT→net→VT→Metal pipeline stays zero-copy on one physical IOSurface per stage.
 
 | Technique | Configuration | Rationale |
 |---|---|---|
-| SCK → encoder zero-copy `[VERIFIED-CORPUS]` | `CMSampleBufferGetImageBuffer()` → straight into `VTCompressionSessionEncodeFrame` | The IOSurface from SCK is the same memory the HW encoder DMAs. The YCbCr pixelFormat (`'420v'`/10-bit) **must** match the encoder; BGRA forces a conversion pass (WWDC22 "let VideoToolbox handle encoding without color space conversion step"). |
-| `VTCompressionSessionGetPixelBufferPool()` `[VERIFIED-CORPUS]` | if GPU pre-processing is needed before encode | The pool vends buffers in exactly the format + IOSurface config the encoder expects → no conversion. |
-| Decoder → Metal zero-copy `[VERIFIED-CORPUS]` | `kCVPixelBufferMetalCompatibilityKey: true` + `CVMetalTextureCacheCreateTextureFromImage` | The IOSurface the decoder writes = the MTLTexture the shader reads; on unified memory there is no PCIe copy. |
-| **AVOID** `CVPixelBufferCreateWithBytes`/`CreateWithPlanarBytes` `[VERIFIED-CORPUS]` | — | Creates a CPU-memory-only buffer that is **not** IOSurface-backed (QA1781 confirmed) → CVMetalTextureCache fails, forcing a copy. Always use a pool with `kCVPixelBufferIOSurfacePropertiesKey: [:]`. |
-| `autoreleasepool { }` `[VERIFIED-CORPUS]` | wrap the entire SCK callback body + VT decode handler | Obj-C objects (CMSampleBuffer, CVMetalTexture, NSData) accumulate in the dispatch queue's pool; burst drains cause 5–30ms pauses (forum thread/725744). |
-| `DispatchData(bytesNoCopy:count:deallocator:)` `[VERIFIED-CORPUS]` | instead of `Data(bytes:count:)` for `NWConnection.send` | The `Data` init always copies; `DispatchData` is no-copy with a custom deallocator releasing the CMSampleBuffer ref. **Uncertain:** whether Network.framework copies internally into the kernel send buffer is unclear. |
-| Pool sizing `[VERIFIED-CORPUS]` | ≥4–6 buffers (2 frames of encoder pipelining + 1 Metal render) | Avoids `kCVReturnWouldExceedAllocationThreshold` → a CPU stall waiting for a buffer = 1 frame period. |
+| SCK → encoder zero-copy `[VERIFIED-CORPUS]` | `CMSampleBufferGetImageBuffer()` → `VTCompressionSessionEncodeFrame` | Same memory the HW encoder DMAs. YCbCr (`'420v'`/10-bit) **must** match the encoder; BGRA forces a conversion pass (WWDC22). |
+| `VTCompressionSessionGetPixelBufferPool()` `[VERIFIED-CORPUS]` | for GPU pre-processing | Vends buffers in the exact format/IOSurface config the encoder expects. |
+| Decoder → Metal zero-copy `[VERIFIED-CORPUS]` | `kCVPixelBufferMetalCompatibilityKey: true` + `CVMetalTextureCacheCreateTextureFromImage` | Decoder IOSurface = the shader's MTLTexture; no PCIe copy on unified memory. |
+| **AVOID** `CVPixelBufferCreateWithBytes/PlanarBytes` `[VERIFIED-CORPUS]` | — | CPU-only, NOT IOSurface-backed (QA1781) → CVMetalTextureCache fails, forces a copy. Use a pool with `kCVPixelBufferIOSurfacePropertiesKey: [:]`. |
+| `autoreleasepool { }` `[VERIFIED-CORPUS]` | wrap the SCK callback + VT decode handler | Obj-C objects accumulate in the queue pool; burst drains = 5–30 ms pauses (forum thread/725744). |
+| `DispatchData(bytesNoCopy:...)` `[VERIFIED-CORPUS]` | not `Data(bytes:count:)` for `NWConnection.send` | `Data` init always copies; `DispatchData` is no-copy with a deallocator releasing the CMSampleBuffer ref. (Whether Network.framework copies internally is unclear.) |
+| Pool sizing `[VERIFIED-CORPUS]` | ≥4–6 buffers | 2 frames encoder pipelining + 1 Metal render; avoids `kCVReturnWouldExceedAllocationThreshold` (= 1 frame stall). |
 
-**Private symbols (high risk):**
-- `MTLPixelFormatYCBCR8_420_2P = 500`, `MTLPixelFormatYCBCR10_420_2P = 505` `[PRIVATE]` — single-plane YCbCr texture binding, dropping the matrix-multiply in the shader. **Confirmed Apple-internal SPI** (WebKit defines it under the `#else` of `USE(APPLE_INTERNAL_SDK)`, ALVR labels it "private"). Raw value 500 is correct. **macOS availability is NOT confirmed** from public sources (only circumstantial: MTLTools.framework string table, CMImaging/NRFV4 dylib). MoltenVK maps Vulkan YCbCr → `MTLPixelFormat::Invalid` on macOS. Using it = SPI with no guarantee across OS versions.
-
----
-
-### Glass-to-glass budget summary (wired LAN, Apple Silicon)
-
-| Stage | 120 fps | 60 fps |
-|---|---|---|
-| Capture (1 compositor vsync floor) | ~8.3ms | ~16.7ms |
-| Encode (HEVC HW, corpus-uncertain) | ~2–4ms (Apple has not published per-frame) | ~2–4ms |
-| Network (wired GigE one-way) | <0.1ms | <0.1ms |
-| Decode (HW Media Engine) | ~1–3ms | ~1–3ms |
-| Render + display scanout (avg half-frame) | ~4.2ms (Metal direct) | ~8.3ms |
-| **Realistic floor (corpus)** | **~14–16ms** | **~22–26ms** |
-
-Wi-Fi 6/6E adds 1–3ms (ideal) to 2–5ms (realistic). Cursor via local overlay: ~2–5ms feedback independent of the video pipeline. The encode/decode numbers are marked **uncertain** because Apple publishes no official per-frame latency; the only sources are self-reported (Lumen) or community (Moonlight).
+**Private (high risk):** `MTLPixelFormatYCBCR8_420_2P = 500` / `..._10_420_2P = 505` `[PRIVATE]` — single-plane YCbCr binding, drops the shader matrix-multiply. Confirmed Apple-internal SPI (WebKit defines it under `#else` of `USE(APPLE_INTERNAL_SDK)`). **macOS availability unconfirmed** (MoltenVK maps it to `Invalid` on macOS). SPI with no cross-version guarantee — use only with a 2-plane shader fallback.
 
 ---
 
 ## Ranked techniques by latency impact
 
-The table below ranks every latency-reduction lever from **biggest win → marginal**, based on the entire corpus. The "est. ms saved / impact" column uses measured/sourced figures when available; where the corpus is only qualitative, that is stated. The "risk" column reflects the adversarial verdicts (refuted/uncertain) in the corpus — refuted or still-doubtful claims are clearly flagged.
+Biggest win → marginal. "Est. ms saved" uses sourced figures where available; figures are at 60 fps (16.67 ms) / 120 fps (8.33 ms). The risk column reflects adversarial verdicts (refuted/uncertain flagged).
 
-> Convention: ms saved depends heavily on frame rate and operating point. Unless stated otherwise, figures are at 60 fps (frame = 16.67 ms) / 120 fps (frame = 8.33 ms).
-
-| # | Technique | Est. ms saved / impact | Apple support | Difficulty | Risk |
-|---|-----------|------------------------|---------------|------------|------|
-| 1 | **Low-latency rate control encode** — `kVTVideoEncoderSpecification_EnableLowLatencyRateControl` (H.264) + manual HEVC config (`AllowFrameReordering=false`, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, `RealTime=true`) | **~100 ms** at 720p30 vs the default buffering mode (WWDC21 session 10158) — mostly from removing frame reordering/B-frame reorder buffers | native (H.264); HEVC **empirically functional** on Apple Silicon | low | **MED** — HEVC support is demonstrated by an FFmpeg patch (commit d87210745e, gated `TARGET_CPU_ARM64`), **NOT** Apple documentation; WWDC21 mentions H.264 only. The SDK header has no codec restriction. Risk of silent regression through an OS update. `kVTPropertyNotSupportedErr (-12900)` when querying HW-accel is API incompleteness, NOT evidence of a software fallback (galad87, forum 751291) |
-| 2 | **Wired Gigabit Ethernet instead of Wi-Fi** | **2–30 ms** of overhead removed + all Wi-Fi jitter; wired one-way <0.1 ms vs Wi-Fi 6/6E 0.5–2 ms (typical), 4–20 ms spikes under interference | native | low | **LOW** — link-layer physics; no downside beyond requiring a cable |
-| 3 | **Client-side cursor overlay** (draw the cursor from the input channel, NOT encoded into video; `SCStreamConfiguration.showsCursor=false`) | **~15–25 ms** for visual cursor feedback on LAN (removes the entire video round-trip for the cursor); cursor appears ~0–2 ms after input vs ~17–30 ms via video | native | medium | **LOW** — RDP/PCoIP/NoMachine all do this; needs out-of-band cursor-shape sharing |
-| 4 | **Metal direct render instead of AVSampleBufferDisplayLayer** (client) — `CVMetalTextureCacheCreateTextureFromImage` → `CAMetalLayer` | **8–33 ms** (1–2 frames of buffering); ≥8.3 ms at 120 Hz, ≥16.7 ms at 60 Hz (Moonlight #1885) | native | medium | **MED** — qualitative evidence ("one or more extra frames"), measured on a macOS dGPU (Radeon Pro 580); **no iOS benchmark** of Metal-vs-AVSBDL and Moonlight-iOS has no Metal fallback (corpus uncertain). On Apple Silicon unified memory there is no GPU copy penalty, so the benefit is even clearer |
-| 5 | **120fps / ProMotion end-to-end** (host `minimumFrameInterval=1/120` + client `CAMetalDisplayLink` 120 Hz) | **~8.3 ms** lower worst-case vsync wait (16.67→8.33 ms); plus ~4 ms average capture-to-encode | native | low–medium | **MED** — requires a 120 Hz host display (M1 Pro/Max+) AND encode completing within 8.3 ms or SCK drops frames. macOS 15 silently changed the default `minimumFrameInterval` to 1/60 (confirmed); must set explicitly. Note: use `1/target_fps × 0.9` (OBS PR#11896) — do **NOT** use `kCMTimeZero` (that claim was refuted: OBS does not use kCMTimeZero, no SDK header confirms it) |
-| 6 | **Avoid AVSampleBufferDisplayLayer audio synchronizer** / use PTS-based fire-and-forget AV sync | **~1000 ms** of `AVSampleBufferRenderSynchronizer` buffering avoided (~1 s buffer ahead) | native | medium | **LOW** — accidentally using synchronizer mode would destroy all the video latency work. The ~1 s figure is community-reported, no official Apple figure (claim_to_verify) |
-| 7 | **VideoToolbox HW decode + verify** (`RequireHardwareAcceleratedVideoDecoder=true`, `RealTime=true`) | **5–17 ms** (HW ~1–3 ms vs SW 8–20 ms); HEVC Main10 SW fallback >30 ms | native | low | **LOW** — `flags=0` synchronous completion is **confirmed** in the SDK header (no HW/SW distinction). `RealTime` already defaults to true (confirmed through macOS 26.5) but should be set explicitly; do NOT set together with `MaximizePowerEfficiency` (undefined behavior) |
-| 8 | **Display drop policy "always-newest"** (Moonlight pacer: cap 3 frames, drop oldest-first every vsync, target 1) | **8.3–25 ms** (each extra queued frame = 1 frame interval; a 3-frame backlog = 25 ms at 120 fps) | native | medium | **LOW** — verified in moonlight-qt pacer.cpp |
-| 9 | **THREAD_TIME_CONSTRAINT_POLICY + os_workgroup for hot threads** | Avoids **5–20 ms** scheduler-induced stalls; replaces usleep's 500–5000 µs variance with `mach_wait_until` <600 µs (99.9%) | native | medium | **MED** — `os_workgroup_join` requires the RT policy first (EINVAL "not realtime" **confirmed** but only for `WORK_INTERVAL_TYPE_COREAUDIO`). The "<600 µs 99.9%" figure is **misattributed** (from micropython issue #8621, hardware unspecified, not Apple forum 120403) and not reproduced on Apple Silicon (uncertain). `yield()` tanks priority to 0 for up to 10 ms — **confirmed** to apply to SCHED_RR too. Swift heap allocations can stall the RT thread |
-| 10 | **SCK queueDepth tuning** (=3 for min capture-side latency; consider 5 on GPU load spikes) | Avoids backlog of **up to 116 ms** (queueDepth=8 default at 60 fps); with =3, max backlog 16.6 ms | native | low | **LOW** — the "3–8 strict range" is **refuted**: the real default is **8** (not 3), no documented minimum; queueDepth=1/2 run in production. "3" is just a conservative community default born of confusion with the old CGDisplayStream |
-| 11 | **SCK `420v` YCbCr pixel format instead of BGRA** (zero-copy into VideoToolbox) | **~0.5–3 ms** by removing one GPU color-conversion pass at 4K | native | low | **LOW** — WWDC22 confirmed "lowest CPU cost"; removes a full DRAM round-trip |
-| 12 | **Zero-copy IOSurface end-to-end** (SCK→VT→VT→Metal, no memcpy; `kCVPixelBufferMetalCompatibilityKey`) | **15–60 µs/frame** of copying avoided; + avoids 5–30 ms deferred-autorelease spikes (autoreleasepool wrapping) | native | low–medium | **LOW** — WWDC21: 62% bandwidth reduction. Note: do **NOT set `kCVPixelBufferPixelFormatTypeKey`** in the decode imageBufferAttributes when it matches the native format (a mismatch triggers a VTPixelTransferSession copy — confirmed via WWDC14 session 513). The visionOS 2 behavior "set pixelFormat at all = copy" is **not confirmed on macOS 14+** (uncertain) |
-| 13 | **Opus RESTRICTED_LOWDELAY 5ms frames** (audio) | **~15 ms** vs the Opus 20ms default (7.5 ms vs 22.5 ms algorithmic delay) | partial (libopus, not native) | medium | **LOW** — Sunshine uses exactly this config. Or PCM on LAN = 0 ms codec delay (~3.1 Mbit/s stereo, trivial on wired) |
-| 14 | **CoreAudio HAL buffer reduction** (`kAudioDevicePropertyBufferFrameSize=64–128`) | **~8 ms** (512→128 frames: 10.67→2.67 ms; →64: 1.33 ms) | native | medium | **LOW** — must be set before allocating render resources; the minimum is driver-dependent |
-| 15 | **LTR recovery instead of full IDR** (`EnableLTR`, `ForceLTRRefresh`) | **30–100 ms** avoided per recovery (LTR-P is 10–30× smaller than an IDR, no bandwidth spike) | native | medium | **MED** — `EnableLTR` is codec-agnostic, HEVC+LTR on Apple Silicon **confirmed feasible** (SDK header has no restriction, FFmpeg ARM64 path). `ForceLTRRefresh` has an internally contradictory type in the header: the annotation says `CFNumberRef`, the doc comment says `kCFBooleanTrue` — must test both at runtime (confirmed inconsistency) |
-| 16 | **Skip idle frames + dirtyRects** (SCK) | **high** — avoids encoder queue buildup from idle callbacks; dirtyRects cuts encode time for partial updates | native | low–medium | **LOW** |
-| 17 | **`maximumDrawableCount=2`** (lower pipeline depth) | **8–34 ms** (count=3 gives 16–50 ms variable latency; count=2 converges to ~8–16 ms) | native | low–medium | **LOW** — "not recommended for iOS/iPadOS" is **refuted**: Apple only constrains the range to [2,3], no iOS-specific prohibition. The real trade-off: `nextDrawable` may return nil → needs frame-drop logic |
-| 18 | **NWParameters `requiredInterfaceType` + `includePeerToPeer=false`** (pin LAN, avoid path eval) | Avoids **50–200 ms** path evaluation + avoids **40–336 ms** AWDL spikes | native | low | **LOW** — guarantees no cellular/AWDL fallback |
-| 19 | **serviceClass = .interactiveVideo** (Wi-Fi WMM AC_VI) | **~10× jitter** on congested Wi-Fi (AC_BE ~67 ms → AC_VI/VO ~7 ms); marginal under light load | native | low | **MED** — only sets Wi-Fi 802.11e UP, does **NOT** set IP-header DSCP except on Fastlane networks (confirmed). On wired LAN use the `IP_TOS` setsockopt directly if DSCP is needed. `nw_service_class_interactive_video=2` ≠ `NET_SERVICE_TYPE_VI=3` (different namespaces, private mapping) |
-| 20 | **Beat-frequency exact rate match** (host display = client refresh, e.g. both at 60.000 Hz) | **0–16.67 ms** oscillation (60 Hz) eliminated; beat period of 60.000 vs 59.94 ≈ 16.7 s | native | medium | **MED** — requires forcing the host display to exactly 60.000 Hz (not 59.951); EDID may map nominal 60 to 59.951 |
-| 21 | **VTCompressionSessionPrepareToEncodeFrames** (pre-warm) + keep the session alive across reconnects | First frame: avoids the init spike (est. 1–10 ms); reconnect: avoids a **30–100 ms** session rebuild | native | low | **MED** — the first-frame spike has no public measurement (open question); the 30–100 ms rebuild is inferred, not Apple-documented |
-| 22 | **CAMetalDisplayLink `preferredFrameLatency=1`** | **~8–16 ms** (the default is 2 frames on iOS) | native | low | **LOW** — confirmed: only accepts 1.0 or 2.0; the system may exceed it when needed (windowed macOS). `CAMetalDisplayLink` is **NOT** restricted to Apple Silicon (refuted: only `@available(macOS 14)`; Moonlight added its own `isAppleSilicon()` guard) |
-| 23 | **CAMetalLayer.opaque=true** (client) | **~8–13 ms** (21–26 ms → 13 ms, Flutter/Impeller #134959) | native | low | **HIGH-uncertainty** — the 13 ms figure is a **single profiling observation**, no reproducible baseline; Flutter's real fix was a custom IOSurface layer (PR #48226), not this flag. `opaque` is a CALayer property (skips alpha-blending); Apple documents no latency guarantee |
-| 24 | **`displaySyncEnabled=false`** (vsync-off, tearing) | **8.3–16.7 ms** (removes the entire vsync wait) | native | low | **MED** — causes tearing on non-adaptive-sync displays; consider adaptive sync (fullscreen) instead |
-| 25 | **CAMetalLayer.colorspace = nil** (bypass the compositor color-match pass) | **sub-frame, non-zero** (Apple: "fastest approach"; qualitatively a "nontrivial-but-not-excessive" GPU cost per frame on mismatch) | native | low | **LOW** — no Apple ms figure; trade-off: raw color on a P3 display. Or match the display's native colorspace |
-| 26 | **Disable EDR for SDR streams** (`wantsExtendedDynamicRangeContent=false`) | **sub-frame** — WWDC21 10161: EDR tone mapping "involves an extra processing pass... increases latency and bandwidth" | native | low | **LOW** — no ms figure; an FP16 buffer is 2× the bandwidth vs bgra10a2 |
-| 27 | **Adaptive sync (VRR) fullscreen** (`presentDrawable:afterMinimumDuration:`) | **3–8 ms** average on a 120 Hz adaptive display | native | medium | **MED** — **fullscreen is a hard requirement** (WWDC21 10147 confirmed; Apple Support 102144 is silent because it covers the OS-level feature, not the app API). Single-window/windowed apps get NO VRR scheduling benefit |
-| 28 | **kCMSampleAttachmentKey_DisplayImmediately** (if forced to use AVSampleBufferDisplayLayer) | Bounds display latency to ~1 scan period instead of accumulating 1–3 frames | native | low | **MED** — the "bypass all enqueued frames" behavior comes from forum 14212, not confirmed on macOS 14+ under sustained load (claim_to_verify) |
-| 29 | **QUIC keepalive + 0-RTT resumption** (reconnect cold path) | **2–5 ms** (1-RTT LAN) or **0 ms** (0-RTT/keepalive); avoids the re-handshake | native | medium | **MED** — `allowFastOpen` confirmed for the TCP path; **the QUIC 0-RTT property in NWProtocolQUIC is unverified** (claim_to_verify). 0-RTT has no forward secrecy and is replay-susceptible (acceptable for control) |
-| 30 | **sendmsg_x / recvmsg_x batch UDP** (raw socket) | **high throughput**, medium per-frame; collapses N syscalls → 1 | partial (PRIVATE syscall) | medium | **MED** — syscalls 480/481 **confirmed stable** on macOS 14+ Apple Silicon; symbols exported from libSystem; but PRIVATE (msghdr_x only in socket_private.h, must forward-declare yourself). **macOS 13 hang** — only use on macOS 14+ |
-| 31 | **Pre-trigger Local Network permission** (onboarding) | Avoids **several seconds** of blocking on first cold launch (iOS 14+ privacy gate) | native | low | **LOW** — a correctness/cold-path fix, not steady-state |
-| 32 | **Slice-based encoding / sub-frame pipelining** | **~10–12 ms** (Haivision; theoretical (N-1)/N × encode_time) — **BUT not feasible via the public VideoToolbox API** | **unsupported** (VideoToolbox = frame granularity) | exotic | **HIGH** — VideoToolbox output is **frame-granular**, one callback per frame. `MaxH264SliceBytes` is H.264-only, no sub-frame callback. `kVTCompressionPropertyKey_NumberOfSlices`/`NumberOfSubFrameSections` are **private symbols** (confirmed present in .tbd, iOS 9.3–26.x) but have NO public header, NO call sites anywhere, and **completely unknown** behavior when invoked (uncertain). Manual NAL-splitting after the callback only saves ~0.1–1 ms on LAN |
-| 33 | **AES-128-GCM encryption (if needed)** vs ChaCha20 | Pick AES-GCM: **~10 µs/frame** saved vs ChaCha20 (4.6 GB/s vs 1.75 GB/s on M1); AES total **<0.1 ms/frame** = negligible | native (QUIC TLS 1.3 picks AES-GCM itself) | low | **LOW** — QUIC is always encrypted (cannot be disabled). Use CryptoKit, not OpenSSL. Throughput numbers are from OpenSSL benchmarks; Apple's internal corecrypto is not publicly benchmarked (claim_to_verify) |
-| 34 | **AWDL peer-to-peer (`includePeerToPeer=true`)** for the video stream | **NEGATIVE** — adds 40–336 ms RTT spikes on a ~5 s cycle; AWDL channel-hop 50–200 ms every 10–12 s | partial | low | **HIGH** — Apple DTS: P2P Wi-Fi "hundreds of ms"; infrastructure Wi-Fi is better. **AVOID for video.** Wi-Fi Aware `WAPerformanceMode.realtime` is iOS/iPadOS 26 only (`@available(macOS, unavailable)` confirmed), requires an entitlement |
-| 35 | **DriverKit virtual HID injection** (vs CGEventPostToPid) | Avoids the **2–3 s lag** on macOS Tahoe 26 (CGEventPost from an unsigned daemon is blocked); latency = the physical HW path | native (entitlement required) | exotic | **MED** — the "physical HW path latency" figure is a Karabiner claim with no measured comparison. Simpler: use a signed app + `kTCCServicePostEvent` |
-| 36 | **CABAC vs CAVLC, profile selection, MaxH264SliceBytes MTU-align** | **marginal** (~7% bitrate for CABAC; slice MTU-align ~1–3 ms) | native | low | **LOW** — on the Apple Silicon HW decoder the CABAC/CAVLC diff is sub-ms; HEVC mandates CABAC |
-| 37 | **`preferNoChecksum`, batch send, BSD checksum offload** | **marginal** (~1–5 µs/packet; ~0 with HW offload) | native | low | **LOW** |
-| 38 | **HEVC tiles / WPP control** | **N/A** — no API surface | **unsupported** | exotic | **N/A** — the Media Engine handles it internally; no `kVTCompressionPropertyKey` for tiles/WPP |
-| 39 | **DPDK / kernel-bypass** | **N/A** on macOS/iOS | **unsupported** | exotic | **N/A** — SIP + the entitlement model block userspace NIC access; NEPacketTunnelProvider is slower, not faster |
-| 40 | **RFC 9150 integrity-only ciphers** | **~3 µs/frame** theoretical | **unsupported** (QUIC is AEAD-only) | exotic | **N/A** — not applicable to QUIC/Network.framework |
-
----
+| # | Technique | Est. ms saved | Difficulty | Risk |
+|---|-----------|---------------|------------|------|
+| 1 | **Low-latency RC encode** — `EnableLowLatencyRateControl` (H.264) + manual HEVC config (`AllowFrameReordering=false`, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, `RealTime=true`) | **~100 ms** @720p30 vs default buffering (WWDC21 10158) | low | **MED** — HEVC support is FFmpeg-empirical (gated `TARGET_CPU_ARM64`), NOT Apple-documented (H.264 only). Risk of silent OS regression. `-12900` on HW-accel query = API incompleteness, not a SW fallback. |
+| 2 | **Wired GigE instead of Wi-Fi** | **2–30 ms** + all Wi-Fi jitter | low | **LOW** — link-layer physics. |
+| 3 | **Client-side cursor overlay** (`showsCursor=false`, draw from the input channel) | **~15–25 ms** for cursor feedback | medium | **LOW** — RDP/PCoIP/NoMachine all do it; needs out-of-band cursor-shape sharing. |
+| 4 | **Metal direct render vs AVSampleBufferDisplayLayer** | **8–33 ms** (1–2 frames, #1885) | medium | **MED** — qualitative, measured on a macOS dGPU; no iOS benchmark. AS unified memory has no copy penalty → benefit clearer. |
+| 5 | **120 fps/ProMotion end-to-end** (`minimumFrameInterval=1/120` + 120 Hz client) | **~8.3 ms** worst-case vsync + ~4 ms avg capture | low–med | **MED** — needs a 120 Hz host AND encode <8.3 ms. macOS 15 default 1/60 (set explicitly). Use `1/fps×0.9`, NOT `kCMTimeZero` (refuted). |
+| 6 | **Avoid `AVSampleBufferRenderSynchronizer`** / PTS fire-and-forget AV sync | **~1000 ms** of buffering avoided | medium | **LOW** — accidentally using synchronizer mode destroys all latency work. ~1 s is community-reported. |
+| 7 | **HW decode + verify** (`RequireHardwareAcceleratedVideoDecoder=true`, `RealTime=true`) | **5–17 ms** (HW 1–3 vs SW 8–20; HEVC Main10 SW >30) | low | **LOW** — `flags=0` sync confirmed in header. Don't combine `RealTime` with `MaximizePowerEfficiency`. |
+| 8 | **Display drop policy "always-newest"** (cap 3, drop oldest/vsync, target 1) | **8.3–25 ms** | medium | **LOW** — verified in moonlight-qt pacer.cpp. |
+| 9 | **THREAD_TIME_CONSTRAINT_POLICY + os_workgroup** for hot threads | avoids **5–20 ms** scheduler stalls; `mach_wait_until` vs usleep | medium | **MED** — join needs RT policy first (EINVAL only for COREAUDIO type). "<600 µs" misattributed. Swift heap alloc stalls the thread. |
+| 10 | **SCK queueDepth=2–3** | avoids **≤116 ms** backlog (default 8 @60 fps) | low | **LOW** — "3–8 strict range" refuted; default is **8**, no floor; 1/2 run in production. |
+| 11 | **SCK `420v` instead of BGRA** (zero-copy into VT) | **~0.5–3 ms** (one color-conversion pass) | low | **LOW** — WWDC22 "lowest CPU cost". |
+| 12 | **Zero-copy IOSurface end-to-end** (`kCVPixelBufferMetalCompatibilityKey`, autoreleasepool) | **15–60 µs/frame** + avoids 5–30 ms autorelease spikes | low–med | **LOW** — WWDC21: 62% bandwidth reduction. Don't set a non-native `kCVPixelBufferPixelFormatTypeKey` (triggers VTPixelTransfer copy, WWDC14 513). |
+| 13 | **Opus RESTRICTED_LOWDELAY 5 ms** (audio) | **~15 ms** vs Opus 20 ms default | medium | **LOW** — Sunshine uses this; or PCM on LAN = 0 codec delay (~3.1 Mbit/s). |
+| 14 | **CoreAudio HAL buffer** (`BufferFrameSize=64–128`) | **~8 ms** (512→128: 10.67→2.67 ms) | medium | **LOW** — set before allocating render resources; min is driver-dependent. |
+| 15 | **LTR recovery instead of full IDR** (`EnableLTR`, `ForceLTRRefresh`) | **30–100 ms**/recovery (LTR-P 10–30× smaller) | medium | **MED** — `EnableLTR` codec-agnostic, HEVC+LTR on AS confirmed feasible. `ForceLTRRefresh` header self-contradicts type → test both. |
+| 16 | **Skip idle frames + dirtyRects** (SCK) | **high** — avoids idle-callback queue buildup | low–med | **LOW** |
+| 17 | **`maximumDrawableCount=2`** | **8–34 ms** (3 → 16–50 ms; 2 → ~8–16 ms) | low–med | **LOW** — "not for iOS" refuted; range [2,3] only. Trade-off: `nextDrawable` may return nil. |
+| 18 | **`requiredInterfaceType` + `includePeerToPeer=false`** | avoids **50–200 ms** path eval + **40–336 ms** AWDL spikes | low | **LOW** — but don't pin over a WG mesh ([13](13-network-transport.md)). |
+| 19 | **`serviceClass=.interactiveVideo`** (Wi-Fi AC_VI) | **~10× jitter** on congested Wi-Fi (67→7 ms); marginal light-load | low | **MED** — sets only Wi-Fi UP, NOT IP DSCP except Fastlane. `nw_..._interactive_video=2` ≠ `NET_SERVICE_TYPE_VI=3`. |
+| 20 | **Beat-frequency exact rate match** (host = client refresh) | **0–16.67 ms** oscillation eliminated | medium | **MED** — needs host forced to exactly 60.000 Hz (EDID may map to 59.951). |
+| 21 | **`PrepareToEncodeFrames` pre-warm** + keep session alive across reconnects | first frame: 1–10 ms; reconnect: **30–100 ms** rebuild | low | **MED** — first-frame spike has no public number; 30–100 ms inferred. |
+| 22 | **`preferredFrameLatency=1`** | **~8–16 ms** (default is 2 frames on iOS) | low | **LOW** — only 1.0/2.0; system may exceed (windowed). `CAMetalDisplayLink` NOT AS-only (refuted). |
+| 23 | **`CAMetalLayer.opaque=true`** (client) | **~8–13 ms** (Flutter #134959) | low | **HIGH-uncertainty** — single non-reproducible observation; Flutter's real fix was a custom IOSurface layer. Apple documents no latency guarantee. |
+| 24 | **`displaySyncEnabled=false`** (vsync-off, tearing) | **8.3–16.7 ms** | low | **MED** — tearing on non-adaptive displays; consider adaptive sync (fullscreen) instead. |
+| 25 | **`colorspace=nil`** (bypass color-match pass) | **sub-frame** (Apple "fastest") | low | **LOW** — raw color on a P3 display; or match the native colorspace. |
+| 26 | **Disable EDR for SDR** (`wantsExtendedDynamicRangeContent=false`) | **sub-frame** (WWDC21 10161) | low | **LOW** — FP16 buffer is 2× bandwidth vs bgra10a2. |
+| 27 | **Adaptive sync (VRR) fullscreen** | **3–8 ms** avg on a 120 Hz adaptive display | medium | **MED** — **fullscreen is a hard requirement** (WWDC21 10147); a windowed app gets no benefit. |
+| 28 | **`kCMSampleAttachmentKey_DisplayImmediately`** (if forced to AVSBDL) | bounds display latency to ~1 scan vs 1–3 frames | low | **MED** — "bypass enqueued frames" from forum 14212, unconfirmed under sustained load. |
+| 29 | **QUIC keepalive + 0-RTT** (reconnect cold path) | **2–5 ms** (1-RTT) or **0** (0-RTT) | medium | **MED** — `allowFastOpen` confirmed for TCP; the QUIC 0-RTT property is unverified. 0-RTT is replay-susceptible (OK for control). |
+| 30 | **`sendmsg_x`/`recvmsg_x` batch UDP** | high throughput, medium per-frame | medium | **MED** — syscalls 480/481 stable on macOS 14+; PRIVATE (`msghdr_x` in `socket_private.h`). macOS 13 hang. |
+| 31 | **Pre-trigger Local Network permission** (onboarding) | avoids **several seconds** on first cold launch | low | **LOW** — cold-path correctness fix. |
+| 32 | **Slice-based / sub-frame pipelining** | ~10–12 ms (theoretical) — **but not feasible via public API** | exotic | **HIGH** — VT output is frame-granular. `NumberOfSlices`/`NumberOfSubFrameSections` are PRIVATE with unknown behavior. Manual NAL-split saves ~0.1–1 ms on LAN. |
+| 33 | **AES-128-GCM vs ChaCha20** (if encrypting) | **~10 µs/frame** (AES total <0.1 ms = negligible) | low | **LOW** — QUIC TLS 1.3 picks AES-GCM itself. Use CryptoKit. |
+| 34 | **AWDL P2P (`includePeerToPeer=true`)** for video | **NEGATIVE** — 40–336 ms spikes; channel-hop 50–200 ms | low | **HIGH** — **AVOID for video.** Wi-Fi Aware `realtime` is iOS/iPadOS 26 only. |
+| 35 | **DriverKit virtual HID** (vs CGEventPostToPid) | avoids the **2–3 s** lag on macOS 26 (unsigned-daemon CGEventPost blocked) | exotic | **MED** — "HW-path latency" is a Karabiner claim, unmeasured. Simpler: signed app + `kTCCServicePostEvent`. |
+| 36 | **CABAC vs CAVLC, profile, slice MTU-align** | **marginal** (~7% bitrate; slice ~1–3 ms) | low | **LOW** — decode delta sub-ms; HEVC mandates CABAC. |
+| 37 | **`preferNoChecksum`, batch send, checksum offload** | **marginal** (~1–5 µs/packet; ~0 with HW offload) | low | **LOW** |
+| 38 | **HEVC tiles / WPP control** | **N/A** — no API surface | exotic | **N/A** — Media Engine handles it internally. |
+| 39 | **DPDK / kernel-bypass** | **N/A** on macOS/iOS | exotic | **N/A** — SIP + entitlements block userspace NIC access. |
+| 40 | **RFC 9150 integrity-only ciphers** | **~3 µs/frame** theoretical | exotic | **N/A** — QUIC is AEAD-only. |
 
 ### Do these first (highest leverage, lowest risk)
 
-In implementation-priority order for the target stack (macOS host → macOS/iOS client, LAN, Apple Silicon):
+1. **Wired GigE** (#2). ⚠️ Do NOT pin `requiredInterfaceType` over a userspace-WireGuard mesh (utun=`.other` → breaks); leave the default, the routing table steers itself ([13](13-network-transport.md)). Keep `includePeerToPeer=false`.
+2. **Low-latency encode** (#1) — `EnableLowLatencyRateControl` (H.264); for HEVC set `RealTime=true`, `AllowFrameReordering=false`, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, `PrioritizeEncodingSpeedOverQuality=true`, `MaxKeyFrameInterval=INT_MAX`. **Verify HEVC at runtime** (`VTCopySupportedPropertyDictionaryForEncoder`).
+3. **HW decode + verify** (#7) — `RequireHardwareAcceleratedVideoDecoder=true`, `flags=0`, `RealTime=true`.
+4. **Metal direct render** (#4) — `CVMetalTextureCacheCreateTextureFromImage → CAMetalLayer`, avoid AVSBDL. The big differentiator vs Moonlight on macOS.
+5. **Client-side cursor overlay** (#3) — `showsCursor=false`, draw locally. The biggest perceived-responsiveness lever.
+6. **Zero-copy IOSurface + `420v`** (#11, #12) — wrap per-frame callbacks in `autoreleasepool {}`.
+7. **Always-newest drop policy** (#8) + **queueDepth=2–3** (#10) + **maximumDrawableCount=2** (#17).
+8. **120 fps/ProMotion if both ends support it** (#5) — `1/fps×0.9` for `minimumFrameInterval`, NOT `kCMTimeZero`.
+9. **RT threads for capture/encode/network** (#9) — `THREAD_TIME_CONSTRAINT_POLICY` + `mach_wait_until`; `.userInteractive`; ban `yield()`; C/ObjC hot path if Swift allocations stall.
+10. **Audio: Opus 5 ms or PCM + HAL 64–128 + PTS fire-and-forget** (#13, #14, #6) — never `AVSampleBufferRenderSynchronizer`.
 
-1. **Wired Gigabit Ethernet** (#2) — the foundation. Sub-0.1 ms one-way, zero jitter. ⚠️ On **NetBird** do NOT pin `requiredInterfaceType = .wiredEthernet` (utun=`.other` → breaks); leave the default, the routing table steers 100.64/10 itself ([13](13-netbird-transport.md)). Keep `includePeerToPeer = false`.
-2. **Low-latency encode config** (#1) — `EnableLowLatencyRateControl` for H.264; for HEVC manually set `RealTime=true`, `AllowFrameReordering=false`, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, `PrioritizeEncodingSpeedOverQuality=true`, `MaxKeyFrameInterval=INT_MAX`. **Verify HEVC support at runtime** via `VTCopySupportedPropertyDictionaryForEncoder` (since Apple documents H.264 only).
-3. **HW decode + verify** (#7) — `RequireHardwareAcceleratedVideoDecoder=true`, `flags=0` synchronous, `RealTime=true`, verify `UsingHardwareAcceleratedVideoDecoder`.
-4. **Metal direct render path** (#4) — `CVMetalTextureCacheCreateTextureFromImage` → `CAMetalLayer`, avoid AVSampleBufferDisplayLayer. This is the big differentiator vs Moonlight on macOS.
-5. **Client-side cursor overlay** (#3) — `showsCursor=false`, draw the cursor locally. The biggest "perceived responsiveness" lever; the cursor feels instant.
-6. **Zero-copy IOSurface + `420v` pixel format** (#11, #12) — throughout the pipeline; wrap per-frame callbacks in `autoreleasepool {}`.
-7. **Display drop policy "always-newest"** (#8) + **queueDepth=3** (#10) + **maximumDrawableCount=2** (#17) — zero-depth queue policy, drop oldest-first every vsync.
-8. **120fps/ProMotion if both ends support it** (#5) — use `1/target_fps × 0.9` for `minimumFrameInterval`, NOT `kCMTimeZero`. Set explicitly to dodge the macOS 15 1/60 cap.
-9. **RT threads for capture/encode/network** (#9) — `THREAD_TIME_CONSTRAINT_POLICY` + `mach_wait_until`; QoS `.userInteractive`; avoid `yield()`; write the hot path in C/ObjC if Swift allocations cause stalls.
-10. **Audio: Opus 5ms or PCM + HAL buffer 64–128 frames + PTS fire-and-forget sync** (#13, #14, #6) — absolutely avoid `AVSampleBufferRenderSynchronizer`.
+### Skip / diminishing returns
 
----
-
-### Diminishing returns / probably skip
-
-- **Slice/sub-frame pipelining** (#32) — **skip**. Not feasible via the public VideoToolbox API (frame-granular output, confirmed). The private symbols `NumberOfSlices`/`NumberOfSubFrameSections` exist but their behavior is unknown and risky. Manual NAL-splitting after the callback is only ~0.1–1 ms on LAN — not worth the complexity.
-- **AWDL peer-to-peer for video** (#34) — **skip, harmful**. Adds latency instead of reducing it. Use infrastructure Wi-Fi/Ethernet.
-- **HEVC tiles/WPP, DPDK kernel-bypass, RFC 9150 ciphers** (#38, #39, #40) — **skip**. No API surface on Apple platforms.
-- **CAMetalLayer.opaque=true** (#23) — **try it but do not trust the number**. The 13 ms figure is a single non-reproducible observation; set it (cheap, safe) but expect no guarantee.
-- **DriverKit virtual HID** (#35) — **skip initially**, only needed if macOS Tahoe 26 blocks `CGEventPostToPid` for the specific use case. A signed app + `kTCCServicePostEvent` is enough for most.
-- **Adaptive sync/VRR** (#27) — **skip for a single-window windowed app**. VRR scheduling requires fullscreen (confirmed); a window-sharing app is usually not fullscreen, so no benefit.
-- **DSCP marking via serviceClass on wired LAN** (#19) — **marginal on wired**. Only sets Wi-Fi UP, no IP DSCP except Fastlane. Worth it for multi-client Wi-Fi; nearly meaningless on a dedicated wired LAN.
-- **Encryption tuning ChaCha vs AES** (#33) — **negligible** on Apple Silicon (<0.1 ms/frame with HW AES-GCM). Just make sure ChaCha20 is not accidentally chosen; QUIC handles it. On a physically isolated LAN, consider plaintext video + an encrypted control channel (the Moonlight model).
-- **`preferNoChecksum`, batch send micro-opts** (#37) — **marginal** with modern HW checksum offload.
-
-> **Cross-cutting measurement note:** the latency overlays of streamers (Moonlight stats, the Virtual Desktop indicator) **under-report by ~40 ms** because they skip capture delay, compositor buffering, and display scanout (Greendayle). Use an LED+photodiode rig (~21 ns resolution) or a 240/1000 fps camera to measure true glass-to-glass; if the sum of software stages deviates >1 ms from the hardware measurement, there is a clock/instrumentation bug.
+- **Slice/sub-frame pipelining** (#32) — not feasible via the public API; private symbols are unknown. Manual NAL-split is ~0.1–1 ms on LAN.
+- **AWDL P2P for video** (#34) — harmful; use infrastructure Wi-Fi/Ethernet.
+- **HEVC tiles/WPP, DPDK, RFC 9150** (#38–40) — no API surface.
+- **`opaque=true`** (#23) — try it but don't trust the number.
+- **DriverKit virtual HID** (#35) — only if macOS 26 blocks `CGEventPostToPid`; a signed app + `kTCCServicePostEvent` suffices for most.
+- **VRR/adaptive sync** (#27) — skip for a windowed app (requires fullscreen).
+- **DSCP via serviceClass on wired LAN** (#19) — marginal (only Wi-Fi UP). On a managed switch use `IP_TOS` directly.
+- **ChaCha vs AES** (#33) — negligible. On an isolated LAN, consider plaintext video + an encrypted control channel (Moonlight model).
 
 ---
 
 ## Verified API claims, corrections & Phase-0 validation list
 
-This section consolidates all the adversarial-verification verdicts in the corpus into a single source of truth for the design phase. Every "load-bearing" claim — one that, if wrong, would break the architecture or inflate/misjudge the latency budget — carries a verdict (`confirmed` / `refuted` / `uncertain`), a confidence level, and a corrected statement. **Golden rule: any line with a `refuted` or `uncertain` verdict must NOT be a hard assumption in the design — it must go into a Phase-0 spike to be confirmed by measurement on the target hardware (Apple Silicon, macOS 14+).**
+Consolidates the adversarial-verification verdicts. **Golden rule: any `refuted`/`uncertain` line must NOT be a hard assumption — it goes into a Phase-0 spike to be confirmed on the target hardware (Apple Silicon, macOS 26).**
 
-### 1. Verdict summary tables (load-bearing API claims)
+### 1. Verdict tables (load-bearing claims)
 
 #### 1.1 Capture — ScreenCaptureKit
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| C1 | `minimumFrameInterval = kCMTimeZero` enables native-refresh delivery; the SDK header says so; OBS PR #11896 proves it | **refuted** | high | `kCMTimeZero` is NOT used by OBS and NO Apple header says so. OBS PR #11896 sets `minimumFrameInterval = (1/target_fps) × 0.9` — a concrete `CMTime`, ~10% shorter than the frame period, NOT zero. Reason: setting the exact fps reciprocal drops frames ([OBS PR #11896](https://github.com/obsproject/obs-studio/pull/11896)). **The design must use the explicit 0.9× value, not kCMTimeZero.** |
-| C2 | The default `minimumFrameInterval` changed to `1/60` in macOS 15 (even on ProMotion) | **confirmed** | high | Correct. SDK header diff: macOS 14.5 says default = 0 (unthrottled); macOS 15.5 says default = `1/60`. Apple updated the header docstring (but never noted it in release notes). To capture at native refresh, `minimumFrameInterval` must be set explicitly ([macos-sdk diff](https://sourcegraph.com/github.com/alexey-lysiuk/macos-sdk), [OBS #11778](https://github.com/obsproject/obs-studio/issues/11778)). |
-| C3 | `queueDepth` is strictly valid 3–8, default 3 | **refuted** | high | The default is **8** (not 3). The header only says "should not exceed 8" (a soft ceiling) — there is NO hard floor of 3. Values 1 and 2 run successfully in multiple shipping projects (daylight-mirror's 3→2: P95 RTT 21.6ms→18.8ms). "3" is the default of the old CGDisplayStream API, mistakenly carried over. **queueDepth=2 for minimum latency is valid; 3 is the conservative setting.** ([SCStream.h:273-276](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/queuedepth)) |
-| C4 | `SCStreamFrameInfoDisplayTime` shares a clock domain with `CACurrentMediaTime()` (mach_absolute_time) | **confirmed** | high | Correct. SCStream.h confirms it is "mach absolute time"; `CACurrentMediaTime()` = `mach_absolute_time()` converted to seconds. NO domain conversion needed — just a ticks→seconds unit conversion via `mach_timebase_info`. The "negative latency" forum report is a separate runtime/PTS bug, not a domain mismatch ([SCStream.h:399](https://developer.apple.com/forums/thread/785046)). |
+| C1 | `minimumFrameInterval = kCMTimeZero` enables native-refresh delivery | **refuted** | high | NOT used by OBS, no header says so. OBS PR #11896 sets `(1/fps)×0.9` (~10% shorter; the exact reciprocal drops frames). **Use the explicit 0.9× value, not kCMTimeZero.** ([OBS #11896](https://github.com/obsproject/obs-studio/pull/11896)) |
+| C2 | Default `minimumFrameInterval` changed to 1/60 in macOS 15 | **confirmed** | high | SDK diff: 14.5 default 0, 15.5 default 1/60 (never in release notes). Must set explicitly for native refresh. ([OBS #11778](https://github.com/obsproject/obs-studio/issues/11778)) |
+| C3 | `queueDepth` strictly 3–8, default 3 | **refuted** | high | Default **8**; "should not exceed 8" is a soft ceiling; **no floor of 3**. 1 and 2 ship (daylight-mirror 3→2: P95 21.6→18.8 ms). "3" carried over from CGDisplayStream. **2 is valid; 3 is conservative.** |
+| C4 | `SCStreamFrameInfoDisplayTime` shares a clock with `CACurrentMediaTime()` | **confirmed** | high | Both `mach_absolute_time`. No domain conversion — just ticks→seconds via `mach_timebase_info`. The "negative latency" report is a separate PTS bug. |
 
 #### 1.2 Encode — VideoToolbox
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| E1 | `kVTVideoEncoderSpecification_EnableLowLatencyRateControl` works with HEVC on Apple Silicon, "confirmed by an SDK comment" | **uncertain** → (more detail at E2) | high | The "an SDK comment says so" part is WRONG. The sentence "supported only for H.264 on Intel… both on Apple Silicon" comes from an **FFmpeg author's commit message (Cameron Gutman)**, NOT an Apple header. Apple's official doc (WWDC21) mentions H.264 only. HEVC + low-latency RC runs on Apple Silicon per FFmpeg's empirical evidence (PR #20453, gated `TARGET_CPU_ARM64`), but **with no guarantee from Apple** ([WWDC21 10158](https://developer.apple.com/videos/play/wwdc2021/10158/), [FFmpeg](https://www.mail-archive.com/ffmpeg-devel@ffmpeg.org/msg185545.html)). |
-| E2 | The macOS 26.5 SDK header still says "supported video codec type: H.264" | **refuted** | high | The header does NOT contain the phrase "supported video codec type: H.264" in any version (15.4 or 26.5) — the constant's docblock is entirely codec-agnostic. That phrase exists only in the WWDC21 transcript. HEVC works on ARM64 per FFmpeg. **Must confirm at runtime; risk of silent regression across OS releases.** |
-| E3 | Whether `kVTCompressionPropertyKey_EnableLTR` works with HEVC low-latency is unclear (WWDC demoed H.264 only) | **refuted** | high | The EnableLTR header (macOS 12.0/iOS 15.0) has no codec restriction whatsoever. FFmpeg production code confirms HEVC low-latency RC runs on ARM64 and EnableLTR applies in the same session path. **HEVC + EnableLowLatencyRateControl + EnableLTR is a viable combination for macOS 14+/Apple Silicon**, but validate at runtime via `VTCopySupportedPropertyDictionaryForEncoder`. |
-| E4 | `kVTEncodeFrameOptionKey_ForceLTRRefresh` is a `CFNumberRef` (not CFBoolean as WWDC said) | **confirmed** | high | Correct. The inline annotation in the header says `// CFNumberRef, Optional`, BUT the `@abstract` in the same header says "Set this option to kCFBooleanTrue" — **an internal contradiction in Apple's header.** The runtime behavior is not resolved by the header. **Must test both `kCFBooleanTrue` and `@(1)` (CFNumberRef) at runtime to learn which one the encoder accepts** ([VTCompressionProperties.h:1265-1277](https://developer.apple.com/videos/play/wwdc2021/10158/)). |
-| E5 | `kVTCompressionPropertyKey_MaxFrameDelayCount = 0` means "default behavior / no limit" | **refuted** | high | WRONG — there is no "value of zero implies default behavior" sentence in the MaxFrameDelayCount block (that sentence belongs to the adjacent `MaxH264SliceBytes` property). Per the header's formula: M=0 ⇒ "before the encode call for frame N returns, frame N must have been emitted" = **synchronous/immediate emit**. The no-limit default is `kVTUnlimitedFrameDelayCount = -1`, not 0. **Set `MaxFrameDelayCount = 0` to force one-in-one-out.** |
-| E6 | `kVTCompressionPropertyKey_AllowOpenGOP` defaults to `kCFBooleanTrue` for HEVC | **confirmed** | high | Correct and unchanged from macOS 15.4→26.5/iOS. **HEVC allows Open-GOP by default — MUST set `false` explicitly** for clean IDR recovery (single-window streaming needs every IDR to be independently decodable) ([VTCompressionProperties.h:186-197](https://developer.apple.com/documentation/videotoolbox/kvtcompressionpropertykey_allowopengop)). |
+| E1 | `EnableLowLatencyRateControl` + HEVC "confirmed by an SDK comment" | **uncertain** | high | The "SDK comment" is an FFmpeg author's commit message, NOT an Apple header. WWDC21 mentions H.264 only. HEVC + low-latency RC runs on Apple Silicon (FFmpeg PR #20453, gated `TARGET_CPU_ARM64`) but **with no Apple guarantee**. |
+| E2 | The macOS 26.5 header still says "supported codec: H.264" | **refuted** | high | The docblock is codec-agnostic in every version (15.4, 26.5); that phrase is only in the WWDC21 transcript. HEVC works on ARM64. **Confirm at runtime; risk of silent regression.** |
+| E3 | Whether `EnableLTR` works with HEVC low-latency is unclear | **refuted** | high | The EnableLTR header (macOS 12.0/iOS 15.0) has no codec restriction. **HEVC + EnableLowLatencyRateControl + EnableLTR is viable on Apple Silicon**; validate via `VTCopySupportedPropertyDictionaryForEncoder`. |
+| E4 | `ForceLTRRefresh` is a `CFNumberRef` (not CFBoolean) | **confirmed** | high | The header self-contradicts: annotation `// CFNumberRef`, abstract "Set to kCFBooleanTrue". **Test both `kCFBooleanTrue` and `@(1)` at runtime.** |
+| E5 | `MaxFrameDelayCount = 0` means "default / no limit" | **refuted** | high | The no-limit default is `kVTUnlimitedFrameDelayCount = -1`. M=0 ⇒ frame N emitted before its encode call returns = **synchronous emit** (the "zero = default" sentence belongs to `MaxH264SliceBytes`). **Set 0 for one-in-one-out.** |
+| E6 | `AllowOpenGOP` defaults to `true` for HEVC | **confirmed** | high | Unchanged 15.4→26.5. **HEVC allows Open-GOP by default — MUST set `false`** so every IDR is independently decodable. |
 
 #### 1.3 Slice-pipelining (private symbols)
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| S1 | `kVTCompressionPropertyKey_NumberOfSlices` exists and "can be set without crashing" | **uncertain** | high | The symbol exists in the .tbd from iOS 9.3→26.x (CONFIRMED), but it is **PRIVATE** — no declaration in any public header. The "can be set without crashing" part has NO evidence; the behavior when passed to `VTSessionSetProperty` (ignore/error/crash) is **unknown**. Do not use in the design unless a spike confirms it. |
-| S2 | `kVTCompressionPropertyKey_NumberOfSubFrameSections` has an observable effect | **uncertain** | high | A real symbol, exported from iOS 13→26.5, but with no header/doc/OSS call site anywhere. Its effect when set is unknown — cannot be refuted as "no-op" but there is also no evidence it works. **Drop from the main design.** |
-| S3 | `kVTSampleAttachmentKey_SliceAttachments` / `SliceDataLength` appear in the output attachment dict | **uncertain** | high | They are exported PRIVATE symbols (resolving to the strings "SliceAttachments"/"SliceDataLength"), but they are NOT in any public header and **whether the runtime populates them is unconfirmed.** Do not rely on them for manual NAL splitting. **Architectural conclusion: VideoToolbox output is frame-granular; true NVENC-style sub-frame pipelining is NOT available via the public API — drop tiles/WPP/slice-callbacks from the design.** |
+| S1 | `NumberOfSlices` exists and "can be set without crashing" | **uncertain** | high | Symbol in the .tbd (iOS 9.3→26.x) but **PRIVATE**, no public header; the "can be set" part has no evidence — behavior unknown. Don't use without a spike. |
+| S2 | `NumberOfSubFrameSections` has an observable effect | **uncertain** | high | Real exported symbol, no header/doc/OSS call site. Effect unknown. **Drop from the design.** |
+| S3 | `SliceAttachments`/`SliceDataLength` appear in output attachments | **uncertain** | high | Exported PRIVATE strings, not in any public header; whether the runtime populates them is unconfirmed. **Conclusion: VT output is frame-granular; NVENC-style sub-frame pipelining is NOT available via the public API — drop tiles/WPP/slice-callbacks.** |
 
 #### 1.4 Decode — VideoToolbox
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| D1 | `kVTDecompressionPropertyKey_RealTime` defaults to `kCFBooleanTrue` | **confirmed** | high | Correct, verbatim in the 15.4 & 26.5 headers: "default is true; setting NULL ≡ kCFBooleanTrue". It is a **hint, not a contract** — still set it explicitly. **Must not be set together with `MaximizePowerEfficiency` (undefined behavior).** |
-| D2 | `flags = 0` guarantees synchronous decode; but forum 19046 says it can still be async with `kVTDecodeInfo_Asynchronous` | **uncertain** | medium | The header guarantee ("the callback completes before DecodeFrame returns") is CONFIRMED, for both HW/SW. The forum-19046 part could NOT be verified (403). The Apple Silicon HW decoder may dispatch internally async and set `kVTDecodeInfo_Asynchronous` in the callback infoFlags **while the calling thread still blocks** — architecturally plausible but unconfirmed by any source. **Use flags=0 for synchronous; if pipelining CPU work in parallel, use async + semaphore.** |
-| D3 | Setting a mismatched pixel format in `destinationImageBufferAttributes` causes an extra copy (but "Apple never documented it") | **refuted** | high | Apple DID document it — WWDC14 Session 513: requesting a non-native format (e.g. BGRA when the decoder outputs YUV) will "force an extra buffer copy". The speculation that "unified memory might optimize this away" has **no evidence** — unified memory removes the PCIe transfer, NOT the compute cost of conversion. **Must match the decoder's native format (`420YpCbCr8BiPlanarVideoRange` 8-bit / `420YpCbCr10BiPlanarVideoRange` 10-bit).** |
+| D1 | `RealTime` defaults to `true` | **confirmed** | high | Verbatim in 15.4 & 26.5 headers. A hint, not a contract — set it explicitly. **Don't set with `MaximizePowerEfficiency` (undefined).** |
+| D2 | `flags=0` guarantees synchronous decode | **uncertain** | med | The header guarantee (callback completes before return) is CONFIRMED for HW/SW. The HW decoder may dispatch internally async, setting `kVTDecodeInfo_Asynchronous` while the thread still blocks — plausible, unconfirmed. **Use flags=0; if pipelining CPU work, use async + semaphore.** |
+| D3 | A mismatched destination pixel format causes a copy ("Apple never documented it") | **refuted** | high | Apple DID — WWDC14 513: a non-native request "forces an extra buffer copy". Unified memory removes the PCIe transfer, NOT the conversion compute. **Match the decoder native format (`420...VideoRange` 8/10-bit).** |
 
-#### 1.5 Display / Compositor (macOS + iOS)
+#### 1.5 Display / Compositor
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| DP1 | `CAMetalDisplayLink` runs on Apple Silicon only | **refuted** | high | The header declares `API_AVAILABLE(macos(14.0), ios(17.0), tvos(17.0))` — **NO Apple Silicon restriction.** Runs on every Mac on macOS 14+ (Intel or AS). The `isAppleSilicon()` guard is Moonlight's own choice (ProMotion frame-pacing reasons), NOT an Apple requirement. |
-| DP2 | `CAMetalDisplayLink.preferredFrameLatency = 1.0` means 1 display cycle | **confirmed** | high | Correct — the unit is **frames**; 1.0 = one display cycle = the API minimum. **Only the values 1.0 and 2.0 are accepted** (Apple marks this Important). The system may exceed the requested level (windowed macOS). Set = 1.0 for streaming. |
-| DP3 | Adaptive sync requires fullscreen (WWDC21) but Apple Support 102144 never mentions it | **confirmed** | high | Both halves are true. WWDC21 session 10147 requires a fullscreen window (NSFullScreenWindowMask) for the Adaptive-Sync *scheduling* APIs; Support 102144 only describes enabling it at the OS level. **Consequence for a single-window app: a NON-fullscreen app gets NO VRR scheduling — windowed falls back to the fixed-rate compositor path.** |
-| DP4 | `maximumDrawableCount = 2` is "not recommended for iOS/iPadOS" (per Apple) | **refuted** | high | Apple has NO "not recommended for iOS/iPadOS" guidance. The only constraint is value ∈ {2,3}. The only engineer warning: count=2 increases the chance `nextDrawable` returns nil (frame drop) — platform-neutral. **`maximumDrawableCount = 2` is fully supported on iOS/iPadOS and is the right choice for minimum latency (with nil handling).** |
-| DP5 | `CAMetalLayer.opaque = true` cuts presentation latency to ~13ms on ProMotion | **uncertain** | high | The ~13ms figure is one isolated profiling measurement by one Flutter engineer (issue #134959), not reproduced, not an Apple-guaranteed property. `opaque` inherits from `CALayer.isOpaque`; Apple only documents that it allows skipping alpha-blending. **Setting isOpaque=true is cheap and sensible, but do not treat "13ms" as a budget number — measure it yourself.** |
-| DP6 | AVSampleBufferDisplayLayer adds "1+ frame" of buffering vs Metal on iOS | **uncertain** | medium | The "1+ frame" figure comes from a *subjective* report on **macOS** (discrete GPU, Moonlight #1885), NOT a measurement on iOS. Compositor architecture differences (macOS WindowServer vs iOS backboardd) make the transfer to iOS uncertain. **The design picks the Metal-direct path to eliminate the risk; if AVSampleBufferDisplayLayer is used, set `kCMSampleAttachmentKey_DisplayImmediately = true` and measure the comparison in a spike.** |
+| DP1 | `CAMetalDisplayLink` is Apple Silicon only | **refuted** | high | `API_AVAILABLE(macos(14.0), ios(17.0), tvos(17.0))` — no AS restriction. Moonlight's `isAppleSilicon()` guard is their own choice. |
+| DP2 | `preferredFrameLatency = 1.0` means 1 display cycle | **confirmed** | high | Unit is frames; 1.0 = one cycle = API minimum. **Only 1.0/2.0 accepted.** System may exceed (windowed). Set 1.0 for streaming. |
+| DP3 | Adaptive sync requires fullscreen (Support 102144 silent) | **confirmed** | high | WWDC21 10147 requires a fullscreen window for the Adaptive-Sync scheduling APIs; 102144 only covers the OS-level toggle. **A non-fullscreen app gets NO VRR scheduling.** |
+| DP4 | `maximumDrawableCount = 2` "not recommended for iOS" | **refuted** | high | No such Apple guidance. Only constraint: value ∈ {2,3}. The only warning (count=2 → `nextDrawable` may return nil) is platform-neutral. **2 is fully supported on iOS, right for min latency (with nil handling).** |
+| DP5 | `opaque=true` cuts presentation latency to ~13 ms | **uncertain** | high | One isolated Flutter measurement (#134959), not reproduced, no Apple guarantee. **Set it (cheap), but don't treat "13 ms" as a budget — measure.** |
+| DP6 | AVSBDL adds "1+ frame" vs Metal on iOS | **uncertain** | med | The "1+ frame" came from a subjective macOS dGPU report (#1885), NOT iOS. macOS WindowServer vs iOS backboardd makes transfer uncertain. **Pick Metal-direct to eliminate the risk; if AVSBDL, set `DisplayImmediately=true` and measure.** |
 
-#### 1.6 Transport — Network.framework / BSD sockets / Wi-Fi QoS
+#### 1.6 Transport — Network.framework / BSD / Wi-Fi QoS
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| N1 | `serviceClass = .interactiveVideo` maps to `NET_SERVICE_TYPE_VI`; the swiftinterface confirms it; described as "inelastic flow, constant packet rate" | **uncertain** | medium | The mapping is *structurally plausible* but NOT verifiable from public sources (the translation table lives in closed Network.framework code). The swiftinterface only shows case names, NOT integers. There is a separate C enum `nw_service_class_interactive_video = 2` (≠ `NET_SERVICE_TYPE_VI = 3`). The "inelastic/constant packet rate" description belongs to VO (voice) and is WRONG — VI is actually "elastic flow, constant packet interval, variable rate". **Still use `.interactiveVideo` for the video flow, but do not treat the integer mapping as certain.** |
-| N2 | `SO_NET_SERVICE_TYPE` sets the Wi-Fi 802.11e UP but does NOT set IP-header DSCP on modern macOS | **confirmed** | high | Correct for ordinary Ethernet and non-Fastlane Wi-Fi. The mechanism is gating on `IFEF_QOSMARKING_ENABLED` (enabled only by Cisco Fastlane), NOT a version regression. **Important: to write DSCP on LAN/Ethernet you must use the `IP_TOS`/`IPV6_TCLASS` setsockopt directly** — the kernel does NOT zero a user-set ip_tos on non-Fastlane interfaces. On Fastlane Wi-Fi, IP_TOS is ignored. |
-| N3 | Network.framework user-space networking (Skywalk/flowsw, zero-copy) is active on macOS 12+ when the firewall is off | **uncertain** | medium | (1) The firewall condition is **version-dependent**: macOS 14 with firewall on ⇒ BSD-socket fallback; macOS 15.3+ firewall no longer forces the fallback. (2) "Zero-copy" is imprecise — Apple describes it as a path that avoids BSD sockets via channel objects, never calls it "zero-copy". (3) The firewall is NOT the only trigger — iCloud Private Relay and NE VPNs also cause fallback. **Verify with `sudo skywalkctl flow -n -P <pid>` on the target machine.** |
-| N4 | `sendmsg_x` (481) / `recvmsg_x` (480) are stable and callable on macOS 14+ Apple Silicon | **confirmed** | high | Correct. Syscall numbers are stable across the 10.10→26.5 SDKs, symbols exported from libSystem, present in the public `syscall.h`. "PRIVATE" only means the `msghdr_x` struct lives in `socket_private.h` (must forward-declare it yourself) and there is no man page. **macOS 13 has a hang bug ⇒ the "macOS 14+" qualifier is load-bearing and accurate** ([xnu syscalls.master:734-740](https://github.com/oven-sh/bun/blob/main/src/analytics/lib.rs)). |
-| N5 | `net_qos_policy_restricted` default = 0 ⇒ every app gets Wi-Fi L2 AC_VI marking without MDM | **refuted** | high | Default = 0 (CONFIRMED) but the meaning was misunderstood. restricted=0 merely *permits* a socket to raise QoS when it *explicitly requests* a higher service type; the default traffic class is `SO_TC_BE` (AC_BE), it does NOT auto-promote to AC_VI. An app that sets no service type ⇒ stays at AC_BE. **Must explicitly set `.interactiveVideo`/`NET_SERVICE_TYPE_VI` to get AC_VI.** |
-| N6 | QUIC datagram TLS encryption overhead on LAN is ~0.1–0.5ms | **uncertain** | high | The figure is an estimate of total user-space QUIC processing overhead, NOT "TLS encryption overhead". Pure AES-GCM cost on Apple Silicon is **sub-microsecond** (<0.001ms for a 1400-byte packet at 4–11 GB/s HW-accel). The dominant overhead is user-space packet processing, not the cipher. **Must benchmark NWConnection QUIC datagram vs plain UDP on this stack yourself.** |
+| N1 | `.interactiveVideo` maps to `NET_SERVICE_TYPE_VI`, "inelastic/constant packet rate" | **uncertain** | med | Mapping plausible but not publicly verifiable. Separate C enum `nw_service_class_interactive_video = 2` (≠ VI=3). "Inelastic/constant rate" is the VO description and is WRONG for VI (elastic, constant interval, variable rate). **Use `.interactiveVideo`; don't treat the integer as certain.** |
+| N2 | `SO_NET_SERVICE_TYPE` sets Wi-Fi UP but NOT IP DSCP on modern macOS | **confirmed** | high | Correct for ordinary Ethernet/non-Fastlane Wi-Fi (gated on `IFEF_QOSMARKING_ENABLED`). **To write DSCP on LAN use `IP_TOS`/`IPV6_TCLASS` directly** — the kernel does not zero a user-set ip_tos off-Fastlane. On Fastlane, IP_TOS is ignored. |
+| N3 | User-space networking (Skywalk) is active on macOS 12+ when firewall is off | **uncertain** | med | (1) Version-dependent: macOS 14 firewall-on ⇒ BSD fallback; 15.3+ no longer forces it. (2) Apple never calls it "zero-copy". (3) Private Relay and NE VPNs also trigger fallback. **Verify with `sudo skywalkctl flow -n -P <pid>`.** |
+| N4 | `sendmsg_x`(481)/`recvmsg_x`(480) are stable on macOS 14+ AS | **confirmed** | high | Numbers stable across SDKs, symbols in libSystem, in public `syscall.h`. "PRIVATE" = `msghdr_x` lives in `socket_private.h` (forward-declare). **macOS 13 hang ⇒ the "14+" qualifier is load-bearing.** |
+| N5 | `net_qos_policy_restricted=0` ⇒ every app gets AC_VI without MDM | **refuted** | high | Default 0 only *permits* a socket to raise QoS when it explicitly requests it; the default class is `SO_TC_BE` (AC_BE). **Must explicitly set `.interactiveVideo`/`NET_SERVICE_TYPE_VI`.** |
+| N6 | QUIC datagram TLS overhead on LAN is ~0.1–0.5 ms | **uncertain** | high | That figure is total user-space QUIC processing, not "TLS". Pure AES-GCM is sub-µs (<0.001 ms/1400 B at HW-accel). The dominant cost is packet processing, not the cipher. **Benchmark QUIC datagram vs plain UDP on this stack.** |
 
 #### 1.7 Realtime threads / scheduling
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| RT1 | `os_workgroup_join` returns EINVAL = "thread is not realtime" (must set THREAD_TIME_CONSTRAINT_POLICY first) | **confirmed** | high | Correct, **but scope-limited**: it applies only to workgroups of type `WORK_INTERVAL_TYPE_COREAUDIO` (the CoreAudio HAL workgroup). For other workgroups, EINVAL just means "workgroup was cancelled". Kernel check: `sched_mode != TH_MODE_REALTIME && saved_mode != TH_MODE_REALTIME`. The documentation gap is real ([xnu work_interval.c:679-685](https://developer.apple.com/forums/thread/697874)). |
-| RT2 | `mach_wait_until` on an RT thread is < 600µs at 99.9% (source: forum thread/120403) | **uncertain** | high | **Wrong source**: the figure comes from an informal comment by @dlech in micropython issue #8621 (hardware unspecified), NOT forum 120403. Apple TN2169 only states a 500µs soft floor on an idle machine, with no percentile commitment. On Apple Silicon there is extra doubt because default threads land on E-cores. **Must measure yourself with P-core affinity / Audio Workgroup enrollment.** |
-| RT3 | `yield()`/`sched_yield()` drops priority to 0 for up to 10ms | **confirmed** | high | Correct. XNU: `sched_yield()` → `swtch_pri(0)` → `thread_depress_abstime(1 × std_quantum)`; std_quantum=10ms at 100Hz; DEPRESSPRI=MINPRI=0. **Applies to SCHED_RR too (TH_MODE_FIXED) — no exemption.** 10ms is the upper bound (may be rescheduled sooner on a lightly loaded system). **Absolutely ban `yield()` on hot media threads; use `mach_wait_until`.** |
+| RT1 | `os_workgroup_join` EINVAL = "not realtime" (set THREAD_TIME_CONSTRAINT_POLICY first) | **confirmed** | high | **Scope-limited:** applies only to `WORK_INTERVAL_TYPE_COREAUDIO`. For other workgroups EINVAL just means "cancelled". Kernel: `sched_mode != TH_MODE_REALTIME && saved_mode != TH_MODE_REALTIME`. |
+| RT2 | `mach_wait_until` on an RT thread is <600 µs @99.9% | **uncertain** | high | **Wrong source** (micropython #8621, HW unspecified, not forum 120403). TN2169 only states a 500 µs soft floor on an idle machine. On AS, default threads land on E-cores. **Measure with P-core affinity/Audio Workgroup.** |
+| RT3 | `yield()`/`sched_yield()` drops priority to 0 for ≤10 ms | **confirmed** | high | XNU: `sched_yield()` → `swtch_pri(0)` → `thread_depress_abstime(std_quantum)`; std_quantum=10 ms; DEPRESSPRI=0. **Applies to SCHED_RR too.** **Ban `yield()` on hot media threads; use `mach_wait_until`.** |
 
 #### 1.8 Zero-copy / memory
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| Z1 | `SCStreamConfiguration.pixelFormat` supports `kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange` ('x420') for window capture on macOS 14+ | **refuted** | high | The 10-bit YCbCr format the header lists is **'xf44' (4:4:4 full-range)**, NOT 'x420' (4:2:0 video-range). 'x420' is not in the supported list. The HDR APIs (`captureDynamicRange`, `Preset`) require **macOS 15.0**, not 14.0. **For 10-bit HDR use `SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay)` (macOS 15+); assigning 'x420' directly is undocumented.** |
-| Z2 | Setting `kCVPixelBufferPixelFormatTypeKey` in VTDecompressionSession causes a copy blit on macOS (the ALVR comment says visionOS 2) | **uncertain** | medium | The ALVR comment only covers **visionOS 2** ("setting pixelFormat at all causes a copy"). On macOS, the header confirms a copy (via `VTPixelTransferSession`) only when the format is **incompatible** with the native decoder output — NOT unconditionally. Whether the visionOS 2 behavior (copy even with the native format) applies to macOS 14+ is unclear. **Spike: try omitting the pixelFormat key, let the decoder output native, measure.** |
-| Z3 | The private `MTLPixelFormatYCBCR8_420_2P = 500` (and siblings) are available on macOS 14+ Apple Silicon | **uncertain** | high | The raw value 500 is CONFIRMED; it is **Apple-internal SPI** (WebKit defines it under the `#else` of `#if USE(APPLE_INTERNAL_SDK)`). NOT in the public enum, no `API_AVAILABLE`. MoltenVK maps the corresponding YCbCr formats to `Invalid` on macOS. **This is undocumented SPI with no OS-version guarantee — use only as an optional optimization with a 2-plane shader fallback.** |
+| Z1 | `SCStreamConfiguration.pixelFormat` supports `'x420'` 10-bit | **refuted** | high | The 10-bit format in the header is **'xf44' (4:4:4 full-range)**, not 'x420'. HDR APIs (`captureDynamicRange`, presets) require **macOS 15.0**, not 14.0. **For 10-bit HDR use `SCStreamConfiguration(preset: .captureHDRStreamLocalDisplay)`; don't assign 'x420'.** |
+| Z2 | Setting `kCVPixelBufferPixelFormatTypeKey` causes a copy on macOS (ALVR says visionOS 2) | **uncertain** | med | The ALVR note is visionOS 2 only. On macOS the header confirms a copy (`VTPixelTransferSession`) only when the format is **incompatible**, not unconditionally. **Spike: omit the key, let the decoder output native, measure.** |
+| Z3 | Private `MTLPixelFormatYCBCR8_420_2P = 500` is available on macOS 14+ AS | **uncertain** | high | Value 500 confirmed; **Apple-internal SPI** (WebKit defines under `#if USE(APPLE_INTERNAL_SDK)`), no `API_AVAILABLE`; MoltenVK maps it to `Invalid` on macOS. **Undocumented SPI — optional optimization with a 2-plane shader fallback only.** |
 
 #### 1.9 Wi-Fi / AWDL
 
-| # | Original claim | Verdict | Confidence | Corrected statement / what to use |
+| # | Claim | Verdict | Conf. | Corrected statement |
 |---|---|---|---|---|
-| W1 | The AWDL 5GHz social channels are ch 44 and ch 149 | **confirmed** | high | Correct (ch 6 on 2.4GHz, ch 44/149 on 5GHz), from reverse-engineering (Seemoo Lab, OWL). Never officially confirmed by Apple. **Configure the AP to use ch 44/149 to eliminate the 50–200ms AWDL spikes.** |
-| W2 | Wi-Fi Aware (`WAPerformanceMode.realtime`) does NOT exist on macOS 26 | **confirmed** | high | Correct — the macOS 26.4 swiftinterface header has an explicit `@available(macOS, unavailable)` (compile-time). The subsystem runs internally (the wifip2pd daemon) but exposes no API to macOS devs. **Wi-Fi Aware is for iOS/iPadOS 26+ clients only, not macOS.** |
+| W1 | AWDL 5 GHz social channels are ch 44 / ch 149 | **confirmed** | high | Correct (ch 6 on 2.4 GHz, 44/149 on 5 GHz), from RE (Seemoo/OWL), never Apple-confirmed. **Configure the AP to ch 44/149 to kill 50–200 ms AWDL spikes.** |
+| W2 | Wi-Fi Aware (`WAPerformanceMode.realtime`) does NOT exist on macOS 26 | **confirmed** | high | macOS 26.4 swiftinterface has `@available(macOS, unavailable)`. The wifip2pd daemon runs but exposes no macOS API. **Wi-Fi Aware is iOS/iPadOS 26+ clients only.** |
 
-### 2. CORRECTIONS to the project's earlier design
+### 2. Corrections to the earlier design
 
-These are the points where the corpus/original stack description **contradicts a verdict** and must be fixed before coding:
+1. **`minimumFrameInterval` (C1).** Use `CMTimeMake(1, targetFPS * 110/100)` (~10% shorter, OBS PR #11896), not `kCMTimeZero`.
+2. **`queueDepth` minimum (C3).** Real default is 8; no floor; `queueDepth=2` is valid and lower-latency. Use 2 or 3 per measured release deadlines.
+3. **HEVC + low-latency RC (E1/E2).** Treat as *empirical* on Apple Silicon, NOT an Apple guarantee. Runtime-probe (`VTCopySupportedPropertyDictionaryForEncoder`) + a manual HEVC fallback config (E3/E5/E6). `UsingHardwareAcceleratedVideoEncoder` returning `-12900` in low-latency mode is NOT lost HW accel (the real missing-HW error is `-12902`).
+4. **`ForceLTRRefresh` type (E4).** Header self-contradicts; try both `CFNumberRef` and `kCFBooleanTrue`, pick what the encoder accepts.
+5. **`MaxFrameDelayCount = 0` (E5).** = synchronous one-in-one-out (what we want), NOT "default/no-limit".
+6. **`AllowOpenGOP` for HEVC (E6).** Defaults to `true` — MUST set `false`.
+7. **Slice/tiles/WPP (S1–S3).** Drop NVENC-style sub-frame pipelining; VT output is frame-granular. Only inter-frame pipelining is available (capture N+1 while transmitting/decoding N).
+8. **Decode pixel-format (D3).** Must match the decoder native; unified memory does NOT remove conversion cost. Don't set a non-native `kCVPixelBufferPixelFormatTypeKey`.
+9. **DSCP via serviceClass (N2).** On LAN, write IP DSCP with `IP_TOS`/`IPV6_TCLASS` directly; serviceClass only sets Wi-Fi L2 UP. Use both if a managed switch needs L3 priority.
+10. **AC_VI "automatic without MDM" (N5).** Set the service type explicitly; default is AC_BE.
+11. **`maximumDrawableCount=2` on iOS (DP4).** Use 2 on both platforms (handle nil). Moonlight/DTS recommend 3 on macOS to avoid starvation — a trade-off to measure, not a prohibition.
+12. **`CAMetalDisplayLink` "AS only" (DP1).** Don't gate on `isAppleSilicon()` for availability — it exists on every Mac on macOS 14+. Gate only for ProMotion reasons.
+13. **10-bit capture (Z1).** Don't assign `'x420'` to `pixelFormat`. Use `SCStreamConfiguration(preset:)` (macOS 15+) or `'xf44'`. HDR capture requires **macOS 15.0**.
+14. **Adaptive sync (DP3).** A windowed app gets NO VRR scheduling — fullscreen is required, conflicting with the "single window" differentiator. Either accept the fixed-rate compositor for windowed, or offer an optional fullscreen client mode.
 
-1. **`minimumFrameInterval = kCMTimeZero` (C1, refuted).** The project context and the capture-floor summary proposed `kCMTimeZero`. **FIX:** use `config.minimumFrameInterval = CMTimeMake(1, targetFPS * 110/100)` (~10% shorter per OBS PR #11896). `kCMTimeZero` is unproven and absent from the OBS code.
+### 3. Phase-0 spike — empirical validation checklist
 
-2. **`queueDepth` "minimum 3" (C3, refuted).** Several corpus techniques say "3 is the minimum". **FIX:** the real default is 8; no hard floor exists; `queueDepth = 2` is valid and gives lower latency (with fast IOSurface release handling). Use 2 or 3 depending on measured release deadlines.
-
-3. **`EnableLowLatencyRateControl` + HEVC "confirmed by the SDK" (E1/E2, refuted/uncertain).** **FIX:** treat this as *empirical* behavior on Apple Silicon only (FFmpeg evidence), NOT an Apple guarantee. The design must have a runtime-probing code path (`VTCopySupportedPropertyDictionaryForEncoder`) and a manual HEVC low-latency config fallback (E3/E5/E6). Warning: `kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder` returns `kVTPropertyNotSupportedErr (-12900)` in low-latency mode — that is NOT evidence of lost HW accel; the real missing-HW gating error is `-12902`.
-
-4. **`ForceLTRRefresh` type (E4, confirmed internal contradiction).** **FIX:** the header contradicts itself (annotation `CFNumberRef` vs abstract `kCFBooleanTrue`). Code must try both and pick whichever the encoder accepts at runtime — do not hardcode one type.
-
-5. **The meaning of `MaxFrameDelayCount = 0` (E5, refuted).** **FIX:** 0 = synchronous one-in-one-out emit (correct for low-latency), NOT "default/no-limit". This is actually what we WANT — just make sure it is not misread as "let the encoder buffer freely".
-
-6. **`AllowOpenGOP` for HEVC (E6, confirmed).** **FIX:** HEVC defaults to `true` — MUST set `false` explicitly. If the old design assumed "closed GOP by default", that was wrong.
-
-7. **Slice-pipelining/tiles/WPP (S1–S3, uncertain).** **FIX:** drop the expectation of NVENC-style sub-frame pipelining. VideoToolbox output is frame-granular; the private symbols are untrustworthy. The only available parallelism is **inter-frame pipelining** (capture N+1 in parallel with transmit/decode of N).
-
-8. **Decode pixel-format mismatch (D3, "unified memory optimizes it away" refuted).** **FIX:** must match the decoder's native format; do NOT assume unified memory removes the conversion cost. Do not set `kCVPixelBufferPixelFormatTypeKey` to anything non-native.
-
-9. **DSCP via `SO_NET_SERVICE_TYPE` (N2, confirmed).** **FIX:** on LAN/Ethernet, writing IP-header DSCP requires `IP_TOS`/`IPV6_TCLASS` directly; `SO_NET_SERVICE_TYPE`/`.interactiveVideo` only controls Wi-Fi L2 UP. Use both (L2 via serviceClass, L3 via IP_TOS) if priority on a managed switch is needed.
-
-10. **AC_VI "automatic without MDM" (N5, refuted).** **FIX:** must set the service type explicitly; the default is AC_BE. `net_qos_policy_restricted=0` only *permits*, it does not *auto-promote*.
-
-11. **`maximumDrawableCount=2` "should not be used on iOS" (DP4, refuted).** **FIX:** use 2 on both macOS and iOS for minimum latency (handle nil drawables). Note: Moonlight/Apple DTS recommend 3 on macOS to avoid starvation — that is a trade-off to measure in a spike, not a prohibition.
-
-12. **`CAMetalDisplayLink` "Apple Silicon only" (DP1, refuted).** **FIX:** do not gate on `isAppleSilicon()` just out of fear the API is missing — it exists on every Mac on macOS 14+. Only gate for ProMotion-specific reasons.
-
-13. **10-bit capture format (Z1, refuted).** **FIX:** do not assign `kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange` ('x420') to `SCStreamConfiguration.pixelFormat`. For 10-bit HDR use `SCStreamConfiguration(preset:)` (macOS 15+) or 'xf44' (4:4:4). Note: HDR capture requires **macOS 15.0**, not 14.0 — adjust the OS-support matrix.
-
-14. **Adaptive sync (DP3, confirmed).** **FIX:** a single-window (non-fullscreen) app gets NO VRR scheduling. If VRR is needed, fullscreen is required — conflicting with the "single window" differentiator. Architecture decision: either accept the fixed-rate compositor for windowed, or offer an optional fullscreen mode on the client.
-
-### 3. Phase-0 spike — empirical validation checklist (MANDATORY)
-
-Every `refuted`/`uncertain` item above must be closed by measurement on the target hardware (host: Apple Silicon Mac on macOS 14 + macOS 15 + macOS 26 if available; client: macOS + iPhone/iPad 120Hz ProMotion). Measure with the unified clock `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` and `mach_timebase_info` (Apple Silicon: numer=125, denom=3 — **confirm on M2/M3/M4 since only M1 was publicly measured**).
+Close every `refuted`/`uncertain` item by measurement on the target hardware (host: Apple Silicon Mac, macOS 26; client: macOS + 120 Hz ProMotion iPhone/iPad). Use `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` + `mach_timebase_info` (M1 = 125/3 — **confirm on M2/M3/M4**).
 
 **A. Capture (ScreenCaptureKit)**
-- [ ] **C1/C2 — minimumFrameInterval:** On ProMotion 120Hz, measure the actual delivered fps with (a) the default (expect 60), (b) `1/120`, (c) `(1/120)×0.9`, (d) `kCMTimeZero`. *Measure:* count `complete` callbacks over 10s on testufo-style content. *Pass:* find the value giving a stable ≥115 fps with no drops.
-- [ ] **C3 — queueDepth:** Try queueDepth = 1, 2, 3. *Measure:* frame-drop rate + capture→encode-submit latency while the encoder is busy. Confirm the release deadline `minimumFrameInterval × (queueDepth−1)` is met with VT HW encode. *Pass:* pick the smallest value that does not stall.
-- [ ] **C4 — displayTime clock:** Compare `SCStreamFrameInfoDisplayTime` (ticks→ns via mach_timebase) against `CACurrentMediaTime()*1e9` for the same frame. *Pass:* a positive, reasonable delta (~a few ms), never negative. If negative ⇒ investigate as a separate PTS bug.
-- [ ] **Z1 — pixel format:** Enumerate the formats `SCStreamConfiguration` actually accepts; try '420v' (8-bit), 'xf44' (10-bit), and the HDR preset (macOS 15+). *Measure:* confirm IOSurface backing + no extra conversion pass when feeding straight into the VT encoder.
+- [ ] **C1/C2 — minimumFrameInterval:** at 120 Hz measure delivered fps with (a) default (expect 60), (b) `1/120`, (c) `(1/120)×0.9`, (d) `kCMTimeZero`. *Pass:* the value giving stable ≥115 fps, no drops.
+- [ ] **C3 — queueDepth:** try 1/2/3; measure drop rate + capture→encode-submit latency while encoding. *Pass:* smallest value that doesn't stall.
+- [ ] **C4 — displayTime clock:** compare `DisplayTime` (→ns) vs `CACurrentMediaTime()*1e9`. *Pass:* positive, ~few ms; never negative.
+- [ ] **Z1 — pixel format:** enumerate accepted formats; try '420v', 'xf44', the HDR preset. *Pass:* IOSurface-backed, no extra conversion into the VT encoder.
 
 **B. Encode (VideoToolbox HEVC)**
-- [ ] **E1/E2 — HEVC low-latency RC:** Create an HEVC VTCompressionSession with `EnableLowLatencyRateControl=true`; call `VTCopySupportedPropertyDictionaryForEncoder`. *Measure:* session creation succeeds, the HW engine engages (cross-check Activity Monitor GPU 0%, measure per-frame encode time). *Pass:* HEVC 1080p60 & 4K60 encode < frame budget; on failure ⇒ activate the manual fallback config (E3/E5/E6).
-- [ ] **E4 — ForceLTRRefresh type:** Send an LTR refresh with `kCFBooleanTrue` and then with `@(1)` (CFNumberRef). *Measure:* whether the output frame is an LTR-P (smaller than IDR), whether there are errors. *Pass:* determine which type the encoder accepts.
-- [ ] **E3 — EnableLTR + HEVC:** Enable EnableLTR on an HEVC low-latency session, run the ACK-token loop. *Pass:* receive `RequireLTRAcknowledgementToken` on output, ForceLTRRefresh produces an LTR-P instead of an IDR.
-- [ ] **Per-frame encode latency (open question):** Measure `encode_done_ns − encode_submit_ns` for HEVC Main10 at 1080p/4K @ 60/120fps. *Goal:* establish the real budget numbers (the ~3.3ms/1080p theoretical ceiling is throughput, not latency).
-- [ ] **First-IDR spike:** Measure the first frame WITH and WITHOUT `VTCompressionSessionPrepareToEncodeFrames`. *Pass:* quantify the cold-start penalty (corpus: no public number).
+- [ ] **E1/E2 — HEVC low-latency RC:** create the session, call `VTCopySupportedPropertyDictionaryForEncoder`; measure per-frame encode. *Pass:* 1080p60 & 4K60 under budget; on failure activate the manual fallback (E3/E5/E6).
+- [ ] **E4 — ForceLTRRefresh type:** send with `kCFBooleanTrue` then `@(1)`. *Pass:* which type produces an LTR-P with no error.
+- [ ] **E3 — EnableLTR + HEVC:** run the ACK-token loop. *Pass:* receive the LTR-ACK token; ForceLTRRefresh produces an LTR-P, not an IDR.
+- [ ] **Per-frame encode latency:** `encode_done − encode_submit` for HEVC Main10 @1080p/4K @60/120. *Goal:* the real budget (the ~3.3 ms ceiling is throughput).
+- [ ] **First-IDR spike:** first frame with/without `PrepareToEncodeFrames`. *Pass:* quantify the cold-start penalty.
 
 **C. Decode + Render**
-- [ ] **D2 — flags=0 sync:** Measure `decode_done − decode_submit` with flags=0; check `kVTDecodeInfo_Asynchronous` in the callback infoFlags. *Pass:* confirm the callback fires before DecodeFrame returns; record whether there is internal async.
-- [ ] **D3 / Z2 — destination pixel format:** Compare 3 configs: (a) omit the pixelFormat key, (b) set native `420YpCbCr10BiPlanarVideoRange`, (c) set BGRA. *Measure:* decode latency + GPU blit pass (Instruments). *Pass:* pick the config with no extra copy on macOS 14+.
-- [ ] **DP6 — AVSampleBufferDisplayLayer vs Metal:** A/B on both macOS and iOS clients: VTDecompressionSession→CVMetalTextureCache→CAMetalLayer vs AVSampleBufferDisplayLayer (with `DisplayImmediately=true`). *Measure:* glass-to-glass with a high-speed camera (240fps/1000fps) or a photodiode rig. *Pass:* determine which path is lower and by how many ms — do NOT rely on the speculated "1+ frame".
-- [ ] **Z3 — private YCbCr MTLPixelFormat:** Try mapping a decoded 10-bit buffer to `MTLPixelFormat(rawValue:505)`. *Pass:* works ⇒ use as an optional optimization; fails ⇒ fall back to the 2-plane r16Unorm/rg16Unorm shader. **Do not architecturally depend on this symbol.**
-- [ ] **DP5 — opaque:** Measure presentation latency with `isOpaque` true vs false on ProMotion. *Pass:* confirm the direction of improvement (do not expect exactly "13ms").
+- [ ] **D2 — flags=0 sync:** measure `decode_done − decode_submit`; check `kVTDecodeInfo_Asynchronous`. *Pass:* callback before return; record internal async.
+- [ ] **D3/Z2 — destination format:** compare (a) omit the key, (b) native 10-bit, (c) BGRA; measure decode + blit. *Pass:* the no-extra-copy config on macOS 26.
+- [ ] **DP6 — AVSBDL vs Metal:** A/B on macOS + iOS (Metal vs AVSBDL with `DisplayImmediately=true`); measure G2G with a 240/1000 fps camera or photodiode. *Pass:* which is lower, by how many ms — don't rely on "1+ frame".
+- [ ] **Z3 — private YCbCr format:** try `MTLPixelFormat(rawValue:505)`. *Pass:* works ⇒ optional optimization; fails ⇒ 2-plane shader. Don't depend on it.
+- [ ] **DP5 — opaque:** presentation latency `isOpaque` true vs false. *Pass:* confirm direction (don't expect exactly 13 ms).
 
 **D. Transport**
-- [ ] **N3 — user-space networking:** Run `sudo skywalkctl flow -n -P <pid>` with firewall ON/OFF on macOS 14 AND 15. *Pass:* confirm flowsw entries; record the fallback conditions (firewall/Private Relay/VPN).
-- [ ] **N4 — sendmsg_x/recvmsg_x:** Forward-declare `msghdr_x`, call `sendmsg_x(fd, msgs, N, 0)` in batch. *Measure:* syscall count drops N×, throughput. *Pass:* runs without crashing on macOS 14+ AS; compare against per-packet sendmsg.
-- [ ] **N6 — QUIC vs UDP overhead:** Microbench NWConnection QUIC datagram send-to-send vs plain UDP send-to-send on wired LAN, ~1400B packets. *Measure:* the ns/packet delta with Instruments System Trace. *Pass:* quantify the real overhead (the corpus only estimates).
-- [ ] **N1/N5 — actual QoS marking:** Set `.interactiveVideo` + `IP_TOS=AF41<<2`; capture packets with Wireshark on the LAN. *Measure:* the DSCP byte in the IP header (expect 0 for SO_NET_SERVICE_TYPE alone; non-zero for IP_TOS); confirm Wi-Fi AC_VI via air capture if available. *Pass:* understand exactly which mechanism sets what.
+- [ ] **N3 — user-space networking:** `sudo skywalkctl flow -n -P <pid>` with firewall on/off. *Pass:* confirm flowsw entries + fallback conditions.
+- [ ] **N4 — sendmsg_x/recvmsg_x:** forward-declare `msghdr_x`, batch-call. *Pass:* runs on macOS 14+ AS; N× syscall drop vs per-packet.
+- [ ] **N6 — QUIC vs UDP:** microbench send-to-send, ~1400 B, wired. *Pass:* the real ns/packet delta.
+- [ ] **N1/N5 — actual QoS marking:** set `.interactiveVideo` + `IP_TOS=AF41<<2`; Wireshark the DSCP byte (expect 0 for serviceClass alone, non-zero for IP_TOS). *Pass:* know which mechanism sets what.
 
 **E. Realtime threads / scheduling**
-- [ ] **RT1 — os_workgroup_join EINVAL:** Try joining the CoreAudio workgroup WITHOUT setting THREAD_TIME_CONSTRAINT_POLICY (expect EINVAL) and then WITH it (expect OK). *Pass:* confirm the required ordering; determine whether a custom video workgroup needs this condition.
-- [ ] **RT2 — mach_wait_until jitter:** Measure wakeup jitter on an RT thread (THREAD_TIME_CONSTRAINT_POLICY) WITH and WITHOUT os_workgroup_interval, with and without P-core enrollment. *Pass:* build the real p50/p99/p99.9 distribution on M-series (do not trust "600µs").
-- [ ] **DVFS ramp (open question):** Measure the P-core frequency ramp time on the target chips (M2/M3/M4) via IOReport CPU Performance States residency. *Pass:* confirm whether ~70ms (M1) still holds or is shorter; decide whether os_workgroup_interval keep-warm is needed.
+- [ ] **RT1 — workgroup EINVAL:** join the CoreAudio workgroup without then with THREAD_TIME_CONSTRAINT_POLICY. *Pass:* confirm the ordering; whether a custom video workgroup needs it.
+- [ ] **RT2 — mach_wait_until jitter:** wakeup jitter with/without os_workgroup_interval and P-core enrollment. *Pass:* real p50/p99/p99.9 on M-series.
+- [ ] **DVFS ramp:** P-core frequency ramp on M2/M3/M4 (IOReport residency). *Pass:* confirm whether ~70 ms (M1) holds; decide if keep-warm is needed.
 
-**F. Clock-sync & ground-truth (cross-cutting)**
-- [ ] **mach_timebase numer/denom:** Read on every target chip. *Pass:* confirm 125/3 (M1) is consistent across M2/M3/M4.
-- [ ] **NWProtocolIP.Metadata.receiveTime epoch:** Corpus already confirmed it is **CLOCK_MONOTONIC_RAW** (advances during sleep), DIFFERENT from `CLOCK_UPTIME_RAW`/`mach_absolute_time`. *Spike:* compute the simultaneous offset at startup and refresh on wake-from-sleep. *Pass:* one-way latency is non-negative and stable.
-- [ ] **Ground-truth glass-to-glass:** Build a photodiode + LED rig (Raspberry Pi Pico, ~20ns resolution) or use a 240/1000fps camera. *Pass:* the sum of measured software stages matches hardware within ±1ms; if off by >1ms ⇒ a clock/instrumentation bug exists.
-- [ ] **Overlay underreport warning:** Cross-check the internal overlay numbers against ground truth. *Pass:* know exactly how much the overlay misses (capture delay + compositor + scanout).
+**F. Clock-sync & ground-truth**
+- [ ] **mach_timebase:** read on every target chip. *Pass:* confirm 125/3 across M2/M3/M4.
+- [ ] **NWProtocolIP.Metadata.receiveTime epoch:** confirmed **CLOCK_MONOTONIC_RAW** (advances during sleep), different from `mach_absolute_time`. *Spike:* compute the startup offset, refresh on wake. *Pass:* one-way latency non-negative and stable.
+- [ ] **Ground-truth G2G:** photodiode+LED rig (~20 ns) or 240/1000 fps camera. *Pass:* the sum of software stages matches hardware within ±1 ms; >1 ms off ⇒ a clock/instrumentation bug.
+- [ ] **Overlay underreport:** cross-check internal overlay numbers vs ground truth.
 
 **G. Display phase / beat-frequency**
-- [ ] **Host display rate exactness:** Read the host display's true rate (expect to detect 59.951/59.94 vs 60.000). *Pass:* if off ⇒ force `CGDisplaySetDisplayMode` to match the client rate to eliminate the beat (~17–20s period).
-- [ ] **DP2 — preferredFrameLatency:** Confirm only 1.0/2.0 are valid; measure drawable-pipeline latency at 1.0 vs 2.0. *Pass:* set 1.0 for streaming.
+- [ ] **Host display rate exactness:** read the true rate (detect 59.951/59.94 vs 60.000). *Pass:* if off, `CGDisplaySetDisplayMode` to match the client and eliminate the ~17–20 s beat.
+- [ ] **DP2 — preferredFrameLatency:** confirm only 1.0/2.0; measure latency at each. *Pass:* set 1.0 for streaming.
 
-**Phase-0 exit criteria:** every `refuted`/`uncertain` row in the §1 tables has been converted to `confirmed`/`refuted` *with measurements*, and the empirical glass-to-glass pipeline (via the ground-truth rig) sits within the expected band (~14–16ms @120fps wired, ~22–26ms @60fps wired — these numbers also need validation, since most are derived rather than measured on this native Swift stack).
+**Phase-0 exit:** every `refuted`/`uncertain` row in §1 is converted to `confirmed`/`refuted` *with measurements*, and the ground-truth G2G sits in the expected band (~14–16 ms @120 fps wired, ~22–26 ms @60 fps wired — these too need validation, being derived rather than measured on this stack).

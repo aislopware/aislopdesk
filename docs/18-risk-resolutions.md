@@ -10,11 +10,11 @@
 
 **Most of Phase 0 already ran RIGHT ON this machine** (Apple M1 Max · macOS 26.5 · arm64 — exactly the target host class, including macOS 26 which was a watch item). Harness + reproducible raw numbers: [research/spikes/vtbench/](research/spikes/vtbench/RESULTS.md).
 
-> **Measured on 2 real machines on the same NetBird mesh:** HOST = M1 Max, CLIENT = M2 Pro (both macOS 26.5). ⚠️ HW encode **hangs over SSH** → run from the Terminal.app GUI.
+> **Measured on 2 real machines on the same WireGuard mesh:** HOST = M1 Max, CLIENT = M2 Pro (both macOS 26.5). ⚠️ HW encode **hangs over SSH** → run from the Terminal.app GUI.
 
 | Spike | Status | Measurement | Gate |
 |-------|-----------|-------|------|
-| **Network RTT (NetBird P2P)** | ✅ **MEASURED** | **avg 11.1ms** (min 8.5/max 14.5), **0% loss**, **direct P2P over the internet** (NAT hole-punch, not same-LAN) | baseline for all latency ✓ |
+| **Network RTT (WireGuard-mesh P2P)** | ✅ **MEASURED** | **avg 11.1ms** (min 8.5/max 14.5), **0% loss**, **direct P2P over the internet** (NAT hole-punch, not same-LAN) | baseline for all latency ✓ |
 | **F** decode latency | ✅ **MEASURED — PASS (host+client)** | host M1 Max **p99 1.1ms**; **client M2 Pro p99 0.92ms** — synchronous HW, NO 2-frame buffer | p99 < 1 frame ✓ |
 | **G** concurrent encoders | ✅ **MEASURED (2 machines)** | 32 sessions/host; **~6 1080p@30fps windows / encode engine** (M2 Pro 1 engine→~6 @184fps; M1 Max 2 engines→~8–10 @340fps). The "2–4" research was WRONG. Client only decodes → fine | enough windows ✓ |
 | **E** live encoder | ✅ **MEASURED** | low-latency-RC **7.5ms** vs constant-quality **24ms** (3× slower) → **live MUST use low-latency-RC** | encode < frame ✓ |
@@ -38,8 +38,8 @@
 | **E** rate-control vs quality | ✅ **MEASURED+SOLVED** | **2 sessions**: A live **low-latency-RC** (measured 7.5ms; constant-quality 24ms too slow) + 12Mbps bitrate cap · B on-demand `Quality=1.0`+`AllowTemporalCompression=false` (there is NO `Lossless` key) |
 | **F** decode latency | ✅ **MEASURED — PASS** | measured p99 **1.1ms** HW synchronous, NO 2-frame buffer; render via `CVMetalTextureCache`+`CAMetalLayer` (NOT `AVSampleBufferDisplayLayer`) |
 | **G** concurrent encoders | ✅ **MEASURED** | 32 sessions/host; ~**8–10 1080p@30fps windows** concurrently (throughput ~340fps); gate with `RequireHardwareAcceleratedVideoEncoder=true` |
-| **H** iOS reconnect | ✅ SOLVED | Port ET `BackedWriter/BackedReader` (64MB cap, 4MB offline gate) over plain TCP, **NO CryptoHandler**; UIKit `didEnterBackground`+`beginBackgroundTask` |
-| **I** PTY = RCE / auth | ✅ **Dissolved (scope)** | You decided **plain, no auth** (personal use, inside the mesh) → the boundary = NetBird/WireGuard membership + ACL. Accepted residual risk |
+| **H** iOS reconnect | ✅ SOLVED | ET-style `BackedWriter/BackedReader` seq-numbered replay buffer (64MB cap, 4MB offline gate) over plain TCP, **NO CryptoHandler**; UIKit `didEnterBackground`+`beginBackgroundTask` |
+| **I** PTY = RCE / auth | ✅ **Dissolved (scope)** | You decided **plain, no auth** (personal use, inside the mesh) → the boundary = WireGuard-mesh membership + ACL. Accepted residual risk |
 
 ---
 
@@ -53,14 +53,14 @@
 - ⚠️ Trap: **actor-suspension escape** — after an `await` inside a `@MainActor` func, hopping to another executor loses isolation; keep the feed→refresh→draw chain unsuspended in the middle.
 
 ### H — iOS byte-exact reconnect (SOLVED)
-- Port **Eternal Terminal `BackedWriter`/`BackedReader`** over plain TCP: ring `MAX_BACKUP=64MB`, **4MB offline gate** — `BUFFERED_ONLY`=keep buffering, `SKIPPED`=pause the PTY drain (don't let a long build while the client is offline overflow it → lost output).
-- ⚠️ **Do NOT port ET's `CryptoHandler`** (libsodium secretbox + nonce). We're plain over WireGuard → the buffer stores **raw bytes**. Write this down so a future contributor doesn't mistakenly add a nonce-resetting crypto layer.
+- The Rust core's terminal namespace implements an **Eternal-Terminal-style `BackedWriter`/`BackedReader`** seq-numbered replay buffer over plain TCP: ring `MAX_BACKUP=64MB`, **4MB offline gate** — `BUFFERED_ONLY`=keep buffering, `SKIPPED`=pause the PTY drain (don't let a long build while the client is offline overflow it → lost output).
+- ⚠️ **No `CryptoHandler`** (ET's libsodium secretbox + nonce): we're plain over the WireGuard mesh → the buffer stores **raw bytes**. Noted so a future contributor doesn't mistakenly add a nonce-resetting crypto layer.
 - Use **int64/varint** for the wire sequence number (ET proto2 uses int32 — truncation on ultra-long sessions).
 - Lifecycle: **UIKit `didEnterBackground`** (NOT SwiftUI `scenePhase`) + `beginBackgroundTask` to pause the PTY drain; reconnect creates a new `NWConnection` after `.failed`, with a pending receive to detect dead sockets. Handshake: **the server decides `RETURNING_CLIENT`** (verified `Connection.cpp:96-141`).
 
 ### I — security (Dissolved by decision: plain, no-auth)
-- Your decision: **no app-layer auth**, plain to reduce latency, personal use inside NetBird/Tailscale. The boundary = mesh membership + ACL.
-- Research *did* find a solution if it's ever needed (Ed25519 per-client allowlist + one-time HMAC pairing, socket bound only to the NetBird IP via `NWParameters.requiredLocalEndpoint`) — **shelved**, not for v1. (If built: `Curve25519.Signing.PrivateKey()`, `isValidSignature` returns Bool and does **not** `try`, Ed25519 does **not** go into the Secure Enclave — SE is P-256 only.)
+- Your decision: **no app-layer auth**, plain to reduce latency, personal use on a trusted private network (a WireGuard mesh such as NetBird/Tailscale). The boundary = mesh membership + ACL.
+- Research *did* find a solution if it's ever needed (Ed25519 per-client allowlist + one-time HMAC pairing, socket bound only to the mesh IP via `NWParameters.requiredLocalEndpoint`) — **shelved**, not for v1. (If built: `Curve25519.Signing.PrivateKey()`, `isValidSignature` returns Bool and does **not** `try`, Ed25519 does **not** go into the Secure Enclave — SE is P-256 only.)
 - **Accepted residual risk:** a PTY accepting bytes = RCE bounded by the mesh; a compromised mesh peer → host exposed. OK for personal use.
 
 ---
@@ -124,7 +124,7 @@ Resolves the "low-latency-RC needs a bitrate vs constant-quality" conflict with 
 
 ## Spike plan — ALL EXECUTED (see §0)
 
-> **All Phase-0 spikes are measured** on 2 real machines (host M1 Max + client M2 Pro, macOS 26.5, P2P internet): network RTT, PATH 1 echo, decode (host+client), encode, concurrency, NALU, **cursor-strip**. Reproducible harness: [research/spikes/vtbench/](research/spikes/vtbench/RESULTS.md).
+> **All Phase-0 spikes are measured** (see §0). Reproducible harness: [research/spikes/vtbench/](research/spikes/vtbench/RESULTS.md).
 
 What remains are **implementation spikes** (not architecture de-risking), done while building:
 - libghostty: alt-screen e2e, iOS XCFramework binary size, shell-integration OSC.

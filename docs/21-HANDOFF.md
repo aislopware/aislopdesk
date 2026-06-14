@@ -1,5 +1,7 @@
 # 21 — Handoff (honest end-of-autonomous-build status)
 
+> **Cumulative build log / handoff snapshot. Records work as of the build, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 > **STATUS: CURRENT.** This is the truthful wake-up picture after the autonomous build of
 > **Aislopdesk** (WF-1 … WF-9, consolidated in WF-10). It states what is COMPLETE + tested
 > headlessly vs. what is COMPILED + reviewed but **not run** (and why), the one external

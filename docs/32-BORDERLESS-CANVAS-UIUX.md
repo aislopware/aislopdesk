@@ -1,5 +1,7 @@
 # 32 — Borderless panes + floating pill + canvas grid + smart snap (2026-06-12)
 
+> **Historical session log (2026-06-12). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 **Status: DONE — designed (3-lens judge panel), implemented, reviewed, live-verified (cua, pixel-exact snap).**
 
 User directive (verbatim, translated): *"Panes must have NO border and NO header — remove them. Add ONE

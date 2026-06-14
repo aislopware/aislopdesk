@@ -1,5 +1,7 @@
 # Night Handoff — 2026-06-06 (core TUI/keyboard/mouse/GUI audit + fix)
 
+> **Historical session log (2026-06-06). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 Autonomous overnight session. Branch **`fix/core-tui-keyboard-mouse-gui`** (off `main` @ b49ec37).
 **UNCOMMITTED** (per the "don't commit unless asked" directive — nothing committed/merged/pushed).
 Driven by audit → fix → verify ultracode workflows, benchmarked against mature OSS (Ghostty, ssh,
@@ -1428,5 +1430,4 @@ NSLock-guarded idempotent `ReadyBox.tryResume`; the EADDRINUSE-only match cannot
 started before its network came up). HEAD `b49ec37` unchanged, both project.yml clean, NOTHING committed.
 
 ---
-*Generated autonomously. HW evidence: `/tmp/aislopdesk-hw/*.png`. Memory:
-`memory/aislopdesk-core-mouse-clipboard-2026-06-06.md`. Build/HW logs under `.work/macos-verify/`.*
+*Generated autonomously. HW evidence: `/tmp/aislopdesk-hw/*.png`. Build/HW logs under `.work/macos-verify/`.*

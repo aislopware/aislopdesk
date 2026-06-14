@@ -1,5 +1,7 @@
 # 25 — Overnight handoff (2026-06-04): mouse-delay fix, connection-mux foundation, resize foundation, audit
 
+> **Historical session log (2026-06-04). Records work as of that date, not the current architecture. See [00-overview.md](00-overview.md) and [19-implementation-plan.md](19-implementation-plan.md) for current state.**
+
 Branch: **`feat/video-overnight`** (off `main`, **not pushed**). All work is committed; `main` is untouched and remains the stable fallback.
 
 > **Update (greenfield removal refactor):** the three self-contained video features below are now **ALWAYS ON** and their env-gates have been **removed** — `AISLOPDESK_VIDEO_STATICIDR` (static-window forced IDR), `AISLOPDESK_VIDEO_KEEPALIVE` (crash-without-bye keepalive + reaper), and `AISLOPDESK_VIDEO_RESIZE` (in-session resize) no longer exist as toggles; the feature paths are unconditional. The legacy `AISLOPDESK_INPUT_UNORDERED` A/B diagnostic path was also removed (ordered pump only). The gate enums `StaticIDRGate` / `KeepaliveGate` and their OFF-path tests are gone (keepalive timing constants moved to `KeepaliveTiming`; the pure deciders `StaticIDRDecider` / `IdleReapDecider` / the resize logic + their tests stay). Where the text below describes these as `AISLOPDESK_VIDEO_*=1` toggles or "default OFF", read it as the now-default, always-on behaviour. The **MUX** gates (`AISLOPDESK_VIDEO_MUX` / `AISLOPDESK_TCP_MUX`) and the debug/test seams (`AISLOPDESK_VIDEO_DEBUG` / `AISLOPDESK_INPUT_TRACE` / `AISLOPDESK_VIDEO_INJECT_TO_PID`) are unchanged.

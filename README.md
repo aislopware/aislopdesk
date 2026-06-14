@@ -3,14 +3,29 @@
 **Aislopdesk** is a terminal-first, low-latency remote-coding tool for Apple platforms — a
 macOS **host** paired with macOS / iOS **clients**. The everyday use case: run a shell and
 **Claude Code** on a remote machine and drive it from another device with feels-local
-responsiveness. Native Swift end to end; the client terminal renderer is **libghostty**
-exclusively (no fallback renderer).
+responsiveness. The performance-critical core is Rust behind a C-ABI; the Swift/SwiftUI apps
+are the platform shell. The client terminal renderer is **libghostty** exclusively (no
+fallback renderer). Build floor: **macOS 26 / iOS 26** (`Package.swift` uses `.v26`).
 
-It runs over a [NetBird](https://netbird.io) (WireGuard) mesh assuming direct P2P
-connectivity. WireGuard provides end-to-end encryption and NetBird ACLs gate membership, so
-Aislopdesk adds **no app-layer encryption or auth** — the security boundary is the mesh.
+Aislopdesk adds **no app-layer encryption or auth**. It assumes deployment on a trusted
+private network — typically a WireGuard mesh (e.g. [NetBird](https://netbird.io) or
+Tailscale) that provides end-to-end encryption, node auth, and per-port ACLs — so the
+security boundary is the network, not the app.
 
-## Architecture — three data paths
+## Architecture
+
+The performance-critical **core is Rust** — crate `rust/aislopdesk-core` (safe Rust, zero
+runtime deps, `#![forbid(unsafe_code)]`): the wire codecs (terminal + video), FEC + frame
+reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode
+gate/sequencer, jitter pacer, delay-gradient trendline, recovery admission), coordinate
+mapping, and the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow
+control. It is exposed over a C-ABI — crate `rust/aislopdesk-ffi` (the only crate allowed
+`unsafe`; hand-written header `aislopdesk_ffi.h`) — and linked into SwiftPM via the
+`CAislopdeskFFI` C target. The **Swift/SwiftUI apps are the platform shell**: capture
+(ScreenCaptureKit), HW codec (VideoToolbox), Metal render, input injection, PTY spawn, UI,
+OS integration. The same core is the basis for a future Android client over C-ABI/JNI.
+
+### Three data paths
 
 ```
 ┌─────────────────── HOST (macOS, non-sandboxed) ───────────────────┐
@@ -27,14 +42,12 @@ Aislopdesk adds **no app-layer encryption or auth** — the security boundary is
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-All three paths run over the NetBird WireGuard mesh, direct P2P.
-
 1. **Terminal path (primary).** Host opens a PTY and streams raw VT bytes over plain TCP
    (`TCP_NODELAY`) to the client, which renders them with libghostty. A dual data/control
    channel plus an Eternal-Terminal-style replay buffer give byte-exact lossless reconnect.
 2. **GUI video path (secondary).** ScreenCaptureKit + VideoToolbox HEVC over UDP for the
-   occasional GUI window (VS Code, Xcode), with FEC, adaptive bitrate, and client-side
-   cursor.
+   occasional GUI window (VS Code, Xcode), with FEC, adaptive bitrate/congestion control,
+   and client-side cursor.
 3. **Read-only inspector (differentiator).** Tails the Claude Code JSONL transcript + hooks
    to surface tool calls, subagents, and todos on a second channel. Read-only by
    construction — it observes the transcript and never drives the agent.
@@ -59,18 +72,24 @@ All three paths run over the NetBird WireGuard mesh, direct P2P.
 | `aislopdesk-client`      | exec | Interactive remote terminal client. |
 | `aislopdesk-videohostd`  | exec | GUI-video host daemon (window capture; needs GUI session + TCC). |
 | `aislopdesk-loopback-validate` | exec | Headless video-pipeline validator (real HW encode→decode, FEC, ABR). |
-| `aislopdesk-framewatch`  | exec | ScreenCaptureKit window-cadence diagnostic tool. |
+| `aislopdesk-corevectors` | exec | Emits the golden reference corpus the Rust core's parity test consumes. |
+| `aislopdesk-framewatch`, `aislopdesk-capture-probe`, `aislopdesk-hid-probe` | exec | Diagnostics: ScreenCaptureKit cadence, window-capture, virtual-HID. |
 
-12 libraries + 5 executables + 10 test targets (plus a C virtual-display shim).
+The Rust core's codecs/FEC/controllers/terminal-protocol are reached through the
+`CAislopdeskFFI` C target (links `libaislopdesk_ffi.a`).
+
+**12 libraries + 8 executables + 10 test targets + 2 C shims** (the Rust-core FFI bridge
+`CAislopdeskFFI` + a virtual-display shim `CAislopdeskVirtualDisplay`).
 
 ## Quickstart
 
-The core libraries, CLIs, and tests are fully headless — no GUI, no libghostty, no signing
-required.
+The core libraries, CLIs, and tests are headless — no GUI, no libghostty, no signing. They
+do link the Rust core staticlib through `CAislopdeskFFI`, so build it once first.
 
 ```sh
-swift build               # builds every target incl. all three executables
-swift test                # full suite, headless
+bash rust/build-apple.sh  # builds libaislopdesk_ffi.a (macOS arm64) for CAislopdeskFFI
+swift build               # builds every target (12 libs + 8 executables)
+swift test                # full suite (~2188 tests), headless
 scripts/check-ios.sh      # iOS-simulator typecheck of the #if os(iOS) sources (needs Xcode)
 ```
 
@@ -142,11 +161,12 @@ header and [`docs/21-HANDOFF.md`](docs/21-HANDOFF.md).
 
 | Layer | State |
 |-------|-------|
+| Rust core + C-ABI (codecs, FEC, controllers, terminal protocol) | ✅ integrated into the apps; verified by cross-language golden parity + per-subsystem fuzz + HW loopback |
 | Terminal path end to end (protocol, transport, host PTY, client, reconnect) | ✅ done, tested headlessly + on real hardware |
 | Inspector (JSONL tailer, event model, second channel) | ✅ done, fixture-tested |
 | Claude Code integration logic (env / sniffer / dedup) | ✅ done, byte-sequence tested |
 | Client UI (SwiftUI + iOS native-feel input) | ✅ macOS-tested; iOS compiles, on-device interaction unverified |
-| GUI video path (codec/FEC tested; capture→render pipeline) | ✅ running on real hardware (host daemon + client Remote-window panel) |
+| GUI video path (codec/FEC/ABR tested; capture→render pipeline) | ✅ running on real hardware (host daemon + client Remote-window panel) |
 | libghostty renderer (macOS + iOS) | ✅ builds, links, renders (iOS Simulator verified) |
 
 Per-layer detail, test counts, and the hardware-verification checklist:

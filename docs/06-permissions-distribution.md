@@ -5,23 +5,23 @@
 ## 1. Required permissions (macOS host)
 
 | Permission (TCC) | Used for | Required? |
-|-------------|-----------|-----------|
+|---|---|---|
 | **Screen Recording** | ScreenCaptureKit capture + reading other apps' window titles/contents | ✅ Required |
 | **Accessibility** | Posting events to other apps + raising/controlling windows via AX | ✅ Required |
 | **Input Monitoring** | ONLY if using `CGEventTap` to *observe* local input | ❌ Not needed to *post* events |
 
-The client (Mac/iOS) only needs **Local Network** (Bonjour) — see [03](03-transport-protocol.md#1-discovery--bonjour-zero-config).
+The client (Mac/iOS) only needs **Local Network**, for same-LAN Bonjour discovery — see [03](03-transport-protocol.md#1-discovery--bonjour-zero-config). Bonjour does not traverse a WireGuard mesh, so peers reached over a trusted private network connect by IP/hostname instead.
 
 ## 2. Info.plist
 
 ```xml
 <!-- Host: Screen Recording -->
 <key>NSScreenCaptureUsageDescription</key>
-<string>PaneCast shares your application windows with paired devices.</string>
+<string>Aislopdesk shares your application windows with paired devices.</string>
 
-<!-- Client + Host: Local Network (mandatory on iOS 14+, without it Bonjour fails silently) -->
+<!-- Client + Host: Local Network — without it Bonjour fails silently on iOS -->
 <key>NSLocalNetworkUsageDescription</key>
-<string>PaneCast discovers and connects to devices on the same local network.</string>
+<string>Aislopdesk discovers and connects to devices on the same local network.</string>
 <key>NSBonjourServices</key>
 <array><string>_panecast._udp</string></array>
 ```
@@ -41,29 +41,28 @@ AXIsProcessTrustedWithOptions(opts)
 if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
 ```
 
-- **Permissions cannot be granted programmatically** — the user must enable them in System Settings.
+- Permissions **cannot be granted programmatically** — the user enables them in System Settings.
 - Grants are tied to the **code signature** — unsigned/ad-hoc rebuilds may lose the grant.
-- **Poll `AXIsProcessTrusted()`** (or watch for app reactivation) to know when the user has finished enabling → update the onboarding UI.
+- **Poll `AXIsProcessTrusted()`** (or watch for app reactivation) to detect when the user finishes enabling → update onboarding UI.
 
-## 4. Sandbox — dealbreaker (stated explicitly)
+## 4. Sandbox — dealbreaker
 
-- **A sandboxed app CANNOT obtain the Accessibility permission.** With sandbox on → the prompt never appears, it can't be added in Settings, `AXIsProcessTrusted()` is always false. **No entitlement re-enables it.**
-- Since the app's core purpose is controlling other apps → **Sandbox is fully disabled.**
-- **Consequence: no Mac App Store** (the App Store requires sandbox).
+- A **sandboxed app CANNOT obtain Accessibility**: the prompt never appears, it can't be added in Settings, `AXIsProcessTrusted()` stays false, and no entitlement re-enables it.
+- The app's core purpose is controlling other apps → **App Sandbox is fully disabled** on the host.
+- **Consequence: no Mac App Store** (MAS requires the sandbox).
 
 ## 5. Hardened Runtime & Distribution
 
-- **Hardened Runtime** (required for notarization/Developer-ID) is **OK** — it does not block event posting/AX. Hardened runtime and sandbox are independent of each other.
-- Usually **no** special hardened-runtime entitlement is needed just to post CGEvents/use AX.
-- **Distribution model:** Developer-ID signed + **notarized**, shipped outside the App Store (DMG / website / Sparkle auto-update).
+- **Hardened Runtime** (required for notarization / Developer-ID) is fine — independent of the sandbox, and does not block event posting or AX. Posting CGEvents / using AX needs no special entitlement.
+- **Distribution:** Developer-ID signed + **notarized**, shipped outside the App Store (DMG / website / Sparkle auto-update).
 
 ## 6. Onboarding flow (proposed)
 
-1. Open the app → "2 permissions needed" screen.
-2. "Grant Screen Recording" button → `CGRequestScreenCaptureAccess()`.
-3. "Grant Accessibility" button → `AXIsProcessTrustedWithOptions(prompt)` → deep-link to Settings.
-4. Poll both → once both are granted, move to the window picker screen.
-5. iOS client: on the first LAN connection → iOS prompts for Local Network automatically.
+1. Launch → "2 permissions needed" screen.
+2. "Grant Screen Recording" → `CGRequestScreenCaptureAccess()`.
+3. "Grant Accessibility" → `AXIsProcessTrustedWithOptions(prompt)` → deep-link to Settings.
+4. Poll both → once granted, move to the window-picker screen.
+5. iOS client: first LAN connection auto-prompts for Local Network.
 
 ## 7. Build checklist
 

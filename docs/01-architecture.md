@@ -1,8 +1,8 @@
 # 01 — Overall Architecture
 
-> **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path.** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
-> ⚠️ **Architecture update (re-scope):** the project is now **hybrid** — the terminal goes over the **PTY text-path** (like SSH/mosh, rendered with libghostty); only **GUI windows** go over video. This doc describes the **GUI video-path**; the new overall architecture + key insight (the terminal path avoids input-injection) is in **[12-coding-profile.md](12-coding-profile.md)** (read that first).
+> The product is **hybrid**: the terminal runs over the **PTY text-path** (rendered with libghostty); only **GUI windows** go over video. This doc covers the **GUI video-path**. For the overall split — and why the terminal path avoids input-injection — read **[12-coding-profile.md](12-coding-profile.md)** first.
 
 ## 1. The big picture
 
@@ -15,12 +15,12 @@
 │ └───────────────┘                    └──────────────┘           ▼     │
 │          ▲                                          ┌──────────────┐  │
 │          │ raise + frame                            │ Packetizer / │  │
-│ ┌───────────────┐    CGEvent / AX    ┌──────────┐   │  Transport   │  │
+│ ┌───────────────┐    CGEvent / AX    ┌──────────┐   │  FEC / Tx    │  │
 │ │ Window/Input  │ ◀───────────────── │ Control  │◀──│ (Network.fw) │  │
 │ │  Controller   │                    │ Receiver │   └──────────────┘  │
 │ └───────────────┘                    └──────────┘           │         │
 └─────────────────────────────────────────────────────────────│─────────┘
-                                                              │ LAN (UDP/QUIC)
+                                                              │ UDP (plain; trusted private net)
                        Bonjour discovery ◀────────────────────┤
                                                               │
 ┌──────────────────── CLIENT (macOS / iOS / iPadOS) ──────────▼─────────┐
@@ -43,65 +43,67 @@
 |--------|-------------|-----------|
 | **Window Enumerator** | Enumerate windows, let the user pick | `SCShareableContent`, `SCWindow` |
 | **Capturer** | Capture one window → `CVPixelBuffer` | `SCStream` + `SCContentFilter(desktopIndependentWindow:)` |
-| **Encoder** | HW encode H.264/HEVC low-latency | `VTCompressionSession` |
-| **Packetizer + Transport** | Fragment NALUs → UDP datagrams, send | `NWConnection`, `NWListener` |
-| **Control Receiver** | Receive input events over the reliable channel | `NWConnection` (TCP/QUIC stream) |
+| **Encoder** | HW encode HEVC (H.264 fallback), low-latency | `VTCompressionSession` |
+| **Packetizer + FEC + Transport** | Fragment NALUs → UDP datagrams + XOR parity, send | `NWConnection`, `NWListener` |
+| **Control Receiver** | Input events + keyframe/LTR requests over the reliable channel | `NWConnection` (TCP, `TCP_NODELAY`) |
 | **Window/Input Controller** | Raise the window + inject mouse/keyboard | `AXUIElement`, `CGEvent`, `CGEventPostToPid` |
 
 ### Client (macOS / iOS / iPadOS) — **maximize code sharing**
 | Module | Responsibility | Key APIs |
 |--------|-------------|-----------|
-| **Discovery** | Find hosts on the LAN | `NWBrowser` (Bonjour) |
-| **Transport + Reassembler** | Receive datagrams, reassemble frames | `NWConnection` |
+| **Discovery** | Find hosts on the LAN (same-LAN only) | `NWBrowser` (Bonjour) |
+| **Transport + Reassembler + FEC** | Receive datagrams, reassemble frames, recover from parity | `NWConnection` |
 | **Decoder** | HW decode → `CVPixelBuffer` | `VTDecompressionSession` |
 | **Renderer** | Low-latency display | `CAMetalLayer` or `AVSampleBufferDisplayLayer` |
 | **Input Capture** | Capture mouse/keyboard/touch → send to host | NSEvent / UIKit gestures |
 
-## 3. Package structure (Swift Package Manager)
+> The wire codec, packetization, **FEC** (XOR parity + adaptive tiering), frame reassembly, and the realtime controllers — **ABR/congestion, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, coordinate mapping** — live in the Rust core (`aislopdesk-core`, safe Rust, zero runtime deps) behind a C-ABI (`aislopdesk-ffi`, header `aislopdesk_ffi.h`). The Swift modules **AislopdeskVideoHost** (capture/encode) and **AislopdeskVideoClient** (decode/render/input) call it through the **CAislopdeskFFI** C target.
+
+## 3. Package structure
 
 ```
-PaneCast/
+aislopdesk/
 ├── Package.swift
+├── rust/
+│   ├── aislopdesk-core/   # safe Rust (no `unsafe`, 0 runtime deps): the
+│   │                      #   performance core — wire codecs, FEC + reassembly,
+│   │                      #   ABR/congestion, FPS governor, LTR, decode gate/
+│   │                      #   sequencer, jitter pacer, coordinate mapping
+│   └── aislopdesk-ffi/    # C-ABI boundary (the only crate allowed `unsafe`)
+│                          #   → libaislopdesk_ffi.a + aislopdesk_ffi.h
 ├── Sources/
-│   ├── PaneCastCore/          # SHARED — platform-independent
-│   │   ├── Protocol/          # packet format, message types, codec enum
-│   │   ├── Transport/         # NWConnection wrappers, Bonjour, packetizer/reassembler
-│   │   └── Codec/             # VideoToolbox encode + decode wrappers
-│   ├── PaneCastHost/          # macOS only — capture, input inject, window control
-│   ├── PaneCastClientKit/     # shared client logic (decode pipeline, input mapping)
-│   └── PaneCastRender/        # Metal renderer (macOS + iOS)
-├── Apps/
-│   ├── HostApp-macOS/         # AppKit/SwiftUI host UI + window picker
-│   ├── ClientApp-macOS/       # viewer UI
-│   └── ClientApp-iOS/         # viewer UI (touch)
+│   ├── CAislopdeskFFI/           # C target; links libaislopdesk_ffi.a
+│   ├── AislopdeskVideoProtocol/  # Swift surface over the core's video codec
+│   ├── AislopdeskVideoHost/      # macOS — capture, HW encode, send
+│   └── AislopdeskVideoClient/    # client — receive, HW decode, Metal render
 └── docs/
 ```
 
-**Principle:** `PaneCastCore` builds for both macOS and iOS (decode + transport run in both places). `PaneCastHost` is macOS-only (capture + input only exist on the host). Rendering uses Metal, shared by both.
+**Principle:** the codecs / FEC / controllers are platform-independent Rust, the same core a future **Android client** consumes over the same C-ABI/JNI (the ALVR split: Rust owns reassembly/FEC/jitter/ABR/recovery; the platform shell owns capture, the socket, and the HW codec). The Swift shell owns ScreenCaptureKit capture, VideoToolbox, Metal rendering, and input. Rendering is Metal, shared by macOS + iOS.
 
 ## 4. Data flow for one frame (happy path)
 
 1. A window on the host changes pixels → ScreenCaptureKit emits a `CMSampleBuffer` (status `.complete`).
 2. Take the `CVPixelBuffer` + PTS → push into `VTCompressionSession`.
-3. The encoder returns NALUs (AVCC). If it's a keyframe → include parameter sets (SPS/PPS or VPS/SPS/PPS).
-4. The packetizer splits the frame into datagrams ≤1200 bytes, attaching a header (frameID, fragIndex, fragCount, flags, streamSeq).
+3. The encoder returns NALUs (AVCC). Keyframes include parameter sets (SPS/PPS or VPS/SPS/PPS).
+4. The Rust core packetizes the frame into datagrams ≤ MTU (header: frameID, fragIndex, fragCount, flags, streamSeq) + emits XOR parity per the adaptive FEC tier.
 5. Send over `NWConnection` UDP (`serviceClass = .interactiveVideo`).
-6. The client receives and reassembles fragments by frameID; if a fragment is missing → **drop the frame + request a keyframe** over the control channel.
+6. The client reassembles fragments by frameID; missing fragments are recovered from FEC parity where possible, otherwise the frame is dropped and recovery is driven by LTR / a keyframe request over the control channel.
 7. Assemble NALUs → `CMSampleBuffer` (AVCC) → `VTDecompressionSession`.
 8. The decoder returns a `CVPixelBuffer` (NV12, IOSurface-backed).
 9. Renderer: zero-copy `CVMetalTextureCache` → YCbCr→RGB shader → present.
 
 ## 5. Latency Budget
 
-> ⚠️ **Applies to the GUI video-path only.** Terminal-path latency = network RTT (~1–5ms LAN-direct), no vsync/encode. The GUI path target is relaxed to **40–80ms** (coding); **120fps/ProMotion dropped**. The table below is the old numbers (30–50ms/60fps) — kept as reference. See [12 §latency](12-coding-profile.md), [00](00-overview.md).
+> ⚠️ **GUI video-path only.** Terminal-path latency = network RTT (~1–5ms LAN-direct), no vsync/encode. The GUI path target is relaxed to **40–80ms** (coding use); 120fps/ProMotion dropped. The table below is the original **30–50ms / 60fps** estimate, kept as reference. See [12 §latency](12-coding-profile.md), [00](00-overview.md).
 
-Target: **glass-to-glass ~30–50ms** on wired LAN, 60fps (frame = 16.6ms).
+Reference target: **glass-to-glass ~30–50ms** on wired LAN, 60fps (frame = 16.6ms).
 
 | Stage | Estimate | Notes |
 |-----------|----------|---------|
 | Capture (SCKit, waiting for a frame) | ~8–16ms | at most 1 frame interval |
-| HW encode (Apple Silicon, low-latency) | ~1–5ms | re-measure in Phase 0 |
-| Packetize + send | <1ms | |
+| HW encode (Apple Silicon, low-latency) | ~1–5ms | |
+| Packetize + FEC + send | <1ms | |
 | LAN (wired) | ~0.2–2ms | Wi-Fi can be 2–10ms + jitter |
 | Reassemble | <1ms | |
 | HW decode | ~2–8ms | |
@@ -109,22 +111,27 @@ Target: **glass-to-glass ~30–50ms** on wired LAN, 60fps (frame = 16.6ms).
 | **Total (wired LAN, 60fps)** | **~30–50ms** | |
 
 **Most important latency levers:**
-- Disable B-frames (`AllowFrameReordering = false`) on both encode and decode (drop `enableTemporalProcessing`).
+- Disable B-frames (`AllowFrameReordering = false`) on encode + decode.
 - `RealTime = true` on both `VTCompressionSession` and `VTDecompressionSession`.
-- `serviceClass = .interactiveVideo` on `NWParameters`.
-- No large jitter buffer: on error → drop the frame + request a keyframe, do NOT retransmit.
+- `serviceClass = .interactiveVideo` on `NWParameters` (zeroed through a WireGuard tunnel → the app-layer ABR carries the load).
+- Bounded jitter buffer: recover lost fragments from FEC parity, else drop + recover via LTR / keyframe request — no per-packet retransmit.
+- Adaptive bitrate / congestion control (`LiveCongestionController` + `LiveBitratePolicy`) tracks the link.
 - Render: `CAMetalLayer.displaySyncEnabled = false` (macOS), `maximumDrawableCount = 2`.
 
 ## 6. Tech stack summary
 
-| Layer | Technology | Min OS |
+| Layer | Technology | Notes |
 |------|-----------|--------|
-| Capture | ScreenCaptureKit | macOS 13 (target 14+) |
-| Encode/Decode | VideoToolbox (HEVC preferred, H.264 fallback) | — |
-| Discovery | Bonjour via `NWListener`/`NWBrowser` | — |
-| Transport | `NWConnection` UDP (LAN) or QUIC datagram (Wi-Fi) | UDP: iOS 12 / QUIC: iOS 16 |
-| Control channel | TCP `noDelay` or QUIC reliable stream | — |
+| Capture | ScreenCaptureKit | macOS 26 floor (SCK since 12.3) |
+| Encode/Decode | VideoToolbox (HEVC, H.264 fallback) | — |
+| Discovery | Bonjour via `NWListener`/`NWBrowser` | same-LAN only |
+| Transport | `NWConnection` plain UDP | video datagrams |
+| Control channel | TCP (`TCP_NODELAY`) | keyframe/LTR requests, input |
 | Render | Metal (`CAMetalLayer` + `CVMetalTextureCache`) | macOS + iOS |
-| Input inject | CGEvent + Accessibility | macOS 14+ |
+| Input inject | CGEvent + Accessibility | macOS 26 |
 
-> **Default codec:** **HEVC Main 10 (10-bit), 4:2:0, low-latency rate control**. H.264 as fallback. On **Apple Silicon**, low-latency rate control supports **HEVC as well** (not just H.264). AV1 = decode-only on Apple (no HW encode) → not used for encoding. The real quality ceiling for text is **4:2:0 chroma** (Apple HW has no 4:4:4) → mitigate with 10-bit + high capture resolution. Full analysis in [09-codec-choice.md](09-codec-choice.md).
+> **Platform floor:** Package.swift targets `.v26` — macOS 26 / iOS 26, no fallback below that.
+
+> **Network model:** plain UDP (video) + plain TCP (control), no app-layer crypto. Assumes a **trusted private network** — typically a WireGuard mesh (e.g. NetBird/Tailscale) providing encryption + node auth + per-port ACLs; the security boundary is the network, not the app. Practical notes when running over a userspace-WG mesh: Bonjour/mDNS does not traverse it (connect by IP/hostname); DSCP/`serviceClass` is zeroed through the tunnel → rely on the app-layer ABR; clamp the UDP payload to the runtime MTU; don't pin `requiredInterfaceType` (a userspace-WG link shows up as `.other`).
+
+> **Default codec:** **HEVC Main (8-bit), 4:2:0, low-latency rate control**; H.264 fallback. On Apple Silicon, low-latency rate control supports HEVC (not just H.264). AV1 = decode-only on Apple (no HW encode) → not used for encoding. The quality ceiling for text is **4:2:0 chroma** (Apple HW has no 4:4:4) → mitigate with high capture resolution. Full analysis in [09-codec-choice.md](09-codec-choice.md).
