@@ -340,6 +340,43 @@ int main(void) {
     CHECK(wl_out.records == NULL && wl_out.records_len == 0, "free nulls the record array");
     aisd_bytes_free(wl_frame);
 
+    /* 10. system_dialog_detector: classify a SecurityAgent prompt (secure, owned owner buffer),
+     * and confirm a normal app window classifies AISD_EMPTY. */
+    CHECK(aisd_system_dialog_min_size() == 60, "system_dialog min_size is 60");
+
+    const char *sa_owner = "SecurityAgent";
+    const char *sa_bundle = "com.apple.SecurityAgent";
+    const char *sa_title = "Authenticate";
+    AisdRect sa_frame = {830.0, 201.0, 260.0, 312.0};
+    AisdSystemDialog dlg;
+    memset(&dlg, 0, sizeof(dlg));
+    CHECK(aisd_system_dialog_classify(1966, (const uint8_t *)sa_owner, strlen(sa_owner),
+                                      (const uint8_t *)sa_bundle, strlen(sa_bundle), 1,
+                                      (const uint8_t *)sa_title, strlen(sa_title), sa_frame,
+                                      aisd_system_dialog_min_size(), &dlg) == AISD_OK,
+          "SecurityAgent classifies as a dialog");
+    CHECK(dlg.window_id == 1966 && dlg.width == 260 && dlg.height == 312 && dlg.is_secure == 1 &&
+              dlg.owner.len == strlen(sa_owner) &&
+              memcmp(dlg.owner.ptr, sa_owner, strlen(sa_owner)) == 0 &&
+              dlg.title.len == strlen(sa_title),
+          "dialog fields + owned owner/title round-trip");
+    aisd_system_dialog_free(&dlg);
+    aisd_system_dialog_free(&dlg); /* idempotent */
+    CHECK(dlg.owner.ptr == NULL && dlg.title.ptr == NULL, "free nulls the owner/title buffers");
+
+    const char *chrome_owner = "Google Chrome";
+    const char *chrome_bundle = "com.google.Chrome";
+    AisdRect chrome_frame = {0.0, 0.0, 700.0, 500.0};
+    AisdSystemDialog not_dlg;
+    memset(&not_dlg, 0, sizeof(not_dlg));
+    CHECK(aisd_system_dialog_classify(1, (const uint8_t *)chrome_owner, strlen(chrome_owner),
+                                      (const uint8_t *)chrome_bundle, strlen(chrome_bundle), 1,
+                                      NULL, 0, chrome_frame, 60, &not_dlg) == AISD_EMPTY,
+          "a normal app window is not a system dialog");
+    CHECK(aisd_system_dialog_classify(1, (const uint8_t *)sa_owner, strlen(sa_owner), NULL, 0, 1,
+                                      NULL, 0, sa_frame, 60, NULL) == AISD_ERR_NULL,
+          "null out rejected");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

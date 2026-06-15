@@ -10,8 +10,9 @@
 #![allow(clippy::borrow_as_ptr)]
 
 use aislopdesk_ffi::video::{
-    aisd_video_control_decode, aisd_video_control_encode, aisd_video_control_free,
-    AisdVideoControl, AisdVideoSummary, AISD_VIDEO_CONTROL_WINDOW_LIST,
+    aisd_system_dialog_classify, aisd_system_dialog_free, aisd_system_dialog_min_size,
+    aisd_video_control_decode, aisd_video_control_encode, aisd_video_control_free, AisdRect,
+    AisdSystemDialog, AisdVideoControl, AisdVideoSummary, AISD_VIDEO_CONTROL_WINDOW_LIST,
 };
 use aislopdesk_ffi::{
     aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free, aisd_frame_decoder_new,
@@ -781,5 +782,109 @@ fn video_control_window_list_round_trips_and_owned_array_frees() {
         assert!(out.records.is_null());
         assert_eq!(out.records_len, 0);
         aisd_bytes_free(frame);
+    }
+}
+
+/// A fresh, all-empty classifier out struct.
+const fn empty_dialog() -> AisdSystemDialog {
+    AisdSystemDialog {
+        window_id: 0,
+        width: 0,
+        height: 0,
+        is_secure: 0,
+        owner: AisdBytes::EMPTY,
+        title: AisdBytes::EMPTY,
+    }
+}
+
+#[test]
+fn system_dialog_classify_round_trips_and_owned_strings_free() {
+    unsafe {
+        let owner = b"SecurityAgent";
+        let bundle = b"com.apple.SecurityAgent";
+        let title = b"Authenticate";
+        let frame = AisdRect {
+            x: 830.0,
+            y: 201.0,
+            width: 260.0,
+            height: 312.0,
+        };
+        let mut out = empty_dialog();
+        assert_eq!(
+            aisd_system_dialog_classify(
+                1966,
+                owner.as_ptr(),
+                owner.len(),
+                bundle.as_ptr(),
+                bundle.len(),
+                1,
+                title.as_ptr(),
+                title.len(),
+                frame,
+                aisd_system_dialog_min_size(),
+                &mut out,
+            ),
+            AISD_OK
+        );
+        assert_eq!(out.window_id, 1966);
+        assert_eq!((out.width, out.height), (260, 312));
+        assert_eq!(out.is_secure, 1);
+        assert_eq!(view(out.owner), owner);
+        assert_eq!(view(out.title), title);
+
+        aisd_system_dialog_free(&mut out);
+        aisd_system_dialog_free(&mut out); // idempotent
+        assert!(out.owner.ptr.is_null() && out.title.ptr.is_null());
+    }
+}
+
+#[test]
+fn system_dialog_classify_non_dialog_empty_and_null_out_guard() {
+    unsafe {
+        let owner = b"Google Chrome";
+        let bundle = b"com.google.Chrome";
+        let frame = AisdRect {
+            x: 0.0,
+            y: 0.0,
+            width: 700.0,
+            height: 500.0,
+        };
+        let mut out = empty_dialog();
+        // A normal app window is not a system dialog → AISD_EMPTY, nothing written.
+        assert_eq!(
+            aisd_system_dialog_classify(
+                1,
+                owner.as_ptr(),
+                owner.len(),
+                bundle.as_ptr(),
+                bundle.len(),
+                1,
+                core::ptr::null(),
+                0,
+                frame,
+                60,
+                &mut out,
+            ),
+            AISD_EMPTY
+        );
+        assert!(out.owner.ptr.is_null());
+
+        // A null out is rejected without dereferencing.
+        assert_eq!(
+            aisd_system_dialog_classify(
+                1,
+                owner.as_ptr(),
+                owner.len(),
+                core::ptr::null(),
+                0,
+                1,
+                core::ptr::null(),
+                0,
+                frame,
+                60,
+                core::ptr::null_mut(),
+            ),
+            AISD_ERR_NULL
+        );
     }
 }

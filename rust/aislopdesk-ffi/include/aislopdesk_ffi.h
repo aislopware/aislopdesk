@@ -540,6 +540,41 @@ uint8_t aisd_capture_should_retarget(AisdRect current, AisdRect desired, double 
  * region is active (active_region_is_null != 0), else 0. Pure; never fails. */
 uint8_t aisd_capture_reorigin_on_geometry(uint8_t active_region_is_null);
 
+/* ---- system_dialog_detector (pure classifier; the ~1 Hz listSystemDialogs poll) ---- */
+
+/* The minimum on-screen width/height (points) for a window to be a surfaced system dialog. */
+int64_t aisd_system_dialog_min_size(void);
+
+/*
+ * A classified system dialog (the Some(Dialog) result of the classifier). On AISD_OK the
+ * owner/title own Rust allocations (release with aisd_system_dialog_free). Field order MUST match
+ * the Rust #[repr(C)] struct AisdSystemDialog.
+ */
+typedef struct AisdSystemDialog {
+    uint32_t window_id;
+    int64_t width;
+    int64_t height;
+    uint8_t is_secure;  /* 1 = a secure-credential (SecurityAgent/coreauthd) prompt class */
+    AisdBytes owner;    /* display label: owner name, or bundle id when the owner is empty */
+    AisdBytes title;
+} AisdSystemDialog;
+
+/* Classify ONE on-screen window into a surfaced system dialog. The three strings are borrowed
+ * (ptr,len) for the call (each NULL only when its length is 0); the secure/system allowlists and
+ * the on-screen + min-size rules live in the Rust core. On AISD_OK *out is a dialog whose
+ * owner/title own buffers (release with aisd_system_dialog_free); AISD_EMPTY = not a system dialog
+ * (nothing written); AISD_ERR_NULL = null out, or a NULL string with a nonzero length. */
+AisdStatus aisd_system_dialog_classify(uint32_t window_id,
+                                       const uint8_t *owner_name, size_t owner_name_len,
+                                       const uint8_t *bundle_id, size_t bundle_id_len,
+                                       uint8_t is_on_screen,
+                                       const uint8_t *title, size_t title_len,
+                                       AisdRect frame, int64_t min_size,
+                                       AisdSystemDialog *out);
+
+/* Release the owned owner/title buffers inside a classified dialog. Idempotent; struct caller-owned. */
+void aisd_system_dialog_free(AisdSystemDialog *msg);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

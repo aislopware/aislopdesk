@@ -152,6 +152,57 @@ public enum RustVideoHostFFI {
         aisd_capture_reorigin_on_geometry(activeRegionGlobal == nil ? 1 : 0) != 0
     }
 
+    // MARK: - system_dialog_detector (pure classifier; the ~1 Hz listSystemDialogs poll)
+
+    /// The minimum on-screen size (points) for a window to be a surfaced system dialog. Wraps
+    /// `aisd_system_dialog_min_size`.
+    static func systemDialogMinSize() -> Int {
+        Int(aisd_system_dialog_min_size())
+    }
+
+    /// Classify ONE on-screen window into a surfaced system dialog (or `nil`). Wraps
+    /// `aisd_system_dialog_classify`; the secure/system allowlists + the on-screen / min-size rules
+    /// live in the Rust core, so this only marshals the borrowed strings in and the owned strings out.
+    static func systemDialogClassify(
+        windowID: UInt32,
+        ownerName: String,
+        bundleID: String,
+        isOnScreen: Bool,
+        title: String,
+        frame: CGRect,
+        minSize: Int,
+    ) -> SystemDialogClassification? {
+        let owner = Array(ownerName.utf8)
+        let bundle = Array(bundleID.utf8)
+        let titleBytes = Array(title.utf8)
+        var out = AisdSystemDialog()
+        let status = owner.withUnsafeBufferPointer { o in
+            bundle.withUnsafeBufferPointer { b in
+                titleBytes.withUnsafeBufferPointer { t in
+                    aisd_system_dialog_classify(
+                        windowID,
+                        o.baseAddress, o.count,
+                        b.baseAddress, b.count,
+                        isOnScreen ? 1 : 0,
+                        t.baseAddress, t.count,
+                        aisdRect(frame), Int64(minSize),
+                        &out,
+                    )
+                }
+            }
+        }
+        guard status == AISD_OK else { return nil }
+        defer { aisd_system_dialog_free(&out) }
+        return SystemDialogClassification(
+            windowID: out.window_id,
+            owner: string(from: out.owner),
+            title: string(from: out.title),
+            width: Int(out.width),
+            height: Int(out.height),
+            isSecure: out.is_secure != 0,
+        )
+    }
+
     /// Flattens a `CGRect` into the C-ABI `AisdRect` (x, y, width, height — all `Double`).
     private static func aisdRect(_ r: CGRect) -> AisdRect {
         AisdRect(
@@ -165,6 +216,14 @@ public enum RustVideoHostFFI {
     /// Rebuilds a `CGRect` from the C-ABI `AisdRect`.
     private static func cgRect(_ r: AisdRect) -> CGRect {
         CGRect(x: r.x, y: r.y, width: r.width, height: r.height)
+    }
+
+    /// Copies a returned `AisdBytes` UTF-8 payload into a `String` (empty for the null buffer). The
+    /// buffer itself is released by the caller's `*_free`.
+    private static func string(from bytes: AisdBytes) -> String {
+        guard let ptr = bytes.ptr, bytes.len > 0 else { return "" }
+        // The bytes came from a Rust `String`, so the failable init never returns nil here.
+        return String(bytes: UnsafeBufferPointer(start: ptr, count: bytes.len), encoding: .utf8) ?? ""
     }
 }
 
@@ -195,4 +254,15 @@ struct CaptureWindow {
     let ownerPID: Int32
     let layer: Int64
     let frame: CGRect
+}
+
+/// The Rust core's `Dialog` classification carried back across the C-ABI (a plain value carrier so
+/// this contained-FFI file stays decoupled from the host's `#if os(macOS)` `SystemDialogDetector`).
+struct SystemDialogClassification {
+    let windowID: UInt32
+    let owner: String
+    let title: String
+    let width: Int
+    let height: Int
+    let isSecure: Bool
 }

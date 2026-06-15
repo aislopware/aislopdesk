@@ -1,7 +1,11 @@
 //! Pure classifier behind the "show system popups/prompts in their own pane" feature.
 //!
-//! The canonical `SystemDialogDetector` logic; the native Swift shell keeps a copy
-//! (`Sources/AislopdeskVideoHost/SystemDialogDetector.swift`) that tracks this (golden parity).
+//! The canonical `SystemDialogDetector` logic and single source of truth.
+//!
+//! The native Swift shell's `SystemDialogDetector`
+//! (`Sources/AislopdeskVideoHost/SystemDialogDetector.swift`) delegates `classify` / `detect` to this
+//! over the C-ABI (`aisd_system_dialog_classify`) and keeps only the `WindowSnapshot` / `Dialog` value
+//! types. Golden parity still pins the agreement.
 //!
 //! A SYSTEM dialog is a cross-process modal window that NO app-pane would ever capture — the
 //! prime case (the user's ask) being a `SecurityAgent` login/admin **password** prompt. The host
@@ -94,21 +98,19 @@ pub struct Dialog {
 }
 
 /// Secure auth processes (password/credential prompts; raise Secure Event Input but the host can still
-/// inject keystrokes). Matched by bundle id OR owner name. Membership-only; order irrelevant. The Swift
-/// shell's `secureBundleIDs` mirrors this.
+/// inject keystrokes). Matched by bundle id OR owner name. Membership-only; order irrelevant. The single
+/// expansion point for a new secure-prompt source — one entry (the Swift shell no longer keeps a copy).
 const SECURE_BUNDLE_IDS: &[&str] = &["com.apple.SecurityAgent", "com.apple.coreauthd"];
 /// Secure auth owner names (the name is the resilient signal across macOS builds; `SCWindow` gives
-/// both). The Swift shell's `secureOwnerNames` mirrors this.
+/// both).
 const SECURE_OWNER_NAMES: &[&str] = &["SecurityAgent", "coreauthd"];
-/// Non-secure system-prompt bundle ids (view + FULL interaction). EMPTY in v1 — the expansion
-/// point. The Swift shell's `systemBundleIDs` mirrors this.
+/// Non-secure system-prompt bundle ids (view + FULL interaction). EMPTY in v1 — the expansion point.
 const SYSTEM_BUNDLE_IDS: &[&str] = &[];
-/// Non-secure system-prompt owner names. EMPTY in v1 — the expansion point. The Swift shell's
-/// `systemOwnerNames` mirrors this.
+/// Non-secure system-prompt owner names. EMPTY in v1 — the expansion point.
 const SYSTEM_OWNER_NAMES: &[&str] = &[];
 
 /// Reject sub-`MIN_SIZE` windows (offscreen helpers, 1×1 indicators) — a real prompt is well above
-/// this. The Swift shell's `minSize` default is `60`.
+/// this. Exposed over the C-ABI as `aisd_system_dialog_min_size`; the Swift shell reads it from there.
 pub const MIN_SIZE: i64 = 60;
 
 /// Classify one window, or `None` if it is not a surfaced system dialog. Pure. The canonical
@@ -160,8 +162,10 @@ pub fn classify_default(w: &WindowSnapshot) -> Option<Dialog> {
     classify(w, MIN_SIZE)
 }
 
-/// Classify a whole snapshot list into the system dialogs to surface (input ORDER PRESERVED). The
-/// canonical `detect(_:minSize:)` implementation (Swift `compactMap`; the Swift shell mirrors this).
+/// Classify a whole snapshot list into the system dialogs to surface (input ORDER PRESERVED).
+///
+/// The canonical `detect(_:minSize:)` implementation; the Swift shell's `detect` is a `compactMap`
+/// over [`classify`], which it delegates to this core over the C-ABI.
 #[must_use]
 pub fn detect(windows: &[WindowSnapshot], min_size: i64) -> Vec<Dialog> {
     windows
