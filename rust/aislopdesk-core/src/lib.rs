@@ -45,6 +45,7 @@ pub mod error;
 pub mod fec;
 pub mod fps_governor;
 pub mod fragment;
+pub mod frame_hash;
 pub mod geometry;
 pub mod gf256;
 pub mod host_output_sniffer;

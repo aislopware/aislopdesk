@@ -787,6 +787,48 @@ int main(void) {
     aisd_reassembler_free(NULL); /* no-op */
     aisd_reassembly_result_free(NULL); /* no-op */
 
+    /* 23. frame_hash: the NEON NV12 frame hash over borrowed plane pointers. Build a small padded
+     * NV12 frame (stride > width) and assert: deterministic; padding-independent; a one-byte change
+     * differs; nulls / degenerate dims return the sentinel. */
+    {
+        const size_t fw = 24, fh = 16, fstride = 32; /* 8 padding bytes per row */
+        uint8_t fy[32 * 16];
+        uint8_t fc[32 * 8]; /* chroma: height/2 rows */
+        for (size_t i = 0; i < sizeof(fy); i++) { fy[i] = (uint8_t)(i * 31 + 7); }
+        for (size_t i = 0; i < sizeof(fc); i++) { fc[i] = (uint8_t)(i * 17 + 3); }
+
+        uint64_t h1 = aisd_frame_hash_nv12(fy, fstride, fw, fh, fc, fstride);
+        uint64_t h2 = aisd_frame_hash_nv12(fy, fstride, fw, fh, fc, fstride);
+        CHECK(h1 == h2, "frame hash is deterministic for the same frame");
+        CHECK(h1 != AISD_FRAME_HASH_SENTINEL, "a valid frame does not return the sentinel");
+
+        /* Scribble the row PADDING (cols [fw, fstride)) with different bytes — the hash must NOT
+         * change, proving only the visible `width` bytes are read. */
+        for (size_t r = 0; r < fh; r++) {
+            for (size_t c = fw; c < fstride; c++) { fy[r * fstride + c] = (uint8_t)(0xA0 + c); }
+        }
+        CHECK(aisd_frame_hash_nv12(fy, fstride, fw, fh, fc, fstride) == h1,
+              "row padding must not affect the frame hash");
+
+        /* A one-byte change inside the VISIBLE region must change the hash. */
+        fy[5 * fstride + 3] ^= 0x01;
+        CHECK(aisd_frame_hash_nv12(fy, fstride, fw, fh, fc, fstride) != h1,
+              "a one-byte change differs");
+
+        /* Luma-only (null chroma) is valid and deterministic. */
+        uint64_t hy1 = aisd_frame_hash_nv12(fy, fstride, fw, fh, NULL, 0);
+        uint64_t hy2 = aisd_frame_hash_nv12(fy, fstride, fw, fh, NULL, 0);
+        CHECK(hy1 == hy2 && hy1 != AISD_FRAME_HASH_SENTINEL, "luma-only hash deterministic");
+
+        /* Null / degenerate ⇒ sentinel, never a crash. */
+        CHECK(aisd_frame_hash_nv12(NULL, fstride, fw, fh, fc, fstride) == AISD_FRAME_HASH_SENTINEL,
+              "null luma ⇒ sentinel");
+        CHECK(aisd_frame_hash_nv12(fy, 0, 0, 0, NULL, 0) == AISD_FRAME_HASH_SENTINEL,
+              "zero dims ⇒ sentinel");
+        CHECK(aisd_frame_hash_nv12(fy, 4, 8, 2, NULL, 0) == AISD_FRAME_HASH_SENTINEL,
+              "stride < width ⇒ sentinel");
+    }
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

@@ -47,6 +47,13 @@ pub mod video;
 /// the C ABI (a future workflow wires the FEC codec to it).
 pub mod gf_neon;
 
+/// A NEON-accelerated NV12 frame hash ([`frame_hash::NeonFrameHash`]).
+///
+/// Byte-identical to the scalar [`aislopdesk_core::frame_hash`]; lives here for the same reason as
+/// [`gf_neon`] (the vector kernel needs `aarch64` NEON intrinsics). The C ABI entry point is
+/// [`video::aisd_frame_hash_nv12`].
+pub mod frame_hash;
+
 /// The crate's single home for raw-pointer / heap-handle `unsafe` primitives (see [`raw`]). The
 /// boundary functions here and in [`video`] reach them through these crate-wide re-exports so the
 /// shims themselves stay safe-bodied.

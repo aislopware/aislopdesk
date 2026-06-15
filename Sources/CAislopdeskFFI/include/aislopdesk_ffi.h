@@ -625,6 +625,31 @@ typedef struct AisdYCbCrCoefficients {
  * studio/video swing — the current shader literals byte-for-byte). Pure; never fails. */
 AisdYCbCrCoefficients aisd_ycbcr_coefficients(uint8_t full_range);
 
+/* ---- frame_hash (NEON-backed NV12 frame hash; host static-frame suppression) ---- */
+
+/* The sentinel aisd_frame_hash_nv12 returns for a null/degenerate call (never a real frame's
+ * hash). UINT64_MAX, distinct from 0 so an all-zero plane (which hashes to a real value) is never
+ * confused with "no usable hash". */
+#define AISD_FRAME_HASH_SENTINEL UINT64_MAX
+
+/* Hash an NV12 frame's luma + interleaved-chroma planes into one strong 64-bit value, reading ONLY
+ * the first `width` bytes of each `*_stride`-spaced row so row padding never affects the result
+ * (resolution-stable). The plane pointers are BORROWED (read, never freed; zero-copy from the
+ * already-locked CVPixelBuffer plane base addresses). On Apple Silicon the 32-byte main loop is
+ * NEON-vectorised and byte-identical to the scalar core (the Android default).
+ *
+ *   y           : luma plane base; must hold >= y_stride * height readable bytes.
+ *   y_stride    : luma plane byte stride (>= width).
+ *   width,height: VISIBLE luma pixel dimensions.
+ *   cbcr        : interleaved NV12 chroma base, or NULL for a luma-only hash; when non-null must
+ *                 hold >= cbcr_stride * (height / 2) readable bytes.
+ *   cbcr_stride : chroma plane byte stride.
+ *
+ * Returns AISD_FRAME_HASH_SENTINEL (never a panic / OOB read) for a NULL y, a zero width/height, or
+ * y_stride < width. Pure read; no pointer is written or freed. */
+uint64_t aisd_frame_hash_nv12(const uint8_t *y, size_t y_stride, size_t width, size_t height,
+                              const uint8_t *cbcr, size_t cbcr_stride);
+
 /* ---- recovery (client->host loss-recovery / ack / cursor-reship / netstats codec) ---- */
 
 #define AISD_RECOVERY_ACK 1

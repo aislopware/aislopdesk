@@ -32,6 +32,38 @@ public enum RustVideoHostFFI {
         Int(aisd_live_bitrate_minimum())
     }
 
+    // MARK: - frame_hash (NEON NV12 frame hash; host static-frame suppression)
+
+    /// The sentinel `frameHashNV12` returns for a null/degenerate call (never a real frame's hash).
+    /// Mirrors `AISD_FRAME_HASH_SENTINEL` (`UInt64.max`).
+    static let frameHashSentinel: UInt64 = .max
+
+    /// Hashes an NV12 frame's already-locked luma + interleaved-chroma planes into one strong 64-bit
+    /// value, reading ONLY the first `width` bytes of each `*Stride`-spaced row (padding-independent).
+    /// ZERO-COPY: the base addresses are the LOCKED `CVPixelBuffer` plane pointers — they are
+    /// borrowed for the call only, never retained or freed by Rust. On Apple Silicon the kernel is
+    /// NEON-vectorised and byte-identical to the scalar core. Wraps `aisd_frame_hash_nv12`.
+    ///
+    /// Returns `frameHashSentinel` for a null `y` / zero dims / `yStride < width` (never a crash).
+    /// `cbcr == nil` ⇒ a luma-only hash.
+    static func frameHashNV12(
+        y: UnsafeRawPointer,
+        yStride: Int,
+        width: Int,
+        height: Int,
+        cbcr: UnsafeRawPointer?,
+        cbcrStride: Int,
+    ) -> UInt64 {
+        aisd_frame_hash_nv12(
+            y.assumingMemoryBound(to: UInt8.self),
+            yStride,
+            width,
+            height,
+            cbcr?.assumingMemoryBound(to: UInt8.self),
+            cbcrStride,
+        )
+    }
+
     // MARK: - window_placement (pure, flat-struct; HiDPI VD-park path)
 
     /// Clamp `windowSize` DOWN to `displayBounds` (never enlarge) and place it at the display's

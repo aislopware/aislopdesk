@@ -50,6 +50,7 @@ use aislopdesk_ffi::video::{
     aisd_video_mux_router_is_draining, aisd_video_mux_router_new, aisd_video_mux_router_retire,
     aisd_video_mux_router_route, aisd_ycbcr_coefficients,
 };
+use aislopdesk_ffi::video::{AISD_FRAME_HASH_SENTINEL, aisd_frame_hash_nv12};
 use aislopdesk_ffi::{
     AISD_EMPTY, AISD_ERR_FRAME_TOO_LARGE, AISD_ERR_INVALID_ARGUMENT, AISD_ERR_MALFORMED,
     AISD_ERR_NULL, AISD_ERR_TRUNCATED, AISD_ERR_UNKNOWN_TYPE, AISD_OK, AISD_WIRE_ACK,
@@ -1714,4 +1715,49 @@ fn reassembler_completes_recovers_and_drops_over_the_c_abi() {
         aisd_reassembler_free(core::ptr::null_mut()); // no-op
         aisd_reassembly_result_free(core::ptr::null_mut()); // no-op
     }
+}
+
+/// `aisd_frame_hash_nv12`: the NEON NV12 frame hash over BORROWED plane pointers — determinism,
+/// stride/padding independence, one-byte sensitivity, and the null/degenerate sentinel guards,
+/// driven exactly as a C caller (raw `*const u8`).
+#[test]
+fn frame_hash_over_the_c_abi() {
+    let (w, h, stride) = (24usize, 16usize, 32usize); // 8 bytes row padding
+    let mut y: Vec<u8> = (0..stride * h).map(|i| (i * 31 + 7) as u8).collect();
+    let cbcr: Vec<u8> = (0..stride * (h / 2)).map(|i| (i * 17 + 3) as u8).collect();
+
+    // SAFETY: the slices outlive each call and cover the implied plane sizes (stride*height etc.).
+    let h1 = unsafe { aisd_frame_hash_nv12(y.as_ptr(), stride, w, h, cbcr.as_ptr(), stride) };
+    let h2 = unsafe { aisd_frame_hash_nv12(y.as_ptr(), stride, w, h, cbcr.as_ptr(), stride) };
+    assert_eq!(h1, h2, "deterministic for the same frame");
+    assert_ne!(
+        h1, AISD_FRAME_HASH_SENTINEL,
+        "a valid frame is not the sentinel"
+    );
+
+    // Mutating only the row PADDING (cols [w, stride)) must not change the hash.
+    for r in 0..h {
+        for c in w..stride {
+            y[r * stride + c] = (0xA0 + c) as u8;
+        }
+    }
+    let padded = unsafe { aisd_frame_hash_nv12(y.as_ptr(), stride, w, h, cbcr.as_ptr(), stride) };
+    assert_eq!(padded, h1, "row padding must not affect the hash");
+
+    // A one-byte change in the VISIBLE region must change the hash.
+    y[5 * stride + 3] ^= 0x01;
+    let edited = unsafe { aisd_frame_hash_nv12(y.as_ptr(), stride, w, h, cbcr.as_ptr(), stride) };
+    assert_ne!(edited, h1, "a one-byte visible change differs");
+
+    // Null / degenerate ⇒ sentinel, never a panic.
+    let null_y =
+        unsafe { aisd_frame_hash_nv12(core::ptr::null(), stride, w, h, core::ptr::null(), 0) };
+    assert_eq!(null_y, AISD_FRAME_HASH_SENTINEL, "null y ⇒ sentinel");
+    let zero = unsafe { aisd_frame_hash_nv12(y.as_ptr(), 0, 0, 0, core::ptr::null(), 0) };
+    assert_eq!(zero, AISD_FRAME_HASH_SENTINEL, "zero dims ⇒ sentinel");
+    let narrow = unsafe { aisd_frame_hash_nv12(y.as_ptr(), 4, 8, 2, core::ptr::null(), 0) };
+    assert_eq!(
+        narrow, AISD_FRAME_HASH_SENTINEL,
+        "stride < width ⇒ sentinel"
+    );
 }

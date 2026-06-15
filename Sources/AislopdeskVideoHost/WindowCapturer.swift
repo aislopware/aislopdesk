@@ -84,6 +84,17 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// behaviour only; HW-verified path, not unit-tested).
     private static let crispWhenStatic = ProcessInfo.processInfo.environment["AISLOPDESK_CRISP"] != "0"
 
+    /// STATIC-FRAME SUPPRESSION (default OFF). When enabled, each `.complete` frame's locked NV12
+    /// planes are hashed (the NEON ``RustVideoHostFFI/frameHashNV12`` kernel) and compared to the
+    /// last submitted frame's hash; a pixel-identical re-delivery with no forced obligation pending
+    /// is DROPPED before the encoder (HEVC + SCK idle-skip handle most static content — this catches
+    /// the residual `.complete` re-deliveries that are byte-identical). DEFAULT OFF ⇒ no hash is
+    /// computed, nothing is suppressed, and the capture path is byte-identical to today. Needs a
+    /// real GUI + TCC session to exercise (the SCStream path hangs headlessly); only the pure
+    /// decider + the hash kernel are unit-tested. `AISLOPDESK_STATIC_SUPPRESS=1` enables it.
+    private static let staticSuppressEnabled =
+        ProcessInfo.processInfo.environment["AISLOPDESK_STATIC_SUPPRESS"] == "1"
+
     /// SELF-HEAL cadence (2026-06-11, Parsec-style ack-anchored healing — HW-validated in
     /// `aislopdesk-loopback-validate --ack-ref` arms L/M/N/O): every `selfHealEvery`-th LIVE delta is
     /// encoded as a `ForceLTRRefresh` P-frame, which VideoToolbox anchors to the newest LTR the
@@ -186,6 +197,16 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     private var staticIDRDecider: StaticIDRDecider
     private var idrTimer: DispatchSourceTimer?
     private var cachedPixelBuffer: CVPixelBuffer? // deep COPY, frameQueue-owned (see copyPixelBuffer)
+
+    // STATIC-FRAME SUPPRESSION (gated on `staticSuppressEnabled`). frameQueue-owned (only touched in
+    // the SCStream callback). Inert when the gate is OFF (the hash is never computed).
+    private let staticSuppressDecider = StaticFrameSuppressionDecider()
+    /// Hash of the last frame ACTUALLY handed to the encoder, or nil before the first one. A new
+    /// frame whose hash equals this — and that owes no forced obligation — is a duplicate to drop.
+    private var lastSubmittedFrameHash: UInt64?
+    /// Count of `.complete` frames suppressed as pixel-identical duplicates; logged periodically so
+    /// a HW session can measure the re-delivery rate. frameQueue-owned.
+    private var completeButDuplicateCount: UInt64 = 0
     /// KHỰNG-ladder stage 1 (AISLOPDESK_VIDEO_DEBUG): last DELIVERED-frame time, frameQueue-owned.
     static let dbgGapEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_VIDEO_DEBUG"] != nil
     private var lastDeliveredAt: Double = 0
@@ -252,6 +273,30 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         keyframeLock.lock()
         defer { keyframeLock.unlock() }
         return pendingForcedKeyframe || pendingLTRRefresh
+    }
+
+    /// PEEK (without clearing) the pending-forced-keyframe latch — for the static-suppression
+    /// decider's `forcedKeyframePending` input, so a suppressed duplicate never drains the latch
+    /// (it drains on the next ENCODED frame).
+    private func peekPendingForcedKeyframe() -> Bool {
+        keyframeLock.lock()
+        defer { keyframeLock.unlock() }
+        return pendingForcedKeyframe
+    }
+
+    /// PEEK (without clearing) the pending-LTR-refresh latch — the static-suppression decider's
+    /// `recoveryPending` input (an LTR refresh is the cheap recovery alternative to a forced IDR).
+    private func peekPendingLTRRefresh() -> Bool {
+        keyframeLock.lock()
+        defer { keyframeLock.unlock() }
+        return pendingLTRRefresh
+    }
+
+    /// Whether a periodic motion-heartbeat IDR is DUE this frame (only when the motion heartbeat is
+    /// enabled — default OFF). Pure read of the heartbeat clock; the static-suppression decider must
+    /// not suppress a frame that owes the periodic insurance IDR. frameQueue-owned read.
+    private func peekHeartbeatDue(now: TimeInterval) -> Bool {
+        Self.motionHeartbeatEnabled && now - lastHeartbeat >= Self.heartbeatIDRInterval
     }
 
     /// Atomically reads + clears the pending-forced-keyframe latch.
@@ -854,6 +899,42 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // rare real frame that already pays for an encode.
         cachedPixelBuffer = Self.copyPixelBuffer(pixelBuffer)
         staticIDRDecider.onCompleteFrame(now: now)
+
+        // STATIC-FRAME SUPPRESSION (default OFF). Hash THIS frame's locked NV12 planes (zero-copy,
+        // NEON) and, when it is pixel-identical to the last SUBMITTED frame and no forced obligation
+        // is pending, drop it here — before any PTS bookkeeping or the encode hand-off — so a SCK
+        // `.complete` re-delivery of unchanged pixels never re-encodes/re-sends. The cache + decider
+        // clock above ARE updated first, so the static-IDR timer still re-anchors on a quiet window.
+        // Gate OFF ⇒ this block is skipped entirely (no hash, byte-identical to today).
+        if Self.staticSuppressEnabled,
+           let frameHash = Self.hashFrame(pixelBuffer),
+           frameHash != RustVideoHostFFI.frameHashSentinel,
+           let lastHash = lastSubmittedFrameHash
+        {
+            // PEEK (do not drain) the forced obligations so a suppressed frame never swallows a
+            // pending recovery/keyframe latch — the latch drains on the next encoded frame, exactly
+            // as the FPS-governor cadence gate peeks. The first-frame case is covered by
+            // `lastSubmittedFrameHash == nil` (this branch is skipped until a frame has been sent).
+            if staticSuppressDecider.shouldSuppress(
+                hashEqualToLast: frameHash == lastHash,
+                isFirstFrame: !hasEmittedFirstFrame,
+                forcedKeyframePending: peekPendingForcedKeyframe(),
+                recoveryPending: peekPendingLTRRefresh(),
+                heartbeatDue: peekHeartbeatDue(now: now),
+                ltrRefreshDue: false, // folded into recoveryPending (the LTR-refresh latch)
+                selfHealDue: false, // self-heal is decided per-ENCODED frame below the gate, never here
+            ) {
+                completeButDuplicateCount += 1
+                // Log every 600th suppression (~10 s at 60 fps of pure duplicates) so a HW session
+                // can read the re-delivery rate without flooding the log on a static screen.
+                if completeButDuplicateCount.isMultiple(of: 600) {
+                    let dropped = completeButDuplicateCount
+                    log.notice("static-frame suppression: \(dropped) complete-but-duplicate frames dropped")
+                }
+                return // duplicate with no obligation — skip encode/send entirely
+            }
+        }
+
         let pts90k = CMTimeConvertScale(pts, timescale: Self.ptsTimescale, method: .default)
         // Clamp the value ACTUALLY handed to the encoder up to the high-water mark — not just
         // the tracker — so a real frame can never reverse a prior synthetic IDR's PTS (the
@@ -973,6 +1054,14 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         }
         if forceKeyframe || ltrRefresh { framesSinceAnchor = 0 }
 
+        // STATIC-FRAME SUPPRESSION: record the hash of the frame we are ABOUT TO SUBMIT (only when
+        // the gate is on), so the NEXT capture is compared against the last frame actually sent
+        // (never against a frame that was cadence-gated and dropped). Computed from the exact buffer
+        // being handed to the encoder, so every submit path (live + gated-tail flush) stays in sync.
+        if Self.staticSuppressEnabled {
+            lastSubmittedFrameHash = Self.hashFrame(pixelBuffer)
+        }
+
         // Hand the CVPixelBuffer to the encoder. The pixel buffer is retained by the
         // encoder for the duration of the encode; when this callback returns the
         // CMSampleBuffer (and its surface) is released — within the queue-depth
@@ -1075,6 +1164,45 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
             }
         }
         return dst
+    }
+
+    // MARK: STATIC-FRAME SUPPRESSION pixel-buffer hash
+
+    /// Hashes the NV12 `pixelBuffer`'s luma + interleaved-chroma planes into one 64-bit value via the
+    /// NEON ``RustVideoHostFFI/frameHashNV12`` kernel, ZERO-COPY: it locks the buffer read-only,
+    /// passes the locked plane base addresses + their `bytesPerRow` strides straight to Rust (which
+    /// borrows them for the call only), then unlocks. The hash reads only the VISIBLE `width` bytes
+    /// of each row, so it is independent of plane padding. Returns nil on a lock failure / missing
+    /// luma plane (the caller then simply does not suppress). Called only when suppression is enabled.
+    private static func hashFrame(_ pixelBuffer: CVPixelBuffer) -> UInt64? {
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        // Luma plane (plane 0): the visible width/height come from the plane, not the buffer, so a
+        // padded plane still hashes only its visible region.
+        guard let yBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else { return nil }
+        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+        let yStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        // Chroma plane (plane 1, interleaved CbCr) when present (NV12 has 2 planes); luma-only else.
+        let cbcr: UnsafeRawPointer?
+        let cbcrStride: Int
+        if CVPixelBufferGetPlaneCount(pixelBuffer) > 1,
+           let cbcrBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
+        {
+            cbcr = UnsafeRawPointer(cbcrBase)
+            cbcrStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+        } else {
+            cbcr = nil
+            cbcrStride = 0
+        }
+        return RustVideoHostFFI.frameHashNV12(
+            y: UnsafeRawPointer(yBase),
+            yStride: yStride,
+            width: width,
+            height: height,
+            cbcr: cbcr,
+            cbcrStride: cbcrStride,
+        )
     }
 }
 #endif
