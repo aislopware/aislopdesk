@@ -89,8 +89,10 @@ struct PaneLeafView: View {
         case .remoteGUI:
             RemoteGUIPaneView(live: live, store: store)
         case .systemDialog:
-            // Same live video view as a remote-GUI pane; a secure (password/auth) prompt gets the
-            // honest "view-only — type on the host" hint (synthetic keystrokes are OS-dropped).
+            // Same live video view as a remote-GUI pane. A secure (password/auth) prompt gets a small
+            // lock chip — NOT a "view-only" restriction: HW-proven (2026-06-15) the host injects the
+            // password into a SecurityAgent/coreauthd field via `CGEvent(.cghidEventTap)` and the keys
+            // LAND even though `IsSecureEventInputEnabled() == true`, so typing from the client works.
             RemoteGUIPaneView(live: live, store: store)
                 .overlay(alignment: .bottom) {
                     if live.isSecureDialog { SecureDialogHintBar() }
@@ -152,12 +154,16 @@ struct PaneLeafView: View {
     }
 }
 
-/// The honest "view-only" hint shown over a SECURE system-dialog pane (a SecurityAgent password/auth
-/// prompt). macOS raises Secure Event Input for these, so the host CAN stream the pixels but synthetic
-/// keystrokes are OS-dropped — the password must be typed on the host. Mouse (Cancel/OK) still works.
+/// A small lock chip flagging a SECURE system-dialog pane (a SecurityAgent/coreauthd password/auth
+/// prompt) as a credential field — NOT a "view-only" restriction. macOS raises Secure Event Input for
+/// these, but HW-proven (2026-06-15, Tahoe 26.5.1): the host's `CGEvent(.cghidEventTap)` keystroke
+/// injection LANDS in the field anyway (the SecurityAgent password fills with dots + authenticates),
+/// so typing the password from the client works — Secure Event Input does NOT block this injection
+/// path. The earlier "view-only — type on the host" wording was therefore wrong and is removed; this
+/// chip just signals "you are typing into a secure credential prompt".
 private struct SecureDialogHintBar: View {
     var body: some View {
-        Label("View-only — type the password on the host", systemImage: "lock.shield")
+        Label("Secure prompt", systemImage: "lock.fill")
             .font(.caption2)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)

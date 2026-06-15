@@ -9,11 +9,13 @@ import Foundation
 /// the on-screen windows, runs this classifier, and answers the client's `listSystemDialogs` poll with
 /// the matches; the client auto-spawns an ephemeral pane per dialog.
 ///
-/// **HW-grounded (probe 2026-06-12, Tahoe 26.5.1):** `SCShareableContent` DOES list the SecurityAgent
-/// prompt (own window, layer 1000, onScreen), and `desktopIndependentWindow` captures it with real
-/// pixels — it is NOT capture-blocked. But while it is up `IsSecureEventInputEnabled() == true`, so
-/// synthetic KEYSTROKES are OS-dropped: a secure dialog is **view + click only**, the password must be
-/// typed on the host. That truth is carried per-dialog as ``Dialog/isSecure`` so the client can label it.
+/// **HW-grounded (probe 2026-06-12 + 2026-06-15, Tahoe 26.5.1):** `SCShareableContent` DOES list the
+/// SecurityAgent prompt (own window, layer 1000, onScreen), and `desktopIndependentWindow` captures it
+/// with real pixels — it is NOT capture-blocked. While it is up `IsSecureEventInputEnabled() == true`,
+/// BUT — corrected 2026-06-15 — that does NOT block injection: the host's `CGEvent(.cghidEventTap)`
+/// keystrokes LAND in the field anyway (it fills with dots + authenticates), so the password CAN be
+/// typed from the client. `Dialog/isSecure` therefore flags a secure-credential prompt (for the client
+/// paste-guard + a "Secure prompt" chip), NOT a view-only restriction.
 ///
 /// **Scope (v1):** system AUTH prompts only — `SecurityAgent` / `coreauthd`. These never overlap with a
 /// streamed app window (different system pid, never a child of an app window) nor with the DIALOG-EXPAND
@@ -53,7 +55,8 @@ public enum SystemDialogDetector {
         public var title: String
         public var width: Int
         public var height: Int
-        /// `true` ⇒ Secure Event Input class (password/auth) — view + click only, keystrokes OS-dropped.
+        /// `true` ⇒ a secure-credential (password/auth) prompt class. NOT a typing restriction — the
+        /// host injects keystrokes into these fields fine (see the type doc); flags it for the client.
         public var isSecure: Bool
         public init(windowID: UInt32, owner: String, title: String, width: Int, height: Int, isSecure: Bool) {
             self.windowID = windowID
@@ -65,8 +68,9 @@ public enum SystemDialogDetector {
         }
     }
 
-    /// Secure auth processes — raise Secure Event Input (view + click, no typing). Matched by bundle id
-    /// OR owner name (the name is the resilient signal across macOS builds; SCWindow gives both).
+    /// Secure auth processes (password/credential prompts; raise Secure Event Input but the host can
+    /// still inject keystrokes). Matched by bundle id OR owner name (the name is the resilient signal
+    /// across macOS builds; SCWindow gives both).
     static let secureBundleIDs: Set<String> = ["com.apple.SecurityAgent", "com.apple.coreauthd"]
     static let secureOwnerNames: Set<String> = ["SecurityAgent", "coreauthd"]
 

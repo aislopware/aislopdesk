@@ -98,9 +98,11 @@ public struct SystemDialogSummary: Equatable, Sendable {
     public var title: String
     public var width: UInt16
     public var height: UInt16
-    /// HW-proven (probe 2026-06-12): a `SecurityAgent`-class dialog raises system Secure Event Input —
-    /// the host can CAPTURE it (pixels stream fine) but synthetic keystrokes are OS-dropped, so the
-    /// password can't be TYPED from the client. The pane shows a "view-only — type on the host" hint.
+    /// `true` ⇒ a `SecurityAgent`/`coreauthd` secure-credential (password/auth) prompt. Drives the
+    /// client paste-guard's "is this a password field?" reasoning + a small "Secure prompt" lock chip.
+    /// NOTE: it does NOT mean keystrokes are blocked — HW-proven (2026-06-15, Tahoe 26.5.1) the host's
+    /// `CGEvent(.cghidEventTap)` injection LANDS in these fields even while `IsSecureEventInputEnabled()`
+    /// is true, so typing the password from the client works (the old "view-only" claim was wrong).
     public var isSecure: Bool
 
     public init(windowID: UInt32, owner: String, title: String, width: UInt16, height: UInt16, isSecure: Bool) {

@@ -8,11 +8,13 @@
 //! enumerates the on-screen windows, runs this classifier, and answers the client's
 //! `listSystemDialogs` poll with the matches; the client auto-spawns an ephemeral pane per dialog.
 //!
-//! **HW-grounded (probe 2026-06-12, Tahoe 26.5.1):** `SCShareableContent` DOES list the
+//! **HW-grounded (probe 2026-06-12 + 2026-06-15, Tahoe 26.5.1):** `SCShareableContent` DOES list the
 //! `SecurityAgent` prompt (own window, layer 1000, onScreen) and it captures with real pixels — it
-//! is NOT capture-blocked. But while it is up `IsSecureEventInputEnabled() == true`, so synthetic
-//! KEYSTROKES are OS-dropped: a secure dialog is **view + click only**, the password must be typed
-//! on the host. That truth is carried per-dialog as [`Dialog::is_secure`] so the client can label it.
+//! is NOT capture-blocked. While it is up `IsSecureEventInputEnabled() == true`, BUT — corrected
+//! 2026-06-15 — that does NOT block injection: the host's `CGEvent(.cghidEventTap)` keystrokes LAND in
+//! the field anyway (it fills with dots + authenticates), so the password CAN be typed from the
+//! client. [`Dialog::is_secure`] flags a secure-credential prompt (client paste-guard + a "Secure
+//! prompt" chip), NOT a view-only restriction.
 //!
 //! **Scope (v1):** system AUTH prompts only — `SecurityAgent` / `coreauthd`. The allowlists below
 //! are the single expansion point — adding a new system-prompt source is one entry.
@@ -86,12 +88,14 @@ pub struct Dialog {
     pub width: i64,
     /// The rounded, standardized (non-negative) height in points.
     pub height: i64,
-    /// `true` ⇒ Secure Event Input class (password/auth) — view + click only, keystrokes dropped.
+    /// `true` ⇒ a secure-credential (password/auth) prompt class. NOT a typing restriction — the host
+    /// injects keystrokes into these fields fine (see the module doc); flags it for the client.
     pub is_secure: bool,
 }
 
-/// Secure auth processes — raise Secure Event Input (view + click, no typing). Matched by bundle
-/// id OR owner name. Membership-only; order irrelevant. The Swift shell's `secureBundleIDs` mirrors this.
+/// Secure auth processes (password/credential prompts; raise Secure Event Input but the host can still
+/// inject keystrokes). Matched by bundle id OR owner name. Membership-only; order irrelevant. The Swift
+/// shell's `secureBundleIDs` mirrors this.
 const SECURE_BUNDLE_IDS: &[&str] = &["com.apple.SecurityAgent", "com.apple.coreauthd"];
 /// Secure auth owner names (the name is the resilient signal across macOS builds; `SCWindow` gives
 /// both). The Swift shell's `secureOwnerNames` mirrors this.
