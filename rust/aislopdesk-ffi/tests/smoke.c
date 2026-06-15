@@ -539,6 +539,26 @@ int main(void) {
     CHECK(ip.has_pre_release == 0 && ip.suppress == 0, "null balance default plan");
     CHECK(aisd_input_button_balance_held_mask(NULL) == 0, "null balance empty mask");
 
+    /* 18. recovery_idr_policy opaque handle: grant/suppress verdicts + null guards. */
+    AisdRecoveryIdrPolicy *rip = aisd_recovery_idr_policy_new(0.75, 0.040, 0.250, 2.0, 2.0, 1.5, 4);
+    CHECK(rip != NULL, "recovery idr policy new");
+    CHECK(aisd_recovery_idr_policy_available_tokens(rip) == 2.0, "starts full");
+    CHECK(aisd_recovery_idr_policy_decide(rip, 10.0, 0, 0, 0.05) == AISD_RECOVERY_IDR_GRANT,
+          "first request grants");
+    CHECK(aisd_recovery_idr_policy_available_tokens(rip) == 1.0, "grant spends a token");
+    aisd_recovery_idr_policy_note_keyframe_sent(rip, 100, 5.0);
+    CHECK(aisd_recovery_idr_policy_decide(rip, 5.02, 99, 1, 0.05) ==
+              AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT,
+          "behind client suppressed in-flight");
+    aisd_recovery_idr_policy_note_keyframe_delivered(rip, 100);
+    CHECK(aisd_recovery_idr_policy_decide(rip, 9.0, 99, 1, 0.05) == AISD_RECOVERY_IDR_SUPPRESS_STALE,
+          "request older than acked keyframe is stale");
+    aisd_recovery_idr_policy_free(rip);
+    aisd_recovery_idr_policy_free(NULL); /* no-op */
+    CHECK(aisd_recovery_idr_policy_decide(NULL, 0.0, 0, 0, 0.0) == AISD_RECOVERY_IDR_GRANT,
+          "null policy grants");
+    CHECK(aisd_recovery_idr_policy_available_tokens(NULL) == 0.0, "null policy zero tokens");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

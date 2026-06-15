@@ -311,6 +311,67 @@ public enum RustVideoHostFFI {
         aisd_input_button_balance_held_mask(handle)
     }
 
+    // MARK: - recovery_idr_policy (opaque handle; host delivery-keyed recovery-IDR admission)
+
+    /// Creates a recovery-IDR policy owned by the Rust core from the resolved config scalars (env
+    /// is resolved Swift-side). Release with `recoveryIdrPolicyFree`. Wraps
+    /// `aisd_recovery_idr_policy_new` (never returns null).
+    static func recoveryIdrPolicyNew(
+        graceFraction: Double,
+        graceFloorSeconds: Double,
+        graceCeilSeconds: Double,
+        bucketCapacity: Double,
+        refillTokensPerSecond: Double,
+        grantPendingTimeout: Double,
+        keyframeRingCapacity: Int,
+    ) -> OpaquePointer {
+        aisd_recovery_idr_policy_new(
+            graceFraction, graceFloorSeconds, graceCeilSeconds, bucketCapacity,
+            refillTokensPerSecond, grantPendingTimeout, keyframeRingCapacity,
+        )
+    }
+
+    /// Destroys a policy handle. Wraps `aisd_recovery_idr_policy_free`.
+    static func recoveryIdrPolicyFree(_ handle: OpaquePointer) {
+        aisd_recovery_idr_policy_free(handle)
+    }
+
+    /// Token-bucket level. Wraps `aisd_recovery_idr_policy_available_tokens`.
+    static func recoveryIdrPolicyAvailableTokens(_ handle: OpaquePointer) -> Double {
+        aisd_recovery_idr_policy_available_tokens(handle)
+    }
+
+    /// Records a keyframe handed to the wire at `now`. Wraps
+    /// `aisd_recovery_idr_policy_note_keyframe_sent`.
+    static func recoveryIdrPolicyNoteKeyframeSent(_ handle: OpaquePointer, frameID: UInt32, now: Double) {
+        aisd_recovery_idr_policy_note_keyframe_sent(handle, frameID, now)
+    }
+
+    /// Records the client decode-ACKed a keyframe. Wraps
+    /// `aisd_recovery_idr_policy_note_keyframe_delivered`.
+    static func recoveryIdrPolicyNoteKeyframeDelivered(_ handle: OpaquePointer, frameID: UInt32) {
+        aisd_recovery_idr_policy_note_keyframe_delivered(handle, frameID)
+    }
+
+    /// The admission verdict as the raw `AISD_RECOVERY_IDR_*` discriminant. `clientLastDecoded ==
+    /// nil` is the wire sentinel "nothing decoded yet". Wraps `aisd_recovery_idr_policy_decide`.
+    static func recoveryIdrPolicyDecide(
+        _ handle: OpaquePointer,
+        now: Double,
+        clientLastDecoded: UInt32?,
+        smoothedRTTSeconds: Double,
+    ) -> UInt8 {
+        aisd_recovery_idr_policy_decide(
+            handle, now, clientLastDecoded ?? 0, clientLastDecoded != nil ? 1 : 0, smoothedRTTSeconds,
+        )
+    }
+
+    /// In-flight grace window (seconds) for the given smoothed RTT. Wraps
+    /// `aisd_recovery_idr_policy_grace`.
+    static func recoveryIdrPolicyGrace(_ handle: OpaquePointer, rtt: Double) -> Double {
+        aisd_recovery_idr_policy_grace(handle, rtt)
+    }
+
     /// Flattens a `CGRect` into the C-ABI `AisdRect` (x, y, width, height — all `Double`).
     private static func aisdRect(_ r: CGRect) -> AisdRect {
         AisdRect(

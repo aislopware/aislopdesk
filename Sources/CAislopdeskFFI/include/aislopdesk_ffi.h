@@ -758,6 +758,45 @@ AisdInputPlan aisd_input_button_balance_plan(AisdInputButtonBalance *balance, ui
 /* Held buttons as a bitmask: bit0=left, bit1=right, bit2=other. 0 for empty / NULL handle. */
 uint8_t aisd_input_button_balance_held_mask(const AisdInputButtonBalance *balance);
 
+/* ---- recovery_idr_policy (opaque handle; host delivery-keyed recovery-IDR admission) ---- */
+
+/* Verdict discriminants (aisd_recovery_idr_policy_decide). */
+#define AISD_RECOVERY_IDR_GRANT 0u
+#define AISD_RECOVERY_IDR_SUPPRESS_GRANT_PENDING 1u
+#define AISD_RECOVERY_IDR_SUPPRESS_STALE 2u
+#define AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT 3u
+#define AISD_RECOVERY_IDR_SUPPRESS_RATE_LIMITED 4u
+
+typedef struct AisdRecoveryIdrPolicy AisdRecoveryIdrPolicy;
+
+/* Creates a policy from the resolved Config scalars (env is resolved caller-side; the core is
+ * env-free). Destroy with aisd_recovery_idr_policy_free. */
+AisdRecoveryIdrPolicy *aisd_recovery_idr_policy_new(double grace_fraction,
+                                                    double grace_floor_seconds,
+                                                    double grace_ceil_seconds,
+                                                    double bucket_capacity,
+                                                    double refill_tokens_per_second,
+                                                    double grant_pending_timeout,
+                                                    size_t keyframe_ring_capacity);
+/* Destroys a policy from aisd_recovery_idr_policy_new. No-op on NULL. */
+void aisd_recovery_idr_policy_free(AisdRecoveryIdrPolicy *policy);
+
+/* Token-bucket level (0.0 for a NULL handle). */
+double aisd_recovery_idr_policy_available_tokens(const AisdRecoveryIdrPolicy *policy);
+/* State folds (no-op on NULL). */
+void aisd_recovery_idr_policy_note_keyframe_sent(AisdRecoveryIdrPolicy *policy, uint32_t frame_id,
+                                                 double now);
+void aisd_recovery_idr_policy_note_keyframe_delivered(AisdRecoveryIdrPolicy *policy,
+                                                      uint32_t frame_id);
+/* Admission decision as an AISD_RECOVERY_IDR_* value. has_client_last_decoded==0 => sentinel
+ * "nothing decoded yet". Grant for a NULL handle. */
+uint8_t aisd_recovery_idr_policy_decide(AisdRecoveryIdrPolicy *policy, double now,
+                                        uint32_t client_last_decoded,
+                                        uint8_t has_client_last_decoded,
+                                        double smoothed_rtt_seconds);
+/* In-flight grace window (seconds) for the given smoothed RTT (0.0 for a NULL handle). */
+double aisd_recovery_idr_policy_grace(const AisdRecoveryIdrPolicy *policy, double rtt);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

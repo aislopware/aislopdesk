@@ -16,17 +16,22 @@ use aislopdesk_ffi::video::{
     aisd_decode_gate_verdict, aisd_input_button_balance_free, aisd_input_button_balance_held_mask,
     aisd_input_button_balance_new, aisd_input_button_balance_plan, aisd_owd_late_detector_free,
     aisd_owd_late_detector_new, aisd_owd_late_detector_note, aisd_recovery_deduper_admit,
-    aisd_recovery_deduper_free, aisd_recovery_deduper_new, aisd_recovery_message_decode,
-    aisd_recovery_message_encode, aisd_static_idr_decider_free, aisd_static_idr_decider_heartbeat,
-    aisd_static_idr_decider_last_complete_encode, aisd_static_idr_decider_new,
-    aisd_static_idr_decider_on_complete_frame, aisd_static_idr_decider_quiet_window,
-    aisd_static_idr_decider_record_synthetic, aisd_static_idr_decider_should_reencode,
-    aisd_system_dialog_classify, aisd_system_dialog_free, aisd_system_dialog_min_size,
-    aisd_video_control_decode, aisd_video_control_encode, aisd_video_control_free,
-    aisd_ycbcr_coefficients, AisdNetworkStats, AisdRecoveryMessage, AisdRect, AisdSystemDialog,
-    AisdVideoControl, AisdVideoSummary, AISD_DECODE_GATE_MODE_BROKEN_CHAIN,
-    AISD_DECODE_GATE_MODE_NEED_KEYFRAME, AISD_DECODE_GATE_MODE_OPEN, AISD_DECODE_GATE_VERDICT_DROP,
-    AISD_DECODE_GATE_VERDICT_SUBMIT, AISD_RECOVERY_NETWORK_STATS,
+    aisd_recovery_deduper_free, aisd_recovery_deduper_new,
+    aisd_recovery_idr_policy_available_tokens, aisd_recovery_idr_policy_decide,
+    aisd_recovery_idr_policy_free, aisd_recovery_idr_policy_grace, aisd_recovery_idr_policy_new,
+    aisd_recovery_idr_policy_note_keyframe_delivered, aisd_recovery_idr_policy_note_keyframe_sent,
+    aisd_recovery_message_decode, aisd_recovery_message_encode, aisd_static_idr_decider_free,
+    aisd_static_idr_decider_heartbeat, aisd_static_idr_decider_last_complete_encode,
+    aisd_static_idr_decider_new, aisd_static_idr_decider_on_complete_frame,
+    aisd_static_idr_decider_quiet_window, aisd_static_idr_decider_record_synthetic,
+    aisd_static_idr_decider_should_reencode, aisd_system_dialog_classify, aisd_system_dialog_free,
+    aisd_system_dialog_min_size, aisd_video_control_decode, aisd_video_control_encode,
+    aisd_video_control_free, aisd_ycbcr_coefficients, AisdNetworkStats, AisdRecoveryMessage,
+    AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
+    AISD_DECODE_GATE_MODE_BROKEN_CHAIN, AISD_DECODE_GATE_MODE_NEED_KEYFRAME,
+    AISD_DECODE_GATE_MODE_OPEN, AISD_DECODE_GATE_VERDICT_DROP, AISD_DECODE_GATE_VERDICT_SUBMIT,
+    AISD_RECOVERY_IDR_GRANT, AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT,
+    AISD_RECOVERY_IDR_SUPPRESS_STALE, AISD_RECOVERY_NETWORK_STATS,
     AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
 };
 use aislopdesk_ffi::{
@@ -1175,5 +1180,44 @@ fn input_button_balance_opaque_handle_balances_and_frees() {
         assert_eq!(p.has_pre_release, 0);
         assert_eq!(p.suppress, 0);
         assert_eq!(aisd_input_button_balance_held_mask(core::ptr::null()), 0);
+    }
+}
+
+#[test]
+fn recovery_idr_policy_opaque_handle_gates_grants_and_frees() {
+    unsafe {
+        let p = aisd_recovery_idr_policy_new(0.75, 0.040, 0.250, 2.0, 2.0, 1.5, 4);
+        assert!(!p.is_null());
+        assert_eq!(aisd_recovery_idr_policy_available_tokens(p), 2.0);
+        // First request (sentinel "nothing decoded") grants and spends a token.
+        assert_eq!(
+            aisd_recovery_idr_policy_decide(p, 10.0, 0, 0, 0.05),
+            AISD_RECOVERY_IDR_GRANT
+        );
+        assert_eq!(aisd_recovery_idr_policy_available_tokens(p), 1.0);
+        // A fresh keyframe in flight ⇒ a behind client is suppressed within the grace window.
+        aisd_recovery_idr_policy_note_keyframe_sent(p, 100, 5.0);
+        assert_eq!(
+            aisd_recovery_idr_policy_decide(p, 5.02, 99, 1, 0.05),
+            AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT
+        );
+        assert!((aisd_recovery_idr_policy_grace(p, 0.0) - 0.040).abs() < 1e-9);
+        // A request older than an acked keyframe is stale.
+        aisd_recovery_idr_policy_note_keyframe_delivered(p, 100);
+        assert_eq!(
+            aisd_recovery_idr_policy_decide(p, 9.0, 99, 1, 0.05),
+            AISD_RECOVERY_IDR_SUPPRESS_STALE
+        );
+        aisd_recovery_idr_policy_free(p);
+        aisd_recovery_idr_policy_free(core::ptr::null_mut()); // no-op
+                                                              // A null handle grants and reports zero tokens.
+        assert_eq!(
+            aisd_recovery_idr_policy_decide(core::ptr::null_mut(), 0.0, 0, 0, 0.0),
+            AISD_RECOVERY_IDR_GRANT
+        );
+        assert_eq!(
+            aisd_recovery_idr_policy_available_tokens(core::ptr::null()),
+            0.0
+        );
     }
 }
