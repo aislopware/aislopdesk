@@ -10,8 +10,8 @@ members = ["aislopdesk-core", "aislopdesk-ffi"]
 # tracks it (proven byte/behaviour-identical by the golden-vector parity tests). A
 # future Android client links this crate over a C ABI / JNI.
 [workspace.package]
-edition = "2021"
-rust-version = "1.85"
+edition = "2024"
+rust-version = "1.96"
 license = "UNLICENSED"
 publish = false
 

@@ -17,7 +17,7 @@
 //! core uses the compile-time defaults below (identical to the shell's values when no env override is set).
 
 use crate::live_congestion_controller::{
-    effective_slack_millis, LOSS_THRESHOLD, RTT_INFLATE_FACTOR,
+    LOSS_THRESHOLD, RTT_INFLATE_FACTOR, effective_slack_millis,
 };
 use std::collections::BTreeSet;
 
@@ -141,12 +141,13 @@ impl FpsGovernor {
         if over_budget && congested {
             self.clean_run = 0;
             self.over_budget_run += 1;
-            if self.over_budget_run >= STEP_DOWN_TICKS && self.ticks >= self.down_hold_until_tick {
-                if let Some(next) = self.ladder.iter().copied().find(|&x| x < self.current_fps) {
-                    self.current_fps = next; // ONE rung down
-                    self.over_budget_run = 0;
-                    self.down_hold_until_tick = self.ticks + STEP_DOWN_HOLD_TICKS;
-                }
+            if self.over_budget_run >= STEP_DOWN_TICKS
+                && self.ticks >= self.down_hold_until_tick
+                && let Some(next) = self.ladder.iter().copied().find(|&x| x < self.current_fps)
+            {
+                self.current_fps = next; // ONE rung down
+                self.over_budget_run = 0;
+                self.down_hold_until_tick = self.ticks + STEP_DOWN_HOLD_TICKS;
             }
         } else if over_budget {
             // Content-heavy but the link is holding: never step down on content alone.
@@ -155,19 +156,18 @@ impl FpsGovernor {
         } else {
             self.over_budget_run = 0;
             self.clean_run += 1;
-            if self.current_fps < self.base_fps && self.clean_run >= STEP_UP_TICKS {
-                if let Some(next) = self
+            if self.current_fps < self.base_fps
+                && self.clean_run >= STEP_UP_TICKS
+                && let Some(next) = self
                     .ladder
                     .iter()
                     .rev()
                     .copied()
                     .find(|&x| x > self.current_fps)
-                {
-                    if self.bytes_per_frame_ewma * 8.0 * f64::from(next) <= target_bps as f64 {
-                        self.current_fps = next; // one rung UP, strict fit, NO headroom
-                        self.clean_run = 0;
-                    }
-                }
+                && self.bytes_per_frame_ewma * 8.0 * f64::from(next) <= target_bps as f64
+            {
+                self.current_fps = next; // one rung UP, strict fit, NO headroom
+                self.clean_run = 0;
             }
         }
         self.current_fps
@@ -184,10 +184,10 @@ impl FpsGovernor {
         abr_current: Option<i64>,
         abr_ceiling: Option<i64>,
     ) -> bool {
-        if let (Some(cur), Some(ceil)) = (abr_current, abr_ceiling) {
-            if cur < ceil {
-                return true;
-            }
+        if let (Some(cur), Some(ceil)) = (abr_current, abr_ceiling)
+            && cur < ceil
+        {
+            return true;
         }
         if last_loss_sample > LOSS_THRESHOLD {
             return true;

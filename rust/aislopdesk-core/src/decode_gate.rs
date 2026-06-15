@@ -124,10 +124,10 @@ impl DecodeGate {
                     return Verdict::Submit;
                 }
                 // Pre-break delta still in flight: references predate the OLDEST loss.
-                if let Some(mn) = self.min_lost_frame_id {
-                    if distance_wrapped(frame_id, mn) < 0 {
-                        return Verdict::Submit;
-                    }
+                if let Some(mn) = self.min_lost_frame_id
+                    && distance_wrapped(frame_id, mn) < 0
+                {
+                    return Verdict::Submit;
                 }
                 Verdict::Drop
             }
@@ -138,28 +138,27 @@ impl DecodeGate {
     /// already on record. A non-keyframe success newer than every loss is the healed LTR anchor.
     pub fn note_decode_succeeded(&mut self, frame_id: u32, keyframe: bool) {
         if keyframe {
-            if let Some(mx) = self.max_lost_frame_id {
-                if distance_wrapped(frame_id, mx) <= 0 {
-                    // The keyframe predates the newest loss: it re-anchored up to itself, but losses
-                    // past it remain. Downgrade to BrokenChain (which then admits an acked-LTR
-                    // refresh) ONLY if the session was still ALIVE. If it had been torn down
-                    // (NeedKeyframe wiped the DPB), a stale keyframe rebuilds it empty — no
-                    // pre-teardown acked LTR survives, so stay NeedKeyframe.
-                    if self.mode != Mode::NeedKeyframe {
-                        self.mode = Mode::BrokenChain;
-                    }
-                    return;
+            if let Some(mx) = self.max_lost_frame_id
+                && distance_wrapped(frame_id, mx) <= 0
+            {
+                // The keyframe predates the newest loss: it re-anchored up to itself, but losses
+                // past it remain. Downgrade to BrokenChain (which then admits an acked-LTR
+                // refresh) ONLY if the session was still ALIVE. If it had been torn down
+                // (NeedKeyframe wiped the DPB), a stale keyframe rebuilds it empty — no
+                // pre-teardown acked LTR survives, so stay NeedKeyframe.
+                if self.mode != Mode::NeedKeyframe {
+                    self.mode = Mode::BrokenChain;
                 }
+                return;
             }
             self.reset();
             return;
         }
-        if self.mode == Mode::BrokenChain {
-            if let Some(mx) = self.max_lost_frame_id {
-                if distance_wrapped(frame_id, mx) > 0 {
-                    self.reset();
-                }
-            }
+        if self.mode == Mode::BrokenChain
+            && let Some(mx) = self.max_lost_frame_id
+            && distance_wrapped(frame_id, mx) > 0
+        {
+            self.reset();
         }
     }
 

@@ -125,7 +125,7 @@ impl TerminalModeTracker {
     const QUESTION: u8 = 0x3F; // '?'
     const SET_FINAL: u8 = 0x68; // 'h'
     const RESET_FINAL: u8 = 0x6C; // 'l'
-                                  // String-sequence introducers: DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`.
+    // String-sequence introducers: DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`.
     const DCS: u8 = 0x50; // 'P'
     const SOS: u8 = 0x58; // 'X'
     const PM: u8 = 0x5E; // '^'

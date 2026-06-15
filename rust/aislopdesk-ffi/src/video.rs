@@ -7,8 +7,8 @@
 //! take no pointers and cannot fail.
 
 use crate::{
-    bytes_from_vec, copy_in, drop_bytes, AisdBytes, AisdStatus, AISD_EMPTY,
-    AISD_ERR_INVALID_ARGUMENT, AISD_ERR_MALFORMED, AISD_ERR_NULL, AISD_ERR_TRUNCATED, AISD_OK,
+    AISD_EMPTY, AISD_ERR_INVALID_ARGUMENT, AISD_ERR_MALFORMED, AISD_ERR_NULL, AISD_ERR_TRUNCATED,
+    AISD_OK, AisdBytes, AisdStatus, bytes_from_vec, copy_in, drop_bytes,
 };
 use aislopdesk_core::adaptive_fec;
 use aislopdesk_core::adaptive_playout;
@@ -58,10 +58,12 @@ pub(crate) const fn status_for_video_error(error: &VideoProtocolError) -> AisdSt
 /// # Safety
 /// If `len != 0`, `data` must point to at least `len` readable bytes.
 pub(crate) const unsafe fn slice_in<'a>(data: *const u8, len: usize) -> &'a [u8] {
-    if len == 0 {
-        &[]
-    } else {
-        core::slice::from_raw_parts(data, len)
+    unsafe {
+        if len == 0 {
+            &[]
+        } else {
+            core::slice::from_raw_parts(data, len)
+        }
     }
 }
 
@@ -76,7 +78,7 @@ pub(crate) const unsafe fn slice_in<'a>(data: *const u8, len: usize) -> &'a [u8]
 /// The caller resolves the `bits_per_pixel` density (e.g. from `AISLOPDESK_BPP`) and passes it
 /// in, so the core stays environment-free and the result is deterministic.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_live_bitrate_target(
     pixel_width: i64,
     pixel_height: i64,
@@ -95,7 +97,7 @@ pub extern "C" fn aisd_live_bitrate_target(
 /// caller holds `prev_playout_ms` between calls and resolves the env knobs, so the core stays
 /// deterministic. Wraps [`adaptive_playout::step_seconds`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_adaptive_playout_step_ms(
     jitter_seconds: f64,
     prev_playout_ms: f64,
@@ -118,7 +120,7 @@ pub extern "C" fn aisd_adaptive_playout_step_ms(
 /// The absolute minimum live bitrate (bits/sec) — a tiny window never starves the encoder.
 /// Wraps [`live_bitrate_policy::MINIMUM_BITRATE`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub const extern "C" fn aisd_live_bitrate_minimum() -> i64 {
     live_bitrate_policy::MINIMUM_BITRATE
 }
@@ -154,7 +156,7 @@ pub struct AisdCursorUpdate {
 /// # Safety
 /// `out` must be a writable [`AisdBytes`] pointer.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_cursor_update_encode(
     shape_id: u16,
     visible: u8,
@@ -164,17 +166,19 @@ pub unsafe extern "C" fn aisd_cursor_update_encode(
     hotspot_y: f64,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    if out.is_null() {
-        return AISD_ERR_NULL;
+    unsafe {
+        if out.is_null() {
+            return AISD_ERR_NULL;
+        }
+        let update = CursorUpdate {
+            position: VideoPoint::new(x, y),
+            shape_id,
+            hotspot: VideoPoint::new(hotspot_x, hotspot_y),
+            visible: visible != 0,
+        };
+        out.write(bytes_from_vec(update.encode()));
+        AISD_OK
     }
-    let update = CursorUpdate {
-        position: VideoPoint::new(x, y),
-        shape_id,
-        hotspot: VideoPoint::new(hotspot_x, hotspot_y),
-        visible: visible != 0,
-    };
-    out.write(bytes_from_vec(update.encode()));
-    AISD_OK
 }
 
 /// Decodes a cursor update into `*out`.
@@ -186,28 +190,30 @@ pub unsafe extern "C" fn aisd_cursor_update_encode(
 /// # Safety
 /// `out` must be writable; if `len != 0`, `data` must point to `len` readable bytes.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_cursor_update_decode(
     data: *const u8,
     len: usize,
     out: *mut AisdCursorUpdate,
 ) -> AisdStatus {
-    if out.is_null() || (data.is_null() && len != 0) {
-        return AISD_ERR_NULL;
-    }
-    match CursorUpdate::decode(slice_in(data, len)) {
-        Ok(c) => {
-            out.write(AisdCursorUpdate {
-                shape_id: c.shape_id,
-                visible: u8::from(c.visible),
-                x: c.position.x,
-                y: c.position.y,
-                hotspot_x: c.hotspot.x,
-                hotspot_y: c.hotspot.y,
-            });
-            AISD_OK
+    unsafe {
+        if out.is_null() || (data.is_null() && len != 0) {
+            return AISD_ERR_NULL;
         }
-        Err(e) => status_for_video_error(&e),
+        match CursorUpdate::decode(slice_in(data, len)) {
+            Ok(c) => {
+                out.write(AisdCursorUpdate {
+                    shape_id: c.shape_id,
+                    visible: u8::from(c.visible),
+                    x: c.position.x,
+                    y: c.position.y,
+                    hotspot_x: c.hotspot.x,
+                    hotspot_y: c.hotspot.y,
+                });
+                AISD_OK
+            }
+            Err(e) => status_for_video_error(&e),
+        }
     }
 }
 
@@ -269,22 +275,24 @@ impl AisdWindowGeometry {
 unsafe fn c_to_window_geometry(
     m: &AisdWindowGeometry,
 ) -> Result<WindowGeometryMessage, AisdStatus> {
-    let message = match m.kind {
-        AISD_WINDOW_GEOMETRY_MOVE => WindowGeometryMessage::Move(VideoPoint::new(m.x, m.y)),
-        AISD_WINDOW_GEOMETRY_RESIZE => {
-            WindowGeometryMessage::Resize(VideoSize::new(m.width, m.height))
-        }
-        AISD_WINDOW_GEOMETRY_BOUNDS => {
-            WindowGeometryMessage::Bounds(VideoRect::xywh(m.x, m.y, m.width, m.height))
-        }
-        AISD_WINDOW_GEOMETRY_TITLE => {
-            let title =
-                String::from_utf8(copy_in(m.title)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
-            WindowGeometryMessage::Title(title)
-        }
-        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
-    };
-    Ok(message)
+    unsafe {
+        let message = match m.kind {
+            AISD_WINDOW_GEOMETRY_MOVE => WindowGeometryMessage::Move(VideoPoint::new(m.x, m.y)),
+            AISD_WINDOW_GEOMETRY_RESIZE => {
+                WindowGeometryMessage::Resize(VideoSize::new(m.width, m.height))
+            }
+            AISD_WINDOW_GEOMETRY_BOUNDS => {
+                WindowGeometryMessage::Bounds(VideoRect::xywh(m.x, m.y, m.width, m.height))
+            }
+            AISD_WINDOW_GEOMETRY_TITLE => {
+                let title =
+                    String::from_utf8(copy_in(m.title)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
+                WindowGeometryMessage::Title(title)
+            }
+            _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+        };
+        Ok(message)
+    }
 }
 
 /// Flattens a core [`WindowGeometryMessage`] into the C struct, allocating an owned buffer for a
@@ -322,20 +330,22 @@ fn window_geometry_to_c(message: &WindowGeometryMessage) -> AisdWindowGeometry {
 /// `msg` and `out` must be valid, writable pointers; a non-empty `title` inside `*msg` must
 /// point to that many readable bytes.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_window_geometry_encode(
     msg: *const AisdWindowGeometry,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    if msg.is_null() || out.is_null() {
-        return AISD_ERR_NULL;
-    }
-    match c_to_window_geometry(&*msg) {
-        Ok(message) => {
-            out.write(bytes_from_vec(message.encode()));
-            AISD_OK
+    unsafe {
+        if msg.is_null() || out.is_null() {
+            return AISD_ERR_NULL;
         }
-        Err(status) => status,
+        match c_to_window_geometry(&*msg) {
+            Ok(message) => {
+                out.write(bytes_from_vec(message.encode()));
+                AISD_OK
+            }
+            Err(status) => status,
+        }
     }
 }
 
@@ -350,21 +360,23 @@ pub unsafe extern "C" fn aisd_window_geometry_encode(
 /// non-[`AISD_OK`] return `*out` is untouched; on [`AISD_OK`] it is overwritten as raw output
 /// WITHOUT freeing prior contents.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_window_geometry_decode(
     data: *const u8,
     len: usize,
     out: *mut AisdWindowGeometry,
 ) -> AisdStatus {
-    if out.is_null() || (data.is_null() && len != 0) {
-        return AISD_ERR_NULL;
-    }
-    match WindowGeometryMessage::decode(slice_in(data, len)) {
-        Ok(message) => {
-            out.write(window_geometry_to_c(&message));
-            AISD_OK
+    unsafe {
+        if out.is_null() || (data.is_null() && len != 0) {
+            return AISD_ERR_NULL;
         }
-        Err(e) => status_for_video_error(&e),
+        match WindowGeometryMessage::decode(slice_in(data, len)) {
+            Ok(message) => {
+                out.write(window_geometry_to_c(&message));
+                AISD_OK
+            }
+            Err(e) => status_for_video_error(&e),
+        }
     }
 }
 
@@ -373,14 +385,16 @@ pub unsafe extern "C" fn aisd_window_geometry_decode(
 ///
 /// # Safety
 /// `msg` must point to a writable [`AisdWindowGeometry`] previously filled by this library.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_window_geometry_free(msg: *mut AisdWindowGeometry) {
-    if msg.is_null() {
-        return;
+    unsafe {
+        if msg.is_null() {
+            return;
+        }
+        let m = &mut *msg;
+        drop_bytes(m.title);
+        m.title = AisdBytes::EMPTY;
     }
-    let m = &mut *msg;
-    drop_bytes(m.title);
-    m.title = AisdBytes::EMPTY;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -473,62 +487,65 @@ impl AisdInputEvent {
 /// # Safety
 /// A non-empty `text` in `m` must point to that many readable bytes.
 unsafe fn c_to_input_event(m: &AisdInputEvent) -> Result<InputEvent, AisdStatus> {
-    let normalized = VideoPoint::new(m.x, m.y);
-    let modifiers = InputModifiers(m.modifiers);
-    let event = match m.kind {
-        AISD_INPUT_MOUSE_MOVE => InputEvent::MouseMove {
-            normalized,
-            tag: m.tag,
-        },
-        AISD_INPUT_MOUSE_DOWN | AISD_INPUT_MOUSE_UP | AISD_INPUT_MOUSE_DRAG => {
-            let button = MouseButton::from_u8(m.button).ok_or(AISD_ERR_INVALID_ARGUMENT)?;
-            let click_count = m.click_count;
-            match m.kind {
-                AISD_INPUT_MOUSE_DOWN => InputEvent::MouseDown {
-                    button,
-                    normalized,
-                    click_count,
-                    modifiers,
-                    tag: m.tag,
-                },
-                AISD_INPUT_MOUSE_UP => InputEvent::MouseUp {
-                    button,
-                    normalized,
-                    click_count,
-                    modifiers,
-                    tag: m.tag,
-                },
-                _ => InputEvent::MouseDrag {
-                    button,
-                    normalized,
-                    click_count,
-                    modifiers,
-                    tag: m.tag,
-                },
+    unsafe {
+        let normalized = VideoPoint::new(m.x, m.y);
+        let modifiers = InputModifiers(m.modifiers);
+        let event = match m.kind {
+            AISD_INPUT_MOUSE_MOVE => InputEvent::MouseMove {
+                normalized,
+                tag: m.tag,
+            },
+            AISD_INPUT_MOUSE_DOWN | AISD_INPUT_MOUSE_UP | AISD_INPUT_MOUSE_DRAG => {
+                let button = MouseButton::from_u8(m.button).ok_or(AISD_ERR_INVALID_ARGUMENT)?;
+                let click_count = m.click_count;
+                match m.kind {
+                    AISD_INPUT_MOUSE_DOWN => InputEvent::MouseDown {
+                        button,
+                        normalized,
+                        click_count,
+                        modifiers,
+                        tag: m.tag,
+                    },
+                    AISD_INPUT_MOUSE_UP => InputEvent::MouseUp {
+                        button,
+                        normalized,
+                        click_count,
+                        modifiers,
+                        tag: m.tag,
+                    },
+                    _ => InputEvent::MouseDrag {
+                        button,
+                        normalized,
+                        click_count,
+                        modifiers,
+                        tag: m.tag,
+                    },
+                }
             }
-        }
-        AISD_INPUT_SCROLL => InputEvent::Scroll {
-            dx: m.dx,
-            dy: m.dy,
-            normalized,
-            scroll_phase: m.scroll_phase,
-            momentum_phase: m.momentum_phase,
-            continuous: m.continuous != 0,
-            tag: m.tag,
-        },
-        AISD_INPUT_KEY => InputEvent::Key {
-            key_code: m.key_code,
-            down: m.down != 0,
-            modifiers,
-            tag: m.tag,
-        },
-        AISD_INPUT_TEXT => {
-            let text = String::from_utf8(copy_in(m.text)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
-            InputEvent::Text { text, tag: m.tag }
-        }
-        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
-    };
-    Ok(event)
+            AISD_INPUT_SCROLL => InputEvent::Scroll {
+                dx: m.dx,
+                dy: m.dy,
+                normalized,
+                scroll_phase: m.scroll_phase,
+                momentum_phase: m.momentum_phase,
+                continuous: m.continuous != 0,
+                tag: m.tag,
+            },
+            AISD_INPUT_KEY => InputEvent::Key {
+                key_code: m.key_code,
+                down: m.down != 0,
+                modifiers,
+                tag: m.tag,
+            },
+            AISD_INPUT_TEXT => {
+                let text =
+                    String::from_utf8(copy_in(m.text)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
+                InputEvent::Text { text, tag: m.tag }
+            }
+            _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+        };
+        Ok(event)
+    }
 }
 
 /// Flattens a core [`InputEvent`] into the C struct, allocating an owned buffer for text.
@@ -610,20 +627,22 @@ fn input_event_to_c(e: &InputEvent) -> AisdInputEvent {
 /// `msg` and `out` must be valid, writable pointers; a non-empty `text` inside `*msg` must
 /// point to that many readable bytes.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_input_event_encode(
     msg: *const AisdInputEvent,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    if msg.is_null() || out.is_null() {
-        return AISD_ERR_NULL;
-    }
-    match c_to_input_event(&*msg) {
-        Ok(event) => {
-            out.write(bytes_from_vec(event.encode()));
-            AISD_OK
+    unsafe {
+        if msg.is_null() || out.is_null() {
+            return AISD_ERR_NULL;
         }
-        Err(status) => status,
+        match c_to_input_event(&*msg) {
+            Ok(event) => {
+                out.write(bytes_from_vec(event.encode()));
+                AISD_OK
+            }
+            Err(status) => status,
+        }
     }
 }
 
@@ -639,21 +658,23 @@ pub unsafe extern "C" fn aisd_input_event_encode(
 /// non-[`AISD_OK`] return `*out` is untouched; on [`AISD_OK`] it is overwritten as raw output
 /// WITHOUT freeing prior contents.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_input_event_decode(
     data: *const u8,
     len: usize,
     out: *mut AisdInputEvent,
 ) -> AisdStatus {
-    if out.is_null() || (data.is_null() && len != 0) {
-        return AISD_ERR_NULL;
-    }
-    match InputEvent::decode(slice_in(data, len)) {
-        Ok(event) => {
-            out.write(input_event_to_c(&event));
-            AISD_OK
+    unsafe {
+        if out.is_null() || (data.is_null() && len != 0) {
+            return AISD_ERR_NULL;
         }
-        Err(e) => status_for_video_error(&e),
+        match InputEvent::decode(slice_in(data, len)) {
+            Ok(event) => {
+                out.write(input_event_to_c(&event));
+                AISD_OK
+            }
+            Err(e) => status_for_video_error(&e),
+        }
     }
 }
 
@@ -662,14 +683,16 @@ pub unsafe extern "C" fn aisd_input_event_decode(
 ///
 /// # Safety
 /// `msg` must point to a writable [`AisdInputEvent`] previously filled by this library.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_input_event_free(msg: *mut AisdInputEvent) {
-    if msg.is_null() {
-        return;
+    unsafe {
+        if msg.is_null() {
+            return;
+        }
+        let m = &mut *msg;
+        drop_bytes(m.text);
+        m.text = AisdBytes::EMPTY;
     }
-    let m = &mut *msg;
-    drop_bytes(m.text);
-    m.text = AisdBytes::EMPTY;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -820,10 +843,12 @@ const unsafe fn records_slice<'a>(
     records: *const AisdVideoSummary,
     len: usize,
 ) -> &'a [AisdVideoSummary] {
-    if len == 0 || records.is_null() {
-        &[]
-    } else {
-        core::slice::from_raw_parts(records, len)
+    unsafe {
+        if len == 0 || records.is_null() {
+            &[]
+        } else {
+            core::slice::from_raw_parts(records, len)
+        }
     }
 }
 
@@ -835,18 +860,22 @@ unsafe fn c_to_window_summaries(
     records: *const AisdVideoSummary,
     len: usize,
 ) -> Result<Vec<WindowSummary>, AisdStatus> {
-    let slice = records_slice(records, len);
-    let mut out = Vec::with_capacity(slice.len());
-    for r in slice {
-        out.push(WindowSummary {
-            window_id: r.window_id,
-            app_name: String::from_utf8(copy_in(r.name)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
-            title: String::from_utf8(copy_in(r.title)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
-            width: r.width,
-            height: r.height,
-        });
+    unsafe {
+        let slice = records_slice(records, len);
+        let mut out = Vec::with_capacity(slice.len());
+        for r in slice {
+            out.push(WindowSummary {
+                window_id: r.window_id,
+                app_name: String::from_utf8(copy_in(r.name))
+                    .map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
+                title: String::from_utf8(copy_in(r.title))
+                    .map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
+                width: r.width,
+                height: r.height,
+            });
+        }
+        Ok(out)
     }
-    Ok(out)
 }
 
 /// Rebuilds the core [`SystemDialogSummary`] list from a borrowed C record array, validating UTF-8.
@@ -857,19 +886,22 @@ unsafe fn c_to_dialog_summaries(
     records: *const AisdVideoSummary,
     len: usize,
 ) -> Result<Vec<SystemDialogSummary>, AisdStatus> {
-    let slice = records_slice(records, len);
-    let mut out = Vec::with_capacity(slice.len());
-    for r in slice {
-        out.push(SystemDialogSummary {
-            window_id: r.window_id,
-            owner: String::from_utf8(copy_in(r.name)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
-            title: String::from_utf8(copy_in(r.title)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
-            width: r.width,
-            height: r.height,
-            is_secure: r.is_secure != 0,
-        });
+    unsafe {
+        let slice = records_slice(records, len);
+        let mut out = Vec::with_capacity(slice.len());
+        for r in slice {
+            out.push(SystemDialogSummary {
+                window_id: r.window_id,
+                owner: String::from_utf8(copy_in(r.name)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
+                title: String::from_utf8(copy_in(r.title))
+                    .map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
+                width: r.width,
+                height: r.height,
+                is_secure: r.is_secure != 0,
+            });
+        }
+        Ok(out)
     }
-    Ok(out)
 }
 
 /// Rebuilds a core [`VideoControlMessage`] from the caller's C struct, validating the `kind` and
@@ -879,44 +911,46 @@ unsafe fn c_to_dialog_summaries(
 /// For a list `kind`, a non-empty `records` must point to that many readable
 /// [`AisdVideoSummary`] values, each with valid `name` / `title` buffers.
 unsafe fn c_to_video_control(m: &AisdVideoControl) -> Result<VideoControlMessage, AisdStatus> {
-    let message = match m.kind {
-        AISD_VIDEO_CONTROL_HELLO => VideoControlMessage::Hello {
-            protocol_version: m.protocol_version,
-            requested_window_id: m.requested_window_id,
-            viewport: VideoSize::new(m.viewport_w, m.viewport_h),
-        },
-        AISD_VIDEO_CONTROL_HELLO_ACK => VideoControlMessage::HelloAck {
-            accepted: m.accepted != 0,
-            stream_id: m.stream_id,
-            capture_width: m.capture_width,
-            capture_height: m.capture_height,
-            window_bounds_cg: VideoRect::xywh(m.bounds_x, m.bounds_y, m.bounds_w, m.bounds_h),
-            full_range: m.full_range != 0,
-        },
-        AISD_VIDEO_CONTROL_BYE => VideoControlMessage::Bye,
-        AISD_VIDEO_CONTROL_RESIZE_REQUEST => VideoControlMessage::ResizeRequest {
-            desired: VideoSize::new(m.desired_w, m.desired_h),
-            epoch: m.epoch,
-        },
-        AISD_VIDEO_CONTROL_RESIZE_ACK => VideoControlMessage::ResizeAck {
-            capture_width: m.capture_width,
-            capture_height: m.capture_height,
-            epoch: m.epoch,
-        },
-        AISD_VIDEO_CONTROL_KEEPALIVE => VideoControlMessage::Keepalive,
-        AISD_VIDEO_CONTROL_LIST_WINDOWS => VideoControlMessage::ListWindows,
-        AISD_VIDEO_CONTROL_WINDOW_LIST => {
-            VideoControlMessage::WindowList(c_to_window_summaries(m.records, m.records_len)?)
-        }
-        AISD_VIDEO_CONTROL_FOCUS_WINDOW => VideoControlMessage::FocusWindow,
-        AISD_VIDEO_CONTROL_STREAM_CADENCE => VideoControlMessage::StreamCadence { fps: m.fps },
-        AISD_VIDEO_CONTROL_LIST_SYSTEM_DIALOGS => VideoControlMessage::ListSystemDialogs,
-        AISD_VIDEO_CONTROL_SYSTEM_DIALOG_LIST => {
-            VideoControlMessage::SystemDialogList(c_to_dialog_summaries(m.records, m.records_len)?)
-        }
-        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
-    };
-    Ok(message)
+    unsafe {
+        let message = match m.kind {
+            AISD_VIDEO_CONTROL_HELLO => VideoControlMessage::Hello {
+                protocol_version: m.protocol_version,
+                requested_window_id: m.requested_window_id,
+                viewport: VideoSize::new(m.viewport_w, m.viewport_h),
+            },
+            AISD_VIDEO_CONTROL_HELLO_ACK => VideoControlMessage::HelloAck {
+                accepted: m.accepted != 0,
+                stream_id: m.stream_id,
+                capture_width: m.capture_width,
+                capture_height: m.capture_height,
+                window_bounds_cg: VideoRect::xywh(m.bounds_x, m.bounds_y, m.bounds_w, m.bounds_h),
+                full_range: m.full_range != 0,
+            },
+            AISD_VIDEO_CONTROL_BYE => VideoControlMessage::Bye,
+            AISD_VIDEO_CONTROL_RESIZE_REQUEST => VideoControlMessage::ResizeRequest {
+                desired: VideoSize::new(m.desired_w, m.desired_h),
+                epoch: m.epoch,
+            },
+            AISD_VIDEO_CONTROL_RESIZE_ACK => VideoControlMessage::ResizeAck {
+                capture_width: m.capture_width,
+                capture_height: m.capture_height,
+                epoch: m.epoch,
+            },
+            AISD_VIDEO_CONTROL_KEEPALIVE => VideoControlMessage::Keepalive,
+            AISD_VIDEO_CONTROL_LIST_WINDOWS => VideoControlMessage::ListWindows,
+            AISD_VIDEO_CONTROL_WINDOW_LIST => {
+                VideoControlMessage::WindowList(c_to_window_summaries(m.records, m.records_len)?)
+            }
+            AISD_VIDEO_CONTROL_FOCUS_WINDOW => VideoControlMessage::FocusWindow,
+            AISD_VIDEO_CONTROL_STREAM_CADENCE => VideoControlMessage::StreamCadence { fps: m.fps },
+            AISD_VIDEO_CONTROL_LIST_SYSTEM_DIALOGS => VideoControlMessage::ListSystemDialogs,
+            AISD_VIDEO_CONTROL_SYSTEM_DIALOG_LIST => VideoControlMessage::SystemDialogList(
+                c_to_dialog_summaries(m.records, m.records_len)?,
+            ),
+            _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+        };
+        Ok(message)
+    }
 }
 
 /// Moves a `Vec` of summary records across the boundary as a raw `(ptr, len)` the caller releases
@@ -1045,16 +1079,18 @@ fn video_control_to_c(message: &VideoControlMessage) -> AisdVideoControl {
 /// `ptr` / `len` must be a record array previously produced by [`summaries_into_raw`] and not yet
 /// freed.
 unsafe fn drop_summaries(ptr: *mut AisdVideoSummary, len: usize) {
-    if ptr.is_null() || len == 0 {
-        return;
+    unsafe {
+        if ptr.is_null() || len == 0 {
+            return;
+        }
+        let boxed: Box<[AisdVideoSummary]> =
+            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len));
+        for rec in &boxed {
+            drop_bytes(rec.name);
+            drop_bytes(rec.title);
+        }
+        drop(boxed);
     }
-    let boxed: Box<[AisdVideoSummary]> =
-        Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len));
-    for rec in &boxed {
-        drop_bytes(rec.name);
-        drop_bytes(rec.title);
-    }
-    drop(boxed);
 }
 
 /// Encodes a caller-built [`AisdVideoControl`] into its wire form.
@@ -1067,20 +1103,22 @@ unsafe fn drop_summaries(ptr: *mut AisdVideoSummary, len: usize) {
 /// `msg` and `out` must be valid, writable pointers; for a list `kind`, a non-empty `records`
 /// inside `*msg` must point to that many readable [`AisdVideoSummary`] values.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_control_encode(
     msg: *const AisdVideoControl,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    if msg.is_null() || out.is_null() {
-        return AISD_ERR_NULL;
-    }
-    match c_to_video_control(&*msg) {
-        Ok(message) => {
-            out.write(bytes_from_vec(message.encode()));
-            AISD_OK
+    unsafe {
+        if msg.is_null() || out.is_null() {
+            return AISD_ERR_NULL;
         }
-        Err(status) => status,
+        match c_to_video_control(&*msg) {
+            Ok(message) => {
+                out.write(bytes_from_vec(message.encode()));
+                AISD_OK
+            }
+            Err(status) => status,
+        }
     }
 }
 
@@ -1096,21 +1134,23 @@ pub unsafe extern "C" fn aisd_video_control_encode(
 /// non-[`AISD_OK`] return `*out` is untouched; on [`AISD_OK`] it is overwritten as raw output
 /// WITHOUT freeing prior contents.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_control_decode(
     data: *const u8,
     len: usize,
     out: *mut AisdVideoControl,
 ) -> AisdStatus {
-    if out.is_null() || (data.is_null() && len != 0) {
-        return AISD_ERR_NULL;
-    }
-    match VideoControlMessage::decode(slice_in(data, len)) {
-        Ok(message) => {
-            out.write(video_control_to_c(&message));
-            AISD_OK
+    unsafe {
+        if out.is_null() || (data.is_null() && len != 0) {
+            return AISD_ERR_NULL;
         }
-        Err(e) => status_for_video_error(&e),
+        match VideoControlMessage::decode(slice_in(data, len)) {
+            Ok(message) => {
+                out.write(video_control_to_c(&message));
+                AISD_OK
+            }
+            Err(e) => status_for_video_error(&e),
+        }
     }
 }
 
@@ -1119,15 +1159,17 @@ pub unsafe extern "C" fn aisd_video_control_decode(
 ///
 /// # Safety
 /// `msg` must point to a writable [`AisdVideoControl`] previously filled by this library.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_control_free(msg: *mut AisdVideoControl) {
-    if msg.is_null() {
-        return;
+    unsafe {
+        if msg.is_null() {
+            return;
+        }
+        let m = &mut *msg;
+        drop_summaries(m.records, m.records_len);
+        m.records = core::ptr::null_mut();
+        m.records_len = 0;
     }
-    let m = &mut *msg;
-    drop_summaries(m.records, m.records_len);
-    m.records = core::ptr::null_mut();
-    m.records_len = 0;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1177,21 +1219,23 @@ impl From<AisdTierState> for adaptive_fec::TierState {
 /// # Safety
 /// `out`, if non-null, must be a writable `usize` pointer.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub const unsafe extern "C" fn aisd_adaptive_fec_group_size(
     tier: u8,
     default_group_size: usize,
     out: *mut usize,
 ) -> u8 {
-    match adaptive_fec::group_size(tier, default_group_size) {
-        // Return `1` only when a size was actually written, so the return is a clean
-        // postcondition (`1` ⟺ `*out` holds a valid group size). A null `out` (caller error)
-        // yields `0` like the OFF tier — nothing written, no UB.
-        Some(g) if !out.is_null() => {
-            out.write(g);
-            1
+    unsafe {
+        match adaptive_fec::group_size(tier, default_group_size) {
+            // Return `1` only when a size was actually written, so the return is a clean
+            // postcondition (`1` ⟺ `*out` holds a valid group size). A null `out` (caller error)
+            // yields `0` like the OFF tier — nothing written, no UB.
+            Some(g) if !out.is_null() => {
+                out.write(g);
+                1
+            }
+            _ => 0,
         }
-        _ => 0,
     }
 }
 
@@ -1202,7 +1246,7 @@ pub const unsafe extern "C" fn aisd_adaptive_fec_group_size(
 /// `allow_off` is the OFF-tier escape hatch resolved by the caller from `AISLOPDESK_FEC_ALLOW_OFF`
 /// (read `!= 0`), keeping the core environment-free.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_adaptive_fec_tier(loss: f64, previous_tier: u8, allow_off: u8) -> u8 {
     adaptive_fec::tier(loss, previous_tier, allow_off != 0)
 }
@@ -1216,7 +1260,7 @@ pub extern "C" fn aisd_adaptive_fec_tier(loss: f64, previous_tier: u8, allow_off
 /// `allow_off` / `saw_unrecovered_loss` are bytes read `!= 0`; the caller resolves `allow_off`
 /// from the environment and passes `dwell`, keeping the core environment-free.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_adaptive_fec_next_tier_state(
     loss: f64,
     state: AisdTierState,
@@ -1306,7 +1350,7 @@ impl AisdScreenInfo {
 /// Maps a normalised (0..1) window point to a host-window point in CG top-left space (no Y
 /// flip, no scale). Wraps [`coordinate_mapping::window_point`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_coord_window_point(
     normalized: AisdPoint,
     window_bounds: AisdRect,
@@ -1320,7 +1364,7 @@ pub extern "C" fn aisd_coord_window_point(
 /// Flips a CG-top-left rect into Cocoa bottom-left space given the primary display height.
 /// Wraps [`coordinate_mapping::cg_rect_to_cocoa`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_coord_cg_rect_to_cocoa(cg_rect: AisdRect, primary_height: f64) -> AisdRect {
     AisdRect::from_core(coordinate_mapping::cg_rect_to_cocoa(
         cg_rect.to_core(),
@@ -1340,7 +1384,7 @@ pub extern "C" fn aisd_coord_cg_rect_to_cocoa(cg_rect: AisdRect, primary_height:
 /// `out_scale` must be a writable `f64`; if `screen_count != 0`, `screens` must point to at
 /// least `screen_count` readable [`AisdScreenInfo`] values.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_coord_backing_scale_factor(
     window_bounds_cg: AisdRect,
     screens: *const AisdScreenInfo,
@@ -1348,32 +1392,34 @@ pub unsafe extern "C" fn aisd_coord_backing_scale_factor(
     primary_height: f64,
     out_scale: *mut f64,
 ) -> AisdStatus {
-    if out_scale.is_null() || (screens.is_null() && screen_count != 0) {
-        return AISD_ERR_NULL;
+    unsafe {
+        if out_scale.is_null() || (screens.is_null() && screen_count != 0) {
+            return AISD_ERR_NULL;
+        }
+        let core_screens: Vec<ScreenInfo> = if screen_count == 0 {
+            Vec::new()
+        } else {
+            core::slice::from_raw_parts(screens, screen_count)
+                .iter()
+                .map(|s| s.to_core())
+                .collect()
+        };
+        coordinate_mapping::backing_scale_factor(
+            window_bounds_cg.to_core(),
+            &core_screens,
+            primary_height,
+        )
+        .map_or(AISD_EMPTY, |scale| {
+            out_scale.write(scale);
+            AISD_OK
+        })
     }
-    let core_screens: Vec<ScreenInfo> = if screen_count == 0 {
-        Vec::new()
-    } else {
-        core::slice::from_raw_parts(screens, screen_count)
-            .iter()
-            .map(|s| s.to_core())
-            .collect()
-    };
-    coordinate_mapping::backing_scale_factor(
-        window_bounds_cg.to_core(),
-        &core_screens,
-        primary_height,
-    )
-    .map_or(AISD_EMPTY, |scale| {
-        out_scale.write(scale);
-        AISD_OK
-    })
 }
 
 /// Pixel path: divide by `backing_scale_factor` to get points, then add the window origin.
 /// Wraps [`coordinate_mapping::window_point_from_pixel`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_coord_window_point_from_pixel(
     pixel: AisdPoint,
     window_bounds_cg: AisdRect,
@@ -1403,7 +1449,7 @@ pub extern "C" fn aisd_coord_window_point_from_pixel(
 /// core environment-free. Returns `1` to escalate, `0` otherwise. The four multiples map
 /// field-for-field onto [`RecoveryPolicy`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn aisd_recovery_policy_should_escalate_to_idr(
     idr_rtt_mult: f64,
@@ -1450,7 +1496,7 @@ pub struct AisdPlacement {
 /// Clamp a window of `window_w × window_h` to `display` (shrink-only) and place it at the
 /// display's top-left origin. Wraps [`window_placement::placement`]. Pure; never fails.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_window_placement(
     window_w: f64,
     window_h: f64,
@@ -1469,7 +1515,7 @@ pub extern "C" fn aisd_window_placement(
 /// Whether a window of `size_w × size_h` fits inside `bounds` (½-pt tolerance). Returns `1` if it
 /// fits, `0` otherwise. Wraps [`window_placement::fits`]. Pure; never fails.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_window_fits(size_w: f64, size_h: f64, bounds: AisdRect) -> u8 {
     u8::from(window_placement::fits(
         VideoSize::new(size_w, size_h),
@@ -1515,7 +1561,7 @@ pub struct AisdVDMillimeters {
 /// Builds a (clamped) virtual-display geometry and returns its derived scalar fields. Wraps
 /// [`VirtualDisplayGeometry::new`]. Pure; never fails.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_vd_geometry(
     point_width: i64,
     point_height: i64,
@@ -1541,7 +1587,7 @@ pub extern "C" fn aisd_vd_geometry(
 /// Built with `scale = 1` so the geometry's pixel dimensions equal the inputs verbatim,
 /// preserving the exact `(pixel / ppi) * 25.4` op order for bit parity.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_vd_size_in_millimeters(
     pixel_width: i64,
     pixel_height: i64,
@@ -1564,20 +1610,22 @@ pub extern "C" fn aisd_vd_size_in_millimeters(
 /// If `display_count != 0`, `displays` must point to at least `display_count` readable
 /// [`AisdRect`] values.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_vd_origin_to_right(
     displays: *const AisdRect,
     display_count: usize,
 ) -> AisdPoint {
-    let rects: Vec<VideoRect> = if display_count == 0 || displays.is_null() {
-        Vec::new()
-    } else {
-        core::slice::from_raw_parts(displays, display_count)
-            .iter()
-            .map(|r| r.to_core())
-            .collect()
-    };
-    AisdPoint::from_core(virtual_display_geometry::origin_to_right(&rects))
+    unsafe {
+        let rects: Vec<VideoRect> = if display_count == 0 || displays.is_null() {
+            Vec::new()
+        } else {
+            core::slice::from_raw_parts(displays, display_count)
+                .iter()
+                .map(|r| r.to_core())
+                .collect()
+        };
+        AisdPoint::from_core(virtual_display_geometry::origin_to_right(&rects))
+    }
 }
 
 /// The chip's horizontal pixel ceiling from a CPU brand string (Pro/Max/Ultra → 7680, base
@@ -1586,13 +1634,15 @@ pub unsafe extern "C" fn aisd_vd_origin_to_right(
 /// # Safety
 /// `cpu_brand` must be a valid NUL-terminated C string, or null (treated as the default).
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_vd_chip_pixel_limit(cpu_brand: *const core::ffi::c_char) -> i64 {
-    if cpu_brand.is_null() {
-        return virtual_display_geometry::chip_pixel_limit("");
+    unsafe {
+        if cpu_brand.is_null() {
+            return virtual_display_geometry::chip_pixel_limit("");
+        }
+        let s = core::ffi::CStr::from_ptr(cpu_brand).to_string_lossy();
+        virtual_display_geometry::chip_pixel_limit(&s)
     }
-    let s = core::ffi::CStr::from_ptr(cpu_brand).to_string_lossy();
-    virtual_display_geometry::chip_pixel_limit(&s)
 }
 
 /// Writes the descending refresh-rate modes for a VD driven at `fps` into `rates` and returns
@@ -1604,19 +1654,21 @@ pub unsafe extern "C" fn aisd_vd_chip_pixel_limit(cpu_brand: *const core::ffi::c
 /// # Safety
 /// If non-null, `rates` must point to at least `capacity` writable `f64` values.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_vd_refresh_rates(
     fps: i64,
     rates: *mut f64,
     capacity: usize,
 ) -> usize {
-    let v = virtual_display_geometry::refresh_rates(fps);
-    if !rates.is_null() && capacity >= v.len() {
-        for (i, r) in v.iter().enumerate() {
-            rates.add(i).write(*r);
+    unsafe {
+        let v = virtual_display_geometry::refresh_rates(fps);
+        if !rates.is_null() && capacity >= v.len() {
+            for (i, r) in v.iter().enumerate() {
+                rates.add(i).write(*r);
+            }
         }
+        v.len()
     }
-    v.len()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1659,7 +1711,7 @@ impl AisdCaptureWindowSnapshot {
 /// If `windows_count != 0`, `windows_in_front` must point to at least `windows_count`
 /// readable [`AisdCaptureWindowSnapshot`] values.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_capture_union_region(
     target_frame: AisdRect,
     target_window_id: u32,
@@ -1669,23 +1721,25 @@ pub unsafe extern "C" fn aisd_capture_union_region(
     display_bounds: AisdRect,
     min_overlap_fraction: f64,
 ) -> AisdRect {
-    let core_windows: Vec<capture_region::WindowSnapshot> =
-        if windows_count == 0 || windows_in_front.is_null() {
-            Vec::new()
-        } else {
-            core::slice::from_raw_parts(windows_in_front, windows_count)
-                .iter()
-                .map(|w| w.to_core())
-                .collect()
-        };
-    AisdRect::from_core(capture_region::union_region(
-        target_frame.to_core(),
-        target_window_id,
-        target_pid,
-        &core_windows,
-        display_bounds.to_core(),
-        min_overlap_fraction,
-    ))
+    unsafe {
+        let core_windows: Vec<capture_region::WindowSnapshot> =
+            if windows_count == 0 || windows_in_front.is_null() {
+                Vec::new()
+            } else {
+                core::slice::from_raw_parts(windows_in_front, windows_count)
+                    .iter()
+                    .map(|w| w.to_core())
+                    .collect()
+            };
+        AisdRect::from_core(capture_region::union_region(
+            target_frame.to_core(),
+            target_window_id,
+            target_pid,
+            &core_windows,
+            display_bounds.to_core(),
+            min_overlap_fraction,
+        ))
+    }
 }
 
 /// Hysteresis gate for capture retargeting.
@@ -1694,7 +1748,7 @@ pub unsafe extern "C" fn aisd_capture_union_region(
 /// `0`. Wraps [`capture_region::should_retarget`]. Pass [`capture_region::DEFAULT_MIN_DELTA`]
 /// (`8.0`) for `min_delta`. Pure; never fails.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_capture_should_retarget(
     current: AisdRect,
     desired: AisdRect,
@@ -1712,7 +1766,7 @@ pub extern "C" fn aisd_capture_should_retarget(
 /// Returns `1` when no union region is active (`active_region_is_null != 0`), else `0`. Wraps
 /// [`capture_region::should_reorigin_to_window_on_geometry`]. Pure; never fails.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_capture_reorigin_on_geometry(active_region_is_null: u8) -> u8 {
     let active = if active_region_is_null != 0 {
         None
@@ -1762,13 +1816,13 @@ pub struct AisdSystemDialog {
 /// # Safety
 /// If `len != 0`, `ptr` must point to at least `len` readable bytes.
 unsafe fn string_in(ptr: *const u8, len: usize) -> String {
-    String::from_utf8_lossy(slice_in(ptr, len)).into_owned()
+    unsafe { String::from_utf8_lossy(slice_in(ptr, len)).into_owned() }
 }
 
 /// The minimum on-screen width/height (points) for a window to be a surfaced system dialog. Wraps
 /// [`system_dialog_detector::MIN_SIZE`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub const extern "C" fn aisd_system_dialog_min_size() -> i64 {
     system_dialog_detector::MIN_SIZE
 }
@@ -1786,7 +1840,7 @@ pub const extern "C" fn aisd_system_dialog_min_size() -> i64 {
 /// readable bytes. On a non-[`AISD_OK`] return `*out` is untouched; on [`AISD_OK`] it is
 /// overwritten as raw output WITHOUT freeing prior contents.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn aisd_system_dialog_classify(
     window_id: u32,
@@ -1801,34 +1855,36 @@ pub unsafe extern "C" fn aisd_system_dialog_classify(
     min_size: i64,
     out: *mut AisdSystemDialog,
 ) -> AisdStatus {
-    if out.is_null()
-        || (owner_name.is_null() && owner_name_len != 0)
-        || (bundle_id.is_null() && bundle_id_len != 0)
-        || (title.is_null() && title_len != 0)
-    {
-        return AISD_ERR_NULL;
-    }
-    let snapshot = system_dialog_detector::WindowSnapshot::new(
-        window_id,
-        string_in(owner_name, owner_name_len),
-        string_in(bundle_id, bundle_id_len),
-        is_on_screen != 0,
-        string_in(title, title_len),
-        frame.to_core(),
-    );
-    match system_dialog_detector::classify(&snapshot, min_size) {
-        Some(d) => {
-            out.write(AisdSystemDialog {
-                window_id: d.window_id,
-                width: d.width,
-                height: d.height,
-                is_secure: u8::from(d.is_secure),
-                owner: bytes_from_vec(d.owner.into_bytes()),
-                title: bytes_from_vec(d.title.into_bytes()),
-            });
-            AISD_OK
+    unsafe {
+        if out.is_null()
+            || (owner_name.is_null() && owner_name_len != 0)
+            || (bundle_id.is_null() && bundle_id_len != 0)
+            || (title.is_null() && title_len != 0)
+        {
+            return AISD_ERR_NULL;
         }
-        None => AISD_EMPTY,
+        let snapshot = system_dialog_detector::WindowSnapshot::new(
+            window_id,
+            string_in(owner_name, owner_name_len),
+            string_in(bundle_id, bundle_id_len),
+            is_on_screen != 0,
+            string_in(title, title_len),
+            frame.to_core(),
+        );
+        match system_dialog_detector::classify(&snapshot, min_size) {
+            Some(d) => {
+                out.write(AisdSystemDialog {
+                    window_id: d.window_id,
+                    width: d.width,
+                    height: d.height,
+                    is_secure: u8::from(d.is_secure),
+                    owner: bytes_from_vec(d.owner.into_bytes()),
+                    title: bytes_from_vec(d.title.into_bytes()),
+                });
+                AISD_OK
+            }
+            None => AISD_EMPTY,
+        }
     }
 }
 
@@ -1837,16 +1893,18 @@ pub unsafe extern "C" fn aisd_system_dialog_classify(
 ///
 /// # Safety
 /// `msg` must point to a writable [`AisdSystemDialog`] previously filled by this library.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_system_dialog_free(msg: *mut AisdSystemDialog) {
-    if msg.is_null() {
-        return;
+    unsafe {
+        if msg.is_null() {
+            return;
+        }
+        let m = &mut *msg;
+        drop_bytes(m.owner);
+        drop_bytes(m.title);
+        m.owner = AisdBytes::EMPTY;
+        m.title = AisdBytes::EMPTY;
     }
-    let m = &mut *msg;
-    drop_bytes(m.owner);
-    drop_bytes(m.title);
-    m.owner = AisdBytes::EMPTY;
-    m.title = AisdBytes::EMPTY;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1869,7 +1927,7 @@ pub struct AisdRecoveryDeduper {
 /// `window_seconds` drops duplicates for that long after the first sighting (`0` ⇒ always admit);
 /// `capacity` is the ring size (floored to 1). Wraps [`RecoveryRequestDeduper::new`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_recovery_deduper_new(
     window_seconds: f64,
     capacity: usize,
@@ -1883,10 +1941,12 @@ pub extern "C" fn aisd_recovery_deduper_new(
 ///
 /// # Safety
 /// `deduper` must be a pointer from [`aisd_recovery_deduper_new`] that has not been freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_deduper_free(deduper: *mut AisdRecoveryDeduper) {
-    if !deduper.is_null() {
-        drop(Box::from_raw(deduper));
+    unsafe {
+        if !deduper.is_null() {
+            drop(Box::from_raw(deduper));
+        }
     }
 }
 
@@ -1904,17 +1964,19 @@ pub unsafe extern "C" fn aisd_recovery_deduper_free(deduper: *mut AisdRecoveryDe
 /// `deduper` must be a live handle; if `len != 0`, `datagram` must point to at least `len`
 /// readable bytes.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_deduper_admit(
     deduper: *mut AisdRecoveryDeduper,
     datagram: *const u8,
     len: usize,
     now: f64,
 ) -> u8 {
-    if deduper.is_null() || (datagram.is_null() && len != 0) {
-        return 1; // fail-open: process rather than drop a real request on a caller error.
+    unsafe {
+        if deduper.is_null() || (datagram.is_null() && len != 0) {
+            return 1; // fail-open: process rather than drop a real request on a caller error.
+        }
+        u8::from((*deduper).inner.admit(slice_in(datagram, len), now))
     }
-    u8::from((*deduper).inner.admit(slice_in(datagram, len), now))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1951,7 +2013,7 @@ pub struct AisdYCbCrCoefficients {
 /// `full_range != 0` ⇒ full swing (luma scale `1.0`, bias `0`), else studio/video swing (the
 /// current shader literals, byte-for-byte). Wraps [`ycbcr::coefficients`]. Pure; never fails.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_ycbcr_coefficients(full_range: u8) -> AisdYCbCrCoefficients {
     let c = ycbcr::coefficients(ycbcr::ColorRange::from_full_range(full_range != 0));
     AisdYCbCrCoefficients {
@@ -2129,20 +2191,22 @@ fn recovery_message_to_c(message: &RecoveryMessage) -> AisdRecoveryMessage {
 /// # Safety
 /// `msg` and `out` must be valid, writable pointers.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_message_encode(
     msg: *const AisdRecoveryMessage,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    if msg.is_null() || out.is_null() {
-        return AISD_ERR_NULL;
-    }
-    match c_to_recovery_message(&*msg) {
-        Ok(message) => {
-            out.write(bytes_from_vec(message.encode()));
-            AISD_OK
+    unsafe {
+        if msg.is_null() || out.is_null() {
+            return AISD_ERR_NULL;
         }
-        Err(status) => status,
+        match c_to_recovery_message(&*msg) {
+            Ok(message) => {
+                out.write(bytes_from_vec(message.encode()));
+                AISD_OK
+            }
+            Err(status) => status,
+        }
     }
 }
 
@@ -2155,21 +2219,23 @@ pub unsafe extern "C" fn aisd_recovery_message_encode(
 /// # Safety
 /// `out` must be writable; if `len != 0`, `data` must point to `len` readable bytes.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_message_decode(
     data: *const u8,
     len: usize,
     out: *mut AisdRecoveryMessage,
 ) -> AisdStatus {
-    if out.is_null() || (data.is_null() && len != 0) {
-        return AISD_ERR_NULL;
-    }
-    match RecoveryMessage::decode(slice_in(data, len)) {
-        Ok(message) => {
-            out.write(recovery_message_to_c(&message));
-            AISD_OK
+    unsafe {
+        if out.is_null() || (data.is_null() && len != 0) {
+            return AISD_ERR_NULL;
         }
-        Err(e) => status_for_video_error(&e),
+        match RecoveryMessage::decode(slice_in(data, len)) {
+            Ok(message) => {
+                out.write(recovery_message_to_c(&message));
+                AISD_OK
+            }
+            Err(e) => status_for_video_error(&e),
+        }
     }
 }
 
@@ -2195,7 +2261,7 @@ pub struct AisdStaticIdrDecider {
 /// `quiet_window`; otherwise the core default (one cadence = `heartbeat`) is used. Wraps
 /// [`StaticIDRDecider::new`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_static_idr_decider_new(
     heartbeat: f64,
     quiet_window: f64,
@@ -2215,10 +2281,12 @@ pub extern "C" fn aisd_static_idr_decider_new(
 ///
 /// # Safety
 /// `decider` must be a pointer from [`aisd_static_idr_decider_new`] that has not been freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_static_idr_decider_free(decider: *mut AisdStaticIdrDecider) {
-    if !decider.is_null() {
-        drop(Box::from_raw(decider));
+    unsafe {
+        if !decider.is_null() {
+            drop(Box::from_raw(decider));
+        }
     }
 }
 
@@ -2227,11 +2295,11 @@ pub unsafe extern "C" fn aisd_static_idr_decider_free(decider: *mut AisdStaticId
 /// # Safety
 /// `decider`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_static_idr_decider_heartbeat(
     decider: *const AisdStaticIdrDecider,
 ) -> f64 {
-    decider.as_ref().map_or(0.0, |d| d.inner.heartbeat())
+    unsafe { decider.as_ref().map_or(0.0, |d| d.inner.heartbeat()) }
 }
 
 /// The configured quiet window (seconds), or `0.0` for a null handle.
@@ -2239,11 +2307,11 @@ pub unsafe extern "C" fn aisd_static_idr_decider_heartbeat(
 /// # Safety
 /// `decider`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_static_idr_decider_quiet_window(
     decider: *const AisdStaticIdrDecider,
 ) -> f64 {
-    decider.as_ref().map_or(0.0, |d| d.inner.quiet_window())
+    unsafe { decider.as_ref().map_or(0.0, |d| d.inner.quiet_window()) }
 }
 
 /// Uptime seconds of the last REAL `.complete`-frame encode (`0.0` = none / null handle).
@@ -2251,13 +2319,15 @@ pub unsafe extern "C" fn aisd_static_idr_decider_quiet_window(
 /// # Safety
 /// `decider`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_static_idr_decider_last_complete_encode(
     decider: *const AisdStaticIdrDecider,
 ) -> f64 {
-    decider
-        .as_ref()
-        .map_or(0.0, |d| d.inner.last_complete_encode())
+    unsafe {
+        decider
+            .as_ref()
+            .map_or(0.0, |d| d.inner.last_complete_encode())
+    }
 }
 
 /// Uptime seconds of the last SYNTHETIC re-encode (`0.0` = none / null handle).
@@ -2265,13 +2335,15 @@ pub unsafe extern "C" fn aisd_static_idr_decider_last_complete_encode(
 /// # Safety
 /// `decider`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_static_idr_decider_last_synthetic_encode(
     decider: *const AisdStaticIdrDecider,
 ) -> f64 {
-    decider
-        .as_ref()
-        .map_or(0.0, |d| d.inner.last_synthetic_encode())
+    unsafe {
+        decider
+            .as_ref()
+            .map_or(0.0, |d| d.inner.last_synthetic_encode())
+    }
 }
 
 /// Re-anchors the live clock: a REAL `.complete` frame was encoded at `now`. No-op on null.
@@ -2279,13 +2351,15 @@ pub unsafe extern "C" fn aisd_static_idr_decider_last_synthetic_encode(
 ///
 /// # Safety
 /// `decider`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub const unsafe extern "C" fn aisd_static_idr_decider_on_complete_frame(
     decider: *mut AisdStaticIdrDecider,
     now: f64,
 ) {
-    if let Some(d) = decider.as_mut() {
-        d.inner.on_complete_frame(now);
+    unsafe {
+        if let Some(d) = decider.as_mut() {
+            d.inner.on_complete_frame(now);
+        }
     }
 }
 
@@ -2294,13 +2368,15 @@ pub const unsafe extern "C" fn aisd_static_idr_decider_on_complete_frame(
 ///
 /// # Safety
 /// `decider`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub const unsafe extern "C" fn aisd_static_idr_decider_record_synthetic(
     decider: *mut AisdStaticIdrDecider,
     now: f64,
 ) {
-    if let Some(d) = decider.as_mut() {
-        d.inner.record_synthetic(now);
+    unsafe {
+        if let Some(d) = decider.as_mut() {
+            d.inner.record_synthetic(now);
+        }
     }
 }
 
@@ -2313,19 +2389,21 @@ pub const unsafe extern "C" fn aisd_static_idr_decider_record_synthetic(
 /// # Safety
 /// `decider`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_static_idr_decider_should_reencode(
     decider: *const AisdStaticIdrDecider,
     now: f64,
     forced_latched: u8,
     has_retained_buffer: u8,
 ) -> u8 {
-    decider.as_ref().map_or(0, |d| {
-        u8::from(
-            d.inner
-                .should_reencode(now, forced_latched != 0, has_retained_buffer != 0),
-        )
-    })
+    unsafe {
+        decider.as_ref().map_or(0, |d| {
+            u8::from(
+                d.inner
+                    .should_reencode(now, forced_latched != 0, has_retained_buffer != 0),
+            )
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2368,7 +2446,7 @@ const fn decode_gate_mode_to_c(mode: DecodeGateMode) -> u32 {
 
 /// Creates a fresh, open decode gate. Destroy it with [`aisd_decode_gate_free`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_decode_gate_new() -> *mut AisdDecodeGate {
     Box::into_raw(Box::new(AisdDecodeGate {
         inner: DecodeGate::new(),
@@ -2379,10 +2457,12 @@ pub extern "C" fn aisd_decode_gate_new() -> *mut AisdDecodeGate {
 ///
 /// # Safety
 /// `gate` must be a pointer from [`aisd_decode_gate_new`] that has not been freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_free(gate: *mut AisdDecodeGate) {
-    if !gate.is_null() {
-        drop(Box::from_raw(gate));
+    unsafe {
+        if !gate.is_null() {
+            drop(Box::from_raw(gate));
+        }
     }
 }
 
@@ -2392,11 +2472,13 @@ pub unsafe extern "C" fn aisd_decode_gate_free(gate: *mut AisdDecodeGate) {
 /// # Safety
 /// `gate`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_mode(gate: *const AisdDecodeGate) -> u32 {
-    gate.as_ref().map_or(AISD_DECODE_GATE_MODE_OPEN, |g| {
-        decode_gate_mode_to_c(g.inner.mode())
-    })
+    unsafe {
+        gate.as_ref().map_or(AISD_DECODE_GATE_MODE_OPEN, |g| {
+            decode_gate_mode_to_c(g.inner.mode())
+        })
+    }
 }
 
 /// The OLDEST lost frame id of the episode. Returns `1` and writes the id to `out` when present,
@@ -2405,17 +2487,19 @@ pub unsafe extern "C" fn aisd_decode_gate_mode(gate: *const AisdDecodeGate) -> u
 /// # Safety
 /// `gate`, if non-null, must be a live handle; `out`, if the return is `1`, must be writable.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_min_lost_frame_id(
     gate: *const AisdDecodeGate,
     out: *mut u32,
 ) -> u8 {
-    match gate.as_ref().and_then(|g| g.inner.min_lost_frame_id()) {
-        Some(id) if !out.is_null() => {
-            *out = id;
-            1
+    unsafe {
+        match gate.as_ref().and_then(|g| g.inner.min_lost_frame_id()) {
+            Some(id) if !out.is_null() => {
+                *out = id;
+                1
+            }
+            _ => 0,
         }
-        _ => 0,
     }
 }
 
@@ -2425,17 +2509,19 @@ pub unsafe extern "C" fn aisd_decode_gate_min_lost_frame_id(
 /// # Safety
 /// `gate`, if non-null, must be a live handle; `out`, if the return is `1`, must be writable.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_max_lost_frame_id(
     gate: *const AisdDecodeGate,
     out: *mut u32,
 ) -> u8 {
-    match gate.as_ref().and_then(|g| g.inner.max_lost_frame_id()) {
-        Some(id) if !out.is_null() => {
-            *out = id;
-            1
+    unsafe {
+        match gate.as_ref().and_then(|g| g.inner.max_lost_frame_id()) {
+            Some(id) if !out.is_null() => {
+                *out = id;
+                1
+            }
+            _ => 0,
         }
-        _ => 0,
     }
 }
 
@@ -2443,10 +2529,12 @@ pub unsafe extern "C" fn aisd_decode_gate_max_lost_frame_id(
 ///
 /// # Safety
 /// `gate`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_note_loss(gate: *mut AisdDecodeGate, frame_id: u32) {
-    if let Some(g) = gate.as_mut() {
-        g.inner.note_loss(frame_id);
+    unsafe {
+        if let Some(g) = gate.as_mut() {
+            g.inner.note_loss(frame_id);
+        }
     }
 }
 
@@ -2455,12 +2543,14 @@ pub unsafe extern "C" fn aisd_decode_gate_note_loss(gate: *mut AisdDecodeGate, f
 ///
 /// # Safety
 /// `gate`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub const unsafe extern "C" fn aisd_decode_gate_note_hard_decode_failure(
     gate: *mut AisdDecodeGate,
 ) {
-    if let Some(g) = gate.as_mut() {
-        g.inner.note_hard_decode_failure();
+    unsafe {
+        if let Some(g) = gate.as_mut() {
+            g.inner.note_hard_decode_failure();
+        }
     }
 }
 
@@ -2469,10 +2559,12 @@ pub const unsafe extern "C" fn aisd_decode_gate_note_hard_decode_failure(
 ///
 /// # Safety
 /// `gate`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub const unsafe extern "C" fn aisd_decode_gate_note_awaiting_keyframe(gate: *mut AisdDecodeGate) {
-    if let Some(g) = gate.as_mut() {
-        g.inner.note_awaiting_keyframe();
+    unsafe {
+        if let Some(g) = gate.as_mut() {
+            g.inner.note_awaiting_keyframe();
+        }
     }
 }
 
@@ -2484,22 +2576,24 @@ pub const unsafe extern "C" fn aisd_decode_gate_note_awaiting_keyframe(gate: *mu
 /// # Safety
 /// `gate`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_verdict(
     gate: *const AisdDecodeGate,
     frame_id: u32,
     keyframe: u8,
     acked_anchored: u8,
 ) -> u32 {
-    gate.as_ref().map_or(AISD_DECODE_GATE_VERDICT_SUBMIT, |g| {
-        match g
-            .inner
-            .verdict(frame_id, keyframe != 0, acked_anchored != 0)
-        {
-            DecodeGateVerdict::Submit => AISD_DECODE_GATE_VERDICT_SUBMIT,
-            DecodeGateVerdict::Drop => AISD_DECODE_GATE_VERDICT_DROP,
-        }
-    })
+    unsafe {
+        gate.as_ref().map_or(AISD_DECODE_GATE_VERDICT_SUBMIT, |g| {
+            match g
+                .inner
+                .verdict(frame_id, keyframe != 0, acked_anchored != 0)
+            {
+                DecodeGateVerdict::Submit => AISD_DECODE_GATE_VERDICT_SUBMIT,
+                DecodeGateVerdict::Drop => AISD_DECODE_GATE_VERDICT_DROP,
+            }
+        })
+    }
 }
 
 /// Folds one successful decode (`keyframe` read `!= 0`). No-op on null. Wraps
@@ -2507,14 +2601,16 @@ pub unsafe extern "C" fn aisd_decode_gate_verdict(
 ///
 /// # Safety
 /// `gate`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_note_decode_succeeded(
     gate: *mut AisdDecodeGate,
     frame_id: u32,
     keyframe: u8,
 ) {
-    if let Some(g) = gate.as_mut() {
-        g.inner.note_decode_succeeded(frame_id, keyframe != 0);
+    unsafe {
+        if let Some(g) = gate.as_mut() {
+            g.inner.note_decode_succeeded(frame_id, keyframe != 0);
+        }
     }
 }
 
@@ -2542,7 +2638,7 @@ pub struct AisdOwdLateDetector {
 /// already-env-resolved [`OwdLateConfig`] fields (the core stays env-free; the caller resolves
 /// `AISLOPDESK_OWD_LATE_*` Swift-side). Wraps [`OwdLateDetector::new`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_owd_late_detector_new(
     bucket_ms: f64,
     threshold_floor_ms: f64,
@@ -2563,10 +2659,12 @@ pub extern "C" fn aisd_owd_late_detector_new(
 ///
 /// # Safety
 /// `detector` must be a pointer from [`aisd_owd_late_detector_new`] that has not been freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_owd_late_detector_free(detector: *mut AisdOwdLateDetector) {
-    if !detector.is_null() {
-        drop(Box::from_raw(detector));
+    unsafe {
+        if !detector.is_null() {
+            drop(Box::from_raw(detector));
+        }
     }
 }
 
@@ -2580,7 +2678,7 @@ pub unsafe extern "C" fn aisd_owd_late_detector_free(detector: *mut AisdOwdLateD
 /// `detector`, if non-null, must be a live handle; `out_deviation`, if the return is `1`, must be
 /// writable.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_owd_late_detector_note(
     detector: *mut AisdOwdLateDetector,
     arrival_ms: f64,
@@ -2588,15 +2686,17 @@ pub unsafe extern "C" fn aisd_owd_late_detector_note(
     interval_ms: f64,
     out_deviation: *mut f64,
 ) -> u8 {
-    match detector
-        .as_mut()
-        .and_then(|d| d.inner.note(arrival_ms, send_ts, interval_ms))
-    {
-        Some(dev) if !out_deviation.is_null() => {
-            *out_deviation = dev;
-            1
+    unsafe {
+        match detector
+            .as_mut()
+            .and_then(|d| d.inner.note(arrival_ms, send_ts, interval_ms))
+        {
+            Some(dev) if !out_deviation.is_null() => {
+                *out_deviation = dev;
+                1
+            }
+            _ => 0,
         }
-        _ => 0,
     }
 }
 
@@ -2664,7 +2764,7 @@ fn input_balance_event(kind: u8, button: u8) -> InputEvent {
 /// Creates a fresh button-balance (nothing held). Destroy it with
 /// [`aisd_input_button_balance_free`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_input_button_balance_new() -> *mut AisdInputButtonBalance {
     Box::into_raw(Box::new(AisdInputButtonBalance {
         inner: InputButtonBalance::new(),
@@ -2675,10 +2775,12 @@ pub extern "C" fn aisd_input_button_balance_new() -> *mut AisdInputButtonBalance
 ///
 /// # Safety
 /// `balance` must be a pointer from [`aisd_input_button_balance_new`] that has not been freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_input_button_balance_free(balance: *mut AisdInputButtonBalance) {
-    if !balance.is_null() {
-        drop(Box::from_raw(balance));
+    unsafe {
+        if !balance.is_null() {
+            drop(Box::from_raw(balance));
+        }
     }
 }
 
@@ -2690,24 +2792,26 @@ pub unsafe extern "C" fn aisd_input_button_balance_free(balance: *mut AisdInputB
 /// # Safety
 /// `balance`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_input_button_balance_plan(
     balance: *mut AisdInputButtonBalance,
     kind: u8,
     button: u8,
 ) -> AisdInputPlan {
-    let Some(bal) = balance.as_mut() else {
-        return AisdInputPlan {
-            has_pre_release: 0,
-            pre_release_button: 0,
-            suppress: 0,
+    unsafe {
+        let Some(bal) = balance.as_mut() else {
+            return AisdInputPlan {
+                has_pre_release: 0,
+                pre_release_button: 0,
+                suppress: 0,
+            };
         };
-    };
-    let plan = bal.inner.plan(&input_balance_event(kind, button));
-    AisdInputPlan {
-        has_pre_release: u8::from(plan.pre_release.is_some()),
-        pre_release_button: plan.pre_release.map_or(0, MouseButton::raw),
-        suppress: u8::from(plan.suppress),
+        let plan = bal.inner.plan(&input_balance_event(kind, button));
+        AisdInputPlan {
+            has_pre_release: u8::from(plan.pre_release.is_some()),
+            pre_release_button: plan.pre_release.map_or(0, MouseButton::raw),
+            suppress: u8::from(plan.suppress),
+        }
     }
 }
 
@@ -2717,16 +2821,18 @@ pub unsafe extern "C" fn aisd_input_button_balance_plan(
 /// # Safety
 /// `balance`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_input_button_balance_held_mask(
     balance: *const AisdInputButtonBalance,
 ) -> u8 {
-    balance.as_ref().map_or(0, |bal| {
-        bal.inner
-            .held()
-            .iter()
-            .fold(0u8, |mask, b| mask | (1u8 << b.raw()))
-    })
+    unsafe {
+        balance.as_ref().map_or(0, |bal| {
+            bal.inner
+                .held()
+                .iter()
+                .fold(0u8, |mask, b| mask | (1u8 << b.raw()))
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2773,7 +2879,7 @@ pub struct AisdRecoveryIdrPolicy {
 /// The seven scalars are the already-env-resolved [`RecoveryIdrConfig`] fields (the core stays
 /// env-free; the caller resolves `AISLOPDESK_IDR_*` Swift-side). Wraps [`RecoveryIdrPolicy::new`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_recovery_idr_policy_new(
     grace_fraction: f64,
     grace_floor_seconds: f64,
@@ -2800,10 +2906,12 @@ pub extern "C" fn aisd_recovery_idr_policy_new(
 ///
 /// # Safety
 /// `policy` must be a pointer from [`aisd_recovery_idr_policy_new`] that has not been freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_idr_policy_free(policy: *mut AisdRecoveryIdrPolicy) {
-    if !policy.is_null() {
-        drop(Box::from_raw(policy));
+    unsafe {
+        if !policy.is_null() {
+            drop(Box::from_raw(policy));
+        }
     }
 }
 
@@ -2812,11 +2920,11 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_free(policy: *mut AisdRecovery
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_idr_policy_available_tokens(
     policy: *const AisdRecoveryIdrPolicy,
 ) -> f64 {
-    policy.as_ref().map_or(0.0, |p| p.inner.available_tokens())
+    unsafe { policy.as_ref().map_or(0.0, |p| p.inner.available_tokens()) }
 }
 
 /// Records that a keyframe was handed to the wire at `now`. No-op on null. Wraps
@@ -2824,14 +2932,16 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_available_tokens(
 ///
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_idr_policy_note_keyframe_sent(
     policy: *mut AisdRecoveryIdrPolicy,
     frame_id: u32,
     now: f64,
 ) {
-    if let Some(p) = policy.as_mut() {
-        p.inner.note_keyframe_sent(frame_id, now);
+    unsafe {
+        if let Some(p) = policy.as_mut() {
+            p.inner.note_keyframe_sent(frame_id, now);
+        }
     }
 }
 
@@ -2840,13 +2950,15 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_note_keyframe_sent(
 ///
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_idr_policy_note_keyframe_delivered(
     policy: *mut AisdRecoveryIdrPolicy,
     frame_id: u32,
 ) {
-    if let Some(p) = policy.as_mut() {
-        p.inner.note_keyframe_delivered(frame_id);
+    unsafe {
+        if let Some(p) = policy.as_mut() {
+            p.inner.note_keyframe_delivered(frame_id);
+        }
     }
 }
 
@@ -2860,7 +2972,7 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_note_keyframe_delivered(
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_idr_policy_decide(
     policy: *mut AisdRecoveryIdrPolicy,
     now: f64,
@@ -2868,14 +2980,16 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_decide(
     has_client_last_decoded: u8,
     smoothed_rtt_seconds: f64,
 ) -> u8 {
-    policy.as_mut().map_or(AISD_RECOVERY_IDR_GRANT, |p| {
-        let last = if has_client_last_decoded != 0 {
-            Some(client_last_decoded)
-        } else {
-            None
-        };
-        recovery_idr_verdict_to_c(p.inner.decide(now, last, smoothed_rtt_seconds))
-    })
+    unsafe {
+        policy.as_mut().map_or(AISD_RECOVERY_IDR_GRANT, |p| {
+            let last = if has_client_last_decoded != 0 {
+                Some(client_last_decoded)
+            } else {
+                None
+            };
+            recovery_idr_verdict_to_c(p.inner.decide(now, last, smoothed_rtt_seconds))
+        })
+    }
 }
 
 /// The in-flight grace window (seconds) for the given smoothed RTT, or `0.0` for a null handle.
@@ -2884,12 +2998,12 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_decide(
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_idr_policy_grace(
     policy: *const AisdRecoveryIdrPolicy,
     rtt: f64,
 ) -> f64 {
-    policy.as_ref().map_or(0.0, |p| p.inner.grace(rtt))
+    unsafe { policy.as_ref().map_or(0.0, |p| p.inner.grace(rtt)) }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2962,7 +3076,7 @@ pub struct AisdVideoMuxRouter {
 
 /// Creates a fresh mux router (nothing admitted). Destroy it with [`aisd_video_mux_router_free`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_video_mux_router_new() -> *mut AisdVideoMuxRouter {
     Box::into_raw(Box::new(AisdVideoMuxRouter {
         inner: VideoMuxRouter::new(),
@@ -2973,10 +3087,12 @@ pub extern "C" fn aisd_video_mux_router_new() -> *mut AisdVideoMuxRouter {
 ///
 /// # Safety
 /// `router` must be a pointer from [`aisd_video_mux_router_new`] that has not been freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_free(router: *mut AisdVideoMuxRouter) {
-    if !router.is_null() {
-        drop(Box::from_raw(router));
+    unsafe {
+        if !router.is_null() {
+            drop(Box::from_raw(router));
+        }
     }
 }
 
@@ -2985,13 +3101,15 @@ pub unsafe extern "C" fn aisd_video_mux_router_free(router: *mut AisdVideoMuxRou
 ///
 /// # Safety
 /// `router`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_admit(
     router: *mut AisdVideoMuxRouter,
     channel_id: u32,
 ) {
-    if let Some(r) = router.as_mut() {
-        r.inner.admit(channel_id);
+    unsafe {
+        if let Some(r) = router.as_mut() {
+            r.inner.admit(channel_id);
+        }
     }
 }
 
@@ -2999,13 +3117,15 @@ pub unsafe extern "C" fn aisd_video_mux_router_admit(
 ///
 /// # Safety
 /// `router`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_retire(
     router: *mut AisdVideoMuxRouter,
     channel_id: u32,
 ) {
-    if let Some(r) = router.as_mut() {
-        r.inner.retire(channel_id);
+    unsafe {
+        if let Some(r) = router.as_mut() {
+            r.inner.retire(channel_id);
+        }
     }
 }
 
@@ -3014,13 +3134,15 @@ pub unsafe extern "C" fn aisd_video_mux_router_retire(
 ///
 /// # Safety
 /// `router`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_begin_drain(
     router: *mut AisdVideoMuxRouter,
     channel_id: u32,
 ) {
-    if let Some(r) = router.as_mut() {
-        r.inner.begin_drain(channel_id);
+    unsafe {
+        if let Some(r) = router.as_mut() {
+            r.inner.begin_drain(channel_id);
+        }
     }
 }
 
@@ -3029,13 +3151,15 @@ pub unsafe extern "C" fn aisd_video_mux_router_begin_drain(
 ///
 /// # Safety
 /// `router`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_end_drain(
     router: *mut AisdVideoMuxRouter,
     channel_id: u32,
 ) {
-    if let Some(r) = router.as_mut() {
-        r.inner.end_drain(channel_id);
+    unsafe {
+        if let Some(r) = router.as_mut() {
+            r.inner.end_drain(channel_id);
+        }
     }
 }
 
@@ -3045,14 +3169,16 @@ pub unsafe extern "C" fn aisd_video_mux_router_end_drain(
 /// # Safety
 /// `router`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_is_admitted(
     router: *const AisdVideoMuxRouter,
     channel_id: u32,
 ) -> u8 {
-    router
-        .as_ref()
-        .map_or(0, |r| u8::from(r.inner.is_admitted(channel_id)))
+    unsafe {
+        router
+            .as_ref()
+            .map_or(0, |r| u8::from(r.inner.is_admitted(channel_id)))
+    }
 }
 
 /// Whether `channel_id` is currently draining. `0` for a null handle. Wraps
@@ -3061,14 +3187,16 @@ pub unsafe extern "C" fn aisd_video_mux_router_is_admitted(
 /// # Safety
 /// `router`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_is_draining(
     router: *const AisdVideoMuxRouter,
     channel_id: u32,
 ) -> u8 {
-    router
-        .as_ref()
-        .map_or(0, |r| u8::from(r.inner.is_draining(channel_id)))
+    unsafe {
+        router
+            .as_ref()
+            .map_or(0, |r| u8::from(r.inner.is_draining(channel_id)))
+    }
 }
 
 /// The routing decision for one received datagram, as an `AISD_MUX_DECISION_*` discriminant.
@@ -3079,21 +3207,24 @@ pub unsafe extern "C" fn aisd_video_mux_router_is_draining(
 /// # Safety
 /// `router`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_route(
     router: *const AisdVideoMuxRouter,
     channel_id: u32,
     channel: u8,
     bytes_count: usize,
 ) -> u8 {
-    router
-        .as_ref()
-        .map_or(AISD_MUX_DECISION_REJECT_UNADMITTED, |r| {
-            mux_decision_to_c(
-                &r.inner
-                    .route(channel_id, mux_channel_from_c(channel), bytes_count),
-            )
-        })
+    unsafe {
+        router
+            .as_ref()
+            .map_or(AISD_MUX_DECISION_REJECT_UNADMITTED, |r| {
+                mux_decision_to_c(&r.inner.route(
+                    channel_id,
+                    mux_channel_from_c(channel),
+                    bytes_count,
+                ))
+            })
+    }
 }
 
 /// The bootstrap action for a not-yet-admitted datagram, as an `AISD_MUX_BOOTSTRAP_*` discriminant.
@@ -3102,7 +3233,7 @@ pub unsafe extern "C" fn aisd_video_mux_router_route(
 /// `payload_is_hello` / `payload_is_list_request` are bytes read `!= 0`. PURE (no handle). Wraps
 /// [`VideoMuxRouter::bootstrap_action`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_video_mux_router_bootstrap_action(
     decision: u8,
     channel: u8,
@@ -3241,7 +3372,7 @@ pub struct AisdPacerDepthPolicy {
 /// Creates a pacer-depth policy from the resolved config + `adapt_enabled` (read `!= 0`). Destroy it
 /// with [`aisd_pacer_depth_policy_free`]. Wraps [`PacerDepthPolicy::new`].
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn aisd_pacer_depth_policy_new(
     config: AisdPacerDepthConfig,
     adapt_enabled: u8,
@@ -3255,10 +3386,12 @@ pub extern "C" fn aisd_pacer_depth_policy_new(
 ///
 /// # Safety
 /// `policy` must be a pointer from [`aisd_pacer_depth_policy_new`] that has not been freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_free(policy: *mut AisdPacerDepthPolicy) {
-    if !policy.is_null() {
-        drop(Box::from_raw(policy));
+    unsafe {
+        if !policy.is_null() {
+            drop(Box::from_raw(policy));
+        }
     }
 }
 
@@ -3268,9 +3401,9 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_free(policy: *mut AisdPacerDept
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_depth(policy: *const AisdPacerDepthPolicy) -> i64 {
-    policy.as_ref().map_or(1, |p| p.inner.depth())
+    unsafe { policy.as_ref().map_or(1, |p| p.inner.depth()) }
 }
 
 /// The expected content interval (seconds), or `0.0` for a null handle. Wraps
@@ -3279,13 +3412,15 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_depth(policy: *const AisdPacerD
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_expected_interval_seconds(
     policy: *const AisdPacerDepthPolicy,
 ) -> f64 {
-    policy
-        .as_ref()
-        .map_or(0.0, |p| p.inner.expected_interval_seconds())
+    unsafe {
+        policy
+            .as_ref()
+            .map_or(0.0, |p| p.inner.expected_interval_seconds())
+    }
 }
 
 /// The late boundary (seconds), or `0.0` for a null handle. Wraps
@@ -3294,13 +3429,15 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_expected_interval_seconds(
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_late_threshold_seconds(
     policy: *const AisdPacerDepthPolicy,
 ) -> f64 {
-    policy
-        .as_ref()
-        .map_or(0.0, |p| p.inner.late_threshold_seconds())
+    unsafe {
+        policy
+            .as_ref()
+            .map_or(0.0, |p| p.inner.late_threshold_seconds())
+    }
 }
 
 /// Folds one decoded-frame submit at `now`. No-op on null. Wraps
@@ -3308,13 +3445,15 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_late_threshold_seconds(
 ///
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_note_arrival(
     policy: *mut AisdPacerDepthPolicy,
     now: f64,
 ) {
-    if let Some(p) = policy.as_mut() {
-        p.inner.note_arrival(now);
+    unsafe {
+        if let Some(p) = policy.as_mut() {
+            p.inner.note_arrival(now);
+        }
     }
 }
 
@@ -3324,14 +3463,16 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_arrival(
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_note_present(
     policy: *mut AisdPacerDepthPolicy,
     now: f64,
 ) -> u8 {
-    policy.as_mut().map_or(AISD_PACER_GAP_FIRST, |p| {
-        pacer_gap_class_to_c(p.inner.note_present(now))
-    })
+    unsafe {
+        policy.as_mut().map_or(AISD_PACER_GAP_FIRST, |p| {
+            pacer_gap_class_to_c(p.inner.note_present(now))
+        })
+    }
 }
 
 /// Folds one NETWORK-late event at `now`. No-op on null. Wraps
@@ -3339,13 +3480,15 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_present(
 ///
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_note_network_late(
     policy: *mut AisdPacerDepthPolicy,
     now: f64,
 ) {
-    if let Some(p) = policy.as_mut() {
-        p.inner.note_network_late(now);
+    unsafe {
+        if let Some(p) = policy.as_mut() {
+            p.inner.note_network_late(now);
+        }
     }
 }
 
@@ -3353,13 +3496,15 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_network_late(
 ///
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_note_reshow(
     policy: *mut AisdPacerDepthPolicy,
     now: f64,
 ) {
-    if let Some(p) = policy.as_mut() {
-        p.inner.note_reshow(now);
+    unsafe {
+        if let Some(p) = policy.as_mut() {
+            p.inner.note_reshow(now);
+        }
     }
 }
 
@@ -3369,23 +3514,25 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_reshow(
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
 #[must_use]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_drain_counters(
     policy: *mut AisdPacerDepthPolicy,
 ) -> AisdPacerCounters {
-    policy.as_mut().map_or(
-        AisdPacerCounters {
-            late_frames: 0,
-            present_gaps: 0,
-        },
-        |p| {
-            let (late_frames, present_gaps) = p.inner.drain_counters();
+    unsafe {
+        policy.as_mut().map_or(
             AisdPacerCounters {
-                late_frames,
-                present_gaps,
-            }
-        },
-    )
+                late_frames: 0,
+                present_gaps: 0,
+            },
+            |p| {
+                let (late_frames, present_gaps) = p.inner.drain_counters();
+                AisdPacerCounters {
+                    late_frames,
+                    present_gaps,
+                }
+            },
+        )
+    }
 }
 
 /// Sets (or clears) the FPS-governor interval hint. `has_hint == 0` clears it; otherwise the hint is
@@ -3393,15 +3540,17 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_drain_counters(
 ///
 /// # Safety
 /// `policy`, if non-null, must be a live handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_set_interval_hint(
     policy: *mut AisdPacerDepthPolicy,
     seconds: f64,
     has_hint: u8,
 ) {
-    if let Some(p) = policy.as_mut() {
-        p.inner
-            .set_interval_hint(if has_hint != 0 { Some(seconds) } else { None });
+    unsafe {
+        if let Some(p) = policy.as_mut() {
+            p.inner
+                .set_interval_hint(if has_hint != 0 { Some(seconds) } else { None });
+        }
     }
 }
 
@@ -3519,10 +3668,12 @@ mod tests {
 
     /// Reads an owned/returned `AisdBytes` as a `Vec` (the caller still frees it).
     unsafe fn view(b: AisdBytes) -> Vec<u8> {
-        if b.ptr.is_null() || b.len == 0 {
-            Vec::new()
-        } else {
-            core::slice::from_raw_parts(b.ptr, b.len).to_vec()
+        unsafe {
+            if b.ptr.is_null() || b.len == 0 {
+                Vec::new()
+            } else {
+                core::slice::from_raw_parts(b.ptr, b.len).to_vec()
+            }
         }
     }
 
@@ -3790,53 +3941,55 @@ mod tests {
 
     /// Rebuilds a core `InputEvent` from a decoded C struct (test-side mirror of the Swift side).
     unsafe fn decode_c_input(out: &AisdInputEvent) -> InputEvent {
-        let normalized = VideoPoint::new(out.x, out.y);
-        let modifiers = InputModifiers(out.modifiers);
-        match out.kind {
-            AISD_INPUT_MOUSE_MOVE => InputEvent::MouseMove {
-                normalized,
-                tag: out.tag,
-            },
-            AISD_INPUT_MOUSE_DOWN => InputEvent::MouseDown {
-                button: MouseButton::from_u8(out.button).unwrap(),
-                normalized,
-                click_count: out.click_count,
-                modifiers,
-                tag: out.tag,
-            },
-            AISD_INPUT_MOUSE_UP => InputEvent::MouseUp {
-                button: MouseButton::from_u8(out.button).unwrap(),
-                normalized,
-                click_count: out.click_count,
-                modifiers,
-                tag: out.tag,
-            },
-            AISD_INPUT_MOUSE_DRAG => InputEvent::MouseDrag {
-                button: MouseButton::from_u8(out.button).unwrap(),
-                normalized,
-                click_count: out.click_count,
-                modifiers,
-                tag: out.tag,
-            },
-            AISD_INPUT_SCROLL => InputEvent::Scroll {
-                dx: out.dx,
-                dy: out.dy,
-                normalized,
-                scroll_phase: out.scroll_phase,
-                momentum_phase: out.momentum_phase,
-                continuous: out.continuous != 0,
-                tag: out.tag,
-            },
-            AISD_INPUT_KEY => InputEvent::Key {
-                key_code: out.key_code,
-                down: out.down != 0,
-                modifiers,
-                tag: out.tag,
-            },
-            _ => InputEvent::Text {
-                text: String::from_utf8(view(out.text)).unwrap(),
-                tag: out.tag,
-            },
+        unsafe {
+            let normalized = VideoPoint::new(out.x, out.y);
+            let modifiers = InputModifiers(out.modifiers);
+            match out.kind {
+                AISD_INPUT_MOUSE_MOVE => InputEvent::MouseMove {
+                    normalized,
+                    tag: out.tag,
+                },
+                AISD_INPUT_MOUSE_DOWN => InputEvent::MouseDown {
+                    button: MouseButton::from_u8(out.button).unwrap(),
+                    normalized,
+                    click_count: out.click_count,
+                    modifiers,
+                    tag: out.tag,
+                },
+                AISD_INPUT_MOUSE_UP => InputEvent::MouseUp {
+                    button: MouseButton::from_u8(out.button).unwrap(),
+                    normalized,
+                    click_count: out.click_count,
+                    modifiers,
+                    tag: out.tag,
+                },
+                AISD_INPUT_MOUSE_DRAG => InputEvent::MouseDrag {
+                    button: MouseButton::from_u8(out.button).unwrap(),
+                    normalized,
+                    click_count: out.click_count,
+                    modifiers,
+                    tag: out.tag,
+                },
+                AISD_INPUT_SCROLL => InputEvent::Scroll {
+                    dx: out.dx,
+                    dy: out.dy,
+                    normalized,
+                    scroll_phase: out.scroll_phase,
+                    momentum_phase: out.momentum_phase,
+                    continuous: out.continuous != 0,
+                    tag: out.tag,
+                },
+                AISD_INPUT_KEY => InputEvent::Key {
+                    key_code: out.key_code,
+                    down: out.down != 0,
+                    modifiers,
+                    tag: out.tag,
+                },
+                _ => InputEvent::Text {
+                    text: String::from_utf8(view(out.text)).unwrap(),
+                    tag: out.tag,
+                },
+            }
         }
     }
 
@@ -4485,7 +4638,7 @@ mod tests {
         };
         assert_eq!(status, AISD_EMPTY);
         approx(scale, -1.0); // untouched on AISD_EMPTY
-                             // null out_scale => AISD_ERR_NULL; null screens + count 0 => empty => AISD_EMPTY.
+        // null out_scale => AISD_ERR_NULL; null screens + count 0 => empty => AISD_EMPTY.
         assert_eq!(
             unsafe {
                 aisd_coord_backing_scale_factor(
@@ -5067,7 +5220,7 @@ mod tests {
             assert_eq!(aisd_static_idr_decider_should_reencode(d, 11.5, 0, 1), 0);
             aisd_static_idr_decider_free(d);
             aisd_static_idr_decider_free(core::ptr::null_mut()); // no-op
-                                                                 // A null handle never forces an encode.
+            // A null handle never forces an encode.
             assert_eq!(
                 aisd_static_idr_decider_should_reencode(core::ptr::null(), 0.0, 1, 1),
                 0
@@ -5137,7 +5290,7 @@ mod tests {
 
             aisd_decode_gate_free(g);
             aisd_decode_gate_free(core::ptr::null_mut()); // no-op
-                                                          // Null handle: Open mode, Submit verdict, no lost bounds.
+            // Null handle: Open mode, Submit verdict, no lost bounds.
             assert_eq!(
                 aisd_decode_gate_mode(core::ptr::null()),
                 AISD_DECODE_GATE_MODE_OPEN
@@ -5173,7 +5326,7 @@ mod tests {
                 send = send.wrapping_add(17);
             }
             assert_eq!(dev, -1.0); // never written while clean.
-                                   // A 40ms spike past the floor is late, deviation > 10ms.
+            // A 40ms spike past the floor is late, deviation > 10ms.
             arrival += 16.7 + 40.0;
             send = send.wrapping_add(17);
             assert_eq!(
@@ -5183,7 +5336,7 @@ mod tests {
             assert!(dev > 10.0);
             aisd_owd_late_detector_free(d);
             aisd_owd_late_detector_free(core::ptr::null_mut()); // no-op
-                                                                // A null handle never reports late.
+            // A null handle never reports late.
             assert_eq!(
                 aisd_owd_late_detector_note(core::ptr::null_mut(), 0.0, 0, interval, &mut dev),
                 0
@@ -5222,7 +5375,7 @@ mod tests {
             assert_eq!(aisd_input_button_balance_held_mask(b), 0b010);
             aisd_input_button_balance_free(b);
             aisd_input_button_balance_free(core::ptr::null_mut()); // no-op
-                                                                   // A null handle returns the default plan and an empty mask.
+            // A null handle returns the default plan and an empty mask.
             let p = aisd_input_button_balance_plan(core::ptr::null_mut(), AISD_INPUT_MOUSE_UP, 0);
             assert_eq!(p.has_pre_release, 0);
             assert_eq!(p.suppress, 0);
@@ -5259,7 +5412,7 @@ mod tests {
             );
             aisd_recovery_idr_policy_free(p);
             aisd_recovery_idr_policy_free(core::ptr::null_mut()); // no-op
-                                                                  // A null handle grants (recovery proceeds) and reports zero tokens/grace.
+            // A null handle grants (recovery proceeds) and reports zero tokens/grace.
             assert_eq!(
                 aisd_recovery_idr_policy_decide(core::ptr::null_mut(), 0.0, 0, 0, 0.0),
                 AISD_RECOVERY_IDR_GRANT
@@ -5329,7 +5482,7 @@ mod tests {
 
             aisd_video_mux_router_free(r);
             aisd_video_mux_router_free(core::ptr::null_mut()); // no-op
-                                                               // A null handle rejects (unknown lane) and reports not-admitted / not-draining.
+            // A null handle rejects (unknown lane) and reports not-admitted / not-draining.
             assert_eq!(
                 aisd_video_mux_router_route(core::ptr::null(), 1, 1, 100),
                 AISD_MUX_DECISION_REJECT_UNADMITTED
@@ -5384,7 +5537,7 @@ mod tests {
             assert_eq!(aisd_pacer_depth_policy_depth(p), 1); // one late never promotes
             aisd_pacer_depth_policy_note_network_late(p, 3.2);
             assert_eq!(aisd_pacer_depth_policy_depth(p), 2); // 2nd within the window promotes
-                                                             // The counters drained reflect the two late events (1 episode each).
+            // The counters drained reflect the two late events (1 episode each).
             let counters = aisd_pacer_depth_policy_drain_counters(p);
             assert_eq!(counters.late_frames, 2);
             // A second drain is empty.
@@ -5406,7 +5559,7 @@ mod tests {
 
             aisd_pacer_depth_policy_free(p);
             aisd_pacer_depth_policy_free(core::ptr::null_mut()); // no-op
-                                                                 // Null handle: depth 1, First, empty counters.
+            // Null handle: depth 1, First, empty counters.
             assert_eq!(aisd_pacer_depth_policy_depth(core::ptr::null()), 1);
             assert_eq!(
                 aisd_pacer_depth_policy_note_present(core::ptr::null_mut(), 0.0),

@@ -196,11 +196,11 @@ impl VideoMuxRouter {
         {
             self.highest_retired = Some(channel_id);
         }
-        if self.retired.len() > Self::RETIRED_CAP {
-            if let Some(high) = self.highest_retired {
-                self.retired
-                    .retain(|&id| distance_wrapped(high, id) <= Self::RETIRED_PRUNE_WINDOW);
-            }
+        if self.retired.len() > Self::RETIRED_CAP
+            && let Some(high) = self.highest_retired
+        {
+            self.retired
+                .retain(|&id| distance_wrapped(high, id) <= Self::RETIRED_PRUNE_WINDOW);
         }
     }
 

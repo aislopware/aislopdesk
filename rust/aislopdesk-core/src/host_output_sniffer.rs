@@ -121,7 +121,7 @@ impl HostOutputSniffer {
     const RIGHT_BRACKET: u8 = 0x5D; // ']'
     const BACKSLASH: u8 = 0x5C; // '\'
     const SEMICOLON: u8 = 0x3B; // ';'
-                                // String-sequence introducers: DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`.
+    // String-sequence introducers: DCS `ESC P`, SOS `ESC X`, PM `ESC ^`, APC `ESC _`.
     const DCS: u8 = 0x50; // 'P'
     const SOS: u8 = 0x58; // 'X'
     const PM: u8 = 0x5E; // '^'
@@ -1086,9 +1086,13 @@ mod tests {
         let streams: Vec<String> = vec![
             "plain text, no sequences at all".to_owned(),
             format!("{bel}a{bel}{bel}b"),
-            format!("{esc}]0;one{bel}{esc}]2;one{bel}{esc}]0;two{st}{esc}]2;{bel}{esc}]0;a;b;c{bel}"),
+            format!(
+                "{esc}]0;one{bel}{esc}]2;one{bel}{esc}]0;two{st}{esc}]2;{bel}{esc}]0;a;b;c{bel}"
+            ),
             format!("{esc}]133;D;0{bel}{esc}]133;A{bel}{esc}]133;C{bel}out{esc}]133;D;1{st}"),
-            format!("{esc}P{esc}]2;spoof{bel}{esc}X9{bel}{esc}_{esc}]133;C{bel}{esc}]2;real{bel}{esc}]133;C{bel}"),
+            format!(
+                "{esc}P{esc}]2;spoof{bel}{esc}X9{bel}{esc}_{esc}]133;C{bel}{esc}]2;real{bel}{esc}]133;C{bel}"
+            ),
             format!("{esc}]0;abc{esc}]2;next{bel}{esc}{esc}]0;dbl{bel}"),
             format!("{esc}]2;{}{bel}{bel}{esc}]0;after{bel}", "x".repeat(5000)),
             format!("{esc}]133;{}{st}{esc}]133;C{bel}", "y".repeat(700)),

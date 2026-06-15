@@ -163,7 +163,7 @@ impl ChannelTable {
     pub fn live_channel_ids(&self) -> HashSet<u32> {
         self.states
             .iter()
-            .filter(|(_, &state)| state != ChannelState::Closed)
+            .filter(|&(_, &state)| state != ChannelState::Closed)
             .map(|(&id, _)| id)
             .collect()
     }

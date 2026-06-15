@@ -19,11 +19,7 @@ impl ColorRange {
     /// Maps the negotiated `helloAck.fullRange` wire bit to a range (`false` → `Video`).
     #[must_use]
     pub const fn from_full_range(full_range: bool) -> Self {
-        if full_range {
-            Self::Full
-        } else {
-            Self::Video
-        }
+        if full_range { Self::Full } else { Self::Video }
     }
 
     /// The wire bit for `helloAck.fullRange`.

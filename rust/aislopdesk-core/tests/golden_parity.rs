@@ -20,7 +20,7 @@ use aislopdesk_core::geometry::{VideoPoint, VideoRect, VideoSize};
 use aislopdesk_core::host_output_sniffer::HostOutputSniffer;
 use aislopdesk_core::input_event::{InputEvent, InputModifiers, MouseButton};
 use aislopdesk_core::input_motion_coalescer::InputMotionCoalescer;
-use aislopdesk_core::mux_header::{video_mux_header, MuxFrameFragmentHeader};
+use aislopdesk_core::mux_header::{MuxFrameFragmentHeader, video_mux_header};
 use aislopdesk_core::nal_unit;
 use aislopdesk_core::network_estimate::NetworkEstimate;
 use aislopdesk_core::owd_late_detector::OwdLateDetector;
@@ -57,7 +57,7 @@ fn load() -> Value {
 }
 
 fn hx(s: &str) -> Vec<u8> {
-    assert!(s.len() % 2 == 0, "odd-length hex: {s}");
+    assert!(s.len().is_multiple_of(2), "odd-length hex: {s}");
     (0..s.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())

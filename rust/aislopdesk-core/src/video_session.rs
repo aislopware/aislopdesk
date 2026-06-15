@@ -440,22 +440,14 @@ impl SizeNegotiation {
 /// agree with `f64::min`. The Swift shell does the same, so the two stay bit-identical.
 #[inline]
 const fn swift_min(x: f64, y: f64) -> f64 {
-    if y < x {
-        y
-    } else {
-        x
-    }
+    if y < x { y } else { x }
 }
 
 /// `max(x, y) == { y >= x ? y : x }` — the NaN-faithful counterpart of `f64::max`
 /// (see [`swift_min`]); the Swift shell does the same. Finite inputs agree with `f64::max`.
 #[inline]
 const fn swift_max(x: f64, y: f64) -> f64 {
-    if y >= x {
-        y
-    } else {
-        x
-    }
+    if y >= x { y } else { x }
 }
 
 #[cfg(test)]
@@ -968,16 +960,18 @@ mod tests {
             desired: VideoSize::new(640.0, 480.0),
             epoch: 3,
         };
-        assert!(sm
-            .handle_control(&stale, bounds(), accept_all, resolve_resize)
-            .is_empty());
+        assert!(
+            sm.handle_control(&stale, bounds(), accept_all, resolve_resize)
+                .is_empty()
+        );
         let dup = VideoControlMessage::ResizeRequest {
             desired: VideoSize::new(640.0, 480.0),
             epoch: 5,
         };
-        assert!(sm
-            .handle_control(&dup, bounds(), accept_all, resolve_resize)
-            .is_empty());
+        assert!(
+            sm.handle_control(&dup, bounds(), accept_all, resolve_resize)
+                .is_empty()
+        );
         assert_eq!(sm.capture_width(), 1280);
         assert_eq!(sm.capture_height(), 800);
         assert_eq!(sm.last_resize_epoch(), 5);
@@ -1055,9 +1049,10 @@ mod tests {
             desired: VideoSize::new(1280.0, 800.0),
             epoch: 1,
         };
-        assert!(sm
-            .handle_control(&req, bounds(), accept_all, resolve_resize)
-            .is_empty());
+        assert!(
+            sm.handle_control(&req, bounds(), accept_all, resolve_resize)
+                .is_empty()
+        );
         assert_eq!(sm.state(), VideoSessionState::Listening);
         assert_eq!(
             sm.last_resize_epoch(),
@@ -1073,9 +1068,10 @@ mod tests {
             desired: VideoSize::new(1280.0, 800.0),
             epoch: 1,
         };
-        assert!(sm
-            .handle_control(&req, bounds(), accept_all, resolve_resize)
-            .is_empty());
+        assert!(
+            sm.handle_control(&req, bounds(), accept_all, resolve_resize)
+                .is_empty()
+        );
         assert_eq!(sm.state(), VideoSessionState::Idle);
     }
 
@@ -1088,9 +1084,10 @@ mod tests {
             desired: VideoSize::new(1280.0, 800.0),
             epoch: 1,
         };
-        assert!(sm
-            .handle_control(&req, bounds(), accept_all, resolve_resize)
-            .is_empty());
+        assert!(
+            sm.handle_control(&req, bounds(), accept_all, resolve_resize)
+                .is_empty()
+        );
         assert_eq!(sm.state(), VideoSessionState::Stopped);
     }
 
@@ -1099,19 +1096,16 @@ mod tests {
         let mut sm = streaming_machine(7);
         // Resolver only accepts window id 99; session is window 42 → reject.
         let reject_resolver = |wid: u32, _d: VideoSize| -> Option<(u16, u16)> {
-            if wid == 99 {
-                Some((640, 480))
-            } else {
-                None
-            }
+            if wid == 99 { Some((640, 480)) } else { None }
         };
         let req = VideoControlMessage::ResizeRequest {
             desired: VideoSize::new(1280.0, 800.0),
             epoch: 1,
         };
-        assert!(sm
-            .handle_control(&req, bounds(), accept_all, reject_resolver)
-            .is_empty());
+        assert!(
+            sm.handle_control(&req, bounds(), accept_all, reject_resolver)
+                .is_empty()
+        );
         assert_eq!(sm.state(), VideoSessionState::Streaming);
         assert_eq!(
             sm.last_resize_epoch(),
@@ -1415,9 +1409,10 @@ mod tests {
             desired: VideoSize::new(640.0, 480.0),
             epoch: u32::MAX,
         };
-        assert!(sm
-            .handle_control(&dup, bounds(), accept_all, resolve_resize)
-            .is_empty());
+        assert!(
+            sm.handle_control(&dup, bounds(), accept_all, resolve_resize)
+                .is_empty()
+        );
         assert_eq!(sm.capture_width(), 1280);
     }
 }

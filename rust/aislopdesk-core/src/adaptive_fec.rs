@@ -87,11 +87,7 @@ const fn tier_for_level(level: i32) -> u8 {
 
 #[allow(clippy::bool_to_int_with_if)] // explicit form documents the floor LEVELS, not a cast.
 const fn relax_floor_level(allow_off: bool) -> i32 {
-    if allow_off {
-        0
-    } else {
-        1
-    }
+    if allow_off { 0 } else { 1 }
 }
 
 /// The redundancy level the loss demands, given the current level. Hysteretic:

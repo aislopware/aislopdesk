@@ -307,7 +307,7 @@ mod tests {
         assert!(!w.is_observing_loss(10.0)); // only 1 event
         w.note_event(10.5);
         assert!(w.is_observing_loss(10.5)); // 2 within 1s
-                                            // both age out by t=12
+        // both age out by t=12
         assert!(!w.is_observing_loss(12.0));
     }
 

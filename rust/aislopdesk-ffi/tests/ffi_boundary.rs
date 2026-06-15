@@ -10,12 +10,22 @@
 #![allow(clippy::borrow_as_ptr)]
 
 use aislopdesk_ffi::video::{
-    aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id, aisd_decode_gate_min_lost_frame_id,
-    aisd_decode_gate_mode, aisd_decode_gate_new, aisd_decode_gate_note_decode_succeeded,
-    aisd_decode_gate_note_hard_decode_failure, aisd_decode_gate_note_loss,
-    aisd_decode_gate_verdict, aisd_input_button_balance_free, aisd_input_button_balance_held_mask,
-    aisd_input_button_balance_new, aisd_input_button_balance_plan, aisd_owd_late_detector_free,
-    aisd_owd_late_detector_new, aisd_owd_late_detector_note, aisd_pacer_depth_policy_depth,
+    AISD_DECODE_GATE_MODE_BROKEN_CHAIN, AISD_DECODE_GATE_MODE_NEED_KEYFRAME,
+    AISD_DECODE_GATE_MODE_OPEN, AISD_DECODE_GATE_VERDICT_DROP, AISD_DECODE_GATE_VERDICT_SUBMIT,
+    AISD_MUX_BOOTSTRAP_DELIVER, AISD_MUX_BOOTSTRAP_DROP_NO_STAMP, AISD_MUX_DECISION_DROP,
+    AISD_MUX_DECISION_DROP_DRAINING, AISD_MUX_DECISION_DROP_RETIRED,
+    AISD_MUX_DECISION_REJECT_UNADMITTED, AISD_MUX_DECISION_ROUTE, AISD_PACER_GAP_FIRST,
+    AISD_RECOVERY_IDR_GRANT, AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT,
+    AISD_RECOVERY_IDR_SUPPRESS_STALE, AISD_RECOVERY_NETWORK_STATS,
+    AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST, AisdNetworkStats,
+    AisdPacerDepthConfig, AisdRecoveryMessage, AisdRect, AisdSystemDialog, AisdVideoControl,
+    AisdVideoSummary, aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id,
+    aisd_decode_gate_min_lost_frame_id, aisd_decode_gate_mode, aisd_decode_gate_new,
+    aisd_decode_gate_note_decode_succeeded, aisd_decode_gate_note_hard_decode_failure,
+    aisd_decode_gate_note_loss, aisd_decode_gate_verdict, aisd_input_button_balance_free,
+    aisd_input_button_balance_held_mask, aisd_input_button_balance_new,
+    aisd_input_button_balance_plan, aisd_owd_late_detector_free, aisd_owd_late_detector_new,
+    aisd_owd_late_detector_note, aisd_pacer_depth_policy_depth,
     aisd_pacer_depth_policy_drain_counters, aisd_pacer_depth_policy_free,
     aisd_pacer_depth_policy_late_threshold_seconds, aisd_pacer_depth_policy_new,
     aisd_pacer_depth_policy_note_arrival, aisd_pacer_depth_policy_note_network_late,
@@ -34,27 +44,18 @@ use aislopdesk_ffi::video::{
     aisd_video_mux_router_bootstrap_action, aisd_video_mux_router_end_drain,
     aisd_video_mux_router_free, aisd_video_mux_router_is_admitted,
     aisd_video_mux_router_is_draining, aisd_video_mux_router_new, aisd_video_mux_router_retire,
-    aisd_video_mux_router_route, aisd_ycbcr_coefficients, AisdNetworkStats, AisdPacerDepthConfig,
-    AisdRecoveryMessage, AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
-    AISD_DECODE_GATE_MODE_BROKEN_CHAIN, AISD_DECODE_GATE_MODE_NEED_KEYFRAME,
-    AISD_DECODE_GATE_MODE_OPEN, AISD_DECODE_GATE_VERDICT_DROP, AISD_DECODE_GATE_VERDICT_SUBMIT,
-    AISD_MUX_BOOTSTRAP_DELIVER, AISD_MUX_BOOTSTRAP_DROP_NO_STAMP, AISD_MUX_DECISION_DROP,
-    AISD_MUX_DECISION_DROP_DRAINING, AISD_MUX_DECISION_DROP_RETIRED,
-    AISD_MUX_DECISION_REJECT_UNADMITTED, AISD_MUX_DECISION_ROUTE, AISD_PACER_GAP_FIRST,
-    AISD_RECOVERY_IDR_GRANT, AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT,
-    AISD_RECOVERY_IDR_SUPPRESS_STALE, AISD_RECOVERY_NETWORK_STATS,
-    AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
+    aisd_video_mux_router_route, aisd_ycbcr_coefficients,
 };
 use aislopdesk_ffi::{
-    aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free, aisd_frame_decoder_new,
-    aisd_frame_decoder_next, aisd_seq_distance, aisd_wire_data_frame_encode_into,
-    aisd_wire_data_frame_view, aisd_wire_message_decode, aisd_wire_message_encode,
-    aisd_wire_message_free, AisdBytes, AisdDataFrameView, AisdWireMessage, AISD_EMPTY,
-    AISD_ERR_FRAME_TOO_LARGE, AISD_ERR_INVALID_ARGUMENT, AISD_ERR_MALFORMED, AISD_ERR_NULL,
-    AISD_ERR_TRUNCATED, AISD_ERR_UNKNOWN_TYPE, AISD_OK, AISD_WIRE_ACK, AISD_WIRE_BELL,
-    AISD_WIRE_BYE, AISD_WIRE_COMMAND_STATUS, AISD_WIRE_EXIT, AISD_WIRE_HELLO, AISD_WIRE_HELLO_ACK,
-    AISD_WIRE_INPUT, AISD_WIRE_NOTIFICATION, AISD_WIRE_OUTPUT, AISD_WIRE_PING, AISD_WIRE_PONG,
-    AISD_WIRE_RESIZE, AISD_WIRE_TITLE,
+    AISD_EMPTY, AISD_ERR_FRAME_TOO_LARGE, AISD_ERR_INVALID_ARGUMENT, AISD_ERR_MALFORMED,
+    AISD_ERR_NULL, AISD_ERR_TRUNCATED, AISD_ERR_UNKNOWN_TYPE, AISD_OK, AISD_WIRE_ACK,
+    AISD_WIRE_BELL, AISD_WIRE_BYE, AISD_WIRE_COMMAND_STATUS, AISD_WIRE_EXIT, AISD_WIRE_HELLO,
+    AISD_WIRE_HELLO_ACK, AISD_WIRE_INPUT, AISD_WIRE_NOTIFICATION, AISD_WIRE_OUTPUT, AISD_WIRE_PING,
+    AISD_WIRE_PONG, AISD_WIRE_RESIZE, AISD_WIRE_TITLE, AisdBytes, AisdDataFrameView,
+    AisdWireMessage, aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free,
+    aisd_frame_decoder_new, aisd_frame_decoder_next, aisd_seq_distance,
+    aisd_wire_data_frame_encode_into, aisd_wire_data_frame_view, aisd_wire_message_decode,
+    aisd_wire_message_encode, aisd_wire_message_free,
 };
 
 /// A zeroed message — every field default, both buffers empty.
@@ -96,41 +97,45 @@ const fn borrow(bytes: &[u8]) -> AisdBytes {
 
 /// Reads an owned/returned `AisdBytes` as a slice.
 unsafe fn view(b: AisdBytes) -> Vec<u8> {
-    if b.ptr.is_null() || b.len == 0 {
-        Vec::new()
-    } else {
-        core::slice::from_raw_parts(b.ptr, b.len).to_vec()
+    unsafe {
+        if b.ptr.is_null() || b.len == 0 {
+            Vec::new()
+        } else {
+            core::slice::from_raw_parts(b.ptr, b.len).to_vec()
+        }
     }
 }
 
 /// Encodes `msg`, feeds the frame through a fresh decoder, and returns the decoded flat
 /// struct (status must be `AISD_OK`). The caller frees the returned message's buffers.
 unsafe fn round_trip(msg: &AisdWireMessage) -> AisdWireMessage {
-    let mut frame = AisdBytes::EMPTY;
-    assert_eq!(
-        aisd_wire_message_encode(msg, &mut frame),
-        AISD_OK,
-        "encode should succeed for tag {}",
-        msg.tag
-    );
+    unsafe {
+        let mut frame = AisdBytes::EMPTY;
+        assert_eq!(
+            aisd_wire_message_encode(msg, &mut frame),
+            AISD_OK,
+            "encode should succeed for tag {}",
+            msg.tag
+        );
 
-    let decoder = aisd_frame_decoder_new();
-    assert_eq!(
-        aisd_frame_decoder_append(decoder, frame.ptr, frame.len),
-        AISD_OK
-    );
+        let decoder = aisd_frame_decoder_new();
+        assert_eq!(
+            aisd_frame_decoder_append(decoder, frame.ptr, frame.len),
+            AISD_OK
+        );
 
-    let mut out = base();
-    let status = aisd_frame_decoder_next(decoder, &mut out);
-    assert_eq!(status, AISD_OK, "decode should succeed for tag {}", msg.tag);
+        let mut out = base();
+        let status = aisd_frame_decoder_next(decoder, &mut out);
+        assert_eq!(status, AISD_OK, "decode should succeed for tag {}", msg.tag);
 
-    // The stream is now drained.
-    let mut spare = base();
-    assert_eq!(aisd_frame_decoder_next(decoder, &mut spare), AISD_EMPTY);
+        // The stream is now drained.
+        let mut spare = base();
+        assert_eq!(aisd_frame_decoder_next(decoder, &mut spare), AISD_EMPTY);
 
-    aisd_frame_decoder_free(decoder);
-    aisd_bytes_free(frame);
-    out
+        aisd_frame_decoder_free(decoder);
+        aisd_bytes_free(frame);
+        out
+    }
 }
 
 #[test]
@@ -948,7 +953,7 @@ fn recovery_deduper_opaque_handle_dedups_and_frees() {
         );
         aisd_recovery_deduper_free(d);
         aisd_recovery_deduper_free(core::ptr::null_mut()); // no-op
-                                                           // A null handle fails open (process, never drop).
+        // A null handle fails open (process, never drop).
         assert_eq!(
             aisd_recovery_deduper_admit(core::ptr::null_mut(), wire.as_ptr(), wire.len(), 0.0),
             1
@@ -1053,7 +1058,7 @@ fn static_idr_decider_opaque_handle_drives_cadence_and_frees() {
         assert_eq!(aisd_static_idr_decider_should_reencode(d, 11.5, 0, 1), 0);
         aisd_static_idr_decider_free(d);
         aisd_static_idr_decider_free(core::ptr::null_mut()); // no-op
-                                                             // A null handle never forces an encode.
+        // A null handle never forces an encode.
         assert_eq!(
             aisd_static_idr_decider_should_reencode(core::ptr::null(), 0.0, 1, 1),
             0
@@ -1113,7 +1118,7 @@ fn decode_gate_opaque_handle_gates_until_anchor_and_frees() {
 
         aisd_decode_gate_free(g);
         aisd_decode_gate_free(core::ptr::null_mut()); // no-op
-                                                      // A null handle reads Open and submits everything.
+        // A null handle reads Open and submits everything.
         assert_eq!(
             aisd_decode_gate_mode(core::ptr::null()),
             AISD_DECODE_GATE_MODE_OPEN
@@ -1154,7 +1159,7 @@ fn owd_late_detector_opaque_handle_flags_spikes_and_frees() {
         assert!(dev > 10.0);
         aisd_owd_late_detector_free(d);
         aisd_owd_late_detector_free(core::ptr::null_mut()); // no-op
-                                                            // A null handle never reports late.
+        // A null handle never reports late.
         assert_eq!(
             aisd_owd_late_detector_note(core::ptr::null_mut(), 0.0, 0, interval, &mut dev),
             0
@@ -1186,7 +1191,7 @@ fn input_button_balance_opaque_handle_balances_and_frees() {
         assert_eq!(aisd_input_button_balance_held_mask(b), 0b110);
         aisd_input_button_balance_free(b);
         aisd_input_button_balance_free(core::ptr::null_mut()); // no-op
-                                                               // A null handle returns the default plan and an empty mask.
+        // A null handle returns the default plan and an empty mask.
         let p = aisd_input_button_balance_plan(core::ptr::null_mut(), 3, 0);
         assert_eq!(p.has_pre_release, 0);
         assert_eq!(p.suppress, 0);
@@ -1221,7 +1226,7 @@ fn recovery_idr_policy_opaque_handle_gates_grants_and_frees() {
         );
         aisd_recovery_idr_policy_free(p);
         aisd_recovery_idr_policy_free(core::ptr::null_mut()); // no-op
-                                                              // A null handle grants and reports zero tokens.
+        // A null handle grants and reports zero tokens.
         assert_eq!(
             aisd_recovery_idr_policy_decide(core::ptr::null_mut(), 0.0, 0, 0, 0.0),
             AISD_RECOVERY_IDR_GRANT
@@ -1346,7 +1351,7 @@ fn pacer_depth_policy_opaque_handle_promotes_and_frees() {
         );
         aisd_pacer_depth_policy_free(p);
         aisd_pacer_depth_policy_free(core::ptr::null_mut()); // no-op
-                                                             // Null handle: depth 1, First, empty drain.
+        // Null handle: depth 1, First, empty drain.
         assert_eq!(aisd_pacer_depth_policy_depth(core::ptr::null()), 1);
         assert_eq!(
             aisd_pacer_depth_policy_drain_counters(core::ptr::null_mut()).late_frames,

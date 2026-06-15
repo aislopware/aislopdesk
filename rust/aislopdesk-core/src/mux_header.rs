@@ -21,7 +21,7 @@ pub const CHANNEL_ID_LENGTH: usize = 4;
 
 /// A bare `[u32 BE channelID][payload…]` prefix codec for opaque media/cursor lanes.
 pub mod video_mux_header {
-    use super::{ByteReader, ByteWriter, Result, CHANNEL_ID_LENGTH};
+    use super::{ByteReader, ByteWriter, CHANNEL_ID_LENGTH, Result};
 
     /// Prepends `channel_id` to an opaque payload (carried verbatim).
     #[must_use]

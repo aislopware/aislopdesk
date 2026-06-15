@@ -141,10 +141,10 @@ impl RecoveryIdrPolicy {
         if !self.recent_keyframes.iter().any(|k| k.id == frame_id) {
             return;
         }
-        if let Some(delivered) = self.delivered_keyframe_id {
-            if distance_wrapped(frame_id, delivered) <= 0 {
-                return;
-            }
+        if let Some(delivered) = self.delivered_keyframe_id
+            && distance_wrapped(frame_id, delivered) <= 0
+        {
+            return;
         }
         self.delivered_keyframe_id = Some(frame_id);
     }
@@ -158,18 +158,17 @@ impl RecoveryIdrPolicy {
         smoothed_rtt_seconds: f64,
     ) -> Verdict {
         self.refill(now);
-        if let Some(granted) = self.granted_at {
-            if now - granted < self.config.grant_pending_timeout {
-                return Verdict::SuppressGrantPending;
-            }
+        if let Some(granted) = self.granted_at
+            && now - granted < self.config.grant_pending_timeout
+        {
+            return Verdict::SuppressGrantPending;
         }
         if let (Some(delivered), Some(request)) = (self.delivered_keyframe_id, client_last_decoded)
+            && distance_wrapped(request, delivered) < 0
         {
-            if distance_wrapped(request, delivered) < 0 {
-                // The client's last-decoded is monotonic, so a request older than a keyframe it
-                // ACKED was composed before that keyframe decoded — stale.
-                return Verdict::SuppressStale;
-            }
+            // The client's last-decoded is monotonic, so a request older than a keyframe it
+            // ACKED was composed before that keyframe decoded — stale.
+            return Verdict::SuppressStale;
         }
         if let Some(newest) = self.recent_keyframes.last() {
             // None last-decoded (nothing decoded yet) is maximally behind by definition.
@@ -198,13 +197,13 @@ impl RecoveryIdrPolicy {
     fn refill(&mut self, now: f64) {
         // The Swift shell's `defer { lastRefillAt = now }` pattern matches this: the stamp advances
         // on EVERY call, the refill only when a strictly-later `now` has a prior stamp to measure against.
-        if let Some(last) = self.last_refill_at {
-            if now > last {
-                self.tokens = self
-                    .config
-                    .bucket_capacity
-                    .min(self.tokens + (now - last) * self.config.refill_tokens_per_second);
-            }
+        if let Some(last) = self.last_refill_at
+            && now > last
+        {
+            self.tokens = self
+                .config
+                .bucket_capacity
+                .min(self.tokens + (now - last) * self.config.refill_tokens_per_second);
         }
         self.last_refill_at = Some(now);
     }

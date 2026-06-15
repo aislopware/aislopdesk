@@ -267,7 +267,7 @@ mod tests {
         let _ = bal.plan(&down(MouseButton::Left));
         assert!(!bal.plan(&up(MouseButton::Left)).suppress); // released
         assert!(bal.plan(&up(MouseButton::Left)).suppress); // duplicate dropped
-                                                            // A fresh click after the redundant ups is clean — the button was released by the first up.
+        // A fresh click after the redundant ups is clean — the button was released by the first up.
         assert_eq!(
             bal.plan(&down(MouseButton::Left)).pre_release,
             None,

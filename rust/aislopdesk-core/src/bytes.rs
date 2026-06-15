@@ -93,13 +93,13 @@ impl ByteWriter {
 
     /// Number of bytes written so far.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.buf.len()
     }
 
     /// Whether nothing has been written yet.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 

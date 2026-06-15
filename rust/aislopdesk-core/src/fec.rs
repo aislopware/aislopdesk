@@ -167,14 +167,14 @@ impl FecScheme for XorParityFec {
         while index < data.len() {
             let upper = (index + group_size).min(data.len());
             let missing: Vec<usize> = (index..upper).filter(|&i| data[i].is_none()).collect();
-            if missing.len() == 1 {
-                if let Some(Some(parity_bytes)) = parity.get(group_index) {
-                    let survivors: Vec<&[u8]> =
-                        (index..upper).filter_map(|i| data[i].as_deref()).collect();
-                    let recovered_encoded = Self::xor_recover(parity_bytes, &survivors);
-                    if let Some(bytes) = Self::strip_length_prefix(&recovered_encoded) {
-                        data[missing[0]] = Some(bytes);
-                    }
+            if missing.len() == 1
+                && let Some(Some(parity_bytes)) = parity.get(group_index)
+            {
+                let survivors: Vec<&[u8]> =
+                    (index..upper).filter_map(|i| data[i].as_deref()).collect();
+                let recovered_encoded = Self::xor_recover(parity_bytes, &survivors);
+                if let Some(bytes) = Self::strip_length_prefix(&recovered_encoded) {
+                    data[missing[0]] = Some(bytes);
                 }
             }
             index += group_size;

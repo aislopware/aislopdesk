@@ -28,7 +28,7 @@ impl SessionId {
     /// # Panics
     /// Panics if `bytes.len() != 16` — a programming error, never reachable from the wire.
     #[must_use]
-    pub fn from_slice(bytes: &[u8]) -> Self {
+    pub const fn from_slice(bytes: &[u8]) -> Self {
         let mut raw = [0u8; 16];
         raw.copy_from_slice(bytes);
         Self(raw)

@@ -36,10 +36,10 @@ impl DecodeFrontier {
 
     /// Folds one successfully-decoded frame. Keep-newest, wrap-aware; older/equal IDs are no-ops.
     pub const fn note_decoded(&mut self, frame_id: u32) {
-        if let Some(current) = self.last_decoded_frame_id {
-            if distance_wrapped(frame_id, current) <= 0 {
-                return;
-            }
+        if let Some(current) = self.last_decoded_frame_id
+            && distance_wrapped(frame_id, current) <= 0
+        {
+            return;
         }
         self.last_decoded_frame_id = Some(frame_id);
     }

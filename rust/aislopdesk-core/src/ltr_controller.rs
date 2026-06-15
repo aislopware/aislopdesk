@@ -80,7 +80,7 @@ impl LtrController {
 
     /// Whether ANY token has been acknowledged — the ACKED-ONLY gate's positive signal.
     #[must_use]
-    pub fn has_acked_token(&self) -> bool {
+    pub const fn has_acked_token(&self) -> bool {
         !self.acknowledged_tokens.is_empty()
     }
 

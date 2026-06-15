@@ -99,10 +99,10 @@ impl WindowParkingLedger {
     pub fn park(&mut self, channel_id: ChannelId, window_id: WindowId) -> ParkDecision {
         // 1) Same lane re-parking the same window (hello retransmit / re-mint) — never double-count.
         //    Requires BOTH the binding to match AND the window to still be parked.
-        if self.channel_window.get(&channel_id) == Some(&window_id) {
-            if let Some(p) = self.parked.get(&window_id) {
-                return ParkDecision::Reuse(p.achieved_size);
-            }
+        if self.channel_window.get(&channel_id) == Some(&window_id)
+            && let Some(p) = self.parked.get(&window_id)
+        {
+            return ParkDecision::Reuse(p.achieved_size);
         }
         // 2) Another lane already parked this window — share it (one move, refcounted restore).
         if let Some(p) = self.parked.get_mut(&window_id) {

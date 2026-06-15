@@ -253,46 +253,52 @@ mod tests {
     // A normal app window (Chrome) is NOT a system dialog.
     #[test]
     fn regular_app_window_ignored() {
-        assert!(classify_default(&snap(
-            1783,
-            "Google Chrome",
-            "com.google.Chrome",
-            true,
-            700.0,
-            500.0,
-            "",
-        ))
-        .is_none());
+        assert!(
+            classify_default(&snap(
+                1783,
+                "Google Chrome",
+                "com.google.Chrome",
+                true,
+                700.0,
+                500.0,
+                "",
+            ))
+            .is_none()
+        );
     }
 
     // The SecurityAgent OFFSCREEN helper (onScreen=false, 500×500) must not surface.
     #[test]
     fn offscreen_helper_ignored() {
-        assert!(classify_default(&snap(
-            1967,
-            "SecurityAgent",
-            "com.apple.SecurityAgent",
-            false,
-            500.0,
-            500.0,
-            "",
-        ))
-        .is_none());
+        assert!(
+            classify_default(&snap(
+                1967,
+                "SecurityAgent",
+                "com.apple.SecurityAgent",
+                false,
+                500.0,
+                500.0,
+                "",
+            ))
+            .is_none()
+        );
     }
 
     // A sub-minSize same-owner sliver (an indicator) is rejected.
     #[test]
     fn tiny_window_ignored() {
-        assert!(classify_default(&snap(
-            9,
-            "SecurityAgent",
-            "com.apple.SecurityAgent",
-            true,
-            20.0,
-            20.0,
-            "",
-        ))
-        .is_none());
+        assert!(
+            classify_default(&snap(
+                9,
+                "SecurityAgent",
+                "com.apple.SecurityAgent",
+                true,
+                20.0,
+                20.0,
+                "",
+            ))
+            .is_none()
+        );
     }
 
     // detect() filters a mixed snapshot down to just the system prompts, order preserved.
@@ -406,16 +412,18 @@ mod tests {
     // Not on screen short-circuits to None regardless of owner/size.
     #[test]
     fn not_on_screen_short_circuits() {
-        assert!(classify_default(&snap(
-            17,
-            "SecurityAgent",
-            "com.apple.SecurityAgent",
-            false,
-            400.0,
-            200.0,
-            "",
-        ))
-        .is_none());
+        assert!(
+            classify_default(&snap(
+                17,
+                "SecurityAgent",
+                "com.apple.SecurityAgent",
+                false,
+                400.0,
+                200.0,
+                "",
+            ))
+            .is_none()
+        );
     }
 
     // Empty owner name → label falls back to the bundle id.

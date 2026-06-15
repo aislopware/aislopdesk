@@ -180,7 +180,7 @@ impl RecoveryMessage {
             other => {
                 return Err(VideoProtocolError::malformed(format!(
                     "unknown recovery message type {other}"
-                )))
+                )));
             }
         };
         if r.bytes_remaining() == 0 {

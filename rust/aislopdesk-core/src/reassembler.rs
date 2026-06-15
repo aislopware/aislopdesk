@@ -132,12 +132,11 @@ impl FrameReassembler {
         if self.retired.contains(&frame_id) {
             return ReassemblyResult::Stale;
         }
-        if let Some(retired_high) = self.highest_retired_frame_id {
-            if distance_wrapped(frame_id, retired_high) <= 0
-                && !self.pending.contains_key(&frame_id)
-            {
-                return ReassemblyResult::Stale;
-            }
+        if let Some(retired_high) = self.highest_retired_frame_id
+            && distance_wrapped(frame_id, retired_high) <= 0
+            && !self.pending.contains_key(&frame_id)
+        {
+            return ReassemblyResult::Stale;
         }
 
         // Advance the loss frontier.
@@ -269,10 +268,10 @@ impl FrameReassembler {
             Some(_) => {}
         }
         // Bound the retired set so a long session doesn't grow it unboundedly.
-        if self.retired.len() > 512 {
-            if let Some(high) = self.highest_retired_frame_id {
-                self.retired.retain(|&x| distance_wrapped(high, x) <= 256);
-            }
+        if self.retired.len() > 512
+            && let Some(high) = self.highest_retired_frame_id
+        {
+            self.retired.retain(|&x| distance_wrapped(high, x) <= 256);
         }
     }
 }
@@ -330,14 +329,12 @@ fn assemble(fec: Option<&dyn FecScheme>, entry: &Pending) -> Option<(Vec<u8>, bo
         .collect();
 
     let had_hole = data_fragments.iter().any(Option::is_none);
-    if had_hole {
-        if let (Some(fec), Some(g)) = (fec, parity_group_size(fec, entry)) {
-            let parity_count = usize::from(entry.frag_count).saturating_sub(data_count);
-            let parity_fragments: Vec<Option<Vec<u8>>> = (0..parity_count)
-                .map(|i| entry.parity.get(&i).cloned())
-                .collect();
-            fec.recover(&mut data_fragments, &parity_fragments, g);
-        }
+    if had_hole && let (Some(fec), Some(g)) = (fec, parity_group_size(fec, entry)) {
+        let parity_count = usize::from(entry.frag_count).saturating_sub(data_count);
+        let parity_fragments: Vec<Option<Vec<u8>>> = (0..parity_count)
+            .map(|i| entry.parity.get(&i).cloned())
+            .collect();
+        fec.recover(&mut data_fragments, &parity_fragments, g);
     }
 
     if data_fragments.iter().any(Option::is_none) {

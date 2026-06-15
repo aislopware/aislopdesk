@@ -54,10 +54,10 @@ pub fn interleave(fragments: Vec<FrameFragment>, group_size: usize) -> Vec<Frame
     for rank in 0..group_size {
         for group in 0..num_groups {
             let idx = group * group_size + rank;
-            if idx < data.len() {
-                if let Some(fragment) = data[idx].take() {
-                    ordered.push(fragment);
-                }
+            if idx < data.len()
+                && let Some(fragment) = data[idx].take()
+            {
+                ordered.push(fragment);
             }
         }
     }
@@ -116,10 +116,12 @@ mod tests {
             .collect();
         assert_eq!(after_data, vec![0, 3, 6, 1, 4, 2, 5]);
         // parity stays last
-        assert!(after
-            .iter()
-            .skip(7)
-            .all(|f| f.header.flags.contains(Flags::PARITY)));
+        assert!(
+            after
+                .iter()
+                .skip(7)
+                .all(|f| f.header.flags.contains(Flags::PARITY))
+        );
         // permutation: same set of frag_index values
         let after_set: std::collections::BTreeSet<u16> =
             after.iter().map(|f| f.header.frag_index).collect();

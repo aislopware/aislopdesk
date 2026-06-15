@@ -10,8 +10,8 @@
 //! connection.
 
 use super::envelope::{MuxEnvelopeCodec, MuxFrame};
-use crate::terminal::error::{Result, TerminalProtocolError};
 use crate::terminal::MAX_FRAME_PAYLOAD_LENGTH;
+use crate::terminal::error::{Result, TerminalProtocolError};
 
 /// Length of the big-endian `u32` mux-frame-length prefix.
 const PREFIX_LENGTH: usize = 4;

@@ -202,10 +202,11 @@ impl TrendlineEstimator {
             if self.overuse_start_ms.is_none() {
                 self.overuse_start_ms = Some(arrival_ms);
             }
-            if let Some(start) = self.overuse_start_ms {
-                if arrival_ms - start > OVERUSING_TIME_MS && trend >= self.prev_trend {
-                    self.state = State::Overusing;
-                }
+            if let Some(start) = self.overuse_start_ms
+                && arrival_ms - start > OVERUSING_TIME_MS
+                && trend >= self.prev_trend
+            {
+                self.state = State::Overusing;
             }
         } else if self.modified_trend < -self.threshold {
             self.state = State::Underusing;

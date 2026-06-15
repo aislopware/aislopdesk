@@ -438,8 +438,9 @@ mod tests {
         assert_eq!(data.len(), 6);
         assert_eq!(parity_count, 2);
         assert!(frags.iter().all(|f| f.header.frag_count == 8));
-        assert!(data
-            .iter()
-            .all(|f| f.header.flags.contains(Flags::KEYFRAME)));
+        assert!(
+            data.iter()
+                .all(|f| f.header.flags.contains(Flags::KEYFRAME))
+        );
     }
 }

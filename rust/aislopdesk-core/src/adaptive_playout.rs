@@ -171,7 +171,7 @@ mod tests {
     fn grows_fast_shrinks_slow() {
         let c = Config::default();
         let shrink = 0.002; // 2ms per tick
-                            // Cold start at floor, jitter jumps to 30ms target (0.8*30+4=28ms): grow immediately.
+        // Cold start at floor, jitter jumps to 30ms target (0.8*30+4=28ms): grow immediately.
         let grown = step_seconds(0.030, c.floor_seconds, shrink, &c);
         assert!(approx(grown, 0.028));
         // Link goes clean (2ms → 5.6ms target): shrink by at most 2ms, NOT straight to target.
@@ -179,7 +179,7 @@ mod tests {
         assert!(approx(s1, 0.026)); // 28 - 2
         let s2 = step_seconds(0.002, s1, shrink, &c);
         assert!(approx(s2, 0.024)); // 26 - 2
-                                    // ... and eventually settles AT the target, never below.
+        // ... and eventually settles AT the target, never below.
         let mut v = s2;
         for _ in 0..100 {
             v = step_seconds(0.002, v, shrink, &c);

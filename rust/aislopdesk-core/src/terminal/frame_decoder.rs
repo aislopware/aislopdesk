@@ -15,9 +15,9 @@
 //! returns `None`, or when the cursor crosses [`COMPACTION_THRESHOLD`]), amortizing total
 //! work to O(bytes). One decoder per channel per connection.
 
+use super::MAX_FRAME_PAYLOAD_LENGTH;
 use super::error::{Result, TerminalProtocolError};
 use super::wire_message::WireMessage;
-use super::MAX_FRAME_PAYLOAD_LENGTH;
 
 /// Length of the big-endian `u32` frame-length prefix.
 const PREFIX_LENGTH: usize = 4;
@@ -315,7 +315,7 @@ mod tests {
     fn scales_linearly_not_quadratically() {
         let small = drain_time(8_000);
         let large = drain_time(32_000); // 4× the frames
-                                        // Linear ≈ 4×; the old O(n²) front-removal ≈ 16×. Generous 8× bound absorbs noise.
+        // Linear ≈ 4×; the old O(n²) front-removal ≈ 16×. Generous 8× bound absorbs noise.
         assert!(
             large / small.max(1e-9) < 8.0,
             "decode time must scale ~linearly (got {}× for 4× frames)",

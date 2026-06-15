@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn multiple_dialogs_accumulate() {
         let target = r(200.0, 200.0, 400.0, 300.0); // x[200,600] y[200,500]
-                                                    // A (100,250,200,200): inter (200,250,100,200)=20000 / smaller 40000 = 0.5 → joins.
+        // A (100,250,200,200): inter (200,250,100,200)=20000 / smaller 40000 = 0.5 → joins.
         let a = WindowSnapshot::new(1, PID, 0, r(100.0, 250.0, 200.0, 200.0));
         // B (400,150,300,400): inter (400,200,200,300)=60000 / smaller 120000 = 0.5 → joins.
         let b = WindowSnapshot::new(2, PID, 0, r(400.0, 150.0, 300.0, 400.0));
