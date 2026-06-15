@@ -19,7 +19,7 @@ final class SystemDialogCodecTests: XCTestCase {
 
     func testSystemDialogListRoundTripPreservesEveryField() throws {
         let dialogs = [
-            // The HW-probed SecurityAgent login prompt: secure class + keystrokes blocked (SEI live).
+            // The HW-probed SecurityAgent password prompt: owner is the label, title often empty, isSecure=true.
             SystemDialogSummary(
                 windowID: 1966,
                 owner: "SecurityAgent",
@@ -27,18 +27,6 @@ final class SystemDialogCodecTests: XCTestCase {
                 width: 260,
                 height: 312,
                 isSecure: true,
-                keystrokesBlocked: true,
-            ),
-            // A secure-class admin-auth prompt whose Secure Event Input is off → typable (the two
-            // flags differ, pinning their independence through the round-trip).
-            SystemDialogSummary(
-                windowID: 2001,
-                owner: "SecurityAgent",
-                title: "Authorize",
-                width: 420,
-                height: 220,
-                isSecure: true,
-                keystrokesBlocked: false,
             ),
             SystemDialogSummary(
                 windowID: 1755,
@@ -47,7 +35,6 @@ final class SystemDialogCodecTests: XCTestCase {
                 width: 880,
                 height: 448,
                 isSecure: false,
-                keystrokesBlocked: false,
             ),
         ]
         let msg = VideoControlMessage.systemDialogList(dialogs)
@@ -55,7 +42,7 @@ final class SystemDialogCodecTests: XCTestCase {
         XCTAssertEqual(
             try VideoControlMessage.decode(msg.encode()),
             .systemDialogList(dialogs),
-            "windowID/size/isSecure/keystrokesBlocked/owner/title all round-trip, in order",
+            "windowID/size/isSecure/owner/title all round-trip, in order",
         )
     }
 
@@ -72,7 +59,6 @@ final class SystemDialogCodecTests: XCTestCase {
             width: 9,
             height: 9,
             isSecure: true,
-            keystrokesBlocked: true,
         )
         let open = SystemDialogSummary(
             windowID: 2,
@@ -81,7 +67,6 @@ final class SystemDialogCodecTests: XCTestCase {
             width: 9,
             height: 9,
             isSecure: false,
-            keystrokesBlocked: false,
         )
         XCTAssertEqual(
             try VideoControlMessage.decode(VideoControlMessage.systemDialogList([secure, open]).encode()),
@@ -97,7 +82,6 @@ final class SystemDialogCodecTests: XCTestCase {
             width: 100,
             height: 50,
             isSecure: true,
-            keystrokesBlocked: true,
         )
         XCTAssertEqual(
             try VideoControlMessage.decode(VideoControlMessage.systemDialogList([d]).encode()),
@@ -121,7 +105,6 @@ final class SystemDialogCodecTests: XCTestCase {
         data.appendBE(UInt16(100)) // width
         data.appendBE(UInt16(50)) // height
         data.append(1) // isSecure = 1
-        data.append(0) // keystrokesBlocked = 0
         data.appendBE(UInt16(9999)) // ownerLen = 9999 but no bytes follow
         XCTAssertThrowsError(
             try VideoControlMessage.decode(data),

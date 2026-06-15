@@ -34,15 +34,7 @@ final class SystemDialogRespawnTests: XCTestCase {
     }
 
     private func dialog(_ wid: UInt32) -> SystemDialogInfo {
-        SystemDialogInfo(
-            windowID: wid,
-            owner: "SecurityAgent",
-            title: "sudo",
-            width: 400,
-            height: 200,
-            isSecure: true,
-            keystrokesBlocked: true,
-        )
+        SystemDialogInfo(windowID: wid, owner: "SecurityAgent", title: "sudo", width: 400, height: 200, isSecure: true)
     }
 
     private func dialogPaneIDs(_ store: WorkspaceStore) -> [PaneID] {

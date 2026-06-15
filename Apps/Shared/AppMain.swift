@@ -119,7 +119,6 @@ struct ClientAppMain {
                         width: $0.width,
                         height: $0.height,
                         isSecure: $0.isSecure,
-                        keystrokesBlocked: $0.keystrokesBlocked,
                     )
                 }
             }

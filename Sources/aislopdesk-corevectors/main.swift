@@ -353,23 +353,9 @@ root["videoControl"] = [
     vc("streamCadence", .streamCadence(fps: 60), ["fps": 60]),
     vc("listSystemDialogs", .listSystemDialogs, [:]),
     vc("systemDialogList", .systemDialogList([
-        SystemDialogSummary(
-            windowID: 9, owner: "SecurityAgent", title: "", width: 400, height: 200,
-            isSecure: true, keystrokesBlocked: true,
-        ),
-        SystemDialogSummary(
-            windowID: 10, owner: "SecurityAgent", title: "Authorize", width: 420, height: 220,
-            isSecure: true, keystrokesBlocked: false,
-        ),
+        SystemDialogSummary(windowID: 9, owner: "SecurityAgent", title: "", width: 400, height: 200, isSecure: true),
     ]), ["dialogs": [
-        [
-            "windowID": 9, "owner": "SecurityAgent", "title": "", "width": 400, "height": 200,
-            "isSecure": true, "keystrokesBlocked": true,
-        ],
-        [
-            "windowID": 10, "owner": "SecurityAgent", "title": "Authorize", "width": 420, "height": 220,
-            "isSecure": true, "keystrokesBlocked": false,
-        ],
+        ["windowID": 9, "owner": "SecurityAgent", "title": "", "width": 400, "height": 200, "isSecure": true],
     ]]),
 ]
 

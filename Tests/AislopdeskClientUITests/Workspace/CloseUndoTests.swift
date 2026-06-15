@@ -64,13 +64,7 @@ final class CloseUndoTests: XCTestCase {
     func testEphemeralDialogCloseIsNotRecorded() {
         let (ws, _, _) = twoPaneWorkspace()
         let store = makeStore(restoring: ws)
-        let dialogID = store.addSystemDialogPane(
-            windowID: 42,
-            owner: "SecurityAgent",
-            title: "sudo",
-            isSecure: true,
-            keystrokesBlocked: true,
-        )
+        let dialogID = store.addSystemDialogPane(windowID: 42, owner: "SecurityAgent", title: "sudo", isSecure: true)
 
         store.closePane(dialogID)
 

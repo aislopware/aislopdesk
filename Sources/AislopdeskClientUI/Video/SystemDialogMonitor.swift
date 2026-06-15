@@ -99,8 +99,7 @@ public final class SystemDialogMonitor {
             }
             manuallyClosedAt.removeValue(forKey: d.windowID)
             spawned[d.windowID] = store.addSystemDialogPane(
-                windowID: d.windowID, owner: d.owner, title: d.title,
-                isSecure: d.isSecure, keystrokesBlocked: d.keystrokesBlocked,
+                windowID: d.windowID, owner: d.owner, title: d.title, isSecure: d.isSecure,
             )
         }
     }
