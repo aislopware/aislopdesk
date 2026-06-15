@@ -3,10 +3,9 @@ import Foundation
 // MARK: - KeystrokeReplay (clipboard text → key-event sequence)
 
 /// One synthetic keystroke: a macOS virtual key code (`kVK_*`) plus whether Shift is held. The host's
-/// per-event input path (`InputInjector.postKey`) routes each of these through the virtual-HID keyboard
-/// when Secure Event Input is active and plain `CGEvent` otherwise — which is what lets "Paste as
-/// Keystrokes" type into a `sudo` / SecurityAgent password field where `keyboardSetUnicodeString`
-/// (the `.text` path) is OS-dropped.
+/// per-event input path (`InputInjector.postKey`) posts each as a `CGEvent` key — which types into a
+/// `sudo` / SecurityAgent password field (HW-proven 2026-06-15: a `CGEvent(.cghidEventTap)` keystroke
+/// reaches the secure field even with Secure Event Input active).
 public struct ReplayStroke: Sendable, Equatable {
     public var keyCode: UInt16
     public var shift: Bool

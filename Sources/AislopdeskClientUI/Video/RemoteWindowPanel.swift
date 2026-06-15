@@ -44,13 +44,13 @@ public final class RemoteWindowModel {
     /// non-nil ⇒ the live ``VideoWindowFactory`` view is shown.
     public private(set) var active: RemoteWindowDescriptor?
 
-    // MARK: Paste as Keystrokes (virtual-HID typing into secure fields)
+    // MARK: Paste as Keystrokes (per-key CGEvent typing into secure fields)
 
     /// The live key-injection sink the gated ``VideoWindowView`` publishes (via
     /// ``RemotePaneContext/onKeyInjectorReady``) once its session exists, and clears (`nil`) on
-    /// teardown. Each call drives the host's per-event input path, which routes to the virtual-HID
-    /// keyboard under Secure Event Input — so this types into `sudo` / SecurityAgent password fields
-    /// where the unicode `.text` path is OS-dropped. `(keyCode, down, shift)`.
+    /// teardown. Each call drives the host's per-event input path (`InputInjector.postKey`, plain
+    /// `CGEvent`) — which types into `sudo` / SecurityAgent password fields (CGEvent keys reach the
+    /// secure field even under Secure Event Input). `(keyCode, down, shift)`.
     public var keyInjector: ((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?
 
     /// Whether a paste-as-keystrokes is possible right now: streaming AND a live key sink is wired.

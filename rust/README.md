@@ -6,7 +6,7 @@ reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode
 gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission),
 coordinate mapping, the pure host server-logic (session state machine, the N-session
 UDP-mux router, input/recovery routing, motion coalescing, virtual-display / window /
-capture-region / system-dialog math, the virtual-HID keymap, the PTY-output sniffer), and
+capture-region / system-dialog math, the PTY-output sniffer), and
 the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control. Safe
 Rust, zero runtime dependencies.
 
@@ -84,7 +84,6 @@ rust/
       window_parking_ledger.rs   VD window-park refcount + channel→window bookkeeping
       virtual_display_geometry.rs HiDPI point/pixel/mm math + display placement / chip limit / refresh
       system_dialog_detector.rs  system auth-dialog (SecurityAgent/coreauthd) classifier
-      virtual_hid_keyboard.rs    kVK_* → USB HID usage map + modifier byte + 8-byte boot report
       host_output_sniffer.rs     PTY-output OSC/title/bell/OSC-133/notification byte state machine
       --- terminal (PTY) path ---
       terminal/

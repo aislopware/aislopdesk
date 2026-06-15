@@ -83,7 +83,7 @@ public struct RemotePaneContext {
     public var onStreamNativeSize: ((_ target: CGSize, _ current: CGSize) -> Void)?
     /// PASTE AS KEYSTROKES: the live video view publishes a key-injection closure here once its
     /// session exists (and `nil` on teardown), so the pane's "Paste as Keystrokes" action can drive
-    /// the SAME secure-input-aware key path the keyboard uses (virtual-HID under SEI). The closure is
+    /// the SAME per-key `CGEvent` path the keyboard uses (`InputInjector.postKey`). The closure is
     /// `(keyCode, down, shift)`. `nil` (the standalone default) ⇒ no canvas to receive the sink.
     public var onKeyInjectorReady: ((((_ keyCode: UInt16, _ down: Bool, _ shift: Bool) -> Void)?) -> Void)?
 

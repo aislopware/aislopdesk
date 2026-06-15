@@ -73,7 +73,7 @@ OS integration. The same core is the basis for a future Android client over C-AB
 | `aislopdesk-videohostd`  | exec | GUI-video host daemon (window capture; needs GUI session + TCC). |
 | `aislopdesk-loopback-validate` | exec | Headless video-pipeline validator (real HW encode→decode, FEC, ABR). |
 | `aislopdesk-corevectors` | exec | Emits the golden reference corpus the Rust core's parity test consumes. |
-| `aislopdesk-framewatch`, `aislopdesk-capture-probe`, `aislopdesk-hid-probe` | exec | Diagnostics: ScreenCaptureKit cadence, window-capture, virtual-HID. |
+| `aislopdesk-framewatch`, `aislopdesk-capture-probe` | exec | Diagnostics: ScreenCaptureKit cadence, window-capture. |
 
 The Rust core's codecs/FEC/controllers/terminal-protocol are reached through the
 `CAislopdeskFFI` C target (links `libaislopdesk_ffi.a`).

@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - Secret-aware paste guard
 
-/// The risk verdict for a "Paste as Keystrokes" action — surfaced as a confirmation before the
-/// virtual-HID actually types the clipboard into a remote field. The point: the same capability that can
+/// The risk verdict for a "Paste as Keystrokes" action — surfaced as a confirmation before the host
+/// actually types the clipboard into a remote field. The point: the same capability that can
 /// type into a `sudo` / SecurityAgent password field can also type a SECRET into a field that echoes it,
 /// or splat a whole FILE into a password prompt. This classifies the payload-shape × target so the UI can
 /// warn before either happens.

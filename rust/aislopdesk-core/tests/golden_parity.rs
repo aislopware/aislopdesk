@@ -35,7 +35,6 @@ use aislopdesk_core::udp_receive_loop_policy::UDPReceiveLoopPolicy;
 use aislopdesk_core::video_control::{SystemDialogSummary, VideoControlMessage, WindowSummary};
 use aislopdesk_core::video_session::SizeNegotiation;
 use aislopdesk_core::virtual_display_geometry::{self, VirtualDisplayGeometry};
-use aislopdesk_core::virtual_hid_keyboard::{self, HIDKeyboardState};
 use aislopdesk_core::window_geometry::WindowGeometryMessage;
 use aislopdesk_core::window_placement;
 use aislopdesk_core::ycbcr::{self, ColorRange};
@@ -1264,89 +1263,6 @@ fn input_motion_coalesce_parity() {
             .map(|v| v.as_str().unwrap().to_owned())
             .collect();
         assert_eq!(got, expected, "inputMotionCoalesce/{}", strv(r, "name"));
-    }
-}
-
-// ----- VirtualHIDKeyboard (boot-keyboard report parity) -----
-//
-// Replays the `VirtualHIDKeyboard` / `HIDKeyboardState` golden vectors: the
-// keycode→HID-usage table over the full vk byte range, the modifier byte for every
-// `InputModifiers` raw-bit combination, the boot-report layout, and a scripted
-// `HIDKeyboardState` transcript comparing each returned report's bytes (never the internal
-// pressed set).
-
-#[test]
-fn vhid_hid_usage_parity() {
-    let root = load();
-    for r in section(&root, "vhidHidUsage") {
-        let vk = u16v(r, "vk");
-        let got = virtual_hid_keyboard::hid_usage(vk);
-        let expected = if r["usage"].is_null() {
-            None
-        } else {
-            Some(u8v(r, "usage"))
-        };
-        assert_eq!(got, expected, "hidUsage vk={vk:#06x}");
-    }
-}
-
-#[test]
-fn vhid_modifier_byte_parity() {
-    let root = load();
-    for r in section(&root, "vhidModifierByte") {
-        let raw = u8v(r, "raw");
-        let got = virtual_hid_keyboard::modifier_byte(InputModifiers(raw));
-        assert_eq!(got, u8v(r, "modByte"), "modifierByte raw={raw}");
-    }
-}
-
-#[test]
-fn vhid_boot_report_parity() {
-    let root = load();
-    for r in section(&root, "vhidBootReport") {
-        let keys = hexv(r, "keysHex");
-        let got = virtual_hid_keyboard::boot_report(u8v(r, "modifiers"), &keys);
-        assert_hex(
-            &format!("vhidBootReport/{}", strv(r, "name")),
-            &got,
-            strv(r, "hex"),
-        );
-    }
-}
-
-#[test]
-fn vhid_state_transcript_parity() {
-    let root = load();
-    // One HIDKeyboardState driven through the SAME op stream the Swift dumper recorded; each
-    // step compares only the returned report bytes (or `None` ⇒ a `null` reportHex).
-    let mut s = HIDKeyboardState::new();
-    for (i, op) in section(&root, "vhidStateTranscript").iter().enumerate() {
-        let got: Option<Vec<u8>> = match strv(op, "op") {
-            "apply" => s.apply(
-                u16v(op, "vk"),
-                boolv(op, "down"),
-                InputModifiers(u8v(op, "mods")),
-            ),
-            "releaseAll" => Some(s.release_all()),
-            "releaseAllReport" => Some(s.release_all_report()),
-            other => panic!("unknown vhid transcript op {other}"),
-        };
-        match (got, &op["reportHex"]) {
-            (Some(report), expected) => {
-                assert_eq!(
-                    to_hex(&report),
-                    expected.as_str().unwrap_or_else(|| panic!(
-                        "vhid transcript step {i}: Rust returned a report but Swift dumped null"
-                    )),
-                    "vhid transcript step {i} ({})",
-                    strv(op, "op")
-                );
-            }
-            (None, expected) => assert!(
-                expected.is_null(),
-                "vhid transcript step {i}: Rust returned None but Swift dumped {expected:?}"
-            ),
-        }
     }
 }
 

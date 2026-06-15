@@ -2,7 +2,6 @@
 import AislopdeskVideoProtocol
 import AppKit
 import ApplicationServices
-import Carbon.HIToolbox // IsSecureEventInputEnabled()
 import CoreGraphics
 import Foundation
 
@@ -69,21 +68,6 @@ public final class InputInjector: @unchecked Sendable {
     /// post tap + cursor move differ.
     private static let injectToPid = ProcessInfo.processInfo.environment["AISLOPDESK_VIDEO_INJECT_TO_PID"] != nil
     private static let inputTrace = ProcessInfo.processInfo.environment["AISLOPDESK_INPUT_TRACE"] != nil
-    /// VIRTUAL-HID keyboard (`AISLOPDESK_VIRTUAL_HID=1`): make the DriverKit virtual keyboard
-    /// (aislopdesk-hid-bridge) AVAILABLE as the keyboard backend. It is used ONLY while Secure Event
-    /// Input is active — i.e. a SecurityAgent password field is up, the one case the `CGEvent` path
-    /// can't reach (SEI drops synthetic CGEvents but not HID-device input). Everything else keeps
-    /// typing through `CGEvent` (no bridge dependency for normal keystrokes). Opt-in: the operator must
-    /// run the bridge (see hid-bridge/ + scripts/setup-virtual-hid.sh). Mouse/scroll always stay on
-    /// CGEvent (SEI is keyboard-only). See ``keyboardBackend(virtualHIDAvailable:secureInputActive:)``.
-    private static let virtualHIDEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_VIRTUAL_HID"] == "1"
-    /// The virtual-HID sender, when enabled (else `nil` → the CGEvent path is unchanged). Per-session.
-    private let virtualHID: VirtualHIDKeyboardClient?
-    /// Which keyboard backend the PREVIOUS key event used, so ``postKey`` can flush a key still held on
-    /// the virtual keyboard when secure input drops mid-keystroke (virtualHID → CGEvent transition) and
-    /// avoid a stuck key. Guarded — the ordered input path is serial, but the lock is cheap insurance.
-    private let keyboardBackendLock = NSLock()
-    private var lastKeyboardBackend: KeyboardBackend = .cgEvent
     /// Scroll gain multiplier (`AISLOPDESK_SCROLL_GAIN`, default 1.0 = byte-identical pass-through).
     /// The client forwards macOS's already-accelerated trackpad deltas 1:1 and the coalescer never
     /// merges or drops a scroll, so distance parity with a local gesture holds at 1.0 — this knob
@@ -108,7 +92,6 @@ public final class InputInjector: @unchecked Sendable {
         self.pid = pid
         self.windowID = windowID
         self.windowBoundsCG = windowBoundsCG
-        virtualHID = Self.virtualHIDEnabled ? VirtualHIDKeyboardClient() : nil
         eventSource = CGEventSource(stateID: .hidSystemState)
         if let eventSource {
             // Default local-events suppression interval is 0.25s: after a posted (or warped)
@@ -432,36 +415,14 @@ public final class InputInjector: @unchecked Sendable {
         clampToInt32(value * gain)
     }
 
-    /// The keyboard backend for one key event. Virtual HID is used ONLY when it is available AND Secure
-    /// Event Input is active (a SecurityAgent password field has the focus); otherwise CGEvent. Pure so
-    /// the routing rule is unit-testable without driving real input.
-    enum KeyboardBackend: Equatable { case cgEvent, virtualHID }
-
-    static func keyboardBackend(virtualHIDAvailable: Bool, secureInputActive: Bool) -> KeyboardBackend {
-        (virtualHIDAvailable && secureInputActive) ? .virtualHID : .cgEvent
-    }
-
     private func postKey(keyCode: UInt16, down: Bool, modifiers: InputModifiers, tag _: UInt32) {
-        // Route through the DriverKit virtual keyboard ONLY while a secure field is up (Secure Event Input
-        // active) — that's the one case CGEvent can't reach. Normal typing stays on CGEvent (the bridge
-        // isn't even needed for it). `IsSecureEventInputEnabled()` is a cheap global-state read.
-        let backend = Self.keyboardBackend(
-            virtualHIDAvailable: virtualHID != nil,
-            secureInputActive: IsSecureEventInputEnabled(),
-        )
-        // TRANSITION GUARD: if the previous key went through the virtual keyboard and this one falls back
-        // to CGEvent (the secure field just dismissed), flush any key still held on the virtual device so
-        // a key whose DOWN was HID but whose UP is now CGEvent can't leave a stuck key (esp. a modifier).
-        keyboardBackendLock.lock()
-        let previous = lastKeyboardBackend
-        lastKeyboardBackend = backend
-        keyboardBackendLock.unlock()
-        if previous == .virtualHID, backend == .cgEvent { virtualHID?.releaseAll() }
-
-        // VIRTUAL-HID: a mapped key is fully handled here — do NOT also post a CGEvent (would double-type).
-        // An UNMAPPED key (send returns false) falls through to CGEvent so nothing is silently dropped.
-        if backend == .virtualHID, let virtualHID,
-           virtualHID.send(keyCode: keyCode, down: down, modifiers: modifiers) { return }
+        // A posted `CGEvent` key reaches even a SecurityAgent/coreauthd secure field: HW-proven
+        // (2026-06-15, Tahoe 26.5.1) a `CGEvent(.cghidEventTap)` keystroke fills the SecurityAgent
+        // password field (dots) and authenticates while `IsSecureEventInputEnabled()` is true —
+        // Secure Event Input blocks event-tap interception, NOT trusted HID-tap injection. (This is
+        // why the former DriverKit virtual-HID keyboard backend was removed: CGEvent already reaches
+        // every dialog the host can surface; virtual-HID would only matter at the login window /
+        // lock screen, which the host can't capture or inject into anyway.)
         guard let event = CGEvent(keyboardEventSource: eventSource, virtualKey: CGKeyCode(keyCode), keyDown: down)
         else { return }
         event.flags = cgFlags(modifiers)

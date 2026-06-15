@@ -78,7 +78,6 @@ pub mod video_control;
 pub mod video_mux_router;
 pub mod video_session;
 pub mod virtual_display_geometry;
-pub mod virtual_hid_keyboard;
 pub mod window_geometry;
 pub mod window_parking_ledger;
 pub mod window_placement;
