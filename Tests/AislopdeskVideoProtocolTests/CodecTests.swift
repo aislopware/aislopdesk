@@ -118,7 +118,24 @@ final class CodecTests: XCTestCase {
                 tag: 8,
             ),
             .mouseDrag(button: .other, normalized: VideoPoint(x: 0.9, y: 0.1), clickCount: 2, modifiers: [], tag: 9),
-            .scroll(dx: -3.5, dy: 12.0, normalized: VideoPoint(x: 0.3, y: 0.7), tag: 3),
+            .scroll(
+                dx: -3.5,
+                dy: 12.0,
+                normalized: VideoPoint(x: 0.3, y: 0.7),
+                scrollPhase: 2,
+                momentumPhase: 0,
+                continuous: true,
+                tag: 3,
+            ),
+            .scroll(
+                dx: 0,
+                dy: 4.25,
+                normalized: VideoPoint(x: 0.3, y: 0.7),
+                scrollPhase: 0,
+                momentumPhase: 2,
+                continuous: true,
+                tag: 3,
+            ),
             .key(keyCode: 36, down: true, modifiers: [.option, .function], tag: 4), // Return
             .key(keyCode: 53, down: false, modifiers: [], tag: 5), // Escape
             .text("hello 世界", tag: 6),
@@ -156,9 +173,33 @@ final class CodecTests: XCTestCase {
         // single NaN/±inf datagram would otherwise crash the whole host process. The router
         // turns the throw into a dropped datagram (a corrupt packet must never crash the peer).
         let nonFinite: [InputEvent] = [
-            .scroll(dx: .nan, dy: 1, normalized: VideoPoint(x: 0, y: 0), tag: 1),
-            .scroll(dx: 1, dy: .infinity, normalized: VideoPoint(x: 0, y: 0), tag: 1),
-            .scroll(dx: 1, dy: 1, normalized: VideoPoint(x: .nan, y: 0), tag: 1),
+            .scroll(
+                dx: .nan,
+                dy: 1,
+                normalized: VideoPoint(x: 0, y: 0),
+                scrollPhase: 0,
+                momentumPhase: 0,
+                continuous: false,
+                tag: 1,
+            ),
+            .scroll(
+                dx: 1,
+                dy: .infinity,
+                normalized: VideoPoint(x: 0, y: 0),
+                scrollPhase: 0,
+                momentumPhase: 0,
+                continuous: false,
+                tag: 1,
+            ),
+            .scroll(
+                dx: 1,
+                dy: 1,
+                normalized: VideoPoint(x: .nan, y: 0),
+                scrollPhase: 0,
+                momentumPhase: 0,
+                continuous: false,
+                tag: 1,
+            ),
             .mouseMove(normalized: VideoPoint(x: .infinity, y: 0), tag: 1),
             .mouseDown(
                 button: .left,
@@ -186,7 +227,15 @@ final class CodecTests: XCTestCase {
         // A FINITE (even very large) scroll delta still decodes — clamping out-of-Int32-range
         // values is the host injector's job (Self.clampToInt32), not decode's.
         XCTAssertNoThrow(try InputEvent.decode(
-            InputEvent.scroll(dx: 1e9, dy: -1e9, normalized: VideoPoint(x: 0.5, y: 0.5), tag: 1).encode(),
+            InputEvent.scroll(
+                dx: 1e9,
+                dy: -1e9,
+                normalized: VideoPoint(x: 0.5, y: 0.5),
+                scrollPhase: 0,
+                momentumPhase: 0,
+                continuous: false,
+                tag: 1,
+            ).encode(),
         ))
     }
 

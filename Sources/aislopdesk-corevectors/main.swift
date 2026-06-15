@@ -247,8 +247,47 @@ root["inputEvent"] = [
     ),
     ie(
         "scroll",
-        .scroll(dx: -3.5, dy: 12.0, normalized: VideoPoint(x: 0.0, y: 1.0), tag: 10),
-        ["dx": -3.5, "dy": 12.0, "nx": 0.0, "ny": 1.0, "tag": 10],
+        .scroll(
+            dx: -3.5,
+            dy: 12.0,
+            normalized: VideoPoint(x: 0.0, y: 1.0),
+            scrollPhase: 2,
+            momentumPhase: 0,
+            continuous: true,
+            tag: 10,
+        ),
+        [
+            "dx": -3.5,
+            "dy": 12.0,
+            "nx": 0.0,
+            "ny": 1.0,
+            "scrollPhase": 2,
+            "momentumPhase": 0,
+            "continuous": true,
+            "tag": 10,
+        ],
+    ),
+    ie(
+        "scroll",
+        .scroll(
+            dx: 0.0,
+            dy: 4.25,
+            normalized: VideoPoint(x: 0.0, y: 1.0),
+            scrollPhase: 0,
+            momentumPhase: 2,
+            continuous: true,
+            tag: 10,
+        ),
+        [
+            "dx": 0.0,
+            "dy": 4.25,
+            "nx": 0.0,
+            "ny": 1.0,
+            "scrollPhase": 0,
+            "momentumPhase": 2,
+            "continuous": true,
+            "tag": 10,
+        ],
     ),
     ie(
         "key",
@@ -1135,7 +1174,18 @@ func imcUp(_ b: MouseButton = .left) -> InputEvent {
     .mouseUp(button: b, normalized: VideoPoint(x: 0, y: 0), clickCount: 1, modifiers: .init(rawValue: 0), tag: 0)
 }
 
-func imcScroll(_ dy: Double) -> InputEvent { .scroll(dx: 0, dy: dy, normalized: VideoPoint(x: 0, y: 0), tag: 0) }
+func imcScroll(_ dy: Double) -> InputEvent {
+    .scroll(
+        dx: 0,
+        dy: dy,
+        normalized: VideoPoint(x: 0, y: 0),
+        scrollPhase: 0,
+        momentumPhase: 0,
+        continuous: false,
+        tag: 0,
+    )
+}
+
 func imcKey(_ kc: UInt16) -> InputEvent { .key(keyCode: kc, down: true, modifiers: .init(rawValue: 0), tag: 0) }
 func imcText(_ s: String) -> InputEvent { .text(s, tag: 0) }
 

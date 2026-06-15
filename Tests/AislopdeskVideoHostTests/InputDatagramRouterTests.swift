@@ -44,7 +44,15 @@ final class InputDatagramRouterTests: XCTestCase {
 
         // ...but a SCROLL is exempt: it goes to the window under the cursor regardless of focus, so it
         // never pays the expensive AX raise even when the post-click latch is armed (the scroll-latency fix).
-        let scroll = InputEvent.scroll(dx: 0, dy: -3, normalized: n, tag: 0)
+        let scroll = InputEvent.scroll(
+            dx: 0,
+            dy: -3,
+            normalized: n,
+            scrollPhase: 0,
+            momentumPhase: 0,
+            continuous: false,
+            tag: 0,
+        )
         guard case let .inject(_, scrollRaises) = router.route(
             datagram: scroll.encode(),
             mediaFlowing: true,
@@ -57,7 +65,16 @@ final class InputDatagramRouterTests: XCTestCase {
     }
 
     func testScrollIsTheOnlyLatchExemptEvent() {
-        XCTAssertTrue(InputDatagramRouter.latchExemptFromRaise(.scroll(dx: 1, dy: 1, normalized: n, tag: 0)))
+        XCTAssertTrue(InputDatagramRouter
+            .latchExemptFromRaise(.scroll(
+                dx: 1,
+                dy: 1,
+                normalized: n,
+                scrollPhase: 0,
+                momentumPhase: 0,
+                continuous: false,
+                tag: 0,
+            )))
         XCTAssertFalse(InputDatagramRouter.latchExemptFromRaise(.mouseMove(normalized: n, tag: 0)))
         XCTAssertFalse(InputDatagramRouter.latchExemptFromRaise(.mouseDown(
             button: .left,
@@ -90,7 +107,7 @@ final class InputDatagramRouterTests: XCTestCase {
         let events: [InputEvent] = [
             .mouseMove(normalized: n, tag: 0),
             .mouseDrag(button: .left, normalized: n, clickCount: 1, modifiers: [], tag: 0),
-            .scroll(dx: 1, dy: -2, normalized: n, tag: 0),
+            .scroll(dx: 1, dy: -2, normalized: n, scrollPhase: 0, momentumPhase: 0, continuous: false, tag: 0),
             .key(keyCode: 1, down: true, modifiers: [], tag: 0),
             .text("x", tag: 0),
             .mouseUp(button: .left, normalized: n, clickCount: 1, modifiers: [], tag: 0),
@@ -182,7 +199,7 @@ final class InputDatagramRouterTests: XCTestCase {
             "the up re-arms the latch",
         )
         XCTAssertFalse(
-            step(.scroll(dx: 0, dy: -5, normalized: n, tag: 0)),
+            step(.scroll(dx: 0, dy: -5, normalized: n, scrollPhase: 0, momentumPhase: 0, continuous: false, tag: 0)),
             "the post-click scroll is latch-exempt → NO AX raise (the fix)",
         )
         XCTAssertTrue(

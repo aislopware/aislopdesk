@@ -162,6 +162,9 @@ mod tests {
             dx: 0.0,
             dy,
             normalized: VideoPoint::new(0.0, 0.0),
+            scroll_phase: 0,
+            momentum_phase: 0,
+            continuous: false,
             tag: 0,
         }
     }

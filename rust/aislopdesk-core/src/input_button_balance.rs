@@ -288,6 +288,9 @@ mod tests {
                 dx: 1.0,
                 dy: 2.0,
                 normalized: n(),
+                scroll_phase: 0,
+                momentum_phase: 0,
+                continuous: false,
                 tag: 0,
             },
             InputEvent::Key {

@@ -369,6 +369,9 @@ fn input_event_parity() {
                 dx: f64v(r, "dx"),
                 dy: f64v(r, "dy"),
                 normalized: n(),
+                scroll_phase: u8v(r, "scrollPhase"),
+                momentum_phase: u8v(r, "momentumPhase"),
+                continuous: boolv(r, "continuous"),
                 tag: u32v(r, "tag"),
             },
             "key" => InputEvent::Key {

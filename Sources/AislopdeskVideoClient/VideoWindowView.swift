@@ -496,6 +496,27 @@ final class MetalLayerBackedView: NSView {
         Self.clampClickCount(event.clickCount),
         mods(event),
     ) }
+    /// Maps a finger-on-glass `NSEvent.phase` to its `CGScrollPhase` integer code so the host can set
+    /// `kCGScrollWheelEventScrollPhase` verbatim (`0`=none, `1`=began, `2`=changed, `4`=ended,
+    /// `8`=cancelled, `128`=mayBegin). `.stationary`/empty → `0`.
+    static func cgScrollPhaseCode(_ phase: NSEvent.Phase) -> UInt8 {
+        if phase.contains(.began) { return 1 }
+        if phase.contains(.changed) { return 2 }
+        if phase.contains(.ended) { return 4 }
+        if phase.contains(.cancelled) { return 8 }
+        if phase.contains(.mayBegin) { return 128 }
+        return 0
+    }
+
+    /// Maps an inertial-coast `NSEvent.momentumPhase` to its `CGMomentumScrollPhase` integer code
+    /// (`0`=none, `1`=begin, `2`=continue, `3`=end) — a SEPARATE encoding from `cgScrollPhaseCode`.
+    static func cgMomentumPhaseCode(_ phase: NSEvent.Phase) -> UInt8 {
+        if phase.contains(.began) { return 1 }
+        if phase.contains(.changed) { return 2 }
+        if phase.contains(.ended) { return 3 }
+        return 0
+    }
+
     override func scrollWheel(with event: NSEvent) {
         // Zoomed in (local crop): a two-finger scroll pans the LOCAL view so you can reach the off-screen
         // parts of the zoomed window. This is the ONE case where a scroll stays INSIDE the pane, and it is
@@ -527,10 +548,17 @@ final class MetalLayerBackedView: NSView {
         // Natural-scroll sign matches `CanvasView.PanView` so a pane-pan feels identical to the bg pan.
         if isActive, !event.modifierFlags.contains(.option) {
             videoViewDbg("scroll → remote (focused)")
+            // Forward the trackpad gesture state so the host can replay a native continuous/inertial
+            // scroll (Began→Changed→Ended, then momentum Begin→Continue→End) instead of a phase-less
+            // wheel tick. `event.phase` (finger-on-glass) and `event.momentumPhase` (coast) are
+            // distinct and mutually exclusive; map each to its CoreGraphics integer code.
             pipeline.scroll(
                 dx: Double(event.scrollingDeltaX),
                 dy: Double(event.scrollingDeltaY),
                 viewPoint: viewPoint(event),
+                scrollPhase: Self.cgScrollPhaseCode(event.phase),
+                momentumPhase: Self.cgMomentumPhaseCode(event.momentumPhase),
+                continuous: event.hasPreciseScrollingDeltas,
             )
             return
         }

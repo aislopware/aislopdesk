@@ -104,7 +104,7 @@ final class InputButtonBalanceTests: XCTestCase {
         _ = bal.plan(for: down(.left))
         let noop: [InputEvent] = [
             .mouseMove(normalized: n, tag: 0),
-            .scroll(dx: 1, dy: 2, normalized: n, tag: 0),
+            .scroll(dx: 1, dy: 2, normalized: n, scrollPhase: 0, momentumPhase: 0, continuous: false, tag: 0),
             .key(keyCode: 1, down: true, modifiers: [], tag: 0),
             .text("x", tag: 0),
         ]

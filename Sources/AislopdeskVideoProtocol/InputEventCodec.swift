@@ -56,7 +56,22 @@ public enum InputEvent: Equatable, Sendable {
         tag: UInt32,
     )
     /// Scroll wheel (pixel units). `dy`/`dx` are signed scroll deltas.
-    case scroll(dx: Double, dy: Double, normalized: VideoPoint, tag: UInt32)
+    ///
+    /// `scrollPhase` / `momentumPhase` carry the trackpad gesture state so the host can replay a
+    /// native continuous/inertial scroll instead of a phase-less wheel tick. They use the CoreGraphics
+    /// integer encodings verbatim — `scrollPhase` ∈ `CGScrollPhase` (0=none, 1=began, 2=changed,
+    /// 4=ended, 8=cancelled, 128=mayBegin); `momentumPhase` ∈ `CGMomentumScrollPhase` (0=none,
+    /// 1=begin, 2=continue, 3=end) — and are mutually exclusive (at most one is non-zero per event).
+    /// `continuous` mirrors `hasPreciseScrollingDeltas` (true = pixel-precise trackpad gesture).
+    case scroll(
+        dx: Double,
+        dy: Double,
+        normalized: VideoPoint,
+        scrollPhase: UInt8,
+        momentumPhase: UInt8,
+        continuous: Bool,
+        tag: UInt32,
+    )
     /// Key down/up by host virtual keycode (for navigation / shortcuts; doc 05 §3).
     case key(keyCode: UInt16, down: Bool, modifiers: InputModifiers, tag: UInt32)
     /// Unicode text insertion (layout-independent; the robust text path, doc 05 §3).
@@ -81,7 +96,7 @@ public enum InputEvent: Equatable, Sendable {
              let .mouseDown(_, _, _, _, tag),
              let .mouseUp(_, _, _, _, tag),
              let .mouseDrag(_, _, _, _, tag),
-             let .scroll(_, _, _, tag),
+             let .scroll(_, _, _, _, _, _, tag),
              let .key(_, _, _, tag),
              let .text(_, tag):
             tag
@@ -105,12 +120,15 @@ public enum InputEvent: Equatable, Sendable {
             out.append(mods.rawValue)
             out.appendBE(n.x)
             out.appendBE(n.y)
-        case let .scroll(dx, dy, n, tag):
+        case let .scroll(dx, dy, n, scrollPhase, momentumPhase, continuous, tag):
             out.appendBE(tag)
             out.appendBE(dx)
             out.appendBE(dy)
             out.appendBE(n.x)
             out.appendBE(n.y)
+            out.append(scrollPhase)
+            out.append(momentumPhase)
+            out.append(continuous ? 1 : 0)
         case let .key(keyCode, down, mods, tag):
             out.appendBE(tag)
             out.appendBE(keyCode)
@@ -155,7 +173,18 @@ public enum InputEvent: Equatable, Sendable {
             let dy = try reader.readFiniteFloat64("scroll.dy")
             let x = try reader.readFiniteFloat64("scroll.x")
             let y = try reader.readFiniteFloat64("scroll.y")
-            return .scroll(dx: dx, dy: dy, normalized: VideoPoint(x: x, y: y), tag: tag)
+            let scrollPhase = try reader.readUInt8()
+            let momentumPhase = try reader.readUInt8()
+            let continuous = try reader.readUInt8() != 0
+            return .scroll(
+                dx: dx,
+                dy: dy,
+                normalized: VideoPoint(x: x, y: y),
+                scrollPhase: scrollPhase,
+                momentumPhase: momentumPhase,
+                continuous: continuous,
+                tag: tag,
+            )
         case 5:
             let tag = try reader.readUInt32()
             let keyCode = try reader.readUInt16()

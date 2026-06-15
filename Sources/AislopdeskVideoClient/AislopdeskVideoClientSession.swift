@@ -1179,13 +1179,23 @@ public actor AislopdeskVideoClientSession {
         ))
     }
 
-    public func sendScroll(dx: Double, dy: Double, viewPoint: VideoPoint) {
+    public func sendScroll(
+        dx: Double,
+        dy: Double,
+        viewPoint: VideoPoint,
+        scrollPhase: UInt8 = 0,
+        momentumPhase: UInt8 = 0,
+        continuous: Bool = false,
+    ) {
         sendInput(inputEncoder.scroll(
             dx: dx,
             dy: dy,
             viewPoint: viewPoint,
             layerSize: layerSize,
             videoNativeSize: decodedSize,
+            scrollPhase: scrollPhase,
+            momentumPhase: momentumPhase,
+            continuous: continuous,
             zoom: zoom,
             pan: pan,
             mode: contentMode,
