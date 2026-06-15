@@ -1,20 +1,17 @@
-import AislopdeskVideoProtocol
-import Foundation
+import CAislopdeskFFI
 
-// Pure, platform-free mux routing for the host video orchestrator. NO sockets, no
-// SCStream, no clock — exactly the discipline of ``InputDatagramRouter`` /
-// ``VideoSessionStateMachine`` in VideoSessionLogic.swift, so this is headlessly
-// unit-testable in isolation. A later (gated) stage will wire the live UDP receive
-// loop to feed decoded `(channelID, VideoChannel, bytesCount)` through this; for now
-// nothing constructs it, so a single-pane run is byte-identical to today.
+// Platform-free mux routing for the host video orchestrator. NO sockets, no SCStream, no
+// clock — exactly the discipline of ``InputDatagramRouter`` / ``VideoSessionStateMachine`` in
+// VideoSessionLogic.swift. The live UDP receive loop (``NWVideoMuxDatagramTransport``) feeds
+// decoded `(channelID, VideoChannel, bytesCount)` through this under its mux lock.
 
-/// PURE per-datagram mux router for the HOST side of the GUI video path (PATH 2).
+/// PER-datagram mux router for the HOST side of the GUI video path (PATH 2).
 ///
 /// When several remote-window sessions share one host UDP socket, each datagram is
 /// fronted by a `UInt32` channelID (see ``VideoMuxHeaderCodec``). This router decides
 /// which session a freshly-arrived datagram belongs to — purely from the channelID it
 /// is told plus the admitted/retired bookkeeping it holds. It owns NO sockets and NO
-/// session objects: it returns a ``Decision`` and lets the (later-built) IO layer act.
+/// session objects: it returns a ``Decision`` and lets the IO layer act.
 ///
 /// **Reconnect-generation safety.** A reconnecting client is admitted under a NEW
 /// channelID (the prior one is `retire`d). In-flight datagrams that were already on
@@ -23,34 +20,24 @@ import Foundation
 /// fresh one. The router therefore keeps a retired set distinct from an "never seen"
 /// channelID: a retired id is dropped with ``Decision/dropRetired`` (a known, benign
 /// drop), while a genuinely unknown id is ``Decision/rejectUnadmitted``.
-public struct VideoMuxRouter: Sendable {
-    /// Currently-admitted lanes (one per live session). Routable for data.
-    private var admitted: Set<UInt32> = []
-    /// Lanes retired by a reconnect/teardown. Their in-flight datagrams are dropped
-    /// (reconnect-generation safety) rather than rejected or misrouted.
-    private var retired: Set<UInt32> = []
-    /// The highest channelID ever retired (wrap-aware high-water mark), so the retired
-    /// set can be pruned of ids too far below it to ever still have an in-flight datagram.
-    private var highestRetired: UInt32?
-    /// Lanes mid-teardown by the reaper: `beginDrain`-ed, awaiting `session.stop()`, not yet
-    /// `retired`. While draining, EVERY datagram (including a `hello`) drops — so a reconnect that
-    /// races the async teardown is neither delivered to the dying session's still-registered sink (a
-    /// false accept) nor prematurely re-minted (which the later `endDrain`/retire would then kill).
-    /// `endDrain` transitions draining → retired, after which FIX #2's hello-re-admit applies. Mirrors
-    /// the single-pin "hold the lane pinned through teardown, free it LAST" discipline (audit FIX #4b).
-    private var draining: Set<UInt32> = []
+///
+/// The routing ALGORITHM (the admitted/retired/draining bookkeeping + the wrap-aware retired-set
+/// bound) lives in the Rust core (`aislopdesk_core::video_mux_router`, the SINGLE SOURCE OF TRUTH
+/// shared with Android over the C ABI); this class is a thin owner of the opaque core handle,
+/// reached via ``RustVideoHostFFI``. It is a `final class` (not the former value struct) so it can
+/// own the handle and free it in `deinit`. `@unchecked Sendable` is sound because the single owner
+/// (``NWVideoMuxDatagramTransport``) serializes every call under its mux `lock` (and the tests run
+/// on one thread), so no two threads race the handle.
+public final class VideoMuxRouter: @unchecked Sendable {
+    private let handle: OpaquePointer
 
-    /// FIX #4: bound the `retired` set exactly like ``FrameReassembler`` bounds its retired
-    /// frame ids (cap at 512, prune to within 256 of the high-water mark). The client allocator
-    /// is monotonic so a retired id is otherwise never re-admitted ⇒ one entry per pane/reconnect
-    /// leaks for the daemon lifetime. channelIDs are monotonic, so an id far BELOW the high-water
-    /// mark can have no in-flight datagram left — dropping it from `retired` is safe: it falls back
-    /// to ``Decision/rejectUnadmitted`` (a clean drop for an unknown lane), and with FIX #2 a fresh
-    /// hello for such an id still re-admits cleanly.
-    static let retiredCap = 512
-    static let retiredPruneWindow: Int = 256
+    public init() {
+        handle = RustVideoHostFFI.videoMuxRouterNew()
+    }
 
-    public init() {}
+    deinit {
+        RustVideoHostFFI.videoMuxRouterFree(handle)
+    }
 
     /// The decision for one received muxed datagram. Mirrors
     /// `InputDatagramRouter.Decision`'s pure style (a closed enum the IO layer acts on,
@@ -72,50 +59,48 @@ public struct VideoMuxRouter: Sendable {
     }
 
     /// Admits `channelID` as a live lane. Idempotent. Admitting a previously-retired
-    /// id clears its retired mark (a fresh generation may legitimately reuse an id).
-    public mutating func admit(_ channelID: UInt32) {
-        admitted.insert(channelID)
-        retired.remove(channelID)
-        draining.remove(channelID)
+    /// id clears its retired mark (a fresh generation may legitimately reuse an id). Delegates to
+    /// the Rust core.
+    public func admit(_ channelID: UInt32) {
+        RustVideoHostFFI.videoMuxRouterAdmit(handle, channelID: channelID)
     }
 
     /// Retires `channelID` (reconnect/teardown): it stops being admitted and any
-    /// further in-flight datagram for it is dropped via ``Decision/dropRetired``.
-    public mutating func retire(_ channelID: UInt32) {
-        admitted.remove(channelID)
-        retired.insert(channelID)
-        // Track the wrap-aware high-water mark, then bound the set (FIX #4).
-        if let high = highestRetired {
-            if channelID.distanceWrapped(from: high) > 0 { highestRetired = channelID }
-        } else {
-            highestRetired = channelID
-        }
-        if retired.count > Self.retiredCap, let high = highestRetired {
-            retired = retired.filter { high.distanceWrapped(from: $0) <= Self.retiredPruneWindow }
-        }
+    /// further in-flight datagram for it is dropped via ``Decision/dropRetired``. Delegates to the
+    /// Rust core (which also bounds the retired set wrap-aware).
+    public func retire(_ channelID: UInt32) {
+        RustVideoHostFFI.videoMuxRouterRetire(handle, channelID: channelID)
     }
 
     /// Begin tearing a lane down on the reaper path: stop routing it and HOLD it (draining) so a
     /// reconnect racing the async `session.stop()` drops cleanly rather than hitting the dying
     /// session's still-registered sink or re-minting early. Pair with ``endDrain`` once stopped.
-    public mutating func beginDrain(_ channelID: UInt32) {
-        admitted.remove(channelID)
-        draining.insert(channelID)
+    /// Delegates to the Rust core.
+    public func beginDrain(_ channelID: UInt32) {
+        RustVideoHostFFI.videoMuxRouterBeginDrain(handle, channelID: channelID)
     }
 
     /// Finish a reaper teardown: the session is stopped, so move the lane draining → retired (where a
-    /// fresh `hello` may now re-admit it, FIX #2). Idempotent if the lane was not draining.
-    public mutating func endDrain(_ channelID: UInt32) {
-        draining.remove(channelID)
-        retire(channelID)
+    /// fresh `hello` may now re-admit it, FIX #2). Idempotent if the lane was not draining. Delegates
+    /// to the Rust core.
+    public func endDrain(_ channelID: UInt32) {
+        RustVideoHostFFI.videoMuxRouterEndDrain(handle, channelID: channelID)
     }
 
     /// Whether `channelID` is currently an admitted (routable) lane.
-    public func isAdmitted(_ channelID: UInt32) -> Bool { admitted.contains(channelID) }
-    /// Whether `channelID` is currently draining (reaper teardown in flight).
-    public func isDraining(_ channelID: UInt32) -> Bool { draining.contains(channelID) }
+    public func isAdmitted(_ channelID: UInt32) -> Bool {
+        RustVideoHostFFI.videoMuxRouterIsAdmitted(handle, channelID: channelID)
+    }
 
-    /// Decides what to do with one received datagram on `channel` carrying `channelID`.
+    /// Whether `channelID` is currently draining (reaper teardown in flight).
+    public func isDraining(_ channelID: UInt32) -> Bool {
+        RustVideoHostFFI.videoMuxRouterIsDraining(handle, channelID: channelID)
+    }
+
+    /// Decides what to do with one received datagram on `channel` carrying `channelID`. Delegates to
+    /// the Rust core; the `.route` case carries back the same `channelID`, and the only `.drop` the
+    /// core produces is the empty-datagram drop (its `reason` is descriptive — never inspected by the
+    /// live path or the tests).
     ///
     /// - Parameters:
     ///   - channelID: the lane the datagram is fronted with (from ``VideoMuxHeaderCodec``).
@@ -124,12 +109,15 @@ public struct VideoMuxRouter: Sendable {
     ///     the admit/retire decision is per-channelID, not per-channel.
     ///   - bytesCount: the datagram's byte length (an empty datagram is dropped).
     public func route(channelID: UInt32, channel: VideoChannel, bytesCount: Int) -> Decision {
-        _ = channel
-        guard bytesCount > 0 else { return .drop(reason: "empty datagram") }
-        if admitted.contains(channelID) { return .route(channelID: channelID) }
-        if draining.contains(channelID) { return .dropDraining }
-        if retired.contains(channelID) { return .dropRetired }
-        return .rejectUnadmitted
+        switch RustVideoHostFFI.videoMuxRouterRoute(
+            handle, channelID: channelID, channel: channel.rawValue, bytesCount: bytesCount,
+        ) {
+        case UInt8(AISD_MUX_DECISION_ROUTE): .route(channelID: channelID)
+        case UInt8(AISD_MUX_DECISION_DROP_RETIRED): .dropRetired
+        case UInt8(AISD_MUX_DECISION_DROP_DRAINING): .dropDraining
+        case UInt8(AISD_MUX_DECISION_DROP): .drop(reason: "empty datagram")
+        default: .rejectUnadmitted
+        }
     }
 
     /// What the transport's bootstrap arm should do with a NOT-yet-admitted datagram (the lane is
@@ -154,29 +142,27 @@ public struct VideoMuxRouter: Sendable {
         case dropNoStamp
     }
 
+    /// Pure bootstrap decision, delegated to the Rust core (no handle needed).
     public static func bootstrapAction(
         for decision: Decision,
         channel: VideoChannel,
         payloadIsHello: Bool,
         payloadIsListRequest: Bool = false,
     ) -> BootstrapAction {
-        switch decision {
-        case .rejectUnadmitted,
-             .dropRetired:
-            // Both the never-seen and the retired (cross-process reuse) cases bootstrap (deliver +
-            // stamp the reply flow) ONLY for a hello OR a window-LIST request on the control channel;
-            // everything else drops without a stamp. A listWindows is delivered+stamped exactly like a
-            // hello so the daemon can answer it (the daemon intercepts it and replies WITHOUT minting a
-            // session — it never reaches the registry's mint path, and a never-admitted list lane is
-            // retired right after the reply).
-            let isBootstrapControl = channel == .control && (payloadIsHello || payloadIsListRequest)
-            return isBootstrapControl ? .bootstrapDeliver : .dropNoStamp
-        case .dropDraining,
-             .route,
-             .drop:
-            // A draining lane is mid-teardown — drop EVEN a hello (no false accept, no premature
-            // re-mint). `.route` is the live path; `.drop` (empty datagram) never bootstraps.
-            return .dropNoStamp
+        let kind =
+            switch decision {
+            case .route: UInt8(AISD_MUX_DECISION_ROUTE)
+            case .rejectUnadmitted: UInt8(AISD_MUX_DECISION_REJECT_UNADMITTED)
+            case .dropRetired: UInt8(AISD_MUX_DECISION_DROP_RETIRED)
+            case .dropDraining: UInt8(AISD_MUX_DECISION_DROP_DRAINING)
+            case .drop: UInt8(AISD_MUX_DECISION_DROP)
+            }
+        switch RustVideoHostFFI.videoMuxRouterBootstrapAction(
+            decision: kind, channel: channel.rawValue,
+            payloadIsHello: payloadIsHello, payloadIsListRequest: payloadIsListRequest,
+        ) {
+        case UInt8(AISD_MUX_BOOTSTRAP_DELIVER): return .bootstrapDeliver
+        default: return .dropNoStamp
         }
     }
 }

@@ -372,6 +372,74 @@ public enum RustVideoHostFFI {
         aisd_recovery_idr_policy_grace(handle, rtt)
     }
 
+    // MARK: - video_mux_router (opaque handle; host per-datagram mux routing)
+
+    /// Creates a mux router owned by the Rust core; release with `videoMuxRouterFree`. Wraps
+    /// `aisd_video_mux_router_new` (never returns null).
+    static func videoMuxRouterNew() -> OpaquePointer {
+        aisd_video_mux_router_new()
+    }
+
+    /// Destroys a router handle. Wraps `aisd_video_mux_router_free`.
+    static func videoMuxRouterFree(_ handle: OpaquePointer) {
+        aisd_video_mux_router_free(handle)
+    }
+
+    /// Admits a lane. Wraps `aisd_video_mux_router_admit`.
+    static func videoMuxRouterAdmit(_ handle: OpaquePointer, channelID: UInt32) {
+        aisd_video_mux_router_admit(handle, channelID)
+    }
+
+    /// Retires a lane. Wraps `aisd_video_mux_router_retire`.
+    static func videoMuxRouterRetire(_ handle: OpaquePointer, channelID: UInt32) {
+        aisd_video_mux_router_retire(handle, channelID)
+    }
+
+    /// Begins draining a lane. Wraps `aisd_video_mux_router_begin_drain`.
+    static func videoMuxRouterBeginDrain(_ handle: OpaquePointer, channelID: UInt32) {
+        aisd_video_mux_router_begin_drain(handle, channelID)
+    }
+
+    /// Finishes draining a lane (draining → retired). Wraps `aisd_video_mux_router_end_drain`.
+    static func videoMuxRouterEndDrain(_ handle: OpaquePointer, channelID: UInt32) {
+        aisd_video_mux_router_end_drain(handle, channelID)
+    }
+
+    /// Whether a lane is admitted. Wraps `aisd_video_mux_router_is_admitted`.
+    static func videoMuxRouterIsAdmitted(_ handle: OpaquePointer, channelID: UInt32) -> Bool {
+        aisd_video_mux_router_is_admitted(handle, channelID) != 0
+    }
+
+    /// Whether a lane is draining. Wraps `aisd_video_mux_router_is_draining`.
+    static func videoMuxRouterIsDraining(_ handle: OpaquePointer, channelID: UInt32) -> Bool {
+        aisd_video_mux_router_is_draining(handle, channelID) != 0
+    }
+
+    /// The routing decision as the raw `AISD_MUX_DECISION_*` discriminant. `channel` is a
+    /// `VideoChannel` rawValue. Wraps `aisd_video_mux_router_route`.
+    static func videoMuxRouterRoute(
+        _ handle: OpaquePointer,
+        channelID: UInt32,
+        channel: UInt8,
+        bytesCount: Int,
+    ) -> UInt8 {
+        aisd_video_mux_router_route(handle, channelID, channel, bytesCount)
+    }
+
+    /// The bootstrap action as the raw `AISD_MUX_BOOTSTRAP_*` discriminant. `decision` is an
+    /// `AISD_MUX_DECISION_*` value, `channel` a `VideoChannel` rawValue. PURE (no handle). Wraps
+    /// `aisd_video_mux_router_bootstrap_action`.
+    static func videoMuxRouterBootstrapAction(
+        decision: UInt8,
+        channel: UInt8,
+        payloadIsHello: Bool,
+        payloadIsListRequest: Bool,
+    ) -> UInt8 {
+        aisd_video_mux_router_bootstrap_action(
+            decision, channel, payloadIsHello ? 1 : 0, payloadIsListRequest ? 1 : 0,
+        )
+    }
+
     /// Flattens a `CGRect` into the C-ABI `AisdRect` (x, y, width, height — all `Double`).
     private static func aisdRect(_ r: CGRect) -> AisdRect {
         AisdRect(

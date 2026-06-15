@@ -559,6 +559,35 @@ int main(void) {
           "null policy grants");
     CHECK(aisd_recovery_idr_policy_available_tokens(NULL) == 0.0, "null policy zero tokens");
 
+    /* 19. video_mux_router opaque handle: admit/retire/drain routing + bootstrap + null guards. */
+    AisdVideoMuxRouter *mux = aisd_video_mux_router_new();
+    CHECK(mux != NULL, "video mux router new");
+    CHECK(aisd_video_mux_router_route(mux, 11, 1, 1200) == AISD_MUX_DECISION_REJECT_UNADMITTED,
+          "unknown lane rejected");
+    aisd_video_mux_router_admit(mux, 11);
+    CHECK(aisd_video_mux_router_is_admitted(mux, 11) == 1, "lane admitted");
+    CHECK(aisd_video_mux_router_route(mux, 11, 1, 1200) == AISD_MUX_DECISION_ROUTE,
+          "admitted lane routes");
+    CHECK(aisd_video_mux_router_route(mux, 11, 1, 0) == AISD_MUX_DECISION_DROP, "empty drops");
+    aisd_video_mux_router_retire(mux, 11);
+    CHECK(aisd_video_mux_router_route(mux, 11, 1, 1200) == AISD_MUX_DECISION_DROP_RETIRED,
+          "retired lane drop-retired");
+    aisd_video_mux_router_admit(mux, 12);
+    aisd_video_mux_router_begin_drain(mux, 12);
+    CHECK(aisd_video_mux_router_is_draining(mux, 12) == 1, "lane draining");
+    CHECK(aisd_video_mux_router_route(mux, 12, 1, 1200) == AISD_MUX_DECISION_DROP_DRAINING,
+          "draining lane drop-draining");
+    CHECK(aisd_video_mux_router_bootstrap_action(AISD_MUX_DECISION_DROP_RETIRED, 0, 1, 0) ==
+              AISD_MUX_BOOTSTRAP_DELIVER,
+          "retired hello on control re-admits");
+    CHECK(aisd_video_mux_router_bootstrap_action(AISD_MUX_DECISION_DROP_DRAINING, 0, 1, 0) ==
+              AISD_MUX_BOOTSTRAP_DROP_NO_STAMP,
+          "draining drops even a hello");
+    aisd_video_mux_router_free(mux);
+    aisd_video_mux_router_free(NULL); /* no-op */
+    CHECK(aisd_video_mux_router_route(NULL, 1, 1, 100) == AISD_MUX_DECISION_REJECT_UNADMITTED,
+          "null router rejects");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

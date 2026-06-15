@@ -797,6 +797,46 @@ uint8_t aisd_recovery_idr_policy_decide(AisdRecoveryIdrPolicy *policy, double no
 /* In-flight grace window (seconds) for the given smoothed RTT (0.0 for a NULL handle). */
 double aisd_recovery_idr_policy_grace(const AisdRecoveryIdrPolicy *policy, double rtt);
 
+/* ---- video_mux_router (opaque handle; host per-datagram mux routing for the GUI video path) ---- */
+
+/* Decision discriminants (aisd_video_mux_router_route). */
+#define AISD_MUX_DECISION_ROUTE 0u
+#define AISD_MUX_DECISION_REJECT_UNADMITTED 1u
+#define AISD_MUX_DECISION_DROP_RETIRED 2u
+#define AISD_MUX_DECISION_DROP_DRAINING 3u
+#define AISD_MUX_DECISION_DROP 4u
+/* BootstrapAction discriminants (aisd_video_mux_router_bootstrap_action). */
+#define AISD_MUX_BOOTSTRAP_DELIVER 0u
+#define AISD_MUX_BOOTSTRAP_DROP_NO_STAMP 1u
+
+typedef struct AisdVideoMuxRouter AisdVideoMuxRouter;
+
+/* Creates a fresh router (nothing admitted). Destroy with aisd_video_mux_router_free. */
+AisdVideoMuxRouter *aisd_video_mux_router_new(void);
+/* Destroys a router from aisd_video_mux_router_new. No-op on NULL. */
+void aisd_video_mux_router_free(AisdVideoMuxRouter *router);
+
+/* Lane bookkeeping folds (no-op on NULL). */
+void aisd_video_mux_router_admit(AisdVideoMuxRouter *router, uint32_t channel_id);
+void aisd_video_mux_router_retire(AisdVideoMuxRouter *router, uint32_t channel_id);
+void aisd_video_mux_router_begin_drain(AisdVideoMuxRouter *router, uint32_t channel_id);
+void aisd_video_mux_router_end_drain(AisdVideoMuxRouter *router, uint32_t channel_id);
+
+/* Lane queries (0 for a NULL handle). */
+uint8_t aisd_video_mux_router_is_admitted(const AisdVideoMuxRouter *router, uint32_t channel_id);
+uint8_t aisd_video_mux_router_is_draining(const AisdVideoMuxRouter *router, uint32_t channel_id);
+
+/* Routing decision as an AISD_MUX_DECISION_* value (channel = VideoChannel raw 0..5).
+ * RejectUnadmitted for a NULL handle. */
+uint8_t aisd_video_mux_router_route(const AisdVideoMuxRouter *router, uint32_t channel_id,
+                                    uint8_t channel, size_t bytes_count);
+
+/* Bootstrap action as an AISD_MUX_BOOTSTRAP_* value (PURE; no handle). decision = AISD_MUX_DECISION_*,
+ * channel = VideoChannel raw 0..5, the two flags read != 0. */
+uint8_t aisd_video_mux_router_bootstrap_action(uint8_t decision, uint8_t channel,
+                                               uint8_t payload_is_hello,
+                                               uint8_t payload_is_list_request);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

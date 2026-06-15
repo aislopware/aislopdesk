@@ -26,13 +26,19 @@ use aislopdesk_ffi::video::{
     aisd_static_idr_decider_quiet_window, aisd_static_idr_decider_record_synthetic,
     aisd_static_idr_decider_should_reencode, aisd_system_dialog_classify, aisd_system_dialog_free,
     aisd_system_dialog_min_size, aisd_video_control_decode, aisd_video_control_encode,
-    aisd_video_control_free, aisd_ycbcr_coefficients, AisdNetworkStats, AisdRecoveryMessage,
+    aisd_video_control_free, aisd_video_mux_router_admit, aisd_video_mux_router_begin_drain,
+    aisd_video_mux_router_bootstrap_action, aisd_video_mux_router_end_drain,
+    aisd_video_mux_router_free, aisd_video_mux_router_is_admitted,
+    aisd_video_mux_router_is_draining, aisd_video_mux_router_new, aisd_video_mux_router_retire,
+    aisd_video_mux_router_route, aisd_ycbcr_coefficients, AisdNetworkStats, AisdRecoveryMessage,
     AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
     AISD_DECODE_GATE_MODE_BROKEN_CHAIN, AISD_DECODE_GATE_MODE_NEED_KEYFRAME,
     AISD_DECODE_GATE_MODE_OPEN, AISD_DECODE_GATE_VERDICT_DROP, AISD_DECODE_GATE_VERDICT_SUBMIT,
-    AISD_RECOVERY_IDR_GRANT, AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT,
-    AISD_RECOVERY_IDR_SUPPRESS_STALE, AISD_RECOVERY_NETWORK_STATS,
-    AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
+    AISD_MUX_BOOTSTRAP_DELIVER, AISD_MUX_BOOTSTRAP_DROP_NO_STAMP, AISD_MUX_DECISION_DROP,
+    AISD_MUX_DECISION_DROP_DRAINING, AISD_MUX_DECISION_DROP_RETIRED,
+    AISD_MUX_DECISION_REJECT_UNADMITTED, AISD_MUX_DECISION_ROUTE, AISD_RECOVERY_IDR_GRANT,
+    AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT, AISD_RECOVERY_IDR_SUPPRESS_STALE,
+    AISD_RECOVERY_NETWORK_STATS, AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
 };
 use aislopdesk_ffi::{
     aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free, aisd_frame_decoder_new,
@@ -1219,5 +1225,69 @@ fn recovery_idr_policy_opaque_handle_gates_grants_and_frees() {
             aisd_recovery_idr_policy_available_tokens(core::ptr::null()),
             0.0
         );
+    }
+}
+
+#[test]
+fn video_mux_router_opaque_handle_routes_and_frees() {
+    unsafe {
+        let r = aisd_video_mux_router_new();
+        assert!(!r.is_null());
+        // Unknown → reject; admit → route; empty → drop.
+        assert_eq!(
+            aisd_video_mux_router_route(r, 11, 1, 1200),
+            AISD_MUX_DECISION_REJECT_UNADMITTED
+        );
+        aisd_video_mux_router_admit(r, 11);
+        assert_eq!(aisd_video_mux_router_is_admitted(r, 11), 1);
+        assert_eq!(
+            aisd_video_mux_router_route(r, 11, 1, 1200),
+            AISD_MUX_DECISION_ROUTE
+        );
+        assert_eq!(
+            aisd_video_mux_router_route(r, 11, 1, 0),
+            AISD_MUX_DECISION_DROP
+        );
+        // Retire → drop-retired.
+        aisd_video_mux_router_retire(r, 11);
+        assert_eq!(
+            aisd_video_mux_router_route(r, 11, 1, 1200),
+            AISD_MUX_DECISION_DROP_RETIRED
+        );
+        // begin/end drain transitions.
+        aisd_video_mux_router_admit(r, 12);
+        aisd_video_mux_router_begin_drain(r, 12);
+        assert_eq!(aisd_video_mux_router_is_draining(r, 12), 1);
+        assert_eq!(
+            aisd_video_mux_router_route(r, 12, 1, 1200),
+            AISD_MUX_DECISION_DROP_DRAINING
+        );
+        aisd_video_mux_router_end_drain(r, 12);
+        assert_eq!(aisd_video_mux_router_is_draining(r, 12), 0);
+        assert_eq!(
+            aisd_video_mux_router_route(r, 12, 1, 1200),
+            AISD_MUX_DECISION_DROP_RETIRED
+        );
+        // bootstrap_action (static, pure): retired hello on control re-admits; non-hello drops.
+        assert_eq!(
+            aisd_video_mux_router_bootstrap_action(AISD_MUX_DECISION_DROP_RETIRED, 0, 1, 0),
+            AISD_MUX_BOOTSTRAP_DELIVER
+        );
+        assert_eq!(
+            aisd_video_mux_router_bootstrap_action(AISD_MUX_DECISION_DROP_RETIRED, 0, 0, 0),
+            AISD_MUX_BOOTSTRAP_DROP_NO_STAMP
+        );
+        // A list request on control also bootstraps an unadmitted lane.
+        assert_eq!(
+            aisd_video_mux_router_bootstrap_action(AISD_MUX_DECISION_REJECT_UNADMITTED, 0, 0, 1),
+            AISD_MUX_BOOTSTRAP_DELIVER
+        );
+        aisd_video_mux_router_free(r);
+        aisd_video_mux_router_free(core::ptr::null_mut()); // no-op
+        assert_eq!(
+            aisd_video_mux_router_route(core::ptr::null(), 1, 1, 100),
+            AISD_MUX_DECISION_REJECT_UNADMITTED
+        );
+        assert_eq!(aisd_video_mux_router_is_admitted(core::ptr::null(), 1), 0);
     }
 }
