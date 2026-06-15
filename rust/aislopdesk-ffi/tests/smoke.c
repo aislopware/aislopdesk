@@ -88,6 +88,56 @@ int main(void) {
     aisd_frame_decoder_free(dec);
     aisd_frame_decoder_free(NULL); /* no-op */
 
+    /* 5. Pure flat-struct geometry policies (FFI wiring round). Exercises AisdRect, AisdPoint,
+     * AisdPlacement, AisdVDGeometry, AisdVDMillimeters, AisdCaptureWindowSnapshot layouts from C. */
+    AisdRect display = {0.0, 0.0, 1920.0, 1080.0};
+
+    AisdPlacement plc = aisd_window_placement(2400.0, 800.0, display);
+    CHECK(plc.x == 0.0 && plc.width == 1920.0 && plc.height == 800.0 && plc.needs_resize == 1,
+          "window_placement clamps oversized width and flags resize");
+    CHECK(aisd_window_fits(1920.0, 1080.0, display) == 1, "window_fits exact");
+    CHECK(aisd_window_fits(1921.0, 1080.0, display) == 0, "window_fits width over");
+
+    AisdVDGeometry g = aisd_vd_geometry(1920, 1080, 2, 7680);
+    CHECK(g.pixel_width == 3840 && g.pixel_height == 2160 && g.exceeds_pixel_limit == 0,
+          "vd_geometry 2x pixel dims under limit");
+    CHECK(aisd_vd_geometry(3840, 2160, 2, 6144).exceeds_pixel_limit == 1,
+          "vd_geometry over base-M chip limit");
+
+    AisdVDMillimeters mm = aisd_vd_size_in_millimeters(3840, 2160, 163.0);
+    CHECK(mm.width > 598.0 && mm.width < 599.0, "vd_size_in_millimeters width ~598.5mm");
+
+    AisdRect displays[2] = {{0.0, 0.0, 1920.0, 1080.0}, {1920.0, 0.0, 2560.0, 1440.0}};
+    AisdPoint origin = aisd_vd_origin_to_right(displays, 2);
+    CHECK(origin.x == 4480.0 && origin.y == 0.0, "vd_origin_to_right rightmost edge");
+    AisdPoint origin0 = aisd_vd_origin_to_right(NULL, 0);
+    CHECK(origin0.x == 0.0 && origin0.y == 0.0, "vd_origin_to_right empty -> (0,0)");
+
+    CHECK(aisd_vd_chip_pixel_limit("Apple M3 Pro") == 7680, "chip limit pro/max/ultra");
+    CHECK(aisd_vd_chip_pixel_limit("Apple M2") == 6144, "chip limit base M");
+    CHECK(aisd_vd_chip_pixel_limit(NULL) == 7680, "chip limit NULL -> default");
+
+    double rates[3] = {0.0, 0.0, 0.0};
+    size_t nrates = aisd_vd_refresh_rates(120, rates, 3);
+    CHECK(nrates == 3 && rates[0] == 120.0 && rates[1] == 60.0 && rates[2] == 30.0,
+          "vd_refresh_rates 120 -> [120,60,30]");
+    CHECK(aisd_vd_refresh_rates(60, rates, 3) == 2, "vd_refresh_rates 60 -> 2 modes");
+
+    AisdRect target = {100.0, 100.0, 800.0, 600.0};
+    AisdCaptureWindowSnapshot front[1] = {{2, 42, 0, {700.0, 100.0, 400.0, 300.0}}};
+    AisdRect uni = aisd_capture_union_region(target, 1, 42, front, 1, display, 0.30);
+    CHECK(uni.width == 1000.0 && uni.height == 600.0,
+          "capture_union_region extends to cover the same-pid panel");
+    AisdRect noneuni = aisd_capture_union_region(target, 1, 42, NULL, 0, display, 0.30);
+    CHECK(noneuni.width == 800.0, "capture_union_region with no panels = target");
+
+    AisdRect ca = {0.0, 0.0, 100.0, 100.0};
+    AisdRect cb = {0.0, 0.0, 120.0, 100.0};
+    CHECK(aisd_capture_should_retarget(ca, cb, 8.0) == 1, "capture_should_retarget over delta");
+    CHECK(aisd_capture_should_retarget(ca, ca, 8.0) == 0, "capture_should_retarget identical");
+    CHECK(aisd_capture_reorigin_on_geometry(1) == 1, "capture_reorigin no active region");
+    CHECK(aisd_capture_reorigin_on_geometry(0) == 0, "capture_reorigin active union holds");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;
