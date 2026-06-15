@@ -286,6 +286,23 @@ impl<G: GfRegion> ReedSolomonFec<G> {
         }
     }
 
+    /// The per-call grouping width this codec uses for a requested `group_size`.
+    ///
+    /// `m == 1` (plain XOR, no matrix) honours the request EXACTLY — NO clamp to `k` — so the
+    /// parity bytes are byte-identical to [`XorParityFec`] for ANY group size (the production FEC
+    /// path drives an adaptive per-frame group size that can exceed the codec's `k`). `m >= 2`
+    /// (the Cauchy code) clamps down to `k = self.group_size`, its column count. A 0 floors to 1
+    /// either way (a non-positive size must never loop forever).
+    #[inline]
+    fn effective_group_size(&self, group_size: usize) -> usize {
+        let floored = group_size.max(1);
+        if self.parity == 1 {
+            floored
+        } else {
+            floored.min(self.group_size)
+        }
+    }
+
     /// XOR of the length-prefixed encodings of a group, zero-padded to the longest member,
     /// folded through the GF backend's [`xor_add`](GfRegion::xor_add).
     ///
@@ -468,10 +485,15 @@ impl<G: GfRegion> FecScheme for ReedSolomonFec<G> {
     }
 
     fn parity(&self, data: &[&[u8]], group_size: usize) -> Vec<Vec<u8>> {
-        // The Cauchy encoder has exactly `k = self.group_size` columns, so a group can never
-        // hold more than `k` data shards. The per-call `group_size` is honoured up to `k` and
-        // clamped down to it (a 0 floors to 1), keeping encode and decode self-consistent.
-        let group_size = group_size.max(1).min(self.group_size);
+        // `m == 1` is plain XOR parity (no matrix), so the per-call `group_size` is honoured
+        // EXACTLY — groups of the passed size, NO clamp to `k` — making the parity bytes
+        // byte-identical to the standalone `XorParityFec` for ANY group size (the production FEC
+        // path: a `ReedSolomonFec::new(k, 1)` codec drives the adaptive per-frame group size, which
+        // can exceed `k`). For `m >= 2` the Cauchy encoder has exactly `k = self.group_size`
+        // columns, so a group can never hold more than `k` data shards: the per-call `group_size`
+        // is then honoured up to `k` and clamped down to it, keeping encode and decode
+        // self-consistent. A 0 floors to 1 in both arms.
+        let group_size = self.effective_group_size(group_size);
         let mut parities = Vec::new();
         let mut index = 0;
         while index < data.len() {
@@ -483,7 +505,7 @@ impl<G: GfRegion> FecScheme for ReedSolomonFec<G> {
     }
 
     fn recover(&self, data: &mut [Option<Vec<u8>>], parity: &[Option<Vec<u8>>], group_size: usize) {
-        let group_size = group_size.max(1).min(self.group_size); // matches `parity`'s clamp.
+        let group_size = self.effective_group_size(group_size); // matches `parity`'s grouping.
         let mut group_index = 0;
         let mut index = 0;
         while index < data.len() {
@@ -666,6 +688,64 @@ mod tests {
                     data,
                     "RS m=1 did not recover original (k={k})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn rs_m1_honors_per_call_group_size_beyond_codec_k() {
+        // THE LOAD-BEARING PRODUCTION GUARANTEE: a `ReedSolomonFec::new(k, 1)` codec built with a
+        // small `k` (e.g. 5, the prod default) is driven by the ADAPTIVE per-frame group size
+        // (AdaptiveFECPolicy tiers => 2, 3, 10, ...), which can EXCEED `k`. For m==1 (no matrix)
+        // the per-call group_size MUST be honoured exactly — groups of the passed size, NOT clamped
+        // to `k` — so the parity bytes stay byte-identical to the standalone `XorParityFec` (the
+        // old Swift XOR wire). If the codec clamped to `k`, a group_size of 10 against a k=5 codec
+        // would WRONGLY split into groups of 5 and emit a different parity count + different bytes.
+        let mut rng = SplitMix::new(0xBEEF_CAFE_F00D);
+        let codec_ks = [1usize, 2, 5];
+        // Cover the adaptive tiers (2, 3, 10) plus the equal/sub-k cases.
+        let call_group_sizes = [1usize, 2, 3, 5, 8, 10, 16];
+        for &k in &codec_ks {
+            let rs = ReedSolomonFec::new(k, 1);
+            for &g in &call_group_sizes {
+                for _ in 0..20 {
+                    let count = 1 + rng.range(3 * g + 1); // span several groups at this size
+                    let data: Vec<Vec<u8>> = (0..count)
+                        .map(|_| {
+                            let len = rng.range(40);
+                            (0..len).map(|_| rng.byte()).collect()
+                        })
+                        .collect();
+                    // The reference XOR scheme grouped at the SAME per-call size.
+                    let reference = XorParityFec::new(1).parity(&slices(&data), g);
+                    let got = rs.parity(&slices(&data), g);
+                    assert_eq!(
+                        got, reference,
+                        "RS m=1 (codec k={k}) parity at group_size={g} must equal XOR grouped at {g}, \
+                         NOT clamped to k"
+                    );
+                    // Parity count proves the grouping width was `g` (ceil), not `min(g, k)`.
+                    assert_eq!(
+                        got.len(),
+                        count.div_ceil(g),
+                        "RS m=1 parity count must reflect the per-call group_size {g}, not codec k={k}"
+                    );
+
+                    // And recovery of a single hole per group must restore the originals byte-exact.
+                    let mut recv: Vec<Option<Vec<u8>>> = data.iter().cloned().map(Some).collect();
+                    for grp in 0..count.div_ceil(g) {
+                        let base = grp * g;
+                        let hi = (base + g).min(count);
+                        let hole = base + rng.range(hi - base);
+                        recv[hole] = None;
+                    }
+                    rs.recover(&mut recv, &opt(&got), g);
+                    assert_eq!(
+                        recv.into_iter().map(Option::unwrap).collect::<Vec<_>>(),
+                        data,
+                        "RS m=1 (codec k={k}) recover at group_size={g} must restore originals"
+                    );
+                }
             }
         }
     }
