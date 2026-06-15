@@ -129,6 +129,11 @@ public actor AislopdeskVideoClientSession {
         /// classifier, which natural sub-cadence content kept permanently "late"). Synchronous,
         /// lock-guarded, callable from the session actor like `readPacerTelemetry`.
         public var noteNetworkLate: (@Sendable () -> Void)?
+        /// Adaptive playout (2026-06-15): one live network-jitter sample (seconds, the session's
+        /// RFC3550 EWMA), fed UNCONDITIONALLY per fragment regardless of pacer mode. The pipeline
+        /// folds it into the deadline pacer's adaptive playout buffer (`FramePacer.notePlayoutJitter`)
+        /// so the jitter-absorption delay auto-tunes to the link. Synchronous, lock-guarded.
+        public var notePlayoutJitter: (@Sendable (Double) -> Void)?
         @preconcurrency
         public init(
             submitDecodedFrame: @escaping @Sendable (CVImageBuffer) -> Void,
@@ -139,6 +144,7 @@ public actor AislopdeskVideoClientSession {
             applyStreamCadence: (@Sendable (Int) -> Void)? = nil,
             readPacerTelemetry: (@Sendable () -> PacerTelemetrySnapshot)? = nil,
             noteNetworkLate: (@Sendable () -> Void)? = nil,
+            notePlayoutJitter: (@Sendable (Double) -> Void)? = nil,
         ) {
             self.submitDecodedFrame = submitDecodedFrame
             self.applyCursor = applyCursor
@@ -148,6 +154,7 @@ public actor AislopdeskVideoClientSession {
             self.applyStreamCadence = applyStreamCadence
             self.readPacerTelemetry = readPacerTelemetry
             self.noteNetworkLate = noteNetworkLate
+            self.notePlayoutJitter = notePlayoutJitter
         }
     }
 
@@ -678,6 +685,10 @@ public actor AislopdeskVideoClientSession {
         // ONE hoisted clock read shared by jitter / hold-anchor / trendline below.
         let now = FramePacer.currentHostTimeSeconds()
         owdJitter.note(arrival: now)
+        // Feed the live jitter EWMA to the deadline pacer's adaptive playout buffer — unconditional per
+        // fragment (the session estimator is fed regardless of pacer mode; the pacer throttles the
+        // recompute to ~1s). No-op when adaptive playout is off / the hook is unbound.
+        gui.notePlayoutJitter?(owdJitter.jitterSeconds)
         // KHỰNG-ladder stage 4 (AISLOPDESK_VIDEO_DEBUG): a >28ms hole between fragment ingests ON THE
         // ACTOR while stage 3 (socket) was clean = the per-datagram Task hop / actor backlog ate
         // the time. Stage 3 also gapped ⇒ inherited, not actor-caused.

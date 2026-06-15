@@ -1,4 +1,5 @@
 #if canImport(QuartzCore) && canImport(CoreVideo)
+import AislopdeskVideoProtocol
 import CoreVideo
 import Foundation
 import OSLog
@@ -162,7 +163,26 @@ public final class FramePacer: @unchecked Sendable {
     /// under ``lock`` (the deadline computation already runs inside the lock) and written only
     /// under ``lock``.
     private var contentIntervalSec: Double
-    private let playoutDelaySec: Double
+    /// The deadline-mode playout buffer (seconds). MUTABLE: when ``adaptivePlayout`` is on it is
+    /// driven by the live network jitter via ``notePlayoutJitter(_:)`` (grow-fast / shrink-slow),
+    /// else it stays the construction-time seed. Read in ``submit(_:)`` and written in
+    /// ``notePlayoutJitter`` — BOTH only under ``lock``.
+    private var playoutDelaySec: Double
+    /// Adaptive-playout state (all seconds). When `adaptivePlayout` is on and no fixed override is
+    /// set, ``notePlayoutJitter`` recomputes ``playoutDelaySec`` from the live jitter on a slow
+    /// (~1s) cadence using the Rust-core law, so the buffer auto-tunes to the link.
+    private let adaptivePlayout: Bool
+    private let fixedPlayoutOverride: Bool
+    private let playoutK: Double
+    private let playoutBaseMs: Double
+    private let playoutFloorMs: Double
+    private let playoutCeilMs: Double
+    /// Max shrink per recompute tick (seconds) — the shrink-slow rate that decays a transient spike.
+    private let playoutShrinkStepMs: Double = 2.0
+    /// Folded-sample counter gating the ~1s recompute cadence (avoids per-fragment churn). ``lock``.
+    private var playoutJitterSampleCount = 0
+    /// Recompute the playout value once per this many jitter samples (≈1s at ~60 fragments/s).
+    private static let playoutRecomputeEvery = 60
     /// Single pending frame + its deadline (latest-wins). Guarded by ``lock``.
     private var pendingFrame: CVImageBuffer?
     private var pendingDeadline: Double = 0
@@ -211,12 +231,25 @@ public final class FramePacer: @unchecked Sendable {
         deadlineMode: Bool = false,
         contentFps: Double = 60.0,
         playoutDelayMs: Double = 20.0,
+        adaptivePlayout: Bool = false,
+        fixedPlayoutOverride: Bool = false,
+        playoutK: Double = 0.8,
+        playoutBaseMs: Double = 4.0,
+        playoutFloorMs: Double = 4.0,
+        playoutCeilMs: Double = 35.0,
         renderCallback: @escaping RenderCallback,
     ) {
         self.presentOnArrival = presentOnArrival
         self.deadlineMode = deadlineMode
         contentIntervalSec = 1.0 / max(1.0, contentFps)
         playoutDelaySec = min(200.0, max(0.0, playoutDelayMs)) / 1000.0
+        // Adaptive only takes effect in deadline mode with no fixed override; otherwise the seed holds.
+        self.adaptivePlayout = adaptivePlayout && deadlineMode && !fixedPlayoutOverride
+        self.fixedPlayoutOverride = fixedPlayoutOverride
+        self.playoutK = playoutK
+        self.playoutBaseMs = playoutBaseMs
+        self.playoutFloorMs = playoutFloorMs
+        self.playoutCeilMs = playoutCeilMs
         self.maxFrameRate = maxFrameRate
         let clampedTarget = max(1, targetDepth)
         let clampedMax = max(clampedTarget, maxDepth)
@@ -463,6 +496,58 @@ public final class FramePacer: @unchecked Sendable {
         // crossover). The governor re-announces on every step, so the hint tracks the live fps.
         depthPolicy.setIntervalHint(1.0 / max(1.0, fps))
         lock.unlock()
+    }
+
+    /// Feeds one live network-jitter sample (seconds, the session's RFC3550 EWMA) to the adaptive
+    /// playout buffer. No-op unless adaptive playout is active (deadline mode + no fixed override).
+    /// On a slow (~1s) cadence it recomputes ``playoutDelaySec`` via the Rust-core law (grow-fast /
+    /// shrink-slow) so the buffer auto-tunes to the link. Lock-guarded (written here, read in the
+    /// deadline ``submit`` branch under the same ``lock``); safe to call off-main per fragment — the
+    /// cadence gate throttles the actual recompute. Feeding the EWMA (not the raw delta) keeps a
+    /// single post-idle spike from jumping the buffer to the ceiling.
+    public func notePlayoutJitter(_ jitterSeconds: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard adaptivePlayout else { return }
+        playoutJitterSampleCount += 1
+        guard playoutJitterSampleCount >= Self.playoutRecomputeEvery else { return }
+        playoutJitterSampleCount = 0
+        recomputePlayoutLocked(jitterSeconds: jitterSeconds)
+    }
+
+    /// Test seam: recompute every call (no cadence gate) so a deterministic test drives convergence.
+    func notePlayoutJitterForTest(_ jitterSeconds: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard adaptivePlayout else { return }
+        recomputePlayoutLocked(jitterSeconds: jitterSeconds)
+    }
+
+    /// Live playout (ms) for assertions/telemetry. Lock-guarded.
+    func playoutDelayMsForTest() -> Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return playoutDelaySec * 1000.0
+    }
+
+    /// Steps ``playoutDelaySec`` toward the jitter-sized target via the Rust-core law. MUST hold ``lock``.
+    private func recomputePlayoutLocked(jitterSeconds: Double) {
+        let nextMs = AdaptivePlayoutPolicy.stepMs(
+            jitterSeconds: jitterSeconds,
+            prevPlayoutMs: playoutDelaySec * 1000.0,
+            shrinkStepMs: playoutShrinkStepMs,
+            k: playoutK,
+            baseMs: playoutBaseMs,
+            floorMs: playoutFloorMs,
+            ceilMs: playoutCeilMs,
+        )
+        let clamped = min(200.0, max(0.0, nextMs)) / 1000.0
+        if Self.dbgEnabled, abs(clamped - playoutDelaySec) > 1e-6 {
+            let line = "Aislopdesk[video.client]: playout J=\(Int((jitterSeconds * 1000).rounded()))ms" +
+                " → \(String(format: "%.1f", clamped * 1000))ms\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        playoutDelaySec = clamped
     }
 
     /// One VSync step: decide which frame to present (pure; the GUI link calls this).

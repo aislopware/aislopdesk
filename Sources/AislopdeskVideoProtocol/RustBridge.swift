@@ -1,6 +1,26 @@
 import CAislopdeskFFI
 import Foundation
 
+/// Public entry to the Rust-core adaptive-playout law (the deadline pacer sizes its jitter buffer
+/// through this). PUBLIC so the client's `FramePacer` (in `AislopdeskVideoClient`) can call it; the
+/// rest of the C ABI stays encapsulated in the internal ``RustVideoFFI``.
+public enum AdaptivePlayoutPolicy {
+    /// One hysteretic step of the playout delay (milliseconds): maps live `jitterSeconds` to the
+    /// target `clamp(k·jitter + base, [floor, ceil])` and steps `prevPlayoutMs` toward it — grow-fast,
+    /// shrink-slow (≤ `shrinkStepMs` down per call). Wraps `aisd_adaptive_playout_step_ms`.
+    public static func stepMs(
+        jitterSeconds: Double,
+        prevPlayoutMs: Double,
+        shrinkStepMs: Double,
+        k: Double,
+        baseMs: Double,
+        floorMs: Double,
+        ceilMs: Double,
+    ) -> Double {
+        aisd_adaptive_playout_step_ms(jitterSeconds, prevPlayoutMs, shrinkStepMs, k, baseMs, floorMs, ceilMs)
+    }
+}
+
 /// Swift-side bridge from `AislopdeskVideoProtocol` to the Rust `aislopdesk-ffi` C ABI.
 ///
 /// All `import CAislopdeskFFI` for the video wire codecs is contained here; the codec types

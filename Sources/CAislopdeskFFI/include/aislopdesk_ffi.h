@@ -152,6 +152,16 @@ int64_t aisd_live_bitrate_target(int64_t pixel_width, int64_t pixel_height, int6
 /* The absolute minimum live bitrate (bits/sec). */
 int64_t aisd_live_bitrate_minimum(void);
 
+/* ---- adaptive_playout (pure scalar) ----------------------------------------------- */
+
+/* One hysteretic step of the client deadline-pacer's adaptive playout delay (milliseconds).
+ * Maps live jitter_seconds to clamp(k*jitter + base, [floor, ceil]) and steps prev_playout_ms
+ * toward it: grow-fast, shrink-slow (<= shrink_step_ms down per call). The caller holds
+ * prev_playout_ms between calls and resolves the env knobs. */
+double aisd_adaptive_playout_step_ms(double jitter_seconds, double prev_playout_ms,
+                                     double shrink_step_ms, double k, double base_ms,
+                                     double floor_ms, double ceil_ms);
+
 /* ---- cursor (the fixed 36-byte hot cursor update) --------------------------------- */
 
 /* A decoded cursor update (no owned buffer). Field order mirrors src/video.rs. */
