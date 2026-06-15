@@ -231,16 +231,17 @@ final class VideoWindowPipeline {
         // the buffer (default 10 ≈ 0.6 frame, below perceptual lag, covers most of the measured ~11ms
         // owd-jitter). Deadline mode pins depth 1 (adaptive-depth + present-on-arrival are inert here).
         let deadlineMode = env["AISLOPDESK_PACER"].map { $0.lowercased() == "deadline" } ?? true
-        // ADAPTIVE PLAYOUT (AISLOPDESK_ADAPTIVE_PLAYOUT): when on, the playout buffer auto-tunes to the
-        // live network jitter (clamp(k·jitter + base, [floor, ceil]) in rust-core) — a clean LAN floats
-        // down to ~floor (low latency), a jittery WAN inflates for smoothness. A fixed value is wrong
-        // across links. EXPLICIT AISLOPDESK_PLAYOUT_MS forces a fixed buffer (adaptation off — the A/B
-        // escape hatch); absent, 10ms is only the cold-start SEED. Ship DEFAULT-OFF (purely additive)
-        // until the live multi-link A/B; the floor/ceil/k/base are env-tunable without a rebuild.
+        // ADAPTIVE PLAYOUT (default ON): the playout buffer auto-tunes to the live network jitter
+        // (clamp(k·jitter + base, [floor, ceil]) in rust-core) — a clean LAN floats down to ~floor (low
+        // latency), a jittery WAN inflates for smoothness. A fixed value is wrong across links. HW-
+        // validated over NetBird: it settled to ~10ms (the hand-tuned value) at jitter p50≈7-12ms with
+        // present-gaps 0% and no regression, WITHOUT a hardcoded constant. EXPLICIT AISLOPDESK_PLAYOUT_MS
+        // forces a fixed buffer (adaptation off — the A/B escape hatch); absent, 10ms is only the
+        // cold-start SEED. `AISLOPDESK_ADAPTIVE_PLAYOUT=0` disables it; floor/ceil/k/base are env-tunable.
         let fixedPlayoutOverride = env["AISLOPDESK_PLAYOUT_MS"] != nil
         let playoutMs = env["AISLOPDESK_PLAYOUT_MS"].flatMap(Double.init) ?? 10.0
         let adaptivePlayout = env["AISLOPDESK_ADAPTIVE_PLAYOUT"]
-            .map { !($0 == "0" || $0.lowercased() == "false") } ?? false
+            .map { !($0 == "0" || $0.lowercased() == "false") } ?? true
         let playoutK = env["AISLOPDESK_PLAYOUT_K"].flatMap(Double.init) ?? 0.8
         let playoutBaseMs = env["AISLOPDESK_PLAYOUT_BASE_MS"].flatMap(Double.init) ?? 4.0
         let playoutFloorMs = env["AISLOPDESK_PLAYOUT_FLOOR_MS"].flatMap(Double.init) ?? 4.0
