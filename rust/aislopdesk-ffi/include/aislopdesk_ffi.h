@@ -837,6 +837,69 @@ uint8_t aisd_video_mux_router_bootstrap_action(uint8_t decision, uint8_t channel
                                                uint8_t payload_is_hello,
                                                uint8_t payload_is_list_request);
 
+/* ---- pacer_depth_policy (opaque handle; client adaptive pacer-depth v3) ---- */
+
+/* GapClass discriminants (aisd_pacer_depth_policy_note_present). */
+#define AISD_PACER_GAP_FIRST 0u
+#define AISD_PACER_GAP_NORMAL 1u
+#define AISD_PACER_GAP_LATE 2u
+#define AISD_PACER_GAP_IDLE 3u
+
+/* The 19 resolved Config tunables (env resolved caller-side; crosses by value). */
+typedef struct AisdPacerDepthConfig {
+    double late_gap_factor;
+    double absolute_late_floor_seconds;
+    double idle_gap_seconds;
+    double gap_gradient_factor;
+    size_t dense_min_arrivals;
+    double dense_window_seconds;
+    double late_slack_fraction;
+    size_t promote_late_count;
+    double promote_window_seconds;
+    double demote_clean_seconds;
+    double min_hold_seconds;
+    size_t demote_tolerance_lates;
+    double promote_warmup_seconds;
+    int64_t boost_depth;
+    size_t interval_ring_size;
+    size_t min_samples_for_estimate;
+    double default_interval_seconds;
+    double min_interval_seconds;
+    double max_interval_seconds;
+} AisdPacerDepthConfig;
+
+/* One drained window of the pacer's presentation-health counters. */
+typedef struct AisdPacerCounters {
+    uint32_t late_frames;
+    uint32_t present_gaps;
+} AisdPacerCounters;
+
+typedef struct AisdPacerDepthPolicy AisdPacerDepthPolicy;
+
+/* Creates a policy from the resolved config + adapt flag (read != 0). Destroy with
+ * aisd_pacer_depth_policy_free. */
+AisdPacerDepthPolicy *aisd_pacer_depth_policy_new(AisdPacerDepthConfig config, uint8_t adapt_enabled);
+/* Destroys a policy from aisd_pacer_depth_policy_new. No-op on NULL. */
+void aisd_pacer_depth_policy_free(AisdPacerDepthPolicy *policy);
+
+/* Recommended presentation depth (1 for a NULL handle). */
+int64_t aisd_pacer_depth_policy_depth(const AisdPacerDepthPolicy *policy);
+/* Expected content interval / late boundary (seconds; 0.0 for a NULL handle). */
+double aisd_pacer_depth_policy_expected_interval_seconds(const AisdPacerDepthPolicy *policy);
+double aisd_pacer_depth_policy_late_threshold_seconds(const AisdPacerDepthPolicy *policy);
+
+/* State folds (no-op on NULL). */
+void aisd_pacer_depth_policy_note_arrival(AisdPacerDepthPolicy *policy, double now);
+/* Folds a present and returns its AISD_PACER_GAP_* class (First for a NULL handle). */
+uint8_t aisd_pacer_depth_policy_note_present(AisdPacerDepthPolicy *policy, double now);
+void aisd_pacer_depth_policy_note_network_late(AisdPacerDepthPolicy *policy, double now);
+void aisd_pacer_depth_policy_note_reshow(AisdPacerDepthPolicy *policy, double now);
+/* Drains (and resets) the windowed counters ({0,0} for a NULL handle). */
+AisdPacerCounters aisd_pacer_depth_policy_drain_counters(AisdPacerDepthPolicy *policy);
+/* Sets (has_hint!=0) or clears (has_hint==0) the FPS-governor interval hint. No-op on NULL. */
+void aisd_pacer_depth_policy_set_interval_hint(AisdPacerDepthPolicy *policy, double seconds,
+                                               uint8_t has_hint);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

@@ -15,8 +15,12 @@ use aislopdesk_ffi::video::{
     aisd_decode_gate_note_hard_decode_failure, aisd_decode_gate_note_loss,
     aisd_decode_gate_verdict, aisd_input_button_balance_free, aisd_input_button_balance_held_mask,
     aisd_input_button_balance_new, aisd_input_button_balance_plan, aisd_owd_late_detector_free,
-    aisd_owd_late_detector_new, aisd_owd_late_detector_note, aisd_recovery_deduper_admit,
-    aisd_recovery_deduper_free, aisd_recovery_deduper_new,
+    aisd_owd_late_detector_new, aisd_owd_late_detector_note, aisd_pacer_depth_policy_depth,
+    aisd_pacer_depth_policy_drain_counters, aisd_pacer_depth_policy_free,
+    aisd_pacer_depth_policy_late_threshold_seconds, aisd_pacer_depth_policy_new,
+    aisd_pacer_depth_policy_note_arrival, aisd_pacer_depth_policy_note_network_late,
+    aisd_pacer_depth_policy_note_present, aisd_pacer_depth_policy_set_interval_hint,
+    aisd_recovery_deduper_admit, aisd_recovery_deduper_free, aisd_recovery_deduper_new,
     aisd_recovery_idr_policy_available_tokens, aisd_recovery_idr_policy_decide,
     aisd_recovery_idr_policy_free, aisd_recovery_idr_policy_grace, aisd_recovery_idr_policy_new,
     aisd_recovery_idr_policy_note_keyframe_delivered, aisd_recovery_idr_policy_note_keyframe_sent,
@@ -30,15 +34,16 @@ use aislopdesk_ffi::video::{
     aisd_video_mux_router_bootstrap_action, aisd_video_mux_router_end_drain,
     aisd_video_mux_router_free, aisd_video_mux_router_is_admitted,
     aisd_video_mux_router_is_draining, aisd_video_mux_router_new, aisd_video_mux_router_retire,
-    aisd_video_mux_router_route, aisd_ycbcr_coefficients, AisdNetworkStats, AisdRecoveryMessage,
-    AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
+    aisd_video_mux_router_route, aisd_ycbcr_coefficients, AisdNetworkStats, AisdPacerDepthConfig,
+    AisdRecoveryMessage, AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
     AISD_DECODE_GATE_MODE_BROKEN_CHAIN, AISD_DECODE_GATE_MODE_NEED_KEYFRAME,
     AISD_DECODE_GATE_MODE_OPEN, AISD_DECODE_GATE_VERDICT_DROP, AISD_DECODE_GATE_VERDICT_SUBMIT,
     AISD_MUX_BOOTSTRAP_DELIVER, AISD_MUX_BOOTSTRAP_DROP_NO_STAMP, AISD_MUX_DECISION_DROP,
     AISD_MUX_DECISION_DROP_DRAINING, AISD_MUX_DECISION_DROP_RETIRED,
-    AISD_MUX_DECISION_REJECT_UNADMITTED, AISD_MUX_DECISION_ROUTE, AISD_RECOVERY_IDR_GRANT,
-    AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT, AISD_RECOVERY_IDR_SUPPRESS_STALE,
-    AISD_RECOVERY_NETWORK_STATS, AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
+    AISD_MUX_DECISION_REJECT_UNADMITTED, AISD_MUX_DECISION_ROUTE, AISD_PACER_GAP_FIRST,
+    AISD_RECOVERY_IDR_GRANT, AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT,
+    AISD_RECOVERY_IDR_SUPPRESS_STALE, AISD_RECOVERY_NETWORK_STATS,
+    AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
 };
 use aislopdesk_ffi::{
     aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free, aisd_frame_decoder_new,
@@ -1289,5 +1294,63 @@ fn video_mux_router_opaque_handle_routes_and_frees() {
             AISD_MUX_DECISION_REJECT_UNADMITTED
         );
         assert_eq!(aisd_video_mux_router_is_admitted(core::ptr::null(), 1), 0);
+    }
+}
+
+#[test]
+fn pacer_depth_policy_opaque_handle_promotes_and_frees() {
+    unsafe {
+        // The default config crosses by value as a flat struct.
+        let cfg = AisdPacerDepthConfig {
+            late_gap_factor: 1.6,
+            absolute_late_floor_seconds: 0.028,
+            idle_gap_seconds: 0.25,
+            gap_gradient_factor: 1.45,
+            dense_min_arrivals: 8,
+            dense_window_seconds: 0.35,
+            late_slack_fraction: 0.25,
+            promote_late_count: 2,
+            promote_window_seconds: 1.0,
+            demote_clean_seconds: 2.5,
+            min_hold_seconds: 1.0,
+            demote_tolerance_lates: 1,
+            promote_warmup_seconds: 2.0,
+            boost_depth: 2,
+            interval_ring_size: 15,
+            min_samples_for_estimate: 5,
+            default_interval_seconds: 1.0 / 60.0,
+            min_interval_seconds: 1.0 / 240.0,
+            max_interval_seconds: 1.0 / 10.0,
+        };
+        let p = aisd_pacer_depth_policy_new(cfg, 1);
+        assert!(!p.is_null());
+        assert_eq!(aisd_pacer_depth_policy_depth(p), 1);
+        // Config round-trips: late boundary = 0.028 + 0.25/60 (slack term on top, before warmup).
+        let expected_late = 0.028 + 0.25 / 60.0;
+        assert!((aisd_pacer_depth_policy_late_threshold_seconds(p) - expected_late).abs() < 1e-6);
+        // Two network-late events past the warmup window promote to boost depth.
+        aisd_pacer_depth_policy_note_arrival(p, 0.0);
+        aisd_pacer_depth_policy_note_network_late(p, 3.0);
+        assert_eq!(aisd_pacer_depth_policy_depth(p), 1);
+        aisd_pacer_depth_policy_note_network_late(p, 3.2);
+        assert_eq!(aisd_pacer_depth_policy_depth(p), 2);
+        // Counters drain then reset.
+        let c = aisd_pacer_depth_policy_drain_counters(p);
+        assert_eq!(c.late_frames, 2);
+        assert_eq!(aisd_pacer_depth_policy_drain_counters(p).late_frames, 0);
+        aisd_pacer_depth_policy_set_interval_hint(p, 1.0 / 30.0, 1);
+        aisd_pacer_depth_policy_set_interval_hint(p, 0.0, 0); // clear
+        assert_eq!(
+            aisd_pacer_depth_policy_note_present(p, 10.0),
+            AISD_PACER_GAP_FIRST
+        );
+        aisd_pacer_depth_policy_free(p);
+        aisd_pacer_depth_policy_free(core::ptr::null_mut()); // no-op
+                                                             // Null handle: depth 1, First, empty drain.
+        assert_eq!(aisd_pacer_depth_policy_depth(core::ptr::null()), 1);
+        assert_eq!(
+            aisd_pacer_depth_policy_drain_counters(core::ptr::null_mut()).late_frames,
+            0
+        );
     }
 }

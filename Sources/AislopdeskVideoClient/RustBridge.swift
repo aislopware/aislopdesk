@@ -107,4 +107,99 @@ enum RustVideoClientFFI {
         var out = 0.0
         return aisd_owd_late_detector_note(handle, arrivalMs, sendTs, intervalMs, &out) != 0 ? out : nil
     }
+
+    // MARK: - pacer_depth_policy (opaque handle; adaptive pacer-depth v3)
+
+    /// Flattens a Swift `PacerDepthPolicy.Config` into the C `AisdPacerDepthConfig` (by field name).
+    private static func cPacerConfig(_ c: PacerDepthPolicy.Config) -> AisdPacerDepthConfig {
+        AisdPacerDepthConfig(
+            late_gap_factor: c.lateGapFactor,
+            absolute_late_floor_seconds: c.absoluteLateFloorSeconds,
+            idle_gap_seconds: c.idleGapSeconds,
+            gap_gradient_factor: c.gapGradientFactor,
+            dense_min_arrivals: c.denseMinArrivals,
+            dense_window_seconds: c.denseWindowSeconds,
+            late_slack_fraction: c.lateSlackFraction,
+            promote_late_count: c.promoteLateCount,
+            promote_window_seconds: c.promoteWindowSeconds,
+            demote_clean_seconds: c.demoteCleanSeconds,
+            min_hold_seconds: c.minHoldSeconds,
+            demote_tolerance_lates: c.demoteToleranceLates,
+            promote_warmup_seconds: c.promoteWarmupSeconds,
+            boost_depth: Int64(c.boostDepth),
+            interval_ring_size: c.intervalRingSize,
+            min_samples_for_estimate: c.minSamplesForEstimate,
+            default_interval_seconds: c.defaultIntervalSeconds,
+            min_interval_seconds: c.minIntervalSeconds,
+            max_interval_seconds: c.maxIntervalSeconds,
+        )
+    }
+
+    /// Creates a pacer-depth policy owned by the Rust core from the resolved config + adapt flag
+    /// (env resolved Swift-side). Release with `pacerDepthPolicyFree`. Wraps
+    /// `aisd_pacer_depth_policy_new` (never returns null).
+    static func pacerDepthPolicyNew(config: PacerDepthPolicy.Config, adaptEnabled: Bool) -> OpaquePointer {
+        aisd_pacer_depth_policy_new(cPacerConfig(config), adaptEnabled ? 1 : 0)
+    }
+
+    /// Destroys a policy handle. Wraps `aisd_pacer_depth_policy_free`.
+    static func pacerDepthPolicyFree(_ handle: OpaquePointer) {
+        aisd_pacer_depth_policy_free(handle)
+    }
+
+    /// The recommended presentation depth. Wraps `aisd_pacer_depth_policy_depth`.
+    static func pacerDepthPolicyDepth(_ handle: OpaquePointer) -> Int {
+        Int(aisd_pacer_depth_policy_depth(handle))
+    }
+
+    /// The expected content interval (seconds). Wraps
+    /// `aisd_pacer_depth_policy_expected_interval_seconds`.
+    static func pacerDepthPolicyExpectedIntervalSeconds(_ handle: OpaquePointer) -> Double {
+        aisd_pacer_depth_policy_expected_interval_seconds(handle)
+    }
+
+    /// The late boundary (seconds). Wraps `aisd_pacer_depth_policy_late_threshold_seconds`.
+    static func pacerDepthPolicyLateThresholdSeconds(_ handle: OpaquePointer) -> Double {
+        aisd_pacer_depth_policy_late_threshold_seconds(handle)
+    }
+
+    /// Folds one decoded-frame submit. Wraps `aisd_pacer_depth_policy_note_arrival`.
+    static func pacerDepthPolicyNoteArrival(_ handle: OpaquePointer, now: Double) {
+        aisd_pacer_depth_policy_note_arrival(handle, now)
+    }
+
+    /// Folds one content present and returns its gap class. Wraps
+    /// `aisd_pacer_depth_policy_note_present`.
+    static func pacerDepthPolicyNotePresent(_ handle: OpaquePointer, now: Double) -> PacerDepthPolicy.GapClass {
+        switch aisd_pacer_depth_policy_note_present(handle, now) {
+        case UInt8(AISD_PACER_GAP_NORMAL): .normal
+        case UInt8(AISD_PACER_GAP_LATE): .late
+        case UInt8(AISD_PACER_GAP_IDLE): .idle
+        default: .first
+        }
+    }
+
+    /// Folds one NETWORK-late event. Wraps `aisd_pacer_depth_policy_note_network_late`.
+    static func pacerDepthPolicyNoteNetworkLate(_ handle: OpaquePointer, now: Double) {
+        aisd_pacer_depth_policy_note_network_late(handle, now)
+    }
+
+    /// Folds one empty re-show. Wraps `aisd_pacer_depth_policy_note_reshow`.
+    static func pacerDepthPolicyNoteReshow(_ handle: OpaquePointer, now: Double) {
+        aisd_pacer_depth_policy_note_reshow(handle, now)
+    }
+
+    /// Drains (and resets) the windowed counters. Wraps `aisd_pacer_depth_policy_drain_counters`.
+    static func pacerDepthPolicyDrainCounters(
+        _ handle: OpaquePointer,
+    ) -> (lateFrames: UInt32, presentGaps: UInt32) {
+        let c = aisd_pacer_depth_policy_drain_counters(handle)
+        return (c.late_frames, c.present_gaps)
+    }
+
+    /// Sets (or clears, when `seconds == nil`) the FPS-governor interval hint. Wraps
+    /// `aisd_pacer_depth_policy_set_interval_hint`.
+    static func pacerDepthPolicySetIntervalHint(_ handle: OpaquePointer, seconds: Double?) {
+        aisd_pacer_depth_policy_set_interval_hint(handle, seconds ?? 0, seconds != nil ? 1 : 0)
+    }
 }

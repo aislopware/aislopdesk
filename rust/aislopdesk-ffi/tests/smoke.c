@@ -588,6 +588,33 @@ int main(void) {
     CHECK(aisd_video_mux_router_route(NULL, 1, 1, 100) == AISD_MUX_DECISION_REJECT_UNADMITTED,
           "null router rejects");
 
+    /* 20. pacer_depth_policy opaque handle: config-by-value, promote/drain, GapClass, null guards. */
+    AisdPacerDepthConfig pcfg = {
+        .late_gap_factor = 1.6, .absolute_late_floor_seconds = 0.028, .idle_gap_seconds = 0.25,
+        .gap_gradient_factor = 1.45, .dense_min_arrivals = 8, .dense_window_seconds = 0.35,
+        .late_slack_fraction = 0.25, .promote_late_count = 2, .promote_window_seconds = 1.0,
+        .demote_clean_seconds = 2.5, .min_hold_seconds = 1.0, .demote_tolerance_lates = 1,
+        .promote_warmup_seconds = 2.0, .boost_depth = 2, .interval_ring_size = 15,
+        .min_samples_for_estimate = 5, .default_interval_seconds = 1.0 / 60.0,
+        .min_interval_seconds = 1.0 / 240.0, .max_interval_seconds = 1.0 / 10.0,
+    };
+    AisdPacerDepthPolicy *pdp = aisd_pacer_depth_policy_new(pcfg, 1);
+    CHECK(pdp != NULL, "pacer depth policy new");
+    CHECK(aisd_pacer_depth_policy_depth(pdp) == 1, "starts at depth 1");
+    aisd_pacer_depth_policy_note_arrival(pdp, 0.0);
+    aisd_pacer_depth_policy_note_network_late(pdp, 3.0);
+    CHECK(aisd_pacer_depth_policy_depth(pdp) == 1, "one late never promotes");
+    aisd_pacer_depth_policy_note_network_late(pdp, 3.2);
+    CHECK(aisd_pacer_depth_policy_depth(pdp) == 2, "2nd late within window promotes");
+    AisdPacerCounters pc = aisd_pacer_depth_policy_drain_counters(pdp);
+    CHECK(pc.late_frames == 2, "drained 2 late frames");
+    CHECK(aisd_pacer_depth_policy_drain_counters(pdp).late_frames == 0, "second drain empty");
+    CHECK(aisd_pacer_depth_policy_note_present(pdp, 10.0) == AISD_PACER_GAP_FIRST, "first present");
+    aisd_pacer_depth_policy_free(pdp);
+    aisd_pacer_depth_policy_free(NULL); /* no-op */
+    CHECK(aisd_pacer_depth_policy_depth(NULL) == 1, "null policy depth 1");
+    CHECK(aisd_pacer_depth_policy_note_present(NULL, 0.0) == AISD_PACER_GAP_FIRST, "null first");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;
