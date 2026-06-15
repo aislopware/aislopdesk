@@ -42,19 +42,18 @@ pub unsafe extern "C" fn aisd_cursor_update_encode(
     hotspot_y: f64,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() {
-            return AISD_ERR_NULL;
-        }
-        let update = CursorUpdate {
-            position: VideoPoint::new(x, y),
-            shape_id,
-            hotspot: VideoPoint::new(hotspot_x, hotspot_y),
-            visible: visible != 0,
-        };
-        out.write(bytes_from_vec(update.encode()));
-        AISD_OK
+    if out.is_null() {
+        return AISD_ERR_NULL;
     }
+    let update = CursorUpdate {
+        position: VideoPoint::new(x, y),
+        shape_id,
+        hotspot: VideoPoint::new(hotspot_x, hotspot_y),
+        visible: visible != 0,
+    };
+    // SAFETY: `out` is non-null per the check above and writable per the contract.
+    unsafe { out.write(bytes_from_vec(update.encode())) };
+    AISD_OK
 }
 
 /// Decodes a cursor update into `*out`.
@@ -72,12 +71,14 @@ pub unsafe extern "C" fn aisd_cursor_update_decode(
     len: usize,
     out: *mut AisdCursorUpdate,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() || (data.is_null() && len != 0) {
-            return AISD_ERR_NULL;
-        }
-        match CursorUpdate::decode(slice_in(data, len)) {
-            Ok(c) => {
+    if out.is_null() || (data.is_null() && len != 0) {
+        return AISD_ERR_NULL;
+    }
+    // SAFETY: `data` covers `len` readable bytes per the contract (and the null+len check).
+    match CursorUpdate::decode(unsafe { slice_in(data, len) }) {
+        Ok(c) => {
+            // SAFETY: `out` is non-null per the check above and writable per the contract.
+            unsafe {
                 out.write(AisdCursorUpdate {
                     shape_id: c.shape_id,
                     visible: u8::from(c.visible),
@@ -86,10 +87,10 @@ pub unsafe extern "C" fn aisd_cursor_update_decode(
                     hotspot_x: c.hotspot.x,
                     hotspot_y: c.hotspot.y,
                 });
-                AISD_OK
             }
-            Err(e) => status_for_video_error(&e),
+            AISD_OK
         }
+        Err(e) => status_for_video_error(&e),
     }
 }
 

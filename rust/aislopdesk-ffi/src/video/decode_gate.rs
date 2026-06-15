@@ -5,6 +5,7 @@
 //! deduper. Mode/Verdict cross as `u32` discriminants (Open/Submit = 0); the lost-frame bounds
 //! cross as a (`u32 out`, `u8 is_some`) Option pair.
 
+use crate::{free_handle, into_handle};
 use aislopdesk_core::decode_gate::{
     DecodeGate, Mode as DecodeGateMode, Verdict as DecodeGateVerdict,
 };
@@ -42,9 +43,9 @@ const fn decode_gate_mode_to_c(mode: DecodeGateMode) -> u32 {
 #[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn aisd_decode_gate_new() -> *mut AisdDecodeGate {
-    Box::into_raw(Box::new(AisdDecodeGate {
+    into_handle(AisdDecodeGate {
         inner: DecodeGate::new(),
-    }))
+    })
 }
 
 /// Destroys a gate created by [`aisd_decode_gate_new`]. No-op on null.
@@ -53,11 +54,8 @@ pub extern "C" fn aisd_decode_gate_new() -> *mut AisdDecodeGate {
 /// `gate` must be a pointer from [`aisd_decode_gate_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_free(gate: *mut AisdDecodeGate) {
-    unsafe {
-        if !gate.is_null() {
-            drop(Box::from_raw(gate));
-        }
-    }
+    // SAFETY: per the contract, `gate` is an unfreed handle from `aisd_decode_gate_new`.
+    unsafe { free_handle(gate) }
 }
 
 /// The current admission mode as an `AISD_DECODE_GATE_MODE_*` discriminant (Open `0` for a null
@@ -68,11 +66,10 @@ pub unsafe extern "C" fn aisd_decode_gate_free(gate: *mut AisdDecodeGate) {
 #[must_use]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_mode(gate: *const AisdDecodeGate) -> u32 {
-    unsafe {
-        gate.as_ref().map_or(AISD_DECODE_GATE_MODE_OPEN, |g| {
-            decode_gate_mode_to_c(g.inner.mode())
-        })
-    }
+    // SAFETY: a non-null `gate` is a live handle per the contract.
+    unsafe { gate.as_ref() }.map_or(AISD_DECODE_GATE_MODE_OPEN, |g| {
+        decode_gate_mode_to_c(g.inner.mode())
+    })
 }
 
 /// The OLDEST lost frame id of the episode. Returns `1` and writes the id to `out` when present,
@@ -86,14 +83,14 @@ pub unsafe extern "C" fn aisd_decode_gate_min_lost_frame_id(
     gate: *const AisdDecodeGate,
     out: *mut u32,
 ) -> u8 {
-    unsafe {
-        match gate.as_ref().and_then(|g| g.inner.min_lost_frame_id()) {
-            Some(id) if !out.is_null() => {
-                *out = id;
-                1
-            }
-            _ => 0,
+    // SAFETY: a non-null `gate` is a live handle per the contract.
+    match unsafe { gate.as_ref() }.and_then(|g| g.inner.min_lost_frame_id()) {
+        Some(id) if !out.is_null() => {
+            // SAFETY: `out` is non-null per the guard and writable per the contract.
+            unsafe { out.write(id) };
+            1
         }
+        _ => 0,
     }
 }
 
@@ -108,14 +105,14 @@ pub unsafe extern "C" fn aisd_decode_gate_max_lost_frame_id(
     gate: *const AisdDecodeGate,
     out: *mut u32,
 ) -> u8 {
-    unsafe {
-        match gate.as_ref().and_then(|g| g.inner.max_lost_frame_id()) {
-            Some(id) if !out.is_null() => {
-                *out = id;
-                1
-            }
-            _ => 0,
+    // SAFETY: a non-null `gate` is a live handle per the contract.
+    match unsafe { gate.as_ref() }.and_then(|g| g.inner.max_lost_frame_id()) {
+        Some(id) if !out.is_null() => {
+            // SAFETY: `out` is non-null per the guard and writable per the contract.
+            unsafe { out.write(id) };
+            1
         }
+        _ => 0,
     }
 }
 
@@ -125,10 +122,9 @@ pub unsafe extern "C" fn aisd_decode_gate_max_lost_frame_id(
 /// `gate`, if non-null, must be a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_decode_gate_note_loss(gate: *mut AisdDecodeGate, frame_id: u32) {
-    unsafe {
-        if let Some(g) = gate.as_mut() {
-            g.inner.note_loss(frame_id);
-        }
+    // SAFETY: a non-null `gate` is a live handle per the contract.
+    if let Some(g) = unsafe { gate.as_mut() } {
+        g.inner.note_loss(frame_id);
     }
 }
 
@@ -141,10 +137,9 @@ pub unsafe extern "C" fn aisd_decode_gate_note_loss(gate: *mut AisdDecodeGate, f
 pub const unsafe extern "C" fn aisd_decode_gate_note_hard_decode_failure(
     gate: *mut AisdDecodeGate,
 ) {
-    unsafe {
-        if let Some(g) = gate.as_mut() {
-            g.inner.note_hard_decode_failure();
-        }
+    // SAFETY: a non-null `gate` is a live handle per the contract.
+    if let Some(g) = unsafe { gate.as_mut() } {
+        g.inner.note_hard_decode_failure();
     }
 }
 
@@ -155,10 +150,9 @@ pub const unsafe extern "C" fn aisd_decode_gate_note_hard_decode_failure(
 /// `gate`, if non-null, must be a live handle.
 #[unsafe(no_mangle)]
 pub const unsafe extern "C" fn aisd_decode_gate_note_awaiting_keyframe(gate: *mut AisdDecodeGate) {
-    unsafe {
-        if let Some(g) = gate.as_mut() {
-            g.inner.note_awaiting_keyframe();
-        }
+    // SAFETY: a non-null `gate` is a live handle per the contract.
+    if let Some(g) = unsafe { gate.as_mut() } {
+        g.inner.note_awaiting_keyframe();
     }
 }
 
@@ -177,17 +171,16 @@ pub unsafe extern "C" fn aisd_decode_gate_verdict(
     keyframe: u8,
     acked_anchored: u8,
 ) -> u32 {
-    unsafe {
-        gate.as_ref().map_or(AISD_DECODE_GATE_VERDICT_SUBMIT, |g| {
-            match g
-                .inner
-                .verdict(frame_id, keyframe != 0, acked_anchored != 0)
-            {
-                DecodeGateVerdict::Submit => AISD_DECODE_GATE_VERDICT_SUBMIT,
-                DecodeGateVerdict::Drop => AISD_DECODE_GATE_VERDICT_DROP,
-            }
-        })
-    }
+    // SAFETY: a non-null `gate` is a live handle per the contract.
+    unsafe { gate.as_ref() }.map_or(AISD_DECODE_GATE_VERDICT_SUBMIT, |g| {
+        match g
+            .inner
+            .verdict(frame_id, keyframe != 0, acked_anchored != 0)
+        {
+            DecodeGateVerdict::Submit => AISD_DECODE_GATE_VERDICT_SUBMIT,
+            DecodeGateVerdict::Drop => AISD_DECODE_GATE_VERDICT_DROP,
+        }
+    })
 }
 
 /// Folds one successful decode (`keyframe` read `!= 0`). No-op on null. Wraps
@@ -201,10 +194,9 @@ pub unsafe extern "C" fn aisd_decode_gate_note_decode_succeeded(
     frame_id: u32,
     keyframe: u8,
 ) {
-    unsafe {
-        if let Some(g) = gate.as_mut() {
-            g.inner.note_decode_succeeded(frame_id, keyframe != 0);
-        }
+    // SAFETY: a non-null `gate` is a live handle per the contract.
+    if let Some(g) = unsafe { gate.as_mut() } {
+        g.inner.note_decode_succeeded(frame_id, keyframe != 0);
     }
 }
 

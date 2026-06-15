@@ -171,18 +171,17 @@ pub unsafe extern "C" fn aisd_recovery_message_encode(
     msg: *const AisdRecoveryMessage,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    unsafe {
-        if msg.is_null() || out.is_null() {
-            return AISD_ERR_NULL;
-        }
-        match c_to_recovery_message(&*msg) {
-            Ok(message) => {
-                out.write(bytes_from_vec(message.encode()));
-                AISD_OK
-            }
-            Err(status) => status,
-        }
+    if msg.is_null() || out.is_null() {
+        return AISD_ERR_NULL;
     }
+    // SAFETY: `msg` is non-null per the check above and valid per the contract.
+    let message = match c_to_recovery_message(unsafe { &*msg }) {
+        Ok(message) => message,
+        Err(status) => return status,
+    };
+    // SAFETY: `out` is non-null per the check above and writable per the contract.
+    unsafe { out.write(bytes_from_vec(message.encode())) };
+    AISD_OK
 }
 
 /// Decodes a recovery message into `*out`.
@@ -200,17 +199,17 @@ pub unsafe extern "C" fn aisd_recovery_message_decode(
     len: usize,
     out: *mut AisdRecoveryMessage,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() || (data.is_null() && len != 0) {
-            return AISD_ERR_NULL;
+    if out.is_null() || (data.is_null() && len != 0) {
+        return AISD_ERR_NULL;
+    }
+    // SAFETY: `data` covers `len` readable bytes per the contract (and the null+len check).
+    match RecoveryMessage::decode(unsafe { slice_in(data, len) }) {
+        Ok(message) => {
+            // SAFETY: `out` is non-null per the check above and writable per the contract.
+            unsafe { out.write(recovery_message_to_c(&message)) };
+            AISD_OK
         }
-        match RecoveryMessage::decode(slice_in(data, len)) {
-            Ok(message) => {
-                out.write(recovery_message_to_c(&message));
-                AISD_OK
-            }
-            Err(e) => status_for_video_error(&e),
-        }
+        Err(e) => status_for_video_error(&e),
     }
 }
 

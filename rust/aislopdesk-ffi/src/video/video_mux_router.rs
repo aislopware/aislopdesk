@@ -6,6 +6,7 @@
 //! descriptive-only and never asserted), so no associated value crosses the boundary. One owner
 //! (`NWVideoMuxDatagramTransport`). Same "Rust owns the state" boundary as the deduper.
 
+use crate::{free_handle, into_handle};
 use aislopdesk_core::video_mux_router::{
     BootstrapAction as MuxBootstrapAction, Decision as MuxDecision,
     VideoChannel as MuxVideoChannel, VideoMuxRouter,
@@ -73,9 +74,9 @@ pub struct AisdVideoMuxRouter {
 #[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn aisd_video_mux_router_new() -> *mut AisdVideoMuxRouter {
-    Box::into_raw(Box::new(AisdVideoMuxRouter {
+    into_handle(AisdVideoMuxRouter {
         inner: VideoMuxRouter::new(),
-    }))
+    })
 }
 
 /// Destroys a router created by [`aisd_video_mux_router_new`]. No-op on null.
@@ -84,11 +85,8 @@ pub extern "C" fn aisd_video_mux_router_new() -> *mut AisdVideoMuxRouter {
 /// `router` must be a pointer from [`aisd_video_mux_router_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_mux_router_free(router: *mut AisdVideoMuxRouter) {
-    unsafe {
-        if !router.is_null() {
-            drop(Box::from_raw(router));
-        }
-    }
+    // SAFETY: per the contract, `router` is an unfreed handle from `aisd_video_mux_router_new`.
+    unsafe { free_handle(router) }
 }
 
 /// Admits `channel_id` as a live lane (clears any retired/draining mark). No-op on null. Wraps
@@ -101,10 +99,9 @@ pub unsafe extern "C" fn aisd_video_mux_router_admit(
     router: *mut AisdVideoMuxRouter,
     channel_id: u32,
 ) {
-    unsafe {
-        if let Some(r) = router.as_mut() {
-            r.inner.admit(channel_id);
-        }
+    // SAFETY: a non-null `router` is a live handle per the contract.
+    if let Some(r) = unsafe { router.as_mut() } {
+        r.inner.admit(channel_id);
     }
 }
 
@@ -117,10 +114,9 @@ pub unsafe extern "C" fn aisd_video_mux_router_retire(
     router: *mut AisdVideoMuxRouter,
     channel_id: u32,
 ) {
-    unsafe {
-        if let Some(r) = router.as_mut() {
-            r.inner.retire(channel_id);
-        }
+    // SAFETY: a non-null `router` is a live handle per the contract.
+    if let Some(r) = unsafe { router.as_mut() } {
+        r.inner.retire(channel_id);
     }
 }
 
@@ -134,10 +130,9 @@ pub unsafe extern "C" fn aisd_video_mux_router_begin_drain(
     router: *mut AisdVideoMuxRouter,
     channel_id: u32,
 ) {
-    unsafe {
-        if let Some(r) = router.as_mut() {
-            r.inner.begin_drain(channel_id);
-        }
+    // SAFETY: a non-null `router` is a live handle per the contract.
+    if let Some(r) = unsafe { router.as_mut() } {
+        r.inner.begin_drain(channel_id);
     }
 }
 
@@ -151,10 +146,9 @@ pub unsafe extern "C" fn aisd_video_mux_router_end_drain(
     router: *mut AisdVideoMuxRouter,
     channel_id: u32,
 ) {
-    unsafe {
-        if let Some(r) = router.as_mut() {
-            r.inner.end_drain(channel_id);
-        }
+    // SAFETY: a non-null `router` is a live handle per the contract.
+    if let Some(r) = unsafe { router.as_mut() } {
+        r.inner.end_drain(channel_id);
     }
 }
 
@@ -169,11 +163,8 @@ pub unsafe extern "C" fn aisd_video_mux_router_is_admitted(
     router: *const AisdVideoMuxRouter,
     channel_id: u32,
 ) -> u8 {
-    unsafe {
-        router
-            .as_ref()
-            .map_or(0, |r| u8::from(r.inner.is_admitted(channel_id)))
-    }
+    // SAFETY: a non-null `router` is a live handle per the contract.
+    unsafe { router.as_ref() }.map_or(0, |r| u8::from(r.inner.is_admitted(channel_id)))
 }
 
 /// Whether `channel_id` is currently draining. `0` for a null handle. Wraps
@@ -187,11 +178,8 @@ pub unsafe extern "C" fn aisd_video_mux_router_is_draining(
     router: *const AisdVideoMuxRouter,
     channel_id: u32,
 ) -> u8 {
-    unsafe {
-        router
-            .as_ref()
-            .map_or(0, |r| u8::from(r.inner.is_draining(channel_id)))
-    }
+    // SAFETY: a non-null `router` is a live handle per the contract.
+    unsafe { router.as_ref() }.map_or(0, |r| u8::from(r.inner.is_draining(channel_id)))
 }
 
 /// The routing decision for one received datagram, as an `AISD_MUX_DECISION_*` discriminant.
@@ -209,17 +197,13 @@ pub unsafe extern "C" fn aisd_video_mux_router_route(
     channel: u8,
     bytes_count: usize,
 ) -> u8 {
-    unsafe {
-        router
-            .as_ref()
-            .map_or(AISD_MUX_DECISION_REJECT_UNADMITTED, |r| {
-                mux_decision_to_c(&r.inner.route(
-                    channel_id,
-                    mux_channel_from_c(channel),
-                    bytes_count,
-                ))
-            })
-    }
+    // SAFETY: a non-null `router` is a live handle per the contract.
+    unsafe { router.as_ref() }.map_or(AISD_MUX_DECISION_REJECT_UNADMITTED, |r| {
+        mux_decision_to_c(
+            &r.inner
+                .route(channel_id, mux_channel_from_c(channel), bytes_count),
+        )
+    })
 }
 
 /// The bootstrap action for a not-yet-admitted datagram, as an `AISD_MUX_BOOTSTRAP_*` discriminant.

@@ -51,17 +51,16 @@ pub const unsafe extern "C" fn aisd_adaptive_fec_group_size(
     default_group_size: usize,
     out: *mut usize,
 ) -> u8 {
-    unsafe {
-        match adaptive_fec::group_size(tier, default_group_size) {
-            // Return `1` only when a size was actually written, so the return is a clean
-            // postcondition (`1` ⟺ `*out` holds a valid group size). A null `out` (caller error)
-            // yields `0` like the OFF tier — nothing written, no UB.
-            Some(g) if !out.is_null() => {
-                out.write(g);
-                1
-            }
-            _ => 0,
+    match adaptive_fec::group_size(tier, default_group_size) {
+        // Return `1` only when a size was actually written, so the return is a clean
+        // postcondition (`1` ⟺ `*out` holds a valid group size). A null `out` (caller error)
+        // yields `0` like the OFF tier — nothing written, no UB.
+        Some(g) if !out.is_null() => {
+            // SAFETY: `out` is non-null per the guard and writable per the contract.
+            unsafe { out.write(g) };
+            1
         }
+        _ => 0,
     }
 }
 

@@ -40,7 +40,9 @@ pub struct AisdSystemDialog {
 /// # Safety
 /// If `len != 0`, `ptr` must point to at least `len` readable bytes.
 unsafe fn string_in(ptr: *const u8, len: usize) -> String {
-    unsafe { String::from_utf8_lossy(slice_in(ptr, len)).into_owned() }
+    // SAFETY: `slice_in` borrows `len` readable bytes at `ptr` per this function's contract.
+    let bytes = unsafe { slice_in(ptr, len) };
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// The minimum on-screen width/height (points) for a window to be a surfaced system dialog. Wraps
@@ -79,36 +81,39 @@ pub unsafe extern "C" fn aisd_system_dialog_classify(
     min_size: i64,
     out: *mut AisdSystemDialog,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null()
-            || (owner_name.is_null() && owner_name_len != 0)
-            || (bundle_id.is_null() && bundle_id_len != 0)
-            || (title.is_null() && title_len != 0)
-        {
-            return AISD_ERR_NULL;
+    if out.is_null()
+        || (owner_name.is_null() && owner_name_len != 0)
+        || (bundle_id.is_null() && bundle_id_len != 0)
+        || (title.is_null() && title_len != 0)
+    {
+        return AISD_ERR_NULL;
+    }
+    // SAFETY: each string is non-null per the checks above (or has length 0) and covers that
+    // many readable bytes per the contract.
+    let snapshot = system_dialog_detector::WindowSnapshot::new(
+        window_id,
+        unsafe { string_in(owner_name, owner_name_len) },
+        unsafe { string_in(bundle_id, bundle_id_len) },
+        is_on_screen != 0,
+        unsafe { string_in(title, title_len) },
+        frame.to_core(),
+    );
+    match system_dialog_detector::classify(&snapshot, min_size) {
+        Some(d) => {
+            let dialog = AisdSystemDialog {
+                window_id: d.window_id,
+                width: d.width,
+                height: d.height,
+                is_secure: u8::from(d.is_secure),
+                owner: bytes_from_vec(d.owner.into_bytes()),
+                title: bytes_from_vec(d.title.into_bytes()),
+            };
+            // SAFETY: `out` is non-null per the check above and writable per the contract; the
+            // prior contents are overwritten without freeing, as documented.
+            unsafe { out.write(dialog) };
+            AISD_OK
         }
-        let snapshot = system_dialog_detector::WindowSnapshot::new(
-            window_id,
-            string_in(owner_name, owner_name_len),
-            string_in(bundle_id, bundle_id_len),
-            is_on_screen != 0,
-            string_in(title, title_len),
-            frame.to_core(),
-        );
-        match system_dialog_detector::classify(&snapshot, min_size) {
-            Some(d) => {
-                out.write(AisdSystemDialog {
-                    window_id: d.window_id,
-                    width: d.width,
-                    height: d.height,
-                    is_secure: u8::from(d.is_secure),
-                    owner: bytes_from_vec(d.owner.into_bytes()),
-                    title: bytes_from_vec(d.title.into_bytes()),
-                });
-                AISD_OK
-            }
-            None => AISD_EMPTY,
-        }
+        None => AISD_EMPTY,
     }
 }
 
@@ -119,16 +124,18 @@ pub unsafe extern "C" fn aisd_system_dialog_classify(
 /// `msg` must point to a writable [`AisdSystemDialog`] previously filled by this library.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_system_dialog_free(msg: *mut AisdSystemDialog) {
-    unsafe {
-        if msg.is_null() {
-            return;
-        }
-        let m = &mut *msg;
-        drop_bytes(m.owner);
-        drop_bytes(m.title);
-        m.owner = AisdBytes::EMPTY;
-        m.title = AisdBytes::EMPTY;
+    if msg.is_null() {
+        return;
     }
+    // SAFETY: `msg` is non-null per the guard and points to a writable `AisdSystemDialog`
+    // previously filled by this library per the contract.
+    let m = unsafe { &mut *msg };
+    // SAFETY: `owner` / `title` are live `bytes_from_vec` buffers (or empty); freeing then
+    // resetting to empty makes a repeat free a no-op (idempotent).
+    unsafe { drop_bytes(m.owner) };
+    unsafe { drop_bytes(m.title) };
+    m.owner = AisdBytes::EMPTY;
+    m.title = AisdBytes::EMPTY;
 }
 
 #[cfg(test)]

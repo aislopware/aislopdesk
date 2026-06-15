@@ -5,6 +5,7 @@
 //! Swift-side and cross as the four resolved Config scalars. Same "Rust owns the state" boundary
 //! as the deduper.
 
+use crate::{free_handle, into_handle};
 use aislopdesk_core::owd_late_detector::{Config as OwdLateConfig, OwdLateDetector};
 
 /// Opaque client one-way-delay spike detector.
@@ -30,14 +31,14 @@ pub extern "C" fn aisd_owd_late_detector_new(
     threshold_interval_fraction: f64,
     warmup_samples: usize,
 ) -> *mut AisdOwdLateDetector {
-    Box::into_raw(Box::new(AisdOwdLateDetector {
+    into_handle(AisdOwdLateDetector {
         inner: OwdLateDetector::new(OwdLateConfig {
             bucket_ms,
             threshold_floor_ms,
             threshold_interval_fraction,
             warmup_samples,
         }),
-    }))
+    })
 }
 
 /// Destroys a detector created by [`aisd_owd_late_detector_new`]. No-op on null.
@@ -46,11 +47,8 @@ pub extern "C" fn aisd_owd_late_detector_new(
 /// `detector` must be a pointer from [`aisd_owd_late_detector_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_owd_late_detector_free(detector: *mut AisdOwdLateDetector) {
-    unsafe {
-        if !detector.is_null() {
-            drop(Box::from_raw(detector));
-        }
-    }
+    // SAFETY: per the contract, `detector` is an unfreed handle from `aisd_owd_late_detector_new`.
+    unsafe { free_handle(detector) }
 }
 
 /// Folds one per-frame sample.
@@ -71,17 +69,15 @@ pub unsafe extern "C" fn aisd_owd_late_detector_note(
     interval_ms: f64,
     out_deviation: *mut f64,
 ) -> u8 {
-    unsafe {
-        match detector
-            .as_mut()
-            .and_then(|d| d.inner.note(arrival_ms, send_ts, interval_ms))
-        {
-            Some(dev) if !out_deviation.is_null() => {
-                *out_deviation = dev;
-                1
-            }
-            _ => 0,
+    // SAFETY: a non-null `detector` is a live handle per the contract.
+    match unsafe { detector.as_mut() }.and_then(|d| d.inner.note(arrival_ms, send_ts, interval_ms))
+    {
+        Some(dev) if !out_deviation.is_null() => {
+            // SAFETY: `out_deviation` is non-null per the guard and writable per the contract.
+            unsafe { out_deviation.write(dev) };
+            1
         }
+        _ => 0,
     }
 }
 

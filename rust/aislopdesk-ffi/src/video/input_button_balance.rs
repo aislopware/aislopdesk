@@ -6,6 +6,7 @@
 //! owns the state" boundary as the deduper.
 
 use super::{AISD_INPUT_MOUSE_DOWN, AISD_INPUT_MOUSE_UP};
+use crate::{free_handle, into_handle};
 use aislopdesk_core::geometry::VideoPoint;
 use aislopdesk_core::input_button_balance::InputButtonBalance;
 use aislopdesk_core::input_event::{InputEvent, InputModifiers, MouseButton};
@@ -67,9 +68,9 @@ fn input_balance_event(kind: u8, button: u8) -> InputEvent {
 #[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn aisd_input_button_balance_new() -> *mut AisdInputButtonBalance {
-    Box::into_raw(Box::new(AisdInputButtonBalance {
+    into_handle(AisdInputButtonBalance {
         inner: InputButtonBalance::new(),
-    }))
+    })
 }
 
 /// Destroys a balance created by [`aisd_input_button_balance_new`]. No-op on null.
@@ -78,11 +79,8 @@ pub extern "C" fn aisd_input_button_balance_new() -> *mut AisdInputButtonBalance
 /// `balance` must be a pointer from [`aisd_input_button_balance_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_input_button_balance_free(balance: *mut AisdInputButtonBalance) {
-    unsafe {
-        if !balance.is_null() {
-            drop(Box::from_raw(balance));
-        }
-    }
+    // SAFETY: per the contract, `balance` is an unfreed handle from `aisd_input_button_balance_new`.
+    unsafe { free_handle(balance) }
 }
 
 /// Folds one event into the held set and returns the injection plan.
@@ -99,20 +97,19 @@ pub unsafe extern "C" fn aisd_input_button_balance_plan(
     kind: u8,
     button: u8,
 ) -> AisdInputPlan {
-    unsafe {
-        let Some(bal) = balance.as_mut() else {
-            return AisdInputPlan {
-                has_pre_release: 0,
-                pre_release_button: 0,
-                suppress: 0,
-            };
+    // SAFETY: a non-null `balance` is a live handle per the contract.
+    let Some(bal) = (unsafe { balance.as_mut() }) else {
+        return AisdInputPlan {
+            has_pre_release: 0,
+            pre_release_button: 0,
+            suppress: 0,
         };
-        let plan = bal.inner.plan(&input_balance_event(kind, button));
-        AisdInputPlan {
-            has_pre_release: u8::from(plan.pre_release.is_some()),
-            pre_release_button: plan.pre_release.map_or(0, MouseButton::raw),
-            suppress: u8::from(plan.suppress),
-        }
+    };
+    let plan = bal.inner.plan(&input_balance_event(kind, button));
+    AisdInputPlan {
+        has_pre_release: u8::from(plan.pre_release.is_some()),
+        pre_release_button: plan.pre_release.map_or(0, MouseButton::raw),
+        suppress: u8::from(plan.suppress),
     }
 }
 
@@ -126,14 +123,13 @@ pub unsafe extern "C" fn aisd_input_button_balance_plan(
 pub unsafe extern "C" fn aisd_input_button_balance_held_mask(
     balance: *const AisdInputButtonBalance,
 ) -> u8 {
-    unsafe {
-        balance.as_ref().map_or(0, |bal| {
-            bal.inner
-                .held()
-                .iter()
-                .fold(0u8, |mask, b| mask | (1u8 << b.raw()))
-        })
-    }
+    // SAFETY: a non-null `balance` is a live handle per the contract.
+    unsafe { balance.as_ref() }.map_or(0, |bal| {
+        bal.inner
+            .held()
+            .iter()
+            .fold(0u8, |mask, b| mask | (1u8 << b.raw()))
+    })
 }
 
 #[cfg(test)]

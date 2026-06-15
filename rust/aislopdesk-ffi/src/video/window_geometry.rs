@@ -62,24 +62,23 @@ impl AisdWindowGeometry {
 unsafe fn c_to_window_geometry(
     m: &AisdWindowGeometry,
 ) -> Result<WindowGeometryMessage, AisdStatus> {
-    unsafe {
-        let message = match m.kind {
-            AISD_WINDOW_GEOMETRY_MOVE => WindowGeometryMessage::Move(VideoPoint::new(m.x, m.y)),
-            AISD_WINDOW_GEOMETRY_RESIZE => {
-                WindowGeometryMessage::Resize(VideoSize::new(m.width, m.height))
-            }
-            AISD_WINDOW_GEOMETRY_BOUNDS => {
-                WindowGeometryMessage::Bounds(VideoRect::xywh(m.x, m.y, m.width, m.height))
-            }
-            AISD_WINDOW_GEOMETRY_TITLE => {
-                let title =
-                    String::from_utf8(copy_in(m.title)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
-                WindowGeometryMessage::Title(title)
-            }
-            _ => return Err(AISD_ERR_INVALID_ARGUMENT),
-        };
-        Ok(message)
-    }
+    let message = match m.kind {
+        AISD_WINDOW_GEOMETRY_MOVE => WindowGeometryMessage::Move(VideoPoint::new(m.x, m.y)),
+        AISD_WINDOW_GEOMETRY_RESIZE => {
+            WindowGeometryMessage::Resize(VideoSize::new(m.width, m.height))
+        }
+        AISD_WINDOW_GEOMETRY_BOUNDS => {
+            WindowGeometryMessage::Bounds(VideoRect::xywh(m.x, m.y, m.width, m.height))
+        }
+        AISD_WINDOW_GEOMETRY_TITLE => {
+            // SAFETY: a non-empty `m.title` covers that many readable bytes per the contract.
+            let title = String::from_utf8(unsafe { copy_in(m.title) })
+                .map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
+            WindowGeometryMessage::Title(title)
+        }
+        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+    };
+    Ok(message)
 }
 
 /// Flattens a core [`WindowGeometryMessage`] into the C struct, allocating an owned buffer for a
@@ -122,18 +121,18 @@ pub unsafe extern "C" fn aisd_window_geometry_encode(
     msg: *const AisdWindowGeometry,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    unsafe {
-        if msg.is_null() || out.is_null() {
-            return AISD_ERR_NULL;
-        }
-        match c_to_window_geometry(&*msg) {
-            Ok(message) => {
-                out.write(bytes_from_vec(message.encode()));
-                AISD_OK
-            }
-            Err(status) => status,
-        }
+    if msg.is_null() || out.is_null() {
+        return AISD_ERR_NULL;
     }
+    // SAFETY: `msg` is non-null per the check above and valid (incl. its `title` buffer) per the
+    // contract.
+    let message = match unsafe { c_to_window_geometry(&*msg) } {
+        Ok(message) => message,
+        Err(status) => return status,
+    };
+    // SAFETY: `out` is non-null per the check above and writable per the contract.
+    unsafe { out.write(bytes_from_vec(message.encode())) };
+    AISD_OK
 }
 
 /// Decodes a window-geometry message into `*out`.
@@ -153,17 +152,17 @@ pub unsafe extern "C" fn aisd_window_geometry_decode(
     len: usize,
     out: *mut AisdWindowGeometry,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() || (data.is_null() && len != 0) {
-            return AISD_ERR_NULL;
+    if out.is_null() || (data.is_null() && len != 0) {
+        return AISD_ERR_NULL;
+    }
+    // SAFETY: `data` covers `len` readable bytes per the contract (and the null+len check).
+    match WindowGeometryMessage::decode(unsafe { slice_in(data, len) }) {
+        Ok(message) => {
+            // SAFETY: `out` is non-null per the check above and writable per the contract.
+            unsafe { out.write(window_geometry_to_c(&message)) };
+            AISD_OK
         }
-        match WindowGeometryMessage::decode(slice_in(data, len)) {
-            Ok(message) => {
-                out.write(window_geometry_to_c(&message));
-                AISD_OK
-            }
-            Err(e) => status_for_video_error(&e),
-        }
+        Err(e) => status_for_video_error(&e),
     }
 }
 
@@ -174,14 +173,15 @@ pub unsafe extern "C" fn aisd_window_geometry_decode(
 /// `msg` must point to a writable [`AisdWindowGeometry`] previously filled by this library.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_window_geometry_free(msg: *mut AisdWindowGeometry) {
-    unsafe {
-        if msg.is_null() {
-            return;
-        }
-        let m = &mut *msg;
-        drop_bytes(m.title);
-        m.title = AisdBytes::EMPTY;
+    if msg.is_null() {
+        return;
     }
+    // SAFETY: `msg` is non-null per the check above and points to a writable struct previously
+    // filled by this library per the contract.
+    let m = unsafe { &mut *msg };
+    // SAFETY: `m.title` was produced by this crate (or is the no-op `AisdBytes::EMPTY`).
+    unsafe { drop_bytes(m.title) };
+    m.title = AisdBytes::EMPTY;
 }
 
 #[cfg(test)]

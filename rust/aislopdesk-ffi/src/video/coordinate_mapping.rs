@@ -117,28 +117,29 @@ pub unsafe extern "C" fn aisd_coord_backing_scale_factor(
     primary_height: f64,
     out_scale: *mut f64,
 ) -> AisdStatus {
-    unsafe {
-        if out_scale.is_null() || (screens.is_null() && screen_count != 0) {
-            return AISD_ERR_NULL;
-        }
-        let core_screens: Vec<ScreenInfo> = if screen_count == 0 {
-            Vec::new()
-        } else {
-            core::slice::from_raw_parts(screens, screen_count)
-                .iter()
-                .map(|s| s.to_core())
-                .collect()
-        };
-        coordinate_mapping::backing_scale_factor(
-            window_bounds_cg.to_core(),
-            &core_screens,
-            primary_height,
-        )
-        .map_or(AISD_EMPTY, |scale| {
-            out_scale.write(scale);
-            AISD_OK
-        })
+    if out_scale.is_null() || (screens.is_null() && screen_count != 0) {
+        return AISD_ERR_NULL;
     }
+    let core_screens: Vec<ScreenInfo> = if screen_count == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: `screens` is non-null per the check above and covers `screen_count`
+        // readable `AisdScreenInfo` values per the contract.
+        unsafe { core::slice::from_raw_parts(screens, screen_count) }
+            .iter()
+            .map(|s| s.to_core())
+            .collect()
+    };
+    coordinate_mapping::backing_scale_factor(
+        window_bounds_cg.to_core(),
+        &core_screens,
+        primary_height,
+    )
+    .map_or(AISD_EMPTY, |scale| {
+        // SAFETY: `out_scale` is non-null per the check above and writable per the contract.
+        unsafe { out_scale.write(scale) };
+        AISD_OK
+    })
 }
 
 /// Pixel path: divide by `backing_scale_factor` to get points, then add the window origin.

@@ -94,65 +94,64 @@ impl AisdInputEvent {
 /// # Safety
 /// A non-empty `text` in `m` must point to that many readable bytes.
 unsafe fn c_to_input_event(m: &AisdInputEvent) -> Result<InputEvent, AisdStatus> {
-    unsafe {
-        let normalized = VideoPoint::new(m.x, m.y);
-        let modifiers = InputModifiers(m.modifiers);
-        let event = match m.kind {
-            AISD_INPUT_MOUSE_MOVE => InputEvent::MouseMove {
-                normalized,
-                tag: m.tag,
-            },
-            AISD_INPUT_MOUSE_DOWN | AISD_INPUT_MOUSE_UP | AISD_INPUT_MOUSE_DRAG => {
-                let button = MouseButton::from_u8(m.button).ok_or(AISD_ERR_INVALID_ARGUMENT)?;
-                let click_count = m.click_count;
-                match m.kind {
-                    AISD_INPUT_MOUSE_DOWN => InputEvent::MouseDown {
-                        button,
-                        normalized,
-                        click_count,
-                        modifiers,
-                        tag: m.tag,
-                    },
-                    AISD_INPUT_MOUSE_UP => InputEvent::MouseUp {
-                        button,
-                        normalized,
-                        click_count,
-                        modifiers,
-                        tag: m.tag,
-                    },
-                    _ => InputEvent::MouseDrag {
-                        button,
-                        normalized,
-                        click_count,
-                        modifiers,
-                        tag: m.tag,
-                    },
-                }
+    let normalized = VideoPoint::new(m.x, m.y);
+    let modifiers = InputModifiers(m.modifiers);
+    let event = match m.kind {
+        AISD_INPUT_MOUSE_MOVE => InputEvent::MouseMove {
+            normalized,
+            tag: m.tag,
+        },
+        AISD_INPUT_MOUSE_DOWN | AISD_INPUT_MOUSE_UP | AISD_INPUT_MOUSE_DRAG => {
+            let button = MouseButton::from_u8(m.button).ok_or(AISD_ERR_INVALID_ARGUMENT)?;
+            let click_count = m.click_count;
+            match m.kind {
+                AISD_INPUT_MOUSE_DOWN => InputEvent::MouseDown {
+                    button,
+                    normalized,
+                    click_count,
+                    modifiers,
+                    tag: m.tag,
+                },
+                AISD_INPUT_MOUSE_UP => InputEvent::MouseUp {
+                    button,
+                    normalized,
+                    click_count,
+                    modifiers,
+                    tag: m.tag,
+                },
+                _ => InputEvent::MouseDrag {
+                    button,
+                    normalized,
+                    click_count,
+                    modifiers,
+                    tag: m.tag,
+                },
             }
-            AISD_INPUT_SCROLL => InputEvent::Scroll {
-                dx: m.dx,
-                dy: m.dy,
-                normalized,
-                scroll_phase: m.scroll_phase,
-                momentum_phase: m.momentum_phase,
-                continuous: m.continuous != 0,
-                tag: m.tag,
-            },
-            AISD_INPUT_KEY => InputEvent::Key {
-                key_code: m.key_code,
-                down: m.down != 0,
-                modifiers,
-                tag: m.tag,
-            },
-            AISD_INPUT_TEXT => {
-                let text =
-                    String::from_utf8(copy_in(m.text)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
-                InputEvent::Text { text, tag: m.tag }
-            }
-            _ => return Err(AISD_ERR_INVALID_ARGUMENT),
-        };
-        Ok(event)
-    }
+        }
+        AISD_INPUT_SCROLL => InputEvent::Scroll {
+            dx: m.dx,
+            dy: m.dy,
+            normalized,
+            scroll_phase: m.scroll_phase,
+            momentum_phase: m.momentum_phase,
+            continuous: m.continuous != 0,
+            tag: m.tag,
+        },
+        AISD_INPUT_KEY => InputEvent::Key {
+            key_code: m.key_code,
+            down: m.down != 0,
+            modifiers,
+            tag: m.tag,
+        },
+        AISD_INPUT_TEXT => {
+            // SAFETY: a non-empty `m.text` covers that many readable bytes per the contract.
+            let text = String::from_utf8(unsafe { copy_in(m.text) })
+                .map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
+            InputEvent::Text { text, tag: m.tag }
+        }
+        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+    };
+    Ok(event)
 }
 
 /// Flattens a core [`InputEvent`] into the C struct, allocating an owned buffer for text.
@@ -239,18 +238,18 @@ pub unsafe extern "C" fn aisd_input_event_encode(
     msg: *const AisdInputEvent,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    unsafe {
-        if msg.is_null() || out.is_null() {
-            return AISD_ERR_NULL;
-        }
-        match c_to_input_event(&*msg) {
-            Ok(event) => {
-                out.write(bytes_from_vec(event.encode()));
-                AISD_OK
-            }
-            Err(status) => status,
-        }
+    if msg.is_null() || out.is_null() {
+        return AISD_ERR_NULL;
     }
+    // SAFETY: `msg` is non-null per the check above and valid (incl. its `text` buffer) per the
+    // contract.
+    let event = match unsafe { c_to_input_event(&*msg) } {
+        Ok(event) => event,
+        Err(status) => return status,
+    };
+    // SAFETY: `out` is non-null per the check above and writable per the contract.
+    unsafe { out.write(bytes_from_vec(event.encode())) };
+    AISD_OK
 }
 
 /// Decodes an input event into `*out`.
@@ -271,17 +270,17 @@ pub unsafe extern "C" fn aisd_input_event_decode(
     len: usize,
     out: *mut AisdInputEvent,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() || (data.is_null() && len != 0) {
-            return AISD_ERR_NULL;
+    if out.is_null() || (data.is_null() && len != 0) {
+        return AISD_ERR_NULL;
+    }
+    // SAFETY: `data` covers `len` readable bytes per the contract (and the null+len check).
+    match InputEvent::decode(unsafe { slice_in(data, len) }) {
+        Ok(event) => {
+            // SAFETY: `out` is non-null per the check above and writable per the contract.
+            unsafe { out.write(input_event_to_c(&event)) };
+            AISD_OK
         }
-        match InputEvent::decode(slice_in(data, len)) {
-            Ok(event) => {
-                out.write(input_event_to_c(&event));
-                AISD_OK
-            }
-            Err(e) => status_for_video_error(&e),
-        }
+        Err(e) => status_for_video_error(&e),
     }
 }
 
@@ -292,14 +291,15 @@ pub unsafe extern "C" fn aisd_input_event_decode(
 /// `msg` must point to a writable [`AisdInputEvent`] previously filled by this library.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_input_event_free(msg: *mut AisdInputEvent) {
-    unsafe {
-        if msg.is_null() {
-            return;
-        }
-        let m = &mut *msg;
-        drop_bytes(m.text);
-        m.text = AisdBytes::EMPTY;
+    if msg.is_null() {
+        return;
     }
+    // SAFETY: `msg` is non-null per the check above and points to a writable struct previously
+    // filled by this library per the contract.
+    let m = unsafe { &mut *msg };
+    // SAFETY: `m.text` was produced by this crate (or is the no-op `AisdBytes::EMPTY`).
+    unsafe { drop_bytes(m.text) };
+    m.text = AisdBytes::EMPTY;
 }
 
 #[cfg(test)]

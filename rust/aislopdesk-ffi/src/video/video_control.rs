@@ -152,12 +152,11 @@ const unsafe fn records_slice<'a>(
     records: *const AisdVideoSummary,
     len: usize,
 ) -> &'a [AisdVideoSummary] {
-    unsafe {
-        if len == 0 || records.is_null() {
-            &[]
-        } else {
-            core::slice::from_raw_parts(records, len)
-        }
+    if len == 0 || records.is_null() {
+        &[]
+    } else {
+        // SAFETY: per the contract, a non-null `records` covers `len` readable summary values.
+        unsafe { core::slice::from_raw_parts(records, len) }
     }
 }
 
@@ -169,22 +168,21 @@ unsafe fn c_to_window_summaries(
     records: *const AisdVideoSummary,
     len: usize,
 ) -> Result<Vec<WindowSummary>, AisdStatus> {
-    unsafe {
-        let slice = records_slice(records, len);
-        let mut out = Vec::with_capacity(slice.len());
-        for r in slice {
-            out.push(WindowSummary {
-                window_id: r.window_id,
-                app_name: String::from_utf8(copy_in(r.name))
-                    .map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
-                title: String::from_utf8(copy_in(r.title))
-                    .map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
-                width: r.width,
-                height: r.height,
-            });
-        }
-        Ok(out)
+    // SAFETY: per the contract, a non-empty `records` covers `len` readable summary values.
+    let slice = unsafe { records_slice(records, len) };
+    let mut out = Vec::with_capacity(slice.len());
+    for r in slice {
+        // SAFETY: per the contract, each non-empty `name` / `title` covers that many readable bytes.
+        let (name, title) = unsafe { (copy_in(r.name), copy_in(r.title)) };
+        out.push(WindowSummary {
+            window_id: r.window_id,
+            app_name: String::from_utf8(name).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
+            title: String::from_utf8(title).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
+            width: r.width,
+            height: r.height,
+        });
     }
+    Ok(out)
 }
 
 /// Rebuilds the core [`SystemDialogSummary`] list from a borrowed C record array, validating UTF-8.
@@ -195,22 +193,22 @@ unsafe fn c_to_dialog_summaries(
     records: *const AisdVideoSummary,
     len: usize,
 ) -> Result<Vec<SystemDialogSummary>, AisdStatus> {
-    unsafe {
-        let slice = records_slice(records, len);
-        let mut out = Vec::with_capacity(slice.len());
-        for r in slice {
-            out.push(SystemDialogSummary {
-                window_id: r.window_id,
-                owner: String::from_utf8(copy_in(r.name)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
-                title: String::from_utf8(copy_in(r.title))
-                    .map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
-                width: r.width,
-                height: r.height,
-                is_secure: r.is_secure != 0,
-            });
-        }
-        Ok(out)
+    // SAFETY: per the contract, a non-empty `records` covers `len` readable summary values.
+    let slice = unsafe { records_slice(records, len) };
+    let mut out = Vec::with_capacity(slice.len());
+    for r in slice {
+        // SAFETY: per the contract, each non-empty `name` / `title` covers that many readable bytes.
+        let (name, title) = unsafe { (copy_in(r.name), copy_in(r.title)) };
+        out.push(SystemDialogSummary {
+            window_id: r.window_id,
+            owner: String::from_utf8(name).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
+            title: String::from_utf8(title).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?,
+            width: r.width,
+            height: r.height,
+            is_secure: r.is_secure != 0,
+        });
     }
+    Ok(out)
 }
 
 /// Rebuilds a core [`VideoControlMessage`] from the caller's C struct, validating the `kind` and
@@ -220,46 +218,50 @@ unsafe fn c_to_dialog_summaries(
 /// For a list `kind`, a non-empty `records` must point to that many readable
 /// [`AisdVideoSummary`] values, each with valid `name` / `title` buffers.
 unsafe fn c_to_video_control(m: &AisdVideoControl) -> Result<VideoControlMessage, AisdStatus> {
-    unsafe {
-        let message = match m.kind {
-            AISD_VIDEO_CONTROL_HELLO => VideoControlMessage::Hello {
-                protocol_version: m.protocol_version,
-                requested_window_id: m.requested_window_id,
-                viewport: VideoSize::new(m.viewport_w, m.viewport_h),
-            },
-            AISD_VIDEO_CONTROL_HELLO_ACK => VideoControlMessage::HelloAck {
-                accepted: m.accepted != 0,
-                stream_id: m.stream_id,
-                capture_width: m.capture_width,
-                capture_height: m.capture_height,
-                window_bounds_cg: VideoRect::xywh(m.bounds_x, m.bounds_y, m.bounds_w, m.bounds_h),
-                full_range: m.full_range != 0,
-            },
-            AISD_VIDEO_CONTROL_BYE => VideoControlMessage::Bye,
-            AISD_VIDEO_CONTROL_RESIZE_REQUEST => VideoControlMessage::ResizeRequest {
-                desired: VideoSize::new(m.desired_w, m.desired_h),
-                epoch: m.epoch,
-            },
-            AISD_VIDEO_CONTROL_RESIZE_ACK => VideoControlMessage::ResizeAck {
-                capture_width: m.capture_width,
-                capture_height: m.capture_height,
-                epoch: m.epoch,
-            },
-            AISD_VIDEO_CONTROL_KEEPALIVE => VideoControlMessage::Keepalive,
-            AISD_VIDEO_CONTROL_LIST_WINDOWS => VideoControlMessage::ListWindows,
-            AISD_VIDEO_CONTROL_WINDOW_LIST => {
-                VideoControlMessage::WindowList(c_to_window_summaries(m.records, m.records_len)?)
-            }
-            AISD_VIDEO_CONTROL_FOCUS_WINDOW => VideoControlMessage::FocusWindow,
-            AISD_VIDEO_CONTROL_STREAM_CADENCE => VideoControlMessage::StreamCadence { fps: m.fps },
-            AISD_VIDEO_CONTROL_LIST_SYSTEM_DIALOGS => VideoControlMessage::ListSystemDialogs,
-            AISD_VIDEO_CONTROL_SYSTEM_DIALOG_LIST => VideoControlMessage::SystemDialogList(
-                c_to_dialog_summaries(m.records, m.records_len)?,
-            ),
-            _ => return Err(AISD_ERR_INVALID_ARGUMENT),
-        };
-        Ok(message)
-    }
+    let message = match m.kind {
+        AISD_VIDEO_CONTROL_HELLO => VideoControlMessage::Hello {
+            protocol_version: m.protocol_version,
+            requested_window_id: m.requested_window_id,
+            viewport: VideoSize::new(m.viewport_w, m.viewport_h),
+        },
+        AISD_VIDEO_CONTROL_HELLO_ACK => VideoControlMessage::HelloAck {
+            accepted: m.accepted != 0,
+            stream_id: m.stream_id,
+            capture_width: m.capture_width,
+            capture_height: m.capture_height,
+            window_bounds_cg: VideoRect::xywh(m.bounds_x, m.bounds_y, m.bounds_w, m.bounds_h),
+            full_range: m.full_range != 0,
+        },
+        AISD_VIDEO_CONTROL_BYE => VideoControlMessage::Bye,
+        AISD_VIDEO_CONTROL_RESIZE_REQUEST => VideoControlMessage::ResizeRequest {
+            desired: VideoSize::new(m.desired_w, m.desired_h),
+            epoch: m.epoch,
+        },
+        AISD_VIDEO_CONTROL_RESIZE_ACK => VideoControlMessage::ResizeAck {
+            capture_width: m.capture_width,
+            capture_height: m.capture_height,
+            epoch: m.epoch,
+        },
+        AISD_VIDEO_CONTROL_KEEPALIVE => VideoControlMessage::Keepalive,
+        AISD_VIDEO_CONTROL_LIST_WINDOWS => VideoControlMessage::ListWindows,
+        AISD_VIDEO_CONTROL_WINDOW_LIST => {
+            // SAFETY: per the contract, a list `kind`'s records cover `records_len` readable values.
+            VideoControlMessage::WindowList(unsafe {
+                c_to_window_summaries(m.records, m.records_len)
+            }?)
+        }
+        AISD_VIDEO_CONTROL_FOCUS_WINDOW => VideoControlMessage::FocusWindow,
+        AISD_VIDEO_CONTROL_STREAM_CADENCE => VideoControlMessage::StreamCadence { fps: m.fps },
+        AISD_VIDEO_CONTROL_LIST_SYSTEM_DIALOGS => VideoControlMessage::ListSystemDialogs,
+        AISD_VIDEO_CONTROL_SYSTEM_DIALOG_LIST => {
+            // SAFETY: per the contract, a list `kind`'s records cover `records_len` readable values.
+            VideoControlMessage::SystemDialogList(unsafe {
+                c_to_dialog_summaries(m.records, m.records_len)
+            }?)
+        }
+        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+    };
+    Ok(message)
 }
 
 /// Moves a `Vec` of summary records across the boundary as a raw `(ptr, len)` the caller releases
@@ -388,18 +390,22 @@ fn video_control_to_c(message: &VideoControlMessage) -> AisdVideoControl {
 /// `ptr` / `len` must be a record array previously produced by [`summaries_into_raw`] and not yet
 /// freed.
 unsafe fn drop_summaries(ptr: *mut AisdVideoSummary, len: usize) {
-    unsafe {
-        if ptr.is_null() || len == 0 {
-            return;
-        }
-        let boxed: Box<[AisdVideoSummary]> =
-            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len));
-        for rec in &boxed {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    // SAFETY: per the contract, `(ptr, len)` is a live `summaries_into_raw` boxed slice
+    // (`into_boxed_slice` makes `cap == len`, so this reconstructs the exact allocation).
+    let boxed: Box<[AisdVideoSummary]> =
+        unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len)) };
+    for rec in &boxed {
+        // SAFETY: each record's `name` / `title` is a live `bytes_from_vec` allocation owned by
+        // this array (freed exactly once here before the slice itself is dropped).
+        unsafe {
             drop_bytes(rec.name);
             drop_bytes(rec.title);
         }
-        drop(boxed);
     }
+    drop(boxed);
 }
 
 /// Encodes a caller-built [`AisdVideoControl`] into its wire form.
@@ -417,18 +423,18 @@ pub unsafe extern "C" fn aisd_video_control_encode(
     msg: *const AisdVideoControl,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    unsafe {
-        if msg.is_null() || out.is_null() {
-            return AISD_ERR_NULL;
-        }
-        match c_to_video_control(&*msg) {
-            Ok(message) => {
-                out.write(bytes_from_vec(message.encode()));
-                AISD_OK
-            }
-            Err(status) => status,
-        }
+    if msg.is_null() || out.is_null() {
+        return AISD_ERR_NULL;
     }
+    // SAFETY: `msg` is non-null per the check + valid per the contract, including any record
+    // buffers a list `kind` borrows.
+    let message = match unsafe { c_to_video_control(&*msg) } {
+        Ok(message) => message,
+        Err(status) => return status,
+    };
+    // SAFETY: `out` is non-null per the check above and writable per the contract.
+    unsafe { out.write(bytes_from_vec(message.encode())) };
+    AISD_OK
 }
 
 /// Decodes a video control message into `*out`.
@@ -449,17 +455,17 @@ pub unsafe extern "C" fn aisd_video_control_decode(
     len: usize,
     out: *mut AisdVideoControl,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() || (data.is_null() && len != 0) {
-            return AISD_ERR_NULL;
+    if out.is_null() || (data.is_null() && len != 0) {
+        return AISD_ERR_NULL;
+    }
+    // SAFETY: `data` covers `len` readable bytes per the contract (and the null+len check).
+    match VideoControlMessage::decode(unsafe { slice_in(data, len) }) {
+        Ok(message) => {
+            // SAFETY: `out` is non-null per the check above and writable per the contract.
+            unsafe { out.write(video_control_to_c(&message)) };
+            AISD_OK
         }
-        match VideoControlMessage::decode(slice_in(data, len)) {
-            Ok(message) => {
-                out.write(video_control_to_c(&message));
-                AISD_OK
-            }
-            Err(e) => status_for_video_error(&e),
-        }
+        Err(e) => status_for_video_error(&e),
     }
 }
 
@@ -470,15 +476,17 @@ pub unsafe extern "C" fn aisd_video_control_decode(
 /// `msg` must point to a writable [`AisdVideoControl`] previously filled by this library.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_video_control_free(msg: *mut AisdVideoControl) {
-    unsafe {
-        if msg.is_null() {
-            return;
-        }
-        let m = &mut *msg;
-        drop_summaries(m.records, m.records_len);
-        m.records = core::ptr::null_mut();
-        m.records_len = 0;
+    if msg.is_null() {
+        return;
     }
+    // SAFETY: `msg` is non-null per the check above and points to a writable, library-filled
+    // `AisdVideoControl` per the contract.
+    let m = unsafe { &mut *msg };
+    // SAFETY: `(records, records_len)` is the array `video_control_to_c` allocated (or `(null, 0)`),
+    // freed exactly once — the reset below makes a second call a no-op (idempotent).
+    unsafe { drop_summaries(m.records, m.records_len) };
+    m.records = core::ptr::null_mut();
+    m.records_len = 0;
 }
 
 #[cfg(test)]

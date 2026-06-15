@@ -40,6 +40,15 @@ use aislopdesk_core::terminal::{
 /// the byte helpers below.
 pub mod video;
 
+/// The crate's single home for raw-pointer / heap-handle `unsafe` primitives (see [`raw`]). The
+/// boundary functions here and in [`video`] reach them through these crate-wide re-exports so the
+/// shims themselves stay safe-bodied.
+mod raw;
+
+pub(crate) use raw::{
+    bytes_from_vec, copy_in, drop_bytes, free_handle, into_handle, slice_in, slice_out,
+};
+
 // ---------------------------------------------------------------------------------------
 // Status codes
 // ---------------------------------------------------------------------------------------
@@ -98,47 +107,6 @@ impl AisdBytes {
     };
 }
 
-/// Moves a `Vec<u8>` across the boundary as an owned [`AisdBytes`]. An empty vec becomes
-/// [`AisdBytes::EMPTY`] (no allocation leaked, free is a no-op).
-pub(crate) fn bytes_from_vec(mut v: Vec<u8>) -> AisdBytes {
-    if v.is_empty() {
-        return AisdBytes::EMPTY;
-    }
-    let ptr = v.as_mut_ptr();
-    let len = v.len();
-    let cap = v.capacity();
-    core::mem::forget(v);
-    AisdBytes { ptr, len, cap }
-}
-
-/// Reconstructs and drops the `Vec<u8>` behind an owned [`AisdBytes`]. No-op on a null
-/// pointer (an empty buffer).
-///
-/// # Safety
-/// `b` must be a buffer previously produced by this crate and not yet freed.
-pub(crate) unsafe fn drop_bytes(b: AisdBytes) {
-    unsafe {
-        if !b.ptr.is_null() {
-            drop(Vec::from_raw_parts(b.ptr, b.len, b.cap));
-        }
-    }
-}
-
-/// Copies the bytes a caller-owned (borrowed) [`AisdBytes`] points at into a fresh `Vec`.
-/// Empty (or null) input yields an empty vec.
-///
-/// # Safety
-/// If `b.len != 0` then `b.ptr` must point to at least `b.len` readable bytes.
-pub(crate) unsafe fn copy_in(b: AisdBytes) -> Vec<u8> {
-    unsafe {
-        if b.ptr.is_null() || b.len == 0 {
-            Vec::new()
-        } else {
-            core::slice::from_raw_parts(b.ptr, b.len).to_vec()
-        }
-    }
-}
-
 /// Releases an owned [`AisdBytes`] returned by this library.
 ///
 /// # Safety
@@ -146,9 +114,8 @@ pub(crate) unsafe fn copy_in(b: AisdBytes) -> Vec<u8> {
 /// and not already freed. Passing [`AisdBytes::EMPTY`] is safe and does nothing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_bytes_free(bytes: AisdBytes) {
-    unsafe {
-        drop_bytes(bytes);
-    }
+    // SAFETY: per the contract, `bytes` is an unfreed buffer this library returned.
+    unsafe { drop_bytes(bytes) }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -357,66 +324,67 @@ fn wire_message_to_c(msg: &WireMessage) -> AisdWireMessage {
 /// # Safety
 /// Any non-empty `data` / `data2` in `m` must point to that many readable bytes.
 unsafe fn c_to_wire_message(m: &AisdWireMessage) -> Result<WireMessage, AisdStatus> {
-    unsafe {
-        let utf8 = |b: AisdBytes| -> Result<String, AisdStatus> {
-            String::from_utf8(copy_in(b)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)
-        };
-        let message = match m.tag {
-            AISD_WIRE_OUTPUT => WireMessage::Output {
-                seq: m.seq,
-                bytes: copy_in(m.data),
-            },
-            AISD_WIRE_EXIT => WireMessage::Exit { code: m.code },
-            AISD_WIRE_INPUT => WireMessage::Input(copy_in(m.data)),
-            AISD_WIRE_HELLO => WireMessage::Hello {
-                protocol_version: m.protocol_version,
-                session_id: SessionId(m.session_id),
-                last_received_seq: m.last_received_seq,
-            },
-            AISD_WIRE_RESIZE => WireMessage::Resize {
-                cols: m.cols,
-                rows: m.rows,
-                px_width: m.px_width,
-                px_height: m.px_height,
-            },
-            AISD_WIRE_ACK => WireMessage::Ack { seq: m.seq },
-            AISD_WIRE_BYE => WireMessage::Bye,
-            AISD_WIRE_PING => WireMessage::Ping {
-                timestamp_ms: m.timestamp_ms,
-            },
-            AISD_WIRE_HELLO_ACK => WireMessage::HelloAck {
-                session_id: SessionId(m.session_id),
-                resume_from_seq: m.resume_from_seq,
-                returning_client: m.returning_client != 0,
-            },
-            AISD_WIRE_TITLE => WireMessage::Title(utf8(m.data)?),
-            AISD_WIRE_BELL => WireMessage::Bell,
-            AISD_WIRE_COMMAND_STATUS => {
-                let status = if m.cmd_running != 0 {
-                    CommandStatus::Running
-                } else {
-                    CommandStatus::Idle {
-                        exit_code: if m.cmd_has_exit_code != 0 {
-                            Some(m.code)
-                        } else {
-                            None
-                        },
-                        duration_ms: m.duration_ms,
-                    }
-                };
-                WireMessage::CommandStatus(status)
-            }
-            AISD_WIRE_PONG => WireMessage::Pong {
-                timestamp_ms: m.timestamp_ms,
-            },
-            AISD_WIRE_NOTIFICATION => WireMessage::Notification {
-                title: utf8(m.data)?,
-                body: utf8(m.data2)?,
-            },
-            _ => return Err(AISD_ERR_INVALID_ARGUMENT),
-        };
-        Ok(message)
-    }
+    // Each `copy_in` is the only unsafe op; the marshaling around it is plain safe Rust.
+    // SAFETY (every `unsafe { copy_in(..) }` below): per the contract, that non-empty buffer
+    // points at the bytes it claims, so the read is sound.
+    let utf8 = |b: AisdBytes| -> Result<String, AisdStatus> {
+        String::from_utf8(unsafe { copy_in(b) }).map_err(|_| AISD_ERR_INVALID_ARGUMENT)
+    };
+    let message = match m.tag {
+        AISD_WIRE_OUTPUT => WireMessage::Output {
+            seq: m.seq,
+            bytes: unsafe { copy_in(m.data) },
+        },
+        AISD_WIRE_EXIT => WireMessage::Exit { code: m.code },
+        AISD_WIRE_INPUT => WireMessage::Input(unsafe { copy_in(m.data) }),
+        AISD_WIRE_HELLO => WireMessage::Hello {
+            protocol_version: m.protocol_version,
+            session_id: SessionId(m.session_id),
+            last_received_seq: m.last_received_seq,
+        },
+        AISD_WIRE_RESIZE => WireMessage::Resize {
+            cols: m.cols,
+            rows: m.rows,
+            px_width: m.px_width,
+            px_height: m.px_height,
+        },
+        AISD_WIRE_ACK => WireMessage::Ack { seq: m.seq },
+        AISD_WIRE_BYE => WireMessage::Bye,
+        AISD_WIRE_PING => WireMessage::Ping {
+            timestamp_ms: m.timestamp_ms,
+        },
+        AISD_WIRE_HELLO_ACK => WireMessage::HelloAck {
+            session_id: SessionId(m.session_id),
+            resume_from_seq: m.resume_from_seq,
+            returning_client: m.returning_client != 0,
+        },
+        AISD_WIRE_TITLE => WireMessage::Title(utf8(m.data)?),
+        AISD_WIRE_BELL => WireMessage::Bell,
+        AISD_WIRE_COMMAND_STATUS => {
+            let status = if m.cmd_running != 0 {
+                CommandStatus::Running
+            } else {
+                CommandStatus::Idle {
+                    exit_code: if m.cmd_has_exit_code != 0 {
+                        Some(m.code)
+                    } else {
+                        None
+                    },
+                    duration_ms: m.duration_ms,
+                }
+            };
+            WireMessage::CommandStatus(status)
+        }
+        AISD_WIRE_PONG => WireMessage::Pong {
+            timestamp_ms: m.timestamp_ms,
+        },
+        AISD_WIRE_NOTIFICATION => WireMessage::Notification {
+            title: utf8(m.data)?,
+            body: utf8(m.data2)?,
+        },
+        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+    };
+    Ok(message)
 }
 
 /// Encodes a caller-built [`AisdWireMessage`] into a complete length-prefixed wire frame.
@@ -434,18 +402,17 @@ pub unsafe extern "C" fn aisd_wire_message_encode(
     msg: *const AisdWireMessage,
     out: *mut AisdBytes,
 ) -> AisdStatus {
-    unsafe {
-        if msg.is_null() || out.is_null() {
-            return AISD_ERR_NULL;
-        }
-        match c_to_wire_message(&*msg) {
-            Ok(message) => {
-                out.write(bytes_from_vec(message.encode()));
-                AISD_OK
-            }
-            Err(status) => status,
-        }
+    if msg.is_null() || out.is_null() {
+        return AISD_ERR_NULL;
     }
+    // SAFETY: `msg` is non-null per the check above and valid per the contract.
+    let message = match unsafe { c_to_wire_message(&*msg) } {
+        Ok(message) => message,
+        Err(status) => return status,
+    };
+    // SAFETY: `out` is non-null per the check above and writable per the contract.
+    unsafe { out.write(bytes_from_vec(message.encode())) };
+    AISD_OK
 }
 
 /// Decodes a single complete payload (`[type byte][body…]`, WITHOUT the 4-byte length
@@ -469,22 +436,18 @@ pub unsafe extern "C" fn aisd_wire_message_decode(
     len: usize,
     out: *mut AisdWireMessage,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() || (payload.is_null() && len != 0) {
-            return AISD_ERR_NULL;
+    if out.is_null() || (payload.is_null() && len != 0) {
+        return AISD_ERR_NULL;
+    }
+    // SAFETY: `payload` covers `len` readable bytes per the contract (and the null+len check).
+    let slice = unsafe { slice_in(payload, len) };
+    match WireMessage::decode(slice) {
+        Ok(message) => {
+            // SAFETY: `out` is non-null per the check above and writable per the contract.
+            unsafe { out.write(wire_message_to_c(&message)) };
+            AISD_OK
         }
-        let slice = if len == 0 {
-            &[][..]
-        } else {
-            core::slice::from_raw_parts(payload, len)
-        };
-        match WireMessage::decode(slice) {
-            Ok(message) => {
-                out.write(wire_message_to_c(&message));
-                AISD_OK
-            }
-            Err(error) => status_for_error(&error),
-        }
+        Err(error) => status_for_error(&error),
     }
 }
 
@@ -495,10 +458,12 @@ pub unsafe extern "C" fn aisd_wire_message_decode(
 /// `msg` must point to a writable [`AisdWireMessage`] previously filled by this library.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_wire_message_free(msg: *mut AisdWireMessage) {
+    if msg.is_null() {
+        return;
+    }
+    // SAFETY: `msg` is non-null per the check above and a writable message per the contract; its
+    // `data`/`data2` are unfreed buffers this library produced.
     unsafe {
-        if msg.is_null() {
-            return;
-        }
         let m = &mut *msg;
         drop_bytes(m.data);
         drop_bytes(m.data2);
@@ -553,24 +518,21 @@ pub unsafe extern "C" fn aisd_wire_data_frame_encode_into(
     out_cap: usize,
     written: *mut usize,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() || written.is_null() || (payload.is_null() && payload_len != 0) {
-            return AISD_ERR_NULL;
-        }
-        let payload_slice = if payload_len == 0 {
-            &[][..]
-        } else {
-            core::slice::from_raw_parts(payload, payload_len)
-        };
-        let out_slice = core::slice::from_raw_parts_mut(out, out_cap);
-        let n = WireMessage::encode_data_frame_into(tag, seq, payload_slice, out_slice);
-        if n == 0 {
-            // A non-DATA tag, or an out buffer smaller than the frame — both caller errors.
-            return AISD_ERR_INVALID_ARGUMENT;
-        }
-        written.write(n);
-        AISD_OK
+    if out.is_null() || written.is_null() || (payload.is_null() && payload_len != 0) {
+        return AISD_ERR_NULL;
     }
+    // SAFETY: per the contract, `payload` covers `payload_len` readable bytes and `out` covers
+    // `out_cap` writable bytes (null/zero handled above).
+    let (payload_slice, out_slice) =
+        unsafe { (slice_in(payload, payload_len), slice_out(out, out_cap)) };
+    let n = WireMessage::encode_data_frame_into(tag, seq, payload_slice, out_slice);
+    if n == 0 {
+        // A non-DATA tag, or an out buffer smaller than the frame — both caller errors.
+        return AISD_ERR_INVALID_ARGUMENT;
+    }
+    // SAFETY: `written` is non-null per the check above and writable per the contract.
+    unsafe { written.write(n) };
+    AISD_OK
 }
 
 /// Parses a complete payload (`[type byte][body…]`, WITHOUT the length prefix) into a borrowed
@@ -592,41 +554,33 @@ pub unsafe extern "C" fn aisd_wire_data_frame_view(
     len: usize,
     out: *mut AisdDataFrameView,
 ) -> AisdStatus {
-    unsafe {
-        if out.is_null() || (payload.is_null() && len != 0) {
-            return AISD_ERR_NULL;
-        }
-        let slice = if len == 0 {
-            &[][..]
-        } else {
-            core::slice::from_raw_parts(payload, len)
-        };
-        match WireMessage::data_frame_view(slice) {
-            Ok(Some(v)) => {
-                out.write(AisdDataFrameView {
-                    tag: v.tag,
-                    seq: v.seq,
-                    bytes: if v.bytes.is_empty() {
-                        core::ptr::null()
-                    } else {
-                        v.bytes.as_ptr()
-                    },
-                    bytes_len: v.bytes.len(),
-                });
-                AISD_OK
-            }
-            Ok(None) => {
-                out.write(AisdDataFrameView {
-                    tag: 0,
-                    seq: 0,
-                    bytes: core::ptr::null(),
-                    bytes_len: 0,
-                });
-                AISD_OK
-            }
-            Err(error) => status_for_error(&error),
-        }
+    if out.is_null() || (payload.is_null() && len != 0) {
+        return AISD_ERR_NULL;
     }
+    // SAFETY: `payload` covers `len` readable bytes per the contract (and the null+len check).
+    let slice = unsafe { slice_in(payload, len) };
+    let view = match WireMessage::data_frame_view(slice) {
+        Ok(Some(v)) => AisdDataFrameView {
+            tag: v.tag,
+            seq: v.seq,
+            bytes: if v.bytes.is_empty() {
+                core::ptr::null()
+            } else {
+                v.bytes.as_ptr()
+            },
+            bytes_len: v.bytes.len(),
+        },
+        Ok(None) => AisdDataFrameView {
+            tag: 0,
+            seq: 0,
+            bytes: core::ptr::null(),
+            bytes_len: 0,
+        },
+        Err(error) => return status_for_error(&error),
+    };
+    // SAFETY: `out` is non-null per the check above and writable per the contract.
+    unsafe { out.write(view) };
+    AISD_OK
 }
 
 // ---------------------------------------------------------------------------------------
@@ -647,9 +601,9 @@ pub struct AisdFrameDecoder {
 #[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn aisd_frame_decoder_new() -> *mut AisdFrameDecoder {
-    Box::into_raw(Box::new(AisdFrameDecoder {
+    into_handle(AisdFrameDecoder {
         inner: FrameDecoder::new(),
-    }))
+    })
 }
 
 /// Destroys a decoder created by [`aisd_frame_decoder_new`]. No-op on null.
@@ -658,11 +612,8 @@ pub extern "C" fn aisd_frame_decoder_new() -> *mut AisdFrameDecoder {
 /// `decoder` must be a pointer from [`aisd_frame_decoder_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_frame_decoder_free(decoder: *mut AisdFrameDecoder) {
-    unsafe {
-        if !decoder.is_null() {
-            drop(Box::from_raw(decoder));
-        }
-    }
+    // SAFETY: per the contract, `decoder` is an unfreed handle from `aisd_frame_decoder_new`.
+    unsafe { free_handle(decoder) }
 }
 
 /// Appends `len` freshly received bytes to the decoder's buffer. `data` may be null only
@@ -678,17 +629,13 @@ pub unsafe extern "C" fn aisd_frame_decoder_append(
     data: *const u8,
     len: usize,
 ) -> AisdStatus {
-    unsafe {
-        if decoder.is_null() || (data.is_null() && len != 0) {
-            return AISD_ERR_NULL;
-        }
-        if len != 0 {
-            (*decoder)
-                .inner
-                .append(core::slice::from_raw_parts(data, len));
-        }
-        AISD_OK
+    if decoder.is_null() || (data.is_null() && len != 0) {
+        return AISD_ERR_NULL;
     }
+    // SAFETY: `decoder` is a live handle and `data` covers `len` readable bytes, both per the
+    // contract (and the null checks above).
+    unsafe { (*decoder).inner.append(slice_in(data, len)) };
+    AISD_OK
 }
 
 /// Drains the next complete message into `*out`.
@@ -709,18 +656,18 @@ pub unsafe extern "C" fn aisd_frame_decoder_next(
     decoder: *mut AisdFrameDecoder,
     out: *mut AisdWireMessage,
 ) -> AisdStatus {
-    unsafe {
-        if decoder.is_null() || out.is_null() {
-            return AISD_ERR_NULL;
+    if decoder.is_null() || out.is_null() {
+        return AISD_ERR_NULL;
+    }
+    // SAFETY: `decoder` is a live handle per the contract and the null check above.
+    match unsafe { (*decoder).inner.next_message() } {
+        Ok(Some(message)) => {
+            // SAFETY: `out` is non-null per the check above and writable per the contract.
+            unsafe { out.write(wire_message_to_c(&message)) };
+            AISD_OK
         }
-        match (*decoder).inner.next_message() {
-            Ok(Some(message)) => {
-                out.write(wire_message_to_c(&message));
-                AISD_OK
-            }
-            Ok(None) => AISD_EMPTY,
-            Err(error) => status_for_error(&error),
-        }
+        Ok(None) => AISD_EMPTY,
+        Err(error) => status_for_error(&error),
     }
 }
 

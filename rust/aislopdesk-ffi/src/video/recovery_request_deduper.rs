@@ -3,6 +3,7 @@
 //! the calls. The same "Rust owns the state" boundary as the terminal `FrameDecoder`.
 
 use super::slice_in;
+use crate::{free_handle, into_handle};
 use aislopdesk_core::recovery_request_deduper::RecoveryRequestDeduper;
 
 /// Opaque host-side recovery-request dedup ring.
@@ -24,9 +25,9 @@ pub extern "C" fn aisd_recovery_deduper_new(
     window_seconds: f64,
     capacity: usize,
 ) -> *mut AisdRecoveryDeduper {
-    Box::into_raw(Box::new(AisdRecoveryDeduper {
+    into_handle(AisdRecoveryDeduper {
         inner: RecoveryRequestDeduper::new(window_seconds, capacity),
-    }))
+    })
 }
 
 /// Destroys a deduper created by [`aisd_recovery_deduper_new`]. No-op on null.
@@ -35,11 +36,8 @@ pub extern "C" fn aisd_recovery_deduper_new(
 /// `deduper` must be a pointer from [`aisd_recovery_deduper_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_deduper_free(deduper: *mut AisdRecoveryDeduper) {
-    unsafe {
-        if !deduper.is_null() {
-            drop(Box::from_raw(deduper));
-        }
-    }
+    // SAFETY: per the contract, `deduper` is an unfreed handle from `aisd_recovery_deduper_new`.
+    unsafe { free_handle(deduper) }
 }
 
 /// Admits a recovery-request datagram. Wraps [`RecoveryRequestDeduper::admit`].
@@ -63,12 +61,12 @@ pub unsafe extern "C" fn aisd_recovery_deduper_admit(
     len: usize,
     now: f64,
 ) -> u8 {
-    unsafe {
-        if deduper.is_null() || (datagram.is_null() && len != 0) {
-            return 1; // fail-open: process rather than drop a real request on a caller error.
-        }
-        u8::from((*deduper).inner.admit(slice_in(datagram, len), now))
+    if deduper.is_null() || (datagram.is_null() && len != 0) {
+        return 1; // fail-open: process rather than drop a real request on a caller error.
     }
+    // SAFETY: `deduper` is non-null (checked above) and a live handle per the contract; `datagram`
+    // covers `len` readable bytes per the contract (and the null+len check above).
+    u8::from(unsafe { (*deduper).inner.admit(slice_in(datagram, len), now) })
 }
 
 #[cfg(test)]

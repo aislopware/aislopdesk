@@ -50,25 +50,25 @@ pub unsafe extern "C" fn aisd_capture_union_region(
     display_bounds: AisdRect,
     min_overlap_fraction: f64,
 ) -> AisdRect {
-    unsafe {
-        let core_windows: Vec<capture_region::WindowSnapshot> =
-            if windows_count == 0 || windows_in_front.is_null() {
-                Vec::new()
-            } else {
-                core::slice::from_raw_parts(windows_in_front, windows_count)
-                    .iter()
-                    .map(|w| w.to_core())
-                    .collect()
-            };
-        AisdRect::from_core(capture_region::union_region(
-            target_frame.to_core(),
-            target_window_id,
-            target_pid,
-            &core_windows,
-            display_bounds.to_core(),
-            min_overlap_fraction,
-        ))
-    }
+    let core_windows: Vec<capture_region::WindowSnapshot> =
+        if windows_count == 0 || windows_in_front.is_null() {
+            Vec::new()
+        } else {
+            // SAFETY: `windows_in_front` is non-null per the guard and covers `windows_count`
+            // readable `AisdCaptureWindowSnapshot` values per the contract.
+            unsafe { core::slice::from_raw_parts(windows_in_front, windows_count) }
+                .iter()
+                .map(|w| w.to_core())
+                .collect()
+        };
+    AisdRect::from_core(capture_region::union_region(
+        target_frame.to_core(),
+        target_window_id,
+        target_pid,
+        &core_windows,
+        display_bounds.to_core(),
+        min_overlap_fraction,
+    ))
 }
 
 /// Hysteresis gate for capture retargeting.

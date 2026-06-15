@@ -3,6 +3,7 @@
 //! `record_synthetic` per synthetic emission — per-frame cadence, never per-fragment. One owner
 //! (`WindowCapturer`), frameQueue-serialized, same "Rust owns the state" boundary as the deduper.
 
+use crate::{free_handle, into_handle};
 use aislopdesk_core::static_idr_decider::StaticIDRDecider;
 
 /// Opaque host static-window forced-IDR decider.
@@ -31,9 +32,9 @@ pub extern "C" fn aisd_static_idr_decider_new(
     } else {
         None
     };
-    Box::into_raw(Box::new(AisdStaticIdrDecider {
+    into_handle(AisdStaticIdrDecider {
         inner: StaticIDRDecider::new(heartbeat, quiet),
-    }))
+    })
 }
 
 /// Destroys a decider created by [`aisd_static_idr_decider_new`]. No-op on null.
@@ -42,11 +43,8 @@ pub extern "C" fn aisd_static_idr_decider_new(
 /// `decider` must be a pointer from [`aisd_static_idr_decider_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_static_idr_decider_free(decider: *mut AisdStaticIdrDecider) {
-    unsafe {
-        if !decider.is_null() {
-            drop(Box::from_raw(decider));
-        }
-    }
+    // SAFETY: per the contract, `decider` is an unfreed handle from `aisd_static_idr_decider_new`.
+    unsafe { free_handle(decider) }
 }
 
 /// The configured heartbeat cadence (seconds), or `0.0` for a null handle.
@@ -58,7 +56,8 @@ pub unsafe extern "C" fn aisd_static_idr_decider_free(decider: *mut AisdStaticId
 pub unsafe extern "C" fn aisd_static_idr_decider_heartbeat(
     decider: *const AisdStaticIdrDecider,
 ) -> f64 {
-    unsafe { decider.as_ref().map_or(0.0, |d| d.inner.heartbeat()) }
+    // SAFETY: a non-null `decider` is a live handle per the contract.
+    unsafe { decider.as_ref() }.map_or(0.0, |d| d.inner.heartbeat())
 }
 
 /// The configured quiet window (seconds), or `0.0` for a null handle.
@@ -70,7 +69,8 @@ pub unsafe extern "C" fn aisd_static_idr_decider_heartbeat(
 pub unsafe extern "C" fn aisd_static_idr_decider_quiet_window(
     decider: *const AisdStaticIdrDecider,
 ) -> f64 {
-    unsafe { decider.as_ref().map_or(0.0, |d| d.inner.quiet_window()) }
+    // SAFETY: a non-null `decider` is a live handle per the contract.
+    unsafe { decider.as_ref() }.map_or(0.0, |d| d.inner.quiet_window())
 }
 
 /// Uptime seconds of the last REAL `.complete`-frame encode (`0.0` = none / null handle).
@@ -82,11 +82,8 @@ pub unsafe extern "C" fn aisd_static_idr_decider_quiet_window(
 pub unsafe extern "C" fn aisd_static_idr_decider_last_complete_encode(
     decider: *const AisdStaticIdrDecider,
 ) -> f64 {
-    unsafe {
-        decider
-            .as_ref()
-            .map_or(0.0, |d| d.inner.last_complete_encode())
-    }
+    // SAFETY: a non-null `decider` is a live handle per the contract.
+    unsafe { decider.as_ref() }.map_or(0.0, |d| d.inner.last_complete_encode())
 }
 
 /// Uptime seconds of the last SYNTHETIC re-encode (`0.0` = none / null handle).
@@ -98,11 +95,8 @@ pub unsafe extern "C" fn aisd_static_idr_decider_last_complete_encode(
 pub unsafe extern "C" fn aisd_static_idr_decider_last_synthetic_encode(
     decider: *const AisdStaticIdrDecider,
 ) -> f64 {
-    unsafe {
-        decider
-            .as_ref()
-            .map_or(0.0, |d| d.inner.last_synthetic_encode())
-    }
+    // SAFETY: a non-null `decider` is a live handle per the contract.
+    unsafe { decider.as_ref() }.map_or(0.0, |d| d.inner.last_synthetic_encode())
 }
 
 /// Re-anchors the live clock: a REAL `.complete` frame was encoded at `now`. No-op on null.
@@ -115,10 +109,9 @@ pub const unsafe extern "C" fn aisd_static_idr_decider_on_complete_frame(
     decider: *mut AisdStaticIdrDecider,
     now: f64,
 ) {
-    unsafe {
-        if let Some(d) = decider.as_mut() {
-            d.inner.on_complete_frame(now);
-        }
+    // SAFETY: a non-null `decider` is a live handle per the contract.
+    if let Some(d) = unsafe { decider.as_mut() } {
+        d.inner.on_complete_frame(now);
     }
 }
 
@@ -132,10 +125,9 @@ pub const unsafe extern "C" fn aisd_static_idr_decider_record_synthetic(
     decider: *mut AisdStaticIdrDecider,
     now: f64,
 ) {
-    unsafe {
-        if let Some(d) = decider.as_mut() {
-            d.inner.record_synthetic(now);
-        }
+    // SAFETY: a non-null `decider` is a live handle per the contract.
+    if let Some(d) = unsafe { decider.as_mut() } {
+        d.inner.record_synthetic(now);
     }
 }
 
@@ -155,14 +147,13 @@ pub unsafe extern "C" fn aisd_static_idr_decider_should_reencode(
     forced_latched: u8,
     has_retained_buffer: u8,
 ) -> u8 {
-    unsafe {
-        decider.as_ref().map_or(0, |d| {
-            u8::from(
-                d.inner
-                    .should_reencode(now, forced_latched != 0, has_retained_buffer != 0),
-            )
-        })
-    }
+    // SAFETY: a non-null `decider` is a live handle per the contract.
+    unsafe { decider.as_ref() }.map_or(0, |d| {
+        u8::from(
+            d.inner
+                .should_reencode(now, forced_latched != 0, has_retained_buffer != 0),
+        )
+    })
 }
 
 #[cfg(test)]

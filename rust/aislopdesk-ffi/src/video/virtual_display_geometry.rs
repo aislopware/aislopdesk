@@ -92,17 +92,17 @@ pub unsafe extern "C" fn aisd_vd_origin_to_right(
     displays: *const AisdRect,
     display_count: usize,
 ) -> AisdPoint {
-    unsafe {
-        let rects: Vec<VideoRect> = if display_count == 0 || displays.is_null() {
-            Vec::new()
-        } else {
-            core::slice::from_raw_parts(displays, display_count)
-                .iter()
-                .map(|r| r.to_core())
-                .collect()
-        };
-        AisdPoint::from_core(virtual_display_geometry::origin_to_right(&rects))
-    }
+    let rects: Vec<VideoRect> = if display_count == 0 || displays.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: `displays` covers `display_count` readable `AisdRect`s per the contract (and the
+        // null + zero-count check above).
+        unsafe { core::slice::from_raw_parts(displays, display_count) }
+            .iter()
+            .map(|r| r.to_core())
+            .collect()
+    };
+    AisdPoint::from_core(virtual_display_geometry::origin_to_right(&rects))
 }
 
 /// The chip's horizontal pixel ceiling from a CPU brand string (Pro/Max/Ultra → 7680, base
@@ -113,13 +113,13 @@ pub unsafe extern "C" fn aisd_vd_origin_to_right(
 #[must_use]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_vd_chip_pixel_limit(cpu_brand: *const core::ffi::c_char) -> i64 {
-    unsafe {
-        if cpu_brand.is_null() {
-            return virtual_display_geometry::chip_pixel_limit("");
-        }
-        let s = core::ffi::CStr::from_ptr(cpu_brand).to_string_lossy();
-        virtual_display_geometry::chip_pixel_limit(&s)
+    if cpu_brand.is_null() {
+        return virtual_display_geometry::chip_pixel_limit("");
     }
+    // SAFETY: `cpu_brand` is non-null per the check above and a valid NUL-terminated C string per
+    // the contract.
+    let s = unsafe { core::ffi::CStr::from_ptr(cpu_brand) }.to_string_lossy();
+    virtual_display_geometry::chip_pixel_limit(&s)
 }
 
 /// Writes the descending refresh-rate modes for a VD driven at `fps` into `rates` and returns
@@ -137,15 +137,15 @@ pub unsafe extern "C" fn aisd_vd_refresh_rates(
     rates: *mut f64,
     capacity: usize,
 ) -> usize {
-    unsafe {
-        let v = virtual_display_geometry::refresh_rates(fps);
-        if !rates.is_null() && capacity >= v.len() {
-            for (i, r) in v.iter().enumerate() {
-                rates.add(i).write(*r);
-            }
+    let v = virtual_display_geometry::refresh_rates(fps);
+    if !rates.is_null() && capacity >= v.len() {
+        for (i, r) in v.iter().enumerate() {
+            // SAFETY: `rates` points to `capacity >= v.len()` writable `f64`s per the contract (and
+            // the non-null + capacity check above), so each offset `i < v.len()` is in bounds.
+            unsafe { rates.add(i).write(*r) };
         }
-        v.len()
     }
+    v.len()
 }
 
 #[cfg(test)]

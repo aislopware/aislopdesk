@@ -9,6 +9,10 @@
 use crate::{AISD_ERR_MALFORMED, AISD_ERR_TRUNCATED, AisdStatus};
 use aislopdesk_core::error::VideoProtocolError;
 
+/// The borrowed-input-buffer primitive, re-exported from the crate's thin unsafe layer so the
+/// video submodules keep reaching it as `super::slice_in`.
+pub(crate) use crate::slice_in;
+
 mod adaptive_fec;
 mod capture_region;
 mod coordinate_mapping;
@@ -60,19 +64,5 @@ pub(crate) const fn status_for_video_error(error: &VideoProtocolError) -> AisdSt
     match error {
         VideoProtocolError::Truncated => AISD_ERR_TRUNCATED,
         VideoProtocolError::Malformed(_) => AISD_ERR_MALFORMED,
-    }
-}
-
-/// Borrows a `(ptr, len)` pair as a slice (empty for `len == 0`, even if `ptr` is null).
-///
-/// # Safety
-/// If `len != 0`, `data` must point to at least `len` readable bytes.
-pub(crate) const unsafe fn slice_in<'a>(data: *const u8, len: usize) -> &'a [u8] {
-    unsafe {
-        if len == 0 {
-            &[]
-        } else {
-            core::slice::from_raw_parts(data, len)
-        }
     }
 }

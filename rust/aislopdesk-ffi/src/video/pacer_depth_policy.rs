@@ -5,6 +5,7 @@
 //! a u8; the drained counters as a flat pair. The internal rings stay Rust-side (never marshaled).
 //! One owner (`FramePacer`). Same "Rust owns the state" boundary as the deduper.
 
+use crate::{free_handle, into_handle};
 use aislopdesk_core::pacer_depth_policy::{
     Config as PacerDepthConfig, GapClass as PacerGapClass, PacerDepthPolicy,
 };
@@ -126,9 +127,9 @@ pub extern "C" fn aisd_pacer_depth_policy_new(
     config: AisdPacerDepthConfig,
     adapt_enabled: u8,
 ) -> *mut AisdPacerDepthPolicy {
-    Box::into_raw(Box::new(AisdPacerDepthPolicy {
+    into_handle(AisdPacerDepthPolicy {
         inner: PacerDepthPolicy::new(config.to_core(), adapt_enabled != 0),
-    }))
+    })
 }
 
 /// Destroys a policy created by [`aisd_pacer_depth_policy_new`]. No-op on null.
@@ -137,11 +138,8 @@ pub extern "C" fn aisd_pacer_depth_policy_new(
 /// `policy` must be a pointer from [`aisd_pacer_depth_policy_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_free(policy: *mut AisdPacerDepthPolicy) {
-    unsafe {
-        if !policy.is_null() {
-            drop(Box::from_raw(policy));
-        }
-    }
+    // SAFETY: per the contract, `policy` is an unfreed handle from `aisd_pacer_depth_policy_new`.
+    unsafe { free_handle(policy) }
 }
 
 /// The recommended presentation depth (1 or `boost_depth`). Returns `1` for a null handle (the
@@ -152,7 +150,8 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_free(policy: *mut AisdPacerDept
 #[must_use]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_pacer_depth_policy_depth(policy: *const AisdPacerDepthPolicy) -> i64 {
-    unsafe { policy.as_ref().map_or(1, |p| p.inner.depth()) }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    unsafe { policy.as_ref() }.map_or(1, |p| p.inner.depth())
 }
 
 /// The expected content interval (seconds), or `0.0` for a null handle. Wraps
@@ -165,11 +164,8 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_depth(policy: *const AisdPacerD
 pub unsafe extern "C" fn aisd_pacer_depth_policy_expected_interval_seconds(
     policy: *const AisdPacerDepthPolicy,
 ) -> f64 {
-    unsafe {
-        policy
-            .as_ref()
-            .map_or(0.0, |p| p.inner.expected_interval_seconds())
-    }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    unsafe { policy.as_ref() }.map_or(0.0, |p| p.inner.expected_interval_seconds())
 }
 
 /// The late boundary (seconds), or `0.0` for a null handle. Wraps
@@ -182,11 +178,8 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_expected_interval_seconds(
 pub unsafe extern "C" fn aisd_pacer_depth_policy_late_threshold_seconds(
     policy: *const AisdPacerDepthPolicy,
 ) -> f64 {
-    unsafe {
-        policy
-            .as_ref()
-            .map_or(0.0, |p| p.inner.late_threshold_seconds())
-    }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    unsafe { policy.as_ref() }.map_or(0.0, |p| p.inner.late_threshold_seconds())
 }
 
 /// Folds one decoded-frame submit at `now`. No-op on null. Wraps
@@ -199,10 +192,9 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_arrival(
     policy: *mut AisdPacerDepthPolicy,
     now: f64,
 ) {
-    unsafe {
-        if let Some(p) = policy.as_mut() {
-            p.inner.note_arrival(now);
-        }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    if let Some(p) = unsafe { policy.as_mut() } {
+        p.inner.note_arrival(now);
     }
 }
 
@@ -217,11 +209,10 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_present(
     policy: *mut AisdPacerDepthPolicy,
     now: f64,
 ) -> u8 {
-    unsafe {
-        policy.as_mut().map_or(AISD_PACER_GAP_FIRST, |p| {
-            pacer_gap_class_to_c(p.inner.note_present(now))
-        })
-    }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    unsafe { policy.as_mut() }.map_or(AISD_PACER_GAP_FIRST, |p| {
+        pacer_gap_class_to_c(p.inner.note_present(now))
+    })
 }
 
 /// Folds one NETWORK-late event at `now`. No-op on null. Wraps
@@ -234,10 +225,9 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_network_late(
     policy: *mut AisdPacerDepthPolicy,
     now: f64,
 ) {
-    unsafe {
-        if let Some(p) = policy.as_mut() {
-            p.inner.note_network_late(now);
-        }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    if let Some(p) = unsafe { policy.as_mut() } {
+        p.inner.note_network_late(now);
     }
 }
 
@@ -250,10 +240,9 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_reshow(
     policy: *mut AisdPacerDepthPolicy,
     now: f64,
 ) {
-    unsafe {
-        if let Some(p) = policy.as_mut() {
-            p.inner.note_reshow(now);
-        }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    if let Some(p) = unsafe { policy.as_mut() } {
+        p.inner.note_reshow(now);
     }
 }
 
@@ -267,21 +256,20 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_note_reshow(
 pub unsafe extern "C" fn aisd_pacer_depth_policy_drain_counters(
     policy: *mut AisdPacerDepthPolicy,
 ) -> AisdPacerCounters {
-    unsafe {
-        policy.as_mut().map_or(
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    unsafe { policy.as_mut() }.map_or(
+        AisdPacerCounters {
+            late_frames: 0,
+            present_gaps: 0,
+        },
+        |p| {
+            let (late_frames, present_gaps) = p.inner.drain_counters();
             AisdPacerCounters {
-                late_frames: 0,
-                present_gaps: 0,
-            },
-            |p| {
-                let (late_frames, present_gaps) = p.inner.drain_counters();
-                AisdPacerCounters {
-                    late_frames,
-                    present_gaps,
-                }
-            },
-        )
-    }
+                late_frames,
+                present_gaps,
+            }
+        },
+    )
 }
 
 /// Sets (or clears) the FPS-governor interval hint. `has_hint == 0` clears it; otherwise the hint is
@@ -295,11 +283,10 @@ pub unsafe extern "C" fn aisd_pacer_depth_policy_set_interval_hint(
     seconds: f64,
     has_hint: u8,
 ) {
-    unsafe {
-        if let Some(p) = policy.as_mut() {
-            p.inner
-                .set_interval_hint(if has_hint != 0 { Some(seconds) } else { None });
-        }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    if let Some(p) = unsafe { policy.as_mut() } {
+        p.inner
+            .set_interval_hint(if has_hint != 0 { Some(seconds) } else { None });
     }
 }
 

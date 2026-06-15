@@ -5,6 +5,7 @@
 //! as the seven Config scalars. Verdict crosses as a u8 discriminant. Same "Rust owns the state"
 //! boundary as the deduper.
 
+use crate::{free_handle, into_handle};
 use aislopdesk_core::recovery_idr_policy::{
     Config as RecoveryIdrConfig, RecoveryIdrPolicy, Verdict as RecoveryIdrVerdict,
 };
@@ -55,7 +56,7 @@ pub extern "C" fn aisd_recovery_idr_policy_new(
     grant_pending_timeout: f64,
     keyframe_ring_capacity: usize,
 ) -> *mut AisdRecoveryIdrPolicy {
-    Box::into_raw(Box::new(AisdRecoveryIdrPolicy {
+    into_handle(AisdRecoveryIdrPolicy {
         inner: RecoveryIdrPolicy::new(RecoveryIdrConfig {
             grace_fraction,
             grace_floor_seconds,
@@ -65,7 +66,7 @@ pub extern "C" fn aisd_recovery_idr_policy_new(
             grant_pending_timeout,
             keyframe_ring_capacity,
         }),
-    }))
+    })
 }
 
 /// Destroys a policy created by [`aisd_recovery_idr_policy_new`]. No-op on null.
@@ -74,11 +75,8 @@ pub extern "C" fn aisd_recovery_idr_policy_new(
 /// `policy` must be a pointer from [`aisd_recovery_idr_policy_new`] that has not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_recovery_idr_policy_free(policy: *mut AisdRecoveryIdrPolicy) {
-    unsafe {
-        if !policy.is_null() {
-            drop(Box::from_raw(policy));
-        }
-    }
+    // SAFETY: per the contract, `policy` is an unfreed handle from `aisd_recovery_idr_policy_new`.
+    unsafe { free_handle(policy) }
 }
 
 /// The current token-bucket level (observability / tests), or `0.0` for a null handle.
@@ -90,7 +88,8 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_free(policy: *mut AisdRecovery
 pub unsafe extern "C" fn aisd_recovery_idr_policy_available_tokens(
     policy: *const AisdRecoveryIdrPolicy,
 ) -> f64 {
-    unsafe { policy.as_ref().map_or(0.0, |p| p.inner.available_tokens()) }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    unsafe { policy.as_ref() }.map_or(0.0, |p| p.inner.available_tokens())
 }
 
 /// Records that a keyframe was handed to the wire at `now`. No-op on null. Wraps
@@ -104,10 +103,9 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_note_keyframe_sent(
     frame_id: u32,
     now: f64,
 ) {
-    unsafe {
-        if let Some(p) = policy.as_mut() {
-            p.inner.note_keyframe_sent(frame_id, now);
-        }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    if let Some(p) = unsafe { policy.as_mut() } {
+        p.inner.note_keyframe_sent(frame_id, now);
     }
 }
 
@@ -121,10 +119,9 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_note_keyframe_delivered(
     policy: *mut AisdRecoveryIdrPolicy,
     frame_id: u32,
 ) {
-    unsafe {
-        if let Some(p) = policy.as_mut() {
-            p.inner.note_keyframe_delivered(frame_id);
-        }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    if let Some(p) = unsafe { policy.as_mut() } {
+        p.inner.note_keyframe_delivered(frame_id);
     }
 }
 
@@ -146,16 +143,15 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_decide(
     has_client_last_decoded: u8,
     smoothed_rtt_seconds: f64,
 ) -> u8 {
-    unsafe {
-        policy.as_mut().map_or(AISD_RECOVERY_IDR_GRANT, |p| {
-            let last = if has_client_last_decoded != 0 {
-                Some(client_last_decoded)
-            } else {
-                None
-            };
-            recovery_idr_verdict_to_c(p.inner.decide(now, last, smoothed_rtt_seconds))
-        })
-    }
+    let last = if has_client_last_decoded != 0 {
+        Some(client_last_decoded)
+    } else {
+        None
+    };
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    unsafe { policy.as_mut() }.map_or(AISD_RECOVERY_IDR_GRANT, |p| {
+        recovery_idr_verdict_to_c(p.inner.decide(now, last, smoothed_rtt_seconds))
+    })
 }
 
 /// The in-flight grace window (seconds) for the given smoothed RTT, or `0.0` for a null handle.
@@ -169,7 +165,8 @@ pub unsafe extern "C" fn aisd_recovery_idr_policy_grace(
     policy: *const AisdRecoveryIdrPolicy,
     rtt: f64,
 ) -> f64 {
-    unsafe { policy.as_ref().map_or(0.0, |p| p.inner.grace(rtt)) }
+    // SAFETY: a non-null `policy` is a live handle per the contract.
+    unsafe { policy.as_ref() }.map_or(0.0, |p| p.inner.grace(rtt))
 }
 
 #[cfg(test)]
