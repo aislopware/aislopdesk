@@ -24,17 +24,20 @@ public enum AdaptivePlayoutPolicy {
 /// Swift-side bridge from `AislopdeskVideoProtocol` to the Rust `aislopdesk-ffi` C ABI.
 ///
 /// All `import CAislopdeskFFI` for the video wire codecs is contained here; the codec types
-/// call these typed wrappers so their public Swift APIs stay stable. The Rust core is the
-/// canonical implementation of the video wire codecs; its byte-/bit-exact output is verified
-/// by golden vectors and re-checked through these wrappers by the `Rust*ParityTests`. The same
-/// core is the basis for the Android client over the same C ABI.
+/// call these typed wrappers so their public Swift APIs stay stable. The Rust core is the SINGLE
+/// SOURCE OF TRUTH for the video wire codecs (there is no native Swift codec); its byte-exact
+/// output is pinned by golden vectors, and the Swift marshaling here is pinned to the wire format
+/// by `RustCodecWireVectorTests` (round-trips by `CodecTests`). The same core is the basis for the
+/// Android client over the same C ABI.
 ///
 /// Memory contract (mirrors `aislopdesk_ffi.h`): buffers passed *in* are borrowed for the
 /// call only; any `AisdBytes` the library returns owns a Rust allocation and is released with
 /// `aisd_bytes_free` before the wrapper returns.
 enum RustVideoFFI {
-    /// Encodes a cursor update (fixed 36 bytes) through the Rust core. The guard defensively
-    /// returns the in-process Swift encoding on the (unreachable) FFI failure.
+    /// Encodes a cursor update (fixed 36 bytes) through the Rust core — the single source of
+    /// truth. Encoding a valid update cannot fail (the only failure modes are a null `out` or a
+    /// zero-length result, neither reachable here), so the guard traps rather than masking memory
+    /// corruption with a second implementation.
     static func encode(_ update: CursorUpdate) -> Data {
         var out = AisdBytes()
         let status = aisd_cursor_update_encode(
@@ -47,7 +50,7 @@ enum RustVideoFFI {
             &out,
         )
         guard status == AISD_OK, let ptr = out.ptr, out.len > 0 else {
-            return update.encodeNative()
+            preconditionFailure("aisd_cursor_update_encode failed for a valid update (status \(status))")
         }
         defer { aisd_bytes_free(out) }
         return Data(bytes: ptr, count: out.len)
@@ -74,6 +77,213 @@ enum RustVideoFFI {
         default:
             throw VideoProtocolError.truncated
         }
+    }
+
+    // MARK: - window_geometry (move/resize/bounds/title; one owned title buffer)
+
+    /// Encodes a window-geometry message through the Rust core — the single source of truth.
+    /// `move`/`resize`/`bounds` cross as scalars; a `title` is borrowed in (Rust copies it, never
+    /// frees). Encoding a valid message cannot fail (the kind is always valid and a Swift `String`
+    /// is always UTF-8), so the guard traps rather than masking corruption with a second codec.
+    static func encode(_ message: WindowGeometryMessage) -> Data {
+        func emit(_ c: inout AisdWindowGeometry) -> Data {
+            var out = AisdBytes()
+            let status = aisd_window_geometry_encode(&c, &out)
+            guard status == AISD_OK, let ptr = out.ptr, out.len > 0 else {
+                preconditionFailure("aisd_window_geometry_encode failed for a valid message (status \(status))")
+            }
+            defer { aisd_bytes_free(out) }
+            return Data(bytes: ptr, count: out.len)
+        }
+        var c = AisdWindowGeometry()
+        c.kind = message.messageType
+        switch message {
+        case let .move(p):
+            c.x = p.x
+            c.y = p.y
+            return emit(&c)
+        case let .resize(s):
+            c.width = s.width
+            c.height = s.height
+            return emit(&c)
+        case let .bounds(r):
+            c.x = r.origin.x
+            c.y = r.origin.y
+            c.width = r.size.width
+            c.height = r.size.height
+            return emit(&c)
+        case let .title(title):
+            var bytes = Array(title.utf8)
+            return bytes.withUnsafeMutableBufferPointer { buf in
+                c.title = AisdBytes(ptr: buf.baseAddress, len: buf.count, cap: 0)
+                return emit(&c)
+            }
+        }
+    }
+
+    /// Decodes a window-geometry message through the Rust core, throwing the same
+    /// ``VideoProtocolError`` cases the native decoder does (`.malformed` for a non-finite
+    /// coordinate / non-UTF-8 title / unknown type, `.truncated` for a short body).
+    static func decodeWindowGeometry(_ data: Data) throws -> WindowGeometryMessage {
+        var out = AisdWindowGeometry()
+        let status: AisdStatus = data.withUnsafeBytes { raw in
+            aisd_window_geometry_decode(raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &out)
+        }
+        switch status {
+        case AISD_OK:
+            defer { aisd_window_geometry_free(&out) }
+            // out.kind ∈ {1 move, 2 resize, 3 bounds, 4 title} on a successful decode.
+            switch out.kind {
+            case 1:
+                return .move(VideoPoint(x: out.x, y: out.y))
+            case 2:
+                return .resize(VideoSize(width: out.width, height: out.height))
+            case 3:
+                return .bounds(VideoRect(x: out.x, y: out.y, width: out.width, height: out.height))
+            default:
+                return .title(string(from: out.title))
+            }
+        case AISD_ERR_MALFORMED:
+            throw VideoProtocolError.malformed("rust: malformed window geometry")
+        default:
+            throw VideoProtocolError.truncated
+        }
+    }
+
+    // MARK: - input_event (pointer/key/scroll/text; one owned text buffer)
+
+    /// Encodes a client→host input event through the Rust core — the single source of truth.
+    /// Scalar fields cross by value; a `text` payload is borrowed in (Rust copies it, never frees).
+    /// Encoding a valid event cannot fail (the kind/button are always valid and a Swift `String`
+    /// is always UTF-8), so the guard traps rather than masking corruption with a second codec.
+    static func encode(_ event: InputEvent) -> Data {
+        func emit(_ c: inout AisdInputEvent) -> Data {
+            var out = AisdBytes()
+            let status = aisd_input_event_encode(&c, &out)
+            guard status == AISD_OK, let ptr = out.ptr, out.len > 0 else {
+                preconditionFailure("aisd_input_event_encode failed for a valid event (status \(status))")
+            }
+            defer { aisd_bytes_free(out) }
+            return Data(bytes: ptr, count: out.len)
+        }
+        var c = AisdInputEvent()
+        c.kind = event.messageType
+        c.tag = event.tag
+        switch event {
+        case let .mouseMove(n, _):
+            c.x = n.x
+            c.y = n.y
+            return emit(&c)
+        case let .mouseDown(button, n, clickCount, mods, _),
+             let .mouseUp(button, n, clickCount, mods, _),
+             let .mouseDrag(button, n, clickCount, mods, _):
+            c.button = button.rawValue
+            c.click_count = clickCount
+            c.modifiers = mods.rawValue
+            c.x = n.x
+            c.y = n.y
+            return emit(&c)
+        case let .scroll(dx, dy, n, scrollPhase, momentumPhase, continuous, _):
+            c.dx = dx
+            c.dy = dy
+            c.x = n.x
+            c.y = n.y
+            c.scroll_phase = scrollPhase
+            c.momentum_phase = momentumPhase
+            c.continuous = continuous ? 1 : 0
+            return emit(&c)
+        case let .key(keyCode, down, mods, _):
+            c.key_code = keyCode
+            c.down = down ? 1 : 0
+            c.modifiers = mods.rawValue
+            return emit(&c)
+        case let .text(string, _):
+            var bytes = Array(string.utf8)
+            return bytes.withUnsafeMutableBufferPointer { buf in
+                c.text = AisdBytes(ptr: buf.baseAddress, len: buf.count, cap: 0)
+                return emit(&c)
+            }
+        }
+    }
+
+    /// Decodes a client→host input event through the Rust core, throwing the same
+    /// ``VideoProtocolError`` cases the native decoder does (`.malformed` for a non-finite
+    /// coordinate / unknown button / non-UTF-8 text / unknown type, `.truncated` for a short body).
+    static func decodeInputEvent(_ data: Data) throws -> InputEvent {
+        var out = AisdInputEvent()
+        let status: AisdStatus = data.withUnsafeBytes { raw in
+            aisd_input_event_decode(raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &out)
+        }
+        switch status {
+        case AISD_OK:
+            defer { aisd_input_event_free(&out) }
+            let n = VideoPoint(x: out.x, y: out.y)
+            let mods = InputModifiers(rawValue: out.modifiers)
+            // out.kind ∈ {1 move, 2 down, 3 up, 4 scroll, 5 key, 6 text, 7 drag} on success.
+            switch out.kind {
+            case 1:
+                return .mouseMove(normalized: n, tag: out.tag)
+            case 2,
+                 3,
+                 7:
+                guard let button = MouseButton(rawValue: out.button) else {
+                    throw VideoProtocolError.malformed("rust: unknown mouse button")
+                }
+                switch out.kind {
+                case 2:
+                    return .mouseDown(
+                        button: button,
+                        normalized: n,
+                        clickCount: out.click_count,
+                        modifiers: mods,
+                        tag: out.tag,
+                    )
+                case 3:
+                    return .mouseUp(
+                        button: button,
+                        normalized: n,
+                        clickCount: out.click_count,
+                        modifiers: mods,
+                        tag: out.tag,
+                    )
+                default:
+                    return .mouseDrag(
+                        button: button,
+                        normalized: n,
+                        clickCount: out.click_count,
+                        modifiers: mods,
+                        tag: out.tag,
+                    )
+                }
+            case 4:
+                return .scroll(
+                    dx: out.dx,
+                    dy: out.dy,
+                    normalized: n,
+                    scrollPhase: out.scroll_phase,
+                    momentumPhase: out.momentum_phase,
+                    continuous: out.continuous != 0,
+                    tag: out.tag,
+                )
+            case 5:
+                return .key(keyCode: out.key_code, down: out.down != 0, modifiers: mods, tag: out.tag)
+            default:
+                return .text(string(from: out.text), tag: out.tag)
+            }
+        case AISD_ERR_MALFORMED:
+            throw VideoProtocolError.malformed("rust: malformed input event")
+        default:
+            throw VideoProtocolError.truncated
+        }
+    }
+
+    /// Copies a returned `AisdBytes` UTF-8 payload into a `String` (empty for the null buffer).
+    /// The buffer itself is released by the caller's `*_free`.
+    private static func string(from bytes: AisdBytes) -> String {
+        guard let ptr = bytes.ptr, bytes.len > 0 else { return "" }
+        // The bytes were already validated as UTF-8 by the Rust decoder, so the failable
+        // initializer never returns nil here; `?? ""` is a total, unreachable fallthrough.
+        return String(bytes: UnsafeBufferPointer(start: ptr, count: bytes.len), encoding: .utf8) ?? ""
     }
 
     // MARK: - adaptive_fec (pure scalar; env stays Swift-side, crosses as params)

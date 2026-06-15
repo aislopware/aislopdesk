@@ -183,6 +183,92 @@ AisdStatus aisd_cursor_update_encode(uint16_t shape_id, uint8_t visible, double 
  * (AISD_ERR_MALFORMED) or a short body (AISD_ERR_TRUNCATED). data may be NULL iff len == 0. */
 AisdStatus aisd_cursor_update_decode(const uint8_t *data, size_t len, AisdCursorUpdate *out);
 
+/* ---- window_geometry (move/resize/bounds/title metadata channel) ------------------ */
+
+#define AISD_WINDOW_GEOMETRY_MOVE 1
+#define AISD_WINDOW_GEOMETRY_RESIZE 2
+#define AISD_WINDOW_GEOMETRY_BOUNDS 3
+#define AISD_WINDOW_GEOMETRY_TITLE 4
+
+/*
+ * A window-geometry message, flattened for the C ABI. `kind` (AISD_WINDOW_GEOMETRY_*) selects
+ * which fields are meaningful: MOVE → x,y; RESIZE → width,height; BOUNDS → all four; TITLE →
+ * title (UTF-8). On a decode *out the `title` owns a Rust allocation (release with
+ * aisd_window_geometry_free); on an encode input it is a borrowed {ptr,len} (cap ignored) or
+ * {NULL,0,0}. Field order MUST match the Rust #[repr(C)] struct AisdWindowGeometry exactly.
+ */
+typedef struct AisdWindowGeometry {
+    uint8_t kind;
+    double x;
+    double y;
+    double width;
+    double height;
+    AisdBytes title;
+} AisdWindowGeometry;
+
+/* Encode a caller-built window-geometry message into its wire form. On AISD_OK, *out owns the
+ * buffer (release with aisd_bytes_free). Returns AISD_ERR_NULL for a null argument or
+ * AISD_ERR_INVALID_ARGUMENT for an unknown kind / non-UTF-8 title. */
+AisdStatus aisd_window_geometry_encode(const AisdWindowGeometry *msg, AisdBytes *out);
+
+/* Decode a window-geometry message into *out. On AISD_OK, *out may own a `title` buffer (release
+ * with aisd_window_geometry_free). data may be NULL iff len == 0. Maps a non-finite coordinate /
+ * non-UTF-8 title / unknown type to AISD_ERR_MALFORMED and a short body to AISD_ERR_TRUNCATED. */
+AisdStatus aisd_window_geometry_decode(const uint8_t *data, size_t len, AisdWindowGeometry *out);
+
+/* Release the owned `title` buffer inside a decoded message. Idempotent; struct is caller-owned. */
+void aisd_window_geometry_free(AisdWindowGeometry *msg);
+
+/* ---- input_event (client→host pointer/key/scroll/text events) --------------------- */
+
+#define AISD_INPUT_MOUSE_MOVE 1
+#define AISD_INPUT_MOUSE_DOWN 2
+#define AISD_INPUT_MOUSE_UP 3
+#define AISD_INPUT_SCROLL 4
+#define AISD_INPUT_KEY 5
+#define AISD_INPUT_TEXT 6
+#define AISD_INPUT_MOUSE_DRAG 7
+
+/*
+ * A client→host input event, flattened for the C ABI. `kind` (AISD_INPUT_*) selects which fields
+ * are meaningful; `tag` (the self-inject filter) is valid for EVERY kind. MOUSE_MOVE → x,y;
+ * MOUSE_DOWN/UP/DRAG → button,click_count,modifiers,x,y; SCROLL → dx,dy,x,y,scroll_phase,
+ * momentum_phase,continuous; KEY → key_code,down,modifiers; TEXT → text (UTF-8; owned out via
+ * aisd_input_event_free / borrowed in). Field order MUST match the Rust #[repr(C)] struct
+ * AisdInputEvent exactly.
+ */
+typedef struct AisdInputEvent {
+    uint8_t kind;
+    uint32_t tag;
+    double x;
+    double y;
+    double dx;
+    double dy;
+    uint8_t button;       /* 0=left, 1=right, 2=other (DOWN/UP/DRAG) */
+    uint8_t click_count;
+    uint8_t modifiers;
+    uint8_t scroll_phase;   /* CGScrollPhase code (SCROLL)         */
+    uint8_t momentum_phase; /* CGMomentumScrollPhase code (SCROLL) */
+    uint8_t continuous;     /* pixel-precise flag, read != 0       */
+    uint16_t key_code;
+    uint8_t down;           /* KEY down flag, read != 0            */
+    AisdBytes text;
+} AisdInputEvent;
+
+/* Encode a caller-built input event into its wire form. On AISD_OK, *out owns the buffer (release
+ * with aisd_bytes_free). Returns AISD_ERR_NULL for a null argument or AISD_ERR_INVALID_ARGUMENT
+ * for an unknown kind / out-of-range button / non-UTF-8 text. */
+AisdStatus aisd_input_event_encode(const AisdInputEvent *msg, AisdBytes *out);
+
+/* Decode an input event into *out. On AISD_OK, *out may own a `text` buffer (release with
+ * aisd_input_event_free). data may be NULL iff len == 0. Maps a non-finite coordinate / unknown
+ * button / non-UTF-8 text / unknown type to AISD_ERR_MALFORMED and a short body to
+ * AISD_ERR_TRUNCATED. */
+AisdStatus aisd_input_event_decode(const uint8_t *data, size_t len, AisdInputEvent *out);
+
+/* Release the owned `text` buffer inside a decoded event. Idempotent; struct is caller-owned. */
+void aisd_input_event_free(AisdInputEvent *msg);
+
 /* ---- adaptive_fec (pure scalar; WF-4 FEC tier policy) ----------------------------- */
 
 /* Tier-decision state for the dwell-gated adaptive-FEC variant. Field order MUST match the

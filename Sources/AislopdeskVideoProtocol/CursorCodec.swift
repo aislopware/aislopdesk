@@ -43,54 +43,18 @@ public struct CursorUpdate: Equatable, Sendable {
     /// Encoded size in bytes (fixed).
     public static let encodedSize = 36
 
-    /// Encodes the update via the Rust `aislopdesk-core` cursor codec (one source of truth with
-    /// the Android client) — byte-identical to ``encodeNative()`` (proven by golden vectors +
-    /// `CursorRustParityTests`). A 36-byte fixed message, so Rust is faster than building `Data`.
+    /// Encodes the update via the Rust `aislopdesk-core` cursor codec — the single source of truth
+    /// shared with the Android client (the wire format is pinned by golden vectors). A 36-byte
+    /// fixed message, so Rust is faster than building `Data`.
     public func encode() -> Data {
         RustVideoFFI.encode(self)
     }
 
-    /// The native Swift encoder, retained as the differential/benchmark baseline and the
-    /// fallback inside ``RustVideoFFI/encode(_:)``.
-    func encodeNative() -> Data {
-        var out = Data(capacity: Self.encodedSize)
-        out.append(Self.messageType)
-        out.appendBE(shapeID)
-        out.append(visible ? 1 : 0)
-        out.appendBE(position.x)
-        out.appendBE(position.y)
-        out.appendBE(hotspot.x)
-        out.appendBE(hotspot.y)
-        return out
-    }
-
-    /// Decodes via the Rust cursor codec — behaviour-identical to ``decodeNative(_:)``
-    /// (re-proven by `CursorRustParityTests`).
+    /// Decodes via the Rust cursor codec — the single source of truth (the wire format is pinned by
+    /// golden vectors). Non-finite coordinates are rejected as `.malformed`: a NaN off the wire
+    /// would otherwise propagate through the client's aspect-fit math into a `CALayer` frame and
+    /// crash with `CALayerInvalidGeometry`.
     public static func decode(_ data: Data) throws -> Self {
         try RustVideoFFI.decodeCursor(data)
-    }
-
-    /// The native Swift decoder, retained as the differential baseline.
-    static func decodeNative(_ data: Data) throws -> Self {
-        var reader = VideoByteReader(data)
-        let type = try reader.readUInt8()
-        guard type == messageType else {
-            throw VideoProtocolError.malformed("not a cursor update (type \(type))")
-        }
-        let shapeID = try reader.readUInt16()
-        let visible = try reader.readUInt8() != 0
-        // Finite-checked: a non-finite position/hotspot off the wire would propagate NaN through the
-        // client's aspect-fit math into a CALayer frame → uncaught CALayerInvalidGeometry crash. A
-        // malformed datagram must be DROPPED, not fatal (symmetric to the host-bound InputEventCodec).
-        let x = try reader.readFiniteFloat64("cursor.x")
-        let y = try reader.readFiniteFloat64("cursor.y")
-        let hx = try reader.readFiniteFloat64("cursor.hotspot.x")
-        let hy = try reader.readFiniteFloat64("cursor.hotspot.y")
-        return Self(
-            position: VideoPoint(x: x, y: y),
-            shapeID: shapeID,
-            hotspot: VideoPoint(x: hx, y: hy),
-            visible: visible,
-        )
     }
 }

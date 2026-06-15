@@ -147,6 +147,110 @@ int main(void) {
     double pl_ceil = aisd_adaptive_playout_step_ms(0.040, 4.0, 2.0, 0.8, 4.0, 4.0, 35.0);
     CHECK(pl_ceil > 34.99 && pl_ceil < 35.01, "adaptive_playout clamps at ceil");
 
+    /* 7. Window-geometry + input-event wire codecs (owned-buffer marshaling from C). */
+    AisdWindowGeometry geo_in;
+    memset(&geo_in, 0, sizeof(geo_in));
+    geo_in.kind = AISD_WINDOW_GEOMETRY_BOUNDS;
+    geo_in.x = 12.0;
+    geo_in.y = 34.0;
+    geo_in.width = 800.0;
+    geo_in.height = 600.0;
+    AisdBytes geo_frame = {NULL, 0, 0};
+    CHECK(aisd_window_geometry_encode(&geo_in, &geo_frame) == AISD_OK, "geometry encode ok");
+    AisdWindowGeometry geo_out;
+    memset(&geo_out, 0, sizeof(geo_out));
+    CHECK(aisd_window_geometry_decode(geo_frame.ptr, geo_frame.len, &geo_out) == AISD_OK,
+          "geometry decode ok");
+    CHECK(geo_out.kind == AISD_WINDOW_GEOMETRY_BOUNDS && geo_out.x == 12.0 && geo_out.y == 34.0 &&
+              geo_out.width == 800.0 && geo_out.height == 600.0,
+          "geometry bounds round-trips");
+    aisd_window_geometry_free(&geo_out);
+    aisd_bytes_free(geo_frame);
+
+    /* A title carries an owned UTF-8 buffer back; a non-UTF-8 title is rejected on encode. */
+    const char *title = "héllo 窗口";
+    AisdWindowGeometry title_in;
+    memset(&title_in, 0, sizeof(title_in));
+    title_in.kind = AISD_WINDOW_GEOMETRY_TITLE;
+    title_in.title.ptr = (uint8_t *)title;
+    title_in.title.len = strlen(title);
+    title_in.title.cap = 0; /* borrowed */
+    AisdBytes title_frame = {NULL, 0, 0};
+    CHECK(aisd_window_geometry_encode(&title_in, &title_frame) == AISD_OK, "title encode ok");
+    AisdWindowGeometry title_out;
+    memset(&title_out, 0, sizeof(title_out));
+    CHECK(aisd_window_geometry_decode(title_frame.ptr, title_frame.len, &title_out) == AISD_OK,
+          "title decode ok");
+    CHECK(title_out.kind == AISD_WINDOW_GEOMETRY_TITLE &&
+              title_out.title.len == strlen(title) &&
+              memcmp(title_out.title.ptr, title, strlen(title)) == 0,
+          "title bytes round-trip");
+    aisd_window_geometry_free(&title_out);
+    aisd_bytes_free(title_frame);
+
+    uint8_t bad_title_bytes[2] = {0xFF, 0xFE};
+    AisdWindowGeometry bad_title;
+    memset(&bad_title, 0, sizeof(bad_title));
+    bad_title.kind = AISD_WINDOW_GEOMETRY_TITLE;
+    bad_title.title.ptr = bad_title_bytes;
+    bad_title.title.len = sizeof(bad_title_bytes);
+    AisdBytes junk2 = {NULL, 0, 0};
+    CHECK(aisd_window_geometry_encode(&bad_title, &junk2) == AISD_ERR_INVALID_ARGUMENT,
+          "geometry rejects non-UTF-8 title");
+
+    /* A scroll input event (all-scalar) and a text event (owned buffer). */
+    AisdInputEvent scroll_in;
+    memset(&scroll_in, 0, sizeof(scroll_in));
+    scroll_in.kind = AISD_INPUT_SCROLL;
+    scroll_in.tag = 4242;
+    scroll_in.dx = -3.5;
+    scroll_in.dy = 12.0;
+    scroll_in.x = 0.25;
+    scroll_in.y = 0.75;
+    scroll_in.scroll_phase = 2;
+    scroll_in.continuous = 1;
+    AisdBytes scroll_frame = {NULL, 0, 0};
+    CHECK(aisd_input_event_encode(&scroll_in, &scroll_frame) == AISD_OK, "scroll encode ok");
+    AisdInputEvent scroll_out;
+    memset(&scroll_out, 0, sizeof(scroll_out));
+    CHECK(aisd_input_event_decode(scroll_frame.ptr, scroll_frame.len, &scroll_out) == AISD_OK,
+          "scroll decode ok");
+    CHECK(scroll_out.kind == AISD_INPUT_SCROLL && scroll_out.tag == 4242 &&
+              scroll_out.dx == -3.5 && scroll_out.dy == 12.0 && scroll_out.scroll_phase == 2 &&
+              scroll_out.continuous == 1,
+          "scroll round-trips fields");
+    aisd_input_event_free(&scroll_out);
+    aisd_bytes_free(scroll_frame);
+
+    const char *typed = "gõ được";
+    AisdInputEvent text_in;
+    memset(&text_in, 0, sizeof(text_in));
+    text_in.kind = AISD_INPUT_TEXT;
+    text_in.tag = 9;
+    text_in.text.ptr = (uint8_t *)typed;
+    text_in.text.len = strlen(typed);
+    AisdBytes text_frame = {NULL, 0, 0};
+    CHECK(aisd_input_event_encode(&text_in, &text_frame) == AISD_OK, "text encode ok");
+    AisdInputEvent text_out;
+    memset(&text_out, 0, sizeof(text_out));
+    CHECK(aisd_input_event_decode(text_frame.ptr, text_frame.len, &text_out) == AISD_OK,
+          "text decode ok");
+    CHECK(text_out.kind == AISD_INPUT_TEXT && text_out.tag == 9 &&
+              text_out.text.len == strlen(typed) &&
+              memcmp(text_out.text.ptr, typed, strlen(typed)) == 0,
+          "text bytes round-trip");
+    aisd_input_event_free(&text_out);
+    aisd_bytes_free(text_frame);
+
+    /* An out-of-range mouse button is rejected on encode. */
+    AisdInputEvent bad_button;
+    memset(&bad_button, 0, sizeof(bad_button));
+    bad_button.kind = AISD_INPUT_MOUSE_DOWN;
+    bad_button.button = 9;
+    AisdBytes junk3 = {NULL, 0, 0};
+    CHECK(aisd_input_event_encode(&bad_button, &junk3) == AISD_ERR_INVALID_ARGUMENT,
+          "input rejects out-of-range button");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

@@ -7,8 +7,8 @@
 //! take no pointers and cannot fail.
 
 use crate::{
-    bytes_from_vec, AisdBytes, AisdStatus, AISD_EMPTY, AISD_ERR_MALFORMED, AISD_ERR_NULL,
-    AISD_ERR_TRUNCATED, AISD_OK,
+    bytes_from_vec, copy_in, drop_bytes, AisdBytes, AisdStatus, AISD_EMPTY,
+    AISD_ERR_INVALID_ARGUMENT, AISD_ERR_MALFORMED, AISD_ERR_NULL, AISD_ERR_TRUNCATED, AISD_OK,
 };
 use aislopdesk_core::adaptive_fec;
 use aislopdesk_core::adaptive_playout;
@@ -17,9 +17,11 @@ use aislopdesk_core::coordinate_mapping::{self, ScreenInfo};
 use aislopdesk_core::cursor::CursorUpdate;
 use aislopdesk_core::error::VideoProtocolError;
 use aislopdesk_core::geometry::{VideoPoint, VideoRect, VideoSize};
+use aislopdesk_core::input_event::{InputEvent, InputModifiers, MouseButton};
 use aislopdesk_core::live_bitrate_policy;
 use aislopdesk_core::recovery_policy::RecoveryPolicy;
 use aislopdesk_core::virtual_display_geometry::{self, VirtualDisplayGeometry};
+use aislopdesk_core::window_geometry::WindowGeometryMessage;
 use aislopdesk_core::window_placement;
 
 /// Maps a core video decode error to its boundary status code (shared by the video codecs).
@@ -186,6 +188,467 @@ pub unsafe extern "C" fn aisd_cursor_update_decode(
         }
         Err(e) => status_for_video_error(&e),
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// window_geometry — the move/resize/bounds/title metadata channel (occasional, per window
+// move/resize/title; one owned title buffer, marshaled like AisdWireMessage)
+// ---------------------------------------------------------------------------------------
+
+/// [`WindowGeometryMessage::Move`] discriminator (`kind`).
+pub const AISD_WINDOW_GEOMETRY_MOVE: u8 = 1;
+/// [`WindowGeometryMessage::Resize`] discriminator.
+pub const AISD_WINDOW_GEOMETRY_RESIZE: u8 = 2;
+/// [`WindowGeometryMessage::Bounds`] discriminator.
+pub const AISD_WINDOW_GEOMETRY_BOUNDS: u8 = 3;
+/// [`WindowGeometryMessage::Title`] discriminator.
+pub const AISD_WINDOW_GEOMETRY_TITLE: u8 = 4;
+
+/// A window-geometry message, flattened for the C ABI.
+///
+/// `kind` (`AISD_WINDOW_GEOMETRY_*`) selects which fields are meaningful: `MOVE` uses `x`/`y`;
+/// `RESIZE` uses `width`/`height`; `BOUNDS` uses all four; `TITLE` uses `title` (UTF-8). On a
+/// decode `out` the `title` owns a Rust allocation — release with [`aisd_window_geometry_free`];
+/// on an encode input it is a borrowed `(ptr, len)` (`cap` ignored) or [`AisdBytes::EMPTY`].
+#[repr(C)]
+pub struct AisdWindowGeometry {
+    /// Message discriminator (`AISD_WINDOW_GEOMETRY_*`).
+    pub kind: u8,
+    /// `MOVE` / `BOUNDS` origin x (points).
+    pub x: f64,
+    /// `MOVE` / `BOUNDS` origin y (points).
+    pub y: f64,
+    /// `RESIZE` / `BOUNDS` width (points).
+    pub width: f64,
+    /// `RESIZE` / `BOUNDS` height (points).
+    pub height: f64,
+    /// `TITLE` UTF-8 bytes (owned out / borrowed in; [`AisdBytes::EMPTY`] otherwise).
+    pub title: AisdBytes,
+}
+
+impl AisdWindowGeometry {
+    /// An all-zero `MOVE`-shaped struct with an empty title — the base every decode fills in.
+    const fn zeroed() -> Self {
+        Self {
+            kind: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            title: AisdBytes::EMPTY,
+        }
+    }
+}
+
+/// Rebuilds a core [`WindowGeometryMessage`] from the caller's C struct, validating the `kind`
+/// and any UTF-8 title.
+///
+/// # Safety
+/// A non-empty `title` in `m` must point to that many readable bytes.
+unsafe fn c_to_window_geometry(
+    m: &AisdWindowGeometry,
+) -> Result<WindowGeometryMessage, AisdStatus> {
+    let message = match m.kind {
+        AISD_WINDOW_GEOMETRY_MOVE => WindowGeometryMessage::Move(VideoPoint::new(m.x, m.y)),
+        AISD_WINDOW_GEOMETRY_RESIZE => {
+            WindowGeometryMessage::Resize(VideoSize::new(m.width, m.height))
+        }
+        AISD_WINDOW_GEOMETRY_BOUNDS => {
+            WindowGeometryMessage::Bounds(VideoRect::xywh(m.x, m.y, m.width, m.height))
+        }
+        AISD_WINDOW_GEOMETRY_TITLE => {
+            let title =
+                String::from_utf8(copy_in(m.title)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
+            WindowGeometryMessage::Title(title)
+        }
+        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+    };
+    Ok(message)
+}
+
+/// Flattens a core [`WindowGeometryMessage`] into the C struct, allocating an owned buffer for a
+/// title.
+fn window_geometry_to_c(message: &WindowGeometryMessage) -> AisdWindowGeometry {
+    let mut out = AisdWindowGeometry::zeroed();
+    out.kind = message.message_type();
+    match message {
+        WindowGeometryMessage::Move(p) => {
+            out.x = p.x;
+            out.y = p.y;
+        }
+        WindowGeometryMessage::Resize(s) => {
+            out.width = s.width;
+            out.height = s.height;
+        }
+        WindowGeometryMessage::Bounds(r) => {
+            out.x = r.origin.x;
+            out.y = r.origin.y;
+            out.width = r.size.width;
+            out.height = r.size.height;
+        }
+        WindowGeometryMessage::Title(t) => out.title = bytes_from_vec(t.clone().into_bytes()),
+    }
+    out
+}
+
+/// Encodes a caller-built [`AisdWindowGeometry`] into its wire form.
+///
+/// On [`AISD_OK`], `*out` owns the buffer — release with [`crate::aisd_bytes_free`]. Returns
+/// [`AISD_ERR_NULL`] for a null argument or [`AISD_ERR_INVALID_ARGUMENT`] for an unknown `kind`
+/// / non-UTF-8 `title`.
+///
+/// # Safety
+/// `msg` and `out` must be valid, writable pointers; a non-empty `title` inside `*msg` must
+/// point to that many readable bytes.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_window_geometry_encode(
+    msg: *const AisdWindowGeometry,
+    out: *mut AisdBytes,
+) -> AisdStatus {
+    if msg.is_null() || out.is_null() {
+        return AISD_ERR_NULL;
+    }
+    match c_to_window_geometry(&*msg) {
+        Ok(message) => {
+            out.write(bytes_from_vec(message.encode()));
+            AISD_OK
+        }
+        Err(status) => status,
+    }
+}
+
+/// Decodes a window-geometry message into `*out`.
+///
+/// On [`AISD_OK`], `*out` may own a `title` buffer — release with [`aisd_window_geometry_free`].
+/// `data` may be null only when `len == 0`. Maps a non-finite coordinate / non-UTF-8 title /
+/// unknown type to [`AISD_ERR_MALFORMED`] and a short body to [`AISD_ERR_TRUNCATED`].
+///
+/// # Safety
+/// `out` must be writable; if `len != 0`, `data` must point to `len` readable bytes. On a
+/// non-[`AISD_OK`] return `*out` is untouched; on [`AISD_OK`] it is overwritten as raw output
+/// WITHOUT freeing prior contents.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_window_geometry_decode(
+    data: *const u8,
+    len: usize,
+    out: *mut AisdWindowGeometry,
+) -> AisdStatus {
+    if out.is_null() || (data.is_null() && len != 0) {
+        return AISD_ERR_NULL;
+    }
+    match WindowGeometryMessage::decode(slice_in(data, len)) {
+        Ok(message) => {
+            out.write(window_geometry_to_c(&message));
+            AISD_OK
+        }
+        Err(e) => status_for_video_error(&e),
+    }
+}
+
+/// Releases the owned `title` buffer inside an [`AisdWindowGeometry`] and resets it to empty.
+/// Idempotent; the struct itself is caller-owned.
+///
+/// # Safety
+/// `msg` must point to a writable [`AisdWindowGeometry`] previously filled by this library.
+#[no_mangle]
+pub unsafe extern "C" fn aisd_window_geometry_free(msg: *mut AisdWindowGeometry) {
+    if msg.is_null() {
+        return;
+    }
+    let m = &mut *msg;
+    drop_bytes(m.title);
+    m.title = AisdBytes::EMPTY;
+}
+
+// ---------------------------------------------------------------------------------------
+// input_event — client→host pointer/key/scroll/text events (per user action; one owned text
+// buffer, marshaled like AisdWireMessage)
+// ---------------------------------------------------------------------------------------
+
+/// [`InputEvent::MouseMove`] discriminator (`kind`).
+pub const AISD_INPUT_MOUSE_MOVE: u8 = 1;
+/// [`InputEvent::MouseDown`] discriminator.
+pub const AISD_INPUT_MOUSE_DOWN: u8 = 2;
+/// [`InputEvent::MouseUp`] discriminator.
+pub const AISD_INPUT_MOUSE_UP: u8 = 3;
+/// [`InputEvent::Scroll`] discriminator.
+pub const AISD_INPUT_SCROLL: u8 = 4;
+/// [`InputEvent::Key`] discriminator.
+pub const AISD_INPUT_KEY: u8 = 5;
+/// [`InputEvent::Text`] discriminator.
+pub const AISD_INPUT_TEXT: u8 = 6;
+/// [`InputEvent::MouseDrag`] discriminator.
+pub const AISD_INPUT_MOUSE_DRAG: u8 = 7;
+
+/// A client→host input event, flattened for the C ABI.
+///
+/// `kind` (`AISD_INPUT_*`) selects which fields are meaningful; `tag` (the self-inject filter)
+/// is valid for EVERY kind. Field usage: `MOUSE_MOVE` → `x`/`y`; `MOUSE_DOWN`/`MOUSE_UP`/
+/// `MOUSE_DRAG` → `button`/`click_count`/`modifiers`/`x`/`y`; `SCROLL` → `dx`/`dy`/`x`/`y`/
+/// `scroll_phase`/`momentum_phase`/`continuous`; `KEY` → `key_code`/`down`/`modifiers`; `TEXT`
+/// → `text` (UTF-8, owned out via [`aisd_input_event_free`] / borrowed in).
+#[repr(C)]
+pub struct AisdInputEvent {
+    /// Message discriminator (`AISD_INPUT_*`).
+    pub kind: u8,
+    /// Self-inject filter tag (valid for every kind).
+    pub tag: u32,
+    /// Normalised (0..1) x (`MOVE`/`DOWN`/`UP`/`DRAG`/`SCROLL`).
+    pub x: f64,
+    /// Normalised (0..1) y.
+    pub y: f64,
+    /// `SCROLL` horizontal delta (pixels).
+    pub dx: f64,
+    /// `SCROLL` vertical delta (pixels).
+    pub dy: f64,
+    /// Mouse button raw (`0`=left, `1`=right, `2`=other) for `DOWN`/`UP`/`DRAG`.
+    pub button: u8,
+    /// Originating click count for `DOWN`/`UP`/`DRAG`.
+    pub click_count: u8,
+    /// Modifier bitmask for `DOWN`/`UP`/`DRAG`/`KEY`.
+    pub modifiers: u8,
+    /// `SCROLL` `CGScrollPhase` code (carried opaquely).
+    pub scroll_phase: u8,
+    /// `SCROLL` `CGMomentumScrollPhase` code (carried opaquely).
+    pub momentum_phase: u8,
+    /// `SCROLL` pixel-precise flag (`0`/nonzero, read `!= 0`).
+    pub continuous: u8,
+    /// `KEY` host virtual keycode.
+    pub key_code: u16,
+    /// `KEY` down flag (`0`/nonzero, read `!= 0`).
+    pub down: u8,
+    /// `TEXT` UTF-8 bytes (owned out / borrowed in; [`AisdBytes::EMPTY`] otherwise).
+    pub text: AisdBytes,
+}
+
+impl AisdInputEvent {
+    /// An all-zero struct with an empty text buffer — the base every decode fills in.
+    const fn zeroed() -> Self {
+        Self {
+            kind: 0,
+            tag: 0,
+            x: 0.0,
+            y: 0.0,
+            dx: 0.0,
+            dy: 0.0,
+            button: 0,
+            click_count: 0,
+            modifiers: 0,
+            scroll_phase: 0,
+            momentum_phase: 0,
+            continuous: 0,
+            key_code: 0,
+            down: 0,
+            text: AisdBytes::EMPTY,
+        }
+    }
+}
+
+/// Rebuilds a core [`InputEvent`] from the caller's C struct, validating the `kind`, the mouse
+/// button, and any UTF-8 text.
+///
+/// # Safety
+/// A non-empty `text` in `m` must point to that many readable bytes.
+unsafe fn c_to_input_event(m: &AisdInputEvent) -> Result<InputEvent, AisdStatus> {
+    let normalized = VideoPoint::new(m.x, m.y);
+    let modifiers = InputModifiers(m.modifiers);
+    let event = match m.kind {
+        AISD_INPUT_MOUSE_MOVE => InputEvent::MouseMove {
+            normalized,
+            tag: m.tag,
+        },
+        AISD_INPUT_MOUSE_DOWN | AISD_INPUT_MOUSE_UP | AISD_INPUT_MOUSE_DRAG => {
+            let button = MouseButton::from_u8(m.button).ok_or(AISD_ERR_INVALID_ARGUMENT)?;
+            let click_count = m.click_count;
+            match m.kind {
+                AISD_INPUT_MOUSE_DOWN => InputEvent::MouseDown {
+                    button,
+                    normalized,
+                    click_count,
+                    modifiers,
+                    tag: m.tag,
+                },
+                AISD_INPUT_MOUSE_UP => InputEvent::MouseUp {
+                    button,
+                    normalized,
+                    click_count,
+                    modifiers,
+                    tag: m.tag,
+                },
+                _ => InputEvent::MouseDrag {
+                    button,
+                    normalized,
+                    click_count,
+                    modifiers,
+                    tag: m.tag,
+                },
+            }
+        }
+        AISD_INPUT_SCROLL => InputEvent::Scroll {
+            dx: m.dx,
+            dy: m.dy,
+            normalized,
+            scroll_phase: m.scroll_phase,
+            momentum_phase: m.momentum_phase,
+            continuous: m.continuous != 0,
+            tag: m.tag,
+        },
+        AISD_INPUT_KEY => InputEvent::Key {
+            key_code: m.key_code,
+            down: m.down != 0,
+            modifiers,
+            tag: m.tag,
+        },
+        AISD_INPUT_TEXT => {
+            let text = String::from_utf8(copy_in(m.text)).map_err(|_| AISD_ERR_INVALID_ARGUMENT)?;
+            InputEvent::Text { text, tag: m.tag }
+        }
+        _ => return Err(AISD_ERR_INVALID_ARGUMENT),
+    };
+    Ok(event)
+}
+
+/// Flattens a core [`InputEvent`] into the C struct, allocating an owned buffer for text.
+fn input_event_to_c(e: &InputEvent) -> AisdInputEvent {
+    let mut out = AisdInputEvent::zeroed();
+    out.kind = e.message_type();
+    out.tag = e.tag();
+    match e {
+        InputEvent::MouseMove { normalized, .. } => {
+            out.x = normalized.x;
+            out.y = normalized.y;
+        }
+        InputEvent::MouseDown {
+            button,
+            normalized,
+            click_count,
+            modifiers,
+            ..
+        }
+        | InputEvent::MouseUp {
+            button,
+            normalized,
+            click_count,
+            modifiers,
+            ..
+        }
+        | InputEvent::MouseDrag {
+            button,
+            normalized,
+            click_count,
+            modifiers,
+            ..
+        } => {
+            out.button = button.raw();
+            out.click_count = *click_count;
+            out.modifiers = modifiers.raw();
+            out.x = normalized.x;
+            out.y = normalized.y;
+        }
+        InputEvent::Scroll {
+            dx,
+            dy,
+            normalized,
+            scroll_phase,
+            momentum_phase,
+            continuous,
+            ..
+        } => {
+            out.dx = *dx;
+            out.dy = *dy;
+            out.x = normalized.x;
+            out.y = normalized.y;
+            out.scroll_phase = *scroll_phase;
+            out.momentum_phase = *momentum_phase;
+            out.continuous = u8::from(*continuous);
+        }
+        InputEvent::Key {
+            key_code,
+            down,
+            modifiers,
+            ..
+        } => {
+            out.key_code = *key_code;
+            out.down = u8::from(*down);
+            out.modifiers = modifiers.raw();
+        }
+        InputEvent::Text { text, .. } => out.text = bytes_from_vec(text.clone().into_bytes()),
+    }
+    out
+}
+
+/// Encodes a caller-built [`AisdInputEvent`] into its wire form.
+///
+/// On [`AISD_OK`], `*out` owns the buffer — release with [`crate::aisd_bytes_free`]. Returns
+/// [`AISD_ERR_NULL`] for a null argument or [`AISD_ERR_INVALID_ARGUMENT`] for an unknown `kind`
+/// / out-of-range `button` / non-UTF-8 `text`.
+///
+/// # Safety
+/// `msg` and `out` must be valid, writable pointers; a non-empty `text` inside `*msg` must
+/// point to that many readable bytes.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_input_event_encode(
+    msg: *const AisdInputEvent,
+    out: *mut AisdBytes,
+) -> AisdStatus {
+    if msg.is_null() || out.is_null() {
+        return AISD_ERR_NULL;
+    }
+    match c_to_input_event(&*msg) {
+        Ok(event) => {
+            out.write(bytes_from_vec(event.encode()));
+            AISD_OK
+        }
+        Err(status) => status,
+    }
+}
+
+/// Decodes an input event into `*out`.
+///
+/// On [`AISD_OK`], `*out` may own a `text` buffer — release with [`aisd_input_event_free`].
+/// `data` may be null only when `len == 0`. Maps a non-finite coordinate / unknown button /
+/// non-UTF-8 text / unknown type to [`AISD_ERR_MALFORMED`] and a short body to
+/// [`AISD_ERR_TRUNCATED`].
+///
+/// # Safety
+/// `out` must be writable; if `len != 0`, `data` must point to `len` readable bytes. On a
+/// non-[`AISD_OK`] return `*out` is untouched; on [`AISD_OK`] it is overwritten as raw output
+/// WITHOUT freeing prior contents.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_input_event_decode(
+    data: *const u8,
+    len: usize,
+    out: *mut AisdInputEvent,
+) -> AisdStatus {
+    if out.is_null() || (data.is_null() && len != 0) {
+        return AISD_ERR_NULL;
+    }
+    match InputEvent::decode(slice_in(data, len)) {
+        Ok(event) => {
+            out.write(input_event_to_c(&event));
+            AISD_OK
+        }
+        Err(e) => status_for_video_error(&e),
+    }
+}
+
+/// Releases the owned `text` buffer inside an [`AisdInputEvent`] and resets it to empty.
+/// Idempotent; the struct itself is caller-owned.
+///
+/// # Safety
+/// `msg` must point to a writable [`AisdInputEvent`] previously filled by this library.
+#[no_mangle]
+pub unsafe extern "C" fn aisd_input_event_free(msg: *mut AisdInputEvent) {
+    if msg.is_null() {
+        return;
+    }
+    let m = &mut *msg;
+    drop_bytes(m.text);
+    m.text = AisdBytes::EMPTY;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -891,6 +1354,400 @@ mod tests {
                 aisd_cursor_update_decode([1u8].as_ptr(), 1, &mut out),
                 AISD_ERR_TRUNCATED
             );
+        }
+    }
+
+    /// Reads an owned/returned `AisdBytes` as a `Vec` (the caller still frees it).
+    unsafe fn view(b: AisdBytes) -> Vec<u8> {
+        if b.ptr.is_null() || b.len == 0 {
+            Vec::new()
+        } else {
+            core::slice::from_raw_parts(b.ptr, b.len).to_vec()
+        }
+    }
+
+    /// Borrows a slice as an input `AisdBytes` (encode copies it, never frees).
+    fn borrow(bytes: &[u8]) -> AisdBytes {
+        if bytes.is_empty() {
+            AisdBytes::EMPTY
+        } else {
+            AisdBytes {
+                ptr: bytes.as_ptr().cast_mut(),
+                len: bytes.len(),
+                cap: 0,
+            }
+        }
+    }
+
+    #[test]
+    fn window_geometry_round_trips_every_variant() {
+        unsafe {
+            let title = "héllo · 窗口";
+            let cases = [
+                (
+                    WindowGeometryMessage::Move(VideoPoint::new(10.0, 20.0)),
+                    AisdWindowGeometry {
+                        kind: AISD_WINDOW_GEOMETRY_MOVE,
+                        x: 10.0,
+                        y: 20.0,
+                        ..AisdWindowGeometry::zeroed()
+                    },
+                ),
+                (
+                    WindowGeometryMessage::Resize(VideoSize::new(640.0, 480.0)),
+                    AisdWindowGeometry {
+                        kind: AISD_WINDOW_GEOMETRY_RESIZE,
+                        width: 640.0,
+                        height: 480.0,
+                        ..AisdWindowGeometry::zeroed()
+                    },
+                ),
+                (
+                    WindowGeometryMessage::Bounds(VideoRect::xywh(1.0, 2.0, 3.0, 4.0)),
+                    AisdWindowGeometry {
+                        kind: AISD_WINDOW_GEOMETRY_BOUNDS,
+                        x: 1.0,
+                        y: 2.0,
+                        width: 3.0,
+                        height: 4.0,
+                        ..AisdWindowGeometry::zeroed()
+                    },
+                ),
+                (
+                    WindowGeometryMessage::Title(title.to_owned()),
+                    AisdWindowGeometry {
+                        kind: AISD_WINDOW_GEOMETRY_TITLE,
+                        title: borrow(title.as_bytes()),
+                        ..AisdWindowGeometry::zeroed()
+                    },
+                ),
+            ];
+            for (core_msg, c_in) in cases {
+                // Encode through the C struct is byte-identical to the core encode.
+                let mut frame = AisdBytes::EMPTY;
+                assert_eq!(aisd_window_geometry_encode(&c_in, &mut frame), AISD_OK);
+                assert_eq!(
+                    view(frame),
+                    core_msg.encode(),
+                    "encode parity {}",
+                    c_in.kind
+                );
+                // Decode it back; the flat struct re-decodes to the same core message.
+                let mut out = AisdWindowGeometry::zeroed();
+                assert_eq!(
+                    aisd_window_geometry_decode(frame.ptr, frame.len, &mut out),
+                    AISD_OK
+                );
+                let round = match out.kind {
+                    AISD_WINDOW_GEOMETRY_MOVE => {
+                        WindowGeometryMessage::Move(VideoPoint::new(out.x, out.y))
+                    }
+                    AISD_WINDOW_GEOMETRY_RESIZE => {
+                        WindowGeometryMessage::Resize(VideoSize::new(out.width, out.height))
+                    }
+                    AISD_WINDOW_GEOMETRY_BOUNDS => WindowGeometryMessage::Bounds(VideoRect::xywh(
+                        out.x, out.y, out.width, out.height,
+                    )),
+                    _ => WindowGeometryMessage::Title(String::from_utf8(view(out.title)).unwrap()),
+                };
+                assert_eq!(round, core_msg, "decode parity {}", out.kind);
+                aisd_window_geometry_free(&mut out);
+                aisd_window_geometry_free(&mut out); // idempotent
+                crate::aisd_bytes_free(frame);
+            }
+        }
+    }
+
+    #[test]
+    fn window_geometry_empty_title_is_null_buffer() {
+        unsafe {
+            let c_in = AisdWindowGeometry {
+                kind: AISD_WINDOW_GEOMETRY_TITLE,
+                ..AisdWindowGeometry::zeroed()
+            };
+            let mut frame = AisdBytes::EMPTY;
+            assert_eq!(aisd_window_geometry_encode(&c_in, &mut frame), AISD_OK);
+            // Just the type byte (4); an empty title adds nothing.
+            assert_eq!(view(frame), vec![AISD_WINDOW_GEOMETRY_TITLE]);
+            let mut out = AisdWindowGeometry::zeroed();
+            assert_eq!(
+                aisd_window_geometry_decode(frame.ptr, frame.len, &mut out),
+                AISD_OK
+            );
+            assert_eq!(out.kind, AISD_WINDOW_GEOMETRY_TITLE);
+            assert!(out.title.ptr.is_null(), "empty title is the null buffer");
+            aisd_window_geometry_free(&mut out);
+            crate::aisd_bytes_free(frame);
+        }
+    }
+
+    #[test]
+    fn window_geometry_encode_and_decode_error_paths() {
+        unsafe {
+            let mut out_bytes = AisdBytes::EMPTY;
+            // Unknown kind on encode.
+            let bad_kind = AisdWindowGeometry {
+                kind: 99,
+                ..AisdWindowGeometry::zeroed()
+            };
+            assert_eq!(
+                aisd_window_geometry_encode(&bad_kind, &mut out_bytes),
+                AISD_ERR_INVALID_ARGUMENT
+            );
+            // Non-UTF-8 title on encode.
+            let invalid = [0xFFu8, 0xFE];
+            let bad_title = AisdWindowGeometry {
+                kind: AISD_WINDOW_GEOMETRY_TITLE,
+                title: borrow(&invalid),
+                ..AisdWindowGeometry::zeroed()
+            };
+            assert_eq!(
+                aisd_window_geometry_encode(&bad_title, &mut out_bytes),
+                AISD_ERR_INVALID_ARGUMENT
+            );
+            // Null guards.
+            let mut out = AisdWindowGeometry::zeroed();
+            assert_eq!(
+                aisd_window_geometry_encode(core::ptr::null(), &mut out_bytes),
+                AISD_ERR_NULL
+            );
+            assert_eq!(
+                aisd_window_geometry_decode(core::ptr::null(), 1, &mut out),
+                AISD_ERR_NULL
+            );
+            // Decode: unknown type → malformed; short move body → truncated; bad title → malformed.
+            assert_eq!(
+                aisd_window_geometry_decode([9u8].as_ptr(), 1, &mut out),
+                AISD_ERR_MALFORMED
+            );
+            let short_move = [AISD_WINDOW_GEOMETRY_MOVE, 0, 0];
+            assert_eq!(
+                aisd_window_geometry_decode(short_move.as_ptr(), short_move.len(), &mut out),
+                AISD_ERR_TRUNCATED
+            );
+            let bad_title_wire = [AISD_WINDOW_GEOMETRY_TITLE, 0xFF, 0xFE];
+            assert_eq!(
+                aisd_window_geometry_decode(
+                    bad_title_wire.as_ptr(),
+                    bad_title_wire.len(),
+                    &mut out
+                ),
+                AISD_ERR_MALFORMED
+            );
+            aisd_window_geometry_free(core::ptr::null_mut()); // no-op
+        }
+    }
+
+    #[test]
+    fn input_event_round_trips_every_variant() {
+        unsafe {
+            let mods = InputModifiers::SHIFT.union(InputModifiers::COMMAND);
+            let cases = [
+                InputEvent::MouseMove {
+                    normalized: VideoPoint::new(0.25, 0.75),
+                    tag: 42,
+                },
+                InputEvent::MouseDown {
+                    button: MouseButton::Right,
+                    normalized: VideoPoint::new(0.1, 0.2),
+                    click_count: 2,
+                    modifiers: mods,
+                    tag: 7,
+                },
+                InputEvent::MouseUp {
+                    button: MouseButton::Left,
+                    normalized: VideoPoint::new(0.3, 0.4),
+                    click_count: 1,
+                    modifiers: InputModifiers::default(),
+                    tag: 8,
+                },
+                InputEvent::MouseDrag {
+                    button: MouseButton::Other,
+                    normalized: VideoPoint::new(0.5, 0.6),
+                    click_count: 1,
+                    modifiers: InputModifiers::CONTROL,
+                    tag: 9,
+                },
+                InputEvent::Scroll {
+                    dx: -3.5,
+                    dy: 12.0,
+                    normalized: VideoPoint::new(0.0, 1.0),
+                    scroll_phase: 2,
+                    momentum_phase: 0,
+                    continuous: true,
+                    tag: 10,
+                },
+                InputEvent::Scroll {
+                    dx: 0.0,
+                    dy: 4.25,
+                    normalized: VideoPoint::new(0.0, 1.0),
+                    scroll_phase: 0,
+                    momentum_phase: 2,
+                    continuous: false,
+                    tag: 11,
+                },
+                InputEvent::Key {
+                    key_code: 0x35,
+                    down: true,
+                    modifiers: InputModifiers::OPTION,
+                    tag: 12,
+                },
+                InputEvent::Text {
+                    text: "gõ được 文字".to_owned(),
+                    tag: 13,
+                },
+            ];
+            for core_event in cases {
+                // `input_event_to_c` is the decode-side marshaling, but it produces a valid C
+                // struct from a core event — exactly the encode INPUT we want (and a free check
+                // for its text allocation). encode borrows `text` (copies, never frees), so the
+                // owned buffer is released afterwards via `aisd_input_event_free(&mut c_in)`.
+                let mut c_in = input_event_to_c(&core_event);
+                let mut frame = AisdBytes::EMPTY;
+                assert_eq!(aisd_input_event_encode(&c_in, &mut frame), AISD_OK);
+                assert_eq!(
+                    view(frame),
+                    core_event.encode(),
+                    "encode parity {}",
+                    c_in.kind
+                );
+
+                let mut out = AisdInputEvent::zeroed();
+                assert_eq!(
+                    aisd_input_event_decode(frame.ptr, frame.len, &mut out),
+                    AISD_OK
+                );
+                let round = decode_c_input(&out);
+                assert_eq!(round, core_event, "decode parity {}", out.kind);
+                assert_eq!(out.tag, core_event.tag(), "tag preserved {}", out.kind);
+                aisd_input_event_free(&mut out);
+                aisd_input_event_free(&mut out); // idempotent
+                aisd_input_event_free(&mut c_in); // free the text buffer input_event_to_c made
+                crate::aisd_bytes_free(frame);
+            }
+        }
+    }
+
+    /// Rebuilds a core `InputEvent` from a decoded C struct (test-side mirror of the Swift side).
+    unsafe fn decode_c_input(out: &AisdInputEvent) -> InputEvent {
+        let normalized = VideoPoint::new(out.x, out.y);
+        let modifiers = InputModifiers(out.modifiers);
+        match out.kind {
+            AISD_INPUT_MOUSE_MOVE => InputEvent::MouseMove {
+                normalized,
+                tag: out.tag,
+            },
+            AISD_INPUT_MOUSE_DOWN => InputEvent::MouseDown {
+                button: MouseButton::from_u8(out.button).unwrap(),
+                normalized,
+                click_count: out.click_count,
+                modifiers,
+                tag: out.tag,
+            },
+            AISD_INPUT_MOUSE_UP => InputEvent::MouseUp {
+                button: MouseButton::from_u8(out.button).unwrap(),
+                normalized,
+                click_count: out.click_count,
+                modifiers,
+                tag: out.tag,
+            },
+            AISD_INPUT_MOUSE_DRAG => InputEvent::MouseDrag {
+                button: MouseButton::from_u8(out.button).unwrap(),
+                normalized,
+                click_count: out.click_count,
+                modifiers,
+                tag: out.tag,
+            },
+            AISD_INPUT_SCROLL => InputEvent::Scroll {
+                dx: out.dx,
+                dy: out.dy,
+                normalized,
+                scroll_phase: out.scroll_phase,
+                momentum_phase: out.momentum_phase,
+                continuous: out.continuous != 0,
+                tag: out.tag,
+            },
+            AISD_INPUT_KEY => InputEvent::Key {
+                key_code: out.key_code,
+                down: out.down != 0,
+                modifiers,
+                tag: out.tag,
+            },
+            _ => InputEvent::Text {
+                text: String::from_utf8(view(out.text)).unwrap(),
+                tag: out.tag,
+            },
+        }
+    }
+
+    #[test]
+    fn input_event_encode_and_decode_error_paths() {
+        unsafe {
+            let mut out_bytes = AisdBytes::EMPTY;
+            // Unknown kind on encode.
+            let bad_kind = AisdInputEvent {
+                kind: 99,
+                ..AisdInputEvent::zeroed()
+            };
+            assert_eq!(
+                aisd_input_event_encode(&bad_kind, &mut out_bytes),
+                AISD_ERR_INVALID_ARGUMENT
+            );
+            // Out-of-range mouse button on encode.
+            let bad_button = AisdInputEvent {
+                kind: AISD_INPUT_MOUSE_DOWN,
+                button: 9,
+                ..AisdInputEvent::zeroed()
+            };
+            assert_eq!(
+                aisd_input_event_encode(&bad_button, &mut out_bytes),
+                AISD_ERR_INVALID_ARGUMENT
+            );
+            // Non-UTF-8 text on encode.
+            let invalid = [0xFFu8, 0xFE];
+            let bad_text = AisdInputEvent {
+                kind: AISD_INPUT_TEXT,
+                text: borrow(&invalid),
+                ..AisdInputEvent::zeroed()
+            };
+            assert_eq!(
+                aisd_input_event_encode(&bad_text, &mut out_bytes),
+                AISD_ERR_INVALID_ARGUMENT
+            );
+            // Null guards.
+            let mut out = AisdInputEvent::zeroed();
+            assert_eq!(
+                aisd_input_event_encode(core::ptr::null(), &mut out_bytes),
+                AISD_ERR_NULL
+            );
+            assert_eq!(
+                aisd_input_event_decode(core::ptr::null(), 1, &mut out),
+                AISD_ERR_NULL
+            );
+            // Decode: unknown type → malformed; unknown button → malformed; short → truncated.
+            assert_eq!(
+                aisd_input_event_decode([200u8].as_ptr(), 1, &mut out),
+                AISD_ERR_MALFORMED
+            );
+            let mut down = InputEvent::MouseDown {
+                button: MouseButton::Left,
+                normalized: VideoPoint::new(0.0, 0.0),
+                click_count: 1,
+                modifiers: InputModifiers::default(),
+                tag: 0,
+            }
+            .encode();
+            down[5] = 9; // button byte (after type + 4-byte tag)
+            assert_eq!(
+                aisd_input_event_decode(down.as_ptr(), down.len(), &mut out),
+                AISD_ERR_MALFORMED
+            );
+            let short_move = [AISD_INPUT_MOUSE_MOVE, 0, 0];
+            assert_eq!(
+                aisd_input_event_decode(short_move.as_ptr(), short_move.len(), &mut out),
+                AISD_ERR_TRUNCATED
+            );
+            aisd_input_event_free(core::ptr::null_mut()); // no-op
         }
     }
 

@@ -27,53 +27,16 @@ public enum WindowGeometryMessage: Equatable, Sendable {
         }
     }
 
+    /// Encodes via the Rust `aislopdesk-core` window-geometry codec — the single source of truth
+    /// shared with the Android client (the wire format is pinned by golden vectors).
     public func encode() -> Data {
-        var out = Data()
-        out.append(messageType)
-        switch self {
-        case let .move(p):
-            out.appendBE(p.x)
-            out.appendBE(p.y)
-        case let .resize(s):
-            out.appendBE(s.width)
-            out.appendBE(s.height)
-        case let .bounds(r):
-            out.appendBE(r.origin.x)
-            out.appendBE(r.origin.y)
-            out.appendBE(r.size.width)
-            out.appendBE(r.size.height)
-        case let .title(title):
-            out.append(Data(title.utf8))
-        }
-        return out
+        RustVideoFFI.encode(self)
     }
 
+    /// Decodes via the Rust window-geometry codec — the single source of truth (the wire format is
+    /// pinned by golden vectors). A non-finite coordinate, a non-UTF-8 title, or an unknown type is
+    /// rejected as `.malformed`; a short body is `.truncated`.
     public static func decode(_ data: Data) throws -> Self {
-        var reader = VideoByteReader(data)
-        let type = try reader.readUInt8()
-        switch type {
-        case 1:
-            let x = try reader.readFiniteFloat64("geometry.move.x")
-            let y = try reader.readFiniteFloat64("geometry.move.y")
-            return .move(VideoPoint(x: x, y: y))
-        case 2:
-            let w = try reader.readFiniteFloat64("geometry.resize.w")
-            let h = try reader.readFiniteFloat64("geometry.resize.h")
-            return .resize(VideoSize(width: w, height: h))
-        case 3:
-            let x = try reader.readFiniteFloat64("geometry.bounds.x")
-            let y = try reader.readFiniteFloat64("geometry.bounds.y")
-            let w = try reader.readFiniteFloat64("geometry.bounds.w")
-            let h = try reader.readFiniteFloat64("geometry.bounds.h")
-            return .bounds(VideoRect(x: x, y: y, width: w, height: h))
-        case 4:
-            let bytes = reader.remaining()
-            guard let title = String(data: bytes, encoding: .utf8) else {
-                throw VideoProtocolError.malformed("window title not valid UTF-8")
-            }
-            return .title(title)
-        default:
-            throw VideoProtocolError.malformed("unknown window-geometry message type \(type)")
-        }
+        try RustVideoFFI.decodeWindowGeometry(data)
     }
 }
