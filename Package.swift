@@ -239,6 +239,7 @@ let package = Package(
                 "AislopdeskVideoProtocol",
                 "AislopdeskVideoHost",
                 "AislopdeskVideoClient",
+                "AislopdeskClaudeCode",
             ],
         ),
 

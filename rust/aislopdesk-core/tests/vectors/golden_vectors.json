@@ -2937,6 +2937,240 @@
       ]
     }
   ],
+  "terminalModeTracker": [
+    {
+      "name": "altScreenEnterExit1049",
+      "steps": [
+        {
+          "events": [
+            "enteredAltScreen",
+            "exitedAltScreen"
+          ],
+          "inputHex": "1b5b3f31303439681b5b3f313034396c",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "legacy47Enter1047Exit",
+      "steps": [
+        {
+          "events": [
+            "enteredAltScreen",
+            "exitedAltScreen"
+          ],
+          "inputHex": "1b5b3f3437681b5b3f313034376c",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "repeatedEnterNoDouble",
+      "steps": [
+        {
+          "events": [
+            "enteredAltScreen"
+          ],
+          "inputHex": "1b5b3f31303439681b5b3f3130343968",
+          "mode": "altScreen"
+        }
+      ]
+    },
+    {
+      "name": "exitWithoutEnterNoop",
+      "steps": [
+        {
+          "events": [],
+          "inputHex": "1b5b3f313034396c",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "multiParamFirstMatch",
+      "steps": [
+        {
+          "events": [
+            "enteredAltScreen"
+          ],
+          "inputHex": "1b5b3f32353b3130343968",
+          "mode": "altScreen"
+        }
+      ]
+    },
+    {
+      "name": "csiWithoutQuestionIgnored",
+      "steps": [
+        {
+          "events": [],
+          "inputHex": "1b5b3130343968",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "osc133FullCycle",
+      "steps": [
+        {
+          "events": [
+            "promptStart",
+            "commandStart",
+            "commandStarted",
+            "commandFinished:0"
+          ],
+          "inputHex": "1b5d3133333b410770726f6d707424201b5d3133333b42076c730a1b5d3133333b43076f75740a1b5d3133333b443b3007",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "osc133ExitVariants",
+      "steps": [
+        {
+          "events": [
+            "commandFinished:130"
+          ],
+          "inputHex": "1b5d3133333b443b31333007",
+          "mode": "shellPrompt"
+        },
+        {
+          "events": [
+            "commandFinished:nil"
+          ],
+          "inputHex": "1b5d3133333b4407",
+          "mode": "shellPrompt"
+        },
+        {
+          "events": [
+            "commandFinished:0"
+          ],
+          "inputHex": "1b5d3133333b443b303b6169643d3507",
+          "mode": "shellPrompt"
+        },
+        {
+          "events": [
+            "commandFinished:5"
+          ],
+          "inputHex": "1b5d3133333b443b3d3507",
+          "mode": "shellPrompt"
+        },
+        {
+          "events": [
+            "commandFinished:nil"
+          ],
+          "inputHex": "1b5d3133333b443b3d07",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "osc133StTerminator",
+      "steps": [
+        {
+          "events": [
+            "promptStart"
+          ],
+          "inputHex": "1b5d3133333b411b5c",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "altScreenSplitAcrossChunks",
+      "steps": [
+        {
+          "events": [],
+          "inputHex": "1b5b",
+          "mode": "shellPrompt"
+        },
+        {
+          "events": [],
+          "inputHex": "3f3130",
+          "mode": "shellPrompt"
+        },
+        {
+          "events": [
+            "enteredAltScreen"
+          ],
+          "inputHex": "343968",
+          "mode": "altScreen"
+        }
+      ]
+    },
+    {
+      "name": "osc133SplitAcrossChunks",
+      "steps": [
+        {
+          "events": [],
+          "inputHex": "1b5d3133333b",
+          "mode": "shellPrompt"
+        },
+        {
+          "events": [
+            "promptStart"
+          ],
+          "inputHex": "4107",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "unterminatedOscThenAltScreen",
+      "steps": [
+        {
+          "events": [
+            "enteredAltScreen"
+          ],
+          "inputHex": "1b5d3133331b5b3f3130343968",
+          "mode": "altScreen"
+        }
+      ]
+    },
+    {
+      "name": "dcsSpoofSwallowed",
+      "steps": [
+        {
+          "events": [],
+          "inputHex": "1b501b5b3f31303439681b5c",
+          "mode": "shellPrompt"
+        }
+      ]
+    },
+    {
+      "name": "unknownEscapeThenMarker",
+      "steps": [
+        {
+          "events": [
+            "enteredAltScreen"
+          ],
+          "inputHex": "1b631b5b3f3130343968",
+          "mode": "altScreen"
+        }
+      ]
+    },
+    {
+      "name": "invalidUtf8ContentThenMarker",
+      "steps": [
+        {
+          "events": [
+            "enteredAltScreen"
+          ],
+          "inputHex": "636166c3a920f09f9a800aff80c01b5b3f3130343968",
+          "mode": "altScreen"
+        }
+      ]
+    },
+    {
+      "name": "osc0TitleIgnored",
+      "steps": [
+        {
+          "events": [],
+          "inputHex": "1b5d303b612077696e646f77207469746c6507",
+          "mode": "shellPrompt"
+        }
+      ]
+    }
+  ],
   "terminalWireMessages": [
     {
       "bytesHex": "68656c6c6f",

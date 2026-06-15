@@ -30,6 +30,9 @@ use aislopdesk_core::static_idr_decider::StaticIDRDecider;
 use aislopdesk_core::system_dialog_detector;
 use aislopdesk_core::terminal::mux::{MuxEnvelopeCodec, MuxFrame};
 use aislopdesk_core::terminal::{CommandStatus, SessionId, WireMessage};
+use aislopdesk_core::terminal_mode_tracker::{
+    TerminalMode, TerminalModeEvent, TerminalModeTracker,
+};
 use aislopdesk_core::trendline_estimator::TrendlineEstimator;
 use aislopdesk_core::udp_receive_loop_policy::UDPReceiveLoopPolicy;
 use aislopdesk_core::video_control::{SystemDialogSummary, VideoControlMessage, WindowSummary};
@@ -1293,6 +1296,58 @@ fn host_output_sniffer_parity() {
                 .map(|v| v.as_str().unwrap().to_owned())
                 .collect();
             assert_eq!(got, expected, "hostOutputSniffer/{name} step {i}");
+        }
+    }
+}
+
+// ----- TerminalModeTracker (output-stream mode + OSC 133 event parity) -----
+//
+// Each scenario replays its scripted chunks on a fresh tracker and asserts the per-step event
+// list + resulting mode match the golden corpus. Events serialize to the same canonical strings
+// the Swift dumper emits.
+
+fn tmt_event_string(e: &TerminalModeEvent) -> String {
+    match e {
+        TerminalModeEvent::EnteredAltScreen => "enteredAltScreen".to_owned(),
+        TerminalModeEvent::ExitedAltScreen => "exitedAltScreen".to_owned(),
+        TerminalModeEvent::PromptStart => "promptStart".to_owned(),
+        TerminalModeEvent::CommandStart => "commandStart".to_owned(),
+        TerminalModeEvent::CommandStarted => "commandStarted".to_owned(),
+        TerminalModeEvent::CommandFinished { exit_code } => format!(
+            "commandFinished:{}",
+            exit_code.map_or_else(|| "nil".to_owned(), |c| c.to_string())
+        ),
+    }
+}
+
+const fn tmt_mode_string(m: TerminalMode) -> &'static str {
+    match m {
+        TerminalMode::ShellPrompt => "shellPrompt",
+        TerminalMode::AltScreen => "altScreen",
+    }
+}
+
+#[test]
+fn terminal_mode_tracker_parity() {
+    let root = load();
+    for scenario in section(&root, "terminalModeTracker") {
+        let name = strv(scenario, "name");
+        let mut t = TerminalModeTracker::new();
+        for (i, step) in scenario["steps"].as_array().unwrap().iter().enumerate() {
+            let input = hexv(step, "inputHex");
+            let got: Vec<String> = t.consume(&input).iter().map(tmt_event_string).collect();
+            let expected: Vec<String> = step["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(got, expected, "terminalModeTracker/{name} step {i} events");
+            assert_eq!(
+                tmt_mode_string(t.mode()),
+                strv(step, "mode"),
+                "terminalModeTracker/{name} step {i} mode"
+            );
         }
     }
 }

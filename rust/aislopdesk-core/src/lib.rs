@@ -72,6 +72,7 @@ pub mod seq;
 pub mod static_idr_decider;
 pub mod system_dialog_detector;
 pub mod terminal;
+pub mod terminal_mode_tracker;
 pub mod trendline_estimator;
 pub mod udp_receive_loop_policy;
 pub mod video_control;

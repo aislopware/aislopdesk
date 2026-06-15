@@ -1,3 +1,4 @@
+import AislopdeskClaudeCode // TerminalModeTracker (output-stream mode + OSC 133 events)
 import AislopdeskHost // HostOutputSniffer (outbound-PTY control-message sniffer)
 import AislopdeskProtocol // WireMessage, MuxEnvelopeCodec (terminal/PTY path)
 import AislopdeskVideoClient // TrendlineEstimator, OwdLateDetector, PacerDepthPolicy
@@ -1331,6 +1332,84 @@ root["hostOutputSniffer"] = [
     snifferScenario("unrelatedOscIgnored", [
         (bytes: oscBEL("1;iconname") + oscBEL("8;;https://example.com") + oscBEL("52;c;BASE64=="), nowMs: 0),
     ]),
+]
+
+// MARK: - TerminalModeTracker (output-stream mode + OSC 133 event parity)
+
+//
+// `TerminalModeTracker` is a byte-at-a-time output-stream state machine that tracks the terminal
+// mode (shellPrompt / altScreen) from DECSET/DECRST 1049/47/1047 + emits OSC 133 command-boundary
+// events. The Rust port replays each scripted chunk on a fresh tracker and compares the per-step
+// event list + the resulting mode. Events serialize to canonical strings shared by both sides.
+
+func tmtEventString(_ e: TerminalModeEvent) -> String {
+    switch e {
+    case .enteredAltScreen: "enteredAltScreen"
+    case .exitedAltScreen: "exitedAltScreen"
+    case .promptStart: "promptStart"
+    case .commandStart: "commandStart"
+    case .commandStarted: "commandStarted"
+    case let .commandFinished(exit): "commandFinished:" + (exit.map(String.init) ?? "nil")
+    }
+}
+
+func tmtModeString(_ m: TerminalMode) -> String {
+    switch m {
+    case .shellPrompt: "shellPrompt"
+    case .altScreen: "altScreen"
+    }
+}
+
+func tmtScenario(_ name: String, _ chunks: [[UInt8]]) -> [String: Any] {
+    let tracker = TerminalModeTracker()
+    var outSteps: [[String: Any]] = []
+    for chunk in chunks {
+        let events = tracker.consume(Data(chunk))
+        outSteps.append([
+            "inputHex": hex(chunk),
+            "events": events.map(tmtEventString),
+            "mode": tmtModeString(tracker.mode),
+        ])
+    }
+    return ["name": name, "steps": outSteps]
+}
+
+root["terminalModeTracker"] = [
+    tmtScenario("altScreenEnterExit1049", [Array("\u{1b}[?1049h\u{1b}[?1049l".utf8)]),
+    tmtScenario("legacy47Enter1047Exit", [Array("\u{1b}[?47h\u{1b}[?1047l".utf8)]),
+    tmtScenario("repeatedEnterNoDouble", [Array("\u{1b}[?1049h\u{1b}[?1049h".utf8)]),
+    tmtScenario("exitWithoutEnterNoop", [Array("\u{1b}[?1049l".utf8)]),
+    tmtScenario("multiParamFirstMatch", [Array("\u{1b}[?25;1049h".utf8)]),
+    tmtScenario("csiWithoutQuestionIgnored", [Array("\u{1b}[1049h".utf8)]),
+    tmtScenario("osc133FullCycle", [
+        Array("\u{1b}]133;A\u{07}prompt$ \u{1b}]133;B\u{07}ls\n\u{1b}]133;C\u{07}out\n\u{1b}]133;D;0\u{07}".utf8),
+    ]),
+    tmtScenario("osc133ExitVariants", [
+        Array("\u{1b}]133;D;130\u{07}".utf8),
+        Array("\u{1b}]133;D\u{07}".utf8),
+        Array("\u{1b}]133;D;0;aid=5\u{07}".utf8),
+        Array("\u{1b}]133;D;=5\u{07}".utf8),
+        Array("\u{1b}]133;D;=\u{07}".utf8),
+    ]),
+    tmtScenario("osc133StTerminator", [Array("\u{1b}]133;A\u{1b}\\".utf8)]),
+    // A whole alt-screen CSI split across three chunks (proves cross-chunk parser state).
+    tmtScenario("altScreenSplitAcrossChunks", [
+        Array("\u{1b}[".utf8), Array("?10".utf8), Array("49h".utf8),
+    ]),
+    // OSC 133;A split mid-payload across two chunks.
+    tmtScenario("osc133SplitAcrossChunks", [Array("\u{1b}]133;".utf8), Array("A\u{07}".utf8)]),
+    // Unterminated OSC abutting an alt-screen enter (stray-ESC oscEscape re-entry).
+    tmtScenario("unterminatedOscThenAltScreen", [Array("\u{1b}]133\u{1b}[?1049h".utf8)]),
+    // DCS string body with an embedded alt-screen CSI → swallowed (mode unchanged).
+    tmtScenario("dcsSpoofSwallowed", [Array("\u{1b}P\u{1b}[?1049h\u{1b}\\".utf8)]),
+    // `ESC c` (unknown 2-byte escape) ignored; the following alt-screen enter still fires.
+    tmtScenario("unknownEscapeThenMarker", [Array("\u{1b}c\u{1b}[?1049h".utf8)]),
+    // Invalid UTF-8 content bytes pass through; a following marker still fires.
+    tmtScenario("invalidUtf8ContentThenMarker", [
+        Array("café 🚀\n".utf8) + [0xFF, 0x80, 0xC0] + Array("\u{1b}[?1049h".utf8),
+    ]),
+    // A non-133 OSC (window title) is ignored.
+    tmtScenario("osc0TitleIgnored", [Array("\u{1b}]0;a window title\u{07}".utf8)]),
 ]
 
 // MARK: emit
