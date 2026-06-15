@@ -21,6 +21,12 @@ public protocol FECScheme: Sendable {
     /// `groupSize:`-parameterized methods; this value is the tier-0 / convenience default.
     var groupSize: Int { get }
 
+    /// Parity shards per group (the code's `m`): how many losses per group the scheme repairs.
+    /// Defaults to `1` (the XOR-equivalent / byte-identical wire). The Rust-backed
+    /// ``RustReedSolomonFEC`` overrides it with its configured `m`. Read by ``FrameReassembler`` to
+    /// build the Rust core reassembler's own `[k + m, k]` codec with the matching multiplicity.
+    var parityCount: Int { get }
+
     /// Computes parity fragments for `dataFragments`, in group order, grouping by `groupSize`.
     func parity(forDataFragments dataFragments: [Data], groupSize: Int) -> [Data]
 

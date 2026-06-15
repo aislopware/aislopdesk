@@ -958,6 +958,68 @@ AisdStatus aisd_fec_recover(const AisdFecCodec *codec, AisdBytes *data, const ui
                             const uint8_t *parity_present, size_t parity_count, size_t group_size,
                             uint8_t *out_recovered);
 
+/* ---- reassembler (opaque handle; per-datagram video RECEIVE hot path) ---- */
+
+/* AisdReassemblyResult.kind discriminants (aisd_reassembler_ingest). */
+#define AISD_REASSEMBLY_PENDING 0u   /* need more fragments (also: an ignored hostile/short datagram) */
+#define AISD_REASSEMBLY_COMPLETED 1u /* the frame completed: `avcc` owns the AVCC bytes + the flags   */
+#define AISD_REASSEMBLY_DROPPED 2u   /* the ingested fragment's OWN frame is hopeless: `frame_id` lost */
+#define AISD_REASSEMBLY_STALE 3u     /* the datagram belonged to an already completed/dropped frame    */
+
+/* The flat outcome of feeding one datagram to aisd_reassembler_ingest. `kind` is an
+ * AISD_REASSEMBLY_* value and selects which fields are meaningful:
+ *   COMPLETED: avcc (owned — release it), frame_id, keyframe, crisp, recovered_via_fec, is_ltr,
+ *              acked_anchored.
+ *   DROPPED:   frame_id (the lost frame).
+ *   PENDING / STALE: no fields; avcc is {NULL,0,0}.
+ * The flag fields are plain uint8_t (read as != 0). Field order MUST match the Rust
+ * `#[repr(C)] struct AisdReassemblyResult`. */
+typedef struct AisdReassemblyResult {
+    uint8_t kind;              /* one of the AISD_REASSEMBLY_* discriminants               */
+    uint8_t keyframe;          /* COMPLETED: this frame is an IDR (decode anchor)          */
+    uint8_t crisp;             /* COMPLETED: crisp near-lossless static refresh            */
+    uint8_t recovered_via_fec; /* COMPLETED: a data hole existed and FEC parity filled it  */
+    uint8_t is_ltr;            /* COMPLETED: a Long-Term-Reference frame (ack on decode)   */
+    uint8_t acked_anchored;    /* COMPLETED: encoded via ForceLTRRefresh (wire bit 7)      */
+    uint32_t frame_id;         /* COMPLETED / DROPPED frame id; 0 for PENDING / STALE      */
+    AisdBytes avcc;            /* COMPLETED: owned AVCC buffer; {NULL,0,0} otherwise       */
+} AisdReassemblyResult;
+
+typedef struct AisdReassembler AisdReassembler;
+
+/* Builds a per-stream reassembler that recovers up to `m` losses per group of `k` data fragments,
+ * granting `fec_reorder_grace` frame-ids of grace past the loss frontier for awaited parity. The
+ * reassembler OWNS its NEON-backed Reed-Solomon codec ([k + m, k]) — there is no external FEC
+ * handle and no double-codec. m == 1 is the production / byte-identical XOR-equivalent wire.
+ * Pass k == 0 (or m == 0) for a NO-FEC reassembler (a missing data fragment is then terminal once
+ * the frame is old). Returns NULL (NOT a panic across the boundary) for an invalid FEC config:
+ * k >= 1 with k + m > 255 (the Cauchy index sets must fit GF(2^8)). Destroy with
+ * aisd_reassembler_free. */
+AisdReassembler *aisd_reassembler_new(size_t k, size_t m, int32_t fec_reorder_grace);
+/* Destroys a reassembler from aisd_reassembler_new. No-op on NULL. */
+void aisd_reassembler_free(AisdReassembler *reassembler);
+
+/* Parses + ingests one fragment datagram (the 19-byte header + payload), writing the outcome to
+ * *out. `datagram` is BORROWED (read, never freed) and may be NULL only when len == 0. On a
+ * COMPLETED result, out->avcc owns a Rust buffer — release it with aisd_bytes_free (or the whole
+ * result with aisd_reassembly_result_free). Returns AISD_ERR_NULL for a null reassembler / out (or
+ * a null datagram with a nonzero len), else AISD_OK with *out populated. NEVER panics on hostile
+ * input: an un-parseable datagram OR a degenerate header (frag_count == 0, frag_count above the
+ * core guard, or frag_index >= frag_count) surfaces as PENDING / STALE with an empty avcc. On
+ * AISD_OK *out is overwritten WITHOUT freeing prior contents, so release a previously-completed
+ * result held in the same storage first (or use fresh storage). */
+AisdStatus aisd_reassembler_ingest(AisdReassembler *reassembler, const uint8_t *datagram,
+                                   size_t len, AisdReassemblyResult *out);
+
+/* Pops the next unrecoverably-lost frame id detected by a PRIOR ingest's hopeless sweep: returns 1
+ * and writes *out_frame_id when a drop was surfaced, else 0 (out_frame_id untouched). Drain this in
+ * a loop after each ingest and issue one recovery signal per id. Returns 0 for a null handle. */
+uint8_t aisd_reassembler_next_dropped(AisdReassembler *reassembler, uint32_t *out_frame_id);
+
+/* Releases the owned avcc inside an AisdReassemblyResult and resets it to PENDING/empty. Idempotent
+ * and safe on a PENDING/STALE/zeroed result; a NULL pointer is a no-op. */
+void aisd_reassembly_result_free(AisdReassemblyResult *result);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

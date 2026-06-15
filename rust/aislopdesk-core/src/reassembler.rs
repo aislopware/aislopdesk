@@ -91,6 +91,18 @@ impl FrameReassembler {
     /// Builds a reassembler. `fec_reorder_grace` is how many frame-ids past the loss
     /// frontier a frame stays eligible for FEC while only awaiting (recoverable) parity
     /// that the packetizer emits last; floored at 0.
+    ///
+    /// TODO (WF6 LOW #2 — gated for a future `m > 1` activation, NOT active today): when the
+    /// tier→`m` table ([`adaptive_fec::parity_count`]) gains `m > 1` values, the per-tier
+    /// `group_size` ([`adaptive_fec::group_size`]) the recover path groups by MUST equal the
+    /// configured Reed-Solomon codec's `k` for every tier that maps to `m > 1` — a systematic
+    /// `[k + m, k]` code's parity is only valid over groups of EXACTLY `k` data shards, so a tier
+    /// whose `group_size != k` would feed `recover` a window the matrix was never built for and
+    /// silently fail to repair. With the production codec (`m == 1`, no matrix) the per-call
+    /// `group_size` is honoured EXACTLY regardless of `k`, so today this is moot and every tier is
+    /// safe. The reconciliation (assert/clamp `group_size == k` for `m > 1` tiers) belongs in the
+    /// later workflow that chooses the `m > 1` table values — it is intentionally NOT done here so
+    /// the m == 1 wire stays byte-identical.
     #[must_use]
     pub fn new(fec: Option<Box<dyn FecScheme>>, fec_reorder_grace: i32) -> Self {
         Self {
@@ -176,14 +188,18 @@ impl FrameReassembler {
                 let default_m = fec.map_or(1, FecScheme::parity_count_per_group);
                 adaptive_fec::parity_count(entry.fec_tier, default_m).max(1)
             };
-            let data_boundary = match g_opt {
-                // m-aware boundary; on no solution fall back to the parity index itself (the
-                // pre-existing single-parity behavior, which used the total fallback inversion).
-                Some(g) => {
-                    invert_data_count(usize::from(entry.frag_count), g, m).unwrap_or(p_index)
-                }
-                None => p_index,
-            };
+            let total = usize::from(entry.frag_count);
+            // m-aware boundary; on no solution fall back to the TOTAL frag_count — identical to
+            // [`resolved_data_count`]'s `.unwrap_or(total)`, so the boundary the parity is keyed
+            // against and the boundary `assemble`/`can_eventually_complete` use never disagree.
+            // (WF6 LOW #1: the old `.unwrap_or(p_index)` here keyed parity against a DIFFERENT
+            // boundary than the one resolved_data_count derives, which on a no-solution header
+            // mis-mapped surviving parity. `total` is the consistent, byte-identical choice for the
+            // m == 1 wire — a real frame always solves, so this only changes the corrupt-header
+            // degenerate path, and changes it to AGREE with resolved_data_count.) The OFF/no-FEC
+            // case (`g_opt == None`) keeps the observed parity index `p_index`.
+            let data_boundary =
+                g_opt.map_or(p_index, |g| invert_data_count(total, g, m).unwrap_or(total));
             entry.data_count = Some(entry.data_count.unwrap_or(p_index).min(p_index));
             // Parity is laid out group-major then parity-rank AFTER the data fragments, so
             // `frag_index - data_boundary` IS the flat layout index `group_index * m + rank`

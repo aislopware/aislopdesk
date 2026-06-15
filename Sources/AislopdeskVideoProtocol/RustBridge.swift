@@ -714,4 +714,61 @@ enum RustVideoFFI {
             pacerDepth: s.pacer_depth,
         )
     }
+
+    // MARK: - reassembler (opaque handle; the per-datagram video RECEIVE hot path)
+
+    /// Creates a reassembler owned by the Rust core: it OWNS a freshly-built NEON-backed Reed-Solomon
+    /// codec (`[k + m, k]`), so there is no second FEC handle and no double-FEC. Pass `k == 0` (or
+    /// `m == 0`) for a no-FEC reassembler. Returns `nil` ONLY for an invalid FEC config (`k >= 1`
+    /// with `k + m > 255`), which the `FrameReassembler` constructor rules out for a real
+    /// ``FECScheme``. Wraps `aisd_reassembler_new`.
+    static func reassemblerNew(k: Int, m: Int, fecReorderGrace: Int) -> OpaquePointer? {
+        aisd_reassembler_new(k, m, Int32(clamping: fecReorderGrace))
+    }
+
+    /// Destroys a reassembler handle. Wraps `aisd_reassembler_free`.
+    static func reassemblerFree(_ handle: OpaquePointer) {
+        aisd_reassembler_free(handle)
+    }
+
+    /// Parses + ingests one fragment datagram (the raw 19-byte header + payload), returning the
+    /// marshaled outcome. The datagram is BORROWED for the call; a COMPLETED frame's owned `avcc`
+    /// is copied into a Swift ``Data`` and freed before returning, so the result carries no Rust
+    /// allocation. Wraps `aisd_reassembler_ingest` / `aisd_reassembly_result_free`.
+    static func reassemblerIngest(_ handle: OpaquePointer, datagram: Data) -> ReassemblyResult {
+        var out = AisdReassemblyResult()
+        let status: AisdStatus = datagram.withUnsafeBytes { raw in
+            aisd_reassembler_ingest(handle, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &out)
+        }
+        // A null-pointer error is unreachable here (handle + out are always valid), so a non-OK
+        // status can only mean "nothing produced" — surface it as incomplete (the benign no-op).
+        guard status == AISD_OK else { return .incomplete }
+        defer { aisd_reassembly_result_free(&out) }
+        switch out.kind {
+        case UInt8(AISD_REASSEMBLY_COMPLETED):
+            let avcc: Data = out.avcc.ptr.map { Data(bytes: $0, count: out.avcc.len) } ?? Data()
+            return .completed(ReassembledFrame(
+                frameID: out.frame_id,
+                keyframe: out.keyframe != 0,
+                crisp: out.crisp != 0,
+                avcc: avcc,
+                recoveredViaFEC: out.recovered_via_fec != 0,
+                isLTR: out.is_ltr != 0,
+                ackedAnchored: out.acked_anchored != 0,
+            ))
+        case UInt8(AISD_REASSEMBLY_DROPPED):
+            return .dropped(frameID: out.frame_id)
+        case UInt8(AISD_REASSEMBLY_STALE):
+            return .stale
+        default:
+            return .incomplete
+        }
+    }
+
+    /// Pops the next unrecoverably-lost frame id the prior ingest's sweep declared hopeless, or
+    /// `nil`. Wraps `aisd_reassembler_next_dropped`.
+    static func reassemblerNextDropped(_ handle: OpaquePointer) -> UInt32? {
+        var out: UInt32 = 0
+        return aisd_reassembler_next_dropped(handle, &out) != 0 ? out : nil
+    }
 }

@@ -21,6 +21,26 @@ static int failures = 0;
         }                                                                                 \
     } while (0)
 
+/* Packs one video fragment datagram (the fixed 19-byte big-endian header + payload) into `out`,
+ * matching the Rust `FrameFragment::encode` wire so aisd_reassembler_ingest can parse it. Returns
+ * the total datagram length (19 + payload_len). `flags`: bit0 keyframe, bit1 parity. */
+static size_t pack_fragment(uint8_t *out, uint32_t stream_seq, uint32_t frame_id, uint16_t frag_index,
+                            uint16_t frag_count, uint8_t flags, const uint8_t *payload,
+                            uint16_t payload_len) {
+    size_t o = 0;
+    out[o++] = (uint8_t)(stream_seq >> 24); out[o++] = (uint8_t)(stream_seq >> 16);
+    out[o++] = (uint8_t)(stream_seq >> 8);  out[o++] = (uint8_t)(stream_seq);
+    out[o++] = (uint8_t)(frame_id >> 24);   out[o++] = (uint8_t)(frame_id >> 16);
+    out[o++] = (uint8_t)(frame_id >> 8);    out[o++] = (uint8_t)(frame_id);
+    out[o++] = (uint8_t)(frag_index >> 8);  out[o++] = (uint8_t)(frag_index);
+    out[o++] = (uint8_t)(frag_count >> 8);  out[o++] = (uint8_t)(frag_count);
+    out[o++] = flags;
+    out[o++] = 0; out[o++] = 0; out[o++] = 0; out[o++] = 0; /* host_send_ts_millis = 0 */
+    out[o++] = (uint8_t)(payload_len >> 8);  out[o++] = (uint8_t)(payload_len);
+    if (payload_len > 0) { memcpy(out + o, payload, payload_len); }
+    return o + payload_len;
+}
+
 int main(void) {
     /* 1. A trivial stateless call: wrap-aware sequence distance. */
     CHECK(aisd_seq_distance(10, 4) == 6, "seq_distance ahead");
@@ -683,6 +703,89 @@ int main(void) {
           "unrecovered holes carry no buffer");
     aisd_bytes_array_free(&uparity);
     aisd_fec_codec_free(fec2);
+
+    /* 22. reassembler: drive raw fragment datagrams through the receive hot path.
+     *
+     * 22a. A whole 3-fragment no-FEC keyframe completes with the concatenated payload + flags. */
+    AisdReassembler *ra = aisd_reassembler_new(0, 1, 2); /* k==0 => no-FEC */
+    CHECK(ra != NULL, "reassembler new (no-fec)");
+    CHECK(aisd_reassembler_new(200, 56, 2) == NULL, "reassembler rejects k+m>255");
+    uint8_t p0[3] = {0xA0, 0xA1, 0xA2};
+    uint8_t p1[2] = {0xB0, 0xB1};
+    uint8_t p2[4] = {0xC0, 0xC1, 0xC2, 0xC3};
+    uint8_t frag_buf[64];
+    AisdReassemblyResult rr;
+    size_t n;
+    n = pack_fragment(frag_buf, 0, 7, 0, 3, 0x01 /* keyframe */, p0, 3);
+    CHECK(aisd_reassembler_ingest(ra, frag_buf, n, &rr) == AISD_OK && rr.kind == AISD_REASSEMBLY_PENDING,
+          "fragment 0 pending");
+    n = pack_fragment(frag_buf, 1, 7, 1, 3, 0x01, p1, 2);
+    CHECK(aisd_reassembler_ingest(ra, frag_buf, n, &rr) == AISD_OK && rr.kind == AISD_REASSEMBLY_PENDING,
+          "fragment 1 pending");
+    n = pack_fragment(frag_buf, 2, 7, 2, 3, 0x01, p2, 4);
+    CHECK(aisd_reassembler_ingest(ra, frag_buf, n, &rr) == AISD_OK && rr.kind == AISD_REASSEMBLY_COMPLETED,
+          "fragment 2 completes the frame");
+    uint8_t ra_want[9] = {0xA0, 0xA1, 0xA2, 0xB0, 0xB1, 0xC0, 0xC1, 0xC2, 0xC3};
+    CHECK(rr.frame_id == 7 && rr.keyframe == 1 && rr.recovered_via_fec == 0, "completed flags");
+    CHECK(rr.avcc.len == sizeof(ra_want) && memcmp(rr.avcc.ptr, ra_want, sizeof(ra_want)) == 0,
+          "avcc is the concatenated payloads");
+    aisd_reassembly_result_free(&rr); /* frees the owned avcc */
+    CHECK(rr.avcc.ptr == NULL, "result free nulls avcc");
+    aisd_reassembly_result_free(&rr); /* idempotent */
+    aisd_reassembler_free(ra);
+
+    /* 22b. A single dropped data fragment FEC-recovers (k=2 m=1 => 2 data + 1 parity). Compute the
+     * parity through aisd_fec_parity, ingest data[0] + parity (drop data[1]); the frame completes
+     * with recovered_via_fec set and the exact original bytes. */
+    AisdReassembler *raf = aisd_reassembler_new(2, 1, 2);
+    AisdFecCodec *rcodec = aisd_fec_codec_new(2, 1);
+    uint8_t d0[4] = {0xD0, 0xD1, 0xD2, 0xD3};
+    uint8_t d1[4] = {0xE0, 0xE1, 0xE2, 0xE3};
+    AisdBytes rdata[2] = {{d0, sizeof(d0), 0}, {d1, sizeof(d1), 0}};
+    AisdBytesArray rparity = {NULL, 0};
+    CHECK(aisd_fec_parity(rcodec, rdata, 2, 2, &rparity) == AISD_OK && rparity.count == 1,
+          "fec parity for the recovery frame");
+    /* 3 fragments total: data 0, data 1 (dropped), parity at frag_index 2 (parity flag bit1). */
+    n = pack_fragment(frag_buf, 10, 9, 0, 3, 0x01, d0, (uint16_t)sizeof(d0));
+    CHECK(aisd_reassembler_ingest(raf, frag_buf, n, &rr) == AISD_OK && rr.kind == AISD_REASSEMBLY_PENDING,
+          "recovery data 0 pending");
+    /* data fragment 1 is LOST — never ingested. */
+    n = pack_fragment(frag_buf, 12, 9, 2, 3, 0x01 | 0x02 /* keyframe + parity */, rparity.items[0].ptr,
+                      (uint16_t)rparity.items[0].len);
+    CHECK(aisd_reassembler_ingest(raf, frag_buf, n, &rr) == AISD_OK &&
+              rr.kind == AISD_REASSEMBLY_COMPLETED,
+          "parity completes the frame via FEC");
+    CHECK(rr.recovered_via_fec == 1, "recovered_via_fec flag set");
+    uint8_t ra_rwant[8] = {0xD0, 0xD1, 0xD2, 0xD3, 0xE0, 0xE1, 0xE2, 0xE3};
+    CHECK(rr.avcc.len == sizeof(ra_rwant) && memcmp(rr.avcc.ptr, ra_rwant, sizeof(ra_rwant)) == 0,
+          "FEC-recovered avcc is byte-exact");
+    aisd_reassembly_result_free(&rr);
+    aisd_bytes_array_free(&rparity);
+    aisd_fec_codec_free(rcodec);
+    aisd_reassembler_free(raf);
+
+    /* 22c. An unrecoverable loss (no FEC): drop a data fragment of frame 0, then a newer frame 1
+     * advances the loss frontier => frame 0 is surfaced as dropped via next_dropped. */
+    AisdReassembler *rad = aisd_reassembler_new(0, 1, 2);
+    n = pack_fragment(frag_buf, 20, 0, 0, 2, 0x01, p0, 3); /* frame 0 frag 0 (of 2); frag 1 lost */
+    CHECK(aisd_reassembler_ingest(rad, frag_buf, n, &rr) == AISD_OK && rr.kind == AISD_REASSEMBLY_PENDING,
+          "frame 0 frag 0 pending");
+    n = pack_fragment(frag_buf, 21, 1, 0, 1, 0x01, p1, 2); /* frame 1 advances the frontier */
+    CHECK(aisd_reassembler_ingest(rad, frag_buf, n, &rr) == AISD_OK, "frame 1 ingested");
+    uint32_t lost = 0xFFFFFFFFu;
+    CHECK(aisd_reassembler_next_dropped(rad, &lost) == 1 && lost == 0, "frame 0 surfaced as dropped");
+    CHECK(aisd_reassembler_next_dropped(rad, &lost) == 0, "drop queue drained");
+    /* 22d. Hostile / truncated input is ignored, never a crash. */
+    uint8_t rsbad[4] = {1, 2, 3, 4};
+    CHECK(aisd_reassembler_ingest(rad, rsbad, sizeof(rsbad), &rr) == AISD_OK &&
+              rr.kind == AISD_REASSEMBLY_PENDING,
+          "truncated datagram ignored as pending");
+    CHECK(aisd_reassembler_ingest(NULL, rsbad, sizeof(rsbad), &rr) == AISD_ERR_NULL, "null handle");
+    CHECK(aisd_reassembler_ingest(rad, rsbad, sizeof(rsbad), NULL) == AISD_ERR_NULL, "null out");
+    CHECK(aisd_reassembler_next_dropped(NULL, &lost) == 0, "null handle next_dropped");
+    aisd_reassembler_free(rad);
+    aisd_reassembler_free(NULL); /* no-op */
+    aisd_reassembly_result_free(NULL); /* no-op */
 
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");

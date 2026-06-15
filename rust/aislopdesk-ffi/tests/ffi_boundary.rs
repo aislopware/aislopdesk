@@ -15,11 +15,12 @@ use aislopdesk_ffi::video::{
     AISD_MUX_BOOTSTRAP_DELIVER, AISD_MUX_BOOTSTRAP_DROP_NO_STAMP, AISD_MUX_DECISION_DROP,
     AISD_MUX_DECISION_DROP_DRAINING, AISD_MUX_DECISION_DROP_RETIRED,
     AISD_MUX_DECISION_REJECT_UNADMITTED, AISD_MUX_DECISION_ROUTE, AISD_PACER_GAP_FIRST,
+    AISD_REASSEMBLY_COMPLETED, AISD_REASSEMBLY_PENDING, AISD_REASSEMBLY_STALE,
     AISD_RECOVERY_IDR_GRANT, AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT,
     AISD_RECOVERY_IDR_SUPPRESS_STALE, AISD_RECOVERY_NETWORK_STATS,
     AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST, AisdNetworkStats,
-    AisdPacerDepthConfig, AisdRecoveryMessage, AisdRect, AisdSystemDialog, AisdVideoControl,
-    AisdVideoSummary, aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id,
+    AisdPacerDepthConfig, AisdReassemblyResult, AisdRecoveryMessage, AisdRect, AisdSystemDialog,
+    AisdVideoControl, AisdVideoSummary, aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id,
     aisd_decode_gate_min_lost_frame_id, aisd_decode_gate_mode, aisd_decode_gate_new,
     aisd_decode_gate_note_decode_succeeded, aisd_decode_gate_note_hard_decode_failure,
     aisd_decode_gate_note_loss, aisd_decode_gate_verdict, aisd_fec_codec_free, aisd_fec_codec_new,
@@ -31,7 +32,9 @@ use aislopdesk_ffi::video::{
     aisd_pacer_depth_policy_late_threshold_seconds, aisd_pacer_depth_policy_new,
     aisd_pacer_depth_policy_note_arrival, aisd_pacer_depth_policy_note_network_late,
     aisd_pacer_depth_policy_note_present, aisd_pacer_depth_policy_set_interval_hint,
-    aisd_recovery_deduper_admit, aisd_recovery_deduper_free, aisd_recovery_deduper_new,
+    aisd_reassembler_free, aisd_reassembler_ingest, aisd_reassembler_new,
+    aisd_reassembler_next_dropped, aisd_reassembly_result_free, aisd_recovery_deduper_admit,
+    aisd_recovery_deduper_free, aisd_recovery_deduper_new,
     aisd_recovery_idr_policy_available_tokens, aisd_recovery_idr_policy_decide,
     aisd_recovery_idr_policy_free, aisd_recovery_idr_policy_grace, aisd_recovery_idr_policy_new,
     aisd_recovery_idr_policy_note_keyframe_delivered, aisd_recovery_idr_policy_note_keyframe_sent,
@@ -1555,5 +1558,160 @@ fn fec_codec_new_rejects_bad_config_and_guards() {
             AISD_ERR_INVALID_ARGUMENT
         );
         aisd_fec_codec_free(codec);
+    }
+}
+
+/// Packs one video fragment datagram (the fixed 19-byte big-endian header + payload) onto the wire
+/// the way `aislopdesk_core::fragment::FrameFragment::encode` does, so `aisd_reassembler_ingest` can
+/// parse it from a raw C-style buffer (no core types needed). `flags`: bit0 keyframe, bit1 parity.
+fn pack_fragment(
+    stream_seq: u32,
+    frame_id: u32,
+    frag_index: u16,
+    frag_count: u16,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut v = Vec::with_capacity(19 + payload.len());
+    v.extend_from_slice(&stream_seq.to_be_bytes());
+    v.extend_from_slice(&frame_id.to_be_bytes());
+    v.extend_from_slice(&frag_index.to_be_bytes());
+    v.extend_from_slice(&frag_count.to_be_bytes());
+    v.push(flags);
+    v.extend_from_slice(&0u32.to_be_bytes()); // host_send_ts_millis = 0
+    v.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    v.extend_from_slice(payload);
+    v
+}
+
+/// Ingests one packed datagram through the C ABI, returning the populated result.
+unsafe fn reassembler_ingest(
+    r: *mut aislopdesk_ffi::video::AisdReassembler,
+    datagram: &[u8],
+) -> AisdReassemblyResult {
+    let mut out = AisdReassemblyResult {
+        kind: AISD_REASSEMBLY_STALE,
+        keyframe: 0,
+        crisp: 0,
+        recovered_via_fec: 0,
+        is_ltr: 0,
+        acked_anchored: 0,
+        frame_id: 0,
+        avcc: AisdBytes::EMPTY,
+    };
+    let status = unsafe { aisd_reassembler_ingest(r, datagram.as_ptr(), datagram.len(), &mut out) };
+    assert_eq!(status, AISD_OK);
+    out
+}
+
+#[test]
+fn reassembler_completes_recovers_and_drops_over_the_c_abi() {
+    unsafe {
+        // Invalid FEC config => null (no abort across the boundary). k == 0 => no-FEC handle.
+        assert!(aisd_reassembler_new(200, 56, 2).is_null());
+
+        // --- whole no-FEC keyframe completes with the concatenated payload + flags ---
+        let r = aisd_reassembler_new(0, 1, 2);
+        assert!(!r.is_null());
+        let f0 = pack_fragment(0, 7, 0, 3, 0x01, &[0xA0, 0xA1, 0xA2]);
+        assert_eq!(reassembler_ingest(r, &f0).kind, AISD_REASSEMBLY_PENDING);
+        let f1 = pack_fragment(1, 7, 1, 3, 0x01, &[0xB0, 0xB1]);
+        assert_eq!(reassembler_ingest(r, &f1).kind, AISD_REASSEMBLY_PENDING);
+        let f2 = pack_fragment(2, 7, 2, 3, 0x01, &[0xC0, 0xC1, 0xC2, 0xC3]);
+        let mut done = reassembler_ingest(r, &f2);
+        assert_eq!(done.kind, AISD_REASSEMBLY_COMPLETED);
+        assert_eq!(done.frame_id, 7);
+        assert_eq!(done.keyframe, 1);
+        assert_eq!(done.recovered_via_fec, 0);
+        let avcc = core::slice::from_raw_parts(done.avcc.ptr, done.avcc.len);
+        assert_eq!(
+            avcc,
+            &[0xA0, 0xA1, 0xA2, 0xB0, 0xB1, 0xC0, 0xC1, 0xC2, 0xC3]
+        );
+        aisd_reassembly_result_free(&mut done);
+        assert!(done.avcc.ptr.is_null());
+        aisd_reassembly_result_free(&mut done); // idempotent
+        aisd_reassembler_free(r);
+
+        // --- single dropped data fragment FEC-recovers (k=2 m=1: 2 data + 1 parity) ---
+        let rf = aisd_reassembler_new(2, 1, 2);
+        let codec = aisd_fec_codec_new(2, 1);
+        let d0: Vec<u8> = vec![0xD0, 0xD1, 0xD2, 0xD3];
+        let d1: Vec<u8> = vec![0xE0, 0xE1, 0xE2, 0xE3];
+        let data_in = [
+            AisdBytes {
+                ptr: d0.as_ptr().cast_mut(),
+                len: d0.len(),
+                cap: 0,
+            },
+            AisdBytes {
+                ptr: d1.as_ptr().cast_mut(),
+                len: d1.len(),
+                cap: 0,
+            },
+        ];
+        let mut parity = AisdBytesArray::EMPTY;
+        assert_eq!(
+            aisd_fec_parity(codec, data_in.as_ptr(), 2, 2, &mut parity),
+            AISD_OK
+        );
+        assert_eq!(parity.count, 1);
+        let parity_bytes = {
+            let p = *parity.items;
+            core::slice::from_raw_parts(p.ptr, p.len).to_vec()
+        };
+        // Ingest data 0 + parity (frag_index 2, parity flag); data 1 is LOST.
+        let rd0 = pack_fragment(10, 9, 0, 3, 0x01, &d0);
+        assert_eq!(reassembler_ingest(rf, &rd0).kind, AISD_REASSEMBLY_PENDING);
+        let rp = pack_fragment(12, 9, 2, 3, 0x01 | 0x02, &parity_bytes);
+        let mut rec = reassembler_ingest(rf, &rp);
+        assert_eq!(rec.kind, AISD_REASSEMBLY_COMPLETED);
+        assert_eq!(rec.recovered_via_fec, 1);
+        let ravcc = core::slice::from_raw_parts(rec.avcc.ptr, rec.avcc.len);
+        assert_eq!(ravcc, &[0xD0, 0xD1, 0xD2, 0xD3, 0xE0, 0xE1, 0xE2, 0xE3]);
+        aisd_reassembly_result_free(&mut rec);
+        aisd_bytes_array_free(&mut parity);
+        aisd_fec_codec_free(codec);
+        aisd_reassembler_free(rf);
+
+        // --- unrecoverable loss surfaces via next_dropped ---
+        let rd = aisd_reassembler_new(0, 1, 2);
+        let g0 = pack_fragment(20, 0, 0, 2, 0x01, &[1, 2, 3]); // frame 0 frag 0 of 2; frag 1 lost
+        assert_eq!(reassembler_ingest(rd, &g0).kind, AISD_REASSEMBLY_PENDING);
+        let g1 = pack_fragment(21, 1, 0, 1, 0x01, &[9]); // frame 1 advances the frontier
+        let _ = reassembler_ingest(rd, &g1);
+        let mut lost = u32::MAX;
+        assert_eq!(aisd_reassembler_next_dropped(rd, &mut lost), 1);
+        assert_eq!(lost, 0);
+        assert_eq!(aisd_reassembler_next_dropped(rd, &mut lost), 0);
+
+        // --- hostile / truncated input is ignored, never a crash; null guards ---
+        let junk = [1u8, 2, 3, 4];
+        assert_eq!(reassembler_ingest(rd, &junk).kind, AISD_REASSEMBLY_PENDING);
+        let mut out = AisdReassemblyResult {
+            kind: AISD_REASSEMBLY_STALE,
+            keyframe: 0,
+            crisp: 0,
+            recovered_via_fec: 0,
+            is_ltr: 0,
+            acked_anchored: 0,
+            frame_id: 0,
+            avcc: AisdBytes::EMPTY,
+        };
+        assert_eq!(
+            aisd_reassembler_ingest(core::ptr::null_mut(), junk.as_ptr(), 4, &mut out),
+            AISD_ERR_NULL
+        );
+        assert_eq!(
+            aisd_reassembler_ingest(rd, junk.as_ptr(), 4, core::ptr::null_mut()),
+            AISD_ERR_NULL
+        );
+        assert_eq!(
+            aisd_reassembler_next_dropped(core::ptr::null_mut(), core::ptr::null_mut()),
+            0
+        );
+        aisd_reassembler_free(rd);
+        aisd_reassembler_free(core::ptr::null_mut()); // no-op
+        aisd_reassembly_result_free(core::ptr::null_mut()); // no-op
     }
 }
