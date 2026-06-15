@@ -18,16 +18,17 @@ use aislopdesk_ffi::video::{
     AISD_REASSEMBLY_COMPLETED, AISD_REASSEMBLY_PENDING, AISD_REASSEMBLY_STALE,
     AISD_RECOVERY_IDR_GRANT, AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT,
     AISD_RECOVERY_IDR_SUPPRESS_STALE, AISD_RECOVERY_NETWORK_STATS,
-    AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST, AisdNetworkStats,
-    AisdPacerDepthConfig, AisdReassemblyResult, AisdRecoveryMessage, AisdRect, AisdSystemDialog,
-    AisdVideoControl, AisdVideoSummary, aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id,
-    aisd_decode_gate_min_lost_frame_id, aisd_decode_gate_mode, aisd_decode_gate_new,
-    aisd_decode_gate_note_decode_succeeded, aisd_decode_gate_note_hard_decode_failure,
-    aisd_decode_gate_note_loss, aisd_decode_gate_verdict, aisd_fec_codec_free, aisd_fec_codec_new,
-    aisd_fec_parity, aisd_fec_recover, aisd_input_button_balance_free,
-    aisd_input_button_balance_held_mask, aisd_input_button_balance_new,
-    aisd_input_button_balance_plan, aisd_owd_late_detector_free, aisd_owd_late_detector_new,
-    aisd_owd_late_detector_note, aisd_pacer_depth_policy_depth,
+    AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_SCROLL_PHASE_ACTIVE, AISD_SCROLL_PHASE_ENDED,
+    AISD_SCROLL_PHASE_MOMENTUM, AISD_VIDEO_CONTROL_WINDOW_LIST, AisdNetworkStats,
+    AisdPacerDepthConfig, AisdReassemblyResult, AisdRecoveryMessage, AisdRect,
+    AisdScrollReprojectorConfig, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
+    aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id, aisd_decode_gate_min_lost_frame_id,
+    aisd_decode_gate_mode, aisd_decode_gate_new, aisd_decode_gate_note_decode_succeeded,
+    aisd_decode_gate_note_hard_decode_failure, aisd_decode_gate_note_loss,
+    aisd_decode_gate_verdict, aisd_fec_codec_free, aisd_fec_codec_new, aisd_fec_parity,
+    aisd_fec_recover, aisd_input_button_balance_free, aisd_input_button_balance_held_mask,
+    aisd_input_button_balance_new, aisd_input_button_balance_plan, aisd_owd_late_detector_free,
+    aisd_owd_late_detector_new, aisd_owd_late_detector_note, aisd_pacer_depth_policy_depth,
     aisd_pacer_depth_policy_drain_counters, aisd_pacer_depth_policy_free,
     aisd_pacer_depth_policy_late_threshold_seconds, aisd_pacer_depth_policy_new,
     aisd_pacer_depth_policy_note_arrival, aisd_pacer_depth_policy_note_network_late,
@@ -38,13 +39,16 @@ use aislopdesk_ffi::video::{
     aisd_recovery_idr_policy_available_tokens, aisd_recovery_idr_policy_decide,
     aisd_recovery_idr_policy_free, aisd_recovery_idr_policy_grace, aisd_recovery_idr_policy_new,
     aisd_recovery_idr_policy_note_keyframe_delivered, aisd_recovery_idr_policy_note_keyframe_sent,
-    aisd_recovery_message_decode, aisd_recovery_message_encode, aisd_static_idr_decider_free,
-    aisd_static_idr_decider_heartbeat, aisd_static_idr_decider_last_complete_encode,
-    aisd_static_idr_decider_new, aisd_static_idr_decider_on_complete_frame,
-    aisd_static_idr_decider_quiet_window, aisd_static_idr_decider_record_synthetic,
-    aisd_static_idr_decider_should_reencode, aisd_system_dialog_classify, aisd_system_dialog_free,
-    aisd_system_dialog_min_size, aisd_video_control_decode, aisd_video_control_encode,
-    aisd_video_control_free, aisd_video_mux_router_admit, aisd_video_mux_router_begin_drain,
+    aisd_recovery_message_decode, aisd_recovery_message_encode, aisd_scroll_reprojector_advance,
+    aisd_scroll_reprojector_free, aisd_scroll_reprojector_new,
+    aisd_scroll_reprojector_note_real_frame, aisd_scroll_reprojector_note_velocity,
+    aisd_scroll_reprojector_reset, aisd_static_idr_decider_free, aisd_static_idr_decider_heartbeat,
+    aisd_static_idr_decider_last_complete_encode, aisd_static_idr_decider_new,
+    aisd_static_idr_decider_on_complete_frame, aisd_static_idr_decider_quiet_window,
+    aisd_static_idr_decider_record_synthetic, aisd_static_idr_decider_should_reencode,
+    aisd_system_dialog_classify, aisd_system_dialog_free, aisd_system_dialog_min_size,
+    aisd_video_control_decode, aisd_video_control_encode, aisd_video_control_free,
+    aisd_video_mux_router_admit, aisd_video_mux_router_begin_drain,
     aisd_video_mux_router_bootstrap_action, aisd_video_mux_router_end_drain,
     aisd_video_mux_router_free, aisd_video_mux_router_is_admitted,
     aisd_video_mux_router_is_draining, aisd_video_mux_router_new, aisd_video_mux_router_retire,
@@ -1363,6 +1367,70 @@ fn pacer_depth_policy_opaque_handle_promotes_and_frees() {
             aisd_pacer_depth_policy_drain_counters(core::ptr::null_mut()).late_frames,
             0
         );
+    }
+}
+
+#[test]
+fn scroll_reprojector_opaque_handle_integrates_resets_and_frees() {
+    unsafe {
+        // The default config crosses by value as a flat struct.
+        let cfg = AisdScrollReprojectorConfig {
+            max_band: 0.125,
+            decay_seconds: 0.12,
+        };
+        let r = aisd_scroll_reprojector_new(cfg);
+        assert!(!r.is_null());
+        let (mut x, mut y) = (0.0_f64, 0.0_f64);
+        // Drive a downward velocity → advance → a non-zero offset (vel*elapsed within the band).
+        aisd_scroll_reprojector_note_velocity(r, 0.0, 0.2, AISD_SCROLL_PHASE_ACTIVE);
+        assert_eq!(
+            aisd_scroll_reprojector_advance(r, 0.05, &mut x, &mut y),
+            AISD_OK
+        );
+        assert!((y - 0.01).abs() < 1e-9 && x.abs() < 1e-12);
+        // RESET on a real decoded frame → EXACTLY zero (the no-double-count invariant).
+        aisd_scroll_reprojector_note_real_frame(r);
+        assert_eq!(
+            aisd_scroll_reprojector_advance(r, 0.0, &mut x, &mut y),
+            AISD_OK
+        );
+        assert_eq!((x, y), (0.0, 0.0));
+        // The live velocity survives the reset: the next tick re-integrates FROM zero.
+        assert_eq!(
+            aisd_scroll_reprojector_advance(r, 0.05, &mut x, &mut y),
+            AISD_OK
+        );
+        assert!((y - 0.01).abs() < 1e-9);
+        // A momentum flick clamps to the band; ended arms the decay (offset shrinks).
+        aisd_scroll_reprojector_note_real_frame(r);
+        aisd_scroll_reprojector_note_velocity(r, 0.0, 9.0, AISD_SCROLL_PHASE_MOMENTUM);
+        let _ = aisd_scroll_reprojector_advance(r, 1.0, &mut x, &mut y);
+        assert!((y - 0.125).abs() < 1e-9);
+        aisd_scroll_reprojector_note_velocity(r, 0.0, 0.0, AISD_SCROLL_PHASE_ENDED);
+        let before = y;
+        let _ = aisd_scroll_reprojector_advance(r, 0.05, &mut x, &mut y);
+        assert!(y < before);
+        // reset clears velocity too: no stale resume.
+        aisd_scroll_reprojector_reset(r);
+        let _ = aisd_scroll_reprojector_advance(r, 0.05, &mut x, &mut y);
+        assert_eq!((x, y), (0.0, 0.0));
+        aisd_scroll_reprojector_free(r);
+        aisd_scroll_reprojector_free(core::ptr::null_mut()); // no-op
+        // Null handle: every fold is a no-op; advance reports NULL and leaves the out-params alone.
+        aisd_scroll_reprojector_note_velocity(
+            core::ptr::null_mut(),
+            1.0,
+            1.0,
+            AISD_SCROLL_PHASE_ACTIVE,
+        );
+        aisd_scroll_reprojector_note_real_frame(core::ptr::null_mut());
+        x = 3.0;
+        y = 4.0;
+        assert_eq!(
+            aisd_scroll_reprojector_advance(core::ptr::null_mut(), 0.1, &mut x, &mut y),
+            AISD_ERR_NULL
+        );
+        assert_eq!((x, y), (3.0, 4.0));
     }
 }
 

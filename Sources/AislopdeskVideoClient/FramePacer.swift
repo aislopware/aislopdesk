@@ -220,6 +220,28 @@ public final class FramePacer: @unchecked Sendable {
     /// unchanged frame.
     private var needsRedisplay = false
 
+    // MARK: SCROLL-HINT REPROJECTION (default-OFF; env-gated at the construction site)
+
+    /// The Rust-core scroll-hint offset law, or `nil` when `AISLOPDESK_SCROLL_REPROJECT != 1`. When
+    /// nil EVERY reproject path below is skipped, so the present path is byte-identical to before this
+    /// feature (the identity-skip / re-show behaviour is unchanged). When set, the pacer integrates
+    /// the local scroll velocity into a UV offset on its BETWEEN-CONTENT ticks (the would-be
+    /// identity-skip re-shows) and re-presents the last frame WITH that offset, and resets the offset
+    /// the instant a real decoded frame is presented (so the new frame's own scrolled content is
+    /// never double-counted). Main-confined like the render path it drives.
+    private let reprojector: ScrollReprojector?
+    /// Sets the current reproject offset on the (@MainActor) renderer's dedicated uniform. It does
+    /// NOT present — the pacer drives the re-present through its own ``renderCallback`` right after,
+    /// so the offset and the frame land on the SAME vsync. Main-actor. Set together with
+    /// ``reprojector`` (both nil ⇒ feature off).
+    private let applyReprojection: ((SIMD2<Float>) -> Void)?
+    /// Host time of the last reproject tick, so a between-content tick integrates by the REAL elapsed
+    /// since the previous reproject (not a fixed nominal interval). Main-confined.
+    private var lastReprojTickTime: Double = 0
+    /// True once a non-zero reproject offset has been applied, so the reset on a real present can be
+    /// skipped when nothing was ever shifted (avoids a redundant re-present at rest). Main-confined.
+    private var reprojOffsetActive = false
+
     public init(
         maxFrameRate: Double = 60.0,
         targetDepth: Int = 2,
@@ -237,8 +259,19 @@ public final class FramePacer: @unchecked Sendable {
         playoutBaseMs: Double = 4.0,
         playoutFloorMs: Double = 4.0,
         playoutCeilMs: Double = 35.0,
+        reprojector: ScrollReprojector? = nil,
+        applyReprojection: ((SIMD2<Float>) -> Void)? = nil,
         renderCallback: @escaping RenderCallback,
     ) {
+        // SCROLL-HINT REPROJECTION: both must be present to engage; either nil ⇒ feature off (the
+        // default), and every reproject path is skipped so the present path is byte-identical.
+        if let reprojector, let applyReprojection {
+            self.reprojector = reprojector
+            self.applyReprojection = applyReprojection
+        } else {
+            self.reprojector = nil
+            self.applyReprojection = nil
+        }
         self.presentOnArrival = presentOnArrival
         self.deadlineMode = deadlineMode
         contentIntervalSec = 1.0 / max(1.0, contentFps)
@@ -704,7 +737,14 @@ public final class FramePacer: @unchecked Sendable {
             lock.unlock()
             if let frame {
                 lastRenderedFrame = frame
+                // REAL codec frame present: it already contains the scrolled content, so reset the
+                // hint offset to zero BEFORE the render (never double-count). No-op when off.
+                resetReprojectionOnRealFrame()
                 renderCallback(frame)
+            } else {
+                // BETWEEN-CONTENT tick (the would-be identity-skip / no-frame-due slot): if the
+                // feature is on, advance the hint offset and re-present the last frame WITH it.
+                reprojectBetweenContentTick(now: hostTimeSeconds)
             }
             return
         }
@@ -713,9 +753,52 @@ public final class FramePacer: @unchecked Sendable {
         }
         lastRenderHostTime = hostTimeSeconds
         if let frame = frameForVSync(), frame !== lastRenderedFrame || needsRedisplay {
+            // A genuinely NEW frame object is a real codec present → reset the hint (no double-count).
+            // A `needsRedisplay`-forced re-render of the SAME frame is NOT a new codec frame, so it
+            // must NOT reset — it just re-applies the current offset under the changed layer.
+            let isNewFrame = frame !== lastRenderedFrame
             lastRenderedFrame = frame
             needsRedisplay = false
+            if isNewFrame { resetReprojectionOnRealFrame() }
             renderCallback(frame)
+        } else {
+            // BETWEEN-CONTENT tick (identity-skip re-show): advance + re-present with the hint offset.
+            reprojectBetweenContentTick(now: hostTimeSeconds)
+        }
+    }
+
+    /// SCROLL-HINT REPROJECTION — a between-content (would-be identity-skip / no-frame-due) tick.
+    /// No-op unless the feature is on. Integrates the local scroll velocity over the REAL elapsed
+    /// since the last reproject tick, applies the resulting normalized offset to the renderer, and
+    /// re-presents the last frame so the picture keeps moving at display rate between codec frames.
+    /// Skips the re-present while the offset is exactly zero AND was already zero (nothing to shift),
+    /// so a static window with the feature on still does the cheap identity-skip. Main-confined.
+    private func reprojectBetweenContentTick(now: Double) {
+        guard let reprojector, let applyReprojection, let frame = lastRenderedFrame else { return }
+        let elapsed = lastReprojTickTime > 0 ? now - lastReprojTickTime : 0
+        lastReprojTickTime = now
+        let (ox, oy) = reprojector.advance(elapsedSeconds: elapsed)
+        let offset = SIMD2<Float>(Float(ox), Float(oy))
+        let nonZero = ox != 0 || oy != 0
+        // Re-present only when there is (or just was) a shift to show — otherwise stay an identity
+        // re-show. The `reprojOffsetActive` latch lets the FINAL settle-to-zero tick repaint once.
+        guard nonZero || reprojOffsetActive else { return }
+        reprojOffsetActive = nonZero
+        applyReprojection(offset) // set the renderer's offset uniform…
+        renderCallback(frame) // …then re-present the SAME last frame with the shift, this vsync
+    }
+
+    /// SCROLL-HINT REPROJECTION — a real codec frame is being presented: reset the hint offset to
+    /// exactly zero so the new frame's own scrolled content is never double-counted. No-op unless the
+    /// feature is on. Clears the renderer offset back to `(0, 0)` (the real frame is the authoritative
+    /// position) when a hint was active. Main-confined.
+    private func resetReprojectionOnRealFrame() {
+        guard let reprojector else { return }
+        reprojector.noteRealFrame()
+        lastReprojTickTime = 0 // restart the elapsed baseline at the fresh frame
+        if reprojOffsetActive, let applyReprojection {
+            reprojOffsetActive = false
+            applyReprojection(.zero) // set offset 0 ONLY; the renderCallback right after presents the new frame un-shifted
         }
     }
 

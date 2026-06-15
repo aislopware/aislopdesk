@@ -41,6 +41,16 @@ final class VideoWindowPipeline {
     private var activeConnection: VideoWindowConnection?
     private var layerSize: VideoSize = .init(width: 0, height: 0)
 
+    /// SCROLL-HINT REPROJECTION (default-OFF, env `AISLOPDESK_SCROLL_REPROJECT == "1"`): the
+    /// Rust-core offset law for this pane, or `nil` when the feature is off (then NOTHING below
+    /// engages and the present path is byte-identical). Owned here; shared with the ``pacer`` (which
+    /// integrates + applies it on between-content ticks and resets it on a real frame) and fed the
+    /// local scroll velocity from ``scroll(dx:dy:...)``. v1 is CLIENT-ONLY — no wire change.
+    private var reprojector: ScrollReprojector?
+    /// Resolved once: whether the reprojection feature is enabled (env read at first access). Default
+    /// OFF, so the existing identity-skip / re-show is unchanged and the present bytes are identical.
+    private static let reprojectEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_REPROJECT"] == "1"
+
     /// INBOUND cursor-overlay coalescing (BUG-1 freeze fix). The ~120 Hz cursor stream used to spawn ONE
     /// `Task { @MainActor in compositor.apply }` PER packet. When a click flips workspace focus, the
     /// resulting synchronous SwiftUI re-render holds the MAIN ACTOR for a span; every queued cursor Task
@@ -247,6 +257,30 @@ final class VideoWindowPipeline {
         let playoutFloorMs = env["AISLOPDESK_PLAYOUT_FLOOR_MS"].flatMap(Double.init) ?? 4.0
         let playoutCeilMs = env["AISLOPDESK_PLAYOUT_CEIL_MS"].flatMap(Double.init) ?? 35.0
         let contentFps = env["AISLOPDESK_CONTENT_FPS"].flatMap(Double.init) ?? 60.0
+        // SCROLL-HINT REPROJECTION (default OFF): build the Rust-core offset law for this pane and the
+        // main-actor closure that applies its offset to the renderer (+ optionally re-presents). When
+        // the gate is off `reprojector`/`applyReprojection` stay nil ⇒ the pacer skips every reproject
+        // path ⇒ the present is byte-identical to before. Band/decay are env-tunable.
+        let reprojector: ScrollReprojector?
+        let applyReprojection: ((SIMD2<Float>) -> Void)?
+        if Self.reprojectEnabled {
+            let maxBand = env["AISLOPDESK_SCROLL_REPROJECT_BAND"].flatMap(Double.init) ?? 0.125
+            let decaySeconds = env["AISLOPDESK_SCROLL_REPROJECT_DECAY_MS"].flatMap(Double.init)
+                .map { $0 / 1000.0 } ?? 0.12
+            let r = ScrollReprojector(maxBand: maxBand, decaySeconds: decaySeconds)
+            reprojector = r
+            self.reprojector = r
+            applyReprojection = { offset in
+                // Main-confined: the pacer's tick runs on the display-link main run loop (see the
+                // renderCallback note), so the renderer (which is @MainActor) is safe to touch here.
+                // Set the dedicated reproject uniform ONLY — the pacer re-presents the frame through
+                // its own renderCallback right after, so the offset + frame land on the same vsync.
+                MainActor.assumeIsolated { renderer.reprojectionOffset = offset }
+            }
+        } else {
+            reprojector = nil
+            applyReprojection = nil
+        }
         let pacer = FramePacer(
             maxFrameRate: tickRate,
             targetDepth: jitterDepth,
@@ -264,6 +298,8 @@ final class VideoWindowPipeline {
             playoutBaseMs: playoutBaseMs,
             playoutFloorMs: playoutFloorMs,
             playoutCeilMs: playoutCeilMs,
+            reprojector: reprojector,
+            applyReprojection: applyReprojection,
         ) { [weak self] buffer in
             // CAD-2 (2026-06-09 smoothness): present SYNCHRONOUSLY on the display-link tick instead of
             // hopping through `Task { @MainActor }`. The FramePacer is driven by `NSView.displayLink` /
@@ -424,6 +460,9 @@ final class VideoWindowPipeline {
         renderer = nil
         compositor = nil
         pacer = nil
+        reprojector?.reset()
+        reprojector = nil
+        lastScrollEventTime = 0
         activeConnection = nil
     }
 
@@ -556,6 +595,10 @@ final class VideoWindowPipeline {
         continuous: Bool = false,
     ) {
         guard let session else { return }
+        // SCROLL-HINT REPROJECTION (default-OFF): feed the LOCAL scroll velocity into the pane's
+        // reprojector IN ADDITION to forwarding the event to the host (no wire change — this is the
+        // same delta, used locally for the zero-latency hint). No-op when the feature is off.
+        feedReprojectionVelocity(dx: dx, dy: dy, scrollPhase: scrollPhase, momentumPhase: momentumPhase)
         submitFlushingMotion {
             await session.sendScroll(
                 dx: dx,
@@ -566,6 +609,58 @@ final class VideoWindowPipeline {
                 continuous: continuous,
             )
         }
+    }
+
+    /// Host time of the last scroll event, so the reprojector velocity is `Δnormalized / Δt` (the
+    /// real instantaneous speed) rather than a per-event delta. `0` ⇒ no prior event this gesture.
+    private var lastScrollEventTime: Double = 0
+
+    /// SCROLL-HINT REPROJECTION (default-OFF): converts one local scroll event into a normalized
+    /// velocity and folds it into the pane's ``reprojector``. No-op unless the feature is on.
+    ///
+    /// The pixel delta is normalized by the view extent (so the hint is resolution-independent) and
+    /// divided by the elapsed since the previous event to get units/sec. The phase comes from the
+    /// platform scroll/momentum codes (`began/changed` ⇒ active, momentum `begin/continue` ⇒
+    /// momentum, either `ended` ⇒ arm the decay). SIGN/GAIN are the HW-tunable visual-feel part; the
+    /// headless guarantee is only that the feed is gated off by default.
+    private func feedReprojectionVelocity(dx: Double, dy: Double, scrollPhase: UInt8, momentumPhase: UInt8) {
+        guard let reprojector else { return }
+        let phase = Self.reprojectionPhase(scrollPhase: scrollPhase, momentumPhase: momentumPhase)
+        let now = FramePacer.currentHostTimeSeconds()
+        // First event of a gesture (or after a long idle) has no Δt → carry zero velocity but still
+        // set the phase, so the integrator stays at rest until the next sampled event.
+        let dt = lastScrollEventTime > 0 ? now - lastScrollEventTime : 0
+        lastScrollEventTime = phase == .ended ? 0 : now // reset the baseline when the gesture ends
+        let w = max(1.0, layerSize.width), h = max(1.0, layerSize.height)
+        // SIGN: a positive scrollingDeltaY (natural scroll, content moving down) shifts the sampled
+        // window so the picture follows; the exact sign/gain is tuned on HW (env-flippable later).
+        let gain = Self.reprojectionGain
+        let (vx, vy): (Double, Double)
+        if dt > 0 {
+            vx = (dx / w) / dt * gain
+            vy = (dy / h) / dt * gain
+        } else {
+            vx = 0
+            vy = 0
+        }
+        reprojector.noteVelocity(vx: vx, vy: vy, phase: phase)
+    }
+
+    /// Gain on the reprojection velocity (HW-tunable visual-feel knob, env
+    /// `AISLOPDESK_SCROLL_REPROJECT_GAIN`, default 1).
+    private static let reprojectionGain = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_REPROJECT_GAIN"]
+        .flatMap(Double.init) ?? 1.0
+
+    /// Maps the platform scroll/momentum phase codes to the reprojector's three-phase model. An
+    /// `ended` on EITHER the finger phase (`4`) or the momentum phase (`3`) arms the decay; an active
+    /// momentum (`1`/`2`) coasts; anything else with a live finger is active.
+    nonisolated static func reprojectionPhase(scrollPhase: UInt8, momentumPhase: UInt8) -> ScrollReprojector.Phase {
+        // CGMomentumScrollPhase: 1 begin, 2 continue, 3 end.
+        if momentumPhase == 3 { return .ended }
+        if momentumPhase == 1 || momentumPhase == 2 { return .momentum }
+        // CGScrollPhase: 1 began, 2 changed, 4 ended, 8 cancelled.
+        if scrollPhase == 4 || scrollPhase == 8 { return .ended }
+        return .active
     }
 
     func key(keyCode: UInt16, down: Bool, modifiers: InputModifiers) {

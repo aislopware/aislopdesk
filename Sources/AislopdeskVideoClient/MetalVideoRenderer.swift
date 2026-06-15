@@ -43,6 +43,17 @@ public final class MetalVideoRenderer {
     /// pacer re-presents the last frame each vsync, so changes apply live on a static window.
     public var zoom: CGFloat = 1
     public var panNormalized: CGPoint = .zero
+
+    /// SCROLL-HINT REPROJECTION (default-OFF, env `AISLOPDESK_SCROLL_REPROJECT`): a small normalized
+    /// UV translation the renderer ADDS to the sampled coordinate so the last decoded frame can be
+    /// shifted by the integrated local scroll velocity on the pacer's between-content ticks — the
+    /// picture keeps moving at display rate between real codec frames. It is a DEDICATED uniform that
+    /// COMPOSES with zoom/pan (it never overloads them); the fragment shader clamps any sample that
+    /// falls outside `[0, 1]` (the newly-revealed disocclusion edge) to black. The offset law lives in
+    /// the Rust core (`ScrollReprojector`); this is purely the GPU application of its current value.
+    /// Stays exactly `(0, 0)` when the feature is off, so the sampled UV — and the rendered bytes —
+    /// are byte-identical to before this feature.
+    public var reprojectionOffset: SIMD2<Float> = .zero
     /// `.fit` (letterbox/pillarbox — whole window, bars) or `.fill` (cover — the video is
     /// scaled up to cover the whole drawable, the overflowing axis clipped by the viewport;
     /// no bars, aspect preserved). Both go through the SAME ``AspectFit/displayedVideoRect``
@@ -227,6 +238,12 @@ public final class MetalVideoRenderer {
         let py = min(max(Float(panNormalized.y), -panLimit), panLimit)
         var zoomPan = SIMD4<Float>(invZoom, px, py, 0)
         encoder.setFragmentBytes(&zoomPan, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
+        // SCROLL-HINT REPROJECTION: a dedicated UV offset the shader ADDS after the zoom/pan crop (it
+        // never overloads them). When the feature is off this is `(0, 0)` ⇒ the sampled UV is
+        // unchanged ⇒ byte-identical output. The shader clamps out-of-[0,1] samples (the disocclusion
+        // edge revealed by the shift) to black.
+        var reproj = reprojectionOffset
+        encoder.setFragmentBytes(&reproj, length: MemoryLayout<SIMD2<Float>>.size, index: 2)
         // WF-6 (#8): the YCbCr→RGB coefficients for the negotiated luma range, from the single pure
         // source of truth (YCbCrConversion). For `.video` these are exactly the prior hardcoded shader
         // literals → byte-identical GPU input on the default-OFF path. Only luma scale/bias differ for
@@ -325,10 +342,19 @@ public final class MetalVideoRenderer {
                                          texture2d<float> lumaTex [[texture(0)]],
                                          texture2d<float> chromaTex [[texture(1)]],
                                          constant float4 &zoomPan [[buffer(0)]],
-                                         constant YCbCrCoeffs &coeffs [[buffer(1)]]) {
+                                         constant YCbCrCoeffs &coeffs [[buffer(1)]],
+                                         constant float2 &reprojOffset [[buffer(2)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         // zoomPan = (invZoom, panX, panY, _): crop the sampled UV around the panned centre.
         float2 uv = (in.uv - 0.5) * zoomPan.x + 0.5 + float2(zoomPan.y, zoomPan.z);
+        // SCROLL-HINT REPROJECTION: shift the sampled coordinate by the integrated scroll offset so
+        // the last frame translates between real codec frames. reprojOffset is (0,0) when the feature
+        // is off ⇒ uv unchanged ⇒ identical output. A sample that now falls OUTSIDE the texture (the
+        // newly-revealed disocclusion edge) returns BLACK instead of clamp_to_edge's smeared border.
+        uv += reprojOffset;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
         float y = lumaTex.sample(s, uv).r;
         float2 cbcr = chromaTex.sample(s, uv).rg;
         // BT.709 YCbCr -> RGB, coefficient-driven (WF-6 #8). For .video the values are the prior

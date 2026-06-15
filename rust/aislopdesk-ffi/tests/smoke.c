@@ -635,6 +635,32 @@ int main(void) {
     CHECK(aisd_pacer_depth_policy_depth(NULL) == 1, "null policy depth 1");
     CHECK(aisd_pacer_depth_policy_note_present(NULL, 0.0) == AISD_PACER_GAP_FIRST, "null first");
 
+    /* 20b. scroll_reprojector opaque handle: drive velocity -> advance -> reset-to-0, clamp, nulls. */
+    AisdScrollReprojectorConfig scfg = {.max_band = 0.125, .decay_seconds = 0.12};
+    AisdScrollReprojector *srp = aisd_scroll_reprojector_new(scfg);
+    CHECK(srp != NULL, "scroll reprojector new");
+    double sox = 0.0, soy = 0.0;
+    aisd_scroll_reprojector_note_velocity(srp, 0.0, 0.2, AISD_SCROLL_PHASE_ACTIVE);
+    CHECK(aisd_scroll_reprojector_advance(srp, 0.05, &sox, &soy) == AISD_OK, "advance ok");
+    CHECK(soy > 0.0099 && soy < 0.0101 && sox == 0.0, "offset grows ~vel*elapsed");
+    /* RESET on a real frame -> exactly zero (the no-double-count invariant). */
+    aisd_scroll_reprojector_note_real_frame(srp);
+    CHECK(aisd_scroll_reprojector_advance(srp, 0.0, &sox, &soy) == AISD_OK, "advance after reset ok");
+    CHECK(sox == 0.0 && soy == 0.0, "real frame resets offset to exactly 0");
+    /* A fast flick clamps to the band. */
+    aisd_scroll_reprojector_note_velocity(srp, 0.0, 9.0, AISD_SCROLL_PHASE_MOMENTUM);
+    aisd_scroll_reprojector_advance(srp, 1.0, &sox, &soy);
+    CHECK(soy > 0.1249 && soy < 0.1251, "fast flick clamps to max_band");
+    aisd_scroll_reprojector_free(srp);
+    aisd_scroll_reprojector_free(NULL); /* no-op */
+    /* Null handle: advance reports NULL and leaves the out-params untouched. */
+    sox = 3.0; soy = 4.0;
+    CHECK(aisd_scroll_reprojector_advance(NULL, 0.1, &sox, &soy) == AISD_ERR_NULL, "null advance NULL");
+    CHECK(sox == 3.0 && soy == 4.0, "null advance leaves out-params untouched");
+    aisd_scroll_reprojector_note_velocity(NULL, 1.0, 1.0, AISD_SCROLL_PHASE_ENDED); /* no-op */
+    aisd_scroll_reprojector_note_real_frame(NULL); /* no-op */
+    aisd_scroll_reprojector_reset(NULL); /* no-op */
+
     /* 21. fec: NEON-backed Reed-Solomon. Build a k=4 m=2 codec, generate parity over 4 data shards,
      * erase 2, recover them, assert byte-equality, then free everything (+ a double-free of the
      * array to prove idempotence). An invalid config returns NULL, not an abort. */

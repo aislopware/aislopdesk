@@ -21,6 +21,76 @@ public enum AdaptivePlayoutPolicy {
     }
 }
 
+/// Public Swift handle over the Rust-core scroll-hint reprojection law (`aisd_scroll_reprojector_*`).
+///
+/// PUBLIC so the client's `FramePacer` / `MetalVideoRenderer` wiring (in `AislopdeskVideoClient`) can
+/// own one per video pane. The Rust core is the SINGLE SOURCE OF TRUTH for the offset law — this
+/// type holds only the opaque handle and forwards. v1 is CLIENT-ONLY: the client already originates
+/// the scroll delta locally, so there is no wire / protocol change.
+///
+/// The law: integrate the local scroll velocity into a small normalized UV offset on the pacer's
+/// *between-content* display ticks (so a remote window scrolls at the display rate), clamp it to a
+/// band, decay it once the scroll stops, and RESET it to exactly zero the instant a real decoded
+/// frame is presented (that frame already contains the scrolled content — resetting is what prevents
+/// the double-count). One owner per pane; not thread-safe (the caller's main actor / pacer lock
+/// serializes it).
+public final class ScrollReprojector: @unchecked Sendable {
+    /// The `AISD_SCROLL_PHASE_*` discriminant, mirrored so callers do not import `CAislopdeskFFI`.
+    public enum Phase: UInt8 {
+        /// Finger on glass: track velocity, no decay.
+        case active = 0
+        /// Inertial coast: track velocity, no decay.
+        case momentum = 1
+        /// Gesture finished: arm the decay.
+        case ended = 2
+    }
+
+    private let handle: OpaquePointer
+
+    /// Builds a reprojector with the band (normalized units) + decay time-constant (seconds). The
+    /// Rust core sanitizes both, so a hostile value can never produce a runaway / negative offset.
+    public init(maxBand: Double, decaySeconds: Double) {
+        let config = AisdScrollReprojectorConfig(max_band: maxBand, decay_seconds: decaySeconds)
+        // `aisd_scroll_reprojector_new` never returns null (the allocation is infallible), so the
+        // force-unwrap is total — a null here would mean OOM, which traps everywhere anyway.
+        guard let handle = aisd_scroll_reprojector_new(config) else {
+            preconditionFailure("aisd_scroll_reprojector_new returned null")
+        }
+        self.handle = handle
+    }
+
+    deinit { aisd_scroll_reprojector_free(handle) }
+
+    /// Folds one scroll-velocity sample (`vx`/`vy` in normalized units per second) with its phase.
+    public func noteVelocity(vx: Double, vy: Double, phase: Phase) {
+        aisd_scroll_reprojector_note_velocity(handle, vx, vy, phase.rawValue)
+    }
+
+    /// Integrates over `elapsedSeconds` (or decays a stopped scroll), clamps to the band, and returns
+    /// the current normalized offset `(x, y)`.
+    public func advance(elapsedSeconds: Double) -> (x: Double, y: Double) {
+        var ox = 0.0
+        var oy = 0.0
+        // The only non-OK return is a null handle / null out-param, neither reachable here, so the
+        // status is ignored — a defensive failure leaves `ox`/`oy` at zero (a no-op offset).
+        _ = aisd_scroll_reprojector_advance(handle, elapsedSeconds, &ox, &oy)
+        return (ox, oy)
+    }
+
+    /// Resets the offset (and integration baseline) to exactly zero — call the instant a real decoded
+    /// frame is presented so the hint is never added on top of the real scroll (the double-count
+    /// guard). The live velocity is preserved.
+    public func noteRealFrame() {
+        aisd_scroll_reprojector_note_real_frame(handle)
+    }
+
+    /// Fully resets the reprojector (offset AND velocity to zero) — call when a pane goes idle / loses
+    /// focus so a stale velocity can never resume.
+    public func reset() {
+        aisd_scroll_reprojector_reset(handle)
+    }
+}
+
 /// Swift-side bridge from `AislopdeskVideoProtocol` to the Rust `aislopdesk-ffi` C ABI.
 ///
 /// All `import CAislopdeskFFI` for the video wire codecs is contained here; the codec types

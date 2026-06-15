@@ -940,6 +940,44 @@ AisdPacerCounters aisd_pacer_depth_policy_drain_counters(AisdPacerDepthPolicy *p
 void aisd_pacer_depth_policy_set_interval_hint(AisdPacerDepthPolicy *policy, double seconds,
                                                uint8_t has_hint);
 
+/* ---- scroll_reprojection (opaque handle; client scroll-hint reprojection offset law) ---- */
+
+/* ScrollPhase discriminants (aisd_scroll_reprojector_note_velocity). */
+#define AISD_SCROLL_PHASE_ACTIVE 0u   /* finger on glass: track velocity, no decay */
+#define AISD_SCROLL_PHASE_MOMENTUM 1u /* inertial coast: track velocity, no decay */
+#define AISD_SCROLL_PHASE_ENDED 2u    /* gesture finished: arm the decay */
+
+/* The 2 resolved Config tunables (env resolved caller-side; crosses by value). */
+typedef struct AisdScrollReprojectorConfig {
+    double max_band;      /* per-axis clamp on the integrated offset (normalized units) */
+    double decay_seconds; /* decay time-constant after a scroll ends (seconds) */
+} AisdScrollReprojectorConfig;
+
+typedef struct AisdScrollReprojector AisdScrollReprojector;
+
+/* Creates a reprojector from the resolved config (zero offset / zero velocity). Destroy with
+ * aisd_scroll_reprojector_free. */
+AisdScrollReprojector *aisd_scroll_reprojector_new(AisdScrollReprojectorConfig config);
+/* Destroys a reprojector from aisd_scroll_reprojector_new. No-op on NULL. */
+void aisd_scroll_reprojector_free(AisdScrollReprojector *reprojector);
+
+/* Folds one velocity sample (vx/vy in normalized units per second) with its AISD_SCROLL_PHASE_*
+ * phase. No-op on NULL. */
+void aisd_scroll_reprojector_note_velocity(AisdScrollReprojector *reprojector, double vx, double vy,
+                                           uint8_t phase);
+/* Integrates over elapsed_seconds (or decays a stopped scroll), clamps to the band, and writes the
+ * offset into *out_x / *out_y. Returns AISD_ERR_NULL for a null handle / null out-param (out-params
+ * untouched), else AISD_OK. */
+AisdStatus aisd_scroll_reprojector_advance(AisdScrollReprojector *reprojector, double elapsed_seconds,
+                                           double *out_x, double *out_y);
+/* Resets the offset (and integration baseline) to EXACTLY zero — call the instant a real decoded
+ * frame is presented so the hint is never added on top of the real scroll (double-count guard). The
+ * live velocity is preserved. No-op on NULL. */
+void aisd_scroll_reprojector_note_real_frame(AisdScrollReprojector *reprojector);
+/* Fully resets the reprojector (offset AND velocity to zero) — call when a pane goes idle / loses
+ * focus. No-op on NULL. */
+void aisd_scroll_reprojector_reset(AisdScrollReprojector *reprojector);
+
 /* ---- fec (opaque handle; NEON-backed Reed-Solomon erasure codec) ---- */
 
 /* An immutable NEON-backed Reed-Solomon codec with k data + m parity shards per group (a group
