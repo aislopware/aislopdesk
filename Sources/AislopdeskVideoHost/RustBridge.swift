@@ -224,6 +224,61 @@ public enum RustVideoHostFFI {
         }
     }
 
+    // MARK: - static_idr_decider (opaque handle; host static-window forced-IDR heartbeat)
+
+    /// Creates a static-IDR decider owned by the Rust core; release with `staticIDRDeciderFree`.
+    /// `quietWindow == nil` takes the core default (one cadence). Wraps
+    /// `aisd_static_idr_decider_new` (never returns null).
+    static func staticIDRDeciderNew(heartbeat: TimeInterval, quietWindow: TimeInterval?) -> OpaquePointer {
+        aisd_static_idr_decider_new(heartbeat, quietWindow ?? 0, quietWindow != nil ? 1 : 0)
+    }
+
+    /// Destroys a decider handle. Wraps `aisd_static_idr_decider_free`.
+    static func staticIDRDeciderFree(_ handle: OpaquePointer) {
+        aisd_static_idr_decider_free(handle)
+    }
+
+    /// The configured heartbeat cadence (seconds). Wraps `aisd_static_idr_decider_heartbeat`.
+    static func staticIDRDeciderHeartbeat(_ handle: OpaquePointer) -> TimeInterval {
+        aisd_static_idr_decider_heartbeat(handle)
+    }
+
+    /// The configured quiet window (seconds). Wraps `aisd_static_idr_decider_quiet_window`.
+    static func staticIDRDeciderQuietWindow(_ handle: OpaquePointer) -> TimeInterval {
+        aisd_static_idr_decider_quiet_window(handle)
+    }
+
+    /// Uptime seconds of the last REAL `.complete`-frame encode (0 = none).
+    static func staticIDRDeciderLastCompleteEncode(_ handle: OpaquePointer) -> TimeInterval {
+        aisd_static_idr_decider_last_complete_encode(handle)
+    }
+
+    /// Uptime seconds of the last SYNTHETIC re-encode (0 = none).
+    static func staticIDRDeciderLastSyntheticEncode(_ handle: OpaquePointer) -> TimeInterval {
+        aisd_static_idr_decider_last_synthetic_encode(handle)
+    }
+
+    /// Re-anchors the live clock (a REAL `.complete` frame at `now`).
+    static func staticIDRDeciderOnCompleteFrame(_ handle: OpaquePointer, now: TimeInterval) {
+        aisd_static_idr_decider_on_complete_frame(handle, now)
+    }
+
+    /// Re-anchors the synthetic clock (the timer fired a synthetic re-encode at `now`).
+    static func staticIDRDeciderRecordSynthetic(_ handle: OpaquePointer, now: TimeInterval) {
+        aisd_static_idr_decider_record_synthetic(handle, now)
+    }
+
+    /// `true` ⇒ re-encode the cached buffer as a forced IDR now. Wraps
+    /// `aisd_static_idr_decider_should_reencode`.
+    static func staticIDRDeciderShouldReencode(
+        _ handle: OpaquePointer,
+        now: TimeInterval,
+        forcedLatched: Bool,
+        hasRetainedBuffer: Bool,
+    ) -> Bool {
+        aisd_static_idr_decider_should_reencode(handle, now, forcedLatched ? 1 : 0, hasRetainedBuffer ? 1 : 0) != 0
+    }
+
     /// Flattens a `CGRect` into the C-ABI `AisdRect` (x, y, width, height — all `Double`).
     private static func aisdRect(_ r: CGRect) -> AisdRect {
         AisdRect(

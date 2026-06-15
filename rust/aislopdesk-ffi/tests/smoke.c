@@ -450,6 +450,22 @@ int main(void) {
     CHECK(aisd_recovery_message_encode(&rc_bad, &rc_bframe) == AISD_ERR_INVALID_ARGUMENT,
           "unknown recovery kind rejected");
 
+    /* 14. static_idr_decider opaque handle: cadence + quiet window + null guards. */
+    AisdStaticIdrDecider *sid = aisd_static_idr_decider_new(1.0, 0.0, 0);
+    CHECK(sid != NULL, "static-IDR decider allocated");
+    CHECK(aisd_static_idr_decider_heartbeat(sid) == 1.0 &&
+              aisd_static_idr_decider_quiet_window(sid) == 1.0,
+          "default quiet window == heartbeat");
+    CHECK(aisd_static_idr_decider_should_reencode(sid, 0.5, 0, 1) == 1, "armed + quiet => fire");
+    CHECK(aisd_static_idr_decider_should_reencode(sid, 50.0, 1, 0) == 0, "no buffer => never fire");
+    aisd_static_idr_decider_on_complete_frame(sid, 10.0);
+    CHECK(aisd_static_idr_decider_last_complete_encode(sid) == 10.0, "real frame anchors");
+    CHECK(aisd_static_idr_decider_should_reencode(sid, 10.5, 0, 1) == 0, "quiet window suppresses");
+    CHECK(aisd_static_idr_decider_should_reencode(sid, 11.0, 0, 1) == 1, "heartbeat elapsed => fire");
+    aisd_static_idr_decider_free(sid);
+    aisd_static_idr_decider_free(NULL); /* no-op */
+    CHECK(aisd_static_idr_decider_should_reencode(NULL, 0.0, 1, 1) == 0, "null handle never fires");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

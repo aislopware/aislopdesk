@@ -11,11 +11,15 @@
 
 use aislopdesk_ffi::video::{
     aisd_recovery_deduper_admit, aisd_recovery_deduper_free, aisd_recovery_deduper_new,
-    aisd_recovery_message_decode, aisd_recovery_message_encode, aisd_system_dialog_classify,
-    aisd_system_dialog_free, aisd_system_dialog_min_size, aisd_video_control_decode,
-    aisd_video_control_encode, aisd_video_control_free, aisd_ycbcr_coefficients, AisdNetworkStats,
-    AisdRecoveryMessage, AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
-    AISD_RECOVERY_NETWORK_STATS, AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
+    aisd_recovery_message_decode, aisd_recovery_message_encode, aisd_static_idr_decider_free,
+    aisd_static_idr_decider_heartbeat, aisd_static_idr_decider_last_complete_encode,
+    aisd_static_idr_decider_new, aisd_static_idr_decider_on_complete_frame,
+    aisd_static_idr_decider_quiet_window, aisd_static_idr_decider_record_synthetic,
+    aisd_static_idr_decider_should_reencode, aisd_system_dialog_classify, aisd_system_dialog_free,
+    aisd_system_dialog_min_size, aisd_video_control_decode, aisd_video_control_encode,
+    aisd_video_control_free, aisd_ycbcr_coefficients, AisdNetworkStats, AisdRecoveryMessage,
+    AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary, AISD_RECOVERY_NETWORK_STATS,
+    AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
 };
 use aislopdesk_ffi::{
     aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free, aisd_frame_decoder_new,
@@ -1001,6 +1005,34 @@ fn recovery_message_round_trips_through_the_c_struct() {
         assert_eq!(
             aisd_recovery_message_encode(&bad, &mut bframe),
             AISD_ERR_INVALID_ARGUMENT
+        );
+    }
+}
+
+#[test]
+fn static_idr_decider_opaque_handle_drives_cadence_and_frees() {
+    unsafe {
+        // Default quiet window == heartbeat (has_quiet_window = 0).
+        let d = aisd_static_idr_decider_new(1.0, 0.0, 0);
+        assert!(!d.is_null());
+        assert_eq!(aisd_static_idr_decider_heartbeat(d), 1.0);
+        assert_eq!(aisd_static_idr_decider_quiet_window(d), 1.0);
+        // Armed, none emitted, no real frame ⇒ fire.
+        assert_eq!(aisd_static_idr_decider_should_reencode(d, 0.5, 0, 1), 1);
+        // A real frame anchors the live clock; the quiet window then suppresses.
+        aisd_static_idr_decider_on_complete_frame(d, 10.0);
+        assert_eq!(aisd_static_idr_decider_last_complete_encode(d), 10.0);
+        assert_eq!(aisd_static_idr_decider_should_reencode(d, 10.5, 0, 1), 0);
+        assert_eq!(aisd_static_idr_decider_should_reencode(d, 11.0, 0, 1), 1);
+        // A synthetic re-anchors the cadence.
+        aisd_static_idr_decider_record_synthetic(d, 11.0);
+        assert_eq!(aisd_static_idr_decider_should_reencode(d, 11.5, 0, 1), 0);
+        aisd_static_idr_decider_free(d);
+        aisd_static_idr_decider_free(core::ptr::null_mut()); // no-op
+                                                             // A null handle never forces an encode.
+        assert_eq!(
+            aisd_static_idr_decider_should_reencode(core::ptr::null(), 0.0, 1, 1),
+            0
         );
     }
 }

@@ -698,8 +698,8 @@ public struct NetworkEstimate: Sendable, Equatable {
 /// Pure decider for the static-window forced-IDR heartbeat (VIDEO-HOST-1). Holds the
 /// cadence anchors and answers: "given the clock and what was last encoded, should the
 /// frameQueue timer re-encode the cached buffer as a forced IDR right now?". No I/O — the
-/// caller owns the retained buffer, the timer, and the encode. Mutating methods are called
-/// only on the capture `frameQueue` (single-threaded), so plain `var` state is safe.
+/// caller owns the retained buffer, the timer, and the encode. The methods are called
+/// only on the capture `frameQueue` (single-threaded), so the single handle is never raced.
 ///
 /// Why this lives beside ``RecoveryDatagramRouter`` / ``InputMotionCoalescer``: it is the
 /// "decider beside the actor" discipline — the policy is pure and headlessly unit-testable
@@ -707,60 +707,64 @@ public struct NetworkEstimate: Sendable, Equatable {
 /// `WindowCapturer`. The capture path calls ``onCompleteFrame(now:)`` on every real frame;
 /// the timer calls ``shouldReencode(now:forcedLatched:hasRetainedBuffer:)`` then
 /// ``recordSynthetic(now:)`` when it fires.
-public struct StaticIDRDecider: Sendable, Equatable {
-    /// Heartbeat cadence (seconds). Mirrors `WindowCapturer.heartbeatIDRInterval` (1.0).
-    public let heartbeat: TimeInterval
-    /// Quiet window (seconds): suppress a synthetic re-encode if a REAL `.complete` frame
-    /// was encoded within this window — a live screen drives IDRs through the normal path,
-    /// so the timer must not double-emit. Default = heartbeat (one cadence).
-    public let quietWindow: TimeInterval
+///
+/// The decision ALGORITHM (the quiet-window + synthetic-anchor heartbeat) lives in the Rust core
+/// (`aislopdesk_core::static_idr_decider`, the single source of truth shared with Android over the
+/// C ABI); this class is a thin owner of the opaque core handle, reached via ``RustVideoHostFFI``.
+/// It is a `final class` (not the former value struct) so it can own the handle and free it in
+/// `deinit`. `@unchecked Sendable` is sound because the single owner (``WindowCapturer``) only
+/// touches it on `frameQueue` (and the loopback/tests from one thread), so no two threads race the
+/// handle. `Equatable` compares the four observable anchors (preserves the golden-parity sanity test).
+public final class StaticIDRDecider: @unchecked Sendable, Equatable {
+    private let handle: OpaquePointer
 
+    /// Heartbeat cadence (seconds). Mirrors `WindowCapturer.heartbeatIDRInterval` (1.0).
+    public var heartbeat: TimeInterval { RustVideoHostFFI.staticIDRDeciderHeartbeat(handle) }
+    /// Quiet window (seconds): suppress a synthetic re-encode if a REAL `.complete` frame
+    /// was encoded within this window. Default = heartbeat (one cadence).
+    public var quietWindow: TimeInterval { RustVideoHostFFI.staticIDRDeciderQuietWindow(handle) }
     /// Uptime seconds of the last REAL `.complete`-frame encode (live path). 0 = none yet.
-    public private(set) var lastCompleteEncode: TimeInterval = 0
+    public var lastCompleteEncode: TimeInterval { RustVideoHostFFI.staticIDRDeciderLastCompleteEncode(handle) }
     /// Uptime seconds of the last SYNTHETIC (timer-driven cached) re-encode. 0 = none yet.
-    public private(set) var lastSyntheticEncode: TimeInterval = 0
+    public var lastSyntheticEncode: TimeInterval { RustVideoHostFFI.staticIDRDeciderLastSyntheticEncode(handle) }
 
     public init(heartbeat: TimeInterval, quietWindow: TimeInterval? = nil) {
-        self.heartbeat = heartbeat
-        self.quietWindow = quietWindow ?? heartbeat
+        handle = RustVideoHostFFI.staticIDRDeciderNew(heartbeat: heartbeat, quietWindow: quietWindow)
+    }
+
+    deinit {
+        RustVideoHostFFI.staticIDRDeciderFree(handle)
     }
 
     /// The capture path encoded a REAL frame at `now`. Re-anchors the live clock so the
     /// timer stays quiet while the screen is live, and a heartbeat measures from the last
-    /// real frame.
-    public mutating func onCompleteFrame(now: TimeInterval) {
-        lastCompleteEncode = now
+    /// real frame. Delegates to the Rust core.
+    public func onCompleteFrame(now: TimeInterval) {
+        RustVideoHostFFI.staticIDRDeciderOnCompleteFrame(handle, now: now)
     }
 
-    /// The timer fired a synthetic re-encode at `now`. Re-anchor the synthetic clock.
-    public mutating func recordSynthetic(now: TimeInterval) {
-        lastSyntheticEncode = now
+    /// The timer fired a synthetic re-encode at `now`. Re-anchor the synthetic clock. Delegates
+    /// to the Rust core.
+    public func recordSynthetic(now: TimeInterval) {
+        RustVideoHostFFI.staticIDRDeciderRecordSynthetic(handle, now: now)
     }
 
-    /// Decision for a frameQueue timer tick. PURE (no mutation).
+    /// Decision for a frameQueue timer tick. PURE (no mutation), delegated to the Rust core.
     /// - `forcedLatched`: a client recovery/keyframe request is pending (drained by caller).
     /// - `hasRetainedBuffer`: a cached `.complete` pixel buffer exists to re-encode.
     /// Returns true iff the caller should re-encode the cached buffer as a forced IDR.
     public func shouldReencode(now: TimeInterval, forcedLatched: Bool, hasRetainedBuffer: Bool) -> Bool {
-        // No cached pixels ⇒ nothing to re-encode (e.g. before the first ever .complete frame).
-        guard hasRetainedBuffer else { return false }
-        // A real frame within the quiet window ⇒ the live path is (or just was) driving the
-        // stream; let it own the cadence, don't double-emit. (A recovery request while live is
-        // already serviced faster by the live `.complete` latch drain — the timer is the
-        // fallback only when the live path has gone quiet, so the quiet window gates forced too.)
-        let sinceComplete = now - lastCompleteEncode
-        if lastCompleteEncode != 0, sinceComplete < quietWindow { return false }
-        // Recovery request always wins once the live path is quiet (latency-critical: a client
-        // is frozen). Fire regardless of heartbeat phase.
-        if forcedLatched { return true }
-        // Otherwise: heartbeat — measured from the last SYNTHETIC emission only (SHARPNESS,
-        // 2026-06-10; was `max(lastComplete, lastSynthetic)`). Measuring from the last REAL frame
-        // made the FIRST crisp re-anchor after a scroll wait a full heartbeat (2.5 s of QP-coarse
-        // text) even though the quiet window had long passed; Parsec re-sharpens in ~1 s. With the
-        // synthetic-only anchor the first crisp fires as soon as the quiet window clears (~1 s
-        // after motion stops), while the steady-state static cadence stays one `heartbeat` apart.
-        if lastSyntheticEncode == 0 { return true } // armed, none emitted yet, quiet ⇒ fire now
-        return (now - lastSyntheticEncode) >= heartbeat
+        RustVideoHostFFI.staticIDRDeciderShouldReencode(
+            handle, now: now, forcedLatched: forcedLatched, hasRetainedBuffer: hasRetainedBuffer,
+        )
+    }
+
+    /// Value-equal iff all four observable anchors match (the former value struct's synthesized
+    /// `Equatable`); used only by the golden-parity sanity test, never in live control flow.
+    public static func == (lhs: StaticIDRDecider, rhs: StaticIDRDecider) -> Bool {
+        lhs.heartbeat == rhs.heartbeat && lhs.quietWindow == rhs.quietWindow
+            && lhs.lastCompleteEncode == rhs.lastCompleteEncode
+            && lhs.lastSyntheticEncode == rhs.lastSyntheticEncode
     }
 }
 

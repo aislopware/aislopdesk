@@ -653,6 +653,35 @@ AisdStatus aisd_recovery_message_encode(const AisdRecoveryMessage *msg, AisdByte
  * AISD_ERR_MALFORMED for an unknown type / trailing bytes; AISD_ERR_TRUNCATED for a short body. */
 AisdStatus aisd_recovery_message_decode(const uint8_t *data, size_t len, AisdRecoveryMessage *out);
 
+/* ---- static_idr_decider (opaque handle; host static-window forced-IDR heartbeat) ---- */
+
+typedef struct AisdStaticIdrDecider AisdStaticIdrDecider;
+
+/* Create a decider: heartbeat cadence (seconds); has_quiet_window != 0 sets quiet_window, else the
+ * core default (one cadence = heartbeat). Destroy with aisd_static_idr_decider_free. */
+AisdStaticIdrDecider *aisd_static_idr_decider_new(double heartbeat, double quiet_window,
+                                                  uint8_t has_quiet_window);
+
+/* Destroy a decider. NULL is a safe no-op. */
+void aisd_static_idr_decider_free(AisdStaticIdrDecider *decider);
+
+/* Getters (0.0 for a NULL handle). */
+double aisd_static_idr_decider_heartbeat(const AisdStaticIdrDecider *decider);
+double aisd_static_idr_decider_quiet_window(const AisdStaticIdrDecider *decider);
+double aisd_static_idr_decider_last_complete_encode(const AisdStaticIdrDecider *decider);
+double aisd_static_idr_decider_last_synthetic_encode(const AisdStaticIdrDecider *decider);
+
+/* Re-anchor the live clock (a REAL .complete frame at `now`). NULL is a no-op. */
+void aisd_static_idr_decider_on_complete_frame(AisdStaticIdrDecider *decider, double now);
+
+/* Re-anchor the synthetic clock (the timer fired a synthetic re-encode at `now`). NULL is a no-op. */
+void aisd_static_idr_decider_record_synthetic(AisdStaticIdrDecider *decider, double now);
+
+/* 1 => re-encode the cached buffer as a forced IDR now, else 0 (and 0 for a NULL handle).
+ * forced_latched / has_retained_buffer are read != 0. */
+uint8_t aisd_static_idr_decider_should_reencode(const AisdStaticIdrDecider *decider, double now,
+                                                uint8_t forced_latched, uint8_t has_retained_buffer);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
