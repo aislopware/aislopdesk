@@ -169,18 +169,27 @@ impl FrameReassembler {
 
         if header.flags.contains(Flags::PARITY) {
             let p_index = usize::from(header.frag_index);
-            // group size needs `self.fec` (disjoint field) + this entry's pinned tier.
-            let g_opt = self
-                .fec
-                .as_deref()
-                .and_then(|f| adaptive_fec::group_size(entry.fec_tier, f.group_size()));
+            // group size + m both need `self.fec` (disjoint field) + this entry's pinned tier.
+            let fec = self.fec.as_deref();
+            let g_opt = fec.and_then(|f| adaptive_fec::group_size(entry.fec_tier, f.group_size()));
+            let m = {
+                let default_m = fec.map_or(1, FecScheme::parity_count_per_group);
+                adaptive_fec::parity_count(entry.fec_tier, default_m).max(1)
+            };
             let data_boundary = match g_opt {
-                Some(g) => inverted_data_count(usize::from(entry.frag_count), g),
+                // m-aware boundary; on no solution fall back to the parity index itself (the
+                // pre-existing single-parity behavior, which used the total fallback inversion).
+                Some(g) => {
+                    invert_data_count(usize::from(entry.frag_count), g, m).unwrap_or(p_index)
+                }
                 None => p_index,
             };
             entry.data_count = Some(entry.data_count.unwrap_or(p_index).min(p_index));
-            let group_order = p_index.saturating_sub(data_boundary);
-            entry.parity.insert(group_order, fragment.payload);
+            // Parity is laid out group-major then parity-rank AFTER the data fragments, so
+            // `frag_index - data_boundary` IS the flat layout index `group_index * m + rank`
+            // (see `parity_index`). For m == 1 this collapses to the group order — byte-identical.
+            let parity_slot = p_index.saturating_sub(data_boundary);
+            entry.parity.insert(parity_slot, fragment.payload);
         } else {
             entry.data.insert(header.frag_index, fragment.payload);
         }
@@ -282,37 +291,108 @@ fn parity_group_size(fec: Option<&dyn FecScheme>, entry: &Pending) -> Option<usi
     fec.and_then(|f| adaptive_fec::group_size(entry.fec_tier, f.group_size()))
 }
 
+/// The PER-FRAME parity-shards-per-group count (`m`) for `entry`, derived from the frame's
+/// pinned FEC tier via [`adaptive_fec::parity_count`], floored to at least 1.
+///
+/// The tier's `default_m` is the configured scheme's own
+/// [`parity_count_per_group`](FecScheme::parity_count_per_group) (`1` for the production XOR /
+/// `m == 1` codec), so today this returns `1` for EVERY frame and the receive path is
+/// byte-identical to the single-parity world. A no-FEC client has no parity, so `m` is `1`
+/// (immaterial — no recovery is attempted). When the tier→m table later gains `m > 1` values,
+/// this is the single point through which the reassembler learns the per-frame multiplicity.
+fn parity_count(fec: Option<&dyn FecScheme>, entry: &Pending) -> usize {
+    let default_m = fec.map_or(1, FecScheme::parity_count_per_group);
+    adaptive_fec::parity_count(entry.fec_tier, default_m).max(1)
+}
+
 /// Resolves how many of a frame's fragments are DATA (vs FEC parity). With FEC, always
 /// derive `data_count` from the unambiguous fragCount inversion (never the observed
 /// parity boundary, which a lost group-0 parity would shift). With no FEC,
 /// `data_count == frag_count`.
+///
+/// The inversion is m-aware: it solves `frag_count = data + m * ceil(data / g)` for the
+/// per-frame `m` ([`parity_count`]). When no data count solves it (a corrupt header, or a
+/// `frag_count` shaped for a different `m`) it falls back to `frag_count` — byte-identical to
+/// the original `m == 1` fallback (which returned the total on no solution).
 fn resolved_data_count(fec: Option<&dyn FecScheme>, entry: &Pending) -> usize {
     let total = usize::from(entry.frag_count);
     parity_group_size(fec, entry).map_or_else(
         || entry.data_count.unwrap_or(total),
-        |g| inverted_data_count(total, g),
+        |g| invert_data_count(total, g, parity_count(fec, entry)).unwrap_or(total),
     )
 }
 
-/// Inverts `frag_count = data_count + ceil(data_count / group_size)` to recover the data
-/// fragment count from the total. Monotonic in `data_count`, so a descending scan finds
-/// the unique solution. A zero `group_size` (defensive) returns `total` unchanged.
-const fn inverted_data_count(total: usize, group_size: usize) -> usize {
-    if group_size < 1 {
-        return total;
+/// Inverts `frag_count = data_count + m * ceil(data_count / group_size)` for `data_count`.
+///
+/// `m` is the parity-shards-per-group multiplicity (`m == 1` is the single-parity-per-group
+/// case). The right-hand side is monotonic non-decreasing in `data_count`, so a descending
+/// scan finds the (unique, when it exists) solution.
+///
+/// Returns `None` when no `data_count` solves the equation for the given `(group_size, m)` —
+/// e.g. a `frag_count` that cannot be `data + m*groups` for any data count (a corrupt header,
+/// or a `frag_count` shaped for a different `m`). The single-parity call sites recover the
+/// pre-existing total-on-no-solution fallback via [`inverted_data_count`].
+///
+/// A non-positive `group_size` or `m` (defensive, off hostile input) yields `None`.
+#[must_use]
+pub const fn invert_data_count(frag_count: usize, group_size: usize, m: usize) -> Option<usize> {
+    if group_size < 1 || m < 1 {
+        return None;
     }
-    let mut d = total;
+    let mut d = frag_count;
     while d > 0 {
-        let parity = d.div_ceil(group_size);
-        if d + parity == total {
-            return d;
+        let parity = m * d.div_ceil(group_size);
+        if d + parity == frag_count {
+            return Some(d);
         }
-        if d + parity < total {
-            break;
+        if d + parity < frag_count {
+            // monotonic: every smaller `d` undershoots even more — no solution exists.
+            return None;
         }
         d -= 1;
     }
-    total
+    // d == 0: a frame with zero data fragments has zero parity, so frag_count must be 0.
+    if frag_count == 0 { Some(0) } else { None }
+}
+
+/// Whether a group is unrecoverable: it lost more data fragments than its budget `m` repairs.
+///
+/// With `m == 1` this is the original `missing >= 2` test; an `[k + m, k]` code recovers up
+/// to `m` erasures per group, so `missing > m` is terminal.
+#[must_use]
+pub const fn group_is_hopeless(missing_in_group: usize, m: usize) -> bool {
+    missing_in_group > m
+}
+
+/// The flat index, within a frame's group-major/parity-rank parity array, of the parity
+/// shard at `rank` (`0..m`) of group `group_index`: `group_index * m + rank`.
+///
+/// Mirrors the [`crate::fec::FecScheme`] parity layout (group 0's rank-0..(m-1), then group
+/// 1's, …). For `m == 1` this collapses to `group_index` — byte-identical to the v1 layout
+/// where parity is keyed by group order alone.
+#[must_use]
+pub const fn parity_index(group_index: usize, rank: usize, m: usize) -> usize {
+    group_index * m + rank
+}
+
+/// Whether a group with `missing_in_group` lost data fragments can be repaired GIVEN the
+/// count of that group's parity shards that have actually survived (arrived).
+///
+/// A group is repairable iff it lost at least one fragment, the loss is within the code's
+/// per-group budget `m` ([`group_is_hopeless`] is false), AND enough of its `m` parity
+/// shards survived to cover the erasures (`surviving_parity >= missing_in_group`). An `[k +
+/// m, k]` MDS code needs exactly `missing` independent parity shards to solve `missing`
+/// erasures. With `m == 1` this is "one hole AND that group's single parity is present" —
+/// the original single-parity condition.
+#[must_use]
+pub const fn group_is_recoverable(
+    missing_in_group: usize,
+    surviving_parity: usize,
+    m: usize,
+) -> bool {
+    missing_in_group >= 1
+        && !group_is_hopeless(missing_in_group, m)
+        && surviving_parity >= missing_in_group
 }
 
 /// Returns the reassembled AVCC bytes if all data fragments are present (after FEC
@@ -330,8 +410,13 @@ fn assemble(fec: Option<&dyn FecScheme>, entry: &Pending) -> Option<(Vec<u8>, bo
 
     let had_hole = data_fragments.iter().any(Option::is_none);
     if had_hole && let (Some(fec), Some(g)) = (fec, parity_group_size(fec, entry)) {
-        let parity_count = usize::from(entry.frag_count).saturating_sub(data_count);
-        let parity_fragments: Vec<Option<Vec<u8>>> = (0..parity_count)
+        // The full flat parity array in group-major then parity-rank order
+        // (`parity[group * m + rank]`) — exactly the layout `FecScheme::recover` indexes. A
+        // lost parity shard leaves its slot `None`; the codec recovers up to `m` data losses
+        // per group from the survivors. `m == 1` collapses to one parity per group (the v1
+        // XOR layout), so this is byte-identical for every current frame.
+        let parity_slots = usize::from(entry.frag_count).saturating_sub(data_count);
+        let parity_fragments: Vec<Option<Vec<u8>>> = (0..parity_slots)
             .map(|i| entry.parity.get(&i).cloned())
             .collect();
         fec.recover(&mut data_fragments, &parity_fragments, g);
@@ -347,8 +432,13 @@ fn assemble(fec: Option<&dyn FecScheme>, entry: &Pending) -> Option<(Vec<u8>, bo
     Some((avcc, had_hole))
 }
 
-/// Whether a frame still has a chance to complete (all data present or FEC could fill
-/// remaining holes).
+/// Whether a frame still has a chance to complete (all data present, or FEC could fill
+/// the remaining holes from the parity it already holds).
+///
+/// m-aware: a group is hopeless when it lost more than its budget `m`
+/// ([`group_is_hopeless`]); a group still missing data needs as many SURVIVING parity shards
+/// as it has holes ([`group_is_recoverable`]). For `m == 1` this is the original "no group
+/// with >=2 holes, and any single-hole group has its (one) parity present" — byte-identical.
 fn can_eventually_complete(fec: Option<&dyn FecScheme>, entry: &Pending) -> bool {
     let data_count = resolved_data_count(fec, entry);
     if data_count == 0 {
@@ -358,6 +448,7 @@ fn can_eventually_complete(fec: Option<&dyn FecScheme>, entry: &Pending) -> bool
         // No FEC (or OFF tier): ANY missing data fragment is terminal once "old".
         return !(0..data_count).any(|i| !entry.data.contains_key(&(i as u16)));
     };
+    let m = parity_count(fec, entry);
     let mut index = 0;
     let mut group_index = 0;
     while index < data_count {
@@ -365,11 +456,21 @@ fn can_eventually_complete(fec: Option<&dyn FecScheme>, entry: &Pending) -> bool
         let missing = (index..upper)
             .filter(|&i| !entry.data.contains_key(&(i as u16)))
             .count();
-        if missing >= 2 {
+        if group_is_hopeless(missing, m) {
             return false;
         }
-        if missing == 1 && !entry.parity.contains_key(&group_index) {
-            return false;
+        if missing >= 1 {
+            // The group's parity shards already held (its `m` slots at group_index*m + rank).
+            let surviving = (0..m)
+                .filter(|&rank| {
+                    entry
+                        .parity
+                        .contains_key(&parity_index(group_index, rank, m))
+                })
+                .count();
+            if !group_is_recoverable(missing, surviving, m) {
+                return false;
+            }
         }
         index += g;
         group_index += 1;
@@ -378,9 +479,16 @@ fn can_eventually_complete(fec: Option<&dyn FecScheme>, entry: &Pending) -> bool
 }
 
 /// True when the only obstacle is FEC parity that has not yet arrived: every group with a
-/// missing data fragment is missing exactly one (XOR-recoverable) and that group's parity
-/// has not been ingested. Such a frame is not permanently hopeless, so the sweep grants it
-/// the reorder grace.
+/// missing data fragment is still within its `m`-erasure budget but does not YET hold enough
+/// surviving parity to repair it. Such a frame is not permanently hopeless — its late,
+/// reordered parity could still complete it — so the sweep grants it the reorder grace.
+///
+/// m-aware: a group with `missing > m` is permanently hopeless ([`group_is_hopeless`]) → not
+/// merely awaiting. A group already holding `surviving_parity >= missing`
+/// ([`group_is_recoverable`]) is repairable NOW, not "awaiting". The frame is "awaiting" iff
+/// at least one group is repairable-in-principle (`missing <= m`) but short of parity, and no
+/// group is permanently hopeless. For `m == 1` this is the original "exactly one hole and its
+/// single parity not yet ingested" — byte-identical.
 fn awaiting_recoverable_parity(fec: Option<&dyn FecScheme>, entry: &Pending) -> bool {
     let Some(g) = parity_group_size(fec, entry) else {
         return false;
@@ -389,6 +497,7 @@ fn awaiting_recoverable_parity(fec: Option<&dyn FecScheme>, entry: &Pending) -> 
     if data_count == 0 {
         return false;
     }
+    let m = parity_count(fec, entry);
     let mut index = 0;
     let mut group_index = 0;
     let mut saw_repairable_hole = false;
@@ -397,14 +506,21 @@ fn awaiting_recoverable_parity(fec: Option<&dyn FecScheme>, entry: &Pending) -> 
         let missing = (index..upper)
             .filter(|&i| !entry.data.contains_key(&(i as u16)))
             .count();
-        if missing >= 2 {
-            return false; // not parity-repairable: permanently hopeless
+        if group_is_hopeless(missing, m) {
+            return false; // beyond the m-erasure budget: permanently hopeless
         }
-        if missing == 1 {
-            if entry.parity.contains_key(&group_index) {
-                return false; // parity already here → not "awaiting"
+        if missing >= 1 {
+            let surviving = (0..m)
+                .filter(|&rank| {
+                    entry
+                        .parity
+                        .contains_key(&parity_index(group_index, rank, m))
+                })
+                .count();
+            if group_is_recoverable(missing, surviving, m) {
+                return false; // enough parity already here → repairable now, not "awaiting"
             }
-            saw_repairable_hole = true;
+            saw_repairable_hole = true; // within budget but short of parity → awaiting more
         }
         index += g;
         group_index += 1;
@@ -508,14 +624,202 @@ mod tests {
         assert_eq!(r.ingest(frag), ReassemblyResult::Stale);
     }
 
+    // ----- pure m-aware receive-path helpers -----------------------------------------------
+
+    /// The pre-existing single-parity (`m == 1`) boundary inversion the reassembler used
+    /// BEFORE it became m-aware: `frag_count = data + ceil(data/g)`, descending scan, returns
+    /// `total` when `group_size < 1` OR no data count solves it. The m-aware
+    /// [`invert_data_count`] with `m == 1` (plus the `.unwrap_or(total)` the call sites apply)
+    /// MUST reproduce this exactly — the byte-identity anchor for today's wire.
+    fn legacy_inverted_data_count(total: usize, group_size: usize) -> usize {
+        if group_size < 1 {
+            return total;
+        }
+        let mut d = total;
+        while d > 0 {
+            let parity = d.div_ceil(group_size);
+            if d + parity == total {
+                return d;
+            }
+            if d + parity < total {
+                break;
+            }
+            d -= 1;
+        }
+        total
+    }
+
     #[test]
-    fn inverted_data_count_matches_forward() {
-        // forward: data + ceil(data/g); inversion must recover `data`.
-        for g in 1..=10usize {
-            for data in 1..=200usize {
-                let total = data + data.div_ceil(g);
-                assert_eq!(inverted_data_count(total, g), data, "g={g} data={data}");
+    fn invert_data_count_m1_matches_pre_existing_inversion() {
+        // Across a WIDE range of (frag_count, group_size), the m-aware solver at m == 1 (with
+        // the call-site total-fallback) equals the original inversion byte-for-byte — the
+        // m == 1 == today guarantee for the data/parity boundary.
+        for g in 1..=20usize {
+            for total in 0..=400usize {
+                let got = invert_data_count(total, g, 1).unwrap_or(total);
+                assert_eq!(
+                    got,
+                    legacy_inverted_data_count(total, g),
+                    "m=1 inversion mismatch total={total} g={g}"
+                );
             }
         }
+        // group_size 0 (defensive): None → call-site fallback to total, like the legacy guard.
+        for total in 0..=8usize {
+            assert_eq!(invert_data_count(total, 0, 1), None);
+            assert_eq!(legacy_inverted_data_count(total, 0), total);
+        }
+    }
+
+    #[test]
+    fn invert_data_count_round_trips_forward_for_m1_m2_m3() {
+        // For every (g, m, data), the forward shape frag_count = data + m*ceil(data/g) MUST
+        // invert back to `data` exactly. This is the load-bearing generalization.
+        for m in 1..=3usize {
+            for g in 1..=12usize {
+                for data in 1..=200usize {
+                    let frag_count = data + m * data.div_ceil(g);
+                    assert_eq!(
+                        invert_data_count(frag_count, g, m),
+                        Some(data),
+                        "round-trip failed m={m} g={g} data={data} frag_count={frag_count}"
+                    );
+                }
+                // data == 0 ⇒ zero parity ⇒ frag_count 0.
+                assert_eq!(invert_data_count(0, g, m), Some(0), "zero-data m={m} g={g}");
+            }
+        }
+    }
+
+    #[test]
+    fn invert_data_count_none_when_no_solution() {
+        // A frag_count shaped for a different m has no solution for the wrong m.
+        // data=10, g=5, m=2 ⇒ frag_count = 10 + 2*2 = 14. Solving 14 with m=1 has no answer:
+        //   d + ceil(d/5) == 14 ⇒ d=12→12+3=15, d=11→11+3=14? 11+ceil(11/5)=11+3=14 ✓ — that
+        // DOES solve, so pick a genuinely-unsolvable one: m=3, g=4. frag_count=2 has no d>=1
+        // (d=1 ⇒ 1+3=4; d=0⇒0) and d=0 needs frag_count 0.
+        assert_eq!(invert_data_count(2, 4, 3), None);
+        assert_eq!(invert_data_count(3, 4, 3), None);
+        // m or group_size below 1 ⇒ None (defensive).
+        assert_eq!(invert_data_count(10, 0, 1), None);
+        assert_eq!(invert_data_count(10, 5, 0), None);
+    }
+
+    #[test]
+    fn group_is_hopeless_is_missing_greater_than_m() {
+        for m in 1..=4usize {
+            for missing in 0..=8usize {
+                assert_eq!(
+                    group_is_hopeless(missing, m),
+                    missing > m,
+                    "hopeless m={m} missing={missing}"
+                );
+            }
+        }
+        // m == 1 special-case: the original `missing >= 2` test.
+        assert!(!group_is_hopeless(0, 1));
+        assert!(!group_is_hopeless(1, 1));
+        assert!(group_is_hopeless(2, 1));
+    }
+
+    #[test]
+    fn parity_index_is_group_major_then_rank() {
+        // m == 1 collapses to the group index (the v1 layout).
+        for group in 0..5usize {
+            assert_eq!(parity_index(group, 0, 1), group);
+        }
+        // m >= 2: group-major then rank.
+        assert_eq!(parity_index(0, 0, 3), 0);
+        assert_eq!(parity_index(0, 1, 3), 1);
+        assert_eq!(parity_index(0, 2, 3), 2);
+        assert_eq!(parity_index(1, 0, 3), 3);
+        assert_eq!(parity_index(2, 1, 3), 7);
+        // Every (group, rank) for m in 1..=3 maps to a unique, contiguous slot.
+        for m in 1..=3usize {
+            let mut expected = 0;
+            for group in 0..4usize {
+                for rank in 0..m {
+                    assert_eq!(parity_index(group, rank, m), expected, "m={m}");
+                    expected += 1;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn group_is_recoverable_needs_budget_and_enough_surviving_parity() {
+        for m in 1..=3usize {
+            for missing in 0..=m + 2 {
+                for surviving in 0..=m {
+                    let want = missing >= 1 && missing <= m && surviving >= missing;
+                    assert_eq!(
+                        group_is_recoverable(missing, surviving, m),
+                        want,
+                        "recoverable m={m} missing={missing} surviving={surviving}"
+                    );
+                }
+            }
+        }
+        // m == 1: recoverable iff exactly one hole AND its single parity survived.
+        assert!(!group_is_recoverable(0, 1, 1)); // no hole
+        assert!(group_is_recoverable(1, 1, 1)); // one hole, parity present
+        assert!(!group_is_recoverable(1, 0, 1)); // one hole, parity lost
+        assert!(!group_is_recoverable(2, 1, 1)); // two holes > budget
+    }
+
+    // ----- m > 1 reachability through the EXISTING code path (test-only m=3 codec) ----------
+    //
+    // The production codec is m == 1, so adaptive_fec::parity_count maps every tier to m == 1
+    // and nothing changes on the wire today. A test that wires an m > 1 ReedSolomonFec proves
+    // the reassembler's m-awareness end-to-end WITHOUT touching the live tier→m table.
+
+    #[test]
+    fn rs_m3_reassembler_recovers_up_to_three_losses_per_group() {
+        use crate::fec::ReedSolomonFec;
+        // k=4 data + m=3 parity per group. default_m = parity_count_per_group() = 3, and
+        // tier 0 → parity_count(0, 3) = 3, so the reassembler expects m=3 for this frame.
+        let mut p = VideoPacketizer::new(Some(Box::new(ReedSolomonFec::new(4, 3))));
+        // 4 data fragments ⇒ exactly one group of k=4 + 3 parity = 7 fragments.
+        let frame = vec![7u8; VideoPacketizer::MAX_PAYLOAD_SIZE * 4];
+        let frags = p.packetize(&frame, keyframe_opts());
+        assert_eq!(frags.len(), 7, "4 data + 3 parity");
+
+        // Drop THREE distinct data fragments (== m); RS must recover all three.
+        let mut r = FrameReassembler::new(Some(Box::new(ReedSolomonFec::new(4, 3))), 4);
+        let mut completed = None;
+        for (i, f) in frags.into_iter().enumerate() {
+            if i == 0 || i == 1 || i == 2 {
+                continue; // three data holes in the single group (within the m=3 budget)
+            }
+            if let ReassemblyResult::Completed(rf) = r.ingest(f) {
+                completed = Some(rf);
+            }
+        }
+        let rf = completed.expect("RS m=3 should recover three losses in one group");
+        assert_eq!(rf.avcc, frame);
+        assert!(rf.recovered_via_fec);
+    }
+
+    #[test]
+    fn rs_m3_reassembler_drops_when_losses_exceed_budget() {
+        use crate::fec::ReedSolomonFec;
+        // Same m=3 codec, but lose FOUR data fragments in the one group (> m=3) AND advance the
+        // frontier with a newer frame so the hopeless sweep fires → the frame is dropped.
+        let mut p = VideoPacketizer::new(Some(Box::new(ReedSolomonFec::new(5, 3))));
+        let frame0 = vec![1u8; VideoPacketizer::MAX_PAYLOAD_SIZE * 5]; // one group of 5 + 3 parity
+        let frame1 = vec![2u8; VideoPacketizer::MAX_PAYLOAD_SIZE];
+        let f0 = p.packetize(&frame0, keyframe_opts());
+        let f1 = p.packetize(&frame1, keyframe_opts());
+
+        let mut r = FrameReassembler::new(Some(Box::new(ReedSolomonFec::new(5, 3))), 0);
+        // Deliver only data fragment 4 + all parity of frame 0 (drop data 0..3 = four holes > m).
+        r.ingest(f0[4].clone());
+        for f in &f0[5..] {
+            r.ingest(f.clone());
+        }
+        // A newer frame advances the frontier → frame 0 swept as hopeless.
+        r.ingest(f1[0].clone());
+        assert_eq!(r.next_dropped_frame(), Some(0));
+        assert_eq!(r.next_dropped_frame(), None);
     }
 }

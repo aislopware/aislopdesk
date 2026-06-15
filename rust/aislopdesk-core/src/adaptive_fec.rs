@@ -45,6 +45,32 @@ pub const fn group_size(tier: u8, default_group_size: usize) -> Option<usize> {
     }
 }
 
+/// Maps a wire tier index to the number of parity shards per group (the code's `m`) the
+/// receive path must expect, or `default_m` for any tier with no explicit `m` override.
+///
+/// TOTAL over every `u8` — a malformed tier off a corrupt fragment can never trap.
+///
+/// CRITICAL — every tier that exists on the wire today maps to `m == 1`, so this function
+/// is pure infrastructure and changes NO current behavior: a frame's data/parity split,
+/// recovery budget, and emitted bytes are byte-identical to the single-parity-per-group
+/// world. It exists so the reassembler can be wired m-aware NOW; the actual `m > 1` tier
+/// values are chosen and gated in a LATER workflow by editing this one table. Passing a
+/// `default_m > 1` here is INFRASTRUCTURE-ONLY (test harnesses proving the m-aware path);
+/// the live receive path derives `default_m` from the configured FEC scheme, which is `1`
+/// for the production XOR/`m == 1` codec.
+///
+/// * tier 1 (OFF) → `1` (no parity is sent, so `m` is moot; kept at the byte-identical `1`).
+/// * every other tier → `default_m`.
+#[must_use]
+pub const fn parity_count(tier: u8, default_m: usize) -> usize {
+    match tier {
+        // The OFF tier sends no parity at all; its `m` is never consulted, but pin it to the
+        // byte-identical 1 so a future table edit can't accidentally imply parity on an OFF frame.
+        1 => 1,
+        _ => default_m,
+    }
+}
+
 /// Pure resolution of the OFF-tier escape hatch (`AISLOPDESK_FEC_ALLOW_OFF=1`), testable
 /// without process state.
 #[must_use]
@@ -230,6 +256,33 @@ mod tests {
         // reserved + any other → default
         assert_eq!(group_size(5, 5), Some(5));
         assert_eq!(group_size(200, 7), Some(7));
+    }
+
+    #[test]
+    fn parity_count_every_current_tier_is_m1() {
+        // The load-bearing invariant: with the production default_m == 1, EVERY tier that
+        // exists on the wire today resolves to m == 1 — no current frame changes behavior.
+        for tier in 0u8..=7 {
+            assert_eq!(
+                parity_count(tier, 1),
+                1,
+                "tier {tier} must be m=1 with default_m=1 (no wire change today)"
+            );
+        }
+        // And across the full u8 range a corrupt tier never traps and stays at the default.
+        for tier in 0u8..=255 {
+            assert_eq!(parity_count(tier, 1), 1, "tier {tier} m=1 default");
+        }
+    }
+
+    #[test]
+    fn parity_count_honours_a_test_only_default_m() {
+        // INFRASTRUCTURE reachability: a harness can pass default_m > 1 to prove the m-aware
+        // path; the OFF tier (1) stays pinned to 1, every other tier takes the default.
+        assert_eq!(parity_count(0, 3), 3);
+        assert_eq!(parity_count(2, 2), 2);
+        assert_eq!(parity_count(1, 4), 1, "OFF tier never implies parity");
+        assert_eq!(parity_count(7, 2), 2, "reserved tier follows default_m");
     }
 
     #[test]
