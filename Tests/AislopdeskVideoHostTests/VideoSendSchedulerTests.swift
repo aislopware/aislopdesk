@@ -15,7 +15,7 @@ final class VideoSendSchedulerTests: XCTestCase {
     }
 
     func testFrameSchedulesAllFragmentsOnVideoChannelInOrder() {
-        var packetizer = VideoPacketizer(fec: XORParityFEC())
+        let packetizer = VideoPacketizer(fec: XORParityFEC())
         let frame = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize * 2 + 9])
         let fragments = packetizer.packetize(frame: frame, keyframe: true)
         let outgoing = scheduler.scheduleFrame(fragments)
@@ -28,7 +28,7 @@ final class VideoSendSchedulerTests: XCTestCase {
     }
 
     func testFrameRoundTripsThroughSchedulerToReassembler() throws {
-        var packetizer = VideoPacketizer()
+        let packetizer = VideoPacketizer()
         let frame = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize + 100, 30])
         let fragments = packetizer.packetize(frame: frame, keyframe: true, crisp: true)
         let outgoing = scheduler.scheduleFrame(fragments)

@@ -22,7 +22,7 @@ final class ReassemblyPacingTests: XCTestCase {
     }
 
     func testReassembleMultiFragmentFrameMatchesSource() throws {
-        var packetizer = VideoPacketizer()
+        let packetizer = VideoPacketizer()
         let frame = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize + 200, 40])
         let fragments = packetizer.packetize(frame: frame, keyframe: true)
 
@@ -36,7 +36,7 @@ final class ReassemblyPacingTests: XCTestCase {
     }
 
     func testFECRecoversSingleLostDataFragment() throws {
-        var packetizer = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+        let packetizer = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
         let frame = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize * 2 + 50])
         let fragments = packetizer.packetize(frame: frame, keyframe: true)
         // Drop the FIRST data fragment; FEC parity (sent last) must recover it.
@@ -54,7 +54,7 @@ final class ReassemblyPacingTests: XCTestCase {
         // No FEC: a missing data fragment in an OLD frame is terminal once a newer
         // frame's fragments advance the loss frontier. This is the path the orchestrator
         // turns into a requestLTRRefresh.
-        var packetizer = VideoPacketizer()
+        let packetizer = VideoPacketizer()
         let frameA = makeAVCC(naluSizes: [VideoPacketizer.maxPayloadSize + 10, 10]) // multi-fragment
         let fragsA = packetizer.packetize(frame: frameA, keyframe: true)
         let frameB = makeAVCC(naluSizes: [20])

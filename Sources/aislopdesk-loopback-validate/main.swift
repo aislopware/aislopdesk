@@ -224,7 +224,7 @@ func runScenario(
         return stats
     }
 
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     let dec = VideoDecoder(decodedFrameHandler: { _ in decodedCounter.value += 1 })
     dec.outputFullRange = fullRange
@@ -346,7 +346,7 @@ func runLTRHWScenario(frames: Int) -> ScenarioStats {
         return stats
     }
 
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     let dec = VideoDecoder(decodedFrameHandler: { _ in decodedCounter.value += 1 })
     var ltrCtl = LTRController()
@@ -632,7 +632,7 @@ func runAckRefArm(
         return r
     }
 
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     let mad = MADBox()
     mad.lowMotion = lowMotion
@@ -1111,7 +1111,7 @@ func runClosedLoopAdaptation(
 
     // ── Host-side real components ──
     let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: kWidth, pixelHeight: kHeight, fps: kFPS, floor: 2_000_000)
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     var est = NetworkEstimate()
     var cc = LiveCongestionController(ceiling: ceiling)
@@ -1382,7 +1382,7 @@ func runBottleneckQueueScenario(frames: Int, verbose: Bool) -> BottleneckResult 
     let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: kWidth, pixelHeight: kHeight, fps: kFPS, floor: 2_000_000)
     let capacityBps = ceiling * 55 / 100 // between the 25% floor and the ceiling — convergence is reachable
     result.capacityMbps = Double(capacityBps) / 1_000_000.0
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     var est = NetworkEstimate()
     var cc = LiveCongestionController(ceiling: ceiling)
@@ -1584,7 +1584,7 @@ func runGradientOnsetArm(gradientEnabled: Bool, verbose: Bool) -> GradientArmTra
     trace.capacityMbps = Double(squeezeCapacityBps) / 1_000_000.0
     let warmFrames = 120, squeezeFrames = 90, restoreFrames = 60
 
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     var est = NetworkEstimate()
     var cc = LiveCongestionController(ceiling: ceiling, gradientCutEnabled: gradientEnabled)
@@ -1754,7 +1754,7 @@ func runGradientOnsetArm(gradientEnabled: Bool, verbose: Bool) -> GradientArmTra
 /// rides above the saw and the raw-RTT corroboration never clears the slack gate.
 func runGradientWobbleArm(frames: Int, verbose: Bool) -> Int {
     let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: kWidth, pixelHeight: kHeight, fps: kFPS, floor: 2_000_000)
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     var est = NetworkEstimate()
     var cc = LiveCongestionController(ceiling: ceiling, gradientCutEnabled: true)
@@ -1997,7 +1997,7 @@ func runFPSGovernorCliffScenario(verbose: Bool) -> FPSGovResult {
     var result = FPSGovResult()
 
     let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: kWidth, pixelHeight: kHeight, fps: kFPS, floor: 2_000_000)
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     var est = NetworkEstimate()
     var cc = LiveCongestionController(ceiling: ceiling)
@@ -2270,7 +2270,7 @@ func runFPSGovernorWeatherArm(frames: Int, verbose: Bool) -> FPSGovWeatherResult
     var result = FPSGovWeatherResult()
 
     let ceiling = LiveBitratePolicy.targetBitrate(pixelWidth: kWidth, pixelHeight: kHeight, fps: kFPS, floor: 2_000_000)
-    var pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
+    let pk = VideoPacketizer(fec: XORParityFEC(groupSize: 5))
     var ra = FrameReassembler(fec: XORParityFEC(groupSize: 5))
     var est = NetworkEstimate()
     var cc = LiveCongestionController(ceiling: ceiling)

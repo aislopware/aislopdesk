@@ -9,6 +9,7 @@
 #include "aislopdesk_ffi.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures = 0;
@@ -853,6 +854,122 @@ int main(void) {
               "zero dims ⇒ sentinel");
         CHECK(aisd_frame_hash_nv12(fy, 4, 8, 2, NULL, 0) == AISD_FRAME_HASH_SENTINEL,
               "stride < width ⇒ sentinel");
+    }
+
+    /* 24. packetizer: the SEND hot path (the symmetric counterpart of 22's reassembler). Fragment a
+     * synthetic AVCC frame into wire datagrams, assert the count + each fragment's header, that the
+     * data fragments concatenate back to the AVCC, and that feeding the produced datagrams to the
+     * reassembler reconstructs the exact frame. Then an m=2 case producing 2 parity per group. */
+    {
+        /* invalid FEC config => NULL (no abort across the boundary). */
+        CHECK(aisd_video_packetizer_new(200, 56) == NULL, "packetizer rejects k+m>255");
+        AisdVideoPacketizer *pk = aisd_video_packetizer_new(0, 1); /* k==0 => no-FEC */
+        CHECK(pk != NULL, "packetizer new (no-fec)");
+        CHECK(aisd_video_packetizer_peek_next_frame_id(pk) == 0, "peek frame_id starts 0");
+
+        /* MAX_PAYLOAD_SIZE = 1200 - 19 = 1181; 1181*2 + 37 => 3 MTU payloads. */
+        const size_t flen = 1181 * 2 + 37;
+        uint8_t *avcc = (uint8_t *)malloc(flen);
+        CHECK(avcc != NULL, "avcc alloc");
+        for (size_t i = 0; i < flen; i++) { avcc[i] = (uint8_t)(i * 7 + 1); }
+
+        AisdPacketizeOptions popts;
+        memset(&popts, 0, sizeof(popts));
+        popts.keyframe = 1;
+        popts.host_send_ts_millis = 4242;
+
+        AisdBytesArray frags = {NULL, 0};
+        CHECK(aisd_packetize(pk, avcc, flen, popts, &frags) == AISD_OK, "packetize ok");
+        CHECK(frags.count == 3, "1181*2+37 => 3 fragments");
+        /* Parse each returned datagram's header (big-endian) and rebuild the data section. */
+        uint8_t rebuilt[1181 * 2 + 37];
+        size_t rebuilt_len = 0;
+        int all_keyframe = 1, no_parity = 1, frame_id_ok = 1, count_ok = 1;
+        for (size_t i = 0; i < frags.count; i++) {
+            const uint8_t *d = frags.items[i].ptr;
+            size_t dl = frags.items[i].len;
+            CHECK(dl >= 19, "datagram carries the header");
+            uint32_t frame_id = ((uint32_t)d[4] << 24) | ((uint32_t)d[5] << 16) |
+                                ((uint32_t)d[6] << 8) | (uint32_t)d[7];
+            uint16_t frag_count = (uint16_t)((d[10] << 8) | d[11]);
+            uint8_t fl = d[12];
+            uint16_t payload_len = (uint16_t)((d[17] << 8) | d[18]);
+            CHECK(dl == (size_t)19 + payload_len, "payload_len matches the body");
+            if (frame_id != 0) { frame_id_ok = 0; }
+            if (frag_count != 3) { count_ok = 0; }
+            if ((fl & 0x01) == 0) { all_keyframe = 0; }
+            if ((fl & 0x02) != 0) { no_parity = 0; }
+            memcpy(rebuilt + rebuilt_len, d + 19, payload_len);
+            rebuilt_len += payload_len;
+        }
+        CHECK(frame_id_ok && count_ok, "shared frame_id 0, frag_count 3");
+        CHECK(all_keyframe && no_parity, "keyframe bit set, no parity (no-FEC)");
+        CHECK(rebuilt_len == flen && memcmp(rebuilt, avcc, flen) == 0,
+              "data fragments concatenate back to the AVCC");
+        CHECK(aisd_video_packetizer_peek_next_frame_id(pk) == 1, "peek frame_id advanced");
+        CHECK(aisd_video_packetizer_peek_next_stream_seq(pk) == 3, "peek stream_seq advanced");
+
+        /* Feed the produced datagrams to the reassembler => the exact frame reconstructs. */
+        AisdReassembler *pra = aisd_reassembler_new(0, 1, 2);
+        int reassembled_ok = 0;
+        for (size_t i = 0; i < frags.count; i++) {
+            AisdReassemblyResult pr;
+            memset(&pr, 0, sizeof(pr));
+            CHECK(aisd_reassembler_ingest(pra, frags.items[i].ptr, frags.items[i].len, &pr) == AISD_OK,
+                  "reassembler ingest of a produced datagram");
+            if (pr.kind == AISD_REASSEMBLY_COMPLETED) {
+                reassembled_ok = (pr.avcc.len == flen && memcmp(pr.avcc.ptr, avcc, flen) == 0);
+                aisd_reassembly_result_free(&pr);
+            }
+        }
+        CHECK(reassembled_ok, "produced datagrams reassemble to the sent frame (send==recv SoT)");
+        aisd_reassembler_free(pra);
+
+        aisd_bytes_array_free(&frags);
+        aisd_bytes_array_free(&frags); /* idempotent */
+        CHECK(frags.items == NULL && frags.count == 0, "fragment array freed + zeroed");
+        aisd_video_packetizer_free(pk);
+
+        /* m=2: 5 data fragments at group 2 => ceil(5/2)=3 groups * m=2 = 6 parity. */
+        AisdVideoPacketizer *pk2 = aisd_video_packetizer_new(2, 2);
+        const size_t blen = 1181 * 5;
+        for (size_t i = 0; i < flen; i++) { avcc[i] = (uint8_t)(i % 251); }
+        uint8_t *big = (uint8_t *)malloc(blen);
+        CHECK(big != NULL, "big alloc");
+        for (size_t i = 0; i < blen; i++) { big[i] = (uint8_t)(i % 251); }
+        AisdPacketizeOptions popts2;
+        memset(&popts2, 0, sizeof(popts2));
+        popts2.fec_group_size = 2;
+        AisdBytesArray frags2 = {NULL, 0};
+        CHECK(aisd_packetize(pk2, big, blen, popts2, &frags2) == AISD_OK, "packetize m=2 ok");
+        size_t data_n = 0, parity_n = 0;
+        for (size_t i = 0; i < frags2.count; i++) {
+            uint8_t fl = frags2.items[i].ptr[12];
+            if ((fl & 0x02) != 0) { parity_n++; } else { data_n++; }
+        }
+        CHECK(data_n == 5 && parity_n == 6, "m=2 produces 6 parity (3 groups * 2)");
+        aisd_bytes_array_free(&frags2);
+        aisd_video_packetizer_free(pk2);
+        aisd_video_packetizer_free(NULL); /* no-op */
+
+        /* null guards. */
+        AisdBytesArray og = {NULL, 0};
+        uint8_t three[3] = {1, 2, 3};
+        AisdPacketizeOptions zopts;
+        memset(&zopts, 0, sizeof(zopts));
+        CHECK(aisd_packetize(NULL, three, 3, zopts, &og) == AISD_ERR_NULL, "packetize null handle");
+        AisdVideoPacketizer *pk3 = aisd_video_packetizer_new(0, 1);
+        CHECK(aisd_packetize(pk3, three, 3, zopts, NULL) == AISD_ERR_NULL, "packetize null out");
+        CHECK(aisd_packetize(pk3, NULL, 3, zopts, &og) == AISD_ERR_NULL, "null avcc with nonzero len");
+        CHECK(aisd_packetize(pk3, NULL, 0, zopts, &og) == AISD_OK && og.count == 1,
+              "empty frame yields one fragment");
+        aisd_bytes_array_free(&og);
+        CHECK(aisd_video_packetizer_peek_next_frame_id(NULL) == 0, "null peek frame_id => 0");
+        CHECK(aisd_video_packetizer_peek_next_stream_seq(NULL) == 0, "null peek stream_seq => 0");
+        aisd_video_packetizer_free(pk3);
+
+        free(avcc);
+        free(big);
     }
 
     if (failures == 0) {

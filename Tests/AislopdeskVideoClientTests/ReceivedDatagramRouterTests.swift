@@ -22,14 +22,14 @@ final class ReceivedDatagramRouterTests: XCTestCase {
     }
 
     func testVideoIgnoredUntilStreaming() {
-        var packetizer = VideoPacketizer()
+        let packetizer = VideoPacketizer()
         let frags = packetizer.packetize(frame: NALUnit.join([Data([1, 2, 3])]), keyframe: true)
         let routed = router.route(channel: .video, data: frags[0].encode(), mediaFlowing: false)
         XCTAssertEqual(routed, .ignore)
     }
 
     func testVideoFragmentDecodedWhileStreaming() throws {
-        var packetizer = VideoPacketizer()
+        let packetizer = VideoPacketizer()
         let frags = packetizer.packetize(frame: NALUnit.join([Data([1, 2, 3, 4])]), keyframe: true)
         let routed = router.route(channel: .video, data: frags[0].encode(), mediaFlowing: true)
         guard case let .videoFragment(f) = routed else { XCTFail("expected videoFragment, got \(routed)")

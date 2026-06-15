@@ -248,6 +248,25 @@ impl VideoPacketizer {
     /// in release. Swift traps here instead — but the bound holds by construction, so
     /// neither path is reachable from real or untrusted input.
     pub fn packetize(&mut self, frame: &[u8], opts: PacketizeOptions) -> Vec<FrameFragment> {
+        // Tier 0 maps to the configured `fec.group_size()` so parity shape matches the
+        // pre-WF-4 path; this is the default for any caller that does not override per-frame.
+        let default_group = self.fec.as_ref().map_or(1, |f| f.group_size());
+        self.packetize_with_default_group(frame, opts, default_group)
+    }
+
+    /// Like [`Self::packetize`], but with an explicit `default_group` the tier-to-group-size
+    /// mapping uses as its tier-0 / no-override default (instead of the codec's configured `k`).
+    ///
+    /// The send-path C-ABI boundary calls this so the host can drive a PER-FRAME group size (a
+    /// heavier adaptive tier groups at the requested width) while the codec's `k` stays fixed.
+    /// Passing `self.fec.group_size()` reproduces [`Self::packetize`] exactly. With `m == 1` the
+    /// core honours the per-call group size for parity regardless of `k`, so the wire is unchanged.
+    pub fn packetize_with_default_group(
+        &mut self,
+        frame: &[u8],
+        opts: PacketizeOptions,
+        default_group: usize,
+    ) -> Vec<FrameFragment> {
         let frame_id = self.next_frame_id;
         self.next_frame_id = self.next_frame_id.wrapping_add(1);
 
@@ -258,9 +277,8 @@ impl VideoPacketizer {
             frame.chunks(Self::MAX_PAYLOAD_SIZE).collect()
         };
 
-        // WF-4: per-frame group size from the tier (None = OFF → no parity). Tier 0 maps
-        // to the configured `fec.group_size()` so parity shape matches the pre-WF-4 path.
-        let default_group = self.fec.as_ref().map_or(1, |f| f.group_size());
+        // WF-4: per-frame group size from the tier (None = OFF → no parity). Tier 0 maps to
+        // `default_group` (the codec's `k`, or a host-resolved per-frame override).
         let group_size = adaptive_fec::group_size(opts.fec_tier, default_group);
         let parity_payloads: Vec<Vec<u8>> = match (group_size, self.fec.as_ref()) {
             (Some(g), Some(fec)) => fec.parity(&payloads, g),

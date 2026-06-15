@@ -14,7 +14,7 @@ final class FragmentInterleaverTests: XCTestCase {
     }
 
     private func packetized() -> [FrameFragment] {
-        var p = VideoPacketizer(fec: XORParityFEC(groupSize: groupSize))
+        let p = VideoPacketizer(fec: XORParityFEC(groupSize: groupSize))
         return p.packetize(frame: makeFrameBytes(), keyframe: true)
     }
 
@@ -105,7 +105,7 @@ final class FragmentInterleaverTests: XCTestCase {
 
     // No-op guards: a single group can't benefit; groupSize ≤ 1 has no groups to spread across.
     func testSingleGroupReturnedUnchanged() {
-        var p = VideoPacketizer(fec: XORParityFEC(groupSize: groupSize))
+        let p = VideoPacketizer(fec: XORParityFEC(groupSize: groupSize))
         let smallFrame = Data((0..<100).map { UInt8(truncatingIfNeeded: $0) }) // 1 data fragment
         let frags = p.packetize(frame: smallFrame, keyframe: true)
         let out = FragmentInterleaver.interleave(frags, groupSize: groupSize)

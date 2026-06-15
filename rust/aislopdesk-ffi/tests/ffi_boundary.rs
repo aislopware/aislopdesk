@@ -20,8 +20,8 @@ use aislopdesk_ffi::video::{
     AISD_RECOVERY_IDR_SUPPRESS_STALE, AISD_RECOVERY_NETWORK_STATS,
     AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_SCROLL_PHASE_ACTIVE, AISD_SCROLL_PHASE_ENDED,
     AISD_SCROLL_PHASE_MOMENTUM, AISD_VIDEO_CONTROL_WINDOW_LIST, AisdNetworkStats,
-    AisdPacerDepthConfig, AisdReassemblyResult, AisdRecoveryMessage, AisdRect,
-    AisdScrollReprojectorConfig, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
+    AisdPacerDepthConfig, AisdPacketizeOptions, AisdReassemblyResult, AisdRecoveryMessage,
+    AisdRect, AisdScrollReprojectorConfig, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
     aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id, aisd_decode_gate_min_lost_frame_id,
     aisd_decode_gate_mode, aisd_decode_gate_new, aisd_decode_gate_note_decode_succeeded,
     aisd_decode_gate_note_hard_decode_failure, aisd_decode_gate_note_loss,
@@ -33,7 +33,7 @@ use aislopdesk_ffi::video::{
     aisd_pacer_depth_policy_late_threshold_seconds, aisd_pacer_depth_policy_new,
     aisd_pacer_depth_policy_note_arrival, aisd_pacer_depth_policy_note_network_late,
     aisd_pacer_depth_policy_note_present, aisd_pacer_depth_policy_set_interval_hint,
-    aisd_reassembler_free, aisd_reassembler_ingest, aisd_reassembler_new,
+    aisd_packetize, aisd_reassembler_free, aisd_reassembler_ingest, aisd_reassembler_new,
     aisd_reassembler_next_dropped, aisd_reassembly_result_free, aisd_recovery_deduper_admit,
     aisd_recovery_deduper_free, aisd_recovery_deduper_new,
     aisd_recovery_idr_policy_available_tokens, aisd_recovery_idr_policy_decide,
@@ -52,7 +52,9 @@ use aislopdesk_ffi::video::{
     aisd_video_mux_router_bootstrap_action, aisd_video_mux_router_end_drain,
     aisd_video_mux_router_free, aisd_video_mux_router_is_admitted,
     aisd_video_mux_router_is_draining, aisd_video_mux_router_new, aisd_video_mux_router_retire,
-    aisd_video_mux_router_route, aisd_ycbcr_coefficients,
+    aisd_video_mux_router_route, aisd_video_packetizer_free, aisd_video_packetizer_new,
+    aisd_video_packetizer_peek_next_frame_id, aisd_video_packetizer_peek_next_stream_seq,
+    aisd_ycbcr_coefficients,
 };
 use aislopdesk_ffi::video::{AISD_FRAME_HASH_SENTINEL, aisd_frame_hash_nv12};
 use aislopdesk_ffi::{
@@ -1782,6 +1784,239 @@ fn reassembler_completes_recovers_and_drops_over_the_c_abi() {
         aisd_reassembler_free(rd);
         aisd_reassembler_free(core::ptr::null_mut()); // no-op
         aisd_reassembly_result_free(core::ptr::null_mut()); // no-op
+    }
+}
+
+/// The 19-byte big-endian fragment header fields, parsed out of a wire datagram a la
+/// `FrameFragment::decode` (no core types needed — the C boundary returns raw bytes).
+struct ParsedFragHeader {
+    stream_seq: u32,
+    frame_id: u32,
+    frag_index: u16,
+    frag_count: u16,
+    flags: u8,
+    payload: Vec<u8>,
+}
+
+/// Parses one wire datagram (header + payload) the boundary returned.
+fn parse_fragment(datagram: &[u8]) -> ParsedFragHeader {
+    assert!(datagram.len() >= 19, "datagram carries the 19-byte header");
+    let u32_at = |o: usize| u32::from_be_bytes(datagram[o..o + 4].try_into().unwrap());
+    let u16_at = |o: usize| u16::from_be_bytes(datagram[o..o + 2].try_into().unwrap());
+    let payload_len = usize::from(u16_at(17));
+    assert_eq!(
+        datagram.len(),
+        19 + payload_len,
+        "payload_len matches the body"
+    );
+    ParsedFragHeader {
+        stream_seq: u32_at(0),
+        frame_id: u32_at(4),
+        frag_index: u16_at(8),
+        frag_count: u16_at(10),
+        flags: datagram[12],
+        payload: datagram[19..].to_vec(),
+    }
+}
+
+/// A zeroed `AisdPacketizeOptions` — every flag off, tier 0, no override, no interleave.
+const fn base_packetize_opts() -> AisdPacketizeOptions {
+    AisdPacketizeOptions {
+        keyframe: 0,
+        crisp: 0,
+        is_ltr: 0,
+        acked_anchored: 0,
+        fec_tier: 0,
+        interleave: 0,
+        host_send_ts_millis: 0,
+        fec_group_size: 0,
+    }
+}
+
+/// Packetizes one frame through the C ABI, returning the parsed fragment headers (and freeing the
+/// owned array, idempotently).
+unsafe fn packetize(
+    p: *mut aislopdesk_ffi::video::AisdVideoPacketizer,
+    frame: &[u8],
+    opts: AisdPacketizeOptions,
+) -> Vec<ParsedFragHeader> {
+    let mut out = AisdBytesArray::EMPTY;
+    let status = unsafe { aisd_packetize(p, frame.as_ptr(), frame.len(), opts, &mut out) };
+    assert_eq!(status, AISD_OK);
+    let frags: Vec<ParsedFragHeader> = (0..out.count)
+        .map(|i| {
+            let b = unsafe { *out.items.add(i) };
+            let bytes = unsafe { core::slice::from_raw_parts(b.ptr, b.len) };
+            parse_fragment(bytes)
+        })
+        .collect();
+    unsafe {
+        aisd_bytes_array_free(&mut out);
+        aisd_bytes_array_free(&mut out); // idempotent
+    }
+    assert!(out.items.is_null() && out.count == 0);
+    frags
+}
+
+/// Concatenates the data fragments' payloads (sorted by `frag_index`) back into the AVCC frame.
+fn concat_data(frags: &[ParsedFragHeader]) -> Vec<u8> {
+    let mut data: Vec<(u16, &[u8])> = frags
+        .iter()
+        .filter(|f| f.flags & 0x02 == 0) // not parity
+        .map(|f| (f.frag_index, f.payload.as_slice()))
+        .collect();
+    data.sort_by_key(|(i, _)| *i);
+    data.into_iter().flat_map(|(_, p)| p.to_vec()).collect()
+}
+
+#[test]
+fn packetize_over_the_c_abi() {
+    unsafe {
+        // Invalid FEC config => null (no abort across the boundary); k == 0 => no-FEC handle.
+        assert!(aisd_video_packetizer_new(200, 56).is_null());
+
+        // --- a no-FEC keyframe MTU-splits, every fragment decodes with the right header, and the
+        //     data fragments concatenate back to the exact AVCC frame ---
+        let p = aisd_video_packetizer_new(0, 1);
+        assert!(!p.is_null());
+        assert_eq!(aisd_video_packetizer_peek_next_frame_id(p), 0);
+        // MAX_PAYLOAD_SIZE = 1200 - 19 = 1181, so 1181*2 + 37 splits into [1181, 1181, 37].
+        let frame: Vec<u8> = (0..(1181 * 2 + 37)).map(|i| (i * 7 + 1) as u8).collect();
+        let opts = AisdPacketizeOptions {
+            keyframe: 1,
+            host_send_ts_millis: 4242,
+            ..base_packetize_opts()
+        };
+        let frags = packetize(p, &frame, opts);
+        assert_eq!(frags.len(), 3, "1181*2+37 splits into 3 MTU payloads");
+        // monotonic stream_seq, shared frame_id 0, keyframe + tier-0 flags, ts stamped.
+        assert_eq!(frags[0].stream_seq, 0);
+        assert_eq!(frags[2].stream_seq, 2);
+        assert!(frags.iter().all(|f| f.frame_id == 0));
+        assert!(frags.iter().all(|f| f.frag_count == 3));
+        assert!(
+            frags.iter().all(|f| f.flags & 0x01 != 0),
+            "keyframe bit set"
+        );
+        assert!(
+            frags.iter().all(|f| f.flags & 0x02 == 0),
+            "no parity (no-FEC)"
+        );
+        assert_eq!(
+            concat_data(&frags),
+            frame,
+            "data concatenates back to the AVCC"
+        );
+        // counters advanced: one frame, three datagrams.
+        assert_eq!(aisd_video_packetizer_peek_next_frame_id(p), 1);
+        assert_eq!(aisd_video_packetizer_peek_next_stream_seq(p), 3);
+
+        // --- the produced datagrams round-trip through the SYMMETRIC reassembler (send==recv SoT) ---
+        let ra = aisd_reassembler_new(0, 1, 2);
+        let mut completed: Option<Vec<u8>> = None;
+        let frags2 = packetize(p, &frame, opts); // frame_id 1
+        // re-emit the exact wire bytes the boundary produced and feed them to the reassembler.
+        let mut out = AisdBytesArray::EMPTY;
+        assert_eq!(
+            aisd_packetize(p, frame.as_ptr(), frame.len(), opts, &mut out),
+            AISD_OK
+        ); // frame_id 2
+        for i in 0..out.count {
+            let b = *out.items.add(i);
+            let bytes = core::slice::from_raw_parts(b.ptr, b.len);
+            let mut rr = AisdReassemblyResult {
+                kind: AISD_REASSEMBLY_STALE,
+                keyframe: 0,
+                crisp: 0,
+                recovered_via_fec: 0,
+                is_ltr: 0,
+                acked_anchored: 0,
+                frame_id: 0,
+                avcc: AisdBytes::EMPTY,
+            };
+            assert_eq!(
+                aisd_reassembler_ingest(ra, bytes.as_ptr(), bytes.len(), &mut rr),
+                AISD_OK
+            );
+            if rr.kind == AISD_REASSEMBLY_COMPLETED {
+                completed = Some(core::slice::from_raw_parts(rr.avcc.ptr, rr.avcc.len).to_vec());
+                aisd_reassembly_result_free(&mut rr);
+            }
+        }
+        aisd_bytes_array_free(&mut out);
+        assert_eq!(
+            completed.as_deref(),
+            Some(frame.as_slice()),
+            "reassembled == sent"
+        );
+        let _ = frags2; // (frags2 only proves the second packetize succeeded)
+        aisd_reassembler_free(ra);
+        aisd_video_packetizer_free(p);
+
+        // --- m=2 produces 2 parity per group (multi-loss reachable) ---
+        let pm = aisd_video_packetizer_new(2, 2);
+        // 5 data fragments at group 2 => ceil(5/2)=3 groups * m=2 = 6 parity.
+        let big: Vec<u8> = (0..(1181 * 5)).map(|i| (i % 251) as u8).collect();
+        let opts2 = AisdPacketizeOptions {
+            fec_group_size: 2,
+            ..base_packetize_opts()
+        };
+        let pf = packetize(pm, &big, opts2);
+        let data = pf.iter().filter(|f| f.flags & 0x02 == 0).count();
+        let parity = pf.iter().filter(|f| f.flags & 0x02 != 0).count();
+        assert_eq!(data, 5);
+        assert_eq!(parity, 6, "3 groups * m=2");
+        assert!(pf.iter().all(|f| f.frag_count == 11));
+        assert_eq!(concat_data(&pf), big, "data still concatenates back");
+        aisd_video_packetizer_free(pm);
+
+        // --- null guards + empty-frame single fragment ---
+        let pn = aisd_video_packetizer_new(0, 1);
+        let mut og = AisdBytesArray::EMPTY;
+        let f = [1u8, 2, 3];
+        assert_eq!(
+            aisd_packetize(
+                core::ptr::null_mut(),
+                f.as_ptr(),
+                3,
+                base_packetize_opts(),
+                &mut og
+            ),
+            AISD_ERR_NULL
+        );
+        assert_eq!(
+            aisd_packetize(
+                pn,
+                f.as_ptr(),
+                3,
+                base_packetize_opts(),
+                core::ptr::null_mut()
+            ),
+            AISD_ERR_NULL
+        );
+        assert_eq!(
+            aisd_packetize(pn, core::ptr::null(), 3, base_packetize_opts(), &mut og),
+            AISD_ERR_NULL,
+            "null avcc with a nonzero len"
+        );
+        // empty frame (null avcc, len 0) is allowed and yields one fragment.
+        assert_eq!(
+            aisd_packetize(pn, core::ptr::null(), 0, base_packetize_opts(), &mut og),
+            AISD_OK
+        );
+        assert_eq!(og.count, 1);
+        aisd_bytes_array_free(&mut og);
+        // null-handle getters return 0.
+        assert_eq!(
+            aisd_video_packetizer_peek_next_frame_id(core::ptr::null()),
+            0
+        );
+        assert_eq!(
+            aisd_video_packetizer_peek_next_stream_seq(core::ptr::null()),
+            0
+        );
+        aisd_video_packetizer_free(pn);
+        aisd_video_packetizer_free(core::ptr::null_mut()); // no-op
     }
 }
 

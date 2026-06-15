@@ -21,38 +21,16 @@ import Foundation
 /// parity by `fragIndex - invertedDataCount(fragCount)` — purely header-derived, reorder-tolerant by
 /// design (UDP already reorders) — so the receiver reconstructs identically regardless of send order.
 ///
-/// Pure value→value transform; unit-tested (the send path is HW-gated).
+/// The reorder law lives in the Rust core (`aislopdesk_core::interleaver`), driven over the
+/// `aisd_interleave` C ABI — the SINGLE SOURCE OF TRUTH (m-aware: data column-major across FEC
+/// groups, then parity column-major across groups; `m == 1` is byte-identical to the prior "parity
+/// LAST"). The previous native Swift reorder is DELETED; this is a thin Rust-backed shell that keeps
+/// the public API. NO wire change — only the send order differs.
 public enum FragmentInterleaver {
-    /// Returns `fragments` reordered for burst-resilient transmission. Data fragments are emitted
-    /// column-major across FEC groups, then the parity fragments (each its own group, so already
-    /// burst-safe). A no-op when there is ≤1 group (interleaving cannot help a single group) or
-    /// `groupSize <= 1`. The returned array is a permutation of the input — same set of fragments,
-    /// every `fragIndex` preserved.
+    /// Returns `fragments` reordered for burst-resilient transmission, m-aware, in the Rust core. A
+    /// no-op (byte-for-byte pass-through) when there is ≤1 group or `groupSize <= 1`. The returned
+    /// array is a permutation of the input — same set of fragments, every `fragIndex` preserved.
     public static func interleave(_ fragments: [FrameFragment], groupSize: Int) -> [FrameFragment] {
-        guard groupSize > 1, fragments.count > groupSize else { return fragments }
-
-        var data: [FrameFragment] = []
-        var parity: [FrameFragment] = []
-        data.reserveCapacity(fragments.count)
-        for f in fragments {
-            if f.header.flags.contains(.parity) { parity.append(f) } else { data.append(f) }
-        }
-        // Single data group → no interleave benefit (any 2 losses in it are unrecoverable regardless).
-        guard data.count > groupSize else { return fragments }
-
-        let numGroups = (data.count + groupSize - 1) / groupSize
-        var ordered: [FrameFragment] = []
-        ordered.reserveCapacity(fragments.count)
-        // Column-major: rank 0 of every group, then rank 1 of every group, … Consecutive emissions
-        // are thus from distinct groups, so any adjacent-loss burst of length ≤ numGroups spreads to
-        // distinct groups (each recoverable by single-loss XOR).
-        for rank in 0..<groupSize {
-            for group in 0..<numGroups {
-                let idx = group * groupSize + rank
-                if idx < data.count { ordered.append(data[idx]) }
-            }
-        }
-        ordered.append(contentsOf: parity) // parity LAST; each parity is its own group → burst-safe
-        return ordered
+        RustVideoFFI.interleave(fragments, groupSize: groupSize)
     }
 }

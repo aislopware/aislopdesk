@@ -1083,6 +1083,72 @@ uint8_t aisd_reassembler_next_dropped(AisdReassembler *reassembler, uint32_t *ou
  * and safe on a PENDING/STALE/zeroed result; a NULL pointer is a no-op. */
 void aisd_reassembly_result_free(AisdReassemblyResult *result);
 
+/* ---- packetizer (opaque handle; per-frame video SEND hot path) ---- */
+
+/*
+ * The per-frame packetize options, flattened for the C ABI. Maps onto the core PacketizeOptions plus
+ * the two send-path knobs the core does not carry (`fec_group_size` overrides the codec's default k
+ * per frame; `interleave` selects the burst-resilient transmit reorder). The boolean-ish fields are
+ * plain uint8_t (read as != 0). Field order MUST match the Rust `#[repr(C)] struct
+ * AisdPacketizeOptions`.
+ */
+typedef struct AisdPacketizeOptions {
+    uint8_t keyframe;       /* sets the keyframe (IDR) flag on every fragment            */
+    uint8_t crisp;          /* sets the crisp static-refresh flag (informational)        */
+    uint8_t is_ltr;         /* sets bit 6 (LTR) so the client acks the frame on decode   */
+    uint8_t acked_anchored; /* sets bit 7 (encoded via ForceLTRRefresh)                  */
+    uint8_t fec_tier;       /* WF-4 adaptive-FEC tier (0..=7); stamped into the flags    */
+    uint8_t interleave;     /* run the burst-resilient transmit interleave (read != 0)   */
+    uint32_t host_send_ts_millis; /* host-monotonic ms since session start (0 = off)     */
+    size_t fec_group_size;  /* per-frame data-fragment group size k the parity+interleave
+                             * use; 0 => the packetizer's configured default group size  */
+} AisdPacketizeOptions;
+
+typedef struct AisdVideoPacketizer AisdVideoPacketizer;
+
+/* Builds a per-stream packetizer that appends `m` parity shards per group of `k` data fragments. The
+ * packetizer OWNS its NEON-backed Reed-Solomon codec ([k + m, k]) — there is no external FEC handle
+ * and no double-codec (symmetric with aisd_reassembler_new). m == 1 is the production / byte-identical
+ * XOR-equivalent wire. Pass k == 0 (or m == 0) for a NO-FEC packetizer (no parity fragments). Returns
+ * NULL (NOT a panic across the boundary) for an invalid FEC config: k >= 1 and m >= 1 with
+ * k + m > 255 (the Cauchy index sets must fit GF(2^8)). Destroy with aisd_video_packetizer_free. */
+AisdVideoPacketizer *aisd_video_packetizer_new(size_t k, size_t m);
+/* Destroys a packetizer from aisd_video_packetizer_new. No-op on NULL. */
+void aisd_video_packetizer_free(AisdVideoPacketizer *packetizer);
+
+/* The frame_id the NEXT aisd_packetize call will assign (0 for a NULL handle). The host reads this
+ * BEFORE packetizing to record the frame_id<->LTR-token (and recovery-IDR keyframe) mapping;
+ * aisd_packetize increments it internally. */
+uint32_t aisd_video_packetizer_peek_next_frame_id(const AisdVideoPacketizer *packetizer);
+/* The stream_seq the next emitted datagram will carry (0 for a NULL handle). */
+uint32_t aisd_video_packetizer_peek_next_stream_seq(const AisdVideoPacketizer *packetizer);
+
+/* Fragments ONE AVCC frame into fully-formed wire datagrams (each = 19-byte header + payload), in
+ * transmit order (data fragments, then parity; column-major when opts.interleave != 0). On AISD_OK,
+ * *out_fragments owns an AisdBytesArray of one buffer per datagram (release the whole array with
+ * aisd_bytes_array_free). `avcc` is BORROWED (read, never freed) and may be NULL only when
+ * avcc_len == 0 (a zero-byte frame still yields one fragment). The packetizer assigns frame_id +
+ * monotonic stream_seq internally and runs the FEC parity through its OWNED codec (no double-FEC);
+ * the per-frame group size is opts.fec_group_size (or the codec's default k when 0). Returns
+ * AISD_ERR_NULL for a null packetizer / out_fragments (or a null avcc with a nonzero avcc_len), else
+ * AISD_OK. NEVER panics. On AISD_OK *out_fragments is overwritten WITHOUT freeing prior contents, so
+ * release a previously-returned array held in the same storage first (or use fresh storage). */
+AisdStatus aisd_packetize(AisdVideoPacketizer *packetizer, const uint8_t *avcc, size_t avcc_len,
+                          AisdPacketizeOptions opts, AisdBytesArray *out_fragments);
+
+/* Reorders already-encoded wire fragments into burst-resilient transmit order, m-aware — the
+ * standalone counterpart of aisd_packetize's `interleave` knob (for callers that hold the encoded
+ * datagrams). Each element of `fragments` is a BORROWED wire datagram (19-byte header + payload);
+ * they are parsed, reordered column-major across FEC groups (data, then parity; m recovered from the
+ * parity count), and returned as one owned AisdBytesArray (release with aisd_bytes_array_free). NO
+ * wire change: only the SEND ORDER differs — each datagram's bytes are byte-identical to the input.
+ * group_size <= 1 (or too few fragments) is a byte-for-byte no-op pass-through. Returns AISD_ERR_NULL
+ * for a null `fragments` (with a nonzero count) / `out`, else AISD_OK. NEVER panics (an un-parseable
+ * datagram is dropped from the reorder set). On AISD_OK *out is overwritten WITHOUT freeing prior
+ * contents. fragments may be NULL only when count == 0. */
+AisdStatus aisd_interleave(const AisdBytes *fragments, size_t count, size_t group_size,
+                           AisdBytesArray *out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

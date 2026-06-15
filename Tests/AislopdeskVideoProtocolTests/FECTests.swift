@@ -73,7 +73,7 @@ final class FECTests: XCTestCase {
     /// recovers the frame (no drop). This is the real recovery the spec demands.
     func testReassemblerRecoversSingleLostDataFragmentViaFEC() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         // A frame spanning a few fragments so there is a real group to repair.
         let units = [Data((0..<(VideoPacketizer.maxPayloadSize * 2 + 333)).map { UInt8(truncatingIfNeeded: $0) })]
         let frame = NALUnit.join(units)
@@ -105,7 +105,7 @@ final class FECTests: XCTestCase {
     /// exercised (it always delivered parity BEFORE the next frame).
     func testReassemblerRecoversWhenParityReorderedAfterNextFrame() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frameBytes = NALUnit
             .join([Data((0..<(VideoPacketizer.maxPayloadSize * 2 + 100)).map { UInt8(truncatingIfNeeded: $0) })])
         let frame0 = packetizer.packetize(frame: frameBytes, keyframe: true)
@@ -147,7 +147,7 @@ final class FECTests: XCTestCase {
     /// declared dropped (recovery is escalated, not deferred forever).
     func testReassemblerDropsWhenParityExceedsReorderGrace() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frameBytes = NALUnit
             .join([Data((0..<(VideoPacketizer.maxPayloadSize * 2 + 100)).map { UInt8(truncatingIfNeeded: $0) })])
         let frame0 = packetizer.packetize(frame: frameBytes, keyframe: true)
@@ -176,7 +176,7 @@ final class FECTests: XCTestCase {
     /// reorder grace applies only to single-hole, parity-repairable frames.
     func testReassemblerDropsPermanentlyHopelessImmediatelyDespiteGrace() throws {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         // 3 data fragments in one group; drop two so parity (one) cannot recover.
         let frameBytes = NALUnit
             .join([Data((0..<(VideoPacketizer.maxPayloadSize * 2 + 50)).map { UInt8(truncatingIfNeeded: $0) })])
@@ -212,7 +212,7 @@ final class FECTests: XCTestCase {
     /// data[9] itself does, so completion is by all-data-present, not FEC recovery.
     func testFrameCompletesWhenGroup0ParityLostButAllDataArrives() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         // Force EXACTLY 10 data fragments: 10 full-MTU payloads (the 10th carries the rest).
         let frameBytes = NALUnit
             .join([Data((0..<(VideoPacketizer.maxPayloadSize * 9 + 17)).map { UInt8(truncatingIfNeeded: $0) })])
@@ -258,7 +258,7 @@ final class FECTests: XCTestCase {
     /// ORDER means group-1 parity lands at slot 1 (where recover() expects it), not shifted.
     func testGroup1DataLossRecoversWhenGroup0ParityLost() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frameBytes = NALUnit
             .join([Data((0..<(VideoPacketizer.maxPayloadSize * 9 + 80)).map { UInt8(truncatingIfNeeded: $0) })])
         let fragments = packetizer.packetize(frame: frameBytes, keyframe: true)
@@ -289,7 +289,7 @@ final class FECTests: XCTestCase {
     /// behavior) the frame is dropped as soon as a newer frame arrives.
     func testReassemblerDropsWhenFECCannotRecover() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frame = NALUnit
             .join([Data((0..<(VideoPacketizer.maxPayloadSize * 2)).map { UInt8(truncatingIfNeeded: $0) })])
         let frame0 = packetizer.packetize(frame: frame, keyframe: true)
@@ -327,7 +327,7 @@ final class FECTests: XCTestCase {
         line: UInt = #line,
     ) {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frameBytes = adaptiveFrame(dataFragmentTarget: 6)
         let fragments = packetizer.packetize(frame: frameBytes, keyframe: true, fecTier: tier)
         let data = fragments.filter { !$0.header.flags.contains(.parity) }
@@ -397,8 +397,8 @@ final class FECTests: XCTestCase {
     /// flags byte (spare bits zero), same parity shape, same fragCount. This is the gate-off invariant.
     func testTierZeroPacketizeIsByteIdenticalToPreWF4() {
         let fec = XORParityFEC(groupSize: 5)
-        var preWF4Packetizer = VideoPacketizer(fec: fec)
-        var tier0Packetizer = VideoPacketizer(fec: fec)
+        let preWF4Packetizer = VideoPacketizer(fec: fec)
+        let tier0Packetizer = VideoPacketizer(fec: fec)
         let frame = NALUnit
             .join([Data((0..<(VideoPacketizer.maxPayloadSize * 2 + 333)).map { UInt8(truncatingIfNeeded: $0) })])
         // Fresh packetizers start at the same streamSeq/frameID, so identical inputs ⇒ identical bytes.
@@ -426,7 +426,7 @@ final class FECTests: XCTestCase {
     /// all-data with `fec` still non-nil — the gate is the PER-FRAME group size, not `fec != nil`.
     func testOffTierEmitsNoParityAndCompletesDataOnly() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frameBytes = adaptiveFrame(dataFragmentTarget: 4)
         let fragments = packetizer.packetize(frame: frameBytes, keyframe: true, fecTier: 1)
         XCTAssertTrue(fragments.allSatisfy { !$0.header.flags.contains(.parity) }, "OFF tier emits NO parity")
@@ -445,7 +445,7 @@ final class FECTests: XCTestCase {
     /// advances — an OFF frame is granted NO reorder grace (it isn't "awaiting parity").
     func testOffTierSingleLossIsUnrecoverableAndDropped() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frame0bytes = adaptiveFrame(dataFragmentTarget: 4)
         let frame0 = packetizer.packetize(frame: frame0bytes, keyframe: true, fecTier: 1)
         let next = packetizer.packetize(frame: NALUnit.join([Data([1, 2, 3])]), keyframe: false, fecTier: 1)
@@ -470,7 +470,7 @@ final class FECTests: XCTestCase {
     /// all-data regardless of group size (here tier 3 / g3 with two parity groups, the first dropped).
     func testAdaptiveTierCompletesWhenAParityFragmentIsDropped() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frameBytes = adaptiveFrame(dataFragmentTarget: 6)
         let fragments = packetizer.packetize(frame: frameBytes, keyframe: true, fecTier: 3)
         let data = fragments.filter { !$0.header.flags.contains(.parity) }

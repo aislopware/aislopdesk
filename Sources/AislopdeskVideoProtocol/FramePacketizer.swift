@@ -153,55 +153,77 @@ public struct FrameFragment: Equatable, Sendable {
 
 /// Fragments a NALU-bearing encoded frame into <=1200-byte datagrams (doc 17 §3.6).
 ///
-/// The packetizer is stateful only in that it hands out a monotonic per-datagram
-/// `streamSeq` (the 4-byte sequence number used for ordering / loss detection) and
-/// a per-frame `frameID`. It is a value type owned by the single send loop.
-public struct VideoPacketizer {
+/// The MTU split, the per-frame FEC group size, the parity append, and the 19-byte header stamp all
+/// live in the Rust core (`aislopdesk_core::fragment::VideoPacketizer`), driven over the
+/// `aisd_packetize` C ABI — the SINGLE SOURCE OF TRUTH for the send path (the symmetric counterpart
+/// of ``FrameReassembler``). The previous native Swift packetize/header-stamping/FEC-append logic is
+/// DELETED; this is a thin Rust-backed shell that keeps the public API (and the ``FrameFragment``
+/// wire type) so the host send path is unchanged. `m == 1` is byte-identical to the pre-port wire.
+///
+/// Owns a Rust packetizer handle (which OWNS its own NEON-backed Reed-Solomon codec — no second FEC
+/// handle, no double-FEC), so this is a `final class` with a `deinit` that frees it. Stateful only in
+/// that the core hands out a monotonic per-datagram `streamSeq` and a per-frame `frameID`; one per
+/// send loop, not thread-safe (the host actor serializes it).
+public final class VideoPacketizer: @unchecked Sendable {
     /// Max UDP payload size (doc 17 §3.6: "<= 1200 bytes" to stay under typical MTU
     /// with WireGuard overhead).
     public static let maxDatagramSize = 1200
     /// Max payload bytes per fragment (datagram budget minus the header).
     public static let maxPayloadSize = maxDatagramSize - FrameFragmentHeader.size
 
-    private var nextStreamSeq: UInt32 = 0
-    private var nextFrameID: UInt32 = 0
-
-    /// Optional FEC scheme; when set, parity fragments are appended to each frame.
+    /// The configured FEC scheme (kept so the host can read ``FECScheme/groupSize`` for interleave),
+    /// or `nil` for a no-FEC packetizer. The live parity engine is the core codec the Rust packetizer
+    /// owns internally — this reference is metadata only.
     public let fec: FECScheme?
+    /// The owned Rust packetizer handle (`AisdVideoPacketizer *`). Freed in `deinit`.
+    private let handle: OpaquePointer
 
     public init(fec: FECScheme? = nil) {
         self.fec = fec
+        // Build the core packetizer with the scheme's (k, m). A nil scheme (or a 1×1 default) is a
+        // no-FEC packetizer (k == 0). `aisd_video_packetizer_new` returns null ONLY for an invalid
+        // (k, m), which a real ``FECScheme`` rules out (k>=1, m>=1, k+m<=255) — so the unwrap is
+        // total for any valid scheme.
+        let k = fec?.groupSize ?? 0
+        let m = fec?.parityCount ?? 0
+        guard let handle = RustVideoFFI.packetizerNew(k: k, m: m) else {
+            preconditionFailure("aisd_video_packetizer_new returned null for (k=\(k), m=\(m))")
+        }
+        self.handle = handle
     }
 
-    /// The `streamSeq` that the next emitted datagram will carry (for tests / acks).
-    public var peekNextStreamSeq: UInt32 { nextStreamSeq }
+    deinit { RustVideoFFI.packetizerFree(handle) }
 
-    /// The `frameID` that the NEXT ``packetize(frame:keyframe:crisp:hostSendTsMillis:fecTier:isLTR:)``
+    /// The `streamSeq` that the next emitted datagram will carry (for tests / acks).
+    public var peekNextStreamSeq: UInt32 { RustVideoFFI.packetizerPeekNextStreamSeq(handle) }
+
+    /// The `frameID` that the NEXT ``packetize(frame:keyframe:crisp:hostSendTsMillis:fecTier:isLTR:ackedAnchored:interleave:)``
     /// call will assign (mirror of ``peekNextStreamSeq``). WF-8: the host actor reads this BEFORE
     /// packetizing so it can record the `frameID ↔ LTR-token` mapping for the frame about to be sent
-    /// (the packetizer increments `nextFrameID` inside `packetize`). Read in encode order on the actor.
-    public var peekNextFrameID: UInt32 { nextFrameID }
+    /// (the core increments its `nextFrameID` inside `packetize`). Read in encode order on the actor.
+    public var peekNextFrameID: UInt32 { RustVideoFFI.packetizerPeekNextFrameID(handle) }
 
-    /// Fragments one encoded frame (an AVCC byte buffer) into data fragments,
-    /// followed by FEC parity fragments if a scheme is configured.
+    /// Fragments one encoded frame (an AVCC byte buffer) into data fragments, followed by FEC parity
+    /// fragments if a scheme is configured — entirely in the Rust core.
     ///
     /// - Parameters:
     ///   - frame: the AVCC bytes (length-prefixed NAL units) of one encoded frame.
     ///   - keyframe: whether this is an IDR (sets the keyframe flag).
     ///   - crisp: whether this is a crisp near-lossless static refresh keyframe (informational).
     ///   - hostSendTsMillis: host-monotonic ms since session start, stamped on EVERY fragment of this
-    ///     frame (the actor supplies it so this value type stays clockless). 0 = telemetry off.
+    ///     frame (the actor supplies it). 0 = telemetry off.
     ///   - fecTier: WF-4 adaptive-FEC tier (default tier 0 = the endpoint's configured group size).
-    ///     Selects the per-frame XOR group size via ``AdaptiveFECPolicy/groupSize(forTier:default:)``
-    ///     (nil = OFF → no parity) and is stamped into every fragment's flags so the client splits
-    ///     data/parity with the SAME group size. Default tier 0 → no flag bits set, no parity-shape
-    ///     change → byte-identical to the pre-WF-4 path.
-    ///   - isLTR: WF-8 — whether this frame is a Long-Term-Reference frame (carried the encoder's
-    ///     `RequireLTRAcknowledgementToken`). Sets ``FrameFragmentHeader/Flags/isLTR`` (bit 6) on
-    ///     EVERY fragment so the client knows to ack it after a successful decode. Default false →
-    ///     bit 6 stays zero → byte-identical to the pre-WF-8 wire.
+    ///     Selects the per-frame group size via ``AdaptiveFECPolicy/groupSize(forTier:default:)`` and
+    ///     is stamped into every fragment's flags so the client splits data/parity with the SAME
+    ///     group size. Default tier 0 → no flag bits set, no parity-shape change → byte-identical.
+    ///   - isLTR: WF-8 — whether this frame is a Long-Term-Reference frame; sets bit 6 on EVERY
+    ///     fragment so the client acks it after decode. Default false → byte-identical.
+    ///   - ackedAnchored: `ForceLTRRefresh` product (bit 7). Default false → byte-identical.
+    ///   - interleave: run the burst-resilient column-major transmit reorder in the SAME core call
+    ///     (keyed by the per-frame group size; m-aware). Default false → data then parity in index
+    ///     order, the pre-port send order.
     /// - Returns: data fragments + parity fragments, in send order.
-    public mutating func packetize(
+    public func packetize(
         frame: Data,
         keyframe: Bool,
         crisp: Bool = false,
@@ -209,85 +231,21 @@ public struct VideoPacketizer {
         fecTier: UInt8 = AdaptiveFECPolicy.defaultTier,
         isLTR: Bool = false,
         ackedAnchored: Bool = false,
+        interleave: Bool = false,
     ) -> [FrameFragment] {
-        let frameID = nextFrameID
-        nextFrameID &+= 1
-
-        // Split into MTU-bounded payloads.
-        var payloads: [Data] = []
-        var offset = frame.startIndex
-        let end = frame.endIndex
-        if offset == end {
-            payloads = [Data()] // a zero-byte frame still occupies one fragment
-        } else {
-            while offset < end {
-                let upper = frame.index(offset, offsetBy: Self.maxPayloadSize, limitedBy: end) ?? end
-                payloads.append(Data(frame[offset..<upper]))
-                offset = upper
-            }
-        }
-
-        // WF-4: the per-frame group size comes from the tier (nil = OFF → no parity). Tier 0 maps to
-        // the configured `fec.groupSize` (5 in prod) so parity shape is identical to the pre-WF-4 path.
-        let groupSize = AdaptiveFECPolicy.groupSize(forTier: fecTier, default: fec?.groupSize ?? 1)
-        let parityPayloads = groupSize.flatMap {
-            fec?.parity(forDataFragments: payloads, groupSize: $0)
-        } ?? []
-        let fragCount = UInt16(payloads.count + parityPayloads.count)
-
-        var baseFlags: FrameFragmentHeader.Flags = []
-        if keyframe { baseFlags.insert(.keyframe) }
-        if crisp { baseFlags.insert(.crisp) }
-        if isLTR { baseFlags.insert(.isLTR) } // WF-8 bit 6 — disjoint from keyframe/crisp/tier
-        if ackedAnchored { baseFlags.insert(.ackedAnchored) } // bit 7 — ForceLTRRefresh product
-        // Stamp the tier into bits 3-5 BEFORE forking data/parity flags. Tier 0 leaves them zero.
-        baseFlags.setFECTier(fecTier)
-
-        var fragments: [FrameFragment] = []
-        fragments.reserveCapacity(payloads.count + parityPayloads.count)
-        var fragIndex: UInt16 = 0
-        for payload in payloads {
-            fragments.append(makeFragment(
-                frameID: frameID,
-                fragIndex: fragIndex,
-                fragCount: fragCount,
-                flags: baseFlags,
-                payload: payload,
-                hostSendTsMillis: hostSendTsMillis,
-            ))
-            fragIndex += 1
-        }
-        for payload in parityPayloads {
-            var flags = baseFlags
-            flags.insert(.parity)
-            fragments.append(makeFragment(
-                frameID: frameID,
-                fragIndex: fragIndex,
-                fragCount: fragCount,
-                flags: flags,
-                payload: payload,
-                hostSendTsMillis: hostSendTsMillis,
-            ))
-            fragIndex += 1
-        }
-        return fragments
-    }
-
-    private mutating func makeFragment(
-        frameID: UInt32,
-        fragIndex: UInt16,
-        fragCount: UInt16,
-        flags: FrameFragmentHeader.Flags,
-        payload: Data,
-        hostSendTsMillis: UInt32,
-    ) -> FrameFragment {
-        let seq = nextStreamSeq
-        nextStreamSeq &+= 1
-        let header = FrameFragmentHeader(
-            streamSeq: seq, frameID: frameID, fragIndex: fragIndex,
-            fragCount: fragCount, flags: flags, payloadLength: UInt16(payload.count),
+        // Pass the codec's RAW default group size (`k`) as the tier-0 default; the Rust core does the
+        // ONE tier→group-size resolution internally (`AdaptiveFECPolicy.groupSize(forTier:default:)`)
+        // and keys the interleave by the same value. Passing the already-resolved size here would
+        // double-apply the table — `0` ⇒ the codec's configured `k`, which is exactly this default.
+        RustVideoFFI.packetize(handle, frame: frame, opts: RustVideoFFI.PacketizeOptions(
+            keyframe: keyframe,
+            crisp: crisp,
             hostSendTsMillis: hostSendTsMillis,
-        )
-        return FrameFragment(header: header, payload: payload)
+            fecTier: fecTier,
+            isLTR: isLTR,
+            ackedAnchored: ackedAnchored,
+            fecGroupSize: fec?.groupSize ?? 0,
+            interleave: interleave,
+        ))
     }
 }

@@ -60,7 +60,7 @@ final class EncodedFrameQueueTests: XCTestCase {
         for i in 0..<10 {
             q.append(.init(avcc: Data([UInt8(i)]), keyframe: i == 0, crisp: false, ltrToken: nil, ackedAnchored: false))
         }
-        var packetizer = VideoPacketizer(fec: nil)
+        let packetizer = VideoPacketizer(fec: nil)
         var frameIDs: [UInt32] = []
         var keyframeFrameID: UInt32?
         for frame in q.drainAll() {

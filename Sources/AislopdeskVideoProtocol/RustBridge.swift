@@ -841,4 +841,130 @@ enum RustVideoFFI {
         var out: UInt32 = 0
         return aisd_reassembler_next_dropped(handle, &out) != 0 ? out : nil
     }
+
+    // MARK: - packetizer (opaque handle; the per-frame video SEND hot path)
+
+    /// Creates a packetizer owned by the Rust core: it OWNS a freshly-built NEON-backed Reed-Solomon
+    /// codec (`[k + m, k]`), so there is no second FEC handle and no double-FEC (symmetric with the
+    /// reassembler). Pass `k == 0` (or `m == 0`) for a no-FEC packetizer. Returns `nil` ONLY for an
+    /// invalid FEC config (`k >= 1` with `k + m > 255`), which a real ``FECScheme`` rules out. Wraps
+    /// `aisd_video_packetizer_new`.
+    static func packetizerNew(k: Int, m: Int) -> OpaquePointer? {
+        aisd_video_packetizer_new(k, m)
+    }
+
+    /// Destroys a packetizer handle. Wraps `aisd_video_packetizer_free`.
+    static func packetizerFree(_ handle: OpaquePointer) {
+        aisd_video_packetizer_free(handle)
+    }
+
+    /// The `frameID` the next ``packetize`` call will assign. Wraps
+    /// `aisd_video_packetizer_peek_next_frame_id`.
+    static func packetizerPeekNextFrameID(_ handle: OpaquePointer) -> UInt32 {
+        aisd_video_packetizer_peek_next_frame_id(handle)
+    }
+
+    /// The `streamSeq` the next emitted datagram will carry. Wraps
+    /// `aisd_video_packetizer_peek_next_stream_seq`.
+    static func packetizerPeekNextStreamSeq(_ handle: OpaquePointer) -> UInt32 {
+        aisd_video_packetizer_peek_next_stream_seq(handle)
+    }
+
+    /// The per-frame packetize options, bundled so the call stays under the parameter-count limit.
+    /// Mirrors the C-ABI `AisdPacketizeOptions` field-for-field (flags, tier, ts, the per-frame group
+    /// override, and the interleave knob).
+    struct PacketizeOptions {
+        var keyframe: Bool
+        var crisp: Bool
+        var hostSendTsMillis: UInt32
+        var fecTier: UInt8
+        var isLTR: Bool
+        var ackedAnchored: Bool
+        /// Per-frame data-fragment group size `k` (0 ⇒ the codec's default `k`).
+        var fecGroupSize: Int
+        var interleave: Bool
+    }
+
+    /// Fragments ONE AVCC frame (borrowed in) into the fully-formed wire datagrams (header + payload,
+    /// data then parity; column-major when `opts.interleave`), parses each back into a
+    /// ``FrameFragment``, and returns them in transmit order. The packetizer assigns frameID +
+    /// monotonic streamSeq and runs the FEC parity through its OWNED codec (no double-FEC).
+    /// `opts.fecGroupSize == 0` ⇒ the codec's default `k`. Wraps `aisd_packetize` /
+    /// `aisd_bytes_array_free`.
+    static func packetize(_ handle: OpaquePointer, frame: Data, opts: PacketizeOptions) -> [FrameFragment] {
+        let cOpts = AisdPacketizeOptions(
+            keyframe: opts.keyframe ? 1 : 0,
+            crisp: opts.crisp ? 1 : 0,
+            is_ltr: opts.isLTR ? 1 : 0,
+            acked_anchored: opts.ackedAnchored ? 1 : 0,
+            fec_tier: opts.fecTier,
+            interleave: opts.interleave ? 1 : 0,
+            host_send_ts_millis: opts.hostSendTsMillis,
+            fec_group_size: opts.fecGroupSize,
+        )
+        var out = AisdBytesArray()
+        let status: AisdStatus = frame.withUnsafeBytes { raw in
+            aisd_packetize(handle, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, cOpts, &out)
+        }
+        // The only non-OK return is a null handle / out, neither reachable here — surface as empty.
+        guard status == AISD_OK else { return [] }
+        defer { aisd_bytes_array_free(&out) }
+        return decodeFragments(out)
+    }
+
+    /// Reorders already-encoded wire fragments into burst-resilient transmit order (m-aware) —
+    /// the standalone counterpart of the ``packetize`` `interleave` knob. Encodes the fragments to
+    /// their wire datagrams, runs the Rust reorder, and decodes the reordered datagrams back. NO wire
+    /// change: only the send order differs. Wraps `aisd_interleave` / `aisd_bytes_array_free`.
+    static func interleave(_ fragments: [FrameFragment], groupSize: Int) -> [FrameFragment] {
+        guard !fragments.isEmpty else { return [] }
+        // Stage every datagram's wire bytes into ONE contiguous buffer, then borrow `AisdBytes`
+        // pointing into it (O(1) stack regardless of count — never a per-fragment recursive borrow).
+        let datagrams = fragments.map { $0.encode() }
+        var blob = [UInt8]()
+        blob.reserveCapacity(datagrams.reduce(0) { $0 + $1.count })
+        var spans: [(offset: Int, len: Int)] = []
+        spans.reserveCapacity(datagrams.count)
+        for d in datagrams {
+            spans.append((blob.count, d.count))
+            blob.append(contentsOf: d)
+        }
+        var out = AisdBytesArray()
+        let status: AisdStatus = blob.withUnsafeBytes { raw -> AisdStatus in
+            let base = raw.baseAddress
+            var borrowed = spans.map { span -> AisdBytes in
+                guard span.len > 0, let base else { return AisdBytes() }
+                return AisdBytes(
+                    ptr: UnsafeMutablePointer(mutating: base.advanced(by: span.offset)
+                        .assumingMemoryBound(to: UInt8.self)),
+                    len: span.len,
+                    cap: 0,
+                )
+            }
+            return borrowed.withUnsafeBufferPointer { buf in
+                aisd_interleave(buf.baseAddress, buf.count, groupSize, &out)
+            }
+        }
+        guard status == AISD_OK else { return fragments }
+        defer { aisd_bytes_array_free(&out) }
+        return decodeFragments(out)
+    }
+
+    /// Decodes a returned `AisdBytesArray` of wire datagrams back into `[FrameFragment]`. Each
+    /// datagram was just produced by the Rust core, so the decode never fails (a failure would be a
+    /// codec bug); an unexpected failure drops that fragment rather than trapping.
+    private static func decodeFragments(_ array: AisdBytesArray) -> [FrameFragment] {
+        // Bind the C `count` to a local Int up front (the `AisdBytesArray` struct has no `isEmpty`).
+        let count = array.count
+        guard let items = array.items, count > 0 else { return [] }
+        var frags: [FrameFragment] = []
+        frags.reserveCapacity(count)
+        for i in 0..<count {
+            let b = items[i]
+            guard let ptr = b.ptr, b.len > 0 else { continue }
+            let datagram = Data(bytes: ptr, count: b.len)
+            if let frag = try? FrameFragment.decode(datagram) { frags.append(frag) }
+        }
+        return frags
+    }
 }

@@ -51,7 +51,7 @@ final class NetworkFeedbackWireTests: XCTestCase {
 
     /// The packetizer stamps the SAME ts on every fragment (data + parity) of one frame.
     func testPacketizerStampsAllFragments() {
-        var packetizer = VideoPacketizer(fec: XORParityFEC())
+        let packetizer = VideoPacketizer(fec: XORParityFEC())
         let frame = Data((0..<(VideoPacketizer.maxPayloadSize * 2 + 10)).map { UInt8(truncatingIfNeeded: $0) })
         let fragments = packetizer.packetize(frame: frame, keyframe: true, crisp: false, hostSendTsMillis: 424_242)
         XCTAssertGreaterThan(fragments.count, 1, "multi-fragment frame (incl. parity)")
@@ -62,7 +62,7 @@ final class NetworkFeedbackWireTests: XCTestCase {
 
     /// Default (telemetry off) stamps 0 — the existing packetize call sites that omit the arg.
     func testPacketizerDefaultsTsToZero() {
-        var packetizer = VideoPacketizer()
+        let packetizer = VideoPacketizer()
         let fragments = packetizer.packetize(frame: Data([1, 2, 3]), keyframe: false)
         XCTAssertEqual(fragments.first?.header.hostSendTsMillis, 0)
     }
@@ -71,7 +71,7 @@ final class NetworkFeedbackWireTests: XCTestCase {
 
     /// A frame that arrives WHOLE (no hole) is not FEC-recovered.
     func testWholeFrameNotMarkedFECRecovered() {
-        var packetizer = VideoPacketizer(fec: XORParityFEC())
+        let packetizer = VideoPacketizer(fec: XORParityFEC())
         let fragments = packetizer.packetize(frame: Data([1, 2, 3, 4]), keyframe: true)
         var reassembler = FrameReassembler(fec: XORParityFEC())
         var completed: ReassembledFrame?
@@ -86,7 +86,7 @@ final class NetworkFeedbackWireTests: XCTestCase {
     /// client's windowed `fecRecovered` counter).
     func testFECRecoveredFrameIsMarked() {
         let fec = XORParityFEC(groupSize: 5)
-        var packetizer = VideoPacketizer(fec: fec)
+        let packetizer = VideoPacketizer(fec: fec)
         let frameBytes = NALUnit
             .join([Data((0..<(VideoPacketizer.maxPayloadSize * 2 + 100)).map { UInt8(truncatingIfNeeded: $0) })])
         let fragments = packetizer.packetize(frame: frameBytes, keyframe: true)

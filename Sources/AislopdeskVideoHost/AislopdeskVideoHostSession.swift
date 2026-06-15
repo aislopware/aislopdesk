@@ -373,11 +373,11 @@ public actor AislopdeskVideoHostSession {
     private let recoveryRouter = RecoveryDatagramRouter()
 
     private var stateMachine: VideoSessionStateMachine
-    private var packetizer: VideoPacketizer
-    /// FEC group size, mirrored from the packetizer's scheme, so ``onEncodedFrame`` can interleave a
-    /// frame's fragments column-major across groups before transmit (burst-loss → flicker fix). 1 when
-    /// there is no FEC (interleaving is then a no-op).
-    private let fecGroupSize: Int
+    /// The send-path packetizer. A Rust-backed reference type (owns the core packetizer + its FEC
+    /// codec); MTU-split, parity, header stamp, and interleave all run in the Rust core via FFI. The
+    /// per-frame group size the interleave keys by is resolved inside the packetizer from the FEC
+    /// scheme + tier — `onEncodedFrame` only passes the interleave on/off flag.
+    private let packetizer: VideoPacketizer
 
     // Live components, created on accept (never in a test).
     private var capturer: WindowCapturer?
@@ -475,7 +475,6 @@ public actor AislopdeskVideoHostSession {
         // fragment, so a parity-less stream is wire-compatible with an unchanged client.
         let fecDisabled = ProcessInfo.processInfo.environment["AISLOPDESK_FEC"] == "0"
         packetizer = VideoPacketizer(fec: fecDisabled ? nil : fec)
-        fecGroupSize = fec?.groupSize ?? 1
     }
 
     // MARK: Lifecycle
@@ -1846,7 +1845,17 @@ public actor AislopdeskVideoHostSession {
                 now: ProcessInfo.processInfo.systemUptime,
             )
         }
-        let fragments = packetizer.packetize(
+        // Packetize AND interleave in ONE Rust-core call (the send path is Rust-owned — the symmetric
+        // counterpart of the receive reassembler). The core MTU-splits, FEC-parities (through its own
+        // codec — no double-FEC), stamps the 19-byte header, and (when `interleave`) reorders
+        // transmission column-major across FEC groups so an adjacent-loss BURST spreads to distinct
+        // groups (each recoverable) instead of wiping one group. Header `fragIndex`/grouping is
+        // unchanged, so the client (reassembles by index, reorder-tolerant) is unaffected — host-only,
+        // no wire change. INTERLEAVE DEFAULT ON (AISLOPDESK_INTERLEAVE=0 disables): the once-seen
+        // white-screen was HW-investigated 2026-06-09 and does NOT reproduce on the current codebase.
+        // The core keys the interleave by the SAME per-frame group size the parity used, m-aware (OFF
+        // tier ⇒ no-op; tier 0 ⇒ the codec's group ⇒ byte-identical to the pre-port send order).
+        let ordered = packetizer.packetize(
             frame: avcc,
             keyframe: keyframe,
             crisp: crisp,
@@ -1854,17 +1863,8 @@ public actor AislopdeskVideoHostSession {
             fecTier: tier,
             isLTR: isLTR,
             ackedAnchored: ackedAnchored,
+            interleave: Self.interleaveTransmit,
         )
-        // Interleave transmission column-major across FEC groups so an adjacent-loss BURST spreads to
-        // distinct groups (each recoverable by single-loss XOR) instead of wiping one group. Header
-        // `fragIndex`/grouping is unchanged, so the client (reassembles by index, reorder-tolerant) is
-        // unaffected — host-only, no wire change. DEFAULT ON (AISLOPDESK_INTERLEAVE=0 disables): the once-seen
-        // white-screen was HW-investigated 2026-06-09 (headless harness + live GUI loopback) and does NOT
-        // reproduce on the current codebase. WF-4: interleave by the SAME per-frame group size the parity
-        // used (OFF tier ⇒ g=1 ⇒ no-op; tier 0 ⇒ fecGroupSize ⇒ identical).
-        let interleaveGroup = AdaptiveFECPolicy.groupSize(forTier: tier, default: fecGroupSize) ?? 1
-        let ordered = Self.interleaveTransmit ? FragmentInterleaver
-            .interleave(fragments, groupSize: interleaveGroup) : fragments
         let outgoings = scheduler.scheduleFrame(ordered)
         if Self.debugStderr {
             let now = ProcessInfo.processInfo.systemUptime
