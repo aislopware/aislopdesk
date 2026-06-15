@@ -100,7 +100,9 @@ public struct AislopdeskClientApp: App {
         // check-macos.sh/check-video.sh keep working), else from the persisted `Workspace.connection`,
         // else the default. Every pane reads `connection.target` for its host/ports.
         let restored = persistence?.load() // nil in automation ⇒ bootstrap replaces it anyway
-        let env = ProcessInfo.processInfo.environment
+        // The automation inputs (env + `AISLOPDESK_…=value` launch args), so the app-global target is
+        // seeded identically whether the seam is driven by environment or by `open --args` (SSH/remote).
+        let env = WorkspaceStore.automationInputs()
         let seedTarget: ConnectionTarget = isAutomation
             ? (WorkspaceStore.videoTarget(from: env)?.0 ?? WorkspaceStore.terminalTarget(from: env) ?? .default)
             : (restored?.connection ?? .default)
@@ -223,7 +225,7 @@ public struct AislopdeskClientApp: App {
                 // shows the gate prefilled and waits for the user's Connect.
                 .task {
                     guard Self.hasAutomationEnvironment() else { return }
-                    let env = ProcessInfo.processInfo.environment
+                    let env = WorkspaceStore.automationInputs()
                     if env["AISLOPDESK_AUTOCONNECT_HOST"]?.isEmpty == false {
                         await connection.connect() // terminal automation: pin the TCP mux
                     } else {
@@ -276,8 +278,8 @@ public struct AislopdeskClientApp: App {
 
     /// Whether any of the automation env vars (`AISLOPDESK_AUTOCONNECT_*` / `AISLOPDESK_VIDEO_AUTOCONNECT_*`)
     /// are set. Gates the bootstrap so a normal launch restores the persisted workspace untouched.
-    private static func hasAutomationEnvironment(_ env: [String: String] = ProcessInfo.processInfo
-        .environment) -> Bool
+    private static func hasAutomationEnvironment(_ env: [String: String] = WorkspaceStore
+        .automationInputs()) -> Bool
     {
         let keys = [
             "AISLOPDESK_AUTOCONNECT_HOST",

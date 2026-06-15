@@ -2026,7 +2026,27 @@ public final class WorkspaceStore {
     ///
     /// The actual connect TRIGGER stays out of the store (the app auto-connects ``AppConnection`` in
     /// automation), so the env-var names stay unchanged and `check-macos.sh`/`check-video.sh` keep working.
-    public func bootstrapFromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) {
+    /// The automation inputs: the process environment overlaid with any `KEY=VALUE` launch
+    /// arguments whose key begins with `AISLOPDESK_`.
+    ///
+    /// The env vars are the canonical seam, but a GUI-session launch cannot always inject env
+    /// (e.g. `open --args …` over SSH, where there is no way to set the child's environment
+    /// without root). Passing the same `AISLOPDESK_…=value` tokens as launch arguments is the
+    /// equivalent; a matching argument overrides the inherited env.
+    public static func automationInputs(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        arguments: [String] = CommandLine.arguments,
+    ) -> [String: String] {
+        var inputs = environment
+        // Skip argv[0] (the executable path); a matching `AISLOPDESK_…=value` argument overrides env.
+        for arg in arguments.dropFirst() {
+            guard arg.hasPrefix("AISLOPDESK_"), let eq = arg.firstIndex(of: "=") else { continue }
+            inputs[String(arg[..<eq])] = String(arg[arg.index(after: eq)...])
+        }
+        return inputs
+    }
+
+    public func bootstrapFromEnvironment(_ env: [String: String] = WorkspaceStore.automationInputs()) {
         if let (target, video) = Self.videoTarget(from: env) {
             let spec = PaneSpec(kind: .remoteGUI, title: video.title, video: video)
             workspace = Self.singleLeafWorkspace(spec: spec, connection: target)
