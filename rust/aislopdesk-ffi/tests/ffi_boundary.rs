@@ -11,9 +11,11 @@
 
 use aislopdesk_ffi::video::{
     aisd_recovery_deduper_admit, aisd_recovery_deduper_free, aisd_recovery_deduper_new,
-    aisd_system_dialog_classify, aisd_system_dialog_free, aisd_system_dialog_min_size,
-    aisd_video_control_decode, aisd_video_control_encode, aisd_video_control_free, AisdRect,
-    AisdSystemDialog, AisdVideoControl, AisdVideoSummary, AISD_VIDEO_CONTROL_WINDOW_LIST,
+    aisd_recovery_message_decode, aisd_recovery_message_encode, aisd_system_dialog_classify,
+    aisd_system_dialog_free, aisd_system_dialog_min_size, aisd_video_control_decode,
+    aisd_video_control_encode, aisd_video_control_free, aisd_ycbcr_coefficients, AisdNetworkStats,
+    AisdRecoveryMessage, AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary,
+    AISD_RECOVERY_NETWORK_STATS, AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
 };
 use aislopdesk_ffi::{
     aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free, aisd_frame_decoder_new,
@@ -922,6 +924,83 @@ fn recovery_deduper_opaque_handle_dedups_and_frees() {
         assert_eq!(
             aisd_recovery_deduper_admit(core::ptr::null_mut(), wire.as_ptr(), wire.len(), 0.0),
             1
+        );
+    }
+}
+
+#[test]
+fn ycbcr_coefficients_video_vs_full() {
+    let video = aisd_ycbcr_coefficients(0);
+    let full = aisd_ycbcr_coefficients(1);
+    // Only the luma expansion differs between the two ranges.
+    assert!((video.luma_scale - 255.0 / 219.0).abs() < 1e-6);
+    assert!(video.luma_bias > 0.0);
+    assert_eq!(full.luma_scale, 1.0);
+    assert_eq!(full.luma_bias, 0.0);
+    // Chroma centre + the four matrix coefficients are range-independent.
+    assert_eq!(video.chroma_bias, full.chroma_bias);
+    assert_eq!(video.cr_to_r, full.cr_to_r);
+    assert_eq!(video.cb_to_g, full.cb_to_g);
+    assert_eq!(video.cr_to_g, full.cr_to_g);
+    assert_eq!(video.cb_to_b, full.cb_to_b);
+    // Any nonzero byte selects full range (the C ABI reads `!= 0`).
+    assert_eq!(aisd_ycbcr_coefficients(0xFF), full);
+}
+
+#[test]
+fn recovery_message_round_trips_through_the_c_struct() {
+    unsafe {
+        // A NetworkStats report (eleven u32s, incl. a negative trend bit-pattern) round-trips.
+        let mut msg = AisdRecoveryMessage {
+            kind: AISD_RECOVERY_NETWORK_STATS,
+            stats: AisdNetworkStats {
+                frames_received: 600,
+                fec_recovered: 12,
+                unrecovered: 3,
+                latest_host_send_ts: 1_234_567,
+                client_hold_ms: 7,
+                owd_jitter_micros: 850,
+                owd_trend_milli: (-987_i32) as u32,
+                owd_trend_flags: (42_u32 << 8) | 1,
+                pacer_late_frames: 4,
+                pacer_present_gaps: 6,
+                pacer_depth: 2,
+            },
+            ..AisdRecoveryMessage::default()
+        };
+        let mut frame = AisdBytes::EMPTY;
+        assert_eq!(aisd_recovery_message_encode(&msg, &mut frame), AISD_OK);
+        let mut out = AisdRecoveryMessage::default();
+        assert_eq!(
+            aisd_recovery_message_decode(frame.ptr, frame.len, &mut out),
+            AISD_OK
+        );
+        assert_eq!(out, msg);
+        aisd_bytes_free(frame);
+
+        // A valid body with a trailing byte is malformed (byte-keyed dedup contract).
+        msg.kind = AISD_RECOVERY_REQUEST_LTR_REFRESH;
+        msg.stats = AisdNetworkStats::default();
+        msg.from_frame_id = 1;
+        let mut lframe = AisdBytes::EMPTY;
+        assert_eq!(aisd_recovery_message_encode(&msg, &mut lframe), AISD_OK);
+        let mut padded = core::slice::from_raw_parts(lframe.ptr, lframe.len).to_vec();
+        padded.push(0);
+        assert_eq!(
+            aisd_recovery_message_decode(padded.as_ptr(), padded.len(), &mut out),
+            AISD_ERR_MALFORMED
+        );
+        aisd_bytes_free(lframe);
+
+        // An unknown kind cannot encode.
+        let bad = AisdRecoveryMessage {
+            kind: 99,
+            ..AisdRecoveryMessage::default()
+        };
+        let mut bframe = AisdBytes::EMPTY;
+        assert_eq!(
+            aisd_recovery_message_encode(&bad, &mut bframe),
+            AISD_ERR_INVALID_ARGUMENT
         );
     }
 }

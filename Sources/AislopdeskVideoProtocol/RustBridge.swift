@@ -597,4 +597,121 @@ enum RustVideoFFI {
             lossyEscalationFloorRTTMultiple, elapsedSinceRequest, rtt, observingLoss ? 1 : 0,
         ) != 0
     }
+
+    // MARK: - ycbcr (pure scalar; the BT.709 coefficient table the Metal shader applies)
+
+    /// The BT.709 YCbCr→RGB coefficients for the negotiated luma range, through the Rust core —
+    /// the single source of truth for the shader constants (there is no native Swift table). Wraps
+    /// `aisd_ycbcr_coefficients`.
+    static func ycbcrCoefficients(fullRange: Bool) -> YCbCrCoefficients {
+        let c = aisd_ycbcr_coefficients(fullRange ? 1 : 0)
+        return YCbCrCoefficients(
+            lumaScale: c.luma_scale,
+            lumaBias: c.luma_bias,
+            chromaBias: c.chroma_bias,
+            crToR: c.cr_to_r,
+            cbToG: c.cb_to_g,
+            crToG: c.cr_to_g,
+            cbToB: c.cb_to_b,
+        )
+    }
+
+    // MARK: - recovery (client→host loss-recovery / ack / cursor-reship / netstats codec)
+
+    /// Encodes a recovery message through the Rust core — the single source of truth. Every field
+    /// is scalar (no owned buffers). Encoding a valid message cannot fail (the kind is always
+    /// valid), so the guard traps rather than masking corruption with a second codec.
+    static func encode(_ message: RecoveryMessage) -> Data {
+        var c = AisdRecoveryMessage()
+        c.kind = message.messageType
+        switch message {
+        case let .ack(streamSeq):
+            c.stream_seq = streamSeq
+        case let .requestLTRRefresh(from, to, lastDecoded):
+            c.from_frame_id = from
+            c.to_frame_id = to
+            c.last_decoded_frame_id = lastDecoded
+        case let .requestIDR(lastDecoded):
+            c.last_decoded_frame_id = lastDecoded
+        case let .requestCursorShape(shapeID):
+            c.shape_id = shapeID
+        case let .networkStats(report):
+            c.stats = cNetworkStats(report)
+        }
+        var out = AisdBytes()
+        let status = aisd_recovery_message_encode(&c, &out)
+        guard status == AISD_OK, let ptr = out.ptr, out.len > 0 else {
+            preconditionFailure("aisd_recovery_message_encode failed for a valid message (status \(status))")
+        }
+        defer { aisd_bytes_free(out) }
+        return Data(bytes: ptr, count: out.len)
+    }
+
+    /// Decodes a recovery message through the Rust core, throwing the same ``VideoProtocolError``
+    /// cases the native decoder did (`.malformed` for an unknown type / trailing bytes — the
+    /// byte-keyed-dedup contract — `.truncated` for a short body).
+    static func decodeRecovery(_ data: Data) throws -> RecoveryMessage {
+        var out = AisdRecoveryMessage()
+        let status: AisdStatus = data.withUnsafeBytes { raw in
+            aisd_recovery_message_decode(raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &out)
+        }
+        switch status {
+        case AISD_OK:
+            // out.kind ∈ {1 ack, 2 ltrRefresh, 3 idr, 4 cursorShape, 5 networkStats} on success.
+            switch out.kind {
+            case 1:
+                return .ack(streamSeq: out.stream_seq)
+            case 2:
+                return .requestLTRRefresh(
+                    fromFrameID: out.from_frame_id,
+                    toFrameID: out.to_frame_id,
+                    lastDecodedFrameID: out.last_decoded_frame_id,
+                )
+            case 3:
+                return .requestIDR(lastDecodedFrameID: out.last_decoded_frame_id)
+            case 4:
+                return .requestCursorShape(shapeID: out.shape_id)
+            default:
+                return .networkStats(networkStatsReport(out.stats))
+            }
+        case AISD_ERR_MALFORMED:
+            throw VideoProtocolError.malformed("rust: malformed recovery message")
+        default:
+            throw VideoProtocolError.truncated
+        }
+    }
+
+    /// Flattens a Swift ``NetworkStatsReport`` into the C `AisdNetworkStats` (eleven scalars).
+    private static func cNetworkStats(_ r: NetworkStatsReport) -> AisdNetworkStats {
+        AisdNetworkStats(
+            frames_received: r.framesReceived,
+            fec_recovered: r.fecRecovered,
+            unrecovered: r.unrecovered,
+            latest_host_send_ts: r.latestHostSendTs,
+            client_hold_ms: r.clientHoldMs,
+            owd_jitter_micros: r.owdJitterMicros,
+            owd_trend_milli: r.owdTrendMilli,
+            owd_trend_flags: r.owdTrendFlags,
+            pacer_late_frames: r.pacerLateFrames,
+            pacer_present_gaps: r.pacerPresentGaps,
+            pacer_depth: r.pacerDepth,
+        )
+    }
+
+    /// Reads a decoded C `AisdNetworkStats` back into a Swift ``NetworkStatsReport``.
+    private static func networkStatsReport(_ s: AisdNetworkStats) -> NetworkStatsReport {
+        NetworkStatsReport(
+            framesReceived: s.frames_received,
+            fecRecovered: s.fec_recovered,
+            unrecovered: s.unrecovered,
+            latestHostSendTs: s.latest_host_send_ts,
+            clientHoldMs: s.client_hold_ms,
+            owdJitterMicros: s.owd_jitter_micros,
+            owdTrendMilli: s.owd_trend_milli,
+            owdTrendFlags: s.owd_trend_flags,
+            pacerLateFrames: s.pacer_late_frames,
+            pacerPresentGaps: s.pacer_present_gaps,
+            pacerDepth: s.pacer_depth,
+        )
+    }
 }

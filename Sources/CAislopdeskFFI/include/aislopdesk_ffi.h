@@ -593,6 +593,66 @@ void aisd_recovery_deduper_free(AisdRecoveryDeduper *deduper);
 uint8_t aisd_recovery_deduper_admit(AisdRecoveryDeduper *deduper, const uint8_t *datagram, size_t len,
                                     double now);
 
+/* ---- ycbcr (pure scalar; the BT.709 YCbCr->RGB coefficient table the Metal shader applies) ---- */
+
+/* The seven YCbCr->RGB coefficients (all float to match the GPU). Crosses by value. */
+typedef struct AisdYCbCrCoefficients {
+    float luma_scale;   /* video 255/219, full 1.0 */
+    float luma_bias;    /* video 16/255, full 0 */
+    float chroma_bias;  /* 128/255 in both ranges */
+    float cr_to_r;      /* range-independent */
+    float cb_to_g;      /* range-independent */
+    float cr_to_g;      /* range-independent */
+    float cb_to_b;      /* range-independent */
+} AisdYCbCrCoefficients;
+
+/* The BT.709 coefficients for the negotiated luma range (full_range != 0 => full swing, else
+ * studio/video swing — the current shader literals byte-for-byte). Pure; never fails. */
+AisdYCbCrCoefficients aisd_ycbcr_coefficients(uint8_t full_range);
+
+/* ---- recovery (client->host loss-recovery / ack / cursor-reship / netstats codec) ---- */
+
+#define AISD_RECOVERY_ACK 1
+#define AISD_RECOVERY_REQUEST_LTR_REFRESH 2
+#define AISD_RECOVERY_REQUEST_IDR 3
+#define AISD_RECOVERY_REQUEST_CURSOR_SHAPE 4
+#define AISD_RECOVERY_NETWORK_STATS 5
+
+/* A client->host network-feedback report (eleven u32s; all fields relative). Crosses by value. */
+typedef struct AisdNetworkStats {
+    uint32_t frames_received;
+    uint32_t fec_recovered;
+    uint32_t unrecovered;
+    uint32_t latest_host_send_ts;
+    uint32_t client_hold_ms;
+    uint32_t owd_jitter_micros;
+    uint32_t owd_trend_milli;
+    uint32_t owd_trend_flags;
+    uint32_t pacer_late_frames;
+    uint32_t pacer_present_gaps;
+    uint32_t pacer_depth;
+} AisdNetworkStats;
+
+/* A client->host recovery message. kind (AISD_RECOVERY_*) selects the meaningful fields; the body
+ * is all-scalar (no owned buffers), so it crosses by value both ways (no *_free). */
+typedef struct AisdRecoveryMessage {
+    uint8_t kind;
+    uint32_t stream_seq;             /* ACK */
+    uint32_t from_frame_id;          /* REQUEST_LTR_REFRESH */
+    uint32_t to_frame_id;            /* REQUEST_LTR_REFRESH */
+    uint32_t last_decoded_frame_id;  /* REQUEST_LTR_REFRESH / REQUEST_IDR */
+    uint16_t shape_id;               /* REQUEST_CURSOR_SHAPE */
+    AisdNetworkStats stats;          /* NETWORK_STATS */
+} AisdRecoveryMessage;
+
+/* Encode a recovery message. AISD_OK => *out owns the buffer (release with aisd_bytes_free);
+ * AISD_ERR_NULL for a null arg; AISD_ERR_INVALID_ARGUMENT for an unknown kind. */
+AisdStatus aisd_recovery_message_encode(const AisdRecoveryMessage *msg, AisdBytes *out);
+
+/* Decode a recovery message into *out (all-scalar, no *_free). data may be NULL only when len == 0.
+ * AISD_ERR_MALFORMED for an unknown type / trailing bytes; AISD_ERR_TRUNCATED for a short body. */
+AisdStatus aisd_recovery_message_decode(const uint8_t *data, size_t len, AisdRecoveryMessage *out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

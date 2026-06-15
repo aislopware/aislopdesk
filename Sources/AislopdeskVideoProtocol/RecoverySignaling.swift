@@ -150,34 +150,12 @@ public enum RecoveryMessage: Equatable, Sendable {
     }
 
     /// Serialises the message: `[UInt8 type][body...]`.
+    ///
+    /// Delegated to the Rust `aislopdesk-core` recovery codec (the SINGLE source of truth shared
+    /// with the Android client over the C ABI); byte-identical to the former native codec (pinned
+    /// by the golden vectors + `RecoveryMessage` round-trip tests).
     public func encode() -> Data {
-        var out = Data()
-        out.append(messageType)
-        switch self {
-        case let .ack(streamSeq):
-            out.appendBE(streamSeq)
-        case let .requestLTRRefresh(fromFrameID, toFrameID, lastDecodedFrameID):
-            out.appendBE(fromFrameID)
-            out.appendBE(toFrameID)
-            out.appendBE(lastDecodedFrameID)
-        case let .requestIDR(lastDecodedFrameID):
-            out.appendBE(lastDecodedFrameID)
-        case let .requestCursorShape(shapeID):
-            out.appendBE(shapeID)
-        case let .networkStats(r):
-            out.appendBE(r.framesReceived)
-            out.appendBE(r.fecRecovered)
-            out.appendBE(r.unrecovered)
-            out.appendBE(r.latestHostSendTs)
-            out.appendBE(r.clientHoldMs)
-            out.appendBE(r.owdJitterMicros)
-            out.appendBE(r.owdTrendMilli)
-            out.appendBE(r.owdTrendFlags)
-            out.appendBE(r.pacerLateFrames)
-            out.appendBE(r.pacerPresentGaps)
-            out.appendBE(r.pacerDepth)
-        }
-        return out
+        RustVideoFFI.encode(self)
     }
 
     /// Parses a recovery message. Throws ``VideoProtocolError`` on an unknown type, a short body,
@@ -186,53 +164,11 @@ public enum RecoveryMessage: Equatable, Sendable {
     /// datagram bytes — a decoder that tolerated suffixes would let suffix-varied copies of one
     /// logical request each decode identically yet bypass the byte-keyed dedup (re-triggering a
     /// second ForceLTRRefresh/IDR). No backcompat needed; both ends redeploy together.
+    ///
+    /// Delegated to the Rust core (same source of truth as ``encode()``); the bounds-checked
+    /// fixed-width reads + the trailing-bytes rejection live there now.
     public static func decode(_ data: Data) throws -> Self {
-        var reader = VideoByteReader(data)
-        let type = try reader.readUInt8()
-        let message: Self
-        switch type {
-        case 1:
-            message = try .ack(streamSeq: reader.readUInt32())
-        case 2:
-            // Three fixed-width UInt32s; bounds-checked reads ⇒ a body < 12 bytes throws .truncated
-            // → the router drops the single datagram (never crashes on hostile input).
-            let from = try reader.readUInt32()
-            let to = try reader.readUInt32()
-            let lastDecoded = try reader.readUInt32()
-            message = .requestLTRRefresh(fromFrameID: from, toFrameID: to, lastDecodedFrameID: lastDecoded)
-        case 3:
-            // One bounds-checked UInt32 (lastDecodedFrameID); a 0-byte legacy body now throws
-            // .truncated and is dropped — no backcompat (both ends redeploy together).
-            message = try .requestIDR(lastDecodedFrameID: reader.readUInt32())
-        case 4:
-            message = try .requestCursorShape(shapeID: reader.readUInt16())
-        case 5:
-            // Eleven fixed-width UInt32s; each read is bounds-checked, so a body < 44 bytes throws
-            // .truncated → the router drops the datagram (no OOB / overflow / force-unwrap surface).
-            let framesReceived = try reader.readUInt32()
-            let fecRecovered = try reader.readUInt32()
-            let unrecovered = try reader.readUInt32()
-            let latestHostSendTs = try reader.readUInt32()
-            let clientHoldMs = try reader.readUInt32()
-            let owdJitterMicros = try reader.readUInt32()
-            let owdTrendMilli = try reader.readUInt32()
-            let owdTrendFlags = try reader.readUInt32()
-            let pacerLateFrames = try reader.readUInt32()
-            let pacerPresentGaps = try reader.readUInt32()
-            let pacerDepth = try reader.readUInt32()
-            message = .networkStats(NetworkStatsReport(
-                framesReceived: framesReceived, fecRecovered: fecRecovered, unrecovered: unrecovered,
-                latestHostSendTs: latestHostSendTs, clientHoldMs: clientHoldMs, owdJitterMicros: owdJitterMicros,
-                owdTrendMilli: owdTrendMilli, owdTrendFlags: owdTrendFlags,
-                pacerLateFrames: pacerLateFrames, pacerPresentGaps: pacerPresentGaps, pacerDepth: pacerDepth,
-            ))
-        default:
-            throw VideoProtocolError.malformed("unknown recovery message type \(type)")
-        }
-        guard reader.bytesRemaining == 0 else {
-            throw VideoProtocolError.malformed("trailing bytes")
-        }
-        return message
+        try RustVideoFFI.decodeRecovery(data)
     }
 }
 

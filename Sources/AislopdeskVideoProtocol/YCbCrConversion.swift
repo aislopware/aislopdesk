@@ -87,37 +87,13 @@ public struct YCbCrCoefficients: Sendable, Equatable {
 /// reproduces today's hardcoded shader literals EXACTLY (the unit test enforces this), so
 /// the default-OFF path feeds the GPU identical numbers. `.full` changes ONLY the luma
 /// (scale 1.0, bias 0); chroma + the four matrix coefficients are byte-identical to `.video`.
+///
+/// The coefficient table now lives in the Rust core (`aislopdesk_core::ycbcr`, the SINGLE source
+/// of truth shared with the Android client) and is reached through the C ABI; this Swift facade
+/// only maps the negotiated range to the wire bit and reshapes the result. Byte-identical to the
+/// former native literals (pinned by `YCbCrConversionTests` + the golden vectors).
 public enum YCbCrConversion {
     public static func coefficients(_ range: ColorRange) -> YCbCrCoefficients {
-        // The four matrix coefficients + chroma centre are shared (range-independent).
-        let chromaBias: Float = 128.0 / 255.0
-        let crToR: Float = 1.5748
-        let cbToG: Float = 0.1873
-        let crToG: Float = 0.4681
-        let cbToB: Float = 1.8556
-        switch range {
-        case .video:
-            // Studio swing: expand [16,235]→[0,1] (the current shader, byte-for-byte).
-            return YCbCrCoefficients(
-                lumaScale: 255.0 / 219.0,
-                lumaBias: 16.0 / 255.0,
-                chromaBias: chromaBias,
-                crToR: crToR,
-                cbToG: cbToG,
-                crToG: crToG,
-                cbToB: cbToB,
-            )
-        case .full:
-            // Full swing: luma is already [0,1] — identity expansion, no bias.
-            return YCbCrCoefficients(
-                lumaScale: 1.0,
-                lumaBias: 0.0,
-                chromaBias: chromaBias,
-                crToR: crToR,
-                cbToG: cbToG,
-                crToG: crToG,
-                cbToB: cbToB,
-            )
-        }
+        RustVideoFFI.ycbcrCoefficients(fullRange: range.isFullRange)
     }
 }

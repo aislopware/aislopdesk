@@ -391,6 +391,65 @@ int main(void) {
     aisd_recovery_deduper_free(NULL); /* no-op */
     CHECK(aisd_recovery_deduper_admit(NULL, rwire, sizeof(rwire), 0.0) == 1, "null handle fails open");
 
+    /* 12. ycbcr coefficients: video vs full differ only in luma; matrix/chroma shared. */
+    AisdYCbCrCoefficients vid = aisd_ycbcr_coefficients(0);
+    AisdYCbCrCoefficients full = aisd_ycbcr_coefficients(1);
+    CHECK(vid.luma_scale > 1.16f && vid.luma_scale < 1.17f && vid.luma_bias > 0.0f,
+          "video range expands luma");
+    CHECK(full.luma_scale == 1.0f && full.luma_bias == 0.0f, "full range is identity luma");
+    CHECK(vid.chroma_bias == full.chroma_bias && vid.cr_to_r == full.cr_to_r &&
+              vid.cb_to_g == full.cb_to_g && vid.cr_to_g == full.cr_to_g && vid.cb_to_b == full.cb_to_b,
+          "chroma + matrix coefficients are range-independent");
+
+    /* 13. recovery codec: a RequestLtrRefresh + a NetworkStats report round-trip; trailing bytes
+     * and an unknown kind are rejected. */
+    AisdRecoveryMessage rmsg;
+    memset(&rmsg, 0, sizeof(rmsg));
+    rmsg.kind = AISD_RECOVERY_REQUEST_LTR_REFRESH;
+    rmsg.from_frame_id = 50;
+    rmsg.to_frame_id = 52;
+    rmsg.last_decoded_frame_id = 49;
+    AisdBytes rframe = {0};
+    CHECK(aisd_recovery_message_encode(&rmsg, &rframe) == AISD_OK, "recovery encode ok");
+    AisdRecoveryMessage rout;
+    memset(&rout, 0, sizeof(rout));
+    CHECK(aisd_recovery_message_decode(rframe.ptr, rframe.len, &rout) == AISD_OK, "recovery decode ok");
+    CHECK(rout.kind == AISD_RECOVERY_REQUEST_LTR_REFRESH && rout.from_frame_id == 50 &&
+              rout.to_frame_id == 52 && rout.last_decoded_frame_id == 49,
+          "RequestLtrRefresh fields round-trip");
+
+    /* trailing byte => malformed (byte-keyed dedup contract); copy into a stack buffer + pad. */
+    uint8_t rc_padded[32];
+    CHECK(rframe.len + 1 <= sizeof(rc_padded), "recovery wire fits the pad buffer");
+    memcpy(rc_padded, rframe.ptr, rframe.len);
+    rc_padded[rframe.len] = 0;
+    CHECK(aisd_recovery_message_decode(rc_padded, rframe.len + 1, &rout) == AISD_ERR_MALFORMED,
+          "trailing bytes rejected");
+    aisd_bytes_free(rframe);
+
+    AisdRecoveryMessage stats;
+    memset(&stats, 0, sizeof(stats));
+    stats.kind = AISD_RECOVERY_NETWORK_STATS;
+    stats.stats.frames_received = 600;
+    stats.stats.owd_trend_milli = (uint32_t)(-987);
+    stats.stats.pacer_depth = 2;
+    AisdBytes sframe = {0};
+    CHECK(aisd_recovery_message_encode(&stats, &sframe) == AISD_OK, "netstats encode ok");
+    AisdRecoveryMessage sout;
+    memset(&sout, 0, sizeof(sout));
+    CHECK(aisd_recovery_message_decode(sframe.ptr, sframe.len, &sout) == AISD_OK, "netstats decode ok");
+    CHECK(sout.stats.frames_received == 600 && sout.stats.owd_trend_milli == (uint32_t)(-987) &&
+              sout.stats.pacer_depth == 2,
+          "NetworkStats fields round-trip");
+    aisd_bytes_free(sframe);
+
+    AisdRecoveryMessage rc_bad;
+    memset(&rc_bad, 0, sizeof(rc_bad));
+    rc_bad.kind = 99;
+    AisdBytes rc_bframe = {0};
+    CHECK(aisd_recovery_message_encode(&rc_bad, &rc_bframe) == AISD_ERR_INVALID_ARGUMENT,
+          "unknown recovery kind rejected");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;
