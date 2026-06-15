@@ -9,6 +9,10 @@
 // buy no safety here — the references are consumed immediately by the call.
 #![allow(clippy::borrow_as_ptr)]
 
+use aislopdesk_ffi::video::{
+    aisd_video_control_decode, aisd_video_control_encode, aisd_video_control_free,
+    AisdVideoControl, AisdVideoSummary, AISD_VIDEO_CONTROL_WINDOW_LIST,
+};
 use aislopdesk_ffi::{
     aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free, aisd_frame_decoder_new,
     aisd_frame_decoder_next, aisd_seq_distance, aisd_wire_data_frame_encode_into,
@@ -691,5 +695,91 @@ fn decode_reports_errors_and_null_guards() {
             aisd_wire_message_decode([1u8].as_ptr(), 1, core::ptr::null_mut()),
             AISD_ERR_NULL
         );
+    }
+}
+
+// ---- video_control (the nested-array windowList path, driven as an external C caller) --------
+
+/// A zeroed control message — every numeric field 0, no records (the external-caller analogue of
+/// the crate-internal `AisdVideoControl::zeroed`, which is private).
+const fn control_base() -> AisdVideoControl {
+    AisdVideoControl {
+        kind: 0,
+        protocol_version: 0,
+        requested_window_id: 0,
+        viewport_w: 0.0,
+        viewport_h: 0.0,
+        accepted: 0,
+        stream_id: 0,
+        full_range: 0,
+        bounds_x: 0.0,
+        bounds_y: 0.0,
+        bounds_w: 0.0,
+        bounds_h: 0.0,
+        capture_width: 0,
+        capture_height: 0,
+        desired_w: 0.0,
+        desired_h: 0.0,
+        epoch: 0,
+        fps: 0,
+        records: core::ptr::null_mut(),
+        records_len: 0,
+    }
+}
+
+/// One borrowed summary record (the strings are copied by `encode`, never freed by Rust).
+const fn summary(
+    window_id: u32,
+    width: u16,
+    height: u16,
+    name: &[u8],
+    title: &[u8],
+) -> AisdVideoSummary {
+    AisdVideoSummary {
+        window_id,
+        width,
+        height,
+        is_secure: 0,
+        name: borrow(name),
+        title: borrow(title),
+    }
+}
+
+#[test]
+fn video_control_window_list_round_trips_and_owned_array_frees() {
+    unsafe {
+        let recs = [
+            summary(604, 1800, 943, b"Google Chrome", b"Tab"),
+            summary(10, 920, 436, b"Finder", b""), // empty title
+        ];
+        let mut msg = control_base();
+        msg.kind = AISD_VIDEO_CONTROL_WINDOW_LIST;
+        msg.records = recs.as_ptr().cast_mut();
+        msg.records_len = recs.len();
+
+        let mut frame = AisdBytes::EMPTY;
+        assert_eq!(aisd_video_control_encode(&msg, &mut frame), AISD_OK);
+
+        let mut out = control_base();
+        assert_eq!(
+            aisd_video_control_decode(frame.ptr, frame.len, &mut out),
+            AISD_OK
+        );
+        assert_eq!(out.kind, AISD_VIDEO_CONTROL_WINDOW_LIST);
+        assert_eq!(out.records_len, 2);
+        let decoded = core::slice::from_raw_parts(out.records, out.records_len);
+        assert_eq!(decoded[0].window_id, 604);
+        assert_eq!((decoded[0].width, decoded[0].height), (1800, 943));
+        assert_eq!(view(decoded[0].name), b"Google Chrome");
+        assert_eq!(view(decoded[0].title), b"Tab");
+        assert_eq!(decoded[1].window_id, 10);
+        assert_eq!(view(decoded[1].name), b"Finder");
+        assert!(view(decoded[1].title).is_empty());
+
+        aisd_video_control_free(&mut out);
+        aisd_video_control_free(&mut out); // idempotent: a second free is a no-op
+        assert!(out.records.is_null());
+        assert_eq!(out.records_len, 0);
+        aisd_bytes_free(frame);
     }
 }

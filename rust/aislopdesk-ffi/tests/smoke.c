@@ -286,6 +286,60 @@ int main(void) {
     CHECK(aisd_wire_data_frame_view(&bye_payload, 1, &cv) == AISD_OK && cv.tag == 0,
           "control payload reported as tag 0");
 
+    /* 9. video_control: a scalar (resizeAck) and the nested-array windowList — encode a
+     * borrowed record array, decode back into an owned one, then free it. */
+    AisdVideoControl rack;
+    memset(&rack, 0, sizeof(rack));
+    rack.kind = AISD_VIDEO_CONTROL_RESIZE_ACK;
+    rack.capture_width = 640;
+    rack.capture_height = 480;
+    rack.epoch = 9;
+    AisdBytes rack_frame = {NULL, 0, 0};
+    CHECK(aisd_video_control_encode(&rack, &rack_frame) == AISD_OK, "resizeAck encode ok");
+    AisdVideoControl rack_out;
+    memset(&rack_out, 0, sizeof(rack_out));
+    CHECK(aisd_video_control_decode(rack_frame.ptr, rack_frame.len, &rack_out) == AISD_OK,
+          "resizeAck decode ok");
+    CHECK(rack_out.kind == AISD_VIDEO_CONTROL_RESIZE_ACK && rack_out.capture_width == 640 &&
+              rack_out.capture_height == 480 && rack_out.epoch == 9 && rack_out.records == NULL,
+          "resizeAck round-trips, no records");
+    aisd_video_control_free(&rack_out);
+    aisd_bytes_free(rack_frame);
+
+    const char *app = "Google Chrome";
+    const char *win_title = "Tab";
+    AisdVideoSummary rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.window_id = 604;
+    rec.width = 1800;
+    rec.height = 943;
+    rec.name.ptr = (uint8_t *)app;
+    rec.name.len = strlen(app);
+    rec.title.ptr = (uint8_t *)win_title;
+    rec.title.len = strlen(win_title);
+    AisdVideoControl wl;
+    memset(&wl, 0, sizeof(wl));
+    wl.kind = AISD_VIDEO_CONTROL_WINDOW_LIST;
+    wl.records = &rec;
+    wl.records_len = 1;
+    AisdBytes wl_frame = {NULL, 0, 0};
+    CHECK(aisd_video_control_encode(&wl, &wl_frame) == AISD_OK, "windowList encode ok");
+    AisdVideoControl wl_out;
+    memset(&wl_out, 0, sizeof(wl_out));
+    CHECK(aisd_video_control_decode(wl_frame.ptr, wl_frame.len, &wl_out) == AISD_OK,
+          "windowList decode ok");
+    CHECK(wl_out.kind == AISD_VIDEO_CONTROL_WINDOW_LIST && wl_out.records_len == 1 &&
+              wl_out.records != NULL && wl_out.records[0].window_id == 604 &&
+              wl_out.records[0].width == 1800 &&
+              wl_out.records[0].name.len == strlen(app) &&
+              memcmp(wl_out.records[0].name.ptr, app, strlen(app)) == 0 &&
+              wl_out.records[0].title.len == strlen(win_title),
+          "windowList record fields + strings round-trip");
+    aisd_video_control_free(&wl_out);
+    aisd_video_control_free(&wl_out); /* idempotent */
+    CHECK(wl_out.records == NULL && wl_out.records_len == 0, "free nulls the record array");
+    aisd_bytes_free(wl_frame);
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

@@ -299,6 +299,85 @@ AisdStatus aisd_input_event_decode(const uint8_t *data, size_t len, AisdInputEve
 /* Release the owned `text` buffer inside a decoded event. Idempotent; struct is caller-owned. */
 void aisd_input_event_free(AisdInputEvent *msg);
 
+/* ---- video_control (PATH-2 session bring-up + window/dialog discovery lists) ------- */
+
+#define AISD_VIDEO_CONTROL_HELLO 1
+#define AISD_VIDEO_CONTROL_HELLO_ACK 2
+#define AISD_VIDEO_CONTROL_BYE 3
+#define AISD_VIDEO_CONTROL_RESIZE_REQUEST 4
+#define AISD_VIDEO_CONTROL_RESIZE_ACK 5
+#define AISD_VIDEO_CONTROL_KEEPALIVE 6
+#define AISD_VIDEO_CONTROL_LIST_WINDOWS 7
+#define AISD_VIDEO_CONTROL_WINDOW_LIST 8
+#define AISD_VIDEO_CONTROL_FOCUS_WINDOW 9
+#define AISD_VIDEO_CONTROL_STREAM_CADENCE 10
+#define AISD_VIDEO_CONTROL_LIST_SYSTEM_DIALOGS 11
+#define AISD_VIDEO_CONTROL_SYSTEM_DIALOG_LIST 12
+
+/*
+ * One window/dialog summary record — the element type of the WINDOW_LIST / SYSTEM_DIALOG_LIST
+ * arrays. Both lists share it: WINDOW_LIST → `name` is the app name, `is_secure` unused (0);
+ * SYSTEM_DIALOG_LIST → `name` is the owning process, `is_secure` = Secure Event Input. On a
+ * decode the `name`/`title` buffers own Rust allocations (released by aisd_video_control_free);
+ * on an encode input they are borrowed {ptr,len} (cap ignored) or {NULL,0,0}. Field order MUST
+ * match the Rust #[repr(C)] struct AisdVideoSummary exactly.
+ */
+typedef struct AisdVideoSummary {
+    uint32_t window_id;
+    uint16_t width;
+    uint16_t height;
+    uint8_t is_secure; /* SYSTEM_DIALOG_LIST flag (0/1); 0 (unused) for WINDOW_LIST */
+    AisdBytes name;    /* app name (WINDOW_LIST) / owner (SYSTEM_DIALOG_LIST)       */
+    AisdBytes title;
+} AisdVideoSummary;
+
+/*
+ * A PATH-2 video control message, flattened for the C ABI. `kind` (AISD_VIDEO_CONTROL_*) selects
+ * which fields are meaningful: HELLO → protocol_version,requested_window_id,viewport_*; HELLO_ACK
+ * → accepted,stream_id,capture_*,full_range,bounds_*; RESIZE_REQUEST → desired_*,epoch; RESIZE_ACK
+ * → capture_*,epoch; STREAM_CADENCE → fps; WINDOW_LIST / SYSTEM_DIALOG_LIST → records,records_len;
+ * the zero-body kinds use none. On a decode *out the `records` array owns a Rust allocation
+ * (release with aisd_video_control_free); on an encode input it is a borrowed {records,records_len}
+ * the library copies and never frees. Field order MUST match the Rust #[repr(C)] struct
+ * AisdVideoControl exactly.
+ */
+typedef struct AisdVideoControl {
+    uint8_t kind;
+    uint16_t protocol_version;
+    uint32_t requested_window_id;
+    double viewport_w;
+    double viewport_h;
+    uint8_t accepted;   /* HELLO_ACK, read != 0 */
+    uint32_t stream_id;
+    uint8_t full_range; /* HELLO_ACK, read != 0 */
+    double bounds_x;
+    double bounds_y;
+    double bounds_w;
+    double bounds_h;
+    uint16_t capture_width;  /* HELLO_ACK / RESIZE_ACK */
+    uint16_t capture_height; /* HELLO_ACK / RESIZE_ACK */
+    double desired_w;
+    double desired_h;
+    uint32_t epoch; /* RESIZE_REQUEST / RESIZE_ACK */
+    uint16_t fps;   /* STREAM_CADENCE */
+    AisdVideoSummary *records; /* WINDOW_LIST / SYSTEM_DIALOG_LIST (NULL otherwise) */
+    size_t records_len;
+} AisdVideoControl;
+
+/* Encode a caller-built video control message into its wire form. On AISD_OK, *out owns the buffer
+ * (release with aisd_bytes_free). Returns AISD_ERR_NULL for a null argument or
+ * AISD_ERR_INVALID_ARGUMENT for an unknown kind / non-UTF-8 record string. */
+AisdStatus aisd_video_control_encode(const AisdVideoControl *msg, AisdBytes *out);
+
+/* Decode a video control message into *out. On AISD_OK, *out may own a `records` array (release with
+ * aisd_video_control_free). data may be NULL iff len == 0. Maps a non-finite coordinate / unknown
+ * type to AISD_ERR_MALFORMED and a short body to AISD_ERR_TRUNCATED (record strings decode lossily). */
+AisdStatus aisd_video_control_decode(const uint8_t *data, size_t len, AisdVideoControl *out);
+
+/* Release the owned `records` array (and each record's name/title) inside a decoded message.
+ * Idempotent; the struct itself is caller-owned. */
+void aisd_video_control_free(AisdVideoControl *msg);
+
 /* ---- adaptive_fec (pure scalar; WF-4 FEC tier policy) ----------------------------- */
 
 /* Tier-decision state for the dwell-gated adaptive-FEC variant. Field order MUST match the

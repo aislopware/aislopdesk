@@ -277,6 +277,212 @@ enum RustVideoFFI {
         }
     }
 
+    // MARK: - video_control (PATH-2 session bring-up + window/dialog discovery lists)
+
+    /// The fields common to a `windowList` / `systemDialogList` record, unified so the two list
+    /// variants share one marshaling path (`isSecure` is meaningful only for a system dialog).
+    private struct SummaryParts {
+        let windowID: UInt32
+        let width: UInt16
+        let height: UInt16
+        let isSecure: Bool
+        let name: String
+        let title: String
+    }
+
+    /// Encodes a PATH-2 video control message through the Rust core — the single source of truth.
+    /// Scalars cross by value; the `windowList`/`systemDialogList` records are borrowed in (Rust
+    /// copies them, never frees). Encoding a valid message cannot fail (the kind is always valid
+    /// and a Swift `String` is always UTF-8), so the guard traps rather than masking corruption
+    /// with a second codec.
+    static func encode(_ message: VideoControlMessage) -> Data {
+        var c = AisdVideoControl()
+        c.kind = message.messageType
+        switch message {
+        case let .hello(version, windowID, viewport):
+            c.protocol_version = version
+            c.requested_window_id = windowID
+            c.viewport_w = viewport.width
+            c.viewport_h = viewport.height
+            return emitVideoControl(&c)
+        case let .helloAck(accepted, streamID, captureWidth, captureHeight, bounds, fullRange):
+            c.accepted = accepted ? 1 : 0
+            c.stream_id = streamID
+            c.capture_width = captureWidth
+            c.capture_height = captureHeight
+            c.full_range = fullRange ? 1 : 0
+            c.bounds_x = bounds.origin.x
+            c.bounds_y = bounds.origin.y
+            c.bounds_w = bounds.size.width
+            c.bounds_h = bounds.size.height
+            return emitVideoControl(&c)
+        case .bye,
+             .keepalive,
+             .listWindows,
+             .focusWindow,
+             .listSystemDialogs:
+            return emitVideoControl(&c)
+        case let .resizeRequest(desired, epoch):
+            c.desired_w = desired.width
+            c.desired_h = desired.height
+            c.epoch = epoch
+            return emitVideoControl(&c)
+        case let .resizeAck(captureWidth, captureHeight, epoch):
+            c.capture_width = captureWidth
+            c.capture_height = captureHeight
+            c.epoch = epoch
+            return emitVideoControl(&c)
+        case let .streamCadence(fps):
+            c.fps = fps
+            return emitVideoControl(&c)
+        case let .windowList(windows):
+            return encodeRecords(kind: message.messageType, windows.map {
+                SummaryParts(
+                    windowID: $0.windowID, width: $0.width, height: $0.height,
+                    isSecure: false, name: $0.appName, title: $0.title,
+                )
+            })
+        case let .systemDialogList(dialogs):
+            return encodeRecords(kind: message.messageType, dialogs.map {
+                SummaryParts(
+                    windowID: $0.windowID, width: $0.width, height: $0.height,
+                    isSecure: $0.isSecure, name: $0.owner, title: $0.title,
+                )
+            })
+        }
+    }
+
+    /// Encodes a caller-built `AisdVideoControl` (the scalar fields already set) through the FFI.
+    private static func emitVideoControl(_ c: inout AisdVideoControl) -> Data {
+        var out = AisdBytes()
+        let status = aisd_video_control_encode(&c, &out)
+        guard status == AISD_OK, let ptr = out.ptr, out.len > 0 else {
+            preconditionFailure("aisd_video_control_encode failed for a valid message (status \(status))")
+        }
+        defer { aisd_bytes_free(out) }
+        return Data(bytes: ptr, count: out.len)
+    }
+
+    /// Marshals a record list (`windowList`/`systemDialogList`) and encodes it. Every record's two
+    /// UTF-8 strings are flattened into one contiguous blob the record `AisdBytes` borrow into; Rust
+    /// copies them during the call, so the blob only has to outlive `aisd_video_control_encode`.
+    private static func encodeRecords(kind: UInt8, _ parts: [SummaryParts]) -> Data {
+        var blob: [UInt8] = []
+        var spans: [(nameOffset: Int, nameLen: Int, titleOffset: Int, titleLen: Int)] = []
+        for part in parts {
+            let name = Array(part.name.utf8)
+            let title = Array(part.title.utf8)
+            let nameOffset = blob.count
+            blob.append(contentsOf: name)
+            let titleOffset = blob.count
+            blob.append(contentsOf: title)
+            spans.append((nameOffset, name.count, titleOffset, title.count))
+        }
+        var c = AisdVideoControl()
+        c.kind = kind
+        return blob.withUnsafeMutableBytes { raw -> Data in
+            let base = raw.baseAddress
+            func bytes(_ offset: Int, _ len: Int) -> AisdBytes {
+                guard len > 0, let base else { return AisdBytes() }
+                return AisdBytes(ptr: base.advanced(by: offset).assumingMemoryBound(to: UInt8.self), len: len, cap: 0)
+            }
+            var summaries = parts.enumerated().map { index, part in
+                AisdVideoSummary(
+                    window_id: part.windowID,
+                    width: part.width,
+                    height: part.height,
+                    is_secure: part.isSecure ? 1 : 0,
+                    name: bytes(spans[index].nameOffset, spans[index].nameLen),
+                    title: bytes(spans[index].titleOffset, spans[index].titleLen),
+                )
+            }
+            return summaries.withUnsafeMutableBufferPointer { buf -> Data in
+                c.records = buf.baseAddress
+                c.records_len = buf.count
+                return emitVideoControl(&c)
+            }
+        }
+    }
+
+    /// Decodes a PATH-2 video control message through the Rust core, throwing the same
+    /// ``VideoProtocolError`` cases the native decoder did (`.malformed` for a non-finite
+    /// coordinate / unknown type, `.truncated` for a short body; record strings decode lossily).
+    static func decodeVideoControl(_ data: Data) throws -> VideoControlMessage {
+        var out = AisdVideoControl()
+        let status: AisdStatus = data.withUnsafeBytes { raw in
+            aisd_video_control_decode(raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &out)
+        }
+        switch status {
+        case AISD_OK:
+            defer { aisd_video_control_free(&out) }
+            // out.kind ∈ 1...12 on a successful decode; the record strings are copied out below
+            // (into Swift `String`s) before the deferred free releases the borrowed buffers.
+            switch out.kind {
+            case 1:
+                return .hello(
+                    protocolVersion: out.protocol_version,
+                    requestedWindowID: out.requested_window_id,
+                    viewport: VideoSize(width: out.viewport_w, height: out.viewport_h),
+                )
+            case 2:
+                return .helloAck(
+                    accepted: out.accepted != 0,
+                    streamID: out.stream_id,
+                    captureWidth: out.capture_width,
+                    captureHeight: out.capture_height,
+                    windowBoundsCG: VideoRect(
+                        x: out.bounds_x,
+                        y: out.bounds_y,
+                        width: out.bounds_w,
+                        height: out.bounds_h,
+                    ),
+                    fullRange: out.full_range != 0,
+                )
+            case 3:
+                return .bye
+            case 4:
+                return .resizeRequest(desired: VideoSize(width: out.desired_w, height: out.desired_h), epoch: out.epoch)
+            case 5:
+                return .resizeAck(captureWidth: out.capture_width, captureHeight: out.capture_height, epoch: out.epoch)
+            case 6:
+                return .keepalive
+            case 7:
+                return .listWindows
+            case 8:
+                return .windowList(summaries(from: out).map {
+                    WindowSummary(
+                        windowID: $0.window_id, appName: string(from: $0.name), title: string(from: $0.title),
+                        width: $0.width, height: $0.height,
+                    )
+                })
+            case 9:
+                return .focusWindow
+            case 10:
+                return .streamCadence(fps: out.fps)
+            case 11:
+                return .listSystemDialogs
+            default:
+                return .systemDialogList(summaries(from: out).map {
+                    SystemDialogSummary(
+                        windowID: $0.window_id, owner: string(from: $0.name), title: string(from: $0.title),
+                        width: $0.width, height: $0.height, isSecure: $0.is_secure != 0,
+                    )
+                })
+            }
+        case AISD_ERR_MALFORMED:
+            throw VideoProtocolError.malformed("rust: malformed video control")
+        default:
+            throw VideoProtocolError.truncated
+        }
+    }
+
+    /// Reads the decoded record array (`records`/`records_len`) into a Swift array. The borrowed
+    /// `AisdBytes` inside each record stay valid until the caller's `aisd_video_control_free`.
+    private static func summaries(from control: AisdVideoControl) -> [AisdVideoSummary] {
+        guard let base = control.records, control.records_len > 0 else { return [] }
+        return (0..<control.records_len).map { base[$0] }
+    }
+
     /// Copies a returned `AisdBytes` UTF-8 payload into a `String` (empty for the null buffer).
     /// The buffer itself is released by the caller's `*_free`.
     private static func string(from bytes: AisdBytes) -> String {

@@ -200,6 +200,78 @@ final class RustCodecWireVectorTests: XCTestCase {
         }
     }
 
+    // MARK: video_control
+
+    /// Pins the scalar video-control variants to their exact wire bytes — including the field order
+    /// the FFI flattens (`hello` viewport `f64`s, `resizeAck` u16+u32, `streamCadence` u16).
+    func testVideoControlScalarWireVectors() throws {
+        let cases: [(VideoControlMessage, [UInt8])] = [
+            // hello: type | protocolVersion u16 | requestedWindowID u32 | viewport.w f64 | .h f64
+            (
+                .hello(
+                    protocolVersion: 0x0102,
+                    requestedWindowID: 0x0304_0506,
+                    viewport: VideoSize(width: 2.0, height: 0.5),
+                ),
+                [
+                    0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+                    0x40, 0, 0, 0, 0, 0, 0, 0, // 2.0
+                    0x3F, 0xE0, 0, 0, 0, 0, 0, 0, // 0.5
+                ],
+            ),
+            // resizeAck: type | captureWidth u16 | captureHeight u16 | epoch u32
+            (
+                .resizeAck(captureWidth: 0x0102, captureHeight: 0x0304, epoch: 0x0506_0708),
+                [0x05, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+            ),
+            // streamCadence: type | fps u16
+            (.streamCadence(fps: 60), [0x0A, 0x00, 0x3C]),
+            (.keepalive, [0x06]),
+            (.bye, [0x03]),
+        ]
+        for (message, expected) in cases {
+            XCTAssertEqual(Array(message.encode()), expected, "encode \(message)")
+            XCTAssertEqual(try VideoControlMessage.decode(Data(expected)), message, "decode \(message)")
+        }
+    }
+
+    /// Pins the nested-array `windowList` / `systemDialogList` layout: `u16 count` then per record
+    /// `u32 id | u16 w | u16 h | (u8 isSecure) | u16-len-prefixed name | u16-len-prefixed title`. A
+    /// known vector independently verifies the FFI record-array marshaling (field order across the
+    /// boundary), which a round-trip alone could not catch if a field were swapped symmetrically.
+    func testVideoControlListWireVectors() throws {
+        let windowList = VideoControlMessage.windowList([
+            WindowSummary(windowID: 1, appName: "Hi", title: "", width: 0x0102, height: 0x0304),
+        ])
+        let windowExpected: [UInt8] = [
+            0x08, // type = windowList
+            0x00, 0x01, // count = 1
+            0x00, 0x00, 0x00, 0x01, // windowID
+            0x01, 0x02, // width
+            0x03, 0x04, // height
+            0x00, 0x02, 0x48, 0x69, // appName len 2 + "Hi"
+            0x00, 0x00, // title len 0
+        ]
+        XCTAssertEqual(Array(windowList.encode()), windowExpected)
+        XCTAssertEqual(try VideoControlMessage.decode(Data(windowExpected)), windowList)
+
+        let dialogList = VideoControlMessage.systemDialogList([
+            SystemDialogSummary(windowID: 1, owner: "Hi", title: "", width: 0x0102, height: 0x0304, isSecure: true),
+        ])
+        let dialogExpected: [UInt8] = [
+            0x0C, // type = systemDialogList
+            0x00, 0x01, // count = 1
+            0x00, 0x00, 0x00, 0x01, // windowID
+            0x01, 0x02, // width
+            0x03, 0x04, // height
+            0x01, // isSecure
+            0x00, 0x02, 0x48, 0x69, // owner len 2 + "Hi"
+            0x00, 0x00, // title len 0
+        ]
+        XCTAssertEqual(Array(dialogList.encode()), dialogExpected)
+        XCTAssertEqual(try VideoControlMessage.decode(Data(dialogExpected)), dialogList)
+    }
+
     // MARK: fuzz — arbitrary bytes must never crash the Rust-backed decoders.
 
     func testDecodersNeverCrashOnRandomBytes() {
@@ -210,6 +282,7 @@ final class RustCodecWireVectorTests: XCTestCase {
             _ = try? CursorUpdate.decode(data)
             _ = try? WindowGeometryMessage.decode(data)
             _ = try? InputEvent.decode(data)
+            _ = try? VideoControlMessage.decode(data)
         }
     }
 }
