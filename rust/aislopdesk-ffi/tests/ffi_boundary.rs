@@ -22,7 +22,8 @@ use aislopdesk_ffi::video::{
     AisdVideoSummary, aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id,
     aisd_decode_gate_min_lost_frame_id, aisd_decode_gate_mode, aisd_decode_gate_new,
     aisd_decode_gate_note_decode_succeeded, aisd_decode_gate_note_hard_decode_failure,
-    aisd_decode_gate_note_loss, aisd_decode_gate_verdict, aisd_input_button_balance_free,
+    aisd_decode_gate_note_loss, aisd_decode_gate_verdict, aisd_fec_codec_free, aisd_fec_codec_new,
+    aisd_fec_parity, aisd_fec_recover, aisd_input_button_balance_free,
     aisd_input_button_balance_held_mask, aisd_input_button_balance_new,
     aisd_input_button_balance_plan, aisd_owd_late_detector_free, aisd_owd_late_detector_new,
     aisd_owd_late_detector_note, aisd_pacer_depth_policy_depth,
@@ -51,11 +52,12 @@ use aislopdesk_ffi::{
     AISD_ERR_NULL, AISD_ERR_TRUNCATED, AISD_ERR_UNKNOWN_TYPE, AISD_OK, AISD_WIRE_ACK,
     AISD_WIRE_BELL, AISD_WIRE_BYE, AISD_WIRE_COMMAND_STATUS, AISD_WIRE_EXIT, AISD_WIRE_HELLO,
     AISD_WIRE_HELLO_ACK, AISD_WIRE_INPUT, AISD_WIRE_NOTIFICATION, AISD_WIRE_OUTPUT, AISD_WIRE_PING,
-    AISD_WIRE_PONG, AISD_WIRE_RESIZE, AISD_WIRE_TITLE, AisdBytes, AisdDataFrameView,
-    AisdWireMessage, aisd_bytes_free, aisd_frame_decoder_append, aisd_frame_decoder_free,
-    aisd_frame_decoder_new, aisd_frame_decoder_next, aisd_seq_distance,
-    aisd_wire_data_frame_encode_into, aisd_wire_data_frame_view, aisd_wire_message_decode,
-    aisd_wire_message_encode, aisd_wire_message_free,
+    AISD_WIRE_PONG, AISD_WIRE_RESIZE, AISD_WIRE_TITLE, AisdBytes, AisdBytesArray,
+    AisdDataFrameView, AisdWireMessage, aisd_bytes_array_free, aisd_bytes_free,
+    aisd_frame_decoder_append, aisd_frame_decoder_free, aisd_frame_decoder_new,
+    aisd_frame_decoder_next, aisd_seq_distance, aisd_wire_data_frame_encode_into,
+    aisd_wire_data_frame_view, aisd_wire_message_decode, aisd_wire_message_encode,
+    aisd_wire_message_free,
 };
 
 /// A zeroed message — every field default, both buffers empty.
@@ -1357,5 +1359,201 @@ fn pacer_depth_policy_opaque_handle_promotes_and_frees() {
             aisd_pacer_depth_policy_drain_counters(core::ptr::null_mut()).late_frames,
             0
         );
+    }
+}
+
+// ---- fec (NEON-backed Reed-Solomon codec over the C ABI) -----------------------------------
+
+/// Borrows a slice as an input data shard (read-only; never freed by the call).
+const fn shard(bytes: &[u8]) -> AisdBytes {
+    if bytes.is_empty() {
+        AisdBytes::EMPTY
+    } else {
+        AisdBytes {
+            ptr: bytes.as_ptr().cast_mut(),
+            len: bytes.len(),
+            cap: 0,
+        }
+    }
+}
+
+#[test]
+fn fec_multi_loss_recover_via_c_abi() {
+    unsafe {
+        // k=4, m=2: lose 2 data shards in a single group and recover BOTH, byte-exact.
+        let codec = aisd_fec_codec_new(4, 2);
+        assert!(!codec.is_null());
+        let owned: Vec<Vec<u8>> = (0..4u8)
+            .map(|i| vec![i, i.wrapping_mul(37), i ^ 0xA5, i.wrapping_add(200)])
+            .collect();
+        let data_in: Vec<AisdBytes> = owned.iter().map(|v| shard(v)).collect();
+
+        let mut parity = AisdBytesArray::EMPTY;
+        assert_eq!(
+            aisd_fec_parity(codec, data_in.as_ptr(), data_in.len(), 4, &mut parity),
+            AISD_OK
+        );
+        assert_eq!(parity.count, 2, "one group of k=4 => m=2 parity shards");
+
+        // Erase shards 0 and 2 (present=0; their bytes become a hole carrying no AisdBytes).
+        let mut data: Vec<AisdBytes> = owned.iter().map(|v| shard(v)).collect();
+        let mut present = [1u8; 4];
+        present[0] = 0;
+        present[2] = 0;
+        data[0] = AisdBytes::EMPTY;
+        data[2] = AisdBytes::EMPTY;
+        let parity_present = vec![1u8; parity.count];
+        let mut recovered = [0u8; 4];
+
+        assert_eq!(
+            aisd_fec_recover(
+                codec,
+                data.as_mut_ptr(),
+                present.as_ptr(),
+                4,
+                parity.items,
+                parity_present.as_ptr(),
+                parity.count,
+                4,
+                recovered.as_mut_ptr(),
+            ),
+            AISD_OK
+        );
+        assert_eq!(recovered, [1, 0, 1, 0], "exactly the two holes filled");
+        assert_eq!(view(data[0]), owned[0], "shard 0 recovered byte-exact");
+        assert_eq!(view(data[2]), owned[2], "shard 2 recovered byte-exact");
+        // Surviving shards are still borrowed (cap==0) — only the two recovered ones are owned.
+        aisd_bytes_free(data[0]);
+        aisd_bytes_free(data[2]);
+        aisd_bytes_array_free(&mut parity);
+        aisd_fec_codec_free(codec);
+    }
+}
+
+#[test]
+fn fec_unrecoverable_more_holes_than_parity_leaves_holes() {
+    unsafe {
+        // k=5, m=2 but 3 holes in the group => unrecoverable; no panic, holes stay holes.
+        let codec = aisd_fec_codec_new(5, 2);
+        let owned: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i; 6]).collect();
+        let data_in: Vec<AisdBytes> = owned.iter().map(|v| shard(v)).collect();
+        let mut parity = AisdBytesArray::EMPTY;
+        assert_eq!(
+            aisd_fec_parity(codec, data_in.as_ptr(), data_in.len(), 5, &mut parity),
+            AISD_OK
+        );
+
+        let mut data: Vec<AisdBytes> = owned.iter().map(|v| shard(v)).collect();
+        let mut present = [1u8; 5];
+        for h in [0usize, 2, 4] {
+            present[h] = 0;
+            data[h] = AisdBytes::EMPTY;
+        }
+        let parity_present = vec![1u8; parity.count];
+        let mut recovered = [7u8; 5];
+        assert_eq!(
+            aisd_fec_recover(
+                codec,
+                data.as_mut_ptr(),
+                present.as_ptr(),
+                5,
+                parity.items,
+                parity_present.as_ptr(),
+                parity.count,
+                5,
+                recovered.as_mut_ptr(),
+            ),
+            AISD_OK
+        );
+        assert_eq!(recovered, [0; 5], "3 holes > m=2 => nothing recovered");
+        // No buffer was written to the holes — nothing to free for them.
+        assert!(data[0].ptr.is_null() && data[2].ptr.is_null() && data[4].ptr.is_null());
+        aisd_bytes_array_free(&mut parity);
+        aisd_fec_codec_free(codec);
+    }
+}
+
+#[test]
+fn fec_free_idempotence_and_recovered_shard_free() {
+    unsafe {
+        // Prove: aisd_bytes_array_free is idempotent (second call no-op), and a recovered shard is
+        // a freeable Rust-owned buffer.
+        let codec = aisd_fec_codec_new(3, 1);
+        let owned: Vec<Vec<u8>> = vec![vec![1, 2, 3], vec![4, 5], vec![6]];
+        let data_in: Vec<AisdBytes> = owned.iter().map(|v| shard(v)).collect();
+        let mut parity = AisdBytesArray::EMPTY;
+        assert_eq!(
+            aisd_fec_parity(codec, data_in.as_ptr(), data_in.len(), 3, &mut parity),
+            AISD_OK
+        );
+        assert_eq!(parity.count, 1, "one group, m=1 => one XOR parity");
+
+        let mut data: Vec<AisdBytes> = owned.iter().map(|v| shard(v)).collect();
+        let present = [1u8, 0, 1];
+        data[1] = AisdBytes::EMPTY;
+        let parity_present = [1u8];
+        let mut recovered = [0u8; 3];
+        assert_eq!(
+            aisd_fec_recover(
+                codec,
+                data.as_mut_ptr(),
+                present.as_ptr(),
+                3,
+                parity.items,
+                parity_present.as_ptr(),
+                parity.count,
+                3,
+                recovered.as_mut_ptr(),
+            ),
+            AISD_OK
+        );
+        assert_eq!(recovered, [0, 1, 0]);
+        assert_eq!(view(data[1]), owned[1]);
+
+        // The recovered shard owns a Rust allocation (cap > 0) — free it.
+        assert!(
+            data[1].cap > 0 || data[1].len == 0,
+            "recovered shard is Rust-owned"
+        );
+        aisd_bytes_free(data[1]);
+
+        // Free the parity array TWICE — the second is a no-op (idempotent).
+        aisd_bytes_array_free(&mut parity);
+        assert!(parity.items.is_null() && parity.count == 0);
+        aisd_bytes_array_free(&mut parity);
+        aisd_bytes_array_free(core::ptr::null_mut()); // null pointer no-op
+        aisd_fec_codec_free(codec);
+        aisd_fec_codec_free(core::ptr::null_mut()); // no-op
+    }
+}
+
+#[test]
+fn fec_codec_new_rejects_bad_config_and_guards() {
+    unsafe {
+        // Invalid configs return null instead of aborting across the boundary.
+        assert!(aisd_fec_codec_new(0, 1).is_null());
+        assert!(aisd_fec_codec_new(1, 0).is_null());
+        assert!(aisd_fec_codec_new(128, 128).is_null()); // 256 > 255
+
+        let codec = aisd_fec_codec_new(4, 2);
+        let mut out = AisdBytesArray::EMPTY;
+        // Null codec / out_parity / data-with-count, and group_size 0.
+        assert_eq!(
+            aisd_fec_parity(core::ptr::null(), core::ptr::null(), 0, 4, &mut out),
+            AISD_ERR_NULL
+        );
+        assert_eq!(
+            aisd_fec_parity(codec, core::ptr::null(), 0, 4, core::ptr::null_mut()),
+            AISD_ERR_NULL
+        );
+        assert_eq!(
+            aisd_fec_parity(codec, core::ptr::null(), 2, 4, &mut out),
+            AISD_ERR_NULL
+        );
+        assert_eq!(
+            aisd_fec_parity(codec, core::ptr::null(), 0, 0, &mut out),
+            AISD_ERR_INVALID_ARGUMENT
+        );
+        aisd_fec_codec_free(codec);
     }
 }

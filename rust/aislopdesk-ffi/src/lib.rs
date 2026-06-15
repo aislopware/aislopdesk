@@ -53,7 +53,8 @@ pub mod gf_neon;
 mod raw;
 
 pub(crate) use raw::{
-    bytes_from_vec, copy_in, drop_bytes, free_handle, into_handle, slice_in, slice_out,
+    bytes_from_vec, bytes_vec_into_raw, copy_in, drop_bytes, drop_bytes_array, free_handle,
+    into_handle, slice_in, slice_out,
 };
 
 // ---------------------------------------------------------------------------------------
@@ -123,6 +124,58 @@ impl AisdBytes {
 pub unsafe extern "C" fn aisd_bytes_free(bytes: AisdBytes) {
     // SAFETY: per the contract, `bytes` is an unfreed buffer this library returned.
     unsafe { drop_bytes(bytes) }
+}
+
+// ---------------------------------------------------------------------------------------
+// Owned array of byte buffers (Rust-allocated, Rust-freed) — the reusable shard-list type
+// ---------------------------------------------------------------------------------------
+
+/// A length-counted array of owned byte buffers that crosses the boundary (e.g. the parity shards
+/// from [`crate::video::aisd_fec_parity`]).
+///
+/// When returned by a function it owns a Rust allocation: both the `items` array and every
+/// [`AisdBytes`] inside it. Release the whole thing with [`aisd_bytes_array_free`] — never C
+/// `free`, and never free an individual `items[i]` separately. An empty array is `{ items: null,
+/// count: 0 }`. Field order MUST match the C header's `AisdBytesArray`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AisdBytesArray {
+    /// Pointer to `count` owned [`AisdBytes`], or null when `count == 0`.
+    pub items: *mut AisdBytes,
+    /// Number of elements at `items`.
+    pub count: usize,
+}
+
+impl AisdBytesArray {
+    /// The canonical empty array: null items, zero count.
+    pub const EMPTY: Self = Self {
+        items: core::ptr::null_mut(),
+        count: 0,
+    };
+}
+
+/// Releases an owned [`AisdBytesArray`] returned by this library.
+///
+/// Frees each element buffer, then the array allocation, and resets `*array` to empty. Idempotent
+/// (a second call is a no-op) and safe on a zeroed/[`AisdBytesArray::EMPTY`] value; a null `array`
+/// pointer is also a no-op.
+///
+/// # Safety
+/// `array`, if non-null, must point to a writable [`AisdBytesArray`] previously filled by this
+/// library (or zeroed/EMPTY) and not already freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aisd_bytes_array_free(array: *mut AisdBytesArray) {
+    if array.is_null() {
+        return;
+    }
+    // SAFETY: `array` is non-null per the check above and a writable, library-filled array per the
+    // contract.
+    let a = unsafe { &mut *array };
+    // SAFETY: `(items, count)` is the array this library allocated (or `(null, 0)`), freed exactly
+    // once — the reset below makes a second call a no-op (idempotent).
+    unsafe { drop_bytes_array(a.items, a.count) };
+    a.items = core::ptr::null_mut();
+    a.count = 0;
 }
 
 // ---------------------------------------------------------------------------------------

@@ -615,6 +615,75 @@ int main(void) {
     CHECK(aisd_pacer_depth_policy_depth(NULL) == 1, "null policy depth 1");
     CHECK(aisd_pacer_depth_policy_note_present(NULL, 0.0) == AISD_PACER_GAP_FIRST, "null first");
 
+    /* 21. fec: NEON-backed Reed-Solomon. Build a k=4 m=2 codec, generate parity over 4 data shards,
+     * erase 2, recover them, assert byte-equality, then free everything (+ a double-free of the
+     * array to prove idempotence). An invalid config returns NULL, not an abort. */
+    CHECK(aisd_fec_codec_new(0, 2) == NULL, "fec codec rejects k<1");
+    CHECK(aisd_fec_codec_new(128, 128) == NULL, "fec codec rejects k+m>255");
+    AisdFecCodec *fec = aisd_fec_codec_new(4, 2);
+    CHECK(fec != NULL, "fec codec new k=4 m=2");
+
+    uint8_t s0[4] = {0x10, 0x11, 0x12, 0x13};
+    uint8_t s1[4] = {0x20, 0x21, 0x22, 0x23};
+    uint8_t s2[4] = {0x30, 0x31, 0x32, 0x33};
+    uint8_t s3[4] = {0x40, 0x41, 0x42, 0x43};
+    AisdBytes data_in[4] = {
+        {s0, sizeof(s0), 0}, {s1, sizeof(s1), 0}, {s2, sizeof(s2), 0}, {s3, sizeof(s3), 0}};
+    AisdBytesArray parity = {NULL, 0};
+    CHECK(aisd_fec_parity(fec, data_in, 4, 4, &parity) == AISD_OK, "fec parity ok");
+    CHECK(parity.count == 2 && parity.items != NULL, "one group => m=2 parity shards");
+
+    /* Erase shards 1 and 3: present=0, their bytes carried as the empty buffer (a hole, not empty). */
+    AisdBytes data[4] = {
+        {s0, sizeof(s0), 0}, {NULL, 0, 0}, {s2, sizeof(s2), 0}, {NULL, 0, 0}};
+    uint8_t data_present[4] = {1, 0, 1, 0};
+    uint8_t parity_present[2] = {1, 1};
+    uint8_t out_recovered[4] = {0, 0, 0, 0};
+    CHECK(aisd_fec_recover(fec, data, data_present, 4, parity.items, parity_present, parity.count, 4,
+                           out_recovered) == AISD_OK,
+          "fec recover ok");
+    CHECK(out_recovered[0] == 0 && out_recovered[1] == 1 && out_recovered[2] == 0 &&
+              out_recovered[3] == 1,
+          "exactly the two holes were filled");
+    CHECK(data[1].len == sizeof(s1) && memcmp(data[1].ptr, s1, sizeof(s1)) == 0,
+          "shard 1 recovered byte-exact");
+    CHECK(data[3].len == sizeof(s3) && memcmp(data[3].ptr, s3, sizeof(s3)) == 0,
+          "shard 3 recovered byte-exact");
+
+    /* Free the two recovered (Rust-owned) shards, then the parity array (twice => idempotent). */
+    aisd_bytes_free(data[1]);
+    aisd_bytes_free(data[3]);
+    aisd_bytes_array_free(&parity);
+    CHECK(parity.items == NULL && parity.count == 0, "array free nulls the items");
+    aisd_bytes_array_free(&parity);     /* idempotent double-free */
+    aisd_bytes_array_free(NULL);        /* null pointer no-op */
+    aisd_fec_codec_free(fec);
+    aisd_fec_codec_free(NULL);          /* no-op */
+
+    /* An unrecoverable group (3 holes > m=2) leaves the holes, never panics. */
+    AisdFecCodec *fec2 = aisd_fec_codec_new(5, 2);
+    uint8_t u[5][3] = {{1, 1, 1}, {2, 2, 2}, {3, 3, 3}, {4, 4, 4}, {5, 5, 5}};
+    AisdBytes uin[5];
+    for (int i = 0; i < 5; i++) { uin[i].ptr = u[i]; uin[i].len = 3; uin[i].cap = 0; }
+    AisdBytesArray uparity = {NULL, 0};
+    CHECK(aisd_fec_parity(fec2, uin, 5, 5, &uparity) == AISD_OK, "fec parity (unrecoverable case)");
+    AisdBytes udata[5];
+    for (int i = 0; i < 5; i++) { udata[i].ptr = u[i]; udata[i].len = 3; udata[i].cap = 0; }
+    udata[0] = (AisdBytes){NULL, 0, 0};
+    udata[2] = (AisdBytes){NULL, 0, 0};
+    udata[4] = (AisdBytes){NULL, 0, 0};
+    uint8_t upresent[5] = {0, 1, 0, 1, 0};
+    uint8_t uparity_present[2] = {1, 1};
+    uint8_t uout[5] = {9, 9, 9, 9, 9};
+    CHECK(aisd_fec_recover(fec2, udata, upresent, 5, uparity.items, uparity_present, uparity.count,
+                           5, uout) == AISD_OK,
+          "fec recover (unrecoverable) ok");
+    CHECK(uout[0] == 0 && uout[2] == 0 && uout[4] == 0, "3 holes > m=2 => none recovered");
+    CHECK(udata[0].ptr == NULL && udata[2].ptr == NULL && udata[4].ptr == NULL,
+          "unrecovered holes carry no buffer");
+    aisd_bytes_array_free(&uparity);
+    aisd_fec_codec_free(fec2);
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

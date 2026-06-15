@@ -116,3 +116,49 @@ pub(crate) unsafe fn copy_in(b: AisdBytes) -> Vec<u8> {
         unsafe { core::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Owned arrays of `AisdBytes` (Rust-allocated, Rust-freed) — the reusable shard-list infra
+// ---------------------------------------------------------------------------------------
+
+/// Moves a `Vec<AisdBytes>` across the boundary as a raw `(ptr, len)` the caller releases via the
+/// matching `*_free`. An empty vec yields `(null, 0)` (no allocation leaked; the matching free is a
+/// no-op). Each element should itself be an owned [`bytes_from_vec`] buffer.
+///
+/// Safe: only the vec's own allocation (and the already-owned element buffers) is handed over;
+/// nothing is dereferenced.
+pub(crate) fn bytes_vec_into_raw(items: Vec<AisdBytes>) -> (*mut AisdBytes, usize) {
+    if items.is_empty() {
+        return (core::ptr::null_mut(), 0);
+    }
+    let len = items.len();
+    // `into_boxed_slice` guarantees `cap == len`, so the matching `from_raw_parts_mut` in
+    // [`drop_bytes_array`] reconstructs the exact same allocation.
+    let mut boxed = items.into_boxed_slice();
+    let ptr = boxed.as_mut_ptr();
+    core::mem::forget(boxed);
+    (ptr, len)
+}
+
+/// Reconstructs the owned `[AisdBytes]` array behind a `(ptr, len)` produced by
+/// [`bytes_vec_into_raw`], dropping each element buffer first, then the array allocation. No-op on
+/// a null pointer or zero length (so it is safe on a zeroed/EMPTY array value).
+///
+/// # Safety
+/// `(ptr, len)` must be an array previously produced by [`bytes_vec_into_raw`] (each element an
+/// unfreed [`bytes_from_vec`] buffer) and not yet freed.
+pub(crate) unsafe fn drop_bytes_array(ptr: *mut AisdBytes, len: usize) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    // SAFETY: forwarded from this function's contract — a live `bytes_vec_into_raw` boxed slice
+    // (`into_boxed_slice` makes `cap == len`, so this reconstructs the exact allocation).
+    let boxed: Box<[AisdBytes]> =
+        unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len)) };
+    for item in &boxed {
+        // SAFETY: each element is a live `bytes_from_vec` allocation owned by this array, freed
+        // exactly once here before the slice itself is dropped.
+        unsafe { drop_bytes(*item) };
+    }
+    drop(boxed);
+}

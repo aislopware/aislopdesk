@@ -229,9 +229,15 @@ impl FecScheme for XorParityFec {
 /// A Cauchy parity row is *not* all-ones, so a literal RS encode with `m == 1` would emit
 /// different parity *bytes* than the plain XOR even though recovery would still be correct.
 /// Because the contract guarantees `m == 1` matches the v1 XOR wire format exactly, this
-/// type **special-cases `m == 1` to plain XOR** internally (delegating to the shared framing
-/// helpers): the parity bytes, and the recovered bytes, are bit-for-bit the XOR scheme's.
-/// For `m >= 2` the full GF(2^8) Cauchy machinery runs.
+/// type **special-cases `m == 1` to plain XOR** internally: the parity bytes, and the recovered
+/// bytes, are bit-for-bit the XOR scheme's. For `m >= 2` the full GF(2^8) Cauchy machinery runs.
+///
+/// Both the `m == 1` XOR path and the `m >= 2` Cauchy path route **every** region operation
+/// through the configured [`GfRegion`] backend `G` (`xor_add` for identity/data-row combination,
+/// `mul_add` for parity rows): *no* scalar region op is hard-wired inside the codec, so a
+/// NEON-backed `G` is fully vectorised even at `m == 1`. The XOR output is backend-independent,
+/// so byte-identity to [`XorParityFec`] holds regardless of `G`. ([`XorParityFec`] itself remains
+/// the standalone scalar reference and the `m == 1` golden anchor.)
 ///
 /// The [`GfRegion`] backend is generic so a SIMD implementation can drop in without
 /// touching the codec; [`ScalarGf`] is the portable default.
@@ -280,16 +286,53 @@ impl<G: GfRegion> ReedSolomonFec<G> {
         }
     }
 
+    /// XOR of the length-prefixed encodings of a group, zero-padded to the longest member,
+    /// folded through the GF backend's [`xor_add`](GfRegion::xor_add).
+    ///
+    /// Byte-identical to [`XorParityFec::xor_encoded`] (field addition is XOR regardless of the
+    /// backend), but routed through `self.gf` so a NEON-backed codec actually vectorises the
+    /// `m == 1` accumulate instead of falling back to the core's scalar XOR.
+    fn gf_xor_encoded(&self, group: &[&[u8]]) -> Vec<u8> {
+        let framed: Vec<Vec<u8>> = group.iter().map(|m| length_prefixed(m)).collect();
+        let width = framed.iter().map(Vec::len).max().unwrap_or(0);
+        let mut acc = vec![0u8; width];
+        for member in &framed {
+            // `member.len() <= acc.len()` (acc is sized to the widest), so `xor_add`'s
+            // `dst.len() >= src.len()` precondition holds.
+            self.gf.xor_add(member, &mut acc);
+        }
+        acc
+    }
+
+    /// `parity XOR (encoded survivors)` through the GF backend = the encoded form of the single
+    /// missing member, zero-padded. Byte-identical to [`XorParityFec::xor_recover`]; routed
+    /// through `self.gf` so the NEON backend vectorises the `m == 1` recover accumulate.
+    fn gf_xor_recover(&self, parity: &[u8], survivors: &[&[u8]]) -> Vec<u8> {
+        let framed_survivors: Vec<Vec<u8>> = survivors.iter().map(|m| length_prefixed(m)).collect();
+        let width = parity
+            .len()
+            .max(framed_survivors.iter().map(Vec::len).max().unwrap_or(0));
+        let mut acc = vec![0u8; width];
+        // Each operand's len <= acc.len() (acc is sized to the max), so `xor_add` is complete.
+        self.gf.xor_add(parity, &mut acc);
+        for member in &framed_survivors {
+            self.gf.xor_add(member, &mut acc);
+        }
+        acc
+    }
+
     /// Encodes one group's `m` parity shards into `out` (appended in rank order).
     ///
     /// Frames each of the up-to-`k` data shards (length-prefixed) and zero-pads to the
     /// group's widest member `W`, then for each parity row folds `coeff * framed_shard` into
     /// a fresh `W`-wide accumulator via the GF backend's `mul_add`. `m == 1` takes the plain
-    /// XOR path so the bytes match [`XorParityFec`] exactly.
+    /// XOR path (through [`gf_xor_encoded`](Self::gf_xor_encoded)) so the bytes match
+    /// [`XorParityFec`] exactly while still routing through `self.gf`.
     fn encode_group(&self, group: &[&[u8]], out: &mut Vec<Vec<u8>>) {
-        // `m == 1`: byte-identical to XOR parity (the shared encoder).
+        // `m == 1`: byte-identical to XOR parity, but via the configured GF backend (so a NEON
+        // codec is vectorised here too, not silently scalar).
         if self.parity == 1 {
-            out.push(XorParityFec::xor_encoded(group));
+            out.push(self.gf_xor_encoded(group));
             return;
         }
         let framed: Vec<Vec<u8>> = group.iter().map(|s| length_prefixed(s)).collect();
@@ -330,12 +373,13 @@ impl<G: GfRegion> ReedSolomonFec<G> {
             return; // nothing to do, or beyond this group's repair budget
         }
 
-        // m == 1: a single hole, plain XOR recover (byte-identical to XorParityFec).
+        // m == 1: a single hole, plain XOR recover (byte-identical to XorParityFec), but folded
+        // through the configured GF backend so the NEON codec is vectorised here too.
         if m == 1 {
             if let Some(Some(parity_bytes)) = parity.get(group_index) {
                 let survivors: Vec<&[u8]> =
                     (index..upper).filter_map(|i| data[i].as_deref()).collect();
-                let recovered = XorParityFec::xor_recover(parity_bytes, &survivors);
+                let recovered = self.gf_xor_recover(parity_bytes, &survivors);
                 if let Some(bytes) = strip_length_prefix(&recovered) {
                     data[holes[0]] = Some(bytes);
                 }

@@ -46,6 +46,21 @@ typedef struct AisdBytes {
 /* Release a buffer this library returned. NULL/empty is a safe no-op. */
 void aisd_bytes_free(AisdBytes bytes);
 
+/* ---- Owned array of byte buffers (Rust-allocated, Rust-freed) ----------------------- */
+
+/* A length-counted array of owned AisdBytes (e.g. the parity shards from aisd_fec_parity). When
+ * returned it owns both the `items` array AND every AisdBytes inside it — release the whole thing
+ * with aisd_bytes_array_free (never C free(), and never free an individual items[i] separately).
+ * Empty is { NULL, 0 }. Field order MUST match the Rust #[repr(C)] struct AisdBytesArray. */
+typedef struct AisdBytesArray {
+    AisdBytes *items; /* `count` owned buffers, or NULL when count == 0 */
+    size_t count;     /* number of elements at `items`                  */
+} AisdBytesArray;
+
+/* Release an array this library returned: frees each element buffer, then the array, then resets
+ * *array to empty. Idempotent and safe on a zeroed/empty value; a NULL `array` pointer is a no-op. */
+void aisd_bytes_array_free(AisdBytesArray *array);
+
 /* ---- Sequence arithmetic ----------------------------------------------------------- */
 
 /* Wrap-aware signed distance a-b in 32-bit sequence space (positive => a is ahead). */
@@ -899,6 +914,49 @@ AisdPacerCounters aisd_pacer_depth_policy_drain_counters(AisdPacerDepthPolicy *p
 /* Sets (has_hint!=0) or clears (has_hint==0) the FPS-governor interval hint. No-op on NULL. */
 void aisd_pacer_depth_policy_set_interval_hint(AisdPacerDepthPolicy *policy, double seconds,
                                                uint8_t has_hint);
+
+/* ---- fec (opaque handle; NEON-backed Reed-Solomon erasure codec) ---- */
+
+/* An immutable NEON-backed Reed-Solomon codec with k data + m parity shards per group (a group
+ * recovers up to m losses). On Apple Silicon the GF(2^8) data plane is NEON-vectorised (incl. the
+ * m==1 XOR path); a scalar fallback is used off aarch64. */
+typedef struct AisdFecCodec AisdFecCodec;
+
+/* Create a codec with k data + m parity shards per group. Returns NULL (NOT a panic across the
+ * boundary) for an invalid config: k < 1, m < 1, or k + m > 255 (the Cauchy index sets must fit
+ * GF(2^8)). Destroy a non-NULL result with aisd_fec_codec_free. */
+AisdFecCodec *aisd_fec_codec_new(size_t k, size_t m);
+/* Destroy a codec from aisd_fec_codec_new. NULL is a safe no-op. */
+void aisd_fec_codec_free(AisdFecCodec *codec);
+
+/* Compute parity for `data` (group_size data shards per group). AISD_OK => *out_parity owns an
+ * array of ceil(data_count / group_size) * m shards in group-major-then-rank order (release with
+ * aisd_bytes_array_free). Each data[i] is borrowed (its bytes are read, never freed). Returns
+ * AISD_ERR_NULL for a null codec / out_parity (or null data with a nonzero data_count), or
+ * AISD_ERR_INVALID_ARGUMENT for group_size == 0. An empty data yields the empty array. Never
+ * panics. data may be NULL only when data_count == 0. */
+AisdStatus aisd_fec_parity(const AisdFecCodec *codec, const AisdBytes *data, size_t data_count,
+                           size_t group_size, AisdBytesArray *out_parity);
+
+/* Recover recoverable DATA holes in place. data[i] is a caller shard; data_present[i] is 1 if it
+ * holds valid bytes and 0 if it is a HOLE to repair (this is how a hole is told apart from a
+ * legitimately-empty shard — never use an empty AisdBytes to mean "missing"). parity /
+ * parity_present describe the parity shards the same way. Grouping is by group_size.
+ *
+ * For every hole this call can repair it writes a fresh Rust-owned AisdBytes into data[i] and sets
+ * out_recovered[i] = 1; unrecoverable holes are left as passed in (out_recovered[i] = 0). The
+ * caller frees each recovered data[i] with aisd_bytes_free. out_recovered (length data_count) is
+ * fully written.
+ *
+ * Returns AISD_ERR_NULL for a null codec / data / data_present / out_recovered (with a nonzero
+ * data_count), or a null parity / parity_present (with a nonzero parity_count); or
+ * AISD_ERR_INVALID_ARGUMENT for group_size == 0. NEVER panics on hostile input (wrong counts, all
+ * holes, more than m holes, corrupt shards) — it validates and degrades, leaving unrepairable
+ * holes untouched. */
+AisdStatus aisd_fec_recover(const AisdFecCodec *codec, AisdBytes *data, const uint8_t *data_present,
+                            size_t data_count, const AisdBytes *parity,
+                            const uint8_t *parity_present, size_t parity_count, size_t group_size,
+                            uint8_t *out_recovered);
 
 #ifdef __cplusplus
 } /* extern "C" */
