@@ -303,7 +303,7 @@ public actor AislopdeskVideoHostSession {
     /// `.forceKeyframe` / `.refreshLTR` arms — `.ack`/`.networkStats`/`.reshipCursorShape`
     /// legitimately repeat. Also fixes the pre-existing frame-boundary-straddle double-
     /// `ForceLTRRefresh` (the LTR path has no cooldown of its own).
-    private var recoveryDeduper = RecoveryRequestDeduper(windowSeconds: AislopdeskVideoHostSession.recoveryDedupWindow)
+    private let recoveryDeduper = RecoveryRequestDeduper(windowSeconds: AislopdeskVideoHostSession.recoveryDedupWindow)
     /// `AISLOPDESK_RECOVERY_DEDUP_MS` (default 25, clamp 0...200; 0 disables — every datagram
     /// admitted). COUPLED to the client spacing: ≥ 2× the max copy spread ((copies−1)·spacing =
     /// 12 ms at copies=5, spacing 3 ms) + reorder skew — duplicates do NOT refresh the window

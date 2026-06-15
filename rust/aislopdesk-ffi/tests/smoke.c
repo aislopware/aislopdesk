@@ -377,6 +377,20 @@ int main(void) {
                                       NULL, 0, sa_frame, 60, NULL) == AISD_ERR_NULL,
           "null out rejected");
 
+    /* 11. recovery_request_deduper opaque handle: a redundant burst dedups to one; a distinct
+     * datagram is admitted; the window expires; a NULL handle fails open. */
+    AisdRecoveryDeduper *ded = aisd_recovery_deduper_new(0.025, 16);
+    CHECK(ded != NULL, "recovery deduper allocated");
+    uint8_t rwire[5] = {3, 0, 0, 0, 50};
+    CHECK(aisd_recovery_deduper_admit(ded, rwire, sizeof(rwire), 100.000) == 1, "first sighting admitted");
+    CHECK(aisd_recovery_deduper_admit(ded, rwire, sizeof(rwire), 100.005) == 0, "duplicate dropped");
+    uint8_t rwire2[2] = {4, 1};
+    CHECK(aisd_recovery_deduper_admit(ded, rwire2, sizeof(rwire2), 100.006) == 1, "distinct admitted");
+    CHECK(aisd_recovery_deduper_admit(ded, rwire, sizeof(rwire), 100.030) == 1, "window expiry re-admits");
+    aisd_recovery_deduper_free(ded);
+    aisd_recovery_deduper_free(NULL); /* no-op */
+    CHECK(aisd_recovery_deduper_admit(NULL, rwire, sizeof(rwire), 0.0) == 1, "null handle fails open");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

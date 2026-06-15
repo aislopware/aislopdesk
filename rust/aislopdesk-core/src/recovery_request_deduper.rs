@@ -56,7 +56,13 @@ impl RecoveryRequestDeduper {
     /// duplicate (the caller should drop). Prunes expired entries, then byte-compares against
     /// the survivors.
     pub fn admit(&mut self, datagram: &[u8], now: f64) -> bool {
-        if self.window_seconds <= 0.0 {
+        // Exact complement of the Swift shell's `guard windowSeconds > 0 else { return true }`
+        // (NOT a bare `<= 0`): for a degenerate NaN window both ADMIT (`NaN > 0` is false ⇒ the
+        // guard fails ⇒ return true), where `<= 0` would instead fall through and could drop a
+        // duplicate. Mirrors the NaN-fidelity of the `now` prune below. (The window is always a
+        // finite literal in practice, so this only keeps the module internally consistent.)
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(self.window_seconds > 0.0) {
             return true;
         }
         // Exact complement of the Swift shell's `removeAll { now - acceptedAt > windowSeconds }`
@@ -172,6 +178,20 @@ mod tests {
         assert!(d.admit(&wire, 100.000));
         assert!(d.admit(&wire, 100.000));
         assert!(d.admit(&wire, 100.005));
+    }
+
+    #[test]
+    fn nan_window_admits_everything_like_swift() {
+        // Degenerate/unreachable (the window is always a finite literal), but NaN-window fidelity:
+        // the Swift `guard windowSeconds > 0` fails for a NaN window (`NaN > 0` is false) ⇒ always
+        // admit. The `!(window > 0.0)` guard reproduces that (a bare `<= 0` would dedup instead).
+        let mut d = RecoveryRequestDeduper::new(f64::NAN, DEFAULT_CAPACITY);
+        let wire = ltr_wire(50, 50, 49);
+        assert!(d.admit(&wire, 100.000));
+        assert!(
+            d.admit(&wire, 100.000),
+            "NaN window is the kill switch, like Swift"
+        );
     }
 
     #[test]

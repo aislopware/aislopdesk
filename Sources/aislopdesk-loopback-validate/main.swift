@@ -2878,7 +2878,7 @@ func runRecoveryRequestLossArm(
     frontier.noteDecoded(frameID: 49)
     // ── REAL components, host side ──
     let router = RecoveryDatagramRouter()
-    var deduper = RecoveryRequestDeduper()
+    let deduper = RecoveryRequestDeduper()
     let ltrCtl = LTRController() // fresh ⇒ no acked token ⇒ refreshLTR falls back to .idr
     var idrPolicy = RecoveryIDRPolicy()
     var nextKF: UInt32 = 100
@@ -3000,7 +3000,7 @@ struct RecoveryDedupArmResult {
 func runRecoveryDedupStraddleArm(dedupOn: Bool, verbose: Bool) -> RecoveryDedupArmResult {
     var r = RecoveryDedupArmResult()
     let router = RecoveryDatagramRouter()
-    var deduper = RecoveryRequestDeduper(windowSeconds: dedupOn ? 0.020 : 0) // 0 = the kill switch ⇒ today's behaviour
+    let deduper = RecoveryRequestDeduper(windowSeconds: dedupOn ? 0.020 : 0) // 0 = the kill switch ⇒ today's behaviour
     var ltrCtl = LTRController()
     ltrCtl.recordLTRFrame(frameID: 0, token: 1)
     _ = ltrCtl.ackFrame(frameID: 0) // acked token ⇒ refreshLTR resolves to .ltrRefresh (the no-cooldown path)

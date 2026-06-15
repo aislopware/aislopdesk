@@ -575,6 +575,24 @@ AisdStatus aisd_system_dialog_classify(uint32_t window_id,
 /* Release the owned owner/title buffers inside a classified dialog. Idempotent; struct caller-owned. */
 void aisd_system_dialog_free(AisdSystemDialog *msg);
 
+/* ---- recovery_request_deduper (opaque handle; host-session recovery-request dedup) ---- */
+
+typedef struct AisdRecoveryDeduper AisdRecoveryDeduper;
+
+/* Create a deduper: window_seconds drops duplicates for that long after the first sighting (0 =>
+ * always admit); capacity is the ring size (floored to 1). Destroy with aisd_recovery_deduper_free. */
+AisdRecoveryDeduper *aisd_recovery_deduper_new(double window_seconds, size_t capacity);
+
+/* Destroy a deduper. NULL is a safe no-op. */
+void aisd_recovery_deduper_free(AisdRecoveryDeduper *deduper);
+
+/* Admit a recovery-request datagram: 1 = first sighting within the window (process it), 0 = a
+ * byte-identical duplicate (drop it). FAIL-OPEN: a NULL handle, or a NULL datagram with a nonzero
+ * len, returns 1 (process) — never 0 — so a caller bug never silently swallows a real request.
+ * datagram may be NULL only when len == 0. */
+uint8_t aisd_recovery_deduper_admit(AisdRecoveryDeduper *deduper, const uint8_t *datagram, size_t len,
+                                    double now);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

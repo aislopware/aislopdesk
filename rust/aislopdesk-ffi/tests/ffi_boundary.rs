@@ -10,6 +10,7 @@
 #![allow(clippy::borrow_as_ptr)]
 
 use aislopdesk_ffi::video::{
+    aisd_recovery_deduper_admit, aisd_recovery_deduper_free, aisd_recovery_deduper_new,
     aisd_system_dialog_classify, aisd_system_dialog_free, aisd_system_dialog_min_size,
     aisd_video_control_decode, aisd_video_control_encode, aisd_video_control_free, AisdRect,
     AisdSystemDialog, AisdVideoControl, AisdVideoSummary, AISD_VIDEO_CONTROL_WINDOW_LIST,
@@ -885,6 +886,42 @@ fn system_dialog_classify_non_dialog_empty_and_null_out_guard() {
                 core::ptr::null_mut(),
             ),
             AISD_ERR_NULL
+        );
+    }
+}
+
+#[test]
+fn recovery_deduper_opaque_handle_dedups_and_frees() {
+    unsafe {
+        let d = aisd_recovery_deduper_new(0.025, 16);
+        assert!(!d.is_null());
+        let wire = [3u8, 0, 0, 0, 50];
+        // First sighting admitted, byte-identical copy dropped.
+        assert_eq!(
+            aisd_recovery_deduper_admit(d, wire.as_ptr(), wire.len(), 100.000),
+            1
+        );
+        assert_eq!(
+            aisd_recovery_deduper_admit(d, wire.as_ptr(), wire.len(), 100.005),
+            0
+        );
+        // A distinct datagram is admitted alongside.
+        let other = [4u8, 1];
+        assert_eq!(
+            aisd_recovery_deduper_admit(d, other.as_ptr(), other.len(), 100.006),
+            1
+        );
+        // After the window the original ages back to admissible.
+        assert_eq!(
+            aisd_recovery_deduper_admit(d, wire.as_ptr(), wire.len(), 100.030),
+            1
+        );
+        aisd_recovery_deduper_free(d);
+        aisd_recovery_deduper_free(core::ptr::null_mut()); // no-op
+                                                           // A null handle fails open (process, never drop).
+        assert_eq!(
+            aisd_recovery_deduper_admit(core::ptr::null_mut(), wire.as_ptr(), wire.len(), 0.0),
+            1
         );
     }
 }

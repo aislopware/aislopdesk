@@ -4,7 +4,9 @@ import XCTest
 
 /// Component 5 (recovery-redundancy, 2026-06-11): the host-side dedup window that collapses the
 /// client's byte-identical redundant recovery-request copies (3× spaced 3 ms) to ONE host action.
-/// Pure value type — `now` injected, keyed on FULL raw datagram bytes (zero wire-layout coupling).
+/// `now` injected, keyed on FULL raw datagram bytes (zero wire-layout coupling). The dedup logic
+/// now lives in the Rust core (`aislopdesk_core::recovery_request_deduper`); this exercises the
+/// host-side handle over the C-ABI, so these cases double as an FFI round-trip check.
 final class RecoveryRequestDeduperTests: XCTestCase {
     private func idrWire(lastDecoded: UInt32 = 400) -> Data {
         RecoveryMessage.requestIDR(lastDecodedFrameID: lastDecoded).encode()
@@ -16,7 +18,7 @@ final class RecoveryRequestDeduperTests: XCTestCase {
 
     /// The redundancy burst: identical datagram at t / t+5ms / t+10ms → admit, drop, drop.
     func testRedundantBurstDedupsToOne() {
-        var d = RecoveryRequestDeduper()
+        let d = RecoveryRequestDeduper()
         let wire = ltrWire()
         XCTAssertTrue(d.admit(wire, now: 100.000))
         XCTAssertFalse(d.admit(wire, now: 100.005))
@@ -26,7 +28,7 @@ final class RecoveryRequestDeduperTests: XCTestCase {
     /// A duplicate does NOT refresh the original's timestamp: identical at t and t+25 ms
     /// (window 20 ms) → both admitted, even with suppressed copies in between.
     func testWindowExpiryWithoutTimestampRefresh() {
-        var d = RecoveryRequestDeduper(windowSeconds: 0.020)
+        let d = RecoveryRequestDeduper(windowSeconds: 0.020)
         let wire = idrWire()
         XCTAssertTrue(d.admit(wire, now: 100.000))
         XCTAssertFalse(d.admit(wire, now: 100.010), "still inside the window")
@@ -37,7 +39,7 @@ final class RecoveryRequestDeduperTests: XCTestCase {
     /// Different requested context (another lostFrameID / frontier) inside the window must
     /// BOTH be admitted — the key is the full body, not just the type byte.
     func testDistinctContextBothAdmitted() {
-        var d = RecoveryRequestDeduper()
+        let d = RecoveryRequestDeduper()
         XCTAssertTrue(d.admit(ltrWire(from: 50, to: 50, lastDecoded: 49), now: 100.000))
         XCTAssertTrue(d.admit(ltrWire(from: 51, to: 51, lastDecoded: 49), now: 100.002))
         XCTAssertTrue(d.admit(idrWire(lastDecoded: 49), now: 100.004))
@@ -46,7 +48,7 @@ final class RecoveryRequestDeduperTests: XCTestCase {
     /// Type-2 (requestLTRRefresh) vs type-3 (requestIDR) are different bytes even if the
     /// context overlaps — both admitted (type-byte discrimination via byte-equality).
     func testTypeByteDiscrimination() {
-        var d = RecoveryRequestDeduper()
+        let d = RecoveryRequestDeduper()
         XCTAssertTrue(d.admit(ltrWire(), now: 100.000))
         XCTAssertTrue(d.admit(idrWire(), now: 100.001))
     }
@@ -54,7 +56,7 @@ final class RecoveryRequestDeduperTests: XCTestCase {
     /// Capacity eviction (drop-oldest): 16 fresh distinct payloads evict entry #1, so its
     /// re-send inside the window is admitted again (bounded memory beats perfect dedup).
     func testCapacityEvictionDropOldest() {
-        var d = RecoveryRequestDeduper(windowSeconds: 10, capacity: 16)
+        let d = RecoveryRequestDeduper(windowSeconds: 10, capacity: 16)
         let first = idrWire(lastDecoded: 0)
         XCTAssertTrue(d.admit(first, now: 100.0))
         for i in 1...16 {
@@ -65,7 +67,7 @@ final class RecoveryRequestDeduperTests: XCTestCase {
 
     /// windowSeconds = 0 ⇒ kill switch: everything admitted, including immediate duplicates.
     func testZeroWindowAdmitsEverything() {
-        var d = RecoveryRequestDeduper(windowSeconds: 0)
+        let d = RecoveryRequestDeduper(windowSeconds: 0)
         let wire = ltrWire()
         XCTAssertTrue(d.admit(wire, now: 100.000))
         XCTAssertTrue(d.admit(wire, now: 100.000))
@@ -75,7 +77,7 @@ final class RecoveryRequestDeduperTests: XCTestCase {
     /// Interleaved bursts: copies for lost frame N interleaving with copies for frame N+1
     /// (different bytes) — A, B admitted; A′, B′ dropped (the ring, not a single slot).
     func testInterleavedBurstsBothDedupCorrectly() {
-        var d = RecoveryRequestDeduper()
+        let d = RecoveryRequestDeduper()
         let a = ltrWire(from: 50, to: 50, lastDecoded: 49)
         let b = ltrWire(from: 51, to: 51, lastDecoded: 49)
         XCTAssertTrue(d.admit(a, now: 100.000)) // A

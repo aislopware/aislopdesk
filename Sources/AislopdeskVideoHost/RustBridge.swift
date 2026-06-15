@@ -203,6 +203,27 @@ public enum RustVideoHostFFI {
         )
     }
 
+    // MARK: - recovery_request_deduper (opaque handle; host-session recovery-request dedup)
+
+    /// Creates a recovery-request dedup ring owned by the Rust core; release with
+    /// `recoveryDeduperFree`. Wraps `aisd_recovery_deduper_new` (never returns null).
+    static func recoveryDeduperNew(windowSeconds: TimeInterval, capacity: Int) -> OpaquePointer {
+        aisd_recovery_deduper_new(windowSeconds, capacity)
+    }
+
+    /// Destroys a deduper handle. Wraps `aisd_recovery_deduper_free`.
+    static func recoveryDeduperFree(_ handle: OpaquePointer) {
+        aisd_recovery_deduper_free(handle)
+    }
+
+    /// Admits a recovery-request datagram: `true` = first sighting (process it), `false` =
+    /// byte-identical duplicate (drop it). Wraps `aisd_recovery_deduper_admit`.
+    static func recoveryDeduperAdmit(_ handle: OpaquePointer, datagram: Data, now: TimeInterval) -> Bool {
+        datagram.withUnsafeBytes { raw in
+            aisd_recovery_deduper_admit(handle, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, now) != 0
+        }
+    }
+
     /// Flattens a `CGRect` into the C-ABI `AisdRect` (x, y, width, height — all `Double`).
     private static func aisdRect(_ r: CGRect) -> AisdRect {
         AisdRect(
