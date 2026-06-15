@@ -517,9 +517,25 @@ final class VideoWindowPipeline {
         ) }
     }
 
-    func scroll(dx: Double, dy: Double, viewPoint: VideoPoint) {
+    func scroll(
+        dx: Double,
+        dy: Double,
+        viewPoint: VideoPoint,
+        scrollPhase: UInt8 = 0,
+        momentumPhase: UInt8 = 0,
+        continuous: Bool = false,
+    ) {
         guard let session else { return }
-        submitFlushingMotion { await session.sendScroll(dx: dx, dy: dy, viewPoint: viewPoint) }
+        submitFlushingMotion {
+            await session.sendScroll(
+                dx: dx,
+                dy: dy,
+                viewPoint: viewPoint,
+                scrollPhase: scrollPhase,
+                momentumPhase: momentumPhase,
+                continuous: continuous,
+            )
+        }
     }
 
     func key(keyCode: UInt16, down: Bool, modifiers: InputModifiers) {

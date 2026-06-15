@@ -574,6 +574,9 @@ public struct InputEventEncoder: Sendable {
         viewPoint: VideoPoint,
         layerSize: VideoSize,
         videoNativeSize: VideoSize,
+        scrollPhase: UInt8 = 0,
+        momentumPhase: UInt8 = 0,
+        continuous: Bool = false,
         zoom: Double = 1,
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
         mode: VideoContentMode = .fit,
@@ -590,6 +593,9 @@ public struct InputEventEncoder: Sendable {
                     pan: pan,
                     mode: mode,
                 ),
+            scrollPhase: scrollPhase,
+            momentumPhase: momentumPhase,
+            continuous: continuous,
             tag: takeTag(),
         )
     }

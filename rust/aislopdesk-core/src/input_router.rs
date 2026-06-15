@@ -238,6 +238,9 @@ mod tests {
             dx: 0.0,
             dy: -3.0,
             normalized: n(),
+            scroll_phase: 0,
+            momentum_phase: 0,
+            continuous: false,
             tag: 0,
         }
     }

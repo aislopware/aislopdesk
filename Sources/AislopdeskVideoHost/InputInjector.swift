@@ -95,6 +95,15 @@ public final class InputInjector: @unchecked Sendable {
         return v
     }()
 
+    /// Replay the forwarded trackpad gesture phase + inertia on the injected `CGScrollWheelEvent`
+    /// (`kCGScrollWheelEventScrollPhase` / `…MomentumPhase`) so Chromium/AppKit run native 1:1
+    /// continuous + rubber-band scrolling instead of per-notch easing. Default ON;
+    /// `AISLOPDESK_SCROLL_PHASE=0` falls back to the prior behaviour (IsContinuous=1, no phase) for A/B.
+    private static let scrollPhaseEnabled: Bool = {
+        let v = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_PHASE"]
+        return !(v == "0" || v?.lowercased() == "false")
+    }()
+
     public init(pid: pid_t, windowID: CGWindowID, windowBoundsCG: VideoRect) {
         self.pid = pid
         self.windowID = windowID
@@ -234,8 +243,15 @@ public final class InputInjector: @unchecked Sendable {
             )
         case let .mouseDrag(button, n, clickCount, mods, tag):
             postMouseDrag(button: button, normalized: n, clickCount: clickCount, modifiers: mods, tag: tag)
-        case let .scroll(dx, dy, _, tag):
-            postScroll(dx: dx, dy: dy, tag: tag)
+        case let .scroll(dx, dy, _, scrollPhase, momentumPhase, continuous, tag):
+            postScroll(
+                dx: dx,
+                dy: dy,
+                scrollPhase: scrollPhase,
+                momentumPhase: momentumPhase,
+                continuous: continuous,
+                tag: tag,
+            )
         case let .key(keyCode, down, mods, tag):
             postKey(keyCode: keyCode, down: down, modifiers: mods, tag: tag)
         case let .text(string, tag):
@@ -351,21 +367,50 @@ public final class InputInjector: @unchecked Sendable {
         stampAndPost(event, tag: tag)
     }
 
-    private func postScroll(dx: Double, dy: Double, tag: UInt32) {
+    private func postScroll(
+        dx: Double,
+        dy: Double,
+        scrollPhase: UInt8,
+        momentumPhase: UInt8,
+        continuous: Bool,
+        tag: UInt32,
+    ) {
         // dx/dy arrive off the (untrusted) wire. `Int32(Double)` is the TRAPPING
         // initializer — it fatal-errors on NaN/±inf or any value outside Int32's range
         // (e.g. a hostile `1e300`), so a single crafted scroll datagram could crash the
         // whole host process. `AislopdeskVideoProtocol` already rejects non-finite deltas at
         // decode; this clamp is the defence-in-depth backstop for a finite-but-huge value,
         // and it can never trap.
+        let phased = Self.scrollPhaseEnabled
+        // A precise/continuous trackpad gesture must NOT be re-scaled: the OS derives the inertial
+        // coast velocity from the Began/Changed delta cadence, so applying scrollGain would desync
+        // the fling. Gain is only meaningful for legacy discrete-wheel events. Keep it 1:1 whenever
+        // we are replaying a real gesture (phase forwarding on AND the gesture is continuous).
+        let gain = (phased && continuous) ? 1.0 : Self.scrollGain
         guard let event = CGEvent(
             scrollWheelEvent2Source: eventSource,
             units: .pixel,
             wheelCount: 2,
-            wheel1: Self.scaledScrollDelta(dy, gain: Self.scrollGain),
-            wheel2: Self.scaledScrollDelta(dx, gain: Self.scrollGain),
+            wheel1: Self.scaledScrollDelta(dy, gain: gain),
+            wheel2: Self.scaledScrollDelta(dx, gain: gain),
             wheel3: 0,
         ) else { return }
+        if phased {
+            // Replay the forwarded gesture. `IsContinuous` follows the precise flag (1 for a trackpad
+            // gesture incl. its momentum tail, 0 for a genuine wheel notch). The two phase fields carry
+            // the CoreGraphics integer codes verbatim and are mutually exclusive (client guarantees at
+            // most one non-zero), so Chromium/AppKit drive native 1:1 inertial + rubber-band scrolling.
+            event.setIntegerValueField(.scrollWheelEventIsContinuous, value: continuous ? 1 : 0)
+            if scrollPhase != 0 {
+                event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(scrollPhase))
+            }
+            if momentumPhase != 0 {
+                event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentumPhase))
+            }
+        } else {
+            // A/B fallback (AISLOPDESK_SCROLL_PHASE=0): the prior phase-less continuous behaviour.
+            event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        }
         stampAndPost(event, tag: tag)
     }
 

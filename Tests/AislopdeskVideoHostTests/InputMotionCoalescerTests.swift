@@ -22,7 +22,19 @@ final class InputMotionCoalescerTests: XCTestCase {
     }
 
     private func scroll(_ dy: Double)
-        -> InputEvent { .scroll(dx: 0, dy: dy, normalized: VideoPoint(x: 0, y: 0), tag: 0) }
+        -> InputEvent
+    {
+        .scroll(
+            dx: 0,
+            dy: dy,
+            normalized: VideoPoint(x: 0, y: 0),
+            scrollPhase: 0,
+            momentumPhase: 0,
+            continuous: false,
+            tag: 0,
+        )
+    }
+
     private func key(_ kc: UInt16) -> InputEvent { .key(keyCode: kc, down: true, modifiers: [], tag: 0) }
     private func text(_ s: String) -> InputEvent { .text(s, tag: 0) }
 

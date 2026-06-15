@@ -112,6 +112,9 @@ final class InputEventEncoderTests: XCTestCase {
             viewPoint: VideoPoint(x: 100, y: 100),
             layerSize: layer,
             videoNativeSize: layer,
+            scrollPhase: 2,
+            momentumPhase: 0,
+            continuous: true,
         )
         let text = enc.text("héllo 𝓊𝓃𝒾𝒸ℴ𝒹ℯ")
         XCTAssertEqual(try InputEvent.decode(scroll.encode()), scroll)

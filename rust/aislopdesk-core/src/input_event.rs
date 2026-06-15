@@ -137,6 +137,17 @@ pub enum InputEvent {
         dy: f64,
         /// Normalised position.
         normalized: VideoPoint,
+        /// Trackpad gesture phase, in `CGScrollPhase` integer encoding
+        /// (`0`=none, `1`=began, `2`=changed, `4`=ended, `8`=cancelled, `128`=mayBegin).
+        /// Mutually exclusive with `momentum_phase` (at most one is non-zero per event).
+        /// Carried opaquely — unknown values pass through so the host can set the CG field verbatim.
+        scroll_phase: u8,
+        /// Inertial-coast phase, in `CGMomentumScrollPhase` integer encoding
+        /// (`0`=none, `1`=begin, `2`=continue, `3`=end). Set on OS-generated momentum events.
+        momentum_phase: u8,
+        /// `true` when the deltas are pixel-precise continuous (trackpad / `hasPreciseScrollingDeltas`),
+        /// `false` for a legacy discrete mouse wheel. Drives `kCGScrollWheelEventIsContinuous` host-side.
+        continuous: bool,
         /// Self-inject filter tag.
         tag: u32,
     },
@@ -232,6 +243,9 @@ impl InputEvent {
                 dx,
                 dy,
                 normalized,
+                scroll_phase,
+                momentum_phase,
+                continuous,
                 tag,
             } => {
                 w.put_u32(*tag);
@@ -239,6 +253,9 @@ impl InputEvent {
                 w.put_f64(*dy);
                 w.put_f64(normalized.x);
                 w.put_f64(normalized.y);
+                w.put_u8(*scroll_phase);
+                w.put_u8(*momentum_phase);
+                w.put_u8(u8::from(*continuous));
             }
             Self::Key {
                 key_code,
@@ -313,10 +330,16 @@ impl InputEvent {
                 let dy = r.read_finite_f64("scroll.dy")?;
                 let x = r.read_finite_f64("scroll.x")?;
                 let y = r.read_finite_f64("scroll.y")?;
+                let scroll_phase = r.read_u8()?;
+                let momentum_phase = r.read_u8()?;
+                let continuous = r.read_u8()? != 0;
                 Ok(Self::Scroll {
                     dx,
                     dy,
                     normalized: VideoPoint::new(x, y),
+                    scroll_phase,
+                    momentum_phase,
+                    continuous,
                     tag,
                 })
             }
@@ -389,6 +412,19 @@ mod tests {
             dx: -3.5,
             dy: 12.0,
             normalized: VideoPoint::new(0.0, 1.0),
+            scroll_phase: 2,
+            momentum_phase: 0,
+            continuous: true,
+            tag: 10,
+        });
+        // Inertial-coast variant: exercises the momentum-phase byte path.
+        round_trip(&InputEvent::Scroll {
+            dx: 0.0,
+            dy: 4.25,
+            normalized: VideoPoint::new(0.0, 1.0),
+            scroll_phase: 0,
+            momentum_phase: 2,
+            continuous: true,
             tag: 10,
         });
         round_trip(&InputEvent::Key {
@@ -409,6 +445,9 @@ mod tests {
             dx: 0.0,
             dy: 0.0,
             normalized: VideoPoint::new(0.0, 0.0),
+            scroll_phase: 0,
+            momentum_phase: 0,
+            continuous: false,
             tag: 99,
         };
         assert_eq!(e.tag(), 99);
@@ -465,6 +504,9 @@ mod tests {
             dx: f64::NAN,
             dy: 0.0,
             normalized: VideoPoint::new(0.0, 0.0),
+            scroll_phase: 0,
+            momentum_phase: 0,
+            continuous: false,
             tag: 0,
         };
         assert!(matches!(
