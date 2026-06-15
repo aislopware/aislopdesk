@@ -33,6 +33,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adaptive_fec;
+pub mod adaptive_playout;
 pub mod bytes;
 pub mod capture_region;
 pub mod coordinate_mapping;

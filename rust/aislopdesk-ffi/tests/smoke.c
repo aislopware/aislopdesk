@@ -138,6 +138,15 @@ int main(void) {
     CHECK(aisd_capture_reorigin_on_geometry(1) == 1, "capture_reorigin no active region");
     CHECK(aisd_capture_reorigin_on_geometry(0) == 0, "capture_reorigin active union holds");
 
+    /* 6. Adaptive playout step (pure scalar, ms domain): 12ms jitter from the floor grows to 13.6ms;
+     * a clean link shrinks by at most the step; a huge jitter clamps at the ceiling. */
+    double pl_grow = aisd_adaptive_playout_step_ms(0.012, 4.0, 2.0, 0.8, 4.0, 4.0, 35.0);
+    CHECK(pl_grow > 13.59 && pl_grow < 13.61, "adaptive_playout grows to k*jitter+base");
+    double pl_shrink = aisd_adaptive_playout_step_ms(0.002, 28.0, 2.0, 0.8, 4.0, 4.0, 35.0);
+    CHECK(pl_shrink > 25.99 && pl_shrink < 26.01, "adaptive_playout shrinks slow by <= step");
+    double pl_ceil = aisd_adaptive_playout_step_ms(0.040, 4.0, 2.0, 0.8, 4.0, 4.0, 35.0);
+    CHECK(pl_ceil > 34.99 && pl_ceil < 35.01, "adaptive_playout clamps at ceil");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;
