@@ -40,6 +40,13 @@ use aislopdesk_core::terminal::{
 /// the byte helpers below.
 pub mod video;
 
+/// A NEON-accelerated [`aislopdesk_core::gf256::GfRegion`] backend ([`gf_neon::NeonGf`]).
+///
+/// Lives here, not in the `#![forbid(unsafe_code)]` core, because the vector kernel needs the
+/// `aarch64` NEON intrinsics. It is byte-identical to the core's `ScalarGf`; not yet exposed over
+/// the C ABI (a future workflow wires the FEC codec to it).
+pub mod gf_neon;
+
 /// The crate's single home for raw-pointer / heap-handle `unsafe` primitives (see [`raw`]). The
 /// boundary functions here and in [`video`] reach them through these crate-wide re-exports so the
 /// shims themselves stay safe-bodied.
