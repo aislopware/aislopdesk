@@ -708,6 +708,69 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         }
     }
 
+    /// True when this capturer crops a DISPLAY (`.displayIncluding`/`.displayExcluding`) — i.e. it
+    /// owns a live `DisplayAnchor` config that an in-place `updateConfiguration` size change can drive.
+    /// `.window` mode (nil anchor) returns false. Read from the session actor; `anchorLock`-guarded.
+    public var isDisplayAnchored: Bool { anchorLock.withLock { displayAnchor != nil } }
+
+    /// True when the crop is a DIALOG-EXPAND union region (poller-owned) — an in-place resize must
+    /// NOT touch it (the poller re-targets); the caller restart-fallbacks instead. `anchorLock`-guarded.
+    public var isUnionAnchored: Bool { anchorLock.withLock { displayAnchor?.isUnion ?? false } }
+
+    /// PURE gate (unit-tested): an in-place `updateConfiguration` resize is allowed only when the flag
+    /// is on, the capture is display-anchored (the live default, with a serialized config driver), and
+    /// the crop is NOT a poller-owned union. Everything else restart-fallbacks. Widen per-mode after HW proof.
+    static func canResizeInPlace(flagEnabled: Bool, isDisplayAnchored: Bool, isUnion: Bool) -> Bool {
+        flagEnabled && isDisplayAnchored && !isUnion
+    }
+
+    /// Why an in-place resize was refused — the caller restart-fallbacks on any of these.
+    public enum CannotResizeInPlace: Error { case noStream, notDisplayAnchored, unionOwned }
+
+    /// IN-PLACE resize: reconfigure the LIVE SCStream to `pixelWidth`×`pixelHeight` via
+    /// `updateConfiguration` — NO restart, so SCK's ~120ms `startCapture` spin-up is avoided. Rebuilds
+    /// the config at the new size, preserves the live display-anchored crop ORIGIN at the new point
+    /// size, and stores the rebuilt config back so a later window-MOVE re-anchor uses the new size.
+    /// THROWS `CannotResizeInPlace` for `.window`/union/no-stream (caller restart-fallbacks); on a thrown
+    /// `updateConfiguration` the live stream keeps running at the OLD size (no dead stream). The filter is
+    /// unchanged (same window+display), so only the config (size + sourceRect) is updated.
+    public func updateSize(pixelWidth: Int, pixelHeight: Int) async throws {
+        guard let stream else { throw CannotResizeInPlace.noStream }
+        // Claim the single-driver gate so a CONCURRENT window-MOVE re-anchor defers (records pending)
+        // instead of issuing a second `updateConfiguration` on this stream mid-resize. Best-effort: if a
+        // re-anchor is ALREADY driving, this resize's config write still wins last + the next geometry
+        // re-anchor reads the new-size anchor below and self-heals — a documented rare residual (this
+        // path is env-gated + HW-validation-gated). Clear the gate + drop any stale pending move at the end.
+        anchorLock.withLock { reanchorInFlight = true }
+        defer { anchorLock.withLock { reanchorInFlight = false
+            reanchorPending = nil
+        } }
+        guard let anchor = anchorLock.withLock({ displayAnchor }) else { throw CannotResizeInPlace.notDisplayAnchored }
+        guard !anchor.isUnion else { throw CannotResizeInPlace.unionOwned }
+        let pointW = Double(pixelWidth) / max(1.0, captureScale)
+        let pointH = Double(pixelHeight) / max(1.0, captureScale)
+        let newConfig = Self.makeConfiguration(
+            width: pixelWidth,
+            height: pixelHeight,
+            fps: fps,
+            captureScale: captureScale,
+            fullRange: fullRange,
+        )
+        // Preserve the live crop ORIGIN (top-left fixed across an AX resize) at the NEW point size,
+        // and the display-including child-window compositing.
+        newConfig.sourceRect = CGRect(
+            origin: anchor.config.sourceRect.origin,
+            size: CGSize(width: pointW, height: pointH),
+        )
+        if #available(macOS 14.2, *) { newConfig.includeChildWindows = anchor.config.includeChildWindows }
+        try await stream.updateConfiguration(newConfig)
+        // Persist the rebuilt (new-size) config so a later MOVE re-anchor crops at the right size.
+        anchorLock.withLock {
+            displayAnchor = DisplayAnchor(displayBounds: anchor.displayBounds, config: newConfig, isUnion: false)
+        }
+        log.notice("in-place resize: updateConfiguration to \(pixelWidth)x\(pixelHeight) px (no restart)")
+    }
+
     public func stop() async {
         guard let stream else { return }
         anchorLock.withLock { displayAnchor = nil }
