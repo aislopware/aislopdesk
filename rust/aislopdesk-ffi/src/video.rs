@@ -15,10 +15,14 @@ use aislopdesk_core::adaptive_playout;
 use aislopdesk_core::capture_region;
 use aislopdesk_core::coordinate_mapping::{self, ScreenInfo};
 use aislopdesk_core::cursor::CursorUpdate;
+use aislopdesk_core::decode_gate::{
+    DecodeGate, Mode as DecodeGateMode, Verdict as DecodeGateVerdict,
+};
 use aislopdesk_core::error::VideoProtocolError;
 use aislopdesk_core::geometry::{VideoPoint, VideoRect, VideoSize};
 use aislopdesk_core::input_event::{InputEvent, InputModifiers, MouseButton};
 use aislopdesk_core::live_bitrate_policy;
+use aislopdesk_core::owd_late_detector::{Config as OwdLateConfig, OwdLateDetector};
 use aislopdesk_core::recovery::{NetworkStatsReport, RecoveryMessage};
 use aislopdesk_core::recovery_policy::RecoveryPolicy;
 use aislopdesk_core::recovery_request_deduper::RecoveryRequestDeduper;
@@ -2313,6 +2317,278 @@ pub unsafe extern "C" fn aisd_static_idr_decider_should_reencode(
     })
 }
 
+// ---------------------------------------------------------------------------------------
+// decode_gate — opaque handle (client pre-emptive drop-until-anchor decode admission). Driven
+// on the client session actor: note_loss / note_*_failure / note_decode_succeeded fold state,
+// verdict gates each reassembled frame — per-frame cadence, never per-fragment. One owner
+// (AislopdeskVideoClientSession), actor-serialized. Same "Rust owns the state" boundary as the
+// deduper. Mode/Verdict cross as `u32` discriminants (Open/Submit = 0); the lost-frame bounds
+// cross as a (`u32 out`, `u8 is_some`) Option pair.
+// ---------------------------------------------------------------------------------------
+
+/// [`DecodeGateMode::Open`] discriminant — chain intact, everything submits.
+pub const AISD_DECODE_GATE_MODE_OPEN: u32 = 0;
+/// [`DecodeGateMode::BrokenChain`] discriminant — loss since the last anchor, session alive.
+pub const AISD_DECODE_GATE_MODE_BROKEN_CHAIN: u32 = 1;
+/// [`DecodeGateMode::NeedKeyframe`] discriminant — session torn down / never configured.
+pub const AISD_DECODE_GATE_MODE_NEED_KEYFRAME: u32 = 2;
+
+/// [`DecodeGateVerdict::Submit`] discriminant — feed this frame to the decoder.
+pub const AISD_DECODE_GATE_VERDICT_SUBMIT: u32 = 0;
+/// [`DecodeGateVerdict::Drop`] discriminant — drop this frame (would tear the session down).
+pub const AISD_DECODE_GATE_VERDICT_DROP: u32 = 1;
+
+/// Opaque client drop-until-anchor decode gate.
+///
+/// Create with [`aisd_decode_gate_new`], fold state with the `_note_*` calls, query each frame
+/// with [`aisd_decode_gate_verdict`], destroy with [`aisd_decode_gate_free`]. One per client
+/// session; not thread-safe (drive it from a single isolation domain / actor).
+pub struct AisdDecodeGate {
+    inner: DecodeGate,
+}
+
+const fn decode_gate_mode_to_c(mode: DecodeGateMode) -> u32 {
+    match mode {
+        DecodeGateMode::Open => AISD_DECODE_GATE_MODE_OPEN,
+        DecodeGateMode::BrokenChain => AISD_DECODE_GATE_MODE_BROKEN_CHAIN,
+        DecodeGateMode::NeedKeyframe => AISD_DECODE_GATE_MODE_NEED_KEYFRAME,
+    }
+}
+
+/// Creates a fresh, open decode gate. Destroy it with [`aisd_decode_gate_free`].
+#[must_use]
+#[no_mangle]
+pub extern "C" fn aisd_decode_gate_new() -> *mut AisdDecodeGate {
+    Box::into_raw(Box::new(AisdDecodeGate {
+        inner: DecodeGate::new(),
+    }))
+}
+
+/// Destroys a gate created by [`aisd_decode_gate_new`]. No-op on null.
+///
+/// # Safety
+/// `gate` must be a pointer from [`aisd_decode_gate_new`] that has not been freed.
+#[no_mangle]
+pub unsafe extern "C" fn aisd_decode_gate_free(gate: *mut AisdDecodeGate) {
+    if !gate.is_null() {
+        drop(Box::from_raw(gate));
+    }
+}
+
+/// The current admission mode as an `AISD_DECODE_GATE_MODE_*` discriminant (Open `0` for a null
+/// handle — a missing gate admits everything).
+///
+/// # Safety
+/// `gate`, if non-null, must be a live handle.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_decode_gate_mode(gate: *const AisdDecodeGate) -> u32 {
+    gate.as_ref().map_or(AISD_DECODE_GATE_MODE_OPEN, |g| {
+        decode_gate_mode_to_c(g.inner.mode())
+    })
+}
+
+/// The OLDEST lost frame id of the episode. Returns `1` and writes the id to `out` when present,
+/// `0` (leaving `out` untouched) for none or a null handle.
+///
+/// # Safety
+/// `gate`, if non-null, must be a live handle; `out`, if the return is `1`, must be writable.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_decode_gate_min_lost_frame_id(
+    gate: *const AisdDecodeGate,
+    out: *mut u32,
+) -> u8 {
+    match gate.as_ref().and_then(|g| g.inner.min_lost_frame_id()) {
+        Some(id) if !out.is_null() => {
+            *out = id;
+            1
+        }
+        _ => 0,
+    }
+}
+
+/// The NEWEST lost frame id of the episode. Returns `1` and writes the id to `out` when present,
+/// `0` (leaving `out` untouched) for none or a null handle.
+///
+/// # Safety
+/// `gate`, if non-null, must be a live handle; `out`, if the return is `1`, must be writable.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_decode_gate_max_lost_frame_id(
+    gate: *const AisdDecodeGate,
+    out: *mut u32,
+) -> u8 {
+    match gate.as_ref().and_then(|g| g.inner.max_lost_frame_id()) {
+        Some(id) if !out.is_null() => {
+            *out = id;
+            1
+        }
+        _ => 0,
+    }
+}
+
+/// Folds one unrecoverably-lost frame. No-op on null. Wraps [`DecodeGate::note_loss`].
+///
+/// # Safety
+/// `gate`, if non-null, must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn aisd_decode_gate_note_loss(gate: *mut AisdDecodeGate, frame_id: u32) {
+    if let Some(g) = gate.as_mut() {
+        g.inner.note_loss(frame_id);
+    }
+}
+
+/// Records a hard decode failure (session torn down). No-op on null. Wraps
+/// [`DecodeGate::note_hard_decode_failure`].
+///
+/// # Safety
+/// `gate`, if non-null, must be a live handle.
+#[no_mangle]
+pub const unsafe extern "C" fn aisd_decode_gate_note_hard_decode_failure(
+    gate: *mut AisdDecodeGate,
+) {
+    if let Some(g) = gate.as_mut() {
+        g.inner.note_hard_decode_failure();
+    }
+}
+
+/// Records that the decoder is awaiting a keyframe. No-op on null. Wraps
+/// [`DecodeGate::note_awaiting_keyframe`].
+///
+/// # Safety
+/// `gate`, if non-null, must be a live handle.
+#[no_mangle]
+pub const unsafe extern "C" fn aisd_decode_gate_note_awaiting_keyframe(gate: *mut AisdDecodeGate) {
+    if let Some(g) = gate.as_mut() {
+        g.inner.note_awaiting_keyframe();
+    }
+}
+
+/// Admission decision for one reassembled frame as an `AISD_DECODE_GATE_VERDICT_*` discriminant.
+///
+/// `keyframe` / `acked_anchored` are bytes read `!= 0`. Pure — never mutates; returns Submit `0`
+/// for a null handle (a missing gate admits everything). Wraps [`DecodeGate::verdict`].
+///
+/// # Safety
+/// `gate`, if non-null, must be a live handle.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_decode_gate_verdict(
+    gate: *const AisdDecodeGate,
+    frame_id: u32,
+    keyframe: u8,
+    acked_anchored: u8,
+) -> u32 {
+    gate.as_ref().map_or(AISD_DECODE_GATE_VERDICT_SUBMIT, |g| {
+        match g
+            .inner
+            .verdict(frame_id, keyframe != 0, acked_anchored != 0)
+        {
+            DecodeGateVerdict::Submit => AISD_DECODE_GATE_VERDICT_SUBMIT,
+            DecodeGateVerdict::Drop => AISD_DECODE_GATE_VERDICT_DROP,
+        }
+    })
+}
+
+/// Folds one successful decode (`keyframe` read `!= 0`). No-op on null. Wraps
+/// [`DecodeGate::note_decode_succeeded`].
+///
+/// # Safety
+/// `gate`, if non-null, must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn aisd_decode_gate_note_decode_succeeded(
+    gate: *mut AisdDecodeGate,
+    frame_id: u32,
+    keyframe: u8,
+) {
+    if let Some(g) = gate.as_mut() {
+        g.inner.note_decode_succeeded(frame_id, keyframe != 0);
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// owd_late_detector — opaque handle (client per-frame one-way-delay spike detector). Driven on
+// the client session actor: one note() per strictly-newer decoded frame, returning the deviation
+// above threshold when the sample is a network-late spike. Per-frame cadence, scalar in/out. One
+// owner (AislopdeskVideoClientSession), actor-serialized. Env knobs stay resolved Swift-side and
+// cross as the four resolved Config scalars. Same "Rust owns the state" boundary as the deduper.
+// ---------------------------------------------------------------------------------------
+
+/// Opaque client one-way-delay spike detector.
+///
+/// Create with [`aisd_owd_late_detector_new`] (resolved `Config` scalars), fold samples with
+/// [`aisd_owd_late_detector_note`], destroy with [`aisd_owd_late_detector_free`]. One per client
+/// session; not thread-safe (drive it from a single isolation domain / actor).
+pub struct AisdOwdLateDetector {
+    inner: OwdLateDetector,
+}
+
+/// Creates an OWD spike detector from the resolved config scalars. Destroy it with
+/// [`aisd_owd_late_detector_free`].
+///
+/// `bucket_ms` / `threshold_floor_ms` / `threshold_interval_fraction` / `warmup_samples` are the
+/// already-env-resolved [`OwdLateConfig`] fields (the core stays env-free; the caller resolves
+/// `AISLOPDESK_OWD_LATE_*` Swift-side). Wraps [`OwdLateDetector::new`].
+#[must_use]
+#[no_mangle]
+pub extern "C" fn aisd_owd_late_detector_new(
+    bucket_ms: f64,
+    threshold_floor_ms: f64,
+    threshold_interval_fraction: f64,
+    warmup_samples: usize,
+) -> *mut AisdOwdLateDetector {
+    Box::into_raw(Box::new(AisdOwdLateDetector {
+        inner: OwdLateDetector::new(OwdLateConfig {
+            bucket_ms,
+            threshold_floor_ms,
+            threshold_interval_fraction,
+            warmup_samples,
+        }),
+    }))
+}
+
+/// Destroys a detector created by [`aisd_owd_late_detector_new`]. No-op on null.
+///
+/// # Safety
+/// `detector` must be a pointer from [`aisd_owd_late_detector_new`] that has not been freed.
+#[no_mangle]
+pub unsafe extern "C" fn aisd_owd_late_detector_free(detector: *mut AisdOwdLateDetector) {
+    if !detector.is_null() {
+        drop(Box::from_raw(detector));
+    }
+}
+
+/// Folds one per-frame sample.
+///
+/// Returns `1` and writes the deviation above threshold (ms) to `out_deviation` when the sample is
+/// a network-late spike, else `0` (leaving `out_deviation` untouched). Returns `0` for a null
+/// handle (a missing detector never reports late). Wraps [`OwdLateDetector::note`].
+///
+/// # Safety
+/// `detector`, if non-null, must be a live handle; `out_deviation`, if the return is `1`, must be
+/// writable.
+#[must_use]
+#[no_mangle]
+pub unsafe extern "C" fn aisd_owd_late_detector_note(
+    detector: *mut AisdOwdLateDetector,
+    arrival_ms: f64,
+    send_ts: u32,
+    interval_ms: f64,
+    out_deviation: *mut f64,
+) -> u8 {
+    match detector
+        .as_mut()
+        .and_then(|d| d.inner.note(arrival_ms, send_ts, interval_ms))
+    {
+        Some(dev) if !out_deviation.is_null() => {
+            *out_deviation = dev;
+            1
+        }
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Driving the C ABI from tests means `&mut x` coercions and exact float round-trip checks.
@@ -3984,6 +4260,118 @@ mod tests {
             let d2 = aisd_static_idr_decider_new(2.5, 1.0, 1);
             assert_eq!(aisd_static_idr_decider_quiet_window(d2), 1.0);
             aisd_static_idr_decider_free(d2);
+        }
+    }
+
+    #[test]
+    fn decode_gate_handle_gates_until_anchor() {
+        unsafe {
+            let g = aisd_decode_gate_new();
+            assert!(!g.is_null());
+            // Fresh gate is Open ⇒ everything submits.
+            assert_eq!(aisd_decode_gate_mode(g), AISD_DECODE_GATE_MODE_OPEN);
+            assert_eq!(
+                aisd_decode_gate_verdict(g, 10, 0, 0),
+                AISD_DECODE_GATE_VERDICT_SUBMIT
+            );
+            let mut id: u32 = 12345;
+            assert_eq!(aisd_decode_gate_min_lost_frame_id(g, &mut id), 0);
+            assert_eq!(id, 12345); // untouched when none.
+
+            // A loss opens a broken-chain episode.
+            aisd_decode_gate_note_loss(g, 100);
+            aisd_decode_gate_note_loss(g, 110);
+            assert_eq!(aisd_decode_gate_mode(g), AISD_DECODE_GATE_MODE_BROKEN_CHAIN);
+            assert_eq!(aisd_decode_gate_min_lost_frame_id(g, &mut id), 1);
+            assert_eq!(id, 100);
+            assert_eq!(aisd_decode_gate_max_lost_frame_id(g, &mut id), 1);
+            assert_eq!(id, 110);
+            // Delta between losses drops; pre-break delta + keyframe + acked anchor submit.
+            assert_eq!(
+                aisd_decode_gate_verdict(g, 105, 0, 0),
+                AISD_DECODE_GATE_VERDICT_DROP
+            );
+            assert_eq!(
+                aisd_decode_gate_verdict(g, 99, 0, 0),
+                AISD_DECODE_GATE_VERDICT_SUBMIT
+            );
+            assert_eq!(
+                aisd_decode_gate_verdict(g, 111, 0, 1),
+                AISD_DECODE_GATE_VERDICT_SUBMIT
+            );
+
+            // A hard failure escalates to need-keyframe (acked anchor no longer enough).
+            aisd_decode_gate_note_hard_decode_failure(g);
+            assert_eq!(
+                aisd_decode_gate_mode(g),
+                AISD_DECODE_GATE_MODE_NEED_KEYFRAME
+            );
+            assert_eq!(
+                aisd_decode_gate_verdict(g, 111, 0, 1),
+                AISD_DECODE_GATE_VERDICT_DROP
+            );
+            assert_eq!(
+                aisd_decode_gate_verdict(g, 112, 1, 0),
+                AISD_DECODE_GATE_VERDICT_SUBMIT
+            );
+            // A keyframe newer than every loss re-opens the gate.
+            aisd_decode_gate_note_decode_succeeded(g, 112, 1);
+            assert_eq!(aisd_decode_gate_mode(g), AISD_DECODE_GATE_MODE_OPEN);
+            assert_eq!(aisd_decode_gate_min_lost_frame_id(g, &mut id), 0);
+
+            aisd_decode_gate_free(g);
+            aisd_decode_gate_free(core::ptr::null_mut()); // no-op
+                                                          // Null handle: Open mode, Submit verdict, no lost bounds.
+            assert_eq!(
+                aisd_decode_gate_mode(core::ptr::null()),
+                AISD_DECODE_GATE_MODE_OPEN
+            );
+            assert_eq!(
+                aisd_decode_gate_verdict(core::ptr::null(), 1, 0, 0),
+                AISD_DECODE_GATE_VERDICT_SUBMIT
+            );
+            assert_eq!(
+                aisd_decode_gate_max_lost_frame_id(core::ptr::null(), &mut id),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn owd_late_detector_handle_flags_spikes() {
+        unsafe {
+            // Defaults: bucket 2000ms, floor 25ms, frac 1.25, warmup 20.
+            let d = aisd_owd_late_detector_new(2000.0, 25.0, 1.25, 20);
+            assert!(!d.is_null());
+            let interval = 1000.0 / 60.0;
+            let mut arrival = 5000.0;
+            let mut send: u32 = 91_000;
+            let mut dev = -1.0;
+            // Warm with 30 clean steady samples — none classify late.
+            for _ in 0..30 {
+                assert_eq!(
+                    aisd_owd_late_detector_note(d, arrival, send, interval, &mut dev),
+                    0
+                );
+                arrival += 16.7;
+                send = send.wrapping_add(17);
+            }
+            assert_eq!(dev, -1.0); // never written while clean.
+                                   // A 40ms spike past the floor is late, deviation > 10ms.
+            arrival += 16.7 + 40.0;
+            send = send.wrapping_add(17);
+            assert_eq!(
+                aisd_owd_late_detector_note(d, arrival, send, interval, &mut dev),
+                1
+            );
+            assert!(dev > 10.0);
+            aisd_owd_late_detector_free(d);
+            aisd_owd_late_detector_free(core::ptr::null_mut()); // no-op
+                                                                // A null handle never reports late.
+            assert_eq!(
+                aisd_owd_late_detector_note(core::ptr::null_mut(), 0.0, 0, interval, &mut dev),
+                0
+            );
         }
     }
 }

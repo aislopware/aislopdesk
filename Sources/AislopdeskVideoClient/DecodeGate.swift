@@ -1,4 +1,4 @@
-import AislopdeskVideoProtocol
+import CAislopdeskFFI
 
 /// PRE-EMPTIVE drop-until-anchor decode admission (decode-fail cascade fix, 2026-06-12).
 ///
@@ -33,9 +33,16 @@ import AislopdeskVideoProtocol
 /// drop — so a lost recovery frame still escalates to a forced IDR at the 2·RTT / escalation-floor
 /// cadence, now WITHOUT a per-frame request storm.
 ///
-/// Pure value type (wrap-aware `UInt32.distanceWrapped`, the reassembler's sequence-space
-/// discipline) — no clock, no transport — headlessly unit-testable.
-public struct DecodeGate: Sendable, Equatable {
+/// Wrap-aware (the reassembler's sequence-space discipline) — no clock, no transport — headlessly
+/// unit-testable.
+///
+/// The decision ALGORITHM (the drop-until-anchor state machine) lives in the Rust core
+/// (`aislopdesk_core::decode_gate`, the SINGLE SOURCE OF TRUTH shared with Android over the C ABI);
+/// this class is a thin owner of the opaque core handle, reached via ``RustVideoClientFFI``. It is a
+/// `final class` (not the former value struct) so it can own the handle and free it in `deinit`.
+/// `@unchecked Sendable` is sound because the single owner (`AislopdeskVideoClientSession`) only
+/// touches it on its actor (and the tests from one thread), so no two threads race the handle.
+public final class DecodeGate: @unchecked Sendable {
     public enum Mode: Sendable, Equatable {
         /// Chain intact — everything submits.
         case open
@@ -50,87 +57,67 @@ public struct DecodeGate: Sendable, Equatable {
         case drop
     }
 
-    public private(set) var mode: Mode = .open
+    private let handle: OpaquePointer
+
+    /// The current admission mode, read from the Rust core.
+    public var mode: Mode {
+        switch RustVideoClientFFI.decodeGateMode(handle) {
+        case AISD_DECODE_GATE_MODE_BROKEN_CHAIN: .brokenChain
+        case AISD_DECODE_GATE_MODE_NEED_KEYFRAME: .needKeyframe
+        default: .open
+        }
+    }
+
     /// OLDEST lost frameID of the episode — the chain is intact strictly BEFORE this id, so an
     /// older in-flight delta may still submit (its references predate the break).
-    public private(set) var minLostFrameID: UInt32?
+    public var minLostFrameID: UInt32? { RustVideoClientFFI.decodeGateMinLostFrameID(handle) }
     /// NEWEST lost frameID of the episode — an anchor must decode strictly PAST this id to prove
     /// the chain re-anchored (same keep-newest discipline as `LTREscalationTracker.maxLostFrameID`).
-    public private(set) var maxLostFrameID: UInt32?
+    public var maxLostFrameID: UInt32? { RustVideoClientFFI.decodeGateMaxLostFrameID(handle) }
 
-    public init() {}
+    public init() {
+        handle = RustVideoClientFFI.decodeGateNew()
+    }
+
+    deinit {
+        RustVideoClientFFI.decodeGateFree(handle)
+    }
 
     /// One unrecoverably-lost frame (the reassembler's `.dropped` / drain path). Opens the episode;
-    /// `needKeyframe` is strictly stronger and is never downgraded by a mere loss.
-    public mutating func noteLoss(frameID: UInt32) {
-        if mode == .open { mode = .brokenChain }
-        if let mx = maxLostFrameID {
-            if frameID.distanceWrapped(from: mx) > 0 { maxLostFrameID = frameID }
-        } else {
-            maxLostFrameID = frameID
-        }
-        if let mn = minLostFrameID {
-            if frameID.distanceWrapped(from: mn) < 0 { minLostFrameID = frameID }
-        } else {
-            minLostFrameID = frameID
-        }
+    /// `needKeyframe` is strictly stronger and is never downgraded by a mere loss. Delegates to the
+    /// Rust core.
+    public func noteLoss(frameID: UInt32) {
+        RustVideoClientFFI.decodeGateNoteLoss(handle, frameID: frameID)
     }
 
     /// A hard decode failure tore the session down (`invalidateSession`) — only an IDR helps now.
-    public mutating func noteHardDecodeFailure() {
-        mode = .needKeyframe
+    /// Delegates to the Rust core.
+    public func noteHardDecodeFailure() {
+        RustVideoClientFFI.decodeGateNoteHardDecodeFailure(handle)
     }
 
     /// The decoder reported `awaitingKeyframe` (no session/parameter sets yet) — same anchor set.
-    public mutating func noteAwaitingKeyframe() {
-        mode = .needKeyframe
+    /// Delegates to the Rust core.
+    public func noteAwaitingKeyframe() {
+        RustVideoClientFFI.decodeGateNoteAwaitingKeyframe(handle)
     }
 
     /// Admission decision for one reassembled frame. Pure — never mutates; the caller acts.
+    /// Delegates to the Rust core.
     public func verdict(frameID: UInt32, keyframe: Bool, ackedAnchored: Bool) -> Verdict {
-        switch mode {
-        case .open:
-            return .submit
-        case .needKeyframe:
-            return keyframe ? .submit : .drop
-        case .brokenChain:
-            if keyframe || ackedAnchored { return .submit }
-            // Pre-break delta still in flight: references predate the OLDEST loss.
-            if let mn = minLostFrameID, frameID.distanceWrapped(from: mn) < 0 { return .submit }
-            return .drop
+        switch RustVideoClientFFI.decodeGateVerdict(
+            handle, frameID: frameID, keyframe: keyframe, ackedAnchored: ackedAnchored,
+        ) {
+        case AISD_DECODE_GATE_VERDICT_DROP: .drop
+        default: .submit
         }
     }
 
     /// Folds one SUCCESSFUL decode. A keyframe re-opens the gate unless a loss NEWER than it is
     /// already on record (the chain past the keyframe is still broken — stay `brokenChain` so the
     /// next refresh/IDR can finish the job). A non-keyframe success newer than every loss is the
-    /// healed LTR anchor (mirrors `LTREscalationTracker.frameDecoded`).
-    public mutating func noteDecodeSucceeded(frameID: UInt32, keyframe: Bool) {
-        if keyframe {
-            if let mx = maxLostFrameID, frameID.distanceWrapped(from: mx) <= 0 {
-                // The keyframe predates the newest loss: it re-anchored the chain UP TO itself, but
-                // losses past it remain. Downgrade to brokenChain (which then admits an acked-LTR
-                // refresh) ONLY if the session was still ALIVE — i.e. we were in brokenChain, so the
-                // pre-loss acked LTRs survive in the DPB and an LTR refresh can decode. If the session
-                // had been TORN DOWN (needKeyframe: invalidateSession wiped the DPB), a stale keyframe
-                // rebuilds it with an empty/keyframe-only DPB — NO pre-teardown acked LTR survives, so
-                // admitting an ackedAnchored refresh would feed VT a reference it no longer holds
-                // (-12909) → another decode-fail / teardown / IDR round, the exact churn this gate
-                // prevents. Stay needKeyframe so only a keyframe NEWER than the loss can re-anchor.
-                if mode != .needKeyframe { mode = .brokenChain }
-            } else {
-                reset()
-            }
-            return
-        }
-        guard mode == .brokenChain, let mx = maxLostFrameID,
-              frameID.distanceWrapped(from: mx) > 0 else { return }
-        reset()
-    }
-
-    private mutating func reset() {
-        mode = .open
-        minLostFrameID = nil
-        maxLostFrameID = nil
+    /// healed LTR anchor (mirrors `LTREscalationTracker.frameDecoded`). Delegates to the Rust core.
+    public func noteDecodeSucceeded(frameID: UInt32, keyframe: Bool) {
+        RustVideoClientFFI.decodeGateNoteDecodeSucceeded(handle, frameID: frameID, keyframe: keyframe)
     }
 }

@@ -10,15 +10,22 @@
 #![allow(clippy::borrow_as_ptr)]
 
 use aislopdesk_ffi::video::{
-    aisd_recovery_deduper_admit, aisd_recovery_deduper_free, aisd_recovery_deduper_new,
-    aisd_recovery_message_decode, aisd_recovery_message_encode, aisd_static_idr_decider_free,
-    aisd_static_idr_decider_heartbeat, aisd_static_idr_decider_last_complete_encode,
-    aisd_static_idr_decider_new, aisd_static_idr_decider_on_complete_frame,
-    aisd_static_idr_decider_quiet_window, aisd_static_idr_decider_record_synthetic,
-    aisd_static_idr_decider_should_reencode, aisd_system_dialog_classify, aisd_system_dialog_free,
-    aisd_system_dialog_min_size, aisd_video_control_decode, aisd_video_control_encode,
-    aisd_video_control_free, aisd_ycbcr_coefficients, AisdNetworkStats, AisdRecoveryMessage,
-    AisdRect, AisdSystemDialog, AisdVideoControl, AisdVideoSummary, AISD_RECOVERY_NETWORK_STATS,
+    aisd_decode_gate_free, aisd_decode_gate_max_lost_frame_id, aisd_decode_gate_min_lost_frame_id,
+    aisd_decode_gate_mode, aisd_decode_gate_new, aisd_decode_gate_note_decode_succeeded,
+    aisd_decode_gate_note_hard_decode_failure, aisd_decode_gate_note_loss,
+    aisd_decode_gate_verdict, aisd_owd_late_detector_free, aisd_owd_late_detector_new,
+    aisd_owd_late_detector_note, aisd_recovery_deduper_admit, aisd_recovery_deduper_free,
+    aisd_recovery_deduper_new, aisd_recovery_message_decode, aisd_recovery_message_encode,
+    aisd_static_idr_decider_free, aisd_static_idr_decider_heartbeat,
+    aisd_static_idr_decider_last_complete_encode, aisd_static_idr_decider_new,
+    aisd_static_idr_decider_on_complete_frame, aisd_static_idr_decider_quiet_window,
+    aisd_static_idr_decider_record_synthetic, aisd_static_idr_decider_should_reencode,
+    aisd_system_dialog_classify, aisd_system_dialog_free, aisd_system_dialog_min_size,
+    aisd_video_control_decode, aisd_video_control_encode, aisd_video_control_free,
+    aisd_ycbcr_coefficients, AisdNetworkStats, AisdRecoveryMessage, AisdRect, AisdSystemDialog,
+    AisdVideoControl, AisdVideoSummary, AISD_DECODE_GATE_MODE_BROKEN_CHAIN,
+    AISD_DECODE_GATE_MODE_NEED_KEYFRAME, AISD_DECODE_GATE_MODE_OPEN, AISD_DECODE_GATE_VERDICT_DROP,
+    AISD_DECODE_GATE_VERDICT_SUBMIT, AISD_RECOVERY_NETWORK_STATS,
     AISD_RECOVERY_REQUEST_LTR_REFRESH, AISD_VIDEO_CONTROL_WINDOW_LIST,
 };
 use aislopdesk_ffi::{
@@ -1032,6 +1039,107 @@ fn static_idr_decider_opaque_handle_drives_cadence_and_frees() {
                                                              // A null handle never forces an encode.
         assert_eq!(
             aisd_static_idr_decider_should_reencode(core::ptr::null(), 0.0, 1, 1),
+            0
+        );
+    }
+}
+
+#[test]
+fn decode_gate_opaque_handle_gates_until_anchor_and_frees() {
+    unsafe {
+        let g = aisd_decode_gate_new();
+        assert!(!g.is_null());
+        assert_eq!(aisd_decode_gate_mode(g), AISD_DECODE_GATE_MODE_OPEN);
+        assert_eq!(
+            aisd_decode_gate_verdict(g, 10, 0, 0),
+            AISD_DECODE_GATE_VERDICT_SUBMIT
+        );
+
+        // Two losses open a broken-chain episode with wrap-aware min/max bounds.
+        aisd_decode_gate_note_loss(g, 110);
+        aisd_decode_gate_note_loss(g, 100);
+        assert_eq!(aisd_decode_gate_mode(g), AISD_DECODE_GATE_MODE_BROKEN_CHAIN);
+        let mut id: u32 = 0;
+        assert_eq!(aisd_decode_gate_min_lost_frame_id(g, &mut id), 1);
+        assert_eq!(id, 100);
+        assert_eq!(aisd_decode_gate_max_lost_frame_id(g, &mut id), 1);
+        assert_eq!(id, 110);
+        // Mid-episode delta drops; pre-break delta + acked anchor submit while session alive.
+        assert_eq!(
+            aisd_decode_gate_verdict(g, 105, 0, 0),
+            AISD_DECODE_GATE_VERDICT_DROP
+        );
+        assert_eq!(
+            aisd_decode_gate_verdict(g, 99, 0, 0),
+            AISD_DECODE_GATE_VERDICT_SUBMIT
+        );
+        assert_eq!(
+            aisd_decode_gate_verdict(g, 111, 0, 1),
+            AISD_DECODE_GATE_VERDICT_SUBMIT
+        );
+
+        // Hard failure tears the session down: only a keyframe re-anchors.
+        aisd_decode_gate_note_hard_decode_failure(g);
+        assert_eq!(
+            aisd_decode_gate_mode(g),
+            AISD_DECODE_GATE_MODE_NEED_KEYFRAME
+        );
+        assert_eq!(
+            aisd_decode_gate_verdict(g, 111, 0, 1),
+            AISD_DECODE_GATE_VERDICT_DROP
+        );
+        aisd_decode_gate_note_decode_succeeded(g, 112, 1);
+        assert_eq!(aisd_decode_gate_mode(g), AISD_DECODE_GATE_MODE_OPEN);
+        let mut none: u32 = 4242;
+        assert_eq!(aisd_decode_gate_min_lost_frame_id(g, &mut none), 0);
+        assert_eq!(none, 4242);
+
+        aisd_decode_gate_free(g);
+        aisd_decode_gate_free(core::ptr::null_mut()); // no-op
+                                                      // A null handle reads Open and submits everything.
+        assert_eq!(
+            aisd_decode_gate_mode(core::ptr::null()),
+            AISD_DECODE_GATE_MODE_OPEN
+        );
+        assert_eq!(
+            aisd_decode_gate_verdict(core::ptr::null(), 7, 0, 0),
+            AISD_DECODE_GATE_VERDICT_SUBMIT
+        );
+    }
+}
+
+#[test]
+fn owd_late_detector_opaque_handle_flags_spikes_and_frees() {
+    unsafe {
+        let d = aisd_owd_late_detector_new(2000.0, 25.0, 1.25, 20);
+        assert!(!d.is_null());
+        let interval = 1000.0 / 60.0;
+        let mut arrival = 5000.0;
+        let mut send: u32 = 91_000;
+        let mut dev = f64::NAN;
+        // Warm 30 clean samples — none late, out-param never touched.
+        for _ in 0..30 {
+            assert_eq!(
+                aisd_owd_late_detector_note(d, arrival, send, interval, &mut dev),
+                0
+            );
+            arrival += 16.7;
+            send = send.wrapping_add(17);
+        }
+        assert!(dev.is_nan());
+        // A 40ms spike past the 25ms floor is late with deviation > 10ms.
+        arrival += 16.7 + 40.0;
+        send = send.wrapping_add(17);
+        assert_eq!(
+            aisd_owd_late_detector_note(d, arrival, send, interval, &mut dev),
+            1
+        );
+        assert!(dev > 10.0);
+        aisd_owd_late_detector_free(d);
+        aisd_owd_late_detector_free(core::ptr::null_mut()); // no-op
+                                                            // A null handle never reports late.
+        assert_eq!(
+            aisd_owd_late_detector_note(core::ptr::null_mut(), 0.0, 0, interval, &mut dev),
             0
         );
     }

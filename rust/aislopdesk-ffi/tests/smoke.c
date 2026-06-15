@@ -466,6 +466,61 @@ int main(void) {
     aisd_static_idr_decider_free(NULL); /* no-op */
     CHECK(aisd_static_idr_decider_should_reencode(NULL, 0.0, 1, 1) == 0, "null handle never fires");
 
+    /* 15. decode_gate opaque handle: mode transitions + Option<u32> out-param + null guards. */
+    AisdDecodeGate *dg = aisd_decode_gate_new();
+    CHECK(dg != NULL, "decode gate new");
+    CHECK(aisd_decode_gate_mode(dg) == AISD_DECODE_GATE_MODE_OPEN, "fresh gate is open");
+    CHECK(aisd_decode_gate_verdict(dg, 10, 0, 0) == AISD_DECODE_GATE_VERDICT_SUBMIT,
+          "open submits");
+    uint32_t dg_lost = 7777;
+    CHECK(aisd_decode_gate_min_lost_frame_id(dg, &dg_lost) == 0 && dg_lost == 7777,
+          "no loss => out untouched");
+    aisd_decode_gate_note_loss(dg, 100);
+    aisd_decode_gate_note_loss(dg, 110);
+    CHECK(aisd_decode_gate_mode(dg) == AISD_DECODE_GATE_MODE_BROKEN_CHAIN, "loss => broken chain");
+    CHECK(aisd_decode_gate_min_lost_frame_id(dg, &dg_lost) == 1 && dg_lost == 100, "min lost = 100");
+    CHECK(aisd_decode_gate_max_lost_frame_id(dg, &dg_lost) == 1 && dg_lost == 110, "max lost = 110");
+    CHECK(aisd_decode_gate_verdict(dg, 105, 0, 0) == AISD_DECODE_GATE_VERDICT_DROP,
+          "mid-episode delta drops");
+    CHECK(aisd_decode_gate_verdict(dg, 111, 0, 1) == AISD_DECODE_GATE_VERDICT_SUBMIT,
+          "acked anchor submits while alive");
+    aisd_decode_gate_note_hard_decode_failure(dg);
+    CHECK(aisd_decode_gate_mode(dg) == AISD_DECODE_GATE_MODE_NEED_KEYFRAME, "hard fail => need kf");
+    CHECK(aisd_decode_gate_verdict(dg, 111, 0, 1) == AISD_DECODE_GATE_VERDICT_DROP,
+          "acked anchor drops after teardown");
+    aisd_decode_gate_note_decode_succeeded(dg, 112, 1);
+    CHECK(aisd_decode_gate_mode(dg) == AISD_DECODE_GATE_MODE_OPEN, "fresh keyframe re-opens");
+    aisd_decode_gate_free(dg);
+    aisd_decode_gate_free(NULL); /* no-op */
+    CHECK(aisd_decode_gate_mode(NULL) == AISD_DECODE_GATE_MODE_OPEN, "null gate is open");
+    CHECK(aisd_decode_gate_verdict(NULL, 1, 0, 0) == AISD_DECODE_GATE_VERDICT_SUBMIT,
+          "null gate submits");
+
+    /* 16. owd_late_detector opaque handle: warmup, spike flag + out-param, null guard. */
+    AisdOwdLateDetector *owd = aisd_owd_late_detector_new(2000.0, 25.0, 1.25, 20);
+    CHECK(owd != NULL, "owd detector new");
+    double owd_interval = 1000.0 / 60.0;
+    double owd_arrival = 5000.0;
+    uint32_t owd_send = 91000;
+    double owd_dev = -1.0;
+    int owd_warm_late = 0;
+    for (int i = 0; i < 30; i++) {
+        owd_warm_late |= aisd_owd_late_detector_note(owd, owd_arrival, owd_send, owd_interval,
+                                                     &owd_dev);
+        owd_arrival += 16.7;
+        owd_send += 17;
+    }
+    CHECK(owd_warm_late == 0 && owd_dev == -1.0, "clean warmup never late, out untouched");
+    owd_arrival += 16.7 + 40.0;
+    owd_send += 17;
+    CHECK(aisd_owd_late_detector_note(owd, owd_arrival, owd_send, owd_interval, &owd_dev) == 1 &&
+              owd_dev > 10.0,
+          "40ms spike flagged, deviation written");
+    aisd_owd_late_detector_free(owd);
+    aisd_owd_late_detector_free(NULL); /* no-op */
+    CHECK(aisd_owd_late_detector_note(NULL, 0.0, 0, owd_interval, &owd_dev) == 0,
+          "null detector never late");
+
     if (failures == 0) {
         printf("aislopdesk-ffi C smoke: OK\n");
         return 0;

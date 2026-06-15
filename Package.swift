@@ -178,7 +178,7 @@ let package = Package(
         // VideoToolbox (decode) / Metal / CoreVideo / QuartzCore. COMPILED + reviewed;
         // decode is MEASURED-safe (~0.9-1.1ms synchronous) but to honour the hang-
         // safety rule NO VTDecompressionSession is instantiated in tests either.
-        .target(name: "AislopdeskVideoClient", dependencies: ["AislopdeskVideoProtocol"]),
+        .target(name: "AislopdeskVideoClient", dependencies: ["AislopdeskVideoProtocol", "CAislopdeskFFI"]),
 
         // MARK: Executables
 

@@ -682,6 +682,58 @@ void aisd_static_idr_decider_record_synthetic(AisdStaticIdrDecider *decider, dou
 uint8_t aisd_static_idr_decider_should_reencode(const AisdStaticIdrDecider *decider, double now,
                                                 uint8_t forced_latched, uint8_t has_retained_buffer);
 
+/* ---- decode_gate (opaque handle; client pre-emptive drop-until-anchor decode admission) ---- */
+
+/* Mode discriminants (aisd_decode_gate_mode). */
+#define AISD_DECODE_GATE_MODE_OPEN 0u
+#define AISD_DECODE_GATE_MODE_BROKEN_CHAIN 1u
+#define AISD_DECODE_GATE_MODE_NEED_KEYFRAME 2u
+/* Verdict discriminants (aisd_decode_gate_verdict). */
+#define AISD_DECODE_GATE_VERDICT_SUBMIT 0u
+#define AISD_DECODE_GATE_VERDICT_DROP 1u
+
+typedef struct AisdDecodeGate AisdDecodeGate;
+
+/* Creates a fresh, open gate. Destroy with aisd_decode_gate_free. */
+AisdDecodeGate *aisd_decode_gate_new(void);
+/* Destroys a gate from aisd_decode_gate_new. No-op on NULL. */
+void aisd_decode_gate_free(AisdDecodeGate *gate);
+
+/* Current mode as an AISD_DECODE_GATE_MODE_* value (Open for a NULL handle). */
+uint32_t aisd_decode_gate_mode(const AisdDecodeGate *gate);
+/* Oldest/newest lost frame id: returns 1 and writes *out when present, else 0 (out untouched). */
+uint8_t aisd_decode_gate_min_lost_frame_id(const AisdDecodeGate *gate, uint32_t *out);
+uint8_t aisd_decode_gate_max_lost_frame_id(const AisdDecodeGate *gate, uint32_t *out);
+
+/* State folds (no-op on NULL). */
+void aisd_decode_gate_note_loss(AisdDecodeGate *gate, uint32_t frame_id);
+void aisd_decode_gate_note_hard_decode_failure(AisdDecodeGate *gate);
+void aisd_decode_gate_note_awaiting_keyframe(AisdDecodeGate *gate);
+void aisd_decode_gate_note_decode_succeeded(AisdDecodeGate *gate, uint32_t frame_id,
+                                            uint8_t keyframe);
+
+/* Admission decision as an AISD_DECODE_GATE_VERDICT_* value (Submit for a NULL handle). */
+uint32_t aisd_decode_gate_verdict(const AisdDecodeGate *gate, uint32_t frame_id, uint8_t keyframe,
+                                  uint8_t acked_anchored);
+
+/* ---- owd_late_detector (opaque handle; client one-way-delay spike detector) ---- */
+
+typedef struct AisdOwdLateDetector AisdOwdLateDetector;
+
+/* Creates a detector from the resolved Config scalars (env is resolved caller-side; the core is
+ * env-free). Destroy with aisd_owd_late_detector_free. */
+AisdOwdLateDetector *aisd_owd_late_detector_new(double bucket_ms, double threshold_floor_ms,
+                                                double threshold_interval_fraction,
+                                                size_t warmup_samples);
+/* Destroys a detector from aisd_owd_late_detector_new. No-op on NULL. */
+void aisd_owd_late_detector_free(AisdOwdLateDetector *detector);
+
+/* Folds one per-frame sample: returns 1 and writes the deviation above threshold (ms) to
+ * *out_deviation when the sample is a network-late spike, else 0 (out_deviation untouched).
+ * Returns 0 for a NULL handle. */
+uint8_t aisd_owd_late_detector_note(AisdOwdLateDetector *detector, double arrival_ms,
+                                    uint32_t send_ts, double interval_ms, double *out_deviation);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
