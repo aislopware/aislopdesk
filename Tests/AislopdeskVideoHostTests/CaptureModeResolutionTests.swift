@@ -6,6 +6,19 @@ import XCTest
 /// `AISLOPDESK_DISPLAY_CAPTURE` A/B seam and the VD-parked default (docs: the tooltip
 /// 1px-shift fix — display-anchored crops are immune to the child-window bounding-rect nudge).
 final class CaptureModeResolutionTests: XCTestCase {
+    /// `canResizeInPlace` gate — in-place `updateConfiguration` resize is allowed ONLY when the flag
+    /// is on, the capture is display-anchored, and the crop is not a poller-owned union.
+    func testCanResizeInPlaceGate() {
+        // Allowed: flag on + display-anchored + not union.
+        XCTAssertTrue(WindowCapturer.canResizeInPlace(flagEnabled: true, isDisplayAnchored: true, isUnion: false))
+        // Flag off → restart-fallback.
+        XCTAssertFalse(WindowCapturer.canResizeInPlace(flagEnabled: false, isDisplayAnchored: true, isUnion: false))
+        // .window mode (not display-anchored) → restart-fallback.
+        XCTAssertFalse(WindowCapturer.canResizeInPlace(flagEnabled: true, isDisplayAnchored: false, isUnion: false))
+        // Union (DIALOG-EXPAND poller-owned crop) → restart-fallback.
+        XCTAssertFalse(WindowCapturer.canResizeInPlace(flagEnabled: true, isDisplayAnchored: true, isUnion: true))
+    }
+
     // Env forces win regardless of VD parking.
     func testEnvForcesWindowMode() {
         XCTAssertEqual(WindowCapturer.resolveCaptureMode(envValue: "window", preferDisplayAnchored: true), .window)

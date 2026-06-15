@@ -143,6 +143,11 @@ public actor AislopdeskVideoHostSession {
     /// shipped this way). When OFF the host is byte-identical: no gate, no streamCadence message,
     /// no self-heal rebase. `AISLOPDESK_FPS_GOVERNOR=1` enables; tunables `AISLOPDESK_FPS_GOV_*`.
     private static let fpsGovernorEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_FPS_GOVERNOR"] == "1"
+    /// In-place SCStream resize (`AISLOPDESK_INPLACE_RESIZE=1`): reconfigure the live stream via
+    /// `updateConfiguration` on a window resize instead of restarting it (~120ms SCK spin-up = the
+    /// resize freeze). Default OFF until the Studio loopback CRC soak proves live output-resize per
+    /// capture mode; any failure falls back to the byte-identical restart path.
+    private static let inPlaceResizeEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_INPLACE_RESIZE"] == "1"
 
     /// PURE (unit-tested): inter-chunk pacing gap (ns) so `chunkFragments × datagramSize` bytes drain at
     /// `targetBps × rateMultiplier`, clamped to `[floorNanos, ceilNanos]`. `targetBps <= 0` ⇒ `fallbackBps`.
@@ -1081,6 +1086,71 @@ public actor AislopdeskVideoHostSession {
         }
     }
 
+    /// A swappable encoder + its configured pixel size behind a lock, so the capture queue's hot
+    /// per-frame closure can be RE-POINTED at a new encoder WITHOUT rebuilding the `WindowCapturer`
+    /// / restarting the SCStream (the ~120ms spin-up). The closure reads `(encoder, w, h)` ONCE per
+    /// frame under the lock — identical cost to the existing `currentGovernedFPS()` read — and DROPS
+    /// any buffer whose size != the configured size (the ≤1-frame transient while SCK applies a new
+    /// `updateConfiguration`), so a mismatched buffer never reaches a resolution-fixed `VTCompressionSession`.
+    final class SwappableEncoder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var encoder: VideoEncoder
+        private var pixelWidth: Int
+        private var pixelHeight: Int
+        init(encoder: VideoEncoder, pixelWidth: Int, pixelHeight: Int) {
+            self.encoder = encoder
+            self.pixelWidth = pixelWidth
+            self.pixelHeight = pixelHeight
+        }
+
+        /// Atomically re-point the dispatch at `encoder` with its new configured size (in-place resize).
+        func swap(encoder: VideoEncoder, pixelWidth: Int, pixelHeight: Int) {
+            lock.lock()
+            self.encoder = encoder
+            self.pixelWidth = pixelWidth
+            self.pixelHeight = pixelHeight
+            lock.unlock()
+        }
+
+        /// The hot per-frame hand-off (capture queue). Reads the live encoder + size once, drops a
+        /// size-mismatched buffer, else runs the same dispatch the construction closure used to.
+        func encode(
+            pixelBuffer: CVPixelBuffer,
+            pts: CMTime,
+            forceKeyframe: Bool,
+            crisp: Bool,
+            compact: Bool,
+            ltrRefresh: Bool,
+            log: Logger,
+        ) {
+            lock.lock()
+            let enc = encoder
+            let w = pixelWidth
+            let h = pixelHeight
+            lock.unlock()
+            // Transient guard: a buffer at the OLD size may arrive after the encoder swap but before
+            // SCK applies the new capture config. Drop it — the next matching new-size buffer is the IDR.
+            guard CVPixelBufferGetWidth(pixelBuffer) == w, CVPixelBufferGetHeight(pixelBuffer) == h else { return }
+            do {
+                if ltrRefresh {
+                    try enc.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else if crisp {
+                    try enc.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else if compact {
+                    try enc.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
+                } else {
+                    try enc.encodeLive(pixelBuffer: pixelBuffer, presentationTime: pts, forceKeyframe: forceKeyframe)
+                }
+            } catch {
+                log.error("live encode failed: \(String(describing: error))")
+            }
+        }
+    }
+
+    /// The live capturer's swappable encoder box (the in-place-resize hand-off). Set alongside
+    /// `encoder`/`capturer`; an in-place resize swaps it, the restart path rebuilds it.
+    private var encoderBox: SwappableEncoder?
+
     // MARK: In-session resize (PATH A — AX window resize)
 
     /// Performs the live in-session resize for a `.resizeCapture` effect (the SM already
@@ -1124,6 +1194,9 @@ public actor AislopdeskVideoHostSession {
         // resume. `currentWindowBoundsCG()` reads the live window via the watcher and itself falls
         // back to the window's creation frame if the live read fails — never nil.
         let preResizePoints: VideoSize = currentWindowBoundsCG().size
+        // Pre-resize PIXEL size, for restoring the encoder box on an in-place-resize fallback.
+        let preResizePixelWidth = max(1, Int((preResizePoints.width * captureScale).rounded()))
+        let preResizePixelHeight = max(1, Int((preResizePoints.height * captureScale).rounded()))
         let requestedPoints = VideoSize(width: Double(width), height: Double(height))
         guard let achievedPoints = await MainActor.run(body: { watcher.resizeWindow(toPoints: requestedPoints) }) else {
             log.error("AX window resize unavailable/failed — keeping current capture size")
@@ -1181,29 +1254,77 @@ public actor AislopdeskVideoHostSession {
         //    false ⇒ forced IDR on its first frame for free, and avoids the per-frame
         //    encoder-ref swap race entirely.
         let logCallback = log
+        // IN-PLACE FAST PATH (AISLOPDESK_INPLACE_RESIZE, per-mode gated): reconfigure the LIVE
+        // SCStream to the new size via `updateConfiguration` + swap the encoder box, instead of
+        // tearing the stream down and paying SCK's ~120ms `startCapture` spin-up (the resize freeze).
+        // On ANY failure (updateConfiguration throws, unproven mode, union/DIALOG-EXPAND) it falls
+        // through to the byte-identical restart path below — correctness never regresses. Default OFF
+        // until the Studio loopback CRC soak proves live output-resize per mode.
+        if Self.inPlaceResizeEnabled,
+           let liveCapturer = capturer, liveCapturer === oldCapturer,
+           let box = encoderBox,
+           WindowCapturer.canResizeInPlace(
+               flagEnabled: Self.inPlaceResizeEnabled,
+               isDisplayAnchored: liveCapturer.isDisplayAnchored,
+               isUnion: liveCapturer.isUnionAnchored,
+           )
+        {
+            // Swap the encoder FIRST (new-size buffers must hit the new-size encoder) — the fresh VT
+            // session's first frame is an IDR; requestKeyframe() belt-and-suspenders forces it too —
+            // then reconfigure the live stream. updateSize throws on any failure → swap the box back +
+            // fall through to the restart path with a STILL-LIVE old stream.
+            box.swap(encoder: newEncoder, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+            liveCapturer.requestKeyframe()
+            do {
+                try await liveCapturer.updateSize(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+                // Post-await recheck (the await is a suspension point) — only the newest epoch installs;
+                // a superseding bye/stop nils `capturer`. Compare to oldCapturer (the object is unchanged).
+                guard stateMachine.mediaFlowing, capturer === oldCapturer, encoder === oldEncoder,
+                      epoch >= stateMachine.lastResizeEpoch
+                else {
+                    dbg("resize(in-place) epoch=\(epoch) — superseded during updateSize; leaving live stream, no ack")
+                    return
+                }
+                encoder = newEncoder
+                seedCongestionController(ceiling: ceiling) // WF-2: re-anchor controller to new ceiling
+                resetLTRForNewEncoder() // WF-8: new VT session holds no acked LTRs
+                oldEncoder.completeFrames() // drain the old encoder AFTER the swap (no frames route to it now)
+                if Self.fpsGovernorEnabled, governedFps != fps { newEncoder.setExpectedFrameRate(governedFps) }
+                dbg(
+                    "resize(in-place) epoch=\(epoch) — updateConfiguration to \(pixelWidth)x\(pixelHeight) px, NO restart",
+                )
+                await apply(.sendControl(.resizeAck(
+                    captureWidth: achievedWidth,
+                    captureHeight: achievedHeight,
+                    epoch: epoch,
+                )))
+                return
+            } catch {
+                // In-place failed: the OLD stream was NEVER stopped and updateSize restored the box to
+                // the old encoder, so frames are still flowing at the OLD size — no dead stream. Fall
+                // through to the restart path (which rebuilds a fresh capturer at the new size).
+                box.swap(encoder: oldEncoder, pixelWidth: preResizePixelWidth, pixelHeight: preResizePixelHeight)
+                log.error("in-place resize failed (\(String(describing: error))) — falling back to stream restart")
+                dbg("resize(in-place) epoch=\(epoch) — updateSize threw; restart fallback")
+            }
+        }
+
+        let newBox = SwappableEncoder(encoder: newEncoder, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
         let newCapturer = WindowCapturer(
             fps: fps,
             captureScale: captureScale,
             fullRange: Self.fullRange,
             preferDisplayAnchored: true, // low-latency default (see WindowCapturer.preferDisplayAnchored)
         ) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
-            do {
-                if ltrRefresh {
-                    try newEncoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
-                } else if crisp {
-                    try newEncoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
-                } else if compact {
-                    try newEncoder.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
-                } else {
-                    try newEncoder.encodeLive(
-                        pixelBuffer: pixelBuffer,
-                        presentationTime: pts,
-                        forceKeyframe: forceKeyframe,
-                    )
-                }
-            } catch {
-                logCallback.error("live encode (post-resize) failed: \(String(describing: error))")
-            }
+            newBox.encode(
+                pixelBuffer: pixelBuffer,
+                pts: pts,
+                forceKeyframe: forceKeyframe,
+                crisp: crisp,
+                compact: compact,
+                ltrRefresh: ltrRefresh,
+                log: logCallback,
+            )
         }
 
         // Stop the OLD capturer first (no frames into the dead encoder), then drain the OLD
@@ -1239,6 +1360,7 @@ public actor AislopdeskVideoHostSession {
         seedCongestionController(ceiling: ceiling) // WF-2: re-anchor the controller to the new resolution's ceiling
         resetLTRForNewEncoder() // WF-8: the new VT session holds no acked LTRs — invalidate the acked-set
         capturer = newCapturer
+        encoderBox = newBox // the new capturer's hot-path hand-off
         // FPS GOVERNOR: a fresh capturer/encoder start at the base fps — re-apply the live
         // governed state (governor state itself persists across resize: path knowledge). No
         // client message — the cadence is unchanged.
@@ -1481,6 +1603,8 @@ public actor AislopdeskVideoHostSession {
             return
         }
         self.encoder = encoder
+        let encoderBox = SwappableEncoder(encoder: encoder, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+        self.encoderBox = encoderBox
         seedCongestionController(ceiling: ceiling) // WF-2: anchor the controller to this build's ceiling
         resetLTRForNewEncoder() // WF-8: anchor the LTR acked-set to this build (clears any prior-client acks on actor reuse)
         // FPS GOVERNOR: fresh session ⇒ fresh governor at the base fps (nil when the flag is off ⇒
@@ -1501,23 +1625,15 @@ public actor AislopdeskVideoHostSession {
             fullRange: Self.fullRange,
             preferDisplayAnchored: true, // low-latency default (see WindowCapturer.preferDisplayAnchored)
         ) { pixelBuffer, pts, forceKeyframe, crisp, compact, ltrRefresh in
-            do {
-                if ltrRefresh {
-                    try encoder.encodeLiveLTRRefresh(pixelBuffer: pixelBuffer, presentationTime: pts)
-                } else if crisp {
-                    try encoder.encodeLiveCrispKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
-                } else if compact {
-                    try encoder.encodeCompactKeyframe(pixelBuffer: pixelBuffer, presentationTime: pts)
-                } else {
-                    try encoder.encodeLive(
-                        pixelBuffer: pixelBuffer,
-                        presentationTime: pts,
-                        forceKeyframe: forceKeyframe,
-                    )
-                }
-            } catch {
-                logCallback.error("live encode failed: \(String(describing: error))")
-            }
+            encoderBox.encode(
+                pixelBuffer: pixelBuffer,
+                pts: pts,
+                forceKeyframe: forceKeyframe,
+                crisp: crisp,
+                compact: compact,
+                ltrRefresh: ltrRefresh,
+                log: logCallback,
+            )
         }
         self.capturer = capturer
 
