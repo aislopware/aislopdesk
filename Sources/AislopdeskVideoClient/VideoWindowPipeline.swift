@@ -76,14 +76,14 @@ final class VideoWindowPipeline {
     /// backing view re-evaluates its OS-cursor decision. Set by the view in `activate`; `nil` on iOS.
     var onServerCursorVisibilityChanged: ((Bool) -> Void)?
 
-    /// 1:1 PANE SNAP: fired on the @MainActor when the stream's decoded PIXEL size changes (first
+    /// 1:1 PANE SNAP: fired on the @MainActor when the stream's decoded size changes (first
     /// decoded frame, or the first frame at a new capture size after a host-side resize). Carries
-    /// the raw pixel dims; the view derives the 1:1 point size from its own `contentsScale`
-    /// (``StreamSizeSnap``) and snaps its canvas pane. MUST be set (or left nil) BEFORE
-    /// ``activate(view:videoLayer:connection:maxFrameRate:)`` — its nil-ness decides at session
-    /// construction whether the pane follows the stream (snap) or the legacy connect-time
-    /// host-follow negotiation runs (standalone windows).
-    var onDecodedPixelSize: ((VideoSize) -> Void)?
+    /// the HOST WINDOW's POINT size (= decoded pixels / the inferred host captureScale — the
+    /// session does the conversion, ``StreamSizeSnap``); the view snaps its canvas pane straight
+    /// to it. MUST be set (or left nil) BEFORE ``activate(view:videoLayer:connection:maxFrameRate:)``
+    /// — its nil-ness decides at session construction whether the pane follows the stream (snap)
+    /// or the legacy connect-time host-follow negotiation runs (standalone windows).
+    var onStreamNativePoints: ((VideoSize) -> Void)?
 
     #if os(macOS)
     /// The LOCAL `NSCursor` mirroring the host's CURRENT cursor SHAPE (Parsec model: the OS draws it at
@@ -341,17 +341,17 @@ final class VideoWindowPipeline {
             ) },
         )
 
-        // 1:1 PANE SNAP: only a view that wired `onDecodedPixelSize` gets the hook — its
+        // 1:1 PANE SNAP: only a view that wired `onStreamNativePoints` gets the hook — its
         // nil-ness is how the session distinguishes a canvas pane (pane follows the stream)
         // from a standalone window (legacy connect-time host-follow negotiation). Hoisted out
         // of the GUIHooks init with an explicit type (the ternary inside the big call defeated
         // the type-checker).
-        let notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)? =
-            if onDecodedPixelSize == nil {
+        let notifyStreamNativePoints: (@Sendable (VideoSize) -> Void)? =
+            if onStreamNativePoints == nil {
                 nil
             } else {
-                { [weak self] px in
-                    Task { @MainActor in self?.onDecodedPixelSize?(px) }
+                { [weak self] points in
+                    Task { @MainActor in self?.onStreamNativePoints?(points) }
                 }
             }
         // GUI hooks: each hops to the main actor to touch the (main-confined) pacer /
@@ -380,7 +380,7 @@ final class VideoWindowPipeline {
                 // before the first frame. `ColorRange` is Sendable; the renderer is @MainActor.
                 Task { @MainActor in self?.renderer?.colorRange = range }
             },
-            notifyDecodedPixelSize: notifyDecodedPixelSize,
+            notifyStreamNativePoints: notifyStreamNativePoints,
             applyStreamCadence: { fps in
                 // FPS GOVERNOR: rebase the pacer's content-cadence assumptions (deadline-mode
                 // interval + adaptive-jitter frames conversion + the depth-v2 policy's expected

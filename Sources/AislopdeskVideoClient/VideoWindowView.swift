@@ -299,8 +299,8 @@ final class MetalLayerBackedView: NSView {
         // (snap) vs the legacy connect-time host-follow by whether this hook exists when the GUI
         // hooks are built. The closure reads the live `onStreamNativeSize`, so updateNSView
         // refreshing the seam closure stays picked up without re-activation.
-        pipeline.onDecodedPixelSize = onStreamNativeSize == nil ? nil : { [weak self] px in
-            self?.adoptStreamPixelSize(px)
+        pipeline.onStreamNativePoints = onStreamNativeSize == nil ? nil : { [weak self] points in
+            self?.adoptStreamNativePoints(points)
         }
         pipeline.activate(view: self, videoLayer: videoLayer, connection: connection)
         // Re-apply the local cursor when the host SWAPS shape, or when the host cursor enters/leaves the
@@ -322,24 +322,23 @@ final class MetalLayerBackedView: NSView {
         pipeline.deactivate()
     }
 
-    /// 1:1 PANE SNAP: the stream's decoded PIXEL size changed (first frame, or the host
-    /// re-captured after a window resize). Compute the point size at which THIS view renders the
-    /// stream pixel-for-pixel (`pixels / contentsScale`), rebase the session's resize debounce on
-    /// it FIRST (so the snap-induced layout pass holds instead of echoing a `resizeRequest` back
-    /// to the host — the snap is client-side only), then ask the canvas pane to adopt it. Skips
-    /// the pane mutation for a sub-half-point delta (already 1:1; the rebase alone suffices).
-    private func adoptStreamPixelSize(_ pixelSize: VideoSize) {
+    /// 1:1 PANE SNAP: the stream's decoded size changed (first frame, or the host re-captured
+    /// after a window resize). The session already converted it to the HOST WINDOW's POINT size
+    /// (`points`, = decoded pixels / the inferred host captureScale — NOT the client contentsScale,
+    /// which halved the pane on a 1× capture). Rebase the session's resize debounce on it FIRST
+    /// (so the snap-induced layout pass holds instead of echoing a `resizeRequest` back to the
+    /// host — the snap is client-side only), then ask the canvas pane to adopt it. Skips the pane
+    /// mutation for a sub-half-point delta (already at the native size; the rebase alone suffices).
+    private func adoptStreamNativePoints(_ points: VideoSize) {
         guard let handler = onStreamNativeSize else { return }
-        let scale = videoLayer.contentsScale > 0 ? videoLayer.contentsScale : 1
-        let target = StreamSizeSnap.targetPoints(pixelSize: pixelSize, contentsScale: Double(scale))
-        pipeline.adoptLayerSize(target)
+        pipeline.adoptLayerSize(points)
         let current = VideoSize(width: Double(bounds.width), height: Double(bounds.height))
-        guard StreamSizeSnap.shouldSnap(target: target, current: current) else { return }
+        guard StreamSizeSnap.shouldSnap(target: points, current: current) else { return }
         videoViewDbg(
-            "1:1 snap → video \(Int(current.width))x\(Int(current.height)) → \(Int(target.width))x\(Int(target.height))pt (pixels \(Int(pixelSize.width))x\(Int(pixelSize.height)) @\(scale)x)",
+            "1:1 snap → video \(Int(current.width))x\(Int(current.height)) → \(Int(points.width))x\(Int(points.height))pt (host window points)",
         )
         handler(
-            CGSize(width: target.width, height: target.height),
+            CGSize(width: points.width, height: points.height),
             CGSize(width: current.width, height: current.height),
         )
     }
@@ -760,8 +759,8 @@ final class MetalLayerBackedView: UIView, UIGestureRecognizerDelegate {
         installGesturesIfNeeded()
         // 1:1 PANE SNAP — wire BEFORE pipeline.activate (nil-ness picks snap vs host-follow at
         // session construction; mirrors the macOS sibling).
-        pipeline.onDecodedPixelSize = onStreamNativeSize == nil ? nil : { [weak self] px in
-            self?.adoptStreamPixelSize(px)
+        pipeline.onStreamNativePoints = onStreamNativeSize == nil ? nil : { [weak self] points in
+            self?.adoptStreamNativePoints(points)
         }
         pipeline.activate(view: self, videoLayer: videoLayer, connection: connection)
         if connection != nil, let controls {
@@ -773,18 +772,16 @@ final class MetalLayerBackedView: UIView, UIGestureRecognizerDelegate {
 
     func deactivate() { pipeline.deactivate() }
 
-    /// 1:1 PANE SNAP: compute the point size at which this view renders the stream
-    /// pixel-for-pixel, rebase the session's resize debounce (no host echo), then ask the pane
-    /// to adopt it — mirrors the macOS sibling.
-    private func adoptStreamPixelSize(_ pixelSize: VideoSize) {
+    /// 1:1 PANE SNAP: the session handed us the host window's POINT size (the snap target).
+    /// Rebase the session's resize debounce (no host echo), then ask the pane to adopt it —
+    /// mirrors the macOS sibling.
+    private func adoptStreamNativePoints(_ points: VideoSize) {
         guard let handler = onStreamNativeSize else { return }
-        let scale = videoLayer.contentsScale > 0 ? videoLayer.contentsScale : 1
-        let target = StreamSizeSnap.targetPoints(pixelSize: pixelSize, contentsScale: Double(scale))
-        pipeline.adoptLayerSize(target)
+        pipeline.adoptLayerSize(points)
         let current = VideoSize(width: Double(bounds.width), height: Double(bounds.height))
-        guard StreamSizeSnap.shouldSnap(target: target, current: current) else { return }
+        guard StreamSizeSnap.shouldSnap(target: points, current: current) else { return }
         handler(
-            CGSize(width: target.width, height: target.height),
+            CGSize(width: points.width, height: points.height),
             CGSize(width: current.width, height: current.height),
         )
     }

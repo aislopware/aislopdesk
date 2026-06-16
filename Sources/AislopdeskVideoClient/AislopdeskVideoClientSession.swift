@@ -105,13 +105,14 @@ public actor AislopdeskVideoClientSession {
         /// Called once at pipeline bring-up, BEFORE the first frame renders (the `helloAck` carrying
         /// the range arrives before any media). `.video` ⇒ today's coefficients, byte-identical.
         public var setColorRange: @Sendable (ColorRange) -> Void
-        /// 1:1 PANE SNAP (2026-06-11): fired when the decoded frames' PIXEL size CHANGES — the
-        /// session's first decoded frame, or the first frame at a new capture size after an
-        /// in-session resize. The view layer derives the 1:1 point size (`pixels /
-        /// contentsScale`, ``StreamSizeSnap``) and snaps its canvas pane to it. `nil` ⇒ no pane
-        /// to snap (a standalone window) → the session keeps the legacy connect-time
+        /// 1:1 PANE SNAP (2026-06-11; carries POINTS as of 2026-06-16): fired when the decoded
+        /// frames' size CHANGES — the session's first decoded frame, or the first frame at a new
+        /// capture size after an in-session resize — carrying the HOST WINDOW's POINT size (the
+        /// snap target the session derives as `decoded pixels / the inferred host captureScale`,
+        /// ``StreamSizeSnap``). The view snaps its canvas pane straight to those points. `nil` ⇒
+        /// no pane to snap (a standalone window) → the session keeps the legacy connect-time
         /// host-follow negotiation (`startDecodePipeline` kicks the resize debounce) instead.
-        public var notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)?
+        public var notifyStreamNativePoints: (@Sendable (VideoSize) -> Void)?
         /// FPS GOVERNOR (2026-06-11): the host announced the stream's CONTENT cadence (fps) — at
         /// session start and on every governed step. The pipeline rebases the pacer's deadline-mode
         /// interval + adaptive-jitter seconds→frames conversion (`FramePacer.setContentFps`).
@@ -140,7 +141,7 @@ public actor AislopdeskVideoClientSession {
             applyCursor: @escaping @Sendable (CursorUpdate, CursorPlacement) -> Void,
             registerCursorShape: @escaping @Sendable (CGImage, VideoSize, UInt16) -> Void,
             setColorRange: @escaping @Sendable (ColorRange) -> Void,
-            notifyDecodedPixelSize: (@Sendable (VideoSize) -> Void)? = nil,
+            notifyStreamNativePoints: (@Sendable (VideoSize) -> Void)? = nil,
             applyStreamCadence: (@Sendable (Int) -> Void)? = nil,
             readPacerTelemetry: (@Sendable () -> PacerTelemetrySnapshot)? = nil,
             noteNetworkLate: (@Sendable () -> Void)? = nil,
@@ -150,7 +151,7 @@ public actor AislopdeskVideoClientSession {
             self.applyCursor = applyCursor
             self.registerCursorShape = registerCursorShape
             self.setColorRange = setColorRange
-            self.notifyDecodedPixelSize = notifyDecodedPixelSize
+            self.notifyStreamNativePoints = notifyStreamNativePoints
             self.applyStreamCadence = applyStreamCadence
             self.readPacerTelemetry = readPacerTelemetry
             self.noteNetworkLate = noteNetworkLate
@@ -252,6 +253,13 @@ public actor AislopdeskVideoClientSession {
     /// A genuinely new-size frame is the first whose pixel dims differ from the steady prior size;
     /// an in-flight old-size frame matches the baseline and is rejected. Gated-path-only.
     private var lastDecodedPixelSize: VideoSize?
+    /// The HOST's capture scale (decoded PIXELS per window POINT), inferred ONCE from the first
+    /// decoded frame (`decoded pixels / the negotiated window points`) and CONSTANT thereafter —
+    /// the host captures at a fixed scale; only the window points change on resize. Drives the
+    /// 1:1 PANE SNAP target (`decoded / streamCaptureScale` = the host window's point size), so a
+    /// 1× no-VD capture on a 2× Retina client no longer halves the pane every resize cycle
+    /// (`StreamSizeSnap`). `nil` until the first frame infers it.
+    private var streamCaptureScale: Double?
     /// One-shot settle timer for the resize debounce. ``maybeRequestResize(for:)`` is only ever
     /// driven by event-based layout callbacks, and the FINAL drag frame re-arms the settle clock
     /// with ~0 elapsed — so without this timer a settled size would NEVER be requested (no further
@@ -565,7 +573,7 @@ public actor AislopdeskVideoClientSession {
         // decoded frame must not echo the pane's STALE size to the host — that would AX-resize
         // the host window to the old pane size right before the pane adopts the stream's
         // natural size, defeating the snap. After the rebase, user drags request normally.
-        if gui.notifyDecodedPixelSize != nil, resizeDebounce.lastRequested == nil {
+        if gui.notifyStreamNativePoints != nil, resizeDebounce.lastRequested == nil {
             dbg("resize: pane-follows-stream — holding resizeRequest until the 1:1 snap rebases the debounce")
             return
         }
@@ -976,11 +984,27 @@ public actor AislopdeskVideoClientSession {
         let decoded = VideoSize(width: width, height: height)
         let previous = lastDecodedPixelSize
         lastDecodedPixelSize = decoded
-        // 1:1 PANE SNAP: surface the GROUND-TRUTH pixel size whenever it changes (the first
-        // frame of the session, or the first frame at a new capture size). The helloAck /
-        // resizeAck carry POINT sizes and the host's captureScale is not on the wire, so the
-        // decoded buffer is the only place the client learns the true pixel dimensions.
-        if previous != decoded { gui.notifyDecodedPixelSize?(decoded) }
+        // 1:1 PANE SNAP: surface the host window's POINT size whenever the decoded size changes
+        // (first frame of the session, or the first frame at a new capture size). The host's
+        // captureScale is not on the wire, but it is CONSTANT and inferable from the first frame
+        // (`decoded pixels / the negotiated window points`); reuse it for every later resize.
+        // Snapping to `decoded / streamCaptureScale` (= the host window points) — NOT `decoded /
+        // the CLIENT contentsScale` — keeps the resize loop gain at 1, so a 1× no-VD capture on a
+        // 2× Retina client no longer halves the pane each cycle ("pane cứ bị co nhỏ").
+        if previous != decoded {
+            // The window points for THIS decoded size: the in-flight resize ack's `pending`
+            // (a resize just landed), else the session's current `decodedSize` (first frame).
+            let windowPoints = pendingCaptureSize ?? decodedSize
+            if streamCaptureScale == nil {
+                streamCaptureScale = StreamSizeSnap.inferredCaptureScale(
+                    decodedPixels: decoded, windowPoints: windowPoints,
+                )
+            }
+            let nativePoints = StreamSizeSnap.targetPoints(
+                pixelSize: decoded, captureScale: streamCaptureScale ?? 1,
+            )
+            gui.notifyStreamNativePoints?(nativePoints)
+        }
         guard let pending = pendingCaptureSize else { return }
         // Adopt only when the decoded buffer is the genuinely-NEW size (aspect match AND a real
         // pixel-size change vs the prior frame) — an in-flight OLD-size frame queued behind the
@@ -1332,12 +1356,12 @@ public actor AislopdeskVideoClientSession {
         // pointless capture restart at connect.
         //
         // 1:1 PANE SNAP (2026-06-11): this legacy host-follow negotiation runs ONLY for a
-        // standalone view (`notifyDecodedPixelSize == nil`). A canvas pane registers the snap
-        // hook, and the direction inverts: the PANE adopts the stream's natural size (fired
-        // from `noteDecoded` on the first frame's ground-truth pixel dims), so the host window
+        // standalone view (`notifyStreamNativePoints == nil`). A canvas pane registers the snap
+        // hook, and the direction inverts: the PANE adopts the stream's natural size (the host
+        // window's POINT size, fired from `noteDecoded` on the first frame), so the host window
         // is never disturbed at connect — "pane resizes to match the virtual display", not the
         // other way around.
-        if gui.notifyDecodedPixelSize == nil,
+        if gui.notifyStreamNativePoints == nil,
            abs(layerSize.width - captureSize.width) >= 8 || abs(layerSize.height - captureSize.height) >= 8
         {
             dbg(

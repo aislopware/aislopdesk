@@ -316,22 +316,38 @@ public struct ResizeDebounce: Sendable, Equatable {
     }
 }
 
-/// 1:1 PANE SNAP (2026-06-11 "match the virtual display"). A remote-GUI canvas pane adopts the
-/// STREAM's size instead of asking the host to resize: the host captures at `window points ×
-/// captureScale` pixels (virtual display 2×), and the pane renders those pixels 1:1 only when its
-/// video layer's point size × the CLIENT contentsScale equals the decoded pixel size exactly —
-/// any mismatch pays a fractional bilinear resample that blurs text. The target point size is
-/// therefore `decoded pixels / contentsScale`, derived from the decoded `CVPixelBuffer` (the only
-/// place the client can learn true pixel dims — helloAck/resizeAck carry POINTS and the host's
-/// captureScale is not on the wire). Pure math — the view passes its scale + current size in —
-/// so the snap decision is unit-testable headlessly.
+/// 1:1 PANE SNAP (2026-06-11 "match the virtual display"; corrected 2026-06-16). A remote-GUI
+/// canvas pane adopts the STREAM's natural size so its video renders without a fractional
+/// resample. The snap target is the HOST WINDOW's own POINT size — `decoded pixels / the HOST
+/// captureScale` — which the resizeRequest/resizeAck round-trip carries in POINTS, so the resize
+/// feedback loop has gain 1 and a user drag converges to the size dragged to.
+///
+/// ⚠️ The bug it fixes (2026-06-16): the target was computed as `decoded pixels / the CLIENT
+/// contentsScale`. That is only correct when the host captures at the client's scale (the 2× VD
+/// on a 2× Retina client). With NO virtual display the host captures at 1× while the client is a
+/// 2× Retina, so `pixels / 2` HALVED the pane every resize cycle (loop gain 0.5) — "khi resize
+/// thì pane cứ bị co nhỏ". The host captureScale is not on the wire, but it is CONSTANT for the
+/// session and inferable from the first decoded frame: `decoded pixels / the acked window points`
+/// (see ``inferredCaptureScale``). Pure math — unit-testable headlessly.
 public enum StreamSizeSnap {
-    /// The video-layer point size at which the decoded stream renders pixel-for-pixel
-    /// (`pixels / scale`). A non-positive scale falls back to 1 (defensive: a real layer's
-    /// `contentsScale` is never ≤ 0).
-    public static func targetPoints(pixelSize: VideoSize, contentsScale: Double) -> VideoSize {
-        let s = contentsScale > 0 ? contentsScale : 1
+    /// The video-layer point size at which the decoded stream renders 1:1: `pixels /
+    /// captureScale`, where `captureScale` is the HOST's capture scale (NOT the client
+    /// contentsScale — see the type doc). Equals the host window's point size, so it round-trips
+    /// cleanly through the point-valued resizeRequest/resizeAck. A non-positive scale falls back
+    /// to 1 (defensive).
+    public static func targetPoints(pixelSize: VideoSize, captureScale: Double) -> VideoSize {
+        let s = captureScale > 0 ? captureScale : 1
         return VideoSize(width: pixelSize.width / s, height: pixelSize.height / s)
+    }
+
+    /// The HOST capture scale inferred from the first decoded frame: decoded PIXELS per negotiated
+    /// window POINT (the helloAck `captureWidth/Height` are points). CONSTANT for the session — the
+    /// host captures at a fixed scale and only the window points change on resize — so the client
+    /// infers it once and reuses it for every later in-session resize. A non-positive `windowPoints`
+    /// width falls back to 1 (defensive: the helloAck always carries a real size before any frame).
+    public static func inferredCaptureScale(decodedPixels: VideoSize, windowPoints: VideoSize) -> Double {
+        guard windowPoints.width > 0, decodedPixels.width > 0 else { return 1 }
+        return decodedPixels.width / windowPoints.width
     }
 
     /// Whether the pane should actually snap: the 1:1 target differs from the current layer
