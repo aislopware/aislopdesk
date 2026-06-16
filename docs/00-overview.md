@@ -1,41 +1,47 @@
 # 00 — Architecture Overview (read this first)
 
-> **Read-first** document — gathers the entire current architecture + every settled decision, each point linking to the detailed doc. Decisions as a log: [DECISIONS.md](DECISIONS.md). Old codename "PaneCast" (from the screen-sharing era) — now a **remote-coding tool**, terminal-first.
+> **Read-first** document — gathers the entire current architecture + every settled decision, each point linking to the detailed doc. Decisions as a log: [DECISIONS.md](DECISIONS.md). Old codename "PaneCast" (from the screen-sharing era); now a remote-coding tool whose client is a unified canvas of terminal and GUI-window panes.
 
 ## 1. What it is
 
-> **Philosophy: commit to one good choice.** The renderer is libghostty; the structured view is the read-only inspector; GUI fps caps at ~24–30.
+> **Philosophy: commit to one good choice per problem.** One renderer (libghostty), one structured view (the read-only inspector), one Rust core that owns the wire. Where there is a real choice the design picks it and proves it, rather than shipping fallbacks.
 
-A **remote control/coding** app on Apple platforms (macOS host, macOS + iOS/iPadOS client), native Swift/SwiftUI; build floor **macOS 26 / iOS 26**, developed on Apple Silicon. **Use-case: daily coding** — running a shell + **Claude Code** remotely. NOT game-streaming. (Docs 01–11 were written under the old screen-sharing/video assumption → they are now **reference for the GUI video-path** or **superseded** — see [README](README.md).)
+A remote-coding app for Apple platforms (macOS host, macOS + iOS/iPadOS client), native Swift/SwiftUI; build floor macOS 26 / iOS 26, developed on Apple Silicon. The use-case is daily coding — running a shell and Claude Code on a remote machine and driving it from another device. Not game-streaming.
 
-## 2. Architecture: 3 data paths
+The client presents one infinite canvas of panes. A pane is either a **terminal** (a host PTY streamed over TCP and rendered by libghostty — pixel-perfect text) or a **GUI window** (a single host window captured and streamed as HEVC over UDP). Both are first-class and you mix them on the same canvas; the transport is chosen per pane by what the content needs. (Docs 01–11 were written when "every window goes over video" was the only plan, so they now read as the **GUI video-path design depth** or **superseded** — see [README](README.md). The terminal path that was once called "primary" and the GUI path once called "Phase 4" are both shipped and co-equal.)
+
+## 2. Architecture: two pane transports + a companion
+
+The canvas holds panes; each pane streams over the transport its content needs (terminal
+text over TCP, GUI video over UDP), and the inspector runs alongside as a read-only
+companion. Three independent transports, sharing no sockets, message set, or version.
 
 ```
 ┌───────────── HOST (macOS, non-sandboxed) ─────────────┐
-│  (1) TERMINAL PATH (primary)                          │
+│  TERMINAL pane                                        │
 │      openpty + posix_spawn → shell / claude (PTY)     │
 │        │ raw VT byte stream                           │
-│  (3) INSPECTOR (read-only companion)                  │
-│      tail JSONL transcript + hooks → typed events     │
-│  (2) GUI VIDEO PATH (secondary)                       │
+│  GUI-WINDOW pane                                      │
 │      ScreenCaptureKit → VideoToolbox HEVC 4:2:0       │
+│  INSPECTOR (read-only companion)                      │
+│      tail JSONL transcript + hooks → typed events     │
 └───────│──────────────│─────────────────│──────────────┘
-        │ TCP          │ NWConn #2       │ UDP   (over a trusted private mesh, e.g. WireGuard)
+        │ TCP          │ UDP             │ NWConn #2   (over a trusted private mesh, e.g. WireGuard)
 ┌───────▼──────────────▼─────────────────▼──────────────┐
-│  CLIENT (macOS / iOS / iPadOS)                        │
-│  (1) libghostty surface (full TUI render) ← sends keys│
-│  (3) SwiftUI read-only views (tool cards / subagent / │
+│  CLIENT (macOS / iOS / iPadOS) — one infinite canvas  │
+│  libghostty surface (full TUI render) ← sends keys    │
+│  VTDecompression → Metal (GUI window video) ← input   │
+│  SwiftUI read-only views (tool cards / subagent /     │
 │      todos / workflow / CoT-placeholder)              │
-│  (2) VTDecompression → Metal (GUI window video)       │
 └───────────────────────────────────────────────────────┘
 ```
 
-- **(1) Terminal path (PRIMARY)** — full TUI fidelity. Host PTY ([12], [02]) → **plain TCP** (on a trusted private network) → **libghostty** client renderer ([12 §renderer]). This is the core.
-- **(3) Read-only inspector (DIFFERENTIATOR)** — a companion for viewing things that are hard to read in scrollback (subagent content, tool I/O, todos, workflow). Data = **tailing the Claude Code JSONL transcript** + hooks → events over a **second NWConnection**. Read-only, so it avoids all the costs of driving the agent. ([16])
-- **(2) GUI video path (secondary)** — only for GUI windows (VS Code/Xcode...). ScreenCaptureKit → VideoToolbox HEVC over plain UDP, with FEC + ABR/congestion control + client-side cursor + LTR recovery. ([01], [02], [04], [09])
+- **Terminal panes** — full TUI fidelity, pixel-perfect text. Host PTY ([12], [02]) → plain TCP (on a trusted private network) → libghostty client renderer ([12 §renderer]).
+- **GUI-window panes** — a single host window (VS Code, Xcode, a browser…). ScreenCaptureKit → VideoToolbox HEVC over plain UDP, with RS-FEC, ABR/congestion control, a client-side cursor, and LTR recovery; 60 fps with idle-skip. ([01], [02], [04], [09])
+- **Read-only inspector** (the differentiator) — a companion for content that is awkward to read in scrollback (subagent transcripts, tool I/O, todos, workflow). Data = tailing the Claude Code JSONL transcript + hooks → events over a second NWConnection. Read-only, so it avoids every cost of driving the agent. ([16])
 
 ### Core / shell split
-The performance-critical **core is Rust** — crate `rust/aislopdesk-core` (safe, zero-dep, `#![forbid(unsafe_code)]`): the wire codecs (terminal WireMessage + video protocol), FEC + frame reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control. It is exposed over a **C-ABI** (`rust/aislopdesk-ffi`, the only crate allowed `unsafe`; rlib + staticlib + cdylib + hand-written `aislopdesk_ffi.h`, linked through the `CAislopdeskFFI` target). The **Swift/SwiftUI apps are the platform shell** — capture (ScreenCaptureKit), HW codec (VideoToolbox), Metal, input injection, PTY spawn, UI — calling the core across that boundary. The same core is the basis for a future **Android client** over C-ABI/JNI.
+The performance-critical **core is Rust** — crate `rust/aislopdesk-core` (safe, zero-dep, `#![forbid(unsafe_code)]`): the wire codecs (terminal WireMessage + video protocol), FEC + frame reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control. It is exposed over a **C-ABI** (`rust/aislopdesk-ffi`, the only crate allowed `unsafe`; rlib + staticlib + cdylib + a cbindgen-generated `aislopdesk_ffi.h`, linked through the `CAislopdeskFFI` target). The **Swift/SwiftUI apps are the platform shell** — capture (ScreenCaptureKit), HW codec (VideoToolbox), Metal, input injection, PTY spawn, UI — calling the core across that boundary. The same core is the basis for a future **Android client** over C-ABI/JNI.
 
 ## 3. Major decisions (summary — details in [DECISIONS.md](DECISIONS.md))
 
@@ -54,21 +60,30 @@ The performance-critical **core is Rust** — crate `rust/aislopdesk-core` (safe
 | External input box | **A** (shell input box + block) **+ B1** (Claude Code keeps its TUI + overlay compose-box→PTY); structured view = read-only inspector [16] | [14] |
 | Inspector | **Read-only**, data = JSONL transcript + hooks; **CoT = placeholder-only** | [16] |
 | Codec (GUI path) | **HEVC Main 8-bit 4:2:0** + constant-quality (Apple Silicon); 10-bit optional. 4:4:4 dropped; AV1/VVC have no HW encode | [09] |
+| FEC (GUI path) | **Reed–Solomon over GF(2⁸)** (NEON-accelerated), `m=1` byte-identical to the old XOR, `m≥2` multi-loss recovery | [03], [17] |
 | Native-feel TUI | **`TCP_NODELAY`** (Nagle +200ms) + dual channel + ET replay-buffer reconnect; **NO full Mosh predictor** (opaque ghostty → duplicate parser; optional glitch-caret only) | [17] |
-| Native-feel GUI | **Client-side cursor** (strip + UDP side-channel + composite at refresh → pointer=RTT) + **lossy-first→lossless-upgrade** (sharp text) + CADisplayLink pacing | [17] |
-| Latency | Terminal path = network RTT (~1–5ms LAN-direct, no vsync). GUI path target **40–80ms** (coding); 120fps/floor-<16ms **dropped** | [11], [12] |
+| Native-feel GUI | **Client-side cursor** (strip + UDP side-channel + composite at refresh → pointer=RTT) + deadline presentation pacer + adaptive playout | [17] |
+| FPS / latency | Terminal panes = network RTT (~1–5ms LAN-direct, no vsync). GUI panes run **60 fps with idle-skip** (30 fps reads as stale on scroll/motion) and target feels-local glass-to-glass; the 120fps/ProMotion/beam-racing floor-chasing from [11] stays out of scope as over-engineering for coding | [11], [12] |
 | Distribution | Host **non-sandboxed** (spawns shell + CGEvent) → Developer-ID + notarize, **outside MAS**; client viewer can be MAS | [06], [12] |
 | Orchestration (herdr/agent-teams) | **Be a client**, don't build an orchestration product | [14], [15] |
 
-## 4. Roadmap (details in [12 §Roadmap])
-**P0** ⭐ **De-risk gate** — run every architecture-defining spike BEFORE building (don't park risk into later phases). *Mostly measured already on an M1 Max/macOS 26.5* ([18 §0]): F decode 1.1ms, G ~8–10 windows, low-latency-RC 7.5ms; remaining: D cursor-strip + echo (not gating). → **P1** Terminal MVP (host PTY → TCP → libghostty) + inspector P1 (tool cards/timeline/todos) → **P2** persistence/reconnect/clipboard + subagent tree → **P3** iOS client → **P4** GUI video path → **P5** polish.
+## 4. How it was built (details in [12 §Roadmap])
+The plan ran de-risk-first: every architecture-defining spike was measured before the
+production build, not parked into a later phase. The measurements held ([18 §0]: decode
+1.1ms, ~8–10 windows/engine, low-latency-RC 7.5ms, cursor-strip clean), and every phase has
+since shipped — the terminal path, the read-only inspector, persistence/reconnect, the iOS
+client, the GUI video path, and the workspace/canvas. The dated build logs that record this,
+phase by phase, are docs 19 and 21–39 (kept as history). Remaining work is polish and the
+Android port over the C ABI.
 
-> Most of the project's risk (macOS input injection — [05]/[08] R1/R2) **applies only to the GUI video-path (P4)**; the terminal path avoids it entirely (input = bytes → PTY stdin).
+> The project's hardest risk (macOS input injection — [05]/[08] R1/R2) lives entirely on the
+> GUI-window path; terminal panes sidestep it (input = bytes → PTY stdin).
 
 ## 5. Further reading
-- ⭐ **Best-solution synthesis (lowest latency + real-machine feel, TUI & GUI)** → [17](17-native-feel-synthesis.md) — OSS/commercial research, gap-analysis, open spikes
-- ⭐ **Risk resolutions (how each risk is resolved + spike plan)** → [18](18-risk-resolutions.md) — 0 blockers; PATH 1 build-ready, PATH 2 gated on 3 light spikes
-- Implementing the terminal path (P1) → [12](12-coding-profile.md) + [13](13-network-transport.md) + [14](14-claude-code-integration.md) + [16](16-readonly-inspector.md)
+- ⭐ **Best-solution synthesis (lowest latency + real-machine feel, TUI & GUI)** → [17](17-native-feel-synthesis.md) — OSS/commercial research, gap-analysis, techniques
+- ⭐ **Risk resolutions (how each risk was resolved + measurements)** → [18](18-risk-resolutions.md)
+- Terminal panes → [12](12-coding-profile.md) + [13](13-network-transport.md) + [14](14-claude-code-integration.md) + [16](16-readonly-inspector.md)
 - Prior art (mobile/desktop apps for Claude Code) → [15](15-prior-art-happy-happier.md)
-- GUI video path (P4) → [01](01-architecture.md) + [02](02-host-capture-encode.md) + [04](04-client-decode-render.md) + [05](05-input-window-control.md) + [09](09-codec-choice.md)
+- GUI-window panes → [01](01-architecture.md) + [02](02-host-capture-encode.md) + [04](04-client-decode-render.md) + [05](05-input-window-control.md) + [09](09-codec-choice.md)
+- Workspace / canvas → [22](22-workspace-architecture.md) + [30](30-infinite-canvas.md)
 - Latency reference (GUI path) → [10](10-latency-optimization.md) + [11](11-absolute-latency.md)

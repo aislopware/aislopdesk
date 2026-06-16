@@ -2,7 +2,7 @@
 
 > **STATUS: CURRENT.** Every still-open risk/spike was researched to a **concrete solution** (19 agents, ~1.62M tokens) then **attacked by a skeptic + verified back to primary sources**. Corpus: [research/18-risk-resolutions.json](research/18-risk-resolutions.json).
 >
-> **Conclusion: 0 blockers.** 9 risks → **SOLVED** (code pattern verified) / **MEASURED** (real numbers measured on an M1 Max — see §0) / **BOUNDED** (remaining spike, with a decision rule + fallback). 2 risks **dissolved by scope decisions** (A, I). PATH 1 is **build-ready now**; PATH 2 is code-ready, nearly all spikes done.
+> **Conclusion: 0 blockers.** 9 risks → **SOLVED** (code pattern verified) / **MEASURED** (real numbers measured on an M1 Max — see §0) / **BOUNDED** (remaining spike, with a decision rule + fallback). 2 risks **dissolved by scope decisions** (A, I). Both paths are **shipped**: PATH 1 (terminal) and PATH 2 (GUI per-window) are co-equal pane kinds.
 
 ## 0. Phase 0 — de-risk gate (resolve every risk BEFORE building production)
 
@@ -25,7 +25,7 @@
 | **H** iOS reconnect | ✅ SOLVED (source) | ET BackedWriter/Reader pattern — no hardware needed | — |
 | PATH 1 echo latency | ✅ **MEASURED** | app-level TCP single-byte round-trip over the mesh: **p50 9.2ms · p99 17.8ms** (max 139ms, 1 outlier). Feels local; **confirms NO Mosh predictor needed** | echo < ~50ms ✓ |
 
-→ **Phase 0 COMPLETE — 0 unknowns left.** EVERYTHING measured on 2 real machines (host M1 Max, client M2 Pro, macOS 26.5, P2P internet): network 11ms · PATH 1 echo 9.2ms · decode 0.9–1.1ms · encode 7ms · concurrency ~6/engine · NALU=1 · **cursor-strip PASS**. The predictor is not needed (confirmed by numbers). **No architecture-defining risk remains open. PATH 1 + PATH 2 are both safe to commit to.**
+→ **Phase 0 COMPLETE — 0 unknowns left.** EVERYTHING measured on 2 real machines (host M1 Max, client M2 Pro, macOS 26.5, P2P internet): network 11ms · PATH 1 echo 9.2ms · decode 0.9–1.1ms · encode 7ms · concurrency ~6/engine · NALU=1 · **cursor-strip PASS**. The predictor is not needed (confirmed by numbers). **No architecture-defining risk remains open. PATH 1 + PATH 2 are both shipped (co-equal pane kinds).**
 
 ## Summary table
 
@@ -43,7 +43,7 @@
 
 ---
 
-## PATH 1 risks (build-ready, no hardware needed)
+## PATH 1 risks (shipped; no hardware needed to resolve)
 
 ### C — libghostty threading (SOLVED)
 - `ghostty_surface_feed_data` / `_refresh` / `_draw` **must be called on the main thread** (confirmed by reading VVTerm source). Swift's `@MainActor` does **not** propagate to C symbols — you must ensure the call site is on main yourself.
@@ -65,7 +65,7 @@
 
 ---
 
-## PATH 2 risks (Phase 4 — code-ready, gated on 3 spikes)
+## PATH 2 risks (shipped; all architecture-defining spikes resolved)
 
 ### A — input injection (Dissolved by decision: activate-then-control)
 - Your decision: **control 1 window at a time, must focus**. → raise + focus the target window (public API: `NSRunningApplication(...).activate` + AX `kAXRaiseAction` / set `kAXFocusedWindow`), it becomes **frontmost**, then `CGEventPost(kCGHIDEventTap)` or `postToPid`. Tag `eventSourceUserData` to filter self-injection.
@@ -131,7 +131,7 @@ What remains are **implementation spikes** (not architecture de-risking), done w
 - (iOS client) re-measure decode+vsync on an A-series iPhone/iPad when a device is available (decode already PASSED on M-series; just confirming A-series).
 - app-level echo measured macOS↔macOS; re-measure on the iOS client once the app exists.
 
-> **PATH 1 + PATH 2: 0 gating spikes left → safe to build.**
+> **PATH 1 + PATH 2: 0 gating spikes left — both paths shipped.**
 
 ---
 

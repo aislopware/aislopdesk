@@ -1,14 +1,17 @@
 # Aislopdesk — design docs
 
-> Technical design docs for **Aislopdesk**, a terminal-first, low-latency remote-coding tool for
-> Apple platforms (macOS host, macOS + iOS/iPadOS clients). The performance-critical **core is
-> Rust** (`rust/aislopdesk-core`, behind a C-ABI — wire codecs, FEC, realtime controllers,
-> terminal protocol); the **shell is Swift/SwiftUI** (capture, HW codec, Metal, input, UI). Some
-> docs use the legacy codename "PaneCast".
+> Design docs for Aislopdesk, a low-latency remote-coding tool for Apple platforms (macOS
+> host, macOS + iOS/iPadOS clients). The client is an infinite canvas of panes; each pane is
+> either a terminal (host PTY → TCP → libghostty) or a live GUI window (ScreenCaptureKit →
+> VideoToolbox HEVC → UDP). Both are first-class. The performance core is Rust
+> (`rust/aislopdesk-core`, behind a C ABI — wire codecs, FEC, realtime controllers, terminal
+> protocol); the shell is Swift/SwiftUI (capture, HW codec, Metal, input, UI). Some older docs
+> use the codename "PaneCast" and frame the terminal as the only path — that split has since
+> been levelled (see [00-overview.md](00-overview.md)).
 >
-> 👉 **Read first: [00-overview.md](00-overview.md)** (architecture + every binding decision)
-> · **Decision log: [DECISIONS.md](DECISIONS.md)**
-> · **Rust core: [`rust/README.md`](../rust/README.md)** (codecs / FEC / controllers / terminal protocol behind the C-ABI)
+> Read first: [00-overview.md](00-overview.md) (architecture + every binding decision)
+> · Decision log: [DECISIONS.md](DECISIONS.md)
+> · Rust core: [`rust/README.md`](../rust/README.md) (codecs / FEC / controllers / terminal protocol behind the C ABI)
 
 ## Scope (settled)
 
@@ -16,18 +19,20 @@
 |------|----------|
 | **Host** | macOS 26+ (Apple Silicon), **non-sandboxed** (spawns shells + CGEvent) |
 | **Client** | macOS + iOS/iPadOS, native Swift/SwiftUI |
-| **Use case** | **Everyday coding** (shell + Claude Code) — NOT game streaming |
-| **Network** | Plain **TCP** (terminal) + **UDP** (video), **no app-layer crypto/auth**. Assumes a **trusted private network** — typically a WireGuard mesh (e.g. NetBird/Tailscale) supplying encryption + node auth; the security boundary is the network. [13](13-network-transport.md) |
-| **Data paths** | **(1) Terminal (primary):** host PTY → TCP → libghostty client. **(2) GUI video (secondary):** ScreenCaptureKit + VideoToolbox HEVC, FEC + ABR, per-window UDP. **(3) Inspector:** read-only Claude Code transcript tail |
-| **Control** | Terminal: input bytes → PTY stdin (no input injection). GUI window: activate-then-control + CGEvent |
+| **Use case** | Everyday coding (shell + Claude Code), not game streaming |
+| **Network** | Plain TCP (terminal) + UDP (video), no app-layer crypto/auth. Assumes a trusted private network, typically a WireGuard mesh (e.g. NetBird/Tailscale) supplying encryption + node auth; the security boundary is the network. [13](13-network-transport.md) |
+| **Data paths** | Two first-class pane transports plus a companion: **(1) Terminal:** host PTY → TCP → libghostty client. **(2) GUI window:** ScreenCaptureKit + VideoToolbox HEVC, RS-FEC + ABR + LTR, per-window UDP, 60 fps default. **(3) Inspector:** read-only Claude Code transcript tail |
+| **Control** | Terminal: input bytes → PTY stdin (no injection). GUI window: activate-then-control + CGEvent |
 
 Non-functional profile (coding, not gaming): terminal text is pixel-perfect by construction
-(PTY → libghostty, never through a codec); input responsiveness matters but ~40–80 ms
-motion-to-photon is acceptable; fps is not a goal (mostly-static screens).
+(PTY → libghostty, never through a codec); the GUI path targets feels-local responsiveness
+and runs at 60 fps by default because 30 fps reads as noticeably stale on scroll and motion.
+This is a coding tool, so it idle-skips when the screen is static rather than burning a fixed
+frame budget — high fps when there is motion, ~0 bandwidth when there isn't.
 
 ## Document index
 
-> **Status:** `CURRENT` = current architecture · `REFERENCE` = GUI video path (secondary)
+> **Status:** `CURRENT` = current architecture · `REFERENCE` = GUI video path design depth
 > · `SUPERSEDED` = kept as history.
 
 ### Read first
@@ -47,7 +52,7 @@ motion-to-photon is acceptable; fps is not a goal (mostly-static screens).
 | 17 | [17-native-feel-synthesis.md](17-native-feel-synthesis.md) | **Best-solution synthesis** from prior art (Mosh/ET/Parsec/Moonlight/Xpra…): native-feel techniques + gap analysis |
 | 18 | [18-risk-resolutions.md](18-risk-resolutions.md) | **Risk resolutions** — verified solutions for 9 risks/spikes (threading, mapping, encoders, reconnect, security) |
 
-### REFERENCE — GUI video path (secondary)
+### REFERENCE — GUI video path (design depth)
 | # | File | Contents |
 |---|------|----------|
 | 01 | [01-architecture.md](01-architecture.md) | Video pipeline architecture + latency budget |
@@ -95,9 +100,10 @@ motion-to-photon is acceptable; fps is not a goal (mostly-static screens).
 
 ## Reading paths by role
 - **Understand the architecture** → [00](00-overview.md) (+ [DECISIONS.md](DECISIONS.md))
-- **Terminal path (primary)** → [00](00-overview.md) → [17](17-native-feel-synthesis.md) → [18](18-risk-resolutions.md) → [12](12-coding-profile.md) → [13](13-network-transport.md) → [14](14-claude-code-integration.md) → [16](16-readonly-inspector.md)
-- **GUI video path (secondary)** → [01](01-architecture.md) + [02](02-host-capture-encode.md) + [04](04-client-decode-render.md) + [05](05-input-window-control.md) + [09](09-codec-choice.md)
+- **Terminal panes** → [00](00-overview.md) → [17](17-native-feel-synthesis.md) → [18](18-risk-resolutions.md) → [12](12-coding-profile.md) → [13](13-network-transport.md) → [14](14-claude-code-integration.md) → [16](16-readonly-inspector.md)
+- **GUI-window panes** → [01](01-architecture.md) + [02](02-host-capture-encode.md) + [04](04-client-decode-render.md) + [05](05-input-window-control.md) + [09](09-codec-choice.md)
 - **Latency work (GUI path)** → [10](10-latency-optimization.md) + [11](11-absolute-latency.md)
+- **Workspace / canvas** → [22](22-workspace-architecture.md) + [30](30-infinite-canvas.md)
 
 ## Glossary
 

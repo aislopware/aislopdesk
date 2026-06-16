@@ -2,14 +2,14 @@
 
 > **STATUS: CURRENT.** Synthesized from 7 "families" of OSS + commercial solutions to lock in the **best** design for the 2 paths, prioritizing (a) lowest latency and (b) the feel of **using a local machine**, not a remote one. Corpus: [research/17-tui-gui-best-solution.json](research/17-tui-gui-best-solution.json). Decisions are in [DECISIONS.md](DECISIONS.md); this doc is the **why + mechanics**.
 >
-> Guiding philosophy (see [00](00-overview.md)): **commit to one best choice.**
+> Guiding philosophy (see [00](00-overview.md)): **one good choice per problem** (one renderer, one structured view, one core).
 
 ## TL;DR (headline)
 
 1. **PATH 1 (terminal) is already nearly local** at a private-mesh 5–20ms RTT. Raw VT byte-stream over **plain TCP + `TCP_NODELAY`** + **libghostty external-IO** = full fidelity, no protocol round-trips. **Do NOT build a Mosh shadow-framebuffer predictor for v1** (see §2.4). Add: **dual data/control channels** + an **ET-style replay buffer** so reconnects lose no bytes.
 2. **PATH 2 (GUI per-window), the highest-value decision = client-side cursor rendering**: split the pointer out of the video, send position+bitmap over a separate UDP side-channel, composite on the client at display-refresh → **pointer latency = RTT**, fully independent of encode/decode. This is the boundary between "feels remote" and "feels local".
 3. **PATH 2 sharp text for editor windows**: **lossy-first → lossless-upgrade** (encode at quality ~0.65 and send immediately, then re-encode the dirty-rect with `kVTCompressionPropertyKey_Lossless` when idle) — both fast and pixel-perfect once the user stops to read.
-4. **PATH 2's unresolved risk** = **mapping the client's video-region coordinates → the host's window/screen** for CGEvent injection (Retina scaling + window moves). Must spike before committing to PATH 2.
+4. **PATH 2's hardest risk** was **mapping the client's video-region coordinates → the host's window/screen** for CGEvent injection (Retina scaling + window moves) — now **SOLVED** ([18 B], §3.9).
 
 ---
 
@@ -79,7 +79,7 @@ Missing any item below means it "works" but does **not** feel like a native iOS 
 
 ---
 
-## 3. PATH 2 — GUI per-window: best design (Phase 4)
+## 3. PATH 2 — GUI per-window: best design
 
 > PATH 2 is a pipeline **fully separate** from PATH 1 — don't merge the libghostty surface with video. (A negative lesson from the iOS family: libghostty only renders its own cell grid.)
 
@@ -91,7 +91,7 @@ Missing any item below means it "works" but does **not** feel like a native iOS 
 - **queueDepth — a real tension, spike it, don't lock it blindly:**
   - [11]/[12] (the 73-agent latency workflow): actual default = **8**; use **2–3** for lowest latency (each slot = 1 frame-interval of potential latency).
   - This workflow: **5** (the value Sunshine/Apple-sample proved); the claim "3 is the minimum" is unverified community inference.
-  - **Reconciliation**: 5 is the value Sunshine tuned for **60–120fps game-streaming under heavy GPU load**. Our profile = **24–30fps, 1 window, mostly idle, HW HEVC ~5–18ms** → the release budget `minimumFrameInterval × (queueDepth−1)` at depth-3/30fps = 66ms ≫ 18ms encode → **keep 2–3 for lower latency**. ⚠️ Spike under real GPU contention; if frames drop, raise to 5.
+  - **Reconciliation**: 5 is the value Sunshine tuned for **60–120fps game-streaming under heavy GPU load**. Our profile = **default 60fps with idle-skip (→ ~0 bandwidth when static), 1 window, HW HEVC ~5–18ms** → the release budget `minimumFrameInterval × (queueDepth−1)` at depth-3/60fps = 33ms ≫ 18ms encode → **keep 2–3 for lower latency**. ⚠️ Spike under real GPU contention; if frames drop, raise to 5.
 - **Release constraint (verified WWDC22 s10155)**: surfaces must be released within `minimumFrameInterval × (queueDepth−1)`; release the `CMSampleBuffer` surface **immediately** after handing the `CVPixelBuffer` to the encoder.
 
 ### 3.2 Encode: VTCompressionSession 4-flag low-latency recipe (ADD/refine)
@@ -101,7 +101,7 @@ Native `VTCompressionSession` (NOT an FFmpeg wrapper), HEVC 8-bit 4:2:0 (`kVTPro
 - **Specification keys** (set in the dict at **session creation**, not via `SetProperty` — this is the common trap):
   - `kVTVideoEncoderSpecification_EnableLowLatencyRateControl = true` — ✅ **verified valid for HEVC on Apple Silicon** (our host). (FFmpeg `videotoolboxenc.c`: `TARGET_CPU_ARM64 && AV_CODEC_ID_HEVC`.) Resolves the old doubt "is HEVC low-latency available?".
   - `kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder = true` — hard-fail instead of silently dropping to software.
-- **Property keys** (via `VTSessionSetProperty`): `RealTime=true`, `ExpectedFrameRate=30`, `PrioritizeEncodingSpeedOverQuality=true` (exactly Apple's 4-flag recipe), `AllowFrameReordering=false` (no B-frames), `MaxKeyFrameInterval=INT_MAX` (IDR on-demand).
+- **Property keys** (via `VTSessionSetProperty`): `RealTime=true`, `ExpectedFrameRate=60`, `PrioritizeEncodingSpeedOverQuality=true` (exactly Apple's 4-flag recipe), `AllowFrameReordering=false` (no B-frames), `MaxKeyFrameInterval=INT_MAX` (IDR on-demand).
 - ⚠️ **Corrections vs doc 09/DECISIONS**:
   - `MaxFrameDelayCount=0` and `AllowOpenGOP=false`, which we listed as "canonical SDK recipe", are actually **not verified as part of the SDK recipe** — harmless, but don't claim they're the Apple standard. Keep as belt-and-suspenders, mark for verification.
   - **`EnableLowLatencyRateControl` requires a target bitrate** (bitrate-based, not constant-quality). ✅ **RESOLVED by measurement ([18 §0]):** live frames use **low-latency-RC** (measured 7.5ms) — NOT constant-quality (measured 24ms, too slow). The crisp-upgrade moves to a separate **Session B** with `Quality=1.0` all-intra. Tension gone (2 sessions, one rate-controller each).
@@ -148,7 +148,7 @@ Solves the "fast vs readable" problem for coding (extending the "4:4:4 dropped, 
 
 - Drive client display from **`CADisplayLink` (VSync)**, NOT from decode completion. Empty queue → **hold the last decoded frame** (Moonlight pacer: `TIMER_SLACK ~3ms`, time-critical thread). Late frames are **skipped**, not queued → avoids latency accumulation.
 - Decode session `RealTime=true`; **`CVMetalTextureCache`** for zero-copy CVPixelBuffer→Metal; **`CAMetalLayer.maximumDrawableCount=2`** keeps display latency ~1 vsync.
-- ⚠️ Spike: measure `VTDecompressionSession` decode latency on a real Apple Silicon client — confirm **single-frame**, no silent 2-frame buffering (`RealTime=true` does **not** guarantee this) → decides whether the 30fps motion-to-photon budget holds.
+- ⚠️ Spike: measure `VTDecompressionSession` decode latency on a real Apple Silicon client — confirm **single-frame**, no silent 2-frame buffering (`RealTime=true` does **not** guarantee this) → decides whether the 60fps motion-to-photon budget holds.
 
 ### 3.8 Window-geometry metadata channel (ADD)
 
@@ -199,7 +199,7 @@ A **dedicated** metadata channel carrying window **move/resize/title** → the c
 - ADD — `TCP_NODELAY`; ET 64MB seq replay buffer (chosen over tmux); dual data/control channels; QoS USER_INTERACTIVE relay; iOS UIKit table stakes.
 
 **PATH 2**
-- KEEP — `SCContentFilter(window:)`; HEVC 8-bit 4:2:0; plain UDP; fps cap 24–30 + idle-skip; CGEvent injection (accepting Accessibility/non-sandbox/outside-MAS).
+- KEEP — `SCContentFilter(window:)`; HEVC 8-bit 4:2:0; plain UDP; default 60fps + idle-skip (→ ~0 bandwidth when static); CGEvent injection (accepting Accessibility/non-sandbox/outside-MAS).
 - CHANGE — **`EnableLowLatencyRateControl` MEASURED for HEVC on Apple Silicon** (7.5ms; CQ 24ms too slow → live = low-latency-RC, crisp = Session B). queueDepth: keep **2–3** (latency) instead of Sunshine's 5, with a spike.
 - ADD — client-side cursor (highest impact); 4-flag recipe + RequireHWEncoder + NV12 zero-copy; lossy-first→lossless-upgrade; CADisplayLink pacing; LTR+FEC instead of forced IDR; window-geometry channel; coordinate mapping as risk #1; 2–4 concurrent VTCompressionSession limit.
 
@@ -207,10 +207,10 @@ A **dedicated** metadata channel carrying window **move/resize/title** → the c
 
 ## 6. Open spikes → **mostly resolved, see [18](18-risk-resolutions.md)**
 
-The 8 spikes in the first draft have been researched to solutions + skeptic-verified ([18]): #2 threading, #3 coordinate, #7 reconnect, #8 rate-control = **SOLVED**; #5 cursor-strip, #4 decode, #6 concurrent-encoder = **BOUNDED** (spikes with decision rules). What remains is **measurement on hardware** (Phase 4, all expected to PASS):
+The 8 spikes in the first draft have been researched to solutions + skeptic-verified ([18]): #2 threading, #3 coordinate, #7 reconnect, #8 rate-control = **SOLVED**; #5 cursor-strip, #4 decode, #6 concurrent-encoder = **BOUNDED** (spikes with decision rules). What remained was **measurement on hardware** (now done — see [18 §0]):
 
 1. **Real PATH 1 echo latency on the mesh** at 5ms & 20ms RTT → decides whether a predictor is needed. *(most important for PATH 1; unresolved because it needs measurement)*
-2. **SPIKE F** decode→display p99 < 1 frame (33ms@30fps) on a real client.
+2. **SPIKE F** decode→display p99 < 1 frame (16.7ms@60fps) on a real client.
 3. **SPIKE G** N HW `VTCompressionSession`s per chip @1080p/1440p → concurrent-window bound.
 4. **SPIKE D** `showsCursor=false` cleanly strips the per-window cursor (window on-screen).
 

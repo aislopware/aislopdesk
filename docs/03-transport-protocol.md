@@ -1,6 +1,6 @@
 # 03 — Transport, Discovery & Protocol
 
-> **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path design depth.** This path is shipped and co-equal with terminal panes — the old "Phase 4 / secondary" framing is retired. Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
 Three parts: discovery (Bonjour, same-LAN only), transport (plain UDP/TCP), and the packet format. The Swift shell owns the sockets (**Network.framework**, native — no libwebrtc) and the HW codec; the **Rust core** (`rust/aislopdesk-core`, video-protocol namespace, behind the C-ABI) implements the wire codec, FEC, frame reassembly, loss handling, and the congestion/ABR controllers.
 
@@ -131,7 +131,7 @@ Recovery requests go over the **reliable control channel**. The buffer is limite
 The video path **ships FEC + ABR + congestion control** (Rust core).
 
 - **Retransmit (ARQ):** costs 1 RTT → visible stutter. Used **only on the reliable control channel**, never for video.
-- **FEC (XOR parity):** recovers loss with no added latency, at a bandwidth cost. **Adaptive tiering** (`FECScheme` + `AdaptiveFECPolicy`): low/none on a clean wired LAN (rely on drop-frame → request-recovery), ramping to ~15–20% on Wi-Fi/lossy links, scaled to loss measured over the control channel.
+- **FEC (Reed–Solomon over GF(2⁸), NEON-accelerated):** recovers loss with no added latency, at a bandwidth cost. `m=1` is byte-identical to the original XOR parity; `m≥2` recovers multi-packet loss. **Adaptive tiering** (`FECScheme` + `AdaptiveFECPolicy`): low/none on a clean wired LAN (rely on drop-frame → request-recovery), ramping to ~15–20% on Wi-Fi/lossy links, scaled to loss measured over the control channel.
 
 ### Pacing
 

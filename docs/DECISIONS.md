@@ -4,13 +4,13 @@
 > Status: ✅ decided · 🔬 needs a measurement spike · ⏸️ deferred · ❓ open.
 
 ## Philosophy
-- ✅ **Commit to one good choice.** Renderer = **libghostty** (full surface); structured view = the **read-only inspector**; **GUI fps capped ~24–30** — enough for the use case while cutting bandwidth/latency/CPU.
+- ✅ **Commit to one good choice per problem.** Renderer = **libghostty** (full surface); structured view = the **read-only inspector**; one Rust core owns the wire. No fallback paths to maintain.
 - ✅ **Phase 0 — de-risk gate BEFORE building production.** Do NOT park "could kill the architecture" unknowns in a later phase (if they break, all prior-phase work is wasted). Every architecture-defining spike runs in Phase 0; only build once it passes. **Most of Phase 0 has already been measured on M1 Max/macOS 26.5** (harness: [research/spikes/vtbench]). → [18 §0]
 
 ## Scope & architecture
 - ✅ **Use-case = everyday coding** (running Claude Code), not game-streaming. → [12]
-- ✅ **Hybrid 3-path:** terminal (primary) + read-only inspector (differentiator) + GUI video (Phase 4). → [00], [12], [16]
-- ✅ **Terminal-first:** the terminal path is the MVP; GUI video moves to Phase 4. → [12 roadmap]
+- ✅ **Unified workspace, two co-equal pane transports + a companion:** terminal panes (PTY → TCP → libghostty) and GUI-window panes (ScreenCaptureKit → HEVC → UDP) coexist on one infinite canvas; the read-only inspector runs alongside. → [00], [12], [16], [22], [30]
+- ✅ **Terminal was built first** (simpler, sidesteps the input-injection risk layer), but the GUI video path is now shipped and equally first-class — the old "terminal-first / GUI is Phase 4" framing is retired. → [12 roadmap], [00]
 
 ## Network / transport
 - ✅ **Assume a trusted WireGuard mesh (e.g. NetBird/Tailscale), direct P2P.** Relay = degraded fallback: surface it + warn, do NOT engineer a workaround. → [13]
@@ -58,7 +58,7 @@
 - ✅ **CoT/thinking = placeholder-only** (the Opus 4.x thinking field is empty/omitted; do NOT rely on undocumented flags). → [16]
 - ⏸️ Workflow panel + agent teams inbox = deferred (research preview). → [16]
 
-## Codec (GUI video path — Phase 4)
+## Codec (GUI video path)
 - ✅ **HEVC Main 8-bit 4:2:0 + constant-quality** (Quality≈0.6, Apple Silicon). 10-bit = optional. → [09]
 - ✅ **4:4:4 dropped** (Apple HW cannot encode it); crisp text already goes through the PTY path. AV1/VVC have no HW encode → out. → [09]
 - ✅ `AllowFrameReordering=false`, infinite GOP + on-demand IDR/LTR. ⚠️ `AllowOpenGOP=false`/`MaxFrameDelayCount=0` **not yet verified as part of the canonical SDK recipe** (kept as belt-and-suspenders). → [02], [09], [17]
@@ -70,7 +70,7 @@
 ## PATH 2 native-feel (GUI video) — from [17]
 - ✅ **Client-side cursor rendering (HIGHEST impact):** `showsCursor=false` strips the cursor from capture; the host samples `NSEvent` ~120Hz and sends position+shape over a **separate UDP socket, <64B** (do NOT multiplex with video); the client composites a Metal quad at display-refresh → **pointer latency = RTT**. (Parsec US 9,798,436 + Moonlight + Selkies.) → [17]
 - ✅ **Concrete idle-skip:** read `SCStreamFrameInfo.status==.idle` → return immediately; heartbeat IDR ~1s. → [17]
-- ✅ **Loss recovery = LTR-refresh + XOR-parity FEC with adaptive tiering** (`FECScheme` + `AdaptiveFECPolicy`) instead of forced-IDR (needs a client→host ACK, fallback IDR 2-RTT); 4B seq-number/packet. → [17]
+- ✅ **Loss recovery = LTR-refresh + Reed–Solomon FEC with adaptive tiering** (`FECScheme` + `AdaptiveFECPolicy`) instead of forced-IDR (needs a client→host ACK, fallback IDR 2-RTT); 4B seq-number/packet. FEC is RS over GF(2⁸) (NEON-accelerated in `aislopdesk-ffi`): `m=1` is byte-identical to the original XOR parity, `m≥2` recovers multi-packet loss. → [17], [03]
 - ✅ **Client frame pacing = `CADisplayLink`/VSync** (NOT decode-completion); show-last-frame when the queue is empty; `CVMetalTextureCache` zero-copy; `CAMetalLayer.maximumDrawableCount=2`. → [17]
 - ✅ **Separate window-geometry channel** (move/resize/title) → the client repositions its `NSWindow` before the next video frame. → [17]
 - ✅ **1 `VTCompressionSession`/window**, gate `RequireHardwareAcceleratedVideoEncoder=true`. 📏 **MEASURED on 2 machines: ~6 windows 1080p@30fps / encode-engine** (M2 Pro 1 engine→~6 @184fps; M1 Max 2 engines→~8–10 @340fps; 32-session ceiling). The research claim "2–4" is WRONG. The client only decodes → encode only constrains the host role. 1–3 windows = non-issue. Query `UsingHardware` once at creation (polling = crashes mediaserverd; -12900 under low-latency); recreate on resize; retry -12905. → [18 G]
@@ -81,15 +81,15 @@
 - ✅ **Phase 0 has no gating spikes left** — every architecture-defining risk measured PASS on 2 real machines. What remains are implementation-level spikes only (alt-screen e2e, iOS A-series re-confirm). → [18 §0]
 
 ## FPS / latency
-- ✅ **Cap the GUI video-path fps at ~24–30** (not 60/120) — smooth enough for scroll/typing, cuts bandwidth + latency + CPU. `minimumFrameInterval = CMTime(1,30)` + idle-skip (near-zero when static). → [12], [09]
-- 🔬 **queueDepth = unresolved tension:** [11]/[12] use **2–3** (lowest latency; the actual default=8); [17] notes Sunshine uses **5** (prevents dropped frames when the GPU is heavily loaded at 60–120fps). Our profile (24–30fps, 1 window, idle, HW HEVC ~5–18ms) → **keep 2–3**, spike under real contention. → [17], [11]
+- ✅ **GUI video-path runs at 60 fps with idle-skip** (default; `--fps` knob). The earlier "cap at ~24–30" decision was reversed once the pipeline was smooth end to end: 30 fps reads as visibly stale on scroll and motion (Parsec-class smoothness was the target). Idle-skip keeps bandwidth near zero when the screen is static, so high fps costs nothing on a still screen. → [12], [09]
+- ✅ **queueDepth resolved to a small jitter buffer with an adaptive 1↔2 depth pacer** (`pacer_depth_policy`, network-late driven) + a deadline presentation pacer; not the 2–3 fixed depth the floor docs assumed. The deadline pacer (not present-on-arrival) is what closed the scroll-smoothness gap vs Parsec. → [17], [11]
 - ✅ **Terminal-path latency = network RTT** (~1–5ms LAN-direct), no vsync/encode/decode. → [13]
-- ✅ **The floor-analysis [11] applies to the GUI video path only.** Motion-to-photon <16ms / 120fps / ProMotion / beam-racing = **over-engineering for coding → DROP**. GUI path target **40–80ms**. → [11], [12]
+- ✅ **The floor-analysis [11] applies to the GUI video path only.** Chasing motion-to-photon <16ms / 120fps / ProMotion / beam-racing is over-engineering for coding and stays out of scope; the goal is feels-local at 60 fps, not a hard latency floor. → [11], [12]
 
 ## Distribution
 - ✅ **Host non-sandboxed** (spawns a shell + CGEvent for the GUI path) → Developer-ID + notarize, **outside the Mac App Store**. The client viewer can go on MAS. → [06], [12]
 
-## Input injection (GUI video path — Phase 4 only)
+## Input injection (GUI video path)
 - ✅ **Activate-then-control, ONE window at a time (must be focused).** No need to inject into background windows (which also sidesteps the R1/R2 cooperative-activation issues on macOS 14). Raise + focus the target window, then post CGEvents; tag `eventSourceUserData` to filter self-injection. → [05], [17]
 - ✅ Applies to the GUI video path only; the terminal path avoids this entirely (input = bytes → PTY stdin). → [05]
 - 🔬 Remaining = **coordinate mapping** client video-region → host window/screen (Retina + y-flip + window-move). → [17 §3.9]

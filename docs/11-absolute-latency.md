@@ -1,8 +1,8 @@
 # 11 — Absolute Latency (latency-floor research)
 
-> **STATUS: REFERENCE — GUI video-path.** Architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path latency-floor research.** This path is shipped and co-equal with terminal panes — the old "Phase 4 / secondary" framing is retired. Architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
-> ⚠️ **Scope.** This floor analysis covers ONLY the GUI video-path and is mostly **over-engineering for the coding profile** ([12](12-coding-profile.md)) — motion-to-photon <16 ms, 120 fps/ProMotion, beam-racing all **DROP**. Terminal-path latency = network RTT (~1–5 ms LAN), no vsync. **Keep the API corrections** (queueDepth default 8, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, disable AWDL, idle-skip/dirtyRects) — still valid for the GUI path.
+> ⚠️ **Scope.** This floor analysis covers ONLY the GUI video-path. The GUI path is shipped and co-equal with terminal panes; it runs at **60 fps default with idle-skip** (30 fps reads stale on scroll/motion; idle-skip drops bandwidth toward ~0 when static). The goal is **feels-local at 60 fps, not a hard sub-16 ms motion-to-photon floor** — so the extreme-floor pursuit here is mostly **over-engineering for the coding profile** ([12](12-coding-profile.md)): motion-to-photon <16 ms, 120 fps/ProMotion, beam-racing all **DROP**. Terminal-pane latency = network RTT (~1–5 ms LAN), no vsync. **Keep the API corrections** (queueDepth default 8, `AllowOpenGOP=false`, `MaxFrameDelayCount=0`, disable AWDL, idle-skip/dirtyRects) — still valid for the GUI path.
 
 > **Net-model note ([13](13-network-transport.md)).** The apps assume a trusted private network — typically a userspace-WireGuard mesh (NetBird/Tailscale as examples). Over such a tunnel DSCP is zeroed and the WG interface (utun) shows as `.other`, so `serviceClass`/DSCP marking and `requiredInterfaceType=.wiredEthernet` in this doc **do NOT apply** there.
 

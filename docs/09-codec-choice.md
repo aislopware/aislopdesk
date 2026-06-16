@@ -1,6 +1,6 @@
 # 09 — Codec Choice
 
-> **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path design depth.** This path is shipped and co-equal with terminal panes — the old "Phase 4 / secondary" framing is retired. Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
 > ⚠️ **Scope (hybrid):** text/code goes over the **PTY path — no codec, absolutely crisp** ([12](12-coding-profile.md)). The codec is **only for GUI windows**, where **HEVC 4:2:0 8-bit is sufficient**. The 4:4:4 / text-crispness problem below is therefore **not central** (no software 4:4:4 tier; 10-bit is optional). The sections below are codec background for the GUI path.
 
@@ -89,7 +89,7 @@ This matters **more** than the H.264-vs-HEVC choice:
 
 ---
 
-## 6. Bitrate ballpark — 4K, mostly-text, ~30fps cap, LAN
+## 6. Bitrate ballpark — 4K, text-heavy windows, 60 fps + idle-skip, LAN
 
 Screen content is bursty: near zero when static, large spikes on full-screen redraw/scroll. **Budget for the spike, not the average.** A LAN is not bandwidth-constrained → bias high for crisp text.
 
@@ -98,7 +98,7 @@ Screen content is bursty: near zero when static, large spikes on full-screen red
 | **H.264** | ~50–80 Mbps | 60 Mbps |
 | **HEVC (8/10-bit)** | ~30–50 Mbps | 40 Mbps |
 
-Rule of thumb: **HEVC gives equivalent text sharpness at ~60–70% of the H.264 bitrate.** On gigabit LAN: set a generous cap (HEVC 40–50, H.264 60–80 Mbps), long GOP + force IDR on detected scene change, and let the rate controller spike on full-screen changes. The average will be far below the cap because the screen is mostly static.
+Rule of thumb: **HEVC gives equivalent text sharpness at ~60–70% of the H.264 bitrate.** On gigabit LAN: set a generous cap (HEVC 40–50, H.264 60–80 Mbps), long GOP + force IDR on detected scene change, and let the rate controller spike on full-screen changes. The average stays far below the cap because idle-skip drops bandwidth toward ~0 between updates — at 60 fps the budget is paid only on motion (scroll/redraw), not held continuously.
 
 ---
 

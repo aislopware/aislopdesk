@@ -5,9 +5,11 @@
 
 > Output of the research workflow (34 agents, 6 dimensions + verify + gap-fill) for the **daily coding** use-case. This document **replaces the "every window goes over video" assumption** of the earlier docs. Raw corpus: [research/hybrid-research-corpus.json](research/hybrid-research-corpus.json).
 
+> **Framing update (shipped build).** Both paths are now **shipped and co-equal**. The client is one unified **infinite canvas of panes**; each pane is either a **terminal pane** (host PTY → TCP → libghostty, pixel-perfect text) or a **GUI-window pane** (ScreenCaptureKit → VideoToolbox HEVC → UDP). They are routed **per pane by content**, not as a primary/fallback split. The historical "terminal-first, video is the fallback / Phase 4" framing below is preserved as the *original reasoning* for why the terminal path was built first — read those parts as history; the GUI video path it called "later / pushed back" has since shipped and is first-class.
+
 ## TL;DR — architecture decision
 
-The app splits into **two separate data paths**, routed per window/feature:
+The app splits into **two data paths**, surfaced as **co-equal panes on one infinite canvas** and routed per pane by content (terminal panes for shells/TUIs, GUI-window panes for GUI apps) — both shipped:
 
 | | **Terminal text-path** (like SSH/mosh) | **GUI video-path** |
 |--|---|---|
@@ -17,9 +19,9 @@ The app splits into **two separate data paths**, routed per window/feature:
 | Input | **bytes → PTY stdin** | CGEvent/Accessibility inject |
 | Idle bandwidth | ~0 | ~0 (skip `.idle`) |
 
-⭐ **Biggest insight:** the terminal path **completely bypasses macOS's input-injection problem** (no CGEvent, no TCC Accessibility, no activate-then-control, no AXUIElement mapping) — input is just bytes written to the PTY. → This is why we **build the terminal path FIRST**: simpler, crisper, and it cleanly sidesteps the project's biggest risk layer (R1/R2 in [08](08-risks-open-questions.md)).
+⭐ **Biggest insight:** the terminal path **completely bypasses macOS's input-injection problem** (no CGEvent, no TCC Accessibility, no activate-then-control, no AXUIElement mapping) — input is just bytes written to the PTY. → This is why the terminal path **was built first**: simpler, crisper, and it cleanly sidesteps the project's biggest risk layer (R1/R2 in [08](08-risks-open-questions.md)). It is also why GUI-window panes are now the *only* place input-injection complexity lives — the terminal pane never injects.
 
-> Prior-art lesson: VS Code Remote, JetBrains Gateway (dropped Projector pixel-streaming), Blink Shell — **nobody pixel-mirrors the code path**; semantic/text streaming wins. Pixels are only a fallback for GUI windows.
+> Prior-art lesson: VS Code Remote, JetBrains Gateway (dropped Projector pixel-streaming), Blink Shell — **nobody pixel-mirrors the code path**; semantic/text streaming wins. This is exactly why **terminal panes render text via PTY+libghostty rather than video** — it is a content-routing choice, not a verdict that the GUI path is inferior. Pixels are how GUI-window panes (apps with no semantic alternative) are streamed.
 
 > **Implementation note (current build).** The performance-critical core — both wire codecs (terminal WireMessage + the video protocol), FEC + frame reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control — lives in the Rust crate `rust/aislopdesk-core` (safe Rust, zero runtime deps, `#![forbid(unsafe_code)]`), exposed over a C-ABI (`rust/aislopdesk-ffi`, header `aislopdesk_ffi.h`, linked via the `CAislopdeskFFI` target). The Swift/SwiftUI apps are the platform shell (ScreenCaptureKit capture, VideoToolbox codec, Metal render, input injection, PTY spawn, UI) and call the core through that boundary; the same core backs a future Android client over C-ABI/JNI. Platform floor: macOS 26 / iOS 26 (Apple Silicon). The design rationale below still holds — read "we build X" as "the shell wires X to the Rust core."
 
@@ -34,7 +36,7 @@ The app splits into **two separate data paths**, routed per window/feature:
 
 ### 1. Two paths, one central insight
 
-Every successful remote-coding tool converges on the same observation: **semantic/text streaming beats pixel streaming for the code path, and pixel streaming is kept only as a fallback for GUI windows** where no semantic option exists. JetBrains abandoned Projector (serializing AWT draw commands over WebSocket) in favor of the thin-client RD protocol because streaming draw commands still has higher latency than a dedicated semantic protocol (JetBrains says it outright: Projector has "higher UI latency and significantly more network bandwidth"). The best iPad→Mac setup today pairs Blink Shell (mosh/SSH) for the text path with VS Code Server (Remote Tunnels / code-server) for the IDE path — **neither side pixel-mirrors** ([JetBrains Gateway blog](https://blog.jetbrains.com/blog/2021/12/03/dive-into-jetbrains-gateway/), [blink.sh](https://blink.sh/), [code.visualstudio.com/docs/remote/vscode-server](https://code.visualstudio.com/docs/remote/vscode-server)).
+Every successful remote-coding tool converges on the same observation: **semantic/text streaming beats pixel streaming for the code path, so the code (shell/TUI) goes through a text path while GUI windows** — where no semantic option exists — **are pixel-streamed.** That routing decision is content-driven (which path fits the pane), not a ranking of one path above the other. JetBrains abandoned Projector (serializing AWT draw commands over WebSocket) in favor of the thin-client RD protocol because streaming draw commands still has higher latency than a dedicated semantic protocol (JetBrains says it outright: Projector has "higher UI latency and significantly more network bandwidth"). The best iPad→Mac setup today pairs Blink Shell (mosh/SSH) for the text path with VS Code Server (Remote Tunnels / code-server) for the IDE path — **neither side pixel-mirrors** ([JetBrains Gateway blog](https://blog.jetbrains.com/blog/2021/12/03/dive-into-jetbrains-gateway/), [blink.sh](https://blink.sh/), [code.visualstudio.com/docs/remote/vscode-server](https://code.visualstudio.com/docs/remote/vscode-server)).
 
 Aislopdesk's hybrid architecture mirrors exactly that:
 
@@ -114,7 +116,7 @@ The terminal path makes all of those constraints **disappear**: a keystroke is j
 
 ### 3. Detailed data flow for each path
 
-### 3.1 TERMINAL text-path (the primary path)
+### 3.1 TERMINAL text-path (the PTY text-path)
 
 **Host PTY → byte stream → libghostty.** The host spawns a login shell in a PTY, reads the master fd (DispatchIO), and streams raw VT bytes; keystrokes are written straight to PTY stdin; resize via `TIOCSWINSZ`+SIGWINCH. **Full API details** (forkpty vs `openpty`+`posix_spawn`, DispatchIO, env vars + IUTF8, the corpus corrections) are **in Part B §"Terminal text-streaming — design" §1 below** — single source, not repeated here.
 
@@ -153,26 +155,26 @@ Use **libghostty** (the Ghostty engine) for both macOS + iOS — Ghostty-class r
 
 **Scrollback:** a raw PTY has no scrollback. Simplest is **client-side**: the libghostty surface keeps a ring buffer of lines → the server stays a **stateless byte relay**, zero cost. If replay-on-reconnect is needed, keep a server-side ring buffer of raw bytes (~1MB) — far simpler than mosh-style state sync.
 
-### 3.2 GUI video-path (fallback for GUI windows)
+### 3.2 GUI video-path (for GUI-window panes)
 
-GUI video-path = **fallback** for GUI windows (VS Code/Xcode...). **Details** (per-window capture, idle-skip `SCFrameStatus.idle`, dirtyRects, HEVC 4:2:0 constant-quality encode + caveats) are in **Part C §"GUI video path"** below + [02](02-host-capture-encode.md)/[09](09-codec-choice.md). Input injection (CGEvent/SkyLight — **this path only**) is in [05](05-input-window-control.md).
+GUI video-path = the path for **GUI-window panes** (VS Code/Xcode/browser...), co-equal with the terminal path and routed by content. **Details** (per-window capture, idle-skip `SCFrameStatus.idle`, dirtyRects, HEVC 4:2:0 constant-quality encode + caveats) are in **Part C §"GUI video path"** below + [02](02-host-capture-encode.md)/[09](09-codec-choice.md). Input injection (CGEvent/SkyLight — **this path only**) is in [05](05-input-window-control.md).
 
 ---
 
-### 4. Per-window routing: terminal-first
+### 4. Per-pane routing: terminal for shells/TUIs, GUI video for GUI windows
 
-**Recommendation: lean terminal-first.** Corpus-backed reasons:
+**Routing rule: pick the path by pane content** — terminal panes for shells/TUIs, GUI-window panes for GUI apps; both are first-class and both ship. Corpus-backed reasons the split is content-driven (not a ranking):
 
-- **Market share & workflow.** VS Code holds 75.9% of IDE share but Vim/Neovim combined are ~38% usage (Stack Overflow 2025); terminal-centric workflows (Neovim + tmux, CLI, git, build systems) **account for most daily coding** on a remote Mac. The terminal path serves this bloc directly.
-- **The terminal path is the stronger half in every respect:** sidesteps input-injection, near-zero bandwidth, text crisp by construction, clean APIs (`apple_support: native`, `difficulty: low`).
-- **The video path is the harder half:** it retains all the CGEvent/SkyLight complexity, private SPIs, distribution risk, and 4:2:0 softness.
+- **Market share & workflow.** VS Code holds 75.9% of IDE share but Vim/Neovim combined are ~38% usage (Stack Overflow 2025); terminal-centric workflows (Neovim + tmux, CLI, git, build systems) **account for most daily coding** on a remote Mac. The terminal path serves this bloc directly — which is why it was built first.
+- **Each path is the right fit for its content:** the terminal path sidesteps input-injection, near-zero bandwidth, text crisp by construction, clean APIs (`apple_support: native`, `difficulty: low`); the GUI video path is the only way to surface a GUI app (VS Code, Xcode, browser) where no semantic protocol exists.
+- **The video path carries more machinery:** CGEvent/SkyLight injection, private SPIs, distribution risk, and 4:2:0 softness — all isolated to GUI-window panes, so the terminal pane never pays that cost.
 
-**Proposed ship order:**
+**How the two were brought up (history → now both shipped):**
 
-1. **v1 — PTY shell first.** Low risk, clean APIs, tiny bandwidth. One `NWConnection` TCP byte relay + 1-byte-type framing.
-2. **v2 — video mirroring as a secondary "mirror this window" feature**, started on demand via a window picker (like the `SCShareableContent` list — the safest & most explicit approach). Accept the CGEvent limitations, with a transparent fallback for non-terminal windows.
+1. **Terminal panes shipped first.** Low risk, clean APIs, tiny bandwidth. One `NWConnection` TCP byte relay + 1-byte-type framing.
+2. **GUI-window panes (the "mirror this window" path) then shipped as co-equal**, started on demand via a window picker (like the `SCShareableContent` list — the safest & most explicit approach). The CGEvent limitations are accepted within GUI-window panes; non-GUI content stays on the terminal path.
 
-**How the user activates it** (open question, proposed direction): picking from a window picker is the safest & clearest option; avoid auto-detecting windows, because classifying "is this a terminal or a GUI editor" has no reliable API. The **terminal embedded in a GUI** case (VS Code's integrated terminal, Xcode console) is an open question — don't try to split it out; leave it inside that window's video path.
+**How the user activates a GUI-window pane:** picking from a window picker is the safest & clearest option; avoid auto-detecting windows, because classifying "is this a terminal or a GUI editor" has no reliable API. The **terminal embedded in a GUI** case (VS Code's integrated terminal, Xcode console) is an open question — don't try to split it out; leave it inside that window's GUI-window pane.
 
 ---
 
@@ -212,19 +214,19 @@ payload bytes (raw PTY data / {cols,rows} for resize)
 | Difficulty / risk | low / native | medium / private SPI |
 | Key library | **libghostty** (full surface, self-owned patch) + host PTY bridge | ScreenCaptureKit + VideoToolbox |
 
-**Work for Phase 1 (terminal-first):**
-- [ ] Non-sandboxed host helper: `openpty()` + `posix_spawn(POSIX_SPAWN_SETSID)` + `login_tty()`, env setup (`TERM`/`LANG`/`IUTF8`), `DispatchIO` read loop, `TIOCSWINSZ` resize.
-- [ ] Wire protocol: 1-byte type + 4-byte length over `NWConnection` TCP; separate resize message.
-- [ ] Client: **libghostty** full surface — **self-maintained external-backend patch** (ref `daiimus/ghostty` External.zig), build `GhosttyKit.xcframework` (zig), vendor + pin upstream SHA; `ghostty_surface_feed_data` ← network, write-callback → host PTY stdin, resize → surface API.
-- [ ] Confirm via prototype: **no** CGEvent/Accessibility call anywhere in the client key path.
-- [ ] (v2) Window picker to choose a GUI window → activate the video path on demand.
+**Work that shipped the terminal panes (built first):**
+- [x] Non-sandboxed host helper: `openpty()` + `posix_spawn(POSIX_SPAWN_SETSID)` + `login_tty()`, env setup (`TERM`/`LANG`/`IUTF8`), `DispatchIO` read loop, `TIOCSWINSZ` resize.
+- [x] Wire protocol: 1-byte type + 4-byte length over `NWConnection` TCP; separate resize message.
+- [x] Client: **libghostty** full surface — **self-maintained external-backend patch** (ref `daiimus/ghostty` External.zig), build `GhosttyKit.xcframework` (zig), vendor + pin upstream SHA; `ghostty_surface_feed_data` ← network, write-callback → host PTY stdin, resize → surface API.
+- [x] Confirm via prototype: **no** CGEvent/Accessibility call anywhere in the client key path.
+- [x] (now shipped, co-equal) Window picker to choose a GUI window → open a GUI-window pane on demand.
 
 ---
 
 
 ## Terminal text-streaming (SSH/mosh-class) — design
 
-This is the **stronger half** of the hybrid architecture. Unlike the GUI window path (ScreenCaptureKit → HEVC → CGEvent inject), the terminal path **owns the shell** like `ssh`/`mosh`: the host spawns a login shell in a POSIX pseudo-terminal, streams the **raw byte stream** (VT escape sequences) to the client, and keystrokes are written **straight to PTY stdin**. The biggest architectural consequence: this path **entirely sidesteps macOS's CGEvent/Accessibility injection limits** — input is just bytes written to a file descriptor, no synthetic keyboard events, no TCC `kTCCServicePostEvent`, no activate-then-control. Text is crisp by construction, bandwidth is tiny (idle = 0 bytes), no codec artifacts.
+This is the **terminal half** of the hybrid architecture — co-equal with the GUI-window path, just routed for different content. Unlike the GUI window path (ScreenCaptureKit → HEVC → CGEvent inject), the terminal path **owns the shell** like `ssh`/`mosh`: the host spawns a login shell in a POSIX pseudo-terminal, streams the **raw byte stream** (VT escape sequences) to the client, and keystrokes are written **straight to PTY stdin**. The biggest architectural consequence: this path **entirely sidesteps macOS's CGEvent/Accessibility injection limits** — input is just bytes written to a file descriptor, no synthetic keyboard events, no TCC `kTCCServicePostEvent`, no activate-then-control. Text is crisp by construction, bandwidth is tiny (idle = 0 bytes), no codec artifacts.
 
 ---
 
@@ -417,9 +419,9 @@ Primary sources: [SwiftTerm Pty.swift / LocalProcess.swift / Terminal.swift / Ap
 
 ## GUI video path (4:2:0 is good enough) — simplified
 
-> Re-scope: the "text crispness" requirement has been **dropped** for the video path. Every GUI window (VS Code, Xcode, browser...) goes through **ScreenCaptureKit → VideoToolbox HEVC 4:2:0 → Network.framework → decode → Metal**. The terminal path (PTY text) carries all of the most demanding text, so the video codec no longer has to strain for text. This document replaces the "optimize motion-to-photon < 16ms" mindset of the earlier docs with an **idle-efficiency + encode-on-change** mindset for a mostly static screen.
+> Re-scope: the "text crispness" requirement has been **dropped** for the video path. Every GUI-window pane (VS Code, Xcode, browser...) goes through **ScreenCaptureKit → VideoToolbox HEVC 4:2:0 → Network.framework → decode → Metal**. The terminal path (PTY text) carries all of the most demanding text, so the video codec no longer has to strain for text. This document replaces the "optimize motion-to-photon < 16ms" mindset of the earlier docs with an **idle-efficiency + encode-on-change** mindset: render **feels-local at 60 fps** while idle-skip keeps bandwidth near zero whenever the screen is static (which, for coding, is most of the time) — not a hard sub-16ms floor.
 
-> **Implementation note.** Over plain UDP the built video path adds **FEC** (XOR parity + adaptive tiering: `FECScheme` + `AdaptiveFECPolicy`), **adaptive bitrate / congestion control** (`LiveCongestionController` + `LiveBitratePolicy`), **LTR** loss recovery, a client-side **cursor** side-channel (strip from capture, composite client-side → pointer latency = RTT), a **window-geometry** channel, and display-refresh frame pacing. The packetization/FEC/reassembly and all of those controllers run in the Rust core (`rust/aislopdesk-core`) behind the C-ABI; the codec config below is what the Swift shell drives on top. (FEC + ABR exist *because* the link is not loss-free — they are not optional.)
+> **Implementation note.** Over plain UDP the built video path adds **FEC** (Reed–Solomon over GF(2⁸), NEON-accelerated, with adaptive tiering: `FECScheme` + `AdaptiveFECPolicy`; `m=1` is byte-identical to the old single-loss XOR parity, `m≥2` recovers multiple losses per group), **adaptive bitrate / congestion control** (`LiveCongestionController` + `LiveBitratePolicy`), **LTR** loss recovery, a client-side **cursor** side-channel (strip from capture, composite client-side → pointer latency = RTT), a **window-geometry** channel, and display-refresh frame pacing. The packetization/FEC/reassembly and all of those controllers run in the Rust core (`rust/aislopdesk-core`) behind the C-ABI; the codec config below is what the Swift shell drives on top. (FEC + ABR exist *because* the link is not loss-free — they are not optional.)
 
 ---
 
@@ -427,7 +429,7 @@ Primary sources: [SwiftTerm Pty.swift / LocalProcess.swift / Terminal.swift / Ap
 
 - **4:2:0 HEVC is good enough** for reading code in a GUI window. Luma (Y) keeps full resolution → glyph edges stay sharp; only chroma (Cb/Cr) is subsampled → slight color fringing at harsh color boundaries. With a dark theme (light text on a dark background) the fringing is even less visible. (`claim_to_verify`: "tolerable" is a subjective judgment; must be user-tested at the actual target resolution/bitrate — see §6.)
 - **4:4:4 is dropped outright**, and not out of laziness: **Apple's HW encoder has no 4:4:4 for HEVC**. The complete set of `kVTProfileLevel_HEVC_*` in the SDK (through iOS/visionOS 26, 2025) is only Main / Main10 / Main42210 / Monochrome / Monochrome10 — **no** SCC or 4:4:4 streaming profile exists. Switching codecs cannot fix it; this is a hardware limit, not a configuration choice.
-- **The levers that ACTUALLY matter now are about idle-efficiency**, not latency: `SCFrameStatus.idle` (zero encode when static) + `dirtyRects` (encode changed regions) + `minimumFrameInterval` capped at **~24–30 fps** (sufficient; cuts bandwidth/latency/CPU) + CQ. A code screen sits still most of the time → average bitrate approaches 0 when idle, bursting only on typing/scrolling/compiling.
+- **The levers that ACTUALLY matter now are about idle-efficiency**, not chasing a hard latency floor: `SCFrameStatus.idle` (zero encode when static) + `dirtyRects` (encode changed regions) + a **60 fps default** with idle-skip (30 fps reads noticeably stale on scroll/motion, so the cap is *not* lowered to save bits — idle-skip already drives bandwidth to ~0 when nothing moves) + CQ. A code screen sits still most of the time → average bitrate approaches 0 when idle, bursting only on typing/scrolling/compiling.
 
 ---
 
@@ -493,18 +495,18 @@ Impact: when only one pane changes (an autocomplete popup, build-output scroll w
 
 ---
 
-### 4. Lever #3 — variable / low fps
+### 4. Lever #3 — fps cap + idle-skip
 
-`SCStreamConfiguration.minimumFrameInterval` (CMTime) caps the frame delivery rate. **Decision: cap at ~24–30 fps** (smooth enough for scrolling/typing, cuts bandwidth/latency/CPU vs 60fps). (Apple's WWDC22 10156 even suggests 10fps for very static text — we pick 24–30 for smoother scrolling.)
+`SCStreamConfiguration.minimumFrameInterval` (CMTime) caps the frame delivery rate. **Decision: default to 60 fps** — 30 fps reads noticeably stale on scroll/motion, so fps *does* matter; idle-skip (not a low cap) is what keeps bandwidth near zero. (Apple's WWDC22 10156 even suggests 10fps for very static text, but that reads laggy the moment anything scrolls — we keep 60 and lean on idle-skip instead.)
 
 ```swift
-config.minimumFrameInterval = CMTime(value: 1, timescale: 30)   // cap ~30 fps; idle-skip keeps near-zero when static
+config.minimumFrameInterval = CMTime(value: 1, timescale: 60)   // 60 fps default; idle-skip keeps near-zero when static
 config.queueDepth = 3                                            // true default=8; use 2–3 for low latency ([11]); releases surfaces fast
 config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange  // NV12 4:2:0
 ```
 
-- The two mechanisms complement each other: **idle-skip** handles static periods; **minimumFrameInterval** caps the rate during motion.
-- For coding, **24–30 fps** is the balance point (smooth scrolling at ~half the bandwidth/CPU of 60fps). Cap 30 + idle-skip = ≤30 encodes/second when active, **0 at rest**.
+- The two mechanisms complement each other: **idle-skip** drives bandwidth to ~0 across static periods (the dominant lever for coding); **minimumFrameInterval** sets the ceiling that motion runs at — kept at 60 so scrolling/typing feels local.
+- For coding, **60 fps + idle-skip** is the balance point: it feels local on motion yet costs ~0 at rest because static frames never encode. 60 encodes/second when active, **0 at rest**.
 - `queueDepth`: a frame must be processed + released within `minimumFrameInterval × (queueDepth − 1)` seconds to avoid dropped frames. On `.idle` return immediately without holding the surface; on `.complete` submit, then release once the encoder has consumed the pixels (VideoToolbox retains internally).
 
 ---
@@ -532,7 +534,7 @@ kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration = 2.0                     
 
 **Low-latency rate control with HEVC (verdict: uncertain — do not treat it as guaranteed):**
 - `kVTVideoEncoderSpecification_EnableLowLatencyRateControl` **has empirical evidence of working with HEVC on Apple Silicon** (FFmpeg patch merged, commit d87210745e, 9/2025, gated `TARGET_CPU_ARM64`) — but **Apple has not documented** HEVC for this key; WWDC21 says "supported video codec type in this mode is H.264". The header only declares the symbol available since macOS 11.3 with no codec constraint, and does not confirm HEVC either.
-- → Under this re-scope, low-latency mode is **no longer a goal**: fps is not a goal, motion-to-photon < 16ms was dropped. It can be enabled for HEVC-on-Apple-Silicon if testing shows it is fine, but it is **no longer a load-bearing feature**. `AllowFrameReordering=false` (eliminating B-frames) already suffices for the needed input responsiveness.
+- → Under this re-scope, low-latency rate control is **no longer load-bearing**: what was dropped is chasing a hard sub-16ms motion-to-photon *floor* (and 120fps), not fps itself — fps still matters, which is why 60 is the default. It can be enabled for HEVC-on-Apple-Silicon if testing shows it is fine, but it is **not a required feature**. `AllowFrameReordering=false` (eliminating B-frames) already suffices for the needed input responsiveness.
 
 `claim_to_verify`: does `kVTCompressionPropertyKey_AllowTemporalCompression=false` (disabling inter-frame) for HEVC make VideoToolbox fall back to software encode — WWDC21 demonstrates the pattern for H.264; unverified for HEVC. Use only if every frame truly must be encoded independently.
 
@@ -554,8 +556,8 @@ Reference comparison: HEVC saves ~25–50% bitrate vs H.264 at equivalent qualit
 
 | Old mindset (10-latency-optimization, 11-absolute-latency) | New mindset (hybrid re-scope) |
 |---|---|
-| Motion-to-photon < 16ms as the top goal | **Dropped.** The code screen is mostly static; typing/cursor responsiveness is handled by the **PTY/terminal path** (bytes into PTY stdin, no CGEvent needed), not the video path |
-| High fps (60/120 ProMotion) | **Cap at ~24–30 fps** (sufficient; cuts bandwidth/latency/CPU); prioritize **idle-efficiency** + encode-on-change |
+| Motion-to-photon < 16ms as the top goal | **Hard floor dropped.** The code screen is mostly static; typing/cursor responsiveness is handled by the **PTY/terminal path** (bytes into PTY stdin, no CGEvent needed), not the video path. The GUI path targets feels-local, not a sub-16ms floor |
+| 120fps / ProMotion / beam-racing the floor | **Dropped** (120fps + beam-racing). But fps still matters: **default 60 fps** (30 reads stale on motion) + **idle-efficiency** + encode-on-change; idle-skip, not a low cap, is what saves bandwidth |
 | 4:4:4 / text sharpness as lever #1 | **4:4:4 dropped outright** (no HW support). Demanding text goes via the terminal path. 4:2:0 is good enough for GUI |
 | Low-latency rate control as load-bearing | Demoted to "nice-to-have, uncertain for HEVC". `AllowFrameReordering=false` already suffices |
 | Optimize every frame | Optimize for **most frames being idle**: the `SCFrameStatus.idle` guard + `dirtyRects` are the center of gravity |
@@ -643,33 +645,35 @@ Doc 09's TL;DR currently reads "The real text-quality ceiling is 4:2:0 chroma ..
 - **Over-engineering to mark as DROP in doc 09:**
   - §2 "Available levers" item 3 — **"Software encode 4:4:4 ultra-text tier"**: drop entirely. The 4:4:4 problem is dropped; stop optimizing for it.
   - §2 item 1 — **HEVC 10-bit (Main 10) by default "for sharper edges"**: demote to optional. The corpus confirms VideoToolbox has no HEVC-SCC (palette/intra-block-copy — claim `confirmed`: no `kVTProfileLevel_HEVC_SCC_*` exists in any SDK). For the GUI path, **HEVC Main 8-bit 4:2:0** is enough; 10-bit is a marginal tweak.
-  - **New recommendation for the GUI path:** `kVTCompressionPropertyKey_Quality = 0.6` (constant-quality, **Apple Silicon macOS ARM64 only** — FFmpeg `vtenc_qscale_enabled()` gates on `!TARGET_OS_IPHONE && TARGET_CPU_ARM64`, claim `confirmed`) + `pixelFormat = 420YpCbCr8BiPlanarVideoRange` + `minimumFrameInterval = CMTime(1, 30)` (cap ~24–30 fps — sufficient, cuts bandwidth/CPU) instead of optimizing chroma.
+  - **New recommendation for the GUI path:** `kVTCompressionPropertyKey_Quality = 0.6` (constant-quality, **Apple Silicon macOS ARM64 only** — FFmpeg `vtenc_qscale_enabled()` gates on `!TARGET_OS_IPHONE && TARGET_CPU_ARM64`, claim `confirmed`) + `pixelFormat = 420YpCbCr8BiPlanarVideoRange` + `minimumFrameInterval = CMTime(1, 60)` (default 60 fps — 30 reads stale on motion; idle-skip, not a low cap, saves the bandwidth) instead of optimizing chroma.
 - **What to change in doc 09:** rewrite the TL;DR as "the GUI window path uses HEVC 4:2:0 8-bit quality-mode; text-heavy content goes via the PTY path with no codec". Keep the codec comparison (Parsec/Moonlight wanting 4:4:4) as historical context, but note clearly "does not apply to hybrid because text moved to the terminal path".
 
 #### 3.3. [11-absolute-latency.md] + [01 §5 latency budget] — the <16ms floor / 120fps / vsync are **over-engineering**
 
 Doc 11 is the "deepest study (73 agents)" of the **absolute latency floor**: a 10–16ms floor @120fps ProMotion, the two dominant stages being capture-vsync + scanout-vsync, beam-racing, `CAMetalDisplayLink preferredFrameLatency=1`. Doc 01 §5 targets "glass-to-glass ~30–50ms, 60fps". **For the hybrid coding profile, this entire optimization layer is over-engineering to downgrade:**
 
-- **Motion-to-photon <16ms is no longer a goal.** The README already states coding tolerates 40–80ms. Therefore:
+- **The hard sub-16ms motion-to-photon floor is no longer a goal.** The README already states coding tolerates 40–80ms. Therefore:
   - **DROP**: chasing the 10–14ms floor, the 120fps/ProMotion path (doc 11's budget @120fps; doc 01 §5's "ProMotion 120Hz" note — the README already says "120fps/ProMotion: dropped").
   - **DROP**: beam-racing, `CAMetalDisplayLink preferredFrameLatency=1`, slice/sub-frame pipelining (corpus confirms "Slice / sub-frame pipelining is NOT available through the public VideoToolbox API" — `refuted`, it should have been dropped anyway).
   - **DROP for the terminal path**: the entire concept of a vsync-dominated budget. **Terminal-path latency = network RTT + PTY round-trip (~1–5ms LAN), with NO capture-vsync, no scanout coupling, no encode/decode.** All of doc 11's "compositor capture vsync + scanout vsync are the two incompressible costs" analysis **applies only to the GUI video path**.
-  - **fps is not a goal**: the corpus correction "`minimumFrameInterval` on macOS 15+ silently defaults to 1/60" is still worth knowing, but for the GUI path we deliberately set it **LOW** (10fps for text content) instead of pushing 60/120. `(1/fps)×0.9` (OBS PR#11896), not `kCMTimeZero` (refuted).
+  - **What stays: fps still matters — what's dropped is the floor and 120fps, not fps itself.** The corpus correction "`minimumFrameInterval` on macOS 15+ silently defaults to 1/60" lines up with the decision: for the GUI path the **default is 60 fps** (30 reads stale on motion; idle-skip, not a low cap, is what saves bandwidth when the screen is static). `(1/fps)×0.9` (OBS PR#11896), not `kCMTimeZero` (refuted).
 - **Keep from doc 11 (still valid, low-risk for the GUI path):** `queueDepth`'s true default is 8 (not 3), and `2` is valid for low latency; `AllowOpenGOP` defaults to true -> set `false`; `MaxFrameDelayCount=0`; **disable AWDL/`includePeerToPeer`** (causes 40–336ms spikes — important for GUI video over Wi-Fi); idle-frame skip + dirtyRects.
 - **What to change in doc 11:** add the banner "This entire floor analysis applies to the **GUI video path**. The terminal path (the default, Phase 1) has a completely different latency model: dominated by network RTT, no vsync." Demote doc 11 from "central study" to "reference for the later video phase".
-- **What to change in doc 01 §5:** split the latency budget into 2 tables: (a) **Terminal path** = keystroke -> PTY -> byte stream -> render, ~1–5ms LAN + optional local echo; (b) **GUI video path** = keep the current 6-stage table but relax the target to 40–80ms and drop the 120fps column.
+- **What to change in doc 01 §5:** split the latency budget into 2 tables: (a) **Terminal path** = keystroke -> PTY -> byte stream -> render, ~1–5ms LAN + optional local echo; (b) **GUI video path** = keep the current 6-stage table but relax the target to a feels-local 40–80ms budget **at the 60 fps default** (drop the 120fps column — fps still matters, the sub-16ms *floor* does not).
 
 ---
 
-### 4. Revised phased roadmap (overrides [07-roadmap.md])
+### 4. Phased roadmap as it played out (history — overrode [07-roadmap.md])
 
-Invert the order: **the terminal text-path is Phase 1** (simpler + higher value + dodges the hardest injection problem). The GUI video path moves to a later phase.
+> **This roadmap is now history.** The phases below describe how the project was actually sequenced: the terminal text-path was built first (simpler + higher value + dodges the hardest injection problem), and the GUI video path — the old "Phase 4" — has **since shipped and is co-equal** with the terminal path (panes on one canvas, routed by content). The ordering and rationale are preserved as the record of *why* it was built that way; they are no longer pending work.
+
+The order was inverted: **the terminal text-path was Phase 1** (simpler + higher value + dodges the hardest injection problem). The GUI video path was sequenced into a later phase — and has since shipped.
 
 ```
 Phase 1 (terminal PTY) ──▶ Phase 2 (persist+reconnect+clipboard) ──▶ Phase 3 (iOS client)
    high value, low risk        makes it "daily usable"                  device expansion
                                                                             │
-                                            Phase 4 (GUI video) ◀───────────┘  <- injection risk concentrated here
+                                            Phase 4 (GUI video) ◀───────────┘  <- injection risk concentrated here; now SHIPPED, co-equal
                                             Phase 5 (security + polish)
 ```
 
@@ -706,11 +710,11 @@ Remove the input-injection gate from its project-blocking position. New spikes:
 - [ ] **iOS UX (settled): libghostty TUI (same as desktop) + the read-only inspector [16] for a structured view.** Do NOT build SDK-driven panes (B2 dropped). The read-only inspector already provides native cards (tool/subagent/todo) without driving the agent → solves the "raw ANSI on a small screen" problem Happy/Happier raise, without losing TUI fidelity.
 - [ ] **Done:** code from an iPad over LAN, full terminal.
 
-#### Phase 4 — GUI video path (pushed back to here — where all the injection risk concentrates)
-- [ ] ScreenCaptureKit per-window + idle skip + dirtyRects + HEVC 4:2:0 8-bit quality-mode (new doc 09).
-- [ ] VideoToolbox decode + Metal render (target 40–80ms, **no** 120fps/beam-racing — doc 11 demoted).
-- [ ] Input injection for GUI windows: activate-then-control + `CGEventPostToPid` (keyboard) + SkyLight SPI (Electron mouse) — **this is the truly "hardest" part of doc 05**, now an opt-in per-window feature, not the foundation.
-- [ ] **Done:** "mirror this window" for VS Code/Xcode when GUI is needed.
+#### Phase 4 — GUI video path (sequenced here because the injection risk concentrates here — now SHIPPED & co-equal)
+- [x] ScreenCaptureKit per-window + idle skip + dirtyRects + HEVC 4:2:0 8-bit quality-mode (new doc 09).
+- [x] VideoToolbox decode + Metal render (feels-local 40–80ms at the 60 fps default, **no** 120fps/beam-racing — doc 11 demoted).
+- [x] Input injection for GUI windows: activate-then-control + `CGEventPostToPid` (keyboard) + SkyLight SPI (Electron mouse) — **this is the truly "hardest" part of doc 05**, isolated to GUI-window panes, not the foundation.
+- [x] **Done:** "mirror this window" for VS Code/Xcode/browser — a GUI-window pane co-equal with terminal panes on the canvas.
 
 #### Phase 5 — Security & polish
 - [ ] **Security = rely on the trusted private network (a WireGuard mesh, e.g. NetBird/Tailscale), do NOT encrypt at the app layer** — see [13](13-network-transport.md). WireGuard already provides E2E encryption + node auth; adding TLS/QUIC-crypto would be **redundant** (double encryption, pointless latency). → **Drop** Network.framework TLS / CryptoKit ECDH at the app layer.
@@ -720,4 +724,4 @@ Remove the input-injection gate from its project-blocking position. New spikes:
 - [ ] Hardened Runtime + Developer ID + notarization (the host helper **cannot** be sandboxed since it spawns shells — ship outside MAS).
 - [ ] ~~Speculative local echo~~ — **NOT needed.** Assume direct P2P over the mesh (~5–20ms, loss~0) → terminal = **TCP byte stream + libghostty render, no mosh/SSP, no predictive echo**. SSP's benefits only materialize when relayed, and we are **not engineering for relay** ([13 §4](13-network-transport.md)).
 
-**Why the phases were inverted (corpus summary):** the terminal path is (a) simpler than [video+injection] — just a byte stream, sidestepping input injection (the libghostty renderer is a one-time effort); (b) higher value — daily coding is terminal/Neovim/tmux/git/build, exactly what every prior-art tool (Blink, code-server, JetBrains Gateway dropping Projector) converged on: "semantic/text streaming beats pixel streaming"; (c) it dodges the hardest problem — input injection. The GUI video path is the fallback for windows with no semantic alternative, exactly where Phase 4 places it.
+**Why the phases were inverted (corpus summary, history):** the terminal path was built first because it is (a) simpler than [video+injection] — just a byte stream, sidestepping input injection (the libghostty renderer is a one-time effort); (b) higher value — daily coding is terminal/Neovim/tmux/git/build, exactly what every prior-art tool (Blink, code-server, JetBrains Gateway dropping Projector) converged on: "semantic/text streaming beats pixel streaming"; (c) it dodges the hardest problem — input injection. That same "semantic beats pixel" insight is why terminal panes still render text via PTY+libghostty rather than video — a content-routing choice. The GUI video path serves windows with no semantic alternative; it has since shipped (the old Phase 4) and is now **co-equal** with the terminal path, both surfaced as panes on one canvas.

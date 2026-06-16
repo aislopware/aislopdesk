@@ -1,8 +1,8 @@
 # 01 — Overall Architecture
 
-> **STATUS: REFERENCE — GUI video-path.** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path design depth.** This path is shipped and co-equal with terminal panes — the old "Phase 4 / secondary" framing is retired. Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
-> The product is **hybrid**: the terminal runs over the **PTY text-path** (rendered with libghostty); only **GUI windows** go over video. This doc covers the **GUI video-path**. For the overall split — and why the terminal path avoids input-injection — read **[12-coding-profile.md](12-coding-profile.md)** first.
+> The client is one unified infinite canvas of panes. A pane is either a **terminal pane** (host PTY → TCP → libghostty, pixel-perfect text) or a **GUI-window pane** (ScreenCaptureKit → VideoToolbox HEVC → UDP video) — two co-equal pane transports, both shipped. This doc covers the **GUI video-path**. For the overall split — and why the terminal transport avoids input-injection — read **[12-coding-profile.md](12-coding-profile.md)** first.
 
 ## 1. The big picture
 
@@ -44,7 +44,7 @@
 | **Window Enumerator** | Enumerate windows, let the user pick | `SCShareableContent`, `SCWindow` |
 | **Capturer** | Capture one window → `CVPixelBuffer` | `SCStream` + `SCContentFilter(desktopIndependentWindow:)` |
 | **Encoder** | HW encode HEVC (H.264 fallback), low-latency | `VTCompressionSession` |
-| **Packetizer + FEC + Transport** | Fragment NALUs → UDP datagrams + XOR parity, send | `NWConnection`, `NWListener` |
+| **Packetizer + FEC + Transport** | Fragment NALUs → UDP datagrams + Reed–Solomon GF(2⁸) parity (NEON), send | `NWConnection`, `NWListener` |
 | **Control Receiver** | Input events + keyframe/LTR requests over the reliable channel | `NWConnection` (TCP, `TCP_NODELAY`) |
 | **Window/Input Controller** | Raise the window + inject mouse/keyboard | `AXUIElement`, `CGEvent`, `CGEventPostToPid` |
 
@@ -57,7 +57,7 @@
 | **Renderer** | Low-latency display | `CAMetalLayer` or `AVSampleBufferDisplayLayer` |
 | **Input Capture** | Capture mouse/keyboard/touch → send to host | NSEvent / UIKit gestures |
 
-> The wire codec, packetization, **FEC** (XOR parity + adaptive tiering), frame reassembly, and the realtime controllers — **ABR/congestion, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, coordinate mapping** — live in the Rust core (`aislopdesk-core`, safe Rust, zero runtime deps) behind a C-ABI (`aislopdesk-ffi`, header `aislopdesk_ffi.h`). The Swift modules **AislopdeskVideoHost** (capture/encode) and **AislopdeskVideoClient** (decode/render/input) call it through the **CAislopdeskFFI** C target.
+> The wire codec, packetization, **FEC** (Reed–Solomon over GF(2⁸), NEON-accelerated — `m=1` byte-identical to the original XOR parity, `m≥2` recovers multi-packet loss; with adaptive tiering), frame reassembly, and the realtime controllers — **ABR/congestion, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, coordinate mapping** — live in the Rust core (`aislopdesk-core`, safe Rust, zero runtime deps) behind a C-ABI (`aislopdesk-ffi`, header `aislopdesk_ffi.h`). The Swift modules **AislopdeskVideoHost** (capture/encode) and **AislopdeskVideoClient** (decode/render/input) call it through the **CAislopdeskFFI** C target.
 
 ## 3. Package structure
 
@@ -86,7 +86,7 @@ aislopdesk/
 1. A window on the host changes pixels → ScreenCaptureKit emits a `CMSampleBuffer` (status `.complete`).
 2. Take the `CVPixelBuffer` + PTS → push into `VTCompressionSession`.
 3. The encoder returns NALUs (AVCC). Keyframes include parameter sets (SPS/PPS or VPS/SPS/PPS).
-4. The Rust core packetizes the frame into datagrams ≤ MTU (header: frameID, fragIndex, fragCount, flags, streamSeq) + emits XOR parity per the adaptive FEC tier.
+4. The Rust core packetizes the frame into datagrams ≤ MTU (header: frameID, fragIndex, fragCount, flags, streamSeq) + emits Reed–Solomon GF(2⁸) parity (NEON; `m=1`≡XOR, `m≥2` multi-loss) per the adaptive FEC tier.
 5. Send over `NWConnection` UDP (`serviceClass = .interactiveVideo`).
 6. The client reassembles fragments by frameID; missing fragments are recovered from FEC parity where possible, otherwise the frame is dropped and recovery is driven by LTR / a keyframe request over the control channel.
 7. Assemble NALUs → `CMSampleBuffer` (AVCC) → `VTDecompressionSession`.
@@ -95,7 +95,7 @@ aislopdesk/
 
 ## 5. Latency Budget
 
-> ⚠️ **GUI video-path only.** Terminal-path latency = network RTT (~1–5ms LAN-direct), no vsync/encode. The GUI path target is relaxed to **40–80ms** (coding use); 120fps/ProMotion dropped. The table below is the original **30–50ms / 60fps** estimate, kept as reference. See [12 §latency](12-coding-profile.md), [00](00-overview.md).
+> ⚠️ **GUI video-path only.** The terminal pane transport's latency = network RTT (~1–5ms LAN-direct), no vsync/encode. The GUI path target is **40–80ms** (coding use); 120fps/ProMotion dropped. The table below is the original **30–50ms / 60fps** estimate, kept as reference. See [12 §latency](12-coding-profile.md), [00](00-overview.md).
 
 Reference target: **glass-to-glass ~30–50ms** on wired LAN, 60fps (frame = 16.6ms).
 

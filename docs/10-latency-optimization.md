@@ -1,6 +1,6 @@
 # 10 — Latency Optimization (lessons from Parsec, Moonlight/Sunshine)
 
-> **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path design depth.** This path is shipped and co-equal with terminal panes — the old "Phase 4 / secondary" framing is retired. Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
 > ⚠️ **GUI video-path only.** The terminal path ([12](12-coding-profile.md)) has a different latency model: network RTT (~1–5ms LAN) + local echo, **no vsync/encode/decode**. Many techniques below (pacer, beam-racing) are over-engineering for the coding profile — see [12 §3.3](12-coding-profile.md).
 
@@ -73,7 +73,7 @@ Moonlight `RtpVideoQueue` + `VideoDepacketizer`:
 
 ### FEC
 - **Moonlight reference (Reed-Solomon):** `parity = ceil(data * fec%/100)`, default 20% (floor 2); per-frame host-driven (% in the frame header, client obeys); large frames split into ≤4 independently-recovering blocks; 4K uses lower FEC (5%).
-- **Built path:** XOR parity + adaptive tiering (`FECScheme` + `AdaptiveFECPolicy`, Rust core) — host-driven per-frame %, scaled to link conditions.
+- **Built path:** Reed–Solomon over GF(2⁸) (NEON) + adaptive tiering (`FECScheme` + `AdaptiveFECPolicy`, Rust core) — host-driven per-frame %, scaled to link conditions. `m=1` is wire-identical to the old XOR parity; `m≥2` recovers multi-packet loss.
 
 ### Speculative loss detection
 Predict frame loss **before** the next frame arrives — once the shard count proves recovery impossible, fire the loss-notify immediately → saves one frame-time. Self-corrects if wrong.

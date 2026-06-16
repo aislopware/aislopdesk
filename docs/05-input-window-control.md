@@ -1,8 +1,8 @@
 # 05 — Input Injection & Window Control (the HARDEST part)
 
-> **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path design depth.** This path is shipped and co-equal with terminal panes — the old "Phase 4 / secondary" framing is retired. Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
-> ⚠️ **ONLY applies to the GUI video-path.** In the hybrid architecture ([12](12-coding-profile.md)), **the terminal goes over the PTY text-path**: input = bytes → PTY stdin → **no CGEvent, no TCC Accessibility, no activate-then-control, no AXUIElement↔CGWindowID matching**. All of the injection risks below **disappear for the terminal** (the bulk of the coding workflow); they only apply when mirroring a GUI window (VS Code/Xcode) in Phase 4.
+> ⚠️ **ONLY applies to GUI-window panes.** A pane is either a terminal pane or a GUI-window pane ([12](12-coding-profile.md)); **terminal panes go over the PTY text-path**: input = bytes → PTY stdin → **no CGEvent, no TCC Accessibility, no activate-then-control, no AXUIElement↔CGWindowID matching**. All of the injection risks below **disappear for terminal panes** (which inject nothing); they only apply when mirroring a GUI window (VS Code/Xcode).
 >
 > **Correction (needs testing):** keyboard injection via `CGEventPostToPid` **is** accepted by Electron/VS Code text areas; only **mouse** is rejected by the renderer IPC (requires the SkyLight `SLEventPostToPid` private SPI).
 

@@ -1,6 +1,6 @@
 # 02 — Host: Per-Window Capture + Encode
 
-> **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path design depth.** This path is shipped and co-equal with terminal panes — the old "Phase 4 / secondary" framing is retired. Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
 Host-side pipeline (Swift platform shell): **ScreenCaptureKit (capture one window)** → **VideoToolbox (low-latency HW encode)** → NALUs handed to the Rust core (`rust/aislopdesk-core`, via the C-ABI) for packetization + FEC + ABR → transport ([03](03-transport-protocol.md)). This doc covers only the capture + encode shell.
 
@@ -45,16 +45,16 @@ let config = SCStreamConfiguration()
 config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange  // NV12 — cheapest for encode
 config.width  = Int(window.frame.width)  * scaleFactor   // scaleFactor comes from NSScreen, do NOT hardcode 2
 config.height = Int(window.frame.height) * scaleFactor
-// DECIDED: cap ~24–30fps for coding (NOT 60/120 — this is not game-streaming; [DECISIONS]/[12]/[17]).
-// MUST be set explicitly (macOS 15+ silently defaults to 1/60) — we want even LOWER (30).
-config.minimumFrameInterval = CMTimeMake(value: 1, timescale: 30)   // cap ~30fps; idle-skip takes it to ~0 when static
+// DECIDED: default 60fps (30 reads noticeably stale on scroll/motion); idle-skip keeps bandwidth ~0 when static ([DECISIONS]/[12]/[17]).
+// MUST be set explicitly (macOS 15+ silently defaults to 1/60, which happens to match).
+config.minimumFrameInterval = CMTimeMake(value: 1, timescale: 60)   // 60fps default; idle-skip takes it to ~0 when static
 config.queueDepth = 3          // real default is 8 (not 3); 2–3 for low latency (release buffers quickly)
 config.showsCursor = false   // strip the cursor → draw it client-side for instant feel (see 10 §7)
 ```
 
 > ⚠️ **scaleFactor:** no API reads the scale from `SCShareableContent` — query `NSScreen` by `displayID`. Hardcoding `×2` breaks on non-Retina external displays.
 
-> ⚠️ **minimumFrameInterval & queueDepth (from [11](11-absolute-latency.md)):** macOS 15+ silently defaults `minimumFrameInterval` to `1/60` → **set it explicitly**; we cap at **~24–30fps** (coding tool, not game-streaming — ProMotion 120 dropped). `queueDepth` really defaults to **8** (no floor of 3 — that was a CGDisplayStream mix-up) → use **2–3** for low latency, releasing the IOSurface within `minimumFrameInterval × (queueDepth−1)`.
+> ⚠️ **minimumFrameInterval & queueDepth (from [11](11-absolute-latency.md)):** macOS 15+ silently defaults `minimumFrameInterval` to `1/60` → **set it explicitly**; we default to **60fps** (30 reads noticeably stale on scroll/motion; idle-skip keeps bandwidth ~0 when static; ProMotion 120 dropped). `queueDepth` really defaults to **8** (no floor of 3 — that was a CGDisplayStream mix-up) → use **2–3** for low latency, releasing the IOSurface within `minimumFrameInterval × (queueDepth−1)`.
 
 ### 1.4 Receiving frames
 
@@ -76,7 +76,7 @@ func stream(_ stream: SCStream, didOutputSampleBuffer sb: CMSampleBuffer,
 ```
 
 **Important optimizations:**
-- `status == .idle` → no new pixels (static window). **Skip encoding entirely.** When capturing a coding window (mostly static) at the 24–30fps cap, most frames are idle → saves a lot.
+- `status == .idle` → no new pixels (static window). **Skip encoding entirely.** When a coding window sits static between bursts of motion, idle-skip drives bandwidth toward ~0 — the 60fps default only spends frames while pixels actually change.
 - `dirtyRects` → could encode only the changed regions (advanced, later).
 
 ### 1.5 Lifecycle
@@ -119,7 +119,7 @@ VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_AllowFrameReorderi
 // Infinite GOP + on-demand IDR — NO periodic timer-based keyframes (every keyframe = a useless latency spike).
 // Recovery via LTR (see 10-latency-optimization.md §1); only force an IDR when no acked LTR remains.
 VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: Int.max as CFNumber)
-VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 30 as CFNumber) // match the ~30fps capture cap
+VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber) // match the 60fps capture default
 VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_EnableLTR, value: kCFBooleanTrue) // LTR recovery — verify the symbol against the SDK
 VTSessionSetProperty(session!, key: kVTCompressionPropertyKey_AverageBitRate, value: (8_000_000/8) as CFNumber) // bytes/s!
 VTCompressionSessionPrepareToEncodeFrames(session!)

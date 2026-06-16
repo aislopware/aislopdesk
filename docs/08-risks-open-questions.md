@@ -3,7 +3,7 @@
 > **STATUS: SUPERSEDED** — design-phase risk log; most items are resolved or moot.
 > For current decisions see [DECISIONS.md](DECISIONS.md) and [00-overview.md](00-overview.md).
 
-> **R1/R2 (input injection) apply ONLY to the GUI video path.** The terminal path is primary and goes over the PTY text-path (input = bytes → PTY stdin), avoiding them entirely — see [12](12-coding-profile.md). For the terminal-first coding profile these are not project-blocking.
+> **R1/R2 (input injection) apply ONLY to GUI-window panes.** Terminal panes go over the PTY text-path (input = bytes → PTY stdin), avoiding them entirely — see [12](12-coding-profile.md). The two pane kinds are co-equal and both shipped; these risks are not project-blocking.
 
 ## 1. Technical risks
 

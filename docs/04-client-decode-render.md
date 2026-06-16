@@ -1,6 +1,6 @@
 # 04 — Client: Decode + Render
 
-> **STATUS: REFERENCE — GUI video-path (Phase 4).** Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
+> **STATUS: REFERENCE — GUI video-path design depth.** This path is shipped and co-equal with terminal panes — the old "Phase 4 / secondary" framing is retired. Current architecture: [00-overview.md](00-overview.md) · [DECISIONS.md](DECISIONS.md).
 
 Runs on **both macOS and iOS/iPadOS** (shared code). Platform floor: macOS 26 / iOS 26. Pipeline: NALU (reassembled + FEC-recovered by the Rust core) → `VTDecompressionSession` → `CVPixelBuffer` → Metal render. The Rust core hands the shell decoded-ready access units; this doc covers the Swift shell's decode + present.
 
