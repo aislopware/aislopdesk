@@ -131,12 +131,25 @@ public enum RecoveryMessage: Equatable, Sendable {
     /// RTT/loss/jitter estimate. Telemetry only — it does not change stream behaviour this phase.
     case networkStats(NetworkStatsReport)
 
+    /// NACK / selective ARQ: the client is missing specific DATA fragments of `frameID` and asks the
+    /// host to retransmit exactly those (from its send-history ring) instead of forcing a full
+    /// recovery-IDR. With the client's playout buffer ≫ RTT the retransmit lands before playout → no
+    /// stutter. Variable-length but SELF-DELIMITING (a count precedes the indices) so the
+    /// trailing-bytes rejection still holds. Capped at ``maxNackFragments`` (a larger loss escalates
+    /// to an LTR refresh / IDR instead).
+    case requestFragments(frameID: UInt32, fragIndices: [UInt16])
+
     /// Wire sentinel for "the client has not decoded any frame yet" in the
     /// `lastDecodedFrameID` field of ``requestIDR(lastDecodedFrameID:)`` /
     /// ``requestLTRRefresh(fromFrameID:toFrameID:lastDecodedFrameID:)``. Cannot collide
     /// with a real id at session start: `FramePacketizer` ids begin at 0, so 0xFFFF_FFFF
     /// is ~2³² frames (≈2.3 years at 60 fps) away across the wrap.
     public static let noFrameDecodedSentinel: UInt32 = 0xFFFF_FFFF
+
+    /// Max fragment indices a single ``requestFragments(frameID:fragIndices:)`` NACK may carry.
+    /// Mirrors the Rust `RecoveryMessage::MAX_NACK_FRAGMENTS`; a larger loss escalates to an LTR
+    /// refresh / IDR rather than a big selective retransmit.
+    public static let maxNackFragments = 64
 
     /// On-wire message-type byte.
     public var messageType: UInt8 {
@@ -146,6 +159,7 @@ public enum RecoveryMessage: Equatable, Sendable {
         case .requestIDR: 3
         case .requestCursorShape: 4
         case .networkStats: 5
+        case .requestFragments: 6
         }
     }
 
@@ -155,7 +169,32 @@ public enum RecoveryMessage: Equatable, Sendable {
     /// with the Android client over the C ABI); byte-identical to the former native codec (pinned
     /// by the golden vectors + `RecoveryMessage` round-trip tests).
     public func encode() -> Data {
-        RustVideoFFI.encode(self)
+        // The NACK is variable-length (a frag-index list) and doesn't fit the flat FFI struct, so it
+        // is encoded NATIVELY here — byte-identical to the Rust `RecoveryMessage::RequestFragments`
+        // wire (golden-pinned by `RecoveryNACKGoldenTests`). Every other variant delegates to the
+        // Rust core codec (the single source of truth) as before.
+        if case let .requestFragments(frameID, fragIndices) = self {
+            return Self.encodeRequestFragments(frameID: frameID, fragIndices: fragIndices)
+        }
+        return RustVideoFFI.encode(self)
+    }
+
+    /// Native encode of the NACK, mirroring the Rust wire: `[6][frameID BE u32][count BE u16][idx BE
+    /// u16]…`. The index list is capped at ``maxNackFragments`` (the caller bounds it; truncation
+    /// here is a defensive backstop, never the live path).
+    static func encodeRequestFragments(frameID: UInt32, fragIndices: [UInt16]) -> Data {
+        let capped = fragIndices.prefix(maxNackFragments)
+        var d = Data(capacity: 1 + 4 + 2 + capped.count * 2)
+        d.append(6)
+        var be32 = frameID.bigEndian
+        withUnsafeBytes(of: &be32) { d.append(contentsOf: $0) }
+        var count16 = UInt16(capped.count).bigEndian
+        withUnsafeBytes(of: &count16) { d.append(contentsOf: $0) }
+        for idx in capped {
+            var be = idx.bigEndian
+            withUnsafeBytes(of: &be) { d.append(contentsOf: $0) }
+        }
+        return d
     }
 
     /// Parses a recovery message. Throws ``VideoProtocolError`` on an unknown type, a short body,
@@ -168,7 +207,37 @@ public enum RecoveryMessage: Equatable, Sendable {
     /// Delegated to the Rust core (same source of truth as ``encode()``); the bounds-checked
     /// fixed-width reads + the trailing-bytes rejection live there now.
     public static func decode(_ data: Data) throws -> Self {
-        try RustVideoFFI.decodeRecovery(data)
+        // Peek the type byte: a NACK (type 6) is decoded NATIVELY (the variable-length frag list
+        // doesn't fit the flat FFI struct); everything else delegates to the Rust core decoder.
+        if data.first == 6 {
+            return try decodeRequestFragments(data)
+        }
+        return try RustVideoFFI.decodeRecovery(data)
+    }
+
+    /// Native decode of the NACK, mirroring the Rust decoder exactly: bounds-checked fixed reads, the
+    /// ``maxNackFragments`` cap, and the TRAILING-bytes rejection (load-bearing for the host's
+    /// byte-keyed dedup — the body length must equal `7 + 2 × count`).
+    static func decodeRequestFragments(_ data: Data) throws -> Self {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 1 + 4 + 2 else { throw VideoProtocolError.truncated }
+        func be32(_ o: Int) -> UInt32 {
+            (UInt32(bytes[o]) << 24) | (UInt32(bytes[o + 1]) << 16)
+                | (UInt32(bytes[o + 2]) << 8) | UInt32(bytes[o + 3])
+        }
+        func be16(_ o: Int) -> UInt16 { (UInt16(bytes[o]) << 8) | UInt16(bytes[o + 1]) }
+        let frameID = be32(1)
+        let count = Int(be16(5))
+        guard count <= maxNackFragments else {
+            throw VideoProtocolError.malformed("NACK fragment count exceeds the cap")
+        }
+        guard bytes.count == 1 + 4 + 2 + count * 2 else {
+            throw VideoProtocolError.malformed("NACK trailing/short bytes")
+        }
+        var frags = [UInt16]()
+        frags.reserveCapacity(count)
+        for i in 0..<count { frags.append(be16(7 + i * 2)) }
+        return .requestFragments(frameID: frameID, fragIndices: frags)
     }
 }
 

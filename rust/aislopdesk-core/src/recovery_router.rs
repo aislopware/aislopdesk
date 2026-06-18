@@ -62,6 +62,18 @@ pub enum Decision {
     /// client hold + jitter). The actor folds it into its network estimate and logs —
     /// MAINTAIN+LOG only, no stream-behaviour change this phase.
     NetworkStats(NetworkStatsReport),
+    /// NACK / selective ARQ: the client is missing specific DATA fragments of `frame_id` and asks
+    /// the host to retransmit them. The actor looks each up by `(frame_id, frag_index)` in its
+    /// send-history ring and re-enqueues the original datagrams on the send lane — cheaper than a
+    /// full recovery-IDR, and it arrives inside the client's playout buffer (no stutter). A lookup
+    /// miss (frame aged out of the ring) is a no-op; the client's Dropped→LTR-refresh path remains
+    /// the fallback when the retransmit-grace expires.
+    RetransmitFragments {
+        /// The frame whose fragments are missing.
+        frame_id: u32,
+        /// The 0-based DATA-fragment indices to retransmit.
+        frag_indices: Vec<u16>,
+    },
     /// Drop a malformed/undecodable datagram (a corrupt single packet must never crash the
     /// receiver — same contract as the reassembler).
     Drop {
@@ -127,6 +139,13 @@ impl RecoveryDatagramRouter {
                 Decision::ReshipCursorShape { shape_id }
             }
             RecoveryMessage::NetworkStats(report) => Decision::NetworkStats(report),
+            RecoveryMessage::RequestFragments {
+                frame_id,
+                frag_indices,
+            } => Decision::RetransmitFragments {
+                frame_id,
+                frag_indices,
+            },
         }
     }
 }
@@ -321,6 +340,27 @@ mod tests {
         assert_eq!(rx.pacer_late_frames, 4);
         assert_eq!(rx.pacer_present_gaps, 6);
         assert_eq!(rx.pacer_depth, 2);
+    }
+
+    #[test]
+    fn request_fragments_routes_to_retransmit() {
+        let msg = RecoveryMessage::RequestFragments {
+            frame_id: 7,
+            frag_indices: vec![1, 4, 9],
+        };
+        let decision = router().route(&msg.encode(), true);
+        assert_eq!(
+            decision,
+            Decision::RetransmitFragments {
+                frame_id: 7,
+                frag_indices: vec![1, 4, 9],
+            },
+        );
+        // Not streaming ⇒ ignored before decode (same guard as every other recovery message).
+        assert_eq!(
+            router().route(&msg.encode(), false),
+            Decision::IgnoreNotStreaming,
+        );
     }
 
     #[test]

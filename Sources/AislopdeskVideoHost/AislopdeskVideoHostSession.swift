@@ -261,6 +261,45 @@ public actor AislopdeskVideoHostSession {
     private static let kfDup = ProcessInfo.processInfo.environment["AISLOPDESK_KF_DUP"] != "0"
     /// Throttle so a recovery-IDR burst is not byte-amplified: duplicate at most one keyframe per interval.
     private static let kfDupMinInterval: TimeInterval = 0.25
+    /// SMALL-FRAME DUPLICATE-SEND (2026-06-18). DEFAULT OFF (`AISLOPDESK_SMALL_DUP=1`).
+    ///
+    /// A CHANGED small DELTA frame (a keystroke / caret — typically 1 fragment) can be wiped WHOLE
+    /// by a loss burst (its data AND parity fragments lost together) — FEC recovers lost fragments
+    /// *within* a frame, never a fully-lost frame. Duplicate-send it time-separated (like a keyframe)
+    /// so it survives unless BOTH copies are lost → protects typing responsiveness on a lossy WAN.
+    /// Gated on the link being CURRENTLY lossy (an elevated adaptive-`m` FEC tier, i.e. not the
+    /// relaxed CLEAN level) so an idle/static stream — every frame a tiny byte-identical delta — is
+    /// NOT doubled. Requires adaptive-m (the live WAN config); inert otherwise.
+    private static let smallDup = ProcessInfo.processInfo.environment["AISLOPDESK_SMALL_DUP"] == "1"
+    /// A frame qualifies as "small" for ``smallDup`` when its encoded byte length is at most this
+    /// (a keystroke delta is ~100–500 B / ~1 MTU; a scroll frame is KB–tens-of-KB and relies on FEC,
+    /// not duplication). Default ~1 MTU-and-a-bit so only genuine 1-fragment deltas qualify.
+    private static let smallDupMaxBytes: Int =
+        ProcessInfo.processInfo.environment["AISLOPDESK_SMALL_DUP_MAX_BYTES"].flatMap(Int.init) ?? 1400
+    /// NACK / selective-ARQ retransmit (2026-06-18). DEFAULT OFF (`AISLOPDESK_NACK=1`; deploy host +
+    /// client together). When on, the host keeps a bounded ring of recently-sent frame datagrams so a
+    /// client NACK (``RecoveryDatagramRouter/Decision/retransmitFragments(frameID:fragIndices:)``) is
+    /// answered by re-sending exactly the missing fragments — cheaper than a recovery-IDR, and with
+    /// the client's playout buffer ≫ RTT it lands before playout (no stutter). The client mirrors the
+    /// gate (its reassembler holds a FEC-unrecoverable frame for the retransmit grace + NACKs the
+    /// missing fragments). A ring miss (frame aged out) is a no-op; the LTR-refresh path is the
+    /// fallback.
+    private static let nackEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_NACK"] == "1"
+    /// Retransmit ring depth in FRAMES (~`/60`s at 60fps): the loss-detect + NACK + retransmit round
+    /// trip is a few frames, so a generous history covers it. Bounded jointly by bytes below.
+    private static let retransmitRingFrames =
+        ProcessInfo.processInfo.environment["AISLOPDESK_NACK_RING_FRAMES"].flatMap(Int.init) ?? 96
+    /// Retransmit ring byte ceiling (an IDR is large; cap total history so the ring can't bloat).
+    private static let retransmitRingMaxBytes =
+        ProcessInfo.processInfo.environment["AISLOPDESK_NACK_RING_BYTES"].flatMap(Int.init) ?? (8 << 20)
+
+    /// The NACK retransmit ring (see ``RetransmitRing``) — `nil` (no memory) unless ``nackEnabled``.
+    private var retransmitRing: RetransmitRing? = AislopdeskVideoHostSession.nackEnabled
+        ? RetransmitRing(
+            maxFrames: AislopdeskVideoHostSession.retransmitRingFrames,
+            maxBytes: AislopdeskVideoHostSession.retransmitRingMaxBytes,
+        )
+        : nil
     /// DELIVERY-KEYED RECOVERY-IDR COOLDOWN (component 2, 2026-06-11). DEFAULT **ON**;
     /// `AISLOPDESK_RECOVERY_IDR_V2=0` restores the legacy sent-keyed 500 ms capturer gate byte-for-byte
     /// (host-side only; the wire fields are unconditional and simply ignored in legacy mode). When ON,
@@ -326,6 +365,14 @@ public actor AislopdeskVideoHostSession {
     /// unrecovered losses / 65 decode-fails in 169s. `AISLOPDESK_FEC_ALLOW_OFF=1` restores the old
     /// walk to OFF; `AISLOPDESK_ADAPTIVE_FEC=0` restores the static always-g5 tier.
     private static let adaptiveFECEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_ADAPTIVE_FEC"] != "0"
+    /// ADAPTIVE-`m` ladder gate (`AISLOPDESK_ADAPTIVE_FEC_M=1`, default OFF; requires a multi-loss
+    /// codec `AISLOPDESK_FEC_M>=2`). When on, the host steps the per-frame parity multiplicity `m`
+    /// by loss (tiers 5/6/7 → m 2/3/5) instead of the group-size tier — lower overhead on a clean
+    /// link (smaller frames → less WAN airtime → fewer RTT spikes), heavier recovery on a burst.
+    /// Resolved in ``AdaptiveFECPolicy`` (the SAME gate the `wireTier` passthrough reads). The
+    /// client needs no flag (its reassembler honours the per-frame wire tier); deploy with matched
+    /// `FEC_M`.
+    private static let adaptiveMEnabled = AdaptiveFECPolicy.adaptiveMEnabled
     /// WF-6 (#8) FULL-RANGE COLOR. DEFAULT OFF; enable with `AISLOPDESK_FULL_RANGE=1`. ONE flag flips ALL
     /// FOUR atomic points together: (1) the capturer's NV12 pixel-format variant, (2) the encoder's
     /// explicit BT.709 VUI keys, (3) the `helloAck.fullRange` byte the host sends, and — because the
@@ -424,7 +471,12 @@ public actor AislopdeskVideoHostSession {
     /// report folds loss and (only when adaptive FEC is on) moves it. With no reports it never
     /// moves — inert at the safe default, never OFF. The dwell (`AdaptiveFECPolicy.relaxDwellReports`)
     /// makes relaxation require ~12s of consecutively clean reports — the 4G burst-flap fix.
-    private var fecTierState = AdaptiveFECPolicy.TierState()
+    private var fecTierState = AislopdeskVideoHostSession.adaptiveMEnabled
+        // Adaptive-m: seed at the NORMAL parity level (tier 6, m=3 = the legacy fixed baseline) so
+        // the very first frame already rides the m-ladder's tier set (5/6/7) and `wireTier` passes
+        // it through cleanly — the ladder then relaxes toward CLEAN (m2) or escalates to BURST (m5).
+        ? AdaptiveFECPolicy.TierState(tier: AdaptiveFECPolicy.parityTierNormal)
+        : AdaptiveFECPolicy.TierState()
     /// WF-8 LTR recovery bookkeeping (pure value type — no reference capture, no retain-cycle risk).
     /// Records `frameID ↔ ack-token` for emitted LTR frames and the set of tokens the client has
     /// ACKNOWLEDGED, both bounded. Only mutated when `AISLOPDESK_LTR=1`; inert (never recorded/acked) when
@@ -1057,7 +1109,22 @@ public actor AislopdeskVideoHostSession {
             // Hysteretic + one-step-clamped (anti-flap) inside the pure policy. Updated ONLY here, inside
             // a real report → it can't move before there is loss data (inert when no reports arrive).
             // No-op unless `AISLOPDESK_ADAPTIVE_FEC=1` ⇒ the tier stays at the today-default tier 0.
-            if Self.adaptiveFECEnabled {
+            if Self.adaptiveMEnabled {
+                // ADAPTIVE-m ladder: step the per-frame parity multiplicity by the folded loss
+                // (escalate immediately on a burst; relax only after the sticky-gated dwell). Same
+                // unrecovered-loss evidence feeds the sticky window. Floors at CLEAN (m2), never OFF.
+                let next = AdaptiveFECPolicy.nextParityTierState(
+                    forLossRate: networkEstimate.lossRate,
+                    state: fecTierState,
+                    sawUnrecoveredLoss: report.unrecovered > 0,
+                )
+                if next.tier != fecTierState.tier {
+                    dbg(
+                        "adaptive-fec-m: tier \(fecTierState.tier) → \(next.tier) (lossEWMA=\(String(format: "%.4f", networkEstimate.lossRate)))",
+                    )
+                }
+                fecTierState = next
+            } else if Self.adaptiveFECEnabled {
                 // FEC LADDER FLOOR + STICKY RELAX (2026-06-11): relaxation floors at g10 (tier 2,
                 // `AISLOPDESK_FEC_ALLOW_OFF=1` restores the old OFF walk) and an unrecovered-loss
                 // report doubles the relax dwell for the next sticky window — both inside the pure
@@ -1178,6 +1245,27 @@ public actor AislopdeskVideoHostSession {
             dbg(
                 "netstats rx: frames=\(report.framesReceived) fec=\(report.fecRecovered) lost=\(report.unrecovered) hostTs=\(report.latestHostSendTs) hold=\(report.clientHoldMs)ms jitter=\(report.owdJitterMicros)us → rtt=\(rttStr)ms smoothedRTT=\(smoothedStr)ms minRTT=\(minRTTStr)ms loss=\(lossStr) rising=\(rising) trend=\(trendStr) tstate=\(tstate) tdeltas=\(tdeltas) late=\(report.pacerLateFrames) gaps=\(report.pacerPresentGaps) depth=\(report.pacerDepth)",
             )
+        case let .retransmitFragments(frameID, fragIndices):
+            // NACK / selective ARQ: re-send exactly the missing fragments from the send-history ring
+            // — no IDR. Dedup the client's 3× redundant NACK copies (same byte-keyed gate as the
+            // other request paths). A ring miss (the frame aged out, or NACK is disabled host-side)
+            // is a benign no-op: the client's retransmit grace then expires and its
+            // Dropped→LTR-refresh fallback fires.
+            guard recoveryDeduper.admit(data, now: ProcessInfo.processInfo.systemUptime) else {
+                dbg("recovery dup NACK suppressed")
+                break
+            }
+            let resend = retransmitRing?.fragments(frameID: frameID, fragIndices: fragIndices) ?? []
+            if resend.isEmpty {
+                dbg("NACK frame=\(frameID) want=\(fragIndices.count): ring miss — no retransmit")
+            } else if let sendLane {
+                dbg("NACK frame=\(frameID): retransmitting \(resend.count)/\(fragIndices.count) frags")
+                sendLane.enqueue(VideoSendLane.Job(
+                    outgoings: resend,
+                    gapNanos: 0,
+                    chunkFragments: Self.paceChunkFragments,
+                ))
+            }
         case let .drop(reason):
             log.error("dropping recovery datagram: \(reason)")
         case .ignoreNotStreaming:
@@ -2104,7 +2192,11 @@ public actor AislopdeskVideoHostSession {
         // group size resolves to the codec's `k` (the Cauchy matrix has exactly k columns / clamps to
         // min(g,k), so m>1 REQUIRES group_size == k). The dynamic adaptive tiers (g2/g3/g10/OFF) are
         // NOT used when m>1. With m==1 this passes the adaptive tier through unchanged (byte-identical).
-        let adaptiveTier = Self.adaptiveFECEnabled ? fecTierState.tier : AdaptiveFECPolicy.defaultTier
+        // Read the ladder tier when EITHER ladder is active (group-size OR adaptive-m); `wireTier`
+        // then forces/passes it per the active mode (adaptive-m passes the m-tier 5/6/7 through).
+        let adaptiveTier = (Self.adaptiveFECEnabled || Self.adaptiveMEnabled)
+            ? fecTierState.tier
+            : AdaptiveFECPolicy.defaultTier
         let tier = AdaptiveFECPolicy.wireTier(adaptiveTier: adaptiveTier)
         // WF-8: if this is an LTR frame (AISLOPDESK_LTR on AND the encoder surfaced an ack token), record the
         // frameID↔token mapping (read the frameID the packetizer is ABOUT to assign, BEFORE packetize
@@ -2154,6 +2246,9 @@ public actor AislopdeskVideoHostSession {
         // RAW send path (perf): get the finished wire datagrams directly — skip the parse-into-
         // FrameFragment-then-re-encode round-trip the send never needs (byte-identical, unit-pinned by
         // PacketizeRawByteIdentityTests). ~3× fewer allocs/frame, several ms off dense IDR/kfDup bursts.
+        // NACK ring (selective ARQ): the frameID the packetizer is ABOUT to assign this frame (read
+        // BEFORE packetizeRaw increments it — the same race-free discipline as the LTR record above).
+        let ringFrameID = packetizer.peekNextFrameID
         let orderedRaw = packetizer.packetizeRaw(
             frame: avcc,
             keyframe: keyframe,
@@ -2165,6 +2260,9 @@ public actor AislopdeskVideoHostSession {
             interleave: Self.interleaveTransmit,
         )
         let outgoings = scheduler.scheduleFrameRaw(orderedRaw)
+        // Record this frame's datagrams so a later client NACK can be answered by re-sending exactly
+        // the lost fragments (nil ring unless AISLOPDESK_NACK). Keyed by frameID; bounded ring.
+        retransmitRing?.record(frameID: ringFrameID, outgoings: outgoings)
         if Self.debugStderr {
             let now = ProcessInfo.processInfo.systemUptime
             if dbgLastFrameSendAt > 0, now - dbgLastFrameSendAt > 0.028 {
@@ -2190,11 +2288,26 @@ public actor AislopdeskVideoHostSession {
                     rateMultiplier: Self.paceRateMultiplier,
                 )
                 : Self.paceGapNanos)
-            sendLane.enqueue(VideoSendLane.Job(
-                outgoings: outgoings,
-                gapNanos: gapNanos,
-                chunkFragments: Self.paceChunkFragments,
-            ))
+            // RANK-2 inline fast path (2026-06-18 input-latency): a tiny single-shot DELTA that
+            // produces NO second (dup) copy can skip the lane's Task-wakeup hop when the wire is idle
+            // — the typing-idle keystroke case, where shaving ~0.1–1 ms off input→photon is felt.
+            // `singleShot` mirrors the lane's own one-shot test, so an inlined frame goes out
+            // byte-for-byte as the lane would have sent it. Keyframes (kfDup) and loss-gated small
+            // deltas (smallDup) keep the lane: they enqueue a SECOND time-separated copy, so
+            // primary+dup must stay ordered on the one consumer. `trySendInline` returns false (→
+            // enqueue) whenever the lane is busy, so a keystroke can never overtake an earlier,
+            // still-draining frame.
+            let singleShot = gapNanos == 0 || outgoings.count <= Self.paceChunkFragments
+            let willSmallDup = Self.smallDup && !keyframe && avcc.count <= Self.smallDupMaxBytes
+                && Self.adaptiveMEnabled && fecTierState.tier != AdaptiveFECPolicy.parityTierClean
+            let inlined = singleShot && !keyframe && !willSmallDup && sendLane.trySendInline(outgoings)
+            if !inlined {
+                sendLane.enqueue(VideoSendLane.Job(
+                    outgoings: outgoings,
+                    gapNanos: gapNanos,
+                    chunkFragments: Self.paceChunkFragments,
+                ))
+            }
             // F3 keyframe DUPLICATE-SEND, lane edition: the second copy is just another in-order job
             // with a leading time-separation gap. Throttle state stays actor-owned.
             if Self.kfDup, keyframe {
@@ -2208,6 +2321,20 @@ public actor AislopdeskVideoHostSession {
                         leadingDelayNanos: Self.paceGapNanos,
                     ))
                 }
+            }
+            // SMALL-FRAME DUP (see `smallDup`): a changed small DELTA during active loss — enqueue a
+            // second time-separated copy so a burst can't wipe the whole tiny frame. Gated on the
+            // elevated adaptive-m tier so an idle/clean static stream is never doubled; keyframes are
+            // handled by kfDup above. Same dedup-by-(frameID,fragIndex) on the client → decoded once.
+            if Self.smallDup, !keyframe, avcc.count <= Self.smallDupMaxBytes,
+               Self.adaptiveMEnabled, fecTierState.tier != AdaptiveFECPolicy.parityTierClean
+            {
+                sendLane.enqueue(VideoSendLane.Job(
+                    outgoings: outgoings,
+                    gapNanos: gapNanos,
+                    chunkFragments: Self.paceChunkFragments,
+                    leadingDelayNanos: Self.paceGapNanos,
+                ))
             }
             return
         }
@@ -2226,6 +2353,14 @@ public actor AislopdeskVideoHostSession {
                 try? await Task.sleep(nanoseconds: Self.paceGapNanos) // time-separate the two copies
                 if stateMachine.mediaFlowing { await sendPaced(outgoings) }
             }
+        }
+        // SMALL-FRAME DUP (non-lane path): mirror of the lane-path gate above.
+        if Self.smallDup, !keyframe, avcc.count <= Self.smallDupMaxBytes,
+           Self.adaptiveMEnabled, fecTierState.tier != AdaptiveFECPolicy.parityTierClean,
+           stateMachine.mediaFlowing
+        {
+            try? await Task.sleep(nanoseconds: Self.paceGapNanos)
+            if stateMachine.mediaFlowing { await sendPaced(outgoings) }
         }
     }
 

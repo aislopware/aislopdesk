@@ -244,6 +244,78 @@ pub unsafe extern "C" fn aisd_reassembler_next_dropped(
     }
 }
 
+/// Enables NACK / selective ARQ on the reassembler.
+///
+/// A FEC-unrecoverable frame is then HELD pending for `retransmit_grace` frame-ids past the loss
+/// frontier (instead of being dropped at the reorder grace), and its missing-fragment request is
+/// surfaced via [`aisd_reassembler_next_needs_retransmit`] — giving a host retransmit time to arrive
+/// inside the client's playout buffer. Only losses of at most `nack_max_frags` fragments get a request
+/// (a SMALL loss; a bigger one skips to the Drop → LTR-refresh fallback). `retransmit_grace == 0`
+/// disables it (the default; byte-identical legacy drop behaviour). No-op on a null `reassembler`.
+///
+/// # Safety
+/// `reassembler`, if non-null, must be a live handle from [`aisd_reassembler_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aisd_reassembler_enable_retransmit(
+    reassembler: *mut AisdReassembler,
+    retransmit_grace: i32,
+    nack_max_frags: usize,
+) {
+    // SAFETY: a non-null `reassembler` is a live handle per the contract.
+    if let Some(r) = unsafe { reassembler.as_mut() } {
+        r.inner.enable_retransmit(retransmit_grace, nack_max_frags);
+    }
+}
+
+/// Pops the next NACK request a prior ingest's sweep queued.
+///
+/// The request names a frame that is FEC-unrecoverable but still inside the retransmit-grace window.
+/// Writes `*out_frame_id` and the missing DATA fragment indices into `out_frag_indices` (setting
+/// `*out_frag_count`); returns `1` when a request was popped, else `0` (outputs untouched). The
+/// caller drains this in a loop after each ingest, like [`aisd_reassembler_next_dropped`].
+///
+/// `out_frag_indices` must hold at least
+/// [`MAX_NACK_FRAGMENTS`](aislopdesk_core::recovery::RecoveryMessage::MAX_NACK_FRAGMENTS) `u16`s —
+/// every queued request is bounded to that, so a request that would not fit `max_frags` is dropped
+/// (returns `0`) rather than truncated. Returns `0` for a null `reassembler` or any null out-pointer.
+///
+/// # Safety
+/// `out_frame_id` / `out_frag_count` must be writable; `out_frag_indices` must point to at least
+/// `max_frags` writable `u16`s when non-null.
+#[must_use]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aisd_reassembler_next_needs_retransmit(
+    reassembler: *mut AisdReassembler,
+    out_frame_id: *mut u32,
+    out_frag_indices: *mut u16,
+    out_frag_count: *mut usize,
+    max_frags: usize,
+) -> u8 {
+    if out_frame_id.is_null() || out_frag_indices.is_null() || out_frag_count.is_null() {
+        return 0;
+    }
+    // SAFETY: a non-null `reassembler` is a live handle per the contract.
+    let Some(r) = (unsafe { reassembler.as_mut() }) else {
+        return 0;
+    };
+    let Some((frame_id, frags)) = r.inner.next_needs_retransmit() else {
+        return 0;
+    };
+    if frags.len() > max_frags {
+        // Won't fit the caller buffer (unreachable for a buffer sized to MAX_NACK_FRAGMENTS, since
+        // the core bounds every request to that) — report nothing rather than truncate.
+        return 0;
+    }
+    // SAFETY: the out-pointers are non-null per the guards; `out_frag_indices` covers `max_frags`
+    // (>= frags.len()) writable u16s per the contract (mirrors `capture_region`'s out-buffer write).
+    unsafe {
+        out_frame_id.write(frame_id);
+        out_frag_count.write(frags.len());
+        core::slice::from_raw_parts_mut(out_frag_indices, frags.len()).copy_from_slice(&frags);
+    }
+    1
+}
+
 /// Releases the owned `avcc` buffer inside an [`AisdReassemblyResult`] and resets it to empty.
 ///
 /// A convenience over [`crate::aisd_bytes_free`] that also clears the discriminant. Idempotent (a
@@ -643,6 +715,67 @@ mod tests {
             assert_eq!(view(done.avcc), frame, "reassembled frame byte-identical");
             assert_eq!(done.recovered_via_fec, 1);
             crate::aisd_bytes_free(done.avcc);
+            aisd_reassembler_free(r);
+            aisd_video_packetizer_free(p);
+        }
+    }
+
+    #[test]
+    fn ffi_retransmit_holds_and_surfaces_needs_retransmit() {
+        unsafe {
+            use super::super::packetizer::{aisd_video_packetizer_free, aisd_video_packetizer_new};
+            let k = 5usize;
+            let frame = vec![0x11u8; VideoPacketizer::MAX_PAYLOAD_SIZE * k];
+            let p = aisd_video_packetizer_new(k, 1);
+            let datagrams = ffi_packetize(p, &frame, k, false); // 5 data + 1 parity
+            let r = aisd_reassembler_new(k, 1, 2);
+            aisd_reassembler_enable_retransmit(r, 8, 8);
+            // Drop data 1 AND 3 (two holes → m=1 can't recover both).
+            for d in &datagrams {
+                let (is_parity, idx) = classify(d);
+                if !is_parity && (idx == 1 || idx == 3) {
+                    continue;
+                }
+                let _ = ffi_ingest(r, d);
+            }
+            // A newer frame advances the frontier → sweep → frame 0 HELD (not dropped) + NACK queued.
+            let next = vec![0x22u8; VideoPacketizer::MAX_PAYLOAD_SIZE];
+            for d in &ffi_packetize(p, &next, k, false) {
+                let _ = ffi_ingest(r, d);
+            }
+            let mut lost = 0u32;
+            assert_eq!(
+                aisd_reassembler_next_dropped(r, &mut lost),
+                0,
+                "held for retransmit, not dropped"
+            );
+            // The NACK request surfaces frame 0 and the two missing DATA fragment indices.
+            let mut fid = 0u32;
+            let mut frags = [0u16; 64];
+            let mut count = 0usize;
+            assert_eq!(
+                aisd_reassembler_next_needs_retransmit(
+                    r,
+                    &mut fid,
+                    frags.as_mut_ptr(),
+                    &mut count,
+                    64
+                ),
+                1
+            );
+            assert_eq!(fid, 0);
+            assert_eq!(&frags[..count], &[1u16, 3u16]);
+            assert_eq!(
+                aisd_reassembler_next_needs_retransmit(
+                    r,
+                    &mut fid,
+                    frags.as_mut_ptr(),
+                    &mut count,
+                    64
+                ),
+                0,
+                "queue drained"
+            );
             aisd_reassembler_free(r);
             aisd_video_packetizer_free(p);
         }

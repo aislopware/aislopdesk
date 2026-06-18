@@ -288,4 +288,62 @@ final class AdaptiveFECPolicyTests: XCTestCase {
         XCTAssertEqual(s.tier, 0)
         XCTAssertEqual(s.relaxStreak, 0, "dead-band hold resets the consecutive-clean streak")
     }
+
+    // MARK: - Adaptive parity-count (`m`) ladder
+
+    func testAdaptiveMGateRequiresFlagAndMultiLossCodec() {
+        // The gate is ON only with the flag AND a multi-loss codec (FEC_M >= 2).
+        XCTAssertTrue(AdaptiveFECPolicy.adaptiveMFromEnv([
+            "AISLOPDESK_ADAPTIVE_FEC_M": "1", "AISLOPDESK_FEC_M": "3",
+        ]))
+        XCTAssertFalse(
+            AdaptiveFECPolicy.adaptiveMFromEnv(["AISLOPDESK_ADAPTIVE_FEC_M": "1"]),
+            "no FEC_M ⇒ single-parity codec ⇒ tier→m table inert ⇒ gate OFF",
+        )
+        XCTAssertFalse(
+            AdaptiveFECPolicy.adaptiveMFromEnv(["AISLOPDESK_FEC_M": "3"]),
+            "flag absent ⇒ gate OFF",
+        )
+        XCTAssertFalse(AdaptiveFECPolicy.adaptiveMFromEnv([
+            "AISLOPDESK_ADAPTIVE_FEC_M": "1", "AISLOPDESK_FEC_M": "1",
+        ]), "FEC_M=1 is the single-parity codec ⇒ gate OFF")
+    }
+
+    func testParityTierConstantsMatchReservedSlots() {
+        // The m-ladder rides the three reserved tier slots (group size → k, safe for m > 1).
+        XCTAssertEqual(AdaptiveFECPolicy.parityTierClean, 5)
+        XCTAssertEqual(AdaptiveFECPolicy.parityTierNormal, 6)
+        XCTAssertEqual(AdaptiveFECPolicy.parityTierBurst, 7)
+        // All three resolve to the endpoint default group size (k), NOT a g != k tier.
+        for tier in [
+            AdaptiveFECPolicy.parityTierClean,
+            AdaptiveFECPolicy.parityTierNormal,
+            AdaptiveFECPolicy.parityTierBurst,
+        ] {
+            XCTAssertEqual(
+                AdaptiveFECPolicy.groupSize(forTier: tier, default: 5), 5,
+                "parity tier \(tier) must keep group size == k for the m>1 Cauchy code",
+            )
+        }
+    }
+
+    func testParityLadderFastAttackAndFloorsAtClean() {
+        // FAST-ATTACK: a heavy burst jumps CLEAN → BURST in ONE report (jump, not one step).
+        var s = AdaptiveFECPolicy.TierState(tier: AdaptiveFECPolicy.parityTierClean)
+        s = AdaptiveFECPolicy.nextParityTierState(forLossRate: 0.05, state: s)
+        XCTAssertEqual(s.tier, AdaptiveFECPolicy.parityTierBurst, "clean → BURST in one report")
+        // A real dropped frame floors at NORMAL even with the loss EWMA ~0 (EWMA lags a burst).
+        let d = AdaptiveFECPolicy.nextParityTierState(
+            forLossRate: 0.0,
+            state: AdaptiveFECPolicy.TierState(tier: AdaptiveFECPolicy.parityTierClean),
+            sawUnrecoveredLoss: true,
+        )
+        XCTAssertEqual(d.tier, AdaptiveFECPolicy.parityTierNormal, "unrecovered loss → ≥NORMAL")
+        // Clean link: floors at CLEAN (never relaxes to an OFF tier on this path).
+        var c = AdaptiveFECPolicy.TierState(tier: AdaptiveFECPolicy.parityTierBurst)
+        for _ in 0..<(4 * AdaptiveFECPolicy.relaxDwellReports) {
+            c = AdaptiveFECPolicy.nextParityTierState(forLossRate: 0.0, state: c)
+        }
+        XCTAssertEqual(c.tier, AdaptiveFECPolicy.parityTierClean, "CLEAN is the floor")
+    }
 }

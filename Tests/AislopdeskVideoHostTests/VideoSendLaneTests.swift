@@ -134,4 +134,85 @@ final class VideoSendLaneTests: XCTestCase {
         XCTAssertEqual(sent.count, 8)
         XCTAssertLessThan(sent[7].at - sent[0].at, 0.050, "≤chunk-size job must not pace")
     }
+
+    /// A one-shot, set-once gate used to park the lane's consumer mid-transmit deterministically.
+    private final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var consumed = false
+        /// Returns true exactly once (the first caller), false thereafter.
+        func tryConsume() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if consumed { return false }
+            consumed = true
+            return true
+        }
+
+        var isConsumed: Bool { lock.lock()
+            defer { lock.unlock() }
+            return consumed
+        }
+    }
+
+    /// RANK-2 inline fast path: an idle lane sends the datagrams SYNCHRONOUSLY on the caller's thread
+    /// (no consumer hop) and reports `true`.
+    func testTrySendInlineOnIdleLaneSendsImmediately() {
+        let recorder = SendRecorder()
+        let lane = makeLane(recorder)
+        defer { lane.close() }
+        let didInline = lane.trySendInline(outgoings(3, count: 2))
+        XCTAssertTrue(didInline, "an idle lane must inline-send")
+        // Inline is synchronous — the datagrams are already recorded with NO await.
+        XCTAssertEqual(recorder.all.map(\.bytes), [Data([3, 0]), Data([3, 1])])
+        XCTAssertTrue(recorder.all.allSatisfy { $0.channel == .video })
+    }
+
+    /// While the consumer is mid-transmit (`transmitting == true`), inline MUST bail so a keystroke
+    /// can never interleave its datagrams into / ahead of an in-flight frame.
+    func testTrySendInlineBailsWhileConsumerBusy() async {
+        let recorder = SendRecorder()
+        let gate = Gate()
+        let release = DispatchSemaphore(value: 0)
+        // The first datagram the consumer sends parks here (lane stays `transmitting`) until released.
+        let lane = VideoSendLane(send: { bytes, channel in
+            if gate.tryConsume() { release.wait() }
+            recorder.record(bytes, channel)
+        })
+        defer { lane.close()
+            release.signal() // unblock any parked consumer so close() can tear down cleanly
+        }
+        lane.enqueue(VideoSendLane.Job(outgoings: outgoings(1, count: 4), gapNanos: 0, chunkFragments: 8))
+        // Wait until the consumer is parked mid-transmit (gate consumed, before any record lands).
+        let start = ProcessInfo.processInfo.systemUptime
+        while !gate.isConsumed, ProcessInfo.processInfo.systemUptime - start < 3.0 {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertTrue(gate.isConsumed, "consumer never reached the send")
+        // Lane is busy → inline must bail and send NOTHING.
+        XCTAssertFalse(lane.trySendInline(outgoings(2, count: 2)), "inline must bail while mid-transmit")
+        release.signal()
+        await waitForCount(recorder, 4)
+        let sent = recorder.all
+        XCTAssertEqual(sent.count, 4)
+        XCTAssertTrue(sent.allSatisfy { $0.bytes.first == 1 }, "the bailed inline attempt sent nothing")
+    }
+
+    /// Inline-send then enqueue: the inlined datagrams precede the lane-drained job, strict order.
+    func testInlineThenEnqueuePreservesOrder() async {
+        let recorder = SendRecorder()
+        let lane = makeLane(recorder)
+        defer { lane.close() }
+        XCTAssertTrue(lane.trySendInline(outgoings(1, count: 2)))
+        lane.enqueue(VideoSendLane.Job(outgoings: outgoings(2, count: 2), gapNanos: 0, chunkFragments: 8))
+        await waitForCount(recorder, 4)
+        XCTAssertEqual(recorder.all.map(\.bytes), [Data([1, 0]), Data([1, 1]), Data([2, 0]), Data([2, 1])])
+    }
+
+    func testTrySendInlineAfterCloseReturnsFalse() {
+        let recorder = SendRecorder()
+        let lane = makeLane(recorder)
+        lane.close()
+        XCTAssertFalse(lane.trySendInline(outgoings(9, count: 2)), "a closed lane must not inline-send")
+        XCTAssertEqual(recorder.count, 0)
+    }
 }

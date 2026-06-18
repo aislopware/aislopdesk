@@ -609,6 +609,12 @@ public struct RecoveryDatagramRouter: Sendable {
         /// client hold + jitter). The actor folds it into its ``NetworkEstimate`` and logs —
         /// MAINTAIN+LOG only, no stream-behaviour change this phase.
         case networkStats(NetworkStatsReport)
+        /// NACK / selective ARQ: the client is missing specific DATA fragments of `frameID` and asks
+        /// the host to retransmit them. The actor looks each up by `(frameID, fragIndex)` in its
+        /// send-history ring and re-enqueues the original datagrams — cheaper than a recovery-IDR and
+        /// it arrives inside the client's playout buffer. A ring miss (frame aged out) is a no-op; the
+        /// client's Dropped→LTR-refresh path is still the fallback once the retransmit-grace expires.
+        case retransmitFragments(frameID: UInt32, fragIndices: [UInt16])
         /// Drop a malformed/undecodable datagram (a corrupt single packet must never
         /// crash the receiver — same contract as the reassembler).
         case drop(reason: String)
@@ -644,6 +650,8 @@ public struct RecoveryDatagramRouter: Sendable {
             return .reshipCursorShape(shapeID: shapeID)
         case let .networkStats(report):
             return .networkStats(report)
+        case let .requestFragments(frameID, fragIndices):
+            return .retransmitFragments(frameID: frameID, fragIndices: fragIndices)
         }
     }
 }

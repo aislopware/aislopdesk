@@ -689,6 +689,29 @@ enum RustVideoFFI {
         return (out.tier, Int(out.relax_streak), Int(out.sticky_relax_remaining))
     }
 
+    /// Dwell-gated PARITY-tier step (the adaptive-`m` production entry point). Wraps
+    /// `aisd_adaptive_fec_next_parity_tier_state`, marshaling the value-type state through the
+    /// flat `AisdTierState`. Unlike the group-size ladder there is no OFF tier (no `allowOff`):
+    /// the floor is the CLEAN level (`m == 2`).
+    static func adaptiveFECNextParityTierState(
+        loss: Double,
+        tier: UInt8,
+        relaxStreak: Int,
+        stickyRelaxRemaining: Int,
+        dwell: Int,
+        sawUnrecoveredLoss: Bool,
+    ) -> (tier: UInt8, relaxStreak: Int, stickyRelaxRemaining: Int) {
+        let inState = AisdTierState(
+            tier: tier,
+            relax_streak: Int32(clamping: relaxStreak),
+            sticky_relax_remaining: Int32(clamping: stickyRelaxRemaining),
+        )
+        let out = aisd_adaptive_fec_next_parity_tier_state(
+            loss, inState, Int32(clamping: dwell), sawUnrecoveredLoss ? 1 : 0,
+        )
+        return (out.tier, Int(out.relax_streak), Int(out.sticky_relax_remaining))
+    }
+
     // MARK: - coordinate_mapping (pure scalar over flat structs; env-free)
 
     private static func cPoint(_ p: VideoPoint) -> AisdPoint { AisdPoint(x: p.x, y: p.y) }
@@ -794,6 +817,11 @@ enum RustVideoFFI {
             c.shape_id = shapeID
         case let .networkStats(report):
             c.stats = cNetworkStats(report)
+        case .requestFragments:
+            // The NACK is encoded NATIVELY by `RecoveryMessage.encode()` (its variable-length frag
+            // list doesn't fit the flat C struct), which branches before delegating here — so this
+            // arm is unreachable via the public path. Guard rather than mis-encode.
+            preconditionFailure("requestFragments is encoded natively, not via the flat FFI struct")
         }
         var out = AisdBytes()
         let status = aisd_recovery_message_encode(&c, &out)
@@ -927,6 +955,30 @@ enum RustVideoFFI {
     static func reassemblerNextDropped(_ handle: OpaquePointer) -> UInt32? {
         var out: UInt32 = 0
         return aisd_reassembler_next_dropped(handle, &out) != 0 ? out : nil
+    }
+
+    /// Enables NACK / selective ARQ on the reassembler: a FEC-unrecoverable frame is HELD pending
+    /// for `grace` frame-ids past the loss frontier (instead of dropped at the reorder grace) and
+    /// surfaces a retransmit request via ``reassemblerNextNeedsRetransmit(_:)``. `grace == 0`
+    /// disables. Wraps `aisd_reassembler_enable_retransmit`.
+    static func reassemblerEnableRetransmit(_ handle: OpaquePointer, grace: Int32, maxFrags: Int) {
+        aisd_reassembler_enable_retransmit(handle, grace, maxFrags)
+    }
+
+    /// Pops the next NACK request the prior ingest's sweep queued — `(frameID, missing data-frag
+    /// indices)` — or `nil`. Wraps `aisd_reassembler_next_needs_retransmit` with a stack buffer
+    /// sized to the core's NACK cap. Drained in a loop after each ingest.
+    static func reassemblerNextNeedsRetransmit(_ handle: OpaquePointer) -> (frameID: UInt32, frags: [UInt16])? {
+        var frameID: UInt32 = 0
+        var count = 0
+        // The core bounds every request to `MAX_NACK_FRAGMENTS`; size the buffer to match so a
+        // request never fails to fit (the FFI drops an over-large one rather than truncate).
+        var buf = [UInt16](repeating: 0, count: RecoveryMessage.maxNackFragments)
+        let got = buf.withUnsafeMutableBufferPointer { p in
+            aisd_reassembler_next_needs_retransmit(handle, &frameID, p.baseAddress, &count, p.count)
+        }
+        guard got != 0 else { return nil }
+        return (frameID, Array(buf.prefix(count)))
     }
 
     // MARK: - packetizer (opaque handle; the per-frame video SEND hot path)

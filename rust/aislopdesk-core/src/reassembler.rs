@@ -80,6 +80,22 @@ pub struct FrameReassembler {
     retired: HashSet<u32>,
     dropped_queue: VecDeque<u32>,
     fec_reorder_grace: i32,
+    /// NACK / selective-ARQ: frame-ids past the frontier a FEC-unrecoverable frame is HELD pending
+    /// (instead of Dropped at `fec_reorder_grace`) so a host retransmit can still fill it within the
+    /// client's playout buffer. `0` = retransmit OFF (legacy drop behaviour). Set by
+    /// [`enable_retransmit`](Self::enable_retransmit).
+    retransmit_grace: i32,
+    /// Frames already surfaced via [`next_needs_retransmit`](Self::next_needs_retransmit) (so each
+    /// retransmit is requested once). Cleared on retire; bounded like `retired`.
+    nacked: HashSet<u32>,
+    /// `(frame_id, missing data-fragment indices)` the client should NACK, FIFO.
+    needs_retransmit_queue: VecDeque<(u32, Vec<u16>)>,
+    /// Only NACK a loss of at most this many DATA fragments — a SMALL loss (a keystroke / tiny frame)
+    /// is cheap and stutter-free to retransmit, but a BIG loss (a scroll frame) is wasteful to
+    /// re-send into a burst and is better served by an LTR-refresh skip-to-current. Above this the
+    /// frame is left to Drop (the LTR-refresh fallback). Clamped to the wire cap
+    /// [`MAX_NACK_FRAGMENTS`](crate::recovery::RecoveryMessage::MAX_NACK_FRAGMENTS) by `enable_retransmit`.
+    nack_max_frags: usize,
 }
 
 impl FrameReassembler {
@@ -113,7 +129,35 @@ impl FrameReassembler {
             retired: HashSet::new(),
             dropped_queue: VecDeque::new(),
             fec_reorder_grace: fec_reorder_grace.max(0),
+            retransmit_grace: 0,
+            nacked: HashSet::new(),
+            needs_retransmit_queue: VecDeque::new(),
+            nack_max_frags: 0,
         }
+    }
+
+    /// Enables NACK / selective ARQ. A FEC-unrecoverable frame is then HELD pending for `grace`
+    /// frame-ids past the loss frontier (instead of being Dropped at `fec_reorder_grace`), and its
+    /// missing DATA fragment indices are surfaced once via
+    /// [`next_needs_retransmit`](Self::next_needs_retransmit) — giving a host retransmit time to
+    /// arrive inside the client's playout buffer (no stutter). If the retransmit never lands the
+    /// frame is Dropped once `grace` elapses (the LTR-refresh fallback then fires as before).
+    ///
+    /// Only losses of at most `max_frags` DATA fragments get a retransmit request (a SMALL loss — cheap +
+    /// stutter-free to re-send); a BIGGER loss (e.g. a scroll frame) is left to Drop → LTR-refresh
+    /// skip-to-current, which is smoother and far cheaper than re-sending a stale frame into a burst.
+    /// `max_frags` is clamped to the wire cap
+    /// [`MAX_NACK_FRAGMENTS`](crate::recovery::RecoveryMessage::MAX_NACK_FRAGMENTS). `grace == 0` (the
+    /// default) disables retransmit entirely — byte-identical legacy drop behaviour.
+    pub fn enable_retransmit(&mut self, grace: i32, max_frags: usize) {
+        self.retransmit_grace = grace.max(0);
+        self.nack_max_frags = max_frags.min(crate::recovery::RecoveryMessage::MAX_NACK_FRAGMENTS);
+    }
+
+    /// Pops the next `(frame_id, missing data-fragment indices)` the client should NACK, or `None`.
+    /// Drained by the client after each ingest (alongside [`next_dropped_frame`](Self::next_dropped_frame)).
+    pub fn next_needs_retransmit(&mut self) -> Option<(u32, Vec<u16>)> {
+        self.needs_retransmit_queue.pop_front()
     }
 
     /// Pops the next unrecoverably-lost `frame_id` detected during prior `ingest` calls,
@@ -235,6 +279,20 @@ impl FrameReassembler {
         let Some(entry) = self.pending.get(&frame_id) else {
             return ReassemblyResult::Stale;
         };
+        // CHEAP completeness precheck before the expensive [`assemble`] (which clones every
+        // present fragment payload and runs the FEC recovery pass). `can_eventually_complete`
+        // is OUTCOME-EQUIVALENT to "assemble would succeed now" — it returns true iff every
+        // group is either hole-free or has enough ALREADY-PRESENT parity to cover its erasures
+        // (the exact precondition under which the systematic RS/XOR recover fills all holes) —
+        // but it uses only HashMap presence lookups, no per-fragment payload clone and no GF
+        // recovery work. Without this gate, `try_complete` ran the full clone + FEC-recover on
+        // EVERY fragment ingest of an in-flight frame, so a frame of N fragments arriving one
+        // at a time paid O(N^2) payload-clone churn plus N redundant recovery attempts. The
+        // Completed/Incomplete decision is unchanged (golden_parity + the reassembler suite
+        // pin it); only the wasted work on not-yet-completable ingests is removed.
+        if !can_eventually_complete(fec, entry) {
+            return ReassemblyResult::Incomplete;
+        }
         let Some((avcc, recovered_via_fec)) = assemble(fec, entry) else {
             return ReassemblyResult::Incomplete;
         };
@@ -257,23 +315,46 @@ impl FrameReassembler {
         };
         let fec = self.fec.as_deref();
         let grace = self.fec_reorder_grace;
-        let mut hopeless: Vec<u32> = self
-            .pending
-            .iter()
-            .filter_map(|(&fid, entry)| {
-                // fid strictly OLDER than the frontier: frontier - fid > 0.
-                let age = distance_wrapped(frontier, fid);
-                if age <= 0 || can_eventually_complete(fec, entry) {
-                    return None;
+        let rgrace = self.retransmit_grace;
+        let mut hopeless: Vec<u32> = Vec::new();
+        // NACK candidates found this sweep (FEC-unrecoverable, not yet nacked, still inside the
+        // retransmit window). Collected under the immutable `pending` borrow, applied after.
+        let mut nack: Vec<(u32, Vec<u16>)> = Vec::new();
+        for (&fid, entry) in &self.pending {
+            // fid strictly OLDER than the frontier: frontier - fid > 0.
+            let age = distance_wrapped(frontier, fid);
+            if age <= 0 || can_eventually_complete(fec, entry) {
+                continue; // newer than the frontier, or completable now — not hopeless.
+            }
+            // Hole(s) only fillable by not-yet-arrived parity → keep within the grace window so
+            // reordered parity (emitted last) still has a chance to land.
+            if awaiting_recoverable_parity(fec, entry) && age <= grace {
+                continue;
+            }
+            // FEC cannot recover this frame from what is here. With NACK enabled (`rgrace > 0`) and
+            // the loss SMALL enough to retransmit, HOLD it for the retransmit-grace window so a host
+            // re-send can fill it inside the client's playout buffer, and surface the request once.
+            // A loss too BIG to NACK (or an already-requested one short of its window) is NOT held
+            // uselessly: it falls straight through to the prompt Drop → LTR-refresh skip-to-current
+            // (holding it would stall the in-order client for the whole grace with no retransmit
+            // coming — the late-frame regression this guard fixes).
+            if rgrace > 0 && age <= rgrace {
+                if self.nacked.contains(&fid) {
+                    continue; // already requested → hold for its retransmit.
                 }
-                // Hole(s) only fillable by not-yet-arrived parity → keep within the grace
-                // window so reordered parity (emitted last) still has a chance to land.
-                if awaiting_recoverable_parity(fec, entry) && age <= grace {
-                    return None;
+                if let Some(missing) = missing_data_frags(fec, entry, self.nack_max_frags) {
+                    nack.push((fid, missing));
+                    continue; // small loss → request + hold for the retransmit.
                 }
-                Some(fid)
-            })
-            .collect();
+                // else: too big to NACK → fall through to the prompt drop below (no useless hold).
+            }
+            // Past every grace window → genuinely hopeless (the LTR-refresh fallback then fires).
+            hopeless.push(fid);
+        }
+        for (fid, missing) in nack {
+            self.nacked.insert(fid);
+            self.needs_retransmit_queue.push_back((fid, missing));
+        }
         // Drop oldest-first for deterministic recovery-signal ordering.
         hopeless.sort_by(|&a, &b| distance_wrapped(a, b).cmp(&0));
         for fid in hopeless {
@@ -284,6 +365,9 @@ impl FrameReassembler {
 
     fn retire(&mut self, frame_id: u32) {
         self.pending.remove(&frame_id);
+        // Drop any NACK bookkeeping: a retired frame (completed OR genuinely dropped) is no longer
+        // a retransmit candidate, so the once-per-frame guard can forget it.
+        self.nacked.remove(&frame_id);
         self.retired.insert(frame_id);
         match self.highest_retired_frame_id {
             Some(high) if distance_wrapped(frame_id, high) > 0 => {
@@ -305,6 +389,32 @@ impl FrameReassembler {
 /// frame, in which case the frame is treated as no-parity.
 fn parity_group_size(fec: Option<&dyn FecScheme>, entry: &Pending) -> Option<usize> {
     fec.and_then(|f| adaptive_fec::group_size(entry.fec_tier, f.group_size()))
+}
+
+/// The missing DATA fragment indices for `entry` (those in `0..data_count` not yet received),
+/// for a NACK / selective-ARQ request — or `None` when there are none to request, the count exceeds
+/// `max_frags` (a BIG loss: re-sending a stale frame into a burst is wasteful, so the client lets it
+/// Drop → LTR-refresh skip-to-current instead), or the data count is unknown. Parity fragments are
+/// NOT requested — the host's retransmit ring holds the original data datagrams, and once enough
+/// DATA arrives the frame completes (with FEC for any residual hole).
+fn missing_data_frags(
+    fec: Option<&dyn FecScheme>,
+    entry: &Pending,
+    max_frags: usize,
+) -> Option<Vec<u16>> {
+    let data_count = resolved_data_count(fec, entry);
+    if data_count == 0 {
+        return None;
+    }
+    let missing: Vec<u16> = (0..data_count)
+        .filter(|&i| !entry.data.contains_key(&(i as u16)))
+        .map(|i| i as u16)
+        .collect();
+    if missing.is_empty() || missing.len() > max_frags {
+        None
+    } else {
+        Some(missing)
+    }
 }
 
 /// The PER-FRAME parity-shards-per-group count (`m`) for `entry`, derived from the frame's
@@ -435,13 +545,21 @@ fn assemble(fec: Option<&dyn FecScheme>, entry: &Pending) -> Option<(Vec<u8>, bo
         let parity_fragments: Vec<Option<Vec<u8>>> = (0..parity_slots)
             .map(|i| entry.parity.get(&i).cloned())
             .collect();
-        fec.recover(&mut data_fragments, &parity_fragments, g);
+        // ADAPTIVE-m: recover at the SAME per-frame m the host encoded with (derived from this
+        // frame's pinned FEC tier), which sets both the parity-array stride (`group * m + rank`)
+        // and the per-group recovery budget. For every legacy tier this is the codec's configured
+        // m, so `recover_with_m` is byte-identical to `recover`.
+        let m = parity_count(Some(fec), entry);
+        fec.recover_with_m(&mut data_fragments, &parity_fragments, g, m);
     }
 
     if data_fragments.iter().any(Option::is_none) {
         return None;
     }
-    let mut avcc = Vec::new();
+    // Pre-size to the exact assembled length so the concat never reallocates mid-loop (the
+    // fragment lengths are already in cache from the recovery pass above).
+    let total: usize = data_fragments.iter().flatten().map(Vec::len).sum();
+    let mut avcc = Vec::with_capacity(total);
     for fragment in data_fragments {
         avcc.extend_from_slice(&fragment.expect("checked non-none above"));
     }
@@ -837,5 +955,206 @@ mod tests {
         r.ingest(f1[0].clone());
         assert_eq!(r.next_dropped_frame(), Some(0));
         assert_eq!(r.next_dropped_frame(), None);
+    }
+
+    // ----- ADAPTIVE-m: per-frame m signalled via the tier (tiers 5/6/7) -----------------------
+
+    #[test]
+    fn adaptive_m_tier_recovers_at_per_frame_m_beyond_codec_m() {
+        use crate::adaptive_fec::{PARITY_TIER_BURST, PARITY_TIER_CLEAN};
+        use crate::fec::ReedSolomonFec;
+        // Production WAN codec: k=5, configured m=3 (FEC_M=3). The host escalates a frame to the
+        // BURST tier (7 → m=5), so the packetizer emits 5 parity per group — MORE than the codec's
+        // configured m — and the reassembler derives m=5 from the same tier. The m signalling rides
+        // the existing 3-bit tier field: no wire-format change.
+        let burst_opts = PacketizeOptions {
+            keyframe: true,
+            fec_tier: PARITY_TIER_BURST,
+            ..PacketizeOptions::default()
+        };
+        let mut p = VideoPacketizer::new(Some(Box::new(ReedSolomonFec::new(5, 3))));
+        let frame = vec![9u8; VideoPacketizer::MAX_PAYLOAD_SIZE * 5]; // one group of k=5
+        let frags = p.packetize(&frame, burst_opts);
+        assert_eq!(
+            frags.len(),
+            10,
+            "5 data + 5 parity (m=5 from the BURST tier)"
+        );
+
+        // Lose FIVE data fragments in the single group (== the per-frame m=5, but > the codec's
+        // configured m=3) → RS recovers all five from the 5 parity shards.
+        let mut r = FrameReassembler::new(Some(Box::new(ReedSolomonFec::new(5, 3))), 8);
+        let mut completed = None;
+        for (i, f) in frags.into_iter().enumerate() {
+            if i < 5 {
+                continue; // drop all five data fragments
+            }
+            if let ReassemblyResult::Completed(rf) = r.ingest(f) {
+                completed = Some(rf);
+            }
+        }
+        let rf = completed.expect("BURST tier m=5 recovers five losses in one group");
+        assert_eq!(rf.avcc, frame);
+        assert!(rf.recovered_via_fec);
+
+        // CLEAN tier (5 → m=2): the SAME codec emits only 2 parity per group (less overhead on a
+        // clean link), and the reassembler recovers within that smaller m=2 budget.
+        let clean_opts = PacketizeOptions {
+            keyframe: true,
+            fec_tier: PARITY_TIER_CLEAN,
+            ..PacketizeOptions::default()
+        };
+        let mut p2 = VideoPacketizer::new(Some(Box::new(ReedSolomonFec::new(5, 3))));
+        let frags2 = p2.packetize(&frame, clean_opts);
+        assert_eq!(
+            frags2.len(),
+            7,
+            "5 data + 2 parity (m=2 from the CLEAN tier)"
+        );
+        let mut r2 = FrameReassembler::new(Some(Box::new(ReedSolomonFec::new(5, 3))), 8);
+        let mut done2 = None;
+        for (i, f) in frags2.into_iter().enumerate() {
+            if i == 0 || i == 1 {
+                continue; // 2 data holes, within the m=2 budget
+            }
+            if let ReassemblyResult::Completed(rf) = r2.ingest(f) {
+                done2 = Some(rf);
+            }
+        }
+        assert_eq!(
+            done2.expect("CLEAN tier m=2 recovers two losses").avcc,
+            frame
+        );
+    }
+
+    #[test]
+    fn precheck_completes_via_fec_exactly_when_parity_present() {
+        use crate::fec::XorParityFec;
+        // Discriminating test for the try_complete completeness precheck: a frame with a data
+        // hole must stay Incomplete on every ingest UNTIL the parity that recovers it arrives,
+        // then complete via FEC. If the precheck gated wrongly (false when recoverable) the
+        // final completion would never fire; if it never gated, the outcome is unchanged but the
+        // earlier ingests would do wasted clone+recover work (not observable here — outcome is).
+        let mut p = VideoPacketizer::new(Some(Box::new(XorParityFec::new(5))));
+        let frame = vec![3u8; VideoPacketizer::MAX_PAYLOAD_SIZE * 5]; // one group of 5 + 1 parity
+        let frags = p.packetize(&frame, keyframe_opts());
+        assert_eq!(frags.len(), 6, "5 data + 1 XOR parity");
+        let mut r = FrameReassembler::new(Some(Box::new(XorParityFec::new(5))), 4);
+        // Deliver the 4 surviving data fragments (drop index 2): a hole with no parity yet →
+        // not recoverable → Incomplete each time (precheck returns false, no premature complete).
+        for i in [0usize, 1, 3, 4] {
+            assert!(
+                matches!(r.ingest(frags[i].clone()), ReassemblyResult::Incomplete),
+                "data-only with an open hole must stay Incomplete"
+            );
+        }
+        // The parity (sent last) makes the single hole recoverable → completes via FEC NOW.
+        match r.ingest(frags[5].clone()) {
+            ReassemblyResult::Completed(f) => {
+                assert_eq!(f.avcc, frame, "FEC-recovered bytes match the original");
+                assert!(f.recovered_via_fec);
+            }
+            other => panic!("expected Completed via FEC once parity arrived, got {other:?}"),
+        }
+    }
+
+    // ----- NACK / selective ARQ: retransmit-grace hold + needs-retransmit signal ---------------
+
+    #[test]
+    fn retransmit_holds_frame_emits_nack_once_then_completes() {
+        use crate::fec::XorParityFec;
+        let mut p = VideoPacketizer::new(Some(Box::new(XorParityFec::new(5))));
+        let frame = vec![5u8; VideoPacketizer::MAX_PAYLOAD_SIZE * 5]; // 5 data + 1 XOR parity
+        let frags = p.packetize(&frame, keyframe_opts());
+        let frame1 = vec![9u8; VideoPacketizer::MAX_PAYLOAD_SIZE];
+        let f1 = p.packetize(&frame1, keyframe_opts()); // advances the frontier
+
+        let mut r = FrameReassembler::new(Some(Box::new(XorParityFec::new(5))), 4);
+        r.enable_retransmit(8, 8);
+        // Deliver frame-0 data 0,2,4 + parity — drop data 1 AND 3 (2 holes; m=1 can't recover both).
+        for i in [0usize, 2, 4, 5] {
+            assert!(matches!(
+                r.ingest(frags[i].clone()),
+                ReassemblyResult::Incomplete
+            ));
+        }
+        // A newer frame advances the frontier → sweep runs → frame 0 is FEC-unrecoverable but HELD.
+        r.ingest(f1[0].clone());
+        assert_eq!(
+            r.next_dropped_frame(),
+            None,
+            "held for retransmit, not dropped"
+        );
+        let (fid, missing) = r.next_needs_retransmit().expect("a NACK should be queued");
+        assert_eq!(fid, 0);
+        assert_eq!(missing, vec![1u16, 3u16], "the two missing DATA fragments");
+        assert_eq!(r.next_needs_retransmit(), None, "NACK emitted exactly once");
+        // The host retransmits a missing DATA fragment → with the parity, FEC fills the other hole
+        // → the HELD frame completes (it was never retired, so the retransmit is not stale).
+        match r.ingest(frags[1].clone()) {
+            ReassemblyResult::Completed(rf) => assert_eq!(rf.avcc, frame),
+            other => panic!("retransmitted fragment should complete the held frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retransmit_grace_expiry_drops_as_fallback() {
+        use crate::fec::XorParityFec;
+        let mut p = VideoPacketizer::new(Some(Box::new(XorParityFec::new(5))));
+        let frame = vec![5u8; VideoPacketizer::MAX_PAYLOAD_SIZE * 5];
+        let frags = p.packetize(&frame, keyframe_opts());
+        let mut r = FrameReassembler::new(Some(Box::new(XorParityFec::new(5))), 2);
+        r.enable_retransmit(3, 8); // small window
+        for i in [0usize, 2, 4, 5] {
+            r.ingest(frags[i].clone()); // 2 holes → FEC-unrecoverable
+        }
+        // Advance the frontier past the retransmit grace → frame 0 ages out and Drops (the
+        // LTR-refresh fallback path fires on Dropped).
+        for k in 1u8..=5 {
+            let fk = p.packetize(&vec![k; VideoPacketizer::MAX_PAYLOAD_SIZE], keyframe_opts());
+            r.ingest(fk[0].clone());
+        }
+        assert!(
+            r.next_needs_retransmit().is_some(),
+            "NACKed once while within the grace window"
+        );
+        assert_eq!(
+            r.next_dropped_frame(),
+            Some(0),
+            "dropped once the retransmit grace elapses"
+        );
+    }
+
+    #[test]
+    fn big_loss_is_not_nacked_only_small_losses_are() {
+        use crate::fec::XorParityFec;
+        // max_frags = 2: a loss bigger than 2 fragments is NOT NACKed (re-sending a stale big frame
+        // into a burst is wasteful → let it Drop → LTR-refresh skip-to-current). One group of k=5.
+        let mut p = VideoPacketizer::new(Some(Box::new(XorParityFec::new(5))));
+        let frame = vec![5u8; VideoPacketizer::MAX_PAYLOAD_SIZE * 5];
+        let frags = p.packetize(&frame, keyframe_opts());
+        let mut r = FrameReassembler::new(Some(Box::new(XorParityFec::new(5))), 4);
+        r.enable_retransmit(8, 2); // NACK only losses of ≤ 2 fragments
+        // Deliver only data 4 + parity → 4 data holes (0,1,2,3) > max_frags=2.
+        for i in [4usize, 5] {
+            r.ingest(frags[i].clone());
+        }
+        // A SINGLE newer frame advances the frontier (age 1, WELL within the rgrace=8 window). A
+        // big loss must NOT be held for the retransmit grace — it drops PROMPTLY to the LTR-refresh
+        // fallback (holding it with no retransmit coming would stall the in-order client).
+        let f1 = p.packetize(
+            &vec![9u8; VideoPacketizer::MAX_PAYLOAD_SIZE],
+            keyframe_opts(),
+        );
+        r.ingest(f1[0].clone());
+        assert!(
+            r.next_needs_retransmit().is_none(),
+            "a >max_frags loss must NOT be NACKed (it skips to the LTR-refresh fallback)"
+        );
+        assert_eq!(
+            r.next_dropped_frame(),
+            Some(0),
+            "the big loss drops PROMPTLY (age 1, not held for the retransmit grace)"
+        );
     }
 }

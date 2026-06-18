@@ -128,10 +128,11 @@ Recovery requests go over the **reliable control channel**. The buffer is limite
 
 ### FEC vs retransmit
 
-The video path **ships FEC + ABR + congestion control** (Rust core).
+The video path **ships FEC + ABR + congestion control** (Rust core), with **FEC first** and a
+**selective-retransmit (NACK) backstop** for what FEC can't recover.
 
-- **Retransmit (ARQ):** costs 1 RTT → visible stutter. Used **only on the reliable control channel**, never for video.
-- **FEC (Reed–Solomon over GF(2⁸), NEON-accelerated):** recovers loss with no added latency, at a bandwidth cost. `m=1` is byte-identical to the original XOR parity; `m≥2` recovers multi-packet loss. **Adaptive tiering** (`FECScheme` + `AdaptiveFECPolicy`): low/none on a clean wired LAN (rely on drop-frame → request-recovery), ramping to ~15–20% on Wi-Fi/lossy links, scaled to loss measured over the control channel.
+- **FEC (Reed–Solomon over GF(2⁸), NEON-accelerated):** recovers loss with **no added latency**, at a bandwidth cost — the primary mechanism. `m=1` is byte-identical to the original XOR parity; `m≥2` recovers multi-packet loss. **Adaptive tiering** (`FECScheme` + `AdaptiveFECPolicy`): low/none on a clean wired LAN (rely on drop-frame → request-recovery), ramping on Wi-Fi/lossy links. **Adaptive parity-`m`** (2026-06-18) steps `m` per-frame by measured loss (clean → m=2, burst → m=5) via the wire FEC-tier field — no format change.
+- **Retransmit (NACK / selective ARQ)** — *re-scoped 2026-06-18, `AISLOPDESK_NACK`, default OFF.* The original rule ("ARQ costs 1 RTT → visible stutter; never for video") assumed the **naive** form — replay the lost frame and stall the stream. That premise does **not** hold with a jitter/**playout buffer ≫ RTT** (e.g. 80 ms buffer vs a ~21 ms WAN RTT): a NACK'd fragment retransmit lands *inside* the buffer window → it fills the hole **before playout, no stutter** (the WebRTC model). So a frame FEC can't recover is **held** for a small retransmit grace, the client NACKs exactly the missing fragments, and the host re-sends them from a bounded send-history ring — far cheaper than the old recovery-IDR (and it recovers whole-frame losses FEC fundamentally cannot). The LTR-refresh / IDR path remains the fallback when the grace expires. Retransmit stays opt-in + deploy-together (adds wire recovery type 6).
 
 ### Pacing
 

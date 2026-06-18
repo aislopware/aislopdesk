@@ -210,15 +210,21 @@ public actor AislopdeskVideoClientSession {
     /// The decoder is created on an accepted helloAck (never in a test).
     private var decoder: VideoDecoder?
 
-    /// DECODE-OFFQUEUE (2026-06-18). The synchronous VT decode (~8ms/frame, ``VideoDecoder/decode``) ran
-    /// ON this session actor, blocking fragment ingest (+ contending with the 120 Hz cursor / FEC) → the
+    /// DECODE-OFFQUEUE. The synchronous VT decode (~8ms/frame, ``VideoDecoder/decode``) ran ON this
+    /// session actor, blocking fragment ingest (+ contending with the 120 Hz cursor / FEC) → the
     /// HW-measured ~98ms ingest-gap jitter on a clean LAN (host send was steady) = the residual
     /// "occasional chậm". When ON, the decode runs on a dedicated SERIAL queue (in submit order → the
     /// pacer still receives frames in order) and only the cheap, order-insensitive post-decode bookkeeping
-    /// hops back to the actor; the actor's ingest/reassembly is never blocked by decode. DEFAULT OFF
-    /// (byte-identical: inline decode on the actor). `AISLOPDESK_DECODE_OFFQUEUE=1` enables. The client
-    /// analog of the host's encode-offqueue.
-    private static let decodeOffQueue = ProcessInfo.processInfo.environment["AISLOPDESK_DECODE_OFFQUEUE"] == "1"
+    /// hops back to the actor; the actor's ingest/reassembly is never blocked by decode.
+    ///
+    /// DEFAULT ON (2026-06-18 — flip, HW-confirmed smooth). It frees the session actor so input sends +
+    /// fragment ingest never queue behind the decode during dense-frame scroll / fast typing. The inline
+    /// path costs ~50–100µs LESS per single isolated frame, but that is imperceptible and the actor-free
+    /// win dominates whenever frames are dense. The only edge is during a recovery episode (post-loss):
+    /// the drop-until-anchor gate reopens one decode-round-trip late (≤1 extra dropped frame + 1
+    /// redundant IDR request, self-correcting) — negligible on a non-lossy link. `AISLOPDESK_DECODE_OFFQUEUE=0`
+    /// restores the inline-on-actor path. The client analog of the host's encode-offqueue.
+    private static let decodeOffQueue = ProcessInfo.processInfo.environment["AISLOPDESK_DECODE_OFFQUEUE"] != "0"
     /// Serial queue owning the off-queue VT decode (incl. its keyframe reconfigure + `invalidateSession`),
     /// so the decoder stays single-threaded. `.userInteractive` to match the latency-critical path.
     private let decodeQueue = DispatchQueue(label: "aislopdesk.client.decode", qos: .userInteractive)
@@ -355,6 +361,23 @@ public actor AislopdeskVideoClientSession {
     /// RTT loop reverts to today's open-loop behaviour. The 4-byte header field is still parsed
     /// either way (the host writes 0 when disabled).
     private static let telemetryEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_NETSTATS"] != "0"
+    /// NACK / selective-ARQ retransmit (2026-06-18). DEFAULT OFF (`AISLOPDESK_NACK=1`; deploy host +
+    /// client together — adds wire recovery type 6). When on, the reassembler HOLDS a FEC-unrecoverable
+    /// frame for ``nackGraceFrames`` frame-ids and NACKs its missing fragments; the host re-sends them
+    /// from its ring (cheaper than an IDR, and within the playout buffer → no stutter). The
+    /// Dropped→LTR-refresh path is still the fallback once the grace expires.
+    private static let nackEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_NACK"] == "1"
+    /// Frame-ids past the loss frontier a FEC-unrecoverable frame is HELD for a NACK retransmit — must
+    /// comfortably exceed the RTT in frame-units (~8 ≈ 130ms at 60fps ≫ a ~21ms WAN RTT, inside the
+    /// ~80ms playout buffer).
+    private static let nackGraceFrames: Int32 =
+        ProcessInfo.processInfo.environment["AISLOPDESK_NACK_GRACE"].flatMap { Int32($0) } ?? 8
+    /// Only NACK a SMALL loss (≤ this many fragments) — a keystroke / tiny frame is cheap and
+    /// stutter-free to re-send. A BIGGER loss (e.g. a scroll frame) skips to the Drop → LTR-refresh
+    /// skip-to-current fallback instead, which is smoother + cheaper than re-sending a stale frame
+    /// into a burst (HW-tuned 2026-06-18 after big retransmits added congestion during bursts).
+    private static let nackMaxFrags: Int =
+        ProcessInfo.processInfo.environment["AISLOPDESK_NACK_MAX_FRAGS"].flatMap(Int.init) ?? 8
     /// Component 3 (delay-gradient): DEFAULT ON; `AISLOPDESK_TREND=0` disables. The client computes a
     /// libwebrtc-style trendline over per-FRAME one-way-delay variation and ships the detector
     /// output in the NetworkStats report. PURE TELEMETRY: the host's gradient cut path is its own
@@ -418,6 +441,11 @@ public actor AislopdeskVideoClientSession {
         self.recoveryPolicy = recoveryPolicy
         stateMachine = VideoClientStateMachine(requestedWindowID: requestedWindowID, viewport: viewport)
         reassembler = FrameReassembler(fec: fec)
+        // NACK / selective ARQ: hold a FEC-unrecoverable frame for the retransmit grace so a host
+        // re-send can fill it (instead of dropping straight to an LTR refresh). Off by default.
+        if Self.nackEnabled {
+            reassembler.enableRetransmit(grace: Self.nackGraceFrames, maxFrags: Self.nackMaxFrags)
+        }
         layerSize = viewport
     }
 
@@ -809,6 +837,24 @@ public actor AislopdeskVideoClientSession {
         while let lost = reassembler.nextDroppedFrame() {
             signalRecovery(lostFrameID: lost)
         }
+        // NACK (selective ARQ): drain frames the reassembler is HOLDING for retransmit — FEC-
+        // unrecoverable but still inside the retransmit grace — and request exactly the missing data
+        // fragments. The host re-sends them from its ring; with the playout buffer ≫ RTT they fill the
+        // hole before playout (no stutter). If they don't arrive before the grace expires the frame
+        // Drops (above) and the LTR-refresh fallback fires. Inert unless retransmit is enabled.
+        while let needed = reassembler.nextNeedsRetransmit() {
+            sendNACK(frameID: needed.frameID, fragIndices: needed.frags)
+        }
+    }
+
+    /// Sends a NACK (selective ARQ) requesting the missing DATA fragments of `frameID` on the
+    /// recovery channel — with the same redundancy as a recovery request, so the NACK itself survives
+    /// loss. The host answers by re-sending exactly those fragments from its send-history ring.
+    private func sendNACK(frameID: UInt32, fragIndices: [UInt16]) {
+        dbg("NACK frame #\(frameID): requesting \(fragIndices.count) missing fragment(s)")
+        sendRecoveryRequest(
+            RecoveryMessage.requestFragments(frameID: frameID, fragIndices: fragIndices).encode(),
+        )
     }
 
     /// Signals recovery for one unrecoverably-lost frame. First loss → prefer an LTR refresh; if an LTR

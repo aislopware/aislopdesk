@@ -58,6 +58,38 @@ pub trait FecScheme {
         let group_size = self.group_size();
         self.recover(data, parity, group_size);
     }
+
+    /// Parity with an explicit per-frame parity multiplicity `m`, overriding the codec's
+    /// configured `m`.
+    ///
+    /// The default IGNORES `m` and delegates to [`parity`](Self::parity) — correct for
+    /// single-parity schemes ([`XorParityFec`]), whose `m` is always 1. Multi-parity codecs
+    /// ([`ReedSolomonFec`]) override this to emit `m` parity shards per group, enabling the
+    /// adaptive-`m` FEC path: the host picks `m` per frame from the measured loss and signals
+    /// it via the wire FEC tier (see [`crate::adaptive_fec::parity_count`]), with no
+    /// wire-format change. `m` is bounded by the codec's field constraint (`k + m <= 255`).
+    fn parity_with_m(&self, data: &[&[u8]], group_size: usize, m: usize) -> Vec<Vec<u8>> {
+        let _ = m;
+        self.parity(data, group_size)
+    }
+
+    /// Recover with an explicit per-frame parity multiplicity `m`, the counterpart of
+    /// [`parity_with_m`](Self::parity_with_m).
+    ///
+    /// The default ignores `m` and delegates to [`recover`](Self::recover).
+    /// [`ReedSolomonFec`] overrides it to read `m` parity shards per group at
+    /// `parity[group * m + rank]` and recover up to `m` losses per group — the same per-frame
+    /// `m` the host encoded with, so the parity-array stride matches the reassembler's layout.
+    fn recover_with_m(
+        &self,
+        data: &mut [Option<Vec<u8>>],
+        parity: &[Option<Vec<u8>>],
+        group_size: usize,
+        m: usize,
+    ) {
+        let _ = m;
+        self.recover(data, parity, group_size);
+    }
 }
 
 /// XOR parity FEC: each group of `group_size` data fragments produces one parity
@@ -286,7 +318,9 @@ impl<G: GfRegion> ReedSolomonFec<G> {
         }
     }
 
-    /// The per-call grouping width this codec uses for a requested `group_size`.
+    /// The per-call grouping width this codec uses for a requested `group_size` at parity
+    /// multiplicity `m` (the per-frame `m`, which may differ from the codec's configured
+    /// `self.parity` on the adaptive-`m` path).
     ///
     /// `m == 1` (plain XOR, no matrix) honours the request EXACTLY — NO clamp to `k` — so the
     /// parity bytes are byte-identical to [`XorParityFec`] for ANY group size (the production FEC
@@ -294,9 +328,9 @@ impl<G: GfRegion> ReedSolomonFec<G> {
     /// (the Cauchy code) clamps down to `k = self.group_size`, its column count. A 0 floors to 1
     /// either way (a non-positive size must never loop forever).
     #[inline]
-    fn effective_group_size(&self, group_size: usize) -> usize {
+    fn effective_group_size(&self, group_size: usize, m: usize) -> usize {
         let floored = group_size.max(1);
-        if self.parity == 1 {
+        if m == 1 {
             floored
         } else {
             floored.min(self.group_size)
@@ -345,17 +379,17 @@ impl<G: GfRegion> ReedSolomonFec<G> {
     /// a fresh `W`-wide accumulator via the GF backend's `mul_add`. `m == 1` takes the plain
     /// XOR path (through [`gf_xor_encoded`](Self::gf_xor_encoded)) so the bytes match
     /// [`XorParityFec`] exactly while still routing through `self.gf`.
-    fn encode_group(&self, group: &[&[u8]], out: &mut Vec<Vec<u8>>) {
+    fn encode_group(&self, group: &[&[u8]], m: usize, out: &mut Vec<Vec<u8>>) {
         // `m == 1`: byte-identical to XOR parity, but via the configured GF backend (so a NEON
         // codec is vectorised here too, not silently scalar).
-        if self.parity == 1 {
+        if m == 1 {
             out.push(self.gf_xor_encoded(group));
             return;
         }
         let framed: Vec<Vec<u8>> = group.iter().map(|s| length_prefixed(s)).collect();
         let width = framed.iter().map(Vec::len).max().unwrap_or(0);
-        let coeffs = crate::rs_matrix::parity_rows(self.group_size, self.parity);
-        for rank in 0..self.parity {
+        let coeffs = crate::rs_matrix::parity_rows(self.group_size, m);
+        for rank in 0..m {
             let mut acc = vec![0u8; width];
             for (j, shard) in framed.iter().enumerate() {
                 // Coefficient for parity `rank` over data shard `j`. A group can hold fewer
@@ -379,9 +413,9 @@ impl<G: GfRegion> ReedSolomonFec<G> {
         index: usize,
         upper: usize,
         group_index: usize,
+        m: usize,
     ) {
         let k = self.group_size;
-        let m = self.parity;
         let group_len = upper - index;
 
         // Holes are missing DATA shards; their position within the group is `i - index`.
@@ -485,32 +519,69 @@ impl<G: GfRegion> FecScheme for ReedSolomonFec<G> {
     }
 
     fn parity(&self, data: &[&[u8]], group_size: usize) -> Vec<Vec<u8>> {
-        // `m == 1` is plain XOR parity (no matrix), so the per-call `group_size` is honoured
-        // EXACTLY — groups of the passed size, NO clamp to `k` — making the parity bytes
-        // byte-identical to the standalone `XorParityFec` for ANY group size (the production FEC
-        // path: a `ReedSolomonFec::new(k, 1)` codec drives the adaptive per-frame group size, which
-        // can exceed `k`). For `m >= 2` the Cauchy encoder has exactly `k = self.group_size`
-        // columns, so a group can never hold more than `k` data shards: the per-call `group_size`
-        // is then honoured up to `k` and clamped down to it, keeping encode and decode
-        // self-consistent. A 0 floors to 1 in both arms.
-        let group_size = self.effective_group_size(group_size);
+        self.parity_m(data, group_size, self.parity)
+    }
+
+    fn parity_with_m(&self, data: &[&[u8]], group_size: usize, m: usize) -> Vec<Vec<u8>> {
+        self.parity_m(data, group_size, m.max(1))
+    }
+
+    fn recover(&self, data: &mut [Option<Vec<u8>>], parity: &[Option<Vec<u8>>], group_size: usize) {
+        self.recover_m(data, parity, group_size, self.parity);
+    }
+
+    fn recover_with_m(
+        &self,
+        data: &mut [Option<Vec<u8>>],
+        parity: &[Option<Vec<u8>>],
+        group_size: usize,
+        m: usize,
+    ) {
+        self.recover_m(data, parity, group_size, m.max(1));
+    }
+}
+
+impl<G: GfRegion> ReedSolomonFec<G> {
+    /// Parity at an explicit multiplicity `m` (the per-frame `m` on the adaptive path; the
+    /// codec's configured `self.parity` on the fixed path). The grouping width is
+    /// [`effective_group_size`](Self::effective_group_size) for this `m`.
+    ///
+    /// `m == 1` is plain XOR parity (no matrix), so the per-call `group_size` is honoured
+    /// EXACTLY — groups of the passed size, NO clamp to `k` — making the parity bytes
+    /// byte-identical to the standalone [`XorParityFec`] for ANY group size (the production FEC
+    /// path: a `ReedSolomonFec::new(k, 1)` codec drives the adaptive per-frame group size, which
+    /// can exceed `k`). For `m >= 2` the Cauchy encoder has exactly `k = self.group_size`
+    /// columns, so a group can never hold more than `k` data shards: the per-call `group_size`
+    /// is then honoured up to `k` and clamped down to it, keeping encode and decode
+    /// self-consistent. A 0 floors to 1 in both arms.
+    fn parity_m(&self, data: &[&[u8]], group_size: usize, m: usize) -> Vec<Vec<u8>> {
+        let group_size = self.effective_group_size(group_size, m);
         let mut parities = Vec::new();
         let mut index = 0;
         while index < data.len() {
             let upper = (index + group_size).min(data.len());
-            self.encode_group(&data[index..upper], &mut parities);
+            self.encode_group(&data[index..upper], m, &mut parities);
             index += group_size;
         }
         parities
     }
 
-    fn recover(&self, data: &mut [Option<Vec<u8>>], parity: &[Option<Vec<u8>>], group_size: usize) {
-        let group_size = self.effective_group_size(group_size); // matches `parity`'s grouping.
+    /// Recover at an explicit multiplicity `m`, the counterpart of [`parity_m`](Self::parity_m).
+    /// The `m` MUST match the one the parity was encoded with: it sets both the per-group parity
+    /// stride (`parity[group * m + rank]`) and the recovery budget.
+    fn recover_m(
+        &self,
+        data: &mut [Option<Vec<u8>>],
+        parity: &[Option<Vec<u8>>],
+        group_size: usize,
+        m: usize,
+    ) {
+        let group_size = self.effective_group_size(group_size, m); // matches `parity_m`'s grouping.
         let mut group_index = 0;
         let mut index = 0;
         while index < data.len() {
             let upper = (index + group_size).min(data.len());
-            self.recover_group(data, parity, index, upper, group_index);
+            self.recover_group(data, parity, index, upper, group_index, m);
             index += group_size;
             group_index += 1;
         }
@@ -798,6 +869,85 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn parity_with_m_overrides_codec_parity_count() {
+        // The adaptive-m property: a codec built at one m emits a DIFFERENT per-frame m via
+        // `parity_with_m`. Discriminating — if `m` were ignored (delegating to `parity`) this
+        // would emit `self.parity` (== 1) shards per group, not the requested 3.
+        let rs = ReedSolomonFec::new(5, 1); // codec configured m == 1
+        let data: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i; 4]).collect();
+        // ceil(5/5) = 1 group × 3 parity = 3 (NOT the codec's 1).
+        assert_eq!(rs.parity_with_m(&slices(&data), 5, 3).len(), 3);
+    }
+
+    #[test]
+    fn parity_with_m_default_is_byte_identical_to_parity() {
+        // Passing the codec's own m must reproduce `parity` exactly (the fixed-path / golden
+        // invariant: the adaptive plumbing changes NOTHING when m == self.parity).
+        let rs = ReedSolomonFec::new(4, 3);
+        let data: Vec<Vec<u8>> = (0..10u8).map(|i| vec![i; 5]).collect();
+        assert_eq!(
+            rs.parity_with_m(&slices(&data), 4, 3),
+            rs.parity(&slices(&data), 4)
+        );
+        // The m == 1 (XOR-equivalent) branch too.
+        let rs1 = ReedSolomonFec::new(5, 1);
+        assert_eq!(
+            rs1.parity_with_m(&slices(&data), 5, 1),
+            rs1.parity(&slices(&data), 5)
+        );
+    }
+
+    #[test]
+    fn recover_with_m_round_trips_at_per_frame_m_differing_from_codec() {
+        // THE adaptive-m guarantee: a single codec instance (built at an arbitrary m) encodes
+        // AND decodes a frame at a per-frame m chosen at runtime, because the Cauchy parity rows
+        // are index-deterministic (row i is independent of total m). Build at m=2, drive m=4,
+        // erase 4 data shards in one group of k=5 → all four recovered byte-exact (4 > the
+        // codec's configured m=2).
+        let rs = ReedSolomonFec::new(5, 2); // codec configured m == 2
+        let data: Vec<Vec<u8>> = vec![vec![1, 2], vec![], vec![9; 7], vec![4, 0, 4], vec![255; 2]];
+        let parity = rs.parity_with_m(&slices(&data), 5, 4); // emit 4 parity for the group
+        assert_eq!(parity.len(), 4);
+        let mut recv: Vec<Option<Vec<u8>>> = data.iter().cloned().map(Some).collect();
+        for e in [0usize, 1, 3, 4] {
+            recv[e] = None; // 4 holes — beyond the codec m=2, within the frame's m=4
+        }
+        rs.recover_with_m(&mut recv, &opt(&parity), 5, 4);
+        let recovered: Vec<Vec<u8>> = recv.into_iter().map(Option::unwrap).collect();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn recover_with_m_budget_is_the_per_frame_m_not_the_codec_m() {
+        // A frame encoded at m=2 recovers up to 2 losses; a 3rd loss in the same group is
+        // unrecoverable EVEN on a codec built at m=3 — the per-frame m is the budget, not
+        // self.parity. (Mirror of the wire: the host emitted only 2 parity shards.)
+        let rs = ReedSolomonFec::new(5, 3); // codec configured m == 3
+        let data: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i, i ^ 0x33]).collect();
+        let parity = rs.parity_with_m(&slices(&data), 5, 2); // only 2 parity emitted
+        assert_eq!(parity.len(), 2);
+        // 2 holes → recovered.
+        let mut recv: Vec<Option<Vec<u8>>> = data.iter().cloned().map(Some).collect();
+        recv[0] = None;
+        recv[2] = None;
+        rs.recover_with_m(&mut recv, &opt(&parity), 5, 2);
+        assert_eq!(
+            recv.iter().cloned().map(Option::unwrap).collect::<Vec<_>>(),
+            data
+        );
+        // 3 holes with only m=2 parity → at least one stays a hole (no panic).
+        let mut recv3: Vec<Option<Vec<u8>>> = data.iter().cloned().map(Some).collect();
+        recv3[0] = None;
+        recv3[2] = None;
+        recv3[4] = None;
+        rs.recover_with_m(&mut recv3, &opt(&parity), 5, 2);
+        assert!(
+            recv3.iter().any(Option::is_none),
+            "3 losses > m=2 budget must leave a hole"
+        );
     }
 
     #[test]

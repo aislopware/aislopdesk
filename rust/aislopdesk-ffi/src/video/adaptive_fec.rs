@@ -103,6 +103,28 @@ pub extern "C" fn aisd_adaptive_fec_next_tier_state(
     .into()
 }
 
+/// Dwell-gated PARITY-tier step — the adaptive-`m` production entry point (the m-adaptive
+/// counterpart of [`aisd_adaptive_fec_next_tier_state`]).
+///
+/// Wraps [`adaptive_fec::next_parity_tier_state`]: instead of stepping the XOR group size at a
+/// fixed `m == 1`, it steps the per-frame parity multiplicity `m` (over tiers 5/6/7 → `m`
+/// 2/3/5) with the same hysteresis + dwell + sticky-relax. Escalation is immediate; relaxation
+/// waits out the (sticky-doubled) dwell; the floor is the CLEAN level (`m == 2`) — there is NO
+/// OFF tier on this path, so unlike [`aisd_adaptive_fec_next_tier_state`] it takes no
+/// `allow_off`. `saw_unrecovered_loss` is a byte read `!= 0`; the caller passes `dwell`, keeping
+/// the core environment-free. Returns the next state by value.
+#[must_use]
+#[unsafe(no_mangle)]
+pub extern "C" fn aisd_adaptive_fec_next_parity_tier_state(
+    loss: f64,
+    state: AisdTierState,
+    dwell: i32,
+    saw_unrecovered_loss: u8,
+) -> AisdTierState {
+    adaptive_fec::next_parity_tier_state(loss, state.into(), dwell, saw_unrecovered_loss != 0)
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     // Driving the C ABI from tests means `&mut x` coercions and exact float round-trip checks.
@@ -203,6 +225,46 @@ mod tests {
             0,
         );
         assert_eq!(adaptive_fec::TierState::from(ffi_next), core_next);
+    }
+
+    #[test]
+    fn adaptive_fec_next_parity_tier_state_matches_core() {
+        let dwell = adaptive_fec::RELAX_DWELL_REPORTS;
+        // A burst escalates the parity tier immediately (matches the core decider exactly).
+        let core_next = adaptive_fec::next_parity_tier_state(
+            0.05,
+            adaptive_fec::TierState::new(adaptive_fec::PARITY_TIER_CLEAN, 0, 0),
+            dwell,
+            false,
+        );
+        let ffi_next = aisd_adaptive_fec_next_parity_tier_state(
+            0.05,
+            AisdTierState {
+                tier: adaptive_fec::PARITY_TIER_CLEAN,
+                relax_streak: 0,
+                sticky_relax_remaining: 0,
+            },
+            dwell,
+            0,
+        );
+        assert_eq!(adaptive_fec::TierState::from(ffi_next), core_next);
+        // Fast-attack: a 0.05 burst jumps CLEAN → BURST in one report.
+        assert_eq!(ffi_next.tier, adaptive_fec::PARITY_TIER_BURST);
+        // An unrecovered-loss report arms the sticky window.
+        let armed = aisd_adaptive_fec_next_parity_tier_state(
+            0.0,
+            AisdTierState {
+                tier: adaptive_fec::PARITY_TIER_NORMAL,
+                relax_streak: 0,
+                sticky_relax_remaining: 0,
+            },
+            dwell,
+            1,
+        );
+        assert_eq!(
+            armed.sticky_relax_remaining,
+            adaptive_fec::STICKY_RELAX_WINDOW_REPORTS
+        );
     }
 
     #[test]

@@ -81,7 +81,7 @@ Predict frame loss **before** the next frame arrives — once the shard count pr
 ### LAN policy (with [03](03-transport-protocol.md))
 1. Clean wired LAN: low FEC (0–10%) + LTR + speculative loss. Wi-Fi/lossy: 15–20%, multi-block. `AdaptiveFECPolicy` scales this automatically.
 2. Recovery prefers **LTR refresh** (§1); keyframe only when no acked LTR remains.
-3. **No retransmit for video** (1 RTT → stutter); retransmit only for input/control.
+3. **FEC-first, with a NACK backstop** (re-scoped 2026-06-18, `AISLOPDESK_NACK`, default OFF — see [03 §FEC vs retransmit](03-transport-protocol.md)): FEC recovers loss at zero added latency; a frame it can't recover is held briefly and the client NACKs the missing fragments, which the host re-sends from a ring. The old "no retransmit (1 RTT → stutter)" rule assumed naive replay-and-stall; with a playout buffer ≫ RTT the retransmit lands *inside* the buffer → no stutter. LTR-refresh / IDR is the fallback once the retransmit grace expires.
 
 ---
 

@@ -116,6 +116,24 @@ public final class FrameReassembler {
         RustVideoFFI.reassemblerNextDropped(handle)
     }
 
+    /// Enables NACK / selective ARQ: a FEC-unrecoverable frame is HELD pending for `grace` frame-ids
+    /// past the loss frontier (instead of dropped at the reorder grace), so a host retransmit
+    /// requested via ``nextNeedsRetransmit()`` can still fill it within the client's playout buffer.
+    /// Only losses of at most `maxFrags` fragments are NACKed (a SMALL loss; a bigger one skips to
+    /// the Drop → LTR-refresh fallback). `grace == 0` (the default) disables it. Delegates to the
+    /// core's `enable_retransmit`.
+    public func enableRetransmit(grace: Int32, maxFrags: Int) {
+        RustVideoFFI.reassemblerEnableRetransmit(handle, grace: grace, maxFrags: maxFrags)
+    }
+
+    /// Pops the next NACK request a prior ``ingest(_:)`` queued — `(frameID, the missing DATA
+    /// fragment indices)` — or `nil`. The client drains this after each ingest (alongside
+    /// ``nextDroppedFrame()``) and sends a ``RecoveryMessage/requestFragments(frameID:fragIndices:)``.
+    /// Inert unless ``enableRetransmit(grace:)`` was called. Delegates to `next_needs_retransmit`.
+    public func nextNeedsRetransmit() -> (frameID: UInt32, frags: [UInt16])? {
+        RustVideoFFI.reassemblerNextNeedsRetransmit(handle)
+    }
+
     /// Feeds one parsed fragment. Returns the outcome FOR THE INGESTED FRAGMENT'S
     /// frame. Drops of OLDER, now-hopeless frames are surfaced separately via
     /// ``nextDroppedFrame()`` (so completing a newer frame never hides an older loss).

@@ -88,11 +88,29 @@ pub enum RecoveryMessage {
     },
     /// Periodic network-feedback telemetry.
     NetworkStats(NetworkStatsReport),
+    /// NACK / selective ARQ: request retransmission of specific lost DATA fragments of a frame.
+    ///
+    /// Variable-length but SELF-DELIMITING (a `u16` count precedes the indices), so the
+    /// decoder's trailing-bytes rejection — load-bearing for the host's byte-keyed request dedup
+    /// — still holds: two NACKs listing the same `(frame_id, indices)` are byte-identical (dedup),
+    /// different ones are not (each acted on).
+    RequestFragments {
+        /// The frame whose fragments are missing.
+        frame_id: u32,
+        /// The 0-based DATA-fragment indices the client is still missing (ascending, deduped).
+        frag_indices: Vec<u16>,
+    },
 }
 
 impl RecoveryMessage {
     /// Wire sentinel for "the client has not decoded any frame yet".
     pub const NO_FRAME_DECODED_SENTINEL: u32 = 0xFFFF_FFFF;
+
+    /// Max fragment indices a single [`RequestFragments`](Self::RequestFragments) NACK may carry.
+    /// A loss larger than this is cheaper to repair with an LTR refresh / IDR than a big selective
+    /// retransmit, so the client escalates instead; the decoder rejects an over-count as malformed
+    /// (a hostile-input guard that also bounds the decode allocation).
+    pub const MAX_NACK_FRAGMENTS: usize = 64;
 
     /// The on-wire message-type byte.
     #[must_use]
@@ -103,6 +121,7 @@ impl RecoveryMessage {
             Self::RequestIdr { .. } => 3,
             Self::RequestCursorShape { .. } => 4,
             Self::NetworkStats(_) => 5,
+            Self::RequestFragments { .. } => 6,
         }
     }
 
@@ -138,6 +157,18 @@ impl RecoveryMessage {
                 w.put_u32(r.pacer_late_frames);
                 w.put_u32(r.pacer_present_gaps);
                 w.put_u32(r.pacer_depth);
+            }
+            Self::RequestFragments {
+                frame_id,
+                frag_indices,
+            } => {
+                w.put_u32(*frame_id);
+                // Self-delimiting: the count precedes the indices so the body has no trailing
+                // bytes. The caller bounds `frag_indices.len()` to `MAX_NACK_FRAGMENTS` (≤ u16).
+                w.put_u16(frag_indices.len() as u16);
+                for idx in frag_indices {
+                    w.put_u16(*idx);
+                }
             }
         }
         w.into_vec()
@@ -177,6 +208,23 @@ impl RecoveryMessage {
                 pacer_present_gaps: r.read_u32()?,
                 pacer_depth: r.read_u32()?,
             }),
+            6 => {
+                let frame_id = r.read_u32()?;
+                let count = r.read_u16()? as usize;
+                if count > Self::MAX_NACK_FRAGMENTS {
+                    return Err(VideoProtocolError::malformed(format!(
+                        "RequestFragments count {count} exceeds MAX_NACK_FRAGMENTS"
+                    )));
+                }
+                let mut frag_indices = Vec::with_capacity(count);
+                for _ in 0..count {
+                    frag_indices.push(r.read_u16()?);
+                }
+                Self::RequestFragments {
+                    frame_id,
+                    frag_indices,
+                }
+            }
             other => {
                 return Err(VideoProtocolError::malformed(format!(
                     "unknown recovery message type {other}"
@@ -211,6 +259,14 @@ mod tests {
             last_decoded_frame_id: 9,
         });
         round_trip(&RecoveryMessage::RequestCursorShape { shape_id: 0xABCD });
+        round_trip(&RecoveryMessage::RequestFragments {
+            frame_id: 42,
+            frag_indices: vec![0, 3, 7, 11],
+        });
+        round_trip(&RecoveryMessage::RequestFragments {
+            frame_id: 1,
+            frag_indices: vec![], // empty list (degenerate but valid, self-delimiting)
+        });
         round_trip(&RecoveryMessage::NetworkStats(NetworkStatsReport {
             frames_received: 100,
             fec_recovered: 5,
@@ -230,6 +286,36 @@ mod tests {
     fn rejects_trailing_bytes() {
         let mut bytes = RecoveryMessage::Ack { stream_seq: 1 }.encode();
         bytes.push(0); // one trailing byte
+        assert!(matches!(
+            RecoveryMessage::decode(&bytes),
+            Err(VideoProtocolError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn request_fragments_rejects_oversized_count() {
+        // A hand-built NACK claiming more indices than MAX_NACK_FRAGMENTS is malformed (the count
+        // guard fires before any index is read — bounding the decode allocation on hostile input).
+        let mut bytes = vec![6u8];
+        bytes.extend_from_slice(&7u32.to_be_bytes()); // frame_id
+        let over = (RecoveryMessage::MAX_NACK_FRAGMENTS as u16) + 1;
+        bytes.extend_from_slice(&over.to_be_bytes()); // count > cap
+        assert!(matches!(
+            RecoveryMessage::decode(&bytes),
+            Err(VideoProtocolError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn request_fragments_rejects_trailing_bytes() {
+        // Self-delimiting body: a stray byte after the declared indices is still rejected, so the
+        // host's byte-keyed dedup cannot be bypassed by a suffix-varied NACK copy.
+        let mut bytes = RecoveryMessage::RequestFragments {
+            frame_id: 9,
+            frag_indices: vec![2, 4],
+        }
+        .encode();
+        bytes.push(0xFF);
         assert!(matches!(
             RecoveryMessage::decode(&bytes),
             Err(VideoProtocolError::Malformed(_))

@@ -100,6 +100,38 @@ public final class VideoSendLane: @unchecked Sendable {
         wakeup?.yield()
     }
 
+    /// Sends `outgoings` INLINE on the caller's thread — skipping the consumer Task-wakeup hop — but
+    /// ONLY when the lane is fully drained; returns `true` if it sent, `false` if the caller must
+    /// ``enqueue(_:)`` instead.
+    ///
+    /// RANK-2 INPUT LATENCY (2026-06-18): the lane exists to keep PACING sleeps off the encoder pump
+    /// (see the type doc). A tiny single-shot delta — the typing-idle keystroke frame — has no sleeps:
+    /// the consumer would just `send()` it in a loop. Yet it still pays a Task hop (~0.1–1 ms) to
+    /// reach that consumer. When the wire is idle we run that same loop right here and save the hop.
+    ///
+    /// The idleness test reads `fifo.isEmpty && !transmitting` UNDER THE LOCK. `transmitting` is true
+    /// for the WHOLE span a consumer drains a job (set in ``popNext`` before its lock-free send loop,
+    /// cleared only once the FIFO empties), so a `false` reading means no consumer send is in flight
+    /// AND nothing is queued — the wire is drained, and sending now preserves strict wire order. If
+    /// anything is queued or mid-pace we bail to `false`, so a keystroke can never overtake an
+    /// earlier, still-draining frame.
+    ///
+    /// INVARIANT (relied on, mirrors the rest of the lane): producers — this and ``enqueue(_:)`` —
+    /// are serialized by the owning session actor, so the FIFO cannot grow between the check and the
+    /// send; the consumer never sends with an empty FIFO, so the lock-free send below is exclusive of
+    /// the consumer's sends. Multi-chunk/paced jobs and the time-separated dup copies must still take
+    /// ``enqueue(_:)`` — they NEED the async sleeps.
+    public func trySendInline(_ outgoings: [VideoSendScheduler.Outgoing]) -> Bool {
+        lock.lock()
+        guard !closed, fifo.isEmpty, !transmitting else {
+            lock.unlock()
+            return false
+        }
+        lock.unlock()
+        for outgoing in outgoings { send(outgoing.bytes, outgoing.channel) }
+        return true
+    }
+
     /// Drops every queued job and aborts a mid-pace job at its next chunk boundary. Call on
     /// bye/media-stop so a dead client's frames are never paced onto the wire.
     public func flush() {

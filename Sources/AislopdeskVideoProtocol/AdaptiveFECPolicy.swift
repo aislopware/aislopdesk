@@ -102,6 +102,35 @@ public enum AdaptiveFECPolicy {
         return RustReedSolomonFEC()
     }
 
+    // MARK: Adaptive parity-count (`m`) ladder
+
+    /// Wire FEC tiers carrying the adaptive-`m` ladder's three parity levels. Chosen from the
+    /// reserved tier slots 5/6/7, all of which ``groupSize(forTier:default:)`` maps to the
+    /// endpoint default (`= k`) — the hard `m > 1` constraint (the RS Cauchy encoder has exactly
+    /// `k` columns; the group-size tiers 2/3/4 map to `g != k` and so can NOT carry `m > 1`).
+    /// Mirror of the Rust `adaptive_fec::PARITY_TIER_*` constants; the receive `m` they resolve to
+    /// (2 / 3 / 5) lives in `adaptive_fec::parity_count` (read by the core reassembler).
+    public static let parityTierClean: UInt8 = 5 // m = 2 (least overhead, clean link)
+    public static let parityTierNormal: UInt8 = 6 // m = 3 (baseline, == legacy fixed FEC_M=3)
+    public static let parityTierBurst: UInt8 = 7 // m = 5 (heavy recovery on a loss burst)
+
+    /// Whether the adaptive parity-count (`m`) ladder is active (`AISLOPDESK_ADAPTIVE_FEC_M=1`),
+    /// host-side. Default OFF.
+    ///
+    /// Requires a multi-loss codec (``MultiLossFEC/isActive``, `AISLOPDESK_FEC_M >= 2`): the
+    /// tier→`m` table is gated on `default_m >= 2`, so on the single-parity codec it is inert.
+    /// The CLIENT needs no flag — its reassembler always honours the per-frame wire tier — but
+    /// MUST run a matched `FEC_M >= 2` so its `default_m` activates the same table. Deploy
+    /// host+client together.
+    public static let adaptiveMEnabled = adaptiveMFromEnv(ProcessInfo.processInfo.environment)
+
+    /// Pure env resolution for the adaptive-`m` gate (testable without process state): the flag is
+    /// set AND the env resolves a multi-loss codec (`FEC_M >= 2`), the precondition for the
+    /// tier→`m` table to activate.
+    static func adaptiveMFromEnv(_ env: [String: String]) -> Bool {
+        env["AISLOPDESK_ADAPTIVE_FEC_M"] == "1" && MultiLossFEC.resolveParityCount(env: env) >= 2
+    }
+
     /// The wire FEC tier the host must stamp on EVERY frame given the active scheme.
     ///
     /// When multi-loss is active (`m >= 2`) this is FORCED to ``defaultTier`` (tier 0), whose wire
@@ -112,8 +141,16 @@ public enum AdaptiveFECPolicy {
     /// would feed the decoder a window the matrix was never built for and silently fail to repair.
     ///
     /// When `m == 1` this returns `adaptiveTier` unchanged, so the adaptive-FEC path is byte-identical.
+    ///
+    /// ADAPTIVE-`m` EXCEPTION: when ``adaptiveMEnabled``, the per-frame `m` ladder drives the tier,
+    /// and it only ever emits the parity tiers 5/6/7 (``parityTierClean``/`Normal`/`Burst`), all of
+    /// which map to group size `= k` — safe for the `m > 1` Cauchy code. So pass the chosen m-tier
+    /// straight through instead of forcing tier 0 (which would pin a single fixed `m`).
     public static func wireTier(adaptiveTier: UInt8) -> UInt8 {
-        MultiLossFEC.isActive ? defaultTier : adaptiveTier
+        if adaptiveMEnabled {
+            return adaptiveTier
+        }
+        return MultiLossFEC.isActive ? defaultTier : adaptiveTier
     }
 
     // MARK: A. Wire codec (host packetize + client reassemble)
@@ -293,6 +330,32 @@ public enum AdaptiveFECPolicy {
             loss: loss, tier: state.tier, relaxStreak: state.relaxStreak,
             stickyRelaxRemaining: state.stickyRelaxRemaining,
             dwell: dwell, allowOff: allowOff, sawUnrecoveredLoss: sawUnrecoveredLoss,
+        )
+        return TierState(
+            tier: next.tier,
+            relaxStreak: next.relaxStreak,
+            stickyRelaxRemaining: next.stickyRelaxRemaining,
+        )
+    }
+
+    /// Dwell-gated PARITY-tier step — the m-adaptive counterpart of ``nextTierState(forLossRate:state:dwell:allowOff:sawUnrecoveredLoss:)``.
+    ///
+    /// Steps the per-frame parity multiplicity `m` (over ``parityTierClean``/`Normal`/`Burst` →
+    /// `m` 2/3/5) with the same hysteresis + dwell + sticky-relax: escalation is immediate on a
+    /// loss burst, relaxation waits out the (sticky-doubled) dwell, and the floor is the CLEAN
+    /// level (`m == 2`) — there is no OFF tier on this path, so unlike the group-size ladder it
+    /// takes no `allowOff`. Delegates to the Rust core (`adaptive_fec::next_parity_tier_state`,
+    /// the single source of truth shared with the Android host); `dwell` stays Swift-side.
+    public static func nextParityTierState(
+        forLossRate loss: Double,
+        state: TierState,
+        dwell: Int = relaxDwellReports,
+        sawUnrecoveredLoss: Bool = false,
+    ) -> TierState {
+        let next = RustVideoFFI.adaptiveFECNextParityTierState(
+            loss: loss, tier: state.tier, relaxStreak: state.relaxStreak,
+            stickyRelaxRemaining: state.stickyRelaxRemaining,
+            dwell: dwell, sawUnrecoveredLoss: sawUnrecoveredLoss,
         )
         return TierState(
             tier: next.tier,

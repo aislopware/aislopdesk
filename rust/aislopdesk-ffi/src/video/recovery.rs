@@ -154,6 +154,12 @@ fn recovery_message_to_c(message: &RecoveryMessage) -> AisdRecoveryMessage {
         } => out.last_decoded_frame_id = *last_decoded_frame_id,
         RecoveryMessage::RequestCursorShape { shape_id } => out.shape_id = *shape_id,
         RecoveryMessage::NetworkStats(r) => out.stats = AisdNetworkStats::from_core(*r),
+        // NACK (selective ARQ): the flat C struct cannot carry the variable-length frag list, so
+        // only the kind + frame_id round-trip through the generic path. The Swift receive path
+        // peeks the type byte and decodes a type-6 datagram NATIVELY (a golden-pinned Swift codec),
+        // so this lossy flattening is never on the live NACK path — it exists only to keep this
+        // exhaustive (e.g. a direct-FFI caller that decodes a type-6 datagram via the generic API).
+        RecoveryMessage::RequestFragments { frame_id, .. } => out.from_frame_id = *frame_id,
     }
     out
 }

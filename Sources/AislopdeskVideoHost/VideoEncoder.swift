@@ -89,13 +89,17 @@ public final class VideoEncoder: @unchecked Sendable {
     }()
 
     /// OWN RATE-CONTROL — CONSTANT-QP (2026-06-18, `AISLOPDESK_CONST_QP`, default OFF = nil). When set
-    /// (1…51), the LIVE delta path pins BOTH `MinAllowedFrameQP` and `MaxAllowedFrameQP` to this value
-    /// so VideoToolbox encodes every live frame at a CONSTANT quality. This takes QP control away from
-    /// VT's `AverageBitRate` VBR steering, which otherwise banks budget while idle and then SLAMS QP on
-    /// the frames after a post-idle burst (the "idle → hard-scroll → rất mờ" clawback). At a constant QP
-    /// the post-idle burst is exactly as sharp as a continuous scroll; frame size floats with content
-    /// (idle tiny, scroll proportional). Brackets (crisp/compact IDRs) keep their own QP. The link
-    /// backstop is the slow ABR (a future link-AIMD will nudge this Q); for the Phase-1 test it is fixed.
+    /// (1…51), the LIVE delta path pins `MinAllowedFrameQP` to this value — the sharp FLOOR VT may
+    /// never undercut — so VideoToolbox encodes every live frame at least this crisp. This takes QP
+    /// control away from VT's `AverageBitRate` VBR steering, which otherwise banks budget while idle and
+    /// then SLAMS QP on the frames after a post-idle burst (the "idle → hard-scroll → rất mờ" clawback).
+    /// `MaxAllowedFrameQP` is normally pinned to the SAME value (constant QP), so a static frame is
+    /// Min==Max==floor; but when a per-frame motion ceiling is supplied (``constQPBand`` — the capturer's
+    /// adaptive-QP measurement under `AISLOPDESK_ADAPTIVE_QP`), the MAX rises above the floor on motion so
+    /// VT may coarsen the huge whole-viewport SCROLL frame (shrinking it ~80 KB → ~15-25 KB so it drains
+    /// in a few ms, not ~30 ms — the scroll "nặng"), then the ceiling snaps back to the floor the instant
+    /// motion stops. Frame size floats with content (idle tiny, scroll bounded). Brackets (crisp/compact
+    /// IDRs) keep their own QP. The link backstop is the slow ABR (the link-AIMD nudges this Q).
     public static let constQP: Int? = {
         guard let s = ProcessInfo.processInfo.environment["AISLOPDESK_CONST_QP"], let v = Int(s),
               v >= 1, v <= 51 else { return nil }
@@ -1002,6 +1006,25 @@ public final class VideoEncoder: @unchecked Sendable {
         )
     }
 
+    /// MOTION-KEYED CONSTANT QP under const-QP (2026-06-18, Parsec-style scroll). Returns the single QP
+    /// to pin BOTH `Min` and `Max` `AllowedFrameQP` to for one live delta frame:
+    /// * `floor` on a STATIC frame (`perFrameMaxQP` nil or ≤ floor) ⇒ Min==Max==floor — pure const-QP,
+    ///   byte-identical to before this lever; text stays crisp, no VBR clawback.
+    /// * `perFrameMaxQP` on MOTION (the capturer's adaptive-QP measurement ramps it above the floor)
+    ///   ⇒ Min==Max==that coarser QP, so VT is FORCED to shrink the huge whole-viewport scroll frame
+    ///   (~80 KB → ~10-20 KB → drains in a few ms, not ~32 ms = the scroll "nặng").
+    ///
+    /// Pinning Min==Max (a CONSTANT QP) rather than a `[floor, ceiling]` band is deliberate and was
+    /// HW-required: a mere ceiling never bites because the const-QP bitrate backstop (AverageBitRate
+    /// ~60 Mbps) leaves VT no budget pressure, so it keeps picking the sharp floor and the scroll frame
+    /// stays fat. Forcing the QP takes the choice away from VT's VBR steering entirely — the same
+    /// anti-clawback property as pure const-QP, with the constant now keyed to motion (and snapping
+    /// back to the floor the instant motion stops, via the capturer's sharp-instant asymmetric EMA).
+    /// A `perFrameMaxQP` below the floor is clamped UP (the sharp floor always wins).
+    static func constQPForFrame(floor: Int, perFrameMaxQP: Int?) -> Int {
+        Swift.max(floor, perFrameMaxQP ?? floor)
+    }
+
     private func encode(
         session: VTCompressionSession,
         pixelBuffer: CVPixelBuffer,
@@ -1016,19 +1039,28 @@ public final class VideoEncoder: @unchecked Sendable {
         // (bracketDepth>0). A small change carries a low (sharp) ceiling, a burst carries the higher
         // configured ceiling. Best-effort (the `set` helper tolerates a -12900 reject); no restore —
         // the next live frame sets its own, and a bracket restores the static ceiling when it runs.
-        // OWN RATE-CONTROL — CONSTANT-QP: pin Min==Max==constQP on the live delta path so VT can't vary
-        // QP (no VBR clawback after a post-idle burst). Overrides the content-driven `perFrameMaxQP`.
+        // OWN RATE-CONTROL — CONSTANT-QP (motion-keyed, 2026-06-18): pin Min to the const-QP floor so VT
+        // can't blur below the sharp guarantee (no VBR clawback after a post-idle burst); the MAX is the
+        // floor on a STATIC frame (Min==Max==floor → constant QP, today's behavior) but rises to the
+        // capturer's content-driven `perFrameMaxQP` on MOTION so VT may coarsen the fat scroll frame
+        // (``constQPBand``). With adaptive-QP off, `perFrameMaxQP` is nil ⇒ Max==floor ⇒ byte-identical.
         // Brackets own the QP (bracketDepth>0) → skip. Best-effort (`set` tolerates -12900). Setting Min
-        // too is what forces a CONSTANT QP (Max alone is only a ceiling VT undershoots under budget).
+        // is what forces the sharp floor (Max alone is only a ceiling VT undershoots under budget).
         if Self.constQP != nil {
             bitrateLock.lock()
-            let cq = liveConstQP // the link-AIMD's current Q (seeded from env, nudged per report)
-            let shouldSet = bracketDepth == 0 && lastAdaptiveQP != cq
-            if shouldSet { lastAdaptiveQP = cq }
+            // floor = the link-AIMD's current Q (seeded from env, nudged per report). Static ⇒ floor;
+            // motion ⇒ a coarser content-driven constant (``constQPForFrame``).
+            let q = Self.constQPForFrame(floor: liveConstQP, perFrameMaxQP: perFrameMaxQP)
+            // Dedup on the applied QP: a static stream holds q == floor ⇒ no per-frame property write
+            // (today's hot path). A const-QP nudge clears `lastAdaptiveQP` (setConstQP) so q re-applies.
+            let shouldSet = bracketDepth == 0 && lastAdaptiveQP != q
+            if shouldSet { lastAdaptiveQP = q }
             bitrateLock.unlock()
             if shouldSet {
-                set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, cq as CFNumber)
-                set(session, kVTCompressionPropertyKey_MinAllowedFrameQP, cq as CFNumber)
+                // Pin BOTH ⇒ a CONSTANT QP VT can't undercut (a ceiling alone never bites — no budget
+                // pressure under the ~60Mbps const-QP backstop, so VT would keep the fat sharp frame).
+                set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, q as CFNumber)
+                set(session, kVTCompressionPropertyKey_MinAllowedFrameQP, q as CFNumber)
             }
         } else if let q = perFrameMaxQP {
             bitrateLock.lock()
@@ -1112,31 +1144,26 @@ public final class VideoEncoder: @unchecked Sendable {
             let dataPointer else { return }
         var avcc = Data(bytes: dataPointer, count: totalLength)
 
-        // Keyframe? Absence of the not-sync attachment ⇒ keyframe.
+        // Read the per-frame sample attachments ONCE and pull BOTH the keyframe flag and (when LTR
+        // is on) the LTR ack token from the same dictionary — they live on the same attachments
+        // object, so a single `CMSampleBufferGetSampleAttachmentsArray` + bridge per frame suffices.
+        // Keyframe? Absence of the not-sync attachment ⇒ keyframe (default true, unchanged).
+        // WF-8: `ltrToken` (an Int64) is read only when `readLTRToken` (the instance `ltrEnabled`);
+        // with LTR off it stays nil ⇒ the handler call is byte-identical to today.
         var keyframe = true
+        var ltrToken: Int64?
         if let attachments = CMSampleBufferGetSampleAttachmentsArray(
             sampleBuffer,
             createIfNecessary: false,
         ) as? [[CFString: Any]],
-            let first = attachments.first,
-            let notSync = first[kCMSampleAttachmentKey_NotSync] as? Bool
+            let first = attachments.first
         {
-            keyframe = !notSync
-        }
-
-        // WF-8: read the LTR ack token if this is a Long-Term-Reference frame. GATED on `readLTRToken`
-        // (the instance `ltrEnabled`): when LTR is off this whole block is skipped → `ltrToken` stays
-        // nil → the handler call is byte-identical to today. Mirror of the WF-7 probe's attachment
-        // inspection (`LTRProbeBox.record`) — read the VALUE (an Int64 token) not just presence.
-        var ltrToken: Int64?
-        if readLTRToken,
-           let attachments = CMSampleBufferGetSampleAttachmentsArray(
-               sampleBuffer,
-               createIfNecessary: false,
-           ) as? [[CFString: Any]],
-           let first = attachments.first
-        {
-            ltrToken = first[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] as? Int64
+            if let notSync = first[kCMSampleAttachmentKey_NotSync] as? Bool {
+                keyframe = !notSync
+            }
+            if readLTRToken {
+                ltrToken = first[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] as? Int64
+            }
         }
 
         // CRITICAL: VTCompressionSession keeps the HEVC VPS/SPS/PPS parameter sets in the sample

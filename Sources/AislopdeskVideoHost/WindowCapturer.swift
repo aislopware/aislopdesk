@@ -142,6 +142,46 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         return 22
     }()
 
+    /// The motion-end QP ceiling the adaptive law ramps UP to on a burst (the sharp end is
+    /// ``adaptiveQPSharp``). Defaults to the static drop-avoidance ceiling
+    /// (``VideoEncoder/maxAllowedFrameQP``, e.g. 51); `AISLOPDESK_AQP_MAX` overrides so motion
+    /// coarsening can be capped well below it (e.g. 36) — keeps a scroll frame readable while still
+    /// shrinking it ~80 KB → ~15-25 KB. Under const-QP (motion-keyed band) this is the upper end of the
+    /// `[floor, AQP_MAX]` range a scroll frame may coarsen into.
+    private static let adaptiveQPMax: Int = {
+        if let s = ProcessInfo.processInfo.environment["AISLOPDESK_AQP_MAX"], let v = Int(s), v >= 1, v <= 51 {
+            return v
+        }
+        return VideoEncoder.maxAllowedFrameQP
+    }()
+
+    /// How fast the smoothed QP eases UP toward a coarser target on motion onset: the per-frame step is
+    /// `(rawQP - smoothed) / N`. `N == 1` (default) ⇒ INSTANT — the QP jumps to the motion target on
+    /// the very first scroll frame, so a quick push-scroll's burst-START frames are already coarse
+    /// (small) instead of fat (the slow ease-up left the first ~6 frames sharp ⇒ ~80 KB ⇒ scroll
+    /// "nặng"). Re-sharpen on STOP is always instant (the snap-down is unconditional). A larger `N`
+    /// (`AISLOPDESK_AQP_UP_RAMP=2/3`) trades responsiveness for less QP shimmer if the coarsen-snap
+    /// ever looks abrupt. Clamped ≥ 1.
+    private static let adaptiveQPUpRamp: Int = {
+        if let s = ProcessInfo.processInfo.environment["AISLOPDESK_AQP_UP_RAMP"], let v = Int(s), v >= 1 {
+            return v
+        }
+        return 1
+    }()
+
+    /// How fast the smoothed QP eases DOWN toward the sharp floor when motion STOPS: at most this many
+    /// QP per frame. A straight snap-to-floor (40→24 in one frame) re-encodes the whole settled
+    /// viewport SHARP in a single ~80 KB frame — the scroll-STOP "khựng". Stepping down by a few QP
+    /// spreads that re-sharpen over a handful of small frames (no hitch) while still reaching full
+    /// sharpness within ~60-80 ms (imperceptible). `AISLOPDESK_AQP_DOWN_STEP` overrides; `≥ 51` (or a
+    /// huge value) restores the old instant snap-down. Clamped ≥ 1.
+    private static let adaptiveQPDownStep: Int = {
+        if let s = ProcessInfo.processInfo.environment["AISLOPDESK_AQP_DOWN_STEP"], let v = Int(s), v >= 1 {
+            return v
+        }
+        return 4
+    }()
+
     private static let adaptiveQPBLoMilli: UInt32 = {
         if let s = ProcessInfo.processInfo.environment["AISLOPDESK_AQP_BLO_MILLI"], let v = UInt32(s) {
             return min(1000, v)
@@ -1240,7 +1280,16 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
                 let rawQP = m.qp
                 let smoothed: Int =
                     if let s = adaptiveQPSmoothed {
-                        rawQP <= s ? rawQP : s + max(1, (rawQP - s) / 3)
+                        if rawQP > s {
+                            // Coarsen on motion ONSET by 1/upRamp (default 1 ⇒ INSTANT) so a scroll's
+                            // first frames are already small.
+                            s + max(1, (rawQP - s) / Self.adaptiveQPUpRamp)
+                        } else {
+                            // Re-sharpen on STOP by at most downStep QP/frame: a snap straight to the
+                            // floor re-encodes the whole settled viewport in ONE ~80 KB frame (the
+                            // scroll-stop "khựng"); stepping spreads it over a few small frames.
+                            max(rawQP, s - Self.adaptiveQPDownStep)
+                        }
                     } else {
                         rawQP
                     }
@@ -1721,7 +1770,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
             prevY: pBase, prevStride: CVPixelBufferGetBytesPerRowOfPlane(prev, 0),
             curY: cBase, curStride: CVPixelBufferGetBytesPerRowOfPlane(cur, 0),
             width: w, height: h,
-            qpSharp: adaptiveQPSharp, qpMax: VideoEncoder.maxAllowedFrameQP,
+            qpSharp: adaptiveQPSharp, qpMax: adaptiveQPMax,
             bLoMilli: adaptiveQPBLoMilli, bHiMilli: adaptiveQPBHiMilli,
         )
         return (qp, changeMilli)

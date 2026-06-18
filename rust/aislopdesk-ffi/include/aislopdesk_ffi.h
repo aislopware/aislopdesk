@@ -1834,6 +1834,23 @@ struct AisdTierState aisd_adaptive_fec_next_tier_state(double loss,
                                                        uint8_t saw_unrecovered_loss);
 
 /*
+ Dwell-gated PARITY-tier step — the adaptive-`m` production entry point (the m-adaptive
+ counterpart of [`aisd_adaptive_fec_next_tier_state`]).
+
+ Wraps [`adaptive_fec::next_parity_tier_state`]: instead of stepping the XOR group size at a
+ fixed `m == 1`, it steps the per-frame parity multiplicity `m` (over tiers 5/6/7 → `m`
+ 2/3/5) with the same hysteresis + dwell + sticky-relax. Escalation is immediate; relaxation
+ waits out the (sticky-doubled) dwell; the floor is the CLEAN level (`m == 2`) — there is NO
+ OFF tier on this path, so unlike [`aisd_adaptive_fec_next_tier_state`] it takes no
+ `allow_off`. `saw_unrecovered_loss` is a byte read `!= 0`; the caller passes `dwell`, keeping
+ the core environment-free. Returns the next state by value.
+ */
+struct AisdTierState aisd_adaptive_fec_next_parity_tier_state(double loss,
+                                                              struct AisdTierState state,
+                                                              int32_t dwell,
+                                                              uint8_t saw_unrecovered_loss);
+
+/*
  The capture union region: the target window unioned with qualifying same-pid panels in
  front of it, clamped to the display. Wraps [`capture_region::union_region`].
 
@@ -2610,6 +2627,46 @@ AisdStatus aisd_reassembler_ingest(struct AisdReassembler *reassembler,
  non-null.
  */
 uint8_t aisd_reassembler_next_dropped(struct AisdReassembler *reassembler, uint32_t *out_frame_id);
+
+/*
+ Enables NACK / selective ARQ on the reassembler.
+
+ A FEC-unrecoverable frame is then HELD pending for `retransmit_grace` frame-ids past the loss
+ frontier (instead of being dropped at the reorder grace), and its missing-fragment request is
+ surfaced via [`aisd_reassembler_next_needs_retransmit`] — giving a host retransmit time to arrive
+ inside the client's playout buffer. Only losses of at most `nack_max_frags` fragments get a request
+ (a SMALL loss; a bigger one skips to the Drop → LTR-refresh fallback). `retransmit_grace == 0`
+ disables it (the default; byte-identical legacy drop behaviour). No-op on a null `reassembler`.
+
+ # Safety
+ `reassembler`, if non-null, must be a live handle from [`aisd_reassembler_new`].
+ */
+void aisd_reassembler_enable_retransmit(struct AisdReassembler *reassembler,
+                                        int32_t retransmit_grace,
+                                        size_t nack_max_frags);
+
+/*
+ Pops the next NACK request a prior ingest's sweep queued.
+
+ The request names a frame that is FEC-unrecoverable but still inside the retransmit-grace window.
+ Writes `*out_frame_id` and the missing DATA fragment indices into `out_frag_indices` (setting
+ `*out_frag_count`); returns `1` when a request was popped, else `0` (outputs untouched). The
+ caller drains this in a loop after each ingest, like [`aisd_reassembler_next_dropped`].
+
+ `out_frag_indices` must hold at least
+ [`MAX_NACK_FRAGMENTS`](aislopdesk_core::recovery::RecoveryMessage::MAX_NACK_FRAGMENTS) `u16`s —
+ every queued request is bounded to that, so a request that would not fit `max_frags` is dropped
+ (returns `0`) rather than truncated. Returns `0` for a null `reassembler` or any null out-pointer.
+
+ # Safety
+ `out_frame_id` / `out_frag_count` must be writable; `out_frag_indices` must point to at least
+ `max_frags` writable `u16`s when non-null.
+ */
+uint8_t aisd_reassembler_next_needs_retransmit(struct AisdReassembler *reassembler,
+                                               uint32_t *out_frame_id,
+                                               uint16_t *out_frag_indices,
+                                               size_t *out_frag_count,
+                                               size_t max_frags);
 
 /*
  Releases the owned `avcc` buffer inside an [`AisdReassemblyResult`] and resets it to empty.

@@ -280,8 +280,17 @@ impl VideoPacketizer {
         // WF-4: per-frame group size from the tier (None = OFF → no parity). Tier 0 maps to
         // `default_group` (the codec's `k`, or a host-resolved per-frame override).
         let group_size = adaptive_fec::group_size(opts.fec_tier, default_group);
+        // ADAPTIVE-m: the per-frame parity multiplicity is ALSO derived from the tier
+        // (`parity_count`), so the host emits more/fewer parity shards per group as the loss
+        // ladder moves WITHOUT a wire-format change. For every tier on the legacy wire this
+        // resolves to the codec's configured `m` (`parity_count_per_group`), so `parity_with_m`
+        // reproduces `parity` byte-for-byte (golden-stable); only the new m-tiers (5/6/7 on a
+        // multi-loss codec) emit a different count.
         let parity_payloads: Vec<Vec<u8>> = match (group_size, self.fec.as_ref()) {
-            (Some(g), Some(fec)) => fec.parity(&payloads, g),
+            (Some(g), Some(fec)) => {
+                let m = adaptive_fec::parity_count(opts.fec_tier, fec.parity_count_per_group());
+                fec.parity_with_m(&payloads, g, m)
+            }
             _ => Vec::new(),
         };
 
