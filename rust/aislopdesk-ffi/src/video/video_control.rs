@@ -87,7 +87,7 @@ pub struct AisdVideoSummary {
 /// `0` and the record array is empty (`records` null, `records_len` 0). Field usage:
 /// `HELLO` → `protocol_version`/`requested_window_id`/`viewport_*`; `HELLO_ACK` → `accepted`/
 /// `stream_id`/`capture_*`/`full_range`/`bounds_*`; `RESIZE_REQUEST` → `desired_*`/`epoch`;
-/// `RESIZE_ACK` → `capture_*`/`epoch`; `STREAM_CADENCE` → `fps`; `SCROLL_OFFSET` → `scroll_dx`/`scroll_dy`; `WINDOW_LIST` /
+/// `RESIZE_ACK` → `capture_*`/`epoch`; `STREAM_CADENCE` → `fps`; `SCROLL_OFFSET` → `scroll_dx`/`scroll_dy`/`scroll_band_top`/`scroll_band_bottom`; `WINDOW_LIST` /
 /// `SYSTEM_DIALOG_LIST` → `records`/`records_len`; `CONTENT_MASK` → `mask_rects`/`mask_rects_len`;
 /// the zero-body kinds use none. On a decode `out`
 /// the `records` array owns a Rust allocation (released by [`aisd_video_control_free`]); on an
@@ -135,6 +135,12 @@ pub struct AisdVideoControl {
     pub scroll_dx: i16,
     /// `SCROLL_OFFSET.dy` — vertical content shift in pixels (signed; positive = content moved DOWN).
     pub scroll_dy: i16,
+    /// `SCROLL_OFFSET.band_top` — top of the moving-content band, ten-thousandths of frame height
+    /// (`0..=10000`); the client warps only this band so chrome does not slide. `bottom <= top` ⇒ no
+    /// band (whole-frame warp).
+    pub scroll_band_top: u16,
+    /// `SCROLL_OFFSET.band_bottom` — bottom of the moving-content band, ten-thousandths of height.
+    pub scroll_band_bottom: u16,
     /// `WINDOW_LIST` / `SYSTEM_DIALOG_LIST` record array (owned out / borrowed in; null otherwise).
     pub records: *mut AisdVideoSummary,
     /// Number of records at `records`.
@@ -169,6 +175,8 @@ impl AisdVideoControl {
             fps: 0,
             scroll_dx: 0,
             scroll_dy: 0,
+            scroll_band_top: 0,
+            scroll_band_bottom: 0,
             records: core::ptr::null_mut(),
             records_len: 0,
             mask_rects: core::ptr::null_mut(),
@@ -289,6 +297,8 @@ unsafe fn c_to_video_control(m: &AisdVideoControl) -> Result<VideoControlMessage
         AISD_VIDEO_CONTROL_SCROLL_OFFSET => VideoControlMessage::ScrollOffset {
             dx: m.scroll_dx,
             dy: m.scroll_dy,
+            band_top: m.scroll_band_top,
+            band_bottom: m.scroll_band_bottom,
         },
         AISD_VIDEO_CONTROL_CONTENT_MASK => {
             // SAFETY: per the contract, a content-mask `kind`'s rects cover `mask_rects_len`
@@ -440,9 +450,16 @@ fn video_control_to_c(message: &VideoControlMessage) -> AisdVideoControl {
             out.epoch = *epoch;
         }
         VideoControlMessage::StreamCadence { fps } => out.fps = *fps,
-        VideoControlMessage::ScrollOffset { dx, dy } => {
+        VideoControlMessage::ScrollOffset {
+            dx,
+            dy,
+            band_top,
+            band_bottom,
+        } => {
             out.scroll_dx = *dx;
             out.scroll_dy = *dy;
+            out.scroll_band_top = *band_top;
+            out.scroll_band_bottom = *band_bottom;
         }
         VideoControlMessage::ContentMask(rects) => {
             let recs: Vec<AisdMaskRect> = rects
@@ -703,9 +720,16 @@ mod tests {
                 kind: AISD_VIDEO_CONTROL_SCROLL_OFFSET,
                 scroll_dx: -5,
                 scroll_dy: 42,
+                scroll_band_top: 1234,
+                scroll_band_bottom: 8765,
                 ..AisdVideoControl::zeroed()
             };
-            let scroll_core = VideoControlMessage::ScrollOffset { dx: -5, dy: 42 };
+            let scroll_core = VideoControlMessage::ScrollOffset {
+                dx: -5,
+                dy: 42,
+                band_top: 1234,
+                band_bottom: 8765,
+            };
 
             for (c, core) in [
                 (hello_c, hello_core),
@@ -741,6 +765,8 @@ mod tests {
                 assert_eq!(out.fps, c.fps);
                 assert_eq!(out.scroll_dx, c.scroll_dx);
                 assert_eq!(out.scroll_dy, c.scroll_dy);
+                assert_eq!(out.scroll_band_top, c.scroll_band_top);
+                assert_eq!(out.scroll_band_bottom, c.scroll_band_bottom);
                 assert!(out.records.is_null(), "no records for a scalar variant");
                 aisd_video_control_free(&mut out); // a scalar decode owns nothing — still a no-op
                 crate::aisd_bytes_free(frame);

@@ -443,9 +443,10 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// first. Distinct from `lastSubmittedFrameHash` (which tracks the last SUBMITTED frame for dedup).
     private var lastStillnessHash: UInt64?
     /// SCROLL REPROJECTION callback (gated on `scrollReprojectEnabled`): called on `frameQueue` with the
-    /// measured per-frame offset (normalized ×10000, signed) when scrolling — the session sends it as a
-    /// `ScrollOffset` control message. `nil` ⇒ no send. frameQueue-confined.
-    var onScrollOffset: (@Sendable (Int16, Int16) -> Void)?
+    /// measured per-frame offset (normalized ×10000, signed) + the moving-content vertical band
+    /// (`bandTop`/`bandBottom`, ten-thousandths of height; `0,0` ⇒ no band) when scrolling — the session
+    /// sends it as a `ScrollOffset` control message. `nil` ⇒ no send. frameQueue-confined.
+    var onScrollOffset: (@Sendable (Int16, Int16, UInt16, UInt16) -> Void)?
     /// True while the last sent scroll offset was non-zero — so exactly one `(0,0)` is emitted when
     /// scroll stops (arming the client reprojector's decay) instead of spamming it on every static frame.
     private var lastScrollWasNonZero = false
@@ -1212,12 +1213,12 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // codec frames). Done BEFORE cachedPixelBuffer is overwritten, so it is still the previous frame.
         // Only sends on a confident non-zero shift, plus one (0,0) when scroll stops (decay arm).
         if Self.scrollReprojectEnabled, let prev = cachedPixelBuffer {
-            let (dx, dy) = Self.measureScrollOffset(prev: prev, cur: pixelBuffer)
+            let (dx, dy, bandTop, bandBottom) = Self.measureScrollOffset(prev: prev, cur: pixelBuffer)
             if dx != 0 || dy != 0 {
-                onScrollOffset?(dx, dy)
+                onScrollOffset?(dx, dy, bandTop, bandBottom)
                 lastScrollWasNonZero = true
             } else if lastScrollWasNonZero {
-                onScrollOffset?(0, 0)
+                onScrollOffset?(0, 0, 0, 0)
                 lastScrollWasNonZero = false
             }
         }
@@ -1633,23 +1634,28 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// luma plane (the caller then simply does not suppress). Called only when suppression is enabled.
     /// SCROLL REPROJECTION: measure the dominant per-frame VERTICAL content shift between `prev` and
     /// `cur` (NV12 luma planes), returned as a signed NORMALIZED offset in ten-thousandths of the frame
-    /// HEIGHT (×10000). `(0, 0)` when the planes differ in size, a lock fails, or the shift is not
-    /// confident (typing / non-scroll). Both planes are locked read-only for the call only. `dx` is
-    /// always `0` on the v1 host (vertical scroll only). frameQueue-confined.
-    private static func measureScrollOffset(prev: CVPixelBuffer, cur: CVPixelBuffer) -> (Int16, Int16) {
+    /// HEIGHT (×10000), PLUS the moving-content vertical band (`bandTop`/`bandBottom`, also in
+    /// ten-thousandths of height) so the client warps only the editor body and the chrome stays put.
+    /// `(0, 0, 0, 0)` when the planes differ in size, a lock fails, or the shift is not confident
+    /// (typing / non-scroll); `bandTop == bandBottom == 0` ⇒ no band (whole-frame warp fallback). Both
+    /// planes are locked read-only for the call only. `dx` is always `0` on the v1 host (vertical scroll
+    /// only). frameQueue-confined.
+    private static func measureScrollOffset(prev: CVPixelBuffer, cur: CVPixelBuffer)
+        -> (dx: Int16, dy: Int16, bandTop: UInt16, bandBottom: UInt16)
+    {
         let w = CVPixelBufferGetWidthOfPlane(cur, 0)
         let h = CVPixelBufferGetHeightOfPlane(cur, 0)
         guard w > 0, h > 0,
               CVPixelBufferGetWidthOfPlane(prev, 0) == w,
               CVPixelBufferGetHeightOfPlane(prev, 0) == h
-        else { return (0, 0) }
-        guard CVPixelBufferLockBaseAddress(prev, .readOnly) == kCVReturnSuccess else { return (0, 0) }
+        else { return (0, 0, 0, 0) }
+        guard CVPixelBufferLockBaseAddress(prev, .readOnly) == kCVReturnSuccess else { return (0, 0, 0, 0) }
         defer { CVPixelBufferUnlockBaseAddress(prev, .readOnly) }
-        guard CVPixelBufferLockBaseAddress(cur, .readOnly) == kCVReturnSuccess else { return (0, 0) }
+        guard CVPixelBufferLockBaseAddress(cur, .readOnly) == kCVReturnSuccess else { return (0, 0, 0, 0) }
         defer { CVPixelBufferUnlockBaseAddress(cur, .readOnly) }
         guard let pBase = CVPixelBufferGetBaseAddressOfPlane(prev, 0),
               let cBase = CVPixelBufferGetBaseAddressOfPlane(cur, 0)
-        else { return (0, 0) }
+        else { return (0, 0, 0, 0) }
         let pStride = CVPixelBufferGetBytesPerRowOfPlane(prev, 0)
         let cStride = CVPixelBufferGetBytesPerRowOfPlane(cur, 0)
         // Search up to a quarter-frame scroll per frame (covers a fast flick at 30 fps).
@@ -1660,18 +1666,35 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
                     .utf8,
             ))
         }
-        let (shift, confMilli) = RustVideoHostFFI.estimateScrollShift(
+        let (shift, confMilli, bandTopRow, bandBottomRow) = RustVideoHostFFI.estimateScrollShift(
             prevY: pBase, prevStride: pStride, curY: cBase, curStride: cStride,
             width: w, height: h, maxShift: maxShift,
         )
         if Self.dbgGapEnabled {
             FileHandle.standardError
-                .write(Data("aislopdesk-videohostd[scroll]: shift=\(shift) conf=\(confMilli)\n".utf8))
+                .write(Data(
+                    "aislopdesk-videohostd[scroll]: shift=\(shift) conf=\(confMilli) band=\(bandTopRow)..\(bandBottomRow)\n"
+                        .utf8,
+                ))
         }
-        guard confMilli >= 500, shift != 0 else { return (0, 0) }
+        guard confMilli >= 500, shift != 0 else { return (0, 0, 0, 0) }
         let normMilli = (Double(shift) / Double(h) * 10000.0).rounded()
         let dy = Int16(max(-32767.0, min(32767.0, normMilli)))
-        return (0, dy)
+        // Normalize the moving-content band (current-frame rows, INCLUSIVE) → ten-thousandths of the
+        // frame height. The shader applies the reproject offset only inside [bandTop, bandBottom) and
+        // clamps the sample to it, so the static chrome above/below never slides. `-1` rows ⇒ no band
+        // (0, 0) ⇒ the client falls back to a whole-frame warp.
+        let (bandTop, bandBottom): (UInt16, UInt16)
+        if bandTopRow >= 0, bandBottomRow >= bandTopRow {
+            let top = (Double(bandTopRow) / Double(h) * 10000.0).rounded()
+            let bottom = (Double(Int(bandBottomRow) + 1) / Double(h) * 10000.0).rounded()
+            bandTop = UInt16(max(0.0, min(10000.0, top)))
+            bandBottom = UInt16(max(0.0, min(10000.0, bottom)))
+        } else {
+            bandTop = 0
+            bandBottom = 0
+        }
+        return (0, dy, bandTop, bandBottom)
     }
 
     /// ADAPTIVE-QP: compute the per-frame `MaxAllowedFrameQP` ceiling from the change magnitude between

@@ -773,6 +773,8 @@ const fn control_base() -> AisdVideoControl {
         fps: 0,
         scroll_dx: 0,
         scroll_dy: 0,
+        scroll_band_top: 0,
+        scroll_band_bottom: 0,
         records: core::ptr::null_mut(),
         records_len: 0,
         mask_rects: core::ptr::null_mut(),

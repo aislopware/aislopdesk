@@ -526,6 +526,57 @@ final class LiveCongestionControllerTests: XCTestCase {
         )
     }
 
+    /// Utilization fix (mirrors the core `idle_utilization_gates_ramp_decay_and_hold`): loaded ⇒ RAMP,
+    /// deeply idle ⇒ DECAY toward offered, moderately idle ⇒ HOLD, no/non-finite signal ⇒ legacy RAMP.
+    /// The "scroll-up-at-top then scroll-down-hard → blur+lag" fix: idle shrinks the target so the burst
+    /// stays bounded.
+    func testIdleUtilizationGatesRampDecayAndHold() {
+        let clean = estimate(lossSamples: 0, folds: 1)
+        // Floor 3M, current starts at ceiling — clear room for a decay to be observable.
+        func floored() -> LiveCongestionController {
+            warmedController(ceiling: ceiling, floor: 3_000_000)
+        }
+        // Below ceiling + past the hold-down so a ramp is observable.
+        func poised() -> LiveCongestionController {
+            var c = warmedController(ceiling: ceiling)
+            _ = c.onReport(estimate(lossSamples: 0.05, folds: 8, rttCongested: true))
+            for _ in 0..<LiveCongestionController.holdTicks { _ = c.onReport(clean) }
+            return c
+        }
+
+        // (a) DEEPLY idle: offered ~2% of current ⇒ DECAY (target FALLS, never below floor).
+        var idle = floored()
+        let before = idle.current
+        let d = idle.decide(clean, offeredBps: Double(before) * 0.02)
+        XCTAssertLessThan(d.target, before, "deep idle must decay the target down")
+        XCTAssertGreaterThanOrEqual(d.target, idle.floor, "decay never below floor")
+        XCTAssertEqual(d.reason, .appLimited)
+
+        // (b) MODERATELY idle: offered ~40% (between the fractions) ⇒ HOLD (no ramp, no decay).
+        var mid = poised()
+        let beforeM = mid.current
+        let dM = mid.decide(clean, offeredBps: Double(beforeM) * 0.40)
+        XCTAssertEqual(dM.target, beforeM, "moderate idle holds")
+        XCTAssertEqual(dM.reason, .hold)
+
+        // (c) LOADED: offered ~90% ⇒ ramp up (Probe or cautious Knee).
+        var loaded = poised()
+        let beforeL = loaded.current
+        let dL = loaded.decide(clean, offeredBps: Double(beforeL) * 0.9)
+        XCTAssertGreaterThan(dL.target, beforeL, "real load must ramp up")
+        XCTAssertTrue(dL.reason == .probe || dL.reason == .knee, "real load ramps, got \(dL.reason)")
+
+        // (d) NO / non-finite signal ⇒ legacy ramp.
+        var legacy = poised()
+        let beforeN = legacy.current
+        XCTAssertGreaterThan(legacy.decide(clean).target, beforeN, "no signal ⇒ legacy probe")
+        var nanSig = poised()
+        let beforeX = nanSig.current
+        XCTAssertGreaterThan(
+            nanSig.decide(clean, offeredBps: .nan).target, beforeX, "non-finite ⇒ permit probe",
+        )
+    }
+
     func testRecoveryNeverExceedsCeiling() {
         var ctrl = warmedController(ceiling: ceiling)
         // Drop once, then feed a long clean stream — the rate climbs but clamps AT the ceiling.

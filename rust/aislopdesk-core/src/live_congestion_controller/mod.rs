@@ -41,6 +41,26 @@ pub const DECREASE_FACTOR: f64 = 0.85;
 pub const SEVERE_DECREASE_FACTOR: f64 = 0.5;
 /// Additive-increase step = `ceiling / increase_divisor` per clean tick.
 pub const INCREASE_DIVISOR: i64 = 32;
+/// Minimum fraction of `current` the stream must be USING before the controller probes higher.
+///
+/// Below it the stream is APPLICATION-limited (idle / near-static screen), so probing would only
+/// inflate phantom headroom that a later burst overshoots into bufferbloat — the controller holds
+/// instead. Only consulted when the host supplies a utilization signal (`decide_with_utilization`);
+/// the legacy `decide` path is unaffected.
+pub const RAMP_UTILIZATION_FRACTION: f64 = 0.5;
+/// Fraction of `current` below which the stream is DEEPLY idle → the target DECAYS toward offered.
+///
+/// Stricter than [`RAMP_UTILIZATION_FRACTION`] so a brief inter-flick pause (the offered EWMA only
+/// dips) holds without decaying, while a sustained static screen (scroll-against-the-wall) drifts the
+/// target down — so a post-idle burst can't form a VBR "monster" frame (which spikes Wi-Fi latency and
+/// triggers a quality-clawback). Between the two fractions the controller simply holds.
+pub const DECAY_UTILIZATION_FRACTION: f64 = 0.25;
+/// While idle the target decays toward `offered × this` — headroom above the measured use so the
+/// first post-idle frame is not starved, while still far below an inflated ceiling.
+pub const DECAY_HEADROOM: f64 = 2.0;
+/// Geometric step (fraction of the gap to the decay target) per idle tick — ~0.4s to settle near the
+/// target at the ~50ms report cadence. Smooth, so it never snaps the rate.
+pub const DECAY_STEP_FRACTION: f64 = 0.25;
 /// Reports to suppress any increase after a decrease — the anti-thrash hold-down.
 pub const HOLD_TICKS: i64 = 20;
 /// `smoothed_rtt > min_rtt × rtt_inflate_factor` (AND past the slack) signals queue build-up.
@@ -95,6 +115,9 @@ pub enum CutReason {
     Probe,
     /// Additive increase at/above the remembered knee — the cautious step.
     Knee,
+    /// Multiplicative decay while DEEPLY application-limited (idle / static screen): the target drifts
+    /// down toward the offered throughput so a post-idle burst stays bounded. Not congestion.
+    AppLimited,
     /// Proportional RTT (delay-targeting) cut — sustained smoothed-RTT inflation streak.
     RttStreak,
     /// Loss-corroborated cut — raw loss over the threshold WITH RTT-inflation evidence.

@@ -88,6 +88,20 @@ public final class VideoEncoder: @unchecked Sendable {
         return 51
     }()
 
+    /// OWN RATE-CONTROL — CONSTANT-QP (2026-06-18, `AISLOPDESK_CONST_QP`, default OFF = nil). When set
+    /// (1…51), the LIVE delta path pins BOTH `MinAllowedFrameQP` and `MaxAllowedFrameQP` to this value
+    /// so VideoToolbox encodes every live frame at a CONSTANT quality. This takes QP control away from
+    /// VT's `AverageBitRate` VBR steering, which otherwise banks budget while idle and then SLAMS QP on
+    /// the frames after a post-idle burst (the "idle → hard-scroll → rất mờ" clawback). At a constant QP
+    /// the post-idle burst is exactly as sharp as a continuous scroll; frame size floats with content
+    /// (idle tiny, scroll proportional). Brackets (crisp/compact IDRs) keep their own QP. The link
+    /// backstop is the slow ABR (a future link-AIMD will nudge this Q); for the Phase-1 test it is fixed.
+    public static let constQP: Int? = {
+        guard let s = ProcessInfo.processInfo.environment["AISLOPDESK_CONST_QP"], let v = Int(s),
+              v >= 1, v <= 51 else { return nil }
+        return v
+    }()
+
     /// CRISP STATIC REFRESH (doc 17 §3.4 — Design A, single-session QP-bump, 2026-06-08).
     /// When the window goes static the heartbeat timer re-encodes the cached frame as a
     /// near-lossless intra refresh ON THE LIVE SESSION (not a second session): we momentarily
@@ -280,6 +294,11 @@ public final class VideoEncoder: @unchecked Sendable {
     /// ``currentLiveBitrate()`` and applies the newest value on restore, so the controller can never
     /// clobber the relaxed crisp/compact config mid-IDR and the bracket never reverts the controller.
     private var bracketDepth = 0
+    /// LIVE constant-QP value (bitrateLock-guarded) when const-QP mode is on (``constQP`` != nil). Seeded
+    /// from the env, then driven per network report by the host's link-AIMD (``QPController``) via
+    /// ``setConstQP(_:)`` — so the constant quality adapts to the link (coarsen on congestion) without
+    /// VT's per-frame VBR clawback. Only read on the live delta path when ``constQP`` != nil.
+    private var liveConstQP: Int = VideoEncoder.constQP ?? maxAllowedFrameQP
     /// Last per-frame adaptive `MaxAllowedFrameQP` actually written (bitrateLock-guarded). Skips the
     /// redundant VTSessionSetProperty + CFNumber bridge when the smoothed QP is unchanged (the common
     /// static/typing case → QP pinned at qp_sharp). INVALIDATED to nil by every crisp/compact bracket
@@ -408,6 +427,23 @@ public final class VideoEncoder: @unchecked Sendable {
             set(sess, kVTCompressionPropertyKey_DataRateLimits, Self.dataRateLimits(bytesPerSecond: clamped / 8))
         }
         // Mid-bracket: skip — the active bracket's defer re-reads currentLiveBitrate() and applies it.
+        return changed
+    }
+
+    /// OWN RATE-CONTROL: set the live constant-QP (the link-AIMD ``QPController``'s current Q). No-op
+    /// unless const-QP mode is on (``constQP`` != nil). Clamped to the HEVC range. Clears
+    /// `lastAdaptiveQP` so the next live delta frame re-applies Min==Max==Q; the actual VTSessionSet
+    /// happens on that next `encode()` (not here), so this is a cheap lock-guarded store callable from
+    /// the host actor per network report. Returns whether the value changed.
+    @discardableResult
+    public func setConstQP(_ q: Int) -> Bool {
+        guard Self.constQP != nil else { return false }
+        let clamped = max(1, min(51, q))
+        bitrateLock.lock()
+        let changed = clamped != liveConstQP
+        liveConstQP = clamped
+        if changed { lastAdaptiveQP = nil } // force the next live frame to re-pin Min==Max==clamped
+        bitrateLock.unlock()
         return changed
     }
 
@@ -816,6 +852,13 @@ public final class VideoEncoder: @unchecked Sendable {
             Self.dataRateLimits(bytesPerSecond: Self.crispDataRateMaxBytes),
         )
         set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, Self.crispMaxQP as CFNumber)
+        // CONST-QP: the live path pins Min==constQP; the crisp IDR's sharp Max (crispMaxQP < constQP)
+        // would then be Min>Max. Pin Min to the crisp QP too so the IDR is sharp + valid. No-op when
+        // const-QP is off (no Min is ever set). The defer restores Max to maxAllowedFrameQP (≥ Min), and
+        // the next live frame re-pins Min==Max==constQP.
+        if Self.constQP != nil {
+            set(session, kVTCompressionPropertyKey_MinAllowedFrameQP, Self.crispMaxQP as CFNumber)
+        }
         // 5. Restore the proven live low-latency config no matter how we exit. CRITICAL: restore the
         //    LIVE cap (`currentLiveBitrate() / 8`, matching the create-site), NOT the static 12 Mbps
         //    default — otherwise the first static refresh on a `--bitrate >12` session would permanently
@@ -973,7 +1016,21 @@ public final class VideoEncoder: @unchecked Sendable {
         // (bracketDepth>0). A small change carries a low (sharp) ceiling, a burst carries the higher
         // configured ceiling. Best-effort (the `set` helper tolerates a -12900 reject); no restore —
         // the next live frame sets its own, and a bracket restores the static ceiling when it runs.
-        if let q = perFrameMaxQP {
+        // OWN RATE-CONTROL — CONSTANT-QP: pin Min==Max==constQP on the live delta path so VT can't vary
+        // QP (no VBR clawback after a post-idle burst). Overrides the content-driven `perFrameMaxQP`.
+        // Brackets own the QP (bracketDepth>0) → skip. Best-effort (`set` tolerates -12900). Setting Min
+        // too is what forces a CONSTANT QP (Max alone is only a ceiling VT undershoots under budget).
+        if Self.constQP != nil {
+            bitrateLock.lock()
+            let cq = liveConstQP // the link-AIMD's current Q (seeded from env, nudged per report)
+            let shouldSet = bracketDepth == 0 && lastAdaptiveQP != cq
+            if shouldSet { lastAdaptiveQP = cq }
+            bitrateLock.unlock()
+            if shouldSet {
+                set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, cq as CFNumber)
+                set(session, kVTCompressionPropertyKey_MinAllowedFrameQP, cq as CFNumber)
+            }
+        } else if let q = perFrameMaxQP {
             bitrateLock.lock()
             // Skip the set when not in a bracket AND the QP is unchanged from the last applied one —
             // avoids a per-frame VTSessionSetProperty + CFNumber bridge on static/typing (QP pinned).

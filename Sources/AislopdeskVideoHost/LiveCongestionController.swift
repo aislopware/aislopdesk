@@ -113,6 +113,25 @@ public struct LiveCongestionController: Sendable, Equatable {
     public static let severeDecreaseFactor: Double = envDouble("AISLOPDESK_ABR_SEVERE_DEC", 0.5, min: 0.05, max: 0.999)
     /// Additive-increase step = `ceiling / increaseDivisor` per clean tick (32 ⇒ ~3% of ceiling). `AISLOPDESK_ABR_INC_DIV`.
     public static let increaseDivisor: Int = envInt("AISLOPDESK_ABR_INC_DIV", 32, min: 1, max: 100_000)
+    /// Minimum fraction of `current` the stream must actually be USING (offered encoded throughput)
+    /// before the controller probes higher. Below it the stream is APPLICATION-limited (idle / near-
+    /// static screen — "scroll-up-at-top, only the cursor blinks") so probing would only inflate
+    /// phantom headroom that a later burst overshoots into bufferbloat (RTT 90-110ms on a 5ms LAN) →
+    /// the "scroll-down-hard → blur + lag" failure. Only consulted when the host supplies a
+    /// utilization signal (`decide(_:offeredBps:)`); the no-signal path is unaffected. Mirrors the
+    /// core `RAMP_UTILIZATION_FRACTION` (0.5). `AISLOPDESK_ABR_RAMP_UTIL`.
+    public static let rampUtilizationFraction: Double = envDouble("AISLOPDESK_ABR_RAMP_UTIL", 0.5, min: 0, max: 1)
+    /// Fraction of `current` below which the stream is DEEPLY idle → the target DECAYS toward offered
+    /// (stricter than ``rampUtilizationFraction`` so a brief flick-pause holds, a sustained static
+    /// screen shrinks the target — so a post-idle burst can't form a VBR monster frame). Mirrors the
+    /// core `DECAY_UTILIZATION_FRACTION` (0.25). `AISLOPDESK_ABR_DECAY_UTIL`.
+    public static let decayUtilizationFraction: Double = envDouble("AISLOPDESK_ABR_DECAY_UTIL", 0.25, min: 0, max: 1)
+    /// While idle the target decays toward `offered × this` (headroom above the measured use). Mirrors
+    /// core `DECAY_HEADROOM` (2.0). `AISLOPDESK_ABR_DECAY_HEADROOM`.
+    public static let decayHeadroom: Double = envDouble("AISLOPDESK_ABR_DECAY_HEADROOM", 2.0, min: 1, max: 100)
+    /// Geometric fraction of the gap to the decay target per idle tick. Mirrors core
+    /// `DECAY_STEP_FRACTION` (0.25). `AISLOPDESK_ABR_DECAY_STEP`.
+    public static let decayStepFraction: Double = envDouble("AISLOPDESK_ABR_DECAY_STEP", 0.25, min: 0, max: 1)
     /// Reports to suppress any increase after a decrease — the anti-thrash hold-down (~20 × 50ms ≈ 1s). `AISLOPDESK_ABR_HOLD`.
     public static let holdTicks: Int = envInt("AISLOPDESK_ABR_HOLD", 20, min: 0, max: 100_000)
     /// `smoothedRTT > minRTT × rttInflateFactor` (AND past the absolute slack) signals queue build-up. `AISLOPDESK_ABR_RTT`.
@@ -134,6 +153,31 @@ public struct LiveCongestionController: Sendable, Equatable {
     public static func effectiveSlackMillis(minRTTMillis: Double) -> Double {
         guard minRTTMillis.isFinite else { return rttSlackMillis }
         return max(rttSlackMillis, rttSlackFraction * minRTTMillis)
+    }
+
+    /// Whether the stream is using enough of its current target to justify probing higher. `nil` (no
+    /// signal) always permits — backward-compatible. With a finite signal, the probe is permitted only
+    /// when the offered throughput is at least ``rampUtilizationFraction`` of `current`; otherwise the
+    /// stream is application-limited and a probe would only inflate phantom headroom (mirrors the core
+    /// `utilization_permits_ramp`).
+    public static func utilizationPermitsRamp(offeredBps: Double?, current: Int) -> Bool {
+        guard let offered = offeredBps, offered.isFinite else { return true }
+        return offered >= Double(current) * rampUtilizationFraction
+    }
+
+    /// The decayed `current` for a DEEPLY application-limited (idle / static) tick, or `nil` when no
+    /// decay applies (no signal, not deeply idle, or already at/below the idle target). Drifts one
+    /// geometric ``decayStepFraction`` step toward `offered × decayHeadroom` (floored) — only when
+    /// offered is below ``decayUtilizationFraction`` of `current`, so a sustained static screen shrinks
+    /// the target (the post-idle burst stays bounded) while a brief flick-pause holds. Mirrors the core
+    /// `app_limited_decay`. Never below `floor`; never increases `current`.
+    static func appLimitedDecay(offeredBps: Double?, current: Int, floor: Int) -> Int? {
+        guard let offered = offeredBps, offered.isFinite else { return nil }
+        guard offered < Double(current) * decayUtilizationFraction else { return nil } // not deeply idle
+        let target = max(floor, Int(offered * decayHeadroom))
+        guard target < current else { return nil } // already at/below the idle target
+        let step = max(1, Int(Double(current - target) * decayStepFraction))
+        return max(target, current - step)
     }
 
     /// CONSECUTIVE inflated reports required before the RTT path decreases (~N × 50ms). `AISLOPDESK_ABR_RTT_N`.
@@ -289,6 +333,9 @@ public struct LiveCongestionController: Sendable, Equatable {
         case probe
         /// Additive increase at/above the remembered knee — the cautious (÷kneeCautionDivisor) step.
         case knee
+        /// Multiplicative decay while DEEPLY application-limited (idle / static screen): the target
+        /// drifts down toward the offered throughput so a post-idle burst stays bounded. Not congestion.
+        case appLimited
         /// Proportional RTT (delay-targeting) cut — sustained smoothed-RTT inflation streak.
         case rttStreak
         /// Loss-corroborated cut — raw loss over the threshold WITH RTT-inflation evidence.
@@ -324,8 +371,15 @@ public struct LiveCongestionController: Sendable, Equatable {
     ///
     /// Decision order: warmup → severe-loss halve → ordinary-congestion multiplicative decrease →
     /// (past hold-down) additive increase. The result is ALWAYS within `[floor, ceiling]`.
+    ///
+    /// `offeredBps` is the host's recent encoded throughput (bytes/frame × 8 × fps). When supplied and
+    /// the stream is APPLICATION-limited (offered far below `current` — an idle / near-static screen),
+    /// the additive increase is SUPPRESSED so an idle period can't inflate the target into phantom
+    /// headroom that a sudden burst then overshoots into bufferbloat. `nil` (the default) ⇒ no
+    /// utilization gate ⇒ probe exactly as before (every pre-fix call site keeps its behaviour). The
+    /// core mirror is `LiveCongestionController::decide_with_utilization`.
     @discardableResult
-    public mutating func decide(_ e: NetworkEstimate) -> Decision {
+    public mutating func decide(_ e: NetworkEstimate, offeredBps: Double? = nil) -> Decision {
         ticks += 1
         // Capture the trend input for the NEXT report whatever branch runs (including warmup).
         defer { prevSmoothedRTTMillis = e.smoothedRTTMillis }
@@ -444,21 +498,30 @@ public struct LiveCongestionController: Sendable, Equatable {
             return Decision(target: current, reason: reason)
         }
         if ticks >= holdUntilTick, !rttInflated, !(gradientCutEnabled && e.owdTrendOverusing) {
-            // Clean link past the hold-down: probe up additively toward the ceiling. `!rttInflated`
-            // keeps the probe from climbing INTO a building queue while the streak/hold-down is
-            // still suppressing the decrease (minRTT re-baselines upward ~1%/fold, so a genuinely
-            // shifted path baseline un-sticks this on its own). Component 3 adds the trend guard
-            // (gated on the same flag for A/B purity): never probe up INTO a detected overuse while
-            // `cutHoldUntilTick` is still blocking the gradient cut — the estimator un-latches
-            // within one window when the slope flattens, so this can never pin the rate. At/above
-            // the remembered knee the
-            // step is divided by `kneeCautionDivisor`: the controller hovers under the rate that
-            // built a queue instead of re-bashing it every recovery (25↔40Mbps pumping = the felt
-            // sawtooth).
-            let cautious = kneeBps.map { current >= $0 } ?? false
-            let step = cautious ? max(1, increaseStep / Self.kneeCautionDivisor) : increaseStep
-            current = min(ceiling, current + step)
-            return Decision(target: current, reason: cautious ? .knee : .probe)
+            // Clean link past the hold-down. RAMP up if the stream is using its allocation; while
+            // DEEPLY idle DECAY the target toward what's offered (so a post-idle burst can't form a VBR
+            // monster frame → no WiFi-latency spike / quality clawback); in between, HOLD (fall through).
+            // No utilization signal ⇒ always a ramp (the legacy path).
+            if Self.utilizationPermitsRamp(offeredBps: offeredBps, current: current) {
+                // Probe up additively toward the ceiling. `!rttInflated` keeps the probe from climbing
+                // INTO a building queue while the streak/hold-down is still suppressing the decrease
+                // (minRTT re-baselines upward ~1%/fold, so a genuinely shifted path baseline un-sticks
+                // this on its own). Component 3 adds the trend guard (gated on the same flag for A/B
+                // purity): never probe up INTO a detected overuse while `cutHoldUntilTick` is still
+                // blocking the gradient cut. At/above the remembered knee the step is divided by
+                // `kneeCautionDivisor`: the controller hovers under the rate that built a queue instead
+                // of re-bashing it every recovery (25↔40Mbps pumping = the felt sawtooth).
+                let cautious = kneeBps.map { current >= $0 } ?? false
+                let step = cautious ? max(1, increaseStep / Self.kneeCautionDivisor) : increaseStep
+                current = min(ceiling, current + step)
+                return Decision(target: current, reason: cautious ? .knee : .probe)
+            }
+            // Not using the allocation. DEEPLY idle ⇒ decay toward offered; moderately idle ⇒ hold
+            // (fall through to the drain/hold attribution below).
+            if let decayed = Self.appLimitedDecay(offeredBps: offeredBps, current: current, floor: floor) {
+                current = decayed
+                return Decision(target: current, reason: .appLimited)
+            }
         }
         // No action this tick. Attribute the DRAIN gate when it is the only thing that held an
         // otherwise fully-armed RTT cut (inflated + streak + cut-hold expired, but improving).

@@ -66,9 +66,12 @@ public enum RustVideoHostFFI {
 
     /// SCROLL REPROJECTION (2026-06-16): the dominant VERTICAL content shift (pixel rows) between two
     /// locked NV12 luma planes (the previous + current captured frames), via the NEON per-row hasher +
-    /// the pure core estimator (`aisd_estimate_scroll_shift_nv12`). Returns `(shift, confidenceMilli)`
-    /// — `shift` positive = content moved DOWN; `confidenceMilli` ∈ 0…1000 (the caller gates on it).
-    /// Pointers are borrowed for the call only. `(0, 0)` on a null/degenerate input (never a crash).
+    /// the pure core estimator (`aisd_estimate_scroll_shift_nv12`). Returns `(shift, confidenceMilli,
+    /// bandTop, bandBottom)` — `shift` positive = content moved DOWN; `confidenceMilli` ∈ 0…1000 (the
+    /// caller gates on it); `bandTop`/`bandBottom` are the inclusive current-frame ROW span of the
+    /// moving content (the editor body — chrome excluded) for the client's chrome-region reproject
+    /// mask, or `-1`/`-1` when there is no confident scroll. Pointers borrowed for the call only.
+    /// Degenerate/null input ⇒ `(0, 0, -1, -1)` (never a crash).
     static func estimateScrollShift(
         prevY: UnsafeRawPointer,
         prevStride: Int,
@@ -77,9 +80,11 @@ public enum RustVideoHostFFI {
         width: Int,
         height: Int,
         maxShift: Int,
-    ) -> (shift: Int32, confidenceMilli: UInt32) {
+    ) -> (shift: Int32, confidenceMilli: UInt32, bandTop: Int32, bandBottom: Int32) {
         var shift: Int32 = 0
         var conf: UInt32 = 0
+        var bandTop: Int32 = -1
+        var bandBottom: Int32 = -1
         _ = aisd_estimate_scroll_shift_nv12(
             prevY.assumingMemoryBound(to: UInt8.self),
             prevStride,
@@ -90,8 +95,10 @@ public enum RustVideoHostFFI {
             maxShift,
             &shift,
             &conf,
+            &bandTop,
+            &bandBottom,
         )
-        return (shift, conf)
+        return (shift, conf, bandTop, bandBottom)
     }
 
     // A 1:1 mirror of the wide C ABI signature, hence the parameter count.

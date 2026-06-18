@@ -54,6 +54,15 @@ public final class MetalVideoRenderer {
     /// Stays exactly `(0, 0)` when the feature is off, so the sampled UV — and the rendered bytes —
     /// are byte-identical to before this feature.
     public var reprojectionOffset: SIMD2<Float> = .zero
+    /// CHROME-REGION REPROJECT MASK (host-measured, 2026-06-18): the moving-content vertical band as
+    /// normalized sample-UV `y` bounds `(top, bottom)`. The reproject offset is applied ONLY to samples
+    /// whose `uv.y` is inside this band (the editor body) and the shifted sample is CLAMPED to it, so
+    /// the static chrome (toolbars / tabs / status bar) above and below keeps its un-shifted UV and does
+    /// NOT slide with the content — the whole-frame warp was the single worst scroll-reproject artifact.
+    /// A degenerate band (`y <= x`, e.g. the default `(0, 0)`) ⇒ the legacy whole-frame warp, so the
+    /// rendered bytes are unchanged when no band is set (and when the feature is off, `reprojectionOffset`
+    /// stays `(0, 0)` ⇒ the band is irrelevant). Set from `VideoWindowPipeline.applyHostScrollOffset`.
+    public var reprojectBand: SIMD2<Float> = .zero
     /// `.fit` (letterbox/pillarbox — whole window, bars) or `.fill` (cover — the video is
     /// scaled up to cover the whole drawable, the overflowing axis clipped by the viewport;
     /// no bars, aspect preserved). Both go through the SAME ``AspectFit/displayedVideoRect``
@@ -294,6 +303,10 @@ public final class MetalVideoRenderer {
         // edge revealed by the shift) to black.
         var reproj = reprojectionOffset
         encoder.setFragmentBytes(&reproj, length: MemoryLayout<SIMD2<Float>>.size, index: 2)
+        // CHROME-REGION MASK band (normalized UV y bounds): the shader applies `reproj` only inside it.
+        // (0,0) (or any y<=x) ⇒ whole-frame warp (byte-identical to before this feature). buffer(9).
+        var rband = reprojectBand
+        encoder.setFragmentBytes(&rband, length: MemoryLayout<SIMD2<Float>>.size, index: 9)
         // CONTENT MASK: normalize each opaque rect (capture pixels) to sample-UV space [0,1] using the
         // decoded frame size, then hand the shader the rect list + count. The shader keeps a fragment
         // OPAQUE only when its sampled UV is inside one of these rects; everything else → alpha 0. The
@@ -437,7 +450,8 @@ public final class MetalVideoRenderer {
                                          constant float &sharpen [[buffer(5)]],
                                          constant float &punch [[buffer(6)]],
                                          constant float &dark [[buffer(7)]],
-                                         constant float2 &lumaTexel [[buffer(8)]]) {
+                                         constant float2 &lumaTexel [[buffer(8)]],
+                                         constant float2 &reprojBand [[buffer(9)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         // zoomPan = (invZoom, panX, panY, _): crop the sampled UV around the panned centre.
         float2 uv = (in.uv - 0.5) * zoomPan.x + 0.5 + float2(zoomPan.y, zoomPan.z);
@@ -446,7 +460,22 @@ public final class MetalVideoRenderer {
         // unchanged ⇒ byte-identical output. The newly-revealed disocclusion edge now samples via the
         // sampler's clamp_to_edge (the editor's near-uniform background row ≈ invisible) rather than hard
         // BLACK — the black gutter was the single most objectionable scroll artifact (2026-06-16 reframe).
-        uv += reprojOffset;
+        //
+        // CHROME-REGION MASK: warp ONLY the host-measured moving-content band [reprojBand.x, reprojBand.y]
+        // (normalized y). Rows outside it — the static toolbars/tabs/status bar — keep their un-shifted UV
+        // so the chrome does not slide with the content (the whole-frame warp was the worst artifact).
+        // Inside the band the shifted sample is CLAMPED to it, so chrome above/below is never pulled in and
+        // the band's leading edge smears (the disocclusion fill, contained to the editor). A degenerate
+        // band (y <= x, incl. the default (0,0)) ⇒ the legacy whole-frame warp (no-band frame / A-B).
+        if (reprojBand.y > reprojBand.x) {
+            if (uv.y >= reprojBand.x && uv.y <= reprojBand.y) {
+                float2 shifted = uv + reprojOffset;
+                shifted.y = clamp(shifted.y, reprojBand.x, reprojBand.y);
+                uv = shifted;
+            }
+        } else {
+            uv += reprojOffset;
+        }
         float y = lumaTex.sample(s, uv).r;
         // UNSHARP MASK on luma (text = luma edges): crisp the upscaled 1× stream back up. Adds
         // amount·(center − avg of 4 source-texel neighbours) to the centre luma. sharpen 0 ⇒ skipped

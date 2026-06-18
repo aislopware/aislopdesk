@@ -3639,9 +3639,11 @@
       "variant": "streamCadence"
     },
     {
+      "bandBottom": 9000,
+      "bandTop": 1000,
       "dx": -5,
       "dy": 42,
-      "hex": "0dfffb002a",
+      "hex": "0dfffb002a03e82328",
       "variant": "scrollOffset"
     },
     {

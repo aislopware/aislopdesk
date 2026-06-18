@@ -394,11 +394,27 @@ public actor AislopdeskVideoHostSession {
     /// at every encoder build so a resize re-anchors it to the new resolution's ceiling. `nil` ⇒ ABR
     /// off or no encoder yet ⇒ no actuation.
     private var congestionController: LiveCongestionController?
+    /// OWN RATE-CONTROL link-AIMD on QP (2026-06-18): drives the encoder's CONSTANT QP from the ABR's
+    /// per-report congestion verdict (a cut reason ⇒ congested → coarsen Q; clean → sharpen slowly), so
+    /// the constant-quality stream adapts to the link without VT's VBR clawback. `nil` unless const-QP
+    /// mode is on (`VideoEncoder.constQP != nil`). Reuses the ABR's congestion detection (no longer
+    /// redundant under const-QP — its verdict now drives Q).
+    private var qpController: QPController?
     /// The last bitrate actually pushed to the encoder via `setLiveBitrate`, so the controller's small
     /// per-tick additive moves are throttled to MATERIAL changes (the controller's `current` advances
     /// every tick; actuation compares against THIS, not the prior tick). Re-anchored to the ceiling at
     /// each encoder build.
     private var lastActuatedBitrate = 0
+    /// ABR utilization signal (idle-ramp fix, 2026-06-18): an EWMA of the encoded DELTA-frame byte size
+    /// (anchors excluded, same as the FPS governor), tracked INDEPENDENTLY of the FPS governor (which is
+    /// usually off) so it is always available at the ABR tick. `offeredBps = ewma × 8 × governedFps`
+    /// feeds `LiveCongestionController.decide(_:offeredBps:)`, which suppresses the additive probe while
+    /// the stream is application-limited (idle / near-static screen) — so an idle period can't inflate
+    /// the target into phantom headroom that a sudden scroll then overshoots into bufferbloat. `0` until
+    /// the first delta frame (⇒ pass `nil` ⇒ no gate, the warmup default).
+    private var offeredBytesPerFrameEWMA: Double = 0
+    /// EWMA smoothing for ``offeredBytesPerFrameEWMA`` (matches the FPS governor's 0.125).
+    private static let offeredEWMAAlpha = 0.125
     /// KHỰNG-ladder stage 2 (AISLOPDESK_VIDEO_DEBUG): last frame-send start, actor-owned. A >28ms gap
     /// between two frame sends during continuous motion = the hole formed at/before encode
     /// (capture stage-1 clean ⇒ encoder/actor pump); see WindowCapturer stage 1.
@@ -459,8 +475,8 @@ public actor AislopdeskVideoHostSession {
             // per-frame scroll offset as a `ScrollOffset` control message. Set on EVERY (re)build —
             // initial start, resize, encoder rebuild — so reprojection survives them. The capturer only
             // measures + calls this when AISLOPDESK_SCROLL_REPROJECT=1, so this is inert otherwise.
-            capturer?.onScrollOffset = { [weak self] dx, dy in
-                Task { await self?.sendScrollOffset(dx: dx, dy: dy) }
+            capturer?.onScrollOffset = { [weak self] dx, dy, bandTop, bandBottom in
+                Task { await self?.sendScrollOffset(dx: dx, dy: dy, bandTop: bandTop, bandBottom: bandBottom) }
             }
         }
     }
@@ -1068,18 +1084,49 @@ public actor AislopdeskVideoHostSession {
                 // Fix 4 (cut-reason attribution): `decide` is `onReport` + the WHY token, so the
                 // actuate line below can attribute a cut to gradient/rttStreak/loss/… — printing
                 // stays here at the debug site; the controller stays pure.
-                let decision = ctrl.decide(networkEstimate)
+                // IDLE-RAMP FIX (2026-06-18): pass the recent offered throughput so the controller
+                // suppresses the additive probe while application-limited (idle/static) — no phantom
+                // headroom for a later burst to overshoot. `nil` until the first delta frame (no gate).
+                let offeredBps = offeredBytesPerFrameEWMA > 0
+                    ? offeredBytesPerFrameEWMA * 8.0 * Double(governedFps)
+                    : nil
+                let decision = ctrl.decide(networkEstimate, offeredBps: offeredBps)
                 let target = decision.target
                 congestionController = ctrl
+                // OWN RATE-CONTROL: feed the ABR's congestion verdict into the QP link-AIMD and drive the
+                // encoder's CONSTANT QP. A cut reason (RTT/loss/gradient/catastrophic) = congested →
+                // coarsen Q (smaller frames, fit the link); anything else = clean → sharpen slowly. This
+                // adapts the constant-quality stream to the link with NO VT VBR clawback, and makes the
+                // ABR verdict meaningful again under const-QP. Runs every report (not gated on actuation).
+                if var qp = qpController {
+                    let congested =
+                        switch decision.reason {
+                        case .rttStreak,
+                             .lossCorroborated,
+                             .gradient,
+                             .catastrophic: true
+                        default: false
+                        }
+                    let q = qp.decide(congested: congested)
+                    qpController = qp
+                    if encoder?.setConstQP(q) == true {
+                        dbg("qp-aimd: Q=\(q) (congested=\(congested) reason=\(decision.reason.rawValue))")
+                    }
+                }
                 if LiveCongestionController.isMaterialChange(
                     previous: lastActuatedBitrate,
                     target: target,
                     ceiling: ctrl.ceiling,
                 ) {
                     lastActuatedBitrate = target
-                    encoder?.setLiveBitrate(target)
+                    // Under const-QP the QP-AIMD above is the SOLE rate control: keep AverageBitRate
+                    // pinned at the create-time ceiling (a high drop-backstop) and do NOT actuate the
+                    // ABR's bitrate cut — cutting AverageBitRate here would race the QP-AIMD (the cut
+                    // lands a frame before the coarser Q) and could momentarily drop frames. The ABR
+                    // still runs purely for its congestion VERDICT, which drives the QP-AIMD.
+                    if qpController == nil { encoder?.setLiveBitrate(target) }
                     dbg(
-                        "abr: actuate target=\(target) ceiling=\(ctrl.ceiling) floor=\(ctrl.floor) current=\(ctrl.current) ticks=\(ctrl.ticks) knee=\(ctrl.kneeBps.map(String.init) ?? "-") reason=\(decision.reason.rawValue)",
+                        "abr: actuate target=\(target) ceiling=\(ctrl.ceiling) floor=\(ctrl.floor) current=\(ctrl.current) ticks=\(ctrl.ticks) knee=\(ctrl.kneeBps.map(String.init) ?? "-") offered≈\(offeredBps.map { String(Int($0)) } ?? "-") reason=\(decision.reason.rawValue)",
                     )
                 }
             }
@@ -1179,6 +1226,9 @@ public actor AislopdeskVideoHostSession {
         // fallback — even when ABR is off. Inert in the default config (pacing off), strictly-better when
         // `AISLOPDESK_PACE=1` is A/B'd with `AISLOPDESK_ABR=0` (otherwise heavy frames serialize at 4× the gap).
         lastActuatedBitrate = ceiling
+        // OWN RATE-CONTROL: when const-QP mode is on, seed the link-AIMD at the env QP. It rides the ABR
+        // tick (uses the ABR's congestion verdict), so it needs the ABR controller below.
+        if let seed = VideoEncoder.constQP { qpController = QPController(seedQ: seed) }
         guard Self.abrEnabled else { return }
         congestionController = LiveCongestionController(ceiling: ceiling)
     }
@@ -1209,12 +1259,17 @@ public actor AislopdeskVideoHostSession {
     }
 
     /// SCROLL REPROJECTION: send the host-measured per-frame scroll offset (normalized ×10000, signed)
-    /// to the client as a `ScrollOffset` control message. Fire-and-forget UDP (a single send, not
-    /// dup'd — it is a per-frame stream); a lost hint just costs one reproject frame (self-corrects on
-    /// the next real frame). No-op once the media flow has stopped.
-    func sendScrollOffset(dx: Int16, dy: Int16) {
+    /// plus the moving-content vertical band (`bandTop`/`bandBottom`, ten-thousandths of height; the
+    /// client warps only that band so the chrome stays put) to the client as a `ScrollOffset` control
+    /// message. Fire-and-forget UDP (a single send, not dup'd — it is a per-frame stream); a lost hint
+    /// just costs one reproject frame (self-corrects on the next real frame). No-op once the media flow
+    /// has stopped.
+    func sendScrollOffset(dx: Int16, dy: Int16, bandTop: UInt16, bandBottom: UInt16) {
         guard stateMachine.mediaFlowing else { return }
-        transport.send(scheduler.scheduleControl(.scrollOffset(dx: dx, dy: dy)).bytes, on: .control)
+        transport.send(
+            scheduler.scheduleControl(.scrollOffset(dx: dx, dy: dy, bandTop: bandTop, bandBottom: bandBottom)).bytes,
+            on: .control,
+        )
     }
 
     /// WF-8 self-audit fix: invalidate the LTR acked-set + frame map whenever a FRESH encoder /
@@ -2007,6 +2062,13 @@ public actor AislopdeskVideoHostSession {
         if var gov = fpsGovernor {
             gov.noteEncodedFrame(bytes: avcc.count, isAnchor: keyframe || crisp)
             fpsGovernor = gov
+        }
+        // ABR utilization signal (always on, independent of the FPS governor): fold this DELTA frame's
+        // size into the offered-load EWMA. Anchors (keyframe/crisp) excluded — episodic 5-10× IDR
+        // outliers would fake high utilization right after every recovery. Separated mul/add (no FMA).
+        if !(keyframe || crisp) {
+            offeredBytesPerFrameEWMA = offeredBytesPerFrameEWMA * (1.0 - Self.offeredEWMAAlpha)
+                + Double(avcc.count) * Self.offeredEWMAAlpha
         }
         encodedFrameCount += 1
         if encodedFrameCount == 1 || encodedFrameCount.isMultiple(of: 15) {

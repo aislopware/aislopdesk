@@ -1328,7 +1328,7 @@ typedef struct AisdMaskRect {
  `0` and the record array is empty (`records` null, `records_len` 0). Field usage:
  `HELLO` → `protocol_version`/`requested_window_id`/`viewport_*`; `HELLO_ACK` → `accepted`/
  `stream_id`/`capture_*`/`full_range`/`bounds_*`; `RESIZE_REQUEST` → `desired_*`/`epoch`;
- `RESIZE_ACK` → `capture_*`/`epoch`; `STREAM_CADENCE` → `fps`; `SCROLL_OFFSET` → `scroll_dx`/`scroll_dy`; `WINDOW_LIST` /
+ `RESIZE_ACK` → `capture_*`/`epoch`; `STREAM_CADENCE` → `fps`; `SCROLL_OFFSET` → `scroll_dx`/`scroll_dy`/`scroll_band_top`/`scroll_band_bottom`; `WINDOW_LIST` /
  `SYSTEM_DIALOG_LIST` → `records`/`records_len`; `CONTENT_MASK` → `mask_rects`/`mask_rects_len`;
  the zero-body kinds use none. On a decode `out`
  the `records` array owns a Rust allocation (released by [`aisd_video_control_free`]); on an
@@ -1416,6 +1416,16 @@ typedef struct AisdVideoControl {
      `SCROLL_OFFSET.dy` — vertical content shift in pixels (signed; positive = content moved DOWN).
      */
     int16_t scroll_dy;
+    /*
+     `SCROLL_OFFSET.band_top` — top of the moving-content band, ten-thousandths of frame height
+     (`0..=10000`); the client warps only this band so chrome does not slide. `bottom <= top` ⇒ no
+     band (whole-frame warp).
+     */
+    uint16_t scroll_band_top;
+    /*
+     `SCROLL_OFFSET.band_bottom` — bottom of the moving-content band, ten-thousandths of height.
+     */
+    uint16_t scroll_band_bottom;
     /*
      `WINDOW_LIST` / `SYSTEM_DIALOG_LIST` record array (owned out / borrowed in; null otherwise).
      */
@@ -2850,14 +2860,20 @@ void aisd_scroll_reprojector_reset(struct AisdScrollReprojector *reprojector);
  and `*out_confidence_milli` is the match fraction ×1000 (`0..=1000`). The CALLER gates (e.g. fire
  only when `confidence_milli >= 500 && shift != 0`).
 
+ `*out_band_top` / `*out_band_bottom` receive the inclusive CURRENT-frame row span of the MOVING
+ content (the editor body the client may reproject), or `-1` / `-1` when there is no confident
+ non-zero shift. The static chrome (toolbars / status bar) lies outside this span, so the client
+ warps only the band and the chrome does not slide.
+
  Returns [`AISD_ERR_NULL`] for a null pointer. A degenerate dimension (`width`/`height` 0, a
  `stride < width`, or a `stride * height` overflow) yields [`AISD_OK`] with shift 0 / confidence 0
- — a non-fault "no measurement". Never panics across the boundary.
+ / band `-1`,`-1` — a non-fault "no measurement". Never panics across the boundary.
 
  # Safety
  `prev_y` / `cur_y` must each point to at least `stride * height` readable, initialized bytes that
  stay valid for the call (borrowed — never retained or freed). `out_shift` /
- `out_confidence_milli` must be writable. No input pointer is ever written through.
+ `out_confidence_milli` / `out_band_top` / `out_band_bottom` must be writable. No input pointer is
+ ever written through.
  */
 AisdStatus aisd_estimate_scroll_shift_nv12(const uint8_t *prev_y,
                                            size_t prev_stride,
@@ -2867,7 +2883,9 @@ AisdStatus aisd_estimate_scroll_shift_nv12(const uint8_t *prev_y,
                                            size_t height,
                                            size_t max_shift,
                                            int32_t *out_shift,
-                                           uint32_t *out_confidence_milli);
+                                           uint32_t *out_confidence_milli,
+                                           int32_t *out_band_top,
+                                           int32_t *out_band_bottom);
 
 /*
  Adaptive per-frame QP ceiling from the inter-frame change magnitude.

@@ -456,6 +456,8 @@ fn video_control_parity() {
             "scrollOffset" => VideoControlMessage::ScrollOffset {
                 dx: i16v(r, "dx"),
                 dy: i16v(r, "dy"),
+                band_top: u16v(r, "bandTop"),
+                band_bottom: u16v(r, "bandBottom"),
             },
             "contentMask" => VideoControlMessage::ContentMask(
                 r["rects"]

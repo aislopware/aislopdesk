@@ -453,9 +453,11 @@ enum RustVideoFFI {
         case let .streamCadence(fps):
             c.fps = fps
             return emitVideoControl(&c)
-        case let .scrollOffset(dx, dy):
+        case let .scrollOffset(dx, dy, bandTop, bandBottom):
             c.scroll_dx = dx
             c.scroll_dy = dy
+            c.scroll_band_top = bandTop
+            c.scroll_band_bottom = bandBottom
             return emitVideoControl(&c)
         case let .contentMask(rects):
             return encodeMaskRects(kind: message.messageType, rects)
@@ -599,7 +601,12 @@ enum RustVideoFFI {
             case 11:
                 return .listSystemDialogs
             case 13:
-                return .scrollOffset(dx: out.scroll_dx, dy: out.scroll_dy)
+                return .scrollOffset(
+                    dx: out.scroll_dx,
+                    dy: out.scroll_dy,
+                    bandTop: out.scroll_band_top,
+                    bandBottom: out.scroll_band_bottom,
+                )
             case 14:
                 return .contentMask(maskRects(from: out).map {
                     MaskRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height)

@@ -136,10 +136,11 @@ public actor AislopdeskVideoClientSession {
         /// so the jitter-absorption delay auto-tunes to the link. Synchronous, lock-guarded.
         public var notePlayoutJitter: (@Sendable (Double) -> Void)?
         /// Scroll reprojection (2026-06-16): a host-measured per-frame scroll offset (normalized
-        /// ×10000, signed `dx`/`dy`). The pipeline converts it to a reprojector velocity so the last
-        /// frame warps between codec frames (`VideoWindowPipeline.applyHostScrollOffset`). `nil` ⇒ no
-        /// reprojector attached. Sent only while scroll reprojection is on.
-        public var applyScrollOffset: (@Sendable (Int16, Int16) -> Void)?
+        /// ×10000, signed `dx`/`dy`) + the moving-content vertical band (`bandTop`/`bandBottom`,
+        /// ten-thousandths of height). The pipeline converts the offset to a reprojector velocity and
+        /// hands the band to the renderer so the last frame warps ONLY inside the editor body between
+        /// codec frames (`VideoWindowPipeline.applyHostScrollOffset`). `nil` ⇒ no reprojector attached.
+        public var applyScrollOffset: (@Sendable (Int16, Int16, UInt16, UInt16) -> Void)?
         /// Content-mask transparency (2026-06-17): the opaque-content rects (capture PIXELS) the host
         /// sent after a DIALOG-EXPAND region change. The pipeline forwards them to the Metal renderer,
         /// which alpha-masks everything OUTSIDE the rects (a popup overhanging the window floats over
@@ -156,7 +157,7 @@ public actor AislopdeskVideoClientSession {
             readPacerTelemetry: (@Sendable () -> PacerTelemetrySnapshot)? = nil,
             noteNetworkLate: (@Sendable () -> Void)? = nil,
             notePlayoutJitter: (@Sendable (Double) -> Void)? = nil,
-            applyScrollOffset: (@Sendable (Int16, Int16) -> Void)? = nil,
+            applyScrollOffset: (@Sendable (Int16, Int16, UInt16, UInt16) -> Void)? = nil,
             applyContentMask: (@Sendable ([MaskRect]) -> Void)? = nil,
         ) {
             self.submitDecodedFrame = submitDecodedFrame
@@ -1371,10 +1372,11 @@ public actor AislopdeskVideoClientSession {
             // Depth v3: the owd-late threshold scales with the content interval.
             contentIntervalMs = 1000.0 / max(1.0, Double(fps))
             gui.applyStreamCadence?(Int(fps))
-        case let .applyScrollOffset(dx, dy):
-            // Scroll reprojection: forward the host-measured normalized offset to the GUI layer
-            // (the pipeline converts it to a reprojector velocity).
-            gui.applyScrollOffset?(dx, dy)
+        case let .applyScrollOffset(dx, dy, bandTop, bandBottom):
+            // Scroll reprojection: forward the host-measured normalized offset + moving-content band to
+            // the GUI layer (the pipeline converts the offset to a reprojector velocity and hands the
+            // band to the renderer's chrome-region mask).
+            gui.applyScrollOffset?(dx, dy, bandTop, bandBottom)
         case let .applyContentMask(rects):
             // Transparency mask after a DIALOG-EXPAND region change: forward the opaque-content rects
             // to the GUI layer (the renderer alpha-masks everything outside them). Empty ⇒ clear.

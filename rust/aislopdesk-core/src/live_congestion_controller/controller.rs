@@ -2,13 +2,13 @@
 //! AIMD `decide`/`decide_inner` fold over a [`NetworkEstimate`].
 
 use super::{
-    CATASTROPHIC_LOSS_THRESHOLD, CUT_HOLD_TICKS, CutReason, DECREASE_FACTOR, Decision,
-    GRADIENT_CUT_ENABLED_DEFAULT, GRADIENT_DECREASE_FACTOR, HOLD_TICKS, INCREASE_DIVISOR,
-    KNEE_CAUTION_DIVISOR, KNEE_TTL_TICKS, LOSS_NEEDS_RTT_CORROBORATION, LOSS_THRESHOLD,
-    LiveCongestionController, MATERIAL_FLOOR_BPS, MATERIAL_FRACTION, MIN_FRAC, MINIMUM_BITRATE,
-    NetworkEstimate, RTT_DECREASE_CAP_FACTOR, RTT_DECREASE_FLOOR_FACTOR, RTT_INFLATE_FACTOR,
-    RTT_STREAK_TICKS, SEVERE_DECREASE_FACTOR, SEVERE_LOSS_THRESHOLD, WARMUP_TICKS,
-    effective_slack_millis,
+    CATASTROPHIC_LOSS_THRESHOLD, CUT_HOLD_TICKS, CutReason, DECAY_HEADROOM, DECAY_STEP_FRACTION,
+    DECAY_UTILIZATION_FRACTION, DECREASE_FACTOR, Decision, GRADIENT_CUT_ENABLED_DEFAULT,
+    GRADIENT_DECREASE_FACTOR, HOLD_TICKS, INCREASE_DIVISOR, KNEE_CAUTION_DIVISOR, KNEE_TTL_TICKS,
+    LOSS_NEEDS_RTT_CORROBORATION, LOSS_THRESHOLD, LiveCongestionController, MATERIAL_FLOOR_BPS,
+    MATERIAL_FRACTION, MIN_FRAC, MINIMUM_BITRATE, NetworkEstimate, RAMP_UTILIZATION_FRACTION,
+    RTT_DECREASE_CAP_FACTOR, RTT_DECREASE_FLOOR_FACTOR, RTT_INFLATE_FACTOR, RTT_STREAK_TICKS,
+    SEVERE_DECREASE_FACTOR, SEVERE_LOSS_THRESHOLD, WARMUP_TICKS, effective_slack_millis,
 };
 
 impl LiveCongestionController {
@@ -92,17 +92,71 @@ impl LiveCongestionController {
     }
 
     /// Folds one network estimate and returns the new target bitrate PLUS the attributed reason.
+    /// Equivalent to [`decide_with_utilization`](Self::decide_with_utilization) with no utilization
+    /// signal — every legacy caller keeps its exact behaviour.
     pub fn decide(&mut self, e: &NetworkEstimate) -> Decision {
+        self.decide_with_utilization(e, None)
+    }
+
+    /// Like [`decide`](Self::decide), but gates the additive-increase (Probe/Knee) on utilization.
+    ///
+    /// `offered_bps` is the host's recent encoded throughput (e.g. bytes/frame × 8 × fps). When the
+    /// stream is APPLICATION-limited — offered far below `current`, as on an idle / near-static screen
+    /// — the controller HOLDS instead of probing higher, so an idle period cannot inflate the target
+    /// into phantom headroom that a sudden burst then overshoots into bufferbloat (the "scroll-up-at-
+    /// top then scroll-down hard → blur + lag" failure). `None` ⇒ no signal ⇒ probe as before (the
+    /// legacy [`decide`](Self::decide) / golden path is byte-for-byte unchanged).
+    pub fn decide_with_utilization(
+        &mut self,
+        e: &NetworkEstimate,
+        offered_bps: Option<f64>,
+    ) -> Decision {
         self.ticks += 1;
-        let decision = self.decide_inner(e);
+        let decision = self.decide_inner(e, offered_bps);
         // The Swift shell's `defer { prevSmoothedRTTMillis = e.smoothedRTTMillis }` matches this: captured for
         // the NEXT report whatever branch ran (including warmup).
         self.prev_smoothed_rtt_millis = e.smoothed_rtt_millis();
         decision
     }
 
+    /// Whether the stream is using enough of its current target to justify probing higher.
+    ///
+    /// `None` (no signal) always permits — backward-compatible. With a finite signal, the probe is
+    /// permitted only when the offered throughput is at least [`RAMP_UTILIZATION_FRACTION`] of
+    /// `current`; otherwise the stream is application-limited and a probe would only inflate phantom
+    /// headroom.
+    fn utilization_permits_ramp(&self, offered_bps: Option<f64>) -> bool {
+        match offered_bps {
+            Some(offered) if offered.is_finite() => {
+                offered >= self.current as f64 * RAMP_UTILIZATION_FRACTION
+            }
+            _ => true,
+        }
+    }
+
+    /// The decayed `current` for a DEEPLY application-limited (idle / static) tick, or `None` when no
+    /// decay applies (no signal, not deeply idle, or already at/below the idle target).
+    ///
+    /// Drifts `current` one geometric [`DECAY_STEP_FRACTION`] step toward `offered × DECAY_HEADROOM`
+    /// (floored), but only when the offered throughput is below [`DECAY_UTILIZATION_FRACTION`] of
+    /// `current` — so a sustained static screen shrinks the target (the post-idle burst then stays
+    /// bounded) while a brief flick-pause (offered only dips toward, not under, the stricter gate)
+    /// holds. Never below `floor`; never increases `current`.
+    fn app_limited_decay(&self, offered_bps: Option<f64>) -> Option<i64> {
+        let offered = offered_bps.filter(|o| o.is_finite())?;
+        if offered >= self.current as f64 * DECAY_UTILIZATION_FRACTION {
+            return None; // not deeply idle — hold, don't decay
+        }
+        let target = self.floor.max((offered * DECAY_HEADROOM) as i64);
+        if target >= self.current {
+            return None; // already at/below the idle target
+        }
+        let step = ((self.current - target) as f64 * DECAY_STEP_FRACTION) as i64;
+        Some((self.current - step.max(1)).max(target))
+    }
+
     #[allow(clippy::too_many_lines)] // the canonical control law
-    fn decide_inner(&mut self, e: &NetworkEstimate) -> Decision {
+    fn decide_inner(&mut self, e: &NetworkEstimate, offered_bps: Option<f64>) -> Decision {
         if self.ticks < WARMUP_TICKS {
             return Decision {
                 target: self.current,
@@ -192,21 +246,34 @@ impl LiveCongestionController {
             && !rtt_inflated
             && !(self.gradient_cut_enabled && e.owd_trend_overusing())
         {
-            let cautious = self.knee_bps.is_some_and(|knee| self.current >= knee);
-            let step = if cautious {
-                (self.increase_step() / KNEE_CAUTION_DIVISOR).max(1)
-            } else {
-                self.increase_step()
-            };
-            self.current = self.ceiling.min(self.current + step);
-            return Decision {
-                target: self.current,
-                reason: if cautious {
-                    CutReason::Knee
+            // Clean link past the hold-down. RAMP up if the stream is using its allocation; while
+            // DEEPLY idle DECAY the target down toward what's offered (so a post-idle burst can't form
+            // a VBR monster frame); in between, hold. With no utilization signal this is always a ramp
+            // (the legacy path).
+            if self.utilization_permits_ramp(offered_bps) {
+                let cautious = self.knee_bps.is_some_and(|knee| self.current >= knee);
+                let step = if cautious {
+                    (self.increase_step() / KNEE_CAUTION_DIVISOR).max(1)
                 } else {
-                    CutReason::Probe
-                },
-            };
+                    self.increase_step()
+                };
+                self.current = self.ceiling.min(self.current + step);
+                return Decision {
+                    target: self.current,
+                    reason: if cautious {
+                        CutReason::Knee
+                    } else {
+                        CutReason::Probe
+                    },
+                };
+            } else if let Some(decayed) = self.app_limited_decay(offered_bps) {
+                self.current = decayed;
+                return Decision {
+                    target: self.current,
+                    reason: CutReason::AppLimited,
+                };
+            }
+            // Moderately idle (between the two fractions): hold — fall through.
         }
         let drain_gated = rtt_inflated
             && self.rtt_inflated_streak >= RTT_STREAK_TICKS

@@ -352,7 +352,11 @@ root["videoControl"] = [
     ]]),
     vc("focusWindow", .focusWindow, [:]),
     vc("streamCadence", .streamCadence(fps: 60), ["fps": 60]),
-    vc("scrollOffset", .scrollOffset(dx: -5, dy: 42), ["dx": -5, "dy": 42]),
+    vc(
+        "scrollOffset",
+        .scrollOffset(dx: -5, dy: 42, bandTop: 1000, bandBottom: 9000),
+        ["dx": -5, "dy": 42, "bandTop": 1000, "bandBottom": 9000],
+    ),
     vc("contentMask", .contentMask([
         MaskRect(x: 0, y: 0, width: 2880, height: 1800),
         MaskRect(x: 96, y: 1406, width: 538, height: 172),

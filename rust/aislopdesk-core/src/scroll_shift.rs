@@ -29,6 +29,13 @@ pub struct ShiftEstimate {
     /// (e.g. only reproject when `confidence >= 0.5 && shift != 0`); a non-scroll frame (typing, a
     /// popup) yields a low confidence or `shift == 0`.
     pub confidence: f64,
+    /// Inclusive `[top, bottom]` CURRENT-frame row span of the informative rows that translated by
+    /// `shift` — the vertical extent of the MOVING content (the editor body). The static chrome
+    /// (toolbars / tabs / status bar that matched at shift `0`, not at `shift`) falls OUTSIDE it.
+    /// `None` when there is no confident non-zero shift (nothing to reproject). This drives the
+    /// client's chrome-region reproject mask: only rows inside the band warp on the spare display
+    /// ticks, so the chrome stays put instead of sliding with the content.
+    pub band: Option<(usize, usize)>,
 }
 
 impl ShiftEstimate {
@@ -36,6 +43,7 @@ impl ShiftEstimate {
     pub const NONE: Self = Self {
         shift: 0,
         confidence: 0.0,
+        band: None,
     };
 }
 
@@ -80,9 +88,30 @@ pub fn estimate_vertical_shift(prev: &[u64], cur: &[u64], max_shift: usize) -> S
         }
         d += 1;
     }
+    // The moving-content band: the inclusive top/bottom row span of the informative rows that
+    // actually translated by the winning shift. The static chrome matched at 0, not at `best_shift`,
+    // so it is excluded — leaving the editor body's vertical extent. Only meaningful for a real
+    // (non-zero, matched) scroll; a `0` shift has nothing to reproject so the band is `None`.
+    let band = if best_shift != 0 && best_matches > 0 {
+        let mut top: Option<usize> = None;
+        let mut bottom = 0usize;
+        for &i in &informative {
+            let j = i as i32 - best_shift;
+            if j >= 0 && (j as usize) < n && prev[j as usize] == cur[i] {
+                if top.is_none() {
+                    top = Some(i);
+                }
+                bottom = i;
+            }
+        }
+        top.map(|t| (t, bottom))
+    } else {
+        None
+    };
     ShiftEstimate {
         shift: best_shift,
         confidence: best_matches as f64 / informative.len() as f64,
+        band,
     }
 }
 
@@ -231,6 +260,55 @@ mod tests {
         let e = estimate_vertical_shift(&prev, &cur, 50);
         assert_eq!(e.shift, 3);
         assert!(e.confidence > 0.9, "conf {}", e.confidence);
+    }
+
+    #[test]
+    fn band_spans_moving_content_and_excludes_chrome() {
+        // A realistic editor layout: STATIC chrome at the top (rows 2,5 — a tab bar) and bottom
+        // (row 195 — a status bar), and a scrolling EDITOR body (text rows 40..=150). Only the body
+        // translates by the shift; the chrome matches at 0. The band must cover the body's extent in
+        // the CURRENT frame and exclude the chrome.
+        let n = 200usize;
+        let body_rows: Vec<usize> = (40..=150).step_by(10).collect();
+        let mut prev = vec![0u64; n];
+        // chrome (top + bottom), unique static hashes that never move.
+        prev[2] = 0xAA;
+        prev[5] = 0xBB;
+        prev[195] = 0xCC;
+        for (k, &r) in body_rows.iter().enumerate() {
+            prev[r] = 1000 + k as u64; // distinct body text rows
+        }
+        // cur = the BODY shifted DOWN by 7; the chrome stays exactly where it was.
+        let shift = 7usize;
+        let mut cur = vec![0u64; n];
+        cur[2] = 0xAA;
+        cur[5] = 0xBB;
+        cur[195] = 0xCC;
+        for &r in &body_rows {
+            if r + shift < n {
+                cur[r + shift] = prev[r];
+            }
+        }
+        let e = estimate_vertical_shift(&prev, &cur, 50);
+        assert_eq!(e.shift, 7);
+        let (top, bottom) = e.band.expect("a confident scroll must report a band");
+        // First body row was 40 → now 47; last was 150 → now 157. Chrome rows (2,5,195) excluded.
+        assert_eq!((top, bottom), (47, 157), "band covers the moved body only");
+    }
+
+    #[test]
+    fn band_is_none_when_no_scroll() {
+        // Static text and a single-row edit both resolve to shift 0 ⇒ nothing to reproject ⇒ no band.
+        let prev = editor(200, &[10, 20, 30, 40]);
+        assert_eq!(estimate_vertical_shift(&prev, &prev, 50).band, None);
+        let mut typed = prev.clone();
+        typed[20] = 7777;
+        assert_eq!(estimate_vertical_shift(&prev, &typed, 50).band, None);
+        // A blank frame is NONE (band None by construction).
+        assert_eq!(
+            estimate_vertical_shift(&[7u64; 50], &[7u64; 50], 10).band,
+            None
+        );
     }
 
     #[test]

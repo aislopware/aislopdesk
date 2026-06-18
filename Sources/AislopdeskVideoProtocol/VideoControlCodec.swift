@@ -194,8 +194,11 @@ public enum VideoControlMessage: Equatable, Sendable {
     /// Host → client: the per-frame content scroll offset (pixels) the host measured between captured
     /// frames — drives client-side scroll reprojection (warp the last frame by this on spare 120 Hz
     /// display ticks so editor scroll looks local). Signed pixel shifts; `(0, 0)` = no confident scroll
-    /// this frame. Sent only while reprojection is on; inert to an old peer (unknown type → dropped).
-    case scrollOffset(dx: Int16, dy: Int16)
+    /// this frame. `bandTop`/`bandBottom` are the MOVING-content vertical band in ten-thousandths of
+    /// the frame height (`0..=10000`): the client warps ONLY that band so the static chrome (toolbars /
+    /// status bar) does not slide; `bandBottom <= bandTop` ⇒ no band (whole-frame warp, the A/B
+    /// fallback). Sent only while reprojection is on; inert to an old peer (unknown type → dropped).
+    case scrollOffset(dx: Int16, dy: Int16, bandTop: UInt16, bandBottom: UInt16)
     /// Host → client: the opaque content sub-rectangles within the captured frame (capture PIXEL
     /// coords). After a DIALOG-EXPAND the rectangular frame has empty area flanking the popup; this
     /// lists the rects that are real content (window block + popups) so the client masks the rest

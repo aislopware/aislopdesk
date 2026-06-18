@@ -49,14 +49,20 @@ fn row_hashes(y: &[u8], stride: usize, width: usize, height: usize) -> Vec<u64> 
 /// and `*out_confidence_milli` is the match fraction ×1000 (`0..=1000`). The CALLER gates (e.g. fire
 /// only when `confidence_milli >= 500 && shift != 0`).
 ///
+/// `*out_band_top` / `*out_band_bottom` receive the inclusive CURRENT-frame row span of the MOVING
+/// content (the editor body the client may reproject), or `-1` / `-1` when there is no confident
+/// non-zero shift. The static chrome (toolbars / status bar) lies outside this span, so the client
+/// warps only the band and the chrome does not slide.
+///
 /// Returns [`AISD_ERR_NULL`] for a null pointer. A degenerate dimension (`width`/`height` 0, a
 /// `stride < width`, or a `stride * height` overflow) yields [`AISD_OK`] with shift 0 / confidence 0
-/// — a non-fault "no measurement". Never panics across the boundary.
+/// / band `-1`,`-1` — a non-fault "no measurement". Never panics across the boundary.
 ///
 /// # Safety
 /// `prev_y` / `cur_y` must each point to at least `stride * height` readable, initialized bytes that
 /// stay valid for the call (borrowed — never retained or freed). `out_shift` /
-/// `out_confidence_milli` must be writable. No input pointer is ever written through.
+/// `out_confidence_milli` / `out_band_top` / `out_band_bottom` must be writable. No input pointer is
+/// ever written through.
 #[must_use]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aisd_estimate_scroll_shift_nv12(
@@ -69,8 +75,15 @@ pub unsafe extern "C" fn aisd_estimate_scroll_shift_nv12(
     max_shift: usize,
     out_shift: *mut i32,
     out_confidence_milli: *mut u32,
+    out_band_top: *mut i32,
+    out_band_bottom: *mut i32,
 ) -> AisdStatus {
-    if prev_y.is_null() || cur_y.is_null() || out_shift.is_null() || out_confidence_milli.is_null()
+    if prev_y.is_null()
+        || cur_y.is_null()
+        || out_shift.is_null()
+        || out_confidence_milli.is_null()
+        || out_band_top.is_null()
+        || out_band_bottom.is_null()
     {
         return AISD_ERR_NULL;
     }
@@ -95,10 +108,12 @@ pub unsafe extern "C" fn aisd_estimate_scroll_shift_nv12(
         }
     };
     let Some((prev_len, cur_len)) = lens else {
-        // SAFETY: both out pointers are non-null (checked) and writable per the contract.
+        // SAFETY: all out pointers are non-null (checked) and writable per the contract.
         unsafe {
             out_shift.write(0);
             out_confidence_milli.write(0);
+            out_band_top.write(-1);
+            out_band_bottom.write(-1);
         }
         return AISD_OK;
     };
@@ -112,10 +127,19 @@ pub unsafe extern "C" fn aisd_estimate_scroll_shift_nv12(
     // confidence ∈ [0, 1] (a fraction of informative rows) ⇒ milli ∈ [0, 1000]; the cast is bounded.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let milli = (est.confidence.clamp(0.0, 1.0) * 1000.0).round() as u32;
-    // SAFETY: both out pointers are non-null (checked) and writable per the contract.
+    // The moving-content band (current-frame rows), or -1/-1 when there is no confident scroll. Rows
+    // are < height ≤ 16384, so the i32 cast never truncates.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let (band_top, band_bottom) = match est.band {
+        Some((t, b)) => (t as i32, b as i32),
+        None => (-1, -1),
+    };
+    // SAFETY: all out pointers are non-null (checked) and writable per the contract.
     unsafe {
         out_shift.write(est.shift);
         out_confidence_milli.write(milli);
+        out_band_top.write(band_top);
+        out_band_bottom.write(band_bottom);
     }
     AISD_OK
 }
@@ -229,6 +253,7 @@ mod tests {
     fn null_pointers_return_null_status() {
         let mut s = 0i32;
         let mut c = 0u32;
+        let (mut bt, mut bb) = (0i32, 0i32);
         let st = unsafe {
             aisd_estimate_scroll_shift_nv12(
                 core::ptr::null(),
@@ -240,9 +265,29 @@ mod tests {
                 4,
                 &mut s,
                 &mut c,
+                &mut bt,
+                &mut bb,
             )
         };
         assert_eq!(st, AISD_ERR_NULL);
+        // A null band out-param is rejected too (a valid plane but a null band pointer).
+        let y = [0u8; 64];
+        let st2 = unsafe {
+            aisd_estimate_scroll_shift_nv12(
+                y.as_ptr(),
+                8,
+                y.as_ptr(),
+                8,
+                8,
+                8,
+                4,
+                &mut s,
+                &mut c,
+                core::ptr::null_mut(),
+                &mut bb,
+            )
+        };
+        assert_eq!(st2, AISD_ERR_NULL);
     }
 
     #[test]
@@ -250,12 +295,26 @@ mod tests {
         let y = [0u8; 64];
         let mut s = 9i32;
         let mut c = 9u32;
+        let (mut bt, mut bb) = (9i32, 9i32);
         // stride < width.
         let st = unsafe {
-            aisd_estimate_scroll_shift_nv12(y.as_ptr(), 4, y.as_ptr(), 4, 8, 2, 4, &mut s, &mut c)
+            aisd_estimate_scroll_shift_nv12(
+                y.as_ptr(),
+                4,
+                y.as_ptr(),
+                4,
+                8,
+                2,
+                4,
+                &mut s,
+                &mut c,
+                &mut bt,
+                &mut bb,
+            )
         };
         assert_eq!(st, AISD_OK);
         assert_eq!((s, c), (0, 0));
+        assert_eq!((bt, bb), (-1, -1), "no measurement ⇒ no band");
     }
 
     #[test]
@@ -273,6 +332,7 @@ mod tests {
         }
         let mut shift = 0i32;
         let mut conf = 0u32;
+        let (mut bt, mut bb) = (0i32, 0i32);
         let st = unsafe {
             aisd_estimate_scroll_shift_nv12(
                 prev.as_ptr(),
@@ -284,11 +344,15 @@ mod tests {
                 40,
                 &mut shift,
                 &mut conf,
+                &mut bt,
+                &mut bb,
             )
         };
         assert_eq!(st, AISD_OK);
         assert_eq!(shift, 6, "dominant downward scroll of 6 rows");
         assert!(conf > 700, "confident (conf milli {conf})");
+        // Text rows 10..=50 shifted DOWN by 6 ⇒ now at 16..=56; that is the moving band.
+        assert_eq!((bt, bb), (16, 56), "band covers the moved text rows");
     }
 
     #[test]
@@ -298,6 +362,7 @@ mod tests {
         let cur = prev.clone();
         let mut shift = 9i32;
         let mut conf = 0u32;
+        let (mut bt, mut bb) = (9i32, 9i32);
         let st = unsafe {
             aisd_estimate_scroll_shift_nv12(
                 prev.as_ptr(),
@@ -309,10 +374,13 @@ mod tests {
                 20,
                 &mut shift,
                 &mut conf,
+                &mut bt,
+                &mut bb,
             )
         };
         assert_eq!(st, AISD_OK);
         assert_eq!(shift, 0, "no scroll ⇒ shift 0");
+        assert_eq!((bt, bb), (-1, -1), "shift 0 ⇒ no band to reproject");
     }
 
     #[test]
@@ -326,6 +394,7 @@ mod tests {
                 let cur = vec![0x31u8; stride * h];
                 let mut shift = 0i32;
                 let mut conf = 0u32;
+                let (mut bt, mut bb) = (0i32, 0i32);
                 let st = unsafe {
                     aisd_estimate_scroll_shift_nv12(
                         prev.as_ptr(),
@@ -337,6 +406,8 @@ mod tests {
                         (h / 4).max(8),
                         &mut shift,
                         &mut conf,
+                        &mut bt,
+                        &mut bb,
                     )
                 };
                 assert_eq!(st, AISD_OK, "w={w} h={h} pad={pad}");

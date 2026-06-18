@@ -56,6 +56,11 @@ final class VideoWindowPipeline {
     /// Resolved once: whether the reprojection feature is enabled (env read at first access). Default
     /// OFF, so the existing identity-skip / re-show is unchanged and the present bytes are identical.
     private static let reprojectEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_REPROJECT"] == "1"
+    /// CHROME-REGION MASK (default ON when reprojection is on; A/B via `AISLOPDESK_REPROJECT_CHROME_MASK=0`):
+    /// warp only the host-measured moving-content band so the static chrome (toolbars/tabs/status bar)
+    /// does not slide. `0` ⇒ legacy whole-frame warp (the artifact this fixes).
+    private static let chromeMaskEnabled =
+        ProcessInfo.processInfo.environment["AISLOPDESK_REPROJECT_CHROME_MASK"] != "0"
 
     /// INBOUND cursor-overlay coalescing (BUG-1 freeze fix). The ~120 Hz cursor stream used to spawn ONE
     /// `Task { @MainActor in compositor.apply }` PER packet. When a click flips workspace focus, the
@@ -414,10 +419,13 @@ final class VideoWindowPipeline {
                 // Lock-guarded, no main hop; the pacer's cadence gate throttles the recompute.
                 pacer.notePlayoutJitter(jitterSeconds)
             },
-            applyScrollOffset: { [weak self] dx, dy in
+            applyScrollOffset: { [weak self] dx, dy, bandTop, bandBottom in
                 // Scroll reprojection (host-truth): hop to the main actor and feed the reprojector the
-                // host-MEASURED offset (replaces the local trackpad guess, which snapped badly).
-                Task { @MainActor in self?.applyHostScrollOffset(dx: dx, dy: dy) }
+                // host-MEASURED offset (replaces the local trackpad guess, which snapped badly) + the
+                // moving-content band (the renderer warps only that band so the chrome doesn't slide).
+                Task { @MainActor in
+                    self?.applyHostScrollOffset(dx: dx, dy: dy, bandTop: bandTop, bandBottom: bandBottom)
+                }
             },
             applyContentMask: { [weak self] rects in
                 // Transparency mask after a DIALOG-EXPAND region change: hop to main and hand the
@@ -656,7 +664,7 @@ final class VideoWindowPipeline {
         renderer?.contentMask = rects
     }
 
-    func applyHostScrollOffset(dx: Int16, dy: Int16) {
+    func applyHostScrollOffset(dx: Int16, dy: Int16, bandTop: UInt16, bandBottom: UInt16) {
         guard let reprojector else { return }
         hostScrollOffsetActive = true // from now on the local trackpad guess is silenced
         let normX = Double(dx) / 10000.0
@@ -664,6 +672,16 @@ final class VideoWindowPipeline {
         let fps = max(1.0, reprojectionContentFps)
         let phase: ScrollReprojector.Phase = (dx != 0 || dy != 0) ? .active : .ended
         reprojector.noteVelocity(vx: normX * fps, vy: normY * fps, phase: phase)
+        // CHROME-REGION MASK: hand the renderer the moving-content band (normalized) so it warps ONLY
+        // the editor body — the static toolbars/tabs/status bar stay put instead of sliding with the
+        // content. A `(0,0)` decay tick (scroll stopped) carries no band; LEAVE the last band so the
+        // residual offset keeps masking as it eases out. `AISLOPDESK_REPROJECT_CHROME_MASK=0` forces
+        // the legacy whole-frame warp for an A/B.
+        if !Self.chromeMaskEnabled {
+            renderer?.reprojectBand = SIMD2<Float>(0, 0)
+        } else if bandBottom > bandTop {
+            renderer?.reprojectBand = SIMD2<Float>(Float(bandTop) / 10000.0, Float(bandBottom) / 10000.0)
+        }
     }
 
     private func feedReprojectionVelocity(dx: Double, dy: Double, scrollPhase: UInt8, momentumPhase: UInt8) {

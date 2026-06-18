@@ -148,6 +148,13 @@ pub enum VideoControlMessage {
         dx: i16,
         /// Vertical content shift in pixels (positive = content moved DOWN).
         dy: i16,
+        /// Top of the MOVING-content band, in ten-thousandths of the frame HEIGHT (`0..=10000`) — the
+        /// client warps only `[band_top, band_bottom]` so the static chrome (toolbars / status bar)
+        /// does not slide. `band_bottom <= band_top` ⇒ no band (warp the whole frame, the v1 / A-B
+        /// fallback). `(0, 0)` when there is no confident scroll this frame.
+        band_top: u16,
+        /// Bottom of the moving-content band, in ten-thousandths of the frame height (`0..=10000`).
+        band_bottom: u16,
     },
     /// Host → client: the opaque content sub-rectangles within the captured frame (capture PIXEL
     /// coords). After a DIALOG-EXPAND, the rectangular frame has empty area flanking the popup;
@@ -245,10 +252,17 @@ impl VideoControlMessage {
                 }
             }
             Self::StreamCadence { fps } => w.put_u16(*fps),
-            Self::ScrollOffset { dx, dy } => {
+            Self::ScrollOffset {
+                dx,
+                dy,
+                band_top,
+                band_bottom,
+            } => {
                 // i16 → u16 is a bit-preserving reinterpret; the decoder casts back.
                 w.put_u16(dx.cast_unsigned());
                 w.put_u16(dy.cast_unsigned());
+                w.put_u16(*band_top);
+                w.put_u16(*band_bottom);
             }
             Self::ContentMask(rects) => {
                 w.put_u16(rects.len() as u16);
@@ -357,6 +371,8 @@ impl VideoControlMessage {
             13 => Ok(Self::ScrollOffset {
                 dx: r.read_u16()?.cast_signed(),
                 dy: r.read_u16()?.cast_signed(),
+                band_top: r.read_u16()?,
+                band_bottom: r.read_u16()?,
             }),
             14 => {
                 let count = r.read_u16()?;
@@ -437,11 +453,23 @@ mod tests {
         round_trip(&VideoControlMessage::FocusWindow);
         round_trip(&VideoControlMessage::StreamCadence { fps: 60 });
         round_trip(&VideoControlMessage::ListSystemDialogs);
-        round_trip(&VideoControlMessage::ScrollOffset { dx: -5, dy: 42 });
-        round_trip(&VideoControlMessage::ScrollOffset { dx: 0, dy: 0 });
+        round_trip(&VideoControlMessage::ScrollOffset {
+            dx: -5,
+            dy: 42,
+            band_top: 1000,
+            band_bottom: 9000,
+        });
+        round_trip(&VideoControlMessage::ScrollOffset {
+            dx: 0,
+            dy: 0,
+            band_top: 0,
+            band_bottom: 0,
+        });
         round_trip(&VideoControlMessage::ScrollOffset {
             dx: i16::MIN,
             dy: i16::MAX,
+            band_top: u16::MIN,
+            band_bottom: u16::MAX,
         });
     }
 

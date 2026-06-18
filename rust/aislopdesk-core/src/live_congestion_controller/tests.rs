@@ -365,6 +365,84 @@ fn probe_increase_on_clean_link_past_hold_down() {
 }
 
 #[test]
+fn idle_utilization_gates_ramp_decay_and_hold() {
+    // The utilization fix has THREE regimes (the host passes recent offered throughput):
+    //   loaded (offered ≥ 0.5×current) → RAMP;  deeply idle (offered < 0.25×current) → DECAY toward
+    //   offered;  in between → HOLD. No signal / non-finite ⇒ legacy RAMP. This is the "scroll-up-at-
+    //   top then scroll-down-hard → blur+lag" fix: idle shrinks the target so the burst stays bounded.
+    let clean = estimate(0.0, 1, false);
+    let floored = || warmed_controller(CEILING, Some(3_000_000), false); // floor 3M, current at ceiling
+
+    // (a) DEEPLY idle: offered ~2% of current ⇒ DECAY toward offered (target FALLS, well above floor).
+    let mut idle = floored();
+    let before = idle.current();
+    let d = idle.decide_with_utilization(&clean, Some(before as f64 * 0.02));
+    assert!(d.target < before, "deep idle must decay the target down");
+    assert!(d.target >= idle.floor(), "decay never goes below floor");
+    assert_eq!(d.reason, CutReason::AppLimited);
+
+    // (b) MODERATELY idle: offered ~40% of current (between the two fractions) ⇒ HOLD — neither ramp
+    // (0.40 < 0.50) nor decay (0.40 > 0.25). Protects a brief flick-pause from over-decaying.
+    let mut mid = floored();
+    let before_m = mid.current();
+    // At ceiling a ramp is a no-op, so drop below ceiling first via a congestion cut + hold-down so a
+    // ramp WOULD be observable — then prove 0.40 utilization neither ramps nor decays.
+    let _ = mid.on_report(&estimate(0.05, 8, true));
+    for _ in 0..HOLD_TICKS {
+        let _ = mid.on_report(&clean);
+    }
+    let mid_before = mid.current();
+    let d_m = mid.decide_with_utilization(&clean, Some(mid_before as f64 * 0.40));
+    assert_eq!(
+        d_m.target, mid_before,
+        "moderate idle holds (no ramp, no decay)"
+    );
+    assert_eq!(d_m.reason, CutReason::Hold);
+    let _ = before_m;
+
+    // (c) LOADED: offered ~90% of current ⇒ RAMP up. Poise below the ceiling first.
+    let mut loaded = warmed_controller(CEILING, None, false);
+    let _ = loaded.on_report(&estimate(0.05, 8, true));
+    for _ in 0..HOLD_TICKS {
+        let _ = loaded.on_report(&clean);
+    }
+    let before_l = loaded.current();
+    let d_l = loaded.decide_with_utilization(&clean, Some(before_l as f64 * 0.9));
+    assert!(d_l.target > before_l, "real load must ramp up");
+    assert!(
+        matches!(d_l.reason, CutReason::Probe | CutReason::Knee),
+        "real load ramps (Probe or cautious Knee), got {:?}",
+        d_l.reason
+    );
+
+    // (d) NO signal / non-finite ⇒ legacy RAMP (every pre-fix caller / golden path unchanged).
+    let mut legacy = warmed_controller(CEILING, None, false);
+    let _ = legacy.on_report(&estimate(0.05, 8, true));
+    for _ in 0..HOLD_TICKS {
+        let _ = legacy.on_report(&clean);
+    }
+    let before_n = legacy.current();
+    assert!(
+        legacy.decide(&clean).target > before_n,
+        "no signal ⇒ legacy probe"
+    );
+
+    let mut nan_sig = warmed_controller(CEILING, None, false);
+    let _ = nan_sig.on_report(&estimate(0.05, 8, true));
+    for _ in 0..HOLD_TICKS {
+        let _ = nan_sig.on_report(&clean);
+    }
+    let before_x = nan_sig.current();
+    assert!(
+        nan_sig
+            .decide_with_utilization(&clean, Some(f64::NAN))
+            .target
+            > before_x,
+        "non-finite offered ⇒ permit probe"
+    );
+}
+
+#[test]
 fn recovery_never_exceeds_ceiling() {
     let mut ctrl = warmed_controller(CEILING, None, false);
     let _ = ctrl.on_report(&estimate(0.5, 12, false));

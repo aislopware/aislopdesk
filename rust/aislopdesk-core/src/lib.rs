@@ -65,6 +65,7 @@ pub mod nal_unit;
 pub mod network_estimate;
 pub mod owd_late_detector;
 pub mod pacer_depth_policy;
+pub mod qp_controller;
 pub mod reassembler;
 pub mod recovery;
 pub mod recovery_idr_policy;

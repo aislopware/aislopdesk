@@ -71,7 +71,10 @@ public struct VideoClientStateMachine: Sendable {
         /// Apply a host-measured scroll offset to the client's scroll reprojector (warp the last frame
         /// between codec frames). `(dx, dy)` are signed NORMALIZED shifts in ten-thousandths of the
         /// frame extent (±10000 ≈ ±1.0); `(0, 0)` arms the reprojector's decay (scroll stopped).
-        case applyScrollOffset(Int16, Int16)
+        /// `bandTop`/`bandBottom` are the moving-content vertical band (ten-thousandths of height); the
+        /// renderer warps ONLY that band so the static chrome doesn't slide (`bandBottom <= bandTop` ⇒
+        /// whole-frame warp fallback).
+        case applyScrollOffset(Int16, Int16, UInt16, UInt16)
         /// Apply the opaque-content rect set (capture PIXELS) the host sent after a capture-region
         /// change: the renderer masks everything OUTSIDE these rects to transparent (so a popup
         /// overhanging the window floats over the canvas instead of a black bar). An EMPTY list
@@ -131,12 +134,12 @@ public struct VideoClientStateMachine: Sendable {
             // dropped (the host never sends it; defensive against a corrupt body that still parsed).
             guard state == .streaming, fps >= 1 else { return [] }
             return [.applyStreamCadence(fps)]
-        case let .scrollOffset(dx, dy):
-            // Host→client scroll-reprojection hint. Only meaningful while streaming; (0,0) still
-            // flows (it arms the reprojector's decay when scroll stops). A stray/late hint after
-            // teardown is inert.
+        case let .scrollOffset(dx, dy, bandTop, bandBottom):
+            // Host→client scroll-reprojection hint + the moving-content band. Only meaningful while
+            // streaming; (0,0,…) still flows (it arms the reprojector's decay when scroll stops). A
+            // stray/late hint after teardown is inert.
             guard state == .streaming else { return [] }
-            return [.applyScrollOffset(dx, dy)]
+            return [.applyScrollOffset(dx, dy, bandTop, bandBottom)]
         case let .contentMask(rects):
             // Host→client transparency mask after a DIALOG-EXPAND region change. Only meaningful
             // while streaming; an empty list clears the mask. A stray/late mask after teardown is
