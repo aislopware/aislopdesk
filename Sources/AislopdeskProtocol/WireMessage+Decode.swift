@@ -107,6 +107,25 @@ extension WireMessage {
             }
             return .notification(title: title, body: body)
 
+        case 26: // foregroundProcess
+            let bytes = reader.remaining()
+            guard let name = String(data: bytes, encoding: .utf8) else {
+                throw AislopdeskError.malformedBody("foregroundProcess: invalid UTF-8")
+            }
+            return .foregroundProcess(name: name)
+
+        case 27: // claudeStatus
+            let state = try reader.readUInt8()
+            let kind = try reader.readUInt8()
+            // Validate the declared label length BEFORE reading: readBytes throws `truncated`
+            // if the body is shorter than the declared count — never over-reading a hostile body.
+            let labelLen = try Int(reader.readUInt16())
+            let labelBytes = try reader.readBytes(labelLen)
+            guard let label = String(data: labelBytes, encoding: .utf8) else {
+                throw AislopdeskError.malformedBody("claudeStatus: invalid label UTF-8")
+            }
+            return .claudeStatus(state: state, kind: kind, label: label)
+
         default:
             throw AislopdeskError.unknownMessageType(type)
         }

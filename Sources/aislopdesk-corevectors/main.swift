@@ -760,6 +760,33 @@ root["terminalWireMessages"] = [
         .notification(title: "semis;in;title", body: "and;in;body;too"),
         ["title": "semis;in;title", "body": "and;in;body;too"],
     ),
+    // W9 — Claude-Code agent status (terminal CONTROL, host → client).
+    // type 26 foregroundProcess: coarse process-watch path, body = UTF-8 basename.
+    wmRecord("foregroundProcess", .foregroundProcess(name: "claude"), ["name": "claude"]),
+    wmRecord("foregroundProcess", .foregroundProcess(name: ""), ["name": ""]),
+    wmRecord(
+        "foregroundProcess",
+        .foregroundProcess(name: "node — café 🚀"),
+        ["name": "node — café 🚀"],
+    ),
+    // type 27 claudeStatus: rich hook path, body = [state][kind][UInt16 labelLen][label UTF-8].
+    // state = ClaudeStatus.urgency (0 none/1 idle/2 done/3 working/4 needsPermission);
+    // kind = NotificationKind (0 none/1 permission/2 waitingForInput/3 other).
+    wmRecord(
+        "claudeStatus",
+        .claudeStatus(state: 0, kind: 0, label: ""),
+        ["state": Int(0), "kindByte": Int(0), "label": ""],
+    ),
+    wmRecord(
+        "claudeStatus",
+        .claudeStatus(state: 4, kind: 1, label: "Allow Bash(rm -rf)?"),
+        ["state": Int(4), "kindByte": Int(1), "label": "Allow Bash(rm -rf)?"],
+    ),
+    wmRecord(
+        "claudeStatus",
+        .claudeStatus(state: 2, kind: 3, label: "Done — ✅ build green 🚀"),
+        ["state": Int(2), "kindByte": Int(3), "label": "Done — ✅ build green 🚀"],
+    ),
 ]
 
 // MARK: AislopdeskProtocol — MuxEnvelopeCodec.encode (byte parity)

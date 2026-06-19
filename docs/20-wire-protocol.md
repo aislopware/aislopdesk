@@ -90,6 +90,11 @@ UUIDs (`sessionID`) are sent as their **16 raw bytes** in canonical order (not a
 | 20 | `helloAck` | host → client | control | 16-byte `sessionID` + `Int64 resumeFromSeq` + `UInt8 returningClient` (0/1) |
 | 21 | `title`    | host → client | control | remaining bytes = UTF-8 window/title string |
 | 22 | `bell`     | host → client | control | (empty) |
+| 23 | `commandStatus` | host → client | control | `UInt8 tag` (`0`=running, `1`=idle); `idle` body = `UInt8 hasExit` + `Int32 exitCode` (BE, 0 if absent) + `UInt32 durationMS` (BE) |
+| 24 | `pong`     | host → client | control | `UInt64 timestampMS` (BE) — the client's `ping` timestamp echoed verbatim |
+| 25 | `notification` | host → client | control | `UInt16 titleLen` (BE) + `title` UTF-8 + remaining bytes = `body` UTF-8 |
+| 26 | `foregroundProcess` | host → client | control | remaining bytes = UTF-8 PTY foreground-process basename (coarse Claude-Code watch; `""` clears) |
+| 27 | `claudeStatus` | host → client | control | `UInt8 state` + `UInt8 kind` + `UInt16 labelLen` (BE) + `label` UTF-8 (rich Claude-Code hook status) |
 
 `protocolVersion` is currently **1** (`Aislopdesk.protocolVersion`). There is **no version
 negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` whose
@@ -125,6 +130,29 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
   re-syncs on a stray `ESC` without swallowing the next introducer. The client surfaces both as
   `AislopdeskClient.Event.title` / `.bell`. They ride the head-of-line-independent CONTROL channel
   and are **not** sequenced/replayed.
+
+- **`foregroundProcess` (26) and `claudeStatus` (27) carry per-pane Claude-Code agent status**
+  (host → client, CONTROL; W9, docs/41 §4 / docs/42). They are **additive within wire version 1**:
+  a peer that does not know them DROPS the frame (`unknownMessageType`) — validate-then-drop, never
+  a trap. The pane identity is carried by the mux channel envelope, not in either body.
+  - **`foregroundProcess`** is the coarse path: the host watches the PTY master's foreground process
+    group (`tcgetpgrp` → `proc_name`, W10) and emits the basename on an edge — `"claude"` means a
+    `claude` is in the foreground; `""` (or any other name) clears it. The client derives a
+    `ClaudeStatus` FLOOR (claude present → `.idle`).
+  - **`claudeStatus`** is the rich hook path: the host folds Claude Code `Notification`/`Stop`/
+    `SessionEnd` hooks (via `AislopdeskInspector.HookParser`) into `[UInt8 state][UInt8 kind][UInt16
+    labelLen (BE)][label UTF-8]`. `state` = `ClaudeStatus.urgency` (`0` none / `1` idle / `2` done /
+    `3` working / `4` needsPermission); `kind` = the notification class (`0` none / `1` permission /
+    `2` waitingForInput / `3` other); `label` = the (often empty, length-prefixed) Stop/Notification
+    message, capped at the UInt16 length field. The wire carries the RAW `state`/`kind` bytes —
+    `AislopdeskProtocol` does not depend on `AislopdeskAgentDetect`; the client maps them back, and a
+    decoder is forward-tolerant of an unknown future `state`/`kind` value (the consumer clamps it).
+  - The decoder **validates the declared `labelLen` before reading** (a short body → `truncated`,
+    never an over-read of a hostile datagram) and requires strict UTF-8 for the name/label (an
+    invalid sequence → `malformedBody`). Both ride the head-of-line-independent CONTROL channel like
+    `title`/`commandStatus` and are **not** sequenced/replayed.
+
+The next free host → client CONTROL type byte is **28** (reserved for the W14 OSC-8 hyperlink type).
 
 ## 5. Seq / ack / replay semantics
 

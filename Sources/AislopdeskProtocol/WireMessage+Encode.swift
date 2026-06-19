@@ -79,6 +79,23 @@ extension WireMessage {
             frame.append(titleBytes)
             frame.append(Data(body.utf8))
 
+        case let .foregroundProcess(name):
+            // [remaining bytes = UTF-8 process basename] — like `title`, the name is the
+            // unambiguous remainder (no length prefix needed for a single trailing string).
+            frame.append(Data(name.utf8))
+
+        case let .claudeStatus(state, kind, label):
+            // [UInt8 state][UInt8 kind][UInt16 BE labelLen][label UTF-8] — fixed state+kind
+            // bytes then a length-prefixed UTF-8 label (so an empty label is unambiguous).
+            // Clamp the label to the UInt16 length the field can hold (see clampedClaudeLabel):
+            // a raw `truncatingIfNeeded` would WRAP the length on a >64KiB label while still
+            // appending every byte, so the decoder would over-read and corrupt the trailer.
+            frame.append(state)
+            frame.append(kind)
+            let labelBytes = Data(Self.clampedClaudeLabel(label).utf8)
+            frame.appendBE(UInt16(labelBytes.count))
+            frame.append(labelBytes)
+
         case .bell:
             break // empty body
 
@@ -129,6 +146,24 @@ extension WireMessage {
         }
         return String(clamped)
     }
+
+    /// A Claude-status label whose UTF-8 fits the wire's UInt16 length field (≤ 65535 bytes),
+    /// clamped at a Unicode SCALAR boundary so it stays valid UTF-8. Identity for any sane
+    /// label (the host caps Stop/Notification text well under 1KiB); only an absurd >64KiB
+    /// label is shortened — preventing the length field from wrapping and corrupting the body.
+    /// Shared by ``encode()`` and ``wireByteCount`` so the two stay consistent.
+    static func clampedClaudeLabel(_ label: String) -> String {
+        guard label.utf8.count > Int(UInt16.max) else { return label }
+        var clamped = String.UnicodeScalarView()
+        var count = 0
+        for scalar in label.unicodeScalars {
+            let n = String(scalar).utf8.count
+            if count + n > Int(UInt16.max) { break }
+            clamped.append(scalar)
+            count += n
+        }
+        return String(clamped)
+    }
 }
 
 public extension WireMessage {
@@ -154,6 +189,9 @@ public extension WireMessage {
             case let .title(string): string.utf8.count
             case let .notification(title, bodyText): 2 + Self.clampedNotificationTitle(title).utf8.count + bodyText.utf8
                 .count // UInt16 len + (clamped) title + body
+            case let .foregroundProcess(name): name.utf8.count
+            case let .claudeStatus(_, _, label): 1 + 1 + 2 + Self.clampedClaudeLabel(label).utf8
+                .count // state + kind + UInt16 len + (clamped) label
             case .bell: 0
             case let .commandStatus(status):
                 switch status {

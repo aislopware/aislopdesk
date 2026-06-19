@@ -104,6 +104,36 @@ public enum WireMessage: Equatable, Sendable {
     /// estimate stays honest under an output flood.
     case pong(timestampMS: UInt64)
 
+    /// The PTY's current foreground-process basename (W9, type 26, host → client, CONTROL).
+    /// The COARSE Claude-Code detection path: the host watches the PTY master's foreground
+    /// process group (`tcgetpgrp` → `proc_name`, W10) and emits this on a basename edge —
+    /// `"claude"` means a `claude` is in the foreground, `""` (or any other name) clears it.
+    /// The client derives a `ClaudeStatus` FLOOR from the name (claude present → at least
+    /// `.idle`); the richer state arrives via ``claudeStatus(state:kind:label:)``. Rides the
+    /// CONTROL channel like ``title``/``commandStatus`` (an output flood can't delay it). The
+    /// pane identity is carried by the mux channel envelope, not in this body.
+    case foregroundProcess(name: String)
+
+    /// A rich Claude-Code agent-status update (W9, type 27, host → client, CONTROL). The
+    /// HOOK path (docs/41 §4.2): the host folds Claude Code hook events (`Notification` /
+    /// `Stop` / `SessionEnd`, via `AislopdeskInspector.HookParser`, W8/W10) into a coarse
+    /// state + a notification class + an optional human-readable label.
+    ///
+    /// - `state` is the raw `UInt8` of `AislopdeskAgentDetect.ClaudeStatus.urgency`
+    ///   (`0 none / 1 idle / 2 done / 3 working / 4 needsPermission`). The wire layer is kept
+    ///   minimal — it carries the raw byte, NOT the enum (`AislopdeskProtocol` does not depend
+    ///   on `AislopdeskAgentDetect`); the client maps it back. An unknown future state byte is
+    ///   carried verbatim (forward-tolerant) — the consumer, not the decoder, clamps it.
+    /// - `kind` is the notification class (`0 none / 1 permission / 2 waitingForInput /
+    ///   3 other`), mirroring `ClaudeHookEvent.NotificationKind`; `0` for non-Notification
+    ///   transitions (Stop/SessionEnd/SessionStart).
+    /// - `label` is the (often empty) Stop `last_assistant_message` / Notification message,
+    ///   capped to the wire's UInt16 length field. Carried as length-prefixed UTF-8 so an
+    ///   empty label is unambiguous.
+    case claudeStatus(state: UInt8, kind: UInt8, label: String)
+
+    /// The semantic state of the foreground command in a pane's shell (from OSC 133).
+
     /// The semantic state of the foreground command in a pane's shell (from OSC 133).
     public enum CommandStatus: Equatable, Sendable {
         /// OSC 133;C — a command began executing (preexec). The pane is RUNNING.
@@ -132,6 +162,8 @@ public enum WireMessage: Equatable, Sendable {
         case .commandStatus: 23
         case .pong: 24
         case .notification: 25
+        case .foregroundProcess: 26
+        case .claudeStatus: 27
         }
     }
 
@@ -152,7 +184,9 @@ public enum WireMessage: Equatable, Sendable {
              .bell,
              .commandStatus,
              .pong,
-             .notification:
+             .notification,
+             .foregroundProcess,
+             .claudeStatus:
             .control
         }
     }

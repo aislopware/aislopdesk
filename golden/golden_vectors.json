@@ -3328,6 +3328,42 @@
       "hex": "0000002019000e73656d69733b696e3b7469746c65616e643b696e3b626f64793b746f6f",
       "kind": "notification",
       "title": "semis;in;title"
+    },
+    {
+      "hex": "000000071a636c61756465",
+      "kind": "foregroundProcess",
+      "name": "claude"
+    },
+    {
+      "hex": "000000011a",
+      "kind": "foregroundProcess",
+      "name": ""
+    },
+    {
+      "hex": "000000141a6e6f646520e2809420636166c3a920f09f9a80",
+      "kind": "foregroundProcess",
+      "name": "node — café 🚀"
+    },
+    {
+      "hex": "000000051b00000000",
+      "kind": "claudeStatus",
+      "kindByte": 0,
+      "label": "",
+      "state": 0
+    },
+    {
+      "hex": "000000181b04010013416c6c6f77204261736828726d202d7266293f",
+      "kind": "claudeStatus",
+      "kindByte": 1,
+      "label": "Allow Bash(rm -rf)?",
+      "state": 4
+    },
+    {
+      "hex": "000000221b0203001d446f6e6520e2809420e29c85206275696c6420677265656e20f09f9a80",
+      "kind": "claudeStatus",
+      "kindByte": 3,
+      "label": "Done — ✅ build green 🚀",
+      "state": 2
     }
   ],
   "trendlineDrive": {
