@@ -232,9 +232,11 @@ final class InspectorGlueTests: XCTestCase {
 
     /// Lifts a terminal session's `claudeStatus` off `.none` (a `claude` was detected in it) so the
     /// inspector second channel is allowed to subscribe — the W11 runtime gate that replaced the
-    /// static `.claudeCode` kind. Mirrors a wire type-26 `foregroundProcess("claude")` arriving.
+    /// static `.claudeCode` kind. P1: the client TRUSTS the host's type-27, so this mirrors the HOST
+    /// reporting an `.idle` claude via wire type-27 (a type-26 alone is display-only — it never sets
+    /// status under the single-source-of-truth contract).
     private func detectClaude(in session: LivePaneSession) {
-        session.feedAgentSignal(.foregroundProcess(name: "claude"))
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // state 1 = .idle urgency
         XCTAssertNotEqual(session.claudeStatus, .none, "claude must be detected before the inspector opens")
     }
 
@@ -380,6 +382,44 @@ final class InspectorGlueTests: XCTestCase {
         await Task.yield()
         try? await Task.sleep(nanoseconds: 20_000_000)
         XCTAssertTrue(vm.toolCards.isEmpty, "no card folds after teardown — the re-subscribe was cancelled")
+
+        await source.close()
+    }
+
+    /// P5 #7 — the DYNAMIC inspector CLOSE-on-clear. A claude is detected (type-27 lifts status off
+    /// `.none`) → the inspector second channel opens and folds host events. Then the claude LEAVES (the
+    /// host pushes a type-27 `.none`) → the inspector client is TORN DOWN: no event sent afterward is
+    /// folded (the consumer is gone), and the status is back to `.none`. This is the `non-none → .none`
+    /// boundary in `applyDetectedStatus`. Mirrors the open-on-detect test, run in reverse.
+    func testInspectorClosesWhenClaudeLeaves() async throws {
+        let (hostCh, clientCh) = LoopbackByteChannel.pair()
+        let source = InspectorSource(channel: hostCh)
+
+        let session = LivePaneSession.make(
+            PaneSpec(kind: .terminal, title: "claude"),
+            makeClient: { makeUnconnectedClient() },
+            makeInspector: { _ in InspectorClient(channel: clientCh) },
+        )
+        let vm = try XCTUnwrap(session.inspector)
+
+        // Claude detected (type-27 idle) → the inspector auto-opens (the dynamic OPEN, W11).
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // .idle
+        XCTAssertNotEqual(session.claudeStatus, .none)
+        try await source.send(.toolCard(sampleCard(id: "live", status: .pending)))
+        await waitUntil({ vm.toolCards.count == 1 }, "inspector never folded while claude was live")
+
+        // Claude LEAVES: the host pushes type-27 .none → the inspector client must be torn down.
+        session.feedAgentSignal(.claudeStatus(state: 0, kind: 0, label: "")) // .none
+        XCTAssertEqual(session.claudeStatus, .none, "claude gone → status none")
+
+        // Give the detached close a chance to run, then prove no further event is folded.
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        try? await source.send(.toolCard(sampleCard(id: "after", status: .pending)))
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(vm.toolCards.count, 1, "no event folds after claude leaves — the inspector channel was closed")
+        XCTAssertEqual(vm.toolCards.first?.id, "live", "only the pre-close card remains")
 
         await source.close()
     }

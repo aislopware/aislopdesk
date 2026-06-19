@@ -2,17 +2,15 @@ import Foundation
 
 /// Builds the curated environment for a spawned login shell.
 ///
-/// WF-7 owns the Claude-Code-specific environment (`CLAUDE_CODE_NO_FLICKER=1`,
-/// `CLAUDE_CODE_ENTRYPOINT=remote_mobile`, `claude setup-token` reuse, etc.) in
-/// ``ClaudeCodeProfile`` / ``ClaudeAuthResolver`` (selected via
-/// `HostServer.LaunchMode.claudeCode`). This generic profile is the env for a plain
-/// login shell (WF-3) and stays Claude-agnostic.
+/// W11 retired the curated `claude` launch mode (a Claude session is now an auto-detected `.terminal`
+/// pane — see `ClaudePaneDetector`), so the only Claude-Code-specific surface left is the ``Term`` choice
+/// in ``ClaudeCodeProfile`` (and `ClaudeCodeProfile.environment`/`ClaudeAuthResolver` were removed in P4).
+/// This generic profile is the env for a plain login shell (WF-3) and is Claude-agnostic.
 ///
-/// TERM is shared: the client renders with libghostty, so the plain-shell path now
-/// advertises the SAME `TERM=xterm-ghostty` as the Claude Code path
-/// (``ClaudeCodeProfile/Term/ghostty``) — there is one source of truth, not a divergent
-/// `xterm-256color` default. `curated(term:)` takes the value so callers can pick the
-/// documented `.xterm256` fallback (#54700) symmetrically with the profile toggle.
+/// TERM is shared: the client renders with libghostty, so the plain-shell path advertises the SAME
+/// `TERM=xterm-ghostty` as the retired Claude path (``ClaudeCodeProfile/Term/ghostty``) — one source of
+/// truth, not a divergent `xterm-256color` default. `curated(term:)` takes the value so callers can pick
+/// the documented `.xterm256` fallback (#54700) symmetrically with the profile toggle.
 public enum HostEnvironment {
     /// The default `TERM` for a spawned shell. Single source of truth shared with
     /// ``ClaudeCodeProfile`` (its `.ghostty` raw value): the client renders with

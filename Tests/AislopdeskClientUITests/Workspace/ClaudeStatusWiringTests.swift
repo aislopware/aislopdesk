@@ -55,40 +55,127 @@ final class ClaudeStatusWiringTests: XCTestCase {
         XCTAssertEqual(session.claudeStatus, .needsPermission)
     }
 
-    /// A type-26 `foregroundProcess("claude")` lifts the presence FLOOR to `.idle`; a non-claude name
-    /// (or empty) clears it back to `.none` (the coarse presence signal).
-    func testForegroundProcessPresenceFloorAndClear() {
+    /// P1: a type-26 `foregroundProcess` is a DISPLAY-ONLY process-name hint — it updates
+    /// ``LivePaneSession/foregroundProcessName`` and NEVER touches ``claudeStatus`` (the host's type-27
+    /// is the single source of truth). So even `foregroundProcess("claude")` leaves the status at `.none`
+    /// until the host SAYS so via type-27.
+    func testForegroundProcessIsDisplayOnlyAndNeverSetsStatus() {
         let session = makeTerminalSession()
-        XCTAssertEqual(
-            session.feedAgentSignal(.foregroundProcess(name: "claude")),
-            .idle,
-            "claude present → idle floor",
-        )
-        XCTAssertEqual(session.claudeStatus, .idle)
-        XCTAssertEqual(session.feedAgentSignal(.foregroundProcess(name: "vim")), .none, "non-claude clears presence")
+        XCTAssertEqual(session.feedAgentSignal(.foregroundProcess(name: "claude")), .none, "type-26 never sets status")
+        XCTAssertEqual(session.claudeStatus, .none, "status stays none — only type-27 moves it")
+        XCTAssertEqual(session.foregroundProcessName, "claude", "type-26 updates the display-only name")
+        // A subsequent type-26 only updates the name; an empty name clears it (still no status change).
+        _ = session.feedAgentSignal(.foregroundProcess(name: "vim"))
+        XCTAssertEqual(session.foregroundProcessName, "vim")
         XCTAssertEqual(session.claudeStatus, .none)
+        _ = session.feedAgentSignal(.foregroundProcess(name: ""))
+        XCTAssertNil(session.foregroundProcessName, "an empty foreground name clears the display hint")
+        XCTAssertEqual(session.claudeStatus, .none)
+    }
+
+    /// P1, review #3: a transient child process taking the PTY (a type-26 edge) must NOT clobber a
+    /// `.needsPermission` the host set via type-27. The type-26 only changes the displayed name.
+    func testForegroundProcessFlapDoesNotClobberHookStatus() {
+        let session = makeTerminalSession()
+        // Host hook → blocked (type-27).
+        XCTAssertEqual(
+            session.feedAgentSignal(.claudeStatus(state: 4, kind: 1, label: "Allow Bash?")),
+            .needsPermission,
+        )
+        // A child tool (`grep`) momentarily becomes the PTY foreground — a type-26 edge.
+        XCTAssertEqual(
+            session.feedAgentSignal(.foregroundProcess(name: "grep")),
+            .needsPermission,
+            "a foreground child process must not wipe the host's needsPermission verdict",
+        )
+        XCTAssertEqual(session.claudeStatus, .needsPermission, "the type-27 status is untouched by type-26")
+        XCTAssertEqual(session.foregroundProcessName, "grep", "only the display name changed")
     }
 
     /// An unknown / future urgency byte degrades to `.none` (forward-tolerant validate-then-repair) —
     /// a hostile or newer datagram must never trap the client.
     func testUnknownStateByteDegradesToNone() {
         let session = makeTerminalSession()
-        // First detect a claude so we are NOT already at .none.
-        XCTAssertEqual(session.feedAgentSignal(.foregroundProcess(name: "claude")), .idle)
+        // First the host reports working via type-27 so we are NOT already at .none.
+        XCTAssertEqual(session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "")), .working)
         // A future state byte (99) maps to .none via ClaudeStatus(urgency:) — the host says "gone".
         let result = session.feedAgentSignal(.claudeStatus(state: 99, kind: 0, label: ""))
         XCTAssertEqual(result, .none, "an unknown urgency byte degrades to .none (never traps)")
     }
 
-    /// `feedAgentSignal` dedupes: feeding the SAME status twice does not churn (idempotent) — the
-    /// store's `setAgentStatus` is also a no-op on equal updates.
-    func testFeedAgentSignalIsIdempotentOnEqualUpdates() {
+    /// P1 (c): the client status EQUALS the host's type-27 verdict for every step of a representative
+    /// host signal sequence — the client (a passive display) maps `ClaudeStatus(urgency: state)` and
+    /// never diverges. The host's emitted `state` bytes (idle 1 / working 3 / blocked 4 / done 2 /
+    /// idle 1 / none 0) are replayed here exactly as the host would push them.
+    func testClientStatusEqualsHostType27VerdictNoDivergence() {
         let session = makeTerminalSession()
-        _ = session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "x"))
-        XCTAssertEqual(session.claudeStatus, .working)
-        // Same urgency again → still working, no change.
-        let again = session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "x"))
-        XCTAssertEqual(again, .working, "a duplicate status update is a no-op")
+        let hostByteThenExpected: [(UInt8, ClaudeStatus)] = [
+            (1, .idle), (3, .working), (4, .needsPermission), (2, .done), (1, .idle), (0, .none),
+        ]
+        for (byte, expected) in hostByteThenExpected {
+            let result = session.feedAgentSignal(.claudeStatus(state: byte, kind: 0, label: ""))
+            XCTAssertEqual(result, expected, "host state byte \(byte) → client status \(expected) (no divergence)")
+            XCTAssertEqual(session.claudeStatus, expected)
+        }
+    }
+
+    /// P1 (d): a `claude-monitor` (or `myclaudewrapper`) foreground process is NOT claude — and since the
+    /// client treats type-26 as display-only, it can NEVER lift `claudeStatus` off `.none` anyway. So the
+    /// inspector second channel is never stood up (no flap): `makeInspector` is never called.
+    func testClaudeMonitorProcessDoesNotOpenInspector() async {
+        var madeInspector = false
+        let session = LivePaneSession.make(
+            PaneSpec(kind: .terminal, title: "term"),
+            makeClient: Self.makeUnconnectedClient,
+            makeInspector: { _ in madeInspector = true
+                return nil
+            },
+        )
+        for name in ["claude-monitor", "myclaudewrapper"] {
+            XCTAssertEqual(session.feedAgentSignal(.foregroundProcess(name: name)), .none, "\(name) is not claude")
+            XCTAssertEqual(
+                session.claudeStatus,
+                .none,
+                "a claude-prefixed name never sets status (type-26 is display-only)",
+            )
+        }
+        // Driving subscribe directly is still a no-op (status is .none → no inspector socket / no flap).
+        await session.subscribeInspector()
+        XCTAssertFalse(madeInspector, "no inspector channel for a non-claude foreground process")
+    }
+
+    /// P5 #6 — a GENUINE dedupe assertion (not the old near-tautological one that only checked the
+    /// returned status stayed `.working`, which holds with OR without dedupe). The store's `setAgentStatus`
+    /// is the dedupe guard; we COUNT how many times the observable `paneAgentStatus` actually MUTATES
+    /// across a stream that contains repeats, and assert it changes exactly ONCE per distinct value. With
+    /// the dedupe guard removed, an idempotent re-set would re-assign (and re-notify) on every repeat —
+    /// this test would then see extra mutations. Driven through the real store sink + the session fold.
+    func testRepeatedIdenticalStatusEmitsOnlyOnce() throws {
+        let store = WorkspaceStore(liveModel: .tree, makeSession: { FakePaneSession($0) })
+        let paneID = try XCTUnwrap(store.tree.allPaneIDs().first)
+
+        // Track every DISTINCT value paneAgentStatus took for this pane (one entry per real mutation).
+        var observedSequence: [ClaudeStatus] = []
+        func setAndRecord(_ s: ClaudeStatus) {
+            let before = store.agentStatus(for: paneID)
+            store.setAgentStatus(s, for: paneID)
+            let after = store.agentStatus(for: paneID)
+            if after != before { observedSequence.append(after) } // a real mutation happened
+        }
+
+        // working, working (dup), working (dup), needsPermission, needsPermission (dup), working.
+        setAndRecord(.working)
+        setAndRecord(.working)
+        setAndRecord(.working)
+        setAndRecord(.needsPermission)
+        setAndRecord(.needsPermission)
+        setAndRecord(.working)
+
+        XCTAssertEqual(
+            observedSequence,
+            [.working, .needsPermission, .working],
+            "each repeated identical status is deduped — the store mutates once per distinct value, not per call",
+        )
     }
 
     // MARK: - 2. The store sink: setAgentStatus mirrors the fold into paneAgentStatus + rollup

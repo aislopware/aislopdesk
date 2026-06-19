@@ -56,19 +56,26 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// upsert/dedup keeps a re-tail safe); `client` is `var` because resume swaps in a fresh one.
     public let inspector: InspectorViewModel?
 
-    // MARK: Claude-Code auto-detection (W11)
+    // MARK: Claude-Code auto-detection (W11 / P1 — client TRUSTS the host's type-27)
 
-    /// The pure, per-pane Claude-status state machine (docs/42 W7). Folds the wire detection signals
-    /// (type 26 `foregroundProcess`, type 27 `claudeStatus`) into a rolled-up ``ClaudeStatus``. `nil`
-    /// for a non-terminal pane (no PTY → no `claude`). `private` — callers read ``claudeStatus`` and
-    /// write via ``feedAgentSignal(_:now:)``.
-    private var statusMachine: ClaudeStatusMachine?
+    /// P1: the CLIENT is a passive display — the HOST owns the one ``ClaudeStatusMachine`` and is the
+    /// single source of truth. The client no longer runs its own machine or re-derives presence from
+    /// type-26 (which fought the host's type-27 + caused inspector flap, review #2/#3). It simply maps
+    /// the host's type-27 `state` byte → ``ClaudeStatus`` (forward-tolerant) and trusts it. Whether a
+    /// terminal can ever host a claude is a build-time fact (only `.terminal` panes), kept as this flag.
+    private let isAgentDetectable: Bool
 
-    /// The current rolled-up Claude status for this pane, the auto-detect payoff (W11): drives the
+    /// The current Claude status for this pane — the HOST's type-27 verdict, trusted verbatim. Drives the
     /// sidebar/tab/chrome ``AgentStatusDot`` (via ``WorkspaceStore/setAgentStatus(_:for:)``) AND the
-    /// dynamic open/close of the inspector second channel. `.none` until a `claude` is detected in this
-    /// pane's PTY. Observed so the leaf chrome re-renders on a change.
+    /// dynamic open/close of the inspector second channel. `.none` until the host reports a `claude`.
+    /// Observed so the leaf chrome re-renders on a change.
     public private(set) var claudeStatus: ClaudeStatus = .none
+
+    /// The last foreground process basename the host reported (type 26) — a COARSE display-only hint, NOT
+    /// a status source (P1, review #3): a transient child process taking the PTY must never wipe a
+    /// `.needsPermission` the host set via a hook, so type-26 updates THIS string and nothing else. `nil`
+    /// until the host reports one. Observed so any chrome that shows it re-renders.
+    public private(set) var foregroundProcessName: String?
     /// The live inspector second-channel client. Set when the inspector is subscribed; nilled on
     /// pause/teardown. Private so callers go through the lifecycle methods.
     private var inspectorClient: InspectorClient?
@@ -167,6 +174,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         remoteWindow: RemoteWindowModel?,
         makeInspector: (@MainActor (ConnectionTarget) -> InspectorClient?)?,
         target: (@MainActor () -> ConnectionTarget)?,
+        isAgentDetectable: Bool,
     ) {
         self.id = id
         self.kind = kind
@@ -177,6 +185,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         self.remoteWindow = remoteWindow
         self.makeInspector = makeInspector
         self.target = target
+        self.isAgentDetectable = isAgentDetectable
     }
 
     // MARK: - Factory (the store's makeSession production path)
@@ -238,7 +247,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // (docs/29 dual-OUT-drain reorder fix). Weak: the sink must not retain the model.
         inputBar.sendSink = { [weak terminal] data in terminal?.sendInput(data) }
 
-        let session = LivePaneSession(
+        return LivePaneSession(
             id: PaneID(),
             kind: spec.kind,
             connection: connection,
@@ -248,11 +257,10 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             remoteWindow: nil,
             makeInspector: makeInspector,
             target: target,
+            // Every terminal can host an auto-detected claude — the host's type-27 verdict (folded via
+            // `feedAgentSignal`) lifts `claudeStatus` off `.none`. The client TRUSTS that verdict (P1).
+            isAgentDetectable: true,
         )
-        // The Claude detection machine is live for every terminal — the wire signals (types 26/27) fold
-        // into it via `feedAgentSignal`, lifting `claudeStatus` off `.none` when a `claude` is detected.
-        session.statusMachine = ClaudeStatusMachine()
-        return session
     }
 
     /// Builds a `.remoteGUI` session: a `RemoteWindowModel` bound to the app target with the per-pane
@@ -282,6 +290,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             remoteWindow: model,
             makeInspector: nil,
             target: nil,
+            isAgentDetectable: false, // a video pane has no PTY → no claude to detect
         )
     }
 
@@ -330,74 +339,47 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         if inspectorClient === client { inspectorClient = nil }
     }
 
-    // MARK: - Claude-Code agent signal fold (W11)
+    // MARK: - Claude-Code agent signal fold (W11 / P1 — client TRUSTS the host's type-27)
 
     /// Folds one wire agent-detection event (type 26 `foregroundProcess` / type 27 `claudeStatus`) into
-    /// this pane's ``ClaudeStatusMachine``, updating ``claudeStatus`` and DYNAMICALLY opening/closing the
-    /// inspector second channel on the `.none` boundary (docs/42 W11, Decision #6). Returns the new
-    /// status so the store can mirror it into ``WorkspaceStore/setAgentStatus(_:for:)`` for the rollup
-    /// dots. A no-op (returns `.none`) for a non-terminal pane (no machine). The wire bytes are mapped
-    /// back to the headless ``ClaudeSignal`` vocabulary here (the only place that bridges wire → machine
-    /// on the client); an unknown future state/kind byte degrades safely (validate-then-repair).
+    /// this pane's DISPLAY state. P1: the client is a passive display — it does NOT run a state machine
+    /// or re-derive presence:
+    /// - **type 27 `claudeStatus`** is the SINGLE source of truth: the `state` byte maps directly to a
+    ///   ``ClaudeStatus`` (forward-tolerant — an unknown/future byte degrades to `.none`), and that
+    ///   verdict is trusted verbatim. It drives the dot AND the dynamic inspector open/close.
+    /// - **type 26 `foregroundProcess`** is a COARSE display-only process-name hint (review #3): it
+    ///   updates ``foregroundProcessName`` and NOTHING else — it can NEVER override the type-27 status,
+    ///   so a transient child process taking the PTY can't wipe a `.needsPermission` the host set.
+    ///
+    /// Returns the current status so the store can mirror it into ``WorkspaceStore/setAgentStatus(_:for:)``.
+    /// A no-op (returns `.none`) for a non-detectable pane (a video pane — no PTY).
     @discardableResult
     func feedAgentSignal(
         _ event: AislopdeskClient.Event,
-        now: TimeInterval = Date().timeIntervalSinceReferenceDate,
+        now _: TimeInterval = Date().timeIntervalSinceReferenceDate,
     ) -> ClaudeStatus {
-        guard var machine = statusMachine else { return claudeStatus }
-        let signal: ClaudeSignal
+        guard isAgentDetectable else { return claudeStatus }
         switch event {
         case let .foregroundProcess(name):
-            // COARSE presence: "claude" (case-insensitive basename) means a claude is foreground →
-            // presence floor `.idle`; anything else (incl. "") clears it → `.none`.
-            let isClaude = name.range(of: "claude", options: .caseInsensitive) != nil
-            signal = .processPresent(isClaude)
-        case let .claudeStatus(state, kind, label):
-            // RICH hook status: map the raw urgency byte back to a ClaudeStatus and synthesize the
-            // matching ClaudeHookEvent so the machine's precedence (block > working > done > idle) and
-            // done→idle decay apply uniformly. `state`/`kind` are forward-tolerant (unknown → safe).
-            signal = Self.hookSignal(state: state, kind: kind, label: label)
+            // DISPLAY-ONLY: a coarse process-name hint. Never touches `claudeStatus` (the type-27 verdict
+            // is authoritative) — so a child process briefly taking the PTY can't clobber a hook status.
+            let trimmed = name.isEmpty ? nil : name
+            if foregroundProcessName != trimmed { foregroundProcessName = trimmed }
+            return claudeStatus
+        case let .claudeStatus(state, _, _):
+            // TRUST the host's verdict: map the raw urgency byte → ClaudeStatus directly (forward-tolerant
+            // — an unknown/future byte degrades to `.none`; a hostile datagram can never trap the client).
+            applyDetectedStatus(ClaudeStatus(urgency: Int(state)))
+            return claudeStatus
         default:
             // Not an agent-detect event — ignore (the store only forwards 26/27 here).
             return claudeStatus
         }
-        // Fold on the local copy, then write the value-type machine back (no force-unwrap).
-        let newStatus = machine.reduce(signal, at: now)
-        statusMachine = machine
-        applyDetectedStatus(newStatus)
-        return newStatus
     }
 
-    /// Maps the wire `claudeStatus(state:kind:label:)` bytes to a headless ``ClaudeSignal``. The host
-    /// already folded the hook events into a coarse `state` (urgency) + notification `kind`; we re-cast
-    /// that into the richest matching ``ClaudeHookEvent`` so the machine's precedence/decay still apply.
-    private static func hookSignal(state: UInt8, kind: UInt8, label: String) -> ClaudeSignal {
-        let status = ClaudeStatus(urgency: Int(state))
-        let chip = label.isEmpty ? nil : label
-        switch status {
-        case .none:
-            // Host says the session ended / claude is gone.
-            return .hook(.sessionEnd(sessionID: nil))
-        case .needsPermission:
-            // Blocked on a human — carry the notification class (permission vs waiting-for-input).
-            let notif: ClaudeHookEvent.NotificationKind =
-                switch kind {
-                case 2: .waitingForInput
-                default: .permission // 1 (permission) or any other → conservative block
-                }
-            return .hook(.notification(kind: notif, label: chip))
-        case .working:
-            return .hook(.userPromptSubmit(sessionID: nil))
-        case .done:
-            return .hook(.stop(sessionID: nil, label: chip))
-        case .idle:
-            return .hook(.sessionStart(sessionID: nil))
-        }
-    }
-
-    /// Applies a freshly-reduced status: dedupes no-op updates, then opens/closes the inspector second
-    /// channel on the `.none` boundary. `.none → non-none` spawns a subscribe; `non-none → .none` tears
-    /// the client down (the pane is back to a plain terminal — hold no inspector socket).
+    /// Applies the host's freshly-trusted status: dedupes no-op updates, then opens/closes the inspector
+    /// second channel on the `.none` boundary. `.none → non-none` spawns a subscribe; `non-none → .none`
+    /// tears the client down (the pane is back to a plain terminal — hold no inspector socket).
     private func applyDetectedStatus(_ newStatus: ClaudeStatus) {
         let wasActive = claudeStatus != .none
         let isActive = newStatus != .none

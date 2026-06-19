@@ -34,10 +34,26 @@ public struct ClaudeStatusMachine: Sendable, Equatable {
     /// Absolute time the status entered `.done` (the done→idle decay anchor). `nil` otherwise.
     private var doneSince: TimeInterval?
 
-    /// Whether an authoritative hook block is in effect — a conservative manifest verdict
-    /// must not clear it. Set on Notification(permission|waiting), cleared on any
-    /// authoritative working/idle/done/terminal transition.
-    private var hookBlocked: Bool
+    /// Where the current `.needsPermission` block came from (`.none` when not blocked). A
+    /// conservative manifest `.working`/`.idle` verdict may clear a MANIFEST-sourced block but
+    /// stays SUPPRESSED under an authoritative HOOK block — distinguishing the source fixes the
+    /// stuck-blocked bug where `applyManifest(.needsPermission)` set the same flag that gated the
+    /// manifest branches, so a manifest-set block could never be cleared by a later manifest
+    /// verdict (review #5). Set on `enterBlocked`; cleared on any authoritative working/idle/
+    /// done/terminal transition (`enter`/`terminate`).
+    private var blockSource: BlockSource
+
+    /// The provenance of an active `.needsPermission` block — what gates whether a conservative
+    /// manifest verdict is allowed to clear it (review #5).
+    private enum BlockSource: Equatable {
+        /// Not blocked.
+        case none
+        /// An authoritative HOOK Notification(permission|waiting) — a manifest verdict must NOT clear it.
+        case hook
+        /// The no-hooks manifest fallback's strongest cue (a known approval UI) — a later manifest
+        /// `.working`/`.idle` MAY clear it (the manifest is the only authority in play).
+        case manifest
+    }
 
     /// Cap for `label` — keeps the chip bounded regardless of a hostile/huge hook body.
     public static let maxLabel = 120
@@ -49,7 +65,7 @@ public struct ClaudeStatusMachine: Sendable, Equatable {
         status = .none
         label = nil
         doneSince = nil
-        hookBlocked = false
+        blockSource = .none
     }
 
     /// Fold one signal at absolute time `now`, returning the new status.
@@ -105,7 +121,8 @@ public struct ClaudeStatusMachine: Sendable, Equatable {
             switch kind {
             case .permission,
                  .waitingForInput:
-                enterBlocked(label: label)
+                // An authoritative HOOK block — a conservative manifest verdict must NOT clear it.
+                enterBlocked(label: label, source: .hook)
             case .other:
                 // Informational (auth_success / elicitation_complete) — no status change,
                 // but it does corroborate presence (lift the floor off `.none`).
@@ -132,15 +149,18 @@ public struct ClaudeStatusMachine: Sendable, Equatable {
             // Unsure → never downgrade; presence is the floor.
             break
         case .needsPermission:
-            // Only the manifest's strongest, conservative signal (a known approval UI).
-            enterBlocked(label: label)
+            // Only the manifest's strongest, conservative signal (a known approval UI). Tagged as a
+            // MANIFEST block (NOT hook) so a later manifest verdict can clear it (review #5: the old
+            // shared `hookBlocked` flag made a manifest-set block permanent).
+            enterBlocked(label: label, source: .manifest)
         case .working:
-            // A coarse "working" guess must NOT clear an authoritative hook block.
-            if !hookBlocked { enter(.working, label: nil) }
+            // A coarse "working" guess must NOT clear an authoritative HOOK block, but MAY clear a
+            // manifest-sourced one (the manifest is the only authority then).
+            if blockSource != .hook { enter(.working, label: nil) }
         case .idle:
-            if !hookBlocked, status == .none { enter(.idle, label: nil) }
+            if blockSource != .hook, status == .none { enter(.idle, label: nil) }
         case .done:
-            if !hookBlocked { enter(.done, label: label, at: nil) }
+            if blockSource != .hook { enter(.done, label: label, at: nil) }
         }
     }
 
@@ -151,8 +171,8 @@ public struct ClaudeStatusMachine: Sendable, Equatable {
         if status == .none { enter(.idle, label: nil) }
     }
 
-    private mutating func enterBlocked(label: String?) {
-        hookBlocked = true
+    private mutating func enterBlocked(label: String?, source: BlockSource) {
+        blockSource = source
         doneSince = nil
         status = .needsPermission
         if let label { self.label = Self.clampLabel(label) }
@@ -160,7 +180,7 @@ public struct ClaudeStatusMachine: Sendable, Equatable {
 
     /// Enter a non-blocked status. `at` non-nil marks the done-decay anchor.
     private mutating func enter(_ next: ClaudeStatus, label newLabel: String?, at now: TimeInterval? = nil) {
-        hookBlocked = false
+        blockSource = .none
         status = next
         label = newLabel.map(Self.clampLabel)
         if next == .done {
@@ -174,7 +194,7 @@ public struct ClaudeStatusMachine: Sendable, Equatable {
         status = .none
         label = nil
         doneSince = nil
-        hookBlocked = false
+        blockSource = .none
     }
 
     // MARK: - Time-based decay (injected clock)

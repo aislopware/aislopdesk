@@ -2496,10 +2496,11 @@ public final class WorkspaceStore {
     // MARK: - Rolled-up agent status (W5 — sidebar/tab dots; W10/W11 feed it real data)
 
     /// The per-pane Claude status the detection signals reduce to. Defaults ``ClaudeStatus/none`` for every
-    /// leaf; the W10/W11 wiring (foreground-process watch + hooks + manifest fallback) will feed real
-    /// verdicts in from the `LivePaneSession`. Stored on the store so the sidebar/chrome dots have a single
-    /// observable source today even though the detection pipeline lands later. Pruned to the live leaf set
-    /// would be ideal, but an absent key already reads as `.none`, so a stale entry is harmless.
+    /// leaf; the W10/W11 wiring (foreground-process watch + hooks + manifest fallback) feeds real verdicts
+    /// in from the `LivePaneSession`. Stored on the store so the sidebar/chrome dots have a single
+    /// observable source. PRUNED to the live leaf set on every reconcile (review #10/#13) — in the same
+    /// shared diff core as the `selectedPanes` / `nativeFrameSize` caches — so a closed pane's entry drops
+    /// out (no unbounded growth, no dead-pane status surfacing in a rollup).
     public private(set) var paneAgentStatus: [PaneID: ClaudeStatus] = [:]
 
     /// The rolled-up agent status for `id` (`.none` when unknown — the common case until W10/W11).
@@ -2663,6 +2664,14 @@ public final class WorkspaceStore {
         // long session of open/close — the round-2 review's leak).
         if !nativeFrameSize.isEmpty {
             nativeFrameSize = nativeFrameSize.filter { leafSet.contains($0.key) }
+        }
+        // Prune the per-pane agent status for orphaned panes (review #10/#13): like the sibling caches
+        // above, a closed pane's `paneAgentStatus` entry must drop out — an absent key reads `.none`, but
+        // without this the dict grew unbounded across a long session of open/close AND a recycled-id-free
+        // stale entry could surface a dead pane's status in a rollup. Prune in the same place the other
+        // per-pane caches are pruned (the shared diff core).
+        if !paneAgentStatus.isEmpty {
+            paneAgentStatus = paneAgentStatus.filter { leafSet.contains($0.key) }
         }
 
         // 2. Orphans: remove from the registry synchronously (the registry is the source of truth for

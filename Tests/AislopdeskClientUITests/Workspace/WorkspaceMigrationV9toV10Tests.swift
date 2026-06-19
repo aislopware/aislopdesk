@@ -437,6 +437,60 @@ final class WorkspaceMigrationV9toV10Tests: XCTestCase {
         XCTAssertTrue(v10.isInvariantHeld())
     }
 
+    /// P5 #11 — a `PaneKindV9` UNKNOWN/future raw value degrades to `.terminal` in the MIGRATION path (not
+    /// just the live `PaneKind` decode). An old/forward file could carry a kind this binary never knew; the
+    /// frozen mirror must decode it to `.terminal` (validate-then-repair, no trap) and the migration must
+    /// preserve the pane (id + title), so a future-written workspace never traps or loses a pane here.
+    func testUnknownPaneKindV9DegradesToTerminalInMigration() throws {
+        let futureID = UUID()
+        let termID = UUID()
+        // Raw v9 JSON with an UNKNOWN kind ("hologram") the frozen PaneKindV9 has never heard of.
+        let json = """
+        {
+          "schemaVersion": 9,
+          "canvas": {
+            "items": [
+              {
+                "id": { "raw": "\(futureID.uuidString)" },
+                "spec": { "kind": "hologram", "title": "future pane" },
+                "frame": { "origin": { "x": 0, "y": 0 }, "size": { "width": 640, "height": 420 } },
+                "z": 0
+              },
+              {
+                "id": { "raw": "\(termID.uuidString)" },
+                "spec": { "kind": "terminal", "title": "shell" },
+                "frame": { "origin": { "x": 700, "y": 0 }, "size": { "width": 640, "height": 420 } },
+                "z": 1
+              }
+            ],
+            "camera": { "origin": { "x": 0, "y": 0 } }
+          },
+          "groups": [],
+          "bookmarks": {},
+          "layoutPresets": [],
+          "snippets": []
+        }
+        """
+        let v9 = try decoder.decode(WorkspaceV9.self, from: Data(json.utf8))
+        // The frozen mirror decodes the unknown kind to `.terminal` (no trap) — both panes survive.
+        XCTAssertEqual(v9.canvas.items.count, 2, "the unknown-kind pane is not dropped on decode")
+        let futureItem = try XCTUnwrap(v9.canvas.items.first { $0.id.raw == futureID })
+        XCTAssertEqual(futureItem.spec.kind, .terminal, "an unknown PaneKindV9 raw value degrades to .terminal")
+
+        // The migration preserves the pane (id + title) as a plain terminal.
+        let v10 = WorkspaceMigrationV9toV10.migrate(v9)
+        let futurePaneID = PaneID(raw: futureID)
+        XCTAssertTrue(v10.allPaneIDs().contains(futurePaneID), "the unknown-kind pane is not lost in migration")
+        XCTAssertEqual(v10.spec(for: futurePaneID)?.kind, .terminal)
+        XCTAssertEqual(v10.spec(for: futurePaneID)?.title, "future pane", "title preserved verbatim")
+        XCTAssertTrue(v10.isInvariantHeld())
+        // An unknown kind is NOT the legacy claudeCode → it must NOT seed the launch snippet.
+        XCTAssertFalse(
+            v10.snippets.contains { $0.name == WorkspaceMigrationV9toV10.claudeLaunchSnippetName },
+            "only a real legacy claudeCode pane seeds the snippet — not any degraded-to-terminal kind",
+        )
+    }
+
     /// A v9 with NO claude pane must NOT seed the launch snippet (don't pollute every migrated workspace).
     func testNoClaudePaneDoesNotSeedSnippet() throws {
         let (live, _) = makeRichV9() // the rich fixture's "claude" pane is a plain `.terminal`, not claudeCode

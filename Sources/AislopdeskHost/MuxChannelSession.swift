@@ -52,19 +52,17 @@ final class MuxChannelSession: @unchecked Sendable {
     /// drive it, though the poll itself is never run in a unit test — hang-safety).
     private let agentPollInterval: Duration
 
-    /// The pure foreground-process detector, touched ONLY on the serial `agentWatchTask` (its
-    /// own single-writer context, like `controlTask`'s resize fields). Not shared.
-    private var foregroundDetector = ForegroundProcessDetector()
+    /// P1 — the SINGLE per-pane Claude detector (ONE ``ClaudeStatusMachine``). Fed by ALL detection
+    /// inputs — the foreground poll's `processPresent`, the per-poll `tick` (drives the `.done→.idle`
+    /// decay), and the hook socket's bytes — so the host is the single source of truth (review #1/#9).
+    /// Touched from TWO contexts (the serial `agentWatchTask` and the socket-accept thread when a hook
+    /// POSTs), so it is guarded by `agentDetectLock` — replacing the pre-P1 pair of independent machines
+    /// (`foregroundDetector` + `agentHookHandler`) that fought over the one type-27 stream.
+    private let agentDetectLock = NSLock()
+    private var agentDetector = ClaudePaneDetector()
 
     /// The foreground-watch poll task (cancel on shutdown).
     private var agentWatchTask: Task<Void, Never>?
-
-    /// W10 — the per-pane hook handler (the OPT-IN hooks path). Fed by the host's
-    /// ``AgentHookListener`` socket shim when an installed Claude hook POSTs for THIS pane; folds
-    /// the bytes → a type-27 status and enqueues it on this channel's CONTROL sender. Guarded by
-    /// `agentHookLock` (the socket-accept thread is a different context than the watch task).
-    private let agentHookLock = NSLock()
-    private var agentHookHandler = AgentHookHandler()
 
     private let taskLock = NSLock()
     private var replay: ReplayBuffer
@@ -441,16 +439,25 @@ final class MuxChannelSession: @unchecked Sendable {
         }
     }
 
-    /// Resolves the PTY's foreground basename via the OS probe, folds it through the pure
-    /// detector, and enqueues any resulting type-26/27 CONTROL messages. Runs only on the
-    /// serial `agentWatchTask` (single-writer for `foregroundDetector`). The clock is the
-    /// monotonic uptime — a plain `Double` seconds, honouring the no-wall-clock-in-logic
+    /// Resolves the PTY's foreground basename via the OS probe, folds it (plus a clock TICK) through the
+    /// single ``ClaudePaneDetector``, and enqueues any resulting type-26/27 CONTROL messages. The clock
+    /// is the monotonic uptime — a plain `Double` seconds, honouring the no-wall-clock-in-logic
     /// convention (the pure detector takes the time as a parameter; only this driver reads it).
+    ///
+    /// The per-poll `tick(at:)` is what drives the `.done → .idle` decay (review #4: nobody ticked the
+    /// host machine before P1, so a finished turn stayed 🔵 forever). Both folds share the one machine
+    /// under `agentDetectLock` (the hook socket-accept thread also folds into it).
     private func sampleForeground(masterFD: Int32) {
         let name = PTYForegroundProbe.foregroundName(masterFD: masterFD)
         let now = ProcessInfo.processInfo.systemUptime
-        let emission = foregroundDetector.sample(name: name, at: now)
-        if !emission.isEmpty { enqueueControl(emission.messages) }
+        agentDetectLock.lock()
+        // Tick FIRST so the decay is evaluated at this `now`, then the presence sample; both emit
+        // type-27 only on a real triple change (the detector dedupes), so at most one status frame ships.
+        let tickEmission = agentDetector.tick(at: now)
+        let sampleEmission = agentDetector.sample(name: name, at: now)
+        agentDetectLock.unlock()
+        if !tickEmission.isEmpty { enqueueControl(tickEmission.messages) }
+        if !sampleEmission.isEmpty { enqueueControl(sampleEmission.messages) }
     }
 
     /// Tears this channel down FOR GOOD and releases its PTY + master fd.
@@ -662,17 +669,17 @@ final class MuxChannelSession: @unchecked Sendable {
         wake?.yield(())
     }
 
-    /// W10 — ingests one received Claude-hook record (raw POST body bytes) for THIS pane and,
-    /// if it produced a status change, enqueues the resulting type-27 on the CONTROL sender.
-    /// Folds through the pure ``AgentHookHandler`` (validate-then-drop: malformed bytes are
-    /// silently ignored). Called from the host's socket-accept shim thread; the handler state is
-    /// lock-guarded. The clock is monotonic uptime (a plain `Double`; the logic is in the pure
-    /// handler, which takes the time as a parameter).
+    /// W10 — ingests one received Claude-hook record (raw POST body bytes) for THIS pane and, if it
+    /// produced a status change, enqueues the resulting type-27 on the CONTROL sender. Folds through the
+    /// SAME ``ClaudePaneDetector`` the foreground poll drives (P1 single source of truth — no second
+    /// machine), under `agentDetectLock` because the socket-accept thread is a different context than the
+    /// watch task. Validate-then-drop: malformed bytes are silently ignored. The clock is monotonic
+    /// uptime (a plain `Double`; the decision logic is in the pure detector, which takes the time).
     func ingestAgentHookRecord(_ bytes: Data) {
-        agentHookLock.lock()
-        let message = agentHookHandler.handle(bytes: bytes, at: ProcessInfo.processInfo.systemUptime)
-        agentHookLock.unlock()
-        if let message { enqueueControl([message]) }
+        agentDetectLock.lock()
+        let emission = agentDetector.hook(bytes: bytes, at: ProcessInfo.processInfo.systemUptime)
+        agentDetectLock.unlock()
+        if !emission.isEmpty { enqueueControl(emission.messages) }
     }
 
     /// Atomically takes the whole pending control batch; `nil` when empty (drain re-parks).

@@ -156,6 +156,44 @@ final class ClaudeStatusMachineTests: XCTestCase {
         XCTAssertEqual(m.reduce(.manifestVerdict(.working), at: 1), .needsPermission)
     }
 
+    // MARK: Block-source provenance (review #5 — a manifest block must be clearable by a manifest verdict)
+
+    /// A MANIFEST-sourced `.needsPermission` (the no-hooks approval-UI cue) must be CLEARABLE by a
+    /// later manifest `.working` verdict — the screen left the approval prompt and a spinner is now
+    /// showing. The pre-fix code set the same `hookBlocked` flag for both sources, so a manifest block
+    /// could never clear (stuck-blocked) — this is the revert-to-confirm-fail guard.
+    func testManifestBlockIsClearedByALaterManifestWorking() {
+        var m = ClaudeStatusMachine()
+        _ = m.reduce(.processPresent(true), at: 0) // idle floor
+        XCTAssertEqual(
+            m.reduce(.manifestVerdict(.needsPermission), at: 1),
+            .needsPermission,
+            "manifest approval UI → blocked",
+        )
+        // The approval prompt is gone and the screen now shows a spinner → the manifest block clears.
+        XCTAssertEqual(
+            m.reduce(.manifestVerdict(.working), at: 2),
+            .working,
+            "a manifest-sourced block must be clearable by a later manifest verdict (not stuck-blocked)",
+        )
+    }
+
+    /// The same clear path via a manifest `.idle` verdict (the screen returned to an empty compose box).
+    /// `.idle` only lifts off `.none` in `applyManifest`, so first force the machine back to `.none`-able
+    /// ground is not needed — instead assert via `.working` is covered above; here pin that a manifest
+    /// block does NOT survive a manifest `.working` while a genuine HOOK block DOES (the asymmetry).
+    func testHookBlockOutranksManifestButManifestBlockDoesNot() {
+        // Hook block: a manifest .working can't clear it.
+        var hookM = ClaudeStatusMachine()
+        _ = hookM.reduce(.hook(.notification(kind: .permission, label: "Allow?")), at: 0)
+        XCTAssertEqual(hookM.reduce(.manifestVerdict(.working), at: 1), .needsPermission, "hook block survives")
+        // Manifest block: a manifest .working DOES clear it.
+        var manifestM = ClaudeStatusMachine()
+        _ = manifestM.reduce(.processPresent(true), at: 0)
+        _ = manifestM.reduce(.manifestVerdict(.needsPermission), at: 1)
+        XCTAssertEqual(manifestM.reduce(.manifestVerdict(.working), at: 2), .working, "manifest block clears")
+    }
+
     // MARK: Idempotence / duplicates / out-of-order / unknown
 
     func testDuplicateSignalsAreIdempotent() {
