@@ -32,6 +32,7 @@ let package = Package(
         .library(name: "AislopdeskTTY", targets: ["AislopdeskTTY"]),
         .library(name: "AislopdeskInspector", targets: ["AislopdeskInspector"]),
         .library(name: "AislopdeskClaudeCode", targets: ["AislopdeskClaudeCode"]),
+        .library(name: "AislopdeskAgentDetect", targets: ["AislopdeskAgentDetect"]),
         .library(name: "AislopdeskClientUI", targets: ["AislopdeskClientUI"]),
         // PATH 2 (GUI video path, Phase 4 / WF-9).
         .library(name: "AislopdeskVideoProtocol", targets: ["AislopdeskVideoProtocol"]),
@@ -102,6 +103,17 @@ let package = Package(
         // dependency beyond Foundation — builds for macOS + iOS, fixture-tested. The host
         // launch env + auth resolution live in AislopdeskHost (macOS, the WF-7 seam).
         .target(name: "AislopdeskClaudeCode", dependencies: ["AislopdeskProtocol"]),
+
+        // Pure, headless Claude-Code DETECTION CORE (W7): the per-pane status enum
+        // (`ClaudeStatus`), the deterministic, clock-injected state machine
+        // (`ClaudeStatusMachine` — `Date()` is physically unreachable; time arrives as
+        // a `TimeInterval` parameter), and the Herdr-style no-hooks fallback
+        // (`ClaudeManifestMatcher`) that reads a terminal pane's title/screen for
+        // recognizable Claude TUI cues. Foundation-only — it depends on NOTHING
+        // GUI/transport/video so it physically cannot import them; the adapter that
+        // maps `AislopdeskInspector.HookPayload` → `ClaudeSignal` is W8/W10, not here.
+        // Validate-then-drop on every foreign string; no force-unwrap.
+        .target(name: "AislopdeskAgentDetect"),
 
         // Cross-platform SwiftUI client UI (WF-8): the views + @MainActor @Observable
         // view-models that bind the existing modules — AislopdeskClient (byte pipeline +
@@ -247,6 +259,10 @@ let package = Package(
         // MARK: Tests
 
         .testTarget(name: "AislopdeskProtocolTests", dependencies: ["AislopdeskProtocol"]),
+        // W7: the pure detection core — state-machine transitions (incl. injected-clock
+        // timeouts, idempotent/out-of-order signals), the conservative manifest matcher,
+        // and the rollup most-urgent order. No GUI/socket/PTY — signals are fed directly.
+        .testTarget(name: "AislopdeskAgentDetectTests", dependencies: ["AislopdeskAgentDetect"]),
         .testTarget(name: "AislopdeskTransportTests", dependencies: ["AislopdeskTransport"]),
         .testTarget(name: "AislopdeskHostTests", dependencies: ["AislopdeskHost", "AislopdeskInspector"]),
         // AislopdeskClientTests exercises the REAL PATH 1 e2e: a HostServer (AislopdeskHost) +
