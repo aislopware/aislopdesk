@@ -55,8 +55,9 @@ public actor MuxSubChannel: MessageChannel {
     private let consumedSink: (@Sendable (_ bytes: Int) async -> Void)?
 
     /// Per-channel streaming frame decoder. Lives inside the actor (not `Sendable`) — one per
-    /// logical channel.
-    private var decoder = FrameDecoder()
+    /// logical channel. A `final class` owning a Rust core handle, so it is `let` (the reference is
+    /// fixed; the Rust-side buffer mutates behind the handle).
+    private let decoder = FrameDecoder()
 
     private let inboundStream: AsyncThrowingStream<WireMessage, Error>
     private let inboundContinuation: AsyncThrowingStream<WireMessage, Error>.Continuation

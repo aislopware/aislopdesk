@@ -1,12 +1,14 @@
 # Strict formatter / linter / static-analysis entrypoints for the whole repo.
-# Configs: .swiftformat .swiftlint.yml rust/{rustfmt,clippy,deny}.toml ruff.toml .shellcheckrc
+# Configs: .swiftformat .swiftlint.yml ruff.toml .shellcheckrc
 #
 #   make fmt    — auto-format everything (writes)
 #   make fix    — fmt + apply every safe lint autofix (writes)
 #   make lint   — run every linter strictly, no writes (what CI gates on)
-#   make check  — lint + swift build + swift test (the full local gate)
+#   make check  — lint + swift build + swift test + golden pin (the full local gate)
 #
 # Tools are pinned/installed via `make install-tools`.
+# Single language: Swift + a tiny native SIMD C kernel (Sources/CAislopdeskSIMD). No Rust, no FFI,
+# no build ordering — `swift build` compiles from a clean checkout with no prerequisite.
 
 SWIFT_PATHS  := Sources Tests Apps
 # Format (SwiftFormat) also covers the package manifest; the SwiftLint scope stays
@@ -14,7 +16,6 @@ SWIFT_PATHS  := Sources Tests Apps
 SWIFTFMT_PATHS := Package.swift $(SWIFT_PATHS)
 SHELL_FILES  := $(shell git ls-files '*.sh' | grep -v '^ThirdParty/')
 PY_FILES     := $(shell git ls-files '*.py')
-RUST_DIR     := rust
 SHFMT_FLAGS  := -i 2 -ci -sr
 
 .DEFAULT_GOAL := help
@@ -27,14 +28,11 @@ help: ## Show this help
 
 # ---------------------------------------------------------------------------- #
 # Formatting (writes)
-.PHONY: fmt fmt-swift fmt-rust fmt-shell fmt-python
-fmt: fmt-swift fmt-rust fmt-shell fmt-python ## Auto-format all languages
+.PHONY: fmt fmt-swift fmt-shell fmt-python
+fmt: fmt-swift fmt-shell fmt-python ## Auto-format all languages
 
 fmt-swift: ## Format Swift (SwiftFormat)
 	swiftformat $(SWIFTFMT_PATHS)
-
-fmt-rust: ## Format Rust (rustfmt)
-	cd $(RUST_DIR) && cargo fmt
 
 fmt-shell: ## Format shell (shfmt)
 	@[ -n "$(SHELL_FILES)" ] && shfmt $(SHFMT_FLAGS) -w $(SHELL_FILES) || true
@@ -47,36 +45,17 @@ fmt-python: ## Format Python (ruff format)
 .PHONY: fix
 fix: fmt ## Format + apply all safe lint autofixes
 	-swiftlint --fix --quiet
-	-cd $(RUST_DIR) && cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 	-[ -n "$(PY_FILES)" ] && ruff check --fix $(PY_FILES)
 	-[ -n "$(SHELL_FILES)" ] && shellcheck -f diff $(SHELL_FILES) | git apply --allow-empty 2>/dev/null
 
 # ---------------------------------------------------------------------------- #
 # Linting (no writes) — the CI gate
-.PHONY: lint lint-swift lint-rust lint-shell lint-python check-ffi-header
-lint: lint-swift lint-rust lint-shell lint-python check-ffi-header ## Run every linter strictly
-
-# C header drift-gate: include/aislopdesk_ffi.h is GENERATED from the Rust #[repr(C)]/extern "C"
-# surface (Rust = SoT), so a hand-edit or a forgotten regen must fail. Re-generate to a temp file and
-# compare byte-for-byte against the committed header (mirrors the golden_parity philosophy).
-check-ffi-header: ## Verify the generated C header is in sync with the Rust SoT (cbindgen)
-	@command -v cbindgen > /dev/null 2>&1 || { echo "cbindgen not installed — run 'make install-tools'"; exit 1; }
-	cd $(RUST_DIR) && cbindgen --config aislopdesk-ffi/cbindgen.toml --crate aislopdesk-ffi \
-		--output /tmp/aislopdesk_ffi.gen.h aislopdesk-ffi 2> /dev/null
-	@cmp -s $(RUST_DIR)/aislopdesk-ffi/include/aislopdesk_ffi.h /tmp/aislopdesk_ffi.gen.h \
-		|| { echo "ERROR: C header drift — run 'bash rust/build-apple.sh' and commit the regenerated header:"; \
-		     diff -u $(RUST_DIR)/aislopdesk-ffi/include/aislopdesk_ffi.h /tmp/aislopdesk_ffi.gen.h; exit 1; }
-	@echo "C header in sync with the Rust source of truth"
+.PHONY: lint lint-swift lint-shell lint-python
+lint: lint-swift lint-shell lint-python ## Run every linter strictly
 
 lint-swift: ## SwiftFormat --lint + SwiftLint --strict
 	swiftformat $(SWIFTFMT_PATHS) --lint
 	swiftlint --strict --quiet
-
-lint-rust: ## rustfmt --check + clippy -D warnings + cargo-deny + cargo-machete
-	cd $(RUST_DIR) && cargo fmt --check
-	cd $(RUST_DIR) && cargo clippy --workspace --all-targets --all-features -- -D warnings
-	cd $(RUST_DIR) && cargo deny check
-	cd $(RUST_DIR) && cargo machete
 
 lint-shell: ## shellcheck + shfmt --diff
 	@[ -n "$(SHELL_FILES)" ] && shellcheck $(SHELL_FILES) || true
@@ -95,27 +74,24 @@ lint-swift-analyze: ## SwiftLint analyzer rules (compiles the package first)
 
 # ---------------------------------------------------------------------------- #
 # Full gate
-.PHONY: check build test
-check: lint build test ## lint + build + test (full local gate)
+.PHONY: check build test golden
+check: lint build test golden ## lint + build + test + golden pin (full local gate)
 
-build: ## swift build (links the Rust FFI staticlib)
-	cd $(RUST_DIR) && cargo build --release -p aislopdesk-ffi
+build: ## swift build (Swift + CAislopdeskSIMD, no prerequisites)
 	swift build
 
-test: ## swift test + rust test
+test: ## swift test (~2300 native Swift tests)
 	swift test
-	cd $(RUST_DIR) && cargo test --workspace
+
+# Golden regression pin: regenerate the wire corpus from the live native-Swift codecs and assert
+# byte-identity to golden/golden_vectors.json (replaces the old cross-language Rust golden_parity).
+golden: ## Verify the wire codecs still reproduce golden/golden_vectors.json
+	bash scripts/golden-check.sh
 
 # ---------------------------------------------------------------------------- #
 .PHONY: install-tools hooks
-install-tools: hooks ## Install all required tools (brew + cargo) and the git hooks
-	brew install swiftlint swiftformat shellcheck shfmt ruff cargo-deny prek
-	cargo install cargo-machete
-	# cbindgen generates the C ABI header from Rust (build/dev tool only — ships nothing in the
-	# staticlib). Pinned: its output formatting is version-sensitive, so an unpinned bump would
-	# re-noise the whole header and trip the drift-gate.
-	cargo install cbindgen --version 0.29.4 --locked
-	rustup component add rustfmt clippy
+install-tools: hooks ## Install all required tools (brew) and the git hooks
+	brew install swiftlint swiftformat shellcheck shfmt ruff prek
 
 hooks: ## Install the prek git hooks (pre-commit + pre-push)
 	prek install

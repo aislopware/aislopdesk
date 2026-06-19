@@ -41,18 +41,16 @@ final class VideoWindowPipeline {
     private var activeConnection: VideoWindowConnection?
     private var layerSize: VideoSize = .init(width: 0, height: 0)
 
-    /// SCROLL-HINT REPROJECTION (default-OFF, env `AISLOPDESK_SCROLL_REPROJECT == "1"`): the
-    /// Rust-core offset law for this pane, or `nil` when the feature is off (then NOTHING below
-    /// engages and the present path is byte-identical). Owned here; shared with the ``pacer`` (which
-    /// integrates + applies it on between-content ticks and resets it on a real frame) and fed the
-    /// local scroll velocity from ``scroll(dx:dy:...)``. v1 is CLIENT-ONLY — no wire change.
+    /// SCROLL-HINT REPROJECTION (default-OFF, env `AISLOPDESK_SCROLL_REPROJECT == "1"`): the offset
+    /// law for this pane, or `nil` when the feature is off (then NOTHING below engages and the present
+    /// path is byte-identical). Owned here; shared with the ``pacer`` (which integrates + applies it on
+    /// between-content ticks and resets it on a real frame). Driven ONLY by the host's MEASURED
+    /// per-frame scroll offset (``applyHostScrollOffset(dx:dy:bandTop:bandBottom:)``) — the local
+    /// trackpad-velocity GUESS was removed (it snapped/shook against the host's real scroll).
     private var reprojector: ScrollReprojector?
     /// Content fps captured at activate() — converts a host per-frame scroll offset to a reprojector
     /// velocity (norm/sec = norm-per-frame × fps). See ``applyHostScrollOffset(dx:dy:)``.
     private var reprojectionContentFps: Double = 30.0
-    /// Set once the host starts sending measured scroll offsets — silences the local trackpad GUESS
-    /// (``feedReprojectionVelocity``) so the two velocity sources don't fight (host-truth wins).
-    private var hostScrollOffsetActive = false
     /// Resolved once: whether the reprojection feature is enabled (env read at first access). Default
     /// OFF, so the existing identity-skip / re-show is unchanged and the present bytes are identical.
     private static let reprojectEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_REPROJECT"] == "1"
@@ -489,7 +487,6 @@ final class VideoWindowPipeline {
         pacer = nil
         reprojector?.reset()
         reprojector = nil
-        lastScrollEventTime = 0
         activeConnection = nil
     }
 
@@ -622,10 +619,6 @@ final class VideoWindowPipeline {
         continuous: Bool = false,
     ) {
         guard let session else { return }
-        // SCROLL-HINT REPROJECTION (default-OFF): feed the LOCAL scroll velocity into the pane's
-        // reprojector IN ADDITION to forwarding the event to the host (no wire change — this is the
-        // same delta, used locally for the zero-latency hint). No-op when the feature is off.
-        feedReprojectionVelocity(dx: dx, dy: dy, scrollPhase: scrollPhase, momentumPhase: momentumPhase)
         submitFlushingMotion {
             await session.sendScroll(
                 dx: dx,
@@ -638,24 +631,6 @@ final class VideoWindowPipeline {
         }
     }
 
-    /// Host time of the last scroll event, so the reprojector velocity is `Δnormalized / Δt` (the
-    /// real instantaneous speed) rather than a per-event delta. `0` ⇒ no prior event this gesture.
-    private var lastScrollEventTime: Double = 0
-
-    /// SCROLL-HINT REPROJECTION (default-OFF): converts one local scroll event into a normalized
-    /// velocity and folds it into the pane's ``reprojector``. No-op unless the feature is on.
-    ///
-    /// The pixel delta is normalized by the view extent (so the hint is resolution-independent) and
-    /// divided by the elapsed since the previous event to get units/sec. The phase comes from the
-    /// platform scroll/momentum codes (`began/changed` ⇒ active, momentum `begin/continue` ⇒
-    /// momentum, either `ended` ⇒ arm the decay). SIGN/GAIN are the HW-tunable visual-feel part; the
-    /// headless guarantee is only that the feed is gated off by default.
-    /// SCROLL REPROJECTION (host-truth, 2026-06-16): apply a host-MEASURED per-frame scroll offset as
-    /// the reprojector's velocity, replacing the local trackpad GUESS (the guess snapped badly because
-    /// the host applies momentum/accel/clamping the client cannot know). `dx`/`dy` are signed
-    /// NORMALIZED shifts over ONE frame in ten-thousandths of the frame extent; velocity (norm/sec) =
-    /// norm-per-frame × contentFps. `(0, 0)` arms the decay (scroll stopped). No-op unless the feature
-    /// is on (`reprojector` nil). Main-confined.
     /// Apply the host's opaque-content rect set to the renderer (transparency mask). The renderer
     /// alpha-masks everything outside the rects so a popup overhanging the window floats over the
     /// canvas instead of a black bar. An empty list clears the mask (whole frame opaque). The pacer
@@ -664,9 +639,16 @@ final class VideoWindowPipeline {
         renderer?.contentMask = rects
     }
 
+    /// SCROLL REPROJECTION (host-truth): apply a host-MEASURED per-frame scroll offset as the
+    /// reprojector's velocity. The host measures the TRUE pixel shift between frames and sends it, so
+    /// the client never GUESSES from local trackpad deltas — that guess snapped badly (the host applies
+    /// momentum/accel/clamping the client can't know) and WAS the scroll-hint "shake"; it is gone, the
+    /// reprojector now moves only on this host truth. `dx`/`dy` are signed NORMALIZED shifts over ONE
+    /// frame in ten-thousandths of the frame extent; velocity (norm/sec) = norm-per-frame × contentFps.
+    /// `(0, 0)` arms the decay (scroll stopped). No-op unless the feature is on (`reprojector` nil).
+    /// Main-confined.
     func applyHostScrollOffset(dx: Int16, dy: Int16, bandTop: UInt16, bandBottom: UInt16) {
         guard let reprojector else { return }
-        hostScrollOffsetActive = true // from now on the local trackpad guess is silenced
         let normX = Double(dx) / 10000.0
         let normY = Double(dy) / 10000.0
         let fps = max(1.0, reprojectionContentFps)
@@ -683,34 +665,6 @@ final class VideoWindowPipeline {
             renderer?.reprojectBand = SIMD2<Float>(Float(bandTop) / 10000.0, Float(bandBottom) / 10000.0)
         }
     }
-
-    private func feedReprojectionVelocity(dx: Double, dy: Double, scrollPhase: UInt8, momentumPhase: UInt8) {
-        guard let reprojector, !hostScrollOffsetActive else { return }
-        let phase = Self.reprojectionPhase(scrollPhase: scrollPhase, momentumPhase: momentumPhase)
-        let now = FramePacer.currentHostTimeSeconds()
-        // First event of a gesture (or after a long idle) has no Δt → carry zero velocity but still
-        // set the phase, so the integrator stays at rest until the next sampled event.
-        let dt = lastScrollEventTime > 0 ? now - lastScrollEventTime : 0
-        lastScrollEventTime = phase == .ended ? 0 : now // reset the baseline when the gesture ends
-        let w = max(1.0, layerSize.width), h = max(1.0, layerSize.height)
-        // SIGN: a positive scrollingDeltaY (natural scroll, content moving down) shifts the sampled
-        // window so the picture follows; the exact sign/gain is tuned on HW (env-flippable later).
-        let gain = Self.reprojectionGain
-        let (vx, vy): (Double, Double)
-        if dt > 0 {
-            vx = (dx / w) / dt * gain
-            vy = (dy / h) / dt * gain
-        } else {
-            vx = 0
-            vy = 0
-        }
-        reprojector.noteVelocity(vx: vx, vy: vy, phase: phase)
-    }
-
-    /// Gain on the reprojection velocity (HW-tunable visual-feel knob, env
-    /// `AISLOPDESK_SCROLL_REPROJECT_GAIN`, default 1).
-    private static let reprojectionGain = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_REPROJECT_GAIN"]
-        .flatMap(Double.init) ?? 1.0
 
     /// Maps the platform scroll/momentum phase codes to the reprojector's three-phase model. An
     /// `ended` on EITHER the finger phase (`4`) or the momentum phase (`3`) arms the decay; an active

@@ -50,6 +50,9 @@ import Foundation
 /// type 11 listSystemDialogs: (no body)
 /// type 12 systemDialogList:  UInt16 count | per record: UInt32 id | UInt16 w | UInt16 h
 ///                            | UInt8 isSecure | lp owner | lp title
+/// type 13 scrollOffset:  UInt16 dx | UInt16 dy | UInt16 bandTop | UInt16 bandBottom
+///                            (dx/dy are i16 stored as a bit-preserving u16; decode casts back)
+/// type 14 contentMask:   UInt16 count | per rect: UInt16 x | UInt16 y | UInt16 w | UInt16 h
 /// ```
 ///
 /// Liveness keepalive (additive after the resize pair — CONCURRENCY-HOST-1 crash-without-bye):
@@ -226,21 +229,247 @@ public enum VideoControlMessage: Equatable, Sendable {
         }
     }
 
-    /// Encodes the message to its `[UInt8 type][body]` wire form through the Rust `aislopdesk-core`
-    /// codec (``RustVideoFFI/encode(_:)-(VideoControlMessage)``) — the single source of truth shared
-    /// with the Android client. The `windowList`/`systemDialogList` records cross as a borrowed array
-    /// Rust copies; the CALLER (host) must still cap a list to fit one UDP datagram (control is not
-    /// packetized). The wire layout above is what the core emits.
+    /// Encodes the message to its `[UInt8 type][body]` wire form. This is the single source of
+    /// truth shared with the Android client (and pinned bit-for-bit by the `videoControl` golden
+    /// vectors). For list messages the CALLER (host) must cap the list to fit one UDP datagram
+    /// (control is not packetized); the count is truncated to `UInt16`.
     public func encode() -> Data {
-        RustVideoFFI.encode(self)
+        var out = Data()
+        out.append(messageType)
+        switch self {
+        case let .hello(version, windowID, viewport):
+            out.appendBE(version)
+            out.appendBE(windowID)
+            out.appendBE(viewport.width)
+            out.appendBE(viewport.height)
+        case let .helloAck(accepted, streamID, w, h, bounds, fullRange):
+            out.append(accepted ? 1 : 0)
+            out.appendBE(streamID)
+            out.appendBE(w)
+            out.appendBE(h)
+            out.append(fullRange ? 1 : 0) // WF-6 (#8): negotiated luma range (after captureHeight)
+            out.appendBE(bounds.origin.x)
+            out.appendBE(bounds.origin.y)
+            out.appendBE(bounds.size.width)
+            out.appendBE(bounds.size.height)
+        case .bye:
+            break
+        case let .resizeRequest(desired, epoch):
+            out.appendBE(desired.width)
+            out.appendBE(desired.height)
+            out.appendBE(epoch)
+        case let .resizeAck(w, h, epoch):
+            out.appendBE(w)
+            out.appendBE(h)
+            out.appendBE(epoch)
+        case .keepalive:
+            break
+        case .listWindows:
+            break
+        case let .windowList(windows):
+            // `UInt16 count` then per record: UInt32 id | UInt16 w | UInt16 h | len-prefixed app | len-prefixed title.
+            // The CALLER (host) must cap the list to fit one UDP datagram (control is not packetized).
+            out.appendBE(UInt16(truncatingIfNeeded: windows.count))
+            for w in windows {
+                out.appendBE(w.windowID)
+                out.appendBE(w.width)
+                out.appendBE(w.height)
+                out.appendVideoControlLengthPrefixed(w.appName)
+                out.appendVideoControlLengthPrefixed(w.title)
+            }
+        case .focusWindow:
+            break
+        case let .streamCadence(fps):
+            out.appendBE(fps)
+        case .listSystemDialogs:
+            break
+        case let .systemDialogList(dialogs):
+            // Mirrors windowList; CALLER caps the list to fit one UDP datagram (control is not packetized).
+            out.appendBE(UInt16(truncatingIfNeeded: dialogs.count))
+            for d in dialogs {
+                out.appendBE(d.windowID)
+                out.appendBE(d.width)
+                out.appendBE(d.height)
+                out.append(d.isSecure ? 1 : 0)
+                out.appendVideoControlLengthPrefixed(d.owner)
+                out.appendVideoControlLengthPrefixed(d.title)
+            }
+        case let .scrollOffset(dx, dy, bandTop, bandBottom):
+            // i16 → u16 is a bit-preserving reinterpret; the decoder casts back. Matches the Rust
+            // core's `dx.cast_unsigned()` / `band_*` raw-u16 layout.
+            out.appendBE(UInt16(bitPattern: dx))
+            out.appendBE(UInt16(bitPattern: dy))
+            out.appendBE(bandTop)
+            out.appendBE(bandBottom)
+        case let .contentMask(rects):
+            // `UInt16 count` then per rect: UInt16 x | UInt16 y | UInt16 w | UInt16 h.
+            // The CALLER (host) must cap the list to fit one UDP datagram (control is not packetized).
+            out.appendBE(UInt16(truncatingIfNeeded: rects.count))
+            for r in rects {
+                out.appendBE(r.x)
+                out.appendBE(r.y)
+                out.appendBE(r.width)
+                out.appendBE(r.height)
+            }
+        }
+        return out
     }
 
-    /// Decodes a message from its `[UInt8 type][body]` payload through the Rust core
-    /// (``RustVideoFFI/decodeVideoControl(_:)``), throwing ``VideoProtocolError/truncated`` for a
-    /// short body and ``VideoProtocolError/malformed(_:)`` for a non-finite coordinate or unknown
-    /// type. The list decoders are hardened against an untrusted record count (a short datagram
-    /// throws `.truncated` rather than over-reading); record strings decode lossily.
+    /// Decodes a message from its `[UInt8 type][body]` payload, throwing ``VideoProtocolError/truncated``
+    /// for a short body and ``VideoProtocolError/malformed(_:)`` for a non-finite coordinate or unknown
+    /// type. The list decoders are hardened against an untrusted record count (a short datagram throws
+    /// `.truncated` rather than over-reading or pre-allocating); record strings decode lossily.
     public static func decode(_ data: Data) throws -> Self {
-        try RustVideoFFI.decodeVideoControl(data)
+        var reader = VideoByteReader(data)
+        let type = try reader.readUInt8()
+        switch type {
+        case 1:
+            let version = try reader.readUInt16()
+            let windowID = try reader.readUInt32()
+            let w = try reader.readFiniteFloat64("hello.viewport.w")
+            let h = try reader.readFiniteFloat64("hello.viewport.h")
+            return .hello(
+                protocolVersion: version,
+                requestedWindowID: windowID,
+                viewport: VideoSize(width: w, height: h),
+            )
+        case 2:
+            let accepted = try reader.readUInt8() != 0
+            let streamID = try reader.readUInt32()
+            let cw = try reader.readUInt16()
+            let ch = try reader.readUInt16()
+            let fr = try reader.readUInt8() != 0 // WF-6 (#8): negotiated luma range (after captureHeight)
+            let bx = try reader.readFiniteFloat64("helloAck.bounds.x")
+            let by = try reader.readFiniteFloat64("helloAck.bounds.y")
+            let bw = try reader.readFiniteFloat64("helloAck.bounds.w")
+            let bh = try reader.readFiniteFloat64("helloAck.bounds.h")
+            return .helloAck(
+                accepted: accepted,
+                streamID: streamID,
+                captureWidth: cw,
+                captureHeight: ch,
+                windowBoundsCG: VideoRect(x: bx, y: by, width: bw, height: bh),
+                fullRange: fr,
+            )
+        case 3:
+            return .bye
+        case 4:
+            let w = try reader.readFiniteFloat64("resizeRequest.w")
+            let h = try reader.readFiniteFloat64("resizeRequest.h")
+            let epoch = try reader.readUInt32()
+            return .resizeRequest(desired: VideoSize(width: w, height: h), epoch: epoch)
+        case 5:
+            let w = try reader.readUInt16()
+            let h = try reader.readUInt16()
+            let epoch = try reader.readUInt32()
+            return .resizeAck(captureWidth: w, captureHeight: h, epoch: epoch)
+        case 6:
+            return .keepalive
+        case 7:
+            return .listWindows
+        case 8:
+            let count = try Int(reader.readUInt16())
+            var windows: [WindowSummary] = []
+            // Do NOT reserveCapacity(count) — count is untrusted. Each record read throws `.truncated`
+            // the instant the datagram runs short, so a bogus huge count cannot over-allocate or
+            // over-read (it bails on the first missing byte).
+            for _ in 0..<count {
+                let id = try reader.readUInt32()
+                let w = try reader.readUInt16()
+                let h = try reader.readUInt16()
+                let app = try reader.readVideoControlLengthPrefixed()
+                let title = try reader.readVideoControlLengthPrefixed()
+                windows.append(WindowSummary(windowID: id, appName: app, title: title, width: w, height: h))
+            }
+            return .windowList(windows)
+        case 9:
+            return .focusWindow
+        case 10:
+            return try .streamCadence(fps: reader.readUInt16())
+        case 11:
+            return .listSystemDialogs
+        case 12:
+            let count = try Int(reader.readUInt16())
+            var dialogs: [SystemDialogSummary] = []
+            // Same untrusted-count discipline as windowList: no reserveCapacity; each record read throws
+            // `.truncated` the instant the datagram runs short, so a bogus huge count can't over-read.
+            for _ in 0..<count {
+                let id = try reader.readUInt32()
+                let w = try reader.readUInt16()
+                let h = try reader.readUInt16()
+                let isSecure = try reader.readUInt8() != 0
+                let owner = try reader.readVideoControlLengthPrefixed()
+                let title = try reader.readVideoControlLengthPrefixed()
+                dialogs.append(SystemDialogSummary(
+                    windowID: id,
+                    owner: owner,
+                    title: title,
+                    width: w,
+                    height: h,
+                    isSecure: isSecure,
+                ))
+            }
+            return .systemDialogList(dialogs)
+        case 13:
+            // u16 → i16 is a bit-preserving reinterpret (counterpart to the encoder's `UInt16(bitPattern:)`).
+            let dx = try Int16(bitPattern: reader.readUInt16())
+            let dy = try Int16(bitPattern: reader.readUInt16())
+            let bandTop = try reader.readUInt16()
+            let bandBottom = try reader.readUInt16()
+            return .scrollOffset(dx: dx, dy: dy, bandTop: bandTop, bandBottom: bandBottom)
+        case 14:
+            let count = try Int(reader.readUInt16())
+            var rects: [MaskRect] = []
+            // Same untrusted-count discipline as windowList/systemDialogList: no reserveCapacity; each
+            // rect read throws `.truncated` the instant the datagram runs short, so a bogus huge count
+            // (e.g. 65535 with no body) bails on the first missing byte rather than OOM-ing.
+            for _ in 0..<count {
+                let x = try reader.readUInt16()
+                let y = try reader.readUInt16()
+                let w = try reader.readUInt16()
+                let h = try reader.readUInt16()
+                rects.append(MaskRect(x: x, y: y, width: w, height: h))
+            }
+            return .contentMask(rects)
+        default:
+            throw VideoProtocolError.malformed("unknown video control message type \(type)")
+        }
+    }
+}
+
+// MARK: - Length-prefixed UTF-8 string helpers
+
+// These two helpers were folded into the codec when the wire-byte helper module dropped them.
+// They carry the UInt16-length-prefixed UTF-8 record-string contract used by `windowList` /
+// `systemDialogList`, kept byte/bit-parity with the Rust core (`put_length_prefixed_str` /
+// `read_length_prefixed_str` → `String::from_utf8_lossy`).
+
+private extension Data {
+    /// Appends a `UInt16`-length-prefixed UTF-8 string. A string whose UTF-8 exceeds `UInt16.max`
+    /// bytes is truncated at a byte boundary (window titles are never that long; this only guards a
+    /// pathological input) — matching the core's wire contract.
+    mutating func appendVideoControlLengthPrefixed(_ string: String) {
+        var bytes = Array(string.utf8)
+        if bytes.count > Int(UInt16.max) { bytes = Array(bytes.prefix(Int(UInt16.max))) }
+        appendBE(UInt16(bytes.count))
+        append(contentsOf: bytes)
+    }
+}
+
+private extension VideoByteReader {
+    /// Reads a `UInt16`-length-prefixed UTF-8 string (the counterpart to
+    /// ``Data/appendVideoControlLengthPrefixed(_:)``). `readBytes` throws
+    /// ``VideoProtocolError/truncated`` if the datagram is too short for the declared length (the
+    /// length is VALIDATED against the buffer BEFORE the read), so a corrupt/oversized prefix DROPS
+    /// the datagram rather than over-reading or crashing. Invalid UTF-8 decodes lossily — a remote
+    /// window title must never crash the receiver, and it matches the Rust core's
+    /// `String::from_utf8_lossy` for byte/bit parity.
+    mutating func readVideoControlLengthPrefixed() throws -> String {
+        let len = try Int(readUInt16())
+        let bytes = try readBytes(len)
+        // The failable `String(bytes:encoding:)` the lint rule prefers returns nil on invalid UTF-8,
+        // which would diverge from the core's lossy parity, so the lossy initializer is kept on purpose.
+        // swiftlint:disable:next optional_data_string_conversion
+        return String(decoding: bytes, as: UTF8.self)
     }
 }

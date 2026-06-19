@@ -1,4 +1,4 @@
-import CAislopdeskFFI
+import AislopdeskVideoProtocol
 
 /// DELIVERY-KEYED recovery-IDR admission policy (component 2, 2026-06-11) — replaces the
 /// capturer's sent-keyed F1 cooldown (`AISLOPDESK_MIN_IDR_MS`, 500 ms) as the single authority on
@@ -25,18 +25,17 @@ import CAislopdeskFFI
 ///    never blocked.
 ///
 /// PURE + WALL-CLOCK-ONLY: all time injected as `Double` seconds (the session's `systemUptime`
-/// domain), zero frame counting — immune to FPS-governor cadence changes. Headlessly
-/// unit-testable like ``LiveCongestionController``.
+/// domain), zero frame counting — immune to FPS-governor cadence changes. No Apple imports
+/// (`UInt32.distanceWrapped` comes from AislopdeskVideoProtocol). Headlessly unit-testable like
+/// ``LiveCongestionController``.
 ///
-/// The admission ALGORITHM (the delivery-keyed decision table + token bucket) lives in the Rust
-/// core (`aislopdesk_core::recovery_idr_policy`, the SINGLE SOURCE OF TRUTH shared with Android
-/// over the C ABI); this class is a thin owner of the opaque core handle, reached via
-/// ``RustVideoHostFFI``. It is a `final class` (not the former value struct) so it can own the
-/// handle and free it in `deinit`. `@unchecked Sendable` is sound because the single owner
+/// NATIVE SWIFT, the single source of truth (the Rust core is being retired). It is a `final
+/// class` (not the former value struct) so callers can hold and mutate it by reference — the
+/// stateful token bucket must NOT be value-copied by mistake (a `let`→`var` ripple would otherwise
+/// be needed at every owner). `@unchecked Sendable` is sound because the single owner
 /// (``AislopdeskVideoHostSession``) only touches it on the session actor (and the tests /
-/// loopback-validate from one thread), so no two threads race the handle. ``Config`` stays a pure
-/// Swift value type — env resolution (`AISLOPDESK_IDR_*`) stays Swift-side and the resolved scalars
-/// cross to the core at init.
+/// loopback-validate from one thread), so no two threads race the mutable state. ``Config`` stays a
+/// pure Swift value type — env resolution (`AISLOPDESK_IDR_*`) stays Swift-side.
 public final class RecoveryIDRPolicy: @unchecked Sendable {
     public struct Config: Sendable, Equatable {
         /// In-flight grace = `graceFraction × smoothedRTT`, clamped to [floor, ceil]. A crossing
@@ -65,6 +64,16 @@ public final class RecoveryIDRPolicy: @unchecked Sendable {
         public init() {}
     }
 
+    /// One sent keyframe (a tuple won't synthesize Equatable).
+    public struct SentKeyframe: Sendable, Equatable {
+        public let id: UInt32
+        public let at: Double
+        public init(id: UInt32, at: Double) {
+            self.id = id
+            self.at = at
+        }
+    }
+
     public enum Verdict: Equatable, Sendable {
         case grant
         /// An IDR grant is already latched and unexpired — the duplicate-request absorber.
@@ -78,60 +87,84 @@ public final class RecoveryIDRPolicy: @unchecked Sendable {
         case suppressRateLimited
     }
 
-    private let handle: OpaquePointer
+    public let config: Config
+    /// Newest-last ring of recently-sent keyframes, capped at `keyframeRingCapacity`.
+    private var recentKeyframes: [SentKeyframe] = []
+    /// Newest SENT-keyframe id the client decode-ACKED (ring-matched — an LTR-P ack never
+    /// masquerades as keyframe delivery).
+    private var deliveredKeyframeID: UInt32?
+    private var tokens: Double
+    private var lastRefillAt: Double?
+    /// Time of the last `.grant` not yet serviced by a `noteKeyframeSent` (nil = none pending).
+    private var grantedAt: Double?
 
     public init(config: Config = Config()) {
-        handle = RustVideoHostFFI.recoveryIdrPolicyNew(
-            graceFraction: config.graceFraction,
-            graceFloorSeconds: config.graceFloorSeconds,
-            graceCeilSeconds: config.graceCeilSeconds,
-            bucketCapacity: config.bucketCapacity,
-            refillTokensPerSecond: config.refillTokensPerSecond,
-            grantPendingTimeout: config.grantPendingTimeout,
-            keyframeRingCapacity: config.keyframeRingCapacity,
-        )
-    }
-
-    deinit {
-        RustVideoHostFFI.recoveryIdrPolicyFree(handle)
+        self.config = config
+        tokens = config.bucketCapacity
     }
 
     /// Read-only token level (observability/tests — proves suppress* verdicts spend nothing).
-    public var availableTokens: Double { RustVideoHostFFI.recoveryIdrPolicyAvailableTokens(handle) }
+    public var availableTokens: Double { tokens }
 
     /// Called from `onEncodedFrame` for EVERY keyframe handed to the wire (recovery, first-frame,
-    /// static-crisp, heartbeat) with `packetizer.peekNextFrameID` read BEFORE packetize. Delegates
-    /// to the Rust core.
+    /// static-crisp, heartbeat) with `packetizer.peekNextFrameID` read BEFORE packetize.
     public func noteKeyframeSent(frameID: UInt32, now: Double) {
-        RustVideoHostFFI.recoveryIdrPolicyNoteKeyframeSent(handle, frameID: frameID, now: now)
+        recentKeyframes.append(SentKeyframe(id: frameID, at: now))
+        if recentKeyframes.count > config.keyframeRingCapacity { recentKeyframes.removeFirst() }
+        grantedAt = nil // a keyframe went out: any pending grant is serviced
     }
 
     /// Called from the `.ack` fold. Idempotent; only ids matching a ring entry count (an LTR-P
-    /// ack must not masquerade as keyframe delivery). Wrap-aware keep-newest. Delegates to the
-    /// Rust core.
+    /// ack must not masquerade as keyframe delivery). Wrap-aware keep-newest.
     public func noteKeyframeDelivered(frameID: UInt32) {
-        RustVideoHostFFI.recoveryIdrPolicyNoteKeyframeDelivered(handle, frameID: frameID)
+        guard recentKeyframes.contains(where: { $0.id == frameID }) else { return }
+        if let delivered = deliveredKeyframeID, frameID.distanceWrapped(from: delivered) <= 0 { return }
+        deliveredKeyframeID = frameID
     }
 
     /// THE admission decision for one IDR-issuing recovery request.
     /// `clientLastDecoded == nil` ⇔ wire sentinel "nothing decoded yet" (treated as maximally
-    /// behind — the connect-time first-IDR-loss case rides the same bypass). Delegates to the
-    /// Rust core.
+    /// behind — the connect-time first-IDR-loss case rides the same bypass).
+    ///
+    /// BRANCH ORDER IS LOAD-BEARING and must read EXACTLY: refill → grant-pending → SuppressStale →
+    /// SuppressInFlight → SuppressRateLimited → Grant. A reordered branch changes behaviour (the
+    /// stale/in-flight/rate-limited tests pin this).
     public func decide(now: Double, clientLastDecoded: UInt32?, smoothedRTTSeconds: Double) -> Verdict {
-        switch RustVideoHostFFI.recoveryIdrPolicyDecide(
-            handle, now: now, clientLastDecoded: clientLastDecoded, smoothedRTTSeconds: smoothedRTTSeconds,
-        ) {
-        case UInt8(AISD_RECOVERY_IDR_SUPPRESS_GRANT_PENDING): .suppressGrantPending
-        case UInt8(AISD_RECOVERY_IDR_SUPPRESS_STALE): .suppressStale
-        case UInt8(AISD_RECOVERY_IDR_SUPPRESS_IN_FLIGHT): .suppressInFlight
-        case UInt8(AISD_RECOVERY_IDR_SUPPRESS_RATE_LIMITED): .suppressRateLimited
-        default: .grant
+        refill(now: now)
+        if let granted = grantedAt, now - granted < config.grantPendingTimeout {
+            return .suppressGrantPending
         }
+        if let delivered = deliveredKeyframeID, let request = clientLastDecoded,
+           request.distanceWrapped(from: delivered) < 0
+        {
+            // Exact, not heuristic: the client's lastDecoded is monotonic, so a request older
+            // than a keyframe it ACKED was composed before that keyframe decoded — stale.
+            return .suppressStale
+        }
+        if let newest = recentKeyframes.last {
+            // nil lastDecoded (nothing decoded yet) is maximally behind by definition.
+            let clientBehind = clientLastDecoded.map { $0.distanceWrapped(from: newest.id) < 0 } ?? true
+            if clientBehind, now - newest.at < grace(rtt: smoothedRTTSeconds) {
+                return .suppressInFlight
+            }
+        }
+        guard tokens >= 1.0 else { return .suppressRateLimited }
+        tokens -= 1.0
+        grantedAt = now
+        return .grant
     }
 
     /// In-flight grace window for the given smoothed RTT: clamp(graceFraction × rtt, floor, ceil).
-    /// Delegates to the Rust core.
     public func grace(rtt: Double) -> Double {
-        RustVideoHostFFI.recoveryIdrPolicyGrace(handle, rtt: rtt)
+        min(config.graceCeilSeconds, max(config.graceFloorSeconds, config.graceFraction * rtt))
+    }
+
+    private func refill(now: Double) {
+        defer { lastRefillAt = now }
+        guard let last = lastRefillAt, now > last else { return }
+        // mul THEN add THEN clamp — kept as separate operations (never fma): the elapsed `(now -
+        // last)` is multiplied by the refill rate, that product is added to the current `tokens`,
+        // and the sum is clamped to the bucket capacity with `min`.
+        tokens = min(config.bucketCapacity, tokens + (now - last) * config.refillTokensPerSecond)
     }
 }

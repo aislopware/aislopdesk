@@ -12,7 +12,7 @@ final class WindowParkingLedgerTests: XCTestCase {
 
     // First park of a window → needsMove; after recordMove it is counted.
     func testFirstParkNeedsMoveThenRecorded() {
-        var l = WindowParkingLedger()
+        let l = WindowParkingLedger()
         XCTAssertEqual(l.park(channelID: 1, windowID: 42), .needsMove)
         XCTAssertEqual(l.parkedCount, 0, "needsMove alone does not record (the AX move may still fail)")
         l.recordMove(channelID: 1, windowID: 42, pid: 7, originalFrame: frameA, achievedSize: sizeA)
@@ -21,7 +21,7 @@ final class WindowParkingLedgerTests: XCTestCase {
 
     // A failed move (recordMove never called) leaves NO orphan record.
     func testFailedMoveLeavesNoRecord() {
-        var l = WindowParkingLedger()
+        let l = WindowParkingLedger()
         _ = l.park(channelID: 1, windowID: 42) // .needsMove, caller's AX move then "fails" → no recordMove
         XCTAssertEqual(l.parkedCount, 0)
         XCTAssertNil(l.unpark(channelID: 1), "an un-recorded channel has nothing to restore")
@@ -29,7 +29,7 @@ final class WindowParkingLedgerTests: XCTestCase {
 
     // Same lane re-parking the same window (hello retransmit) reuses WITHOUT bumping the refcount.
     func testRetransmitDoesNotDoubleCount() {
-        var l = WindowParkingLedger()
+        let l = WindowParkingLedger()
         _ = l.park(channelID: 1, windowID: 42)
         l.recordMove(channelID: 1, windowID: 42, pid: 7, originalFrame: frameA, achievedSize: sizeA)
         XCTAssertEqual(l.park(channelID: 1, windowID: 42), .reuse(sizeA))
@@ -41,7 +41,7 @@ final class WindowParkingLedgerTests: XCTestCase {
 
     // Two lanes naming the SAME window: moved once, restored once (last release).
     func testTwoLanesShareOneWindow() {
-        var l = WindowParkingLedger()
+        let l = WindowParkingLedger()
         _ = l.park(channelID: 1, windowID: 42)
         l.recordMove(channelID: 1, windowID: 42, pid: 7, originalFrame: frameA, achievedSize: sizeA)
         XCTAssertEqual(l.park(channelID: 2, windowID: 42), .reuse(sizeA), "second lane reuses, no move")
@@ -57,7 +57,7 @@ final class WindowParkingLedgerTests: XCTestCase {
     // Double-unpark of one channel restores exactly ONCE (idempotent — locks the invariant the
     // redundant onReapLane/onRetire/SIGINT callers rely on).
     func testDoubleUnparkRestoresOnce() {
-        var l = WindowParkingLedger()
+        let l = WindowParkingLedger()
         _ = l.park(channelID: 1, windowID: 42)
         l.recordMove(channelID: 1, windowID: 42, pid: 7, originalFrame: frameA, achievedSize: sizeA)
         XCTAssertNotNil(l.unpark(channelID: 1), "first unpark restores")
@@ -67,13 +67,13 @@ final class WindowParkingLedgerTests: XCTestCase {
 
     // unpark of an unknown channel is a harmless no-op.
     func testUnparkUnknownChannel() {
-        var l = WindowParkingLedger()
+        let l = WindowParkingLedger()
         XCTAssertNil(l.unpark(channelID: 99))
     }
 
     // drainAll returns every parked window once and clears state; a second drain is empty.
     func testDrainAll() {
-        var l = WindowParkingLedger()
+        let l = WindowParkingLedger()
         _ = l.park(channelID: 1, windowID: 42)
         l.recordMove(channelID: 1, windowID: 42, pid: 7, originalFrame: frameA, achievedSize: sizeA)
         _ = l.park(channelID: 2, windowID: 43)

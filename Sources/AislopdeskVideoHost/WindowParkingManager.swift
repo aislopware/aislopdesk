@@ -18,7 +18,7 @@ import OSLog
 @MainActor
 public final class WindowParkingManager {
     private let log = Logger(subsystem: "aislopdesk.video.host", category: "WindowParking")
-    private var ledger = WindowParkingLedger()
+    private let ledger = WindowParkingLedger()
 
     public init() {}
 

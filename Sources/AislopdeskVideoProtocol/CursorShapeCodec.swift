@@ -49,6 +49,10 @@ public struct CursorShapeMessage: Equatable, Sendable {
     /// Fixed-header size (everything before the bitmap payload).
     public static let headerSize = 27
 
+    /// Encodes the shape message (fixed header then bitmap, big-endian). Native Swift is the
+    /// single source of truth; the wire format is pinned by the `cursorShape` golden vector.
+    /// The on-wire width/height are the round-half-away-from-zero dimensions truncated to 16 bits
+    /// (`UInt16(truncatingIfNeeded: Int(size.width.rounded()))`).
     public func encode() -> Data {
         var out = Data(capacity: Self.headerSize + bitmap.count)
         out.append(Self.messageType)
@@ -62,6 +66,9 @@ public struct CursorShapeMessage: Equatable, Sendable {
         return out
     }
 
+    /// Decodes a cursor shape message (the wire format is pinned by the `cursorShape` golden
+    /// vector). Non-finite hotspots are rejected as `.malformed` and a short body / over-long
+    /// bitmap length as `.truncated`, so a corrupt datagram is DROPPED, never fatal.
     public static func decode(_ data: Data) throws -> Self {
         var reader = VideoByteReader(data)
         let type = try reader.readUInt8()

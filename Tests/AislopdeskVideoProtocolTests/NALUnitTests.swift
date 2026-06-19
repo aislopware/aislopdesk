@@ -36,6 +36,14 @@ final class NALUnitTests: XCTestCase {
         XCTAssertEqual(NALUnit.split(bytes), [Data([9, 9])])
     }
 
+    func testTrailingPartialPrefixIgnored() {
+        // Two valid units, then 3 trailing bytes that cannot hold a 4-byte length
+        // prefix — the partial tail is dropped, the whole units survive.
+        var bytes = NALUnit.join([Data([9]), Data([8, 7])])
+        bytes.append(contentsOf: [1, 2, 3])
+        XCTAssertEqual(NALUnit.split(bytes), [Data([9]), Data([8, 7])])
+    }
+
     func testEmptyBuffer() {
         XCTAssertEqual(NALUnit.split(Data()), [])
         XCTAssertEqual(NALUnit.join([]), Data())

@@ -41,29 +41,24 @@ let package = Package(
     targets: [
         // MARK: Libraries
 
-        // C-ABI shim onto the Rust `aislopdesk-ffi` staticlib (rust/aislopdesk-ffi).
-        // Exposes the hand-written header `aislopdesk_ffi.h` (a copy kept in sync by
-        // `rust/build-apple.sh`) as the `CAislopdeskFFI` module and links the prebuilt
-        // `libaislopdesk_ffi.a`. The Rust core (`aislopdesk-core`) implements the wire
-        // codecs + realtime controllers; Swift modules call into it over the C-ABI via
-        // the `RustFFI` bridge, so macOS/iOS and a future Android client run the identical
-        // algorithm bytes. `unsafeFlags` (the -L/-l for the vendored static archive) make
-        // the package non-consumable as a dependency — fine for a leaf app. macOS slice
-        // for now; iOS device/sim slices are a follow-up (see rust/build-apple.sh).
+        // Native SIMD kernels (the all-Swift migration's replacement for the Rust FFI NEON).
+        // A tiny C target SwiftPM COMPILES FROM SOURCE every build — no cbindgen, no marshalling,
+        // no prebuilt staticlib, no build-ordering. Holds the two genuine-SIMD kernels: the
+        // GF(2^8) split-table region multiply (`vqtbl1q_u8`) and the xxHash64 NV12 frame-hash
+        // fold (synthesized `vmull_u32` u64 lane multiply), each guarded `#if __aarch64__` with a
+        // scalar fallback so x86_64 CI/sim builds stay green. Swift links it directly via the
+        // `include/` modulemap; byte-identical to the scalar reference (pinned by a differential
+        // test). This is the ONLY remaining C/unsafe surface after the Rust core is reabsorbed.
         .target(
-            name: "CAislopdeskFFI",
-            path: "Sources/CAislopdeskFFI",
-            publicHeadersPath: "include",
-            linkerSettings: [
-                .unsafeFlags(["-L\(packageRoot)/rust/target/release", "-laislopdesk_ffi"]),
-            ],
+            name: "CAislopdeskSIMD",
+            path: "Sources/CAislopdeskSIMD",
+            cSettings: [.unsafeFlags(["-O3"])],
         ),
 
         // Pure-Swift wire format: framing, MessageType, seq(Int64), Hello/Ack.
         // ZERO platform dependency (no Network/Darwin) so it builds for macOS + iOS
-        // and is unit-testable in isolation. Codec bodies delegate to the Rust core via
-        // `CAislopdeskFFI` (see Sources/AislopdeskProtocol/RustFFI.swift).
-        .target(name: "AislopdeskProtocol", dependencies: ["CAislopdeskFFI"]),
+        // and is unit-testable in isolation. Native Swift codecs (single source of truth).
+        .target(name: "AislopdeskProtocol"),
 
         // NWConnection + TCP_NODELAY, dual data/control channel, ET-style replay
         // buffer, reconnect handshake. (Implemented in WF-2.)
@@ -147,7 +142,7 @@ let package = Package(
         // Retina), and the client->host input-event codec. ZERO platform dependency
         // (no ScreenCaptureKit/VideoToolbox/AppKit) so it builds macOS + iOS and is
         // fully unit-testable in isolation — same discipline as AislopdeskProtocol.
-        .target(name: "AislopdeskVideoProtocol", dependencies: ["CAislopdeskFFI"]),
+        .target(name: "AislopdeskVideoProtocol", dependencies: ["CAislopdeskSIMD"]),
 
         // macOS-only host capture + encode + input injection. USES
         // ScreenCaptureKit / VideoToolbox / CoreGraphics / AppKit. COMPILED + code-
@@ -168,7 +163,7 @@ let package = Package(
 
         .target(
             name: "AislopdeskVideoHost",
-            dependencies: ["AislopdeskVideoProtocol", "CAislopdeskVirtualDisplay", "CAislopdeskFFI"],
+            dependencies: ["AislopdeskVideoProtocol", "CAislopdeskVirtualDisplay"],
             // macOS-only: SCStream + VTCompressionSession + AX/CGEvent are macOS APIs.
             // (AislopdeskVideoProtocol stays cross-platform; only this host layer is gated.)
             swiftSettings: [],
@@ -178,7 +173,7 @@ let package = Package(
         // VideoToolbox (decode) / Metal / CoreVideo / QuartzCore. COMPILED + reviewed;
         // decode is MEASURED-safe (~0.9-1.1ms synchronous) but to honour the hang-
         // safety rule NO VTDecompressionSession is instantiated in tests either.
-        .target(name: "AislopdeskVideoClient", dependencies: ["AislopdeskVideoProtocol", "CAislopdeskFFI"]),
+        .target(name: "AislopdeskVideoClient", dependencies: ["AislopdeskVideoProtocol"]),
 
         // MARK: Executables
 
@@ -228,6 +223,9 @@ let package = Package(
         // GUI client. Diagnostic-only (overnight capture-cadence root-cause work). GUI+TCC at runtime.
         .executableTarget(name: "aislopdesk-fake-client", dependencies: ["AislopdeskVideoProtocol"]),
 
+        // Micro-benchmark for the Swift-level hot paths (frame hash, GF region multiply, RS FEC).
+        .executableTarget(name: "aislopdesk-bench", dependencies: ["AislopdeskVideoProtocol"]),
+
         // Golden-vector dumper: emits the golden reference corpus for the Rust core's
         // parity test — a deterministic JSON corpus from the AislopdeskVideoProtocol codecs
         // + the pure realtime controllers (public API only) that the Rust `aislopdesk-core`
@@ -240,11 +238,9 @@ let package = Package(
             name: "aislopdesk-corevectors",
             dependencies: [
                 "AislopdeskProtocol",
-                "AislopdeskHost",
                 "AislopdeskVideoProtocol",
                 "AislopdeskVideoHost",
                 "AislopdeskVideoClient",
-                "AislopdeskClaudeCode",
             ],
         ),
 

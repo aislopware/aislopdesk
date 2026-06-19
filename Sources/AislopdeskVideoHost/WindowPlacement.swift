@@ -4,6 +4,63 @@ import CoreGraphics
 import Foundation
 import OSLog
 
+/// PURE placement arithmetic (feature #1): decide where/how to move a window fully onto a display.
+/// Headlessly unit-testable; the AX side effects live in ``WindowPlacement``.
+///
+/// Native Swift — the single source of truth for the VD-park placement/fits math (the Rust core's
+/// `window_placement` mirrored this; it is now reabsorbed). All CoreGraphics semantics preserved
+/// EXACTLY:
+///   * `CGRect.width`/`.height` STANDARDIZE — they return `|size|` (always ≥ 0) — so the display
+///     extents read `displayBounds.width`/`.height` (abs-returning).
+///   * `CGSize.width`/`.height` are RAW stored fields (NOT standardized), so the window operand
+///     (and the `size` arg to ``fits``) is used verbatim, never abs'd. The clamp is therefore
+///     asymmetric: `min(windowRaw, displayAbs)`.
+///   * `CGRect.origin` is the RAW stored origin (NOT standardized), so ``placement`` returns
+///     `displayBounds.origin` verbatim — including negative coordinates from a display placed to
+///     the left of / above the main display.
+///   * The `min(x, y)` clamp uses the same ternary form as Swift's global `min` (`{ y < x ? y : x }`)
+///     rather than `Swift.min`: the two agree for every finite input, but the ternary propagates a
+///     NaN operand (matching the Rust reference's `dw < window ? dw : window`).
+///   * The ½-pt tolerance math is byte-for-byte: `0.5` is exactly representable and is added to
+///     exactly-representable inputs, so there is no rounding error. NO rounding anywhere here.
+public enum WindowPlacementMath {
+    /// Clamp `windowSize` to `displayBounds` (resize DOWN only if larger — never enlarge) and place
+    /// at the display's top-left origin. macOS crops a window that overhangs a display, so an
+    /// oversized window must be shrunk before the move.
+    ///
+    /// CG-semantic asymmetry preserved EXACTLY:
+    ///   * `windowSize.width`/`.height` are RAW `CGSize` fields (NOT standardized).
+    ///   * `displayBounds.width`/`.height` are CG-standardized (abs).
+    ///   * `min(a, b)` uses the same form as Swift's global `min(x, y) == { y < x ? y : x }`
+    ///     (matters only for NaN; finite inputs agree with `Swift.min`).
+    public static func placement(windowSize: CGSize, displayBounds: CGRect)
+        -> (origin: CGPoint, size: CGSize, needsResize: Bool)
+    {
+        let dw = displayBounds.width // CG-standardized (abs)
+        let dh = displayBounds.height
+        // Swift `min(windowSize.width, displayBounds.width)` == `dw < window ? dw : window`.
+        // NaN-faithful ordered min as a TERNARY (NOT Swift.min — that would propagate NaN
+        // differently); matches the Rust core's `dw < window_size.width ? dw : window_size.width`.
+        let w = dw < windowSize.width ? dw : windowSize.width
+        let h = dh < windowSize.height ? dh : windowSize.height
+        // ½-pt tolerance so floating-point equality doesn't trigger a no-op resize. Uses the
+        // CLAMPED w/h vs the RAW window size. `w + 0.5` is a SEPARATE add (no FMA) — but there is
+        // no mul here, so the FMA trap does not apply; the exact `(w + 0.5 < windowSize.width)`
+        // half-point predicate is reproduced verbatim from the Rust reference.
+        let needsResize = (w + 0.5 < windowSize.width) || (h + 0.5 < windowSize.height)
+        return (displayBounds.origin, CGSize(width: w, height: h), needsResize)
+    }
+
+    /// True when `size` fits inside `bounds` (within a ½-pt tolerance). Used after the AX move to
+    /// confirm the window actually shrank to fit the VD — an app that refuses/clamps the resize
+    /// leaves an oversized window, which must NOT be reported as a successful 2× move (the capture
+    /// crop would exceed the framebuffer and the client's input mapping would desync).
+    /// `bounds.width`/`.height` are CG-standardized (abs); `size` is raw.
+    public static func fits(_ size: CGSize, within bounds: CGRect) -> Bool {
+        size.width <= bounds.width + 0.5 && size.height <= bounds.height + 0.5
+    }
+}
+
 /// Moves a target window onto a display via Accessibility (feature #1 — put the remoted window on
 /// the HiDPI virtual display so it renders at real 2× backing). Best-effort + crash-free.
 ///
@@ -71,7 +128,7 @@ public enum WindowPlacement {
         }
 
         let bounds = CGDisplayBounds(displayID) // global points; VD origin is the target
-        let plan = RustVideoHostFFI.windowPlacement(windowSize: originalFrame.size, displayBounds: bounds)
+        let plan = WindowPlacementMath.placement(windowSize: originalFrame.size, displayBounds: bounds)
         if plan.needsResize { // shrink to fit BEFORE crossing displays
             setSize(axWindow, plan.size)
         }
@@ -84,7 +141,7 @@ public enum WindowPlacement {
         let achieved = axWindowFrame(axWindow)?.size ?? plan.size
         // If the app refused/clamped the shrink the window still overhangs the VD → a 2× move here
         // would over-crop the capture and desync input mapping. Roll back and fall back to 1×.
-        guard RustVideoHostFFI.windowFits(achieved, within: bounds) else {
+        guard WindowPlacementMath.fits(achieved, within: bounds) else {
             log
                 .error(
                     "move window \(windowID): achieved \(Int(achieved.width))×\(Int(achieved.height))pt overhangs VD — rolling back to 1×",

@@ -106,6 +106,23 @@ public final class VideoEncoder: @unchecked Sendable {
         return v
     }()
 
+    /// QP MIN/MAX DECOUPLE (2026-06-19, `AISLOPDESK_QP_DECOUPLE`, default **ON**; `=0` disables). Keeps
+    /// `MinAllowedFrameQP` pinned to the SHARP const-QP floor on a MOTION frame while only
+    /// `MaxAllowedFrameQP` rises to the content-driven ceiling — i.e. a `[floor, ceiling]` BAND instead
+    /// of the legacy `Min==Max` constant. Keeps the STATIC sidebar sharp during scroll: its blocks are
+    /// skip-coded (~free), so VT's per-CTU rate-distortion holds them at the floor while coarsening only
+    /// the expensive moving body up to the ceiling. (VideoToolbox has no per-region/ROI QP and
+    /// `SpatialAdaptiveQPLevel` is rejected under low-latency RC — HW-confirmed −12900 — so this band is
+    /// the ONLY in-RC lever.) HW-VALIDATED 2026-06-19: sidebar stops blurring whole-frame, scroll stays
+    /// light, ~1 VT drop / 150 frames, depth 1, no loss. ⚠️ TRADE-OFF: scroll frames run BIGGER (some
+    /// >50 KB vs ~10-20 KB pinned) because the band doesn't fully bite under the ~60 Mbps backstop — fine
+    /// on a clean link, but on a LOSSY WAN the fatter frames risk burst loss (the old scroll-giật cliff),
+    /// so it is LOSS-TIER-ADAPTIVE (``setLinkCongested``): the `[floor,q]` band is used only while the
+    /// link is CLEAN and auto-collapses to Min==Max==q (small frames) the moment the ABR reports
+    /// congestion (RTT-streak / loss / gradient / catastrophic). `=0` forces the legacy pin. Only bites
+    /// when ``constQP`` != nil.
+    static let qpDecouple: Bool = ProcessInfo.processInfo.environment["AISLOPDESK_QP_DECOUPLE"] != "0"
+
     /// CRISP STATIC REFRESH (doc 17 §3.4 — Design A, single-session QP-bump, 2026-06-08).
     /// When the window goes static the heartbeat timer re-encodes the cached frame as a
     /// near-lossless intra refresh ON THE LIVE SESSION (not a second session): we momentarily
@@ -308,6 +325,11 @@ public final class VideoEncoder: @unchecked Sendable {
     /// static/typing case → QP pinned at qp_sharp). INVALIDATED to nil by every crisp/compact bracket
     /// restore (which writes the static ceiling) so the next live frame always re-applies its own QP.
     private var lastAdaptiveQP: Int?
+    /// LINK CONGESTED (bitrateLock-guarded) — the host's per-report ABR cut verdict (RTT-streak / loss /
+    /// gradient / catastrophic). Driven by ``setLinkCongested(_:)``. When TRUE, ``qpDecouple`` is
+    /// SUPPRESSED (Min re-pinned to Max==q) so scroll frames stay small on a stressed link instead of
+    /// fattening for sidebar sharpness — i.e. the decouple is loss-tier-adaptive. Default false (clean).
+    private var linkCongested = false
 
     /// COMPACT LAZY-RESTORE (2026-06-18, HW-measured). The compact recovery IDR relaxes the session
     /// QP/rate then drained twice (`VTCompressionSessionCompleteFrames`) to isolate the IDR before
@@ -447,6 +469,23 @@ public final class VideoEncoder: @unchecked Sendable {
         let changed = clamped != liveConstQP
         liveConstQP = clamped
         if changed { lastAdaptiveQP = nil } // force the next live frame to re-pin Min==Max==clamped
+        bitrateLock.unlock()
+        return changed
+    }
+
+    /// LOSS-TIER-ADAPTIVE DECOUPLE: set whether the link is currently congested (the host's ABR cut
+    /// verdict). When TRUE, ``qpDecouple`` is suppressed so the live delta path re-pins `Min==Max==q`
+    /// (small scroll frames — safe on a stressed link); when FALSE (clean), the `[floor, q]` band is
+    /// restored (sharp sidebar). Clears `lastAdaptiveQP` on change so the next `encode()` re-applies the
+    /// new Min. Lock-guarded store, callable from the host actor per network report. No-op unless
+    /// const-QP mode is on. Returns whether it changed.
+    @discardableResult
+    public func setLinkCongested(_ congested: Bool) -> Bool {
+        guard Self.constQP != nil else { return false }
+        bitrateLock.lock()
+        let changed = congested != linkCongested
+        linkCongested = congested
+        if changed { lastAdaptiveQP = nil } // force the next live frame to re-apply Min under the new band
         bitrateLock.unlock()
         return changed
     }
@@ -1049,18 +1088,26 @@ public final class VideoEncoder: @unchecked Sendable {
         if Self.constQP != nil {
             bitrateLock.lock()
             // floor = the link-AIMD's current Q (seeded from env, nudged per report). Static ⇒ floor;
-            // motion ⇒ a coarser content-driven constant (``constQPForFrame``).
-            let q = Self.constQPForFrame(floor: liveConstQP, perFrameMaxQP: perFrameMaxQP)
+            // motion ⇒ a coarser content-driven constant (``constQPForFrame``). Captured under the lock
+            // so the DECOUPLE branch below reads a consistent floor.
+            let floor = liveConstQP
+            let congested = linkCongested
+            let q = Self.constQPForFrame(floor: floor, perFrameMaxQP: perFrameMaxQP)
             // Dedup on the applied QP: a static stream holds q == floor ⇒ no per-frame property write
             // (today's hot path). A const-QP nudge clears `lastAdaptiveQP` (setConstQP) so q re-applies.
             let shouldSet = bracketDepth == 0 && lastAdaptiveQP != q
             if shouldSet { lastAdaptiveQP = q }
             bitrateLock.unlock()
             if shouldSet {
-                // Pin BOTH ⇒ a CONSTANT QP VT can't undercut (a ceiling alone never bites — no budget
-                // pressure under the ~60Mbps const-QP backstop, so VT would keep the fat sharp frame).
                 set(session, kVTCompressionPropertyKey_MaxAllowedFrameQP, q as CFNumber)
-                set(session, kVTCompressionPropertyKey_MinAllowedFrameQP, q as CFNumber)
+                // DECOUPLE (``qpDecouple``), LOSS-TIER-ADAPTIVE: on a CLEAN link hold Min at the SHARP
+                // floor so VT's per-CTU rate-distortion keeps the cheap skip-coded static region (sidebar)
+                // crisp while only the moving body coarsens to `q` — a `[floor, q]` band. But when the
+                // link is CONGESTED (``linkCongested`` — the ABR cut verdict), re-pin Min==Max==q so the
+                // fatter-band scroll frames don't risk burst loss on a stressed WAN (the old giật cliff).
+                // The default (decouple off) and the congested case both pin Min==Max==q.
+                let minQP = (Self.qpDecouple && !congested) ? floor : q
+                set(session, kVTCompressionPropertyKey_MinAllowedFrameQP, minQP as CFNumber)
             }
         } else if let q = perFrameMaxQP {
             bitrateLock.lock()

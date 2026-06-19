@@ -88,12 +88,42 @@ public struct YCbCrCoefficients: Sendable, Equatable {
 /// the default-OFF path feeds the GPU identical numbers. `.full` changes ONLY the luma
 /// (scale 1.0, bias 0); chroma + the four matrix coefficients are byte-identical to `.video`.
 ///
-/// The coefficient table now lives in the Rust core (`aislopdesk_core::ycbcr`, the SINGLE source
-/// of truth shared with the Android client) and is reached through the C ABI; this Swift facade
-/// only maps the negotiated range to the wire bit and reshapes the result. Byte-identical to the
-/// former native literals (pinned by `YCbCrConversionTests` + the golden vectors).
+/// The coefficient table is computed natively here in `Float` end-to-end (the SINGLE source of
+/// truth for the shader literals); pinned bit-exact by `YCbCrConversionTests` + the `ycbcr` golden
+/// vector. ⚠️ Every value MUST stay `Float` — an `f64`/`Double` intermediate narrowed to `Float`
+/// diverges the low bits and breaks the pinned bit-patterns. The four matrix coefficients + the
+/// chroma centre are range-independent; only the luma scale/bias differ between the two ranges.
 public enum YCbCrConversion {
     public static func coefficients(_ range: ColorRange) -> YCbCrCoefficients {
-        RustVideoFFI.ycbcrCoefficients(fullRange: range.isFullRange)
+        // Shared (range-independent): chroma centre + the four BT.709 matrix coefficients.
+        let chromaBias: Float = 128.0 / 255.0
+        let crToR: Float = 1.5748
+        let cbToG: Float = 0.1873
+        let crToG: Float = 0.4681
+        let cbToB: Float = 1.8556
+        switch range {
+        case .video:
+            // Studio swing: Y in [16,235] → [0,1] via bias 16/255, scale 255/219.
+            return YCbCrCoefficients(
+                lumaScale: 255.0 / 219.0,
+                lumaBias: 16.0 / 255.0,
+                chromaBias: chromaBias,
+                crToR: crToR,
+                cbToG: cbToG,
+                crToG: crToG,
+                cbToB: cbToB,
+            )
+        case .full:
+            // Full swing: Y in [0,255] → [0,1] (scale 1.0, bias 0); chroma + matrix unchanged.
+            return YCbCrCoefficients(
+                lumaScale: 1.0,
+                lumaBias: 0.0,
+                chromaBias: chromaBias,
+                crToR: crToR,
+                cbToG: cbToG,
+                crToG: crToG,
+                cbToB: cbToB,
+            )
+        }
     }
 }

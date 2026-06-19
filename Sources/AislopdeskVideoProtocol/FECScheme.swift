@@ -1,14 +1,13 @@
-import CAislopdeskFFI
 import Foundation
 
 /// Forward-error-correction over a frame's data fragments.
 ///
-/// doc 17 §3.6 calls for ~20% parity per frame (Sunshine default). The live engine is the
-/// NEON-backed Reed-Solomon erasure codec in the Rust core (`aislopdesk-core::fec`), driven over
-/// the `aisd_fec_*` C ABI: ``RustReedSolomonFEC`` is the production ``FECScheme``. With `m == 1`
-/// (one parity per group) it is **byte-identical** to the legacy XOR/length-prefix wire format, so
-/// a mixed fleet still interoperates and the golden vectors are unchanged. Multi-loss (`m >= 2`)
-/// activation is gated behind a later workflow; v1 ships `m == 1`.
+/// doc 17 §3.6 calls for ~20% parity per frame (Sunshine default). The live engine is a native
+/// Swift systematic Reed-Solomon erasure codec over GF(2^8) (the all-Swift migration deletes the
+/// former Rust core + FFI boundary): ``RustReedSolomonFEC`` is the production ``FECScheme``. With
+/// `m == 1` (one parity per group) it is **byte-identical** to the legacy XOR/length-prefix wire
+/// format, so a mixed fleet still interoperates and the golden vectors are unchanged. Multi-loss
+/// (`m >= 2`) recovers up to `m` lost fragments per group.
 ///
 /// Contract: ``parity(forDataFragments:)`` produces parity fragments from the frame's data
 /// fragments; ``recover(dataFragments:parityFragments:)`` fills any `nil` (lost) data fragment it
@@ -22,9 +21,9 @@ public protocol FECScheme: Sendable {
     var groupSize: Int { get }
 
     /// Parity shards per group (the code's `m`): how many losses per group the scheme repairs.
-    /// Defaults to `1` (the XOR-equivalent / byte-identical wire). The Rust-backed
-    /// ``RustReedSolomonFEC`` overrides it with its configured `m`. Read by ``FrameReassembler`` to
-    /// build the Rust core reassembler's own `[k + m, k]` codec with the matching multiplicity.
+    /// Defaults to `1` (the XOR-equivalent / byte-identical wire). ``RustReedSolomonFEC`` exposes
+    /// its configured `m`. Read by ``FrameReassembler`` / ``FramePacketizer`` to build their own
+    /// `[k + m, k]` codec with the matching multiplicity.
     var parityCount: Int { get }
 
     /// Computes parity fragments for `dataFragments`, in group order, grouping by `groupSize`.
@@ -48,221 +47,396 @@ public extension FECScheme {
     }
 }
 
-/// The production FEC scheme: the Rust core's NEON-backed Reed-Solomon erasure codec, reached over
-/// the `aisd_fec_*` C ABI. Each group of `groupSize` data fragments produces `m` parity fragments
-/// and recovers up to `m` losses per group.
+/// The production FEC scheme: a native Swift systematic Reed-Solomon erasure codec over GF(2^8).
+/// Each group of `groupSize` data fragments produces `m` parity fragments and recovers up to `m`
+/// losses per group.
 ///
-/// **v1 ships `m == 1`**, which the core special-cases to plain XOR parity — the parity bytes and
-/// the recovered bytes are bit-for-bit the legacy ``XORParityFEC`` length-prefixed XOR (the
-/// `aislopdesk-core` golden vectors anchor this), so the on-wire datagrams are byte-identical to
-/// the pre-port stream and a mixed fleet interoperates. The XOR path still routes through the GF
-/// backend, so on Apple Silicon the accumulate is NEON-vectorised.
+/// **v1 ships `m == 1`**, which the codec special-cases to plain XOR parity — the parity bytes and
+/// the recovered bytes are bit-for-bit the legacy length-prefixed XOR (the golden vectors anchor
+/// this), so the on-wire datagrams are byte-identical to the pre-port stream and a mixed fleet
+/// interoperates. The XOR path still routes through the configured ``GfRegion`` backend, so on
+/// Apple Silicon the accumulate is NEON-vectorised.
 ///
-/// **Dynamic group size.** The codec is constructed ONCE (`aisd_fec_codec_new(k, m)`), but the
-/// host/client drive it with a PER-FRAME group size (``AdaptiveFECPolicy/groupSize(forTier:default:)``,
-/// which varies by tier — e.g. 2, 3, 5, 10). For `m == 1` there is no matrix, so the core honours
-/// the per-call group size EXACTLY (no clamp to `k`), exactly matching the old Swift XOR for any
-/// group size. The codec is therefore built with `k == groupSize` for clarity, but a per-call size
-/// larger than `k` (a heavier adaptive tier) is still grouped at the requested width.
+/// **`m == 1` is byte-identical to plain XOR for ANY group size.** A Cauchy parity row is *not*
+/// all-ones, so a literal RS encode with `m == 1` would emit different parity bytes than the plain
+/// XOR even though recovery would still be correct. Because the wire contract guarantees `m == 1`
+/// matches the v1 XOR format exactly, this type special-cases `m == 1` to plain XOR internally and,
+/// crucially, does NOT clamp the per-call group size to `k` at `m == 1` (the production FEC path
+/// drives an adaptive per-frame group size that can exceed `k`). For `m >= 2` the Cauchy encoder has
+/// exactly `k = groupSize` columns, so the per-call size is clamped down to `k`, keeping encode and
+/// decode self-consistent.
 ///
-/// Owns a Rust codec handle, so this is a `final class` with a `deinit` that frees it. The handle
-/// is immutable after construction and the codec is pure (no shared mutation), so it is safe to use
-/// concurrently — marked `@unchecked Sendable` because the `OpaquePointer` is not auto-`Sendable`.
+/// Every region operation routes through the configured ``GfRegion`` backend (``NeonGf``):
+/// `xorAdd` for identity/data-row combination, `mulAdd` for parity rows. The XOR output is
+/// backend-independent, so byte-identity to the legacy XOR holds regardless of `G`.
+///
+/// Value type, immutable after construction; safe to use concurrently.
 public final class RustReedSolomonFEC: FECScheme, @unchecked Sendable {
     public let groupSize: Int
     /// The parity-shard count per group (`m`). v1 is always 1 (XOR-equivalent, wire-identical).
     public let parityCount: Int
-    /// The owned Rust codec handle (`AisdFecCodec *`). Freed in `deinit`.
-    private let codec: OpaquePointer
+
+    /// The GF(2^8) region-arithmetic backend (NEON-accelerated on Apple Silicon, byte-identical to
+    /// the scalar reference). Used for every encode/recover region accumulate.
+    private let gf: any GfRegion
 
     /// Builds an `[n = k + m, k]` Reed-Solomon codec.
     ///
     /// - Parameters:
     ///   - groupSize: data fragments per group (`k`). Default 5 ⇒ 20% parity at `m == 1`.
     ///   - parityCount: parity fragments per group (`m`). Default 1 (XOR-equivalent, byte-identical
-    ///     to the legacy wire). Values `>= 2` enable multi-loss recovery (a later workflow).
+    ///     to the legacy wire). Values `>= 2` enable multi-loss recovery.
     public init(groupSize: Int = 5, parityCount: Int = 1) {
         precondition(groupSize >= 1, "groupSize must be >= 1")
         precondition(parityCount >= 1, "parityCount must be >= 1")
         precondition(groupSize + parityCount <= 255, "groupSize + parityCount must be <= 255 (GF(2^8))")
         self.groupSize = groupSize
         self.parityCount = parityCount
-        // `aisd_fec_codec_new` returns null ONLY for an invalid config, which the preconditions
-        // above already rule out — so the force-unwrap is unreachable for valid arguments.
-        guard let handle = aisd_fec_codec_new(groupSize, parityCount) else {
-            preconditionFailure("aisd_fec_codec_new returned null for a validated (k=\(groupSize), m=\(parityCount))")
-        }
-        codec = handle
+        gf = NeonGf()
     }
 
-    deinit { aisd_fec_codec_free(codec) }
-
     public func parity(forDataFragments dataFragments: [Data], groupSize: Int) -> [Data] {
-        let groupSize = max(1, groupSize) // defensive floor: a non-positive size must never trap.
-        return RustFECBridge.parity(codec: codec, dataFragments: dataFragments, groupSize: groupSize)
+        parityM(dataFragments, groupSize: groupSize, m: parityCount)
     }
 
     public func recover(dataFragments: [Data?], parityFragments: [Data?], groupSize: Int) -> [Data?] {
-        let groupSize = max(1, groupSize) // defensive floor (matches `parity`).
-        return RustFECBridge.recover(
-            codec: codec,
-            dataFragments: dataFragments,
-            parityFragments: parityFragments,
-            groupSize: groupSize,
-        )
+        recoverM(dataFragments: dataFragments, parityFragments: parityFragments, groupSize: groupSize, m: parityCount)
     }
-}
 
-/// Compatibility alias: the legacy name now maps to the Rust-backed Reed-Solomon scheme so the many
-/// `XORParityFEC(...)` construction/test sites keep building UNCHANGED while the live FEC engine is
-/// the NEON-backed Rust core. `m == 1` keeps the wire byte-identical to the old native Swift XOR.
-public typealias XORParityFEC = RustReedSolomonFEC
+    // MARK: - Effective grouping width
 
-/// The `aisd_fec_*` C-ABI marshaling for the FEC path. All `import CAislopdeskFFI` for FEC is
-/// contained here; ``RustReedSolomonFEC`` calls these to drive the Rust core's codec. The previous
-/// native Swift XOR/length-prefix math is DELETED — the Rust core (`aislopdesk-core::fec`) is the
-/// single source of truth, with `m == 1` byte-identical to the legacy wire.
-enum RustFECBridge {
-    /// Computes the parity shards for `dataFragments`, grouping by `groupSize`, by marshaling the
-    /// shards as a borrowed `AisdBytes` array into `aisd_fec_parity` and copying the owned result
-    /// array out into `[Data]`. Wraps `aisd_fec_parity` / `aisd_bytes_array_free`.
-    static func parity(codec: OpaquePointer, dataFragments: [Data], groupSize: Int) -> [Data] {
-        guard !dataFragments.isEmpty else { return [] }
-        // Stage every shard's bytes into ONE owned contiguous buffer, then borrow `AisdBytes`
-        // pointing into it. O(1) stack regardless of fragment count (a per-fragment-recursive borrow
-        // overflowed the ~512KB production stack on large keyframes). The single flat-buffer memcpy
-        // is negligible next to the codec work, and the C ABI only READS these (borrowed in).
-        return withStagedShards(dataFragments) { borrowed in
-            var out = AisdBytesArray()
-            let status = borrowed.withUnsafeBufferPointer { buf in
-                aisd_fec_parity(codec, buf.baseAddress, buf.count, groupSize, &out)
+    /// The per-call grouping width for a requested `group_size` at parity multiplicity `m`.
+    ///
+    /// `m == 1` (plain XOR, no matrix) honours the request EXACTLY — NO clamp to `k` — so the parity
+    /// bytes are byte-identical to the standalone length-prefixed XOR for ANY group size (the
+    /// production FEC path drives an adaptive per-frame group size that can exceed the codec's `k`).
+    /// `m >= 2` (the Cauchy code) clamps down to `k = groupSize`, its column count. A non-positive
+    /// size floors to 1 either way (a 0 size must never loop forever).
+    private func effectiveGroupSize(_ requested: Int, m: Int) -> Int {
+        let floored = max(1, requested)
+        return m == 1 ? floored : min(floored, groupSize)
+    }
+
+    // MARK: - Parity (encode)
+
+    /// Parity at multiplicity `m`. Groups `data` at ``effectiveGroupSize(_:m:)`` and emits each
+    /// group's `m` parity shards in rank order (group-major then rank).
+    private func parityM(_ data: [Data], groupSize requested: Int, m: Int) -> [Data] {
+        let groupSize = effectiveGroupSize(requested, m: m)
+        var parities: [Data] = []
+        // `m` parity shards per full group + a tail group ⇒ exact-ish reservation, no growth churn.
+        if !data.isEmpty {
+            let groups = (data.count + groupSize - 1) / groupSize
+            parities.reserveCapacity(groups * m)
+        }
+        var index = 0
+        while index < data.count {
+            let upper = min(index + groupSize, data.count)
+            encodeGroup(data, range: index..<upper, m: m, into: &parities)
+            index += groupSize
+        }
+        return parities
+    }
+
+    /// Encodes one group's `m` parity shards, appended in rank order. The group is the data shards
+    /// at `data[range]` — passed as a base array + range to avoid an intermediate slice-copy.
+    ///
+    /// `m == 1` takes the plain XOR path (byte-identical to the legacy XOR), still routed through the
+    /// GF backend. For `m >= 2`, frames each up-to-`k` data shard (length-prefixed) ONCE into a
+    /// reusable scratch, zero-pads to the group's widest member `W`, then for each parity row folds
+    /// `coeff * framed_shard` into a single reused `W`-wide accumulator (zeroed between ranks) via the
+    /// GF backend's `mulAdd`. Output bytes are identical to the per-rank-fresh-buffer version.
+    private func encodeGroup(_ data: [Data], range: Range<Int>, m: Int, into out: inout [Data]) {
+        if m == 1 {
+            out.append(gfXorEncoded(data, range: range))
+            return
+        }
+        // Frame each shard once (length-prefixed). `framed[j]` is reused across all `m` ranks.
+        var framed: [[UInt8]] = []
+        framed.reserveCapacity(range.count)
+        var width = 0
+        for i in range {
+            let f = Self.lengthPrefixed(data[i])
+            if f.count > width { width = f.count }
+            framed.append(f)
+        }
+        let coeffs = ReedSolomonMatrix.parityRows(k: groupSize, m: m)
+        // One accumulator, reused across ranks: each rank zeroes the full width before folding, so no
+        // stale bytes leak (the result is bit-identical to a fresh per-rank buffer).
+        var acc = [UInt8](repeating: 0, count: width)
+        acc.withUnsafeMutableBufferPointer { accBuf in
+            for rank in 0..<m {
+                if rank > 0 {
+                    for i in 0..<width { accBuf[i] = 0 }
+                }
+                for (j, shard) in framed.enumerated() {
+                    // Coefficient for parity `rank` over data shard `j`. A short final group holds
+                    // fewer than k shards; only the present shards contribute.
+                    let coeff = coeffs[rank * groupSize + j]
+                    shard.withUnsafeBufferPointer { srcBuf in
+                        gf.mulAdd(coeff: coeff, src: srcBuf, dst: accBuf)
+                    }
+                }
+                out.append(Data(accBuf))
             }
-            guard status == AISD_OK else { return [] }
-            defer { aisd_bytes_array_free(&out) }
-            return collectArray(out)
         }
     }
 
-    /// Recovers recoverable holes in `dataFragments` (a `nil` entry is a hole) using
-    /// `parityFragments`, grouping by `groupSize`. Marshals the present/hole masks + borrowed bytes
-    /// into `aisd_fec_recover`, then copies each Rust-recovered shard back into the result, freeing
-    /// each recovered `AisdBytes`. Wraps `aisd_fec_recover` / `aisd_bytes_free`.
-    static func recover(
-        codec: OpaquePointer,
-        dataFragments: [Data?],
-        parityFragments: [Data?],
-        groupSize: Int,
-    ) -> [Data?] {
-        var result = dataFragments
-        let dataCount = dataFragments.count
-        guard dataCount > 0 else { return result }
+    /// XOR of the length-prefixed encodings of a group (`data[range]`), zero-padded to the longest
+    /// member, folded through the GF backend's `xorAdd`. Byte-identical to the legacy
+    /// `XORParityFEC.xorEncoded` (field addition is XOR regardless of the backend). Frames each
+    /// member directly into the accumulator with no per-member `[UInt8]` array kept around.
+    private func gfXorEncoded(_ data: [Data], range: Range<Int>) -> Data {
+        // Width = the widest length-prefixed member = 4 + max member byte count.
+        var maxLen = 0
+        for i in range where data[i].count > maxLen { maxLen = data[i].count }
+        let width = range.isEmpty ? 0 : 4 + maxLen
+        var acc = [UInt8](repeating: 0, count: width)
+        acc.withUnsafeMutableBufferPointer { accBuf in
+            for i in range {
+                Self.appendLengthPrefixedXor(data[i], into: accBuf)
+            }
+        }
+        return Data(acc)
+    }
 
-        // Present masks: 1 = the shard carries valid bytes, 0 = a hole to repair. A hole is told
-        // apart from a legitimately-empty present shard by the mask (never by "empty bytes").
-        let dataPresent: [UInt8] = dataFragments.map { $0 == nil ? 0 : 1 }
-        let parityPresent: [UInt8] = parityFragments.map { $0 == nil ? 0 : 1 }
-        // Present shards carry their bytes; holes carry empty (the mask says they are absent).
-        let dataBytes: [Data] = dataFragments.map { $0 ?? Data() }
-        let parityBytes: [Data] = parityFragments.map { $0 ?? Data() }
-        let parityCount = parityFragments.count
+    /// `acc[0..<4+member.count] ^= lengthPrefixed(member)` in place — folds a single length-prefixed
+    /// member into the accumulator WITHOUT materialising its framed `[UInt8]`. `acc.count` is the
+    /// group width (`>= 4 + member.count`), so every write is in bounds. Byte-identical to building
+    /// `lengthPrefixed(member)` and `xorAdd`-ing it.
+    @inline(__always)
+    private static func appendLengthPrefixedXor(_ member: Data, into acc: UnsafeMutableBufferPointer<UInt8>) {
+        let len = UInt32(truncatingIfNeeded: member.count)
+        acc[0] ^= UInt8(truncatingIfNeeded: len >> 24)
+        acc[1] ^= UInt8(truncatingIfNeeded: len >> 16)
+        acc[2] ^= UInt8(truncatingIfNeeded: len >> 8)
+        acc[3] ^= UInt8(truncatingIfNeeded: len)
+        member.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for j in 0..<bytes.count {
+                acc[4 + j] ^= bytes[j]
+            }
+        }
+    }
 
-        withStagedShards(dataBytes) { dataBorrowed in
-            withStagedShards(parityBytes) { parityBorrowed in
-                // `data` is read AND written by the C ABI (recovered holes become owned buffers),
-                // so it is a mutable copy of the borrowed views.
-                var data = dataBorrowed
-                var recovered = [UInt8](repeating: 0, count: dataCount)
-                let status = data.withUnsafeMutableBufferPointer { dataPtr in
-                    dataPresent.withUnsafeBufferPointer { dpPtr in
-                        parityBorrowed.withUnsafeBufferPointer { parPtr in
-                            parityPresent.withUnsafeBufferPointer { ppPtr in
-                                recovered.withUnsafeMutableBufferPointer { recPtr in
-                                    aisd_fec_recover(
-                                        codec,
-                                        dataPtr.baseAddress,
-                                        dpPtr.baseAddress,
-                                        dataCount,
-                                        parPtr.baseAddress,
-                                        ppPtr.baseAddress,
-                                        parityCount,
-                                        groupSize,
-                                        recPtr.baseAddress,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                guard status == AISD_OK else { return }
-                // Copy each recovered hole's bytes out into the result and free the Rust buffer
-                // (the C ABI wrote a fresh Rust-owned `AisdBytes` into `data[i]` for each fill).
-                for i in 0..<dataCount where recovered[i] != 0 {
-                    result[i] = copyOut(data[i])
-                    aisd_bytes_free(data[i])
+    /// `parity XOR (encoded survivors)` = the encoded form of the single missing member, zero-padded,
+    /// then length-stripped → the recovered shard. Byte-identical to the legacy
+    /// `XORParityFEC.xorRecover` but folds straight from the `Data` survivors (`data[range]`, present
+    /// only) + the parity `Data`, with NO `[UInt8]`↔`Data` round-trips and ONE reused accumulator.
+    /// Survivors are length-prefixed on the fly into the accumulator; `nil` on a corrupt length
+    /// prefix (validate-then-drop), identical to the old strip step.
+    private func gfXorRecoverHole(parity: Data, data: [Data?], range: Range<Int>) -> Data? {
+        // Width = max(parity.count, max over present survivors of 4 + survivor.count).
+        var width = parity.count
+        for i in range {
+            if let s = data[i] {
+                let framed = 4 + s.count
+                if framed > width { width = framed }
+            }
+        }
+        var acc = [UInt8](repeating: 0, count: width)
+        return acc.withUnsafeMutableBufferPointer { accBuf -> Data? in
+            // XOR the parity bytes (count <= width).
+            parity.withUnsafeBytes { raw in
+                let pb = raw.bindMemory(to: UInt8.self)
+                for j in 0..<pb.count { accBuf[j] ^= pb[j] }
+            }
+            // XOR each present survivor's length-prefixed framing (count <= width).
+            for i in range {
+                if let s = data[i] {
+                    Self.appendLengthPrefixedXor(s, into: accBuf)
                 }
             }
+            return Self.stripLengthPrefix(UnsafeBufferPointer(accBuf))
+        }
+    }
+
+    // MARK: - Recover (decode)
+
+    /// Recover at multiplicity `m`. The `m` MUST match the one the parity was encoded with: it sets
+    /// both the per-group parity stride (`parity[group * m + rank]`) and the recovery budget.
+    private func recoverM(
+        dataFragments: [Data?],
+        parityFragments: [Data?],
+        groupSize requested: Int,
+        m: Int,
+    ) -> [Data?] {
+        var result = dataFragments
+        let groupSize = effectiveGroupSize(requested, m: m) // matches parityM's grouping
+        var groupIndex = 0
+        var index = 0
+        while index < result.count {
+            let upper = min(index + groupSize, result.count)
+            recoverGroup(&result, parity: parityFragments, index: index, upper: upper, groupIndex: groupIndex, m: m)
+            index += groupSize
+            groupIndex += 1
         }
         return result
     }
 
-    // MARK: Marshaling helpers
-
-    /// Runs `body` with `fragments` exposed as a borrowed `[AisdBytes]` (each `{ptr,len,cap:0}`),
-    /// where every shard's bytes live in ONE owned contiguous staging buffer that outlives the call.
+    /// Recovers a single group's holes in place (indices `index..<upper` of `data`), using the
+    /// group's `m` parity shards at `parity[groupIndex * m ..< groupIndex * m + m]`.
     ///
-    /// This is ITERATIVE — O(1) stack regardless of fragment count. (The previous
-    /// per-fragment-recursive borrow nested one open `withUnsafeBytes` closure per fragment, so the
-    /// stack grew with the frame size and overflowed the ~512KB production stack — a host/client
-    /// SIGSEGV on a 1MB+ keyframe.) The single staging copy is cheap relative to the codec work, and
-    /// every `AisdBytes` carries `cap == 0`, so the C ABI treats them as caller-owned (read-only,
-    /// never freed). The staging buffer is held alive for the entire `body` via `withUnsafeBytes`.
-    private static func withStagedShards<R>(_ fragments: [Data], _ body: ([AisdBytes]) -> R) -> R {
-        // Lay every shard end-to-end in one buffer, recording each shard's [offset, length).
-        var staging = [UInt8]()
-        staging.reserveCapacity(fragments.reduce(0) { $0 + $1.count })
-        var offsets = [Int]()
-        offsets.reserveCapacity(fragments.count)
-        var lengths = [Int]()
-        lengths.reserveCapacity(fragments.count)
-        for data in fragments {
-            offsets.append(staging.count)
-            lengths.append(data.count)
-            if !data.isEmpty { staging.append(contentsOf: data) }
+    /// Leaves every hole untouched when unrecoverable (`holes == 0`, `holes > m`, too few surviving
+    /// parity, a singular submatrix, or a corrupt length prefix) — never traps.
+    private func recoverGroup(
+        _ data: inout [Data?],
+        parity: [Data?],
+        index: Int,
+        upper: Int,
+        groupIndex: Int,
+        m: Int,
+    ) {
+        let k = groupSize
+        let groupLen = upper - index
+
+        // Holes are missing DATA shards; their position within the group is `i - index`.
+        let holes = (index..<upper).filter { data[$0] == nil }
+        if holes.isEmpty || holes.count > m {
+            return // nothing to do, or beyond this group's repair budget
         }
-        // One stable base address for the whole staging buffer; derive each shard pointer from it.
-        return staging.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> R in
-            var borrowed = [AisdBytes]()
-            borrowed.reserveCapacity(fragments.count)
-            for i in 0..<fragments.count {
-                let len = lengths[i]
-                // An empty shard carries a null pointer (len 0); a present shard points into staging.
-                // `baseAddress` is non-nil whenever any shard has bytes (len > 0 ⇒ a non-empty buffer).
-                var ptr: UnsafeMutablePointer<UInt8>?
-                if len > 0, let base = raw.baseAddress {
-                    ptr = UnsafeMutablePointer(mutating: base.advanced(by: offsets[i])
-                        .assumingMemoryBound(to: UInt8.self))
+
+        // m == 1: a single hole, plain XOR recover (byte-identical to the legacy XOR), folded
+        // through the GF backend.
+        if m == 1 {
+            if groupIndex < parity.count, let parityBytes = parity[groupIndex] {
+                if let bytes = gfXorRecoverHole(parity: parityBytes, data: data, range: index..<upper) {
+                    data[holes[0]] = bytes
                 }
-                borrowed.append(AisdBytes(ptr: ptr, len: len, cap: 0))
             }
-            return body(borrowed)
+            return
+        }
+
+        // The encoder treats a short final group (groupLen < k) as having (k - groupLen) implicit
+        // all-zero data shards in slots groupLen..<k. Those phantom shards are never missing (the
+        // constant 0), so they always count as survivors.
+        let parityCoeffs = ReedSolomonMatrix.parityRows(k: k, m: m)
+
+        // Collect k survivor (encoder-row, framed-bytes) pairs. Encoder indices: 0..<k are the data
+        // rows (identity), k..<k+m are the parity rows. We need exactly k linearly independent
+        // survivors; any k of the n MDS rows suffice.
+        var survivorRows: [[UInt8]] = []
+        survivorRows.reserveCapacity(k)
+        var survivorBytes: [[UInt8]] = []
+        survivorBytes.reserveCapacity(k)
+
+        // 1) Present real data shards contribute their identity row e_j and framed bytes.
+        for slot in 0..<groupLen {
+            if let bytes = data[index + slot] {
+                var row = [UInt8](repeating: 0, count: k)
+                row[slot] = 1
+                survivorRows.append(row)
+                survivorBytes.append(Self.lengthPrefixed(bytes))
+            }
+        }
+        // 2) Phantom zero shards in a short final group are known-zero survivors (identity row,
+        //    all-zero bytes). They let a short group still reach k independent rows.
+        if groupLen < k {
+            for slot in groupLen..<k {
+                var row = [UInt8](repeating: 0, count: k)
+                row[slot] = 1
+                survivorRows.append(row)
+                survivorBytes.append([]) // all-zero contributes nothing
+            }
+        }
+        // 3) Fill the remaining slots from present parity shards (their Cauchy rows).
+        let parityBase = groupIndex * m
+        var rank = 0
+        while survivorRows.count < k, rank < m {
+            let parityIdx = parityBase + rank
+            if parityIdx < parity.count, let parityBytes = parity[parityIdx] {
+                let row = Array(parityCoeffs[rank * k..<rank * k + k])
+                survivorRows.append(row)
+                survivorBytes.append([UInt8](parityBytes))
+            }
+            rank += 1
+        }
+
+        if survivorRows.count < k {
+            return // not enough surviving shards to solve — leave the holes
+        }
+        // Use exactly k survivors (we may have collected k from data + phantom already).
+        if survivorRows.count > k {
+            survivorRows.removeLast(survivorRows.count - k)
+            survivorBytes.removeLast(survivorBytes.count - k)
+        }
+
+        // Invert the k×k encoder submatrix of the chosen survivors.
+        guard let inverse = ReedSolomonMatrix.invertSubset(survivorRows, k: k) else {
+            return // singular (should not happen for a true MDS subset) — leave holes
+        }
+
+        // Width of the working accumulator: the widest survivor's framed length.
+        var width = 0
+        for sbytes in survivorBytes where sbytes.count > width { width = sbytes.count }
+
+        // For each missing DATA slot, the original framed shard is row `slot` of
+        // (inverse · survivorBytes): acc = Σ_t inverse[slot * k + t] * survivorBytes[t].
+        // One accumulator reused across holes (zeroed per hole — no stale bytes leak), folded via
+        // the unsafe `mulAdd` overload so survivor bytes are not re-copied per fold.
+        var acc = [UInt8](repeating: 0, count: width)
+        acc.withUnsafeMutableBufferPointer { accBuf in
+            for hole in holes {
+                let slot = hole - index // 0..<k position of the missing data shard
+                for i in 0..<width { accBuf[i] = 0 }
+                for (t, sbytes) in survivorBytes.enumerated() {
+                    let coeff = inverse[slot * k + t]
+                    sbytes.withUnsafeBufferPointer { srcBuf in
+                        gf.mulAdd(coeff: coeff, src: srcBuf, dst: accBuf)
+                    }
+                }
+                if let bytes = Self.stripLengthPrefix(UnsafeBufferPointer(accBuf)) {
+                    data[hole] = bytes
+                }
+            }
         }
     }
 
-    /// Copies an owned/returned `AisdBytesArray` out into `[Data]` (the array itself is freed by the
-    /// caller's `aisd_bytes_array_free`).
-    private static func collectArray(_ array: AisdBytesArray) -> [Data] {
-        // Bind the C `count` to a local Int up front (the `AisdBytesArray` struct has no `isEmpty`).
-        let count = array.count
-        guard let items = array.items, count > 0 else { return [] }
-        var out: [Data] = []
-        out.reserveCapacity(count)
-        for i in 0..<count { out.append(copyOut(items[i])) }
+    // MARK: - Length-prefix framing (shared by the XOR and Cauchy paths)
+
+    /// `[UInt32 BE length][bytes]`. A fragment never approaches 4 GiB (MTU-bounded), so the `UInt32`
+    /// length holds by construction. Both the XOR and the RS code operate over this framed,
+    /// zero-padded encoding so recovery reproduces the *exact* original length even when group
+    /// members differ in size.
+    static func lengthPrefixed(_ data: Data) -> [UInt8] {
+        var out = [UInt8]()
+        out.reserveCapacity(4 + data.count)
+        let len = UInt32(truncatingIfNeeded: data.count)
+        out.append(UInt8(truncatingIfNeeded: len >> 24))
+        out.append(UInt8(truncatingIfNeeded: len >> 16))
+        out.append(UInt8(truncatingIfNeeded: len >> 8))
+        out.append(UInt8(truncatingIfNeeded: len))
+        out.append(contentsOf: data)
         return out
     }
 
-    /// Copies an `AisdBytes`' payload into an owned `Data` (empty for the null/zero buffer).
-    private static func copyOut(_ bytes: AisdBytes) -> Data {
-        guard let ptr = bytes.ptr, bytes.len > 0 else { return Data() }
-        return Data(bytes: ptr, count: bytes.len)
+    /// Inverse of ``lengthPrefixed(_:)``: reads the embedded length and slices exactly that many
+    /// bytes, ignoring trailing zero padding. `nil` if the declared length does not fit (a corrupt
+    /// prefix on hostile input — recovery then leaves the hole rather than crashing). VALIDATE before
+    /// allocating: bounds are checked before the slice copy.
+    static func stripLengthPrefix(_ data: [UInt8]) -> Data? {
+        data.withUnsafeBufferPointer { stripLengthPrefix($0) }
+    }
+
+    /// `UnsafeBufferPointer` overload of ``stripLengthPrefix(_:)`` for the hot recover path: parses
+    /// the prefix and slices straight out of the working accumulator, skipping the intermediate
+    /// `[UInt8]` copy. Identical validate-then-drop semantics: bounds are checked before the copy.
+    static func stripLengthPrefix(_ data: UnsafeBufferPointer<UInt8>) -> Data? {
+        if data.count < 4 { return nil }
+        let length =
+            (Int(data[0]) << 24) |
+            (Int(data[1]) << 16) |
+            (Int(data[2]) << 8) |
+            Int(data[3])
+        let end = 4 + length
+        if length >= 0, end <= data.count {
+            return Data(UnsafeBufferPointer(rebasing: data[4..<end]))
+        }
+        return nil
     }
 }
+
+/// Compatibility alias: the legacy name maps to the native Reed-Solomon scheme so the many
+/// `XORParityFEC(...)` construction/test sites keep building UNCHANGED while the live FEC engine is
+/// the native Swift codec. `m == 1` keeps the wire byte-identical to the old native Swift XOR.
+public typealias XORParityFEC = RustReedSolomonFEC

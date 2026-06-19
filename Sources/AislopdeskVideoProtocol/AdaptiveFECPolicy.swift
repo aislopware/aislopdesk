@@ -168,10 +168,15 @@ public enum AdaptiveFECPolicy {
     /// - tier 4 → 2   (severe, 50% overhead).
     /// - tier 5,6,7 and any other value → `default` (reserved → safe default, forward-compatible).
     public static func groupSize(forTier tier: UInt8, default defaultGroupSize: Int) -> Int? {
-        // Delegates to the Rust `aislopdesk-core` policy (single source of truth shared with the
-        // Android client) — byte-identical to the former native table (golden-vector
-        // `adaptiveGroupSize` + `AdaptiveFECPolicyTests` + `RustAdaptiveFECParityTests`). TOTAL.
-        RustVideoFFI.adaptiveFECGroupSize(tier: tier, defaultGroupSize: defaultGroupSize)
+        // Native Swift (single source of truth). TOTAL over every UInt8 — a malformed/unknown
+        // tier off a corrupt fragment can NEVER trap; golden-vector `adaptiveGroupSize` pins it.
+        switch tier {
+        case 1: nil // OFF (clean link, no parity)
+        case 2: 10 // light (~10%)
+        case 3: 3 // heavy (~33%)
+        case 4: 2 // severe (50%)
+        default: defaultGroupSize // 0 + reserved 5,6,7 (+ any other) → safe default
+        }
     }
 
     // MARK: B. Loss → tier decision (host only)
@@ -192,59 +197,6 @@ public enum AdaptiveFECPolicy {
         env["AISLOPDESK_FEC_ALLOW_OFF"] == "1"
     }
 
-    /// The lowest redundancy LEVEL the relax path may land on: 1 (g10) by default, 0 (OFF) only
-    /// behind the escape hatch. Escalation is unaffected (it only ever raises the level).
-    private static func relaxFloorLevel(allowOff: Bool) -> Int { allowOff ? 0 : 1 }
-
-    /// Internal redundancy LEVEL, monotonic in loss (0 = least redundancy … 4 = most):
-    ///  level 0 = OFF, 1 = g10, 2 = g5 (the default), 3 = g3, 4 = g2.
-    /// Decisions step at most ONE level per call; the level↔tier maps below translate to/from
-    /// the non-monotonic wire tier numbering (tier 0 must be g5 for byte-identity, so the wire
-    /// order is NOT the redundancy order).
-    private static func level(forTier tier: UInt8) -> Int {
-        switch tier {
-        case 1: 0 // OFF
-        case 2: 1 // g10
-        case 0: 2 // g5 (default)
-        case 3: 3 // g3
-        case 4: 4 // g2
-        default: 2 // reserved → treat as the default/g5 level
-        }
-    }
-
-    private static func tier(forLevel level: Int) -> UInt8 {
-        switch level {
-        case 0: 1 // OFF
-        case 1: 2 // g10
-        case 2: 0 // g5 (default)
-        case 3: 3 // g3
-        case 4: 4 // g2
-        default: 0 // clamp → default
-        }
-    }
-
-    /// The redundancy level the loss demands, given the current level. Hysteretic:
-    /// asymmetric up/down thresholds create a dead-band so a loss oscillating around a
-    /// boundary does NOT flap the tier. Within the dead-band the current level holds.
-    ///
-    /// Up-thresholds (raise redundancy):  ≥0.005→L1, ≥0.02→L2, ≥0.05→L3, ≥0.10→L4.
-    /// Down-thresholds (must fall well below to relax): <0.002→L0, <0.012→L1, <0.035→L2, <0.08→L3.
-    /// For every adjacent pair the up-threshold strictly exceeds the down-threshold (dead-band),
-    /// so `upLevel <= downLevel` always and the two `if`s below are mutually exclusive.
-    private static func targetLevel(forLossRate loss: Double, currentLevel current: Int) -> Int {
-        let upLevel =
-            if loss >= 0.10 { 4 } else if loss >= 0.05 { 3 } else if loss >= 0.02 { 2 } else if loss >= 0.005 { 1 }
-            else { 0 }
-
-        let downLevel =
-            if loss < 0.002 { 0 } else if loss < 0.012 { 1 } else if loss < 0.035 { 2 } else if loss < 0.08 { 3 }
-            else { 4 }
-
-        if upLevel > current { return upLevel } // loss has risen → demand more redundancy
-        if downLevel < current { return downLevel } // loss low enough → relax
-        return current // dead-band → hold
-    }
-
     /// Picks the next wire tier from the EWMA loss and the previous tier, with hysteresis and a
     /// strict one-level-per-call clamp (anti-flap). The clamp means relaxation on a sustained clean
     /// link is GRADUAL (one level per report) and a loss spike never jumps multiple levels at once.
@@ -257,9 +209,65 @@ public enum AdaptiveFECPolicy {
         previousTier: UInt8,
         allowOff: Bool = allowOffTierDefault,
     ) -> UInt8 {
-        // Delegates to the Rust core (golden-vector `adaptiveTier` proves bit-exact parity with
-        // the former native ladder). Env stays Swift-side: `allowOff` crosses as a byte.
-        RustVideoFFI.adaptiveFECTier(loss: loss, previousTier: previousTier, allowOff: allowOff)
+        // Native Swift (single source of truth); golden-vector `adaptiveTier` pins bit-exact parity.
+        let current = levelForTier(previousTier)
+        let target = max(
+            targetLevel(forLossRate: loss, currentLevel: current),
+            relaxFloorLevel(allowOff: allowOff),
+        )
+        let stepped: Int = if target > current { current + 1 } else if target < current { current - 1 } else { current }
+        return tierForLevel(stepped)
+    }
+
+    // MARK: Group-size ladder internals (level ↔ wire-tier translation + hysteretic target)
+
+    /// The lowest redundancy LEVEL the relax path may land on: 1 (g10) by default, 0 (OFF) only
+    /// behind the escape hatch. Escalation is unaffected (it only ever raises the level).
+    private static func relaxFloorLevel(allowOff: Bool) -> Int { allowOff ? 0 : 1 }
+
+    /// Internal redundancy LEVEL, monotonic in loss (0 = least redundancy … 4 = most):
+    ///  level 0 = OFF, 1 = g10, 2 = g5 (the default), 3 = g3, 4 = g2.
+    /// The wire tier numbering is NOT the redundancy order (tier 0 must be g5 for byte-identity),
+    /// so these maps translate between them.
+    private static func levelForTier(_ tier: UInt8) -> Int {
+        switch tier {
+        case 1: 0 // OFF
+        case 2: 1 // g10
+        case 0: 2 // g5 (default)
+        case 3: 3 // g3
+        case 4: 4 // g2
+        default: 2 // reserved → treat as the default/g5 level
+        }
+    }
+
+    private static func tierForLevel(_ level: Int) -> UInt8 {
+        switch level {
+        case 0: 1 // OFF
+        case 1: 2 // g10
+        case 2: 0 // g5 (default)
+        case 3: 3 // g3
+        case 4: 4 // g2
+        default: 0 // clamp → default
+        }
+    }
+
+    /// The redundancy level the loss demands, given the current level. Hysteretic: asymmetric
+    /// up/down thresholds create a dead-band so a loss oscillating around a boundary does NOT flap.
+    ///
+    /// Up-thresholds (raise redundancy):  ≥0.005→L1, ≥0.02→L2, ≥0.05→L3, ≥0.10→L4.
+    /// Down-thresholds (relax):  <0.002→L0, <0.012→L1, <0.035→L2, <0.08→L3.
+    private static func targetLevel(forLossRate loss: Double, currentLevel current: Int) -> Int {
+        let upLevel =
+            if loss >= 0.10 { 4 } else if loss >= 0.05 { 3 } else if loss >= 0.02 { 2 }
+            else if loss >= 0.005 { 1 } else { 0 }
+
+        let downLevel =
+            if loss < 0.002 { 0 } else if loss < 0.012 { 1 } else if loss < 0.035 { 2 }
+            else if loss < 0.08 { 3 } else { 4 }
+
+        if upLevel > current { return upLevel } // loss has risen → demand more redundancy
+        if downLevel < current { return downLevel } // loss low enough → relax
+        return current // dead-band → hold
     }
 
     // MARK: Relax dwell (2026-06-11, 4G burst-flap fix)
@@ -321,21 +329,26 @@ public enum AdaptiveFECPolicy {
         allowOff: Bool = allowOffTierDefault,
         sawUnrecoveredLoss: Bool = false,
     ) -> TierState {
-        // Delegates to the Rust core: marshal the value-type state through the flat
-        // `AisdTierState` and rebuild a Swift `TierState` from the result. The whole
-        // hysteresis/dwell/sticky decision lives in `aislopdesk-core::adaptive_fec`, the single
-        // source of truth shared with the Android host. Env stays Swift-side (`dwell` + `allowOff`
-        // cross as params). Public API unchanged.
-        let next = RustVideoFFI.adaptiveFECNextTierState(
-            loss: loss, tier: state.tier, relaxStreak: state.relaxStreak,
-            stickyRelaxRemaining: state.stickyRelaxRemaining,
-            dwell: dwell, allowOff: allowOff, sawUnrecoveredLoss: sawUnrecoveredLoss,
+        // Native Swift (single source of truth). The whole hysteresis/dwell/sticky decision lives
+        // here; `dwell` + `allowOff` stay Swift-side env-derived params. Public API unchanged.
+        let sticky = sawUnrecoveredLoss ? stickyRelaxWindowReports : max(0, state.stickyRelaxRemaining - 1)
+        let effectiveDwell = sticky > 0 ? 2 * dwell : dwell
+        let current = levelForTier(state.tier)
+        let target = max(
+            targetLevel(forLossRate: loss, currentLevel: current),
+            relaxFloorLevel(allowOff: allowOff),
         )
-        return TierState(
-            tier: next.tier,
-            relaxStreak: next.relaxStreak,
-            stickyRelaxRemaining: next.stickyRelaxRemaining,
-        )
+        if target > current {
+            return TierState(tier: tierForLevel(current + 1), relaxStreak: 0, stickyRelaxRemaining: sticky)
+        }
+        if target < current {
+            let streak = state.relaxStreak + 1
+            if streak >= max(1, effectiveDwell) {
+                return TierState(tier: tierForLevel(current - 1), relaxStreak: 0, stickyRelaxRemaining: sticky)
+            }
+            return TierState(tier: state.tier, relaxStreak: streak, stickyRelaxRemaining: sticky)
+        }
+        return TierState(tier: state.tier, relaxStreak: 0, stickyRelaxRemaining: sticky)
     }
 
     /// Dwell-gated PARITY-tier step — the m-adaptive counterpart of ``nextTierState(forLossRate:state:dwell:allowOff:sawUnrecoveredLoss:)``.
@@ -352,15 +365,62 @@ public enum AdaptiveFECPolicy {
         dwell: Int = relaxDwellReports,
         sawUnrecoveredLoss: Bool = false,
     ) -> TierState {
-        let next = RustVideoFFI.adaptiveFECNextParityTierState(
-            loss: loss, tier: state.tier, relaxStreak: state.relaxStreak,
-            stickyRelaxRemaining: state.stickyRelaxRemaining,
-            dwell: dwell, sawUnrecoveredLoss: sawUnrecoveredLoss,
-        )
-        return TierState(
-            tier: next.tier,
-            relaxStreak: next.relaxStreak,
-            stickyRelaxRemaining: next.stickyRelaxRemaining,
-        )
+        // Native Swift (single source of truth). Asymmetric FAST-ATTACK / slow-decay over the
+        // 3-level parity-m ladder (clean/normal/burst → m 2/3/5), no OFF tier (floor = CLEAN).
+        let sticky = sawUnrecoveredLoss ? stickyRelaxWindowReports : max(0, state.stickyRelaxRemaining - 1)
+        let effectiveDwell = sticky > 0 ? 2 * dwell : dwell
+        let current = mLevelForTier(state.tier)
+        // Fast-attack: a real dropped frame floors the demand at NORMAL even before the EWMA reacts.
+        let target = sawUnrecoveredLoss
+            ? max(mTargetLevel(forLossRate: loss, currentLevel: current), 1)
+            : mTargetLevel(forLossRate: loss, currentLevel: current)
+
+        if target > current {
+            // Jump straight to the demanded level (not one step) — full parity by the next frame.
+            return TierState(tier: tierForMLevel(target), relaxStreak: 0, stickyRelaxRemaining: sticky)
+        }
+        if target < current {
+            let streak = state.relaxStreak + 1
+            if streak >= max(1, effectiveDwell) {
+                return TierState(tier: tierForMLevel(current - 1), relaxStreak: 0, stickyRelaxRemaining: sticky)
+            }
+            return TierState(tier: state.tier, relaxStreak: streak, stickyRelaxRemaining: sticky)
+        }
+        return TierState(tier: state.tier, relaxStreak: 0, stickyRelaxRemaining: sticky)
+    }
+
+    // MARK: Parity-m ladder internals (level ↔ parity-tier translation + hysteretic target)
+
+    /// Internal redundancy LEVEL for the parity-count ladder (0 = least `m` … 2 = most): 0=clean
+    /// (m2, tier 5), 1=normal (m3, tier 6), 2=burst (m5, tier 7). Any other tier (a corrupt read,
+    /// or a group-size tier) maps to the NORMAL baseline.
+    private static func mLevelForTier(_ tier: UInt8) -> Int {
+        switch tier {
+        case parityTierClean: 0
+        case parityTierBurst: 2
+        default: 1 // parityTierNormal and any other → baseline
+        }
+    }
+
+    private static func tierForMLevel(_ level: Int) -> UInt8 {
+        switch level {
+        case 0: parityTierClean
+        case 2: parityTierBurst
+        default: parityTierNormal // 1 and any clamp → baseline
+        }
+    }
+
+    /// The parity redundancy level the loss demands, given the current level. Hysteretic dead-band.
+    ///
+    /// Up-thresholds (raise `m`): ≥0.005 → L1, ≥0.03 → L2.
+    /// Down-thresholds (relax `m`): <0.002 → L0, <0.02 → L1.
+    private static func mTargetLevel(forLossRate loss: Double, currentLevel current: Int) -> Int {
+        let upLevel = if loss >= 0.03 { 2 } else if loss >= 0.005 { 1 } else { 0 }
+
+        let downLevel = if loss < 0.002 { 0 } else if loss < 0.02 { 1 } else { 2 }
+
+        if upLevel > current { return upLevel }
+        if downLevel < current { return downLevel }
+        return current
     }
 }

@@ -16,7 +16,7 @@ final class FrameDecoderTests: XCTestCase {
     func testPartialReadsOneByteAtATime() throws {
         // Feed the combined buffer ONE byte at a time; assert exactly the 3 messages
         // emerge in order, and nextMessage() returns nil at the end.
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         let combined = concatenatedFrames()
         var decoded: [WireMessage] = []
 
@@ -33,7 +33,7 @@ final class FrameDecoderTests: XCTestCase {
 
     func testMultipleFramesInOneAppend() throws {
         // Feed all 3 frames in a single append; assert all 3 emerge in order.
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(concatenatedFrames())
 
         var decoded: [WireMessage] = []
@@ -52,7 +52,7 @@ final class FrameDecoderTests: XCTestCase {
         var frame = Data()
         frame.appendBE(UInt32(oversized))
 
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(frame)
 
         XCTAssertThrowsError(try decoder.nextMessage()) { error in
@@ -67,7 +67,7 @@ final class FrameDecoderTests: XCTestCase {
         var frame = Data()
         frame.appendBE(UInt32(Aislopdesk.maxFramePayloadLength))
 
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(frame)
 
         XCTAssertNoThrow(XCTAssertNil(try decoder.nextMessage()))
@@ -78,7 +78,7 @@ final class FrameDecoderTests: XCTestCase {
         let big = Data((0..<(256 * 1024)).map { UInt8($0 & 0xFF) }) // 256 KiB
         let message = WireMessage.output(seq: 99, bytes: big)
 
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(message.encode())
         XCTAssertEqual(try decoder.nextMessage(), message)
         XCTAssertNil(try decoder.nextMessage())
@@ -90,7 +90,7 @@ final class FrameDecoderTests: XCTestCase {
         frame.appendBE(UInt32(1))
         frame.append(0xFF)
 
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(frame)
 
         XCTAssertThrowsError(try decoder.nextMessage()) { error in
@@ -104,7 +104,7 @@ final class FrameDecoderTests: XCTestCase {
         let full = WireMessage.exit(code: 256).encode()
         let allButLast = full.prefix(full.count - 1)
 
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(Data(allButLast))
 
         XCTAssertNil(try decoder.nextMessage())
@@ -117,7 +117,7 @@ final class FrameDecoderTests: XCTestCase {
     }
 
     func testEmptyAndZeroLengthInputs() throws {
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         // Nothing buffered.
         XCTAssertNil(try decoder.nextMessage())
         // Appending empty data changes nothing.
@@ -134,7 +134,7 @@ final class FrameDecoderTests: XCTestCase {
         let first = WireMessage.bell.encode()
         let second = WireMessage.title("incomplete").encode()
 
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(first)
         decoder.append(second.prefix(second.count - 3)) // drop tail of 2nd frame
 

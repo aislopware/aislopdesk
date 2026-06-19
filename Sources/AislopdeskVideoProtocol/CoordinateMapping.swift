@@ -46,10 +46,13 @@ public enum CoordinateMapping {
     ///   - windowBounds: `kCGWindowBounds` — the window rect in CG top-left points.
     /// - Returns: the absolute CG-space point to post the event at.
     public static func windowPoint(normalized: VideoPoint, windowBounds: VideoRect) -> VideoPoint {
-        // Delegated to the Rust `aislopdesk-core` coordinate-mapping (single source of truth
-        // shared with the Android host); byte-identical to the former native arithmetic (pinned
-        // by `CoordinateMappingTests` + `RustCoordinateMappingParityTests`).
-        RustVideoFFI.coordWindowPoint(normalized: normalized, windowBounds: windowBounds)
+        // Native Swift — the single source of truth. Byte-identical to
+        // `coordinate_mapping::window_point` (pinned by the `coordWindowPoint` golden vector).
+        // keep mul+add separate — FMA breaks bit-exact golden parity
+        VideoPoint(
+            x: windowBounds.origin.x + normalized.x * windowBounds.size.width,
+            y: windowBounds.origin.y + normalized.y * windowBounds.size.height,
+        )
     }
 
     /// Step 4 (helper) — flips a CG-top-left rect into Cocoa bottom-left space given
@@ -59,8 +62,13 @@ public enum CoordinateMapping {
     /// in Cocoa the primary's bottom is `y = 0`. A window whose CG top is `y` and
     /// height `h` therefore has Cocoa bottom-left `primaryHeight - y - h`.
     public static func cgRectToCocoa(_ cgRect: VideoRect, primaryHeight: Double) -> VideoRect {
-        // Delegated to the Rust core (see `windowPoint`).
-        RustVideoFFI.coordCGRectToCocoa(cgRect, primaryHeight: primaryHeight)
+        // Native Swift — byte-identical to `coordinate_mapping::cg_rect_to_cocoa`.
+        VideoRect(
+            x: cgRect.origin.x,
+            y: primaryHeight - cgRect.origin.y - cgRect.size.height,
+            width: cgRect.size.width,
+            height: cgRect.size.height,
+        )
     }
 
     /// Step 4 — picks the screen a window lives on (largest-overlap) and returns its
@@ -79,11 +87,22 @@ public enum CoordinateMapping {
         screens: [ScreenInfo],
         primaryHeight: Double,
     ) -> Double? {
-        // Delegated to the Rust core (see `windowPoint`); the screens array is borrowed for the
-        // call only. Returns nil for no overlap, exactly as the native loop did.
-        RustVideoFFI.coordBackingScaleFactor(
-            windowBoundsCG: windowBoundsCG, screens: screens, primaryHeight: primaryHeight,
-        )
+        // Native Swift — byte-identical to `coordinate_mapping::backing_scale_factor`. The
+        // window rect is flipped into Cocoa space, then the largest-overlap screen wins. The
+        // tie-break is STRICT `area > best.area` (matching the core's `is_none_or` / strictly-
+        // greater compare), so on an exact-area tie the EARLIER screen in `screens` wins.
+        let cocoaWindow = cgRectToCocoa(windowBoundsCG, primaryHeight: primaryHeight)
+        var best: (area: Double, scale: Double)?
+        for screen in screens {
+            let area = cocoaWindow.intersectionArea(screen.cocoaFrame)
+            // STRICT `area > best.area` tie-break: on an exact-area tie the EARLIER screen wins.
+            // `best?.area ?? 0` reproduces the original `best == nil || area > best!.area` — the
+            // `??` arm is only reached when `area > 0` already holds, so a nil `best` always takes it.
+            if area > 0, area > (best?.area ?? 0) {
+                best = (area, screen.backingScaleFactor)
+            }
+        }
+        return best?.scale
     }
 
     /// Convenience for the rare case the client sent **pixels** instead of
@@ -97,7 +116,11 @@ public enum CoordinateMapping {
         windowBoundsCG: VideoRect,
         backingScaleFactor scale: Double,
     ) -> VideoPoint {
-        // Delegated to the Rust core (see `windowPoint`).
-        RustVideoFFI.coordWindowPoint(pixel: pixel, windowBoundsCG: windowBoundsCG, backingScaleFactor: scale)
+        // Native Swift — byte-identical to `coordinate_mapping::window_point_from_pixel`.
+        // keep div+add separate (no FMA) — matches the core bit-for-bit
+        VideoPoint(
+            x: windowBoundsCG.origin.x + pixel.x / scale,
+            y: windowBoundsCG.origin.y + pixel.y / scale,
+        )
     }
 }

@@ -45,9 +45,14 @@ public struct VideoRect: Equatable, Sendable {
 
     /// The area of intersection with `other` (0 when disjoint). Used by the
     /// multi-monitor coordinate-mapping screen pick.
+    ///
+    /// Native Swift, byte-identical to `geometry::VideoRect::intersection_area`. The
+    /// Rust core uses NaN-ignoring `f64::max`/`f64::min`, mirrored here with the IEEE
+    /// `Double.maximum`/`Double.minimum` static forms (NOT `Swift.max`/`Swift.min`,
+    /// which propagate NaN) so any NaN handling matches the core bit-for-bit.
     public func intersectionArea(_ other: Self) -> Double {
-        let ix = max(0, min(maxX, other.maxX) - max(minX, other.minX))
-        let iy = max(0, min(maxY, other.maxY) - max(minY, other.minY))
+        let ix = Double.maximum(0, Double.minimum(maxX, other.maxX) - Double.maximum(minX, other.minX))
+        let iy = Double.maximum(0, Double.minimum(maxY, other.maxY) - Double.maximum(minY, other.minY))
         return ix * iy
     }
 }
@@ -97,20 +102,24 @@ public enum AspectFit {
         videoNativeSize: VideoSize,
         mode: VideoContentMode = .fit,
     ) -> VideoRect {
+        // Native Swift — the single source of truth shared with the renderer's quad scale.
+        // Byte-identical to `geometry::aspect_fit::displayed_video_rect`.
         let vw = videoNativeSize.width, vh = videoNativeSize.height
-        let viewW = viewSize.width, viewH = viewSize.height
-        guard vw > 0, vh > 0, viewW > 0, viewH > 0 else {
-            return VideoRect(x: 0, y: 0, width: max(0, viewW), height: max(0, viewH))
+        let capW = viewSize.width, capH = viewSize.height
+        guard vw > 0, vh > 0, capW > 0, capH > 0 else {
+            return VideoRect(x: 0, y: 0, width: Double.maximum(0, capW), height: Double.maximum(0, capH))
         }
         // `.fit` scales to the SMALLER axis ratio (contain → the whole video sits inside,
         // bars on the longer axis). `.fill` scales to the LARGER axis ratio (cover → the
         // video fills the view, the longer axis overflows and is cropped). Both use a single
-        // uniform `scale`, so neither distorts the aspect.
-        let scaleX = viewW / vw, scaleY = viewH / vh
-        let scale = (mode == .fit) ? min(scaleX, scaleY) : max(scaleX, scaleY)
+        // uniform `scale`, so neither distorts the aspect. NaN-ignoring IEEE min/max mirrors
+        // the core's `f64::min`/`f64::max` (inputs are guarded positive, so this is moot here
+        // but stays faithful to the Rust reference).
+        let scaleX = capW / vw, scaleY = capH / vh
+        let scale = (mode == .fit) ? Double.minimum(scaleX, scaleY) : Double.maximum(scaleX, scaleY)
         let w = vw * scale, h = vh * scale
-        let ox = (viewW - w) / 2
-        let oy = (viewH - h) / 2
+        let ox = (capW - w) / 2
+        let oy = (capH - h) / 2
         return VideoRect(x: ox, y: oy, width: w, height: h)
     }
 
@@ -133,16 +142,26 @@ public enum AspectFit {
         pan: VideoPoint = VideoPoint(x: 0, y: 0),
         mode: VideoContentMode = .fit,
     ) -> VideoPoint {
+        // Native Swift — the exact inverse of the input encoder's `normalize`, derived from
+        // the same source so they can never drift. Byte-identical to
+        // `geometry::aspect_fit::view_point`.
         let su = videoNativeSize.width > 0 ? hostPoint.x / videoNativeSize.width : 0
         let sv = videoNativeSize.height > 0 ? hostPoint.y / videoNativeSize.height : 0
-        let z = max(1, zoom)
+        let z = Double.maximum(1, zoom)
         let invZoom = 1 / z
+        // keep mul+add separate — FMA breaks bit-exact golden parity
         let panLimit = 0.5 * (1 - invZoom)
-        let px = min(max(pan.x, -panLimit), panLimit)
-        let py = min(max(pan.y, -panLimit), panLimit)
+        // NaN-ignoring clamp — the core deliberately uses `f64::max`/`f64::min` so a NaN pan
+        // clamps to ±panLimit (a finite coordinate). Use IEEE `Double.maximum`/`Double.minimum`,
+        // NOT `Swift.max`/`Swift.min` (which would poison NaN → NaN as the pre-port Swift did).
+        // See the core's pan-clamp NOTE: the finite-clamping behaviour is the one we keep.
+        let px = Double.minimum(Double.maximum(pan.x, -panLimit), panLimit)
+        let py = Double.minimum(Double.maximum(pan.y, -panLimit), panLimit)
+        // keep mul+add separate — FMA breaks bit-exact golden parity
         let du = (su - 0.5 - px) * z + 0.5
         let dv = (sv - 0.5 - py) * z + 0.5
         let r = displayedVideoRect(viewSize: viewSize, videoNativeSize: videoNativeSize, mode: mode)
+        // keep mul+add separate — FMA breaks bit-exact golden parity
         return VideoPoint(x: r.origin.x + du * r.size.width, y: r.origin.y + dv * r.size.height)
     }
 }

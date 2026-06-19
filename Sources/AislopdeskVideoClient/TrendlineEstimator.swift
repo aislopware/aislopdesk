@@ -128,6 +128,9 @@ public struct TrendlineEstimator: Sendable, Equatable {
         // growing). The cross-machine clock offset cancels in the two deltas.
         let d = dArrival - dSend
         accumulatedDelayMs += d
+        // BIT-EXACT (FMA-sensitive): keep the EWMA as SEPARATE mul + add — `a*x + b*y`, never
+        // `a.mulAdd(x, b*y)`. FMA's fused rounding diverges the low bits and breaks golden parity
+        // (mirrors Rust core `SMOOTHING_COEF * s + (1−COEF) * acc`).
         smoothedDelayMs = Self.smoothingCoef * smoothedDelayMs + (1 - Self.smoothingCoef) * accumulatedDelayMs
         numDeltas = min(numDeltas + 1, 1000)
 
@@ -146,12 +149,17 @@ public struct TrendlineEstimator: Sendable, Equatable {
         }
         meanX /= n
         meanY /= n
+        // BIT-EXACT (FMA-sensitive): the OLS covariance / variance accumulators are SEPARATE
+        // mul + add per term — `numer += (x−mx)*(y−my)`, `denom += (x−mx)*(x−mx)`. Never fold to
+        // mulAdd (matches Rust core's two `+=` loops; FMA would diverge the slope's low bits).
         var numer = 0.0, denom = 0.0
         for s in window {
             numer += (s.x - meanX) * (s.y - meanY)
             denom += (s.x - meanX) * (s.x - meanX)
         }
         let trend = denom > 0 ? numer / denom : prevTrend
+        // BIT-EXACT (FMA-sensitive): `count × slope × gain` as SEPARATE mul chain (two multiplies,
+        // no fused add) — mirrors Rust `(num_deltas.min(60)) as f64 * trend * threshold_gain`.
         modifiedTrend = Double(min(numDeltas, Self.maxScaledDeltas)) * trend * Self.thresholdGain
 
         // Detect (libwebrtc OveruseDetector): overuse must be SUSTAINED (>overusingTimeMs anchored
@@ -174,7 +182,11 @@ public struct TrendlineEstimator: Sendable, Equatable {
         // quiet ones let it fall back; clamped to [thresholdMin, thresholdMax].
         if abs(modifiedTrend) <= threshold + Self.outlierSkipMargin {
             let k = abs(modifiedTrend) < threshold ? Self.kDown : Self.kUp
+            // BIT-EXACT (FMA-sensitive): `k * (|trend|−threshold) * dt` as SEPARATE mul + the
+            // outer `threshold +=` add — never mulAdd (matches Rust core's `threshold += k * … * …`).
             threshold += k * (abs(modifiedTrend) - threshold) * min(dArrival, Self.maxAdaptDtMs)
+            // NaN-faithful ORDERED clamp: `min(max, max(min, t))` (NOT `.clamped`/`simd_clamp`) so
+            // a NaN drops the way Rust core's `t.max(MIN).min(MAX)` does; identical for finite t.
             threshold = min(Self.thresholdMax, max(Self.thresholdMin, threshold))
         }
         prevTrend = trend
@@ -211,13 +223,18 @@ public extension TrendlineEstimator {
     /// `modifiedTrend × 1000` rounded, clamped to ±1_000_000_000, as an Int32 bit-pattern. Static
     /// so the clamp is testable at magnitudes the estimator cannot reach organically.
     static func packTrendMilli(_ modifiedTrend: Double) -> UInt32 {
+        // BIT-EXACT: `× 1000` then `.rounded()` (half-away-from-zero, matching Rust `round()`).
         let milli = (modifiedTrend * 1000).rounded()
+        // NaN-faithful ORDERED clamp `min(+1e9, max(-1e9, m))` — a NaN yields -1e9 (drops via
+        // `max(-1e9, NaN) = -1e9` then `min(1e9, -1e9)`), exactly like Rust `m.max(-1e9).min(1e9)`.
         let clamped = min(1_000_000_000.0, max(-1_000_000_000.0, milli))
         return UInt32(bitPattern: Int32(clamped))
     }
 
     /// Bits 0-1: detector state raw value; bits 8-15: `min(numDeltas, 255)` (host log context).
     static func packTrendFlags(state: State, numDeltas: Int) -> UInt32 {
+        // BIT-EXACT layout (matches Rust `pack_trend_flags`): state in bits 0-1 masked `& 0x3`,
+        // `numDeltas` clamped to 0...255 then shifted into bits 8-15.
         UInt32(state.rawValue & 0x3) | (UInt32(min(max(numDeltas, 0), 255)) << 8)
     }
 

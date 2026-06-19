@@ -35,25 +35,21 @@ public enum LiveBitratePolicy {
     }()
 
     /// Absolute lower bound so a tiny window never starves the encoder (matches `VideoEncoder.init`'s
-    /// own `max(1_000_000, …)` clamp). Sourced from the Rust core (`aisd_live_bitrate_minimum`) so
-    /// the constant has one source of truth across platforms.
-    public static let minimumBitrate = RustVideoHostFFI.liveBitrateMinimum()
+    /// own `max(1_000_000, …)` clamp).
+    public static let minimumBitrate = 1_000_000
 
     /// Resolution-aware target bitrate (bits/sec) for an encoder of `pixelWidth × pixelHeight` at
     /// `fps`. Never below `floor` (the configured `--bitrate`, so an explicit higher cap is honoured)
-    /// and never below ``minimumBitrate``.
-    ///
-    /// Delegates the arithmetic to the Rust `aislopdesk-core` policy (`aisd_live_bitrate_target`),
-    /// the single source of truth shared with the Android host — byte-identical to the former
-    /// native computation (pinned by `LiveBitratePolicyTests`). The env-resolved
-    /// ``bitsPerPixelPerFrame`` density stays Swift-side and is passed in, keeping the core env-free.
+    /// and never below ``minimumBitrate``. Degenerate (zero/negative) dimensions and fps are
+    /// clamped to 1.
     public static func targetBitrate(pixelWidth: Int, pixelHeight: Int, fps: Int, floor: Int) -> Int {
-        RustVideoHostFFI.liveBitrateTarget(
-            pixelWidth: pixelWidth,
-            pixelHeight: pixelHeight,
-            fps: fps,
-            floor: floor,
-            bitsPerPixel: bitsPerPixelPerFrame,
-        )
+        let px = max(1, pixelWidth)
+        let py = max(1, pixelHeight)
+        let rate = max(1, fps)
+        // keep mul+add separate — FMA breaks bit-exact parity (pure multiplies here; round half-away
+        // matches Rust `f64::round`, which Swift `.rounded()` reproduces).
+        let bits = Double(px) * Double(py) * Double(rate) * bitsPerPixelPerFrame
+        let resolution = Int(bits.rounded())
+        return max(max(minimumBitrate, floor), resolution)
     }
 }

@@ -2,10 +2,7 @@
 import CoreGraphics
 import Foundation
 
-/// Host-side façade over the Rust-core classifier behind the "show system popups/prompts in their
-/// own pane" feature. The classify rules + secure/system allowlists live in
-/// `aislopdesk_core::system_dialog_detector` (the single source of truth), reached over the C-ABI via
-/// `RustVideoHostFFI`; this enum keeps only the `WindowSnapshot` / `Dialog` value types the host passes.
+/// Pure, unit-tested classifier behind the "show system popups/prompts in their own pane" feature.
 ///
 /// A SYSTEM dialog is a cross-process modal window that NO app-pane would ever capture — the prime
 /// case (the user's ask) being a `SecurityAgent` login/admin **password** prompt. The host enumerates
@@ -71,30 +68,36 @@ public enum SystemDialogDetector {
         }
     }
 
-    /// Reject sub-`minSize` windows (offscreen helpers, 1×1 indicators) — a real prompt is well above
-    /// this. The threshold, the secure/system allowlists, and the classify rules all live in the Rust
-    /// core (`aislopdesk_core::system_dialog_detector`, the single source of truth); this reads it once.
-    public static let minSize = RustVideoHostFFI.systemDialogMinSize()
+    /// Secure auth processes (password/credential prompts; raise Secure Event Input but the host can
+    /// still inject keystrokes). Matched by bundle id OR owner name (the name is the resilient signal
+    /// across macOS builds; SCWindow gives both).
+    static let secureBundleIDs: Set<String> = ["com.apple.SecurityAgent", "com.apple.coreauthd"]
+    static let secureOwnerNames: Set<String> = ["SecurityAgent", "coreauthd"]
 
-    /// Classify one window, or `nil` if it is not a surfaced system dialog. Delegates to the Rust core
-    /// over the C-ABI (`RustVideoHostFFI.systemDialogClassify`); this shell only carries the value types.
+    /// Non-secure system-prompt sources (view + FULL interaction). Empty in v1 — the expansion point for
+    /// e.g. standalone system alerts. (App-owned save/open panels are deliberately NOT here: DIALOG-EXPAND
+    /// already folds them into the streamed pane; surfacing them again would double up.)
+    static let systemBundleIDs: Set<String> = []
+    static let systemOwnerNames: Set<String> = []
+
+    /// Reject sub-`minSize` windows (offscreen helpers, 1×1 indicators) — a real prompt is well above this.
+    public static let minSize = 60
+
+    /// Classify one window, or `nil` if it is not a surfaced system dialog. Pure.
     public static func classify(_ w: WindowSnapshot, minSize: Int = minSize) -> Dialog? {
-        guard let d = RustVideoHostFFI.systemDialogClassify(
-            windowID: w.windowID,
-            ownerName: w.ownerName,
-            bundleID: w.bundleID,
-            isOnScreen: w.isOnScreen,
-            title: w.title,
-            frame: w.frame,
-            minSize: minSize,
-        ) else { return nil }
+        let width = Int(w.frame.width.rounded()), height = Int(w.frame.height.rounded())
+        guard w.isOnScreen, width >= minSize, height >= minSize else { return nil }
+        let isSecure = secureBundleIDs.contains(w.bundleID) || secureOwnerNames.contains(w.ownerName)
+        let isSystem = isSecure || systemBundleIDs.contains(w.bundleID) || systemOwnerNames.contains(w.ownerName)
+        guard isSystem else { return nil }
+        let label = w.ownerName.isEmpty ? w.bundleID : w.ownerName
         return Dialog(
-            windowID: d.windowID,
-            owner: d.owner,
-            title: d.title,
-            width: d.width,
-            height: d.height,
-            isSecure: d.isSecure,
+            windowID: w.windowID,
+            owner: label,
+            title: w.title,
+            width: width,
+            height: height,
+            isSecure: isSecure,
         )
     }
 

@@ -114,19 +114,10 @@ repos:
       # ===================== UNIT TESTS (pre-push only) ======================
       # Slow → kept off the per-commit path. Incremental: cargo/swift reuse their
       # build caches, so an unchanged tree re-runs in seconds.
-      - id: rust-test
-        name: cargo test --workspace
-        entry: bash -c 'cd rust && cargo test --workspace'
-        language: system
-        files: '^rust/.*\.rs$'
-        pass_filenames: false
-        stages: [pre-push]
-
       - id: swift-test
-        name: swift test (builds the Rust FFI staticlib first)
-        entry: bash -c 'cargo build --release -p aislopdesk-ffi --manifest-path rust/Cargo.toml && swift test'
+        name: swift test (native-Swift suite — no prerequisite post-Rust-removal)
+        entry: bash -c 'swift test'
         language: system
-        # also re-run on FFI changes (they affect the Swift link/behaviour)
-        files: '^(Sources|Tests|Apps)/.*\.swift$|^rust/aislopdesk-ffi/.*\.rs$'
+        files: '^(Sources|Tests|Apps)/.*\.swift$'
         pass_filenames: false
         stages: [pre-push]

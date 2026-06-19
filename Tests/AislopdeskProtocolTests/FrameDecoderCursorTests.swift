@@ -26,7 +26,7 @@ final class FrameDecoderCursorTests: XCTestCase {
 
     func testFrameDecoderDecodesManySmallFramesIdenticallyInOneChunk() throws {
         let (expected, bytes) = smallWireFrames(12000) // > 64 KiB of tiny frames → compaction fires mid-drain
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(bytes)
         var decoded: [WireMessage] = []
         while let m = try decoder.nextMessage() { decoded.append(m) }
@@ -36,7 +36,7 @@ final class FrameDecoderCursorTests: XCTestCase {
 
     func testFrameDecoderDecodesIdenticallyAcrossArbitrarySplits() throws {
         let (expected, bytes) = smallWireFrames(3000)
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         var decoded: [WireMessage] = []
         // Feed in 7-byte slices so frames straddle append boundaries and the cursor/compaction interact
         // with partial frames repeatedly.
@@ -67,13 +67,13 @@ final class FrameDecoderCursorTests: XCTestCase {
         let bytes = make()
         // One warmup to stabilize allocator/caches, then the measured run.
         for _ in 0..<2 {
-            var d = FrameDecoder()
+            let d = FrameDecoder()
             d.append(bytes)
             while try d.nextMessage() != nil {}
         }
         let clock = ContinuousClock()
         let start = clock.now
-        var d = FrameDecoder()
+        let d = FrameDecoder()
         d.append(bytes)
         while try d.nextMessage() != nil {}
         let elapsed = start.duration(to: clock.now)
@@ -106,7 +106,7 @@ final class FrameDecoderCursorTests: XCTestCase {
                 | (UInt32(f[f.startIndex + 2]) << 8) | UInt32(f[f.startIndex + 3])
             XCTAssertEqual(Int(prefix), f.count - 4, "back-patched prefix must equal payload length for \(m)")
             // And it must still decode back to the same message.
-            var d = FrameDecoder()
+            let d = FrameDecoder()
             d.append(f)
             XCTAssertEqual(try d.nextMessage(), m)
             XCTAssertNil(try d.nextMessage())

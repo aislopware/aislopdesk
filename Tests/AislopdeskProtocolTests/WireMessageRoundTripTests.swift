@@ -8,7 +8,7 @@ private func roundTrip(
     file _: StaticString = #filePath,
     line _: UInt = #line,
 ) throws -> WireMessage? {
-    var decoder = FrameDecoder()
+    let decoder = FrameDecoder()
     decoder.append(message.encode())
     return try decoder.nextMessage()
 }
@@ -161,7 +161,7 @@ final class WireMessageRoundTripTests: XCTestCase {
         var frame = Data()
         frame.appendBE(UInt32(body.count))
         frame.append(body)
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(frame)
         XCTAssertThrowsError(try decoder.nextMessage()) { error in
             guard case .malformedBody = (error as? AislopdeskError) else {
@@ -212,7 +212,7 @@ final class WireMessageRoundTripTests: XCTestCase {
         var exitFrame = Data()
         exitFrame.appendBE(UInt32(1)) // payloadLength = 1 (just the type byte)
         exitFrame.append(2) // type = exit, missing 4 code bytes
-        var exitDecoder = FrameDecoder()
+        let exitDecoder = FrameDecoder()
         exitDecoder.append(exitFrame)
         XCTAssertThrowsError(try exitDecoder.nextMessage()) { error in
             XCTAssertEqual(error as? AislopdeskError, .truncated)
@@ -223,7 +223,7 @@ final class WireMessageRoundTripTests: XCTestCase {
         var resizeFrame = Data()
         resizeFrame.appendBE(UInt32(resizeBody.count))
         resizeFrame.append(resizeBody)
-        var resizeDecoder = FrameDecoder()
+        let resizeDecoder = FrameDecoder()
         resizeDecoder.append(resizeFrame)
         XCTAssertThrowsError(try resizeDecoder.nextMessage()) { error in
             XCTAssertEqual(error as? AislopdeskError, .truncated)
@@ -237,7 +237,7 @@ final class WireMessageRoundTripTests: XCTestCase {
         var frame = Data()
         frame.appendBE(UInt32(body.count))
         frame.append(body)
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(frame)
         XCTAssertThrowsError(try decoder.nextMessage()) { error in
             guard case .malformedBody = (error as? AislopdeskError) else {

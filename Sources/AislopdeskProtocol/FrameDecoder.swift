@@ -9,10 +9,13 @@ import Foundation
 /// returning `nil` whenever no complete frame is buffered yet (it simply waits for
 /// more bytes — a partial frame is **not** an error).
 ///
-/// This is a value type. It is intentionally **not** `Sendable`: it carries mutable
-/// buffer state and is meant to live inside a single actor / task (e.g. the
-/// per-connection receive loop). One decoder per channel per connection.
-public struct FrameDecoder {
+/// This is native Swift — the single source of truth for the terminal (path-1) wire
+/// framing. It is a `final class` (so the per-channel decoder can be held by `let` and
+/// mutated through its reference, matching the owning `MuxSubChannel`/test call sites)
+/// and intentionally **not** `Sendable`: it carries mutable buffer state and is meant
+/// to live inside a single actor / task (e.g. the per-connection receive loop). One
+/// decoder per channel per connection.
+public final class FrameDecoder {
     /// Length of the big-endian `UInt32` frame-length prefix.
     private static let prefixLength = 4
 
@@ -36,7 +39,7 @@ public struct FrameDecoder {
 
     /// Appends a freshly received chunk of bytes to the internal buffer.
     /// Safe to call with empty data, a single byte, or many frames' worth.
-    public mutating func append(_ data: Data) {
+    public func append(_ data: Data) {
         buffer.append(data)
     }
 
@@ -46,7 +49,7 @@ public struct FrameDecoder {
     /// - Throws: ``AislopdeskError/frameTooLarge(_:)`` if a length prefix exceeds
     ///   ``Aislopdesk/maxFramePayloadLength``; or any error from
     ///   ``WireMessage/decode(payload:)`` (unknown type, malformed/truncated body).
-    public mutating func nextMessage() throws -> WireMessage? {
+    public func nextMessage() throws -> WireMessage? {
         // Bytes not yet consumed by a completed frame.
         let available = buffer.count - readOffset
         // Need at least the length prefix to know how big the frame is.
@@ -81,7 +84,7 @@ public struct FrameDecoder {
 
     /// Physically drops the consumed prefix (`readOffset` bytes) from the front of the buffer ONCE,
     /// resetting the cursor — the single O(remaining) memmove that replaces the per-frame one.
-    private mutating func compactConsumed() {
+    private func compactConsumed() {
         guard readOffset > 0 else { return }
         buffer.removeSubrange(buffer.startIndex..<buffer.startIndex + readOffset)
         readOffset = 0

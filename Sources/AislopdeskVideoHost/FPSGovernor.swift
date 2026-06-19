@@ -91,10 +91,16 @@ public struct FPSGovernor: Sendable, Equatable {
     /// divisors matter: at a 16.7 ms delivery grid the governed intervals are exact multiples
     /// (2/3/4 slots), which is what makes the ``EncodeCadenceGate`` cadence metronome-regular.
     public static func ladder(baseFps: Int) -> [Int] {
+        ladder(baseFps: baseFps, minFps: minFps)
+    }
+
+    /// Clean-divisor ladder with an explicit floor — divisors {1,2,3,4} of `baseFps`, floored at
+    /// `minFps`, deduplicated, descending. Always contains `baseFps`, so it is never empty.
+    static func ladder(baseFps: Int, minFps: Int) -> [Int] {
         let base = max(1, baseFps)
         var rungs: Set<Int> = [base]
         for divisor in 2...4 {
-            let f = base / divisor
+            let f = base / divisor // integer division
             if f >= minFps { rungs.insert(f) }
         }
         return rungs.sorted(by: >)
@@ -106,10 +112,14 @@ public struct FPSGovernor: Sendable, Equatable {
     /// LTR-refresh frames (≈1.49× a delta) ARE folded — they are steady-state stream cost, so the
     /// budget test self-accounts for the self-heal cadence.
     public mutating func noteEncodedFrame(bytes: Int, isAnchor: Bool) {
-        guard !isAnchor, bytes > 0 else { return }
-        bytesPerFrameEWMA = bytesPerFrameEWMA == 0
-            ? Double(bytes)
-            : bytesPerFrameEWMA * (1 - Self.bytesAlpha) + Double(bytes) * Self.bytesAlpha
+        if isAnchor || bytes <= 0 { return }
+        let b = Double(bytes)
+        if bytesPerFrameEWMA == 0 {
+            bytesPerFrameEWMA = b // first non-anchor seeds exactly
+        } else {
+            // keep mul+add separate — FMA breaks bit-exact parity
+            bytesPerFrameEWMA = bytesPerFrameEWMA * (1.0 - Self.bytesAlpha) + b * Self.bytesAlpha
+        }
     }
 
     /// One tick per folded NetworkStats report (~50 ms). `targetBps` is the host's
@@ -119,33 +129,38 @@ public struct FPSGovernor: Sendable, Equatable {
     @discardableResult
     public mutating func onTick(targetBps: Int, congested: Bool) -> Int {
         ticks += 1
-        guard ticks >= Self.warmupTicks, bytesPerFrameEWMA > 0, targetBps > 0 else { return currentFps }
-        let offeredBps = bytesPerFrameEWMA * 8 * Double(currentFps)
+        if ticks < Self.warmupTicks || bytesPerFrameEWMA <= 0 || targetBps <= 0 {
+            return currentFps
+        }
+        // keep mul+add separate — FMA breaks bit-exact parity (no add term here, but the chained
+        // mul stays a plain multiply so no refactor folds it into an FMA).
+        let offeredBps = bytesPerFrameEWMA * 8.0 * Double(currentFps)
         let overBudget = offeredBps > Double(targetBps) * Self.headroomFactor
         if overBudget, congested {
             cleanRun = 0
             overBudgetRun += 1
             if overBudgetRun >= Self.stepDownTicks, ticks >= downHoldUntilTick,
                let next = ladder.first(where: { $0 < currentFps })
-            { // ONE rung down
-                currentFps = next
+            {
+                currentFps = next // ONE rung down
                 overBudgetRun = 0
-                downHoldUntilTick = ticks + Self.stepDownHoldTicks // one cut per window
+                downHoldUntilTick = ticks + Self.stepDownHoldTicks
             }
         } else if overBudget {
-            // Content-heavy but the link is holding (no congestion evidence): NEVER step down on
-            // content alone (the input-latency rule). Not clean either — freeze both runs.
+            // Content-heavy but the link is holding: never step down on content alone.
             overBudgetRun = 0
             cleanRun = 0
         } else {
             overBudgetRun = 0
             cleanRun += 1
+            // one rung UP, strict fit, NO headroom — `ladder` is descending so reversed() finds the
+            // smallest rung strictly above the current fps.
             if currentFps < baseFps, cleanRun >= Self.stepUpTicks,
-               let next = ladder.last(where: { $0 > currentFps }), // one rung UP
-               bytesPerFrameEWMA * 8 * Double(next) <= Double(targetBps)
-            { // strict fit, NO headroom
+               let next = ladder.reversed().first(where: { $0 > currentFps }),
+               bytesPerFrameEWMA * 8.0 * Double(next) <= Double(targetBps)
+            {
                 currentFps = next
-                cleanRun = 0 // re-arm per rung
+                cleanRun = 0
             }
         }
         return currentFps
@@ -165,12 +180,15 @@ public struct FPSGovernor: Sendable, Equatable {
         abrCurrent: Int?,
         abrCeiling: Int?,
     ) -> Bool {
+        // The ABR is below its ceiling ⇒ it has already cut on positive evidence: a clean, debounced
+        // congestion proxy.
         if let cur = abrCurrent, let ceil = abrCeiling, cur < ceil { return true }
         if lastLossSample > LiveCongestionController.lossThreshold { return true }
-        let slack = LiveCongestionController.effectiveSlackMillis(minRTTMillis: minRTTMillis)
+        let slackMillis = LiveCongestionController.effectiveSlackMillis(minRTTMillis: minRTTMillis)
+        // ordered `>` comparisons (NaN-faithful: false for a non-finite minRTT via the is-finite gate).
         return minRTTMillis.isFinite
             && smoothedRTTMillis > minRTTMillis * LiveCongestionController.rttInflateFactor
-            && smoothedRTTMillis > minRTTMillis + slack
+            && smoothedRTTMillis > minRTTMillis + slackMillis
     }
 
     // MARK: Env parsing helpers
@@ -222,12 +240,12 @@ public struct EncodeCadenceGate: Sendable, Equatable {
         toleranceSeconds: Double,
         forced: Bool,
     ) -> Bool {
-        guard targetIntervalSeconds > 0 else { return true }
+        if targetIntervalSeconds <= 0 { return true } // inert / ungoverned base-fps case
         if forced || nextDueSeconds == 0 {
             nextDueSeconds = now + targetIntervalSeconds
             return true
         }
-        guard now + toleranceSeconds >= nextDueSeconds else { return false }
+        if now + toleranceSeconds < nextDueSeconds { return false }
         if now - nextDueSeconds > targetIntervalSeconds {
             nextDueSeconds = now + targetIntervalSeconds // stall: re-anchor, no burst catch-up
         } else {
@@ -248,7 +266,9 @@ public struct EncodeCadenceGate: Sendable, Equatable {
 /// governor's bytes-EWMA, so the budget test self-accounts for them.
 public enum SelfHealCadence {
     public static func effectiveEvery(baseEvery: Int, baseFps: Int, governedFps: Int) -> Int {
-        guard baseEvery > 0 else { return 0 } // 0 = disabled, passthrough
-        return max(2, Int((Double(baseEvery) * Double(governedFps) / Double(max(1, baseFps))).rounded()))
+        if baseEvery <= 0 { return 0 } // disabled, passthrough
+        // keep mul+div separate; `.rounded()` defaults to .toNearestOrAwayFromZero == Rust f64::round.
+        let scaled = (Double(baseEvery) * Double(governedFps) / Double(max(1, baseFps))).rounded()
+        return max(2, Int(scaled))
     }
 }

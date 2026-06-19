@@ -43,6 +43,17 @@ public final class InputInjector: @unchecked Sendable {
     private let balanceLock = NSLock()
     private var balance = InputButtonBalance()
 
+    /// SCROLL RESAMPLE state (active only when ``scrollResampleHz`` > 0). The resampler + its output
+    /// timer are CONFINED to `scrollQueue` (a serial queue), so neither needs a lock. `postScroll`
+    /// hands each arriving wire scroll to the resampler on this queue; the timer drains it at
+    /// ``scrollResampleHz`` and posts the steady high-rate sub-events. See ``scrollResampleHz``.
+    private let scrollQueue = DispatchQueue(label: "aislopdesk.scroll-resample", qos: .userInteractive)
+    private var scrollResampler = ScrollResampler()
+    private var scrollTimer: DispatchSourceTimer?
+    /// The tag of the latest forwarded scroll, stamped on the resampler's interpolated sub-events
+    /// (so the self-inject filter still recognises them). Confined to `scrollQueue`.
+    private var lastScrollTag: UInt32 = 0
+
     /// Whether the full AX raise chain has run at least once for this session (the CLICK-latency
     /// fix). The first interaction always raises (to set `kAXMainWindow`/`kAXFocusedWindow`); after
     /// that, `raiseTargetWindow()` skips the ~6–10 synchronous AX IPC calls whenever the target app
@@ -88,6 +99,20 @@ public final class InputInjector: @unchecked Sendable {
         return !(v == "0" || v?.lowercased() == "false")
     }()
 
+    /// SCROLL RESAMPLE output rate (`AISLOPDESK_SCROLL_RESAMPLE_HZ`, default **0 = OFF**). HW-measured
+    /// (2026-06-19): Chromium/Electron renders INJECTED smooth-scroll at a rate that climbs with the
+    /// injection event rate, only hitting the display's 60 fps near ~250 Hz (4× vsync); the wire
+    /// delivers scroll at the client trackpad rate (~60–120 Hz, burstier under jitter), so a captured
+    /// VS Code scroll renders ~20–35 fps ("giật"). When > 0, the bursty wire scroll is resampled
+    /// (``ScrollResampler``) to a STEADY `Hz` stream via a timer, driving the source app's native
+    /// 60 fps smooth-scroll — fixing the stutter at the source instead of client-side reprojection.
+    /// `0` keeps the legacy direct-post path (byte-identical). Set to `250` to enable. Clamped [60, 1000].
+    private static let scrollResampleHz: Int = {
+        guard let s = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_RESAMPLE_HZ"], let v = Int(s), v > 0
+        else { return 0 }
+        return max(60, min(1000, v))
+    }()
+
     public init(pid: pid_t, windowID: CGWindowID, windowBoundsCG: VideoRect) {
         self.pid = pid
         self.windowID = windowID
@@ -102,6 +127,13 @@ public final class InputInjector: @unchecked Sendable {
             // is the modern equivalent.)
             eventSource.localEventsSuppressionInterval = 0
         }
+    }
+
+    deinit {
+        // Stop the scroll-resample pump. The timer is never suspended (it runs continuously once
+        // started), so a plain `cancel()` from any thread releases it cleanly — no suspend/resume
+        // balance to honour. Safe even if it was never started (`nil`).
+        scrollTimer?.cancel()
     }
 
     public func updateWindowBounds(_ bounds: VideoRect) {
@@ -350,7 +382,71 @@ public final class InputInjector: @unchecked Sendable {
         stampAndPost(event, tag: tag)
     }
 
+    /// Routes a forwarded wire scroll. With ``scrollResampleHz`` == 0 (default) it posts the event
+    /// DIRECTLY (legacy, byte-identical). When enabled, it hands the event to the resampler on
+    /// `scrollQueue`: marker phases (Began/Ended/momentum boundaries) post immediately, while the
+    /// continuous stream accumulates and the timer drains it at the steady high output rate.
     private func postScroll(
+        dx: Double,
+        dy: Double,
+        scrollPhase: UInt8,
+        momentumPhase: UInt8,
+        continuous: Bool,
+        tag: UInt32,
+    ) {
+        guard Self.scrollResampleHz > 0 else {
+            postScrollEvent(
+                dx: dx, dy: dy, scrollPhase: scrollPhase, momentumPhase: momentumPhase,
+                continuous: continuous, tag: tag,
+            )
+            return
+        }
+        scrollQueue.async { [weak self] in
+            guard let self else { return }
+            lastScrollTag = tag
+            let markers = scrollResampler.ingest(
+                dx: dx, dy: dy, scrollPhase: scrollPhase, momentumPhase: momentumPhase, continuous: continuous,
+            )
+            for m in markers {
+                postScrollEvent(
+                    dx: m.dx, dy: m.dy, scrollPhase: m.scrollPhase, momentumPhase: m.momentumPhase,
+                    continuous: m.continuous, tag: tag,
+                )
+            }
+            // Emit the FIRST resampled chunk on THIS hop (no full-tick wait), so a fresh scroll moves
+            // pixels immediately — P1 zero-latency; the timer then maintains the steady output rate.
+            if let sub = scrollResampler.drain() {
+                postScrollEvent(
+                    dx: sub.dx, dy: sub.dy, scrollPhase: sub.scrollPhase, momentumPhase: sub.momentumPhase,
+                    continuous: sub.continuous, tag: tag,
+                )
+            }
+            ensureScrollTimer()
+        }
+    }
+
+    /// Lazily starts the ≈`scrollResampleHz` output timer on `scrollQueue` (idempotent). It runs
+    /// continuously once started — each tick is a cheap drain that no-ops while the residual is idle —
+    /// so there is no suspend/resume balance to get wrong; ``deinit`` cancels it.
+    private func ensureScrollTimer() {
+        if scrollTimer != nil { return }
+        let interval = 1.0 / Double(Self.scrollResampleHz)
+        let timer = DispatchSource.makeTimerSource(queue: scrollQueue)
+        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .nanoseconds(500_000))
+        timer.setEventHandler { [weak self] in
+            guard let self, let sub = scrollResampler.drain() else { return }
+            postScrollEvent(
+                dx: sub.dx, dy: sub.dy, scrollPhase: sub.scrollPhase, momentumPhase: sub.momentumPhase,
+                continuous: sub.continuous, tag: lastScrollTag,
+            )
+        }
+        scrollTimer = timer
+        timer.resume()
+    }
+
+    /// Builds + posts ONE scroll `CGEvent` (pixel units + replayed phase/momentum/continuous flags).
+    /// The single emission point for BOTH the direct path and the resampler's interpolated sub-events.
+    private func postScrollEvent(
         dx: Double,
         dy: Double,
         scrollPhase: UInt8,

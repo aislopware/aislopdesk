@@ -1,4 +1,5 @@
 #if os(macOS)
+import AislopdeskVideoProtocol
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -89,7 +90,8 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     private static let crispWhenStatic = ProcessInfo.processInfo.environment["AISLOPDESK_CRISP"] != "0"
 
     /// STATIC-FRAME SUPPRESSION (default OFF). When enabled, each `.complete` frame's locked NV12
-    /// planes are hashed (the NEON ``RustVideoHostFFI/frameHashNV12`` kernel) and compared to the
+    /// planes are hashed (the native ``FrameHasher/hashNV12(y:yStride:width:height:cbcr:cbcrStride:)``
+    /// NEON kernel) and compared to the
     /// last submitted frame's hash; a pixel-identical re-delivery with no forced obligation pending
     /// is DROPPED before the encoder (HEVC + SCK idle-skip handle most static content — this catches
     /// the residual `.complete` re-deliveries that are byte-identical). DEFAULT OFF ⇒ no hash is
@@ -124,6 +126,16 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// (set on BOTH host + client). Confidence-gated so typing / non-scroll motion never reprojects.
     private static let scrollReprojectEnabled =
         ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_REPROJECT"] == "1"
+
+    /// SCROLL-SHIFT QUANTIZE (default 3). Right-shifts each luma byte by this many bits before the
+    /// per-row hash, so real capture noise (resample / dither / ±LSB) no longer breaks the EXACT row
+    /// match the estimator relies on. Without it the host detects no scroll on real content (the
+    /// `measureScrollOffset == 0 every frame` bug); 3 tolerates ±3 of per-pixel noise. `0` restores the
+    /// exact byte-for-byte match. Clamped to 0...7. `AISLOPDESK_SCROLL_QUANTIZE`.
+    private static let scrollQuantizeShift: UInt8 = {
+        let v = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_QUANTIZE"].flatMap(Int.init) ?? 3
+        return UInt8(max(0, min(7, v)))
+    }()
 
     /// ADAPTIVE-QP (default OFF). When enabled, each `.complete` frame's CHANGE magnitude vs the
     /// previous frame (NEON per-row hash → changed-row fraction) drives the live frame's
@@ -1325,7 +1337,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         if Self.idleSkipEnabled,
            Self.idleSkipEligible(measured: measured, changeMilli: changeMilli),
            let fullHash = Self.hashFrame(pixelBuffer),
-           fullHash != RustVideoHostFFI.frameHashSentinel
+           fullHash != FrameHash.SENTINEL
         {
             idleSkip = lastIdleFullHash == fullHash
                 && staticSuppressDecider.shouldSuppress(
@@ -1348,7 +1360,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // (the IDR timer drains it). Runs BEFORE the suppression block so the decider sees every frame.
         if Self.stillCrispEnabled,
            let frameHash = Self.hashFrame(pixelBuffer),
-           frameHash != RustVideoHostFFI.frameHashSentinel
+           frameHash != FrameHash.SENTINEL
         {
             stillnessDecider.onFrame(hashEqualToPrevious: lastStillnessHash == frameHash)
             lastStillnessHash = frameHash
@@ -1405,7 +1417,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         // Gate OFF ⇒ this block is skipped entirely (no hash, byte-identical to today).
         if Self.staticSuppressEnabled,
            let frameHash = Self.hashFrame(pixelBuffer),
-           frameHash != RustVideoHostFFI.frameHashSentinel,
+           frameHash != FrameHash.SENTINEL,
            let lastHash = lastSubmittedFrameHash
         {
             // PEEK (do not drain) the forced obligations so a suppressed frame never swallows a
@@ -1676,7 +1688,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     // MARK: STATIC-FRAME SUPPRESSION pixel-buffer hash
 
     /// Hashes the NV12 `pixelBuffer`'s luma + interleaved-chroma planes into one 64-bit value via the
-    /// NEON ``RustVideoHostFFI/frameHashNV12`` kernel, ZERO-COPY: it locks the buffer read-only,
+    /// native ``FrameHasher/hashNV12(y:yStride:width:height:cbcr:cbcrStride:)`` NEON kernel, ZERO-COPY: it locks the buffer read-only,
     /// passes the locked plane base addresses + their `bytesPerRow` strides straight to Rust (which
     /// borrows them for the call only), then unlocks. The hash reads only the VISIBLE `width` bytes
     /// of each row, so it is independent of plane padding. Returns nil on a lock failure / missing
@@ -1715,9 +1727,9 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
                     .utf8,
             ))
         }
-        let (shift, confMilli, bandTopRow, bandBottomRow) = RustVideoHostFFI.estimateScrollShift(
+        let (shift, confMilli, bandTopRow, bandBottomRow) = ScrollShiftEstimator.estimateNV12(
             prevY: pBase, prevStride: pStride, curY: cBase, curStride: cStride,
-            width: w, height: h, maxShift: maxShift,
+            width: w, height: h, maxShift: maxShift, quantizeShift: Self.scrollQuantizeShift,
         )
         if Self.dbgGapEnabled {
             FileHandle.standardError
@@ -1766,14 +1778,14 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
         guard let pBase = CVPixelBufferGetBaseAddressOfPlane(prev, 0),
               let cBase = CVPixelBufferGetBaseAddressOfPlane(cur, 0)
         else { return nil }
-        let (qp, changeMilli) = RustVideoHostFFI.adaptiveFrameQP(
+        let (qp, changeMilli) = AdaptiveFrameQP.computeNV12(
             prevY: pBase, prevStride: CVPixelBufferGetBytesPerRowOfPlane(prev, 0),
             curY: cBase, curStride: CVPixelBufferGetBytesPerRowOfPlane(cur, 0),
             width: w, height: h,
-            qpSharp: adaptiveQPSharp, qpMax: adaptiveQPMax,
+            qpSharp: UInt8(clamping: adaptiveQPSharp), qpMax: UInt8(clamping: adaptiveQPMax),
             bLoMilli: adaptiveQPBLoMilli, bHiMilli: adaptiveQPBHiMilli,
         )
-        return (qp, changeMilli)
+        return (Int(qp), changeMilli)
     }
 
     private static func hashFrame(_ pixelBuffer: CVPixelBuffer) -> UInt64? {
@@ -1797,7 +1809,7 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
             cbcr = nil
             cbcrStride = 0
         }
-        return RustVideoHostFFI.frameHashNV12(
+        return FrameHasher.hashNV12(
             y: UnsafeRawPointer(yBase),
             yStride: yStride,
             width: width,

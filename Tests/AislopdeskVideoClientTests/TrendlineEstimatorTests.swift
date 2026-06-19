@@ -11,7 +11,8 @@ import XCTest
 /// environment), mirroring `LiveCongestionControllerTests`.
 final class TrendlineEstimatorTests: XCTestCase {
     /// Seeds the estimator then feeds `count` samples at a constant cadence (arrival step /
-    /// host-stamp step in ms), returning the updated cursor for follow-on phases.
+    /// host-stamp step in ms), returning the updated cursor for follow-on phases. `est` is a
+    /// reference type (a thin owner of the Rust-core handle), so it is passed by reference.
     private func feed(
         _ est: inout TrendlineEstimator,
         count: Int,
@@ -238,13 +239,26 @@ final class TrendlineEstimatorTests: XCTestCase {
         var ts: UInt32 = 5000
         est.note(arrivalMs: arrival, sendTs: ts)
         feed(&est, count: 30, arrival: &arrival, ts: &ts)
-        let before = est
+        // Snapshot every observable field: the estimator is a reference type (a thin owner of the
+        // Rust-core handle), so "state untouched" is proven over its full public verdict + wire
+        // surface rather than by value Equatable.
+        let beforeState = est.state
+        let beforeTrend = est.modifiedTrend
+        let beforeDeltas = est.numDeltas
+        let beforeThreshold = est.threshold
+        let beforeMilli = est.wireTrendMilli
+        let beforeFlags = est.wireTrendFlags
         // A reordered OLDER stamp slips through (TrendSampler normally rejects this upstream).
         est.note(arrivalMs: arrival + 16, sendTs: ts &- 100)
-        XCTAssertEqual(est, before, "a negative send delta is ignored entirely (state untouched)")
+        XCTAssertEqual(est.state, beforeState, "a negative send delta is ignored entirely (state untouched)")
+        XCTAssertEqual(est.modifiedTrend, beforeTrend)
+        XCTAssertEqual(est.numDeltas, beforeDeltas)
+        XCTAssertEqual(est.threshold, beforeThreshold)
+        XCTAssertEqual(est.wireTrendMilli, beforeMilli)
+        XCTAssertEqual(est.wireTrendFlags, beforeFlags)
     }
 
-    func testDeterministicReplayEquatable() {
+    func testDeterministicReplay() {
         func drive(_ est: inout TrendlineEstimator) {
             var arrival = 1000.0
             var ts: UInt32 = 5000
@@ -259,7 +273,12 @@ final class TrendlineEstimatorTests: XCTestCase {
         var b = TrendlineEstimator()
         drive(&a)
         drive(&b)
-        XCTAssertEqual(a, b, "same input ⇒ Equatable-identical state (deterministic replay)")
+        // Same input ⇒ identical observable state + wire output (deterministic replay over the full
+        // public surface, since the reference type has no value Equatable).
+        XCTAssertEqual(a.state, b.state, "same input ⇒ identical verdict (deterministic replay)")
+        XCTAssertEqual(a.modifiedTrend, b.modifiedTrend)
+        XCTAssertEqual(a.numDeltas, b.numDeltas)
+        XCTAssertEqual(a.threshold, b.threshold)
         XCTAssertEqual(a.wireTrendMilli, b.wireTrendMilli)
         XCTAssertEqual(a.wireTrendFlags, b.wireTrendFlags)
     }

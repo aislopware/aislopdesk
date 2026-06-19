@@ -103,16 +103,109 @@ public enum InputEvent: Equatable, Sendable {
         }
     }
 
-    /// Encodes via the Rust `aislopdesk-core` input-event codec — the single source of truth shared
-    /// with the Android client (the wire format is pinned by golden vectors).
+    /// Serialises the event. Native Swift is the single source of truth for the wire format
+    /// (pinned by the `inputEvent` golden vectors). All multi-byte ints are big-endian; the
+    /// `text` payload is appended as raw UTF-8 to the end of the datagram.
     public func encode() -> Data {
-        RustVideoFFI.encode(self)
+        var out = Data()
+        out.append(messageType)
+        switch self {
+        case let .mouseMove(n, tag):
+            out.appendBE(tag)
+            out.appendBE(n.x)
+            out.appendBE(n.y)
+        case let .mouseDown(button, n, clickCount, mods, tag),
+             let .mouseUp(button, n, clickCount, mods, tag),
+             let .mouseDrag(button, n, clickCount, mods, tag):
+            out.appendBE(tag)
+            out.append(button.rawValue)
+            out.append(clickCount)
+            out.append(mods.rawValue)
+            out.appendBE(n.x)
+            out.appendBE(n.y)
+        case let .scroll(dx, dy, n, scrollPhase, momentumPhase, continuous, tag):
+            out.appendBE(tag)
+            out.appendBE(dx)
+            out.appendBE(dy)
+            out.appendBE(n.x)
+            out.appendBE(n.y)
+            out.append(scrollPhase)
+            out.append(momentumPhase)
+            out.append(continuous ? 1 : 0)
+        case let .key(keyCode, down, mods, tag):
+            out.appendBE(tag)
+            out.appendBE(keyCode)
+            out.append(down ? 1 : 0)
+            out.append(mods.rawValue)
+        case let .text(string, tag):
+            out.appendBE(tag)
+            out.append(Data(string.utf8))
+        }
+        return out
     }
 
-    /// Decodes via the Rust input-event codec — the single source of truth (the wire format is
-    /// pinned by golden vectors). Non-finite coordinates, an unknown button/type, or non-UTF-8
-    /// text are rejected as `.malformed`; a short body is `.truncated`.
+    /// Decodes a client→host input event (native Swift, the single source of truth; the wire
+    /// format is pinned by golden vectors). Non-finite coordinates, an unknown button/type, or
+    /// non-UTF-8 text are rejected as `.malformed`; a short body is `.truncated`.
     public static func decode(_ data: Data) throws -> Self {
-        try RustVideoFFI.decodeInputEvent(data)
+        var reader = VideoByteReader(data)
+        let type = try reader.readUInt8()
+        switch type {
+        case 1:
+            let tag = try reader.readUInt32()
+            let x = try reader.readFiniteFloat64("mouseMove.x")
+            let y = try reader.readFiniteFloat64("mouseMove.y")
+            return .mouseMove(normalized: VideoPoint(x: x, y: y), tag: tag)
+        case 2,
+             3,
+             7:
+            let tag = try reader.readUInt32()
+            guard let button = try MouseButton(rawValue: reader.readUInt8()) else {
+                throw VideoProtocolError.malformed("unknown mouse button")
+            }
+            let clickCount = try reader.readUInt8()
+            let mods = try InputModifiers(rawValue: reader.readUInt8())
+            let x = try reader.readFiniteFloat64("mouseButton.x")
+            let y = try reader.readFiniteFloat64("mouseButton.y")
+            let n = VideoPoint(x: x, y: y)
+            switch type {
+            case 2: return .mouseDown(button: button, normalized: n, clickCount: clickCount, modifiers: mods, tag: tag)
+            case 3: return .mouseUp(button: button, normalized: n, clickCount: clickCount, modifiers: mods, tag: tag)
+            default: return .mouseDrag(button: button, normalized: n, clickCount: clickCount, modifiers: mods, tag: tag)
+            }
+        case 4:
+            let tag = try reader.readUInt32()
+            let dx = try reader.readFiniteFloat64("scroll.dx")
+            let dy = try reader.readFiniteFloat64("scroll.dy")
+            let x = try reader.readFiniteFloat64("scroll.x")
+            let y = try reader.readFiniteFloat64("scroll.y")
+            let scrollPhase = try reader.readUInt8()
+            let momentumPhase = try reader.readUInt8()
+            let continuous = try reader.readUInt8() != 0
+            return .scroll(
+                dx: dx,
+                dy: dy,
+                normalized: VideoPoint(x: x, y: y),
+                scrollPhase: scrollPhase,
+                momentumPhase: momentumPhase,
+                continuous: continuous,
+                tag: tag,
+            )
+        case 5:
+            let tag = try reader.readUInt32()
+            let keyCode = try reader.readUInt16()
+            let down = try reader.readUInt8() != 0
+            let mods = try InputModifiers(rawValue: reader.readUInt8())
+            return .key(keyCode: keyCode, down: down, modifiers: mods, tag: tag)
+        case 6:
+            let tag = try reader.readUInt32()
+            let bytes = reader.remaining()
+            guard let string = String(data: bytes, encoding: .utf8) else {
+                throw VideoProtocolError.malformed("input text not valid UTF-8")
+            }
+            return .text(string, tag: tag)
+        default:
+            throw VideoProtocolError.malformed("unknown input event type \(type)")
+        }
     }
 }

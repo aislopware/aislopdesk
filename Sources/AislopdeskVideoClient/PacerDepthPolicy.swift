@@ -60,16 +60,7 @@ public struct PacerTelemetrySnapshot: Sendable, Equatable {
 /// Demote: `demoteCleanSeconds` with ≤ `demoteToleranceLates` network-late events (and ≥
 /// `minHoldSeconds` since promotion) ⇒ back to 1. Counters always run (telemetry); only the
 /// depth action is gated by `adaptEnabled`.
-/// The depth/telemetry ALGORITHM (promote-on-network-late + demote-on-clean-dwell + gap
-/// classification + the windowed counters) lives in the Rust core
-/// (`aislopdesk_core::pacer_depth_policy`, the SINGLE SOURCE OF TRUTH shared with Android over the C
-/// ABI); this class is a thin owner of the opaque core handle, reached via ``RustVideoClientFFI``.
-/// It is a `final class` (not the former value struct) so it can own the handle and free it in
-/// `deinit`. `@unchecked Sendable` is sound because the single owner (``FramePacer``) serializes
-/// every call under its `lock` (and the tests run on one thread), so no two threads race the handle.
-/// ``Config`` stays a pure Swift value type — env resolution (`AISLOPDESK_DEPTH_*`) stays Swift-side
-/// and the resolved scalars cross to the core (as a flat struct) at init.
-public final class PacerDepthPolicy: @unchecked Sendable {
+public struct PacerDepthPolicy: Sendable, Equatable {
     public struct Config: Sendable, Equatable {
         /// late iff gap > max(`absoluteLateFloorSeconds`, `lateGapFactor` × expectedInterval).
         /// 1.6 sits above 1-interval + 120Hz-tick quantization + present-on-arrival wobble
@@ -174,77 +165,204 @@ public final class PacerDepthPolicy: @unchecked Sendable {
         case idle
     }
 
-    private let handle: OpaquePointer
+    /// The recommended presentation depth: 1 or `boostDepth`. Always 1 while `adaptEnabled` is
+    /// false (counters still run — telemetry is unconditional).
+    public private(set) var depth: Int
+
+    private let config: Config
+    private let adaptEnabled: Bool
+
+    // Arrival-side state.
+    private var lastArrival: Double?
+    /// Recent arrival times (cap 16) for the dense-flow gate.
+    private var arrivalRing: [Double] = []
+    /// In-flow inter-arrival gaps (gap ∈ (0, idleGapSeconds]), cap `intervalRingSize`.
+    private var intervalRing: [Double] = []
+    /// FPS-governor seam: overrides the estimator while non-nil (`FramePacer.setContentFps`).
+    private var intervalHint: Double?
+
+    // Present-side state.
+    private var lastPresentAt: Double?
+    private var prevPresentGap: Double?
+    /// Recent late-event times (cap 4) for the promote pairing window AND the demote-tolerance
+    /// window count (the cap is safe: any count above the 0...3 tolerance clamp blocks demote
+    /// identically whether the ring holds 4 or 40).
+    private var lateTimes: [Double] = []
+    private var promotedAt: Double = -1e30
+    /// Stream start = the FIRST arrival (fix 2c): promote decisions are ignored until
+    /// `promoteWarmupSeconds` past this, mirroring `LiveCongestionController.warmupTicks`.
+    private var streamStartAt: Double?
+    /// Latched once a re-show tick opens a gap episode; cleared by the next present or idle
+    /// classification, so an episode is counted exactly ONCE however many re-shows span it.
+    private var gapEpisodeOpen = false
+
+    // Windowed, saturating counters (drained per NetworkStats report, ~50ms).
+    private var lateCount: UInt32 = 0
+    private var gapCount: UInt32 = 0
 
     public init(config: Config = Config(), adaptEnabled: Bool) {
-        handle = RustVideoClientFFI.pacerDepthPolicyNew(config: config, adaptEnabled: adaptEnabled)
+        self.config = config
+        self.adaptEnabled = adaptEnabled
+        depth = 1
     }
-
-    deinit {
-        RustVideoClientFFI.pacerDepthPolicyFree(handle)
-    }
-
-    /// The recommended presentation depth: 1 or `boostDepth`. Always 1 while `adaptEnabled` is
-    /// false (counters still run — telemetry is unconditional). Read from the Rust core.
-    public var depth: Int { RustVideoClientFFI.pacerDepthPolicyDepth(handle) }
 
     /// The expected content interval: the hint (if set), else the median of the in-flow
-    /// inter-arrival ring (once warmed), else the default — clamped to a sane band. Delegates to the
-    /// Rust core.
+    /// inter-arrival ring (once warmed), else the default — clamped to a sane band.
     public var expectedIntervalSeconds: Double {
-        RustVideoClientFFI.pacerDepthPolicyExpectedIntervalSeconds(handle)
+        let raw: Double =
+            if let intervalHint {
+                intervalHint
+            } else if intervalRing.count >= config.minSamplesForEstimate {
+                Self.median(intervalRing)
+            } else {
+                config.defaultIntervalSeconds
+            }
+        return min(config.maxIntervalSeconds, max(config.minIntervalSeconds, raw))
     }
 
     /// The late boundary: `max(absFloor, factor × expectedInterval) + slackFraction × expectedInterval`.
     /// The slack term (fix 2a) sits ON TOP of the base boundary so ±routine-jitter arrivals — gaps
     /// a few ms past the bare boundary at dense flow — stop classifying late (see
-    /// ``Config/lateSlackFraction``). Delegates to the Rust core.
+    /// ``Config/lateSlackFraction``).
     public var lateThresholdSeconds: Double {
-        RustVideoClientFFI.pacerDepthPolicyLateThresholdSeconds(handle)
+        // BIT-EXACT (Rust parity): keep the `mul` and the `add` SEPARATE — never fma. The base
+        // boundary is `max(absFloor, lateGapFactor * expected)`; the slack term `slack * expected`
+        // is a SEPARATE product added on top (two distinct multiplies, one add).
+        max(config.absoluteLateFloorSeconds, config.lateGapFactor * expectedIntervalSeconds)
+            + config.lateSlackFraction * expectedIntervalSeconds
     }
 
     /// Fold one decoded-frame SUBMIT (client-monotonic seconds). Also evaluates demote so a
     /// post-idle resume demotes BEFORE the pacer re-primes (avoids one extra held frame at resume).
-    /// Delegates to the Rust core.
-    public func noteArrival(_ now: Double) {
-        RustVideoClientFFI.pacerDepthPolicyNoteArrival(handle, now: now)
+    public mutating func noteArrival(_ now: Double) {
+        if streamStartAt == nil { streamStartAt = now }
+        if let last = lastArrival {
+            let gap = now - last
+            if gap > 0, gap <= config.idleGapSeconds {
+                intervalRing.append(gap)
+                if intervalRing.count > config.intervalRingSize {
+                    intervalRing.removeFirst(intervalRing.count - config.intervalRingSize)
+                }
+            }
+        }
+        arrivalRing.append(now)
+        if arrivalRing.count > 16 { arrivalRing.removeFirst(arrivalRing.count - 16) }
+        lastArrival = now
+        evaluateDemote(now)
     }
 
     /// Fold one CONTENT present and classify its gap. Late requires ALL of: gap past the late
     /// boundary, dense flow when the gap opened, and a sharp (≥ gradient-factor) step up from the
-    /// previous in-flow gap. Delegates to the Rust core.
+    /// previous in-flow gap.
     @discardableResult
-    public func notePresent(_ now: Double) -> GapClass {
-        RustVideoClientFFI.pacerDepthPolicyNotePresent(handle, now: now)
+    public mutating func notePresent(_ now: Double) -> GapClass {
+        guard let last = lastPresentAt else {
+            lastPresentAt = now
+            return .first
+        }
+        let gap = now - last
+        if gap > config.idleGapSeconds {
+            // Host idle-skip / motion stop: never late, and the next in-flow gap must not be
+            // gradient-compared against this idle span.
+            gapEpisodeOpen = false
+            prevPresentGap = nil
+            lastPresentAt = now
+            evaluateDemote(now)
+            return .idle
+        }
+        // BIT-EXACT (Rust parity): `gapGradientFactor * prevGap` is a SEPARATE multiply, no fma.
+        let gradientOK = prevPresentGap.map { gap >= config.gapGradientFactor * $0 } ?? true
+        // v3: classification only (GapClass diagnostics) — a present-gap late no longer counts or
+        // promotes (the v2 pinning bug); the depth action runs on ``noteNetworkLate(_:)``.
+        let isLate = gap > lateThresholdSeconds && gradientOK && wasDense(asOf: last)
+        gapEpisodeOpen = false // any present closes an open re-show episode
+        prevPresentGap = gap
+        lastPresentAt = now
+        evaluateDemote(now)
+        return isLate ? .late : .normal
     }
 
     /// Fold one NETWORK-late event (v3 — the session's `OwdLateDetector` flagged a one-way-delay
     /// spike past the path baseline): THE promotion input, and the demote dwell's content. Counted
     /// into the windowed `lateFrames` telemetry too (the wire's late= field now reports the
-    /// promotion-relevant signal). Delegates to the Rust core.
-    public func noteNetworkLate(_ now: Double) {
-        RustVideoClientFFI.pacerDepthPolicyNoteNetworkLate(handle, now: now)
+    /// promotion-relevant signal).
+    public mutating func noteNetworkLate(_ now: Double) {
+        if lateCount < .max { lateCount += 1 }
+        lateTimes.append(now)
+        if lateTimes.count > 4 { lateTimes.removeFirst(lateTimes.count - 4) }
+        evaluatePromote(now)
     }
 
     /// Fold one empty-queue re-show tick. Counts a late-gap EPISODE (once) the moment the open gap
     /// crosses the late boundary — so the hitch is counted AS IT HAPPENS even if no frame ever
     /// resolves it (motion stop). Promotion never uses this counter, so stop boundaries can't promote.
-    /// Delegates to the Rust core.
-    public func noteReshow(_ now: Double) {
-        RustVideoClientFFI.pacerDepthPolicyNoteReshow(handle, now: now)
+    public mutating func noteReshow(_ now: Double) {
+        guard let last = lastPresentAt, !gapEpisodeOpen else { return }
+        let openGap = now - last
+        if openGap > lateThresholdSeconds, openGap <= config.idleGapSeconds, wasDense(asOf: last) {
+            if gapCount < .max { gapCount += 1 }
+            gapEpisodeOpen = true
+        }
     }
 
-    /// Read + reset the windowed counters (one drain per NetworkStats report). Delegates to the
-    /// Rust core.
-    public func drainCounters() -> (lateFrames: UInt32, presentGaps: UInt32) {
-        RustVideoClientFFI.pacerDepthPolicyDrainCounters(handle)
+    /// Read + reset the windowed counters (one drain per NetworkStats report).
+    public mutating func drainCounters() -> (lateFrames: UInt32, presentGaps: UInt32) {
+        defer { lateCount = 0
+            gapCount = 0
+        }
+        return (lateCount, gapCount)
     }
 
     /// FPS-governor seam: a host `streamCadence` message pins the expected interval (instant
     /// late-boundary rebase, no ~8-arrival estimator transient). `nil` / non-finite / non-positive
-    /// returns to the estimator (the core applies the finiteness/positivity guard). Delegates to the
-    /// Rust core.
-    public func setIntervalHint(_ seconds: Double?) {
-        RustVideoClientFFI.pacerDepthPolicySetIntervalHint(handle, seconds: seconds)
+    /// returns to the estimator.
+    public mutating func setIntervalHint(_ seconds: Double?) {
+        if let s = seconds, s.isFinite, s > 0 {
+            intervalHint = s
+        } else {
+            intervalHint = nil
+        }
+    }
+
+    /// Dense-flow gate: ≥ `denseMinArrivals` arrivals in the `denseWindowSeconds` before `t`
+    /// (the moment the gap OPENED — arrivals after it must not count).
+    private func wasDense(asOf t: Double) -> Bool {
+        let windowStart = t - config.denseWindowSeconds
+        var n = 0
+        for a in arrivalRing where a > windowStart && a <= t { n += 1 }
+        return n >= config.denseMinArrivals
+    }
+
+    private mutating func evaluatePromote(_ now: Double) {
+        guard adaptEnabled, depth == 1 else { return }
+        // Fix 2c — cold-start guard: connection bring-up produces transient gap shapes that look
+        // late; ignore promote DECISIONS (never the counters) until the warmup elapses.
+        guard let start = streamStartAt, now - start >= config.promoteWarmupSeconds else { return }
+        let windowStart = now - config.promoteWindowSeconds
+        var recent = 0
+        for t in lateTimes where t >= windowStart && t <= now { recent += 1 }
+        if recent >= config.promoteLateCount {
+            depth = max(2, config.boostDepth)
+            promotedAt = now
+        }
+    }
+
+    private mutating func evaluateDemote(_ now: Double) {
+        guard depth > 1 else { return }
+        guard now - promotedAt >= config.minHoldSeconds else { return }
+        // Fix 2b — demote tolerance: demote when the trailing dwell window holds ≤ tolerance late
+        // events (tolerance 0 ≡ the old strict "now − lastLate ≥ dwell": the newest late is always
+        // in the capped ring). A lone genuine late no longer re-arms the full dwell.
+        let windowStart = now - config.demoteCleanSeconds
+        var recent = 0
+        for t in lateTimes where t > windowStart && t <= now { recent += 1 }
+        guard recent <= config.demoteToleranceLates else { return }
+        depth = 1
+    }
+
+    /// Median of a small array (ring ≤ 15 entries; sort cost is negligible at this size).
+    private static func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        return sorted[sorted.count / 2]
     }
 }

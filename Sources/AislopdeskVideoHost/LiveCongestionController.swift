@@ -149,35 +149,24 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// unaffected (0.75×10ms < 15ms absolute floor). `AISLOPDESK_ABR_SLACK_FRAC`.
     public static let rttSlackFraction: Double = envDouble("AISLOPDESK_ABR_SLACK_FRAC", 0.75, min: 0, max: 10)
 
-    /// The effective absolute-slack gate for a given path baseline (see ``rttSlackFraction``).
+    /// The effective absolute-slack gate for a given path baseline (see ``rttSlackFraction``):
+    /// `max(rttSlackMillis, rttSlackFraction × minRTT)`, or `rttSlackMillis` for a non-finite baseline.
     public static func effectiveSlackMillis(minRTTMillis: Double) -> Double {
-        guard minRTTMillis.isFinite else { return rttSlackMillis }
-        return max(rttSlackMillis, rttSlackFraction * minRTTMillis)
+        effectiveSlackMillis(
+            minRTTMillis: minRTTMillis, slackMillis: rttSlackMillis, slackFraction: rttSlackFraction,
+        )
     }
 
-    /// Whether the stream is using enough of its current target to justify probing higher. `nil` (no
-    /// signal) always permits — backward-compatible. With a finite signal, the probe is permitted only
-    /// when the offered throughput is at least ``rampUtilizationFraction`` of `current`; otherwise the
-    /// stream is application-limited and a probe would only inflate phantom headroom (mirrors the core
-    /// `utilization_permits_ramp`).
-    public static func utilizationPermitsRamp(offeredBps: Double?, current: Int) -> Bool {
-        guard let offered = offeredBps, offered.isFinite else { return true }
-        return offered >= Double(current) * rampUtilizationFraction
-    }
-
-    /// The decayed `current` for a DEEPLY application-limited (idle / static) tick, or `nil` when no
-    /// decay applies (no signal, not deeply idle, or already at/below the idle target). Drifts one
-    /// geometric ``decayStepFraction`` step toward `offered × decayHeadroom` (floored) — only when
-    /// offered is below ``decayUtilizationFraction`` of `current`, so a sustained static screen shrinks
-    /// the target (the post-idle burst stays bounded) while a brief flick-pause holds. Mirrors the core
-    /// `app_limited_decay`. Never below `floor`; never increases `current`.
-    static func appLimitedDecay(offeredBps: Double?, current: Int, floor: Int) -> Int? {
-        guard let offered = offeredBps, offered.isFinite else { return nil }
-        guard offered < Double(current) * decayUtilizationFraction else { return nil } // not deeply idle
-        let target = max(floor, Int(offered * decayHeadroom))
-        guard target < current else { return nil } // already at/below the idle target
-        let step = max(1, Int(Double(current - target) * decayStepFraction))
-        return max(target, current - step)
+    /// The effective absolute-slack gate with the slack tunables passed in (mirrors
+    /// `effective_slack_millis_with`). NaN-faithful: Rust uses `f64::max`, so Swift `Double.maximum`
+    /// (IEEE — returns the non-NaN operand), NOT `Swift.max` (NaN-poisoning).
+    static func effectiveSlackMillis(minRTTMillis: Double, slackMillis: Double, slackFraction: Double) -> Double {
+        if minRTTMillis.isFinite {
+            // keep mul+add separate — FMA breaks bit-exact parity (pure multiply here).
+            let scaled = slackFraction * minRTTMillis
+            return Double.maximum(slackMillis, scaled)
+        }
+        return slackMillis
     }
 
     /// CONSECUTIVE inflated reports required before the RTT path decreases (~N × 50ms). `AISLOPDESK_ABR_RTT_N`.
@@ -289,9 +278,6 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// wobble and breathes 3–11M — measurably better quality at the same RTT. Keep the knee simple.
     public private(set) var kneeExpiresAtTick = 0
 
-    /// Additive-increase step in bps (≥ 1 so a tiny ceiling still makes progress).
-    private var increaseStep: Int { max(1, ceiling / Self.increaseDivisor) }
-
     // MARK: Init
 
     /// Primary initialiser. `floor` is clamped to `[minimumBitrate, ceiling]` so the controller can
@@ -380,168 +366,51 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// core mirror is `LiveCongestionController::decide_with_utilization`.
     @discardableResult
     public mutating func decide(_ e: NetworkEstimate, offeredBps: Double? = nil) -> Decision {
+        // Native AIMD control law — mirrors `LiveCongestionController::decide_with_config`
+        // (decide_inner + decrease) byte-for-byte. The env-off defaults equal `Config::DEFAULT`.
         ticks += 1
-        // Capture the trend input for the NEXT report whatever branch runs (including warmup).
-        defer { prevSmoothedRTTMillis = e.smoothedRTTMillis }
-        // Cold-start guard: fold (advance `ticks`) but take no action, so an open-loop start with
-        // `loss == 0` cannot trigger a spurious drop and the estimate's own gradient can warm up.
-        guard ticks >= Self.warmupTicks else { return Decision(target: current, reason: .warmup) }
-
-        // Positive-evidence congestion ONLY (never decrease on absence-of-data): loss over the gate,
-        // OR a finite RTT baseline inflated past it WITH a rising OWD gradient (queue build-up).
-        //
-        // LOSS uses the RAW per-report sample (`lastLossSample`), NOT the EWMA-damped `lossRate`: the
-        // EWMA's whole point is to lag, but here that lag is harmful — a single transient spike keeps
-        // the damped value above the threshold for MANY subsequent reports, and since the decrease
-        // branches fire on EVERY report over the threshold (the hold-down gates only the INCREASE),
-        // one blip would cascade into a multi-step drop on otherwise perfectly-clean reports. Keying
-        // on the raw sample means a clean report (raw loss 0) never decreases, so a spike costs exactly
-        // ONE decrease + the hold-down — react-fast, recover-slow AIMD without the EWMA-tail cascade.
-        // RTT path (see STABILITY MITIGATIONS): BOTH inflation gates (multiplicative factor AND
-        // absolute slack), SUSTAINED for `rttStreakTicks` consecutive reports, AND past the
-        // hold-down (the EWMA-decay anti-cascade cooldown — max one RTT decrease per `holdTicks`).
-        // `owdGradientRising` is deliberately ignored: adjacent-sample jitter comparison is a coin
-        // flip on a steady link, not congestion evidence.
-        let slack = Self.effectiveSlackMillis(minRTTMillis: e.minRTTMillis)
-        let rttInflated = e.minRTTMillis.isFinite
-            && e.smoothedRTTMillis > e.minRTTMillis * Self.rttInflateFactor
-            && e.smoothedRTTMillis > e.minRTTMillis + slack
-        rttInflatedStreak = rttInflated ? rttInflatedStreak + 1 : 0
-        let rttCongested = rttInflated
-            && rttInflatedStreak >= Self.rttStreakTicks
-            && ticks >= cutHoldUntilTick
-            && e.smoothedRTTMillis + 1.0 >= prevSmoothedRTTMillis // not improving — see prevSmoothedRTTMillis
-
-        // Knee TTL: a knee that hasn't been re-confirmed by a queue-corroborated decrease within
-        // `kneeTTLTicks` is stale path knowledge — forget it so the climb is uncapped again.
-        if kneeBps != nil, ticks >= kneeExpiresAtTick { kneeBps = nil }
-
-        // LOSS-TOLERANCE #4: sub-catastrophic loss acts only when CORROBORATED by RTT inflation on
-        // the same report (queue evidence). Weather loss — the measured rate-independent ~1%/3–9%
-        // bursts at FLAT RTT — is handled by FEC/LTR/kfDup, not by giving up bitrate.
-        let lossEvidence = !Self.lossNeedsRTTCorroboration || rttInflated
-        // CUT-CASCADE FIX (2026-06-11): the loss path shares the `cutHoldTicks` spacing — the first
-        // cut of an episode is immediate (the hold starts expired), but a weather burst spanning
-        // several consecutive lossy reports costs ONE cut per window, never a per-report cascade.
-        let lossCongested = e.lastLossSample > Self.lossThreshold && lossEvidence
-            && ticks >= cutHoldUntilTick
-        // DELAY-GRADIENT EARLY CUT (component 3): ONE report suffices. Trend evidence (the client
-        // trendline reads OVERUSING — monotone delay growth over a full regression window, sustained
-        // past its adaptive threshold) + fresh LEVEL evidence (THIS report's RAW RTT sample past the
-        // same factor+slack gates the smoothed path uses — raw reflects the queue NOW, no EWMA lag,
-        // no streak). Shares the `cutHoldTicks` spacing with every other cut: the FIRST cut of an
-        // episode is immediate (the hold starts expired), and a persisting gradient re-cuts at most
-        // once per window — the cut-cascade fix invariant extends, never regresses.
-        let rawRTTInflated: Bool = {
-            guard let raw = e.lastRTTSampleMillis, e.minRTTMillis.isFinite else { return false }
-            return raw > e.minRTTMillis * Self.rttInflateFactor && raw > e.minRTTMillis + slack
-        }()
-        let gradientCongested = gradientCutEnabled && e.owdTrendOverusing && rawRTTInflated
-            && ticks >= cutHoldUntilTick
-        if e.lossRate > Self.catastrophicLossThreshold,
-           e.lastLossSample > Self.severeLossThreshold,
-           ticks >= holdUntilTick
-        {
-            // SUSTAINED catastrophic loss (EWMA over the gate AND the CURRENT raw sample still
-            // severe — the collapse is happening now, not the decaying tail of one that ended):
-            // halve regardless of RTT (queue-less policer / true collapse), at most once per
-            // hold-down window.
-            decrease(to: max(floor, Int(Double(current) * Self.severeDecreaseFactor)), queueCorroborated: rttInflated)
-            return Decision(target: current, reason: .catastrophic)
-        }
-        if rttCongested || lossCongested || gradientCongested {
-            // Ordinary congestion. DELAY-TARGETING (2026-06-11): the RTT path sizes the decrease to
-            // the MEASURED queue instead of a fixed ×0.85 — `factor = (minRTT + slack) / smoothedRTT`,
-            // clamped to [rttDecreaseFloorFactor, rttDecreaseCapFactor]. A 70ms standing queue over a
-            // 10ms baseline cuts hard in ONE step (clamped −40%) instead of bleeding 50–100ms latency
-            // through four ×0.85-per-second steps; barely-over-threshold inflation (and the EWMA
-            // decay tail after the queue drains) trims at most −5% per step. The loss path keeps the
-            // classic ×0.85. When both fire, take the stronger evidence (lower target).
-            //
-            // NOTE (CUT-CASCADE FIX): there is deliberately NO raw-sample "severe → halve" step here
-            // any more — at ~3 frames per report one lost frame reads 33%, so raw severity is
-            // quantization noise. Depth comes from the measured queue; collapse from the EWMA gate.
-            var target = Int.max
-            var reason = CutReason.hold // overwritten below — at least one branch fired to get here
-            if rttCongested {
-                // Drain target uses the SAME baseline-proportional slack as the gate, so the
-                // proportional cut sizes against the path's own wobble floor, not the LAN constant.
-                let drained = e.minRTTMillis + slack
-                let factor = min(
-                    Self.rttDecreaseCapFactor,
-                    max(Self.rttDecreaseFloorFactor, drained / e.smoothedRTTMillis),
-                )
-                let cut = Int(Double(current) * factor)
-                if cut < target { target = cut
-                    reason = .rttStreak
-                }
-            }
-            if lossCongested {
-                let cut = Int(Double(current) * Self.decreaseFactor)
-                if cut < target { target = cut
-                    reason = .lossCorroborated
-                }
-            }
-            if gradientCongested {
-                // The early-onset reflex: one conventional ×0.85-deep cut. NOTE the unchanged
-                // `queueCorroborated: rttInflated` below — a gradient-ONLY cut (smoothed not yet
-                // inflated ⇒ `rttInflated` false) deliberately sets NO knee: an onset reflex is not
-                // capacity knowledge, and knee-pinning from early cuts would cap the climb for
-                // `kneeTTLTicks` on the measured rate-independent 4G/inter-ISP wobble (the
-                // falsified-design history). The proportional path sets it if the queue is real.
-                let cut = Int(Double(current) * Self.gradientDecreaseFactor)
-                if cut < target { target = cut
-                    reason = .gradient
-                }
-            }
-            decrease(to: max(floor, target), queueCorroborated: rttInflated)
-            return Decision(target: current, reason: reason)
-        }
-        if ticks >= holdUntilTick, !rttInflated, !(gradientCutEnabled && e.owdTrendOverusing) {
-            // Clean link past the hold-down. RAMP up if the stream is using its allocation; while
-            // DEEPLY idle DECAY the target toward what's offered (so a post-idle burst can't form a VBR
-            // monster frame → no WiFi-latency spike / quality clawback); in between, HOLD (fall through).
-            // No utilization signal ⇒ always a ramp (the legacy path).
-            if Self.utilizationPermitsRamp(offeredBps: offeredBps, current: current) {
-                // Probe up additively toward the ceiling. `!rttInflated` keeps the probe from climbing
-                // INTO a building queue while the streak/hold-down is still suppressing the decrease
-                // (minRTT re-baselines upward ~1%/fold, so a genuinely shifted path baseline un-sticks
-                // this on its own). Component 3 adds the trend guard (gated on the same flag for A/B
-                // purity): never probe up INTO a detected overuse while `cutHoldUntilTick` is still
-                // blocking the gradient cut. At/above the remembered knee the step is divided by
-                // `kneeCautionDivisor`: the controller hovers under the rate that built a queue instead
-                // of re-bashing it every recovery (25↔40Mbps pumping = the felt sawtooth).
-                let cautious = kneeBps.map { current >= $0 } ?? false
-                let step = cautious ? max(1, increaseStep / Self.kneeCautionDivisor) : increaseStep
-                current = min(ceiling, current + step)
-                return Decision(target: current, reason: cautious ? .knee : .probe)
-            }
-            // Not using the allocation. DEEPLY idle ⇒ decay toward offered; moderately idle ⇒ hold
-            // (fall through to the drain/hold attribution below).
-            if let decayed = Self.appLimitedDecay(offeredBps: offeredBps, current: current, floor: floor) {
-                current = decayed
-                return Decision(target: current, reason: .appLimited)
-            }
-        }
-        // No action this tick. Attribute the DRAIN gate when it is the only thing that held an
-        // otherwise fully-armed RTT cut (inflated + streak + cut-hold expired, but improving).
-        let drainGated = rttInflated
-            && rttInflatedStreak >= Self.rttStreakTicks
-            && ticks >= cutHoldUntilTick
-            && e.smoothedRTTMillis + 1.0 < prevSmoothedRTTMillis
-        return Decision(target: current, reason: drainGated ? .drain : .hold)
+        let decision = decideInner(e, offeredBps: offeredBps)
+        // Matches the core's post-step capture: `prevSmoothedRTTMillis` becomes THIS report's smoothed
+        // RTT for the NEXT report, whatever branch ran (including warmup).
+        prevSmoothedRTTMillis = e.smoothedRTTMillis
+        return decision
     }
 
-    /// Applies a computed decrease target and arms the anti-thrash hold-downs — but ONLY re-arms them
-    /// when the target actually LOWERS `current`. At the floor the decrease is a no-op
-    /// (`next == current`), so without this guard a sustained congestion signal pinned at the floor
-    /// would keep extending the hold-down every report, pushing the additive-recovery start far past
-    /// the actual congestion and inflating dead time at the floor.
-    ///
-    /// `queueCorroborated` (the report showed RTT inflation) additionally records the landed-on rate
-    /// as the knee (ssthresh) — see ``kneeBps``. A catastrophic halve at FLAT RTT is rate-independent
-    /// weather/policer evidence, not path-capacity knowledge, so it deliberately sets no knee.
-    private mutating func decrease(to next: Int, queueCorroborated: Bool) {
+    /// Additive-increase step in bps (≥ 1 so a tiny ceiling still makes progress). Mirrors
+    /// `increase_step`. NaN-free integer math.
+    private func increaseStep() -> Int {
+        max(ceiling / Self.increaseDivisor, 1)
+    }
+
+    /// Whether the stream is using enough of its current target to justify probing higher. `nil`
+    /// (no signal) always permits — mirrors `utilization_permits_ramp`.
+    private func utilizationPermitsRamp(_ offeredBps: Double?) -> Bool {
+        guard let offered = offeredBps, offered.isFinite else { return true }
+        // keep mul+add separate — FMA breaks bit-exact parity (pure multiply here). Ordered `>=` as Rust.
+        let gate = Double(current) * Self.rampUtilizationFraction
+        return offered >= gate
+    }
+
+    /// The decayed `current` for a DEEPLY application-limited tick, or `nil` when no decay applies.
+    /// Mirrors `app_limited_decay`. Rust `(x as f64 * f) as i64` truncates toward zero → `Int(_)`.
+    private func appLimitedDecay(_ offeredBps: Double?) -> Int? {
+        guard let offered = offeredBps, offered.isFinite else { return nil }
+        // keep mul+add separate — FMA breaks bit-exact parity. Ordered `>=` as Rust (NaN already excluded).
+        let idleGate = Double(current) * Self.decayUtilizationFraction
+        if offered >= idleGate { return nil } // not deeply idle — hold, don't decay
+        let decayTarget = offered * Self.decayHeadroom // keep mul+add separate — pure multiply
+        // Rust `f64::max(floor, (offered*headroom) as i64)` — integer max after truncation.
+        let target = Swift.max(floor, Int(decayTarget))
+        if target >= current { return nil } // already at/below the idle target
+        // Rust `((current - target) as f64 * step) as i64` — keep mul+add separate, truncate toward zero.
+        let stepF = Double(current - target) * Self.decayStepFraction
+        let step = Int(stepF)
+        return Swift.max(current - Swift.max(step, 1), target)
+    }
+
+    /// Applies a decrease and arms the hold-downs — ONLY when the target actually LOWERS `current`.
+    /// A queue-corroborated decrease additionally records the knee. Mirrors `decrease`.
+    private mutating func applyDecrease(_ next: Int, queueCorroborated: Bool) {
         if next < current {
             current = next
             holdUntilTick = ticks + Self.holdTicks
@@ -554,6 +423,129 @@ public struct LiveCongestionController: Sendable, Equatable {
         }
     }
 
+    /// The control-law step over the folded estimate — mirrors `decide_inner` branch-for-branch.
+    private mutating func decideInner(_ e: NetworkEstimate, offeredBps: Double?) -> Decision {
+        if ticks < Self.warmupTicks {
+            return Decision(target: current, reason: .warmup)
+        }
+
+        let slack = Self.effectiveSlackMillis(
+            minRTTMillis: e.minRTTMillis, slackMillis: Self.rttSlackMillis,
+            slackFraction: Self.rttSlackFraction,
+        )
+        // keep mul+add separate — FMA breaks bit-exact parity. Ordered `>` / `+` as Rust.
+        let inflateThreshold = e.minRTTMillis * Self.rttInflateFactor
+        let slackThreshold = e.minRTTMillis + slack
+        let rttInflated = e.minRTTMillis.isFinite
+            && e.smoothedRTTMillis > inflateThreshold
+            && e.smoothedRTTMillis > slackThreshold
+        rttInflatedStreak = rttInflated ? rttInflatedStreak + 1 : 0
+        // keep mul+add separate — pure additive comparison `smoothed + 1.0 >= prev`.
+        let rttCongested = rttInflated
+            && rttInflatedStreak >= Self.rttStreakTicks
+            && ticks >= cutHoldUntilTick
+            && e.smoothedRTTMillis + 1.0 >= prevSmoothedRTTMillis
+
+        // Knee TTL: forget a knee not re-confirmed within `kneeTTLTicks`.
+        if kneeBps != nil, ticks >= kneeExpiresAtTick {
+            kneeBps = nil
+        }
+
+        let lossEvidence = !Self.lossNeedsRTTCorroboration || rttInflated
+        let lossCongested = e.lastLossSample > Self.lossThreshold
+            && lossEvidence
+            && ticks >= cutHoldUntilTick
+        let rawRTTInflated: Bool = {
+            guard let raw = e.lastRTTSampleMillis, e.minRTTMillis.isFinite else { return false }
+            // keep mul+add separate — FMA breaks bit-exact parity. Ordered `>` / `+` as Rust.
+            let rawInflate = e.minRTTMillis * Self.rttInflateFactor
+            let rawSlack = e.minRTTMillis + slack
+            return raw > rawInflate && raw > rawSlack
+        }()
+        let gradientCongested = gradientCutEnabled
+            && e.owdTrendOverusing
+            && rawRTTInflated
+            && ticks >= cutHoldUntilTick
+
+        if e.lossRate > Self.catastrophicLossThreshold, e.lastLossSample > Self.severeLossThreshold,
+           ticks >= holdUntilTick
+        {
+            // keep mul+add separate — pure multiply; Rust `(current * factor) as i64` truncates → Int(_).
+            let scaled = Double(current) * Self.severeDecreaseFactor
+            let target = Swift.max(floor, Int(scaled))
+            applyDecrease(target, queueCorroborated: rttInflated)
+            return Decision(target: current, reason: .catastrophic)
+        }
+        if rttCongested || lossCongested || gradientCongested {
+            var target = Int.max
+            var reason: CutReason = .hold // overwritten — at least one branch fired
+            if rttCongested {
+                // keep mul+add separate — pure additive `min + slack`.
+                let drained = e.minRTTMillis + slack
+                // NaN-faithful: Rust `cap.min(floor.max(drained/smoothed))` — IEEE min/max. Use
+                // Double.minimum/Double.maximum (return non-NaN operand), NOT Swift.min/max.
+                let ratio = drained / e.smoothedRTTMillis
+                let factor = Double.minimum(
+                    Self.rttDecreaseCapFactor,
+                    Double.maximum(Self.rttDecreaseFloorFactor, ratio),
+                )
+                let cutF = Double(current) * factor // keep mul+add separate — pure multiply
+                let cut = Int(cutF)
+                if cut < target {
+                    target = cut
+                    reason = .rttStreak
+                }
+            }
+            if lossCongested {
+                let cutF = Double(current) * Self.decreaseFactor // keep mul+add separate — pure multiply
+                let cut = Int(cutF)
+                if cut < target {
+                    target = cut
+                    reason = .lossCorroborated
+                }
+            }
+            if gradientCongested {
+                let cutF = Double(current) * Self.gradientDecreaseFactor // keep mul+add separate
+                let cut = Int(cutF)
+                if cut < target {
+                    target = cut
+                    reason = .gradient
+                }
+            }
+            applyDecrease(Swift.max(floor, target), queueCorroborated: rttInflated)
+            return Decision(target: current, reason: reason)
+        }
+        if ticks >= holdUntilTick,
+           !rttInflated,
+           !(gradientCutEnabled && e.owdTrendOverusing)
+        {
+            // Clean link past the hold-down: RAMP if using the allocation; DECAY while deeply idle;
+            // else hold. With no utilization signal this is always a ramp (the legacy path).
+            if utilizationPermitsRamp(offeredBps) {
+                let cautious: Bool = {
+                    guard let knee = kneeBps else { return false }
+                    return current >= knee
+                }()
+                let step = cautious
+                    ? Swift.max(increaseStep() / Self.kneeCautionDivisor, 1)
+                    : increaseStep()
+                current = Swift.min(ceiling, current + step)
+                return Decision(target: current, reason: cautious ? .knee : .probe)
+            }
+            if let decayed = appLimitedDecay(offeredBps) {
+                current = decayed
+                return Decision(target: current, reason: .appLimited)
+            }
+            // Moderately idle (between the two fractions): hold — fall through.
+        }
+        // keep mul+add separate — pure additive comparison `smoothed + 1.0 < prev`.
+        let drainGated = rttInflated
+            && rttInflatedStreak >= Self.rttStreakTicks
+            && ticks >= cutHoldUntilTick
+            && e.smoothedRTTMillis + 1.0 < prevSmoothedRTTMillis
+        return Decision(target: current, reason: drainGated ? .drain : .hold)
+    }
+
     // MARK: Actuation churn gate (pure — used by the host, unit-tested here)
 
     /// Whether a target change is large enough to be worth a VTSessionSetProperty round-trip. The host
@@ -561,7 +553,12 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// so a single ~3%-of-ceiling additive tick does not actuate every 50ms; consecutive additive ticks
     /// accumulate against the last ACTUATED rate and cross the gate after a couple of reports.
     public static func isMaterialChange(previous: Int, target: Int, ceiling: Int) -> Bool {
-        abs(target - previous) >= max(materialFloorBps, Int(Double(max(1, ceiling)) * materialFraction))
+        // Mirrors `is_material_change_with`: |Δ| ≥ max(floorBps, ceiling × fraction). Rust
+        // `(ceiling.max(1) as f64 * fraction) as i64` truncates toward zero → Int(_).
+        // keep mul+add separate — FMA breaks bit-exact parity (pure multiply here).
+        let scaled = Double(Swift.max(1, ceiling)) * materialFraction
+        let threshold = Swift.max(materialFloorBps, Int(scaled))
+        return abs(target - previous) >= threshold
     }
 
     // MARK: Env parsing helpers

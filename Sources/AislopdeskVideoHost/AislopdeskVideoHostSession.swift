@@ -1179,6 +1179,12 @@ public actor AislopdeskVideoHostSession {
                     if encoder?.setConstQP(q) == true {
                         dbg("qp-aimd: Q=\(q) (congested=\(congested) reason=\(decision.reason.rawValue))")
                     }
+                    // LOSS-TIER-ADAPTIVE QP DECOUPLE: feed the same congestion verdict to the encoder so
+                    // the sharp-sidebar `[floor,q]` band is used only on a clean link and collapses to
+                    // Min==Max==q (small frames) when the link is stressed (burst-loss safety).
+                    if encoder?.setLinkCongested(congested) == true {
+                        dbg("qp-decouple: \(congested ? "PIN Min==Max (congested)" : "BAND (clean)")")
+                    }
                 }
                 if LiveCongestionController.isMaterialChange(
                     previous: lastActuatedBitrate,
@@ -2421,7 +2427,7 @@ public actor AislopdeskVideoHostSession {
         // union-sized stream (clicks/cursor in the dialog area map to the wrong absolute point). The union
         // poll (onAssociatedUnion → applyCaptureRegion) re-applies the correct mapping as things move.
         if let bounds = boundsFromGeometry(message) {
-            if RustVideoHostFFI.captureReoriginOnGeometry(activeRegionGlobal: captureRegionGlobal) {
+            if CaptureRegionMath.shouldReoriginToWindowOnGeometry(activeRegionGlobal: captureRegionGlobal) {
                 cursorSampler?.updateWindowBounds(bounds)
                 injector?.updateWindowBounds(bounds)
             }
@@ -2453,10 +2459,10 @@ public actor AislopdeskVideoHostSession {
         // overhangs) expands, otherwise we want the plain window frame back.
         let desired = unionGlobal.contains(windowFrame) && unionGlobal != windowFrame ? unionGlobal : windowFrame
         let current = captureRegionGlobal ?? windowFrame
-        guard RustVideoHostFFI.captureShouldRetarget(current: current, desired: desired) else { return }
+        guard CaptureRegionMath.shouldRetarget(current: current, desired: desired) else { return }
         // Contracting back to (approximately) the window frame ⇒ clear the override; else expand.
-        let target: CGRect? = RustVideoHostFFI
-            .captureShouldRetarget(current: desired, desired: windowFrame) ? desired : nil
+        let target: CGRect? = CaptureRegionMath
+            .shouldRetarget(current: desired, desired: windowFrame) ? desired : nil
         if let target {
             // EXPAND immediately, and cancel any pending contract (a popup re-opened inside the
             // debounce window — no need to shrink-then-grow).

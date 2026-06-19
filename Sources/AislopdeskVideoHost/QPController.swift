@@ -1,7 +1,7 @@
 import Foundation
 
-/// Link-adaptive constant-QP controller (own rate control, 2026-06-18) — the Swift mirror of the pure
-/// `aislopdesk_core::qp_controller` law. See that module for the full rationale.
+/// Link-adaptive constant-QP controller (own rate control, 2026-06-18) — native Swift, the single
+/// source of truth for the integer AIMD-on-QP law.
 ///
 /// VideoToolbox's `AverageBitRate` VBR banks unused budget while idle, then slams the QP on the frames
 /// after a post-idle burst (the "idle → hard-scroll → blur" clawback). Pinning a CONSTANT QP per frame
@@ -21,19 +21,22 @@ struct QPController: Equatable {
     /// Clean reports per one-QP sharpen (ease back slowly). `AISLOPDESK_QP_DOWN_INTERVAL` (default 4).
     static let downInterval: Int = envInt("AISLOPDESK_QP_DOWN_INTERVAL", 4, min: 1, max: 10000)
 
-    /// Parse + clamp an int env to `[min, max]`, falling back to `def` (mirrors the core sanitiser;
-    /// kept local so QPController is self-contained — same shape as LiveCongestionController.envInt).
+    /// Parse + clamp an int env to `[min, max]`, falling back to `def`.
     static func envInt(_ key: String, _ def: Int, min lo: Int, max hi: Int) -> Int {
         guard let s = ProcessInfo.processInfo.environment[key], let v = Int(s) else { return def }
         return Swift.max(lo, Swift.min(hi, v))
     }
 
+    // The sanitized config knobs (a hostile value can never invert the QP range — see `init`).
+    // Stored verbatim — equality is by config+state.
     private let qSharpV: Int
     private let qCoarseV: Int
     private let upStepV: Int
     private let downIntervalV: Int
+    /// The current constant QP.
     private(set) var q: Int
-    private var cleanStreak = 0
+    /// The clean-report streak persisted between steps.
+    private var cleanStreak: Int
 
     /// Production wiring: bounds from the env knobs, seeded at `seedQ` (clamped into the range).
     init(seedQ: Int) {
@@ -43,29 +46,34 @@ struct QPController: Equatable {
         )
     }
 
-    /// Explicit bounds (for tests). Sanitises like the core: QPs into `1...51`, `qSharp <= qCoarse`,
-    /// `upStep >= 1`, `downInterval >= 1`; seed clamped into `[qSharp, qCoarse]`.
+    /// Explicit bounds (production + tests). Sanitises (`QPs into 1...51`, `qSharp <= qCoarse`,
+    /// `upStep >= 1`, `downInterval >= 1`) and clamps the seed into `[qSharp, qCoarse]`. Mirrors
+    /// `QpConfig::sanitized` + `QpController::new` exactly.
     init(qSharp: Int, qCoarse: Int, upStep: Int, downInterval: Int, seedQ: Int) {
+        // sanitize: a hostile env value can never invert or escape the QP range.
         let sharp = Swift.max(1, Swift.min(51, qSharp))
         let coarse = Swift.max(sharp, Swift.min(51, qCoarse))
         qSharpV = sharp
         qCoarseV = coarse
         upStepV = Swift.max(1, upStep)
         downIntervalV = Swift.max(1, downInterval)
+        // seed clamped into [qSharp, qCoarse].
         q = Swift.max(sharp, Swift.min(coarse, seedQ))
+        cleanStreak = 0
     }
 
     /// Folds one report's congestion verdict and returns the (possibly unchanged) new QP. Congested →
     /// coarsen fast toward `qCoarse`; clean → sharpen one step per `downInterval` clean reports.
+    /// Native integer AIMD — mirrors `QpController::decide` exactly.
     @discardableResult
     mutating func decide(congested: Bool) -> Int {
         if congested {
-            q = Swift.min(qCoarseV, q + upStepV)
+            q = Swift.min(q + upStepV, qCoarseV)
             cleanStreak = 0
         } else {
             cleanStreak += 1
             if cleanStreak >= downIntervalV {
-                q = Swift.max(qSharpV, q - 1)
+                q = Swift.max(q - 1, qSharpV)
                 cleanStreak = 0
             }
         }

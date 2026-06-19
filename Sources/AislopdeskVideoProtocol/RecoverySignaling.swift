@@ -163,20 +163,44 @@ public enum RecoveryMessage: Equatable, Sendable {
         }
     }
 
-    /// Serialises the message: `[UInt8 type][body...]`.
-    ///
-    /// Delegated to the Rust `aislopdesk-core` recovery codec (the SINGLE source of truth shared
-    /// with the Android client over the C ABI); byte-identical to the former native codec (pinned
-    /// by the golden vectors + `RecoveryMessage` round-trip tests).
+    /// Serialises the message: `[UInt8 type][body...]`. Native Swift is the single source of
+    /// truth (byte-identical to the wire pinned by the golden vectors + the round-trip tests).
     public func encode() -> Data {
-        // The NACK is variable-length (a frag-index list) and doesn't fit the flat FFI struct, so it
-        // is encoded NATIVELY here — byte-identical to the Rust `RecoveryMessage::RequestFragments`
-        // wire (golden-pinned by `RecoveryNACKGoldenTests`). Every other variant delegates to the
-        // Rust core codec (the single source of truth) as before.
+        // The NACK (type 6) is variable-length (a frag-index list); it is encoded NATIVELY by the
+        // dedicated helper — byte-identical to the rest of this codec.
         if case let .requestFragments(frameID, fragIndices) = self {
             return Self.encodeRequestFragments(frameID: frameID, fragIndices: fragIndices)
         }
-        return RustVideoFFI.encode(self)
+        var out = Data()
+        out.append(messageType)
+        switch self {
+        case let .ack(streamSeq):
+            out.appendBE(streamSeq)
+        case let .requestLTRRefresh(fromFrameID, toFrameID, lastDecodedFrameID):
+            out.appendBE(fromFrameID)
+            out.appendBE(toFrameID)
+            out.appendBE(lastDecodedFrameID)
+        case let .requestIDR(lastDecodedFrameID):
+            out.appendBE(lastDecodedFrameID)
+        case let .requestCursorShape(shapeID):
+            out.appendBE(shapeID)
+        case let .networkStats(r):
+            out.appendBE(r.framesReceived)
+            out.appendBE(r.fecRecovered)
+            out.appendBE(r.unrecovered)
+            out.appendBE(r.latestHostSendTs)
+            out.appendBE(r.clientHoldMs)
+            out.appendBE(r.owdJitterMicros)
+            out.appendBE(r.owdTrendMilli)
+            out.appendBE(r.owdTrendFlags)
+            out.appendBE(r.pacerLateFrames)
+            out.appendBE(r.pacerPresentGaps)
+            out.appendBE(r.pacerDepth)
+        case .requestFragments:
+            // Handled by the native helper above; unreachable here.
+            break
+        }
+        return out
     }
 
     /// Native encode of the NACK, mirroring the Rust wire: `[6][frameID BE u32][count BE u16][idx BE
@@ -203,16 +227,59 @@ public enum RecoveryMessage: Equatable, Sendable {
     /// datagram bytes — a decoder that tolerated suffixes would let suffix-varied copies of one
     /// logical request each decode identically yet bypass the byte-keyed dedup (re-triggering a
     /// second ForceLTRRefresh/IDR). No backcompat needed; both ends redeploy together.
-    ///
-    /// Delegated to the Rust core (same source of truth as ``encode()``); the bounds-checked
-    /// fixed-width reads + the trailing-bytes rejection live there now.
     public static func decode(_ data: Data) throws -> Self {
-        // Peek the type byte: a NACK (type 6) is decoded NATIVELY (the variable-length frag list
-        // doesn't fit the flat FFI struct); everything else delegates to the Rust core decoder.
+        // A NACK (type 6) is decoded by the dedicated variable-length helper; the rest are
+        // fixed-width and read inline below. Every read is bounds-checked → a short body throws
+        // `.truncated` and the router drops the single datagram (never crashes on hostile input).
         if data.first == 6 {
             return try decodeRequestFragments(data)
         }
-        return try RustVideoFFI.decodeRecovery(data)
+        var reader = VideoByteReader(data)
+        let type = try reader.readUInt8()
+        let message: Self
+        switch type {
+        case 1:
+            message = try .ack(streamSeq: reader.readUInt32())
+        case 2:
+            // Three fixed-width UInt32s; bounds-checked reads ⇒ a body < 12 bytes throws .truncated
+            // → the router drops the single datagram (never crashes on hostile input).
+            let from = try reader.readUInt32()
+            let to = try reader.readUInt32()
+            let lastDecoded = try reader.readUInt32()
+            message = .requestLTRRefresh(fromFrameID: from, toFrameID: to, lastDecodedFrameID: lastDecoded)
+        case 3:
+            // One bounds-checked UInt32 (lastDecodedFrameID); a 0-byte legacy body now throws
+            // .truncated and is dropped — no backcompat (both ends redeploy together).
+            message = try .requestIDR(lastDecodedFrameID: reader.readUInt32())
+        case 4:
+            message = try .requestCursorShape(shapeID: reader.readUInt16())
+        case 5:
+            // Eleven fixed-width UInt32s; each read is bounds-checked, so a body < 44 bytes throws
+            // .truncated → the router drops the datagram (no OOB / overflow / force-unwrap surface).
+            let framesReceived = try reader.readUInt32()
+            let fecRecovered = try reader.readUInt32()
+            let unrecovered = try reader.readUInt32()
+            let latestHostSendTs = try reader.readUInt32()
+            let clientHoldMs = try reader.readUInt32()
+            let owdJitterMicros = try reader.readUInt32()
+            let owdTrendMilli = try reader.readUInt32()
+            let owdTrendFlags = try reader.readUInt32()
+            let pacerLateFrames = try reader.readUInt32()
+            let pacerPresentGaps = try reader.readUInt32()
+            let pacerDepth = try reader.readUInt32()
+            message = .networkStats(NetworkStatsReport(
+                framesReceived: framesReceived, fecRecovered: fecRecovered, unrecovered: unrecovered,
+                latestHostSendTs: latestHostSendTs, clientHoldMs: clientHoldMs, owdJitterMicros: owdJitterMicros,
+                owdTrendMilli: owdTrendMilli, owdTrendFlags: owdTrendFlags,
+                pacerLateFrames: pacerLateFrames, pacerPresentGaps: pacerPresentGaps, pacerDepth: pacerDepth,
+            ))
+        default:
+            throw VideoProtocolError.malformed("unknown recovery message type \(type)")
+        }
+        guard reader.bytesRemaining == 0 else {
+            throw VideoProtocolError.malformed("trailing bytes")
+        }
+        return message
     }
 
     /// Native decode of the NACK, mirroring the Rust decoder exactly: bounds-checked fixed reads, the
@@ -316,17 +383,16 @@ public struct RecoveryPolicy: Sendable {
     /// ABOVE the floor; the floor just guarantees an LTR refresh gets the time it physically needs
     /// before the IDR sledgehammer.
     public func shouldEscalateToIDR(elapsedSinceRequest: TimeInterval, rtt: TimeInterval, observingLoss: Bool) -> Bool {
-        // Delegated to the Rust `aislopdesk-core` recovery policy (single source of truth shared
-        // with the Android client); byte-identical to the former native clock (pinned by the
-        // existing recovery tests + `RustRecoveryPolicyParityTests`). The env-resolved lossy floor
-        // (`lossyEscalationFloor`, from AISLOPDESK_ESCALATION_FLOOR_MS) stays Swift-side, passed in.
-        RustVideoFFI.recoveryShouldEscalateToIDR(
-            idrTimeoutRTTMultiple: idrTimeoutRTTMultiple,
-            lossyIdrTimeoutRTTMultiple: lossyIdrTimeoutRTTMultiple,
-            lossyEscalationFloor: lossyEscalationFloor,
-            lossyEscalationFloorRTTMultiple: lossyEscalationFloorRTTMultiple,
-            elapsedSinceRequest: elapsedSinceRequest, rtt: rtt, observingLoss: observingLoss,
-        )
+        let deadline: TimeInterval
+        if observingLoss {
+            // floor = max(lossyEscalationFloor, lossyEscalationFloorRTTMultiple·rtt), then the
+            // halved clock floored at it: max(lossyIdrTimeoutRTTMultiple·rtt, floor).
+            let floor = max(lossyEscalationFloor, lossyEscalationFloorRTTMultiple * rtt)
+            deadline = max(lossyIdrTimeoutRTTMultiple * rtt, floor)
+        } else {
+            deadline = idrTimeoutRTTMultiple * rtt
+        }
+        return elapsedSinceRequest >= deadline
     }
 }
 

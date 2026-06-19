@@ -19,7 +19,7 @@ final class MuxSubChannelTests: XCTestCase {
         let (id, inner) = captured.value
         XCTAssertEqual(id, 7, "the sub-channel stamps its own channelID on the send")
         // `inner` is the framed WireMessage — decoding it back must yield the original message.
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(inner)
         XCTAssertEqual(try decoder.nextMessage(), original, "inner bytes are the opaque framed WireMessage")
     }

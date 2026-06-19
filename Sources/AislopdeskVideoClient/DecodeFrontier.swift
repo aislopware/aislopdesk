@@ -15,8 +15,13 @@ public struct DecodeFrontier: Sendable, Equatable {
     public init() {}
 
     /// Folds one successfully-decoded frame. Keep-newest, wrap-aware; older/equal ids are no-ops.
+    /// Native Swift twin of `aislopdesk_core::decode_frontier::DecodeFrontier::note_decoded`: a
+    /// late out-of-order decode (`frameID.distanceWrapped(from: current) <= 0`) is a no-op, so the
+    /// frontier only ever advances in `UInt32`-wrap sequence space.
     public mutating func noteDecoded(frameID: UInt32) {
-        if let current = lastDecodedFrameID, frameID.distanceWrapped(from: current) <= 0 { return }
+        if let current = lastDecodedFrameID, frameID.distanceWrapped(from: current) <= 0 {
+            return
+        }
         lastDecodedFrameID = frameID
     }
 

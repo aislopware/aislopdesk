@@ -6,7 +6,12 @@ import CoreGraphics
 /// already-parked window (another pane, or a hello retransmit), and which window to RESTORE when its
 /// last lane releases it. Kept separate so the bug-prone refcount logic is headlessly unit-tested
 /// while the AX side effects stay thin in the manager.
-struct WindowParkingLedger: Equatable {
+///
+/// Native Swift, the single source of truth. It is a `final class` (not the former value struct) so
+/// the single ``WindowParkingManager`` owner holds it by reference (`private let ledger`) without a
+/// `let`→`var` ripple. It is singly owned by the `@MainActor` ``WindowParkingManager`` and never
+/// value-compared / copied, so no value semantics are lost by holding it as a reference.
+final class WindowParkingLedger {
     /// A window parked on the VD: the frame to restore to, the achieved on-VD size to capture at,
     /// and how many lanes currently hold it.
     struct Parked: Equatable {
@@ -31,13 +36,15 @@ struct WindowParkingLedger: Equatable {
         case needsMove
     }
 
-    private(set) var parked: [CGWindowID: Parked] = [:]
-    private(set) var channelWindow: [UInt32: CGWindowID] = [:]
+    private var parked: [CGWindowID: Parked] = [:]
+    private var channelWindow: [UInt32: CGWindowID] = [:]
+
+    init() {}
 
     /// Decide a park request, applying the refcount bookkeeping for the REUSE cases. A fresh window
     /// returns `.needsMove`; the caller AX-moves it and commits via ``recordMove`` ONLY on success
     /// (so a failed move leaves no orphan record).
-    mutating func park(channelID: UInt32, windowID: CGWindowID) -> ParkDecision {
+    func park(channelID: UInt32, windowID: CGWindowID) -> ParkDecision {
         // Same lane re-parking the same window (UDP hello retransmit / re-mint) — never double-count.
         if channelWindow[channelID] == windowID, let p = parked[windowID] {
             return .reuse(p.achievedSize)
@@ -52,8 +59,10 @@ struct WindowParkingLedger: Equatable {
         return .needsMove
     }
 
-    /// Commit a successful first move (after ``park`` returned `.needsMove`).
-    mutating func recordMove(
+    /// Commit a successful first move (after ``park`` returned `.needsMove`). NOTE: a plain
+    /// dictionary assignment — it OVERWRITES any existing `parked[windowID]`, RESETTING refcount to
+    /// 1 (it does NOT accumulate).
+    func recordMove(
         channelID: UInt32,
         windowID: CGWindowID,
         pid: pid_t,
@@ -65,8 +74,10 @@ struct WindowParkingLedger: Equatable {
     }
 
     /// Release `channelID`'s hold; returns the window to RESTORE iff its last lane just released it.
-    /// Idempotent: a second call for the same channelID finds no binding and returns `nil`.
-    mutating func unpark(channelID: UInt32) -> RestoreTarget? {
+    /// The channel binding is removed UNCONDITIONALLY FIRST, THEN `parked` is consulted — so an
+    /// unknown channel, or a channel whose window is no longer parked, both return `nil` with the
+    /// binding already gone. Idempotent.
+    func unpark(channelID: UInt32) -> RestoreTarget? {
         guard let windowID = channelWindow.removeValue(forKey: channelID), var p = parked[windowID] else { return nil }
         p.refcount -= 1
         if p.refcount <= 0 {
@@ -77,9 +88,11 @@ struct WindowParkingLedger: Equatable {
         return nil
     }
 
-    /// Drain ALL parked windows (shutdown / VD termination): return every restore target and clear
-    /// all state. Idempotent (a second drain returns `[]`).
-    mutating func drainAll() -> [RestoreTarget] {
+    /// Drain ALL parked windows (shutdown / VD termination): return one restore target per DISTINCT
+    /// parked window and clear all state. Idempotent (a second drain returns `[]`). The order is
+    /// `Dictionary`'s unspecified iteration order; not load-bearing (each target is AX-restored
+    /// independently).
+    func drainAll() -> [RestoreTarget] {
         let targets = parked.map {
             RestoreTarget(windowID: $0.key, pid: $0.value.pid, originalFrame: $0.value.originalFrame)
         }

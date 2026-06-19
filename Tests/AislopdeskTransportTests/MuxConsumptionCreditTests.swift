@@ -154,7 +154,7 @@ final class MuxConsumptionCreditTests: XCTestCase {
     func testSendInputSplitsLargePasteIntoBoundedFrames() async throws {
         final class FrameRecorder: @unchecked Sendable {
             private let lock = NSLock()
-            private var decoder = FrameDecoder()
+            private let decoder = FrameDecoder()
             private(set) var inputs: [Data] = []
             func ingest(_ inner: Data) {
                 lock.lock()

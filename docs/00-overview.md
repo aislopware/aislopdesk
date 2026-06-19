@@ -4,7 +4,7 @@
 
 ## 1. What it is
 
-> **Philosophy: commit to one good choice per problem.** One renderer (libghostty), one structured view (the read-only inspector), one Rust core that owns the wire. Where there is a real choice the design picks it and proves it, rather than shipping fallbacks.
+> **Philosophy: commit to one good choice per problem.** One renderer (libghostty), one structured view (the read-only inspector), one native-Swift core that owns the wire. Where there is a real choice the design picks it and proves it, rather than shipping fallbacks.
 
 A remote-coding app for Apple platforms (macOS host, macOS + iOS/iPadOS client), native Swift/SwiftUI; build floor macOS 26 / iOS 26, developed on Apple Silicon. The use-case is daily coding — running a shell and Claude Code on a remote machine and driving it from another device. Not game-streaming.
 
@@ -41,7 +41,7 @@ companion. Three independent transports, sharing no sockets, message set, or ver
 - **Read-only inspector** (the differentiator) — a companion for content that is awkward to read in scrollback (subagent transcripts, tool I/O, todos, workflow). Data = tailing the Claude Code JSONL transcript + hooks → events over a second NWConnection. Read-only, so it avoids every cost of driving the agent. ([16])
 
 ### Core / shell split
-The performance-critical **core is Rust** — crate `rust/aislopdesk-core` (safe, zero-dep, `#![forbid(unsafe_code)]`): the wire codecs (terminal WireMessage + video protocol), FEC + frame reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control. It is exposed over a **C-ABI** (`rust/aislopdesk-ffi`, the only crate allowed `unsafe`; rlib + staticlib + cdylib + a cbindgen-generated `aislopdesk_ffi.h`, linked through the `CAislopdeskFFI` target). The **Swift/SwiftUI apps are the platform shell** — capture (ScreenCaptureKit), HW codec (VideoToolbox), Metal, input injection, PTY spawn, UI — calling the core across that boundary. The same core is the basis for a future **Android client** over C-ABI/JNI.
+The performance-critical **core is native Swift** — the wire codecs (terminal WireMessage + video protocol), FEC + frame reassembly, the realtime controllers (congestion/ABR, FPS governor, LTR, decode gate/sequencer, jitter-depth pacer, delay-gradient trendline, recovery admission), coordinate mapping, and the terminal/PTY protocol incl. the SSH-style channel mux + per-channel flow control. It is the **single source of truth for the wire**, frozen by a golden corpus (`golden/golden_vectors.json`) so a refactor can't silently shift a byte. The only non-Swift code is one tiny C target, `Sources/CAislopdeskSIMD` — a single aarch64 NEON kernel (GF(2⁸) region multiply for FEC) with a scalar fallback, pinned bit-for-bit against the Swift scalar path. Frame hashing is pure scalar Swift (xxHash64's 64-bit multiply has no native NEON instruction, so scalar beats a synthesized-NEON fold ~3.4× on Apple Silicon). The same **Swift/SwiftUI apps are the platform shell** around the core — capture (ScreenCaptureKit), HW codec (VideoToolbox), Metal, input injection, PTY spawn, UI.
 
 ## 3. Major decisions (summary — details in [DECISIONS.md](DECISIONS.md))
 
@@ -73,8 +73,7 @@ production build, not parked into a later phase. The measurements held ([18 §0]
 1.1ms, ~8–10 windows/engine, low-latency-RC 7.5ms, cursor-strip clean), and every phase has
 since shipped — the terminal path, the read-only inspector, persistence/reconnect, the iOS
 client, the GUI video path, and the workspace/canvas. The dated build logs that record this,
-phase by phase, are docs 19 and 21–39 (kept as history). Remaining work is polish and the
-Android port over the C ABI.
+phase by phase, are docs 19 and 21–39 (kept as history). Remaining work is polish.
 
 > The project's hardest risk (macOS input injection — [05]/[08] R1/R2) lives entirely on the
 > GUI-window path; terminal panes sidestep it (input = bytes → PTY stdin).

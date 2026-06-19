@@ -1,4 +1,0 @@
-module CAislopdeskFFI {
-    header "aislopdesk_ffi.h"
-    export *
-}

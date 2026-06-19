@@ -156,7 +156,7 @@ final class MuxSubChannelFlowTests: XCTestCase {
         XCTAssertEqual(sink.totalBytes, framed.count, "every byte of the framed message is written exactly once")
         // The receiver's per-channel FrameDecoder reassembles the inner WireMessage across the
         // .channelData chunk boundaries — feed the concatenated chunks and assert the ORIGINAL frame.
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(sink.concatenated)
         let reassembled = try decoder.nextMessage()
         guard case let .input(bytes) = reassembled else {
@@ -199,7 +199,7 @@ final class MuxSubChannelFlowTests: XCTestCase {
         await fulfillment(of: [done], timeout: 5)
         _ = await task.value
 
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(sink.concatenated)
         let first = try decoder.nextMessage()
         let second = try decoder.nextMessage()
@@ -260,7 +260,7 @@ final class MuxSubChannelFlowTests: XCTestCase {
         _ = await taskB.value
 
         // The wire must reassemble to EXACTLY two intact .input frames (no interleave → no corruption).
-        var decoder = FrameDecoder()
+        let decoder = FrameDecoder()
         decoder.append(sink.concatenated)
         let f1 = try decoder.nextMessage()
         let f2 = try decoder.nextMessage()

@@ -17,6 +17,7 @@
 
 #if os(macOS)
 import AislopdeskVideoHost
+import AislopdeskVideoProtocol
 import AppKit
 import CoreImage
 import CoreMedia
@@ -144,7 +145,7 @@ let task = Task {
         // substrate. Isolates whether the CGVirtualDisplay's SYNTHESIZED vsync (no hardware VBLANK)
         // is what slips during scroll (vs a physical display). Restored on every exit path.
         if useVD {
-            let geo = RustVideoHostFFI.vdGeometry(pointWidth: 1920, pointHeight: 1080, scale: 2)
+            let geo = VirtualDisplayGeometry(pointWidth: 1920, pointHeight: 1080, scale: 2)
             let vd = VirtualDisplay()
             guard let vdID = await vd.create(geo, fps: 60) else { eprint("VD create FAILED")
                 exit(1)
@@ -239,22 +240,77 @@ let task = Task {
             let sflag = ScrollFlag()
             if let spid = selfScrollPid {
                 let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+                let env = ProcessInfo.processInfo.environment
+                let scrollLines = Int32(env["PROBE_SCROLL_LINES"].flatMap { Int($0) } ?? 3) // ± lines/tick
+                let scrollMs = env["PROBE_SCROLL_MS"].flatMap { Double($0) } ?? 8.0 // tick interval (ms)
+                let reverseTicks = env["PROBE_SCROLL_REVERSE"].flatMap { Int($0) } ?? 64 // reverse every N ticks
+                // SMOOTH mode (PROBE_SMOOTH=<pixels/tick>): mimic the PRODUCTION trackpad injection —
+                // pixel units + IsContinuous + a Began→Changed scroll PHASE, posted via the HID tap to
+                // the FOCUSED window (window must be frontmost). This is what makes Chromium/Electron run
+                // its native smooth-scroll, vs legacy line-wheel postToPid (per-notch stepping).
+                let smoothPx = env["PROBE_SMOOTH"].flatMap { Int32($0) }
+                // RESAMPLE mode (PROBE_RESAMPLE=1): feed a LOW-rate input (every PROBE_INPUT_DIV ticks)
+                // through the REAL `ScrollResampler` and post its drained output EVERY tick — exactly
+                // what the host's InputInjector pump does. Proves end-to-end that low-rate input → ~tick
+                // -rate output → 60fps Chromium (vs the same low-rate posted DIRECTLY = ~35fps).
+                let probeResample = env["PROBE_RESAMPLE"] != nil
+                let inputDiv = max(1, env["PROBE_INPUT_DIV"].flatMap { Int($0) } ?? 2)
                 eprint(
-                    "self-scroll → pid \(spid) @\(Int(center.x)),\(Int(center.y)) (wheel ±3 lines/8ms, reverse 0.5s)",
+                    "self-scroll → pid \(spid) @\(Int(center.x)),\(Int(center.y)) (\(probeResample ? "RESAMPLE inputDiv=\(inputDiv) " : "")\(smoothPx != nil ? "SMOOTH pixel+phase \(smoothPx!)px" : "wheel \(scrollLines)line")/\(Int(scrollMs))ms, reverse \(reverseTicks))",
                 )
+                func postPixelScroll(dy: Int32, scrollPhase: Int64, momentumPhase: Int64) {
+                    guard let ev = CGEvent(
+                        scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0,
+                    ) else { return }
+                    ev.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                    if scrollPhase != 0 { ev.setIntegerValueField(.scrollWheelEventScrollPhase, value: scrollPhase) }
+                    if momentumPhase !=
+                        0 { ev.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentumPhase) }
+                    ev.location = center
+                    ev.post(tap: .cghidEventTap)
+                }
                 Thread.detachNewThread {
                     var i = 0
+                    var started = false
+                    var resampler = ScrollResampler()
                     while sflag.run {
-                        let dir: Int32 = (i / 64) % 2 == 0 ? -3 : 3 // reverse every 64 ticks (~0.5s)
-                        if let ev = CGEvent(
+                        if probeResample, let px = smoothPx {
+                            let dir: Int32 = (i / reverseTicks) % 2 == 0 ? -px : px
+                            if i % inputDiv == 0 {
+                                let markers = resampler.ingest(
+                                    dx: 0, dy: Double(dir * Int32(inputDiv)),
+                                    scrollPhase: started ? 2 : 1, momentumPhase: 0, continuous: true,
+                                )
+                                for m in markers {
+                                    postPixelScroll(
+                                        dy: Int32(m.dy),
+                                        scrollPhase: Int64(m.scrollPhase),
+                                        momentumPhase: Int64(m.momentumPhase),
+                                    )
+                                }
+                                started = true
+                            }
+                            if let s = resampler.drain() {
+                                postPixelScroll(
+                                    dy: Int32(s.dy),
+                                    scrollPhase: Int64(s.scrollPhase),
+                                    momentumPhase: Int64(s.momentumPhase),
+                                )
+                            }
+                        } else if let px = smoothPx {
+                            let dir: Int32 = (i / reverseTicks) % 2 == 0 ? -px : px
+                            postPixelScroll(dy: dir, scrollPhase: started ? 2 : 1, momentumPhase: 0)
+                            started = true
+                        } else if let ev = CGEvent(
                             scrollWheelEvent2Source: nil, units: .line,
-                            wheelCount: 1, wheel1: dir, wheel2: 0, wheel3: 0,
+                            wheelCount: 1, wheel1: (i / reverseTicks) % 2 == 0 ? -scrollLines : scrollLines,
+                            wheel2: 0, wheel3: 0,
                         ) {
                             ev.location = center // hit-test over the window's editor area
                             ev.postToPid(spid)
                         }
                         i += 1
-                        Thread.sleep(forTimeInterval: 0.008)
+                        Thread.sleep(forTimeInterval: scrollMs / 1000.0)
                     }
                 }
             }

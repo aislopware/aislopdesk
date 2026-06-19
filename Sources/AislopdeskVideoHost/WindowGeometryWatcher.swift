@@ -4,6 +4,175 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+/// PURE geometry for the DIALOG-EXPAND feature (host-side, unit-tested): decide the capture region
+/// = the target window frame ∪ any associated panel windows (a file-open / print / share dialog
+/// the OS attaches to the window), so a dialog larger than the streamed window shows in full and is
+/// clickable — instead of being cropped to the window frame by the display-anchored crop.
+///
+/// Native Swift — the single source of truth (the Rust core's `capture_region` mirrored this; it is
+/// now reabsorbed). STATELESS: every function is pure; `windowsInFront` is iterated in order
+/// (front-to-back, the slice strictly IN FRONT of the target). All `CGRect` operations
+/// (standardized `width`/`height`, `intersection`, `union`, the `CGRectNull` outcome) delegate to
+/// the CG-faithful native `CGRect` methods — this enum does not reinvent them.
+///
+/// The association is by **owning process**: the open/save panel is attributed to the host app's
+/// own pid (HW-verified 2026-06-12: a Chrome file dialog enumerates as `pid==Chrome, layer==0,
+/// name=="Open"`). So a panel qualifies when it is a DIFFERENT window owned by the SAME pid, on an
+/// *associatable* layer (``isAssociatableLayer``: `0` for sheets/dialogs, `101` for pop-up /
+/// context menus — HW-verified 2026-06-17 a VS Code gear menu enumerates as `pid==Code, layer==101`),
+/// overlapping the target by ≥ `minOverlapFraction` of the smaller rect's area.
+public enum CaptureRegionMath {
+    /// Minimum overlap fraction (of the smaller rect's area) for a same-pid front window to count
+    /// as an attached panel. Matches the Rust core's `DEFAULT_MIN_OVERLAP_FRACTION`.
+    public static let defaultMinOverlapFraction: Double = 0.30
+
+    /// Per-edge hysteresis threshold (points) for ``shouldRetarget``. Matches the Rust core's
+    /// `DEFAULT_MIN_DELTA`.
+    public static let defaultMinDelta: Double = 8
+
+    /// Whether a CG window level counts as "attached" to the streamed window for capture-region
+    /// expansion.
+    ///
+    /// `0` (`kCGNormalWindowLevel`) — file/save/print sheets & dialogs the OS attributes to the
+    /// app's own pid. `101` (`kCGPopUpMenuWindowLevel`) — pop-up / context / dropdown menus that
+    /// render as a SEPARATE same-pid window and can overhang the streamed window (HW-measured
+    /// 2026-06-17: VS Code's gear "Manage" menu enumerates at layer `101`).
+    ///
+    /// DELIBERATELY excludes the menu bar (`24`), Dock (`20`), and tooltips / status windows (`25`):
+    /// those are system chrome or transient — unioning them would drag the crop onto the top strip
+    /// (menu bar) or churn the encoder open/closed on every hover (tooltips).
+    public static func isAssociatableLayer(_ layer: Int) -> Bool {
+        layer == 0 || layer == 101
+    }
+
+    /// One on-screen window, as read from `CGWindowListCopyWindowInfo` (CG top-left points).
+    public struct WindowSnapshot: Equatable, Sendable {
+        public let windowID: UInt32
+        public let ownerPID: Int32
+        public let layer: Int
+        public let frame: CGRect
+        public init(windowID: UInt32, ownerPID: Int32, layer: Int, frame: CGRect) {
+            self.windowID = windowID
+            self.ownerPID = ownerPID
+            self.layer = layer
+            self.frame = frame
+        }
+    }
+
+    /// The union of `targetFrame` with every qualifying associated panel in `windowsInFront`
+    /// (front-to-back order, the slice strictly IN FRONT of the target), clamped to `displayBounds`.
+    /// Returns `targetFrame` (clamped) when nothing qualifies — i.e. no dialog, or the dialog fits
+    /// inside the window.
+    ///
+    /// A window qualifies as an attached panel when it is: a DIFFERENT window than the target, owned
+    /// by `targetPID`, on an associatable layer (``isAssociatableLayer`` — `0` sheets/dialogs, `101`
+    /// pop-up menus), and overlapping the target by a meaningful fraction (≥ `minOverlapFraction`
+    /// of the SMALLER rect's area — skips an incidental 1px edge touch). The whole panel frame joins
+    /// the union even where it overhangs the window.
+    public static func unionRegion(
+        targetFrame: CGRect,
+        targetWindowID: UInt32,
+        targetPID: Int32,
+        windowsInFront: [WindowSnapshot],
+        displayBounds: CGRect,
+        minOverlapFraction: Double = defaultMinOverlapFraction,
+    ) -> CGRect {
+        var union = targetFrame
+        // CGRect.width / .height are standardized (always ≥ 0).
+        // keep the two factors as a SEPARATE mul — no FMA (no add chained here, but kept explicit).
+        let targetArea = targetFrame.width * targetFrame.height
+        // `!(targetArea > 0.0)` (NOT `targetArea <= 0`) → NaN-faithful skip-guard: a zero/NaN area
+        // is skipped and falls back to the clamped frame. Reproduces the Rust core's exact predicate.
+        if !(targetArea > 0.0) {
+            return targetFrame.intersection(displayBounds)
+        }
+        for w in windowsInFront {
+            guard w.windowID != targetWindowID, w.ownerPID == targetPID, isAssociatableLayer(w.layer)
+            else { continue }
+            // CGRectIsNull is disjoint (a real gap) — an edge-touch / zero-area overlap is NOT null.
+            let inter = w.frame.intersection(targetFrame)
+            guard !inter.isNull else { continue }
+            // keep each product a SEPARATE mul — no FMA.
+            let interArea = inter.width * inter.height
+            let wArea = w.frame.width * w.frame.height
+            // Swift global `min(targetArea, wArea)` == `wArea < targetArea ? wArea : targetArea`
+            // (NaN-faithful ternary; differs from Swift.min on NaN — inputs finite here, kept exact).
+            let smallerArea = wArea < targetArea ? wArea : targetArea
+            // `>=` is inclusive (overlap exactly == fraction qualifies); negated guards stay `!(…)`
+            // to mirror the Rust core's NaN-faithful skip semantics.
+            if !(smallerArea > 0.0) || !(interArea / smallerArea >= minOverlapFraction) { continue }
+            union = union.union(w.frame)
+        }
+        let clamped = union.intersection(displayBounds)
+        return clamped.isNull ? targetFrame.intersection(displayBounds) : clamped
+    }
+
+    /// The list of OPAQUE content rectangles within the capture region: the target window frame
+    /// followed by each qualifying associated panel/popup, every rect clamped to `displayBounds`.
+    ///
+    /// Same qualification rule as ``unionRegion``. Where ``unionRegion`` returns the bounding box,
+    /// this returns the INDIVIDUAL rects so the client can mask the empty area BETWEEN them (the
+    /// black flank beside a narrow popup) to transparent — the union bounding box alone can't express
+    /// that hole. Front-to-back order, target first. A rect whose clamp to the display is null is
+    /// dropped; an empty result means nothing is on the display.
+    public static func contentRects(
+        targetFrame: CGRect,
+        targetWindowID: UInt32,
+        targetPID: Int32,
+        windowsInFront: [WindowSnapshot],
+        displayBounds: CGRect,
+        minOverlapFraction: Double = defaultMinOverlapFraction,
+    ) -> [CGRect] {
+        var rects: [CGRect] = []
+        let clampedTarget = targetFrame.intersection(displayBounds)
+        if !clampedTarget.isNull { rects.append(clampedTarget) }
+        // keep the two factors as a SEPARATE mul — no FMA.
+        let targetArea = targetFrame.width * targetFrame.height
+        // Mirror unionRegion's NaN-skips-guard: with a zero/NaN target area no popup qualifies (the
+        // overlap fraction is undefined), so return just the target. EXACT `!(targetArea > 0.0)`.
+        if !(targetArea > 0.0) { return rects }
+        for w in windowsInFront {
+            guard w.windowID != targetWindowID, w.ownerPID == targetPID, isAssociatableLayer(w.layer)
+            else { continue }
+            let inter = w.frame.intersection(targetFrame)
+            guard !inter.isNull else { continue }
+            // keep each product a SEPARATE mul — no FMA.
+            let interArea = inter.width * inter.height
+            let wArea = w.frame.width * w.frame.height
+            // NaN-faithful ternary min (NOT Swift.min): `wArea < targetArea ? wArea : targetArea`.
+            let smallerArea = wArea < targetArea ? wArea : targetArea
+            if !(smallerArea > 0.0) || !(interArea / smallerArea >= minOverlapFraction) { continue }
+            let clamped = w.frame.intersection(displayBounds)
+            if !clamped.isNull { rects.append(clamped) }
+        }
+        return rects
+    }
+
+    /// Hysteresis gate for committing a region change: each change is an encoder rebuild + IDR, so
+    /// only retarget when the desired region differs from the current capture region by more than
+    /// `minDelta` points on ANY edge. Returns true when the change is worth a rebuild. Uses `abs()`
+    /// and a strict `>`; a single edge differing by exactly `minDelta` does NOT retarget. The
+    /// capture regions fed here are always positive-size, so `.minX`/`.minY` equal the standardized
+    /// edges; the standardized `.width`/`.height` accessors give the size deltas.
+    public static func shouldRetarget(current: CGRect, desired: CGRect, minDelta: Double = defaultMinDelta) -> Bool {
+        abs(desired.minX - current.minX) > minDelta
+            || abs(desired.minY - current.minY) > minDelta
+            || abs(desired.width - current.width) > minDelta
+            || abs(desired.height - current.height) > minDelta
+    }
+
+    /// Whether a window-move geometry event should re-origin the input/cursor mapping to the PLAIN
+    /// window frame. NO while a DIALOG-EXPAND capture region is active (`activeRegionGlobal != nil`):
+    /// the mapping origin is then owned by the union region (set in `applyCaptureRegion` against
+    /// window∪dialog), and the stream is still union-sized. Re-origining to the plain window frame
+    /// would desync input/cursor from that stream — a normalized client point in the dialog area
+    /// (left/above the window) would map to a wrong absolute point (clicks land wrong) and the cursor
+    /// would report not-visible over the dialog.
+    public static func shouldReoriginToWindowOnGeometry(activeRegionGlobal: CGRect?) -> Bool {
+        activeRegionGlobal == nil
+    }
+}
+
 /// Watches a tracked window's geometry (move / resize / title) and emits
 /// ``WindowGeometryMessage`` for the geometry channel (doc 17 §3.8, doc 18 §B).
 ///
@@ -37,8 +206,8 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
     /// FRONT of the tracked window, computes the capture region = window ∪ any attached same-pid
     /// panel (a file-open dialog the OS attributes to the app's pid), and fires this handler with the
     /// GLOBAL-point union whenever it changes beyond hysteresis. Off (nil) ⇒ zero extra work. The
-    /// union math lives in the Rust core (`aislopdesk_core::capture_region`, via the C ABI); this
-    /// method only feeds it the `CGWindowListCopyWindowInfo` snapshot. queue-confined.
+    /// union math lives in ``CaptureRegionMath`` (pure native Swift, unit-tested); this method only
+    /// feeds it the `CGWindowListCopyWindowInfo` snapshot. queue-confined.
     /// `(unionGlobal, contentRectsGlobal)` — the capture-region bounding union AND the individual
     /// opaque content rects (window + popups, global points) the client masks the black flank with.
     public typealias UnionHandler = @Sendable (CGRect, [CGRect]) -> Void
@@ -115,9 +284,9 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
         }
     }
 
-    /// Enumerate windows IN FRONT of the tracked window, compute the capture-region union via the
-    /// Rust core (`aislopdesk_core::capture_region`), and fire the union handler when it changes
-    /// beyond hysteresis. queue-confined (called from ``pollOnce``). Display = the one under centre.
+    /// Enumerate windows IN FRONT of the tracked window, compute the capture-region union via
+    /// ``CaptureRegionMath`` (native Swift), and fire the union handler when it changes beyond
+    /// hysteresis. queue-confined (called from ``pollOnce``). Display = the one under centre.
     private func pollAssociatedUnion(targetFrameVR: VideoRect) {
         guard let handler = associatedUnionHandler else { return }
         let targetFrame = CGRect(
@@ -135,17 +304,17 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
         guard let all = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]
         else { return }
         // CGWindowList is FRONT-to-back: take the slice strictly in front of the tracked window.
-        var inFront: [CaptureWindow] = []
+        var inFront: [CaptureRegionMath.WindowSnapshot] = []
         for w in all {
             let wid = (w[kCGWindowNumber as String] as? UInt32) ?? 0
             if wid == windowID { break } // reached the tracked window — the rest are behind it
             guard let bd = w[kCGWindowBounds as String] as? [String: Any],
                   let r = CGRect(dictionaryRepresentation: bd as CFDictionary) else { continue }
             let ownerPID = Int32((w[kCGWindowOwnerPID as String] as? Int) ?? -1)
-            let layer = Int64((w[kCGWindowLayer as String] as? Int) ?? Int.min)
-            inFront.append(CaptureWindow(windowID: wid, ownerPID: ownerPID, layer: layer, frame: r))
+            let layer = (w[kCGWindowLayer as String] as? Int) ?? Int.min
+            inFront.append(.init(windowID: wid, ownerPID: ownerPID, layer: layer, frame: r))
         }
-        let union = RustVideoHostFFI.captureUnionRegion(
+        let union = CaptureRegionMath.unionRegion(
             targetFrame: targetFrame,
             targetWindowID: UInt32(windowID),
             targetPID: Int32(pid),
@@ -153,11 +322,11 @@ public final class WindowGeometryWatcher: @unchecked Sendable {
             displayBounds: displayBounds,
         )
         let baseline = lastUnionEmitted.isNull ? targetFrame : lastUnionEmitted
-        guard RustVideoHostFFI.captureShouldRetarget(current: baseline, desired: union) else { return }
+        guard CaptureRegionMath.shouldRetarget(current: baseline, desired: union) else { return }
         lastUnionEmitted = union
         // The INDIVIDUAL opaque rects (window + popups) so the client can mask the black flank
         // between them — the union bbox alone can't express the hole beside a narrow popup.
-        let contentRects = RustVideoHostFFI.captureContentRects(
+        let contentRects = CaptureRegionMath.contentRects(
             targetFrame: targetFrame,
             targetWindowID: UInt32(windowID),
             targetPID: Int32(pid),

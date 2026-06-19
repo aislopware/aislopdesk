@@ -14,19 +14,24 @@ import Foundation
 public enum KeepaliveTiming {
     // MARK: Constants (the timing contract — RFC 7675 §5.1 / RFC 9000 §10.1.2)
 
+    //
+    // Native Swift twin of `aislopdesk_core::keepalive` — fixed compile-time constants (seconds),
+    // the SINGLE source of truth shared by the client keepalive timer and the host idle-reaper so
+    // host and client cannot silently drift apart.
+
     /// Client keepalive cadence (seconds). RFC 7675 §5.1 consent-check default is 5 s; well
     /// under the 30 s NAT-UDP mapping expiry (RFC 9000 §10.1.2) so a single empty 2-byte
     /// datagram per 5 s also refreshes the NetBird/WireGuard path mapping.
-    public static let keepaliveInterval: TimeInterval = 5
+    public static let keepaliveInterval: TimeInterval = 5.0
 
     /// Host idle threshold (seconds) before a keepalive-proven flow is declared dead. RFC 7675
     /// 30 s consent expiry = 6× the 5 s interval, tolerating ~5 consecutive keepalive losses
     /// before reaping (mobile burst-loss safe). The minimum-safe ratio is 3× (RFC 9000
     /// §10.1.2 / WireGuard 10 s passive); 6× is comfortable for a video session where a 30 s
     /// slot-reclaim latency is fine.
-    public static let idleTimeout: TimeInterval = 30
+    public static let idleTimeout: TimeInterval = 30.0
 
     /// Host reaper scan cadence (seconds) — coarse, = the keepalive interval, so the
     /// worst-case reclaim latency is `idleTimeout + reaperTick` ≤ 35 s.
-    public static let reaperTick: TimeInterval = 5
+    public static let reaperTick: TimeInterval = 5.0
 }

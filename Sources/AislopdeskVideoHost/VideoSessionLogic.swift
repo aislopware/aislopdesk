@@ -385,34 +385,16 @@ public enum InputInjectorRaisePolicy {
 /// release FIRST — guaranteeing a click never begins inside a stuck selection. Only
 /// down/up mutate the held set; moves/drags/scroll/keys/text pass through unchanged.
 ///
-/// The bookkeeping ALGORITHM (the held-set fold) lives in the Rust core
-/// (`aislopdesk_core::input_button_balance`, the SINGLE SOURCE OF TRUTH shared with Android over
-/// the C ABI); this class is a thin owner of the opaque core handle, reached via
-/// ``RustVideoHostFFI``. It is a `final class` (not the former value struct) so it can own the
-/// handle and free it in `deinit`. `@unchecked Sendable` is sound because the single owner
-/// (``InputInjector``) serializes every call under its `balanceLock` (and the tests run on one
-/// thread), so no two threads race the handle.
-public final class InputButtonBalance: @unchecked Sendable {
-    private let handle: OpaquePointer
-
-    /// The logically-held buttons, reconstructed from the core's bitmask. Mirrors the former
-    /// `Set<MouseButton>` (the golden-parity tests read `held.contains` / `held.isEmpty` / `held`).
-    public var held: Set<MouseButton> {
-        let mask = RustVideoHostFFI.inputButtonBalanceHeldMask(handle)
-        var set: Set<MouseButton> = []
-        if mask & 0b001 != 0 { set.insert(.left) }
-        if mask & 0b010 != 0 { set.insert(.right) }
-        if mask & 0b100 != 0 { set.insert(.other) }
-        return set
-    }
-
-    public init() {
-        handle = RustVideoHostFFI.inputButtonBalanceNew()
-    }
-
-    deinit {
-        RustVideoHostFFI.inputButtonBalanceFree(handle)
-    }
+/// The held set is keyed on ``MouseButton`` (a `UInt8`-backed enum, left=0/right=1/other=2), so
+/// `Set<MouseButton>` membership is the SINGLE SOURCE OF TRUTH for the fold — only `mouseDown`/
+/// `mouseUp` ever mutate it. A value `struct` (`Sendable, Equatable`): the lone live owner
+/// (``InputInjector``) serializes every `plan(for:)` under its `balanceLock`, and the golden-parity
+/// tests fold it on one thread, so the by-value held set is never raced.
+public struct InputButtonBalance: Sendable, Equatable {
+    /// The logically-held buttons (keyed on ``MouseButton``; the golden-parity tests read
+    /// `held.contains` / `held.isEmpty` / `held`).
+    public private(set) var held: Set<MouseButton> = []
+    public init() {}
 
     /// What to do before injecting `event`.
     public struct Plan: Equatable, Sendable {
@@ -435,22 +417,25 @@ public final class InputButtonBalance: @unchecked Sendable {
     /// Folds `event` into the held set and returns the injection plan. A `mouseDown` for an
     /// already-held button asks for a pre-release (then stays held — the fresh down owns it);
     /// a `mouseUp` for a HELD button releases it (post it); a `mouseUp` for a button NOT held
-    /// is a redundant/duplicate up and is SUPPRESSED; everything else passes through. Delegates
-    /// to the Rust core (only the event variant + button drive the decision).
-    public func plan(for event: InputEvent) -> Plan {
-        let button: UInt8 =
-            switch event {
-            case let .mouseDown(b, _, _, _, _),
-                 let .mouseUp(b, _, _, _, _),
-                 let .mouseDrag(b, _, _, _, _):
-                b.rawValue
-            default:
-                0
+    /// is a redundant/duplicate up and is SUPPRESSED; everything else passes through.
+    public mutating func plan(for event: InputEvent) -> Plan {
+        switch event {
+        case let .mouseDown(button, _, _, _, _):
+            let stuck = held.contains(button)
+            held.insert(button)
+            return Plan(preRelease: stuck ? button : nil)
+        case let .mouseUp(button, _, _, _, _):
+            if held.remove(button) != nil {
+                return Plan() // first up for a held button — release it
             }
-        let result = RustVideoHostFFI.inputButtonBalancePlan(
-            handle, kind: event.messageType, button: button,
-        )
-        return Plan(preRelease: result.preRelease, suppress: result.suppress)
+            return Plan(suppress: true) // duplicate / orphan up — drop it (idempotent)
+        case .mouseMove,
+             .mouseDrag,
+             .scroll,
+             .key,
+             .text:
+            return Plan()
+        }
     }
 }
 
@@ -623,6 +608,14 @@ public struct RecoveryDatagramRouter: Sendable {
     }
 
     /// Decides what to do with one raw recovery datagram.
+    ///
+    /// A non-streaming session ignores the datagram before any decode; an undecodable datagram
+    /// drops (a corrupt single packet must never crash the receiver — same contract as the
+    /// reassembler); otherwise the decoded ``RecoveryMessage`` maps to its ``Decision``. The
+    /// guaranteed-recovery escalation (`requestIDR`) is ALWAYS a real `forceKeyframe` and can never
+    /// degrade to an LTR refresh; the wire sentinel (``RecoveryMessage/noFrameDecodedSentinel``)
+    /// maps to a clean `nil` decode frontier. Recovery rides its OWN channel — its leading type
+    /// bytes (1/2/3) alias ``InputEvent``, so this must never be fed the input grammar.
     public func route(datagram: Data, mediaFlowing: Bool) -> Decision {
         guard mediaFlowing else { return .ignoreNotStreaming }
         let message: RecoveryMessage
@@ -651,6 +644,9 @@ public struct RecoveryDatagramRouter: Sendable {
         case let .networkStats(report):
             return .networkStats(report)
         case let .requestFragments(frameID, fragIndices):
+            // NACK / selective ARQ: the client is missing specific DATA fragments of `frameID`. The
+            // actor looks each up by `(frameID, fragIndex)` in its send-history ring and re-enqueues
+            // the originals; a ring miss is a no-op. NOT a forced keyframe — cheaper than a recovery-IDR.
             return .retransmitFragments(frameID: frameID, fragIndices: fragIndices)
         }
     }
@@ -749,18 +745,21 @@ public struct NetworkEstimate: Sendable, Equatable {
         owdTrendModified = Double(owdTrendModifiedMilli) / 1000
         if let rtt = rttMillis {
             let sample = Double(rtt)
+            // keep mul+add separate — FMA breaks bit-exact parity
             smoothedRTTMillis = smoothedRTTMillis == 0 ? sample :
                 (smoothedRTTMillis * (1 - Self.rttAlpha) + sample * Self.rttAlpha)
             if sample < minRTTMillis {
                 minRTTMillis = sample
             } else if minRTTMillis.isFinite {
                 // Slow re-baseline so a one-off low doesn't pin the baseline below the real path RTT.
+                // keep mul+add separate — FMA breaks bit-exact parity
                 minRTTMillis += (sample - minRTTMillis) * Self.minRTTDecay
             }
         }
         // Loss rate: guard divide-by-zero (a report with 0 frames received contributes a 0 sample).
         let lossSample = framesReceived > 0 ? Double(unrecovered) / Double(framesReceived) : 0
         lastLossSample = lossSample
+        // keep mul+add separate — FMA breaks bit-exact parity
         lossRate = lossRate * (1 - Self.lossAlpha) + lossSample * Self.lossAlpha
         // OWD gradient: only meaningful after a short warmup (the first sample has no predecessor).
         if sampleCount >= 2 {
@@ -775,7 +774,7 @@ public struct NetworkEstimate: Sendable, Equatable {
 /// cadence anchors and answers: "given the clock and what was last encoded, should the
 /// frameQueue timer re-encode the cached buffer as a forced IDR right now?". No I/O — the
 /// caller owns the retained buffer, the timer, and the encode. The methods are called
-/// only on the capture `frameQueue` (single-threaded), so the single handle is never raced.
+/// only on the capture `frameQueue` (single-threaded), so the single instance is never raced.
 ///
 /// Why this lives beside ``RecoveryDatagramRouter`` / ``InputMotionCoalescer``: it is the
 /// "decider beside the actor" discipline — the policy is pure and headlessly unit-testable
@@ -784,55 +783,67 @@ public struct NetworkEstimate: Sendable, Equatable {
 /// the timer calls ``shouldReencode(now:forcedLatched:hasRetainedBuffer:)`` then
 /// ``recordSynthetic(now:)`` when it fires.
 ///
-/// The decision ALGORITHM (the quiet-window + synthetic-anchor heartbeat) lives in the Rust core
-/// (`aislopdesk_core::static_idr_decider`, the single source of truth shared with Android over the
-/// C ABI); this class is a thin owner of the opaque core handle, reached via ``RustVideoHostFFI``.
-/// It is a `final class` (not the former value struct) so it can own the handle and free it in
-/// `deinit`. `@unchecked Sendable` is sound because the single owner (``WindowCapturer``) only
-/// touches it on `frameQueue` (and the loopback/tests from one thread), so no two threads race the
-/// handle. `Equatable` compares the four observable anchors (preserves the golden-parity sanity test).
+/// The decision ALGORITHM (the quiet-window + synthetic-anchor heartbeat) is native Swift here —
+/// the single source of truth for the host. It is a `final class` (not the former value struct)
+/// so the cadence anchors mutate through the shared reference held by ``WindowCapturer`` without
+/// rippling `let`→`var` through every call site. `@unchecked Sendable` is sound because the single
+/// owner only touches it on `frameQueue` (and the loopback/tests from one thread), so no two
+/// threads race the state. `Equatable` compares the four observable anchors (the former value
+/// struct's synthesized `Equatable`); used only by the golden-parity sanity test.
 public final class StaticIDRDecider: @unchecked Sendable, Equatable {
-    private let handle: OpaquePointer
-
     /// Heartbeat cadence (seconds). Mirrors `WindowCapturer.heartbeatIDRInterval` (1.0).
-    public var heartbeat: TimeInterval { RustVideoHostFFI.staticIDRDeciderHeartbeat(handle) }
+    public let heartbeat: TimeInterval
     /// Quiet window (seconds): suppress a synthetic re-encode if a REAL `.complete` frame
-    /// was encoded within this window. Default = heartbeat (one cadence).
-    public var quietWindow: TimeInterval { RustVideoHostFFI.staticIDRDeciderQuietWindow(handle) }
+    /// was encoded within this window — a live screen drives IDRs through the normal path,
+    /// so the timer must not double-emit. Default = heartbeat (one cadence).
+    public let quietWindow: TimeInterval
+
     /// Uptime seconds of the last REAL `.complete`-frame encode (live path). 0 = none yet.
-    public var lastCompleteEncode: TimeInterval { RustVideoHostFFI.staticIDRDeciderLastCompleteEncode(handle) }
+    public private(set) var lastCompleteEncode: TimeInterval = 0
     /// Uptime seconds of the last SYNTHETIC (timer-driven cached) re-encode. 0 = none yet.
-    public var lastSyntheticEncode: TimeInterval { RustVideoHostFFI.staticIDRDeciderLastSyntheticEncode(handle) }
+    public private(set) var lastSyntheticEncode: TimeInterval = 0
 
     public init(heartbeat: TimeInterval, quietWindow: TimeInterval? = nil) {
-        handle = RustVideoHostFFI.staticIDRDeciderNew(heartbeat: heartbeat, quietWindow: quietWindow)
-    }
-
-    deinit {
-        RustVideoHostFFI.staticIDRDeciderFree(handle)
+        self.heartbeat = heartbeat
+        self.quietWindow = quietWindow ?? heartbeat
     }
 
     /// The capture path encoded a REAL frame at `now`. Re-anchors the live clock so the
     /// timer stays quiet while the screen is live, and a heartbeat measures from the last
-    /// real frame. Delegates to the Rust core.
+    /// real frame.
     public func onCompleteFrame(now: TimeInterval) {
-        RustVideoHostFFI.staticIDRDeciderOnCompleteFrame(handle, now: now)
+        lastCompleteEncode = now
     }
 
-    /// The timer fired a synthetic re-encode at `now`. Re-anchor the synthetic clock. Delegates
-    /// to the Rust core.
+    /// The timer fired a synthetic re-encode at `now`. Re-anchor the synthetic clock.
     public func recordSynthetic(now: TimeInterval) {
-        RustVideoHostFFI.staticIDRDeciderRecordSynthetic(handle, now: now)
+        lastSyntheticEncode = now
     }
 
-    /// Decision for a frameQueue timer tick. PURE (no mutation), delegated to the Rust core.
+    /// Decision for a frameQueue timer tick. PURE (no mutation).
     /// - `forcedLatched`: a client recovery/keyframe request is pending (drained by caller).
     /// - `hasRetainedBuffer`: a cached `.complete` pixel buffer exists to re-encode.
     /// Returns true iff the caller should re-encode the cached buffer as a forced IDR.
     public func shouldReencode(now: TimeInterval, forcedLatched: Bool, hasRetainedBuffer: Bool) -> Bool {
-        RustVideoHostFFI.staticIDRDeciderShouldReencode(
-            handle, now: now, forcedLatched: forcedLatched, hasRetainedBuffer: hasRetainedBuffer,
-        )
+        // No cached pixels ⇒ nothing to re-encode (e.g. before the first ever .complete frame).
+        guard hasRetainedBuffer else { return false }
+        // A real frame within the quiet window ⇒ the live path is (or just was) driving the
+        // stream; let it own the cadence, don't double-emit. (A recovery request while live is
+        // already serviced faster by the live `.complete` latch drain — the timer is the
+        // fallback only when the live path has gone quiet, so the quiet window gates forced too.)
+        let sinceComplete = now - lastCompleteEncode
+        if lastCompleteEncode != 0, sinceComplete < quietWindow { return false }
+        // Recovery request always wins once the live path is quiet (latency-critical: a client
+        // is frozen). Fire regardless of heartbeat phase.
+        if forcedLatched { return true }
+        // Otherwise: heartbeat — measured from the last SYNTHETIC emission only (SHARPNESS,
+        // 2026-06-10; was `max(lastComplete, lastSynthetic)`). Measuring from the last REAL frame
+        // made the FIRST crisp re-anchor after a scroll wait a full heartbeat even though the
+        // quiet window had long passed; Parsec re-sharpens in ~1 s. With the synthetic-only anchor
+        // the first crisp fires as soon as the quiet window clears (~1 s after motion stops),
+        // while the steady-state static cadence stays one `heartbeat` apart.
+        if lastSyntheticEncode == 0 { return true } // armed, none emitted yet, quiet ⇒ fire now
+        return (now - lastSyntheticEncode) >= heartbeat
     }
 
     /// Value-equal iff all four observable anchors match (the former value struct's synthesized

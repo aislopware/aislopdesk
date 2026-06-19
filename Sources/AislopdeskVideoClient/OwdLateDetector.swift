@@ -1,3 +1,4 @@
+import AislopdeskVideoProtocol
 import Foundation
 
 /// Depth v3 (2026-06-12): per-frame one-way-delay SPIKE detector — the promotion signal for the
@@ -30,16 +31,7 @@ import Foundation
 /// self-sustain at depth 2 (the v2 pinning loop), so demote-on-clean actually happens.
 ///
 /// PURE + deterministic: caller injects every sample; headlessly unit-testable.
-///
-/// The detection ALGORITHM (the two-bucket min-baseline spike test) lives in the Rust core
-/// (`aislopdesk_core::owd_late_detector`, the SINGLE SOURCE OF TRUTH shared with Android over the C
-/// ABI); this class is a thin owner of the opaque core handle, reached via ``RustVideoClientFFI``.
-/// It is a `final class` (not the former value struct) so it can own the handle and free it in
-/// `deinit`. `@unchecked Sendable` is sound because the single owner
-/// (`AislopdeskVideoClientSession`) only touches it on its actor (and the tests from one thread),
-/// so no two threads race the handle. ``Config`` stays a pure Swift value type — env resolution
-/// (`AISLOPDESK_OWD_LATE_*`) stays Swift-side and the resolved scalars cross to the core at init.
-public final class OwdLateDetector: @unchecked Sendable {
+public struct OwdLateDetector: Sendable, Equatable {
     public struct Config: Sendable, Equatable {
         /// Baseline bucket span (ms). Baseline = min(current bucket, previous bucket) ⇒ effective
         /// history 1–2 buckets. Long enough to straddle multi-frame bursts (a whole burst must not
@@ -78,28 +70,60 @@ public final class OwdLateDetector: @unchecked Sendable {
         }
     }
 
-    private let handle: OpaquePointer
+    private let config: Config
+
+    /// Host send stamp unwrapped into a monotone double (the UInt32 wire stamp wraps at ~49 days;
+    /// accumulating wrap-aware deltas keeps owd continuous across the wrap).
+    private var unwrappedSendMs = 0.0
+    private var prevSendTs: UInt32?
+    /// Two-bucket rolling min over owd (see Config.bucketMs).
+    private var currentBucketMin = Double.infinity
+    private var previousBucketMin = Double.infinity
+    private var bucketStartArrivalMs: Double?
+    private var samples = 0
 
     public init(config: Config = Config()) {
-        handle = RustVideoClientFFI.owdLateDetectorNew(
-            bucketMs: config.bucketMs,
-            thresholdFloorMs: config.thresholdFloorMs,
-            thresholdIntervalFraction: config.thresholdIntervalFraction,
-            warmupSamples: config.warmupSamples,
-        )
-    }
-
-    deinit {
-        RustVideoClientFFI.owdLateDetectorFree(handle)
+        self.config = config
     }
 
     /// Folds one per-frame sample (the caller admits one per strictly-newer frameID via
     /// `TrendSampler`, so reorder/kfDup/ts==0 never reach here). Returns the deviation above
-    /// threshold (ms) when the sample is a network-late spike, else `nil`. Delegates to the Rust
-    /// core.
-    public func note(arrivalMs: Double, sendTs: UInt32, intervalMs: Double) -> Double? {
-        RustVideoClientFFI.owdLateDetectorNote(
-            handle, arrivalMs: arrivalMs, sendTs: sendTs, intervalMs: intervalMs,
+    /// threshold (ms) when the sample is a network-late spike, else `nil`.
+    public mutating func note(arrivalMs: Double, sendTs: UInt32, intervalMs: Double) -> Double? {
+        if let prev = prevSendTs {
+            // Wrap-aware monotone unwrap; the sampler guarantees strictly-newer frames, but a
+            // negative delta is tolerated as 0 forward progress (defense in depth). `max(0, …)` is
+            // an ORDERED Int max (no NaN concern — UInt32 wrap-delta), matching Rust `.max(0)`.
+            unwrappedSendMs += Double(max(0, sendTs.distanceWrapped(from: prev)))
+        }
+        prevSendTs = sendTs
+        let owd = arrivalMs - unwrappedSendMs
+
+        // Bucket rotation on ARRIVAL time (content gaps just stretch a bucket — harmless to min).
+        if let start = bucketStartArrivalMs {
+            if arrivalMs - start >= config.bucketMs {
+                previousBucketMin = currentBucketMin
+                currentBucketMin = .infinity
+                bucketStartArrivalMs = arrivalMs
+            }
+        } else {
+            bucketStartArrivalMs = arrivalMs
+        }
+
+        // NaN-faithful ORDERED min nesting — `min(prev, min(cur, owd))`, mirroring the Rust core's
+        // `previous.min(current.min(owd))`. owd is finite here; `.infinity` seeds are ordered.
+        let baseline = min(previousBucketMin, min(currentBucketMin, owd))
+        currentBucketMin = min(currentBucketMin, owd)
+        samples += 1
+        guard samples >= config.warmupSamples, baseline.isFinite else { return nil }
+
+        // ORDERED max for the threshold (floor vs fraction × interval); `max(0, intervalMs)` guards
+        // a stray negative interval. Mirrors Rust `floor.max(fraction * interval.max(0.0))`.
+        let threshold = max(
+            config.thresholdFloorMs,
+            config.thresholdIntervalFraction * max(0, intervalMs),
         )
+        let deviation = owd - baseline
+        return deviation > threshold ? deviation - threshold : nil
     }
 }

@@ -12,7 +12,7 @@ final class MuxChannelSessionPingTests: XCTestCase {
     func testPingIsAnsweredWithEchoedPong() async throws {
         final class FrameRecorder: @unchecked Sendable {
             private let lock = NSLock()
-            private var decoder = FrameDecoder()
+            private let decoder = FrameDecoder()
             private(set) var messages: [WireMessage] = []
             func ingest(_ inner: Data) {
                 lock.lock()

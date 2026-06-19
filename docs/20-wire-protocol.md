@@ -5,14 +5,14 @@
 > transport (UDP vs TCP), different message set, separate version constants, and no shared
 > `WireMessage` / `FrameDecoder` / `Channel`.
 >
-> The framing, codecs, channel mux and flow control are implemented in the **Rust core**
-> (`rust/aislopdesk-core`, `terminal` namespace — safe Rust, zero deps, never panics on untrusted
-> input) and exposed over the C-ABI (`rust/aislopdesk-ffi`, header `aislopdesk_ffi.h`, linked via
-> the `CAislopdeskFFI` target). The Swift `AislopdeskProtocol` module is the thin shell over that
-> boundary and `AislopdeskTransport` drives the sockets. The wire format below is the contract both
-> ends implement. Binding decisions it realizes: dual data/control channel + plain TCP +
-> `TCP_NODELAY` + ET-style replay-buffer reconnect ([DECISIONS.md](DECISIONS.md),
-> [17](17-native-feel-synthesis.md) §2, [18](18-risk-resolutions.md) H).
+> The framing, codecs, channel mux and flow control are implemented in **native Swift** — the
+> `AislopdeskProtocol` module (never panics / traps on untrusted input: a malformed frame throws and
+> is dropped), with `AislopdeskTransport` driving the sockets. The codecs are the single source of
+> truth for the wire, frozen bit-for-bit by the golden corpus (`golden/golden_vectors.json`). The
+> wire format below is the contract both ends implement. Binding decisions it realizes: dual
+> data/control channel + plain TCP + `TCP_NODELAY` + ET-style replay-buffer reconnect
+> ([DECISIONS.md](DECISIONS.md), [17](17-native-feel-synthesis.md) §2,
+> [18](18-risk-resolutions.md) H).
 
 ## 1. Channels (dual TCP)
 
@@ -176,9 +176,8 @@ over plain TCP on the trusted private network.
 
 ## 7. Public API (`AislopdeskProtocol`)
 
-The Swift `AislopdeskProtocol` module is the shell surface over the Rust core's terminal codecs:
-the encode/decode and the streaming `FrameDecoder` run in `aislopdesk-core` behind the C-ABI, and
-these Swift types wrap that boundary.
+The Swift `AislopdeskProtocol` module *is* the terminal codecs: the encode/decode and the streaming
+`FrameDecoder` are native Swift, and these are the public types.
 
 - `enum Channel { case data, control }`
 - `enum WireMessage: Equatable, Sendable` — all cases above; `var messageType: UInt8`,
@@ -289,12 +288,12 @@ half-close the host intends, so a clean finish is always a disconnect that recon
 
 # PATH 2 — GUI video transport (UDP)
 
-> **STATUS: CURRENT.** The wire format, packetization, FEC and recovery logic live in the **Rust
-> core** (`rust/aislopdesk-core` video codecs, exposed via the C-ABI); `AislopdeskVideoHost`
-> (`NWVideoDatagramTransport`) and `AislopdeskVideoClient` (`NWVideoClientTransport`) are the Swift
-> shells that capture/encode/decode/render and drive the sockets. This secondary GUI video path
-> (doc 17 §3, doc 18 measured spike config) is **independent of PATH 1** — its own protocol over
-> plain UDP, with NO TCP, no `WireMessage`, no `FrameDecoder`.
+> **STATUS: CURRENT.** The wire format, packetization, FEC and recovery logic are **native Swift**
+> (the `AislopdeskVideoProtocol` codecs, with the FEC's GF(2⁸) NEON kernel in `CAislopdeskSIMD`);
+> `AislopdeskVideoHost` (`NWVideoDatagramTransport`) and `AislopdeskVideoClient`
+> (`NWVideoClientTransport`) capture/encode/decode/render and drive the sockets. This secondary GUI
+> video path (doc 17 §3, doc 18 measured spike config) is **independent of PATH 1** — its own
+> protocol over plain UDP, with NO TCP, no `WireMessage`, no `FrameDecoder`.
 
 ## 9. Path-2 overview
 
