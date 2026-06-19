@@ -88,4 +88,91 @@ final class HookIngestTests: XCTestCase {
         XCTAssertNil(HookParser.parse(Data(#"{"hook_event_name":"Unknown"}"#.utf8)))
         XCTAssertNil(HookParser.parse(Data("garbage".utf8)))
     }
+
+    // MARK: - W8: Notification / Stop / SessionEnd / UserPromptSubmit / PreToolUse
+
+    func testNotificationPermissionHookClassifiesAsPermission() {
+        let hook = HookParser.parse(Fixtures.data("hook-notification-permission.json"))
+        guard case let .notification(info)? = hook else {
+            XCTFail("expected .notification, got \(String(describing: hook))")
+            return
+        }
+        XCTAssertEqual(info.kind, .permission)
+        XCTAssertEqual(info.message, "Claude needs your permission to use Bash")
+        XCTAssertEqual(info.sessionID, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    }
+
+    func testNotificationWaitingHookClassifiesAsWaitingForInput() {
+        let hook = HookParser.parse(Fixtures.data("hook-notification-waiting.json"))
+        guard case let .notification(info)? = hook else {
+            XCTFail("expected .notification, got \(String(describing: hook))")
+            return
+        }
+        XCTAssertEqual(info.kind, .waitingForInput)
+        XCTAssertEqual(info.message, "Claude is waiting for your input")
+    }
+
+    func testNotificationOtherHookClassifiesAsOther() {
+        let hook = HookParser.parse(Fixtures.data("hook-notification-other.json"))
+        guard case let .notification(info)? = hook else {
+            XCTFail("expected .notification, got \(String(describing: hook))")
+            return
+        }
+        XCTAssertEqual(info.kind, .other)
+        XCTAssertEqual(info.message, "Authentication succeeded")
+    }
+
+    func testStopHookParsesWithLastAssistantMessage() {
+        let hook = HookParser.parse(Fixtures.data("hook-stop.json"))
+        guard case let .stop(info)? = hook else {
+            XCTFail("expected .stop, got \(String(describing: hook))")
+            return
+        }
+        XCTAssertEqual(info.sessionID, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        XCTAssertEqual(info.lastAssistantMessage, "Done — the build is green and all tests pass.")
+    }
+
+    func testSessionEndHookParses() {
+        let hook = HookParser.parse(Fixtures.data("hook-session-end.json"))
+        guard case let .sessionEnd(info)? = hook else {
+            XCTFail("expected .sessionEnd, got \(String(describing: hook))")
+            return
+        }
+        XCTAssertEqual(info.sessionID, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    }
+
+    func testUserPromptSubmitHookParses() {
+        let hook = HookParser.parse(Fixtures.data("hook-user-prompt-submit.json"))
+        guard case let .userPromptSubmit(info)? = hook else {
+            XCTFail("expected .userPromptSubmit, got \(String(describing: hook))")
+            return
+        }
+        XCTAssertEqual(info.sessionID, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    }
+
+    func testPreToolUseHookParsesToolName() {
+        let hook = HookParser.parse(Fixtures.data("hook-pre-tool-use.json"))
+        guard case let .preToolUse(use)? = hook else {
+            XCTFail("expected .preToolUse, got \(String(describing: hook))")
+            return
+        }
+        XCTAssertEqual(use.name, "Bash")
+        XCTAssertEqual(use.input["command"]?.stringValue, "swift build")
+    }
+
+    func testMalformedHookIsDroppedNotTrapped() {
+        // validate-then-drop: garbage JSON body returns nil, never traps.
+        XCTAssertNil(HookParser.parse(Fixtures.data("hook-malformed.json")))
+    }
+
+    func testNotificationWithoutMessageDoesNotTrap() {
+        // A Notification missing `message` still parses (drops to .other) — no force-unwrap.
+        let hook = HookParser.parse(Data(#"{"hook_event_name":"Notification"}"#.utf8))
+        guard case let .notification(info)? = hook else {
+            XCTFail("expected .notification, got \(String(describing: hook))")
+            return
+        }
+        XCTAssertEqual(info.kind, .other)
+        XCTAssertNil(info.message)
+    }
 }

@@ -137,6 +137,19 @@ public struct EventBuilder {
             // Mark the subagent stopped (creating the node if first seen). The file at
             // `agent_transcript_path` is tailed separately by the watcher.
             return updateSubagent(node)
+
+        case .userPromptSubmit,
+             .preToolUse,
+             .notification,
+             .stop,
+             .sessionEnd:
+            // W8 detection-only signals. These drive the `AislopdeskAgentDetect` coarse
+            // state machine (working / blocked / done / none) via the W10 adapter, which
+            // consumes the `HookPayload` directly — they have no `InspectorEvent` of their
+            // own (no tool card / message / subagent node), so the inspector stream is
+            // unchanged (additive: existing folding stays byte-identical). The host glue
+            // forwards these payloads to the detector; here they fold to nothing.
+            return []
         }
     }
 
