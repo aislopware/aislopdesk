@@ -109,22 +109,70 @@ struct CanvasV9: Codable, Equatable {
     }
 }
 
+// MARK: - PaneKindV9 (frozen mirror of the v9 PaneKind, INCLUDING the retired `claudeCode`)
+
+/// A **frozen** copy of the v9 ``PaneKind`` discriminator that — unlike the live `PaneKind` (which now
+/// folds the retired `"claudeCode"` raw value into `.terminal`, docs/42 W11) — PRESERVES the legacy
+/// `claudeCode` case. The migration reads it to rewrite a legacy Claude pane into a `.terminal` pane +
+/// seed a `claude` launch snippet (it would otherwise be invisible — the live decode already collapsed
+/// it). An unknown future raw value degrades to `.terminal` (validate-then-repair: never trap on a
+/// hand-edited / newer file).
+enum PaneKindV9: String, Codable, Equatable {
+    case terminal
+    case claudeCode
+    case remoteGUI
+    case systemDialog
+
+    init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: raw) ?? .terminal // unknown → safe default (no trap)
+    }
+}
+
+// MARK: - PaneSpecV9 (frozen mirror of the v9 PaneSpec)
+
+/// Frozen mirror of the v9 ``PaneSpec`` (`{kind, title, video?}`) using ``PaneKindV9`` so the legacy
+/// `claudeCode` kind survives the decode (see ``PaneKindV9``). `VideoEndpoint` is reused verbatim (a
+/// stable public value type). The migration consults `.kind`; it preserves `.title`/`.video` onto the
+/// rewritten live ``PaneSpec``.
+struct PaneSpecV9: Codable, Equatable {
+    var kind: PaneKindV9
+    var title: String
+    var video: VideoEndpoint?
+
+    init(kind: PaneKindV9, title: String, video: VideoEndpoint? = nil) {
+        self.kind = kind
+        self.title = title
+        self.video = video
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, title, video }
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(PaneKindV9.self, forKey: .kind)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        video = try c.decodeIfPresent(VideoEndpoint.self, forKey: .video)
+    }
+}
+
 // MARK: - CanvasItemV9 (frozen mirror of one placed pane)
 
-/// Frozen mirror of a v9 ``CanvasItem`` — the join key (``PaneID``), the pure ``PaneSpec``, plus the
-/// soon-to-be-dropped `frame`/`z`/`groupID`. The migration keeps `id`+`spec` (verbatim into the tree side
-/// table) and reads `frame`/`groupID` only to deterministically order + bucket panes, then drops them.
+/// Frozen mirror of a v9 ``CanvasItem`` — the join key (``PaneID``), the frozen ``PaneSpecV9`` (which
+/// keeps the legacy `claudeCode` kind), plus the soon-to-be-dropped `frame`/`z`/`groupID`. The migration
+/// keeps `id`+`spec` (mapping the spec into the live tree side table, rewriting a legacy claude pane) and
+/// reads `frame`/`groupID` only to deterministically order + bucket panes, then drops them.
 ///
 /// The `frame` mirrors the live `WireRect` shape (`{origin:{x,y}, size:{width,height}}`); a missing /
 /// malformed component falls back to a safe default so a hand-edited file never traps (validate-then-repair).
 struct CanvasItemV9: Codable, Equatable {
     let id: PaneID
-    var spec: PaneSpec
+    var spec: PaneSpecV9
     var frame: CGRect
     var z: Int
     var groupID: PaneGroupID?
 
-    init(id: PaneID, spec: PaneSpec, frame: CGRect, z: Int, groupID: PaneGroupID?) {
+    init(id: PaneID, spec: PaneSpecV9, frame: CGRect, z: Int, groupID: PaneGroupID?) {
         self.id = id
         self.spec = spec
         self.frame = frame
@@ -137,7 +185,7 @@ struct CanvasItemV9: Codable, Equatable {
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(PaneID.self, forKey: .id)
-        spec = try c.decode(PaneSpec.self, forKey: .spec)
+        spec = try c.decode(PaneSpecV9.self, forKey: .spec)
         frame = try (c.decodeIfPresent(WireRectV9.self, forKey: .frame))?.rect ?? .zero
         z = try c.decodeIfPresent(Int.self, forKey: .z) ?? 0
         groupID = try c.decodeIfPresent(PaneGroupID.self, forKey: .groupID)

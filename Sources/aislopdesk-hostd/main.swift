@@ -99,7 +99,7 @@ if let agentHookListener {
 }
 
 // Inspector server (NWConnection #2, port + 1) — read-only structured companion.
-// Constructed when --inspector / --claude / --transcript is set. The replay log is the
+// Constructed when --inspector / --transcript is set. The replay log is the
 // replay-then-live fan-out; the engine feeds it. PIECE C (live per-PTY transcript-path
 // discovery via the SessionStart hook) is DEFERRED — for now the path is the injected
 // --transcript value (if any), tailed straight into the engine. Without a path the
@@ -170,14 +170,7 @@ Task {
     do {
         try await server.start()
         let bound = await server.boundPort() ?? parsed.port
-        let mode =
-            switch parsed.launchMode {
-            case .shell:
-                "shell"
-            case let .claudeCode(profile):
-                "claude (TERM=\(profile.term.rawValue))"
-            }
-        log("listening on 0.0.0.0:\(bound) (shell=\(server.shellPath), mode=\(mode))")
+        log("listening on 0.0.0.0:\(bound) (shell=\(server.shellPath), mode=shell)")
     } catch {
         log("failed to start: \(error)")
         exit(1)

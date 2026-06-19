@@ -630,6 +630,12 @@ public final class TerminalViewModel {
             // An explicit child notification (OSC 9 / OSC 777) is handled at the connection/store
             // layer (it posts a local UNUserNotification). The terminal model holds no state for it.
             break
+        case .foregroundProcess,
+             .claudeStatus:
+            // Claude-Code detection signals (wire types 26/27) are folded into the pane's
+            // ClaudeStatusMachine at the connection/store layer (→ WorkspaceStore.setAgentStatus).
+            // The terminal model holds no state for them.
+            break
         case let .exit(code):
             connectionStatus = .exited(code: code)
             // The shell died mid-"command" (e.g. `exit` itself emits OSC 133;C but never a

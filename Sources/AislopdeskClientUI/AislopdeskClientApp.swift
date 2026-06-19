@@ -68,8 +68,9 @@ public struct AislopdeskClientApp: App {
         // for on-device A/B, matching how `automationInputs` already overlays the same args for the seam.
         Self.applyLaunchArgumentEnvironment()
         // Build the store exactly once with the production session factory. `makeInspector` is now the
-        // live builder (`WorkspaceStore.liveMakeInspector`): a `.claudeCode` pane's read-only inspector
-        // second channel (NWConnection #2) is an `NWByteChannel` → `InspectorClient` over the
+        // live builder (`WorkspaceStore.liveMakeInspector`): a terminal pane's read-only inspector
+        // second channel (NWConnection #2, opened dynamically once a `claude` is detected, W11) is an
+        // `NWByteChannel` → `InspectorClient` over the
         // terminal-port+1 convention (docs/16, docs/20, docs/22 §7), connected LAZILY on appear. The
         // GUARDRAIL holds: the host does not yet serve an inspector port, so the channel simply never
         // completes its handshake against today's `aislopdesk-hostd` and the terminal is unaffected — the

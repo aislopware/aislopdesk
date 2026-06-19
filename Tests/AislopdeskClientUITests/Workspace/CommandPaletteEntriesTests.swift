@@ -185,7 +185,7 @@ final class CommandPaletteEntriesTests: XCTestCase {
         let workspace = Workspace.make(
             panes: [
                 (groupedID, PaneSpec(kind: .terminal, title: "Left")),
-                (ungroupedID, PaneSpec(kind: .claudeCode, title: "Right")),
+                (ungroupedID, PaneSpec(kind: .remoteGUI, title: "Right")),
             ],
             focused: groupedID,
             groups: [group],

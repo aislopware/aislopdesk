@@ -55,6 +55,13 @@ public final class ConnectionViewModel {
     /// OSC 9 omits a title.
     public var onExplicitNotification: ((_ paneTitle: String, _ title: String, _ body: String) -> Void)?
 
+    /// A Claude-Code agent-detection signal (wire types 26/27 — `.foregroundProcess` / `.claudeStatus`).
+    /// The store wires this to the owning pane's ``LivePaneSession`` so it folds the signal into the
+    /// pane's `ClaudeStatusMachine` and pushes the result to ``WorkspaceStore/setAgentStatus(_:for:)``
+    /// (W11). `nil` ⇒ no observer (the signal is dropped). Only the two agent-detect events are
+    /// forwarded here; all other events still drive the chrome/terminal as before.
+    public var onAgentSignal: ((_ event: AislopdeskClient.Event) -> Void)?
+
     #if os(macOS)
     /// Posts a local notification when a LONG-running command (OSC 133;D, ≥ ~10s) completes.
     /// Best-effort + lazy-auth; macOS-only (iOS still builds). The in-app running indicator is
@@ -533,6 +540,12 @@ public final class ConnectionViewModel {
             onExplicitNotification?(terminal.title ?? "", title, body)
         case let .rtt(milliseconds):
             latencyMS = milliseconds
+        case .foregroundProcess,
+             .claudeStatus:
+            // Claude-Code detection (wire types 26/27): hand the raw event to the store's per-pane
+            // agent-status hook (which folds it into the pane's ClaudeStatusMachine). A pure
+            // side-effect — the chrome status is unaffected.
+            onAgentSignal?(event)
         case .title,
              .bell:
             break

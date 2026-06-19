@@ -63,8 +63,11 @@ final class WorkspaceMigrationV9toV10Tests: XCTestCase {
     }
 
     /// A representative, realistic live v9 workspace: two groups + an ungrouped pane, a video pane carrying
-    /// a `VideoEndpoint`, a `.claudeCode` pane, a focused + maximized pane, a panned camera, snippets,
-    /// presets, and bookmarks. The single source the suite migrates and round-trips.
+    /// a `VideoEndpoint`, a terminal "claude" pane, a focused + maximized pane, a panned camera, snippets,
+    /// presets, and bookmarks. The single source the suite migrates and round-trips. (The retired
+    /// `.claudeCode` legacy kind is covered separately by `testLegacyClaudeCodePaneMigratesToTerminal`,
+    /// which builds raw v9 JSON carrying the old `"claudeCode"` discriminator — the live `PaneSpec` no
+    /// longer has the case, so it cannot be expressed via the typed fixture.)
     private func makeRichV9() -> (Workspace, [PaneID]) {
         let groupA = PaneGroup(name: "Servers")
         let groupB = PaneGroup(name: "Agents")
@@ -87,10 +90,10 @@ final class WorkspaceMigrationV9toV10Tests: XCTestCase {
                     z: 0,
                     groupID: groupA.id,
                 ),
-                // groupB: a claude terminal + a video pane.
+                // groupB: a terminal running claude + a video pane.
                 CanvasItem(
                     id: pClaude,
-                    spec: PaneSpec(kind: .claudeCode, title: "claude"),
+                    spec: PaneSpec(kind: .terminal, title: "claude"),
                     frame: CGRect(x: 0, y: 500, width: 640, height: 420),
                     z: 2,
                     groupID: groupB.id,
@@ -168,9 +171,15 @@ final class WorkspaceMigrationV9toV10Tests: XCTestCase {
 
         // Every PaneID survives.
         XCTAssertEqual(Set(v10.allPaneIDs()), Set(paneIDs), "no PaneID lost or invented")
-        // Every spec survives byte-for-byte.
+        // Every spec survives — compared against the v9→live spec mapping (which rewrites the retired
+        // `.claudeCode` kind to `.terminal`, W11; this fixture carries no claudeCode pane so the map is
+        // an identity on kind here). Title + video are preserved verbatim.
         for item in v9.canvas.items {
-            XCTAssertEqual(v10.spec(for: item.id), item.spec, "spec for \(item.id.raw) preserved verbatim")
+            XCTAssertEqual(
+                v10.spec(for: item.id),
+                WorkspaceMigrationV9toV10.liveSpec(from: item.spec),
+                "spec for \(item.id.raw) preserved verbatim",
+            )
         }
         XCTAssertTrue(v10.isInvariantHeld(), "specs == leafIDs after migration")
     }
@@ -362,6 +371,82 @@ final class WorkspaceMigrationV9toV10Tests: XCTestCase {
         let mainTab = try XCTUnwrap(session.tabs.first { $0.title == "Main" })
         XCTAssertEqual(mainTab.allPaneIDs(), [pDangling], "the dangling-membership pane is in the Main tab")
         XCTAssertTrue(v10.isInvariantHeld(), "specs == leafIDs after migration (no orphan dropped)")
+    }
+
+    // MARK: - 9. Legacy `.claudeCode` pane → `.terminal` + seeded launch snippet (W11)
+
+    /// W11: the retired `.claudeCode` PaneKind. An OLD persisted v9 file (written by a pre-W11 binary)
+    /// carries `"kind":"claudeCode"` in raw JSON. The frozen ``WorkspaceV9`` must DECODE it (the live
+    /// `PaneSpec` no longer has the case → it cannot be built via the typed fixture, so the v9 JSON is
+    /// hand-built here), and the migration must rewrite it to a `.terminal` pane (NO data loss / no trap)
+    /// and seed a "Claude Code" launch snippet (the retired curated launch, re-offered as data).
+    func testLegacyClaudeCodePaneMigratesToTerminalAndSeedsSnippet() throws {
+        let claudeID = UUID()
+        let termID = UUID()
+        // Raw v9 JSON with the LEGACY "claudeCode" discriminator on one pane — the exact bytes an old
+        // binary wrote. Assembled by hand because the live `PaneSpec` can no longer emit "claudeCode".
+        let json = """
+        {
+          "schemaVersion": 9,
+          "canvas": {
+            "items": [
+              {
+                "id": { "raw": "\(claudeID.uuidString)" },
+                "spec": { "kind": "claudeCode", "title": "my agent" },
+                "frame": { "origin": { "x": 0, "y": 0 }, "size": { "width": 640, "height": 420 } },
+                "z": 0
+              },
+              {
+                "id": { "raw": "\(termID.uuidString)" },
+                "spec": { "kind": "terminal", "title": "shell" },
+                "frame": { "origin": { "x": 700, "y": 0 }, "size": { "width": 640, "height": 420 } },
+                "z": 1
+              }
+            ],
+            "camera": { "origin": { "x": 0, "y": 0 } }
+          },
+          "groups": [],
+          "bookmarks": {},
+          "layoutPresets": [],
+          "snippets": []
+        }
+        """
+        let data = Data(json.utf8)
+
+        // The frozen mirror decodes the legacy shape without trapping; the frozen PaneKindV9 keeps the case.
+        let v9 = try decoder.decode(WorkspaceV9.self, from: data)
+        XCTAssertEqual(v9.canvas.items.count, 2, "both panes decode (no data loss on the legacy file)")
+        let claudeItem = try XCTUnwrap(v9.canvas.items.first { $0.id.raw == claudeID })
+        XCTAssertEqual(claudeItem.spec.kind, .claudeCode, "the frozen mirror preserves the legacy claudeCode kind")
+        XCTAssertEqual(claudeItem.spec.title, "my agent")
+
+        // Migration rewrites it to a plain `.terminal`, preserving the title, and seeds the launch snippet.
+        let v10 = WorkspaceMigrationV9toV10.migrate(v9)
+        let claudePaneID = PaneID(raw: claudeID)
+        XCTAssertTrue(v10.allPaneIDs().contains(claudePaneID), "the legacy claude pane is not lost")
+        let migratedSpec = try XCTUnwrap(v10.spec(for: claudePaneID))
+        XCTAssertEqual(migratedSpec.kind, .terminal, "claudeCode rewritten to a plain terminal")
+        XCTAssertEqual(migratedSpec.title, "my agent", "the title is preserved verbatim")
+        // The retired curated launch is re-offered as a snippet.
+        XCTAssertTrue(
+            v10.snippets.contains { $0.name == WorkspaceMigrationV9toV10.claudeLaunchSnippetName },
+            "a Claude Code launch snippet is seeded when a legacy claude pane is migrated",
+        )
+        let snippet = try XCTUnwrap(v10.snippets.first { $0.name == WorkspaceMigrationV9toV10.claudeLaunchSnippetName })
+        XCTAssertEqual(snippet.body, WorkspaceMigrationV9toV10.claudeLaunchSnippetBody, "the snippet runs `claude`")
+        XCTAssertTrue(v10.isInvariantHeld())
+    }
+
+    /// A v9 with NO claude pane must NOT seed the launch snippet (don't pollute every migrated workspace).
+    func testNoClaudePaneDoesNotSeedSnippet() throws {
+        let (live, _) = makeRichV9() // the rich fixture's "claude" pane is a plain `.terminal`, not claudeCode
+        let data = try makeEncoder().encode(live)
+        let v9 = try decoder.decode(WorkspaceV9.self, from: data)
+        let v10 = WorkspaceMigrationV9toV10.migrate(v9)
+        XCTAssertFalse(
+            v10.snippets.contains { $0.name == WorkspaceMigrationV9toV10.claudeLaunchSnippetName },
+            "no legacy claudeCode pane → no seeded launch snippet",
+        )
     }
 
     func testEmptyGroupYieldsNoTab() throws {

@@ -17,7 +17,7 @@ final class CompactLayoutResolverTests: XCTestCase {
     private func threePaneCanvas(a: PaneID, b: PaneID, c: PaneID) -> Canvas {
         Canvas.make(panes: [
             (a, PaneSpec(kind: .terminal, title: "Shell")),
-            (b, PaneSpec(kind: .claudeCode, title: "Claude")),
+            (b, PaneSpec(kind: .terminal, title: "Claude")),
             (c, PaneSpec(kind: .remoteGUI, title: "Screen")),
         ])
     }
@@ -32,7 +32,7 @@ final class CompactLayoutResolverTests: XCTestCase {
         XCTAssertEqual(pages.map(\.id), [a, b, c], "page order == canvas.allIDs() z-order")
         XCTAssertEqual(pages.map(\.id), canvas.allIDs(), "page order tracks the canvas z-order exactly")
 
-        XCTAssertEqual(pages.map(\.kind), [.terminal, .claudeCode, .remoteGUI], "each page carries its pane kind")
+        XCTAssertEqual(pages.map(\.kind), [.terminal, .terminal, .remoteGUI], "each page carries its pane kind")
         XCTAssertEqual(pages.map(\.title), ["Shell", "Claude", "Screen"], "each page carries its pane title")
     }
 

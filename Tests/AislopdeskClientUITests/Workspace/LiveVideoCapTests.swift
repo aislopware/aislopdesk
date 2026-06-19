@@ -26,8 +26,8 @@ import XCTest
 ///   it DOES emit a reactive nudge (``WorkspaceStore/videoPromotionGeneration``, ITEM #2) on every
 ///   slot-freeing event so the on-screen gated leaves observe it and re-attempt admission through the
 ///   still-cap-checked `activateVideo`;
-/// - `terminal` / `claudeCode` panes are NEVER gated by the video cap (and never count against it):
-///   `activateVideo` returns `false` for them because they are non-video, not because of the cap.
+/// - `terminal` panes are NEVER gated by the video cap (and never count against it): `activateVideo`
+///   returns `false` for them because they are non-video, not because of the cap.
 @MainActor
 final class LiveVideoCapTests: XCTestCase {
     // MARK: - Fixtures
@@ -205,30 +205,27 @@ final class LiveVideoCapTests: XCTestCase {
 
     // MARK: - non-video kinds are never gated by the cap
 
-    /// `terminal` and `claudeCode` panes are not gated by the video cap — `activateVideo` returns
-    /// `false` for them because they are NON-VIDEO (not because the cap is saturated), they never
-    /// flip `isVideoActive`, and they never consume a video slot.
-    func testTerminalAndClaudeCodeAreNeverGatedAndNeverConsumeSlots() throws {
+    /// A `terminal` pane is not gated by the video cap — `activateVideo` returns `false` for it because
+    /// it is NON-VIDEO (not because the cap is saturated), it never flips `isVideoActive`, and it never
+    /// consumes a video slot. (Claude Code is no longer a distinct kind — a `claude` runs inside a plain
+    /// terminal, W11 — so the single non-video PTY kind covers the whole "non-video never gated" rule.)
+    func testTerminalIsNeverGatedAndNeverConsumesSlots() throws {
         // cap=2, saturated by two live remoteGUI panes on the canvas.
         let (store, guiIDs) = makeStoreWithRemoteGUILeaves(2, cap: 2) // two remoteGUI panes
         XCTAssertTrue(store.activateVideo(guiIDs[0]))
         XCTAssertTrue(store.activateVideo(guiIDs[1])) // cap now saturated
 
-        // Add terminal + claudeCode panes to the same canvas.
+        // Add a terminal pane to the same canvas (snapshot ids to single out the new one).
+        let before = Set(store.workspace.canvas.allIDs())
         store.addPane(kind: .terminal)
-        let terminalID = try XCTUnwrap(store.workspace.canvas.allIDs()
-            .first { store.handle(for: $0)?.kind == .terminal })
-        store.addPane(kind: .claudeCode)
-        let claudeID = try XCTUnwrap(store.workspace.canvas.allIDs()
-            .first { store.handle(for: $0)?.kind == .claudeCode })
+        let terminalID = try XCTUnwrap(store.workspace.canvas.allIDs().first { !before.contains($0) })
+        XCTAssertEqual(store.handle(for: terminalID)?.kind, .terminal)
 
-        // activateVideo is a definitional false for non-video kinds — regardless of cap state.
+        // activateVideo is a definitional false for a non-video kind — regardless of cap state.
         XCTAssertFalse(store.activateVideo(terminalID), "terminal is non-video, not cap-gated")
-        XCTAssertFalse(store.activateVideo(claudeID), "claudeCode is non-video, not cap-gated")
 
-        // They never flipped a video flag and never consumed a slot.
+        // It never flipped a video flag and never consumed a slot.
         XCTAssertFalse(try XCTUnwrap(store.handle(for: terminalID)?.isVideoActive))
-        XCTAssertFalse(try XCTUnwrap(store.handle(for: claudeID)?.isVideoActive))
         XCTAssertEqual(
             fake(store.handle(for: terminalID)).events,
             [.adopt(terminalID)],

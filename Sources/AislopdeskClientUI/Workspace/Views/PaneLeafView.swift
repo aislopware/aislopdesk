@@ -11,10 +11,9 @@ import SwiftUI
 /// Its SIGNATURE is the stable WF4 contract — only the BODY is WF5:
 /// - `.terminal`   → ``TerminalScreenView``(model: handle.terminalModel) + a per-pane
 ///   ``InputBarView``(model: handle.inputBar, client: handle.connection.activeClient), composed
-///   exactly as the old `ClientRootView` did for ONE session.
-/// - `.claudeCode` → the same terminal + a TOGGLEABLE ``InspectorPanel`` (per-pane VIEW state — an
-///   inspector-visible toggle + a local split ratio; macOS side-by-side, iOS a bottom sheet —
-///   mirroring the old `ClientRootView` platform branch). It is a SINGLE leaf, not a tree node.
+///   exactly as the old `ClientRootView` did for ONE session — PLUS a dynamically-revealed,
+///   read-only ``InspectorPanel`` (W11) once a `claude` is detected running in it (the per-pane
+///   `claudeStatus` lifts off `.none`); a plain terminal shows neither. SINGLE leaf, not a tree node.
 /// - `.remoteGUI`  → ``RemoteWindowPanel``(model: handle.remoteWindow, showCloseButton: false) — the
 ///   pane chrome owns close; video decode activates on appear / deactivates on disappear (battery).
 ///
@@ -71,15 +70,10 @@ struct PaneLeafView: View {
     private func content(for live: LivePaneSession) -> some View {
         switch live.kind {
         case .terminal:
+            // W11: ONE terminal view. It auto-detects a `claude` running inside it (the per-pane
+            // `claudeStatus`) and reveals the read-only inspector toggle dynamically — there is no
+            // separate "Claude Code pane" any more.
             TerminalPaneView(
-                live: live,
-                spec: spec,
-                isFocused: isFocused,
-                focusCoordinator: focusCoordinator,
-                suppressFailureBanner: suppressFailureBanner,
-            )
-        case .claudeCode:
-            ClaudeCodePaneView(
                 live: live,
                 spec: spec,
                 isFocused: isFocused,
@@ -129,7 +123,6 @@ struct PaneLeafView: View {
     private var kindLabel: String {
         switch spec.kind {
         case .terminal: "terminal"
-        case .claudeCode: "claude"
         case .remoteGUI: "remote"
         case .systemDialog: "dialog"
         }
@@ -147,7 +140,6 @@ struct PaneLeafView: View {
     static func icon(for kind: PaneKind) -> String {
         switch kind {
         case .terminal: "terminal"
-        case .claudeCode: "sparkles"
         case .remoteGUI: "macwindow.on.rectangle"
         case .systemDialog: "lock.shield"
         }
@@ -174,7 +166,7 @@ private struct SecureDialogHintBar: View {
     }
 }
 
-// MARK: - Terminal composition (shared by .terminal and .claudeCode)
+// MARK: - Terminal composition (the .terminal content; the inspector is layered by TerminalPaneView)
 
 /// The proven terminal composition for ONE pane: the renderer seam over the per-pane
 /// ``TerminalViewModel`` + the per-pane ``InputBarView`` bound to the SAME connection's live client,
@@ -189,8 +181,8 @@ private struct SecureDialogHintBar: View {
 /// we never blindly auto-dial a default for a user-created pane.
 ///
 /// Owns the (gated) connect-on-appear + the `AISLOPDESK_AUTOTYPE` OUT-path proof seam (both keyed off the
-/// `LivePaneSession`'s own `connection`). Used directly for `.terminal` and embedded by
-/// ``ClaudeCodePaneView`` for `.claudeCode`.
+/// `LivePaneSession`'s own `connection`). Embedded by ``TerminalPaneView`` (which layers the dynamic
+/// inspector on top once a `claude` is detected, W11).
 private struct TerminalContentView: View {
     let live: LivePaneSession
     /// The pure intent (kind + title). The host/port live on the app-global connection — the pane just
@@ -372,58 +364,40 @@ private struct TerminalContentView: View {
     }
 }
 
-/// A `.terminal` leaf: the terminal composition, full-bleed.
+/// A `.terminal` leaf: the proven terminal composition, full-bleed — PLUS the dynamically-revealed,
+/// read-only ``InspectorPanel`` (W11). Claude Code is no longer a stored `PaneKind`: ANY terminal that
+/// the host detects is running `claude` (the per-pane ``LivePaneSession/claudeStatus`` lifts off `.none`)
+/// gains the inspector toggle + its second channel; a plain terminal shows neither. The toggle + the
+/// local split ratio are per-pane VIEW state (NOT a tree node — one leaf, docs/22 §2.3). Platform branch:
+/// - **macOS**: terminal + inspector side-by-side, divider toggled by a header button.
+/// - **iOS**: terminal full-bleed, inspector as a bottom sheet.
 private struct TerminalPaneView: View {
     let live: LivePaneSession
     let spec: PaneSpec
     var isFocused: Bool = true
     var focusCoordinator: PaneFocusCoordinator?
     var suppressFailureBanner: Bool = false
-    var body: some View {
-        TerminalContentView(
-            live: live,
-            spec: spec,
-            isFocused: isFocused,
-            focusCoordinator: focusCoordinator,
-            suppressFailureBanner: suppressFailureBanner,
-        )
-    }
-}
-
-// MARK: - Claude Code composition (terminal + toggleable inspector)
-
-/// A `.claudeCode` leaf: the proven terminal composition PLUS a TOGGLEABLE read-only ``InspectorPanel``
-/// fed by the pane's own inspector second channel (NWConnection #2). The inspector-visible toggle + the
-/// local split ratio are per-pane VIEW state — NOT a tree node (a Claude Code pane is a single leaf,
-/// docs/22 §2.3). Platform branch mirrors the retired `ClientRootView`:
-/// - **macOS**: terminal + inspector side-by-side, divider toggled by a header button.
-/// - **iOS**: terminal full-bleed, inspector as a bottom sheet.
-private struct ClaudeCodePaneView: View {
-    let live: LivePaneSession
-    /// The pure intent — forwarded to ``TerminalContentView`` so a fresh Claude Code pane shows the
-    /// connect form until it is dialed in (docs/22 WF6 new-pane connection flow).
-    let spec: PaneSpec
-    /// Whether this pane is the active tab's focused pane (forwarded to the embedded terminal so the
-    /// renderer drives the macOS first responder from workspace intent).
-    var isFocused: Bool = true
-    /// The single-focus arbiter forwarded to the embedded terminal composition (docs/22 §7).
-    var focusCoordinator: PaneFocusCoordinator?
-    /// Threaded through to the embedded terminal (see ``PaneLeafView/suppressFailureBanner``).
-    var suppressFailureBanner: Bool = false
-    /// Per-pane VIEW state: whether the inspector is shown. Local to this leaf — lost on a true
-    /// session swap (a new `PaneID`), preserved across reshape/zoom/focus (stable `.id`).
+    /// Per-pane VIEW state: whether the inspector is shown. Local to this leaf — lost on a true session
+    /// swap (a new `PaneID`), preserved across reshape/zoom/focus (stable `.id`).
     @State private var showInspector = false
+
+    /// Whether a `claude` is currently detected in this terminal (the inspector affordance gate, W11).
+    private var claudeDetected: Bool { live.claudeStatus != .none }
 
     var body: some View {
         VStack(spacing: 0) {
-            inspectorToggleBar
-            Divider()
+            // The inspector toggle strip only appears once a claude is detected — a plain terminal is
+            // full-bleed (no chrome). subscribeInspector() is gated on the same runtime status, so a
+            // plain terminal opens NO inspector socket.
+            if claudeDetected {
+                inspectorToggleBar
+                Divider()
+            }
             content
         }
-        // Open + fold the inspector second channel once (full replay → live), via the session's single
-        // fold point. Mirrors `LivePaneSession.subscribeInspector` (idempotent; re-tail-safe). We do
-        // NOT also pass the client to `InspectorPanel` — that would double-subscribe the same stream.
-        .task { await live.subscribeInspector() }
+        // Re-drive the dynamic subscribe whenever the detection status crosses (idempotent; the session
+        // also opens/closes the channel itself in feedAgentSignal — this is the view-appear safety net).
+        .task(id: claudeDetected) { await live.subscribeInspector() }
     }
 
     /// macOS: terminal + (optional) inspector side-by-side. iOS: terminal full-bleed; inspector sheet.
@@ -439,7 +413,7 @@ private struct ClaudeCodePaneView: View {
                 suppressFailureBanner: suppressFailureBanner,
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if showInspector, let model = live.inspector {
+            if showInspector, claudeDetected, let model = live.inspector {
                 Divider()
                 InspectorPanel(model: model)
                     .frame(minWidth: 280, maxWidth: 420)

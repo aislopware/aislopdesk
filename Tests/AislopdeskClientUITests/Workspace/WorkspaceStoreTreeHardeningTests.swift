@@ -67,13 +67,13 @@ final class WorkspaceStoreTreeHardeningTests: XCTestCase {
     /// PRE-FIX the view read `workspace.canvas.spec(for:)` → nil for a tree id → a generic "Close Pane?".
     func testPendingCloseSpecResolvesFromTree() throws {
         let store = makeTreeStore()
-        store.splitActivePane(axis: .horizontal, kind: .claudeCode)
+        store.splitActivePane(axis: .horizontal, kind: .remoteGUI)
         let target = try XCTUnwrap(activePane(store))
         fake(store, target)?.isShellBusy = true
         store.requestCloseActivePaneTree()
 
         let spec = try XCTUnwrap(store.pendingCloseSpec, "the pending-close spec is resolved from the tree")
-        XCTAssertEqual(spec.kind, .claudeCode, "the spec is the parked TREE leaf's, not a canvas fallback")
+        XCTAssertEqual(spec.kind, .remoteGUI, "the spec is the parked TREE leaf's, not a canvas fallback")
     }
 
     // MARK: - C4 — requestCloseActivePaneTree PARKS (not closes) a busy pane

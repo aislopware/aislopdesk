@@ -9,7 +9,7 @@ import Foundation
 /// mapping fully unit-testable with no view.
 public enum WorkspaceCommand: Sendable, Equatable {
     case newPaneDefault // ⌘N   — a pane of the user's default kind (Settings ▸ Canvas)
-    case newPane(PaneKind) // ⌘T terminal, ⇧⌘N claudeCode, ⌥⌘N remoteGUI
+    case newPane(PaneKind) // ⌘T terminal, ⌥⌘N remoteGUI
     case duplicatePane // ⌘D   — copy the focused pane's spec (incl. endpoint) beside it
     case tidy // ⇧⌘D  — pack panes into a grid
     case centerFocusedPane // ⌥⌘C  — centre the camera on the focused pane (the pan-only "recenter")
@@ -202,10 +202,10 @@ public extension CommandInterpreter {
         // New pane. ⌘N is the macOS-native "new" (the File menu replaces the default New-Window item,
         // so ⌘N makes a pane instead of an unwanted second window) — it creates the user's DEFAULT kind
         // (Settings ▸ Canvas, default Terminal). ⌘T is the muscle-memory alias that always makes a
-        // Terminal (the freed "new tab" chord). ⇧⌘N / ⌥⌘N create the other kinds directly.
+        // Terminal (the freed "new tab" chord). ⌥⌘N makes a Remote Window. (W11: there is no Claude Code
+        // pane kind any more — a `claude` running in any terminal is auto-detected — so ⇧⌘N is freed.)
         map[KeyChord(character: "n", [.command])] = .newPaneDefault
         map[KeyChord(character: "t", [.command])] = .newPane(.terminal)
-        map[KeyChord(character: "n", [.command, .shift])] = .newPane(.claudeCode)
         map[KeyChord(character: "n", [.command, .option])] = .newPane(.remoteGUI)
 
         // Duplicate the focused pane (spec + endpoint + group, cascaded beside it): ⌘D — the Finder

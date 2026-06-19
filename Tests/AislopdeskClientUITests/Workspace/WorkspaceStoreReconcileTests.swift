@@ -108,13 +108,14 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
     /// Restoring a multi-pane canvas materializes EVERY pane at init (shape + intent only —
     /// sessions are idle, never connected).
     func testInitMaterializesAllRestoredLeavesAcrossTabs() {
-        // Three panes on one canvas: two terminals and a claudeCode.
+        // Three panes on one canvas: two terminals and a remote-GUI (a distinct kind to prove the
+        // spec's kind survives materialization).
         let a0 = PaneID(), a1 = PaneID(), b0 = PaneID()
         let restored = Workspace.make(
             panes: [
                 (a0, PaneSpec(kind: .terminal, title: "a0")),
                 (a1, PaneSpec(kind: .terminal, title: "a1")),
-                (b0, PaneSpec(kind: .claudeCode, title: "b0")),
+                (b0, PaneSpec(kind: .remoteGUI, title: "b0")),
             ],
             focused: a0,
         )
@@ -123,7 +124,7 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
 
         XCTAssertEqual(store.allSessions.count, 3, "all three panes on the canvas materialized at init")
         assertInvariant(store, "after init(restored 3-pane canvas)")
-        XCTAssertEqual(fake(store, b0)?.kind, .claudeCode, "pane spec kind preserved through materialization")
+        XCTAssertEqual(fake(store, b0)?.kind, .remoteGUI, "pane spec kind preserved through materialization")
         // No connect/video at materialization — sessions are idle.
         XCTAssertEqual(fake(store, b0)?.isVideoActive, false, "materialized session is idle (no video)")
         XCTAssertEqual(fake(store, b0)?.pauseCount, 0, "materialized session is not paused")
@@ -299,7 +300,7 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         let group = store.addGroup(name: "Work")
         XCTAssertEqual(registryIDs(store), before, "addGroup is metadata-only — no new session")
 
-        store.addPane(kind: .claudeCode, inGroup: group)
+        store.addPane(kind: .remoteGUI, inGroup: group)
 
         let after = registryIDs(store)
         XCTAssertEqual(after.count, before.count + 1, "addPane materializes exactly one new pane")
@@ -307,7 +308,7 @@ final class WorkspaceStoreReconcileTests: XCTestCase {
         assertInvariant(store, "after addPane(inGroup:)")
 
         let newPane = try XCTUnwrap(after.subtracting(before).first)
-        XCTAssertEqual(fake(store, newPane)?.kind, .claudeCode, "new pane materialized with its kind")
+        XCTAssertEqual(fake(store, newPane)?.kind, .remoteGUI, "new pane materialized with its kind")
         XCTAssertEqual(store.workspace.group(ofPane: newPane)?.id, group, "the new pane joined the group")
         XCTAssertTrue(
             store.workspace.canvas.ids(inGroup: group).contains(newPane),

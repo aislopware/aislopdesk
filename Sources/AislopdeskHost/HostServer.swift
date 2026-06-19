@@ -25,15 +25,13 @@ public final class HostServer: @unchecked Sendable {
     /// Absolute path to the shell to spawn (defaults to the user's login shell).
     public let shellPath: String
 
-    /// What every new channel spawns: a plain login shell (default) or `claude` under
-    /// the curated Claude Code profile. The plain-shell path is unchanged; this is an
-    /// additional option, selected at construction. The daemon CLI selects it via the
-    /// `--claude [--xterm256]` flags (see `aislopdesk-hostd/main.swift`).
+    /// What every new channel spawns: a plain login shell. The curated `claude` launch is no
+    /// longer a daemon mode — a Claude session is just a `.terminal` pane that runs `claude`,
+    /// auto-detected by the host foreground-process watch + hook listener (W11, Decision #5/#9).
+    /// The curated env is offered client-side as a launch preset, not a host launch mode.
     public enum LaunchMode: Sendable, Equatable {
         /// Plain login shell (the WF-3 path): `[shell] argv0=-shell`, curated generic env.
         case shell
-        /// Launch `claude` via `[shell, -lc, command]` with the Claude Code profile env.
-        case claudeCode(ClaudeCodeProfile)
     }
 
     /// The launch mode for new channels.
@@ -382,30 +380,6 @@ public final class HostServer: @unchecked Sendable {
                     shimDir = overrides["ZDOTDIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
                 }
                 try pty.spawn(shellPath, environment: env, argv0: argv0)
-            case let .claudeCode(profile):
-                // Audit #17: same terminfo bootstrap for the Claude path. An explicit
-                // `--xterm256` (`profile.term == .xterm256`) is an operator override and WINS —
-                // the resolver keeps it untouched; only a `.ghostty` request that the host
-                // cannot resolve auto-falls back.
-                let term = resolveEffectiveTerm(
-                    requested: profile.term,
-                    explicitOverride: profile.term == .xterm256,
-                )
-                var resolvedProfile = profile
-                resolvedProfile.term = term
-                var claudeEnv = resolvedProfile.environment()
-                // W10: export the hook socket path + pane id into the Claude PTY env too.
-                if agentHookListener != nil {
-                    claudeEnv[HostEnvironment.agentSocketEnvKey] = agentHookSocketPath
-                    claudeEnv[HostEnvironment.agentPaneIDEnvKey] =
-                        Self.paneID(connectionID: connectionID, channelID: open.channelID)
-                }
-                try pty.spawn(
-                    shellPath,
-                    arguments: resolvedProfile.loginShellArguments(),
-                    environment: claudeEnv,
-                    argv0: argv0,
-                )
             }
         } catch {
             onLog?("mux channel \(open.channelID) (conn \(connectionID)): shell spawn failed: \(error)")
@@ -460,12 +434,13 @@ public final class HostServer: @unchecked Sendable {
     /// (audit #17), logging the auto-fallback exactly when it fires.
     ///
     /// Delegates the decision to ``TerminfoResolver`` (pure logic + the live terminfo probe).
-    /// When the host cannot resolve `xterm-ghostty` and no explicit `--xterm256` override is in
+    /// When the host cannot resolve `xterm-ghostty` and no explicit `.xterm256` override is in
     /// effect, the resolver returns `.xterm256` with `fellBack == true`; we then emit ONE
     /// diagnostic line via ``onLog`` (host stderr — the same out-of-band channel as every other
     /// session-lifecycle log, NOT the PTY byte stream, so it never pollutes what the client
-    /// renders). The log is gated on `fellBack`: when ghostty resolves, or the operator
-    /// explicitly chose `xterm-256color`, nothing is logged.
+    /// renders). The log is gated on `fellBack`: when ghostty resolves, or `.xterm256` was the
+    /// explicit request, nothing is logged. (The plain-shell path always passes `.ghostty` with
+    /// no override, so the fallback only ever fires for a host that lacks the ghostty terminfo.)
     private func resolveEffectiveTerm(
         requested: ClaudeCodeProfile.Term,
         explicitOverride: Bool,

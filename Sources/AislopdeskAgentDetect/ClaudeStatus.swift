@@ -36,6 +36,24 @@ public enum ClaudeStatus: String, Sendable, Equatable, Codable, CaseIterable {
         }
     }
 
+    /// The inverse of ``urgency`` — maps the raw wire `state` byte of a
+    /// ``AislopdeskProtocol.WireMessage/claudeStatus(state:kind:label:)`` (type 27) back to a
+    /// `ClaudeStatus` on the client (docs/42 W11). The wire carries the urgency byte rather than the
+    /// enum so `AislopdeskProtocol` need not depend on this module; the client maps it back here.
+    ///
+    /// **Forward-tolerant (validate-then-repair).** An unknown / future urgency byte the host has not
+    /// agreed on degrades to `.none` rather than trapping — a hostile or newer datagram can never crash
+    /// the client (CLAUDE.md untrusted-input contract). `0…4` round-trip `urgency` exactly.
+    public init(urgency: Int) {
+        switch urgency {
+        case 1: self = .idle
+        case 2: self = .done
+        case 3: self = .working
+        case 4: self = .needsPermission
+        default: self = .none // 0 or any unknown/future byte → no status
+        }
+    }
+
     /// Most-urgent rollup over a set of per-pane statuses (the sidebar/tab dot).
     /// Empty → `.none`. Commutative; ties impossible (`urgency` is a total order).
     public static func rollup(_ statuses: some Sequence<Self>) -> Self {

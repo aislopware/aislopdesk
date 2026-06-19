@@ -31,7 +31,6 @@ enum KeyboardCheatSheet {
         ("Panes", [
             (.newPaneDefault, "New pane"),
             (.newPane(.terminal), "New terminal"),
-            (.newPane(.claudeCode), "New Claude Code pane"),
             (.newPane(.remoteGUI), "New remote window"),
             (.duplicatePane, "Duplicate pane"),
             (.closePane, "Close pane"),

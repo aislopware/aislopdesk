@@ -34,16 +34,19 @@ public struct PaneGroupID: Hashable, Codable, Sendable {
 // MARK: - Leaf intent (what a pane IS — never a live object)
 
 /// What a pane *is*. The kind selects which proven per-session stack the live layer will
-/// materialize for the leaf (docs/22 §7): a plain remote terminal, a Claude Code terminal with
-/// a second read-only inspector channel, or a remote-GUI video window.
+/// materialize for the leaf (docs/22 §7): a plain remote terminal or a remote-GUI video window.
+///
+/// **Claude Code is no longer a kind (docs/42 W11).** A `claude` session is just a `.terminal`
+/// pane: the host watches its PTY foreground process / hooks and the client auto-detects it
+/// (wire types 26/27 → the per-pane `ClaudeStatus`), opening the read-only inspector channel
+/// dynamically. There is no dedicated "Claude Code pane".
 ///
 /// `String`-raw + hand-stable so the persisted JSON discriminator is human-readable and
-/// versionable.
+/// versionable. **Forward/back-tolerant decode** (below): an OLD persisted `"claudeCode"` raw
+/// value maps to `.terminal` so a v9 / pre-W11-v10 file never traps now the case is gone.
 public enum PaneKind: String, Codable, Sendable, Equatable {
-    /// A remote PTY terminal (PATH 1 byte pipeline).
+    /// A remote PTY terminal (PATH 1 byte pipeline). Also hosts an auto-detected `claude` session.
     case terminal
-    /// A Claude Code terminal — a `terminal` plus the read-only structured inspector channel.
-    case claudeCode
     /// A remote-GUI video window (PATH 2 UDP media + cursor side-channel).
     case remoteGUI
     /// An EPHEMERAL pane auto-spawned by the client's system-dialog monitor to stream a host SYSTEM
@@ -51,6 +54,30 @@ public enum PaneKind: String, Codable, Sendable, Equatable {
     /// ``remoteGUI``, but auto-managed (spawn/close follow the host poll), NOT persisted, and it skips
     /// the picker + stale-binding revalidation (its windowID is always fresh from the live poll).
     case systemDialog
+
+    /// The retired-but-tolerated legacy raw value of the removed "Claude Code" pane kind (docs/42 W11).
+    /// A `.claudeCode` pane is now just a `.terminal`; an OLD persisted file (v9, or a v10 written before
+    /// W11) may still carry this discriminator. Kept ONLY as the migration/decode bridge below.
+    static let legacyClaudeCodeRawValue = "claudeCode"
+
+    /// **Forward/back-tolerant decode (validate-then-repair, CLAUDE.md untrusted-persisted-data
+    /// contract).** A persisted `"claudeCode"` raw value (the removed kind, W11) maps to `.terminal` so
+    /// an old workspace file never traps now the case is gone — a Claude session is just a terminal. Any
+    /// OTHER unknown raw value still throws (it is genuine corruption the loader's reset path handles),
+    /// preserving the strict behaviour for everything except the one intentionally-retired value.
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if raw == Self.legacyClaudeCodeRawValue {
+            self = .terminal
+            return
+        }
+        guard let value = Self(rawValue: raw) else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "unknown PaneKind raw value \"\(raw)\""),
+            )
+        }
+        self = value
+    }
 }
 
 public extension PaneKind {
@@ -60,9 +87,9 @@ public extension PaneKind {
     /// An auto-managed, never-persisted overlay pane (the system-dialog surface).
     var isEphemeral: Bool { self == .systemDialog }
     /// Whether this pane has a shell input funnel that text can be typed into — the recipient set for
-    /// broadcast/synchronized input (tmux `synchronize-panes`). Only the PTY-backed kinds; the video
-    /// kinds (`remoteGUI`/`systemDialog`) take input through the cursor/key side-channel, not a text bar.
-    var canReceiveText: Bool { self == .terminal || self == .claudeCode }
+    /// broadcast/synchronized input (tmux `synchronize-panes`). Only the PTY-backed `.terminal` kind; the
+    /// video kinds (`remoteGUI`/`systemDialog`) take input through the cursor/key side-channel, not a text bar.
+    var canReceiveText: Bool { self == .terminal }
 }
 
 /// Which remote window a `.remoteGUI` (video) pane mirrors. The host + UDP ports are no longer here —

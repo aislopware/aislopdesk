@@ -365,6 +365,11 @@ Task {
                 // Smoothed-RTT samples are a GUI affordance (latency badge); the raw-mode
                 // CLI surfaces nothing (a periodic stderr line would smear the screen).
                 break
+            case .foregroundProcess,
+                 .claudeStatus:
+                // Claude-Code detection signals (wire types 26/27) drive the GUI client's per-pane
+                // agent-status dot. The raw-mode CLI has no such affordance — a no-op here.
+                break
             }
         }
     }

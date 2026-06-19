@@ -51,7 +51,6 @@ public struct WorkspaceCommands: Commands {
                 commandButton("New Pane", .newPaneDefault)
                 Divider()
                 commandButton("New Terminal Pane", .newPane(.terminal))
-                commandButton("New Claude Code Pane", .newPane(.claudeCode))
                 commandButton("New Remote Window Pane", .newPane(.remoteGUI))
                 Divider()
                 commandButton("Duplicate Pane", .duplicatePane)

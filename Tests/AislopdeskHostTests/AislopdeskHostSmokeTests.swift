@@ -21,8 +21,9 @@ final class AislopdeskHostSmokeTests: XCTestCase {
 
     func testCuratedEnvironmentHasSaneTerminalDefaults() {
         let env = HostEnvironment.curated(parent: ["PATH": "/usr/bin", "HOME": "/Users/x"])
-        // The plain-shell path advertises the SAME libghostty TERM as the Claude Code
-        // path (single source of truth) — the client renders with libghostty.
+        // The plain-shell path advertises the libghostty TERM that ``ClaudeCodeProfile`` still
+        // owns as the single source of truth (the curated Claude launch is now a client-side
+        // preset, but the TERM constant lives on the profile) — the client renders with libghostty.
         XCTAssertEqual(env["TERM"], "xterm-ghostty")
         XCTAssertEqual(env["TERM"], HostEnvironment.defaultTerm)
         XCTAssertEqual(
@@ -38,7 +39,7 @@ final class AislopdeskHostSmokeTests: XCTestCase {
 
     func testCuratedEnvironmentHonoursExplicitTermOverride() {
         // The TERM is a parameter so a caller can select the documented fallback
-        // (xterm-256color, #54700) symmetrically with ClaudeCodeProfile's toggle.
+        // (xterm-256color, #54700) — the constant still lives on ClaudeCodeProfile.Term.
         let env = HostEnvironment.curated(
             parent: ["PATH": "/usr/bin"],
             term: ClaudeCodeProfile.Term.xterm256.rawValue,
@@ -80,31 +81,16 @@ final class AislopdeskHostSmokeTests: XCTestCase {
         XCTAssertEqual(parsed.launchMode, .shell)
     }
 
-    func testParseClaudeWithXterm256YieldsClaudeCodeWithXterm256Term() throws {
-        let parsed = try XCTUnwrap(HostdArguments.parse(["aislopdesk-hostd", "--claude", "--xterm256"]))
-        XCTAssertEqual(
-            parsed.launchMode,
-            .claudeCode(ClaudeCodeProfile(term: .xterm256)),
-            "--claude --xterm256 must select the claudeCode launch mode with TERM=xterm-256color",
-        )
-        // Spell the TERM out explicitly so a regression in the toggle is obvious.
-        guard case let .claudeCode(profile) = parsed.launchMode else {
-            XCTFail("expected claudeCode launch mode")
-            return
-        }
-        XCTAssertEqual(profile.term, .xterm256)
-        XCTAssertEqual(profile.term.rawValue, "xterm-256color")
+    func testParseRetiredClaudeFlagIsUnknownAndRejected() {
+        // W11 Decision #9: the curated `claude` launch is no longer a daemon mode. `--claude`
+        // is now an UNKNOWN flag → parse returns nil (caller prints usage + exits non-zero).
+        XCTAssertNil(HostdArguments.parse(["aislopdesk-hostd", "--claude"]))
+        XCTAssertNil(HostdArguments.parse(["aislopdesk-hostd", "--claude", "--xterm256"]))
     }
 
-    func testParseClaudeWithoutXterm256DefaultsToGhosttyTerm() throws {
-        let parsed = try XCTUnwrap(HostdArguments.parse(["aislopdesk-hostd", "--claude"]))
-        XCTAssertEqual(parsed.launchMode, .claudeCode(ClaudeCodeProfile(term: .ghostty)))
-    }
-
-    func testParseXterm256WithoutClaudeStaysShell() throws {
-        // --xterm256 only has meaning with --claude; on its own it is a no-op.
-        let parsed = try XCTUnwrap(HostdArguments.parse(["aislopdesk-hostd", "--xterm256"]))
-        XCTAssertEqual(parsed.launchMode, .shell)
+    func testParseRetiredXterm256FlagIsUnknownAndRejected() {
+        // `--xterm256` was only meaningful with `--claude`; both are retired and unknown now.
+        XCTAssertNil(HostdArguments.parse(["aislopdesk-hostd", "--xterm256"]))
     }
 
     func testParseHelpReturnsNil() {
@@ -112,13 +98,13 @@ final class AislopdeskHostSmokeTests: XCTestCase {
         XCTAssertNil(HostdArguments.parse(["aislopdesk-hostd", "-h"]))
     }
 
-    func testParsePortAndShellAlongsideClaude() throws {
+    func testParsePortAndShellYieldShellLaunchMode() throws {
         let parsed = try XCTUnwrap(
-            HostdArguments.parse(["aislopdesk-hostd", "--port", "9001", "--shell", "/bin/bash", "--claude"]),
+            HostdArguments.parse(["aislopdesk-hostd", "--port", "9001", "--shell", "/bin/bash"]),
         )
         XCTAssertEqual(parsed.port, 9001)
         XCTAssertEqual(parsed.shell, "/bin/bash")
-        XCTAssertEqual(parsed.launchMode, .claudeCode(ClaudeCodeProfile(term: .ghostty)))
+        XCTAssertEqual(parsed.launchMode, .shell)
     }
 
     // MARK: - -inspector / --transcript (inspector server)
@@ -129,10 +115,11 @@ final class AislopdeskHostSmokeTests: XCTestCase {
         XCTAssertNil(parsed.transcriptPath)
     }
 
-    func testParseClaudeAutoEnablesInspector() throws {
-        // --claude implies the inspector (it observes a claude session).
-        let parsed = try XCTUnwrap(HostdArguments.parse(["aislopdesk-hostd", "--claude"]))
-        XCTAssertTrue(parsed.inspectorEnabled, "--claude auto-enables the inspector")
+    func testInspectorIsOnlyEnabledByExplicitFlags() throws {
+        // The `--claude` auto-enable is retired (W11 Decision #6): the inspector now stands up
+        // only on an explicit `--inspector`/`--transcript`. A bare daemon leaves it off.
+        let parsed = try XCTUnwrap(HostdArguments.parse(["aislopdesk-hostd"]))
+        XCTAssertFalse(parsed.inspectorEnabled, "no implicit inspector without an explicit flag")
     }
 
     func testParseExplicitInspectorFlag() throws {

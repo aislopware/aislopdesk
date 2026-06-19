@@ -174,9 +174,6 @@ struct PaneCarouselView: View {
             Button { store.addPane(kind: .terminal) } label: {
                 Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
             }
-            Button { store.addPane(kind: .claudeCode) } label: {
-                Label("Claude Code", systemImage: PaneLeafView.icon(for: .claudeCode))
-            }
             Button { store.addPane(kind: .remoteGUI) } label: {
                 Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
             }

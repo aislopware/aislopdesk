@@ -97,7 +97,7 @@ final class WorkspacePersistenceTests: XCTestCase {
                 ),
                 CanvasItem(
                     id: pC,
-                    spec: PaneSpec(kind: .claudeCode, title: "agent"),
+                    spec: PaneSpec(kind: .remoteGUI, title: "agent"),
                     frame: CGRect(x: 0, y: 0, width: 640, height: 420),
                     z: 2,
                     groupID: groupB.id,
@@ -237,7 +237,7 @@ final class WorkspacePersistenceTests: XCTestCase {
         let p0 = PaneID(), p1 = PaneID()
         let original = Workspace.make(panes: [
             (p0, PaneSpec(kind: .terminal, title: "shell")),
-            (p1, PaneSpec(kind: .claudeCode, title: "agent")),
+            (p1, PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
         let data = try makeEncoder().encode(original)
         let restored = decodeOrDefault(data)
@@ -250,7 +250,7 @@ final class WorkspacePersistenceTests: XCTestCase {
     func testMigrationIdentityForCurrentVersion() {
         let original = Workspace.make(panes: [
             (PaneID(), PaneSpec(kind: .terminal, title: "shell")),
-            (PaneID(), PaneSpec(kind: .claudeCode, title: "agent")),
+            (PaneID(), PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
         let migrated = WorkspaceSchemaMigration.migrate(original, from: Workspace.currentSchemaVersion)
         XCTAssertEqual(migrated, original, "from == to is the identity migration")
@@ -290,7 +290,7 @@ final class WorkspacePersistenceTests: XCTestCase {
         let persistence = WorkspacePersistence(fileURL: url)
         let original = Workspace.make(panes: [
             (PaneID(), PaneSpec(kind: .terminal, title: "shell")),
-            (PaneID(), PaneSpec(kind: .claudeCode, title: "agent")),
+            (PaneID(), PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
         try persistence.save(original)
         XCTAssertEqual(persistence.load(), original, "a current-version payload loads verbatim")
@@ -348,7 +348,7 @@ final class WorkspacePersistenceTests: XCTestCase {
     func testLoadDoesNotBackUpAGoodFile() throws {
         let url = try tempURL()
         let persistence = WorkspacePersistence(fileURL: url)
-        try persistence.save(Workspace.make(panes: [(PaneID(), PaneSpec(kind: .claudeCode, title: "x"))]))
+        try persistence.save(Workspace.make(panes: [(PaneID(), PaneSpec(kind: .remoteGUI, title: "x"))]))
         _ = persistence.load()
         let backup = url.appendingPathExtension("corrupt")
         XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path), "a good load writes no backup")
@@ -402,7 +402,7 @@ final class WorkspacePersistenceTests: XCTestCase {
         let p0 = PaneID(), p1 = PaneID()
         let base = Workspace.make(panes: [
             (p0, PaneSpec(kind: .terminal, title: "shell")),
-            (p1, PaneSpec(kind: .claudeCode, title: "agent")),
+            (p1, PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
 
         let (withGroup, gid) = base.addingGroup(name: "Work")
@@ -483,7 +483,7 @@ final class WorkspacePersistenceTests: XCTestCase {
         let p0 = PaneID(), p1 = PaneID()
         let v9 = Workspace.make(panes: [
             (p0, PaneSpec(kind: .terminal, title: "shell")),
-            (p1, PaneSpec(kind: .claudeCode, title: "agent")),
+            (p1, PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
         let data = try makeEncoder().encode(v9)
         let tree = try XCTUnwrap(
@@ -577,7 +577,7 @@ final class WorkspacePersistenceTests: XCTestCase {
         // Add a second tab so the round-trip exercises more than a singleton.
         let (grown, _) = WorkspaceTreeOps.newTab(
             in: TreeWorkspace(sessions: [session], activeSessionID: session.id),
-            spec: PaneSpec(kind: .claudeCode, title: "agent"),
+            spec: PaneSpec(kind: .remoteGUI, title: "agent"),
         )
         try persistence.save(grown)
 

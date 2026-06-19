@@ -634,7 +634,6 @@ struct PaneMenuView: View {
             Label("New Pane", systemImage: "plus")
             Spacer(minLength: 12)
             kindButton(.terminal, help: "New Terminal")
-            kindButton(.claudeCode, help: "New Claude Code")
             kindButton(.remoteGUI, help: "New Remote Window")
         }
         .padding(.vertical, 2)

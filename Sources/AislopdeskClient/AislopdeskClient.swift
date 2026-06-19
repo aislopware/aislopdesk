@@ -62,6 +62,16 @@ public actor AislopdeskClient {
         /// An EXPLICIT desktop notification the child requested (OSC 9 / OSC 777, sniffed
         /// host-side). The client posts it as a local notification; clicking focuses the pane.
         case notification(title: String, body: String)
+        /// The PTY's current foreground-process basename (wire type 26, host → client). The COARSE
+        /// Claude-Code detection signal: `"claude"` means a `claude` is in the foreground, `""`/any
+        /// other name clears it. The UI folds this into the pane's ``ClaudeStatusMachine`` presence
+        /// floor. The pane identity comes from the channel envelope, not this body.
+        case foregroundProcess(name: String)
+        /// A rich Claude-Code agent-status update (wire type 27, host → client). `state` is the raw
+        /// `AislopdeskAgentDetect.ClaudeStatus.urgency` byte, `kind` the notification class
+        /// (`0 none / 1 permission / 2 waitingForInput / 3 other`), `label` an optional human chip
+        /// string. Surfaced verbatim; the UI maps `state`/`kind` back to a `ClaudeStatus`.
+        case claudeStatus(state: UInt8, kind: UInt8, label: String)
         /// The remote child process exited with `code`. Terminal — ``output`` finishes
         /// right after this is surfaced.
         case exit(code: Int32)
@@ -409,6 +419,14 @@ public actor AislopdeskClient {
             eventBroadcaster.yield(.commandStatus(status))
         case let .notification(title, body):
             eventBroadcaster.yield(.notification(title: title, body: body))
+        case let .foregroundProcess(name):
+            // COARSE Claude detection (type 26): surface the PTY foreground-process basename so the UI
+            // can derive a presence floor for this pane. Rides CONTROL; never blocks output.
+            eventBroadcaster.yield(.foregroundProcess(name: name))
+        case let .claudeStatus(state, kind, label):
+            // RICH Claude status (type 27): surface the raw bytes; the UI maps them back to a
+            // ClaudeStatus (AislopdeskClient does not depend on AislopdeskAgentDetect).
+            eventBroadcaster.yield(.claudeStatus(state: state, kind: kind, label: label))
         case let .pong(timestampMS):
             recordPong(sentAtMS: timestampMS)
         default:

@@ -22,7 +22,7 @@ final class LayoutPresetTests: XCTestCase {
             ),
             CanvasItem(
                 id: b,
-                spec: PaneSpec(kind: .claudeCode, title: "B"),
+                spec: PaneSpec(kind: .remoteGUI, title: "B"),
                 frame: CGRect(x: 600, y: 0, width: 480, height: 320),
                 z: 1,
             ),
@@ -82,7 +82,7 @@ final class LayoutPresetTests: XCTestCase {
         XCTAssertEqual(Set(store.allSessions.map(\.id)), liveIDs)
         // Titles/kinds preserved through the switch.
         let kinds = store.workspace.canvas.allIDs().compactMap { store.workspace.canvas.spec(for: $0)?.kind }
-        XCTAssertEqual(Set(kinds), Set([.terminal, .claudeCode]))
+        XCTAssertEqual(Set(kinds), Set([.terminal, .remoteGUI]))
     }
 
     func testSwitchPreservesConnectionAndPresets() {

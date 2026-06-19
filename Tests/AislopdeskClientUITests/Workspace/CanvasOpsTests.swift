@@ -67,7 +67,7 @@ final class CanvasOpsTests: XCTestCase {
             CanvasItem(id: dup, spec: PaneSpec(kind: .terminal, title: "first"), frame: f0, z: 0),
             CanvasItem(
                 id: dup,
-                spec: PaneSpec(kind: .claudeCode, title: "second"),
+                spec: PaneSpec(kind: .terminal, title: "second"),
                 frame: CGRect(x: 50, y: 60, width: 300, height: 300),
                 z: 1,
             ),

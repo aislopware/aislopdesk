@@ -5,9 +5,10 @@ import XCTest
 
 /// Pins the iOS background/foreground **lifecycle fan-out** on ``WorkspaceStore`` (docs/22 §4, §11.4):
 /// `pauseAll()` pauses EVERY materialized session and `resumeAll()` resumes EVERY session — once each,
-/// across the whole canvas, including the inspector-bearing `.claudeCode` pane (whose `pause()` the
-/// `LivePaneSession` routes to BOTH its connection and its inspector channel; the double records the
-/// single `pause()` call, which is what the store guarantees).
+/// across the whole canvas, including an inspector-bearing terminal pane (whose `pause()` the
+/// `LivePaneSession` routes to BOTH its connection and its latent inspector channel — every terminal
+/// owns the latent inspector since W11; the double records the single `pause()` call, which is what the
+/// store guarantees).
 ///
 /// The load-bearing property here is that the fan-out is **AWAITED** — the store uses a `TaskGroup`
 /// that is awaited before returning, NOT fire-and-forget (a stranded `pause()` on iOS background is
@@ -24,18 +25,17 @@ final class ScenePhaseFanOutTests: XCTestCase {
     // MARK: - Fixtures
 
     /// Builds a store whose default workspace is one terminal pane, then grows it (via the store's own
-    /// mutations, so every pane is materialized through `reconcile()`) to a multi-pane canvas that
-    /// includes a `.claudeCode` pane: the default terminal + an added claudeCode + two more terminals
-    /// (4 panes total on the single canvas, one of them the inspector-bearing claudeCode pane).
+    /// mutations, so every pane is materialized through `reconcile()`) to a 4-pane canvas: the default
+    /// terminal + three more terminals. Every terminal owns the latent inspector since W11 (Claude Code
+    /// is no longer a distinct kind), so the fan-out's "inspector-bearing pane" is just any terminal.
     ///
     /// Returns the store and the set of all materialized handles cast to `FakePaneSession` for direct
     /// counter assertions. Order of `allSessions` is unspecified, so callers key off identity, not order.
     private func makeMultiPaneStore() -> (store: WorkspaceStore, fakes: [FakePaneSession]) {
         let store = WorkspaceStore(makeSession: { FakePaneSession($0) }, liveVideoCap: 2)
 
-        // The default workspace already has one terminal pane; add three more onto the same canvas,
-        // one of them the inspector-bearing claudeCode pane.
-        store.addPane(kind: .claudeCode)
+        // The default workspace already has one terminal pane; add three more onto the same canvas.
+        store.addPane(kind: .terminal)
         store.addPane(kind: .terminal)
         store.addPane(kind: .terminal)
 
@@ -48,12 +48,12 @@ final class ScenePhaseFanOutTests: XCTestCase {
     func testPauseAllPausesEverySessionExactlyOnce() async {
         let (store, fakes) = makeMultiPaneStore()
 
-        // Precondition: 4 panes materialized on the canvas, one of them the claudeCode pane.
+        // Precondition: 4 terminal panes materialized on the canvas (each bears the latent inspector).
         XCTAssertEqual(fakes.count, 4, "all four canvas panes are materialized")
         XCTAssertEqual(
-            fakes.count(where: { $0.kind == .claudeCode }),
-            1,
-            "the inspector-bearing claudeCode pane is among them",
+            fakes.count(where: { $0.kind == .terminal }),
+            4,
+            "every pane is an inspector-bearing terminal (W11 — no dedicated Claude pane)",
         )
         XCTAssertTrue(fakes.allSatisfy { $0.pauseCount == 0 }, "nothing paused before pauseAll")
 
@@ -89,21 +89,22 @@ final class ScenePhaseFanOutTests: XCTestCase {
         }
     }
 
-    func testClaudeCodePaneIsIncludedInTheFanOut() async {
-        // The inspector-bearing pane is paused/resumed like any other: FakePaneSession doesn't model
+    func testInspectorBearingTerminalIsIncludedInTheFanOut() async {
+        // An inspector-bearing terminal is paused/resumed like any other: FakePaneSession doesn't model
         // the inspector separately — it records the single pause()/resume() the store drives, which is
         // exactly the store's contract (the LivePaneSession internally fans that to connection+inspector).
+        // Since W11 every terminal owns the latent inspector, so any terminal pane stands in.
         let (store, fakes) = makeMultiPaneStore()
-        guard let claude = fakes.first(where: { $0.kind == .claudeCode }) else {
-            XCTFail("expected a claudeCode pane in the fixture")
+        guard let terminal = fakes.first(where: { $0.kind == .terminal }) else {
+            XCTFail("expected a terminal pane in the fixture")
             return
         }
 
         await store.pauseAll()
-        XCTAssertEqual(claude.pauseCount, 1, "the claudeCode pane is paused too")
+        XCTAssertEqual(terminal.pauseCount, 1, "the inspector-bearing terminal pane is paused too")
 
         await store.resumeAll()
-        XCTAssertEqual(claude.resumeCount, 1, "the claudeCode pane is resumed too")
+        XCTAssertEqual(terminal.resumeCount, 1, "the inspector-bearing terminal pane is resumed too")
     }
 
     // MARK: - Video suspend/restore across the fan-out (docs/22 §4)

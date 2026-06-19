@@ -9,25 +9,26 @@ import Foundation
 /// ## Flags
 /// - `--port N` / `-p N`: TCP port to bind (default `7420`; `0` = OS-assigned).
 /// - `--shell PATH` / `-s PATH`: shell to spawn (default: the user's login shell).
-/// - `--claude`: launch `claude` under the curated ``ClaudeCodeProfile`` instead of a
-///   plain login shell — selects ``HostServer/LaunchMode/claudeCode(_:)``.
-/// - `--xterm256`: with `--claude`, advertise `TERM=xterm-256color`
-///   (``ClaudeCodeProfile/Term/xterm256``, the #54700 fallback) instead of the default
-///   `xterm-ghostty`. Ignored without `--claude`.
 /// - `--inspector`: enable the read-only structured inspector server on `port + 1`
-///   (NWConnection #2). **Auto-enabled by `--claude`** (the inspector observes a `claude`
-///   session) but can be requested explicitly; harmless without `--claude` (the replay
-///   log just stays empty until PIECE C feeds it).
+///   (NWConnection #2). The dynamic, client-driven inspector gating (only stand the
+///   second channel up once a `claude` session is detected) lives client-side now (W11
+///   Decision #6); the daemon still honors this explicit opt-in. Harmless on its own —
+///   the replay log stays empty until a hook/transcript feeds it.
 /// - `--transcript PATH`: inject the Claude Code JSONL transcript path the inspector
 ///   tails (PIECE C's live discovery is deferred; until then the path is supplied here).
 ///   Implies `--inspector`.
 /// - `--help` / `-h`: returns `nil` (caller prints usage + exits non-zero).
+///
+/// The curated `claude` launch (formerly `--claude [--xterm256]`) is RETIRED as a daemon
+/// mode (W11 Decision #9): a Claude session is now just a `.terminal` pane that runs
+/// `claude`, auto-detected by the host process-watch + hook listener and offered to the
+/// user as a client-side launch preset. New channels always spawn a plain login shell.
 public struct HostdArguments: Sendable, Equatable {
     public let port: UInt16
     public let shell: String?
     public let launchMode: HostServer.LaunchMode
-    /// Whether to start the inspector server (auto-true under `--claude` or
-    /// `--transcript`). Bound to `port + 1`.
+    /// Whether to start the inspector server (auto-true under `--transcript`, else explicit
+    /// `--inspector`). Bound to `port + 1`.
     public let inspectorEnabled: Bool
     /// Injected transcript path for the inspector's (deferred) live tailer, if supplied.
     public let transcriptPath: String?
@@ -48,7 +49,7 @@ public struct HostdArguments: Sendable, Equatable {
 
     /// The usage string printed on `--help` or a parse error.
     public static func usage(programName: String) -> String {
-        "usage: \(programName) [--port N] [--shell /path/to/shell] [--claude [--xterm256]] [--inspector] [--transcript PATH]"
+        "usage: \(programName) [--port N] [--shell /path/to/shell] [--inspector] [--transcript PATH]"
     }
 
     /// Parses a full argv (including `argv[0]`, which is dropped). Returns `nil` for
@@ -57,8 +58,6 @@ public struct HostdArguments: Sendable, Equatable {
     public static func parse(_ args: [String]) -> Self? {
         var port: UInt16 = 7420
         var shell: String?
-        var claude = false
-        var xterm256 = false
         var inspector = false
         var transcript: String?
 
@@ -73,10 +72,6 @@ public struct HostdArguments: Sendable, Equatable {
                  "-s":
                 guard let value = iterator.next() else { return nil }
                 shell = value
-            case "--claude":
-                claude = true
-            case "--xterm256":
-                xterm256 = true
             case "--inspector":
                 inspector = true
             case "--transcript":
@@ -90,20 +85,13 @@ public struct HostdArguments: Sendable, Equatable {
             }
         }
 
-        let launchMode: HostServer.LaunchMode
-        if claude {
-            let term: ClaudeCodeProfile.Term = xterm256 ? .xterm256 : .ghostty
-            launchMode = .claudeCode(ClaudeCodeProfile(term: term))
-        } else {
-            // `--xterm256` without `--claude` is a no-op: the plain-shell TERM is fixed
-            // to the libghostty default here (the daemon does not expose a TERM override
-            // for the plain shell — that would be a separate flag if ever needed).
-            launchMode = .shell
-        }
+        // New channels always spawn a plain login shell. The curated `claude` launch is no
+        // longer a daemon mode (W11 Decision #9) — the plain-shell TERM is fixed to the
+        // libghostty default (resolved against the host terminfo DB at spawn time).
+        let launchMode: HostServer.LaunchMode = .shell
 
-        // The inspector is enabled explicitly, OR implied by `--claude` (it observes a
-        // `claude` session), OR implied by `--transcript` (a path to tail).
-        let inspectorEnabled = inspector || claude || (transcript != nil)
+        // The inspector is enabled explicitly, OR implied by `--transcript` (a path to tail).
+        let inspectorEnabled = inspector || (transcript != nil)
 
         return Self(
             port: port,

@@ -63,8 +63,12 @@ final class SettingsKeyTests: XCTestCase {
 
     func testDefaultPaneKindDefaultsToTerminalAndRoundTrips() {
         XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal)
-        UserDefaults.standard.set(PaneKind.claudeCode.rawValue, forKey: SettingsKey.defaultPaneKindKey)
-        XCTAssertEqual(SettingsKey.defaultPaneKind, .claudeCode)
+        UserDefaults.standard.set(PaneKind.remoteGUI.rawValue, forKey: SettingsKey.defaultPaneKindKey)
+        XCTAssertEqual(SettingsKey.defaultPaneKind, .remoteGUI)
+        // W11: a stale persisted `claudeCode` value (the retired kind) is no longer a valid raw value
+        // here → falls back to `.terminal` (the safe default), like any other invalid raw value.
+        UserDefaults.standard.set("claudeCode", forKey: SettingsKey.defaultPaneKindKey)
+        XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal, "a retired/invalid raw value falls back to terminal")
         UserDefaults.standard.set("garbage", forKey: SettingsKey.defaultPaneKindKey)
         XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal, "an invalid raw value falls back to terminal")
     }

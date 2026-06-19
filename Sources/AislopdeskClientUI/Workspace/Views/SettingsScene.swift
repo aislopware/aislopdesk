@@ -61,7 +61,8 @@ public enum SettingsKey {
     }
 
     /// The default kind for a generic "New Pane" (toolbar primary action / empty state), default
-    /// `.terminal`. Per-kind shortcuts (⇧⌘N / ⌥⌘N) are unaffected.
+    /// `.terminal`. The ⌥⌘N per-kind shortcut is unaffected. A stale persisted `"claudeCode"` value (the
+    /// kind retired in W11) is not a valid raw value here → falls back to `.terminal`, exactly right.
     public static var defaultPaneKind: PaneKind {
         (UserDefaults.standard.string(forKey: defaultPaneKindKey)).flatMap(PaneKind.init(rawValue:)) ?? .terminal
     }
@@ -113,11 +114,15 @@ private struct CanvasSettingsTab: View {
             Section("New panes") {
                 Picker("Default new pane", selection: $defaultKind) {
                     Text("Terminal").tag(PaneKind.terminal.rawValue)
-                    Text("Claude Code").tag(PaneKind.claudeCode.rawValue)
                     Text("Remote Window").tag(PaneKind.remoteGUI.rawValue)
                 }
-                Text("Used by ⌘N and the toolbar + button. ⇧⌘N / ⌥⌘N always make Claude / Remote panes.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(
+                    """
+                    Used by ⌘N and the toolbar + button. ⌥⌘N always makes a Remote Window pane. \
+                    Run `claude` in any terminal — it is auto-detected (no dedicated pane).
+                    """,
+                )
+                .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

@@ -2592,6 +2592,21 @@ public final class WorkspaceStore {
         connection?.onExplicitNotification = { [weak self] paneTitle, title, body in
             self?.handlePaneNotification(id: id, paneTitle: paneTitle, title: title, body: body)
         }
+        // CLAUDE AUTO-DETECT (W11): fold the agent-detection wire signals (types 26/27) into this pane's
+        // ClaudeStatusMachine and mirror the result into `paneAgentStatus` (→ the sidebar/tab/chrome dots).
+        connection?.onAgentSignal = { [weak self] event in
+            self?.handleAgentSignal(id: id, event: event)
+        }
+    }
+
+    /// Folds one Claude-Code agent-detection event (wire types 26/27) for pane `id` into the owning
+    /// ``LivePaneSession``'s state machine, then mirrors the new ``ClaudeStatus`` into ``paneAgentStatus``
+    /// so the sidebar/tab/chrome ``AgentStatusDot``s light up live (the auto-detect payoff, W11). The
+    /// session owns the dedupe + the dynamic inspector open/close; `setAgentStatus` is itself idempotent.
+    private func handleAgentSignal(id: PaneID, event: AislopdeskClient.Event) {
+        guard let session = registry[id] as? LivePaneSession else { return }
+        let status = session.feedAgentSignal(event)
+        setAgentStatus(status, for: id)
     }
 
     /// Updates the spec for `id` in whichever live model is active (W5): the tree's side table when
@@ -2792,6 +2807,10 @@ public final class WorkspaceStore {
                 connection?.onExplicitNotification = { [weak self] paneTitle, title, body in
                     self?.handlePaneNotification(id: id, paneTitle: paneTitle, title: title, body: body)
                 }
+                // CLAUDE AUTO-DETECT (W11): same agent-signal fold as the tree path's `wireMaterializedLeaf`.
+                connection?.onAgentSignal = { [weak self] event in
+                    self?.handleAgentSignal(id: id, event: event)
+                }
             },
         )
 
@@ -2989,7 +3008,6 @@ public final class WorkspaceStore {
     private func defaultTitle(for kind: PaneKind) -> String {
         switch kind {
         case .terminal: "Terminal"
-        case .claudeCode: "Claude Code"
         case .remoteGUI: "Remote window"
         case .systemDialog: "System dialog"
         }
@@ -3004,8 +3022,8 @@ public extension WorkspaceStore {
     /// `makeSession` so tests can substitute `{ FakePaneSession($0) }` instead (docs/22 §0).
     ///
     /// - Parameters:
-    ///   - makeInspector: builds the read-only `InspectorClient` for a `.claudeCode` endpoint, or
-    ///     `nil` when no second channel is available (e.g. the descriptor cannot be built headless).
+    ///   - makeInspector: builds the read-only `InspectorClient` for a terminal endpoint (subscribed
+    ///     dynamically once a `claude` is detected, W11), or `nil` when no second channel is available.
     ///     Defaults to ``liveMakeInspector(_:)`` — a lazily-connecting NWConnection #2 client (see
     ///     that function for the unproven-host guardrail).
     ///   - muxRegistry: the per-host shared-connection pool. Every `AislopdeskClient` is backed by a
@@ -3063,7 +3081,8 @@ public extension WorkspaceStore {
         return overflow ? nil : sum
     }
 
-    /// Builds the production read-only ``InspectorClient`` for a `.claudeCode` pane's `endpoint`.
+    /// Builds the production read-only ``InspectorClient`` for a terminal pane's `endpoint` (subscribed
+    /// dynamically once a `claude` is detected in it, W11).
     ///
     /// ### Guardrail (docs/22 §7 + the WF5 brief): the LIVE network inspector path is NOT runtime-proven
     /// The terminal byte-pipeline (PATH 1) is proven; the structured inspector second channel
@@ -3090,8 +3109,8 @@ public extension WorkspaceStore {
             using: NWByteChannel.parameters(),
         )
         // The channel connects lazily: NWByteChannel.start() is idempotent and is triggered by the
-        // first send (the `subscribe(fromSeq:)` in LivePaneSession.subscribeInspector). We do not
-        // start it here so an idle / never-appeared claudeCode pane opens no socket.
+        // first send (the `subscribe(fromSeq:)` in LivePaneSession.subscribeInspector). We do not start
+        // it here so a plain terminal (no claude detected, W11) opens no inspector socket.
         let channel = NWByteChannel(connection: connection)
         return InspectorClient(channel: channel)
     }

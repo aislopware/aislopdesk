@@ -767,14 +767,11 @@ struct CommandPaletteView: View {
         CatalogItem(
             command: .newPane(.terminal),
             title: "New Terminal Pane",
+            // W11: Claude Code is no longer a dedicated pane — a `claude` running in ANY terminal is
+            // auto-detected. The "claude/ai/assistant" keywords ride the plain New Terminal entry so the
+            // discoverable verb still lands the user on a terminal they can run `claude` in.
             symbol: "plus.rectangle",
-            keywords: "split window shell add open create",
-        ),
-        CatalogItem(
-            command: .newPane(.claudeCode),
-            title: "New Claude Code Pane",
-            symbol: "sparkles.rectangle.stack",
-            keywords: "split ai assistant add open create",
+            keywords: "split window shell add open create claude ai assistant agent",
         ),
         CatalogItem(
             command: .newPane(.remoteGUI),

@@ -29,19 +29,47 @@ import Foundation
 /// hand-edited / partial v9 file (validate-then-repair). The function is total — it never force-unwraps or
 /// traps on a degenerate input (no panes / one pane / one group / a focus pointing at a missing pane).
 enum WorkspaceMigrationV9toV10 {
+    /// The name of the launch snippet seeded when a legacy `.claudeCode` pane is migrated (docs/42 W11).
+    /// A Claude Code pane is no longer a `PaneKind`; the curated launch is offered as a normal terminal
+    /// `claude` launcher instead. `<Enter>` runs it (see ``SendKeysParser``).
+    static let claudeLaunchSnippetName = "Claude Code"
+    /// The body of that snippet — run `claude` in the focused terminal pane.
+    static let claudeLaunchSnippetBody = "claude<Enter>"
+
     /// Migrates a decoded ``WorkspaceV9`` value to a ``TreeWorkspace``. Pure + total — see the type doc.
     static func migrate(_ v9: WorkspaceV9) -> TreeWorkspace {
         let session = makeSession(from: v9)
+        // A legacy `.claudeCode` pane becomes a plain `.terminal` (W11 — Claude Code is no longer a
+        // PaneKind). So a user can still spin one up, SEED a "Claude Code" launch snippet (the retired
+        // curated launch, re-offered as data) when any claude pane was migrated — but never duplicate it.
+        let hadClaudePane = v9.canvas.items.contains { $0.spec.kind == .claudeCode }
+        var snippets = v9.snippets
+        if hadClaudePane, !snippets.contains(where: { $0.name == claudeLaunchSnippetName }) {
+            snippets.append(Snippet(name: claudeLaunchSnippetName, body: claudeLaunchSnippetBody))
+        }
         let workspace = TreeWorkspace(
             sessions: [session],
             activeSessionID: session.id,
             // Both schemas share these client-state collections — carry them verbatim (docs/42 §Migration).
-            snippets: v9.snippets,
+            snippets: snippets,
             layoutPresets: v9.layoutPresets,
         )
         // Repair the invariant (drop orphan specs / re-seed missing ones) + the active selection. A
         // degenerate v9 (no panes) normalizes into the default single-leaf workspace rather than an empty one.
         return workspace.normalized()
+    }
+
+    /// Maps a frozen ``PaneSpecV9`` to the LIVE ``PaneSpec``, rewriting the retired `.claudeCode` kind to
+    /// `.terminal` (W11 — a Claude session is just a terminal now). Title + video are carried verbatim.
+    static func liveSpec(from v9: PaneSpecV9) -> PaneSpec {
+        let kind: PaneKind =
+            switch v9.kind {
+            case .terminal,
+                 .claudeCode: .terminal // the retired Claude kind degrades to a plain terminal
+            case .remoteGUI: .remoteGUI
+            case .systemDialog: .systemDialog
+            }
+        return PaneSpec(kind: kind, title: v9.title, video: v9.video)
     }
 
     // MARK: - Session assembly
@@ -74,9 +102,10 @@ enum WorkspaceMigrationV9toV10 {
             tabs.append(makeTab(title: group.name, panes: members))
         }
 
-        // The spec side table: every leaf's PaneSpec, preserved verbatim (the join contract).
+        // The spec side table: every leaf's PaneSpec, mapped from the frozen v9 shape — preserved
+        // verbatim except the retired `.claudeCode` kind, which is rewritten to `.terminal` (W11).
         var specs: [PaneID: PaneSpec] = [:]
-        for item in items { specs[item.id] = item.spec }
+        for item in items { specs[item.id] = liveSpec(from: item.spec) }
 
         // Carry focus → the owning tab's activePane; maximize → that tab's zoomedPane; select that tab.
         var activeTabIndex = 0
