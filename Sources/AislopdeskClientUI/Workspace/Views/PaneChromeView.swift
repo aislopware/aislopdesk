@@ -156,7 +156,9 @@ struct PaneChromeView<Content: View>: View {
                     store.toggleZoomTree()
                 }
                 chromeButton("xmark", help: "Close pane", role: .destructive) {
-                    store.closePaneTree(id)
+                    // ITEM A3: route through the busy-shell guard (parks `pendingClose` mid-command) so the
+                    // chrome close honours the same confirmation ⌘W / the canvas path do — not a raw close.
+                    store.requestClosePaneTree(id)
                 }
             }
             .font(.caption)

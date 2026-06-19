@@ -11,6 +11,11 @@ import SwiftUI
 /// `WorkspaceRootView` presents this for the regular-width macOS/iPad path; the compact (iPhone)
 /// projection keeps the existing carousel for now (a full iOS tree shell is a later item — see the
 /// `SplitWorkspaceView.compact` note).
+///
+/// TODO(iOS tree carousel — deferred, see DECISIONS #8): there is no compact/iPhone per-tab tree
+/// projection yet. The regular `NavigationSplitView` shell here is the only tree projection; the iPhone
+/// per-tab carousel is deliberately DEFERRED (and is currently blocked by pre-existing iOS UIKit rot —
+/// not built in this pass). Do not treat its absence as an accident.
 struct SplitWorkspaceView: View {
     @Bindable var store: WorkspaceStore
 

@@ -122,7 +122,8 @@ final class WorkspaceStoreLiveTreeTests: XCTestCase {
     func testMutationDebounceSavesTheTreeAndLoadTreeRoundTrips() async throws {
         let (persistence, _) = try writeV9Fixture()
         let restoredTree = persistence.loadTree()
-        // A short debounce so the test does not stall.
+        // A short debounce so the test does not stall. The wait below is bounded by a CONDITION (the file
+        // reflecting the split), not a fixed sleep, so it can't flake: a slow CI just polls a few more times.
         let store = treeStore(
             persistence: persistence,
             restoringTree: restoredTree,
@@ -132,16 +133,23 @@ final class WorkspaceStoreLiveTreeTests: XCTestCase {
 
         // Mutate the LIVE tree (split the active pane) — this schedules a debounced save of the TREE.
         store.splitActivePane(axis: .horizontal, kind: .terminal)
-        XCTAssertEqual(store.tree.allPaneIDs().count, leavesBefore + 1)
+        let expectedLeaves = Set(store.tree.allPaneIDs())
+        XCTAssertEqual(expectedLeaves.count, leavesBefore + 1)
 
-        // Wait past the debounce, then re-load via the LIVE tree path — the split must have been persisted
-        // as a v10 tree (a canvas save would not round-trip through loadTree at v10).
-        try await Task.sleep(for: .milliseconds(120))
-        let reloaded = persistence.loadTree()
+        // DETERMINISTIC WAIT (C5): poll the persisted tree until the debounced write lands, bounded by a
+        // generous 5s ceiling (the debounce is 20ms) so the assertion fires on the CONDITION, never a race
+        // with a fixed sleep. The `loadTree()` round-trip proves it was saved as a v10 TREE (a canvas save
+        // would not round-trip through `loadTree` at v10).
+        var reloaded = persistence.loadTree()
+        let deadline = Date().addingTimeInterval(5)
+        while Set(reloaded.allPaneIDs()) != expectedLeaves, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+            reloaded = persistence.loadTree()
+        }
         XCTAssertEqual(reloaded.schemaVersion, TreeWorkspace.currentSchemaVersion)
         XCTAssertEqual(
             Set(reloaded.allPaneIDs()),
-            Set(store.tree.allPaneIDs()),
+            expectedLeaves,
             "the debounced save persisted the live TREE (the split survived the round-trip)",
         )
     }

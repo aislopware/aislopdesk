@@ -15,7 +15,8 @@ public enum WorkspaceAction: Hashable, Sendable {
     case splitRight // ⌘D  — split the active pane into a side-by-side column
     case splitDown // ⌘⇧D — split the active pane into a stacked row
     case closePane // ⌘W  — close the active pane (cascades the tab/session)
-    case renamePane // ⌘⇧R — rename the active pane (opens its inline field)
+    case renamePane // ⌘⇧R — rename the active TAB on the tree shell (opens its tab-strip inline field);
+    // the active canvas pane on the retained-but-dead canvas path
     case breakPaneToTab // ⌃⌘T — eject the active pane into a new tab
 
     // Focus
@@ -150,9 +151,9 @@ public enum WorkspaceBindingRegistry {
             symbol: "xmark", keywords: "quit kill end terminate remove",
         ),
         WorkspaceBinding(
-            id: "pane.rename", action: .renamePane, title: "Rename Pane",
+            id: "pane.rename", action: .renamePane, title: "Rename Tab",
             category: .panes, chord: KeyChord(character: "r", [.command, .shift]),
-            symbol: "pencil", keywords: "title label name",
+            symbol: "pencil", keywords: "title label name tab",
         ),
         WorkspaceBinding(
             id: "pane.breakToTab", action: .breakPaneToTab, title: "Break Pane to Tab",

@@ -566,6 +566,122 @@ final class WorkspacePersistenceTests: XCTestCase {
         XCTAssertTrue(tree.isInvariantHeld())
     }
 
+    // MARK: - 9. loadTree() — the LIVE load path's safety branches (C2)
+
+    /// A real v10 ``TreeWorkspace`` file decodes + round-trips through `loadTree()` with NO migration
+    /// (the steady-state path), no `.corrupt` sidecar written.
+    func testLoadTreeRoundTripsV10FileWithoutMigration() throws {
+        let url = try tempURL()
+        let persistence = WorkspacePersistence(fileURL: url)
+        let session = Session.singlePane(name: "Local", spec: PaneSpec(kind: .terminal, title: "build"))
+        // Add a second tab so the round-trip exercises more than a singleton.
+        let (grown, _) = WorkspaceTreeOps.newTab(
+            in: TreeWorkspace(sessions: [session], activeSessionID: session.id),
+            spec: PaneSpec(kind: .claudeCode, title: "agent"),
+        )
+        try persistence.save(grown)
+
+        let loaded = persistence.loadTree()
+        XCTAssertEqual(
+            loaded.schemaVersion,
+            TreeWorkspace.currentSchemaVersion,
+            "a v10 file loads at v10, no migration",
+        )
+        XCTAssertEqual(Set(loaded.allPaneIDs()), Set(grown.allPaneIDs()), "every leaf survived the v10 round-trip")
+        XCTAssertTrue(loaded.isInvariantHeld(), "the loaded tree holds specs == leafIDs")
+        let backup = url.appendingPathExtension("corrupt")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: backup.path),
+            "a good v10 load writes no .corrupt sidecar",
+        )
+    }
+
+    /// Garbage / non-JSON bytes → `loadTree()` returns the default AND copies the file aside as `.corrupt`
+    /// (it never throws). Pins the validate-then-drop + preserve-aside contract on the live load path.
+    func testLoadTreeGarbageResetsToDefaultAndWritesCorruptSidecar() throws {
+        let url = try tempURL()
+        try Data("{ this is not valid tree json ".utf8).write(to: url, options: [.atomic])
+        let persistence = WorkspacePersistence(fileURL: url)
+
+        let loaded = persistence.loadTree()
+
+        assertIsDefaultTreeShape(loaded, "garbage bytes → the default tree")
+        let backup = url.appendingPathExtension("corrupt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path), "the unrestorable file is preserved aside")
+    }
+
+    /// A FUTURE `schemaVersion` (> v10) is un-migratable by this build → safe reset to the default (+ sidecar).
+    func testLoadTreeFutureVersionSafelyResets() throws {
+        let url = try tempURL()
+        let persistence = WorkspacePersistence(fileURL: url)
+        var future = TreeWorkspace.defaultWorkspace()
+        future.schemaVersion = TreeWorkspace.currentSchemaVersion + 99
+        try persistence.save(future)
+
+        let loaded = persistence.loadTree()
+
+        assertIsDefaultTreeShape(loaded, "a future tree schemaVersion → safe default reset")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: url.appendingPathExtension("corrupt").path),
+            "the future-version file is preserved aside",
+        )
+    }
+
+    /// A file whose leaf count EXCEEDS ``WorkspaceTransfer/maxItems`` is bounded-reset (a corrupt file must
+    /// not make the store eagerly allocate a session per leaf on launch).
+    func testLoadTreeExceedingMaxItemsIsBoundedReset() throws {
+        let url = try tempURL()
+        let persistence = WorkspacePersistence(fileURL: url)
+        // A single session whose one tab carries maxItems + 1 leaves (a deep split), via the tree ops.
+        var tree = TreeWorkspace.defaultWorkspace()
+        let firstLeaf = try XCTUnwrap(tree.allPaneIDs().first)
+        // Split the active pane repeatedly to grow leaves past the ceiling. Each split adds one leaf.
+        for _ in 0...(WorkspaceTransfer.maxItems) {
+            let active = tree.activeSession?.activeTab?.activePane ?? firstLeaf
+            let (next, _) = WorkspaceTreeOps.splitPane(
+                active, axis: .horizontal,
+                newSpec: PaneSpec(kind: .terminal, title: "x"), in: tree,
+            )
+            tree = next
+        }
+        XCTAssertGreaterThan(tree.allPaneIDs().count, WorkspaceTransfer.maxItems, "the fixture is over the ceiling")
+        try persistence.save(tree)
+
+        let loaded = persistence.loadTree()
+        assertIsDefaultTreeShape(loaded, "an over-ceiling file is bounded-reset to the default")
+    }
+
+    /// Asserts `tree` has the default-workspace SHAPE (one "Local" session, one tab, one terminal leaf) —
+    /// not value-equality, since `defaultWorkspace()` mints fresh random ids on every call.
+    private func assertIsDefaultTreeShape(
+        _ tree: TreeWorkspace,
+        _ message: String = "",
+        file: StaticString = #filePath,
+        line: UInt = #line,
+    ) {
+        XCTAssertEqual(tree.schemaVersion, TreeWorkspace.currentSchemaVersion, message, file: file, line: line)
+        XCTAssertEqual(tree.sessions.count, 1, "default tree has one session. \(message)", file: file, line: line)
+        XCTAssertEqual(tree.allPaneIDs().count, 1, "default tree has one leaf. \(message)", file: file, line: line)
+        XCTAssertEqual(
+            tree.sessions.first?.tabs.count,
+            1,
+            "default tree has one tab. \(message)",
+            file: file,
+            line: line,
+        )
+        guard let leaf = tree.allPaneIDs().first else {
+            XCTFail("default tree must have one leaf. \(message)", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(
+            tree.spec(for: leaf)?.kind,
+            .terminal,
+            "default leaf is a terminal. \(message)",
+            file: file,
+            line: line,
+        )
+    }
+
     // MARK: - Helpers
 
     private func tempURL(file _: StaticString = #filePath, line _: UInt = #line) throws -> URL {

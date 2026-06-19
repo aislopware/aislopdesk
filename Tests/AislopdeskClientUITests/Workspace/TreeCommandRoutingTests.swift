@@ -207,39 +207,53 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(store.allSessions.count, 2)
     }
 
-    // MARK: - Rename: routes to the pending-rename request (UI affordance marker)
+    // MARK: - Rename: ⌘⇧R targets the active TAB on the tree shell (ITEM B1)
 
-    /// `.renamePane` records the active pane as the pending rename target (the inline field opens) — the
-    /// tree/registry are untouched, exactly as the canvas rename is a command-layer UI nudge.
-    func testRenamePaneRecordsPendingRenameTarget() {
+    /// B1: `.renamePane` on a `.tree` store records the active TAB as the pending tab-rename target (the
+    /// `TabBarView` inline field opens) — the tree/registry are untouched, a command-layer UI nudge. It must
+    /// NOT set `pendingRename` (the canvas pane-rename request no tree view observes — the old dead-end).
+    func testRenameActionTargetsActiveTab() throws {
         let store = makeTreeStore()
-        let active = activePane(store)
+        let activeTab = try XCTUnwrap(store.tree.activeSession?.activeTab?.id)
         let treeBefore = store.tree
         let sessionsBefore = store.allSessions.count
 
         route(.renamePane, store)
 
-        XCTAssertEqual(store.pendingRename, active, "renamePane recorded the active pane as the rename target")
+        XCTAssertEqual(store.pendingTabRename, activeTab, "renamePane records the active TAB as the rename target")
+        XCTAssertNil(store.pendingRename, "the dead canvas pane-rename request is NOT set on the tree shell")
         XCTAssertEqual(store.tree, treeBefore, "renamePane never mutates the tree")
         XCTAssertEqual(store.allSessions.count, sessionsBefore, "renamePane never touches the registry")
     }
 
     // MARK: - Registry integrity (the single source of truth)
 
-    /// Every binding has a stable, unique id and (for the chord-carrying ones) a unique chord — the drift
-    /// guard the menu/palette/cheat-sheet rely on. Pins that no two actions claim the same chord.
+    /// C1: every binding the DISPATCHER sees (``allBindings`` — incl. the nine generated ⌘1…⌘9 select-tab
+    /// chords the `bindings` table omits) has a stable, unique id and (for the chord-carrying ones) a unique
+    /// chord. Iterating only `bindings` (the old test) missed the nine digit chords the dispatcher actually
+    /// routes, so a collision among them — or with a ⌘-digit elsewhere — could slip past. We ALSO assert
+    /// `chordTable.count == #chord-bearing allBindings`, proving no two entries collapsed onto one chord (the
+    /// dict would silently drop a duplicate).
     func testRegistryBindingsHaveUniqueIDsAndChords() {
-        let ids = WorkspaceBindingRegistry.bindings.map(\.id)
-        XCTAssertEqual(Set(ids).count, ids.count, "binding ids are unique")
+        let ids = WorkspaceBindingRegistry.allBindings.map(\.id)
+        XCTAssertEqual(Set(ids).count, ids.count, "all binding ids (incl. select-tab digits) are unique")
 
-        let chords = WorkspaceBindingRegistry.bindings.compactMap(\.chord)
+        let chords = WorkspaceBindingRegistry.allBindings.compactMap(\.chord)
         XCTAssertEqual(Set(chords).count, chords.count, "no two bindings share a chord (conflict-free)")
+        // The chord → action table is built from allBindings; if two entries shared a chord, the dict would
+        // collapse them and its count would drop below the number of chord-bearing bindings.
+        XCTAssertEqual(
+            WorkspaceBindingRegistry.chordTable.count,
+            chords.count,
+            "every chord-bearing binding has its OWN chordTable entry (no collision collapsed two)",
+        )
     }
 
-    /// Every chord-carrying binding is ⌘- or ⌥-prefixed (the load-bearing §5 conflict rule: a bare key /
-    /// Ctrl-letter must fall through to the focused terminal). NO bare-key binding anywhere.
+    /// C1: every chord-carrying binding the DISPATCHER sees (``allBindings``) is ⌘- or ⌥-prefixed (the
+    /// load-bearing §5 conflict rule: a bare key / Ctrl-letter must fall through to the focused terminal).
+    /// Iterating `allBindings` (not just `bindings`) covers the nine ⌘-digit select-tab chords too.
     func testEveryChordIsCommandOrOptionPrefixed() {
-        for binding in WorkspaceBindingRegistry.bindings {
+        for binding in WorkspaceBindingRegistry.allBindings {
             guard let chord = binding.chord else { continue }
             XCTAssertTrue(
                 chord.modifiers.contains(.command) || chord.modifiers.contains(.option),
@@ -271,20 +285,34 @@ final class TreeCommandRoutingTests: XCTestCase {
 
     // MARK: - Single source of truth: the cheat sheet is GENERATED from the registry (drift guard)
 
-    /// DRIFT GUARD: every chord-carrying registry binding (a real tree shortcut) is documented in the
-    /// tree cheat sheet via its registry-rendered glyph — so the cheat sheet cannot drift from the table
-    /// the menu + palette + chord dispatcher use. (The select-tab digits collapse to one "⌘1…⌘9" row.)
-    func testTreeCheatSheetDocumentsEveryRegistryChord() {
-        let glyphs = Set(KeyboardCheatSheet.treeSections().flatMap(\.items).map(\.glyph))
-        for binding in WorkspaceBindingRegistry.bindings {
-            guard let chord = binding.chord else { continue }
-            XCTAssertTrue(
-                glyphs.contains(WorkspaceBindingRegistry.glyph(chord)),
-                "the tree cheat sheet is missing a row for \(binding.id) (\(WorkspaceBindingRegistry.glyph(chord)))",
-            )
-        }
-        // The collapsed select-tab row stands in for the nine ⌘-digit chords.
-        XCTAssertTrue(glyphs.contains("⌘1…⌘9"), "the select-tab digits are documented as one collapsed row")
+    /// C3 — DRIFT GUARD (strengthened to SET-EQUALITY): the workspace glyphs the tree cheat sheet renders
+    /// EXACTLY equal the glyphs of the registry's chords (with the nine ⌘-digit select-tab chords collapsed
+    /// to one "⌘1…⌘9" sentinel). The old test only checked one-way containment, so it passed even if the
+    /// sheet listed a phantom chord no registry binding owns. This version fails BOTH ways — a registry
+    /// chord missing from the sheet AND a sheet glyph with no registry chord behind it.
+    func testTreeCheatSheetChordsEqualRegistryChords() {
+        // The Terminal extras are curated (live outside the workspace table), so exclude that section.
+        let workspaceSheetGlyphs = Set(
+            KeyboardCheatSheet.treeSections()
+                .filter { $0.title != "Terminal" }
+                .flatMap(\.items)
+                .map(\.glyph),
+        )
+        // The registry's expected glyph set: the main table's chord glyphs + the collapsed select-tab row
+        // standing in for the nine ⌘-digit chords (which `allBindings` carries individually).
+        var expected = Set(WorkspaceBindingRegistry.bindings.compactMap(\.chord).map(WorkspaceBindingRegistry.glyph))
+        expected.insert("⌘1…⌘9")
+
+        XCTAssertEqual(
+            workspaceSheetGlyphs,
+            expected,
+            "the tree cheat sheet's workspace glyphs must EXACTLY match the registry chords (no missing/phantom rows)",
+        )
+        // And every individual select-tab digit chord IS one of the nine the collapsed row stands for —
+        // proving the collapse is faithful (no ⌘-digit chord left undocumented).
+        let selectTabGlyphs = Set(WorkspaceBindingRegistry.selectTabBindings.compactMap(\.chord)
+            .map(WorkspaceBindingRegistry.glyph))
+        XCTAssertEqual(selectTabGlyphs, Set((1...9).map { "⌘\($0)" }), "the nine ⌘-digit chords are exactly ⌘1…⌘9")
     }
 
     /// The tree cheat sheet groups by the registry categories (Panes / Tabs / Sessions / Focus / View)

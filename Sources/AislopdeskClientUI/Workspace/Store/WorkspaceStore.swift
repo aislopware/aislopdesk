@@ -116,15 +116,22 @@ public final class WorkspaceStore {
         pendingRename = focused
     }
 
-    /// Requests the inline rename on the ACTIVE pane in whichever live model is current (W6): the tree's
-    /// active leaf when ``liveModel`` is ``LiveModel/tree``, else the canvas focused pane. The leaf-view
-    /// chrome (`PaneChromeView`) observes ``pendingRename`` to open its inline field. No-op without an
-    /// active pane. This is the command-layer "Rename pane" entry the binding registry routes to.
+    /// The TAB whose strip pill should open its inline rename field — set by the ⌘⇧R / menu "Rename Tab"
+    /// entry point on the LIVE tree shell, CONSUMED by ``TabBarView`` (``clearTabRenameRequest()``) once
+    /// the field is open. A pending ID (mirrors ``pendingRename``) so a not-yet-mounted tab strip acts on
+    /// the still-pending value rather than a fired-and-missed counter.
+    public private(set) var pendingTabRename: TabID?
+
+    /// Requests the inline rename on the ACTIVE entity in whichever live model is current (W6, ITEM B1):
+    /// under ``LiveModel/tree`` the ⌘⇧R chord renames the active TAB (the tabs model + the existing
+    /// ``TabBarView`` inline-rename field, set via ``pendingTabRename``); under ``LiveModel/canvas`` it
+    /// keeps the sidebar pane rename (``pendingRename``, the field the `PaneSidebarView` row opens). No-op
+    /// without an active tab / pane. This is the command-layer "Rename" entry the binding registry routes to.
     public func requestRenameActivePane() {
         switch liveModel {
         case .tree:
-            guard let active = tree.activeSession?.activeTab?.activePane else { return }
-            pendingRename = active
+            guard let tabID = tree.activeSession?.activeTab?.id else { return }
+            pendingTabRename = tabID
         case .canvas:
             requestRenameFocusedPane()
         }
@@ -134,6 +141,11 @@ public final class WorkspaceStore {
     /// moot (pane gone).
     public func clearRenameRequest() {
         pendingRename = nil
+    }
+
+    /// The tab strip consumed the tab-rename request (its inline field is open) — or it became moot.
+    public func clearTabRenameRequest() {
+        pendingTabRename = nil
     }
 
     /// Where the value tree is persisted (docs/22 §6). Injectable so tests point at a temp dir and a
@@ -543,17 +555,49 @@ public final class WorkspaceStore {
         }
     }
 
-    /// Confirms the parked busy-shell close. No-op when nothing is pending (e.g. the pane was
-    /// already closed by another path — `closePane` clears a matching `pendingClose`).
+    /// The TREE busy-shell close guard (W5, ITEM A3): the IDE-shell counterpart of ``requestClosePane(_:)``
+    /// — an idle leaf closes immediately (cascading the tab/session), a leaf mid-command parks behind the
+    /// ``pendingClose`` confirmation. The chrome close button and ⌘W on a SPECIFIC leaf both route through
+    /// here so the busy-guard is honoured uniformly (the `closePaneTree(_:)` direct call stays for tests /
+    /// the active-pane convenience). No-op if `id` is not a live tree leaf.
+    public func requestClosePaneTree(_ id: PaneID) {
+        guard tree.contains(id) else { return }
+        if registry[id]?.isShellBusy == true {
+            pendingClose = id
+        } else {
+            closePaneTree(id)
+        }
+    }
+
+    /// Confirms the parked busy-shell close in whichever live model is current (W5, ITEM A1): under
+    /// ``LiveModel/tree`` the parked id is a live tree leaf, so it is closed via ``closePaneTree(_:)`` (the
+    /// canvas ``closePane(_:)`` would early-return on a tree id, silently dropping the close); under
+    /// ``LiveModel/canvas`` it stays the canvas path. No-op when nothing is pending (the pane was already
+    /// closed by another path — a close clears a matching `pendingClose`).
     public func confirmPendingClose() {
         guard let id = pendingClose else { return }
         pendingClose = nil
-        closePane(id)
+        switch liveModel {
+        case .tree: closePaneTree(id)
+        case .canvas: closePane(id)
+        }
     }
 
     /// Dismisses the busy-shell close confirmation without closing.
     public func cancelPendingClose() {
         pendingClose = nil
+    }
+
+    /// The ``PaneSpec`` of the pane awaiting a busy-close confirmation, resolved from whichever live model
+    /// is current (W5, ITEM A1) — the tree's side table under ``LiveModel/tree``, else the canvas. Lets the
+    /// confirmation dialog name the leaf it would close on EITHER shell (the old canvas-only lookup showed a
+    /// generic title under `.tree`). `nil` when nothing is pending or the pane vanished.
+    public var pendingCloseSpec: PaneSpec? {
+        guard let id = pendingClose else { return nil }
+        switch liveModel {
+        case .tree: return tree.spec(for: id)
+        case .canvas: return workspace.canvas.spec(for: id)
+        }
     }
 
     /// Reopens the most recently closed pane at its exact former frame (frontmost, focused, back in
@@ -595,18 +639,57 @@ public final class WorkspaceStore {
             title: label,
             video: VideoEndpoint(windowID: windowID, title: label, appName: owner),
         )
-        let viewport = lastViewport
-        let (canvas, id) = workspace.canvas.adding(spec, near: workspace.focusedPane, viewport: viewport)
-        workspace.canvas = canvas
-        workspace.focusedPane = id
-        // A surfacing prompt exits maximize and is panned into view (it demands attention).
-        if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
-        recenterIfOffscreen(id, viewport: viewport)
-        reconcile()
+        // W5 (ITEM A2): on the LIVE tree shell the canvas is dead, so an ephemeral dialog pane must be
+        // inserted into the TREE — a NEW TAB of the active session (the least-disruptive transient shape:
+        // a tab the monitor closes again the moment the dialog leaves, without resplitting the user's
+        // current layout). The `.canvas` path keeps the old behaviour byte-identical.
+        // W5 (ITEM A2): on the LIVE tree shell the canvas is dead, so an ephemeral dialog pane must be
+        // inserted into the TREE — a NEW TAB of the active session (the least-disruptive transient shape:
+        // a tab the monitor closes again the moment the dialog leaves, without resplitting the user's
+        // current layout). The `.canvas` path keeps the old behaviour byte-identical.
+        let id: PaneID
+        switch liveModel {
+        case .tree:
+            let (next, newID) = WorkspaceTreeOps.newTab(in: tree, spec: spec)
+            tree = next
+            id = newID
+            reconcileTree()
+        case .canvas:
+            let viewport = lastViewport
+            let (canvas, newID) = workspace.canvas.adding(spec, near: workspace.focusedPane, viewport: viewport)
+            workspace.canvas = canvas
+            workspace.focusedPane = newID
+            id = newID
+            // A surfacing prompt exits maximize and is panned into view (it demands attention).
+            if workspace.maximizedPane != nil { workspace.maximizedPane = nil }
+            recenterIfOffscreen(id, viewport: viewport)
+            reconcile()
+        }
         // isSecure is a pure-live property (never persisted), so set it on the just-materialized session
         // directly rather than threading it through the Codable spec.
         (registry[id] as? LivePaneSession)?.markSystemDialog(isSecure: isSecure)
         return id
+    }
+
+    /// Closes a pane the auto-managed monitor owns (a system-dialog overlay) in whichever live model is
+    /// current (W5, ITEM A2): under ``LiveModel/tree`` the leaf lives in the tree (its transient tab is
+    /// dropped, cascading), else the canvas close. The monitor calls this directly (it is not subject to
+    /// the busy-shell guard — a dialog leaving host-side must always dismiss its pane).
+    public func closeSystemDialogPane(_ id: PaneID) {
+        switch liveModel {
+        case .tree: closePaneTree(id)
+        case .canvas: closePane(id)
+        }
+    }
+
+    /// Whether `id` is a LIVE leaf in whichever model is current (W5, ITEM A2) — the tree under
+    /// ``LiveModel/tree``, else the canvas. The auto-managed monitor uses this to detect a manual close
+    /// (a spawned pane no longer present) on EITHER shell.
+    public func isSystemDialogPaneLive(_ id: PaneID) -> Bool {
+        switch liveModel {
+        case .tree: tree.contains(id)
+        case .canvas: workspace.canvas.contains(id)
+        }
     }
 
     /// Focuses pane `id` (a pure focus change; leaf set unchanged). Maximize follows focus.
@@ -1692,6 +1775,17 @@ public final class WorkspaceStore {
 
     // MARK: - Named layout presets (save / switch canvas contexts)
 
+    /// The saved layout presets in whichever live model is current (W5, ITEM A2): the tree's under
+    /// ``LiveModel/tree`` (where they are carried verbatim from v9), else the canvas's. The app-launch
+    /// monitor reads THIS so its trigger scan resolves against the live model — on the tree shell the
+    /// canvas presets are dead (and empty), so the monitor must not read them.
+    public var liveLayoutPresets: [LayoutPreset] {
+        switch liveModel {
+        case .tree: tree.layoutPresets
+        case .canvas: workspace.layoutPresets
+        }
+    }
+
     /// The saved layout names, in saved order — for the palette / menu listing.
     public var layoutPresetNames: [String] { workspace.layoutPresets.map(\.name) }
 
@@ -1733,10 +1827,10 @@ public final class WorkspaceStore {
     }
 
     /// The preset whose `triggerAppName` matches `appName` (case-insensitive), or `nil`. Pure — the
-    /// app-launch matcher.
+    /// app-launch matcher. Resolves from the LIVE model's presets (W5, ITEM A2).
     func presetForLaunchedApp(_ appName: String) -> LayoutPreset? {
         let lower = appName.lowercased()
-        return workspace.layoutPresets.first { $0.triggerAppName?.lowercased() == lower }
+        return liveLayoutPresets.first { $0.triggerAppName?.lowercased() == lower }
     }
 
     /// The app name whose trigger last auto-switched a layout, so the same launch (still present in the
@@ -2209,6 +2303,9 @@ public final class WorkspaceStore {
     /// session → close session unless last; last pane → re-seed a default). Reconcile tears down the
     /// removed leaves and materializes any re-seeded one.
     public func closePaneTree(_ target: PaneID) {
+        // Clear a matching parked busy-close so confirming/closing the same leaf twice cannot strand a
+        // phantom confirmation dialog (mirrors the canvas `closePane(_:)` `pendingClose` clear).
+        if pendingClose == target { pendingClose = nil }
         tree = WorkspaceTreeOps.closePane(target, in: tree)
         reconcileTree()
     }
@@ -2344,8 +2441,10 @@ public final class WorkspaceStore {
         newSession(name: defaultSessionName, kind: SettingsKey.defaultPaneKind)
     }
 
-    /// A sensible default session name — "Session N" where N is one past the current session count, so a
-    /// keyboard-created session is never blank. The sidebar's manual "add session" footer uses the same.
+    /// The SINGLE source of the default new-session name (ITEM B3) — "Session N" where N is one past the
+    /// current session count, so a created session is never blank. BOTH the keyboard path
+    /// (``newSessionDefault()``) and the sidebar's manual "add session" footer name through THIS, so the
+    /// two paths can never drift.
     public var defaultSessionName: String {
         "Session \(tree.sessions.count + 1)"
     }

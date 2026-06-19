@@ -73,7 +73,9 @@ struct SessionSidebarView: View {
     private var footer: some View {
         HStack {
             Button {
-                store.newSession(name: defaultSessionName, kind: SettingsKey.defaultPaneKind)
+                // ITEM B3: name a footer-created session via the SAME store helper the keyboard
+                // (`newSessionDefault`) uses, so the two paths can never drift ("Session N").
+                store.newSession(name: store.defaultSessionName, kind: SettingsKey.defaultPaneKind)
             } label: {
                 Label("New Session", systemImage: "plus")
                     .font(.callout)
@@ -114,10 +116,6 @@ struct SessionSidebarView: View {
             buckets[host, default: []].append(session)
         }
         return order.map { HostGroup(host: $0, sessions: buckets[$0] ?? []) }
-    }
-
-    private var defaultSessionName: String {
-        store.tree.activeSession?.connection?.host ?? "Local"
     }
 
     // MARK: Rename

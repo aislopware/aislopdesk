@@ -200,7 +200,9 @@ public struct WorkspaceRootView: View {
     /// The busy-close dialog title, naming the pane it would close (best-effort — falls back to a
     /// generic title if the pane vanished while the dialog was up).
     private var pendingCloseTitle: String {
-        if let id = store.pendingClose, let spec = store.workspace.canvas.spec(for: id) {
+        // ITEM A1: resolve the spec from the LIVE model (tree or canvas) so the dialog names the leaf it
+        // would close on the IDE shell too — the old canvas-only lookup returned a generic title under .tree.
+        if let id = store.pendingClose, let spec = store.pendingCloseSpec {
             return "Close “\(PanePresentation.displayTitle(store.handle(for: id), spec: spec))”?"
         }
         return "Close Pane?"

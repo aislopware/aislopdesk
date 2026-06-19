@@ -74,7 +74,7 @@ public final class SystemDialogMonitor {
         // 1. Dialogs gone host-side → close our pane + forget ALL state (a future reappearance is fresh).
         //    Close FIRST so a freed video-cap slot is available before a new one is admitted.
         for (wid, id) in spawned where !present.contains(wid) {
-            store.closePane(id)
+            store.closeSystemDialogPane(id)
             spawned.removeValue(forKey: wid)
         }
         // Clear the manual-close grace for any dialog no longer present — even one already removed from
@@ -87,7 +87,7 @@ public final class SystemDialogMonitor {
         //    user closed it). Drop it from `spawned` and start its grace timer — so it is eligible to
         //    re-spawn after the suppression window rather than lingering as a dead id (the old bug:
         //    spawned[wid] kept a closed pane's id, so the dialog was unrecoverable).
-        for (wid, id) in spawned where !store.isPaneOnCanvas(id) {
+        for (wid, id) in spawned where !store.isSystemDialogPaneLive(id) {
             spawned.removeValue(forKey: wid)
             if manuallyClosedAt[wid] == nil { manuallyClosedAt[wid] = clock() }
         }
@@ -108,7 +108,7 @@ public final class SystemDialogMonitor {
     func reconcileForTesting(_ dialogs: [SystemDialogInfo]) { reconcile(dialogs) }
 
     private func closeAllSpawned() {
-        if let store { for (_, id) in spawned { store.closePane(id) } }
+        if let store { for (_, id) in spawned { store.closeSystemDialogPane(id) } }
         spawned.removeAll()
     }
 }

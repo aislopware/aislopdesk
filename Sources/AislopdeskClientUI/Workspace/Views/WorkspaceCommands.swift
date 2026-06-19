@@ -114,7 +114,7 @@ public struct WorkspaceCommands: Commands {
         actionButton("Split Right", .splitRight)
         actionButton("Split Down", .splitDown)
         actionButton("Break Pane to Tab", .breakPaneToTab)
-        actionButton("Rename Pane…", .renamePane)
+        actionButton("Rename Tab…", .renamePane) // ITEM B1: ⌘⇧R renames the active tab on the tree shell
         actionButton("Close Pane", .closePane)
 
         Divider()

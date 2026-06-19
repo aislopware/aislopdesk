@@ -28,6 +28,20 @@ struct TabBarView: View {
         }
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
+        // ITEM B1: observe the store's ⌘⇧R "Rename Tab" request and open the matching pill's inline field.
+        // A pending TabID (not a counter) so a just-mounted strip still acts on the request; consumed once
+        // the field opens. `.onAppear` covers a request that fired before the strip mounted.
+        .onChange(of: store.pendingTabRename) { _, requested in openPendingTabRename(requested) }
+        .onAppear { openPendingTabRename(store.pendingTabRename) }
+    }
+
+    /// Opens the inline rename for the requested tab (if it belongs to THIS session's strip) and clears the
+    /// store request. The active-session strip is the one mounted, so a request for another session's tab is
+    /// simply ignored here (that session is not on screen).
+    private func openPendingTabRename(_ requested: TabID?) {
+        guard let requested, session.tabs.contains(where: { $0.id == requested }) else { return }
+        if let tab = session.tabs.first(where: { $0.id == requested }) { beginRename(tab) }
+        store.clearTabRenameRequest()
     }
 
     // MARK: Tab pill
@@ -77,8 +91,11 @@ struct TabBarView: View {
                 .strokeBorder(isActive ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1),
         )
         .contentShape(Rectangle())
+        // ITEM B2: the double-tap MUST win over the single-tap (a leading `onTapGesture` swallows the
+        // double-tap before it can fire). A `highPriorityGesture(TapGesture(count: 2))` is evaluated
+        // first, so a genuine double-tap renames and a single-tap still falls through to select.
+        .highPriorityGesture(TapGesture(count: 2).onEnded { beginRename(tab) })
         .onTapGesture { store.selectTab(index) }
-        .onTapGesture(count: 2) { beginRename(tab) }
         .contextMenu {
             Button("Rename…") { beginRename(tab) }
             Button("Close Tab", role: .destructive) { store.closeTab(tab.id) }
