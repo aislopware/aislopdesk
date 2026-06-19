@@ -35,7 +35,18 @@ public final class WorkspaceStore {
     /// methods change it (each then reconciles), so the registry can never drift from the tree.
     public private(set) var workspace: Workspace
 
-    /// The table of liveness: 1:1 with the leaves of `workspace`. `reconcile()` is the only writer.
+    /// W4 (docs/42 §"W4 — Store retarget"): the **DORMANT** tree-of-intent the store gains alongside the
+    /// live canvas `workspace`. The `Session → Tab → Pane` split-tree replacement (``TreeWorkspace``). It
+    /// is mutated by the tree-mutation methods below (each delegating to ``WorkspaceTreeOps`` then calling
+    /// ``reconcileTree()``), but it is NOT the live path yet: `init` does NOT reconcile it, and the live
+    /// update loop keeps using the canvas `reconcile()` (the still-canvas Views bind `workspace`). The W5
+    /// cutover promotes it to the live source of truth and retires the canvas. `private(set)`: only the
+    /// tree-mutation methods change it (each then `reconcileTree()`s), so the registry can never drift.
+    public private(set) var tree: TreeWorkspace
+
+    /// The table of liveness: 1:1 with the leaves of `workspace` on the live canvas path (and 1:1 with
+    /// ``tree``'s leaves on the dormant tree path — both paths diff the SAME registry, but only one drives
+    /// a given store: the live app uses the canvas `reconcile()`, the W4 tests drive ``reconcileTree()``).
     private var registry: [PaneID: any PaneSessionHandle] = [:]
 
     /// The injection seam (docs/22 §0). Spec-only — the store re-points the built handle at the leaf
@@ -221,6 +232,11 @@ public final class WorkspaceStore {
     /// - Parameters:
     ///   - restoring: a decoded workspace to restore (SHAPE + INTENT only — sessions start idle,
     ///     docs/22 §6). `nil` ⇒ ``Workspace/defaultWorkspace()`` (one terminal tab).
+    ///   - restoringTree: a decoded ``TreeWorkspace`` to seed the DORMANT tree path (W4). `nil` ⇒
+    ///     ``TreeWorkspace/defaultWorkspace()`` (one terminal pane). It is NOT reconciled at init — the
+    ///     live canvas `reconcile()` is the only init reconcile, so seeding it is behavior-neutral for
+    ///     the live path. The tree-mutation methods + ``reconcileTree()`` are the only things that act on
+    ///     it (W5 cutover makes it the live source).
     ///   - makeSession: the session factory seam (production: `LivePaneSession.make`; tests:
     ///     `{ FakePaneSession($0) }`).
     ///   - liveVideoCap: concurrent live-video ceiling (default 2).
@@ -231,6 +247,7 @@ public final class WorkspaceStore {
     @preconcurrency
     public init(
         restoring: Workspace? = nil,
+        restoringTree: TreeWorkspace? = nil,
         makeSession: @escaping @MainActor (PaneSpec) -> any PaneSessionHandle,
         liveVideoCap: Int = 2,
         persistence: WorkspacePersistence? = nil,
@@ -238,6 +255,8 @@ public final class WorkspaceStore {
         videoTeardownSettle: Duration = .zero,
     ) {
         workspace = restoring ?? .defaultWorkspace()
+        // W4: seed the dormant tree (NOT reconciled at init — the canvas reconcile below is the only one).
+        tree = (restoringTree ?? .defaultWorkspace()).normalized()
         self.makeSession = makeSession
         self.liveVideoCap = liveVideoCap
         self.persistence = persistence
@@ -2091,6 +2110,152 @@ public final class WorkspaceStore {
             z: 0,
         )
         return Workspace(canvas: Canvas(items: [item]), focusedPane: paneID, connection: connection)
+    }
+
+    // MARK: - Tree-path mutations (W4 — DORMANT; delegate to WorkspaceTreeOps, then reconcileTree)
+
+    /// W4 (docs/42): the tree-of-intent mutation surface the store gains alongside the canvas methods.
+    /// Each method applies a **pure** ``WorkspaceTreeOps`` transform (returns a new ``TreeWorkspace``) and
+    /// then calls ``reconcileTree()`` to materialize/orphan the registry — the exact shape of the canvas
+    /// mutations, but driven by the new model. They keep the **specs == leafIDs invariant** (the ops do)
+    /// and are DORMANT: the live update loop still uses the canvas `reconcile()`, so calling these on a
+    /// canvas-driven store would orphan its canvas panes — they exist for the W4 unit tests and the W5
+    /// cutover. The default kind resolves via the user's ``SettingsKey/defaultPaneKind`` like `addPane`.
+
+    /// Splits the active pane along `axis`, inserting a new leaf of `kind` (focused). Tree no-op when there
+    /// is no active pane.
+    public func splitActivePane(axis: SplitAxis, kind: PaneKind) {
+        guard let active = tree.activeSession?.activeTab?.activePane else { return }
+        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        let (next, _) = WorkspaceTreeOps.splitPane(active, axis: axis, newSpec: spec, in: tree)
+        tree = next
+        reconcileTree()
+    }
+
+    /// Splits the specific pane `target` along `axis`, inserting a new leaf of `kind` (focused).
+    public func splitPaneTree(_ target: PaneID, axis: SplitAxis, kind: PaneKind) {
+        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        let (next, _) = WorkspaceTreeOps.splitPane(target, axis: axis, newSpec: spec, in: tree)
+        tree = next
+        reconcileTree()
+    }
+
+    /// Closes pane `target` with the full cascade (collapse + rebalance; empty tab → close tab; empty
+    /// session → close session unless last; last pane → re-seed a default). Reconcile tears down the
+    /// removed leaves and materializes any re-seeded one.
+    public func closePaneTree(_ target: PaneID) {
+        tree = WorkspaceTreeOps.closePane(target, in: tree)
+        reconcileTree()
+    }
+
+    /// Toggles render-only zoom on the active tab's active pane (the tree is untouched). Tree no-op when
+    /// there is no active pane.
+    public func toggleZoomTree() {
+        guard let active = tree.activeSession?.activeTab?.activePane else { return }
+        tree = WorkspaceTreeOps.toggleZoom(active, in: tree)
+        reconcileTree()
+    }
+
+    /// Moves focus in `direction` from the active pane, resolved geometrically against the active tab
+    /// solved into `bounds` (the store passes the live viewport; tests pass any finite rect).
+    public func moveFocusTree(_ direction: FocusDirection, bounds: CGRect) {
+        tree = WorkspaceTreeOps.moveFocus(direction, bounds: bounds, in: tree)
+        reconcileTree()
+    }
+
+    /// Adds a new tab (single leaf of `kind`) to the active session and selects it; materializes its leaf.
+    public func newTab(kind: PaneKind) {
+        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        let (next, _) = WorkspaceTreeOps.newTab(in: tree, spec: spec)
+        tree = next
+        reconcileTree()
+    }
+
+    /// Closes tab `tabID` (dropping its panes) and cascades like ``closePaneTree(_:)``.
+    public func closeTab(_ tabID: TabID) {
+        tree = WorkspaceTreeOps.closeTab(tabID, in: tree)
+        reconcileTree()
+    }
+
+    /// Selects tab at `index` in the active session — a pure active-state change (the FULL leaf set stays
+    /// registered; only focus follows). Reconcile is a registry no-op.
+    public func selectTab(_ index: Int) {
+        tree = WorkspaceTreeOps.selectTab(index, in: tree)
+        reconcileTree()
+    }
+
+    /// Adds a new session (one tab, one leaf of `kind`) and selects it; materializes its leaf.
+    public func newSession(name: String, kind: PaneKind) {
+        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        let (next, _) = WorkspaceTreeOps.newSession(in: tree, name: name, spec: spec)
+        tree = next
+        reconcileTree()
+    }
+
+    /// Closes session `sessionID` (dropping all its tabs/panes) and selects another (or re-seeds a default
+    /// when it was the last). Reconcile tears down its leaves.
+    public func closeSession(_ sessionID: SessionID) {
+        tree = WorkspaceTreeOps.closeSession(sessionID, in: tree)
+        reconcileTree()
+    }
+
+    /// Selects session `sessionID` — a pure active-state change (the full leaf set stays registered).
+    public func selectSession(_ sessionID: SessionID) {
+        tree = WorkspaceTreeOps.selectSession(sessionID, in: tree)
+        reconcileTree()
+    }
+
+    // MARK: - reconcileTree (W4 — DORMANT mirror of reconcile, driven by the tree)
+
+    /// W4 (docs/42): the tree-driven counterpart of ``reconcile()``, diffing the desired leaf set
+    /// `tree.allPaneIDs()` against the `[PaneID: any PaneSessionHandle]` registry. It mirrors the canvas
+    /// reconcile's load-bearing steps — orphan-remove-then-teardown (synchronous removal so the invariant
+    /// `Set(registry.keys) == Set(tree.allPaneIDs())` holds the instant it returns; async teardown
+    /// launched + tracked in `teardownTasks` for `quiesce()`), then materialize one idle handle per new
+    /// leaf via `makeSession` + `adopt(id:)` — but driven by ``tree`` and resolving each spec via
+    /// `tree.spec(for:)`. It deliberately does NOT replicate the canvas-specific bookkeeping (autotype
+    /// target / OSC-9 notification wiring / focus-coordinator sync / debounced persistence): those belong
+    /// to the live canvas path, and `reconcileTree()` is DORMANT (never called from the live loop), so
+    /// keeping it minimal avoids double-writing the same persistence file / nudging the same generation.
+    /// Idempotent. The same `tearingDownVideo` ceiling-accounting as the canvas path is honored so the
+    /// video cap stays correct under a same-tick close+reopen.
+    public func reconcileTree() {
+        let leafIDs = tree.allPaneIDs()
+        let leafSet = Set(leafIDs)
+
+        // 1. Orphans: remove synchronously, then drive teardown in a tracked task (mirrors reconcile()).
+        let orphans = registry.filter { !leafSet.contains($0.key) }.map(\.value)
+        for orphan in orphans {
+            registry.removeValue(forKey: orphan.id)
+            if orphan.kind.isVideo, orphan.isVideoActive {
+                tearingDownVideo.insert(orphan.id)
+                videoPromotionGeneration &+= 1
+            }
+        }
+        if !orphans.isEmpty {
+            let id = nextTeardownID
+            nextTeardownID &+= 1
+            teardownTasks[id] = Task { @MainActor in
+                for orphan in orphans {
+                    await orphan.teardown()
+                    if self.tearingDownVideo.contains(orphan.id), self.videoTeardownSettle > .zero {
+                        try? await Task.sleep(for: self.videoTeardownSettle)
+                    }
+                    if self.tearingDownVideo.remove(orphan.id) != nil {
+                        self.videoPromotionGeneration &+= 1
+                    }
+                }
+                self.teardownTasks.removeValue(forKey: id)
+            }
+        }
+
+        // 2. New leaves: materialize an idle session for each, binding its identity to the leaf id.
+        for id in leafIDs where registry[id] == nil {
+            guard let spec = tree.spec(for: id) else { continue }
+            let handle = makeSession(spec)
+            (handle as? PaneSessionIDAdopting)?.adopt(id: id)
+            registry[id] = handle
+        }
     }
 
     // MARK: - reconcile (the single audited seam)
