@@ -267,6 +267,18 @@ struct CommandPaletteView: View {
             // (WorkspaceRootView) so its `{{slots}}` are resolved before injection rather than sent
             // literally. Either way routes to the focused pane, or the broadcast group when armed.
             store.beginRunSnippet(id)
+        case let .action(action):
+            // The live IDE shell: route through the SAME single-source-of-truth registry the menu bar +
+            // chord dispatcher use. The palette/cheat-sheet view actions are no-ops from the palette
+            // (showing the palette to dismiss-then-show itself is meaningless), so they are not offered.
+            WorkspaceBindingRegistry.route(action, to: store)
+        case let .treePane(id):
+            store.focusPaneTree(id)
+        case let .selectTab(sessionID, index):
+            store.selectSession(sessionID)
+            store.selectTab(index)
+        case let .selectSession(sessionID):
+            store.selectSession(sessionID)
         }
         dismiss()
     }
@@ -304,20 +316,36 @@ struct CommandPaletteView: View {
         // stripped before fuzzy matching; an empty post-prefix query lists just that section.
         let raw = query.trimmingCharacters(in: .whitespaces)
         let (scope, stripped) = Self.parseScope(raw)
+        // The LIVE IDE shell (`.tree`) sources its rows from the single ``WorkspaceBindingRegistry`` source
+        // of truth (the same table the menu bar + cheat sheet read) plus the live tab/session/pane jump
+        // rows; the retained-but-dead canvas (`.canvas`) keeps its catalog. The view's run handler routes
+        // each accordingly.
         let all: [Entry] =
-            switch scope {
-            case .all: commandEntries + layoutEntries + snippetEntries + groupEntries + paneEntries + bookmarkEntries +
-                hostWindowEntries
-            case .commands: commandEntries + layoutEntries + snippetEntries
-            case .panes: groupEntries + paneEntries + bookmarkEntries
-            case .hostWindows: hostWindowEntries
+            switch store.liveModel {
+            case .tree:
+                switch scope {
+                case .all: treeActionEntries + treeTabEntries + treeSessionEntries + snippetEntries + treePaneEntries
+                case .commands: treeActionEntries + snippetEntries
+                case .panes: treePaneEntries + treeTabEntries + treeSessionEntries
+                case .hostWindows: hostWindowEntries
+                }
+            case .canvas:
+                switch scope {
+                case .all: commandEntries + layoutEntries + snippetEntries + groupEntries + paneEntries +
+                    bookmarkEntries + hostWindowEntries
+                case .commands: commandEntries + layoutEntries + snippetEntries
+                case .panes: groupEntries + paneEntries + bookmarkEntries
+                case .hostWindows: hostWindowEntries
+                }
             }
         let trimmed = stripped
         // Empty query (the '.all' / '.commands' scopes): float the recently-run commands to the top so
         // the verbs you use most are one keystroke away. Only on an empty query — once the user types,
         // fuzzy ranking over the full list takes over (a recent command is already in `commandEntries`).
         guard !trimmed.isEmpty else {
-            if scope == .all || scope == .commands {
+            // The canvas path floats its recently-run command verbs to the top; the tree path has no
+            // recents ring yet (C4), so it shows the registry catalog in display order.
+            if store.liveModel == .canvas, scope == .all || scope == .commands {
                 let recents = recentEntries
                 let recentIDs = Set(recents.map(\.id))
                 return recents + all.filter { !recentIDs.contains($0.id) }
@@ -354,6 +382,80 @@ struct CommandPaletteView: View {
                 symbol: item.symbol,
                 shortcutHint: Self.shortcutHint(for: item.command),
                 keywords: item.keywords,
+            )
+        }
+    }
+
+    // MARK: - Tree shell entries (W6 — sourced from the single WorkspaceBindingRegistry)
+
+    /// Every TREE workspace action runnable from ⌘K, sourced from ``WorkspaceBindingRegistry`` (the SAME
+    /// table the menu bar + cheat sheet read) in its display order. The two view-overlay actions (command
+    /// palette / cheat sheet) are excluded — running them from inside the palette is meaningless — and
+    /// the active-pane verbs are dropped when the active tab has no pane (so "Close Pane" on an empty shell
+    /// doesn't read as broken, mirroring the canvas `visibleCommands`).
+    private var treeActionEntries: [Entry] {
+        let hasActivePane = store.tree.activeSession?.activeTab?.activePane != nil
+        return WorkspaceBindingRegistry.bindings.compactMap { binding -> Entry? in
+            switch binding.action {
+            case .commandPalette,
+                 .cheatSheet: return nil
+            default: break
+            }
+            guard hasActivePane || !binding.action.requiresActivePane else { return nil }
+            return Entry(
+                id: "action.\(binding.id)",
+                kind: .action(binding.action),
+                title: binding.title,
+                symbol: binding.symbol,
+                shortcutHint: binding.chord.map(WorkspaceBindingRegistry.glyph),
+                keywords: binding.keywords,
+            )
+        }
+    }
+
+    /// One "switch to tab" entry per tab in the active session, by title — the live IDE shell's tab jump.
+    private var treeTabEntries: [Entry] {
+        guard let session = store.tree.activeSession else { return [] }
+        return session.tabs.enumerated().map { index, tab in
+            let title = tab.title.isEmpty ? "Tab \(index + 1)" : tab.title
+            return Entry(
+                id: "treetab.\(tab.id.raw.uuidString)",
+                kind: .selectTab(session.id, index),
+                title: "Switch to “\(title)”",
+                subtitle: "Tab",
+                symbol: "rectangle.on.rectangle",
+                keywords: "tab switch select jump \(title)",
+            )
+        }
+    }
+
+    /// One "switch to session" entry per session, by name — the live IDE shell's session jump.
+    private var treeSessionEntries: [Entry] {
+        store.tree.sessions.map { session in
+            Entry(
+                id: "treesession.\(session.id.raw.uuidString)",
+                kind: .selectSession(session.id),
+                title: "Switch to “\(session.name)”",
+                subtitle: "Session",
+                symbol: "macwindow",
+                keywords: "session host workspace switch select jump \(session.name)",
+            )
+        }
+    }
+
+    /// One "focus pane" entry per leaf in the active session, titled by its spec — the live IDE shell's
+    /// per-pane jump (focuses + selects its tab). Derived live from the tree.
+    private var treePaneEntries: [Entry] {
+        guard let session = store.tree.activeSession else { return [] }
+        return session.allPaneIDs().compactMap { id -> Entry? in
+            guard let spec = store.tree.spec(for: id) else { return nil }
+            return Entry(
+                id: "treepane.\(id.raw.uuidString)",
+                kind: .treePane(id),
+                title: spec.title,
+                subtitle: "Pane",
+                symbol: PaneLeafView.icon(for: spec.kind),
+                keywords: "pane focus jump \(spec.title)",
             )
         }
     }
@@ -588,6 +690,14 @@ struct CommandPaletteView: View {
             case switchLayout(String)
             /// Run a saved command snippet (by id) into the focused pane (or the broadcast group).
             case snippet(UUID)
+            /// Run a TREE workspace action (routed via ``WorkspaceBindingRegistry``) — the live IDE shell.
+            case action(WorkspaceAction)
+            /// Focus a TREE leaf (the live IDE shell's per-pane jump).
+            case treePane(PaneID)
+            /// Select a TREE tab by index in its session.
+            case selectTab(SessionID, Int)
+            /// Select a TREE session.
+            case selectSession(SessionID)
         }
 
         let id: String

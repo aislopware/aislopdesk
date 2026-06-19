@@ -116,6 +116,20 @@ public final class WorkspaceStore {
         pendingRename = focused
     }
 
+    /// Requests the inline rename on the ACTIVE pane in whichever live model is current (W6): the tree's
+    /// active leaf when ``liveModel`` is ``LiveModel/tree``, else the canvas focused pane. The leaf-view
+    /// chrome (`PaneChromeView`) observes ``pendingRename`` to open its inline field. No-op without an
+    /// active pane. This is the command-layer "Rename pane" entry the binding registry routes to.
+    public func requestRenameActivePane() {
+        switch liveModel {
+        case .tree:
+            guard let active = tree.activeSession?.activeTab?.activePane else { return }
+            pendingRename = active
+        case .canvas:
+            requestRenameFocusedPane()
+        }
+    }
+
     /// The sidebar consumed the rename request (its inline field is open) — or the request became
     /// moot (pane gone).
     public func clearRenameRequest() {
@@ -2214,6 +2228,20 @@ public final class WorkspaceStore {
         reconcileTree()
     }
 
+    /// Moves tree focus in `direction` using the bounds the active-tab view last reported via
+    /// ``updateSolvedLayout(_:)`` — the keyboard / menu / command-palette entry point that has no
+    /// `GeometryReader` of its own. The bounds are the union of the reported frames (the exact rect the
+    /// `SplitTreeView` solved into), so a chord-driven focus move resolves against the geometry the user
+    /// sees. A no-op until the view has reported a layout (the first frame), mirroring the canvas
+    /// ``move(_:)`` directional no-op.
+    public func moveFocusTreeUsingReportedLayout(_ direction: FocusDirection) {
+        guard let solved = lastSolvedLayout, !solved.frames.isEmpty else { return }
+        var bounds = CGRect.null
+        for rect in solved.frames.values { bounds = bounds.union(rect) }
+        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else { return }
+        moveFocusTree(direction, bounds: bounds)
+    }
+
     /// Adds a new tab (single leaf of `kind`) to the active session and selects it; materializes its leaf.
     public func newTab(kind: PaneKind) {
         let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
@@ -2294,6 +2322,76 @@ public final class WorkspaceStore {
     public func renameSession(_ sessionID: SessionID, to name: String) {
         tree = WorkspaceTreeOps.renameSession(sessionID, to: name, in: tree)
         reconcileTree()
+    }
+
+    // MARK: - Tree command-routing conveniences (W6 — the keyboard/menu/palette entry points)
+
+    /// Splits the active pane along `axis`, inserting a leaf of the user's default kind (Settings ▸
+    /// Canvas). The command/menu/palette "split right/down" entry — it resolves the default kind here, as
+    /// the W4 doc notes the caller (not the dormant ops) owns the default-kind resolution.
+    public func splitActivePaneDefault(axis: SplitAxis) {
+        splitActivePane(axis: axis, kind: SettingsKey.defaultPaneKind)
+    }
+
+    /// Adds a tab to the active session carrying the user's default-kind leaf. The "new tab" command entry.
+    public func newTabDefault() {
+        newTab(kind: SettingsKey.defaultPaneKind)
+    }
+
+    /// Adds a session carrying the user's default-kind leaf, named for the next free "Session N" slot.
+    /// The "new session" command entry.
+    public func newSessionDefault() {
+        newSession(name: defaultSessionName, kind: SettingsKey.defaultPaneKind)
+    }
+
+    /// A sensible default session name — "Session N" where N is one past the current session count, so a
+    /// keyboard-created session is never blank. The sidebar's manual "add session" footer uses the same.
+    public var defaultSessionName: String {
+        "Session \(tree.sessions.count + 1)"
+    }
+
+    /// Closes the active pane through the busy-shell guard (W6): an idle pane closes immediately (cascading
+    /// the tab/session), a pane mid-command parks behind the `pendingClose` confirmation the root view
+    /// hosts — mirroring the canvas ``requestClosePane(_:)``. No-op without an active pane.
+    public func requestCloseActivePaneTree() {
+        guard let active = tree.activeSession?.activeTab?.activePane else { return }
+        if registry[active]?.isShellBusy == true {
+            pendingClose = active
+        } else {
+            closePaneTree(active)
+        }
+    }
+
+    /// Breaks the active pane out into a new tab of its session (the "break pane to tab" command entry).
+    /// No-op without an active pane.
+    public func breakActivePaneToTab() {
+        guard let active = tree.activeSession?.activeTab?.activePane else { return }
+        breakPaneToTab(active)
+    }
+
+    /// Toggles render-only zoom on the active pane (the "zoom/maximize" command entry).
+    public func toggleZoomActivePane() { toggleZoomTree() }
+
+    /// Selects the tab `delta` away from the active tab in the active session, clamped to the tab range
+    /// (no wrap — a list stops at its ends, like the palette). The "next/prev tab" command entry. No-op
+    /// without an active session.
+    public func cycleTab(by delta: Int) {
+        guard let session = tree.activeSession else { return }
+        let count = session.tabs.count
+        guard count > 1 else { return }
+        let next = min(max(session.activeTabIndex + delta, 0), count - 1)
+        guard next != session.activeTabIndex else { return }
+        selectTab(next)
+    }
+
+    /// Selects the `number`-th tab (1-based) of the active session, if it exists. The ⌘1…⌘9 command entry;
+    /// a number past the tab count is a no-op (clamps to nothing rather than the last tab — a missing tab
+    /// number simply does nothing, the native ⌘N tab idiom).
+    public func selectTabNumber(_ number: Int) {
+        guard let session = tree.activeSession else { return }
+        let index = number - 1
+        guard session.tabs.indices.contains(index) else { return }
+        selectTab(index)
     }
 
     // MARK: - Rolled-up agent status (W5 — sidebar/tab dots; W10/W11 feed it real data)

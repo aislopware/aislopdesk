@@ -42,18 +42,26 @@ public struct WorkspaceCommands: Commands {
     public init() {}
 
     public var body: some Commands {
-        // REPLACE the default File > New Window (⌘N): in a one-window canvas app a second window is
-        // never what ⌘N means — it now creates panes, per kind. ⌘N mirrors ⌘T (the Pane-menu alias)
-        // for terminals; ⇧⌘N / ⌥⌘N create the other kinds directly (every prior creation path was
-        // Terminal-only).
+        // REPLACE the default File > New Window (⌘N): in a one-window IDE app a second window is never
+        // what ⌘N / ⌘T mean — they create tabs/panes. The LIVE IDE shell (`.tree`) routes through the
+        // single ``WorkspaceBindingRegistry``; the retained-but-dead canvas keeps its ``WorkspaceCommand``
+        // items so the canvas tests/menu stay intact.
         CommandGroup(replacing: .newItem) {
-            commandButton("New Pane", .newPaneDefault)
-            Divider()
-            commandButton("New Terminal Pane", .newPane(.terminal))
-            commandButton("New Claude Code Pane", .newPane(.claudeCode))
-            commandButton("New Remote Window Pane", .newPane(.remoteGUI))
-            Divider()
-            commandButton("Duplicate Pane", .duplicatePane)
+            if store?.liveModel == .canvas {
+                commandButton("New Pane", .newPaneDefault)
+                Divider()
+                commandButton("New Terminal Pane", .newPane(.terminal))
+                commandButton("New Claude Code Pane", .newPane(.claudeCode))
+                commandButton("New Remote Window Pane", .newPane(.remoteGUI))
+                Divider()
+                commandButton("Duplicate Pane", .duplicatePane)
+            } else {
+                actionButton("New Tab", .newTab)
+                actionButton("New Session", .newSession)
+                Divider()
+                actionButton("Split Right", .splitRight)
+                actionButton("Split Down", .splitDown)
+            }
         }
         #if os(macOS)
         // Portable workspace backup / share, next to the OS's import/export menu slot.
@@ -71,23 +79,77 @@ public struct WorkspaceCommands: Commands {
         // scene's toggle so it targets the key window; disabled when no workspace window is key.
         CommandGroup(after: .toolbar) {
             Button("Command Palette") { paletteToggle?.toggle() }
-                .keyboardShortcut("k", modifiers: .command)
+                .modifier(OptionalShortcut(WorkspaceBindingRegistry.binding(for: .commandPalette)?.chord?.shortcut))
                 .disabled(paletteToggle == nil)
             Button("Keyboard Shortcuts") { cheatSheetToggle?.toggle() }
-                .keyboardShortcut("/", modifiers: .command)
+                .modifier(OptionalShortcut(WorkspaceBindingRegistry.binding(for: .cheatSheet)?.chord?.shortcut))
                 .disabled(cheatSheetToggle == nil)
-            Divider()
-            // The canvas interaction prefs, surfaced app-globally for discoverability — the SAME
-            // @AppStorage keys the per-pane pill menu toggles, so the two surfaces cannot drift.
-            // Bound Toggles render as native checkmarked menu items.
-            SnapPreferenceToggles()
+            // The canvas interaction prefs are inert on the tree shell — surface them only on the
+            // retained-but-dead canvas (the SAME @AppStorage keys the per-pane pill menu toggles).
+            if store?.liveModel == .canvas {
+                Divider()
+                SnapPreferenceToggles()
+            }
         }
         // The Pane menu reads as a workspace-level menu alongside the OS chrome. `CommandMenu`'s
-        // trailing closure is a `@ViewBuilder` (Buttons + Dividers), not nested `Commands` — every
-        // Button funnels its `WorkspaceCommand` through `apply(_:to:)`.
+        // trailing closure is a `@ViewBuilder` (Buttons + Dividers), not nested `Commands`. The LIVE IDE
+        // shell (`.tree`) renders the registry-driven tree menu; the canvas keeps its `apply(_:to:)` menu.
         CommandMenu("Pane") {
-            paneMenu
+            if store?.liveModel == .canvas {
+                paneMenu
+            } else {
+                treePaneMenu
+            }
         }
+    }
+
+    // MARK: - Tree pane menu (the LIVE IDE shell — every item routes through WorkspaceBindingRegistry)
+
+    /// The IDE-shell `Pane` menu, every item sourced from + routed through the single
+    /// ``WorkspaceBindingRegistry`` (so the chord glyph the menu shows can never drift from the chord that
+    /// actually fires). Grouped panes / tabs / sessions / focus / view, with the ⌘1…⌘9 select-tab chords
+    /// surfaced as a submenu.
+    @ViewBuilder
+    private var treePaneMenu: some View {
+        actionButton("Split Right", .splitRight)
+        actionButton("Split Down", .splitDown)
+        actionButton("Break Pane to Tab", .breakPaneToTab)
+        actionButton("Rename Pane…", .renamePane)
+        actionButton("Close Pane", .closePane)
+
+        Divider()
+
+        actionButton("Focus Left", .focusLeft)
+        actionButton("Focus Right", .focusRight)
+        actionButton("Focus Up", .focusUp)
+        actionButton("Focus Down", .focusDown)
+
+        Divider()
+
+        actionButton("New Tab", .newTab)
+        actionButton("Next Tab", .nextTab)
+        actionButton("Previous Tab", .prevTab)
+        Menu("Select Tab") {
+            ForEach(1...9, id: \.self) { n in
+                actionButton("Tab \(n)", .selectTab(n))
+            }
+        }
+
+        Divider()
+
+        actionButton("New Session", .newSession)
+        actionButton("Maximize Pane", .toggleZoom)
+    }
+
+    /// A menu `Button` for a tree ``WorkspaceAction`` that routes through ``WorkspaceBindingRegistry`` and
+    /// derives its key equivalent from the SAME registry binding (so the displayed chord and the fired
+    /// chord cannot drift). Disabled when no workspace store is key.
+    private func actionButton(_ title: String, _ action: WorkspaceAction) -> some View {
+        Button(title) {
+            if let store { WorkspaceBindingRegistry.route(action, to: store) }
+        }
+        .disabled(store == nil)
+        .modifier(OptionalShortcut(WorkspaceBindingRegistry.binding(for: action)?.chord?.shortcut))
     }
 
     // MARK: - Pane menu (tabs are gone — everything is on the single canvas)

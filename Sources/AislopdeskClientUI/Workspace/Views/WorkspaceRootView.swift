@@ -349,7 +349,7 @@ private struct WorkspaceOverlayModals: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay { CommandPaletteView(store: store, isPresented: $showPalette) }
-            .overlay { KeyboardCheatSheetView(isPresented: $showCheatSheet) }
+            .overlay { KeyboardCheatSheetView(isPresented: $showCheatSheet, liveModel: store.liveModel) }
             .animation(.easeOut(duration: 0.12), value: showCheatSheet)
     }
 }

@@ -102,6 +102,37 @@ enum KeyboardCheatSheet {
         ]))
         return out
     }
+
+    // MARK: - Tree shell sections (W6 — generated from the SINGLE WorkspaceBindingRegistry source)
+
+    /// The cheat-sheet sections for the LIVE IDE shell (``WorkspaceStore/LiveModel/tree``), generated
+    /// entirely from ``WorkspaceBindingRegistry`` — the SAME single source of truth the menu bar and the ⌘K
+    /// palette consume — so a rebinding can never drift the sheet. Grouped by the registry's display
+    /// categories (Panes / Tabs / Sessions / Focus / View); the nine ⌘-digit select-tab chords are
+    /// collapsed into one representative "⌘1…⌘9" row, and the terminal extras are appended (the §5 chords
+    /// the focused libghostty surface claims itself, outside the workspace table).
+    static func treeSections() -> [Section] {
+        var out: [Section] = WorkspaceBindingRegistry.groupedForDisplay.compactMap { group -> Section? in
+            var items = group.bindings.compactMap { binding -> Item? in
+                guard let chord = binding.chord else { return nil }
+                return Item(glyph: WorkspaceBindingRegistry.glyph(chord), label: binding.title)
+            }
+            // Append the collapsed "select tab N" row to the Tabs group (the nine ⌘-digit chords).
+            if group.category == .tabs {
+                items.append(Item(glyph: "⌘1…⌘9", label: "Select Tab 1–9"))
+            }
+            guard !items.isEmpty else { return nil }
+            return Section(title: group.category.rawValue, items: items)
+        }
+        // The terminal chords the focused surface handles itself (curated, not generated — they live
+        // outside the workspace table, exactly as the canvas sheet documents).
+        out.append(Section(title: "Terminal", items: [
+            Item(glyph: "⌘C / ⌘V", label: "Copy / paste (focused terminal)"),
+            Item(glyph: "⌘A", label: "Select all text (focused terminal)"),
+            Item(glyph: "⌘= / ⌘− / ⌘0", label: "Font size (focused terminal)"),
+        ]))
+        return out
+    }
 }
 
 // MARK: - KeyboardCheatSheetView (the ⌘/ overlay)
@@ -110,6 +141,19 @@ enum KeyboardCheatSheet {
 /// Mirrors ``CommandPaletteView``'s overlay shape (dim backdrop, top-third card) but is read-only.
 struct KeyboardCheatSheetView: View {
     @Binding var isPresented: Bool
+    /// Which command model the live store drives (W6): ``WorkspaceStore/LiveModel/tree`` renders the
+    /// registry-generated tree shortcuts; ``WorkspaceStore/LiveModel/canvas`` the retained canvas sheet.
+    /// Defaults `.tree` (the live app) so a caller that omits it gets the IDE-shell sheet.
+    var liveModel: WorkspaceStore.LiveModel = .tree
+
+    /// The sections to render, picked by the live model — both come from the one drift-guarded source for
+    /// their model (the registry for `.tree`, `defaultBindings` for `.canvas`).
+    private var sections: [KeyboardCheatSheet.Section] {
+        switch liveModel {
+        case .tree: KeyboardCheatSheet.treeSections()
+        case .canvas: KeyboardCheatSheet.sections()
+        }
+    }
 
     var body: some View {
         if isPresented {
@@ -141,7 +185,7 @@ struct KeyboardCheatSheetView: View {
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(KeyboardCheatSheet.sections()) { section in
+                    ForEach(sections) { section in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(section.title.uppercased())
                                 .font(.caption2.weight(.semibold))
