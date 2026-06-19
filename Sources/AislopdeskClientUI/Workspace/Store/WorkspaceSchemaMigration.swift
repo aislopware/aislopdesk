@@ -30,4 +30,25 @@ enum WorkspaceSchemaMigration {
         // step (single-user, no backward-compat) → nil so the caller falls back to the default.
         from == to ? workspace : nil
     }
+
+    // MARK: - Tree-rooted (v10) migration registration (W3 — additive, off the live load path)
+
+    /// The registered upgrade step into the tree-rooted ``TreeWorkspace`` shape (docs/42 §Migration). A
+    /// `from == 9` raw-decodable v9 file migrates through the frozen ``WorkspaceV9`` mirror; a `from == 10`
+    /// file is already the tree shape (the caller typed-decodes it directly, so this returns `nil` — there
+    /// is nothing to upgrade); any other version returns `nil` → the caller resets to default.
+    ///
+    /// **Additive (W3): the live `WorkspacePersistence.load()` still returns the v9 ``Workspace`` and does
+    /// NOT call this.** It is the registered seam W4 wires in behind the version peek when the store cuts
+    /// over to ``TreeWorkspace``. Forward-tolerant on `5...9` (those older shapes all decode through the v9
+    /// mirror — the v9 fields are a superset).
+    static func migrateToTree(_ data: Data, from: Int) -> TreeWorkspace? {
+        switch from {
+        case 5...9:
+            WorkspacePersistence.migrateV9toV10(from: data)
+        default:
+            // 10 = already the tree shape (caller decodes directly); anything else is uninterpretable.
+            nil
+        }
+    }
 }

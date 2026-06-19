@@ -120,6 +120,28 @@ public struct WorkspacePersistence: @unchecked Sendable {
         return repaired.normalizingCollections().normalizingFocus().normalizingGroups()
     }
 
+    // MARK: Version peek + v9→v10 step (W3 — exposed, NOT yet wired into load())
+
+    /// Peeks ONLY the `schemaVersion` off raw persisted bytes WITHOUT a full typed decode (docs/42
+    /// §Migration: "a pre-decode raw-JSON version peek"). A v10 ``TreeWorkspace`` file has no
+    /// `canvas`/`groups`, so it would FAIL the typed v9 ``Workspace`` decode — the load path needs to
+    /// branch on the version *before* choosing a decoder. Returns `nil` for non-JSON / a missing
+    /// `schemaVersion` (a corrupt file the caller resets aside). **Additive (W3): the live `load()` does
+    /// not yet call this** — the cutover that branches the decoder on the peeked version is W4.
+    public static func peekSchemaVersion(in data: Data) -> Int? {
+        struct VersionPeek: Decodable { let schemaVersion: Int }
+        return (try? JSONDecoder().decode(VersionPeek.self, from: data))?.schemaVersion
+    }
+
+    /// Decodes raw v9 bytes through the frozen ``WorkspaceV9`` shadow and migrates them to a normalized
+    /// ``TreeWorkspace`` (docs/42 §Migration). Returns `nil` when the bytes are not decodable v9 JSON.
+    /// **Additive (W3): not yet on the live `load()` path** — exposed so W4 can wire it behind the version
+    /// peek without re-deriving the step.
+    public static func migrateV9toV10(from data: Data) -> TreeWorkspace? {
+        guard let v9 = try? JSONDecoder().decode(WorkspaceV9.self, from: data) else { return nil }
+        return WorkspaceMigrationV9toV10.migrate(v9)
+    }
+
     /// Best-effort copy the unrestorable file aside BEFORE the next `save()` atomically overwrites it, so a
     /// merely-unreadable-by-THIS-build file (a future schemaVersion after a downgrade) or a hard-corrupt
     /// one is recoverable instead of silently destroyed (UI/UX pass-3 #2). Bounded to a single fixed-name
