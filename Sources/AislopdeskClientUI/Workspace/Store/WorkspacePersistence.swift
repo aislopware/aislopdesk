@@ -72,6 +72,17 @@ public struct WorkspacePersistence: @unchecked Sendable {
         try data.write(to: fileURL, options: [.atomic])
     }
 
+    /// W5: encodes the v10 ``TreeWorkspace`` and writes it atomically to ``fileURL`` — the live save path
+    /// after the cutover (the tree IS the persisted source of truth now). Same atomic / sorted-keys
+    /// discipline as the canvas ``save(_:)`` so the on-disk shape stays reviewable and byte-stable. The
+    /// store debounces + best-effort-calls this; a thrown error keeps the previous good file.
+    public func save(_ tree: TreeWorkspace) throws {
+        let directory = fileURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try Self.makeEncoder().encode(tree)
+        try data.write(to: fileURL, options: [.atomic])
+    }
+
     // MARK: Load
 
     /// Reads + decodes the workspace, then forward-migrates it to this build's schema (docs/22 §6).
@@ -120,7 +131,56 @@ public struct WorkspacePersistence: @unchecked Sendable {
         return repaired.normalizingCollections().normalizingFocus().normalizingGroups()
     }
 
-    // MARK: Version peek + v9→v10 step (W3 — exposed, NOT yet wired into load())
+    // MARK: Load (tree — W5 LIVE path)
+
+    /// W5 — the LIVE load path after the IDE-shell cutover: reads the file, peeks its `schemaVersion`
+    /// off the raw bytes (a v10 ``TreeWorkspace`` file has no `canvas`/`groups` and would fail the typed
+    /// v9 decode), and branches:
+    /// - `== 10` → typed-decode the ``TreeWorkspace`` directly (the steady-state).
+    /// - `5…9` → run the frozen-mirror v9→v10 migration (``migrateV9toV10``) so an existing canvas
+    ///   workspace upgrades in place, preserving every `PaneID` + `PaneSpec`.
+    /// - missing file → ``TreeWorkspace/defaultWorkspace()`` (first launch).
+    /// - unknown / future / un-decodable → reset aside (`.corrupt` sidecar) + the default.
+    ///
+    /// Never throws — launch must always get a usable tree. The result is `normalized()` so the
+    /// `Set(specs.keys) == Set(leafIDs)` invariant holds even for a hand-edited / partial file
+    /// (validate-then-repair), and the per-collection ``WorkspaceTransfer/maxItems`` bound guards against
+    /// a corrupt file that would make the store eagerly allocate a session per leaf on launch.
+    public func loadTree() -> TreeWorkspace {
+        guard let data = try? Data(contentsOf: fileURL) else {
+            return .defaultWorkspace() // missing file = first launch; nothing to back up
+        }
+        guard let version = Self.peekSchemaVersion(in: data) else {
+            return resetTreeToDefault() // not JSON / no schemaVersion — preserve aside
+        }
+        let tree: TreeWorkspace? =
+            if version == TreeWorkspace.currentSchemaVersion {
+                try? JSONDecoder().decode(TreeWorkspace.self, from: data)
+            } else {
+                // A v5…9 canvas file migrates forward through the frozen mirror; anything else is unhandled.
+                WorkspaceSchemaMigration.migrateToTree(data, from: version)
+            }
+        guard let tree else {
+            return resetTreeToDefault() // un-decodable v10 / un-migratable version — preserve aside
+        }
+        // Bound the leaf/collection counts so a corrupt file cannot make the store allocate unboundedly
+        // on launch (the same ceiling the canvas load + portable import enforce).
+        guard tree.allPaneIDs().count <= WorkspaceTransfer.maxItems,
+              tree.snippets.count <= WorkspaceTransfer.maxItems,
+              tree.layoutPresets.count <= WorkspaceTransfer.maxItems else { return resetTreeToDefault() }
+        return tree.normalized()
+    }
+
+    /// The tree counterpart of ``resetToDefault()``: copy the unrestorable file aside to the single
+    /// fixed-name `.corrupt` sidecar before the next `save()` overwrites it, then return the default tree.
+    private func resetTreeToDefault() -> TreeWorkspace {
+        let backup = fileURL.appendingPathExtension("corrupt")
+        try? FileManager.default.removeItem(at: backup)
+        try? FileManager.default.copyItem(at: fileURL, to: backup)
+        return .defaultWorkspace()
+    }
+
+    // MARK: Version peek + v9→v10 step (W3 — exposed, wired into loadTree() in W5)
 
     /// Peeks ONLY the `schemaVersion` off raw persisted bytes WITHOUT a full typed decode (docs/42
     /// §Migration: "a pre-decode raw-JSON version peek"). A v10 ``TreeWorkspace`` file has no

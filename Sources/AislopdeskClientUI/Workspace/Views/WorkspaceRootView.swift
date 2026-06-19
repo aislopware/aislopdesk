@@ -68,19 +68,7 @@ public struct WorkspaceRootView: View {
     }
 
     public var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            PaneSidebarView(store: store)
-            #if os(macOS)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
-            #endif
-        } detail: {
-            detail
-                .toolbar { detailToolbar }
-                .navigationTitle(windowTitle)
-            #if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
-            #endif
-        }
+        shell
         #if os(macOS)
         .frame(minWidth: 720, minHeight: 480)
         // ITEM #6: observe the outer window's width so the compact breakpoint keys on the whole window,
@@ -179,6 +167,36 @@ public struct WorkspaceRootView: View {
         .modifier(SnippetModals(store: store))
     }
 
+    // MARK: Shell (W5 — the IDE split shell vs the retained-but-dead canvas shell)
+
+    /// The workspace shell. W5 cutover: when the store's live model is ``WorkspaceStore/LiveModel/tree``
+    /// (the app) it is the new IDE ``SplitWorkspaceView`` (sessions sidebar + tab bar + recursive split
+    /// content); otherwise the retained-but-dead canvas ``NavigationSplitView`` (so the canvas views keep
+    /// compiling + the old tests render). The shared overlays (connect-gate, ⌘K palette, dialogs, snippet
+    /// modals, `publishingWorkspaceStore`) wrap WHICHEVER shell — they live below on the `body` chain.
+    @ViewBuilder
+    private var shell: some View {
+        switch store.liveModel {
+        case .tree:
+            SplitWorkspaceView(store: store)
+                .toolbar { detailToolbar }
+        case .canvas:
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                PaneSidebarView(store: store)
+                #if os(macOS)
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
+                #endif
+            } detail: {
+                detail
+                    .toolbar { detailToolbar }
+                    .navigationTitle(windowTitle)
+                #if os(iOS)
+                    .navigationBarTitleDisplayMode(.inline)
+                #endif
+            }
+        }
+    }
+
     /// The busy-close dialog title, naming the pane it would close (best-effort — falls back to a
     /// generic title if the pane vanished while the dialog was up).
     private var pendingCloseTitle: String {
@@ -269,22 +287,51 @@ public struct WorkspaceRootView: View {
             .help("Connection: \(connection.target.host) — \(ConnectionPresenter.headline(for: connection.status))")
         }
         ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Button { store.addPane(kind: .terminal) } label: {
-                    Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
+            switch store.liveModel {
+            case .tree:
+                // The IDE shell: the primary "+" opens a new TAB; the menu offers split / new session.
+                Menu {
+                    Button { store.newTab(kind: SettingsKey.defaultPaneKind) } label: {
+                        Label("New Tab", systemImage: "plus.rectangle.on.rectangle")
+                    }
+                    if let active = store.tree.activeSession?.activeTab?.activePane {
+                        Button { store.splitPaneTree(active, axis: .horizontal, kind: SettingsKey.defaultPaneKind)
+                        } label: {
+                            Label("Split Right", systemImage: "rectangle.split.2x1")
+                        }
+                        Button { store.splitPaneTree(active, axis: .vertical, kind: SettingsKey.defaultPaneKind)
+                        } label: {
+                            Label("Split Down", systemImage: "rectangle.split.1x2")
+                        }
+                    }
+                    Divider()
+                    Button { store.newSession(name: "Local", kind: SettingsKey.defaultPaneKind) } label: {
+                        Label("New Session", systemImage: "square.stack.3d.up")
+                    }
+                } label: {
+                    Label("New Tab", systemImage: "plus")
+                } primaryAction: {
+                    store.newTab(kind: SettingsKey.defaultPaneKind)
                 }
-                Button { store.addPane(kind: .claudeCode) } label: {
-                    Label("Claude Code", systemImage: PaneLeafView.icon(for: .claudeCode))
+                .help("New tab")
+            case .canvas:
+                Menu {
+                    Button { store.addPane(kind: .terminal) } label: {
+                        Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
+                    }
+                    Button { store.addPane(kind: .claudeCode) } label: {
+                        Label("Claude Code", systemImage: PaneLeafView.icon(for: .claudeCode))
+                    }
+                    Button { store.addPane(kind: .remoteGUI) } label: {
+                        Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
+                    }
+                } label: {
+                    Label("New Pane", systemImage: "plus")
+                } primaryAction: {
+                    store.addPane(kind: SettingsKey.defaultPaneKind)
                 }
-                Button { store.addPane(kind: .remoteGUI) } label: {
-                    Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
-                }
-            } label: {
-                Label("New Pane", systemImage: "plus")
-            } primaryAction: {
-                store.addPane(kind: SettingsKey.defaultPaneKind)
+                .help("New pane")
             }
-            .help("New pane")
         }
     }
 }

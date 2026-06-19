@@ -106,16 +106,20 @@ public struct AislopdeskClientApp: App {
         // The ONE app-global connection (docs/31). Seed its target from the env in automation (so
         // check-macos.sh/check-video.sh keep working), else from the persisted `Workspace.connection`,
         // else the default. Every pane reads `connection.target` for its host/ports.
-        let restored = persistence?.load() // nil in automation ⇒ bootstrap replaces it anyway
+        // W5: the LIVE model is now the v10 ``TreeWorkspace`` (the IDE shell). `loadTree()` peeks the
+        // persisted schema version and either decodes a v10 tree directly or migrates an existing v9
+        // canvas file forward (preserving every PaneID + PaneSpec); a fresh launch gets the default tree.
+        let restoredTree = persistence?.loadTree() // nil in automation ⇒ bootstrap replaces it anyway
         // The automation inputs (env + `AISLOPDESK_…=value` launch args), so the app-global target is
         // seeded identically whether the seam is driven by environment or by `open --args` (SSH/remote).
         let env = WorkspaceStore.automationInputs()
         let seedTarget: ConnectionTarget = isAutomation
             ? (WorkspaceStore.videoTarget(from: env)?.0 ?? WorkspaceStore.terminalTarget(from: env) ?? .default)
-            : (restored?.connection ?? .default)
+            : (restoredTree?.activeSession?.connection ?? .default)
         let appConnection = AppConnection(registry: muxRegistry, seed: seedTarget)
         let store = WorkspaceStore(
-            restoring: restored,
+            restoringTree: restoredTree,
+            liveModel: .tree,
             makeSession: WorkspaceStore.liveMakeSession(
                 makeInspector: WorkspaceStore.liveMakeInspector,
                 muxRegistry: muxRegistry,
@@ -273,7 +277,12 @@ public struct AislopdeskClientApp: App {
         // state + an overlay), so it is wired there, not here.
         .commands { WorkspaceCommands() }
         #if os(macOS)
-            .windowResizability(.contentSize)
+            // W5: coding-IDE chrome — a hidden/unified title bar with full-size content so the traffic
+            // lights float over the sessions sidebar (the `SplitWorkspaceView` shell draws to the window
+            // edge). `.automatic` resizability replaces `.contentSize` so the split content can be sized
+            // freely by the user, not pinned to its intrinsic size.
+            .windowStyle(.hiddenTitleBar)
+            .windowResizability(.automatic)
         #endif
 
         #if os(macOS)

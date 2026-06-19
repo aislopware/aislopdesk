@@ -58,6 +58,9 @@ struct PaneChromeView<Content: View>: View {
             let status = connectionStatus
             PaneStatusDot(status: status, running: isRunning)
 
+            // W5: the per-leaf Claude/agent status dot (hidden when `.none` — the common case until W10/W11).
+            AgentStatusDot(status: store.agentStatus(for: id))
+
             Text(displayTitle)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(isFocused ? .primary : .secondary)
@@ -108,36 +111,75 @@ struct PaneChromeView<Content: View>: View {
             .background {
                 ScrollPanForwarder(store: store)
                     .contentShape(Rectangle())
-                    .simultaneousGesture(TapGesture().onEnded { store.focus(id) })
+                    .simultaneousGesture(TapGesture().onEnded { focusThisLeaf() })
             }
             .background(isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial))
         #else
             .background(isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial))
             .contentShape(Rectangle())
             // A plain TAP on the title bar focuses the pane (the natural way to select a window).
-            .simultaneousGesture(TapGesture().onEnded { store.focus(id) })
+            .simultaneousGesture(TapGesture().onEnded { focusThisLeaf() })
         #endif
     }
 
-    /// The add / maximize / close controls. Compact icon buttons in the native borderless toolbar
-    /// idiom. The add affordance is a KIND-picker (docs/30 §6.7): a plain tap adds a terminal pane (the
-    /// common case); the menu offers Claude Code / Remote so the user chooses the new pane's KIND —
-    /// mirroring the sidebar / detail "New" idiom (the old split-direction buttons are gone with splits).
-    private var controls: some View {
-        HStack(spacing: 2) {
-            addMenu
-            chromeButton(
-                isZoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                help: isZoomed ? "Restore" : "Maximize",
-            ) {
-                store.focus(id) // maximize acts on the focused pane — ensure it's this one first
-                store.toggleZoom()
-            }
-            chromeButton("xmark", help: store.isOnlyLeaf(id) ? "Close last pane" : "Close pane", role: .destructive) {
-                store.requestClosePane(id)
-            }
+    /// Focuses this leaf in whichever live model is active (W5): the tree's active pane on the IDE shell,
+    /// the canvas focus on the retained-but-dead path.
+    private func focusThisLeaf() {
+        switch store.liveModel {
+        case .tree: store.focusPaneTree(id)
+        case .canvas: store.focus(id)
         }
-        .font(.caption)
+    }
+
+    /// The per-leaf controls. Repurposed for W5: on the LIVE tree shell (``WorkspaceStore/LiveModel/tree``)
+    /// it is the slim coding-IDE split-leaf header — split-right (⌘D), split-down (⌘⇧D), zoom, close — all
+    /// funneling through the store's tree ops. On the retained-but-dead canvas path it keeps the old
+    /// add-KIND-picker + maximize + close.
+    @ViewBuilder
+    private var controls: some View {
+        switch store.liveModel {
+        case .tree:
+            HStack(spacing: 2) {
+                chromeButton("rectangle.split.2x1", help: "Split right (⌘D)") {
+                    store.focusPaneTree(id)
+                    store.splitPaneTree(id, axis: .horizontal, kind: SettingsKey.defaultPaneKind)
+                }
+                chromeButton("rectangle.split.1x2", help: "Split down (⌘⇧D)") {
+                    store.focusPaneTree(id)
+                    store.splitPaneTree(id, axis: .vertical, kind: SettingsKey.defaultPaneKind)
+                }
+                chromeButton(
+                    isZoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                    help: isZoomed ? "Restore" : "Zoom",
+                ) {
+                    store.focusPaneTree(id)
+                    store.toggleZoomTree()
+                }
+                chromeButton("xmark", help: "Close pane", role: .destructive) {
+                    store.closePaneTree(id)
+                }
+            }
+            .font(.caption)
+        case .canvas:
+            HStack(spacing: 2) {
+                addMenu
+                chromeButton(
+                    isZoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                    help: isZoomed ? "Restore" : "Maximize",
+                ) {
+                    store.focus(id) // maximize acts on the focused pane — ensure it's this one first
+                    store.toggleZoom()
+                }
+                chromeButton(
+                    "xmark",
+                    help: store.isOnlyLeaf(id) ? "Close last pane" : "Close pane",
+                    role: .destructive,
+                ) {
+                    store.requestClosePane(id)
+                }
+            }
+            .font(.caption)
+        }
     }
 
     /// The "add pane" KIND-picker: tap to add a terminal pane to the canvas, or open the menu to add a

@@ -61,7 +61,10 @@ public enum SplitLayoutSolver {
     /// left over in proportion to their (already-clamped) flex weights. A degenerate all-zero-flex case
     /// falls back to an equal split so no pane vanishes. Pure. (The partition is axis-agnostic — `total`
     /// is already the bound's length along the relevant axis.)
-    private static func extents(for children: [WeightedChild], total: CGFloat) -> [CGFloat] {
+    ///
+    /// `internal` (not private) so ``SplitTreeRenderModel`` can reuse the EXACT same un-clamped partition
+    /// to place its divider handles on the same seams the solver tiles to (no second, drifting copy).
+    static func extents(for children: [WeightedChild], total: CGFloat) -> [CGFloat] {
         // First pass: RESERVE each fixed child its per-child extent with a RUNNING clamp (so the fixed sum
         // is ≤ total and no band overruns the bound), recording that exact extent per index. Pass 2 reuses
         // it verbatim — emitting the same per-child share, NOT the whole bound — so the two passes are

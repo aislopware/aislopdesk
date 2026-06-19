@@ -141,6 +141,9 @@ let package = Package(
                 "AislopdeskTransport",
                 "AislopdeskInspector",
                 "AislopdeskClaudeCode",
+                // W5: the pure headless Claude-status enum (`ClaudeStatus`) the sidebar/chrome dots read.
+                // AgentDetect depends on nothing GUI/transport/video, so this never widens the GUI graph.
+                "AislopdeskAgentDetect",
                 "AislopdeskTerminal",
             ],
         ),
@@ -308,6 +311,7 @@ let package = Package(
                 "AislopdeskHost",
                 "AislopdeskInspector",
                 "AislopdeskClaudeCode",
+                "AislopdeskAgentDetect",
                 "AislopdeskTerminal",
             ],
         ),

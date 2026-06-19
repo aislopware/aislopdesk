@@ -1,3 +1,4 @@
+import AislopdeskAgentDetect
 import AislopdeskClient
 import AislopdeskInspector
 import AislopdeskTransport
@@ -29,6 +30,25 @@ import Network
 @MainActor
 @Observable
 public final class WorkspaceStore {
+    // MARK: Live model (W5 — which tree of intent drives the live loop)
+
+    /// W5 (docs/42 §"W5 — IDE shell CUTOVER"): which model is the LIVE source of truth — the one `init`
+    /// reconciles, the one a debounced save persists, the one the views bind. The cutover flips the app
+    /// to ``tree``; the retained-but-dead canvas tests keep ``canvas`` so they are byte-identical.
+    public enum LiveModel: Sendable, Equatable {
+        /// The retained-but-dead infinite ``Canvas`` path: `init` reconciles `workspace`, a save persists
+        /// `workspace`. The DEFAULT so every pre-cutover test (the canvas `WorkspaceStoreReconcileTests`
+        /// + the dormant-tree `WorkspaceStoreTreeReconcileTests`) is unchanged.
+        case canvas
+        /// The LIVE IDE-shell path: `init` reconciles ``tree``, a save persists ``tree``, and the
+        /// `SplitWorkspaceView` shell binds it. The production app passes this.
+        case tree
+    }
+
+    /// Which model drives the live loop (W5). Default ``LiveModel/canvas`` keeps the retained-but-dead
+    /// canvas path and every existing test untouched; the app constructs with ``LiveModel/tree``.
+    public let liveModel: LiveModel
+
     // MARK: State
 
     /// The pure tree of intent — the single source of truth. `private(set)`: only the mutation
@@ -232,15 +252,16 @@ public final class WorkspaceStore {
     /// - Parameters:
     ///   - restoring: a decoded workspace to restore (SHAPE + INTENT only — sessions start idle,
     ///     docs/22 §6). `nil` ⇒ ``Workspace/defaultWorkspace()`` (one terminal tab).
-    ///   - restoringTree: a decoded ``TreeWorkspace`` to seed the DORMANT tree path (W4). `nil` ⇒
-    ///     ``TreeWorkspace/defaultWorkspace()`` (one terminal pane). It is NOT reconciled at init — the
-    ///     live canvas `reconcile()` is the only init reconcile, so seeding it is behavior-neutral for
-    ///     the live path. The tree-mutation methods + ``reconcileTree()`` are the only things that act on
-    ///     it (W5 cutover makes it the live source).
+    ///   - restoringTree: a decoded ``TreeWorkspace`` to seed the tree path. `nil` ⇒
+    ///     ``TreeWorkspace/defaultWorkspace()`` (one terminal pane). With ``LiveModel/canvas`` (the
+    ///     default) the tree stays DORMANT (init reconciles the canvas, so seeding it is behavior-neutral);
+    ///     with ``LiveModel/tree`` (the app, W5 cutover) the tree IS the live source — init reconciles it.
+    ///   - liveModel: which model drives the live loop (W5). Default ``LiveModel/canvas`` keeps every
+    ///     pre-cutover test untouched; the production app passes ``LiveModel/tree``.
     ///   - makeSession: the session factory seam (production: `LivePaneSession.make`; tests:
     ///     `{ FakePaneSession($0) }`).
     ///   - liveVideoCap: concurrent live-video ceiling (default 2).
-    ///   - persistence: where to debounce-save the tree after mutations (docs/22 §6). `nil` (the
+    ///   - persistence: where to debounce-save the live model after mutations (docs/22 §6). `nil` (the
     ///     default) ⇒ no disk writes, so the pure/fake test seam never touches the filesystem; the app
     ///     passes a real ``WorkspacePersistence``.
     ///   - saveDebounce: the mutation-coalescing window before a write (default 600ms).
@@ -248,21 +269,28 @@ public final class WorkspaceStore {
     public init(
         restoring: Workspace? = nil,
         restoringTree: TreeWorkspace? = nil,
+        liveModel: LiveModel = .canvas,
         makeSession: @escaping @MainActor (PaneSpec) -> any PaneSessionHandle,
         liveVideoCap: Int = 2,
         persistence: WorkspacePersistence? = nil,
         saveDebounce: Duration = .milliseconds(600),
         videoTeardownSettle: Duration = .zero,
     ) {
+        self.liveModel = liveModel
         workspace = restoring ?? .defaultWorkspace()
-        // W4: seed the dormant tree (NOT reconciled at init — the canvas reconcile below is the only one).
         tree = (restoringTree ?? .defaultWorkspace()).normalized()
         self.makeSession = makeSession
         self.liveVideoCap = liveVideoCap
         self.persistence = persistence
         self.saveDebounce = saveDebounce
         self.videoTeardownSettle = videoTeardownSettle
-        reconcile() // materialize idle sessions for the restored/default leaves
+        // W5: the live model picks the init reconcile. `.canvas` (default) materializes the canvas panes
+        // (the retained-but-dead path + every existing test); `.tree` (the app) materializes the tree's
+        // leaves through the SAME registry diff — exactly one of the two trees ever drives a given store.
+        switch liveModel {
+        case .canvas: reconcile()
+        case .tree: reconcileTree()
+        }
         savingEnabled = true // arm debounced saves only AFTER the restore reconcile
     }
 
@@ -2066,16 +2094,37 @@ public final class WorkspaceStore {
     }
 
     public func bootstrapFromEnvironment(_ env: [String: String] = WorkspaceStore.automationInputs()) {
-        if let (target, video) = Self.videoTarget(from: env) {
-            let spec = PaneSpec(kind: .remoteGUI, title: video.title, video: video)
-            workspace = Self.singleLeafWorkspace(spec: spec, connection: target)
-        } else if let target = Self.terminalTarget(from: env) {
-            let spec = PaneSpec(kind: .terminal, title: "Terminal")
-            workspace = Self.singleLeafWorkspace(spec: spec, connection: target)
-        } else {
-            workspace = .defaultWorkspace()
+        // Resolve the single bootstrap pane spec + the app target from the autoconnect env (video first).
+        let bootstrap: (spec: PaneSpec, target: ConnectionTarget)? =
+            if let (target, video) = Self
+                .videoTarget(from: env)
+            {
+                (PaneSpec(kind: .remoteGUI, title: video.title, video: video), target)
+            } else if let target = Self.terminalTarget(from: env) {
+                (PaneSpec(kind: .terminal, title: "Terminal"), target)
+            } else {
+                nil
+            }
+        switch liveModel {
+        case .tree:
+            // W5: the live tree is what the IDE shell binds, so the automation bootstrap reshapes the TREE
+            // (one session/tab/leaf carrying the spec + per-session connection) and reconciles it.
+            if let bootstrap {
+                var session = Session.singlePane(name: bootstrap.target.host, spec: bootstrap.spec)
+                session.connection = bootstrap.target
+                tree = TreeWorkspace(sessions: [session], activeSessionID: session.id).normalized()
+            } else {
+                tree = .defaultWorkspace()
+            }
+            reconcileTree()
+        case .canvas:
+            if let bootstrap {
+                workspace = Self.singleLeafWorkspace(spec: bootstrap.spec, connection: bootstrap.target)
+            } else {
+                workspace = .defaultWorkspace()
+            }
+            reconcile()
         }
-        reconcile()
     }
 
     /// The app target from the terminal-autoconnect env vars, or `nil`.
@@ -2207,20 +2256,158 @@ public final class WorkspaceStore {
         reconcileTree()
     }
 
-    // MARK: - reconcileTree (W4 — DORMANT mirror of reconcile, driven by the tree)
+    // MARK: - Tree mutations (W5 — the additional shell wrappers the IDE views drive)
 
-    /// W4 (docs/42): the tree-driven counterpart of ``reconcile()``, diffing the desired leaf set
-    /// `tree.allPaneIDs()` against the `[PaneID: any PaneSessionHandle]` registry. It delegates the whole
-    /// load-bearing diff to the shared ``reconcileRegistry(desiredLeafIDs:spec:onMaterialize:)`` — the
-    /// exact same orphan-remove-then-teardown, `tearingDownVideo` ceiling-accounting, per-pane cache
-    /// pruning, and `makeSession`/`adopt(id:)` materialize the canvas path uses — but sourced from
-    /// ``tree`` and resolving each spec via `tree.spec(for:)`. It deliberately passes NO `onMaterialize`
-    /// hook and runs none of the canvas-specific side effects (autotype target / OSC-9 notification
-    /// wiring / focus-coordinator sync / debounced persistence): those belong to the live canvas path,
-    /// and `reconcileTree()` is DORMANT (never called from the live loop), so keeping it minimal avoids
-    /// double-writing the same persistence file / nudging the same generation. Idempotent.
+    /// Focuses leaf `id` in the tree (sets its tab's `activePane` + selects that session/tab). The full
+    /// leaf set stays registered — a pure active-state change. The IDE shell calls this on a leaf tap.
+    public func focusPaneTree(_ id: PaneID) {
+        guard tree.contains(id), tree.activeSession?.activeTab?.activePane != id else { return }
+        tree = WorkspaceTreeOps.focusPane(id, in: tree)
+        reconcileTree()
+    }
+
+    /// Drag-resizes the divider between children `leadingChildIndex` and `leadingChildIndex + 1` of split
+    /// `splitID` by `delta` (in flex-weight units, sum-preserving + clamped). The leaf set is unchanged, so
+    /// the reconcile only persists. The `DividerHandle` view converts a pixel drag → a weight delta and
+    /// calls this on the active tab's split.
+    public func resizeDividerTree(splitID: SplitNodeID, leadingChildIndex: Int, delta: Double) {
+        tree = WorkspaceTreeOps.resizeDivider(
+            splitID: splitID, leadingChildIndex: leadingChildIndex, delta: delta, in: tree,
+        )
+        reconcileTree()
+    }
+
+    /// Ejects leaf `id` into a NEW tab of its session (Zellij/Herdr "break pane"); the source tab
+    /// collapses/rebalances. No-op if it is its tab's only leaf.
+    public func breakPaneToTab(_ id: PaneID) {
+        tree = WorkspaceTreeOps.breakPaneToTab(id, in: tree)
+        reconcileTree()
+    }
+
+    /// Renames tab `tabID`. Pure metadata — the leaf set is unchanged, so the reconcile only persists.
+    public func renameTab(_ tabID: TabID, to title: String) {
+        tree = WorkspaceTreeOps.renameTab(tabID, to: title, in: tree)
+        reconcileTree()
+    }
+
+    /// Renames session `sessionID`. Pure metadata — the leaf set is unchanged.
+    public func renameSession(_ sessionID: SessionID, to name: String) {
+        tree = WorkspaceTreeOps.renameSession(sessionID, to: name, in: tree)
+        reconcileTree()
+    }
+
+    // MARK: - Rolled-up agent status (W5 — sidebar/tab dots; W10/W11 feed it real data)
+
+    /// The per-pane Claude status the detection signals reduce to. Defaults ``ClaudeStatus/none`` for every
+    /// leaf; the W10/W11 wiring (foreground-process watch + hooks + manifest fallback) will feed real
+    /// verdicts in from the `LivePaneSession`. Stored on the store so the sidebar/chrome dots have a single
+    /// observable source today even though the detection pipeline lands later. Pruned to the live leaf set
+    /// would be ideal, but an absent key already reads as `.none`, so a stale entry is harmless.
+    public private(set) var paneAgentStatus: [PaneID: ClaudeStatus] = [:]
+
+    /// The rolled-up agent status for `id` (`.none` when unknown — the common case until W10/W11).
+    public func agentStatus(for id: PaneID) -> ClaudeStatus {
+        paneAgentStatus[id] ?? .none
+    }
+
+    /// Sets the per-pane agent status (the W10/W11 detection sink — exposed now so the sidebar/chrome dots
+    /// have a stable write path). Idempotent: a no-op when unchanged so it never churns the views.
+    public func setAgentStatus(_ status: ClaudeStatus, for id: PaneID) {
+        guard paneAgentStatus[id] != status else { return }
+        if status == .none { paneAgentStatus.removeValue(forKey: id) } else { paneAgentStatus[id] = status }
+    }
+
+    /// The most-urgent agent status over every leaf of session `sessionID` (Herdr rollup:
+    /// blocked > working > done > idle > none) — the sidebar session-row dot. `.none` for an unknown
+    /// session or one whose panes are all `.none`.
+    public func rollupStatus(forSession sessionID: SessionID) -> ClaudeStatus {
+        guard let session = tree.sessions.first(where: { $0.id == sessionID }) else { return .none }
+        return ClaudeStatus.rollup(session.allPaneIDs().map { agentStatus(for: $0) })
+    }
+
+    /// The most-urgent agent status over every leaf of tab `tabID` (the tab-pill dot).
+    public func rollupStatus(forTab tabID: TabID) -> ClaudeStatus {
+        for session in tree.sessions {
+            if let tab = session.tabs.first(where: { $0.id == tabID }) {
+                return ClaudeStatus.rollup(tab.allPaneIDs().map { agentStatus(for: $0) })
+            }
+        }
+        return .none
+    }
+
+    // MARK: - reconcileTree (W4 seam → W5 LIVE path)
+
+    /// The tree-driven counterpart of ``reconcile()`` (W4 seam, promoted to the LIVE path in W5), diffing
+    /// the desired leaf set `tree.allPaneIDs()` against the `[PaneID: any PaneSessionHandle]` registry. It
+    /// delegates the whole load-bearing diff to the shared ``reconcileRegistry(desiredLeafIDs:spec:onMaterialize:)``
+    /// — the exact same orphan-remove-then-teardown, `tearingDownVideo` ceiling-accounting, per-pane cache
+    /// pruning, and `makeSession`/`adopt(id:)` materialize the canvas path uses — but sourced from ``tree``
+    /// and resolving each spec via `tree.spec(for:)`.
+    ///
+    /// W5: it now wires the SAME per-leaf side effects the canvas `reconcile()` does (pane-rebind /
+    /// `onEndpointCommitted`, OSC-9 `onExplicitNotification`), marks the autotype target, syncs the focus
+    /// coordinator to the TREE's active pane, and schedules the debounced save — so the tree is a complete
+    /// live reconcile. These are all inert for the dormant-tree unit tests (`FakePaneSession` is not a
+    /// `LivePaneSession`, and those stores carry no `persistence`), so the W4 tree-reconcile suite still
+    /// pins the bare diff. Idempotent.
     public func reconcileTree() {
-        reconcileRegistry(desiredLeafIDs: tree.allPaneIDs(), spec: { tree.spec(for: $0) })
+        reconcileRegistry(
+            desiredLeafIDs: tree.allPaneIDs(),
+            spec: { tree.spec(for: $0) },
+            onMaterialize: { [weak self] id, handle in
+                self?.wireMaterializedLeaf(id: id, handle: handle)
+            },
+        )
+        // Mark the AISLOPDESK_AUTOTYPE target (the first leaf in DFS order) + sync the focus coordinator to
+        // the tree's active pane (the iPad-regular first-responder arbiter), then debounce-save. Mirrors the
+        // canvas `reconcile()` tail; the model-aware save persists the tree (see `scheduleSave`).
+        let autotypeTarget = tree.allPaneIDs().first
+        for (id, handle) in registry {
+            (handle as? LivePaneSession)?.isAutotypeTarget = (id == autotypeTarget)
+        }
+        if let focused = tree.activeSession?.activeTab?.activePane, focusCoordinator.focusedPane != focused {
+            focusCoordinator.focus(focused)
+        }
+        scheduleSave()
+    }
+
+    /// The per-new-leaf wiring the live reconcile runs for a materialized ``LivePaneSession`` — factored
+    /// out of the canvas `reconcile()`'s `onMaterialize` closure so the tree path (W5) and the canvas path
+    /// run the IDENTICAL pane-rebind + OSC-9 wiring (no second copy to drift). A no-op for a fake handle.
+    private func wireMaterializedLeaf(id: PaneID, handle: any PaneSessionHandle) {
+        // PANE REBIND: persist every committed video endpoint into the pane's spec so a relaunch
+        // re-streams the bound window instead of re-showing the picker. The leaf set is unchanged by the
+        // spec update, so the nested reconcile is a no-op + save. The title follows the binding only
+        // while it was tracking the previous binding (a user rename survives re-picks).
+        if let model = (handle as? LivePaneSession)?.remoteWindow {
+            model.onEndpointCommitted = { [weak self] endpoint in
+                self?.updateSpecLive(id) { spec in
+                    if spec.video == nil || spec.title == spec.video?.title {
+                        spec.title = endpoint.title
+                    }
+                    spec.video = endpoint
+                }
+            }
+        }
+        // EXPLICIT NOTIFICATIONS (OSC 9 / OSC 777): route a terminal pane's child-requested notification
+        // to the app poster, tagged with this pane id so a click reveals it.
+        let connection = (handle as? LivePaneSession)?.connection
+        connection?.onExplicitNotification = { [weak self] paneTitle, title, body in
+            self?.handlePaneNotification(id: id, paneTitle: paneTitle, title: title, body: body)
+        }
+    }
+
+    /// Updates the spec for `id` in whichever live model is active (W5): the tree's side table when
+    /// ``liveModel`` is ``LiveModel/tree``, else the canvas. Used by the shared pane-rebind wiring so a
+    /// committed endpoint persists into the right model.
+    private func updateSpecLive(_ id: PaneID, _ transform: @escaping (inout PaneSpec) -> Void) {
+        switch liveModel {
+        case .tree:
+            tree = WorkspaceTreeOps.updatingSpec(id, in: tree, transform)
+            reconcileTree()
+        case .canvas:
+            updateSpec(id, transform)
+        }
     }
 
     // MARK: - reconcileRegistry (the shared, leaf-source-agnostic diff core)
@@ -2369,6 +2556,13 @@ public final class WorkspaceStore {
     /// synchronous is deliberate — it is called inline by every mutation method and from `init` — so
     /// awaiting teardown before materialize would ripple `async` through the whole mutation surface.
     private func reconcile() {
+        // W5 SAFETY: when the LIVE model is the tree, the canvas is retained-but-dead and its `reconcile()`
+        // must NEVER run — it diffs the SAME registry against the (default, dead) canvas leaf set, which
+        // would orphan + tear down every TREE-materialized handle. The remaining live callers of the
+        // canvas mutations (the system-dialog monitor / notification reveal, deferred to a later item) thus
+        // become no-ops on the tree shell rather than corrupting the live registry. The tree path uses
+        // `reconcileTree()`. (On a `.canvas` store this is a pure passthrough.)
+        guard liveModel == .canvas else { return }
         // Steps 1+2 (cache pruning, orphan-remove-then-teardown, materialize) are the shared, leaf-source
         // agnostic core. The canvas path supplies its leaf source + spec lookup, and wires every NEW leaf
         // via `onMaterialize` (pane-rebind + OSC-9). The canvas-ONLY side effects (autotype target / focus
@@ -2468,12 +2662,38 @@ public final class WorkspaceStore {
         return w.normalizingFocus()
     }
 
+    /// W5: the value snapshot the debounced/immediate save writes — the v10 ``TreeWorkspace`` when
+    /// ``liveModel`` is ``LiveModel/tree`` (the live app), else the retained-but-dead canvas
+    /// ``persistableWorkspace()``. Captured as an enum so the one off-main write path stays a single
+    /// `persistence.save(...)` (an overload resolves the type). Both are value types (Sendable).
+    private enum SaveSnapshot {
+        case canvas(Workspace)
+        case tree(TreeWorkspace)
+    }
+
+    /// The PERSISTABLE snapshot of the live model right now (ephemeral dialog panes are a canvas-only
+    /// concept, stripped there; the tree never holds ephemeral system-dialog leaves in the MVP).
+    private func persistableSnapshot() -> SaveSnapshot {
+        switch liveModel {
+        case .tree: .tree(tree)
+        case .canvas: .canvas(persistableWorkspace())
+        }
+    }
+
+    /// Writes a snapshot through the model-appropriate ``WorkspacePersistence`` overload.
+    private static func write(_ snapshot: SaveSnapshot, to persistence: WorkspacePersistence) throws {
+        switch snapshot {
+        case let .canvas(w): try persistence.save(w)
+        case let .tree(t): try persistence.save(t)
+        }
+    }
+
     private func scheduleSave() {
         guard savingEnabled, let persistence else { return }
         saveTask?.cancel()
-        // Snapshot the (Sendable, value-typed) PERSISTABLE workspace now (ephemeral dialog panes stripped)
-        // so the write reflects this mutation.
-        let snapshot = persistableWorkspace()
+        // Snapshot the (Sendable, value-typed) PERSISTABLE live model now (ephemeral dialog panes stripped
+        // on the canvas path) so the write reflects this mutation.
+        let snapshot = persistableSnapshot()
         let debounce = saveDebounce
         saveGeneration &+= 1
         let generation = saveGeneration
@@ -2496,7 +2716,7 @@ public final class WorkspaceStore {
             await MainActor.run { [weak self] in
                 guard let self, isCurrentSaveGeneration(generation) else { return }
                 // A failed save keeps the previous good file (best-effort).
-                try? persistence.save(snapshot)
+                try? Self.write(snapshot, to: persistence)
                 saveTask = nil
             }
         }
@@ -2512,7 +2732,7 @@ public final class WorkspaceStore {
         saveGeneration &+= 1
         saveTask?.cancel()
         saveTask = nil
-        try? persistence.save(persistableWorkspace())
+        try? Self.write(persistableSnapshot(), to: persistence)
     }
 
     // MARK: - Tree lookups
@@ -2531,8 +2751,16 @@ public final class WorkspaceStore {
     /// (called by ``AppConnection/onTargetCommitted`` on a successful connect) so the connect-gate
     /// prefills the last-used host next launch. Debounced-saves like any other mutation.
     public func commitConnectionTarget(_ target: ConnectionTarget) {
-        guard workspace.connection != target else { return }
-        workspace.connection = target
+        switch liveModel {
+        case .canvas:
+            guard workspace.connection != target else { return }
+            workspace.connection = target
+        case .tree:
+            // W5: stamp the target onto the active session (the per-session host seam; MVP all sessions
+            // share the one AppConnection, so this is the prefill source for the gate next launch).
+            guard let sIdx = tree.activeSessionIndex, tree.sessions[sIdx].connection != target else { return }
+            tree.sessions[sIdx].connection = target
+        }
         scheduleSave()
     }
 
