@@ -151,6 +151,16 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     never an over-read of a hostile datagram) and requires strict UTF-8 for the name/label (an
     invalid sequence → `malformedBody`). Both ride the head-of-line-independent CONTROL channel like
     `title`/`commandStatus` and are **not** sequenced/replayed.
+  - **Host delivery (W10).** Both are emitted from `AislopdeskHost` and gated by two env flags
+    (the repo idiom — check the exact comparison): **`AISLOPDESK_AGENT_DETECT`** (DEFAULT-ON, only
+    `"0"` disables) drives the foreground-process watch → type 26/27 (the PRIMARY, zero-config
+    signal, Decision #5); **`AISLOPDESK_AGENT_HOOKS`** (DEFAULT-OFF, only `"1"` enables) binds an
+    opt-in `AF_UNIX` hook socket. When the socket is bound, every PTY exports
+    **`AISLOPDESK_SOCKET_PATH`** (the socket) + **`AISLOPDESK_PANE_ID`** (the routing key) so an
+    installed Claude hook (`aislopdesk-hostd integration install claude`) POSTs `pane=<id>\n<json>`
+    records the host folds into type 27 for the owning pane. The host **dedupes** both: type 26 only
+    on a basename edge, type 27 only when the `(state, kind, label)` triple changes — an idle
+    `claude` never spams identical frames.
 
 The next free host → client CONTROL type byte is **28** (reserved for the W14 OSC-8 hyperlink type).
 

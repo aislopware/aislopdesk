@@ -24,11 +24,19 @@ public enum HostEnvironment {
     /// `PATH` blindly ([12] §1.4) — we set a conservative default the child's login
     /// shell will re-derive from its profile anyway.
     ///
-    /// - Parameter term: the `TERM` to advertise. Defaults to ``defaultTerm``
-    ///   (`xterm-ghostty`), matching what the libghostty client renders.
+    /// - Parameters:
+    ///   - term: the `TERM` to advertise. Defaults to ``defaultTerm`` (`xterm-ghostty`),
+    ///     matching what the libghostty client renders.
+    ///   - agentSocketPath: when non-nil, exported as `AISLOPDESK_SOCKET_PATH` so an installed
+    ///     Claude Code hook (W10, ``AgentInstaller``) knows where to POST hook events. Absent
+    ///     by default — detection works WITHOUT hooks via the foreground watcher (Decision #5).
+    ///   - paneID: when non-nil, exported as `AISLOPDESK_PANE_ID` so the hook can tag which pane
+    ///     it belongs to (Muxy's `MUXY_PANE_ID` analog). Absent by default.
     public static func curated(
         parent: [String: String] = ProcessInfo.processInfo.environment,
         term: String = Self.defaultTerm,
+        agentSocketPath: String? = nil,
+        paneID: String? = nil,
     )
         -> [String: String]
     {
@@ -69,7 +77,54 @@ public enum HostEnvironment {
         // before the login profile augments it. (Not forwarded blindly from parent.)
         env["PATH"] = parent["PATH"] ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+        // W10: export the agent-hook socket path + pane id into the PTY env (Muxy's
+        // MUXY_SOCKET_PATH / MUXY_PANE_ID analog) when the host has the opt-in hook listener
+        // enabled. The installed hook script (``AgentInstaller/hookScript()``) reads these to
+        // POST hook events to the host; absent → the hook is a silent no-op.
+        if let agentSocketPath { env[Self.agentSocketEnvKey] = agentSocketPath }
+        if let paneID { env[Self.agentPaneIDEnvKey] = paneID }
+
         return env
+    }
+
+    /// The PTY env var carrying the agent-hook listener socket path (W10). The installed
+    /// Claude Code hook (``AgentInstaller``) POSTs to this socket; matches `MUXY_SOCKET_PATH`.
+    public static let agentSocketEnvKey = "AISLOPDESK_SOCKET_PATH"
+
+    /// The PTY env var carrying the pane id the hook should tag its events with (W10);
+    /// matches `MUXY_PANE_ID`.
+    public static let agentPaneIDEnvKey = "AISLOPDESK_PANE_ID"
+
+    /// W10 — whether host-side Claude-Code agent detection is enabled (the foreground
+    /// process-watch + the rolled-up status emission). Default idiom = DEFAULT-ON via
+    /// `env[key] != "0"` (only an explicit `"0"` disables) — process-watch is zero-config and
+    /// the ratified primary signal (Decision #5), so it is on unless the operator opts out.
+    public static let agentDetectEnvKey = "AISLOPDESK_AGENT_DETECT"
+
+    /// Resolves whether agent detection (the foreground watcher) is enabled. Default-ON:
+    /// only the exact string `"0"` disables it; anything else (unset, `"1"`, etc.) enables.
+    public static func agentDetectEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+    )
+        -> Bool
+    {
+        environment[agentDetectEnvKey] != "0"
+    }
+
+    /// W10 — whether the opt-in Claude-Code HOOK listener (the `AF_UNIX` socket) is enabled.
+    /// Default idiom = DEFAULT-OFF via `env[key] == "1"` (only an explicit `"1"` enables):
+    /// hooks are the SECOND/opt-in signal (Decision #5), so the socket is bound only when the
+    /// operator turned it on (or `integration install claude` set it for them).
+    public static let agentHooksEnvKey = "AISLOPDESK_AGENT_HOOKS"
+
+    /// Resolves whether the hook listener socket should be bound. Default-OFF: only `"1"`
+    /// enables; anything else (unset, `"0"`) keeps it off (foreground watch still runs).
+    public static func agentHooksEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+    )
+        -> Bool
+    {
+        environment[agentHooksEnvKey] == "1"
     }
 
     /// The user's login shell path: `$SHELL` if set and absolute, else `/bin/zsh`.

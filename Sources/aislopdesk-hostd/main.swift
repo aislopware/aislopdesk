@@ -12,6 +12,43 @@ import Foundation
 let arguments = CommandLine.arguments
 let programName = arguments.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "aislopdesk-hostd"
 
+// W10 — `integration install|uninstall claude`: write/merge (or strip) the Claude Code hooks
+// config + hook script, then EXIT. This is a one-shot setup command, not the daemon path; it
+// runs entirely off the pure ``AgentInstaller`` + its thin disk shim. Honored before the daemon
+// arg-parse so `integration …` never reaches the listener.
+if arguments.count >= 2, arguments[1] == "integration" {
+    let sub = arguments.count >= 3 ? arguments[2] : ""
+    let target = arguments.count >= 4 ? arguments[3] : "claude"
+    func fail(_ message: String) -> Never {
+        FileHandle.standardError.write(Data("\(programName): \(message)\n".utf8))
+        FileHandle.standardError.write(Data(
+            "usage: \(programName) integration install|uninstall claude\n".utf8,
+        ))
+        exit(2)
+    }
+    guard target == "claude" else { fail("unknown integration target '\(target)' (only 'claude')") }
+    let settingsPath = AgentInstaller.defaultSettingsPath()
+    let scriptPath = AgentInstaller.defaultScriptPath()
+    do {
+        switch sub {
+        case "install":
+            _ = try AgentInstaller.install(settingsPath: settingsPath, scriptPath: scriptPath)
+            print("aislopdesk: installed Claude Code hooks → \(settingsPath)")
+            print("aislopdesk: hook script → \(scriptPath)")
+            print("aislopdesk: start the host with \(HostEnvironment.agentHooksEnvKey)=1 to bind the listener socket.")
+            exit(0)
+        case "uninstall":
+            _ = try AgentInstaller.uninstall(settingsPath: settingsPath)
+            print("aislopdesk: removed Claude Code hooks from \(settingsPath)")
+            exit(0)
+        default:
+            fail("unknown integration subcommand '\(sub)' (use install | uninstall)")
+        }
+    } catch {
+        fail("integration \(sub) failed: \(error)")
+    }
+}
+
 guard let parsed = HostdArguments.parse(arguments) else {
     FileHandle.standardError.write(Data(
         (HostdArguments.usage(programName: programName) + "\n").utf8,
@@ -23,12 +60,43 @@ let log: @Sendable (String) -> Void = { message in
     FileHandle.standardError.write(Data("\(programName): \(message)\n".utf8))
 }
 
+// W10: the foreground-process watch is the PRIMARY, zero-config Claude detection signal
+// (Decision #5) — default-ON, only `AISLOPDESK_AGENT_DETECT=0` disables it.
+let agentDetectEnabled = HostEnvironment.agentDetectEnabled()
+
+// W10: the OPT-IN Claude-hook listener (Decision #5: SECOND/opt-in). Bound only when
+// `AISLOPDESK_AGENT_HOOKS=1` (default-OFF). The socket lives in the user's temp dir, keyed by
+// pid so concurrent hosts don't collide. The installed hook (`integration install claude`)
+// POSTs to `AISLOPDESK_SOCKET_PATH`, which every PTY env exports.
+var agentHookListener: AgentHookListener?
+var agentHookSocketPath = ""
+if HostEnvironment.agentHooksEnabled() {
+    agentHookSocketPath = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("aislopdesk-agent-\(getpid()).sock").path
+    let listener = AgentHookListener()
+    listener.onLog = log
+    agentHookListener = listener
+}
+
 let server = HostServer(
     port: parsed.port,
     shellPath: parsed.shell,
     launchMode: parsed.launchMode,
+    agentDetectEnabled: agentDetectEnabled,
+    agentHookListener: agentHookListener,
+    agentHookSocketPath: agentHookSocketPath,
 )
 server.onLog = log
+
+// Bind the hook socket now (before the listener accepts client connections). A bind failure is
+// logged + non-fatal — the foreground watch still provides detection (Decision #5).
+if let agentHookListener {
+    do {
+        try agentHookListener.start(path: agentHookSocketPath)
+    } catch {
+        log("agent-hook listener failed to bind (\(error)) — continuing with process-watch only")
+    }
+}
 
 // Inspector server (NWConnection #2, port + 1) — read-only structured companion.
 // Constructed when --inspector / --claude / --transcript is set. The replay log is the
@@ -89,6 +157,7 @@ sigintSource.setEventHandler {
     guard shutdownLatch.tryFire() else { return } // ignore repeated Ctrl-C during the async drain
     log("SIGINT — shutting down")
     Task {
+        agentHookListener?.stop()
         inspectorServer?.stop()
         await server.stop()
         exit(0)

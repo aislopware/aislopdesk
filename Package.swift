@@ -70,9 +70,14 @@ let package = Package(
         // Also hosts the inspector's second-connection server (InspectorServer):
         // AislopdeskHost depends on AislopdeskInspector for the wire types + replay log. This is
         // acyclic — AislopdeskInspector depends ONLY on AislopdeskProtocol, never on AislopdeskHost.
+        //
+        // W10 adds AislopdeskAgentDetect: the host folds foreground-process / Claude-hook signals
+        // through the pure `ClaudeStatusMachine` to decide the type-26/27 CONTROL emissions. The
+        // edge stays acyclic — AislopdeskAgentDetect depends on NOTHING (it physically cannot
+        // import AislopdeskHost), and AislopdeskInspector still depends only on AislopdeskProtocol.
         .target(
             name: "AislopdeskHost",
-            dependencies: ["AislopdeskTransport", "AislopdeskProtocol", "AislopdeskInspector"],
+            dependencies: ["AislopdeskTransport", "AislopdeskProtocol", "AislopdeskInspector", "AislopdeskAgentDetect"],
         ),
 
         // Shared client: connection mgr, reconnect, input encoding. (WF-4.)
@@ -267,7 +272,10 @@ let package = Package(
         // and the rollup most-urgent order. No GUI/socket/PTY — signals are fed directly.
         .testTarget(name: "AislopdeskAgentDetectTests", dependencies: ["AislopdeskAgentDetect"]),
         .testTarget(name: "AislopdeskTransportTests", dependencies: ["AislopdeskTransport"]),
-        .testTarget(name: "AislopdeskHostTests", dependencies: ["AislopdeskHost", "AislopdeskInspector"]),
+        .testTarget(
+            name: "AislopdeskHostTests",
+            dependencies: ["AislopdeskHost", "AislopdeskInspector", "AislopdeskAgentDetect"],
+        ),
         // AislopdeskClientTests exercises the REAL PATH 1 e2e: a HostServer (AislopdeskHost) +
         // AislopdeskClient over loopback, so it depends on AislopdeskHost + AislopdeskTTY too.
         .testTarget(

@@ -1,3 +1,4 @@
+import AislopdeskAgentDetect
 import AislopdeskProtocol
 import AislopdeskTransport
 import Foundation
@@ -41,6 +42,29 @@ final class MuxChannelSession: @unchecked Sendable {
     /// at exec time, so the dir is safe to remove on teardown. Without this, every opened pane leaked one
     /// `aislopdesk-zdotdir-*` dir + 4 files into the temp dir for the host's (long-lived) lifetime.
     private let shimDir: URL?
+
+    /// W10 — whether host-side Claude-Code agent detection (the foreground process-watch) is
+    /// enabled for this channel. When true, ``startRelay()`` spins a low-rate poll that resolves
+    /// the PTY's foreground basename and drives ``ForegroundProcessDetector`` → type-26/27.
+    private let agentDetectEnabled: Bool
+
+    /// The interval between foreground-process samples (~1 Hz; injected so a future test could
+    /// drive it, though the poll itself is never run in a unit test — hang-safety).
+    private let agentPollInterval: Duration
+
+    /// The pure foreground-process detector, touched ONLY on the serial `agentWatchTask` (its
+    /// own single-writer context, like `controlTask`'s resize fields). Not shared.
+    private var foregroundDetector = ForegroundProcessDetector()
+
+    /// The foreground-watch poll task (cancel on shutdown).
+    private var agentWatchTask: Task<Void, Never>?
+
+    /// W10 — the per-pane hook handler (the OPT-IN hooks path). Fed by the host's
+    /// ``AgentHookListener`` socket shim when an installed Claude hook POSTs for THIS pane; folds
+    /// the bytes → a type-27 status and enqueues it on this channel's CONTROL sender. Guarded by
+    /// `agentHookLock` (the socket-accept thread is a different context than the watch task).
+    private let agentHookLock = NSLock()
+    private var agentHookHandler = AgentHookHandler()
 
     private let taskLock = NSLock()
     private var replay: ReplayBuffer
@@ -197,6 +221,8 @@ final class MuxChannelSession: @unchecked Sendable {
         resizeDebounce: Duration = .milliseconds(16),
         replay: ReplayBuffer = ReplayBuffer(),
         shimDir: URL? = nil,
+        agentDetectEnabled: Bool = false,
+        agentPollInterval: Duration = .seconds(1),
     ) {
         self.channelID = channelID
         self.pty = pty
@@ -205,6 +231,8 @@ final class MuxChannelSession: @unchecked Sendable {
         self.resizeDebounce = resizeDebounce
         self.replay = replay
         self.shimDir = shimDir
+        self.agentDetectEnabled = agentDetectEnabled
+        self.agentPollInterval = agentPollInterval
     }
 
     func startRelay() {
@@ -394,6 +422,35 @@ final class MuxChannelSession: @unchecked Sendable {
             await self?.awaitExitSentOrTimeout()
             self?.onExit?(id)
         }
+
+        // W10: foreground-process watch (Decision #5 PRIMARY signal). A low-rate poll resolves
+        // the PTY's foreground basename and folds it through the pure ``ForegroundProcessDetector``,
+        // enqueueing the resulting type-26/27 CONTROL messages on a basename edge / status change
+        // (the detector dedupes — an idle `claude` does not spam identical frames). The OS probe
+        // (`tcgetpgrp`/`proc_pidpath`) is the thin shim; the decision logic is the pure detector.
+        // Gated by `agentDetectEnabled` so the headless byte pipeline is byte-identical when off.
+        if agentDetectEnabled {
+            let interval = agentPollInterval
+            agentWatchTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    sampleForeground(masterFD: masterFD)
+                    do { try await Task.sleep(for: interval) } catch { return }
+                }
+            }
+        }
+    }
+
+    /// Resolves the PTY's foreground basename via the OS probe, folds it through the pure
+    /// detector, and enqueues any resulting type-26/27 CONTROL messages. Runs only on the
+    /// serial `agentWatchTask` (single-writer for `foregroundDetector`). The clock is the
+    /// monotonic uptime — a plain `Double` seconds, honouring the no-wall-clock-in-logic
+    /// convention (the pure detector takes the time as a parameter; only this driver reads it).
+    private func sampleForeground(masterFD: Int32) {
+        let name = PTYForegroundProbe.foregroundName(masterFD: masterFD)
+        let now = ProcessInfo.processInfo.systemUptime
+        let emission = foregroundDetector.sample(name: name, at: now)
+        if !emission.isEmpty { enqueueControl(emission.messages) }
     }
 
     /// Tears this channel down FOR GOOD and releases its PTY + master fd.
@@ -435,6 +492,8 @@ final class MuxChannelSession: @unchecked Sendable {
         inputTask?.cancel()
         controlTask?.cancel()
         exitTask?.cancel()
+        agentWatchTask?.cancel() // W10: stop the foreground-process poll
+        agentWatchTask = nil
         // `outputTask.cancel()` now GENUINELY unblocks a drain parked on an exhausted DATA credit
         // window: `MuxSubChannel.awaitChunkCredit`'s park is cancellation-aware, so a cancelled sender
         // wakes + throws and the task completes. Without that, the `HostServer.stop()` teardown — which
@@ -601,6 +660,19 @@ final class MuxChannelSession: @unchecked Sendable {
         let wake = controlWakeContinuation
         controlOutLock.unlock()
         wake?.yield(())
+    }
+
+    /// W10 — ingests one received Claude-hook record (raw POST body bytes) for THIS pane and,
+    /// if it produced a status change, enqueues the resulting type-27 on the CONTROL sender.
+    /// Folds through the pure ``AgentHookHandler`` (validate-then-drop: malformed bytes are
+    /// silently ignored). Called from the host's socket-accept shim thread; the handler state is
+    /// lock-guarded. The clock is monotonic uptime (a plain `Double`; the logic is in the pure
+    /// handler, which takes the time as a parameter).
+    func ingestAgentHookRecord(_ bytes: Data) {
+        agentHookLock.lock()
+        let message = agentHookHandler.handle(bytes: bytes, at: ProcessInfo.processInfo.systemUptime)
+        agentHookLock.unlock()
+        if let message { enqueueControl([message]) }
     }
 
     /// Atomically takes the whole pending control batch; `nil` when empty (drain re-parks).

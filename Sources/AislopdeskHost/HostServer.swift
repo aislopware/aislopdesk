@@ -39,6 +39,22 @@ public final class HostServer: @unchecked Sendable {
     /// The launch mode for new channels.
     public let launchMode: LaunchMode
 
+    /// W10 — whether new channels run the host-side foreground-process watch (the PRIMARY,
+    /// zero-config Claude-Code detection signal, Decision #5). Resolved from
+    /// `AISLOPDESK_AGENT_DETECT` (default-ON; only `"0"` disables) by the daemon and passed in
+    /// at construction. When false, the channel's byte pipeline is byte-identical to pre-W10.
+    public let agentDetectEnabled: Bool
+
+    /// W10 — the OPT-IN Claude-hook listener (the `AF_UNIX` socket), or `nil` when hooks are
+    /// disabled (Decision #5: hooks are SECOND/opt-in — the foreground watcher runs regardless).
+    /// When set, each new channel exports the socket path + a pane id into its PTY env and
+    /// registers a per-pane sink; an installed hook then POSTs status events for that pane.
+    public let agentHookListener: AgentHookListener?
+
+    /// The filesystem path of the bound hook socket, exported as `AISLOPDESK_SOCKET_PATH` into
+    /// every PTY env when ``agentHookListener`` is set. Empty when hooks are disabled.
+    public let agentHookSocketPath: String
+
     private let transport: HostTransport
     private let lock = NSLock()
     private var muxAcceptTask: Task<Void, Never>?
@@ -105,11 +121,24 @@ public final class HostServer: @unchecked Sendable {
         port: UInt16,
         shellPath: String? = nil,
         launchMode: LaunchMode = .shell,
+        agentDetectEnabled: Bool = false,
+        agentHookListener: AgentHookListener? = nil,
+        agentHookSocketPath: String = "",
     ) {
         self.port = port
         self.shellPath = shellPath ?? HostEnvironment.loginShell()
         self.launchMode = launchMode
+        self.agentDetectEnabled = agentDetectEnabled
+        self.agentHookListener = agentHookListener
+        self.agentHookSocketPath = agentHookSocketPath
         transport = HostTransport()
+    }
+
+    /// The stable pane id for a channel — the composite `(connectionID, channelID)` key, which
+    /// uniquely identifies one pane across simultaneous client connections. Exported into the
+    /// PTY env as `AISLOPDESK_PANE_ID` and used as the hook-listener routing key.
+    static func paneID(connectionID: UUID, channelID: UInt32) -> String {
+        "\(connectionID.uuidString):\(channelID)"
     }
 
     /// The port the listener actually bound to (resolved after ``start()``).
@@ -335,7 +364,14 @@ public final class HostServer: @unchecked Sendable {
                 // that entry we auto-fall back to `xterm-256color` (#54700) so vim/htop/less/
                 // tmux/top don't degrade. No explicit override exists on the plain-shell path.
                 let term = resolveEffectiveTerm(requested: .ghostty, explicitOverride: false)
-                var env = HostEnvironment.curated(term: term.rawValue)
+                // W10: when the opt-in hook listener is bound, export its socket path + this
+                // pane's id so an installed Claude hook can POST status events for this pane.
+                let paneID = Self.paneID(connectionID: connectionID, channelID: open.channelID)
+                var env = HostEnvironment.curated(
+                    term: term.rawValue,
+                    agentSocketPath: agentHookListener != nil ? agentHookSocketPath : nil,
+                    paneID: agentHookListener != nil ? paneID : nil,
+                )
                 if let overrides = ShellIntegration.makeEnvironmentOverrides(
                     parent: ProcessInfo.processInfo.environment,
                     shellPath: shellPath,
@@ -357,10 +393,17 @@ public final class HostServer: @unchecked Sendable {
                 )
                 var resolvedProfile = profile
                 resolvedProfile.term = term
+                var claudeEnv = resolvedProfile.environment()
+                // W10: export the hook socket path + pane id into the Claude PTY env too.
+                if agentHookListener != nil {
+                    claudeEnv[HostEnvironment.agentSocketEnvKey] = agentHookSocketPath
+                    claudeEnv[HostEnvironment.agentPaneIDEnvKey] =
+                        Self.paneID(connectionID: connectionID, channelID: open.channelID)
+                }
                 try pty.spawn(
                     shellPath,
                     arguments: resolvedProfile.loginShellArguments(),
-                    environment: resolvedProfile.environment(),
+                    environment: claudeEnv,
                     argv0: argv0,
                 )
             }
@@ -382,6 +425,7 @@ public final class HostServer: @unchecked Sendable {
             data: open.data,
             control: open.control,
             shimDir: shimDir,
+            agentDetectEnabled: agentDetectEnabled,
         )
         // The shell-exit reaper closes over the SAME composite key so it only removes THIS
         // connection's session (idempotent with the peer-close `setHostCloseHandler` path).
@@ -400,6 +444,14 @@ public final class HostServer: @unchecked Sendable {
         lock.unlock()
         emitConnectionCount()
         session.startRelay()
+        // W10: register this pane's hook sink so an installed Claude hook POSTing to the host
+        // socket (with this pane's id) routes into THIS channel's per-pane status handler.
+        if let agentHookListener {
+            let paneID = Self.paneID(connectionID: connectionID, channelID: open.channelID)
+            agentHookListener.register(paneID: paneID) { [weak session] bytes in
+                session?.ingestAgentHookRecord(bytes)
+            }
+        }
         Task { await connection.sendOpenAck(open.channelID, accepted: true) }
         onLog?("mux channel \(open.channelID) (conn \(connectionID)): shell \(shellPath) (pid \(pty.pid)) attached")
     }
@@ -454,6 +506,10 @@ public final class HostServer: @unchecked Sendable {
         lock.lock()
         let session = muxSessions.removeValue(forKey: key)
         lock.unlock()
+        // W10: drop this pane's hook sink so a late hook POST for a closed pane is dropped.
+        if session != nil, let agentHookListener {
+            agentHookListener.unregister(paneID: Self.paneID(connectionID: key.connectionID, channelID: key.channelID))
+        }
         // Only re-count when a session was actually removed (the path is idempotent with the
         // peer-close / child-exit race, so a second remove of the same key is a no-op and must
         // not re-emit an unchanged count).
