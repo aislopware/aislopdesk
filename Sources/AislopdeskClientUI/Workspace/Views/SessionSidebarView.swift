@@ -44,7 +44,7 @@ struct SessionSidebarView: View {
                 TextField("Session", text: $renameText)
                     .textFieldStyle(.plain)
                     .onSubmit { commitRename(session.id) }
-                    .onExitCommand { renamingSession = nil }
+                    .onEscapeKey { renamingSession = nil }
                 #if os(iOS)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)

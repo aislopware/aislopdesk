@@ -220,9 +220,7 @@ struct KeyboardCheatSheetView: View {
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 70)
-        #if os(macOS)
-            .onExitCommand { isPresented = false }
-        #endif
+        .onEscapeKey { isPresented = false }
     }
 }
 #endif

@@ -55,7 +55,7 @@ struct TabBarView: View {
                     .font(.caption)
                     .frame(minWidth: 60, maxWidth: 160)
                     .onSubmit { commitRename(tab.id) }
-                    .onExitCommand { renamingTab = nil }
+                    .onEscapeKey { renamingTab = nil }
                 #if os(iOS)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)

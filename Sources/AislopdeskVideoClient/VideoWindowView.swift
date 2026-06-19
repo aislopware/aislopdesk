@@ -710,6 +710,9 @@ struct MetalVideoLayerView: UIViewRepresentable {
     var onActivate: () -> Void = {}
     var onCanvasScroll: (CGSize) -> Void = { _ in }
     var onStreamNativeSize: ((CGSize, CGSize) -> Void)?
+    // Signature parity with the macOS representable (the shared `VideoWindowView.body` passes it).
+    // iOS has no host-key-injection sink (paste-as-keystrokes is macOS-only), so this is unused here.
+    var onKeyInjectorReady: ((((UInt16, Bool, Bool) -> Void)?) -> Void)?
 
     func makeUIView(context _: Context) -> MetalLayerBackedView {
         let view = MetalLayerBackedView()
