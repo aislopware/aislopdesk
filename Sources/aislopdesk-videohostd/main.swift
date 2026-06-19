@@ -150,6 +150,18 @@ struct VideoHostdArguments {
     }
 }
 
+// W12 (decision #10): fold the `video-prefs.json` sidecar into `EnvConfig.overlay` at launch, BEFORE
+// any consumer's `static let` (QPController / LiveCongestionController / …) is forced — they resolve
+// overlay → ProcessInfo env → default, so a GUI setting applies on the next connect. A real
+// `AISLOPDESK_*` env var still wins (the sidecar only fills gaps). No live reload — the video flags
+// are read once; the UI says "applies on reconnect." A missing / corrupt sidecar is a no-op.
+let appliedVideoPrefs = EnvBridge.loadDefaultSidecarIntoEnvConfig()
+if !appliedVideoPrefs.isEmpty, ProcessInfo.processInfo.environment["AISLOPDESK_VIDEO_DEBUG"] != nil {
+    FileHandle.standardError.write(
+        Data("aislopdesk-videohostd: applied video-prefs.json overlay → \(appliedVideoPrefs.sorted())\n".utf8),
+    )
+}
+
 let argv = CommandLine.arguments
 let program = argv.first.map { $0.isEmpty ? "" : URL(fileURLWithPath: $0).lastPathComponent }
     ?? "aislopdesk-videohostd"
