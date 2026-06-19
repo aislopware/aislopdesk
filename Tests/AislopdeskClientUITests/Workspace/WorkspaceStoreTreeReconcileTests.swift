@@ -23,12 +23,17 @@ extension WorkspaceStoreReconcileTests {
     /// `tree` is seeded from `restoringTree`. The tree path is then the only thing that touches the
     /// registry, so a tree test can assert the registry 1:1 against `tree.allPaneIDs()` with no canvas
     /// pane confounding it. NEVER a real client/host (`FakePaneSession` seam).
-    private func makeTreeStore(restoringTree: TreeWorkspace) -> WorkspaceStore {
+    private func makeTreeStore(
+        restoringTree: TreeWorkspace,
+        liveVideoCap: Int = 2,
+        videoTeardownSettle: Duration = .zero,
+    ) -> WorkspaceStore {
         WorkspaceStore(
             restoring: Workspace(canvas: Canvas(items: []), focusedPane: nil),
             restoringTree: restoringTree,
             makeSession: { FakePaneSession($0) },
-            liveVideoCap: 2,
+            liveVideoCap: liveVideoCap,
+            videoTeardownSettle: videoTeardownSettle,
         )
     }
 
@@ -307,5 +312,153 @@ extension WorkspaceStoreReconcileTests {
         let treeLeaf = store.tree.allPaneIDs()[0]
         XCTAssertNotEqual(treeLeaf, canvasPane, "tree default leaf is independent of the canvas pane")
         XCTAssertNil(store.handle(for: treeLeaf), "the tree default leaf is NOT registered at init (dormant)")
+    }
+
+    // MARK: - Finding 1: the tree path honors the SAME video-cap teardown accounting as the canvas path
+
+    /// Closing a `.remoteGUI` leaf that holds a LIVE video slot through the TREE path
+    /// (``WorkspaceStore/closePaneTree(_:)``) drives the SAME ceiling-accounting the canvas
+    /// `LiveVideoCapTests` pin — proving the shared ``WorkspaceStore`` reconcile core (not a duplicated
+    /// branch) bites on the tree path too. Mirrors `LiveVideoCapTests.testClosingActiveVideoPaneFreesSlot`
+    /// / `testTeardownSettleHoldsSlotPastTeardownThenFrees`, driven by the tree:
+    ///  (a) at close time the orphan is recorded in `tearingDownVideo` (so a same-tick reopen is GATED);
+    ///  (b) `videoPromotionGeneration` advanced (the close-time slot-freeing nudge);
+    ///  (c) with a NON-ZERO `videoTeardownSettle` the slot stays HELD past `teardown()`'s return until
+    ///      `quiesce()` drains the settle — only then does the gated reopen admit.
+    func testCloseTreeVideoPaneHonorsCapTeardownAccounting() async throws {
+        // A two-`.remoteGUI`-leaf tree (split the seed) under cap=2 + a non-zero settle, so a same-tick
+        // reopen has nowhere to go until the closing pane's stack actually releases.
+        let videoSpec = PaneSpec(kind: .remoteGUI, title: "Remote window")
+        let store = makeTreeStore(
+            restoringTree: .singlePane(spec: videoSpec),
+            liveVideoCap: 2,
+            videoTeardownSettle: .milliseconds(80),
+        )
+        store.reconcileTree()
+        let a = store.tree.allPaneIDs()[0]
+        store.splitActivePane(axis: .horizontal, kind: .remoteGUI)
+        let b = try XCTUnwrap(store.tree.allPaneIDs().first { $0 != a })
+        XCTAssertEqual(store.allSessions.count, 2, "two remoteGUI leaves materialized")
+
+        // Mark BOTH leaves' handles video-active through the store's cap-checked admission (cap=2).
+        XCTAssertTrue(store.activateVideo(a))
+        XCTAssertTrue(store.activateVideo(b), "cap=2 saturated by two live video panes")
+        let bFake = try XCTUnwrap(treeFake(store, b))
+
+        let genBefore = store.videoPromotionGeneration
+
+        // Close b through the TREE path. Its teardown returns immediately (no gate) but the settle holds
+        // its slot; b is gone from the registry synchronously.
+        store.closePaneTree(b)
+        XCTAssertNil(store.handle(for: b), "closed leaf removed from the registry synchronously")
+        assertTreeInvariant(store, "after closePaneTree(b) of a live video leaf")
+
+        // (b) The close was a slot-freeing event for a LIVE video pane ⇒ exactly one close-time nudge.
+        XCTAssertEqual(
+            store.videoPromotionGeneration,
+            genBefore + 1,
+            "closing a live video tree leaf is a slot-freeing event ⇒ one close-time promotion nudge",
+        )
+
+        // (a) + (c) Same tick, split a third `.remoteGUI` leaf in. While the closing pane's slot is still
+        // held by the settle (a live (1) + b settling (1) = cap of 2 occupied), the reopen is GATED.
+        store.splitActivePane(axis: .horizontal, kind: .remoteGUI)
+        let reopened = try XCTUnwrap(store.tree.allPaneIDs().first { $0 != a })
+        await Task.yield() // let teardown() return but leave the settle sleep in flight
+        XCTAssertFalse(
+            store.activateVideo(reopened),
+            "same-tick reopen GATED — b is recorded in tearingDownVideo and its slot is still settling",
+        )
+
+        // After quiesce() drains the teardown task INCLUDING its settle sleep, the slot frees.
+        await store.quiesce()
+        XCTAssertEqual(bFake.teardownCount, 1, "the closed video leaf was torn down exactly once")
+        XCTAssertTrue(
+            store.activateVideo(reopened),
+            "once the settle elapsed and the stack released, the reopened tree leaf admits",
+        )
+        let activeIDs = Set(store.allSessions.filter(\.isVideoActive).map(\.id))
+        XCTAssertEqual(activeIDs, Set([a, reopened]), "exactly cap=2 live; the ceiling was never exceeded")
+    }
+
+    // MARK: - Finding 3: closeTab orphaning >1 leaf in a single reconcileTree pass
+
+    /// ``WorkspaceStore/closeTab(_:)`` closing a MULTI-pane tab orphans every one of that tab's leaves in a
+    /// SINGLE `reconcileTree` pass: each is torn down exactly once, the other tab's leaves are untouched,
+    /// and the tree invariant holds. (Exercises the orphan loop with >1 orphan — no prior test does.)
+    func testCloseTabTearsDownAllLeavesOfAMultiPaneTab() async throws {
+        let store = makeTreeStore(restoringTree: .defaultWorkspace())
+        store.reconcileTree()
+        let tab0Leaf = store.tree.allPaneIDs()[0]
+
+        // Build a SECOND tab and grow it to ≥3 leaves (two same-axis splits of its lone leaf).
+        store.newTab(kind: .terminal)
+        store.splitActivePane(axis: .horizontal, kind: .terminal)
+        store.splitActivePane(axis: .horizontal, kind: .terminal)
+        XCTAssertEqual(store.allSessions.count, 4, "tab0 (1 leaf) + tab1 (3 leaves) all materialized")
+        assertTreeInvariant(store, "after building the multi-pane second tab")
+
+        // Capture the second tab's id + the fakes of ALL its leaves (and tab0's, to prove it is untouched).
+        let tab1ID = try XCTUnwrap(store.tree.activeSession?.activeTab?.id)
+        let tab1Leaves = try XCTUnwrap(store.tree.activeSession?.activeTab?.allPaneIDs())
+        XCTAssertEqual(tab1Leaves.count, 3, "the second tab has three leaves")
+        let tab1Fakes = tab1Leaves.map { treeFake(store, $0) }
+        let tab0Fake = treeFake(store, tab0Leaf)
+
+        // Close the whole multi-pane tab — orphans all three of its leaves in ONE reconcileTree pass.
+        store.closeTab(tab1ID)
+
+        // Synchronously: only tab0's leaf remains; the invariant holds.
+        XCTAssertEqual(store.tree.allPaneIDs(), [tab0Leaf], "only tab0's leaf survives in the tree")
+        XCTAssertEqual(store.allSessions.count, 1, "registry cascaded to the one surviving leaf")
+        for id in tab1Leaves {
+            XCTAssertNil(store.handle(for: id), "every closed-tab leaf removed from the registry synchronously")
+        }
+        assertTreeInvariant(store, "after closeTab(multi-pane tab)")
+
+        await store.quiesce()
+        // Every leaf of the closed tab torn down EXACTLY once; the surviving tab's leaf untouched.
+        for fake in tab1Fakes {
+            XCTAssertEqual(fake?.teardownCount, 1, "each leaf of the closed multi-pane tab torn down exactly once")
+        }
+        XCTAssertEqual(tab0Fake?.teardownCount, 0, "the surviving tab's leaf was never torn down")
+        XCTAssertTrue(treeFake(store, tab0Leaf) === tab0Fake, "the surviving handle is the same object")
+    }
+
+    // MARK: - Finding 4: pure active-state methods are a registry no-op (full leaf set, same objects)
+
+    /// The pure active-state tree methods (`moveFocusTree` / `toggleZoomTree` / `selectSession`) change
+    /// focus/zoom/active-session only — the FULL leaf set stays registered, the same handle OBJECTS
+    /// persist, the session count is unchanged, and nothing is torn down. (Mirrors
+    /// `testSelectTabKeepsFullLeafSetRegistered` for the remaining active-state surface.)
+    func testActiveStateMethodsAreRegistryNoOp() {
+        let store = makeTreeStore(restoringTree: .defaultWorkspace())
+        store.reconcileTree()
+        // ≥2 leaves in the active tab (so moveFocus/toggleZoom have a target), plus a second session.
+        store.splitActivePane(axis: .horizontal, kind: .terminal)
+        store.newSession(name: "host-2", kind: .terminal)
+        // Re-select the first session so the multi-leaf tab is active for the focus/zoom ops.
+        if let firstSessionID = store.tree.sessions.first?.id { store.selectSession(firstSessionID) }
+
+        let beforeIDs = treeRegistryIDs(store)
+        let beforeCount = store.allSessions.count
+        let beforeFakes = store.tree.allPaneIDs().compactMap { treeFake(store, $0) }
+        XCTAssertEqual(beforeCount, 3, "two leaves in session 0 + one leaf in session 1")
+
+        // Pure active-state ops: none touches the leaf set.
+        store.moveFocusTree(.right, bounds: CGRect(x: 0, y: 0, width: 1000, height: 1000))
+        store.toggleZoomTree()
+        if let secondSessionID = store.tree.sessions.dropFirst().first?.id {
+            store.selectSession(secondSessionID)
+        }
+
+        XCTAssertEqual(treeRegistryIDs(store), beforeIDs, "active-state ops left the registry leaf set unchanged")
+        XCTAssertEqual(store.allSessions.count, beforeCount, "no handle materialized or torn down")
+        assertTreeInvariant(store, "after the active-state ops")
+        // The SAME handle objects persist, with zero teardowns.
+        for fake in beforeFakes {
+            XCTAssertTrue(treeFake(store, fake.id) === fake, "the same handle object persists (never re-materialized)")
+            XCTAssertEqual(fake.teardownCount, 0, "active-state ops tore nothing down")
+        }
     }
 }

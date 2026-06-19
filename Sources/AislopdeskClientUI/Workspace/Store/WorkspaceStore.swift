@@ -2120,7 +2120,9 @@ public final class WorkspaceStore {
     /// mutations, but driven by the new model. They keep the **specs == leafIDs invariant** (the ops do)
     /// and are DORMANT: the live update loop still uses the canvas `reconcile()`, so calling these on a
     /// canvas-driven store would orphan its canvas panes — they exist for the W4 unit tests and the W5
-    /// cutover. The default kind resolves via the user's ``SettingsKey/defaultPaneKind`` like `addPane`.
+    /// cutover. The kind is taken EXPLICITLY (`kind:`) — these methods do NOT resolve
+    /// ``SettingsKey/defaultPaneKind``; it is the CALLER (the W6 command routing, as for `addPane`) that
+    /// resolves the user's default before invoking them.
 
     /// Splits the active pane along `axis`, inserting a new leaf of `kind` (focused). Tree no-op when there
     /// is no active pane.
@@ -2208,93 +2210,53 @@ public final class WorkspaceStore {
     // MARK: - reconcileTree (W4 — DORMANT mirror of reconcile, driven by the tree)
 
     /// W4 (docs/42): the tree-driven counterpart of ``reconcile()``, diffing the desired leaf set
-    /// `tree.allPaneIDs()` against the `[PaneID: any PaneSessionHandle]` registry. It mirrors the canvas
-    /// reconcile's load-bearing steps — orphan-remove-then-teardown (synchronous removal so the invariant
-    /// `Set(registry.keys) == Set(tree.allPaneIDs())` holds the instant it returns; async teardown
-    /// launched + tracked in `teardownTasks` for `quiesce()`), then materialize one idle handle per new
-    /// leaf via `makeSession` + `adopt(id:)` — but driven by ``tree`` and resolving each spec via
-    /// `tree.spec(for:)`. It deliberately does NOT replicate the canvas-specific bookkeeping (autotype
-    /// target / OSC-9 notification wiring / focus-coordinator sync / debounced persistence): those belong
-    /// to the live canvas path, and `reconcileTree()` is DORMANT (never called from the live loop), so
-    /// keeping it minimal avoids double-writing the same persistence file / nudging the same generation.
-    /// Idempotent. The same `tearingDownVideo` ceiling-accounting as the canvas path is honored so the
-    /// video cap stays correct under a same-tick close+reopen.
+    /// `tree.allPaneIDs()` against the `[PaneID: any PaneSessionHandle]` registry. It delegates the whole
+    /// load-bearing diff to the shared ``reconcileRegistry(desiredLeafIDs:spec:onMaterialize:)`` — the
+    /// exact same orphan-remove-then-teardown, `tearingDownVideo` ceiling-accounting, per-pane cache
+    /// pruning, and `makeSession`/`adopt(id:)` materialize the canvas path uses — but sourced from
+    /// ``tree`` and resolving each spec via `tree.spec(for:)`. It deliberately passes NO `onMaterialize`
+    /// hook and runs none of the canvas-specific side effects (autotype target / OSC-9 notification
+    /// wiring / focus-coordinator sync / debounced persistence): those belong to the live canvas path,
+    /// and `reconcileTree()` is DORMANT (never called from the live loop), so keeping it minimal avoids
+    /// double-writing the same persistence file / nudging the same generation. Idempotent.
     public func reconcileTree() {
-        let leafIDs = tree.allPaneIDs()
-        let leafSet = Set(leafIDs)
-
-        // 1. Orphans: remove synchronously, then drive teardown in a tracked task (mirrors reconcile()).
-        let orphans = registry.filter { !leafSet.contains($0.key) }.map(\.value)
-        for orphan in orphans {
-            registry.removeValue(forKey: orphan.id)
-            if orphan.kind.isVideo, orphan.isVideoActive {
-                tearingDownVideo.insert(orphan.id)
-                videoPromotionGeneration &+= 1
-            }
-        }
-        if !orphans.isEmpty {
-            let id = nextTeardownID
-            nextTeardownID &+= 1
-            teardownTasks[id] = Task { @MainActor in
-                for orphan in orphans {
-                    await orphan.teardown()
-                    if self.tearingDownVideo.contains(orphan.id), self.videoTeardownSettle > .zero {
-                        try? await Task.sleep(for: self.videoTeardownSettle)
-                    }
-                    if self.tearingDownVideo.remove(orphan.id) != nil {
-                        self.videoPromotionGeneration &+= 1
-                    }
-                }
-                self.teardownTasks.removeValue(forKey: id)
-            }
-        }
-
-        // 2. New leaves: materialize an idle session for each, binding its identity to the leaf id.
-        for id in leafIDs where registry[id] == nil {
-            guard let spec = tree.spec(for: id) else { continue }
-            let handle = makeSession(spec)
-            (handle as? PaneSessionIDAdopting)?.adopt(id: id)
-            registry[id] = handle
-        }
+        reconcileRegistry(desiredLeafIDs: tree.allPaneIDs(), spec: { tree.spec(for: $0) })
     }
 
-    // MARK: - reconcile (the single audited seam)
+    // MARK: - reconcileRegistry (the shared, leaf-source-agnostic diff core)
 
-    /// The load-bearing diff (docs/22 §2.3). Idempotent. After it runs:
+    /// The leaf-source-agnostic core BOTH ``reconcile()`` (canvas) and ``reconcileTree()`` (tree) share, so
+    /// the subtlest store logic — orphan detection/removal, the ``liveVideoCap`` ceiling-accounting
+    /// (`tearingDownVideo` / `videoPromotionGeneration` / the `videoTeardownSettle` teardown `Task`), the
+    /// per-pane cache pruning (`selectedPanes` / `nativeFrameSize`), and materialize-via-`makeSession` +
+    /// `adopt(id:)` — exists ONCE rather than in two hand-synced copies (the W4 review's maintenance
+    /// hazard). The caller supplies the desired leaf id list (`desiredLeafIDs`, in canonical order) and a
+    /// `spec(for:)` lookup; an optional `onMaterialize` runs the caller's per-new-leaf side wiring (the
+    /// canvas path's pane-rebind / OSC-9 closures). After it returns:
     ///
-    ///   `Set(registry.keys) == Set(workspace.canvas.allIDs())`
+    ///   `Set(registry.keys) == Set(desiredLeafIDs)`
     ///
-    /// Steps, in order:
-    /// 1. **Orphan removal (synchronous) + teardown (async, launched not awaited)** — for every
-    ///    registry key NOT in the current leaf set, the entry is removed from the registry
-    ///    SYNCHRONOUSLY (so the invariant `keys == leafIDs` holds the instant reconcile returns), and
-    ///    its `teardown()` (proven `ConnectionViewModel` disconnect order + inspector close + video
-    ///    stop) is LAUNCHED in an ordered, tracked `Task` that completes shortly AFTER materialize — it
-    ///    is **not** awaited before materialization. The task is awaitable via ``quiesce()`` but never
-    ///    awaited inline (reconcile is synchronous; see below).
-    /// 2. **Materialize new leaves** — for every leaf id NOT yet in the registry, build the session
-    ///    via `makeSession(spec)`, `adopt(id:)` so its identity is the leaf's, and register it. New
-    ///    sessions are IDLE (lazy connect; video not activated — the cap is enforced at activation).
-    ///
-    /// A projection flip (compact ↔ regular) does NOT call this — it is a view-only change; the tree
-    /// (hence the leaf set) is unchanged, so even if called it would be a no-op (docs/22 §4, §9.9).
-    ///
-    /// NOTE — same-tick close+reopen and the video ceiling (ITEM #3): because step-1 teardown is
-    /// launched (not awaited) before step-2 materialize, a same-tick close of one `.remoteGUI` pane and
-    /// open of another would transiently overlap their live video stacks while the first is still
-    /// tearing down. The ceiling IS now protected without making reconcile `async`: step-1 records an
-    /// orphan whose `isVideoActive` was true into `tearingDownVideo` (reading the flag BEFORE teardown
-    /// nils it), the orphan's teardown task removes it after the `await`, and ``activateVideo(_:)``
-    /// counts `tearingDownVideo.count` as occupied slots — so a new pane cannot be admitted until the
-    /// orphan's UDP / VTDecompression / CVDisplayLink stack is actually released. reconcile staying
-    /// synchronous is deliberate — it is called inline by every mutation method and from `init` — so
-    /// awaiting teardown before materialize would ripple `async` through the whole mutation surface.
-    private func reconcile() {
-        let leafIDs = allLeafIDs()
-        let leafSet = Set(leafIDs)
+    /// Steps, in the exact order the canvas path historically ran them (see ``reconcile()``'s doc for the
+    /// full rationale — prune caches, then orphan-remove synchronously + launch the tracked teardown,
+    /// then materialize):
+    /// 1. **Prune per-pane caches** to the live leaf set (so a closed/switched-away pane drops out of the
+    ///    multi-selection and the native-size cache cannot grow unbounded).
+    /// 2. **Orphan removal (synchronous) + teardown (async, launched not awaited)** — removing the
+    ///    registry entry synchronously so the `keys == leafIDs` invariant holds the instant this returns;
+    ///    the ceiling-accounting for an orphan that was holding a live video stack (`tearingDownVideo` +
+    ///    the close-time / completion-site `videoPromotionGeneration` nudges + the `videoTeardownSettle`
+    ///    hold) is identical to before.
+    /// 3. **Materialize new leaves** — `makeSession(spec)` + `adopt(id:)` per new leaf, then run
+    ///    `onMaterialize` so the caller can wire that handle.
+    private func reconcileRegistry(
+        desiredLeafIDs: [PaneID],
+        spec: (PaneID) -> PaneSpec?,
+        onMaterialize: ((PaneID, any PaneSessionHandle) -> Void)? = nil,
+    ) {
+        let leafSet = Set(desiredLeafIDs)
 
-        // Prune the multi-selection to live panes (a closed/switched-away pane drops out) so the Arrange
-        // ops and the group drag never reference a ghost. Cheap small-set intersection.
+        // 1. Prune the multi-selection to live panes (a closed/switched-away pane drops out) so the Arrange
+        //    ops and the group drag never reference a ghost. Cheap small-set intersection.
         if !selectedPanes.isEmpty, !selectedPanes.isSubset(of: leafSet) {
             selectedPanes.formIntersection(leafSet)
         }
@@ -2304,7 +2266,7 @@ public final class WorkspaceStore {
             nativeFrameSize = nativeFrameSize.filter { leafSet.contains($0.key) }
         }
 
-        // 1. Orphans: remove from the registry synchronously (the registry is the source of truth for
+        // 2. Orphans: remove from the registry synchronously (the registry is the source of truth for
         //    "what is live"), then drive teardown. Removing first guarantees the invariant holds the
         //    instant reconcile returns, even though teardown's async cleanup completes slightly after.
         let orphans = registry.filter { !leafSet.contains($0.key) }.map(\.value)
@@ -2351,12 +2313,12 @@ public final class WorkspaceStore {
                     // (ITEM #3). Serialized on the main actor with `activateVideo`'s read, so a
                     // same-tick reopen sees the slot freed only after the real release.
                     if self.tearingDownVideo.remove(orphan.id) != nil {
-                        // COMPLETION-SITE nudge (VIDEO-UI-1): the close-time bump (`reconcile`, above)
-                        // fired while this slot was STILL counted against the cap, so a same-tick gated
-                        // reopen was refused and is now parked on the "Video paused" placeholder.
-                        // Removing the id here is the instant the slot ACTUALLY frees — nudge again so
-                        // that gated on-screen pane re-attempts admission now, instead of waiting for an
-                        // unrelated event (another deactivate / re-appear) to happen to nudge it.
+                        // COMPLETION-SITE nudge (VIDEO-UI-1): the close-time bump (above) fired while
+                        // this slot was STILL counted against the cap, so a same-tick gated reopen was
+                        // refused and is now parked on the "Video paused" placeholder. Removing the id
+                        // here is the instant the slot ACTUALLY frees — nudge again so that gated
+                        // on-screen pane re-attempts admission now, instead of waiting for an unrelated
+                        // event (another deactivate / re-appear) to happen to nudge it.
                         self.videoPromotionGeneration &+= 1
                     }
                 }
@@ -2364,35 +2326,83 @@ public final class WorkspaceStore {
             }
         }
 
-        // 2. New leaves: materialize an idle session for each, binding its identity to the leaf id.
-        for id in leafIDs where registry[id] == nil {
-            guard let spec = spec(for: id) else { continue }
+        // 3. New leaves: materialize an idle session for each, binding its identity to the leaf id, then
+        //    let the caller wire it (the canvas path's pane-rebind / OSC-9 closures).
+        for id in desiredLeafIDs where registry[id] == nil {
+            guard let spec = spec(id) else { continue }
             let handle = makeSession(spec)
             (handle as? PaneSessionIDAdopting)?.adopt(id: id)
             registry[id] = handle
-            // PANE REBIND (2026-06-12): persist every committed video endpoint into the pane's
-            // spec. Until now a picked window lived only in the RemoteWindowModel — the spec kept
-            // `video: nil`, so a relaunch always re-showed the picker; and a REBOUND endpoint
-            // (stale CGWindowID re-resolved by app+title) must overwrite the stale id. The leaf
-            // set is unchanged by `updateSpec`, so the nested reconcile is a no-op + save. The
-            // pane TITLE follows the binding only while it was tracking the previous binding
-            // (or was never bound) — a user rename survives re-picks.
-            if let model = (handle as? LivePaneSession)?.remoteWindow {
-                model.onEndpointCommitted = { [weak self] endpoint in
-                    self?.updateSpec(id) { spec in
-                        if spec.video == nil || spec.title == spec.video?.title {
-                            spec.title = endpoint.title
+            onMaterialize?(id, handle)
+        }
+    }
+
+    // MARK: - reconcile (the single audited seam)
+
+    /// The load-bearing diff (docs/22 §2.3). Idempotent. After it runs:
+    ///
+    ///   `Set(registry.keys) == Set(workspace.canvas.allIDs())`
+    ///
+    /// Steps, in order:
+    /// 1. **Orphan removal (synchronous) + teardown (async, launched not awaited)** — for every
+    ///    registry key NOT in the current leaf set, the entry is removed from the registry
+    ///    SYNCHRONOUSLY (so the invariant `keys == leafIDs` holds the instant reconcile returns), and
+    ///    its `teardown()` (proven `ConnectionViewModel` disconnect order + inspector close + video
+    ///    stop) is LAUNCHED in an ordered, tracked `Task` that completes shortly AFTER materialize — it
+    ///    is **not** awaited before materialization. The task is awaitable via ``quiesce()`` but never
+    ///    awaited inline (reconcile is synchronous; see below).
+    /// 2. **Materialize new leaves** — for every leaf id NOT yet in the registry, build the session
+    ///    via `makeSession(spec)`, `adopt(id:)` so its identity is the leaf's, and register it. New
+    ///    sessions are IDLE (lazy connect; video not activated — the cap is enforced at activation).
+    ///
+    /// A projection flip (compact ↔ regular) does NOT call this — it is a view-only change; the tree
+    /// (hence the leaf set) is unchanged, so even if called it would be a no-op (docs/22 §4, §9.9).
+    ///
+    /// NOTE — same-tick close+reopen and the video ceiling (ITEM #3): because step-1 teardown is
+    /// launched (not awaited) before step-2 materialize, a same-tick close of one `.remoteGUI` pane and
+    /// open of another would transiently overlap their live video stacks while the first is still
+    /// tearing down. The ceiling IS now protected without making reconcile `async`: step-1 records an
+    /// orphan whose `isVideoActive` was true into `tearingDownVideo` (reading the flag BEFORE teardown
+    /// nils it), the orphan's teardown task removes it after the `await`, and ``activateVideo(_:)``
+    /// counts `tearingDownVideo.count` as occupied slots — so a new pane cannot be admitted until the
+    /// orphan's UDP / VTDecompression / CVDisplayLink stack is actually released. reconcile staying
+    /// synchronous is deliberate — it is called inline by every mutation method and from `init` — so
+    /// awaiting teardown before materialize would ripple `async` through the whole mutation surface.
+    private func reconcile() {
+        // Steps 1+2 (cache pruning, orphan-remove-then-teardown, materialize) are the shared, leaf-source
+        // agnostic core. The canvas path supplies its leaf source + spec lookup, and wires every NEW leaf
+        // via `onMaterialize` (pane-rebind + OSC-9). The canvas-ONLY side effects (autotype target / focus
+        // coordinator / debounced save) stay below, so reconcile's observable behavior is unchanged.
+        reconcileRegistry(
+            desiredLeafIDs: allLeafIDs(),
+            spec: { spec(for: $0) },
+            onMaterialize: { [weak self] id, handle in
+                guard let self else { return }
+                // PANE REBIND (2026-06-12): persist every committed video endpoint into the pane's
+                // spec. Until now a picked window lived only in the RemoteWindowModel — the spec kept
+                // `video: nil`, so a relaunch always re-showed the picker; and a REBOUND endpoint
+                // (stale CGWindowID re-resolved by app+title) must overwrite the stale id. The leaf
+                // set is unchanged by `updateSpec`, so the nested reconcile is a no-op + save. The
+                // pane TITLE follows the binding only while it was tracking the previous binding
+                // (or was never bound) — a user rename survives re-picks.
+                if let model = (handle as? LivePaneSession)?.remoteWindow {
+                    model.onEndpointCommitted = { [weak self] endpoint in
+                        self?.updateSpec(id) { spec in
+                            if spec.video == nil || spec.title == spec.video?.title {
+                                spec.title = endpoint.title
+                            }
+                            spec.video = endpoint
                         }
-                        spec.video = endpoint
                     }
                 }
-            }
-            // EXPLICIT NOTIFICATIONS (OSC 9 / OSC 777): route a terminal pane's child-requested
-            // notification to the app poster, tagged with this pane id so a click reveals it.
-            (handle as? LivePaneSession)?.connection?.onExplicitNotification = { [weak self] paneTitle, title, body in
-                self?.handlePaneNotification(id: id, paneTitle: paneTitle, title: title, body: body)
-            }
-        }
+                // EXPLICIT NOTIFICATIONS (OSC 9 / OSC 777): route a terminal pane's child-requested
+                // notification to the app poster, tagged with this pane id so a click reveals it.
+                let connection = (handle as? LivePaneSession)?.connection
+                connection?.onExplicitNotification = { [weak self] paneTitle, title, body in
+                    self?.handlePaneNotification(id: id, paneTitle: paneTitle, title: title, body: body)
+                }
+            },
+        )
 
         // 3. Mark the `AISLOPDESK_AUTOTYPE` target (docs/22 §7): the first pane on the canvas. The store owns
         //    the tree, so it is the authority on "pane0"; the terminal leaf reads this flag after connect
