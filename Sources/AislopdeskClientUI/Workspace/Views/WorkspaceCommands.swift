@@ -78,10 +78,10 @@ public struct WorkspaceCommands: Commands {
         // scene's toggle so it targets the key window; disabled when no workspace window is key.
         CommandGroup(after: .toolbar) {
             Button("Command Palette") { paletteToggle?.toggle() }
-                .modifier(OptionalShortcut(WorkspaceBindingRegistry.binding(for: .commandPalette)?.chord?.shortcut))
+                .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .commandPalette)?.shortcut))
                 .disabled(paletteToggle == nil)
             Button("Keyboard Shortcuts") { cheatSheetToggle?.toggle() }
-                .modifier(OptionalShortcut(WorkspaceBindingRegistry.binding(for: .cheatSheet)?.chord?.shortcut))
+                .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .cheatSheet)?.shortcut))
                 .disabled(cheatSheetToggle == nil)
             // The canvas interaction prefs are inert on the tree shell — surface them only on the
             // retained-but-dead canvas (the SAME @AppStorage keys the per-pane pill menu toggles).
@@ -148,7 +148,10 @@ public struct WorkspaceCommands: Commands {
             if let store { WorkspaceBindingRegistry.route(action, to: store) }
         }
         .disabled(store == nil)
-        .modifier(OptionalShortcut(WorkspaceBindingRegistry.binding(for: action)?.chord?.shortcut))
+        // W13: derive the shortcut from the OVERRIDE-AWARE resolution so a user rebind (Settings ▸
+        // Keyboard Shortcuts → ``KeybindingPreferences``) updates the menu glyph + the fired chord
+        // together. Empty overrides ⇒ the registry default (W6 behaviour unchanged).
+        .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: action)?.shortcut))
     }
 
     // MARK: - Pane menu (tabs are gone — everything is on the single canvas)

@@ -130,6 +130,30 @@ final class GhosttyApp {
         }
     }
 
+    /// The last `TerminalConfigBroadcaster.generation` we applied — so an idempotent re-publish of the
+    /// same string is a no-op (we still apply when the generation bumps, even if the string is equal).
+    private var lastAppliedConfigGeneration = 0
+
+    /// W13: apply a NEW terminal-render config string LIVE to the running app (and thus every surface).
+    /// Builds a fresh `ghostty_config_t`, loads the string, finalizes, and pushes it via
+    /// `ghostty_app_update_config` (header 1153) which reflows all surfaces. Called from the SwiftUI
+    /// `.onChange(of: TerminalConfigBroadcaster.shared.generation)` seam in `GhosttyTerminalView`; the
+    /// view then re-measures the cell size and resizes the host PTY grid (the grid-mismatch fix). A
+    /// no-op when the generation hasn't advanced past the last apply.
+    func applyTerminalConfig(_ configString: String, generation: Int) {
+        guard generation != lastAppliedConfigGeneration else { return }
+        lastAppliedConfigGeneration = generation
+        let config = ghostty_config_new()
+        if !configString.isEmpty {
+            configString.withCString { cstr in
+                ghostty_config_load_string(config, cstr, strlen(cstr))
+            }
+        }
+        ghostty_config_finalize(config)
+        ghostty_app_update_config(app, config)
+        ghostty_config_free(config)
+    }
+
     private init() {
         // 1. ghostty_init (header 1117): once per process, before any config/app.
         //    Signature is `int ghostty_init(uintptr_t, char**)` — argc/argv; we pass
@@ -151,6 +175,19 @@ final class GhosttyApp {
         //    zsh-autosuggestion was NOT a palette issue — it was the empty-HISTFILE shim bug, fixed in
         //    AislopdeskHost/ShellIntegration.swift.)
         let config = ghostty_config_new()
+        // W13: apply the user's terminal-render prefs (font / theme / cursor / scrollback) BEFORE
+        // finalize. `TerminalConfigBroadcaster` (set by the client's `PreferencesStore` on every
+        // settings change, and at launch) holds the libghostty config string built by
+        // `TerminalConfigBuilder`. Loading it here means a fresh surface starts with the user's font/
+        // theme; a LATER change re-applies live via `GhosttyApp.applyTerminalConfig(_:)` →
+        // `ghostty_app_update_config` (which reflows every surface, after which the view re-measures the
+        // cell size and resizes the host PTY grid — fixing the documented grid-mismatch on a font reflow).
+        let initialConfig = MainActor.assumeIsolated { TerminalConfigBroadcaster.shared.configString }
+        if !initialConfig.isEmpty {
+            initialConfig.withCString { cstr in
+                ghostty_config_load_string(config, cstr, strlen(cstr))
+            }
+        }
         ghostty_config_finalize(config)
 
         // 3. Runtime config (header 1073). The embedder must supply the callback set;
@@ -324,6 +361,18 @@ public struct GhosttyTerminalView: TerminalRenderingView {
     public var body: some View {
         GhosttyMetalLayerView(model: model, isFocused: isFocused)
             .accessibilityLabel(Text("Terminal"))
+            // W13: LIVE terminal-config apply. The client's `PreferencesStore` publishes a new libghostty
+            // config string to `TerminalConfigBroadcaster` (bumping `generation`) on every Settings ▸
+            // Terminal change. Push it app-wide (reflows every surface), then nudge the surface to
+            // re-measure its cell size + resize the host PTY grid so a font reflow doesn't desync the grid.
+            .onChange(of: TerminalConfigBroadcaster.shared.generation, initial: true) {
+                // `ghostty_app_update_config` reflows + re-draws every surface; the surface's
+                // resize_callback then fires onResize → the host PTY grid tracks the new font metrics.
+                GhosttyApp.shared.applyTerminalConfig(
+                    TerminalConfigBroadcaster.shared.configString,
+                    generation: TerminalConfigBroadcaster.shared.generation,
+                )
+            }
     }
 }
 

@@ -1,3 +1,4 @@
+import AislopdeskVideoProtocol
 import XCTest
 @testable import AislopdeskClientUI
 
@@ -71,5 +72,58 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal, "a retired/invalid raw value falls back to terminal")
         UserDefaults.standard.set("garbage", forKey: SettingsKey.defaultPaneKindKey)
         XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal, "an invalid raw value falls back to terminal")
+    }
+
+    // MARK: - PreferencesStore (W13) — the live source the Settings panels bind to
+
+    /// An isolated `UserDefaults` suite so the round-trips don't touch the real defaults.
+    private func makeIsolatedDefaults(_ name: String = #function) -> UserDefaults {
+        let suite = "PreferencesStoreTest." + name
+        let d = UserDefaults(suiteName: suite)!
+        d.removePersistentDomain(forName: suite)
+        return d
+    }
+
+    func testPreferencesStoreLoadsModelDefaultsOnFreshInstall() {
+        // A fresh install (no persisted prefs) loads the model DEFAULTS, and the all-nil video/agent
+        // models contribute NOTHING to the EnvConfig overlay (behaviour-preserving). `applyOnInit: false`
+        // so we assert the loaded models without mutating the process-wide overlay.
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
+        XCTAssertEqual(store.terminal, TerminalPreferences())
+        XCTAssertEqual(store.video, VideoPreferences())
+        XCTAssertEqual(store.agent, AgentPreferences())
+        XCTAssertEqual(store.keybindings, KeybindingPreferences())
+        XCTAssertTrue(store.rawOverrides.isEmpty)
+        // The behaviour-preservation proof: the default video ∪ agent overlay is EMPTY.
+        XCTAssertTrue(EnvBridge.toEnv(store.video).isEmpty)
+        XCTAssertTrue(EnvBridge.toEnv(store.agent).isEmpty)
+    }
+
+    func testPreferencesStoreRoundTripsEachModelThroughUserDefaults() {
+        let defaults = makeIsolatedDefaults()
+        // Write a custom value for each model, then reload a NEW store from the SAME defaults.
+        let store = PreferencesStore(defaults: defaults, sidecarURL: nil, applyOnInit: false)
+        store.terminal = TerminalPreferences(fontFamily: "JetBrains Mono", fontSize: 15, cursorStyle: .bar)
+        store.video = VideoPreferences(qpSharp: 22, fecM: 2, fecK: 5)
+        store.agent = AgentPreferences(agentDetect: true)
+        store.keybindings = KeybindingPreferences(overrides: ["pane.splitRight": .init(key: "e", command: true)])
+        store.rawOverrides = ["AISLOPDESK_FOO": "1"]
+
+        let reloaded = PreferencesStore(defaults: defaults, sidecarURL: nil, applyOnInit: false)
+        XCTAssertEqual(reloaded.terminal, store.terminal)
+        XCTAssertEqual(reloaded.video, store.video)
+        XCTAssertEqual(reloaded.agent, store.agent)
+        XCTAssertEqual(reloaded.keybindings, store.keybindings)
+        XCTAssertEqual(reloaded.rawOverrides, store.rawOverrides)
+    }
+
+    func testResetAllReturnsToBehaviourPreservingDefaults() {
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
+        store.video = VideoPreferences(qpSharp: 30)
+        store.rawOverrides = ["AISLOPDESK_X": "9"]
+        store.resetAll()
+        XCTAssertEqual(store.video, VideoPreferences())
+        XCTAssertTrue(store.rawOverrides.isEmpty)
+        XCTAssertTrue(EnvBridge.toEnv(store.video).isEmpty)
     }
 }

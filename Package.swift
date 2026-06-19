@@ -150,6 +150,12 @@ let package = Package(
                 // AgentDetect depends on nothing GUI/transport/video, so this never widens the GUI graph.
                 "AislopdeskAgentDetect",
                 "AislopdeskTerminal",
+                // W13: the W12 settings MODELS + the pure config bridges (`VideoPreferences`,
+                // `TerminalPreferences`, `AgentPreferences`, `KeybindingPreferences`, `EnvConfig`,
+                // `EnvBridge`, `TerminalConfigBuilder`) the `PreferencesStore` + Settings panels bind to.
+                // AislopdeskVideoProtocol is the cross-platform PURE wire/settings target (no
+                // ScreenCaptureKit/VideoToolbox/AppKit), so this does NOT widen the GUI graph with HW deps.
+                "AislopdeskVideoProtocol",
             ],
         ),
 

@@ -51,6 +51,11 @@ public struct AislopdeskClientApp: App {
     #endif
     /// Polls the host window list to auto-switch a layout when its trigger app launches.
     @State private var appLaunchMonitor: AppLaunchMonitor
+    /// W13: the GUI Settings store, built ONCE at launch so its apply paths run BEFORE the video
+    /// pipeline / any `static let` env flag is forced — folding the persisted client/agent prefs into
+    /// ``EnvConfig/overlay`` and publishing the terminal config to ``TerminalConfigBroadcaster``. The
+    /// Settings scene binds to THIS instance so an in-app edit and the launch-time apply share one store.
+    @State private var preferences: PreferencesStore
     @Environment(\.scenePhase) private var scenePhase
     /// Serializes the iOS background/foreground lifecycle transitions so the LAST phase observed is the
     /// LAST applied: each `handleScenePhase` chains its work behind the previous transition's, so a
@@ -67,6 +72,14 @@ public struct AislopdeskClientApp: App {
         // `AISLOPDESK_NO_VSYNC`, pacer `AISLOPDESK_ADAPTIVE_DEPTH`/`_JITTER_DEPTH`, …) settable remotely
         // for on-device A/B, matching how `automationInputs` already overlays the same args for the seam.
         Self.applyLaunchArgumentEnvironment()
+        // W13: build the GUI Settings store FIRST so its apply paths run before the video pipeline /
+        // any `static let` env flag is forced — it folds the persisted client/agent prefs into
+        // `EnvConfig.overlay` and publishes the terminal config to `TerminalConfigBroadcaster`. A fresh
+        // install has all-default (all-nil video/agent) prefs ⇒ an EMPTY overlay ⇒ behaviour-identical
+        // to today (the golden corpus is unaffected). In automation we still build it (an empty overlay
+        // is inert) so the seam is identical. The Settings scene re-uses this same instance.
+        let preferences = PreferencesStore()
+        _preferences = State(initialValue: preferences)
         // Build the store exactly once with the production session factory. `makeInspector` is now the
         // live builder (`WorkspaceStore.liveMakeInspector`): a terminal pane's read-only inspector
         // second channel (NWConnection #2, opened dynamically once a `claude` is detected, W11) is an
@@ -289,7 +302,7 @@ public struct AislopdeskClientApp: App {
         #if os(macOS)
         // The Settings scene (⌘,): canvas / notification / advanced prefs that retire the env-var gates
         // into real, discoverable @AppStorage settings (SettingsKey is the shared source of truth).
-        Settings { SettingsView() }
+        Settings { SettingsView(store: preferences) }
         #endif
     }
 
