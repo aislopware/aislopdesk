@@ -47,3 +47,4 @@ ThirdParty/ghostty/GhosttyKit.xcframework/
 # backup left by an artifact-rebuild step). The "*.xcframework/" pattern above only
 # matches the exact ".xcframework/" directory boundary, not ".xcframework.<suffix>".
 ThirdParty/ghostty/*.xcframework*
+.work/
