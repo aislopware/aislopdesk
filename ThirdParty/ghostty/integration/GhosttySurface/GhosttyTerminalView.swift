@@ -146,7 +146,7 @@ final class GhosttyApp {
         let config = ghostty_config_new()
         if !configString.isEmpty {
             configString.withCString { cstr in
-                ghostty_config_load_string(config, cstr, strlen(cstr))
+                ghostty_config_load_string(config, cstr, UInt(strlen(cstr)))
             }
         }
         ghostty_config_finalize(config)
@@ -185,7 +185,7 @@ final class GhosttyApp {
         let initialConfig = MainActor.assumeIsolated { TerminalConfigBroadcaster.shared.configString }
         if !initialConfig.isEmpty {
             initialConfig.withCString { cstr in
-                ghostty_config_load_string(config, cstr, strlen(cstr))
+                ghostty_config_load_string(config, cstr, UInt(strlen(cstr)))
             }
         }
         ghostty_config_finalize(config)

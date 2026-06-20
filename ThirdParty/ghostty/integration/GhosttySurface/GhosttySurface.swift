@@ -135,7 +135,7 @@ func ghosttyOnMainActor(_ body: @escaping @MainActor () -> Void) {
 /// enqueues onto the per-surface serial ``feedGate`` queue (docs/31 follow-up #5 — see
 /// the header THREADING CONTRACT).
 @MainActor
-public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressuring, TerminalSurfaceActions {
+public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressuring, @MainActor TerminalSurfaceActions {
 
     // MARK: Stored state
 
