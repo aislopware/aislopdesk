@@ -43,6 +43,9 @@ struct SplitTreeView: View {
                 // Dividers between adjacent siblings (none when zoomed / single-leaf). Each converts a pixel
                 // drag into a sum-preserving flex-weight shift via the store.
                 ForEach(Array(layout.dividers.enumerated()), id: \.offset) { _, divider in
+                    // Fills the bounds; its hit region is constrained to the seam band by an internal
+                    // `contentShape(DividerBandShape)` in absolute bounds coords — so off-seam drags fall
+                    // through to the pane below and ONLY the band resizes.
                     DividerHandleView(
                         handle: divider,
                         pairPixelLength: pairPixelLength(for: divider, in: bounds),

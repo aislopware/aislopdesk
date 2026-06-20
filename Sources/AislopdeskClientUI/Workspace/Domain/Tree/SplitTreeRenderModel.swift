@@ -66,7 +66,9 @@ public enum SplitTreeRenderModel {
 
     /// The on-screen thickness of a divider handle's hit/draw band, centered on the seam between two
     /// siblings. A comfortable trackpad target; the visible hairline can be drawn thinner inside it.
-    public static let dividerThickness: CGFloat = 8
+    /// (8pt was too thin to reliably grab — bumped to a comfortable 16pt hit band; the drawn hairline
+    /// stays 1.5pt so the seam still looks crisp.)
+    public static let dividerThickness: CGFloat = 16
 
     // MARK: - Entry points
 

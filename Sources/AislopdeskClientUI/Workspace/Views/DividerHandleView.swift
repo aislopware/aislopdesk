@@ -33,21 +33,32 @@ struct DividerHandleView: View {
 
     var body: some View {
         let isHorizontal = handle.axis == .horizontal
+        // A thin band sized to the seam and placed by `.position`. THE MODIFIER ORDER IS LOAD-BEARING:
+        //   • `.contentShape(Rectangle())` is applied to the band FRAME *before* `.position` — so the hit
+        //     shape is the 16pt band, and `.position` then relocates that hit shape together with the view.
+        //   • `.gesture` is applied *after* `.position` — so it hit-tests the band at its FINAL on-screen
+        //     location.
+        // The two earlier wrong orders, for the record: `.contentShape` AFTER `.position` expands the hit
+        // area to the whole tab (every drag resizes + the terminal never sees the mouse — the reported
+        // "mọi thao tác chuột đều resize" bug); `.gesture` BEFORE `.position` leaves the gesture's hit
+        // region at the pre-position origin, so dragging the visible seam does nothing.
         Rectangle()
-            .fill(Color.clear) // the whole band is the hit target; the visible hairline is the overlay
+            // A faint fill (NOT clear): an opaque-enough fill is independently hit-testable, so the drag
+            // works without depending on contentShape edge-cases — and it makes the 16pt grab band faintly
+            // visible (the seam's draggable zone), brightening on hover.
+            // A visible, hittable fill (a clear/near-transparent fill is NOT reliably hit-tested in this
+            // ZStack+position layout): the 16pt grab band reads as a real divider strip and brightens on
+            // hover, so the seam is obviously draggable.
+            .fill(hovering ? Color.accentColor.opacity(0.40) : Color.primary.opacity(0.18))
             .overlay {
-                // A thin centered hairline that brightens on hover/drag — the affordance.
-                let line = RoundedRectangle(cornerRadius: 1, style: .continuous)
+                // The visible hairline at the band's centre (thin; the 16pt band is just the grab target).
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
                     .fill(hovering ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.18))
-                if isHorizontal {
-                    line.frame(width: 1.5)
-                } else {
-                    line.frame(height: 1.5)
-                }
+                    .frame(width: isHorizontal ? 1.5 : nil, height: isHorizontal ? nil : 1.5)
             }
             .frame(width: handle.rect.width, height: handle.rect.height)
-            .position(x: handle.rect.midX, y: handle.rect.midY)
             .contentShape(Rectangle())
+            .position(x: handle.rect.midX, y: handle.rect.midY)
         #if os(macOS)
             .onHover { hovering = $0 }
             // The native resize cursor while hovering the band.
