@@ -92,6 +92,8 @@ public struct AgentControlHandler: Sendable {
             killPane(id: id, params: params, server: server)
         case "resize":
             resizePane(id: id, params: params, server: server)
+        case "report":
+            reportAgent(id: id, params: params, server: server)
         default:
             errorResponse(id: id, message: "unknown method: \(method)")
         }
@@ -99,16 +101,24 @@ public struct AgentControlHandler: Sendable {
 
     // MARK: Verb implementations
 
-    /// `list-panes` → `{panes: [{paneId, title, pid, isAlive}]}`
+    /// `list-panes` → `{panes: [{paneId, title, pid, isAlive, state}]}`
     static func listPanes(id: String, server: HostServer) -> String {
         let panes = server.listPanesForControl()
         let items = panes.map { p -> [String: Any] in
-            ["paneId": p.paneId, "title": p.title, "pid": Int(p.pid), "isAlive": p.isAlive]
+            ["paneId": p.paneId, "title": p.title, "pid": Int(p.pid), "isAlive": p.isAlive, "state": p.state]
         }
         return successResponse(id: id, result: ["panes": items])
     }
 
     /// `read` → `{text: "…"}` — scrollback snapshot for a pane (ANSI stripped by default).
+    ///
+    /// When `source == "unwrapped"` (P1), returns `{text, lines: [...]}` where `lines` is the
+    /// array of LOGICAL lines (joined chunks, ANSI-stripped, split on hard `\n`; only the empty
+    /// artifact of a terminating newline is dropped — an UNTERMINATED final line is KEPT, since it
+    /// is typically the live prompt / awaiting-input cue an orchestrator scrapes) and `text` is
+    /// those lines re-joined — so an agent regex is robust to read-CHUNK boundaries. An optional
+    /// `lines` count limits to the last N. (True reverse-of-terminal-width wrapping is impossible
+    /// host-side — the host keeps no screen buffer.)
     static func readPane(id: String, params: [String: Any], server: HostServer) -> String {
         guard let paneId = params["paneId"] as? String else {
             return errorResponse(id: id, message: "missing params.paneId")
@@ -116,9 +126,47 @@ public struct AgentControlHandler: Sendable {
         guard let session = server.lookupPaneForControl(paneId: paneId) else {
             return errorResponse(id: id, message: "pane not found: \(paneId)")
         }
+        // `source: "unwrapped"` (a.k.a. recent) switches to the logical-line view.
+        if let source = params["source"] as? String, source == "unwrapped" || source == "recent" {
+            // Optional positive `lines` cap; any non-positive / non-Int value → no cap (unbounded).
+            let limit: Int? = {
+                if let n = params["lines"] as? Int, n > 0 { return n }
+                return nil
+            }()
+            let rows = session.recentUnwrappedTextForControl(lines: limit)
+            return successResponse(id: id, result: ["lines": rows, "text": rows.joined(separator: "\n")])
+        }
         let ansiStrip = (params["ansiStrip"] as? Bool) ?? true
         let text = session.scrollbackTextForControl(ansiStrip: ansiStrip)
         return successResponse(id: id, result: ["text": text])
+    }
+
+    /// `report` — an agent self-declares its state `{state, message?}` (P1 supervision API).
+    ///
+    /// Authoritative (precedence-2 hook fold), beating the foreground-process heuristic floor.
+    /// Validate-then-drop: a missing `paneId`, an unknown pane, or a `state` outside the closed
+    /// supervision set (``AgentControlState/allStates``) → error response, never a trap.
+    static func reportAgent(id: String, params: [String: Any], server: HostServer) -> String {
+        guard let paneId = params["paneId"] as? String else {
+            return errorResponse(id: id, message: "missing params.paneId")
+        }
+        guard let state = params["state"] as? String else {
+            return errorResponse(id: id, message: "missing params.state")
+        }
+        guard AgentControlState.isValid(state) else {
+            return errorResponse(
+                id: id,
+                message: "invalid state '\(state)' (want one of: \(AgentControlState.allStates.joined(separator: ", ")))",
+            )
+        }
+        // Optional human label — bounded by the detector's machine cap downstream; here we only
+        // accept a String (any other JSON type is ignored, not an error).
+        let message = params["message"] as? String
+        guard let session = server.lookupPaneForControl(paneId: paneId) else {
+            return errorResponse(id: id, message: "pane not found: \(paneId)")
+        }
+        session.reportAgentStatusForControl(state: state, message: message)
+        return successResponse(id: id, result: ["state": state])
     }
 
     /// `write` — injects raw text into the PTY (no Enter).
@@ -514,7 +562,14 @@ public final class AgentControlAcceptor: @unchecked Sendable {
                 // returns to the request-dispatch loop. The server does NOT emit an initial
                 // {id,ok,result} handshake line — it immediately begins streaming events.
                 if method == "subscribe" {
-                    serveSubscribe(fd: fd, id: reqID, params: params, server: server, log: log)
+                    // A `subscribe` with NO paneId is the TOP-LEVEL supervision stream: fan
+                    // `agent_status_changed` across ALL panes. A present paneId is the per-pane
+                    // output stream. (A missing paneId is a VALID all-mode — not an error.)
+                    if params["paneId"] is String {
+                        serveSubscribe(fd: fd, id: reqID, params: params, server: server, log: log)
+                    } else {
+                        serveSubscribeAll(fd: fd, id: reqID, server: server, log: log)
+                    }
                     return // connection consumed; caller closes fd
                 }
 
@@ -669,6 +724,136 @@ public final class AgentControlAcceptor: @unchecked Sendable {
                 writeAll(fd: fd, data: closedData)
             }
         }
+    }
+
+    // MARK: subscribe --all — cross-pane agent_status_changed pump
+
+    /// Implements the TOP-LEVEL `subscribe` (no paneId): streams one NDJSON line per pane
+    /// status transition across ALL panes until the client disconnects. No initial handshake.
+    ///
+    /// Event shape (one UTF-8 NDJSON line, newline-terminated):
+    ///   `{"type":"agent_status_changed","paneId":"<uuid>","state":"<idle|working|done|blocked>","title":"<osc title>","ts":<unix-seconds>}`
+    ///
+    /// Reuses the SAME ``SubscribeState``/`NSCondition`/`writeAll` pattern as ``serveSubscribe``.
+    /// A server-level observer (registered via ``HostServer/registerAgentStatusObserver(id:_:)``)
+    /// pushes lines into the condition-guarded buffer; the pump drains them to `fd`. Consecutive
+    /// identical `(paneId, state)` pairs are deduped at the fan-out (the detector already dedupes
+    /// type-27, but a belt-and-braces per-pane dedupe here defends against any double-notify).
+    /// The observer is deregistered on disconnect; the fd is consumed (this method owns it).
+    private static func serveSubscribeAll(
+        fd: Int32,
+        id _: String,
+        server: HostServer,
+        log _: (@Sendable (String) -> Void)?,
+    ) {
+        // Mutable cross-thread state guarded by an NSCondition (Swift 6 strict sendability).
+        // `closed` is the disconnect-wakeup the per-pane `serveSubscribe` gets from its close
+        // observer: here a dedicated reader thread sets it on client EOF/error so an IDLE-then-
+        // disconnected `events` subscriber (the common case — no pane has transitioned, so the
+        // pump would otherwise park in `wait()` forever, leaking the observer + fd + thread) is
+        // reaped. Without this, a trusted-mesh peer could open N idle `events` subscriptions and
+        // drop them to exhaust the host's thread/fd budget — which the never-DoS posture forbids.
+        final class AllState: @unchecked Sendable {
+            let condition = NSCondition()
+            var lines: [Data] = []
+            var lastByPane: [String: String] = [:] // paneId → last emitted state (dedupe)
+            var closed = false // set by the reader thread on client disconnect
+        }
+        let state = AllState()
+        let observerID = UUID()
+
+        server.registerAgentStatusObserver(id: observerID) { paneId, stateStr, title, ts in
+            state.condition.lock()
+            // Drop late events once the client is gone (the reader already woke the pump).
+            if state.closed {
+                state.condition.unlock()
+                return
+            }
+            // Dedupe consecutive identical (paneId, state) — a redundant transition is dropped.
+            if state.lastByPane[paneId] == stateStr {
+                state.condition.unlock()
+                return
+            }
+            state.lastByPane[paneId] = stateStr
+            let eventObj: [String: Any] = [
+                "type": "agent_status_changed",
+                "paneId": paneId,
+                "state": stateStr,
+                "title": title,
+                "ts": ts,
+            ]
+            guard var lineData = try? JSONSerialization.data(withJSONObject: eventObj, options: [.sortedKeys]) else {
+                state.condition.unlock()
+                return
+            }
+            lineData.append(0x0A)
+            state.lines.append(lineData)
+            state.condition.signal()
+            state.condition.unlock()
+        }
+
+        // Disconnect reader: the `events` client never sends after the subscribe request, so a
+        // `read(2)` returning 0 (EOF) or -1 (error, non-EINTR) means it disconnected — even while
+        // the host is idle. Set `closed` + signal the pump so it returns and the observer is
+        // deregistered. This mirrors `serveSubscribe`'s `registerCloseObserver` wakeup.
+        Thread.detachNewThread {
+            var scratch = [UInt8](repeating: 0, count: 256)
+            while true {
+                let n = read(fd, &scratch, scratch.count)
+                if n > 0 { continue } // unexpected client chatter — ignore, keep watching
+                if n < 0, errno == EINTR { continue }
+                break // 0 == EOF, or a real error → client gone
+            }
+            state.condition.lock()
+            state.closed = true
+            state.condition.signal()
+            state.condition.unlock()
+        }
+
+        // Pump: park on the condition until a line is ready OR the client disconnected, drain
+        // pending lines, write to fd. A write failure (EPIPE / -1) also flags disconnect.
+        var clientDisconnected = false
+        while !clientDisconnected {
+            state.condition.lock()
+            while state.lines.isEmpty, !state.closed {
+                state.condition.wait()
+            }
+            if state.closed {
+                state.condition.unlock()
+                break
+            }
+            let batch = state.lines
+            state.lines.removeAll(keepingCapacity: true)
+            state.condition.unlock()
+
+            for line in batch {
+                var ok = true
+                line.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let base = raw.baseAddress else { ok = false
+                        return
+                    }
+                    var offset = 0
+                    let total = raw.count
+                    while offset < total {
+                        let n = write(fd, base + offset, total - offset)
+                        if n > 0 { offset += n }
+                        else if n < 0, errno == EINTR { continue }
+                        else { ok = false
+                            return
+                        }
+                    }
+                }
+                if !ok {
+                    clientDisconnected = true
+                    break
+                }
+            }
+        }
+
+        server.removeAgentStatusObserver(id: observerID)
+        // The reader thread is parked in `read(fd)`. The caller (`serveConnection`/`acceptLoop`)
+        // `close(fd)`s right after this returns, which makes the blocked `read` return and the
+        // reader thread exits — no leak.
     }
 
     // MARK: writeAll helper (handles EINTR + partial writes)

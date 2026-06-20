@@ -101,8 +101,22 @@ public func listPanesParams() -> [String: Any] { [:] }
 /// - Parameters:
 ///   - paneId: the target pane UUID string.
 ///   - ansiStrip: when `true` (default), the host strips ANSI escape sequences before returning.
-public func readParams(paneId: String, ansiStrip: Bool = true) -> [String: Any] {
-    ["paneId": paneId, "ansiStrip": ansiStrip]
+///   - unwrapped: when `true`, requests the logical-line view (`source: "unwrapped"`) — the host
+///     returns a `lines` array (joined chunks, ANSI-stripped, split on hard `\n`, partial trailing
+///     line dropped) so an agent regex is robust to read-chunk boundaries. `ansiStrip` is implied.
+///   - lines: optional last-N logical-line cap (only meaningful with `unwrapped`).
+public func readParams(
+    paneId: String,
+    ansiStrip: Bool = true,
+    unwrapped: Bool = false,
+    lines: Int? = nil,
+) -> [String: Any] {
+    var params: [String: Any] = ["paneId": paneId, "ansiStrip": ansiStrip]
+    if unwrapped {
+        params["source"] = "unwrapped"
+        if let lines, lines > 0 { params["lines"] = lines }
+    }
+    return params
 }
 
 /// Builds the params dict for the `write` verb.
@@ -158,6 +172,17 @@ public func subscribeParams(paneId: String, ansiStrip: Bool = true) -> [String: 
     ["paneId": paneId, "ansiStrip": ansiStrip]
 }
 
+/// Builds the params dict for the `report` verb (agent self-declares its supervision state).
+/// - Parameters:
+///   - paneId: the target pane UUID string.
+///   - state: one of `idle` / `working` / `done` / `blocked` (validated host-side).
+///   - message: optional human label (e.g. the blocking question / last assistant line).
+public func reportParams(paneId: String, state: String, message: String?) -> [String: Any] {
+    var params: [String: Any] = ["paneId": paneId, "state": state]
+    if let message { params["message"] = message }
+    return params
+}
+
 /// Builds the params dict for the `resize` verb.
 /// - Parameters:
 ///   - paneId: the target pane UUID string.
@@ -166,3 +191,9 @@ public func subscribeParams(paneId: String, ansiStrip: Bool = true) -> [String: 
 public func resizeParams(paneId: String, rows: Int, cols: Int) -> [String: Any] {
     ["paneId": paneId, "rows": rows, "cols": cols]
 }
+
+/// Builds the params dict for the TOP-LEVEL `subscribe` (the `events` stream): NO `paneId`,
+/// which the host treats as "fan `agent_status_changed` across all panes". An empty dict is the
+/// whole contract — the absence of `paneId` is the signal (a present-but-missing paneId is the
+/// per-pane mode).
+public func subscribeAllParams() -> [String: Any] { [:] }

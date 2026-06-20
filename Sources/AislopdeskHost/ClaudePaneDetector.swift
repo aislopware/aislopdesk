@@ -43,6 +43,21 @@ public struct ClaudePaneDetector: Sendable {
     /// A new machine verdict emits type-27 iff this triple changed (dedupe).
     private var lastEmittedStatus: ForegroundProcessDetector.StatusTriple?
 
+    /// Absolute time (injected `now`) of the LAST authoritative self-report (the P1 `report` ctl
+    /// verb), or `nil` if none. Within ``reportGraceWindow`` seconds of this, a foreground-presence
+    /// ABSENCE (`sample(name:)` with a non-claude/empty basename) must NOT terminate the
+    /// machine — the self-report is authoritative and a custom orchestrator / node-wrapped CLI will
+    /// not classify as `claude`, so the ~1 Hz poll would otherwise wipe a just-reported state on the
+    /// very next tick (review finding: "self-report beats the foreground heuristic" must hold past
+    /// the instant of report, not only at it).
+    private var lastReportAt: TimeInterval?
+
+    /// Seconds a self-report stays STICKY against a foreground-presence absence. Picked an order of
+    /// magnitude above the ~1 Hz foreground poll so at least several polls cannot wipe a report; an
+    /// agent that keeps working re-reports (or its hooks fire) well within this, and a genuinely
+    /// finished/exited agent decays normally once the window lapses.
+    static let reportGraceWindow: TimeInterval = 30
+
     /// The wire `kind` byte for the LAST hook Notification class (`0` until a Notification arrives;
     /// carried so a type-27 emitted by a subsequent tick/presence fold still reports the live block
     /// class). Reset to `0` by any non-Notification transition through the machine that leaves the
@@ -93,9 +108,27 @@ public struct ClaudePaneDetector: Sendable {
             emission.foreground = .foregroundProcess(name: base)
         }
         let present = matcher.isClaudeRunning(processName: base)
-        machine.reduce(.processPresent(present), at: now)
-        // Presence absence terminates → not blocked anymore → forget the stale notification kind.
-        if !present { lastNotificationKind = 0 }
+        // Stickiness (review finding): a recent authoritative self-report must not be wiped by a
+        // foreground-presence ABSENCE — the common supervised agent (a custom orchestrator,
+        // node-wrapped CLI, any non-`claude` basename) self-reports `working`/`blocked`, and the
+        // ~1 Hz poll's `present == false` would otherwise terminate it on the next tick. Within the
+        // grace window we DROP the absence fold entirely (presence PRESENCE still folds as a normal
+        // floor). Once the window lapses, absence terminates as before (a genuinely exited agent
+        // decays). Ordered comparison (NaN-faithful) — never a bare `<` ternary.
+        let reportSticky: Bool = {
+            guard !present, let reportedAt = lastReportAt else { return false }
+            let elapsed = now - reportedAt
+            return Double.minimum(elapsed, Self.reportGraceWindow) < Self.reportGraceWindow
+                && elapsed >= 0
+        }()
+        if reportSticky {
+            // Skip the terminating absence fold; keep the authoritative reported status intact.
+            // (No presence floor to lift — absence cannot lift `.none`.)
+        } else {
+            machine.reduce(.processPresent(present), at: now)
+            // Presence absence terminates → not blocked anymore → forget the stale notification kind.
+            if !present { lastNotificationKind = 0 }
+        }
         emission.status = statusEmissionIfChanged()
         return emission
     }
@@ -112,6 +145,45 @@ public struct ClaudePaneDetector: Sendable {
         // Track the live block class: a Notification carries its kind; any transition that leaves the
         // blocked state forgets it (so a later tick/presence type-27 reports kind 0, not a stale class).
         lastNotificationKind = (machine.status == .needsPermission) ? kindByte : 0
+        emission.status = statusEmissionIfChanged()
+        return emission
+    }
+
+    /// Fold an AGENT SELF-REPORT at `now` (the P1 `report` ctl verb). An agent inside a pane
+    /// declares its own state — this is authoritative (precedence-2, same as a real hook),
+    /// beating the foreground-process heuristic floor. The ctl state string is mapped to a
+    /// synthetic ``ClaudeHookEvent`` and folded through the SAME machine so the existing
+    /// precedence + dedupe apply unchanged:
+    ///   - `working` → `.userPromptSubmit` (a turn is in progress),
+    ///   - `blocked` → `.notification(.permission, label: message)` (needs a human),
+    ///   - `done`    → `.stop(label: message)` (turn finished),
+    ///   - `idle`    → `.sessionStart` (present & at rest, clears any stale block).
+    ///
+    /// Validate-then-drop: an unknown `state` string changes nothing and returns an empty
+    /// emission (the caller has already validated via ``AgentControlState/isValid(_:)``, but a
+    /// belt-and-braces guard here keeps this method safe in isolation). Emits type-27 iff the
+    /// machine's status triple changed; never a type-26 (the foreground process did not change).
+    public mutating func report(state: String, message: String?, at now: TimeInterval) -> Emission {
+        var emission = Emission()
+        let event: ClaudeHookEvent
+        switch state {
+        case "working":
+            event = .userPromptSubmit(sessionID: nil)
+        case "blocked":
+            event = .notification(kind: .permission, label: message)
+        case "done":
+            event = .stop(sessionID: nil, label: message)
+        case "idle":
+            event = .sessionStart(sessionID: nil)
+        default:
+            return emission // validate-then-drop: unknown state is a no-op
+        }
+        // Record the report time so a subsequent foreground-presence absence cannot wipe this
+        // authoritative state for the grace window (see `lastReportAt` / `sample`). Only a VALID
+        // (folded) state stamps the floor — an unknown state already returned above.
+        lastReportAt = now
+        machine.reduce(.hook(event), at: now)
+        lastNotificationKind = (machine.status == .needsPermission) ? 1 : 0
         emission.status = statusEmissionIfChanged()
         return emission
     }

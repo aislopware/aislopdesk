@@ -164,4 +164,100 @@ final class ClaudePaneDetectorTests: XCTestCase {
         let edge = d.sample(name: "claude", at: 2)
         XCTAssertEqual(edge.foreground, .foregroundProcess(name: "claude"), "a basename change re-emits type-26")
     }
+
+    // MARK: - PIECE 4: agent self-report folds as an authoritative hook
+
+    /// A self-report `working`/`blocked`/`done`/`idle` maps to the same machine verdict an
+    /// equivalent real hook would. Each is precedence-2 (authoritative), so it beats the bare
+    /// foreground-process presence FLOOR (which only lifts `.none → .idle`).
+    func testReportWorkingBlockedDoneIdle() {
+        var d = ClaudePaneDetector()
+        _ = d.sample(name: "claude", at: 0) // presence floor = idle
+
+        let working = d.report(state: "working", message: nil, at: 1)
+        XCTAssertEqual(d.status, .working)
+        XCTAssertEqual(stateByte(working.status), 3, "working → urgency 3")
+
+        let blocked = d.report(state: "blocked", message: "approve?", at: 2)
+        XCTAssertEqual(d.status, .needsPermission)
+        XCTAssertEqual(stateByte(blocked.status), 4, "blocked → needsPermission urgency 4")
+
+        let done = d.report(state: "done", message: "all set", at: 3)
+        XCTAssertEqual(d.status, .done)
+        XCTAssertEqual(stateByte(done.status), 2, "done → urgency 2")
+
+        let idle = d.report(state: "idle", message: nil, at: 4)
+        XCTAssertEqual(d.status, .idle)
+        XCTAssertEqual(stateByte(idle.status), 1, "idle → urgency 1")
+    }
+
+    /// Self-report beats the foreground heuristic: with NO claude present (presence would force
+    /// `.none`), a `working` report still lifts the status — the authoritative hook fold wins.
+    func testReportBeatsForegroundFloor() {
+        var d = ClaudePaneDetector()
+        _ = d.sample(name: "zsh", at: 0) // not claude → status .none
+        XCTAssertEqual(d.status, .none)
+        _ = d.report(state: "working", message: nil, at: 1)
+        XCTAssertEqual(d.status, .working, "the self-report is authoritative; presence floor cannot override it")
+    }
+
+    /// An unknown report state is a no-op (validate-then-drop) — no emission, no status change.
+    func testReportUnknownStateIsNoOp() {
+        var d = ClaudePaneDetector()
+        _ = d.sample(name: "claude", at: 0)
+        let before = d.status
+        let e = d.report(state: "frobnicating", message: nil, at: 1)
+        XCTAssertNil(e.status, "unknown state emits nothing")
+        XCTAssertEqual(d.status, before, "unknown state does not change the machine")
+    }
+
+    /// A self-report is STICKY against the ~1 Hz foreground poll: after `report(working)`, a
+    /// following `tick` + `sample(name: non-claude)` (the supervised case — a custom orchestrator /
+    /// node-wrapped CLI whose basename is NOT `claude`) must NOT wipe the reported state for the
+    /// grace window. Without the stickiness floor, `sample`'s `processPresent(false)` terminates the
+    /// machine ~1s after the report, fanning a spurious working→idle/none. This FAILS on the
+    /// pre-fix code (the report is wiped on the very next poll).
+    func testReportStickyAgainstForegroundAbsence() {
+        var d = ClaudePaneDetector()
+        _ = d.sample(name: "node", at: 0) // a non-claude wrapper → status .none
+        XCTAssertEqual(d.status, .none)
+        _ = d.report(state: "working", message: nil, at: 1)
+        XCTAssertEqual(d.status, .working, "the self-report lifts the status")
+
+        // The very next foreground poll (~1s later): a tick + a non-claude sample. Pre-fix this
+        // terminated the machine; with the stickiness floor the reported state survives.
+        _ = d.tick(at: 2)
+        let resample = d.sample(name: "node", at: 2)
+        XCTAssertEqual(d.status, .working, "a non-claude presence-absence must not wipe a recent self-report")
+        XCTAssertNil(resample.status, "no transition → no spurious type-27 churn")
+
+        // Several more polls within the grace window keep it sticky.
+        _ = d.sample(name: "node", at: 10)
+        XCTAssertEqual(d.status, .working, "still sticky well inside the grace window")
+    }
+
+    /// The stickiness floor LAPSES: once the grace window elapses with the agent still absent
+    /// (genuinely exited), a foreground-absence sample DOES terminate — a stale report does not
+    /// pin the pane forever. Complements ``testReportStickyAgainstForegroundAbsence``.
+    func testReportStickinessLapsesAfterGraceWindow() {
+        var d = ClaudePaneDetector()
+        _ = d.report(state: "working", message: nil, at: 0)
+        XCTAssertEqual(d.status, .working)
+        // A sample PAST the grace window with no claude present → the agent really left → terminate.
+        let late = ClaudePaneDetector.reportGraceWindow + 1
+        let e = d.sample(name: "node", at: late)
+        XCTAssertEqual(d.status, .none, "after the grace window a non-claude absence terminates as before")
+        XCTAssertNotNil(e.status, "the termination emits a type-27 transition")
+    }
+
+    /// A repeated identical self-report dedupes (no second type-27) — the change-hook only fires
+    /// on a real transition.
+    func testRepeatedReportDedupes() {
+        var d = ClaudePaneDetector()
+        _ = d.sample(name: "claude", at: 0)
+        let first = d.report(state: "working", message: nil, at: 1)
+        XCTAssertNotNil(first.status, "first working report emits")
+        let second = d.report(state: "working", message: nil, at: 2)
+        XCTAssertNil(second.status, "an identical consecutive report dedupes (no new type-27)")
+    }
 }

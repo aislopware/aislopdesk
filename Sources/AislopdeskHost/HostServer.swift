@@ -1,3 +1,4 @@
+import AislopdeskAgentDetect
 import AislopdeskProtocol
 import AislopdeskTransport
 import Foundation
@@ -57,6 +58,11 @@ public final class HostServer: @unchecked Sendable {
     /// into every PTY env when ``agentControlEnabled`` is true. Empty when control is disabled.
     public let agentControlSocketPath: String
 
+    /// The absolute path to the `aislopdesk-ctl` binary, exported as `AISLOPDESK_CTL_BIN` into a
+    /// control-spawned pane's env (P1) so an agent self-orients with zero discovery. Empty → not
+    /// exported (the agent falls back to a PATH lookup). Resolved by the daemon (sibling of hostd).
+    public let ctlBinaryPath: String
+
     private let transport: HostTransport
     private let lock = NSLock()
     private var muxAcceptTask: Task<Void, Never>?
@@ -65,6 +71,21 @@ public final class HostServer: @unchecked Sendable {
     /// Keyed by `sessionID` (UUID), guarded by `lock`.  Drained on `stop()` alongside
     /// `muxSessions` so no orphan PTY outlives the daemon.
     private var controlSessions: [UUID: MuxChannelSession] = [:]
+
+    /// P1 supervision — server-level cross-pane `agent_status_changed` observers, keyed by a
+    /// per-subscription `UUID`, guarded by `agentStatusObserversLock`. Each ``MuxChannelSession``
+    /// (mux OR control) is wired with an `onAgentStatusChanged` closure that calls
+    /// ``fanAgentStatusChanged(paneId:title:status:)``, which snapshots this map and invokes every
+    /// observer with `(paneId, state, title, ts)`. A top-level `subscribe` (no paneId) registers
+    /// one here and deregisters on disconnect. Separate lock from `lock` so a status fan-out never
+    /// contends with the session maps (the closure may run on the foreground-poll task thread).
+    private let agentStatusObserversLock = NSLock()
+    private var agentStatusObservers: [UUID: @Sendable (
+        _ paneId: String,
+        _ state: String,
+        _ title: String,
+        _ ts: Double,
+    ) -> Void] = [:]
 
     /// Live per-channel mux sessions, keyed by `(connectionID, channelID)`, guarded by `lock`.
     ///
@@ -150,6 +171,7 @@ public final class HostServer: @unchecked Sendable {
         agentHookListener: AgentHookListener? = nil,
         agentHookSocketPath: String = "",
         agentControlSocketPath: String = "",
+        ctlBinaryPath: String = "",
         blocksEnabled: Bool = true,
         detachEnabled: Bool? = nil,
         detachTTLSecs: Int? = nil,
@@ -161,6 +183,7 @@ public final class HostServer: @unchecked Sendable {
         self.agentHookListener = agentHookListener
         self.agentHookSocketPath = agentHookSocketPath
         self.agentControlSocketPath = agentControlSocketPath
+        self.ctlBinaryPath = ctlBinaryPath
         self.blocksEnabled = blocksEnabled
         transport = HostTransport()
 
@@ -578,6 +601,7 @@ public final class HostServer: @unchecked Sendable {
         // The shell-exit reaper closes over the SAME composite key so it only removes THIS
         // connection's session (idempotent with the peer-close `setHostCloseHandler` path).
         session.onExit = { [weak self] _ in self?.removeMuxSession(key) }
+        wireAgentStatusFanOut(session)
         lock.lock()
         if stopping {
             // stop() set `stopping` AFTER our early check but BEFORE this insert (it raced the fork).
@@ -739,6 +763,10 @@ public final class HostServer: @unchecked Sendable {
         public let title: String // last sniffed OSC title (empty if none)
         public let pid: Int32 // child PID (-1 if exited)
         public let isAlive: Bool // child still running
+        /// P1 supervision state — the per-pane Claude agent state mapped to the ctl wire
+        /// vocabulary (`idle`/`working`/`done`/`blocked`). A live pane with no detected
+        /// `claude` reports `idle` (see ``AgentControlState``).
+        public let state: String
     }
 
     /// Returns a snapshot of all live panes (mux + standalone control panes).
@@ -754,7 +782,54 @@ public final class HostServer: @unchecked Sendable {
                 title: session.currentTitle,
                 pid: session.pty.pid,
                 isAlive: !session.isChildExited(),
+                state: AgentControlState.string(from: session.agentStatusForControl),
             )
+        }
+    }
+
+    // MARK: - P1 cross-pane agent-status fan-out
+
+    /// Registers a cross-pane `agent_status_changed` observer and returns its dedupe key. Called
+    /// by the top-level (no-paneId) `subscribe` handler. The observer is invoked with
+    /// `(paneId, state, title, ts)` on EVERY pane's status transition until ``removeAgentStatusObserver(id:)``.
+    func registerAgentStatusObserver(
+        id: UUID,
+        _ observer: @escaping @Sendable (_ paneId: String, _ state: String, _ title: String, _ ts: Double) -> Void,
+    ) {
+        agentStatusObserversLock.lock()
+        agentStatusObservers[id] = observer
+        agentStatusObserversLock.unlock()
+    }
+
+    /// Removes a cross-pane observer (idempotent — a missing id is a no-op).
+    func removeAgentStatusObserver(id: UUID) {
+        agentStatusObserversLock.lock()
+        agentStatusObservers[id] = nil
+        agentStatusObserversLock.unlock()
+    }
+
+    /// Fans one pane's status transition to every registered cross-pane observer. Snapshots the
+    /// observer map under its lock, then calls each observer OUTSIDE the lock (an observer's NDJSON
+    /// write must never serialise the next pane's transition). Maps the host ``ClaudeStatus`` to the
+    /// ctl wire string here (the observers receive the stable supervision vocabulary, not the enum).
+    func fanAgentStatusChanged(paneId: String, title: String, status: ClaudeStatus) {
+        agentStatusObserversLock.lock()
+        let observers = Array(agentStatusObservers.values)
+        agentStatusObserversLock.unlock()
+        guard !observers.isEmpty else { return }
+        let state = AgentControlState.string(from: status)
+        let ts = Date().timeIntervalSince1970
+        for observer in observers { observer(paneId, state, title, ts) }
+    }
+
+    /// Wires a freshly-created session's `onAgentStatusChanged` to the server fan-out. Called from
+    /// EVERY session-creation site (mux + control spawn) so a transition on any pane reaches the
+    /// top-level subscribers. `[weak self]` avoids retaining the server through the session.
+    private func wireAgentStatusFanOut(_ session: MuxChannelSession) {
+        let paneId = session.sessionID.uuidString
+        session.onAgentStatusChanged = { [weak self, weak session] status in
+            let title = session?.currentTitle ?? ""
+            self?.fanAgentStatusChanged(paneId: paneId, title: title, status: status)
         }
     }
 
@@ -825,11 +900,18 @@ public final class HostServer: @unchecked Sendable {
         let pty = PTYProcess()
         let sessionID = UUID()
 
-        // Build the environment.
-        var environ = HostEnvironment.curated()
+        // Build the environment. Thread the control socket path so a spawned agent can reach the
+        // ctl socket (curated sets AISLOPDESK_CONTROL_SOCKET when non-empty).
+        var environ = HostEnvironment.curated(
+            controlSocketPath: agentControlSocketPath.isEmpty ? nil : agentControlSocketPath,
+        )
         if let extraEnv { for (k, v) in extraEnv { environ[k] = v } }
         // Inject the pane self-id (same contract as a mux-spawned pane).
         environ[HostEnvironment.agentPaneIDEnvKey] = sessionID.uuidString
+        // P1 full self-orientation sentinel: an agent inside a spawned pane knows it is under
+        // aislopdesk control (AISLOPDESK_CTL=1) and where the ctl binary is, with zero discovery.
+        environ[HostEnvironment.ctlSentinelEnvKey] = "1"
+        if !ctlBinaryPath.isEmpty { environ[HostEnvironment.ctlBinaryEnvKey] = ctlBinaryPath }
         // Inject the working directory via `PWD` if provided (the shell sources it).
         if let cwd { environ["PWD"] = cwd }
 
@@ -871,6 +953,7 @@ public final class HostServer: @unchecked Sendable {
             blocksEnabled: false, // no client → blocks metadata would be dropped anyway
         )
         session.onExit = { [weak self] _ in self?.removeControlSession(sessionID) }
+        wireAgentStatusFanOut(session)
 
         // Synchronous helper: NSLock is unavailable from async context directly.
         guard insertControlSession(sessionID, session) else {

@@ -105,6 +105,16 @@ public enum HostEnvironment {
     /// shells is not something to enable silently. Only an explicit `"1"` enables it.
     public static let agentControlEnvKey = "AISLOPDESK_AGENT_CONTROL"
 
+    /// SENTINEL exported into a control-SPAWNED pane's env (P1): `"1"` tells an agent running
+    /// inside that it lives under aislopdesk control and the ctl socket/binary are reachable, so it
+    /// can self-orient with zero discovery. Set ONLY for `spawn`-created panes (not user panes).
+    public static let ctlSentinelEnvKey = "AISLOPDESK_CTL"
+
+    /// The absolute path to the `aislopdesk-ctl` binary, exported into a control-spawned pane's env
+    /// (P1) so an agent can invoke it directly without a PATH lookup. Empty/absent → the agent
+    /// falls back to a PATH lookup of `aislopdesk-ctl`.
+    public static let ctlBinaryEnvKey = "AISLOPDESK_CTL_BIN"
+
     /// Resolves whether the agent-control socket should be bound. Default-OFF: only `"1"` enables.
     public static func agentControlEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment,

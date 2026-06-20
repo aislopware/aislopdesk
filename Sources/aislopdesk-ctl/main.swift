@@ -46,10 +46,13 @@ func printUsage() {
       list-panes [--json]
           List all live panes.  --json emits the raw NDJSON response line.
 
-      read <paneId> [--ansi] [--full] [--lines N]
+      read <paneId> [--ansi] [--full] [--lines N] [--unwrapped]
           Dump the pane's scrollback.  --ansi keeps ANSI escape codes (default: stripped).
           --full reads the complete scrollback ring (overrides --lines).
           --lines N limits output to the last N lines.
+          --unwrapped (alias --recent) returns logical lines (joined chunks, ANSI-stripped,
+          split on hard newlines, partial trailing line dropped) so a regex is robust to
+          read-chunk boundaries.  Combine with --lines N for the last N logical lines.
 
       write <paneId> --text "..."
           Send raw text bytes to the pane's PTY master fd (no Enter appended).
@@ -80,6 +83,19 @@ func printUsage() {
 
       resize <paneId> --rows N --cols N
           Resize the pane's PTY to N rows × N cols (1–65535 each).
+
+      report <paneId> --state idle|working|done|blocked [--message "..."] [--json]
+          Self-declare this pane's agent supervision state (authoritative — beats the
+          foreground heuristic).  Use from inside a spawned agent pane.  --message attaches a
+          human label (the blocking question / last line).
+
+      events [--json]
+          Stream top-level supervision events: one NDJSON line per pane status transition
+          across ALL panes, until disconnected.  Line shape:
+            {"type":"agent_status_changed","paneId":"…","state":"…","title":"…","ts":…}
+          COARSE-STATE ONLY: an event fires on a state change (idle/working/blocked/done);
+          a same-state `report` that only updates the --message does NOT re-emit (no message
+          field is carried).  Use `read --unwrapped` to fetch the latest blocking prompt text.
 
     Flags:
       --socket PATH   Override the control socket path.
@@ -226,14 +242,16 @@ func cmdListPanes(socketPath: String, rest: [String]) {
     func pad(_ s: String, _ width: Int) -> String {
         s.count >= width ? s : s + String(repeating: " ", count: width - s.count)
     }
-    stdout("\(pad("PANE-ID", 36))  \(pad("PID", 6))  \(pad("STATUS", 6))  TITLE\n")
+    stdout("\(pad("PANE-ID", 36))  \(pad("PID", 6))  \(pad("STATUS", 6))  \(pad("AGENT", 8))  TITLE\n")
     for pane in panes {
         let paneId = pane["paneId"] as? String ?? "-"
         let pid = pane["pid"] as? Int ?? -1
         let title = pane["title"] as? String ?? ""
         let isAlive = (pane["isAlive"] as? Bool) ?? false
         let status = isAlive ? "alive" : "dead"
-        stdout("\(pad(paneId, 36))  \(pad(String(pid), 6))  \(pad(status, 6))  \(title)\n")
+        // P1 supervision state (idle/working/done/blocked). Older hosts omit it → "-".
+        let agent = pane["state"] as? String ?? "-"
+        stdout("\(pad(paneId, 36))  \(pad(String(pid), 6))  \(pad(status, 6))  \(pad(agent, 8))  \(title)\n")
     }
 }
 
@@ -243,6 +261,7 @@ func cmdRead(socketPath: String, rest: [String]) {
     var keepAnsi = false
     var limitLines: Int?
     var fullRing = false
+    var unwrapped = false
     var idx = 1
     while idx < rest.count {
         switch rest[idx] {
@@ -251,6 +270,11 @@ func cmdRead(socketPath: String, rest: [String]) {
         case "--full":
             // Explicit "full ring" — overrides any --lines limit and reads the complete scrollback.
             fullRing = true
+        case "--unwrapped",
+             "--recent":
+            // Logical-line view: the host returns a `lines` array (joined chunks, ANSI-stripped,
+            // split on hard \n, partial trailing line dropped) so a regex is chunk-boundary robust.
+            unwrapped = true
         case "--lines":
             guard idx + 1 < rest.count else { die("--lines requires a value") }
             idx += 1
@@ -264,13 +288,20 @@ func cmdRead(socketPath: String, rest: [String]) {
     // --full takes precedence over --lines.
     if fullRing { limitLines = nil }
 
-    let obj = callVerb(socketPath: socketPath, method: "read", params: readParams(paneId: paneId, ansiStrip: !keepAnsi))
+    let params = readParams(
+        paneId: paneId, ansiStrip: !keepAnsi, unwrapped: unwrapped,
+        lines: unwrapped ? limitLines : nil,
+    )
+    let obj = callVerb(socketPath: socketPath, method: "read", params: params)
     requireOK(obj, context: "read")
 
     let result = obj["result"] as? [String: Any] ?? [:]
     var text = result["text"] as? String ?? ""
 
-    if let limit = limitLines {
+    // For the non-unwrapped path, the host returns the whole snapshot; apply the last-N trim
+    // client-side. For --unwrapped, the host already applied the cap (and built `text` from the
+    // logical `lines`), so no further trim is needed.
+    if !unwrapped, let limit = limitLines {
         let lines = text.components(separatedBy: "\n")
         text = lines.suffix(limit).joined(separator: "\n")
     }
@@ -433,7 +464,14 @@ func cmdSubscribe(socketPath: String, rest: [String]) {
         }
         idx += 1
     }
+    streamSubscribe(socketPath: socketPath, params: subscribeParams(paneId: paneId, ansiStrip: !keepAnsi))
+}
 
+/// Opens the control socket, sends a `subscribe` request with `params`, and streams every
+/// NDJSON event line to stdout until the connection closes. Used by BOTH the per-pane
+/// `subscribe` verb (params carry a `paneId`) and the top-level `events` stream (no `paneId`
+/// → the host fans `agent_status_changed` across ALL panes). Exits 0 on a clean close.
+func streamSubscribe(socketPath: String, params: [String: Any]) {
     // `subscribe` keeps the connection open and streams NDJSON event lines.
     // We can't use `sendRequest` (reads one line then closes). Open the socket directly,
     // send the request, then read lines until the connection closes (pane exited or error).
@@ -468,7 +506,7 @@ func cmdSubscribe(socketPath: String, rest: [String]) {
     guard let reqLine = encodeRequestLine(
         id: "1",
         method: "subscribe",
-        params: subscribeParams(paneId: paneId, ansiStrip: !keepAnsi),
+        params: params,
     ) else {
         die("failed to encode subscribe request")
     }
@@ -547,6 +585,57 @@ func cmdResize(socketPath: String, rest: [String]) {
     stdout("resized \(paneId) to \(r)x\(c)\n")
 }
 
+func cmdReport(socketPath: String, rest: [String]) {
+    guard !rest.isEmpty else { die("report requires <paneId>") }
+    let paneId = rest[0]
+    var state: String?
+    var message: String?
+    var jsonMode = false
+    var idx = 1
+    while idx < rest.count {
+        switch rest[idx] {
+        case "--state":
+            guard idx + 1 < rest.count else { die("--state requires a value") }
+            idx += 1
+            state = rest[idx]
+        case "--message":
+            guard idx + 1 < rest.count else { die("--message requires a value") }
+            idx += 1
+            message = rest[idx]
+        case "--json":
+            jsonMode = true
+        default:
+            die("unknown flag for report: \(rest[idx])")
+        }
+        idx += 1
+    }
+    guard let stateValue = state else {
+        die("report requires --state idle|working|done|blocked")
+    }
+    let obj = callVerb(
+        socketPath: socketPath, method: "report",
+        params: reportParams(paneId: paneId, state: stateValue, message: message),
+    )
+    requireOK(obj, context: "report")
+    if jsonMode {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]),
+              let line = String(bytes: data, encoding: .utf8)
+        else { die("failed to re-encode JSON response") }
+        stdout(line + "\n")
+    } else {
+        stdout("reported \(paneId) as \(stateValue)\n")
+    }
+}
+
+/// `events` — top-level supervision stream: subscribe with NO paneId and print every
+/// `agent_status_changed` NDJSON line across ALL panes until the connection drops.
+func cmdEvents(socketPath: String, rest: [String]) {
+    for arg in rest where arg != "--json" {
+        die("unknown flag for events: \(arg)")
+    }
+    streamSubscribe(socketPath: socketPath, params: subscribeAllParams())
+}
+
 // MARK: - Entry point
 
 let args = CommandLine.arguments
@@ -586,6 +675,10 @@ case "kill":
     cmdKill(socketPath: socketPath, rest: global.rest)
 case "subscribe":
     cmdSubscribe(socketPath: socketPath, rest: global.rest)
+case "events":
+    cmdEvents(socketPath: socketPath, rest: global.rest)
+case "report":
+    cmdReport(socketPath: socketPath, rest: global.rest)
 case "resize":
     cmdResize(socketPath: socketPath, rest: global.rest)
 default:

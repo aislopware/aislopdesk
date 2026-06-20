@@ -108,6 +108,16 @@ let agentControlSocketPath: String =
         ""
     }
 
+// Resolve the sibling `aislopdesk-ctl` binary (P1 env sentinel for spawned panes). hostd and ctl
+// ship in the same directory, so derive ctl's path from hostd's executable path. If the sibling is
+// absent, leave empty → spawned agents fall back to a PATH lookup of `aislopdesk-ctl`.
+let ctlBinaryPath: String = {
+    guard let hostdPath = CommandLine.arguments.first else { return "" }
+    let dir = URL(fileURLWithPath: hostdPath).deletingLastPathComponent()
+    let candidate = dir.appendingPathComponent("aislopdesk-ctl").path
+    return FileManager.default.isExecutableFile(atPath: candidate) ? candidate : ""
+}()
+
 let server = HostServer(
     port: parsed.port,
     shellPath: parsed.shell,
@@ -116,6 +126,7 @@ let server = HostServer(
     agentHookListener: agentHookListener,
     agentHookSocketPath: agentHookSocketPath,
     agentControlSocketPath: agentControlSocketPath,
+    ctlBinaryPath: ctlBinaryPath,
     blocksEnabled: blocksEnabled,
 )
 server.onLog = log

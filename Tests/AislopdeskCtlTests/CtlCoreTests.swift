@@ -216,6 +216,58 @@ final class CtlCoreTests: XCTestCase {
         XCTAssertEqual(params["text"] as? String, "hello\u{03}")
     }
 
+    // MARK: PIECE 3 — read --unwrapped params
+
+    func testReadParamsPlainHasNoSource() {
+        let params = readParams(paneId: "x")
+        XCTAssertNil(params["source"], "plain read carries no source param")
+        XCTAssertNil(params["lines"])
+    }
+
+    func testReadParamsUnwrappedSetsSource() {
+        let params = readParams(paneId: "x", unwrapped: true)
+        XCTAssertEqual(params["source"] as? String, "unwrapped")
+        XCTAssertNil(params["lines"], "no lines cap unless requested")
+    }
+
+    func testReadParamsUnwrappedWithLines() {
+        let params = readParams(paneId: "x", unwrapped: true, lines: 40)
+        XCTAssertEqual(params["source"] as? String, "unwrapped")
+        XCTAssertEqual(params["lines"] as? Int, 40)
+    }
+
+    func testReadParamsLinesIgnoredWithoutUnwrapped() {
+        // A lines cap without --unwrapped is NOT sent as a param (the host doesn't honour it for
+        // the plain path; the CLI trims client-side).
+        let params = readParams(paneId: "x", unwrapped: false, lines: 40)
+        XCTAssertNil(params["lines"])
+        XCTAssertNil(params["source"])
+    }
+
+    // MARK: PIECE 4 — report params
+
+    func testReportParamsMinimal() {
+        let params = reportParams(paneId: "p", state: "working", message: nil)
+        XCTAssertEqual(params["paneId"] as? String, "p")
+        XCTAssertEqual(params["state"] as? String, "working")
+        XCTAssertNil(params["message"], "no message key when nil")
+    }
+
+    func testReportParamsWithMessage() {
+        let params = reportParams(paneId: "p", state: "blocked", message: "approve the rm?")
+        XCTAssertEqual(params["state"] as? String, "blocked")
+        XCTAssertEqual(params["message"] as? String, "approve the rm?")
+    }
+
+    // MARK: PIECE 2 — top-level subscribe (events) params
+
+    func testSubscribeAllParamsHasNoPaneId() {
+        // The top-level events stream is signalled by the ABSENCE of paneId.
+        let params = subscribeAllParams()
+        XCTAssertNil(params["paneId"], "the events stream carries no paneId (absence = all-mode)")
+        XCTAssertTrue(params.isEmpty)
+    }
+
     func testKillParams() {
         let params = killParams(paneId: "z")
         XCTAssertEqual(params["paneId"] as? String, "z")

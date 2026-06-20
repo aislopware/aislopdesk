@@ -254,6 +254,20 @@ final class MuxChannelSession: @unchecked Sendable {
     /// Called once when the child exits so the owner can drop this channel from its map.
     var onExit: (@Sendable (UInt32) -> Void)?
 
+    /// P1 supervision hook — fired whenever this pane's detected Claude status TRANSITIONS to a
+    /// new value (foreground poll, hook POST, or a self-report). The ``HostServer`` sets it (like
+    /// ``onExit``) to fan the cross-pane `agent_status_changed` event to top-level subscribers.
+    /// `nil` by default → no fan-out (the headless smoke daemon never sets it). The closure is
+    /// invoked OUTSIDE `agentDetectLock` to avoid holding the detector lock across the server's
+    /// observer fan-out. Deduping consecutive identical states is the server's responsibility.
+    var onAgentStatusChanged: (@Sendable (ClaudeStatus) -> Void)?
+
+    /// Invokes ``onAgentStatusChanged`` (if set) with `status`. Called from the detector-folding
+    /// sites AFTER `agentDetectLock` is released, only on a real status transition.
+    private func notifyAgentStatusChanged(_ status: ClaudeStatus) {
+        onAgentStatusChanged?(status)
+    }
+
     private enum OutputItem {
         case chunk(bytes: Data, control: [WireMessage])
         case exit(code: Int32)
@@ -547,9 +561,14 @@ final class MuxChannelSession: @unchecked Sendable {
         // type-27 only on a real triple change (the detector dedupes), so at most one status frame ships.
         let tickEmission = agentDetector.tick(at: now)
         let sampleEmission = agentDetector.sample(name: name, at: now)
+        // A status transition (from EITHER fold) → notify the cross-pane supervision observer.
+        // Both folds share the one machine, so the final `status` is the post-fold value.
+        let statusChanged = (tickEmission.status != nil || sampleEmission.status != nil)
+        let newStatus = statusChanged ? agentDetector.status : nil
         agentDetectLock.unlock()
         if !tickEmission.isEmpty { enqueueControl(tickEmission.messages) }
         if !sampleEmission.isEmpty { enqueueControl(sampleEmission.messages) }
+        if let newStatus { notifyAgentStatusChanged(newStatus) }
     }
 
     // MARK: - Detach / reattach (tmux-style survival — C1–C4)
@@ -1024,8 +1043,26 @@ final class MuxChannelSession: @unchecked Sendable {
     func ingestAgentHookRecord(_ bytes: Data) {
         agentDetectLock.lock()
         let emission = agentDetector.hook(bytes: bytes, at: ProcessInfo.processInfo.systemUptime)
+        let changed = emission.status != nil ? agentDetector.status : nil
         agentDetectLock.unlock()
         if !emission.isEmpty { enqueueControl(emission.messages) }
+        if let changed { notifyAgentStatusChanged(changed) }
+    }
+
+    /// Folds an AGENT SELF-REPORT (the P1 `report` ctl verb) into the ONE ``ClaudePaneDetector``
+    /// under `agentDetectLock`. The state string has already been validated by the caller; an
+    /// unrecognised string is a no-op inside the detector (validate-then-drop). Any resulting
+    /// type-27 is enqueued to the (possibly absent) client AND fans the cross-pane
+    /// `agent_status_changed` observer (P1 supervision stream) on a real transition.
+    func reportAgentStatusForControl(state: String, message: String?) {
+        agentDetectLock.lock()
+        let emission = agentDetector.report(
+            state: state, message: message, at: ProcessInfo.processInfo.systemUptime,
+        )
+        let changed = emission.status != nil ? agentDetector.status : nil
+        agentDetectLock.unlock()
+        if !emission.isEmpty { enqueueControl(emission.messages) }
+        if let changed { notifyAgentStatusChanged(changed) }
     }
 
     // MARK: - Agent-control surface (public primitives used by AgentControlListener)
@@ -1082,11 +1119,62 @@ final class MuxChannelSession: @unchecked Sendable {
         return ansiStrip ? ANSIStripper.strip(text) : text
     }
 
+    /// Returns the pane's scrollback as an array of LOGICAL lines (P1 `read --unwrapped`).
+    ///
+    /// The host keeps NO screen buffer and the scrollback ring stores RAW PTY read-chunk byte
+    /// slices (NOT terminal-width-aware lines), so TRUE reverse-of-terminal-wrapping is impossible
+    /// host-side — a soft-wrapped visual row carries no marker to un-wrap. What this DOES give an
+    /// agent regex is robustness to arbitrary read-CHUNK / transport boundaries: it joins every
+    /// stored chunk in seq order (so a hard line split across two chunks is one string),
+    /// ANSI-strips (same as ``scrollbackTextForControl(ansiStrip:)``), then splits on the hard
+    /// `\n` into logical lines. A partial (no trailing newline) last line is DROPPED so a regex
+    /// never matches a half-written prompt. When `lines` is non-nil, only the last N are returned.
+    func recentUnwrappedTextForControl(lines limit: Int? = nil) -> [String] {
+        let text = scrollbackTextForControl(ansiStrip: true)
+        return Self.unwrapLogicalLines(text, lines: limit)
+    }
+
+    /// Pure logical-line split (P1 `read --unwrapped`): split `text` on hard `\n`, keep blank
+    /// lines, and optionally keep only the last `limit`. Extracted as a `static` so it is
+    /// unit-testable with no PTY/ReplayBuffer.
+    ///
+    /// Trailing-element handling (review finding): only DROP the final element when the text ended
+    /// in `\n` (so the split's trailing `""` is a separator artifact, not content). When the text
+    /// does NOT end in `\n`, the final element is a complete-but-unterminated logical line — which
+    /// host-side is INDISTINGUISHABLE from the very signal an orchestrator scrapes (a live shell
+    /// prompt or a Claude "awaiting input" line that carries no trailing newline). Dropping it
+    /// unconditionally silently swallowed the freshest line, so we KEEP it. (A genuine half-written
+    /// partial is rare and harmless to include; losing the prompt is the worse failure.)
+    static func unwrapLogicalLines(_ text: String, lines limit: Int? = nil) -> [String] {
+        guard !text.isEmpty else { return [] }
+        var rows = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        // Drop ONLY the empty trailing artifact of a terminating newline; keep an unterminated
+        // final logical line (the prompt / awaiting-input cue).
+        if text.hasSuffix("\n"), !rows.isEmpty, rows[rows.count - 1].isEmpty {
+            rows.removeLast()
+        }
+        if let limit, limit > 0, rows.count > limit { rows = Array(rows.suffix(limit)) }
+        return rows
+    }
+
     /// The last OSC-sniffed window title for this pane (empty string if none has arrived yet).
     var currentTitle: String {
         titleLock.lock()
         defer { titleLock.unlock() }
         return _currentTitle
+    }
+
+    /// The current rolled-up Claude detection status for this pane (P1 supervision API).
+    ///
+    /// Read under `agentDetectLock` because `agentDetector` is folded from TWO contexts (the
+    /// serial `agentWatchTask` foreground poll and the hook socket-accept thread); a bare read
+    /// of the private detector would race. Used by ``HostServer/listPanesForControl()`` to surface
+    /// per-pane agent state in the `list-panes` verb. A pane whose detector never saw `claude`
+    /// returns ``ClaudeStatus/none``.
+    var agentStatusForControl: ClaudeStatus {
+        agentDetectLock.lock()
+        defer { agentDetectLock.unlock() }
+        return agentDetector.status
     }
 
     /// Registers an output observer for the `wait` verb. The closure is called from the PTY
