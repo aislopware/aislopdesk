@@ -1,24 +1,100 @@
 import AislopdeskTerminal
 import Foundation
 
+// MARK: - TerminalModelProviding (the store↔live-session seam the block ops resolve through)
+
+/// The tiny capability seam the WB2/WB3 active-pane block ops resolve through INSTEAD of an
+/// `as? LivePaneSession` cast — so the store's block-routing glue (navigator / jump-to-block /
+/// re-run-last / jump-to-failed / bookmark seed) is exercisable by a recording test double that carries a
+/// REAL ``TerminalViewModel`` but never opens a socket. The production conformer is ``LivePaneSession``
+/// (returns its `connection.terminalModel`); a headless test conformer returns a directly-built model.
+///
+/// `bookmarkScopeKey` is the per-SESSION persistence identity (NOT the stable pane id): a token minted
+/// fresh each time the session is materialized, so a relaunch (a brand-new segmenter re-numbering blocks
+/// from 0) starts with NO stars rather than re-applying a prior run's raw indices onto unrelated commands
+/// (the cross-session mis-restore the persisted-by-pane-id wiring caused). Stable across a transport
+/// reconnect within one launch (same session instance).
+@MainActor
+protocol TerminalModelProviding: AnyObject {
+    /// The live terminal model the block ops drive, or `nil` for a non-terminal session (`.remoteGUI`).
+    var terminalModel: TerminalViewModel? { get }
+
+    /// The per-session key block bookmarks persist under (see the type doc). Distinct per materialization.
+    var bookmarkScopeKey: String { get }
+}
+
+// MARK: - BlockBookmarkSeam (WB3 — the store's per-pane bookmark persistence + jump cursor)
+
+/// The per-pane block-bookmark persistence seam plus the jump-to-failed cursor, bundled so the
+/// ``WorkspaceStore`` holds ONE stored property for the whole WB3 surface (keeping its body under the lint
+/// type-body ceiling). `load`/`save` are wired by the app to the ``PreferencesStore`` keyed by the
+/// per-SESSION scope key (``TerminalModelProviding/bookmarkScopeKey`` — NOT the stable pane id, so a
+/// relaunch with a fresh block-index space does not re-apply stale stars onto unrelated commands); left
+/// `nil` bookmarks are in-memory only. `jumpCursor` maps a pane to the index its last jump-to-failed
+/// landed on (`nil`/absent = start from the newest end).
+public struct BlockBookmarkSeam {
+    /// Loads the persisted bookmark indices for a session scope key (app → ``PreferencesStore``).
+    /// `nil` ⇒ in-memory only.
+    public var load: ((String) -> [UInt32])?
+    /// Persists a session scope key's bookmark indices (app → ``PreferencesStore``). `nil` ⇒ in-memory only.
+    public var save: ((String, [UInt32]) -> Void)?
+    /// The per-pane jump-to-failed cursor (the block index the last jump landed on; absent = newest end).
+    public var jumpCursor: [PaneID: UInt32] = [:]
+
+    public init() {}
+}
+
+// MARK: - BlockJump (the ONE shared absolute re-anchor jump — navigator + store share it)
+
+/// The single absolute "jump the viewport to navigator position N" implementation (WB2/WB3), so the
+/// navigator's per-row jump and the store's jump-to-failed cannot drift on the delta math. It re-anchors
+/// to the newest prompt (`scroll_to_bottom`) then steps `pos` prompts UP (delta `-pos`) from that known
+/// bottom anchor — robust to a prior scroll/jump (the delta math is ``BlockJump/jumpDelta(toTargetPos:)``).
+/// Pure over the ``TerminalSurfaceActions`` seam; `nonisolated` so both call sites reach it.
+enum BlockJump {
+    /// The libghostty `jump_to_prompt` delta to reach newest-first navigator position `pos` (0 = newest)
+    /// AFTER the viewport has been re-anchored to the newest prompt (`scroll_to_bottom`). From the bottom
+    /// anchor the newest prompt is "0 prompts up", so target N is exactly N prompts UP → a delta of `-N`.
+    /// The SINGLE source of the delta math: ``toNavigatorPosition(_:using:)`` and the navigator's per-row
+    /// ``CommandNavigatorView/jumpDelta(toTargetPos:)`` both route through this so the two can't drift.
+    nonisolated static func jumpDelta(toTargetPos pos: Int) -> Int {
+        -pos
+    }
+
+    /// Re-anchors to the bottom then jumps `actions` to newest-first navigator position `pos` (0 = newest).
+    /// A `pos` of 0 leaves the viewport at the bottom (the step is a no-op, skipped for clarity).
+    nonisolated static func toNavigatorPosition(_ pos: Int, using actions: TerminalSurfaceActions) {
+        actions.performBindingAction("scroll_to_bottom")
+        let delta = jumpDelta(toTargetPos: pos)
+        if delta != 0 { actions.performBindingAction("jump_to_prompt:\(delta)") }
+    }
+}
+
 // MARK: - WorkspaceStore × Command Blocks (WB2 — Warp-style per-command blocks)
 
-/// The WB2 active-pane Block ops, split into their own extension so the (already large) ``WorkspaceStore``
-/// body stays under the lint ceiling. They mirror ``WorkspaceStore/requestFindInActivePane()``: resolve the
-/// active pane's live terminal model (in whichever live model is active), then route to its block hooks.
+/// The WB2/WB3 active-pane Block ops, split into their own extension so the (already large)
+/// ``WorkspaceStore`` body stays under the lint ceiling. They mirror
+/// ``WorkspaceStore/requestFindInActivePane()``: resolve the active pane's live terminal model (in
+/// whichever live model is active), then route to its block hooks.
 public extension WorkspaceStore {
+    /// The active pane's id in WHICHEVER live model is active — the tree's active pane on the IDE shell, the
+    /// canvas focus on the retained-but-dead path. `nil` for an empty shell. Shared by the block ops that
+    /// need the id (the jump-to-failed CURSOR is keyed by it).
+    internal var activePaneID: PaneID? {
+        switch liveModel {
+        case .tree: tree.activeSession?.activeTab?.activePane
+        case .canvas: focusedPane
+        }
+    }
+
     /// The active pane's live terminal model in WHICHEVER live model is active (W5): the tree's active pane
     /// on the IDE shell, the canvas focus on the retained-but-dead path. `nil` for a non-terminal active
     /// pane (`.remoteGUI` / `.systemDialog`) or an empty shell. Shared by the WB2 block ops so the
     /// navigator / jump work on both paths.
     private var activeTerminalModel: TerminalViewModel? {
-        let activeID: PaneID? =
-            switch liveModel {
-            case .tree: tree.activeSession?.activeTab?.activePane
-            case .canvas: focusedPane
-            }
-        guard let activeID, let live = handle(for: activeID) as? LivePaneSession else { return nil }
-        return live.terminalModel
+        guard let activeID = activePaneID,
+              let provider = handle(for: activeID) as? TerminalModelProviding else { return nil }
+        return provider.terminalModel
     }
 
     /// Opens the Command Navigator (WB2: ⌃⌘O / the chrome chip / a menu item) over the active pane — routes
@@ -37,5 +113,49 @@ public extension WorkspaceStore {
         guard let model = activeTerminalModel,
               let actions = model.surface as? TerminalSurfaceActions else { return }
         actions.performBindingAction("jump_to_prompt:\(delta)")
+    }
+
+    /// WB3 BOOKMARKS: seeds a freshly-materialized pane's ``TerminalBlockModel`` from persistence (keyed by
+    /// the per-SESSION ``TerminalModelProviding/bookmarkScopeKey``, NOT the stable pane id — so a relaunch
+    /// with a fresh block-index space starts with no stars instead of grafting stale indices onto unrelated
+    /// commands) and wires its `onBookmarksChanged` to persist back on every toggle. A no-op for a
+    /// non-terminal pane / when no persistence seam is wired (tests / previews keep bookmarks in-memory).
+    /// Lives here (not in the main store body) so the store stays under the lint type-body ceiling.
+    internal func seedBlockBookmarks(id _: PaneID, handle: any PaneSessionHandle) {
+        guard let provider = handle as? TerminalModelProviding, let model = provider.terminalModel else { return }
+        let scopeKey = provider.bookmarkScopeKey
+        if let load = blockBookmarks.load { model.blocks.setBookmarks(load(scopeKey)) }
+        if let save = blockBookmarks.save {
+            model.blocks.onBookmarksChanged = { indices in save(scopeKey, Array(indices).sorted()) }
+        }
+    }
+
+    // MARK: - WB3: Re-run last command
+
+    /// Re-runs the active pane's LATEST captured command by re-injecting its text (verbatim, +1 newline)
+    /// into the pane's shell via the normal input path (``TerminalViewModel/sendInput(_:)`` → wire type 3).
+    /// A no-op if there is no terminal / no block / the command is empty (``BlockReRunEncoder`` returns
+    /// `nil`). NOT gated on completion — re-running a still-running command's text is fine.
+    func reRunLastCommandInActivePane() {
+        guard let model = activeTerminalModel, let latest = model.blocks.latest,
+              let bytes = BlockReRunEncoder.bytes(for: latest.commandText) else { return }
+        model.sendInput(bytes)
+    }
+
+    // MARK: - WB3: Jump to previous / next FAILED block
+
+    /// Jumps the active pane's viewport to the next (`forward`) / previous (`!forward`) FAILED block from
+    /// the per-pane cursor (``WorkspaceStore/blockJumpCursor``), updating the cursor, via the SAME absolute
+    /// re-anchor jump the navigator's per-row jump uses (``BlockJump``). Stops at the ends (no wrap). A
+    /// no-op for a non-terminal pane / no failures / no surface seam.
+    func jumpToFailedBlockInActivePane(forward: Bool) {
+        guard let paneID = activePaneID, let model = activeTerminalModel,
+              let actions = model.surface as? TerminalSurfaceActions else { return }
+        let blocks = model.blocks.navigatorBlocks
+        guard let target = BlockNavigation.adjacentFailed(
+            in: blocks, fromIndex: blockBookmarks.jumpCursor[paneID], forward: forward,
+        ), let pos = blocks.firstIndex(where: { $0.index == target.index }) else { return }
+        blockBookmarks.jumpCursor[paneID] = target.index
+        BlockJump.toNavigatorPosition(pos, using: actions)
     }
 }

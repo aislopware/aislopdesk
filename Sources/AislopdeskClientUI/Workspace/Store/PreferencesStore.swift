@@ -89,6 +89,7 @@ public final class PreferencesStore {
         static let agent = "settings.agent.v1"
         static let keybindings = "settings.keybindings.v1"
         static let rawOverrides = "settings.rawOverrides.v1"
+        static let blockBookmarks = "settings.blockBookmarks.v1"
     }
 
     // MARK: Init / load
@@ -184,6 +185,30 @@ public final class PreferencesStore {
         agent = AgentPreferences()
         keybindings = KeybindingPreferences()
         rawOverrides = [:]
+    }
+
+    // MARK: Block bookmarks (WB3 — per-session starred command blocks)
+
+    /// The persisted per-session block bookmarks: `sessionUUID → [block index]`. A separate
+    /// `UserDefaults` key (`settings.blockBookmarks.v1`) holding a plain `[String: [UInt32]]` JSON map —
+    /// NOT part of the four typed prefs models, and never folded into the env overlay / sidecar (so the
+    /// golden corpus is untouched). An absent key (fresh install) reads as empty.
+    private func loadBlockBookmarkMap() -> [String: [UInt32]] {
+        Self.decode([String: [UInt32]].self, defaults, Key.blockBookmarks) ?? [:]
+    }
+
+    /// The bookmarked block indices for `sessionUUID` (empty if none / unknown). The wiring layer seeds a
+    /// pane's ``TerminalBlockModel`` from this on attach.
+    public func blockBookmarks(for sessionUUID: String) -> [UInt32] {
+        loadBlockBookmarkMap()[sessionUUID] ?? []
+    }
+
+    /// Persists `indices` as `sessionUUID`'s bookmarks (an EMPTY set removes the key entry, keeping the map
+    /// tidy). The wiring layer calls this from the model's `onBookmarksChanged`.
+    public func setBlockBookmarks(_ indices: [UInt32], for sessionUUID: String) {
+        var map = loadBlockBookmarkMap()
+        if indices.isEmpty { map.removeValue(forKey: sessionUUID) } else { map[sessionUUID] = indices }
+        Self.encode(map, defaults, Key.blockBookmarks)
     }
 
     /// The keybinding conflicts the UI highlights — DISTINCT ids resolving to the same chord (W12

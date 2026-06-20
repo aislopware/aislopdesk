@@ -29,7 +29,9 @@ import Foundation
 @preconcurrency
 @MainActor
 @Observable
-public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiable, PaneSessionIDAdopting {
+public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiable, PaneSessionIDAdopting,
+    TerminalModelProviding
+{
     // MARK: Identity
 
     /// Set at construction to a placeholder, then re-pointed to the leaf's id by the store's
@@ -139,6 +141,15 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// The terminal model the leaf view renders, or `nil` for a `.remoteGUI` pane. A convenience over
     /// `connection.terminalModel` so the view never reaches into the connection.
     public var terminalModel: TerminalViewModel? { connection?.terminalModel }
+
+    /// WB3 BOOKMARKS persistence scope (``TerminalModelProviding/bookmarkScopeKey``): a token minted FRESH
+    /// per materialization of this session (so a relaunch — which re-numbers blocks from 0 in a brand-new
+    /// segmenter — starts with NO stars instead of grafting a prior run's raw block indices onto unrelated
+    /// commands). Stable across a transport reconnect within one launch (the same `LivePaneSession`
+    /// instance survives a reconnect; only the host shell + block-index space restart). Keyed by THIS rather
+    /// than the stable pane id precisely to make the persisted index set per-SESSION, matching the
+    /// ``PreferencesStore`` contract (a `sessionUUID → [block index]` map).
+    public let bookmarkScopeKey = UUID().uuidString
 
     /// Whether an OSC 133 command is currently executing in this pane's shell — the
     /// ``PaneSessionHandle/isShellBusy`` close-guard signal and the pill's "running…" cue. `false`

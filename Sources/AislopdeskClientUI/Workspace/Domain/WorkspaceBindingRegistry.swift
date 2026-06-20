@@ -35,6 +35,9 @@ public enum WorkspaceAction: Hashable, Sendable {
     case commandNavigator // ⌃⌘O — show/hide the searchable recent-blocks navigator over the active pane
     case jumpPreviousBlock // ⌃⌘[ — jump the viewport to the previous shell prompt (OSC 133, libghostty)
     case jumpNextBlock // ⌃⌘] — jump the viewport to the next shell prompt
+    case reRunLastCommand // ⌃⌘R — re-inject the active pane's latest captured command (verbatim + newline)
+    case jumpPreviousFailed // ⌃⌘⇧[ — jump to the previous (newer) FAILED block
+    case jumpNextFailed // ⌃⌘⇧] — jump to the next (older) FAILED block
 
     // Tabs
     case newTab // ⌘T
@@ -74,7 +77,10 @@ public extension WorkspaceAction {
         case .find,
              .commandNavigator,
              .jumpPreviousBlock,
-             .jumpNextBlock:
+             .jumpNextBlock,
+             .reRunLastCommand,
+             .jumpPreviousFailed,
+             .jumpNextFailed:
             // Block / find affordances target the active TERMINAL pane (its blocks / scrollback / prompt
             // marks), so they need one — but they degrade gracefully (a no-pane shell just no-ops), so
             // they are not greyed out aggressively.
@@ -255,6 +261,24 @@ public enum WorkspaceBindingRegistry {
             id: "view.jumpNextBlock", action: .jumpNextBlock, title: "Jump to Next Block",
             category: .view, chord: KeyChord(character: "]", [.control, .command]),
             symbol: "chevron.down.circle", keywords: "next prompt block command forward down jump scroll osc133",
+        ),
+        // WB3: re-run last command + jump-to-failed prev/next. ⌃⌘R / ⌃⌘⇧[ / ⌃⌘⇧] are all ⌘-prefixed (§5)
+        // and collision-free: ⌃⌘R is otherwise unbound; ⌃⌘⇧[ / ⌃⌘⇧] add ⇧ to the block-jump chords, so
+        // they are distinct from both ⌃⌘[ / ⌃⌘] (block jump) and ⌘⇧[ / ⌘⇧] (tab cycling).
+        WorkspaceBinding(
+            id: "view.reRunLastCommand", action: .reRunLastCommand, title: "Re-run Last Command",
+            category: .view, chord: KeyChord(character: "r", [.control, .command]),
+            symbol: "arrow.clockwise", keywords: "rerun repeat replay again last command block execute",
+        ),
+        WorkspaceBinding(
+            id: "view.jumpPreviousFailed", action: .jumpPreviousFailed, title: "Jump to Previous Failed",
+            category: .view, chord: KeyChord(character: "[", [.control, .command, .shift]),
+            symbol: "chevron.up.2", keywords: "previous failed error nonzero exit block jump back up",
+        ),
+        WorkspaceBinding(
+            id: "view.jumpNextFailed", action: .jumpNextFailed, title: "Jump to Next Failed",
+            category: .view, chord: KeyChord(character: "]", [.control, .command, .shift]),
+            symbol: "chevron.down.2", keywords: "next failed error nonzero exit block jump forward down",
         ),
     ]
 

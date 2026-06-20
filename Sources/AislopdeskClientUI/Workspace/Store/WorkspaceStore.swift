@@ -1044,6 +1044,16 @@ public final class WorkspaceStore {
         reconcile()
     }
 
+    /// WB3: the per-pane block-bookmark persistence seam + the per-pane jump-to-failed cursor, bundled into
+    /// one stored holder (``BlockBookmarkSeam``) so the store body stays under the lint ceiling. The seam's
+    /// `load`/`save` are wired by the app to the ``PreferencesStore`` (`settings.blockBookmarks.v1`), keyed
+    /// by the pane's STABLE id (`PaneID.raw`, persisted with the tree so it survives reconnect / relaunch);
+    /// left default (tests / previews) bookmarks are in-memory only. The `jumpCursor` records the block
+    /// index the last jump-to-failed landed on so a repeated ⌃⌘⇧[ / ⌃⌘⇧] walks every failure in order.
+    /// `@ObservationIgnored`: wiring, not view state. `internal` so the WorkspaceStore+Blocks extension
+    /// reaches it (extensions can't add stored state).
+    @ObservationIgnored var blockBookmarks = BlockBookmarkSeam()
+
     /// The pane frame size at which each `.remoteGUI` pane renders its stream pixel-for-pixel, cached
     /// from the last ``snapPaneToContentSize`` report. Drives "Resize to Native Stream Size".
     private var nativeFrameSize: [PaneID: CGSize] = [:]
@@ -2684,6 +2694,9 @@ public final class WorkspaceStore {
         connection?.onAgentSignal = { [weak self] event in
             self?.handleAgentSignal(id: id, event: event)
         }
+        // WB3 BOOKMARKS: seed the pane's block model from persistence + wire its change closure to persist
+        // back (the helper lives in WorkspaceStore+Blocks so this body stays under the lint ceiling).
+        seedBlockBookmarks(id: id, handle: handle)
     }
 
     /// Folds one Claude-Code agent-detection event (wire types 26/27) for pane `id` into the owning

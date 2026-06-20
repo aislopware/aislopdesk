@@ -307,6 +307,38 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(store.tree, before, "the WB2 block actions are active-pane affordances — the tree is unchanged")
     }
 
+    /// WB3: the re-run-last + jump-to-failed actions route to the store's active-pane hooks WITHOUT trapping
+    /// or mutating the tree. Against a `FakePaneSession` (not a live terminal) the hooks no-op, so this only
+    /// pins tree-immutability + trap-freedom — it is BLIND to which store hook fires or the forward/backward
+    /// mapping. The BEHAVIORAL dispatch (re-run bytes, the `.jumpPreviousFailed`/`.jumpNextFailed` direction
+    /// inversion) is proven in `WB3BlockRoutingDispatchTests` over a live-model recording double.
+    @MainActor
+    func testWB3BlockActionsRouteToStoreWithoutMutatingTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        WorkspaceBindingRegistry.route(.reRunLastCommand, to: store)
+        WorkspaceBindingRegistry.route(.jumpPreviousFailed, to: store)
+        WorkspaceBindingRegistry.route(.jumpNextFailed, to: store)
+        XCTAssertEqual(store.tree, before, "the WB3 block actions are active-pane affordances — the tree is unchanged")
+    }
+
+    /// WB3: pins the three new chords are exactly ⌃⌘R / ⌃⌘⇧[ / ⌃⌘⇧] (and so distinct from the existing
+    /// ⌃⌘[ / ⌃⌘] block-jump + ⌘⇧[ / ⌘⇧] tab-cycle chords). The generic uniqueness guard
+    /// (`testRegistryBindingsHaveUniqueIDsAndChords`) catches a collision; this pins the intended values.
+    @MainActor
+    func testWB3ChordsAreTheDocumentedDefaults() {
+        func chord(_ action: WorkspaceAction) -> KeyChord? {
+            WorkspaceBindingRegistry.binding(for: action)?.chord
+        }
+        XCTAssertEqual(chord(.reRunLastCommand), KeyChord(character: "r", [.control, .command]), "re-run = ⌃⌘R")
+        XCTAssertEqual(
+            chord(.jumpPreviousFailed), KeyChord(character: "[", [.control, .command, .shift]), "prev failed = ⌃⌘⇧[",
+        )
+        XCTAssertEqual(
+            chord(.jumpNextFailed), KeyChord(character: "]", [.control, .command, .shift]), "next failed = ⌃⌘⇧]",
+        )
+    }
+
     // MARK: - View: find routes to the overlay toggle (W14 #5)
 
     /// `.find` with an explicit `toggleFind` override fires the closure (the root view's find-bar `@State`),

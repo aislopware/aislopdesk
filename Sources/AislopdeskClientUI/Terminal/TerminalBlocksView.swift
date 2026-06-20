@@ -90,22 +90,26 @@ struct CommandNavigatorView: View {
     @Binding var isPresented: Bool
 
     @State private var query = ""
+    /// WB3: the status / bookmark filter segment (all / failed / bookmarked).
+    @State private var filter: BlockNavigatorFilter = .all
     /// The index of a block whose copy-output request is in flight (shows the row spinner).
     @State private var copyingIndex: UInt32?
-    /// A transient per-row status note ("Copied", "Output unavailable") keyed by block index.
+    /// A transient per-row status note ("Copied", "Output unavailable", "Re-run") keyed by block index.
     @State private var note: (index: UInt32, text: String)?
 
-    /// The blocks matching the query (newest first). An empty query shows all recent blocks.
+    /// The blocks matching the FILTER segment AND the text query (newest first). The filter (all / failed /
+    /// bookmarked) is the model query; the text query narrows it further.
     private var filtered: [CommandBlock] {
-        let all = model.blocks.navigatorBlocks
+        let base = model.blocks.blocks(filter: filter)
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return all }
-        return all.filter { $0.commandText.lowercased().contains(q) }
+        guard !q.isEmpty else { return base }
+        return base.filter { $0.commandText.lowercased().contains(q) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            filterBar
             Divider()
             if filtered.isEmpty {
                 emptyState
@@ -137,6 +141,19 @@ struct CommandNavigatorView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// WB3: the All / Failed / Bookmarked filter segment.
+    private var filterBar: some View {
+        Picker("Filter", selection: $filter) {
+            ForEach(BlockNavigatorFilter.allCases, id: \.self) { f in
+                Label(f.title, systemImage: f.symbol).tag(f)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
     }
 
     private var emptyState: some View {
@@ -177,6 +194,23 @@ struct CommandNavigatorView: View {
             }
 
             Spacer(minLength: 6)
+
+            // WB3: star / unstar this block (the "Bookmarked" filter shows only starred blocks). Filled
+            // star when bookmarked. Persists via the model's onBookmarksChanged (wired on attach).
+            Button { model.blocks.toggleBookmark(index: block.index) } label: {
+                Image(systemName: model.blocks.isBookmarked(block.index) ? "star.fill" : "star")
+                    .foregroundStyle(model.blocks.isBookmarked(block.index) ? Color.yellow : Color.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(model.blocks.isBookmarked(block.index) ? "Remove bookmark" : "Bookmark this command")
+            .accessibilityLabel(model.blocks.isBookmarked(block.index) ? "Remove bookmark" : "Bookmark command")
+
+            // WB3: re-run this block's command into THIS pane (verbatim text + newline). NOT gated on
+            // completion — re-running a still-running command's text is allowed.
+            Button { reRun(block) } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.borderless)
+                .help("Re-run this command")
+                .accessibilityLabel("Re-run command")
 
             // Jump to this block (libghostty jump_to_prompt by its relative position from newest).
             Button { jump(to: block) } label: { Image(systemName: "arrow.right.to.line") }
@@ -225,14 +259,9 @@ struct CommandNavigatorView: View {
         // navigatorBlocks is newest-first; pos 0 = the newest (current) prompt.
         let newest = model.blocks.navigatorBlocks
         guard let pos = newest.firstIndex(where: { $0.index == block.index }) else { return }
-        // Re-anchor to the newest prompt, then step `pos` prompts up from that known bottom anchor.
-        actions.performBindingAction("scroll_to_bottom")
-        let delta = Self.jumpDelta(toTargetPos: pos)
-        // delta == 0 (the newest block) → already re-anchored at the bottom; the no-op step is harmless
-        // (libghostty's scrollPrompt early-returns on a zero delta) but we skip it for clarity.
-        if delta != 0 {
-            actions.performBindingAction("jump_to_prompt:\(delta)")
-        }
+        // Re-anchor to the newest prompt, then step `pos` prompts up — the ONE shared absolute jump impl
+        // (so the navigator + the store's jump-to-failed can't drift on the delta math).
+        BlockJump.toNavigatorPosition(pos, using: actions)
         isPresented = false
     }
 
@@ -247,10 +276,22 @@ struct CommandNavigatorView: View {
     /// navigator list, which can diverge from libghostty's prompt count if the client evicted blocks the
     /// terminal still has in scrollback (or vice-versa). The two rings share the same 64-cap, so they track
     /// closely in practice; an off-by-a-few landing is self-correcting (the user re-jumps) and never traps.
-    /// `nonisolated`: a pure integer mapping with no view state, so it is callable off the main actor (the
-    /// unit test, and the `jump(to:)` call site both reach it without an actor hop).
+    ///
+    /// Forwards to ``BlockJump/jumpDelta(toTargetPos:)`` — the ONE source of the delta math the store's
+    /// jump-to-failed shares — so the two call sites can't drift. `nonisolated`: a pure integer mapping with
+    /// no view state, so the unit test (`CommandNavigatorJumpTests`) reaches it without an actor hop.
     nonisolated static func jumpDelta(toTargetPos pos: Int) -> Int {
-        -pos
+        BlockJump.jumpDelta(toTargetPos: pos)
+    }
+
+    /// WB3: re-runs `block`'s captured command into THIS navigator's own pane by re-injecting the verbatim
+    /// text (+1 newline) through the normal input path (``TerminalViewModel/sendInput(_:)`` → wire type 3).
+    /// A no-op for an empty command (``BlockReRunEncoder`` returns `nil`); closes the navigator so the user
+    /// sees the command land. NOT gated on completion (re-running a running command's text is fine).
+    private func reRun(_ block: CommandBlock) {
+        guard let bytes = BlockReRunEncoder.bytes(for: block.commandText) else { return }
+        model.sendInput(bytes)
+        isPresented = false
     }
 
     /// Requests `block`'s output, strips VT control sequences, and puts the plain text on the clipboard.

@@ -86,6 +86,14 @@ public struct CommandBlock: Equatable, Sendable, Identifiable {
         }
     }
 
+    /// Whether this block FAILED: completed with a reported non-zero exit code. A still-running block is
+    /// NEVER failed (no code yet), and a completed block with exit 0 / no reported code is a success. The
+    /// single predicate the "Failed" navigator filter + jump-to-failed both read.
+    public var isFailed: Bool {
+        if case .failed = status { return true }
+        return false
+    }
+
     /// The duration formatted compactly ("1.25s", "340ms"), or `nil` while running / unknown.
     public var durationLabel: String? {
         guard let ms = durationMS else { return nil }
@@ -128,6 +136,79 @@ public final class TerminalBlockModel {
     public var navigatorBlocks: [CommandBlock] { blocks.reversed() }
 
     public init() {}
+
+    // MARK: Bookmarks (WB3 — star a block)
+
+    /// The cap on how many bookmarks one pane retains, so a long-lived session can't grow the set
+    /// unbounded. When a toggle would exceed it, the OLDEST-inserted bookmark is evicted (FIFO). Generous
+    /// enough that no real session hits it.
+    public static let maxBookmarks = 256
+
+    /// The bookmarked block indices, in INSERTION order (so the cap evicts the oldest). Stored as an
+    /// ordered array but exposed as a `Set` for membership; persistence rides ``onBookmarksChanged``.
+    @ObservationIgnored private var bookmarkOrder: [UInt32] = []
+
+    /// The bookmarked block indices for this pane. `private(set)` — mutated only through
+    /// ``toggleBookmark(index:)`` / ``setBookmarks(_:)`` so the cap + the change notification always run.
+    /// Observed so the navigator star + "Bookmarked" filter re-render on a toggle.
+    public private(set) var bookmarkedIndices: Set<UInt32> = []
+
+    /// Fired on EVERY bookmark mutation with the current set, so the wiring layer can persist it (the model
+    /// stays `UserDefaults`-free / pure / testable). `nil` (the default) = no persistence (a unit test or a
+    /// preview). `@ObservationIgnored`: a wiring sink, not view state.
+    @ObservationIgnored public var onBookmarksChanged: ((Set<UInt32>) -> Void)?
+
+    /// Whether `index` is bookmarked.
+    public func isBookmarked(_ index: UInt32) -> Bool { bookmarkedIndices.contains(index) }
+
+    /// Toggles `index`'s bookmark: removes it if set, else adds it (evicting the oldest if over the cap).
+    /// Fires ``onBookmarksChanged`` with the resulting set. Idempotent in the sense that two toggles return
+    /// to the original set.
+    public func toggleBookmark(index: UInt32) {
+        if bookmarkedIndices.contains(index) {
+            bookmarkedIndices.remove(index)
+            bookmarkOrder.removeAll { $0 == index }
+        } else {
+            bookmarkedIndices.insert(index)
+            bookmarkOrder.append(index)
+            // Cap by count — evict the oldest-inserted bookmarks (FIFO) until under the bound.
+            while bookmarkOrder.count > Self.maxBookmarks {
+                let evicted = bookmarkOrder.removeFirst()
+                bookmarkedIndices.remove(evicted)
+            }
+        }
+        onBookmarksChanged?(bookmarkedIndices)
+    }
+
+    /// SEEDS the bookmark set from persistence on attach (does NOT fire ``onBookmarksChanged`` — this is
+    /// the restore direction, not a user edit). Applies the same cap (a corrupt over-long persisted set is
+    /// trimmed, keeping the FIRST ``maxBookmarks`` in the provided order). The order is the caller's
+    /// (persistence stores it as an array); insertion order is preserved for future FIFO eviction.
+    public func setBookmarks(_ indices: [UInt32]) {
+        bookmarkOrder = []
+        bookmarkedIndices = []
+        for index in indices where !bookmarkedIndices.contains(index) {
+            guard bookmarkOrder.count < Self.maxBookmarks else { break }
+            bookmarkOrder.append(index)
+            bookmarkedIndices.insert(index)
+        }
+    }
+
+    // MARK: Filtered views (WB3 — status / bookmark navigator filter)
+
+    /// The blocks NEWEST-FIRST matching `filter` — the navigator's filtered list (intersected with its text
+    /// query in the view). `.all` is every block; `.failed` is completed non-zero exits (a RUNNING block is
+    /// never failed); `.bookmarked` is the starred set.
+    public func blocks(filter: BlockNavigatorFilter) -> [CommandBlock] {
+        switch filter {
+        case .all:
+            navigatorBlocks
+        case .failed:
+            navigatorBlocks.filter(\.isFailed)
+        case .bookmarked:
+            navigatorBlocks.filter { bookmarkedIndices.contains($0.index) }
+        }
+    }
 
     /// The block for `index`, or `nil` if unknown / evicted.
     public func block(at index: UInt32) -> CommandBlock? {
@@ -195,6 +276,14 @@ public final class TerminalBlockModel {
     /// one never hangs). Called on a session reset / reconnect — the dead session's blocks are stale.
     public func reset() {
         blocks.removeAll()
+        // Bookmarks are per-SESSION display state — a fresh session starts with none. The wiring layer
+        // re-seeds them from persistence on the next attach (a new materialization mints a NEW
+        // per-session scope key, so a relaunch starts empty rather than re-applying stale indices).
+        // Cleared WITHOUT firing onBookmarksChanged so a reset doesn't overwrite the persisted set with
+        // empty (persistence keys by the session scope key — `LivePaneSession.bookmarkScopeKey` — not the
+        // stable pane id, so a within-launch reconnect's reset leaves the prior set untouched on disk).
+        bookmarkOrder.removeAll()
+        bookmarkedIndices.removeAll()
         // Resolve every in-flight request as "unavailable" so its continuation never strands.
         let stranded = pending
         pending.removeAll()
@@ -283,5 +372,79 @@ public final class TerminalBlockModel {
         if let generation, requestGeneration[index] != generation { return } // stale timer — ignore.
         guard let callbacks = pending.removeValue(forKey: index) else { return }
         for callback in callbacks { callback(nil) }
+    }
+}
+
+// MARK: - BlockNavigatorFilter (WB3 — the navigator's status / bookmark segment)
+
+/// The Command Navigator's filter segment (WB3): all recent blocks, only FAILED ones (jump-to-error), or
+/// only BOOKMARKED ones. A pure value enum so the model query (``TerminalBlockModel/blocks(filter:)``) and
+/// the segmented control read one vocabulary. `CaseIterable` so the segmented control enumerates it.
+public enum BlockNavigatorFilter: String, CaseIterable, Sendable, Hashable {
+    case all
+    case failed
+    case bookmarked
+
+    /// The segment label.
+    public var title: String {
+        switch self {
+        case .all: "All"
+        case .failed: "Failed"
+        case .bookmarked: "Bookmarked"
+        }
+    }
+
+    /// The SF Symbol for the segment.
+    public var symbol: String {
+        switch self {
+        case .all: "list.bullet"
+        case .failed: "xmark.octagon"
+        case .bookmarked: "star"
+        }
+    }
+}
+
+// MARK: - BlockNavigation (WB3 — jump-to-failed cursor stepping)
+
+/// PURE jump-to-failed navigation over a newest-first block list (WB3). Given the navigator's newest-first
+/// `blocks`, a cursor (a block INDEX, or `nil` = start from the newest end), and a direction, it finds the
+/// next/prev FAILED block — STOPPING at the ends (never wraps). Used by the active-pane "Jump to
+/// Previous/Next Failed" store ops; kept pure + `nonisolated` so it unit-tests with no view / actor.
+enum BlockNavigation {
+    /// The next (`forward == true`) / previous (`forward == false`) FAILED block from the cursor in the
+    /// NEWEST-FIRST `blocks` list, or `nil` if there is none in that direction (no wrap).
+    ///
+    /// Direction is expressed over the newest-first list ORDER: "forward" steps toward later positions
+    /// (older blocks), "backward" toward earlier positions (newer blocks). `fromIndex == nil` starts from
+    /// the newest end so a first "forward" jump lands on the newest failed block.
+    ///
+    /// If the cursor sits ON a failed block, the search ADVANCES PAST it (so repeated jumps walk through
+    /// every failure rather than sticking). A cursor index not present in `blocks` (evicted) starts from the
+    /// matching end.
+    nonisolated static func adjacentFailed(
+        in blocks: [CommandBlock],
+        fromIndex: UInt32?,
+        forward: Bool,
+    ) -> CommandBlock? {
+        guard !blocks.isEmpty else { return nil }
+        // The cursor's position in the newest-first list, or a virtual position just OFF the matching end
+        // when there is no cursor / it was evicted: forward starts before position 0 (so it can land on 0),
+        // backward starts after the last position (so it can land on the last).
+        let cursorPos: Int = fromIndex
+            .flatMap { idx in blocks.firstIndex { $0.index == idx } } ?? (forward ? -1 : blocks.count)
+        if forward {
+            var pos = cursorPos + 1
+            while pos < blocks.count {
+                if blocks[pos].isFailed { return blocks[pos] }
+                pos += 1
+            }
+        } else {
+            var pos = cursorPos - 1
+            while pos >= 0 {
+                if blocks[pos].isFailed { return blocks[pos] }
+                pos -= 1
+            }
+        }
+        return nil
     }
 }

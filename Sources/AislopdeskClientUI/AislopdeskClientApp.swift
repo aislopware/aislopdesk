@@ -147,6 +147,20 @@ public struct AislopdeskClientApp: App {
             // releases the stack before a same-tick sibling is admitted (avoids a transient cap+1).
             videoTeardownSettle: .milliseconds(250),
         )
+        // WB3 BOOKMARKS: wire the per-pane block-bookmark persistence to the live PreferencesStore, keyed
+        // by the per-SESSION scope key the store resolves (`LivePaneSession.bookmarkScopeKey`) — NOT the
+        // stable pane id. The block-index space restarts at 0 each session, so persisting raw indices under
+        // a relaunch-stable pane id would re-star unrelated commands; a fresh session token instead starts
+        // with no stars (and a within-launch reconnect keeps the same token, matching the PreferencesStore
+        // `sessionUUID → [block index]` contract). `wireMaterializedLeaf` seeds each pane's block model from
+        // this and persists back on every star toggle. CLIENT-only display state — never touches the env
+        // overlay / sidecar / golden corpus.
+        store.blockBookmarks.load = { [weak preferences] scopeKey in
+            preferences?.blockBookmarks(for: scopeKey) ?? []
+        }
+        store.blockBookmarks.save = { [weak preferences] scopeKey, indices in
+            preferences?.setBlockBookmarks(indices, for: scopeKey)
+        }
         // Automation seams (docs/22 §7): only when the env vars are present do we let the bootstrap
         // REPLACE the restored workspace with the autoconnect/video shape (a normal launch restores the
         // persisted tree untouched). With nil persistence above, the bootstrap reconcile's

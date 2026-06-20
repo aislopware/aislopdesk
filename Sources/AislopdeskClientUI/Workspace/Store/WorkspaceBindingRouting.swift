@@ -71,6 +71,11 @@ public extension WorkspaceBindingRegistry {
         case .commandNavigator: store.requestBlockNavigatorInActivePane()
         case .jumpPreviousBlock: store.jumpToBlockInActivePane(delta: -1)
         case .jumpNextBlock: store.jumpToBlockInActivePane(delta: 1)
+        case .reRunLastCommand: store.reRunLastCommandInActivePane()
+        // "Previous failed" = toward NEWER blocks (backward over the newest-first list); "next failed" =
+        // toward OLDER blocks (forward).
+        case .jumpPreviousFailed: store.jumpToFailedBlockInActivePane(forward: false)
+        case .jumpNextFailed: store.jumpToFailedBlockInActivePane(forward: true)
         // Tabs
         case .newTab: store.newTabDefault()
         case .nextTab: store.cycleTab(by: 1)
@@ -114,6 +119,9 @@ public extension WorkspaceBindingRegistry {
         case .commandNavigator: store.requestBlockNavigatorInActivePane()
         case .jumpPreviousBlock: store.jumpToBlockInActivePane(delta: -1)
         case .jumpNextBlock: store.jumpToBlockInActivePane(delta: 1)
+        case .reRunLastCommand: store.reRunLastCommandInActivePane()
+        case .jumpPreviousFailed: store.jumpToFailedBlockInActivePane(forward: false)
+        case .jumpNextFailed: store.jumpToFailedBlockInActivePane(forward: true)
         case .nextTab,
              .prevTab,
              .selectTab: break // no canvas tab model
