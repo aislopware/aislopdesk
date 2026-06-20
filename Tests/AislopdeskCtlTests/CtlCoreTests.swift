@@ -221,6 +221,80 @@ final class CtlCoreTests: XCTestCase {
         XCTAssertEqual(params["paneId"] as? String, "z")
     }
 
+    func testSubscribeParamsDefaultAnsiStrip() {
+        // Default: ansiStrip is true (server strips ANSI — clean agent output).
+        let params = subscribeParams(paneId: "sub-uuid")
+        XCTAssertEqual(params["paneId"] as? String, "sub-uuid")
+        XCTAssertEqual(params["ansiStrip"] as? Bool, true, "subscribeParams default must be ansiStrip:true")
+        XCTAssertEqual(params.count, 2, "subscribeParams must contain paneId and ansiStrip")
+    }
+
+    func testSubscribeParamsKeepAnsi() {
+        // --ansi flag: ansiStrip is false (raw PTY bytes passed through in event text).
+        let params = subscribeParams(paneId: "sub-uuid", ansiStrip: false)
+        XCTAssertEqual(params["paneId"] as? String, "sub-uuid")
+        XCTAssertEqual(params["ansiStrip"] as? Bool, false, "subscribeParams with ansiStrip:false must propagate flag")
+    }
+
+    func testResizeParams() {
+        let params = resizeParams(paneId: "p", rows: 40, cols: 132)
+        XCTAssertEqual(params["paneId"] as? String, "p")
+        XCTAssertEqual(params["rows"] as? Int, 40)
+        XCTAssertEqual(params["cols"] as? Int, 132)
+        XCTAssertEqual(params.count, 3, "resizeParams must contain paneId, rows, cols")
+    }
+
+    func testResizeParamsEncoding() throws {
+        let params = resizeParams(paneId: "my-pane", rows: 24, cols: 80)
+        let line = try XCTUnwrap(encodeRequestLine(id: "rz1", method: "resize", params: params))
+        let data = try XCTUnwrap(line.data(using: .utf8))
+        let obj = try XCTUnwrap(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["method"] as? String, "resize")
+        let dp = try XCTUnwrap(obj["params"] as? [String: Any])
+        XCTAssertEqual(dp["paneId"] as? String, "my-pane")
+        XCTAssertEqual(dp["rows"] as? Int, 24)
+        XCTAssertEqual(dp["cols"] as? Int, 80)
+    }
+
+    func testSubscribeParamsEncoding() throws {
+        // Default (ansiStrip: true) encodes both paneId and ansiStrip.
+        let params = subscribeParams(paneId: "pane-abc")
+        let line = try XCTUnwrap(encodeRequestLine(id: "sub1", method: "subscribe", params: params))
+        let data = try XCTUnwrap(line.data(using: .utf8))
+        let obj = try XCTUnwrap(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["method"] as? String, "subscribe")
+        let dp = try XCTUnwrap(obj["params"] as? [String: Any])
+        XCTAssertEqual(dp["paneId"] as? String, "pane-abc")
+        XCTAssertEqual(dp["ansiStrip"] as? Bool, true, "default subscribe must encode ansiStrip:true")
+    }
+
+    func testSubscribeParamsKeepAnsiEncoding() throws {
+        // --ansi flag (ansiStrip: false): server receives ansiStrip:false and passes raw PTY text.
+        let params = subscribeParams(paneId: "pane-xyz", ansiStrip: false)
+        let line = try XCTUnwrap(encodeRequestLine(id: "sub2", method: "subscribe", params: params))
+        let data = try XCTUnwrap(line.data(using: .utf8))
+        let obj = try XCTUnwrap(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["method"] as? String, "subscribe")
+        let dp = try XCTUnwrap(obj["params"] as? [String: Any])
+        XCTAssertEqual(dp["paneId"] as? String, "pane-xyz")
+        XCTAssertEqual(dp["ansiStrip"] as? Bool, false, "--ansi flag must encode ansiStrip:false")
+    }
+
+    func testReadParamsFullRingEncoding() throws {
+        // `read --full` clears any line limit: just paneId + ansiStrip (no limit field).
+        // This mirrors cmdRead: fullRing=true sets limitLines=nil → same readParams call.
+        let params = readParams(paneId: "ring-pane", ansiStrip: true)
+        let line = try XCTUnwrap(encodeRequestLine(id: "rf1", method: "read", params: params))
+        let data = try XCTUnwrap(line.data(using: .utf8))
+        let obj = try XCTUnwrap(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["method"] as? String, "read")
+        let dp = try XCTUnwrap(obj["params"] as? [String: Any])
+        XCTAssertEqual(dp["paneId"] as? String, "ring-pane")
+        XCTAssertEqual(dp["ansiStrip"] as? Bool, true)
+        // No "lines" field — full ring is expressed by the absence of a limit.
+        XCTAssertNil(dp["lines"], "--full must not encode a lines field (server returns full scrollback)")
+    }
+
     // MARK: - Round-trip: encode then decode
 
     func testRoundTripRunRequest() throws {

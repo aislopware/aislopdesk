@@ -147,3 +147,22 @@ public func spawnParams(
 public func killParams(paneId: String) -> [String: Any] {
     ["paneId": paneId]
 }
+
+/// Builds the params dict for the `subscribe` verb.
+/// - Parameters:
+///   - paneId: the target pane UUID string.
+///   - ansiStrip: when `true` (default), the host strips ANSI escape sequences from each
+///     output chunk before emitting the event line. Pass `false` to receive raw PTY bytes
+///     (useful when the caller needs to parse colour codes or cursor sequences itself).
+public func subscribeParams(paneId: String, ansiStrip: Bool = true) -> [String: Any] {
+    ["paneId": paneId, "ansiStrip": ansiStrip]
+}
+
+/// Builds the params dict for the `resize` verb.
+/// - Parameters:
+///   - paneId: the target pane UUID string.
+///   - rows: new PTY row count (1–65535).
+///   - cols: new PTY column count (1–65535).
+public func resizeParams(paneId: String, rows: Int, cols: Int) -> [String: Any] {
+    ["paneId": paneId, "rows": rows, "cols": cols]
+}

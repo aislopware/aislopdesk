@@ -90,6 +90,8 @@ public struct AgentControlHandler: Sendable {
             spawnPane(id: id, params: params, server: server)
         case "kill":
             killPane(id: id, params: params, server: server)
+        case "resize":
+            resizePane(id: id, params: params, server: server)
         default:
             errorResponse(id: id, message: "unknown method: \(method)")
         }
@@ -299,6 +301,27 @@ public struct AgentControlHandler: Sendable {
         return errorResponse(id: id, message: "pane not found: \(paneId)")
     }
 
+    /// `resize` — sets the PTY window size via `TIOCSWINSZ`. Returns `{}` on success.
+    ///
+    /// Validates `rows` and `cols` are in `1…65535` (validate-then-drop on out-of-range).
+    /// The kernel delivers `SIGWINCH` to the foreground process group automatically.
+    static func resizePane(id: String, params: [String: Any], server: HostServer) -> String {
+        guard let paneId = params["paneId"] as? String else {
+            return errorResponse(id: id, message: "missing params.paneId")
+        }
+        guard let rowsRaw = params["rows"] as? Int, rowsRaw >= 1, rowsRaw <= 65535 else {
+            return errorResponse(id: id, message: "rows must be 1..65535")
+        }
+        guard let colsRaw = params["cols"] as? Int, colsRaw >= 1, colsRaw <= 65535 else {
+            return errorResponse(id: id, message: "cols must be 1..65535")
+        }
+        guard let session = server.lookupPaneForControl(paneId: paneId) else {
+            return errorResponse(id: id, message: "pane not found: \(paneId)")
+        }
+        session.resizeForControl(rows: UInt16(rowsRaw), cols: UInt16(colsRaw))
+        return successResponse(id: id, result: [:])
+    }
+
     // MARK: JSON helpers (pure, no Foundation JSONEncoder/Decoder — avoids cyclic-import risk)
 
     /// Encodes a success response as a NDJSON line.
@@ -487,6 +510,14 @@ public final class AgentControlAcceptor: @unchecked Sendable {
                     continue
                 }
 
+                // `subscribe` hijacks the connection: it streams NDJSON event lines and never
+                // returns to the request-dispatch loop. The server does NOT emit an initial
+                // {id,ok,result} handshake line — it immediately begins streaming events.
+                if method == "subscribe" {
+                    serveSubscribe(fd: fd, id: reqID, params: params, server: server, log: log)
+                    return // connection consumed; caller closes fd
+                }
+
                 // Dispatch (may block for `wait`).
                 let response = AgentControlHandler.dispatch(
                     id: reqID, method: method, params: params, server: server,
@@ -498,6 +529,144 @@ public final class AgentControlAcceptor: @unchecked Sendable {
             if lineBuffer.count > maxRequestBytes {
                 log?("agent-control: oversized partial line (\(lineBuffer.count) bytes) — discarding")
                 lineBuffer.removeAll(keepingCapacity: false)
+            }
+        }
+    }
+
+    // MARK: subscribe — streaming event pump
+
+    /// Implements the `subscribe` verb: streams NDJSON event lines to `fd` until the pane exits
+    /// or the client disconnects (EPIPE). No initial handshake line is sent — event streaming
+    /// begins immediately. The connection fd is consumed (this method owns it until return).
+    ///
+    /// Event shapes (one UTF-8 NDJSON line per event, newline-terminated):
+    /// - `{"event":"output","text":"<plain-text chunk>"}` — zero or more per PTY read chunk
+    ///   (ANSI-stripped for clean agent consumption).
+    /// - `{"event":"closed"}` — exactly one, after the PTY's read loop has fully drained to EOF
+    ///   (guaranteed to arrive after all `output` events for the session).
+    ///
+    /// Cleanup: both the output observer and the close observer are removed on any disconnect
+    /// or pane exit. The pump runs on the connection thread already detached by the acceptor —
+    /// no new thread is needed.
+    private static func serveSubscribe(
+        fd: Int32,
+        id: String,
+        params: [String: Any],
+        server: HostServer,
+        log _: (@Sendable (String) -> Void)?,
+    ) {
+        guard let paneId = params["paneId"] as? String else {
+            let resp = AgentControlHandler.errorResponse(id: id, message: "missing params.paneId")
+            writeAll(fd: fd, data: Data(resp.utf8))
+            return
+        }
+        guard let session = server.lookupPaneForControl(paneId: paneId) else {
+            let resp = AgentControlHandler.errorResponse(id: id, message: "pane not found: \(paneId)")
+            writeAll(fd: fd, data: Data(resp.utf8))
+            return
+        }
+
+        // `ansiStrip` — default ON (strip ANSI for clean agent text). The client may pass
+        // `ansiStrip: false` to receive raw PTY bytes (e.g. to parse colour codes itself).
+        let ansiStrip = (params["ansiStrip"] as? Bool) ?? true
+
+        // Box shared state under NSCondition so the output observer (PTY read-loop thread) and
+        // close observer (exit task thread) can deliver events to the pump thread safely.
+        // Swift 6 strict sendability: mutable state lives in an @unchecked Sendable class; the
+        // NSCondition serialises all accesses — no captured `var`s across concurrency boundaries.
+        final class SubscribeState: @unchecked Sendable {
+            let condition = NSCondition()
+            var lines: [Data] = [] // pending NDJSON event lines buffered by observers
+            var closed = false // set by the close observer when the PTY exits
+        }
+        let state = SubscribeState()
+        let observerID = UUID()
+
+        // Output observer — runs on the PTY read-loop thread for every raw chunk.
+        session.registerOutputObserver(id: observerID) { chunk in
+            // Optionally strip ANSI for clean agent text (PUA glyphs and charset designators
+            // removed). When ansiStrip is false the raw PTY bytes are passed through.
+            let rawStr: String =
+                if let utf8 = String(bytes: chunk, encoding: .utf8) {
+                    utf8
+                } else {
+                    String(chunk.map { $0 < 0x80 ? $0 : UInt8(0x3F) }
+                        .map { Character(UnicodeScalar($0)) })
+                }
+            let text = ansiStrip ? ANSIStripper.strip(rawStr) : rawStr
+            guard !text.isEmpty else { return }
+            let eventObj: [String: Any] = ["event": "output", "text": text]
+            guard let eventData = try? JSONSerialization.data(withJSONObject: eventObj, options: [.sortedKeys]),
+                  var lineData = Optional(eventData)
+            else { return }
+            lineData.append(0x0A)
+            state.condition.lock()
+            if !state.closed {
+                state.lines.append(lineData)
+                state.condition.signal()
+            }
+            state.condition.unlock()
+        }
+
+        // Close observer — runs from the exit task after awaitEOFOrTimeout (all output
+        // observer calls for this pane have completed before this fires).
+        session.registerCloseObserver(id: observerID) {
+            state.condition.lock()
+            state.closed = true
+            state.condition.signal()
+            state.condition.unlock()
+        }
+
+        // Pump loop: park on the condition, drain the pending batch, write to fd.
+        // Detect client disconnect via write(2) failure (EPIPE / -1).
+        var clientDisconnected = false
+        while !clientDisconnected {
+            state.condition.lock()
+            while state.lines.isEmpty, !state.closed {
+                state.condition.wait()
+            }
+            let batch = state.lines
+            let isClosed = state.closed
+            state.lines.removeAll(keepingCapacity: true)
+            state.condition.unlock()
+
+            for line in batch {
+                var ok = true
+                line.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let base = raw.baseAddress else { ok = false
+                        return
+                    }
+                    var offset = 0
+                    let total = raw.count
+                    while offset < total {
+                        let n = write(fd, base + offset, total - offset)
+                        if n > 0 { offset += n }
+                        else if n < 0, errno == EINTR { continue }
+                        else { ok = false
+                            return
+                        } // EPIPE or other error → client gone
+                    }
+                }
+                if !ok {
+                    clientDisconnected = true
+                    break
+                }
+            }
+            if isClosed { break } // pane exited; emit closed event below and return
+        }
+
+        // Deregister both observers before touching the fd again.
+        session.removeOutputObserver(id: observerID)
+        session.removeCloseObserver(id: observerID)
+
+        // Emit {"event":"closed"} only on a clean pane-exit (not on client disconnect so we
+        // do not write to a broken pipe). `state.closed` is set exclusively by the close
+        // observer and is only true when the PTY exit task fired — not on write failure.
+        if !clientDisconnected {
+            let closedObj: [String: Any] = ["event": "closed"]
+            if var closedData = try? JSONSerialization.data(withJSONObject: closedObj, options: [.sortedKeys]) {
+                closedData.append(0x0A)
+                writeAll(fd: fd, data: closedData)
             }
         }
     }

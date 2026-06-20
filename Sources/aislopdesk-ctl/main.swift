@@ -6,12 +6,14 @@ import Foundation
 //
 // Usage (subcommands map to protocol verbs):
 //   aislopdesk-ctl [--socket PATH] list-panes [--json]
-//   aislopdesk-ctl [--socket PATH] read <paneId> [--ansi] [--lines N]
+//   aislopdesk-ctl [--socket PATH] read <paneId> [--ansi] [--full] [--lines N]
 //   aislopdesk-ctl [--socket PATH] write <paneId> --text "..."
 //   aislopdesk-ctl [--socket PATH] run <paneId> --cmd "..."
 //   aislopdesk-ctl [--socket PATH] wait <paneId> --until "<regex>" [--timeout-ms N]
 //   aislopdesk-ctl [--socket PATH] spawn [--cmd "..."] [--cwd "..."] [--env K=V] [--rows N] [--cols N]
 //   aislopdesk-ctl [--socket PATH] kill <paneId>
+//   aislopdesk-ctl [--socket PATH] subscribe <paneId> [--ansi]
+//   aislopdesk-ctl [--socket PATH] resize <paneId> --rows N --cols N
 //
 // Socket path resolved from (in priority order):
 //   1. --socket flag
@@ -44,8 +46,9 @@ func printUsage() {
       list-panes [--json]
           List all live panes.  --json emits the raw NDJSON response line.
 
-      read <paneId> [--ansi] [--lines N]
+      read <paneId> [--ansi] [--full] [--lines N]
           Dump the pane's scrollback.  --ansi keeps ANSI escape codes (default: stripped).
+          --full reads the complete scrollback ring (overrides --lines).
           --lines N limits output to the last N lines.
 
       write <paneId> --text "..."
@@ -66,6 +69,17 @@ func printUsage() {
 
       kill <paneId>
           Kill a pane by its UUID id.
+
+      subscribe <paneId> [--ansi]
+          Stream live PTY output as NDJSON event lines until the pane exits.
+          Each line is one of:
+            {"event":"output","text":"<plain-text chunk>"}
+            {"event":"closed"}
+          --ansi keeps ANSI escape codes in event text (default: stripped).
+          Prints event lines to stdout.  Exits 0 when the pane closes.
+
+      resize <paneId> --rows N --cols N
+          Resize the pane's PTY to N rows × N cols (1–65535 each).
 
     Flags:
       --socket PATH   Override the control socket path.
@@ -228,11 +242,15 @@ func cmdRead(socketPath: String, rest: [String]) {
     let paneId = rest[0]
     var keepAnsi = false
     var limitLines: Int?
+    var fullRing = false
     var idx = 1
     while idx < rest.count {
         switch rest[idx] {
         case "--ansi":
             keepAnsi = true
+        case "--full":
+            // Explicit "full ring" — overrides any --lines limit and reads the complete scrollback.
+            fullRing = true
         case "--lines":
             guard idx + 1 < rest.count else { die("--lines requires a value") }
             idx += 1
@@ -243,6 +261,8 @@ func cmdRead(socketPath: String, rest: [String]) {
         }
         idx += 1
     }
+    // --full takes precedence over --lines.
+    if fullRing { limitLines = nil }
 
     let obj = callVerb(socketPath: socketPath, method: "read", params: readParams(paneId: paneId, ansiStrip: !keepAnsi))
     requireOK(obj, context: "read")
@@ -398,6 +418,135 @@ func cmdKill(socketPath: String, rest: [String]) {
     stdout("killed \(paneId)\n")
 }
 
+func cmdSubscribe(socketPath: String, rest: [String]) {
+    guard !rest.isEmpty else { die("subscribe requires <paneId>") }
+    let paneId = rest[0]
+    // --ansi: keep ANSI escape codes in event text (default: stripped for clean agent output).
+    var keepAnsi = false
+    var idx = 1
+    while idx < rest.count {
+        switch rest[idx] {
+        case "--ansi":
+            keepAnsi = true
+        default:
+            die("unknown flag for subscribe: \(rest[idx])")
+        }
+        idx += 1
+    }
+
+    // `subscribe` keeps the connection open and streams NDJSON event lines.
+    // We can't use `sendRequest` (reads one line then closes). Open the socket directly,
+    // send the request, then read lines until the connection closes (pane exited or error).
+    let maxPath = MemoryLayout.size(ofValue: sockaddr_un().sun_path) - 1
+    guard socketPath.utf8.count <= maxPath else { die("socket path too long: \(socketPath)") }
+
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { die("socket(2) failed: \(String(cString: strerror(errno)))") }
+    defer { close(fd) }
+
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    _ = withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+        socketPath.withCString { cstr in
+            strncpy(
+                UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: CChar.self),
+                cstr,
+                maxPath,
+            )
+        }
+    }
+    let connectResult = withUnsafePointer(to: &addr) { ptr in
+        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard connectResult == 0 else {
+        die("connect '\(socketPath)': \(String(cString: strerror(errno)))")
+    }
+
+    // Send the subscribe request.
+    guard let reqLine = encodeRequestLine(
+        id: "1",
+        method: "subscribe",
+        params: subscribeParams(paneId: paneId, ansiStrip: !keepAnsi),
+    ) else {
+        die("failed to encode subscribe request")
+    }
+    let sendData = Data((reqLine + "\n").utf8)
+    sendData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        guard let base = raw.baseAddress else { return }
+        var offset = 0
+        let total = raw.count
+        while offset < total {
+            let n = write(fd, base + offset, total - offset)
+            if n > 0 { offset += n }
+            else if n < 0, errno == EINTR { continue }
+            else { die("write to socket failed: \(String(cString: strerror(errno)))") }
+        }
+    }
+
+    // Stream NDJSON event lines until the server closes the connection.
+    // The server never reads from the fd again after accept, so we just read.
+    var lineBuffer = Data()
+    var chunk = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let n = read(fd, &chunk, chunk.count)
+        if n < 0, errno == EINTR { continue }
+        if n <= 0 { break } // server closed (pane exited) or error
+        lineBuffer.append(contentsOf: chunk[0..<n])
+        while let nlIdx = lineBuffer.firstIndex(of: 0x0A) {
+            let lineData = lineBuffer[lineBuffer.startIndex..<nlIdx]
+            lineBuffer = Data(lineBuffer[lineBuffer.index(after: nlIdx)...])
+            guard let line = String(bytes: lineData, encoding: .utf8), !line.isEmpty else { continue }
+            // Print the raw NDJSON event line (let the caller parse if needed).
+            stdout(line + "\n")
+            // On {"event":"closed"} we can exit cleanly.
+            if let obj = decodeResponseLine(line),
+               let event = obj["event"] as? String, event == "closed"
+            {
+                exit(0)
+            }
+            // If the server sent an error response (pane not found etc.), surface it and exit.
+            if let obj = decodeResponseLine(line), let ok = obj["ok"] as? Bool, !ok {
+                let errMsg = obj["error"] as? String ?? "(no error)"
+                die("subscribe: \(errMsg)")
+            }
+        }
+    }
+    // Server closed connection without a "closed" event (e.g. host restarted).
+    exit(0)
+}
+
+func cmdResize(socketPath: String, rest: [String]) {
+    guard !rest.isEmpty else { die("resize requires <paneId>") }
+    let paneId = rest[0]
+    var rows: Int?
+    var cols: Int?
+    var idx = 1
+    while idx < rest.count {
+        switch rest[idx] {
+        case "--rows":
+            guard idx + 1 < rest.count else { die("--rows requires a value") }
+            idx += 1
+            guard let n = Int(rest[idx]), n >= 1, n <= 65535 else { die("--rows must be 1..65535") }
+            rows = n
+        case "--cols":
+            guard idx + 1 < rest.count else { die("--cols requires a value") }
+            idx += 1
+            guard let n = Int(rest[idx]), n >= 1, n <= 65535 else { die("--cols must be 1..65535") }
+            cols = n
+        default:
+            die("unknown flag for resize: \(rest[idx])")
+        }
+        idx += 1
+    }
+    guard let r = rows else { die("resize requires --rows N") }
+    guard let c = cols else { die("resize requires --cols N") }
+    let obj = callVerb(socketPath: socketPath, method: "resize", params: resizeParams(paneId: paneId, rows: r, cols: c))
+    requireOK(obj, context: "resize")
+    stdout("resized \(paneId) to \(r)x\(c)\n")
+}
+
 // MARK: - Entry point
 
 let args = CommandLine.arguments
@@ -435,6 +584,10 @@ case "spawn":
     cmdSpawn(socketPath: socketPath, rest: global.rest)
 case "kill":
     cmdKill(socketPath: socketPath, rest: global.rest)
+case "subscribe":
+    cmdSubscribe(socketPath: socketPath, rest: global.rest)
+case "resize":
+    cmdResize(socketPath: socketPath, rest: global.rest)
 default:
     die("unknown subcommand '\(global.subcommand)' (run with --help)")
 }

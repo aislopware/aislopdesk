@@ -104,11 +104,15 @@ final class MuxChannelSession: @unchecked Sendable {
     private let titleLock = NSLock()
     private var _currentTitle: String = ""
 
-    /// Observer closures registered by the agent-control `wait` verb. Each is called with
-    /// the raw PTY chunk immediately after the sniffer pass (non-destructive, never modifies
-    /// the byte stream). Guarded by `observersLock`.
+    /// Observer closures registered by the agent-control `wait` and `subscribe` verbs. Each is
+    /// called with the raw PTY chunk immediately after the sniffer pass (non-destructive, never
+    /// modifies the byte stream). Guarded by `observersLock`.
     private let observersLock = NSLock()
     private var outputObservers: [UUID: @Sendable (Data) -> Void] = [:]
+    /// Close-observer closures registered by the agent-control `subscribe` verb. Called once,
+    /// after the PTY read loop has drained to EOF (so all output observers fire before this),
+    /// from the exit task. Guarded by `observersLock`.
+    private var closeObservers: [UUID: @Sendable () -> Void] = [:]
 
     private let taskLock = NSLock()
     private var replay: ReplayBuffer
@@ -494,6 +498,11 @@ final class MuxChannelSession: @unchecked Sendable {
             // guarantees `.exit` follows the last `.chunk` (the FIFO + single sequential drain preserve
             // that order on the wire). Bounded so a wedged/paused read never hangs exit delivery forever.
             await self?.awaitEOFOrTimeout()
+            // Notify close observers (subscribe verb) AFTER the read loop has drained all output
+            // to the output observers, so subscribers see a complete output stream before the
+            // {"event":"closed"} line. Called here, before enqueueExit, so the ordering matches
+            // the output-observer → close-observer → wire-exit sequence.
+            self?.notifyCloseObservers()
             self?.enqueueExit(code: code)
             // R13 #7: wait until the drain actually SENT `.exit` on the wire before firing onExit (which
             // triggers shutdown → outputTask.cancel()). Otherwise teardown can cancel the drain before
@@ -1039,6 +1048,20 @@ final class MuxChannelSession: @unchecked Sendable {
         }
     }
 
+    /// Resizes the PTY for the agent-control `resize` verb.
+    ///
+    /// Delegates directly to ``PTYProcess/setWindowSize(cols:rows:pxWidth:pxHeight:)`` which
+    /// performs `TIOCSWINSZ` under `exitLock` (TOCTOU-safe, non-blocking O(1) ioctl). The
+    /// kernel delivers `SIGWINCH` to the PTY's foreground process group automatically as part
+    /// of the `TIOCSWINSZ` call on macOS — no separate `kill`/`killpg` call is needed.
+    ///
+    /// Called on the control socket's per-connection handler thread. Safe to call there:
+    /// `setWindowSize` is documented non-blocking and the lock held (``PTYProcess/exitLock``)
+    /// is never contended from this path (it guards PTY-fd lifetime, not application state).
+    func resizeForControl(rows: UInt16, cols: UInt16) {
+        pty.setWindowSize(cols: cols, rows: rows)
+    }
+
     /// Returns a plain-text snapshot of the ReplayBuffer scrollback (all acked + live tail).
     ///
     /// Joins every stored output chunk in sequence order, converts to UTF-8 (replacing invalid
@@ -1081,6 +1104,30 @@ final class MuxChannelSession: @unchecked Sendable {
         observersLock.lock()
         outputObservers[id] = nil
         observersLock.unlock()
+    }
+
+    /// Registers a close observer for the `subscribe` verb. Called once when the PTY exits
+    /// (after EOF has been drained through the output observers). Replaces any prior observer
+    /// for the same `id` (idempotent).
+    func registerCloseObserver(id: UUID, _ observer: @escaping @Sendable () -> Void) {
+        observersLock.lock()
+        closeObservers[id] = observer
+        observersLock.unlock()
+    }
+
+    /// Removes the close observer registered under `id`. Idempotent.
+    func removeCloseObserver(id: UUID) {
+        observersLock.lock()
+        closeObservers[id] = nil
+        observersLock.unlock()
+    }
+
+    /// Calls all registered close observers. Called from the exit task after EOF drains.
+    private func notifyCloseObservers() {
+        observersLock.lock()
+        let observers = closeObservers
+        observersLock.unlock()
+        for (_, observer) in observers { observer() }
     }
 
     /// Calls all registered output observers with `chunk`. Called from `onChunk` on the
