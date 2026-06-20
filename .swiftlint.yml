@@ -228,7 +228,13 @@ type_body_length:
   # (panePendingCompletion + isAppActive[+didSet focus-clear] + onLongCommandNotify) — `@Observable`
   # synthesises on stored properties so they can't live in WorkspaceStore+Completion.swift; ALL the badge
   # query/setter/rollup/handler logic DOES live in that extension. Single declaration cluster, not bloat.
-  warning: 1660
+  # 1660 → 1680 (2026-06-20): WorkspaceStore gains the live-title `onTitleChanged` wire in both the tree
+  # path (`wireMaterializedLeaf`) and the canvas path (`reconcile()`'s inline onMaterialize closure) —
+  # Goal A live OSC title persistence into PaneSpec.lastKnownTitle. Wire-only closures, no new stored state.
+  # 1680 → 1690 (2026-06-20): WorkspaceStore gains the `onResumeIdentitySnapshot` wire in
+  # `wireMaterializedLeaf` (detach/reattach Stage 2, C2/C3) — mirrors the `onTitleChanged` pattern.
+  # Wire-only closure, no new stored state.
+  warning: 1690
   error: 2700
 
 function_body_length:

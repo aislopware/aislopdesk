@@ -1,16 +1,17 @@
+// Adapted from Muxy (https://github.com/muxy-app/muxy) — MIT © 2026 Muxy.
 #if canImport(SwiftUI)
 import SwiftUI
 
-// MARK: - PaneChromeView (per-pane header + focus ring)
+// MARK: - PaneChromeView (chrome-less on the tree shell; compact header on iOS carousel)
 
-/// The per-pane chrome that wraps every leaf's content (docs/22 §3, §7): a thin header bar
-/// (kind glyph + title + connection-status dot + split-H / split-V / zoom / close buttons) over the
-/// content, plus a focus ring when the pane is focused.
+/// Wraps every leaf's content. The Muxy redesign makes the IDE tree shell CHROME-LESS: no per-pane
+/// header, no border stroke, no focus ring, no opacity dim — focus lives on the TAB (its bottom accent
+/// line), not the pane. The focused pane is full-opacity and seamless with its split siblings; the
+/// bottom ``PaneStatusBar`` surfaces the focused pane's connection / title / RTT / agent state.
 ///
-/// All actions funnel through the store's pure mutations (`split`, `toggleZoom`, `closePane`), so the
-/// chrome holds no state of its own — it is a thin, declarative skin. Buttons are monochrome SF
-/// Symbols in the native toolbar idiom; the focus ring is a 1.5pt accent stroke that appears only on
-/// the focused pane so the user always knows where keyboard input goes.
+/// The iOS compact carousel keeps a slim header (``showsHeader == true``): a single carousel pane has no
+/// tab strip, so its header is the only place to surface the title + split/zoom/close controls. All
+/// actions funnel through the store's pure mutations, so the chrome holds no state of its own.
 struct PaneChromeView<Content: View>: View {
     /// The leaf this chrome wraps.
     let id: PaneID
@@ -18,41 +19,66 @@ struct PaneChromeView<Content: View>: View {
     let spec: PaneSpec
     /// The live session, for the header status dot (read-only).
     let handle: (any PaneSessionHandle)?
-    /// Whether this pane is focused (shows the ring + a brighter header).
+    /// Whether this pane is focused. On the chrome-less tree shell this is IGNORED for visuals (focus is
+    /// shown on the tab); it still tints the compact carousel header.
     let isFocused: Bool
     /// Whether the tab is currently maximized on THIS pane (flips the maximize button's glyph/intent).
     let isZoomed: Bool
     /// The store, for the chrome's mutations.
     let store: WorkspaceStore
+    /// Whether to draw the per-pane header bar. The Muxy IDE tree shell (``SplitTreeView``) sets this
+    /// FALSE — Muxy has NO per-pane header (the tab strip is the only header; focus is the tab's accent
+    /// line). The iOS compact carousel keeps it TRUE.
+    var showsHeader: Bool = true
     /// The wrapped content (the leaf view).
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
+        if showsHeader {
+            // The compact carousel keeps a slim header over the content (no tab strip to carry focus).
+            VStack(spacing: 0) {
+                header
+                Divider()
+                content()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(AislopdeskTheme.bg)
+        } else {
+            // The IDE tree shell: CHROME-LESS pane body — no per-pane header, no focus ring, no opacity
+            // dim (focus is shown by the tab's bottom accent line). The Warp "floating card" look:
+            // 8pt continuous rounded corners + a soft 1px fg@10% border so each pane reads as a
+            // raised card floating on the `bg` gutter that SplitTreeView's half-gap padding exposes.
+            //
+            // BORDER: uniform across ALL panes (no dim, no conditional focus tint) — the invariant from
+            // the design spec. The accent-line on the active TAB is the focus cue; the card border is
+            // purely structural chrome.
+            //
+            // METAL CLIPPING: SwiftUI `.clipShape` clips the SwiftUI render tree but NOT the hosted
+            // AppKit/UIKit sublayer that libghostty installs (the IOSurfaceLayer — see
+            // GhosttyLayerBackedView). The corner radius for the live Metal surface is applied directly
+            // on the hosted layer in GhosttyLayerBackedView.layout() via `layer?.cornerRadius` +
+            // `layer?.masksToBounds = true`. This view supplies the visual card chrome only; the renderer
+            // is responsible for its own layer clipping.
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay {
-            // The focus ring: an accent stroke on the focused pane only (docs/22 §3 affordance).
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(
-                    isFocused ? Color.accentColor : Color.primary.opacity(0.12),
-                    lineWidth: isFocused ? 1.5 : 1,
+                .background(AislopdeskTheme.bg)
+                .clipShape(
+                    RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous),
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous)
+                        .strokeBorder(AislopdeskTheme.border, lineWidth: 1),
                 )
         }
-        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
-    // MARK: Header
+    // MARK: Header (compact carousel only)
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: AislopdeskTheme.Space.m) {
             Image(systemName: PaneLeafView.icon(for: spec.kind))
-                .font(.caption)
-                .foregroundStyle(isFocused ? Color.accentColor : .secondary)
+                .font(.system(size: UIMetrics.fontCaption))
+                .foregroundStyle(isFocused ? AislopdeskTheme.accent : AislopdeskTheme.fgMuted)
                 .accessibilityHidden(true) // decorative — the title Text carries the row's label
 
             let status = connectionStatus
@@ -62,8 +88,8 @@ struct PaneChromeView<Content: View>: View {
             AgentStatusDot(status: store.agentStatus(for: id))
 
             Text(displayTitle)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(isFocused ? .primary : .secondary)
+                .font(.system(size: UIMetrics.fontCaption, design: .monospaced))
+                .foregroundStyle(isFocused ? AislopdeskTheme.fg : AislopdeskTheme.fgMuted)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -72,46 +98,40 @@ struct PaneChromeView<Content: View>: View {
             statusDetail(status)
 
             // Live RTT badge (docs/26 D10): the smoothed ping/pong RTT beside the title while
-            // connected — typing lag finally has an attributable number (network vs host vs
-            // render). Hidden until the first sample; amber past 100ms (the "this will feel
-            // laggy" line for keystroke echo).
+            // connected. Hidden until the first sample; amber past 100ms (the "this will feel laggy" line).
             if case .connected = status.phase, let ms = latencyMS {
                 Text(ms < 1 ? "<1ms" : "\(Int(ms.rounded()))ms")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(ms > 100 ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
+                    .font(.system(size: UIMetrics.fontMicro).monospacedDigit())
+                    .foregroundStyle(ms > 100 ? AnyShapeStyle(.orange) : AnyShapeStyle(AislopdeskTheme.fgDim))
                     .lineLimit(1)
                     .accessibilityLabel(Text("latency \(Int(ms.rounded())) milliseconds"))
                     .help("Smoothed round-trip time to the host (3s ping)")
             }
 
-            // A "running…" affordance while an OSC 133 command executes on this pane — the iconic
-            // modern-terminal activity cue, beside the title. Hidden at the idle prompt.
+            // A "running…" affordance while an OSC 133 command executes on this pane.
             if isRunning {
                 Text("running…")
-                    .font(.caption2)
+                    .font(.system(size: UIMetrics.fontMicro))
                     .foregroundStyle(.orange)
                     .lineLimit(1)
                     .accessibilityLabel(Text("command running"))
             }
 
-            // WB2: the Warp-style block STATUS CHIP — the latest command's status (running ⏳ / ✓ exit 0 /
-            // ✗ exit N + duration), tappable to open the Command Navigator. Hidden until the first block.
+            // WB2: the Warp-style block STATUS CHIP — the latest command's status, tappable to open the
+            // Command Navigator. Hidden until the first block.
             blockStatusChip
 
-            Spacer(minLength: 8)
+            Spacer(minLength: AislopdeskTheme.Space.m)
 
             controls
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.horizontal, AislopdeskTheme.Space.m)
+        .padding(.vertical, AislopdeskTheme.Space.s)
         #if os(macOS)
             // BUG-2 ("ở cạnh trên/header vẫn bị"): the header bar is hit-OPAQUE (it carries the
             // tap-to-focus gesture over the whole bar), so a scroll over it was SWALLOWED instead of
-            // panning — exactly like the resize-grip perimeter was before `gripBase`. Fix with the SAME
-            // pattern: make the bar's hit layer a `ScrollPanForwarder` (a real NSView that forwards
-            // scroll → `store.scrollPan`) that ALSO carries the tap. (The canvas drag-to-move moved to
-            // the floating pill with the borderless canvas pane; this header now lives only on the
-            // compact carousel, where panes don't move.)
+            // panning. Fix with a `ScrollPanForwarder` (a real NSView that forwards scroll →
+            // `store.scrollPan`) that ALSO carries the tap.
             .background {
                 ScrollPanForwarder(store: store)
                     .contentShape(Rectangle())
@@ -121,21 +141,19 @@ struct PaneChromeView<Content: View>: View {
         #else
             .background(isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial))
             .contentShape(Rectangle())
-            // A plain TAP on the title bar focuses the pane (the natural way to select a window).
+            // A plain TAP on the title bar focuses the pane.
             .simultaneousGesture(TapGesture().onEnded { focusThisLeaf() })
         #endif
     }
 
     // MARK: WB2 block status chip
 
-    /// The pane's latest Warp-style block (the current/last command), or `nil` until one has run. Reading
-    /// the `@Observable` block model re-renders the chip as the latest block's status changes.
+    /// The pane's latest Warp-style block (the current/last command), or `nil` until one has run.
     private var latestBlock: CommandBlock? { PanePresentation.latestBlock(handle) }
 
     /// The block status chip: the latest command's status icon + a compact "exit N · 1.2s" label, tappable
-    /// to open the Command Navigator. Hidden until the first block lands (and while the shell is RUNNING the
-    /// existing "running…" cue already covers it, so the chip stays quiet on a still-running latest block to
-    /// avoid a duplicate amber cue — it appears once the command completes with its exit badge).
+    /// to open the Command Navigator. Hidden until the first block lands (and quiet while running — the
+    /// existing "running…" cue already covers that).
     @ViewBuilder
     private var blockStatusChip: some View {
         if let block = latestBlock, block.complete {
@@ -144,8 +162,8 @@ struct PaneChromeView<Content: View>: View {
                     Image(systemName: block.statusSymbol)
                         .foregroundStyle(blockTint(block))
                     Text(blockChipLabel(block))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: UIMetrics.fontMicro).monospacedDigit())
+                        .foregroundStyle(AislopdeskTheme.fgMuted)
                         .lineLimit(1)
                 }
             }
@@ -181,10 +199,9 @@ struct PaneChromeView<Content: View>: View {
         }
     }
 
-    /// The per-leaf controls. Repurposed for W5: on the LIVE tree shell (``WorkspaceStore/LiveModel/tree``)
-    /// it is the slim coding-IDE split-leaf header — split-right (⌘D), split-down (⌘⇧D), zoom, close — all
-    /// funneling through the store's tree ops. On the retained-but-dead canvas path it keeps the old
-    /// add-KIND-picker + maximize + close.
+    /// The per-leaf controls. On the LIVE tree shell it is the slim coding-IDE split-leaf header —
+    /// split-right (⌘D), split-down (⌘⇧D), zoom, close — all funneling through the store's tree ops. On
+    /// the retained-but-dead canvas path it keeps the old add-KIND-picker + maximize + close.
     @ViewBuilder
     private var controls: some View {
         switch store.liveModel {
@@ -206,12 +223,12 @@ struct PaneChromeView<Content: View>: View {
                     store.toggleZoomTree()
                 }
                 chromeButton("xmark", help: "Close pane", role: .destructive) {
-                    // ITEM A3: route through the busy-shell guard (parks `pendingClose` mid-command) so the
-                    // chrome close honours the same confirmation ⌘W / the canvas path do — not a raw close.
+                    // ITEM A3: route through the busy-shell guard so the chrome close honours the same
+                    // confirmation ⌘W / the canvas path do — not a raw close.
                     store.requestClosePaneTree(id)
                 }
             }
-            .font(.caption)
+            .font(.system(size: UIMetrics.fontCaption))
         case .canvas:
             HStack(spacing: 2) {
                 addMenu
@@ -230,12 +247,12 @@ struct PaneChromeView<Content: View>: View {
                     store.requestClosePane(id)
                 }
             }
-            .font(.caption)
+            .font(.system(size: UIMetrics.fontCaption))
         }
     }
 
     /// The "add pane" KIND-picker: tap to add a terminal pane to the canvas, or open the menu to add a
-    /// Claude Code / Remote pane. New panes cascade off the focused pane and are guaranteed in view.
+    /// Claude Code / Remote pane.
     @ViewBuilder
     private var addMenu: some View {
         Menu {
@@ -251,7 +268,7 @@ struct PaneChromeView<Content: View>: View {
             }
         } label: {
             Image(systemName: "plus")
-                .frame(width: 18, height: 18)
+                .frame(width: UIMetrics.resizeHandleHitArea, height: UIMetrics.resizeHandleHitArea)
         } primaryAction: {
             store.addPane(kind: .terminal)
         }
@@ -260,7 +277,7 @@ struct PaneChromeView<Content: View>: View {
             .menuStyle(.borderlessButton)
         #endif
             .fixedSize()
-            .foregroundStyle(.secondary)
+            .foregroundStyle(AislopdeskTheme.fgMuted)
             .help("Add pane")
             .accessibilityLabel("Add pane")
     }
@@ -273,37 +290,31 @@ struct PaneChromeView<Content: View>: View {
     ) -> some View {
         Button(role: role, action: action) {
             Image(systemName: systemImage)
-                .frame(width: 18, height: 18)
+                .frame(width: UIMetrics.resizeHandleHitArea, height: UIMetrics.resizeHandleHitArea)
         }
         .buttonStyle(.borderless)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(AislopdeskTheme.fgMuted)
         .help(help)
         .accessibilityLabel(help)
     }
 
     // MARK: Status dot
 
-    /// The header status presentation (the shared ``PanePresentation`` derivation — the canvas
-    /// floating handle and this header can never drift).
+    /// The header status presentation (the shared ``PanePresentation`` derivation).
     private var connectionStatus: PaneConnectionStatus { PanePresentation.connectionStatus(handle) }
 
-    /// Whether an OSC 133 command is currently executing in this pane's shell (drives the amber
-    /// running ring on the dot + the "running…" header label).
+    /// Whether an OSC 133 command is currently executing in this pane's shell.
     private var isRunning: Bool { PanePresentation.isRunning(handle) }
 
     /// The smoothed app-layer RTT for the latency badge (`nil` until the first ping/pong completes).
-    /// Reading the `@Observable` connection's `latencyMS` re-renders the header on each ~3s sample.
     private var latencyMS: Double? { PanePresentation.latencyMS(handle) }
 
-    /// The header label: the LIVE OSC 0/2 terminal title when set, else `spec.title` (shared
-    /// ``PanePresentation`` rule). Reading the `@Observable` model's `title` here re-renders the
-    /// header when the shell changes it.
+    /// The header label: the LIVE OSC 0/2 terminal title when set, else `spec.title`.
     private var displayTitle: String { PanePresentation.displayTitle(handle, spec: spec) }
 
     /// The compact status detail shown beside the title for the in-flight / terminal states. For a
     /// reconnecting pane with a known next-retry instant it ticks a live "retrying in Ns" countdown via
-    /// a `TimelineView` (refreshed once a second, no store mutation); otherwise it shows the static
-    /// label. Hidden entirely for the steady connected/idle states so the header stays clean.
+    /// a `TimelineView`; otherwise it shows the static label. Hidden for the steady connected/idle states.
     @ViewBuilder
     private func statusDetail(_ status: PaneConnectionStatus) -> some View {
         switch status.phase {
@@ -311,32 +322,28 @@ struct PaneChromeView<Content: View>: View {
             if let nextRetry = status.nextRetry {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(reconnectLabel(status, now: context.date, nextRetry: nextRetry))
-                        .font(.caption2)
+                        .font(.system(size: UIMetrics.fontMicro))
                         .foregroundStyle(.orange)
                         .lineLimit(1)
                 }
             } else {
                 Text(status.label)
-                    .font(.caption2)
+                    .font(.system(size: UIMetrics.fontMicro))
                     .foregroundStyle(.orange)
                     .lineLimit(1)
             }
         case .connecting:
-            // An initial dial can block on the dead-host handshake/timeout (~10s); surface a
-            // "Connecting…" cue beside the title — not just the pulsing dot — so the wait reads as
-            // in-flight, not frozen. Neutral (secondary) since it is not yet an error.
+            // An initial dial can block on the dead-host handshake/timeout (~10s); surface "Connecting…"
+            // beside the title — neutral (muted) since it is not yet an error.
             Text(status.label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.system(size: UIMetrics.fontMicro))
+                .foregroundStyle(AislopdeskTheme.fgMuted)
                 .lineLimit(1)
         case .unreachable,
              .failed:
-            // Show the CONCRETE reason ("Failed: timed out") inline, not the bare word "Failed" —
-            // the reason was previously reachable only via the 7pt status-dot hover tooltip. The
-            // full text stays in `.help` for the truncated case. (`.unreachable` carries no message,
-            // so `detailedLabel` is just "Unreachable" there — still correct.)
+            // Show the CONCRETE reason ("Failed: timed out") inline, not the bare word "Failed".
             Text(status.detailedLabel)
-                .font(.caption2)
+                .font(.system(size: UIMetrics.fontMicro))
                 .foregroundStyle(.red)
                 .lineLimit(1)
                 .truncationMode(.middle)

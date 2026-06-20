@@ -469,8 +469,17 @@ final class GhosttyLayerBackedView: NSView {
     /// here (the sibling that becomes focused makes ITSELF first responder, which resigns this one) and
     /// never touches `surface.setFocus` (render-focus stays on for repaint — the multi-pane fix).
     private func applyKeyboardFocus() {
-        guard isFocusedPane, let window, window.firstResponder !== self else { return }
-        window.makeFirstResponder(self)
+        guard isFocusedPane else { return }
+        // Defer off the SwiftUI update/commit pass: makeFirstResponder synchronously tears down + sets up
+        // the AppKit responder chain (and draws the focus ring), which stalls the main thread when it runs
+        // inside updateNSView during a tab/session switch. One runloop hop makes the switch a single CA
+        // commit; the keyboard first-responder transfer happens imperceptibly after.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isFocusedPane,
+                  let window = self.window,
+                  window.firstResponder !== self else { return }
+            window.makeFirstResponder(self)
+        }
     }
 
     /// Drives libghostty's renderer thread via `ghostty_surface_draw_now`. GATED on `presentTicks`:
@@ -719,6 +728,21 @@ final class GhosttyLayerBackedView: NSView {
             CATransaction.setDisableActions(true)
             hosted.frame = CGRect(origin: .zero, size: bounds.size)
             hosted.contentsScale = scale
+            // ROUNDED-CARD METAL CLIPPING: SwiftUI .clipShape on the NSViewRepresentable clips the
+            // SwiftUI render tree but NOT this hosted IOSurfaceLayer (libghostty's Metal sublayer).
+            // Setting cornerRadius + masksToBounds directly on the hosted layer is the only way to
+            // round the actual terminal pixels — exactly how NSView/CALayer-backed views are clipped
+            // at the system level. The radius matches AislopdeskTheme.Radius.pane (8pt); continuous
+            // curve is approximated by the layer's own antialiasing (CALayer cornerCurve .continuous
+            // is only available on iOS 13+ / macOS 10.15+; we check below for safety).
+            //
+            // contentsGravity stays .topLeft (already the default for this layer) so the clip does
+            // not shift the rendered surface. masksToBounds is already likely false; explicit set.
+            if #available(macOS 10.15, *) {
+                hosted.cornerCurve = .continuous
+            }
+            hosted.cornerRadius = 8  // AislopdeskTheme.Radius.pane — imported from AislopdeskClientUI
+            hosted.masksToBounds = true
             CATransaction.commit()
         }
         rdbg("macOS layout bounds=\(Int(bounds.width))x\(Int(bounds.height)) scale=\(scale) px=\(pxW)x\(pxH) rendered=\(surface?.renderedPixelSize.map { "\($0.width)x\($0.height)" } ?? "nil")")
@@ -1507,6 +1531,14 @@ final class GhosttyLayerBackedView: UIView {
         // early-returns (renderer/generic.zig zero-size guard) → blank screen, no error.
         // (macOS works because libghostty makes its layer the view's *backing* layer,
         // which AppKit auto-sizes.) Size every sublayer to our bounds + scale.
+        //
+        // ROUNDED-CARD METAL CLIPPING (iOS): apply the same rounded-corner clip to the
+        // hosting UIView's own layer so the Metal sublayer is masked. The sublayers are
+        // sized to `bounds` above, and `masksToBounds = true` on THIS layer clips them all.
+        // Matches the macOS hosted-layer clip in GhosttyLayerBackedView.layout().
+        layer.cornerRadius = 8   // AislopdeskTheme.Radius.pane
+        if #available(iOS 13.0, *) { layer.cornerCurve = .continuous }
+        layer.masksToBounds = true
         layer.sublayers?.forEach { sub in
             sub.frame = bounds
             sub.contentsScale = scale

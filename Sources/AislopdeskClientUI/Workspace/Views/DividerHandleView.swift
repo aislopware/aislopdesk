@@ -1,25 +1,25 @@
+// Adapted from Muxy (https://github.com/muxy-app/muxy) — MIT © 2026 Muxy.
 #if canImport(SwiftUI)
 import SwiftUI
 
-// MARK: - DividerHandleView (the draggable split divider — W5)
+// MARK: - DividerHandleView (the draggable split divider — W5, Muxy ResizeHandle look)
 
 /// A draggable divider between two adjacent siblings of a split (docs/42 W5). It is positioned by
 /// ``SplitTreeView`` from a ``SplitTreeRenderModel/DividerHandle`` and converts a pixel drag along the
 /// split's axis into a sum-preserving flex-weight `delta`, committing through
 /// ``WorkspaceStore/resizeDividerTree(splitID:leadingChildIndex:delta:)``.
 ///
+/// ### Muxy ResizeHandle visual
+/// A 1px-thin VISIBLE line on the seam (``AislopdeskTheme/border`` at rest, ``AislopdeskTheme/accent``
+/// while hovering or dragging) with a TRANSPARENT ``UIMetrics/resizeHandleHitArea`` (18pt) hit overlay on
+/// the cross-axis carrying the gesture + the resize cursor. No fat fill band — the seam reads as a hairline.
+///
 /// ### Pixel → weight conversion
-/// The op shifts FLEX WEIGHT between the two children; a drag is in points. The render model gives the
-/// handle's span (the parent rect's extent along the split axis) and the two siblings' current pixel
-/// extents — but the simplest robust conversion the view can do without re-solving is: `Δweight ≈
-/// Δpixels / axisLength × pairFlexSum`. The pair's flex sum is not known to the view, so we approximate it
-/// from the two siblings' *pixel* extents (their share of the axis IS their share of the flex sum, since
-/// the cross-axis is shared) — i.e. `Δweight ≈ Δpixels / pairPixelLength × pairWeightSum`, and with the
-/// weight sum unknown we drive the op with the *normalized* delta `Δpixels / pairPixelLength` scaled by a
-/// nominal pair-sum. Because ``WorkspaceTreeOps/resizeDivider`` re-clamps and re-normalizes, a small
-/// per-event delta tracks the cursor closely; the cumulative drag stays stable. The committed delta is
-/// applied INCREMENTALLY per `.onChanged` translation step (the previous translation is subtracted) so
-/// the op's sum-preserving shift follows the finger.
+/// The op shifts FLEX WEIGHT between the two children; a drag is in points. We drive the op with the
+/// *normalized* delta `Δpixels / pairPixelLength`; ``WorkspaceTreeOps/resizeDivider`` re-clamps and
+/// re-normalizes, so a small per-event delta tracks the cursor closely and the cumulative drag stays
+/// stable. The committed delta is applied INCREMENTALLY per `.onChanged` translation step (the previous
+/// translation is subtracted) so the op's sum-preserving shift follows the finger.
 struct DividerHandleView: View {
     let handle: SplitTreeRenderModel.DividerHandle
     /// The full pixel length the two siblings share along the split axis (the parent extent), used to
@@ -30,42 +30,56 @@ struct DividerHandleView: View {
     /// The translation already applied this drag (so each `.onChanged` applies only the new increment).
     @State private var appliedTranslation: CGFloat = 0
     @State private var hovering = false
+    @GestureState private var dragging = false
+
+    /// Active = hovered OR mid-drag → the seam line washes to accent (Muxy `active`).
+    private var active: Bool { hovering || dragging }
 
     var body: some View {
         let isHorizontal = handle.axis == .horizontal
         // A thin band sized to the seam and placed by `.position`. THE MODIFIER ORDER IS LOAD-BEARING:
         //   • `.contentShape(Rectangle())` is applied to the band FRAME *before* `.position` — so the hit
-        //     shape is the 16pt band, and `.position` then relocates that hit shape together with the view.
+        //     shape is the band, and `.position` then relocates that hit shape together with the view.
         //   • `.gesture` is applied *after* `.position` — so it hit-tests the band at its FINAL on-screen
         //     location.
         // The two earlier wrong orders, for the record: `.contentShape` AFTER `.position` expands the hit
         // area to the whole tab (every drag resizes + the terminal never sees the mouse — the reported
         // "mọi thao tác chuột đều resize" bug); `.gesture` BEFORE `.position` leaves the gesture's hit
         // region at the pre-position origin, so dragging the visible seam does nothing.
-        Rectangle()
-            // A faint fill (NOT clear): an opaque-enough fill is independently hit-testable, so the drag
-            // works without depending on contentShape edge-cases — and it makes the 16pt grab band faintly
-            // visible (the seam's draggable zone), brightening on hover.
-            // A visible, hittable fill (a clear/near-transparent fill is NOT reliably hit-tested in this
-            // ZStack+position layout): the 16pt grab band reads as a real divider strip and brightens on
-            // hover, so the seam is obviously draggable.
-            .fill(hovering ? Color.accentColor.opacity(0.40) : Color.primary.opacity(0.18))
+        //
+        // Muxy ResizeHandle: a 1px VISIBLE line (border → accent on hover/drag) is the seam; a transparent
+        // 18pt `resizeHandleHitArea` cross-axis strip OVERLAYS it to carry the grab. The transparent strip
+        // is the band frame that gets `.contentShape` (so the 18pt zone is hittable), keeping the seam a
+        // crisp hairline rather than the old fat fill band.
+        Color.clear
             .overlay {
-                // The visible hairline at the band's centre (thin; the 16pt band is just the grab target).
-                RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(hovering ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.18))
-                    .frame(width: isHorizontal ? 1.5 : nil, height: isHorizontal ? nil : 1.5)
+                // The crisp 1px hairline at the band's centre — `border` at rest, `accent` when active.
+                Rectangle()
+                    .fill(active ? AislopdeskTheme.accent : AislopdeskTheme.border)
+                    .frame(width: isHorizontal ? 1 : nil, height: isHorizontal ? nil : 1)
             }
-            .frame(width: handle.rect.width, height: handle.rect.height)
+            .frame(
+                width: isHorizontal ? UIMetrics.resizeHandleHitArea : handle.rect.width,
+                height: isHorizontal ? handle.rect.height : UIMetrics.resizeHandleHitArea,
+            )
             .contentShape(Rectangle())
             .position(x: handle.rect.midX, y: handle.rect.midY)
         #if os(macOS)
-            .onHover { hovering = $0 }
-            // The native resize cursor while hovering the band.
-            .pointerStyle(isHorizontal ? .columnResize : .rowResize)
+            // The native resize cursor while hovering the strip (wrap NSCursor for the AppKit gate).
+            .onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    hovering = true
+                    (isHorizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+                case .ended:
+                    hovering = false
+                    if !dragging { NSCursor.arrow.set() }
+                }
+            }
         #endif
             .gesture(
                 DragGesture(minimumDistance: 1)
+                    .updating($dragging) { _, state, _ in state = true }
                     .onChanged { value in
                         let raw = isHorizontal ? value.translation.width : value.translation.height
                         let increment = raw - appliedTranslation

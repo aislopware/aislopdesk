@@ -246,10 +246,39 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         target: @escaping @MainActor () -> ConnectionTarget,
     ) -> LivePaneSession {
         let terminal = TerminalViewModel()
+        // AISLOPDESK_DETACH_ENABLED (default ON — env != "0"): when the restored spec carries a
+        // saved session UUID (set by Stage 2's capture path), pre-seed the client's resume identity
+        // BEFORE the first connect() so the channelOpen preamble presents the host with the saved
+        // UUID + last-received seq, enabling a RETURNING_CLIENT reattach. A spec with nil
+        // resumeSessionID (a brand-new or never-connected pane) takes the existing fresh-shell path.
+        let detachEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_DETACH_ENABLED"] != "0"
+        let savedResumeID = detachEnabled ? spec.resumeSessionID : nil
+        // COLD LAUNCH: always seed seq=0 even when spec.resumeLastReceivedSeq is non-nil.
+        //
+        // This is a COLD path — the client actor is brand-new (process relaunch), so
+        // highestContiguousSeq starts at 0 regardless. Seeding a non-zero seq here would
+        // present lastReceivedSeq=N to the host, which would replay only messages with
+        // seq > N — skipping the entire scrollback ring (which holds history with seq ≤ N).
+        //
+        // By always seeding seq=0 the host receives lastReceivedSeq=0, triggering the full
+        // scrollback ring replay (ring entries 1..ackedSeq) followed by the un-acked tail —
+        // the same as `tmux attach-session` (AISLOPDESK_SCROLLBACK_PERSIST gate on the host).
+        //
+        // WARM in-process reconnect (iOS background/foreground, transport drop without process exit):
+        // seedResumeIdentity is NOT called — the actor's live highestContiguousSeq is presented
+        // directly in AislopdeskClient.connect() (line: `let lastSeq = highestContiguousSeq`).
+        // That path is unaffected.
+        let makeClientSeeded: @Sendable () -> AislopdeskClient = {
+            let c = makeClient()
+            if let id = savedResumeID {
+                Task { await c.seedResumeIdentity(sessionID: id, seq: 0) }
+            }
+            return c
+        }
         let connection = ConnectionViewModel(
             terminal: terminal,
             target: target,
-            makeClient: makeClient,
+            makeClient: makeClientSeeded,
         )
         let inputBar = InputBarModel()
         // SINGLE OUT FUNNEL: input-bar bytes ride the pane's ONE ordered OUT FIFO

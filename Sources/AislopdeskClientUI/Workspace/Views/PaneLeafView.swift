@@ -61,7 +61,9 @@ struct PaneLeafView: View {
                 placeholder
             }
         }
-        .opacity(isFocused ? 1 : 0.92)
+        // No focus dim (Muxy): the focused pane is full-opacity; focus is shown by the accent border in
+        // `PaneChromeView` + the tab-strip accent line. The old `.opacity(isFocused ? 1 : 0.92)` made even
+        // the correctly-focused pane look slightly dim/blurry (HW-reported), so it is removed.
     }
 
     // MARK: - Kind switch (the seams)

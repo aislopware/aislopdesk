@@ -123,16 +123,87 @@ public struct VideoEndpoint: Codable, Sendable, Equatable {
 /// A `PaneSpec` is pure intent: it is what the pane *should* be, not a handle to anything live.
 /// The store reads it to materialize a session; mutating it (e.g. rename) is done through
 /// ``PaneNode/updatingSpec(_:_:)`` and triggers a reconcile downstream.
-public struct PaneSpec: Codable, Sendable, Equatable {
+///
+/// ### Additive persistence fields (Stage 1 — schema v11)
+/// Four optional fields are persisted when a pane has been connected at least once. They are ADDITIVE:
+/// a v10 file that does not carry these keys decodes with all four `nil` (never traps). Only
+/// `lastKnownTitle` feeds the load-time auto-title promotion (see ``WorkspacePersistence/loadTree()``);
+/// the resume fields are reserved for Stage 2 (host-side detach/reattach) and are NOT fed into
+/// `connect()` yet.
+public struct PaneSpec: Sendable, Equatable {
     public var kind: PaneKind
     public var title: String
     /// Set for `remoteGUI` panes (which host-side window to mirror).
     public var video: VideoEndpoint?
 
-    public init(kind: PaneKind, title: String, video: VideoEndpoint? = nil) {
+    // MARK: Stage-1 additive persistence fields (schema v11)
+
+    /// The session ID assigned by the host on the most-recent successful connection. Reserved for Stage 2
+    /// (host-side detach/reattach). NOT fed into `connect()` in Stage 1.
+    public var resumeSessionID: UUID?
+    /// The last sequence number successfully received from the host (used to resume from a mid-stream
+    /// disconnect in Stage 2). NOT fed into `connect()` in Stage 1.
+    public var resumeLastReceivedSeq: Int64?
+    /// The working directory reported by the host shell at last-seen time. Used as the display subtitle
+    /// and as a hint for Stage 2 cwd-restore. Read-only from the client perspective.
+    public var lastKnownCwd: String?
+    /// The shell title (e.g. the running process or tab title) as last reported by the host. Written into
+    /// ``title`` on load only when the user has not renamed the pane (see
+    /// ``WorkspacePersistence/loadTree()``). Read-only from the client perspective.
+    public var lastKnownTitle: String?
+
+    public init(
+        kind: PaneKind,
+        title: String,
+        video: VideoEndpoint? = nil,
+        resumeSessionID: UUID? = nil,
+        resumeLastReceivedSeq: Int64? = nil,
+        lastKnownCwd: String? = nil,
+        lastKnownTitle: String? = nil,
+    ) {
         self.kind = kind
         self.title = title
         self.video = video
+        self.resumeSessionID = resumeSessionID
+        self.resumeLastReceivedSeq = resumeLastReceivedSeq
+        self.lastKnownCwd = lastKnownCwd
+        self.lastKnownTitle = lastKnownTitle
+    }
+}
+
+// MARK: - PaneSpec Codable (additive — new keys are decodeIfPresent so v10 files still load)
+
+extension PaneSpec: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case title
+        case video
+        case resumeSessionID
+        case resumeLastReceivedSeq
+        case lastKnownCwd
+        case lastKnownTitle
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(PaneKind.self, forKey: .kind)
+        title = try c.decode(String.self, forKey: .title)
+        video = try c.decodeIfPresent(VideoEndpoint.self, forKey: .video)
+        resumeSessionID = try c.decodeIfPresent(UUID.self, forKey: .resumeSessionID)
+        resumeLastReceivedSeq = try c.decodeIfPresent(Int64.self, forKey: .resumeLastReceivedSeq)
+        lastKnownCwd = try c.decodeIfPresent(String.self, forKey: .lastKnownCwd)
+        lastKnownTitle = try c.decodeIfPresent(String.self, forKey: .lastKnownTitle)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(title, forKey: .title)
+        try c.encodeIfPresent(video, forKey: .video)
+        try c.encodeIfPresent(resumeSessionID, forKey: .resumeSessionID)
+        try c.encodeIfPresent(resumeLastReceivedSeq, forKey: .resumeLastReceivedSeq)
+        try c.encodeIfPresent(lastKnownCwd, forKey: .lastKnownCwd)
+        try c.encodeIfPresent(lastKnownTitle, forKey: .lastKnownTitle)
     }
 }
 

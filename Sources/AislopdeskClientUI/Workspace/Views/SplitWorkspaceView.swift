@@ -1,52 +1,173 @@
+// Adapted from Muxy (https://github.com/muxy-app/muxy) — MIT © 2026 Muxy.
 #if canImport(SwiftUI)
 import SwiftUI
+#if os(macOS)
+import AppKit // NSApplication fullscreen notifications — the title-bar drag region only shows when windowed.
+#endif
 
-// MARK: - SplitWorkspaceView (the IDE shell root — W5)
+// MARK: - SplitWorkspaceView (the IDE shell root — W5, Muxy MainWindow skeleton)
 
 /// The coding-IDE shell that replaces `CanvasView` as the live workspace content (docs/41 §3.4,
-/// docs/42 W5): a **sessions sidebar** (``SessionSidebarView``, grouped by host with rolled-up agent
-/// status dots) + a **detail** that stacks the active session's **tab bar** (``TabBarView``) over the
-/// **recursive split content** (``SplitTreeView``). Binds the LIVE ``WorkspaceStore/tree``.
+/// docs/42 W5), REWRITTEN to Muxy's hand-built `MainWindow` layout (no `NavigationSplitView`): a
+/// **sessions sidebar** (``SessionSidebarView``) in a left nav column whose top reserves a window-drag
+/// title-bar strip, a draggable divider (``PanelResizeHandle``), and a **main column** stacking the
+/// window-title-bar tab strip (``TabBarView`` with `isWindowTitleBar: true`) over the recursive split
+/// content (``SplitTreeView``) over the bottom status bar (``PaneStatusBar``). Binds the LIVE
+/// ``WorkspaceStore/tree``.
 ///
-/// `WorkspaceRootView` presents this for the regular-width macOS/iPad path; the compact (iPhone)
-/// projection keeps the existing carousel for now (a full iOS tree shell is a later item — see the
-/// `SplitWorkspaceView.compact` note).
+/// The whole shell paints itself in the terminal's dark theme (`AislopdeskTheme.bg`) and draws to the
+/// window edge under the hidden title bar (`ignoresSafeArea(.container, edges: .top)` +
+/// ``WindowConfigurator``), so the traffic lights float over the sessions sidebar's reserved drag strip.
 ///
 /// TODO(iOS tree carousel — deferred, see DECISIONS #8): there is no compact/iPhone per-tab tree
-/// projection yet. The regular `NavigationSplitView` shell here is the only tree projection; the iPhone
-/// per-tab carousel is deliberately DEFERRED (and is currently blocked by pre-existing iOS UIKit rot —
-/// not built in this pass). Do not treat its absence as an accident.
+/// projection yet; this regular shell is the only tree projection (the iPhone per-tab carousel is
+/// deliberately DEFERRED and is blocked by pre-existing iOS UIKit rot). Do not treat its absence as an
+/// accident. The window-drag / traffic-light reservation is macOS-only; off macOS the strip collapses.
 struct SplitWorkspaceView: View {
     @Bindable var store: WorkspaceStore
 
-    /// The sidebar visibility — bound so the toolbar toggle and the hidden-titlebar traffic-light overlap
-    /// both behave; `.automatic` shows the sidebar on regular width.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    /// The sessions-sidebar width, user-draggable via the inter-column ``PanelResizeHandle`` and clamped
+    /// to the expanded min/max (Muxy keeps the rail resizable, not a fixed `NavigationSplitView` column).
+    @State private var sidebarWidth: CGFloat = 240
+
+    /// Whether the window is full-screen — when true the reserved title-bar drag strip is hidden (no
+    /// traffic lights to clear in full-screen). Defaults `false`; tracked from the custom
+    /// `.aislopdeskWindowFullScreenDidChange` notification (posted by `WindowConfigurator.Coordinator`
+    /// with `object: window` and `userInfo["isFullScreen"]: Bool`) filtered to this view's OWN window,
+    /// so Settings sheets, command palettes, or a second workspace window going full-screen cannot
+    /// wrongly flip this state.
+    @State private var isFullScreen = false
+
+    #if os(macOS)
+    /// This view's own `NSWindow`, captured lazily via ``WindowAnchorView`` once the view is on screen.
+    /// Used to filter `.aislopdeskWindowFullScreenDidChange` to only notifications from our window.
+    @State private var ownWindow: NSWindow?
+    #endif
+
+    /// Keep-alive set: tab IDs that have been SHOWN at least once this run. A tab mounts (its libghostty
+    /// surfaces are created + channels opened) the FIRST time it becomes active, then STAYS mounted — so
+    /// switching BACK is a pure teardown-free visibility flip (the no-prompt-loss property) while a
+    /// never-visited tab costs nothing. The first cut of the prompt-loss fix mounted EVERY tab of every
+    /// session up-front, which created all surfaces + opened all channels at launch — a thundering herd
+    /// that made switching slow (HW-found "render rất chậm"). Bounding the live set to visited tabs keeps
+    /// the fix and removes the storm.
+    @State private var visitedTabIDs: Set<TabID> = []
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        HStack(spacing: 0) {
+            // ⌘B collapses the rail AND its divider, leaving the main column full-width.
+            if !store.sidebarCollapsed {
+                leftNavColumn
+                    .frame(width: sidebarWidth)
+                    .background(AislopdeskTheme.bg)
+                    .overlay(alignment: .trailing) {
+                        Rectangle().fill(AislopdeskTheme.border).frame(width: 1)
+                    }
+                // The inter-column divider — drag to resize the sessions rail (clamped to the expanded bounds).
+                PanelResizeHandle(
+                    axis: .horizontal,
+                    edge: .trailing,
+                    current: { sidebarWidth },
+                    apply: { sidebarWidth = Self.clampSidebar($0) },
+                )
+            }
+            mainColumn
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(AislopdeskTheme.bg)
+        // Muxy paints itself in the terminal's (dark) theme regardless of the macOS appearance, so the whole
+        // window — titlebar, scrollbars, menus — reads as one dark surface with the chrome + terminal panes
+        // instead of a half-light stock shell.
+        .preferredColorScheme(.dark)
+        // Draw under the hidden title bar so the chrome reaches the window's top edge (the traffic lights
+        // float over the sessions rail's reserved drag strip).
+        .ignoresSafeArea(.container, edges: .top)
+        // The borderless / custom-title-bar window foundation (hides the stock titlebar, drops the window
+        // background to one solid theme color, repositions + keeps the traffic lights aligned).
+        .background(WindowConfigurator())
+        #if os(macOS)
+            // Capture this view's own NSWindow so we can filter the full-screen notification below.
+            .background(WindowAnchorView(window: $ownWindow))
+            // Track full-screen so the reserved title-bar drag strip (which only exists to clear the
+            // traffic lights) collapses in full-screen, where there are no traffic lights.
+            //
+            // We subscribe to the CUSTOM `.aislopdeskWindowFullScreenDidChange` notification (posted by
+            // `WindowConfigurator.Coordinator` with `object: window` and `userInfo["isFullScreen"]: Bool`)
+            // rather than the bare `NSWindow.didEnter/ExitFullScreenNotification`. The bare notifications
+            // carry NO object filter in SwiftUI's `.onReceive`, so any OTHER window going full-screen
+            // (Settings sheet, command palette, a second workspace window) would wrongly flip this view's
+            // `isFullScreen` state and toggle the 78pt drag-strip reservation on the wrong window.
+            .onReceive(
+                NotificationCenter.default.publisher(for: .aislopdeskWindowFullScreenDidChange),
+            ) { notification in
+                // Filter to our own window so other windows don't affect this view's layout.
+                guard let window = notification.object as? NSWindow,
+                      window === ownWindow,
+                      let value = notification.userInfo?["isFullScreen"] as? Bool
+                else { return }
+                isFullScreen = value
+            }
+        #endif
+    }
+
+    // MARK: Left nav column (sessions sidebar under a reserved title-bar drag strip)
+
+    /// The sessions sidebar, with a reserved title-bar-height strip at the top (windowed only) that is a
+    /// window-drag region so empty space beside the traffic lights drags the window — Muxy's MainWindow
+    /// left column.
+    private var leftNavColumn: some View {
+        VStack(spacing: 0) {
+            if !isFullScreen {
+                Color.clear
+                    .frame(height: UIMetrics.titleBarHeight)
+                    .frame(maxWidth: .infinity)
+                    .background(WindowDragRepresentable())
+                Rectangle().fill(AislopdeskTheme.border).frame(height: 1)
+            }
             SessionSidebarView(store: store)
-            #if os(macOS)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
-            #endif
-        } detail: {
-            detail
         }
     }
 
-    // MARK: Detail (tab bar over recursive split content)
+    // MARK: Main column (window-title-bar tab strip over recursive split content over status bar)
 
     @ViewBuilder
-    private var detail: some View {
+    private var mainColumn: some View {
         if let session = store.tree.activeSession, let activeTab = session.activeTab {
             VStack(spacing: 0) {
-                TabBarView(store: store, session: session)
+                // The tab strip doubles as the window's custom title bar (empty space drags the window).
+                HStack(spacing: 0) {
+                    #if os(macOS)
+                    // With the sidebar collapsed the strip slides to x=0; reserve a leading drag strip
+                    // so the first tab clears the floating traffic lights instead of tucking under them.
+                    // (In full-screen there are no traffic lights, so no reservation.)
+                    if store.sidebarCollapsed, !isFullScreen {
+                        Color.clear
+                            .frame(width: Self.trafficLightInset)
+                            .background(WindowDragRepresentable())
+                    }
+                    #endif
+                    TabBarView(store: store, session: session, isWindowTitleBar: true)
+                }
+                .frame(height: AislopdeskTheme.Metrics.tabHeight)
+                .background(AislopdeskTheme.bg)
+                Rectangle().fill(AislopdeskTheme.border).frame(height: 1)
                 panesHost(activeTabID: activeTab.id)
+                    // Outer half-gap so panes at the window edge float by the same amount as
+                    // panes that are interior siblings — the tab strip / status bar / sidebar
+                    // seam shows the `bg` gutter rather than a flush butt joint.
+                    .padding(AislopdeskTheme.Space.paneGap / 2)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                PaneStatusBar(store: store)
             }
-            #if os(macOS)
-            .frame(minWidth: 480, minHeight: 360)
-            #endif
+            .background(AislopdeskTheme.bg)
+            // Mark the now-visible tab visited (keep-alive) and prune ids whose tab was closed so the set
+            // can't grow without bound. `initial: true` seeds the launch tab. The active tab is mounted
+            // unconditionally below regardless of this set, so there is no first-frame race.
+            .onChange(of: activeTab.id, initial: true) { _, id in
+                guard !visitedTabIDs.contains(id) else { return }
+                let liveIDs = Set(store.tree.sessions.flatMap { $0.tabs.map(\.id) })
+                visitedTabIDs = visitedTabIDs.intersection(liveIDs).union([id])
+            }
         } else {
             // A live tree is never empty (the ops re-seed a default), so this is only a transient
             // pre-materialize state.
@@ -54,17 +175,16 @@ struct SplitWorkspaceView: View {
         }
     }
 
-    /// Mounts EVERY tab of every session at once, showing only the active one. Keeping the inactive tabs
-    /// mounted (at `opacity 0`, hit-testing off — the same no-teardown trick `SplitTreeView` uses for zoom,
-    /// here extended ACROSS tabs/sessions) means a pane's libghostty surface is NEVER torn down + recreated
-    /// on a tab/session switch. That recreate — surface rebuilt at a possibly-different backing scale, byte
-    /// ring replayed, grid reflowed — is exactly what dropped a segment of the prompt on switch (HW-found).
-    /// Switching is now a pure visibility flip; the hidden surfaces keep rendering their live output, so a
-    /// tab is already current the instant it is shown. (Creating/closing a tab still mounts/unmounts that
-    /// one tab — only SWITCHING is teardown-free.)
+    /// Mounts the active tab plus every PREVIOUSLY-VISITED tab (at `opacity 0`, hit-testing off — the same
+    /// no-teardown trick `SplitTreeView` uses for zoom, here extended across tabs/sessions), showing only
+    /// the active one. Keeping a visited tab mounted means its libghostty surfaces are NEVER torn down +
+    /// recreated on a switch back. That recreate — surface rebuilt at a possibly-different backing scale,
+    /// byte ring replayed, grid reflowed — is exactly what dropped a segment of the prompt on switch
+    /// (HW-found). Switching back is now a pure visibility flip. A never-visited tab is NOT mounted, so the
+    /// app doesn't create every surface + open every channel at launch (the slow-switch storm).
     private func panesHost(activeTabID: TabID) -> some View {
         ZStack {
-            ForEach(hostedTabs, id: \.tab.id) { hosted in
+            ForEach(hostedTabs(activeTabID: activeTabID), id: \.tab.id) { hosted in
                 let active = hosted.tab.id == activeTabID
                 SplitTreeView(store: store, session: hosted.session, tab: hosted.tab, isActive: active)
                     .opacity(active ? 1 : 0)
@@ -74,10 +194,31 @@ struct SplitWorkspaceView: View {
         }
     }
 
-    /// Every (session, tab) pair across the whole workspace, in a stable order. `TabID` is globally unique,
-    /// so the `ForEach` identity is stable → no view (and no surface) remounts on a switch.
-    private var hostedTabs: [(session: Session, tab: Tab)] {
-        store.tree.sessions.flatMap { session in session.tabs.map { (session: session, tab: $0) } }
+    /// The (session, tab) pairs to keep mounted: the active tab (always) ∪ every visited tab (keep-alive).
+    /// `TabID` is globally unique, so the `ForEach` identity is stable → a visited tab never remounts on a
+    /// switch. The active tab is always included even before `visitedTabIDs` records it, so the first frame
+    /// of a freshly-selected tab never races the keep-alive bookkeeping.
+    private func hostedTabs(activeTabID: TabID) -> [(session: Session, tab: Tab)] {
+        store.tree.sessions.flatMap { session in
+            session.tabs.compactMap { tab in
+                tab.id == activeTabID || visitedTabIDs.contains(tab.id) ? (session: session, tab: tab) : nil
+            }
+        }
+    }
+
+    /// Horizontal space the macOS traffic-light cluster occupies at the window's leading edge (close +
+    /// minimize + zoom + standard gutter). Reserved on the tab strip when the sidebar is collapsed so the
+    /// first tab is not clipped under the lights. Native AppKit buttons are fixed-size, so this is not scaled.
+    private static let trafficLightInset: CGFloat = 78
+
+    /// Clamp the sidebar width to the expanded min/max with ordered comparisons (no bare `</>` ternary —
+    /// SwiftLint's NaN-faithful min/max convention; a width is never NaN but the rule applies uniformly).
+    private static func clampSidebar(_ width: CGFloat) -> CGFloat {
+        let lo = UIMetrics.sidebarExpandedMinWidth
+        let hi = UIMetrics.sidebarExpandedMaxWidth
+        if width < lo { return lo }
+        if width > hi { return hi }
+        return width
     }
 
     private var emptyState: some View {
@@ -92,4 +233,28 @@ struct SplitWorkspaceView: View {
         }
     }
 }
+
+// MARK: - WindowAnchorView
+
+#if os(macOS)
+/// A zero-size `NSViewRepresentable` that writes the view's `NSWindow` into a binding once the view
+/// is on screen. Used by `SplitWorkspaceView` to capture its own window so the
+/// `.aislopdeskWindowFullScreenDidChange` notification can be filtered by object identity (preventing
+/// another window's full-screen transition from flipping this view's `isFullScreen` state).
+private struct WindowAnchorView: NSViewRepresentable {
+    @Binding var window: NSWindow?
+
+    func makeNSView(context _: Context) -> NSView {
+        let view = NSView()
+        view.frame = .zero
+        DispatchQueue.main.async {
+            window = view.window
+        }
+        return view
+    }
+
+    func updateNSView(_: NSView, context _: Context) {}
+}
+#endif
+
 #endif

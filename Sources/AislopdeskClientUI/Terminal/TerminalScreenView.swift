@@ -26,6 +26,13 @@ public struct TerminalScreenView: View {
     /// ⌃⌘O / the chrome chip flip it through ``TerminalViewModel/onRequestBlockNavigator`` (wired below).
     @State private var isNavigatorPresented = false
 
+    /// WB2: whether to draw the slim ``StickyCommandHeader`` overlay at the top of each pane. DEFAULT-OFF
+    /// so panes are CHROME-LESS like Muxy (the block info is still reachable via the ⌃⌘O Command Navigator
+    /// below — only the always-on top strip is gone, which also stops it overlaying the terminal's top
+    /// rows). Opt back in with `AISLOPDESK_STICKY_BLOCK_HEADER=1` (default-OFF idiom: only "1" enables).
+    private static let stickyHeaderEnabled =
+        ProcessInfo.processInfo.environment["AISLOPDESK_STICKY_BLOCK_HEADER"] == "1"
+
     public init(model: TerminalViewModel, isFocused: Bool = true) {
         _model = State(initialValue: model)
         self.isFocused = isFocused
@@ -54,10 +61,12 @@ public struct TerminalScreenView: View {
                     .transition(.opacity)
             }
             // WB2: the sticky command header — a slim overlay pinned at the TOP showing the CURRENT block's
-            // command + running spinner / exit badge. Behind the find bar (top-leading) so they don't fight
-            // for the same corner; non-interactive so it never swallows a scroll. Hidden until a block lands.
-            StickyCommandHeader(model: model)
-                .frame(maxWidth: .infinity, alignment: .top)
+            // command + running spinner / exit badge. DEFAULT-OFF (Muxy-clean panes); the block info lives
+            // in the ⌃⌘O Command Navigator. Opt back in with AISLOPDESK_STICKY_BLOCK_HEADER=1.
+            if Self.stickyHeaderEnabled {
+                StickyCommandHeader(model: model)
+                    .frame(maxWidth: .infinity, alignment: .top)
+            }
             // W14 #5: the find-in-terminal bar, top-trailing so it doesn't cover the prompt.
             if isFindPresented {
                 TerminalFindBar(model: model, isPresented: $isFindPresented)

@@ -64,8 +64,16 @@ struct StickyCommandHeader: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator, lineWidth: 0.5))
+            // Replace ad-hoc .ultraThinMaterial + cornerRadius:6 + .separator with AislopdeskTheme
+            // tokens: 8pt continuous radius (panel/card), bg fill, soft 1px hairline border.
+            .background(
+                AislopdeskTheme.bg.opacity(0.92),
+                in: RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.lg, style: .continuous),
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.lg, style: .continuous)
+                    .strokeBorder(AislopdeskTheme.border, lineWidth: 1),
+            )
             .padding(.horizontal, 8)
             .padding(.top, 6)
             .allowsHitTesting(false) // purely informational — never swallow a scroll/click over the pane

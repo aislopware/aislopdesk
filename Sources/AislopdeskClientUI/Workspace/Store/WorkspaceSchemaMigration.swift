@@ -31,23 +31,40 @@ enum WorkspaceSchemaMigration {
         from == to ? workspace : nil
     }
 
-    // MARK: - Tree-rooted (v10) migration registration (W3 — additive, off the live load path)
+    // MARK: - Tree-rooted migration registration (W3 — additive, off the live load path)
 
-    /// The registered upgrade step into the tree-rooted ``TreeWorkspace`` shape (docs/42 §Migration). A
-    /// `from == 9` raw-decodable v9 file migrates through the frozen ``WorkspaceV9`` mirror; a `from == 10`
-    /// file is already the tree shape (the caller typed-decodes it directly, so this returns `nil` — there
-    /// is nothing to upgrade); any other version returns `nil` → the caller resets to default.
+    /// The registered upgrade step into the tree-rooted ``TreeWorkspace`` shape (docs/42 §Migration):
+    /// - `from ∈ 5...9` — migrates through the frozen ``WorkspaceV9`` mirror (all v5–v9 canvas files
+    ///   decode through the v9 shadow, which carries a superset of all older fields).
+    /// - `from == 10` — identity re-decode: v10 is structurally identical to v11; the four new optional
+    ///   ``PaneSpec`` fields resolve to `nil` via `decodeIfPresent`. No data is lost.
+    /// - `from == 11` (current) — the caller decodes directly; this returns `nil` (nothing to upgrade).
+    /// - Any other version → `nil` → the caller resets to the default workspace.
     ///
     /// **Additive (W3): the live `WorkspacePersistence.load()` still returns the v9 ``Workspace`` and does
     /// NOT call this.** It is the registered seam W4 wires in behind the version peek when the store cuts
     /// over to ``TreeWorkspace``. Forward-tolerant on `5...9` (those older shapes all decode through the v9
     /// mirror — the v9 fields are a superset).
+    ///
+    /// **v10 → v11 is an identity step** (schema v11 only adds optional fields to ``PaneSpec`` — all four
+    /// decode via `decodeIfPresent` → `nil` when absent, so a v10 file decodes cleanly as a v11 tree with
+    /// no data loss and no structural changes). A `from == 10` raw JSON string is therefore re-decoded as a
+    /// ``TreeWorkspace`` directly (the typed decode already handles the new-field absence) and the result's
+    /// `schemaVersion` is left at the decoded value; `loadTree()` normalizes + upgrades the version in the
+    /// next `save()`. `from == 11` is already the current shape (caller decodes directly → returns `nil`
+    /// here so the caller's direct decode takes effect).
     static func migrateToTree(_ data: Data, from: Int) -> TreeWorkspace? {
         switch from {
         case 5...9:
             WorkspacePersistence.migrateV9toV10(from: data)
+        case 10:
+            // A v10 file only lacks the four new optional PaneSpec fields, which `decodeIfPresent` resolves
+            // to nil. Re-decode the raw bytes as TreeWorkspace (identical schema, additive fields absent)
+            // so the caller gets a valid tree. loadTree() will write it back at schemaVersion 11 on the
+            // next save.
+            try? JSONDecoder().decode(TreeWorkspace.self, from: data)
         default:
-            // 10 = already the tree shape (caller decodes directly); anything else is uninterpretable.
+            // 11 = already the current shape (caller decodes directly); anything else is uninterpretable.
             nil
         }
     }

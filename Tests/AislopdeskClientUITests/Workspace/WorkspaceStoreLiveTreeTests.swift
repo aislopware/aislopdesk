@@ -88,9 +88,13 @@ final class WorkspaceStoreLiveTreeTests: XCTestCase {
     func testLiveTreeStoreMigratesV9FileAndMaterializesTreeLeaves() throws {
         let (persistence, v9PaneIDs) = try writeV9Fixture()
 
-        // The LIVE load path: peek v9, migrate to a v10 tree preserving every pane.
+        // The LIVE load path: peek v9, migrate to the current tree shape preserving every pane.
         let restoredTree = persistence.loadTree()
-        XCTAssertEqual(restoredTree.schemaVersion, TreeWorkspace.currentSchemaVersion, "migrated to v10")
+        XCTAssertEqual(
+            restoredTree.schemaVersion,
+            TreeWorkspace.currentSchemaVersion,
+            "migrated to current schema version",
+        )
         XCTAssertEqual(
             Set(restoredTree.allPaneIDs()),
             Set(v9PaneIDs),

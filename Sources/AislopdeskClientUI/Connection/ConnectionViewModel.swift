@@ -40,6 +40,22 @@ public final class ConnectionViewModel {
     /// badge / typing-lag attribution datum (docs/26 D1/D10).
     public private(set) var latencyMS: Double?
     public private(set) var sessionID: UUID?
+
+    // MARK: Detach/resume identity mirror (AISLOPDESK_DETACH_ENABLED)
+
+    /// The session UUID the client is currently using (the one it presented to the host in the
+    /// channelOpen preamble). Mirrors ``AislopdeskClient/sessionID`` after a successful connect so
+    /// the store can snapshot it into ``PaneSpec/resumeSessionID`` for the next launch.
+    /// `nil` until the client completes its first handshake. Named to avoid shadowing `sessionID`
+    /// (which carries the value learned from the last `helloAck`, same thing on this path).
+    public private(set) var effectiveSessionID: UUID?
+
+    /// The highest contiguous output seq the client has received from the host, snapshotted
+    /// periodically so the store can persist it into ``PaneSpec/resumeLastReceivedSeq``. Driven
+    /// by the `.rtt` probe tick (every ~3 s) so the snapshot is fresh without a dedicated timer.
+    /// `0` until the client receives its first output chunk.
+    public private(set) var snapshotedContiguousSeq: Int64 = 0
+
     /// Last log line from the reconnect supervisor (surfaced in the UI for diagnostics).
     public private(set) var lastLog: String?
 
@@ -54,6 +70,17 @@ public final class ConnectionViewModel {
     /// notification is dropped). Carries the live pane title so the poster can fall back to it when an
     /// OSC 9 omits a title.
     public var onExplicitNotification: ((_ paneTitle: String, _ title: String, _ body: String) -> Void)?
+
+    /// A live OSC title change (wire type `.title`). The store wires this to persist the new title into
+    /// ``PaneSpec/lastKnownTitle`` so a relaunch can restore the shell's last-known tab title even when
+    /// the user has not manually renamed the pane. Empty strings are suppressed (the host emits an empty
+    /// title on connect before the shell sets a real one). `nil` ⇒ no observer (the side-effect is dropped).
+    public var onTitleChanged: ((String) -> Void)?
+
+    /// A resume-identity snapshot (AISLOPDESK_DETACH_ENABLED). Called whenever the effective session UUID
+    /// or the snapshotted seq are updated so the store can persist them into ``PaneSpec/resumeSessionID``
+    /// / ``PaneSpec/resumeLastReceivedSeq`` for the next launch. `nil` ⇒ no observer.
+    public var onResumeIdentitySnapshot: ((_ sessionID: UUID, _ seq: Int64) -> Void)?
 
     /// A Claude-Code agent-detection signal (wire types 26/27 — `.foregroundProcess` / `.claudeStatus`).
     /// The store wires this to the owning pane's ``LivePaneSession`` so it folds the signal into the
@@ -384,6 +411,8 @@ public final class ConnectionViewModel {
             let learnedID = await client.sessionID
             guard myGeneration == connectGeneration, self.client === client else { return }
             sessionID = learnedID
+            effectiveSessionID = learnedID
+            if let learnedID { onResumeIdentitySnapshot?(learnedID, 0) }
             status = .connected
             // The host PTY is now ready to accept a resize. Re-send the renderer's current grid: any
             // resize that fired during the handshake threw `sendResize before connect` and was dropped
@@ -506,6 +535,8 @@ public final class ConnectionViewModel {
             // terminal.reset() (R13 #3).
             if deliberatelyClosed { return }
             self.sessionID = sessionID
+            effectiveSessionID = sessionID
+            onResumeIdentitySnapshot?(sessionID, snapshotedContiguousSeq)
             status = .connected
             // RECONNECT GRID RE-ASSERT (the "render bị xô lệch khi reconnect" fix). A reconnect spawns
             // a BRAND-NEW host shell (the mux path has no server-side resume — see
@@ -543,6 +574,18 @@ public final class ConnectionViewModel {
             onExplicitNotification?(terminal.title ?? "", title, body)
         case let .rtt(milliseconds):
             latencyMS = milliseconds
+            // Piggyback a seq snapshot on the RTT tick (~3 s cadence) so the store can persist
+            // the live highestContiguousSeq without a dedicated timer. Actor-isolated read; safe
+            // because we hop onto MainActor inside an already-MainActor foldEvent call.
+            let snapClient = client
+            Task { @MainActor [weak self] in
+                guard let self, let snapClient, client === snapClient else { return }
+                let seq = await snapClient.highestContiguousSeq
+                snapshotedContiguousSeq = seq
+                if let id = effectiveSessionID {
+                    onResumeIdentitySnapshot?(id, seq)
+                }
+            }
         case .foregroundProcess,
              .claudeStatus:
             // Claude-Code detection (wire types 26/27): hand the raw event to the store's per-pane
@@ -554,8 +597,11 @@ public final class ConnectionViewModel {
             // WB2 Warp-style Blocks (wire types 28/29): folded into the terminal model's per-pane block
             // store below (terminal.handle). The chrome status is unaffected.
             break
-        case .title,
-             .bell:
+        case let .title(text):
+            // Persist the live shell title into the pane spec so a relaunch can restore it.
+            // Empty strings are suppressed — the host emits "" on connect before the shell sets a real one.
+            if !text.isEmpty { onTitleChanged?(text) }
+        case .bell:
             break
         }
         terminal.handle(event)

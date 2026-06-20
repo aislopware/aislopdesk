@@ -282,6 +282,15 @@ public struct AislopdeskClientApp: App {
                         connection.markConnectedForAutomation()
                     }
                 }
+                // AUTO-RECONNECT (Goal B): on a normal (non-automation) launch, silently re-connect to
+                // the most-recently-used host so the user doesn't have to press Connect again. The
+                // automation seam keeps precedence — this task is a no-op under any AISLOPDESK_*AUTOCONNECT*
+                // env, so check-macos.sh / check-video.sh are unaffected. The escape hatch
+                // AISLOPDESK_SKIP_AUTO_RECONNECT=1 suppresses it for tests or headless runs.
+                .task {
+                    guard !Self.hasAutomationEnvironment() else { return }
+                    await connection.connectIfSavedTarget()
+                }
             #if os(macOS)
                 // AUTOMATION ONLY (env-gated): bring the window to front + make it key at launch so the
                 // NavigationSplitView detail subtree appears and the .remoteGUI pane's connect-on-appear
@@ -319,6 +328,14 @@ public struct AislopdeskClientApp: App {
             // freely by the user, not pinned to its intrinsic size.
             .windowStyle(.hiddenTitleBar)
             .windowResizability(.automatic)
+            // Open at a sensible size. WITHOUT this, `.automatic` resizability sizes a fresh window to the
+            // content's INITIAL ideal — and when the workspace shell is the first content shown (the
+            // autoconnect/automation path dismisses the connect gate immediately), that ideal is the
+            // not-yet-laid-out `NavigationSplitView`'s near-zero height, so the window opens collapsed to
+            // titlebar-only (HW-found on a 1× display: a 30px-tall window, no visible workspace). A
+            // `.defaultSize` pins the initial frame so the shell always opens usable; the user can still
+            // resize freely. (The manual-connect path was unaffected because the gate sized the window first.)
+            .defaultSize(width: 1280, height: 820)
         #endif
 
         #if os(macOS)

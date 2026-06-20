@@ -45,6 +45,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     case commandPalette // ⌘K — show/hide the ⌘K command palette
     case cheatSheet // ⌘/ — show/hide the keyboard cheat sheet
     case find // ⌘F — show/hide the find-in-terminal bar over the active pane (W14 #5)
+    case toggleSidebar // ⌘B — show/hide the sessions sidebar
 
     // Blocks (WB2 — Warp-style per-command blocks)
     case commandNavigator // ⌃⌘O — show/hide the searchable recent-blocks navigator over the active pane
@@ -59,6 +60,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     case nextTab // ⌘⇧]
     case prevTab // ⌘⇧[
     case selectTab(Int) // ⌘1…⌘9 (1-based)
+    case closeTab // ⌘⇧W — close the active tab (all its panes)
 
     // Sessions
     case newSession // ⌃⌘N
@@ -115,6 +117,8 @@ public extension WorkspaceAction {
              .nextTab,
              .prevTab,
              .selectTab,
+             .closeTab,
+             .toggleSidebar,
              .newSession:
             false
         }
@@ -263,13 +267,18 @@ public enum WorkspaceBindingRegistry {
         ),
         WorkspaceBinding(
             id: "tab.next", action: .nextTab, title: "Next Tab",
-            category: .tabs, chord: KeyChord(character: "]", [.command, .shift]),
+            category: .tabs, chord: KeyChord(character: "]", [.command]),
             symbol: "arrow.forward.square", keywords: "cycle forward switch tab",
         ),
         WorkspaceBinding(
             id: "tab.prev", action: .prevTab, title: "Previous Tab",
-            category: .tabs, chord: KeyChord(character: "[", [.command, .shift]),
+            category: .tabs, chord: KeyChord(character: "[", [.command]),
             symbol: "arrow.backward.square", keywords: "cycle back previous switch tab",
+        ),
+        WorkspaceBinding(
+            id: "tab.close", action: .closeTab, title: "Close Tab",
+            category: .tabs, chord: KeyChord(character: "w", [.command, .shift]),
+            symbol: "xmark.rectangle", keywords: "close end terminate tab all panes",
         ),
         // Sessions
         WorkspaceBinding(
@@ -319,9 +328,14 @@ public enum WorkspaceBindingRegistry {
             category: .view, chord: KeyChord(character: "f", [.command]),
             symbol: "magnifyingglass", keywords: "search scrollback grep locate text in terminal",
         ),
+        WorkspaceBinding(
+            id: "view.toggleSidebar", action: .toggleSidebar, title: "Toggle Sidebar",
+            category: .view, chord: KeyChord(character: "b", [.command]),
+            symbol: "sidebar.left", keywords: "sidebar sessions rail hide show collapse",
+        ),
         // Blocks (WB2): the Command Navigator toggle + jump-to-block prev/next. ⌃⌘O / ⌃⌘[ / ⌃⌘] are all
         // ⌘-prefixed (the §5 conflict rule) and collision-free against the rest of the table (tab cycling
-        // is ⌘⇧[/], focus is ⌥⌘arrows — neither uses ⌃⌘bracket). They target the active terminal pane.
+        // is ⌘[/], focus is ⌥⌘arrows — neither uses ⌃⌘bracket). They target the active terminal pane.
         WorkspaceBinding(
             id: "view.commandNavigator", action: .commandNavigator, title: "Command Navigator",
             category: .view, chord: KeyChord(character: "o", [.control, .command]),
@@ -339,7 +353,7 @@ public enum WorkspaceBindingRegistry {
         ),
         // WB3: re-run last command + jump-to-failed prev/next. ⌃⌘R / ⌃⌘⇧[ / ⌃⌘⇧] are all ⌘-prefixed (§5)
         // and collision-free: ⌃⌘R is otherwise unbound; ⌃⌘⇧[ / ⌃⌘⇧] add ⇧ to the block-jump chords, so
-        // they are distinct from both ⌃⌘[ / ⌃⌘] (block jump) and ⌘⇧[ / ⌘⇧] (tab cycling).
+        // they are distinct from both ⌃⌘[ / ⌃⌘] (block jump) and ⌘[ / ⌘] (tab cycling).
         WorkspaceBinding(
             id: "view.reRunLastCommand", action: .reRunLastCommand, title: "Re-run Last Command",
             category: .view, chord: KeyChord(character: "r", [.control, .command]),

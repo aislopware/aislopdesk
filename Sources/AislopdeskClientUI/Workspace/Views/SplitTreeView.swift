@@ -67,7 +67,7 @@ struct SplitTreeView: View {
             // remount), re-publish its solved layout so geometric focus moves resolve against it.
             .onChange(of: isActive) { _, active in if active { reportLayout(placement) } }
         }
-        .background(.background)
+        .background(AislopdeskTheme.bg) // Muxy: the gutter between split panes is the solid theme bg.
     }
 
     // MARK: Leaf
@@ -82,6 +82,7 @@ struct SplitTreeView: View {
             isFocused: tab.activePane == id,
             isZoomed: tab.zoomedPane == id,
             store: store,
+            showsHeader: false, // Muxy: no per-pane header — the tab strip is the only header.
         ) {
             PaneLeafView(
                 handle: store.handle(for: id),
@@ -91,22 +92,33 @@ struct SplitTreeView: View {
                 store: store,
             )
         }
-        .padding(2)
+        // Half-gap around every leaf so sibling halves form a full `paneGap`-pt gutter.
+        .padding(AislopdeskTheme.Space.paneGap / 2)
         .frame(width: rect.width, height: rect.height)
         .position(x: rect.midX, y: rect.midY)
         // The no-teardown trick: a zoomed-away leaf stays MOUNTED but invisible + inert.
         .opacity(isVisible ? 1 : 0)
         .allowsHitTesting(isVisible)
-        // W14 #10: wire the terminal right-click menu's "Split Right / Split Down" to the store for THIS
-        // leaf (find self-wires in TerminalScreenView). A non-terminal / faked leaf has no model → no-op.
-        .onAppear { wireContextMenu(for: id) }
+        // W14 #10: wire this leaf's terminal model callbacks to the store (find/split self-wire in
+        // TerminalScreenView). A non-terminal / faked leaf has no model → no-op.
+        .onAppear { wirePaneCallbacks(for: id) }
     }
 
-    /// Points the leaf's terminal model's context-menu split callback at the store (W14 #10). Captures only
-    /// `store` + `id` (both stable). No-op for a leaf without a live terminal model.
-    private func wireContextMenu(for id: PaneID) {
+    /// Points the leaf's terminal model callbacks at the store. Captures only `store` + `id` (both stable).
+    /// No-op for a leaf without a live terminal model.
+    ///
+    /// - `onRequestFocus` — a click in the terminal BODY (`GhosttyLayerBackedView.mouseDown`) fires this so
+    ///   the workspace focus follows where the user actually clicked. It was previously wired ONLY on the
+    ///   dead canvas path (`CanvasItemView`), so on the live tree shell clicking a pane made it the keyboard
+    ///   first responder (typing landed) but never moved `tab.activePane` — the clicked pane stayed at the
+    ///   unfocused `.opacity(0.92)` dim with the focus ring stuck on the old pane (HW-found "focused pane
+    ///   vẫn mờ mờ mặc dù gõ được"). Routing it through `focusPaneTree` keeps focus, the ring, and the dim
+    ///   consistent with the first responder.
+    /// - `onContextMenuSplit` — the right-click "Split Right / Split Down" menu items.
+    private func wirePaneCallbacks(for id: PaneID) {
         guard let live = store.handle(for: id) as? LivePaneSession,
               let model = live.terminalModel else { return }
+        model.onRequestFocus = { [weak store] in store?.focusPaneTree(id) }
         model.onContextMenuSplit = { [weak store] horizontal in
             store?.splitPaneTree(id, axis: horizontal ? .horizontal : .vertical, kind: .terminal)
         }

@@ -1,123 +1,143 @@
+// Adapted from Muxy (https://github.com/muxy-app/muxy) — MIT © 2026 Muxy.
 #if canImport(SwiftUI)
+import AislopdeskAgentDetect
 import SwiftUI
 
-// MARK: - TabBarView (the active session's tab strip — W5)
+// MARK: - TabBarView (the active session's tab strip — Muxy-styled)
 
-/// The slim coding-IDE tab strip for the active session (docs/42 W5): one pill per ``Tab`` (select /
-/// close / double-click-to-rename), a rolled-up ``AgentStatusDot`` per tab, and a `+` to open a new tab.
-/// Drives the store's tree ops (`selectTab` / `closeTab` / `newTab` / `renameTab`).
+/// The coding-IDE tab strip for the active session, REWRITTEN to match Muxy's `PaneTabStrip` (not stock
+/// pills): a solid `bg` row of RECTANGULAR `TabCell`s (active = `surface` fill + a 2pt `accent` bottom line
+/// when active+focused, the primary "this is the active tab" cue), 1pt `border` separators between cells,
+/// and a right-aligned group of split / zoom / new-tab `ChromeIconButton`s that act on the active pane (the
+/// per-pane header that used to host those was removed — Muxy has no per-pane header). Drives the store's
+/// tree ops (`selectTab` / `closeTab` / `newTab` / `renameTab` / `splitPaneTree` / `toggleZoomTree`).
+///
+/// When `isWindowTitleBar` is set, the whole strip doubles as the window's custom title bar: the scroll
+/// region and the trailing controls cluster are backed by `WindowDragRepresentable(alwaysEnabled: true)` so
+/// empty space drags the window.
 struct TabBarView: View {
     @Bindable var store: WorkspaceStore
     let session: Session
+
+    /// Whether this strip is acting as the window's custom title bar (⇒ it is the window-drag region).
+    var isWindowTitleBar: Bool = false
 
     /// The tab whose inline rename field is open (double-click / context-menu Rename), or `nil`.
     @State private var renamingTab: TabID?
     @State private var renameText: String = ""
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(Array(session.tabs.enumerated()), id: \.element.id) { index, tab in
-                    tabPill(tab: tab, index: index, isActive: index == session.activeTabIndex)
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(Array(session.tabs.enumerated()), id: \.element.id) { index, tab in
+                        tabSlot(tab: tab, index: index, isActive: index == session.activeTabIndex)
+                    }
                 }
-                newTabButton
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .titleBarDrag(isWindowTitleBar)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            Spacer(minLength: 0)
+            controls
         }
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
-        // ITEM B1: observe the store's ⌘⇧R "Rename Tab" request and open the matching pill's inline field.
-        // A pending TabID (not a counter) so a just-mounted strip still acts on the request; consumed once
-        // the field opens. `.onAppear` covers a request that fired before the strip mounted.
+        .frame(height: AislopdeskTheme.Metrics.tabHeight)
+        .background(AislopdeskTheme.bg)
+        .titleBarDrag(isWindowTitleBar)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(AislopdeskTheme.border).frame(height: 1)
+        }
+        // ITEM B1: observe the store's ⌘⇧R "Rename Tab" request and open the matching cell's inline field.
         .onChange(of: store.pendingTabRename) { _, requested in openPendingTabRename(requested) }
         .onAppear { openPendingTabRename(store.pendingTabRename) }
+        // FIX A: dismiss a half-open inline rename when the session changes (TabBarView is NOT remounted
+        // across session switches — same identity, new `session:` value — so @State persists and a stale
+        // TabID would silently swallow the edit).
+        .onChange(of: session.id) { _, _ in renamingTab = nil }
     }
 
     /// Opens the inline rename for the requested tab (if it belongs to THIS session's strip) and clears the
-    /// store request. The active-session strip is the one mounted, so a request for another session's tab is
-    /// simply ignored here (that session is not on screen).
+    /// store request.
     private func openPendingTabRename(_ requested: TabID?) {
         guard let requested, session.tabs.contains(where: { $0.id == requested }) else { return }
         if let tab = session.tabs.first(where: { $0.id == requested }) { beginRename(tab) }
         store.clearTabRenameRequest()
     }
 
-    // MARK: Tab pill
+    // MARK: Tab cell (or its inline rename field)
 
-    private func tabPill(tab: Tab, index: Int, isActive: Bool) -> some View {
-        HStack(spacing: 6) {
-            AgentStatusDot(status: store.rollupStatus(forTab: tab.id), size: 6)
-            CompletionBadge(badge: store.rollupPendingCompletion(forTab: tab.id), size: 6)
-            if renamingTab == tab.id {
+    @ViewBuilder
+    private func tabSlot(tab: Tab, index: Int, isActive: Bool) -> some View {
+        if renamingTab == tab.id {
+            HStack(spacing: 0) {
                 TextField("Tab", text: $renameText)
                     .textFieldStyle(.plain)
-                    .font(.caption)
+                    .font(.system(size: UIMetrics.fontBody))
+                    .foregroundStyle(AislopdeskTheme.fg)
                     .frame(minWidth: 60, maxWidth: 160)
+                    .padding(.horizontal, UIMetrics.spacing6)
                     .onSubmit { commitRename(tab.id) }
                     .onEscapeKey { renamingTab = nil }
                 #if os(iOS)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                 #endif
-            } else {
-                Text(tabTitle(tab))
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
-            // Close affordance (hidden inline rename keeps it out of the way).
-            if renamingTab != tab.id {
-                Button {
-                    store.closeTab(tab.id)
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
+            .frame(height: AislopdeskTheme.Metrics.tabHeight)
+            // Use surface12 (fg·0.12) for the active inline-rename field so it reads as an
+            // open/focused input rather than the same weight as a resting selected tab (surface fg·0.08).
+            .background(AislopdeskTheme.surface12)
+            .overlay(alignment: .trailing) { Rectangle().fill(AislopdeskTheme.border).frame(width: 1) }
+        } else {
+            TabCell(
+                title: tabTitle(tab),
+                icon: tabIcon(tab),
+                isActive: isActive,
+                agentStatus: store.rollupStatus(forTab: tab.id),
+                completion: store.rollupPendingCompletion(forTab: tab.id),
+                onSelect: { store.selectTab(index) },
+                onRename: { beginRename(tab) },
+                onClose: { store.closeTab(tab.id) },
+            )
+            .contextMenu {
+                Button("Rename…") { beginRename(tab) }
+                Button("Close Tab", role: .destructive) { store.closeTab(tab.id) }
+            }
+        }
+    }
+
+    // MARK: Right-side controls (act on the active pane — Muxy puts split/new-tab here)
+
+    private var controls: some View {
+        HStack(spacing: AislopdeskTheme.Space.xs) {
+            if let active = session.activeTab?.activePane {
+                ChromeIconButton(systemImage: "square.split.2x1", help: "Split right (⌘D)") {
+                    store.focusPaneTree(active)
+                    store.splitPaneTree(active, axis: .horizontal, kind: SettingsKey.defaultPaneKind)
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .help("Close tab")
-                .accessibilityLabel("Close tab")
+                ChromeIconButton(systemImage: "square.split.1x2", help: "Split down (⌘⇧D)") {
+                    store.focusPaneTree(active)
+                    store.splitPaneTree(active, axis: .vertical, kind: SettingsKey.defaultPaneKind)
+                }
+                let zoomed = session.activeTab?.zoomedPane == active
+                ChromeIconButton(
+                    systemImage: zoomed
+                        ? "arrow.down.right.and.arrow.up.left.square"
+                        : "arrow.up.left.and.arrow.down.right.square",
+                    help: zoomed ? "Restore (⌘⌥↩)" : "Zoom (⌘⌥↩)",
+                ) {
+                    store.focusPaneTree(active)
+                    store.toggleZoomTree()
+                }
+            }
+            ChromeIconButton(systemImage: "plus", help: "New tab (⌘T)") {
+                store.newTab(kind: SettingsKey.defaultPaneKind)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isActive ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.clear)),
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(isActive ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1),
-        )
-        .contentShape(Rectangle())
-        // ITEM B2: the double-tap MUST win over the single-tap (a leading `onTapGesture` swallows the
-        // double-tap before it can fire). A `highPriorityGesture(TapGesture(count: 2))` is evaluated
-        // first, so a genuine double-tap renames and a single-tap still falls through to select.
-        .highPriorityGesture(TapGesture(count: 2).onEnded { beginRename(tab) })
-        .onTapGesture { store.selectTab(index) }
-        .contextMenu {
-            Button("Rename…") { beginRename(tab) }
-            Button("Close Tab", role: .destructive) { store.closeTab(tab.id) }
-        }
+        .padding(.horizontal, AislopdeskTheme.Space.m)
+        .titleBarDrag(isWindowTitleBar)
     }
 
-    private var newTabButton: some View {
-        Button {
-            store.newTab(kind: SettingsKey.defaultPaneKind)
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 11, weight: .medium))
-                .frame(width: 22, height: 22)
-        }
-        .buttonStyle(.borderless)
-        .foregroundStyle(.secondary)
-        .help("New tab (⌘T)")
-        .accessibilityLabel("New tab")
-    }
-
-    // MARK: Title + rename
+    // MARK: Title + icon + rename
 
     /// The tab's title, deriving from the active pane's live OSC title when the tab has no explicit name.
     private func tabTitle(_ tab: Tab) -> String {
@@ -126,6 +146,14 @@ struct TabBarView: View {
             return PanePresentation.displayTitle(store.handle(for: active), spec: spec)
         }
         return "Tab"
+    }
+
+    /// The tab's glyph — the active pane's kind icon (one source of truth via `PaneLeafView.icon`).
+    private func tabIcon(_ tab: Tab) -> String {
+        if let active = tab.activePane, let spec = store.tree.spec(for: active) {
+            return PaneLeafView.icon(for: spec.kind)
+        }
+        return PaneLeafView.icon(for: .terminal)
     }
 
     private func beginRename(_ tab: Tab) {
@@ -137,6 +165,137 @@ struct TabBarView: View {
         let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         store.renameTab(id, to: trimmed)
         renamingTab = nil
+    }
+}
+
+// MARK: - Window-drag helper
+
+private extension View {
+    /// Backs the receiver with the window-drag region when this strip is the custom title bar (Muxy:
+    /// `WindowDragRepresentable(alwaysEnabled: isWindowTitleBar)`), else a no-op.
+    @ViewBuilder
+    func titleBarDrag(_ enabled: Bool) -> some View {
+        if enabled {
+            background(WindowDragRepresentable(alwaysEnabled: true))
+        } else {
+            self
+        }
+    }
+}
+
+// MARK: - TabCell (one rectangular Muxy tab)
+
+/// A single rectangular tab cell in the Muxy idiom: icon (+ a top-trailing unread/completion accent dot when
+/// inactive) + agent dot + title + (hover/active) close, with a `surface` fill + 2pt `accent` bottom line
+/// when active, a `hover` wash on hover, and a 1pt `border` trailing separator. Width clamps to Muxy's
+/// `minWidth 44 … maxWidth 200`; below `titleHideThreshold 80` the title hides to an icon-only chip. Its own
+/// `hovering` state keeps the close glyph + hover wash local (no parent re-render per pointer move).
+private struct TabCell: View {
+    static let minWidth: CGFloat = 44
+    static let maxWidth: CGFloat = 200
+    static let titleHideThreshold: CGFloat = 80
+
+    let title: String
+    let icon: String
+    let isActive: Bool
+    let agentStatus: ClaudeStatus
+    let completion: PaneCompletionBadge?
+    let onSelect: () -> Void
+    let onRename: () -> Void
+    let onClose: () -> Void
+
+    @State private var hovering = false
+    /// Seed at `maxWidth` so the title is SHOWN by default. A `0` sentinel latches the title hidden
+    /// forever: hiding the title shrinks the cell below `titleHideThreshold`, so the GeometryReader
+    /// re-measures it as narrow and never lifts the hide. Showing-by-default costs at most a one-frame
+    /// title→hidden flash on genuinely narrow (many-tab) strips, which is the lesser evil.
+    @State private var measuredWidth: CGFloat = Self.maxWidth
+
+    /// Below the threshold the cell collapses to an icon-only chip (Muxy hides the title on narrow tabs).
+    private var titleHidden: Bool { measuredWidth < Self.titleHideThreshold }
+
+    var body: some View {
+        HStack(spacing: AislopdeskTheme.Space.m) {
+            Image(systemName: icon)
+                .font(.system(size: UIMetrics.fontBody))
+                .foregroundStyle(isActive ? AislopdeskTheme.fg : AislopdeskTheme.fgMuted)
+                .overlay(alignment: .topTrailing) { unreadDot }
+            AgentStatusDot(status: agentStatus, size: 6)
+            CompletionBadge(badge: completion, size: 6)
+            if !titleHidden {
+                Text(title)
+                    .font(.system(size: UIMetrics.fontBody))
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .foregroundStyle(isActive ? AislopdeskTheme.fg : AislopdeskTheme.fgMuted)
+            }
+            if !titleHidden { closeButton }
+        }
+        .padding(.horizontal, titleHidden ? AislopdeskTheme.Space.s : AislopdeskTheme.Space.xl)
+        .frame(height: AislopdeskTheme.Metrics.tabHeight)
+        .frame(minWidth: Self.minWidth, maxWidth: Self.maxWidth)
+        .background {
+            GeometryReader { geo in
+                Color.clear.onAppear { measuredWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { _, width in measuredWidth = width }
+            }
+        }
+        .background(isActive ? AislopdeskTheme.surface : (hovering ? AislopdeskTheme.hover : .clear))
+        .overlay(alignment: .bottom) {
+            // The active-tab accent line — the primary focus cue (Muxy: 2pt accent bottom line).
+            Rectangle()
+                .fill(isActive ? AislopdeskTheme.accent : .clear)
+                .frame(height: 2)
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(AislopdeskTheme.border).frame(width: 1)
+        }
+        .contentShape(Rectangle())
+        // ITEM B2: the double-tap must win over the single-tap (a leading `onTapGesture` swallows it).
+        .highPriorityGesture(TapGesture(count: 2).onEnded { onRename() })
+        .onTapGesture { onSelect() }
+        // Middle-click closes the tab (Muxy idiom) — a no-op view off macOS.
+        .overlay { MiddleClickView(action: onClose).accessibilityHidden(true) }
+        #if os(macOS)
+            .onHover { hovering = $0 }
+        #endif
+    }
+
+    /// The top-trailing unread/completion accent dot on the icon, shown only on an INACTIVE tab (the active
+    /// tab is in view, so its agent/completion state is already visible inline). Muxy: a 6pt accent circle.
+    @ViewBuilder
+    private var unreadDot: some View {
+        let pending = agentStatus == .done || agentStatus == .needsPermission || completion != nil
+        if pending, !isActive {
+            Circle()
+                .fill(AislopdeskTheme.accent)
+                .frame(width: 6, height: 6)
+                .offset(x: 3, y: -3)
+        }
+    }
+
+    /// The close glyph — shown on hover or when active (Muxy hides it on narrow inactive tabs); always
+    /// shown on iOS (no hover) when active.
+    @ViewBuilder
+    private var closeButton: some View {
+        let show: Bool = {
+            #if os(macOS)
+            return hovering || isActive
+            #else
+            return isActive
+            #endif
+        }()
+        if show {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: UIMetrics.fontCaption, weight: .bold))
+                    .foregroundStyle(AislopdeskTheme.fgDim)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close tab")
+            .accessibilityLabel("Close tab")
+        }
     }
 }
 #endif

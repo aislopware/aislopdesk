@@ -96,6 +96,18 @@ if HostEnvironment.agentHooksEnabled() {
     agentHookListener = listener
 }
 
+// Agent-control Unix-domain socket (DEFAULT-OFF: only `AISLOPDESK_AGENT_CONTROL=1` enables).
+// The socket path is keyed by pid (same derivation as the hook socket) so concurrent hosts
+// don't collide. chmod 0600 is applied by `AgentControlAcceptor.start(path:)`.
+// Resolve the path BEFORE constructing HostServer so the server can inject it into PTY envs.
+let agentControlSocketPath: String =
+    if HostEnvironment.agentControlEnabled() {
+        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("aislopdesk-ctl-\(getpid()).sock").path
+    } else {
+        ""
+    }
+
 let server = HostServer(
     port: parsed.port,
     shellPath: parsed.shell,
@@ -103,9 +115,18 @@ let server = HostServer(
     agentDetectEnabled: agentDetectEnabled,
     agentHookListener: agentHookListener,
     agentHookSocketPath: agentHookSocketPath,
+    agentControlSocketPath: agentControlSocketPath,
     blocksEnabled: blocksEnabled,
 )
 server.onLog = log
+
+// Construct the control listener (needs a reference to the server for verb dispatch).
+var agentControlListener: AgentControlListener?
+if !agentControlSocketPath.isEmpty {
+    let listener = AgentControlListener(socketPath: agentControlSocketPath, server: server)
+    listener.onLog = log
+    agentControlListener = listener
+}
 
 // Bind the hook socket now (before the listener accepts client connections). A bind failure is
 // logged + non-fatal — the foreground watch still provides detection (Decision #5).
@@ -114,6 +135,17 @@ if let agentHookListener {
         try agentHookListener.start(path: agentHookSocketPath)
     } catch {
         log("agent-hook listener failed to bind (\(error)) — continuing with process-watch only")
+    }
+}
+
+// Bind the agent-control socket. A bind failure is logged + non-fatal (the terminal path is
+// unaffected); agents will get connection-refused and should report the error to the operator.
+if let agentControlListener {
+    do {
+        try agentControlListener.start()
+        log("agent-control socket: \(agentControlSocketPath) (AISLOPDESK_CONTROL_SOCKET)")
+    } catch {
+        log("agent-control listener failed to bind (\(error)) — control socket unavailable")
     }
 }
 
@@ -177,6 +209,7 @@ sigintSource.setEventHandler {
     log("SIGINT — shutting down")
     Task {
         agentHookListener?.stop()
+        agentControlListener?.stop()
         inspectorServer?.stop()
         await server.stop()
         exit(0)

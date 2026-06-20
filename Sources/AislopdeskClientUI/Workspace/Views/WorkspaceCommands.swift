@@ -60,6 +60,18 @@ public struct WorkspaceCommands: Commands {
                 Divider()
                 actionButton("Split Right", .splitRight)
                 actionButton("Split Down", .splitDown)
+                Divider()
+                Button("Close Pane") {
+                    guard let store else {
+                        #if os(macOS)
+                        NSApp.keyWindow?.performClose(nil)
+                        #endif
+                        return
+                    }
+                    WorkspaceBindingRegistry.route(.closePane, to: store)
+                }
+                .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .closePane)?.shortcut))
+                actionButton("Close Tab", .closeTab)
             }
         }
         #if os(macOS)
@@ -83,6 +95,7 @@ public struct WorkspaceCommands: Commands {
             Button("Keyboard Shortcuts") { cheatSheetToggle?.toggle() }
                 .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .cheatSheet)?.shortcut))
                 .disabled(cheatSheetToggle == nil)
+            actionButton("Toggle Sidebar", .toggleSidebar)
             // The canvas interaction prefs are inert on the tree shell — surface them only on the
             // retained-but-dead canvas (the SAME @AppStorage keys the per-pane pill menu toggles).
             if store?.liveModel == .canvas {
@@ -114,7 +127,6 @@ public struct WorkspaceCommands: Commands {
         actionButton("Split Down", .splitDown)
         actionButton("Break Pane to Tab", .breakPaneToTab)
         actionButton("Rename Tab…", .renamePane) // ITEM B1: ⌘⇧R renames the active tab on the tree shell
-        actionButton("Close Pane", .closePane)
 
         Divider()
 

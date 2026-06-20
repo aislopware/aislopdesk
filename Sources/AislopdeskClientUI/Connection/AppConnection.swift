@@ -121,6 +121,28 @@ public final class AppConnection {
         cursorPort = String(t.cursorPort)
     }
 
+    /// Silently re-connects to the most-recently-used target on launch — the auto-reconnect path.
+    ///
+    /// A no-op when:
+    /// - `AISLOPDESK_SKIP_AUTO_RECONNECT=1` is set in the environment (test/automation escape hatch), or
+    /// - there are no saved recent targets (fresh install, or the user never successfully connected).
+    ///
+    /// Otherwise fills the form from the MRU target and fires the SAME silent establish path the
+    /// Connect button uses — committing the target, setting `deliberatelyClosed = false`, and running
+    /// the liveness supervisor — so the app is live without any manual gate interaction.
+    public func connectIfSavedTarget() async {
+        guard ProcessInfo.processInfo.environment["AISLOPDESK_SKIP_AUTO_RECONNECT"] != "1" else { return }
+        guard let saved = recentTargets.first else { return }
+        fillForm(from: saved)
+        status = .connecting
+        deliberatelyClosed = false
+        target = saved
+        onTargetCommitted?(saved)
+        connectGeneration &+= 1
+        let gen = connectGeneration
+        await establish(saved, generation: gen, isRetry: false)
+    }
+
     // MARK: Form validation (the gate's Connect button)
 
     /// The parsed target from the form, or `nil` if any field is invalid.

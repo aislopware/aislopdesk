@@ -53,6 +53,23 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(model.title, "~/proj — zsh")
     }
 
+    /// Regression: an empty .title("") used to store "" which PanePresentation.displayTitle
+    /// discards — effectively silently clobbering the last real title.  After the fix an empty
+    /// title message collapses to nil so the previous non-empty title is preserved.
+    func testEmptyTitleDoesNotClobberPriorRealTitle() {
+        let model = TerminalViewModel()
+        // Establish a real title first.
+        model.handle(.title("~/proj — zsh"))
+        XCTAssertEqual(model.title, "~/proj — zsh", "precondition: real title stored")
+        // A subsequent empty-title message must NOT overwrite it.
+        model.handle(.title(""))
+        XCTAssertEqual(
+            model.title,
+            "~/proj — zsh",
+            "empty .title(\"\") must not shadow the previous real title",
+        )
+    }
+
     func testBellEventSetsAndClears() {
         let model = TerminalViewModel()
         XCTAssertFalse(model.bellPending)

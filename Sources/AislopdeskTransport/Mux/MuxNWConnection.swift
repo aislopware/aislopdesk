@@ -45,6 +45,19 @@ public actor MuxNWConnection {
     private let controlLink: any MuxByteLink
     private let dataLink: any MuxByteLink
 
+    /// S3: when `true`, a whole-link DROP on the DATA link routes to detach (``linkDownHandler``)
+    /// instead of the S1 per-channel kill loop (FIX #2 SECONDARY). Set by the host wiring
+    /// (``HostServer.handleNewMuxConnection``) to `detachEnabled` so that:
+    ///   - `true`  → DATA-link end (clean FIN **or** hard error) fires ``linkDownHandler`` ONCE and
+    ///              skips `hostCloseHandler` per channel — ``HostServer.handleLinkDown`` detaches
+    ///              every session, keeping shells alive for a reconnecting client.
+    ///   - `false` → exact S1 behaviour: per-channel `hostCloseHandler` kills each shell and
+    ///              ``linkDownHandler`` fires ONLY on a hard error (error ≠ nil), unchanged.
+    ///
+    /// The EXPLICIT per-channel channelClose path (`.lifecycle(.closed)` in ``route``) is
+    /// unaffected by this flag: a peer channelClose (one pane ⌘W) always kills that pane's shell.
+    public var detachShellsOnLinkDrop: Bool = false
+
     /// One decoder + router per link (the pure demux core). Distinct decoders because each link is
     /// an independent byte stream; the router's channel table is shared per link so a channel's
     /// open/close lifecycle on a link is tracked independently of the other link.
@@ -537,6 +550,13 @@ public actor MuxNWConnection {
         linkDownHandler = handler
     }
 
+    /// S3: sets ``detachShellsOnLinkDrop`` on the actor. Called by the host wiring before the
+    /// receive loops start (``HostServer.handleNewMuxConnection``). Actor-isolated so the flag is
+    /// visible to ``finishLink`` with the same isolation guarantee as the other host handlers.
+    public func setDetachShellsOnLinkDrop(_ enabled: Bool) {
+        detachShellsOnLinkDrop = enabled
+    }
+
     /// Sends a `channelOpenAck` for `id` on the DATA link (host → client). Host-only.
     public func sendOpenAck(_ id: UInt32, accepted: Bool) {
         let frame = MuxEnvelopeCodec.encode(.channelOpenAck(channelID: id, accepted: accepted))
@@ -566,30 +586,65 @@ public actor MuxNWConnection {
             // delivered frame, never racing ahead of in-flight data (which would drop the tail).
             if let error { await ch.finish(throwing: error) } else { await ch.finish() }
         }
-        // FIX #2 (SECONDARY — crash/link-drop leak, the TCP-mux analogue of CONCURRENCY-HOST-1):
-        // when the whole shared DATA link drops WITHOUT a per-channel `channelClose` (peer crash /
-        // TCP reset), every channel riding it is dead and — since S1 has no per-channel
-        // reconnect/resume — its shell must be reaped. Drive the host close hook per channel here.
-        // Keyed off the DATA link (mirrors the open + the per-channel close above) so it fires once
-        // per channel; `removeMuxSession` is idempotent so any overlap with an `onExit` is harmless.
-        // If the handler is not installed yet, buffer (symmetric to the per-channel close path).
+        // DATA-link end: choose between S1-kill and S3-detach based on `detachShellsOnLinkDrop`.
+        //
+        // S3 detach path (detachShellsOnLinkDrop == true):
+        //   Skip the FIX #2 SECONDARY per-channel hostCloseHandler kill loop entirely. Instead fire
+        //   linkDownHandler ONCE for the DATA-link end, regardless of whether error is nil (clean
+        //   ⌘Q FIN) or non-nil (hard TCP RST). HostServer.handleLinkDown then detaches every
+        //   session on this connection into DetachedSessionStore, keeping shells alive.
+        //
+        // S1 kill path (detachShellsOnLinkDrop == false, the original behaviour):
+        //   FIX #2 (SECONDARY — crash/link-drop leak, the TCP-mux analogue of CONCURRENCY-HOST-1):
+        //   when the whole shared DATA link drops WITHOUT a per-channel `channelClose` (peer crash /
+        //   TCP reset), every channel riding it is dead and — since S1 has no per-channel
+        //   reconnect/resume — its shell must be reaped. Drive the host close hook per channel here.
+        //   Keyed off the DATA link (mirrors the open + the per-channel close above) so it fires
+        //   once per channel; `removeMuxSession` is idempotent so any overlap with an `onExit` is
+        //   harmless. If the handler is not installed yet, buffer (symmetric to the per-channel
+        //   close path).
         if role == .host, link == .data {
-            if let hostCloseHandler {
-                for id in channels.keys { hostCloseHandler(id) }
+            if detachShellsOnLinkDrop {
+                // S3: delegate to linkDownHandler (fires for BOTH clean FIN and hard error).
+                // `linkDownFired` guards the one-shot: both links may drop together but we only
+                // want a single detach call. If the handler is not yet installed, `linkFailed`
+                // (already set above when error != nil) lets setLinkDownHandler fire immediately
+                // on install (died-during-accept race). For a clean FIN (error == nil) linkFailed
+                // is NOT set, so we must fire here if the handler is already installed.
+                if !linkDownFired, let handler = linkDownHandler {
+                    linkDownFired = true
+                    linkDownHandler = nil
+                    handler()
+                } else if !linkDownFired, error == nil {
+                    // Clean FIN with no handler yet: mark that we want the next setLinkDownHandler
+                    // call to fire immediately. We reuse `linkFailed` to mean "link is dead" in the
+                    // general sense (the connection is no longer usable), which is true for a clean
+                    // FIN too — and `setLinkDownHandler` already fires immediately when `linkFailed`
+                    // is set.
+                    linkFailed = true
+                }
+                // Do NOT run the per-channel hostCloseHandler kill loop on this path.
             } else {
-                pendingHostCloses.append(contentsOf: channels.keys)
+                // S1: per-channel kill loop.
+                if let hostCloseHandler {
+                    for id in channels.keys { hostCloseHandler(id) }
+                } else {
+                    pendingHostCloses.append(contentsOf: channels.keys)
+                }
             }
         }
         // S2: the whole DATA link is gone — drop every channel's receive-window accounting. (The
         // send windows are torn down via each sub-channel's `finish()` above, which also wakes any
         // parked sender so the link drop never leaks a suspended task.)
         if link == .data { dataReceiveWindows.removeAll() }
-        // R5 rank 3: a HARD link failure means the whole physical connection is dead. Fire the host's
-        // connection-death hook ONCE (first failing link wins) so the host reaps the connection from its
-        // retention map + closes it. A clean per-channel FIN (`error == nil`) is NOT a connection death.
-        // `linkDownFired` is consumed ONLY when a handler actually fires — if none is installed yet, the
-        // already-set `linkFailed` flag lets a LATER `setLinkDownHandler` fire immediately (the
-        // died-during-accept race), so we must not pre-burn the one-shot here.
+        // R5 rank 3 (S1 path and CONTROL-link path): a HARD link failure means the whole physical
+        // connection is dead. Fire the host's connection-death hook ONCE (first failing link wins)
+        // so the host reaps the connection from its retention map + closes it.
+        // On the S3 path the DATA-link-end handler already fired (above). The CONTROL-link end
+        // falls through to here and is guarded by `linkDownFired` so it does not double-fire.
+        // `linkDownFired` is consumed ONLY when a handler actually fires — if none is installed
+        // yet, the already-set `linkFailed` flag lets a LATER `setLinkDownHandler` fire
+        // immediately (the died-during-accept race), so we must not pre-burn the one-shot here.
         if role == .host, error != nil, !linkDownFired, let handler = linkDownHandler {
             linkDownFired = true
             linkDownHandler = nil

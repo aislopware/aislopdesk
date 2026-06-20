@@ -8,7 +8,7 @@ import Foundation
 /// or transport import.
 ///
 /// **Transitional name (W2 is purely additive).** The plan's final type name for this is `Workspace`
-/// (docs/42 §Domain model, `currentSchemaVersion = 10`), but the live ``Workspace`` (the v9 canvas value)
+/// (docs/42 §Domain model, `currentSchemaVersion = 11`), but the live ``Workspace`` (the v9 canvas value)
 /// is still the persistence format and the store/views reference it. W2 must **not** rewrite or replace
 /// it — the build must stay green and every existing test must still pass. So this container ships under
 /// the transitional name `TreeWorkspace`; the store cutover (W4) promotes it to `Workspace` once the
@@ -88,9 +88,11 @@ public struct TreeWorkspace: Codable, Sendable, Equatable {
         sessionTemplates = try c.decodeIfPresent([SessionTemplate].self, forKey: .sessionTemplates) ?? []
     }
 
-    /// The schema version this redesigned shape writes (docs/42 §Domain model = 10). The live v9
-    /// ``Workspace`` still owns its own `currentSchemaVersion = 9`; these coexist during the cutover.
-    public static let currentSchemaVersion = 10
+    /// The schema version this redesigned shape writes (docs/42 §Domain model = 10; bumped to 11 for
+    /// the additive Stage-1 persistence fields on ``PaneSpec`` — `resumeSessionID`,
+    /// `resumeLastReceivedSeq`, `lastKnownCwd`, `lastKnownTitle`). The live v9 ``Workspace`` still
+    /// owns its own `currentSchemaVersion = 9`; these coexist during the cutover.
+    public static let currentSchemaVersion = 11
 }
 
 // MARK: - Construction

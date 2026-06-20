@@ -361,8 +361,10 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(chord(.splitDown), KeyChord(character: "d", [.command, .shift]), "split down = ⌘⇧D")
         XCTAssertEqual(chord(.focusLeft), KeyChord(.leftArrow, [.option, .command]), "focus left = ⌥⌘←")
         XCTAssertEqual(chord(.toggleZoom), KeyChord(.return, [.option, .command]), "zoom = ⌥⌘↩")
-        XCTAssertEqual(chord(.nextTab), KeyChord(character: "]", [.command, .shift]), "next tab = ⌘⇧]")
-        XCTAssertEqual(chord(.prevTab), KeyChord(character: "[", [.command, .shift]), "prev tab = ⌘⇧[")
+        XCTAssertEqual(chord(.nextTab), KeyChord(character: "]", [.command]), "next tab = ⌘] (Muxy parity)")
+        XCTAssertEqual(chord(.prevTab), KeyChord(character: "[", [.command]), "prev tab = ⌘[ (Muxy parity)")
+        XCTAssertEqual(chord(.closeTab), KeyChord(character: "w", [.command, .shift]), "close tab = ⌘⇧W")
+        XCTAssertEqual(chord(.toggleSidebar), KeyChord(character: "b", [.command]), "toggle sidebar = ⌘B")
         XCTAssertEqual(chord(.newSession), KeyChord(character: "n", [.control, .command]), "new session = ⌃⌘N")
         XCTAssertEqual(chord(.selectTab(1)), KeyChord(character: "1", [.command]), "select tab 1 = ⌘1")
         XCTAssertEqual(chord(.selectTab(9)), KeyChord(character: "9", [.command]), "select tab 9 = ⌘9")
@@ -410,7 +412,7 @@ final class TreeCommandRoutingTests: XCTestCase {
     }
 
     /// WB3: pins the three new chords are exactly ⌃⌘R / ⌃⌘⇧[ / ⌃⌘⇧] (and so distinct from the existing
-    /// ⌃⌘[ / ⌃⌘] block-jump + ⌘⇧[ / ⌘⇧] tab-cycle chords). The generic uniqueness guard
+    /// ⌃⌘[ / ⌃⌘] block-jump + ⌘[ / ⌘] tab-cycle chords). The generic uniqueness guard
     /// (`testRegistryBindingsHaveUniqueIDsAndChords`) catches a collision; this pins the intended values.
     @MainActor
     func testWB3ChordsAreTheDocumentedDefaults() {

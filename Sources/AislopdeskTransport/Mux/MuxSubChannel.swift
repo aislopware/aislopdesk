@@ -340,4 +340,27 @@ public actor MuxSubChannel: MessageChannel {
         wakeBlockedSenders()
         wakeSendGateWaiters()
     }
+
+    /// Creates a *null* `MuxSubChannel` whose inbound stream is already finished (no messages
+    /// will ever arrive) and whose outbound sends are no-ops (bytes are silently dropped).
+    ///
+    /// Used by the agent-control `spawn` verb: standalone panes have no real client connection,
+    /// so their `data` and `control` sub-channels are null stubs. The relay's receive loops exit
+    /// immediately (the finished stream), which drives `setClientOnline(false)` on the session
+    /// (the ReplayBuffer offline gate engages), letting the PTY drain flow to the replay ring
+    /// instead of the wire.
+    ///
+    /// `channelID 0` is a sentinel (the protocol allocates from 1): it uniquely identifies a
+    /// null channel and is never confused with a real sub-channel id.
+    public static func makeNull(channel: Channel) async -> MuxSubChannel {
+        let ch = MuxSubChannel(
+            channelID: 0,
+            channel: channel,
+            sendWindowBytes: nil, // infinite window — no flow control, no parking
+            consumedSink: nil,
+            muxSend: { _, _ in }, // drop all sends silently (no real connection)
+        )
+        await ch.finish() // closes inbound stream immediately → relay loops exit
+        return ch
+    }
 }

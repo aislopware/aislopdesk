@@ -178,8 +178,13 @@ public struct WorkspaceRootView: View {
     private var shell: some View {
         switch store.liveModel {
         case .tree:
+            // W5 Muxy cutover: the IDE shell is now self-contained (its own hand-built HStack skeleton +
+            // hidden-title-bar window foundation via `WindowConfigurator`), NOT wrapped in this view's
+            // `NavigationSplitView`. The old `.toolbar { detailToolbar }` host is gone — its affordances
+            // (new tab / split / new session) now live in the shell's tab strip + sessions sidebar, and the
+            // app-global connection control moved into the sidebar. The shared overlays (connect-gate, ⌘K
+            // palette, dialogs, snippet modals, `publishingWorkspaceStore`) still wrap this from `body`.
             SplitWorkspaceView(store: store)
-                .toolbar { detailToolbar }
         case .canvas:
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 PaneSidebarView(store: store)

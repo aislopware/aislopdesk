@@ -69,7 +69,15 @@ public actor MuxClientTransport: ClientTransporting {
         let id = resume == WireMessage.newSessionID ? UUID() : resume
         let acquisition = try await acquire(host, port, id, lastReceivedSeq)
         sessionID = id
-        resumeFromSeq = lastReceivedSeq
+        // S1/mux: `channelOpenAck` carries only `accepted: Bool` — no host-authoritative
+        // `resumeFromSeq` reply. The host either reattaches an existing session (PATH A,
+        // AISLOPDESK_DETACH_ENABLED) or spawns a fresh shell (PATH B/C). Without a wire
+        // field to distinguish them, we leave `resumeFromSeq = 0` so `AislopdeskClient`
+        // always resets its dedup/ack high-water on (re)connect (the correct S1 behavior —
+        // the fresh shell restarts at seq 1, and PATH A would also reset if detach is not
+        // wired end-to-end yet). When PATH A wires a host-authoritative `resumeFromSeq`
+        // through the openAck, set it here to `lastReceivedSeq` on true resume.
+        resumeFromSeq = 0
         returningClient = (resume != WireMessage.newSessionID)
         dataChannel = acquisition.data
         controlChannel = acquisition.control

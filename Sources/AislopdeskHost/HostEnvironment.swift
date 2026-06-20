@@ -36,6 +36,7 @@ public enum HostEnvironment {
         term: String = Self.defaultTerm,
         agentSocketPath: String? = nil,
         paneID: String? = nil,
+        controlSocketPath: String? = nil,
     )
         -> [String: String]
     {
@@ -82,6 +83,7 @@ public enum HostEnvironment {
         // POST hook events to the host; absent → the hook is a silent no-op.
         if let agentSocketPath { env[Self.agentSocketEnvKey] = agentSocketPath }
         if let paneID { env[Self.agentPaneIDEnvKey] = paneID }
+        if let controlSocketPath { env[Self.agentControlSocketEnvKey] = controlSocketPath }
 
         return env
     }
@@ -93,6 +95,22 @@ public enum HostEnvironment {
     /// The PTY env var carrying the pane id the hook should tag its events with (W10);
     /// matches `MUXY_PANE_ID`.
     public static let agentPaneIDEnvKey = "AISLOPDESK_PANE_ID"
+
+    /// Agent-control socket path exported to every PTY env when the control listener is
+    /// enabled. Agents shell out to `aislopdesk-ctl` pointing at this socket.
+    public static let agentControlSocketEnvKey = "AISLOPDESK_CONTROL_SOCKET"
+
+    /// Whether the agent-control Unix-domain socket should be bound. Default idiom =
+    /// DEFAULT-OFF via `env[key] == "1"` (same as hooks) — writing to PTYs and spawning
+    /// shells is not something to enable silently. Only an explicit `"1"` enables it.
+    public static let agentControlEnvKey = "AISLOPDESK_AGENT_CONTROL"
+
+    /// Resolves whether the agent-control socket should be bound. Default-OFF: only `"1"` enables.
+    public static func agentControlEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+    ) -> Bool {
+        environment[agentControlEnvKey] == "1"
+    }
 
     /// W10 — whether host-side Claude-Code agent detection is enabled (the foreground
     /// process-watch + the rolled-up status emission). Default idiom = DEFAULT-ON via

@@ -214,6 +214,19 @@ let package = Package(
         // Headless host daemon (PTY + transport). Sources under Sources/aislopdesk-hostd.
         .executableTarget(name: "aislopdesk-hostd", dependencies: ["AislopdeskHost"]),
 
+        // Pure, testable core for aislopdesk-ctl: arg-parsing (GlobalArgs / parseGlobal) and
+        // NDJSON request/response helpers (encodeRequestLine / decodeResponseLine / verb
+        // param builders). No socket I/O — Foundation-only so it builds for macOS + iOS and
+        // is unit-testable without any AF_UNIX socket (hang-safety rule). The thin
+        // `aislopdesk-ctl` executable imports this and adds the socket I/O + exit calls.
+        .target(name: "AislopdeskCtlCore"),
+
+        // Agent-control CLI: the reference client for the agent-control Unix-domain socket.
+        // Sends a single NDJSON request to $AISLOPDESK_CONTROL_SOCKET (or --socket PATH),
+        // prints the result, and exits. Agents shell out to this. Pure socket I/O in main.swift;
+        // the testable logic lives in AislopdeskCtlCore.
+        .executableTarget(name: "aislopdesk-ctl", dependencies: ["AislopdeskCtlCore"]),
+
         // Interactive remote terminal client. Sources under Sources/aislopdesk-client.
         .executableTarget(
             name: "aislopdesk-client",
@@ -279,6 +292,11 @@ let package = Package(
         ),
 
         // MARK: Tests
+
+        // aislopdesk-ctl CLI: arg-parsing + request-encoding tests. No real socket — the pure
+        // AislopdeskCtlCore logic (parseGlobal, encodeRequestLine, verb param builders) is
+        // exercised directly (hang-safety: no AF_UNIX in tests).
+        .testTarget(name: "AislopdeskCtlTests", dependencies: ["AislopdeskCtlCore"]),
 
         .testTarget(name: "AislopdeskProtocolTests", dependencies: ["AislopdeskProtocol"]),
         // W7: the pure detection core — state-machine transitions (incl. injected-clock

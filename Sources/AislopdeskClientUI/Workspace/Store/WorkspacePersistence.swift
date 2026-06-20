@@ -134,9 +134,13 @@ public struct WorkspacePersistence: @unchecked Sendable {
     // MARK: Load (tree — W5 LIVE path)
 
     /// W5 — the LIVE load path after the IDE-shell cutover: reads the file, peeks its `schemaVersion`
-    /// off the raw bytes (a v10 ``TreeWorkspace`` file has no `canvas`/`groups` and would fail the typed
-    /// v9 decode), and branches:
-    /// - `== 10` → typed-decode the ``TreeWorkspace`` directly (the steady-state).
+    /// off the raw bytes (a v10/v11 ``TreeWorkspace`` file has no `canvas`/`groups` and would fail the
+    /// typed v9 decode), and branches:
+    /// - `== 11` → typed-decode the ``TreeWorkspace`` directly (the steady-state).
+    /// - `== 10` → identity-decode through ``WorkspaceSchemaMigration/migrateToTree(_:from:)`` (v10 is
+    ///   structurally identical to v11; the four new optional ``PaneSpec`` fields decode as `nil` via
+    ///   `decodeIfPresent`, so no data is lost). The result's `schemaVersion` will be upgraded to 11 on
+    ///   the next `save()`.
     /// - `5…9` → run the frozen-mirror v9→v10 migration (``migrateV9toV10``) so an existing canvas
     ///   workspace upgrades in place, preserving every `PaneID` + `PaneSpec`.
     /// - missing file → ``TreeWorkspace/defaultWorkspace()`` (first launch).
@@ -146,6 +150,12 @@ public struct WorkspacePersistence: @unchecked Sendable {
     /// `Set(specs.keys) == Set(leafIDs)` invariant holds even for a hand-edited / partial file
     /// (validate-then-repair), and the per-collection ``WorkspaceTransfer/maxItems`` bound guards against
     /// a corrupt file that would make the store eagerly allocate a session per leaf on launch.
+    ///
+    /// After normalization, a **last-known-title promotion** runs over each session's specs: if a pane's
+    /// ``PaneSpec/lastKnownTitle`` is non-nil AND its ``PaneSpec/title`` is still the default `"Terminal"`
+    /// (meaning the user has never manually renamed it), the title is promoted to `lastKnownTitle` so the
+    /// pane chrome shows the last-seen shell title on restore. User-renamed panes (title ≠ `"Terminal"`)
+    /// are left untouched.
     public func loadTree() -> TreeWorkspace {
         guard let data = try? Data(contentsOf: fileURL) else {
             return .defaultWorkspace() // missing file = first launch; nothing to back up
@@ -157,11 +167,11 @@ public struct WorkspacePersistence: @unchecked Sendable {
             if version == TreeWorkspace.currentSchemaVersion {
                 try? JSONDecoder().decode(TreeWorkspace.self, from: data)
             } else {
-                // A v5…9 canvas file migrates forward through the frozen mirror; anything else is unhandled.
+                // v5…9: frozen-mirror migration; v10: additive identity re-decode; others: nil → reset.
                 WorkspaceSchemaMigration.migrateToTree(data, from: version)
             }
         guard let tree else {
-            return resetTreeToDefault() // un-decodable v10 / un-migratable version — preserve aside
+            return resetTreeToDefault() // un-decodable / un-migratable version — preserve aside
         }
         // Bound the leaf/collection counts so a corrupt file cannot make the store allocate unboundedly
         // on launch (the same ceiling the canvas load + portable import enforce).
@@ -170,7 +180,26 @@ public struct WorkspacePersistence: @unchecked Sendable {
               tree.layoutPresets.count <= WorkspaceTransfer.maxItems,
               tree.launchPresets.count <= WorkspaceTransfer.maxItems,
               tree.sessionTemplates.count <= WorkspaceTransfer.maxItems else { return resetTreeToDefault() }
-        return tree.normalized()
+        let normalized = tree.normalized()
+        return Self.promotingLastKnownTitles(in: normalized)
+    }
+
+    /// Pure value transform: for each pane whose ``PaneSpec/title`` is still the default `"Terminal"` AND
+    /// whose ``PaneSpec/lastKnownTitle`` is non-nil, promote `lastKnownTitle` into `title`. A user-renamed
+    /// pane (title ≠ `"Terminal"`) is left untouched. Called once on the loaded + normalized tree.
+    static func promotingLastKnownTitles(in tree: TreeWorkspace) -> TreeWorkspace {
+        var result = tree
+        result.sessions = tree.sessions.map { session in
+            var s = session
+            for (paneID, spec) in s.specs {
+                guard let knownTitle = spec.lastKnownTitle, spec.title == "Terminal" else { continue }
+                var updated = spec
+                updated.title = knownTitle
+                s.specs[paneID] = updated
+            }
+            return s
+        }
+        return result
     }
 
     /// The tree counterpart of ``resetToDefault()``: copy the unrestorable file aside to the single

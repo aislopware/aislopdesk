@@ -2363,6 +2363,22 @@ public final class WorkspaceStore {
         reconcileTree()
     }
 
+    /// Close the active tab of the active session (the ⌘⇧W "Close Tab" routing target). A no-op when
+    /// there is no active tab. The tree ops cascade an emptied session / re-seed a default like
+    /// `closeTab(_:)` does.
+    public func closeActiveTab() {
+        guard let id = tree.activeSession?.activeTab?.id else { return }
+        closeTab(id)
+    }
+
+    /// Whether the sessions sidebar is collapsed (hidden). Toggled by ⌘B (Muxy parity). In-memory only —
+    /// a fresh launch shows the sidebar. Observed by `SplitWorkspaceView` which drops the rail + divider
+    /// when true.
+    public var sidebarCollapsed: Bool = false
+
+    /// Flip the sessions-sidebar collapsed state (the ⌘B "Toggle Sidebar" routing target).
+    public func toggleSidebarCollapsed() { sidebarCollapsed.toggle() }
+
     /// Selects tab at `index` in the active session — a pure active-state change (the FULL leaf set stays
     /// registered; only focus follows). Reconcile is a registry no-op.
     public func selectTab(_ index: Int) {
@@ -2796,6 +2812,25 @@ public final class WorkspaceStore {
             let title = tree.spec(for: id)?.title ?? ""
             handleCommandCompleted(id: id, exitCode: exitCode, durationMS: durationMS, paneTitle: title)
         }
+        // LIVE TITLE PERSISTENCE (Goal A): persist the shell's live OSC title into lastKnownTitle so a
+        // relaunch can restore the tab title for untouched (default-titled) panes. The dirty guard avoids
+        // a needless reconcile + save when the title didn't actually change.
+        connection?.onTitleChanged = { [weak self] title in
+            self?.updateSpecLive(id) { spec in
+                guard spec.lastKnownTitle != title else { return }
+                spec.lastKnownTitle = title
+            }
+        }
+        // RESUME IDENTITY CAPTURE (AISLOPDESK_DETACH_ENABLED): persist the live session UUID +
+        // highest-contiguous-seq into the spec on each RTT snapshot (~3 s cadence) and on reconnect
+        // so the next launch can feed them into seedResumeIdentity → RETURNING_CLIENT reattach.
+        connection?.onResumeIdentitySnapshot = { [weak self] sessionID, seq in
+            self?.updateSpecLive(id) { spec in
+                guard spec.resumeSessionID != sessionID || spec.resumeLastReceivedSeq != seq else { return }
+                spec.resumeSessionID = sessionID
+                spec.resumeLastReceivedSeq = seq
+            }
+        }
         // WB3 BOOKMARKS: seed the pane's block model from persistence + wire its change closure to persist
         // back (the helper lives in WorkspaceStore+Blocks so this body stays under the lint ceiling).
         seedBlockBookmarks(id: id, handle: handle)
@@ -3031,6 +3066,21 @@ public final class WorkspaceStore {
                     guard let self else { return }
                     let title = spec(for: id)?.title ?? ""
                     handleCommandCompleted(id: id, exitCode: exitCode, durationMS: durationMS, paneTitle: title)
+                }
+                // LIVE TITLE PERSISTENCE (Goal A, canvas path): same lastKnownTitle wire as wireMaterializedLeaf.
+                connection?.onTitleChanged = { [weak self] title in
+                    self?.updateSpecLive(id) { spec in
+                        guard spec.lastKnownTitle != title else { return }
+                        spec.lastKnownTitle = title
+                    }
+                }
+                // RESUME IDENTITY CAPTURE (canvas path): same wire as wireMaterializedLeaf.
+                connection?.onResumeIdentitySnapshot = { [weak self] sessionID, seq in
+                    self?.updateSpecLive(id) { spec in
+                        guard spec.resumeSessionID != sessionID || spec.resumeLastReceivedSeq != seq else { return }
+                        spec.resumeSessionID = sessionID
+                        spec.resumeLastReceivedSeq = seq
+                    }
                 }
             },
         )

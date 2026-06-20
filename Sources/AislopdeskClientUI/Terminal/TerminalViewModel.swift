@@ -643,7 +643,10 @@ public final class TerminalViewModel {
     public func handle(_ event: AislopdeskClient.Event) {
         switch event {
         case let .title(text):
-            title = text
+            // Empty-body OSC title messages (e.g. zsh/p10k prompt redraws) are silently dropped;
+            // only a non-empty string updates the stored title so the previous real title is
+            // preserved across command boundaries.
+            if !text.isEmpty { title = text }
         case .bell:
             bellPending = true
         case let .commandStatus(status):

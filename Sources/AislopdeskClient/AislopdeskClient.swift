@@ -264,6 +264,23 @@ public actor AislopdeskClient {
 
     // MARK: Connect / reconnect
 
+    /// Pre-seeds the resume identity so the NEXT ``connect(...)`` presents this session
+    /// UUID and last-received seq to the host (the AISLOPDESK_DETACH_ENABLED path). The
+    /// caller is ``LivePaneSession/makeTerminal(_:makeClient:makeInspector:target:)`` when a
+    /// restored ``PaneSpec`` carries a non-nil ``PaneSpec/resumeSessionID``.
+    ///
+    /// Design: seeding into the existing actor state (`sessionID` / `highestContiguousSeq`)
+    /// means the established ``connect(...)`` line `let resume = sessionID ?? WireMessage.newSessionID`
+    /// picks it up with no new parameter — the connect path is unmodified. Calling this BEFORE
+    /// `connect()` is the only safe window: `connect()` immediately reads both fields on the fast
+    /// (pre-suspension) path. Calling it after `connect()` has no effect (the live session has
+    /// already presented its own learned identity). Must only be called before the first connect.
+    public func seedResumeIdentity(sessionID: UUID, seq: Int64) {
+        self.sessionID = sessionID
+        highestContiguousSeq = seq
+        highestSeqFed = seq
+    }
+
     /// Connects to `host:port`. A first call uses a NEW session (zero sessionID); a
     /// later call (driven by ``ReconnectManager`` or ``resume()``) reuses the learned
     /// ``sessionID`` and presents ``highestContiguousSeq`` so the host replays the tail.
@@ -329,34 +346,36 @@ public actor AislopdeskClient {
         let returning = await transport.returningClient
         if let learnedID { sessionID = learnedID }
 
-        // RESET DEDUP / ACK STATE ON EVERY (RE)CONNECT. The mux transport — the SOLE terminal
-        // connectivity — has NO per-channel server-side resume: `HostServer.spawnMuxChannel` mints a
-        // BRAND-NEW PTY on every channelOpen and `MuxChannelSession` documents "S1 has no per-channel
-        // reconnect/resume … the shell MUST die" on any drop. So the host's `output` ALWAYS restarts at
-        // seq 1, even on a "reconnect". Our `highestSeqFed`/`highestContiguousSeq` high-water marks
-        // belong to the OLD (now-dead) session and MUST be reset here, before the pumps start —
-        // otherwise:
-        //   • `deliverOutput` drops every fresh `output` with seq <= the stale `highestSeqFed`,
-        //     SILENTLY SWALLOWING the new shell's first prompt until its seq passes the old mark; and
-        //   • the ack ticker sends `ack(stale highestContiguousSeq)` against the fresh session.
-        // (On a first connect these are already 0 — a harmless no-op.)
+        // RESET DEDUP / ACK STATE — conditional on the HOST's authoritative resumeFromSeq.
         //
-        // WHY UNCONDITIONAL (not gated on `returning`): `MuxClientTransport.returningClient` is computed
-        // CLIENT-SIDE as `resume != newSessionID`, so it is `true` on EVERY reconnect — but the host
-        // never actually preserved anything (it always spawned a fresh shell). Gating the reset on
-        // `!returning` (the old code) therefore SKIPPED it on the exact path that needs it most. The
-        // reset is correct as long as no transport performs a real server-side resume-with-replay; IF
-        // host-side per-channel survival ever lands (docs/20 §8.3 / an openAck-carried returning flag),
-        // this must become conditional on that HOST-AUTHORITATIVE signal, not the client-side guess.
-        highestSeqFed = 0
-        highestContiguousSeq = 0
-        ackPending = false
-        // Drop the DEAD session's undrained inbox entries with the seq marks. Two reasons
-        // (night-review findings): (a) a consumer drain racing the reconnect could paint
-        // the old session's tail AFTER the fresh-session wipe; (b) takeOutputBatch credits
-        // taken entries to the CURRENT transport — stale entries would emit a phantom
-        // windowAdjust over-grant on the NEW channel (its peer never sent those bytes).
-        outputInbox.removeAll(keepingCapacity: true)
+        // The correct signal is the HOST-AUTHORITATIVE `resumeFromSeq` returned in the handshake
+        // ack, NOT the client-side `returningClient` flag (which is computed as `resume != newSessionID`
+        // and was ALWAYS true on reconnect, making the old `!returning` gate skip the reset exactly
+        // when it was most needed — the existing dedup-regression test pins this).
+        //
+        //   • resumeFromSeq == 0  →  HOST spawned a FRESH shell. The old session is gone; its
+        //     `highestSeqFed`/`highestContiguousSeq` belong to the dead session and MUST be reset
+        //     so `deliverOutput` doesn't silently drop the fresh shell's seq-1 output. The inbox
+        //     is also flushed for the same reason (see below).
+        //
+        //   • resumeFromSeq > 0  →  HOST honored a real RETURNING_CLIENT resume (AISLOPDESK_DETACH_ENABLED
+        //     path): the host will replay the tail from `resumeFromSeq` onward. The client's marks
+        //     were seeded by ``seedResumeIdentity(sessionID:seq:)`` to match, so the dedup
+        //     high-water is ALREADY correct — resetting would discard the marks and cause
+        //     `deliverOutput` to re-deliver the replayed tail as new, duplicating output on the
+        //     pane. Leave them in place; the inbox is already empty (it was drained on the prior
+        //     disconnect / before seeding).
+        if resumeFromSeq == 0 {
+            highestSeqFed = 0
+            highestContiguousSeq = 0
+            ackPending = false
+            // Drop the DEAD session's undrained inbox entries with the seq marks. Two reasons
+            // (night-review findings): (a) a consumer drain racing the reconnect could paint
+            // the old session's tail AFTER the fresh-session wipe; (b) takeOutputBatch credits
+            // taken entries to the CURRENT transport — stale entries would emit a phantom
+            // windowAdjust over-grant on the NEW channel (its peer never sent those bytes).
+            outputInbox.removeAll(keepingCapacity: true)
+        }
 
         if returning, let learnedID {
             // Surface the reconnect so the UI flips `.reconnecting` → `.connected`
