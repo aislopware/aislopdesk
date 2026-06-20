@@ -157,6 +157,47 @@ final class TerminalBlockModelTests: XCTestCase {
         model.timeoutPending(index: 2)
     }
 
+    func testStaleTimeoutDoesNotKillAFreshRequestForSameIndex() {
+        // The #5 race: copy#1 of block 3 schedules a 5s timeout; copy#1 then RESOLVES; copy#2 of the
+        // SAME block 3 opens a fresh request; copy#1's stale timer must NOT resolve copy#2 as
+        // "unavailable". The fix gates the timeout on the per-index request GENERATION captured at send.
+        let model = TerminalBlockModel()
+        var firstResult: Data?
+        var firstResolved = false
+        let gen1 = model.requestOutput(index: 3, send: { _ in }, completion: { r in
+            firstResolved = true
+            firstResult = r
+        })
+        // copy#1 resolves normally with real bytes.
+        model.resolveOutput(index: 3, output: Data("first\n".utf8))
+        XCTAssertTrue(firstResolved)
+        XCTAssertEqual(firstResult, Data("first\n".utf8))
+
+        // copy#2 opens a fresh pending request for the same index — a NEWER generation.
+        var secondResult: Data?
+        var secondResolved = false
+        let gen2 = model.requestOutput(index: 3, send: { _ in }, completion: { r in
+            secondResolved = true
+            secondResult = r
+        })
+        XCTAssertNotEqual(gen1, gen2, "a fresh request for the same index gets a newer generation token")
+        XCTAssertTrue(model.isOutputPending(index: 3))
+
+        // copy#1's STALE timeout fires (its captured gen1). It must be a no-op — NOT resolve copy#2.
+        model.timeoutPending(index: 3, generation: gen1)
+        XCTAssertFalse(secondResolved, "the stale timer (gen1) must NOT resolve the fresh request (gen2)")
+        XCTAssertTrue(model.isOutputPending(index: 3), "the fresh request is still in flight")
+
+        // The fresh request still resolves on its own real reply.
+        model.resolveOutput(index: 3, output: Data("second\n".utf8))
+        XCTAssertTrue(secondResolved)
+        XCTAssertEqual(secondResult, Data("second\n".utf8))
+
+        // And copy#2's OWN timeout (gen2) WOULD have fired had the reply been lost — prove it is the
+        // live token (a no-op now only because the request already resolved).
+        XCTAssertNil(model.currentRequestGeneration(index: 3), "no request pending after resolve")
+    }
+
     func testResetClearsBlocksAndStrandsNoPendingRequest() {
         let model = TerminalBlockModel()
         model.upsert(index: 0, commandText: "a", exitCode: 0, durationMS: 1, complete: true, outputLen: 0)

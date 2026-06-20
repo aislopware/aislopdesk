@@ -184,14 +184,17 @@ struct CommandNavigatorView: View {
                 .help("Jump to this command")
                 .accessibilityLabel("Jump to command")
 
-            // Copy this block's output (request type 15 → strip VT → clipboard).
+            // Copy this block's output (request type 15 → strip VT → clipboard). DISABLED until the block
+            // COMPLETES: the host only retains output on completion (a running block's bytes are still
+            // growing and not in the ring), so a copy of a running block would always reply "unavailable".
             Group {
                 if copyingIndex == block.index {
                     ProgressView().controlSize(.mini)
                 } else {
                     Button { copyOutput(of: block) } label: { Image(systemName: "doc.on.doc") }
                         .buttonStyle(.borderless)
-                        .help("Copy command output")
+                        .disabled(!block.complete)
+                        .help(block.complete ? "Copy command output" : "Output available once the command finishes")
                         .accessibilityLabel("Copy command output")
                 }
             }
@@ -203,18 +206,51 @@ struct CommandNavigatorView: View {
 
     // MARK: Actions
 
-    /// Jumps the viewport to `block` via libghostty `jump_to_prompt:<delta>`. The delta is the block's
-    /// position relative to the NEWEST block (0 blocks back = the latest prompt, N back = N prompts up).
-    /// libghostty owns the OSC 133 prompt marks, so we navigate by relative count — the only lever the
-    /// C API gives us (it won't report absolute rows).
+    /// Jumps the viewport to `block` via libghostty's prompt navigation.
+    ///
+    /// libghostty's `jump_to_prompt:<delta>` is viewport-RELATIVE (`PageList.scrollPrompt` steps `delta`
+    /// prompts from the CURRENT viewport, and `delta == 0` is a no-op), so a bare `jump_to_prompt:-pos`
+    /// (pos = the block's position in the newest-first list) is only correct when the viewport already sits
+    /// at the newest prompt — after any prior scroll/jump it is off by the current viewport offset, and the
+    /// newest block (pos 0) never moves at all. We therefore RE-ANCHOR first: `scroll_to_bottom` parks the
+    /// viewport at the newest prompt (a real libghostty binding action — `Surface.zig` → `scrollViewport
+    /// (.bottom)`), and only THEN do we step `pos` prompts up from that known anchor. From the bottom anchor
+    /// the delta is deterministic (independent of where the viewport happened to be), and the newest block
+    /// is a no-op step that correctly leaves us at the bottom.
+    ///
+    /// (The ⌃⌘[/] ±1 chord path stays a pure RELATIVE step — see ``WorkspaceStore/jumpToBlockInActivePane
+    /// (delta:)`` — because there "previous/next from here" IS the intent.)
     private func jump(to block: CommandBlock) {
         guard let actions = model.surface as? TerminalSurfaceActions else { return }
-        // navigatorBlocks is newest-first; the newest is "current". `jump_to_prompt:-N` steps N prompts up.
+        // navigatorBlocks is newest-first; pos 0 = the newest (current) prompt.
         let newest = model.blocks.navigatorBlocks
         guard let pos = newest.firstIndex(where: { $0.index == block.index }) else { return }
-        // pos == 0 is the newest → the most recent prompt; step back `pos` prompts from there.
-        actions.performBindingAction("jump_to_prompt:-\(pos)")
+        // Re-anchor to the newest prompt, then step `pos` prompts up from that known bottom anchor.
+        actions.performBindingAction("scroll_to_bottom")
+        let delta = Self.jumpDelta(toTargetPos: pos)
+        // delta == 0 (the newest block) → already re-anchored at the bottom; the no-op step is harmless
+        // (libghostty's scrollPrompt early-returns on a zero delta) but we skip it for clarity.
+        if delta != 0 {
+            actions.performBindingAction("jump_to_prompt:\(delta)")
+        }
         isPresented = false
+    }
+
+    /// The libghostty `jump_to_prompt` delta to reach the navigator block at `toTargetPos` (0 = newest)
+    /// AFTER the viewport has been re-anchored to the newest prompt (`scroll_to_bottom`).
+    ///
+    /// From the bottom anchor the newest prompt is "0 prompts up", so target N (the Nth-newest block) is
+    /// exactly N prompts UP → a delta of `-N`. This is robust to a prior scroll/jump precisely BECAUSE the
+    /// caller re-anchors first: the delta no longer depends on where the viewport happened to be.
+    ///
+    /// NOTE on eviction divergence: `toTargetPos` is the block's position in the CLIENT's bounded
+    /// navigator list, which can diverge from libghostty's prompt count if the client evicted blocks the
+    /// terminal still has in scrollback (or vice-versa). The two rings share the same 64-cap, so they track
+    /// closely in practice; an off-by-a-few landing is self-correcting (the user re-jumps) and never traps.
+    /// `nonisolated`: a pure integer mapping with no view state, so it is callable off the main actor (the
+    /// unit test, and the `jump(to:)` call site both reach it without an actor hop).
+    nonisolated static func jumpDelta(toTargetPos pos: Int) -> Int {
+        -pos
     }
 
     /// Requests `block`'s output, strips VT control sequences, and puts the plain text on the clipboard.

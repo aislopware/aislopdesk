@@ -215,23 +215,44 @@ public final class TerminalBlockModel {
     /// index just append a callback; the single type-29 reply fans out to all of them.
     @ObservationIgnored private var pending: [UInt32: [(OutputResult) -> Void]] = [:]
 
+    /// Monotonic per-index REQUEST GENERATION, bumped each time a brand-new pending slot opens for an
+    /// index (NOT on a coalesced piggy-back). A timeout `Task` captures the generation it armed for and
+    /// passes it to ``timeoutPending(index:generation:)``; the timeout only fires if THAT generation is
+    /// still the live one — so a stale timer from request #1 can never resolve a fresh request #2 for the
+    /// same index (the #5 race). Resolving / timing out a slot leaves the counter alone (it only ever
+    /// advances), so the next request gets a strictly newer token.
+    @ObservationIgnored private var requestGeneration: [UInt32: UInt64] = [:]
+
+    /// The generation currently armed for an in-flight request at `index`, or `nil` if none is pending —
+    /// the token a caller's timeout must match to fire. Bumped by ``requestOutput`` on a fresh send.
+    public func currentRequestGeneration(index: UInt32) -> UInt64? {
+        pending[index] != nil ? requestGeneration[index] : nil
+    }
+
     /// Requests block `index`'s output, invoking `completion` with the RAW VT bytes when the host replies
     /// (or `nil` on an EMPTY reply = evicted/unknown). `send` actually fires the wire request (it is the
     /// `AislopdeskClient.requestBlockOutput` call, injected so the model stays pure / testable); a request
-    /// for an already-pending index does NOT re-send (it coalesces). The flow NEVER hangs: a `blockOutput`
-    /// always resolves it (empty → `nil`), and a caller can add a timeout via ``timeoutPending(index:)``.
+    /// for an already-pending index does NOT re-send (it coalesces). Returns the request GENERATION the
+    /// caller should pass to ``timeoutPending(index:generation:)`` so a stale timer can't kill a later
+    /// request (#5). The flow NEVER hangs: a `blockOutput` always resolves it (empty → `nil`), and the
+    /// generation-gated timeout is the belt-and-braces guard for a dropped reply.
+    @discardableResult
     public func requestOutput(
         index: UInt32,
         send: (UInt32) -> Void,
         completion: @escaping (OutputResult) -> Void,
-    ) {
+    ) -> UInt64 {
         if pending[index] != nil {
-            // Already in flight — coalesce: just register this callback, do NOT re-send.
+            // Already in flight — coalesce: just register this callback, do NOT re-send. The live
+            // generation is the one armed when this slot opened; a coalesced caller shares it.
             pending[index]?.append(completion)
-            return
+            return requestGeneration[index] ?? 0
         }
+        let generation = (requestGeneration[index] ?? 0) &+ 1
+        requestGeneration[index] = generation
         pending[index] = [completion]
         send(index)
+        return generation
     }
 
     /// Resolves a pending request for `index` from a `blockOutput` reply: an EMPTY `output` is treated as
@@ -251,9 +272,15 @@ public final class TerminalBlockModel {
 
     /// Times out a still-pending request for `index`, resolving it as "unavailable" (`nil`) — the
     /// belt-and-braces guard for a host that drops the reply (so the UI's copy spinner never spins
-    /// forever). A no-op if the request already resolved. The owning view-model arms a `Task.sleep`
-    /// that calls this; the empty-reply path is the common case (it cannot strand on its own).
-    public func timeoutPending(index: UInt32) {
+    /// forever). A no-op if the request already resolved.
+    ///
+    /// GENERATION-GATED (#5): fires ONLY if `generation` is still the live token for this index. A copy
+    /// request resolves its slot and a SECOND copy of the same block opens a NEW slot with a NEWER
+    /// generation; the first copy's parked timeout then carries a STALE generation and is correctly
+    /// ignored, so it can't resolve the fresh request as "unavailable". Passing `nil` keeps the old
+    /// unconditional behavior (any pending request for the index is timed out).
+    public func timeoutPending(index: UInt32, generation: UInt64? = nil) {
+        if let generation, requestGeneration[index] != generation { return } // stale timer — ignore.
         guard let callbacks = pending.removeValue(forKey: index) else { return }
         for callback in callbacks { callback(nil) }
     }

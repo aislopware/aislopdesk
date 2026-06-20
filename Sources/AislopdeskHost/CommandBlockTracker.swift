@@ -98,7 +98,17 @@ struct CommandBlockTracker {
     // MARK: - Internals
 
     /// Builds the wire metadata for a block and returns a `commandBlock` message ONLY if that
-    /// metadata differs from what was last emitted for this index (dedup). Records the new metadata.
+    /// metadata MEANINGFULLY differs from what was last emitted for this index (dedup). Records the
+    /// new metadata.
+    ///
+    /// CHURN GUARD (#8): for a RUNNING block we deliberately EXCLUDE the growing `outputLen` from the
+    /// dedup comparison — a running command whose output grows on every PTY chunk would otherwise
+    /// re-emit a type-28 per chunk, churning the CONTROL channel for no UI gain (the client gates the
+    /// copy-output affordance on `complete`, so it does not need a live byte count). So a running
+    /// block emits ONCE on start (and again if its command text fills in late), and the COMPLETION
+    /// emit carries the final exit / duration / `outputLen` exactly. We still RECORD the latest
+    /// `outputLen` in `lastEmitted` so the running→completed transition (which flips `complete` and
+    /// freezes the final length) is always emitted.
     private mutating func emitIfChanged(_ block: CommandBlockSegmenter.CommandBlock) -> WireMessage? {
         let index = UInt32(truncatingIfNeeded: block.index)
         let meta = BlockMeta(
@@ -108,7 +118,12 @@ struct CommandBlockTracker {
             outputLen: UInt32(truncatingIfNeeded: block.output.count),
             commandText: block.commandText,
         )
-        if lastEmitted[index] == meta { return nil }
+        if let last = lastEmitted[index], !Self.meaningfullyChanged(from: last, to: meta) {
+            // Nothing the UI cares about changed — but keep the recorded length fresh so the eventual
+            // completion (or a command-text fill) still compares against the latest running state.
+            lastEmitted[index] = meta
+            return nil
+        }
         lastEmitted[index] = meta
         return .commandBlock(
             index: index,
@@ -118,6 +133,19 @@ struct CommandBlockTracker {
             outputLen: meta.outputLen,
             commandText: meta.commandText,
         )
+    }
+
+    /// Whether the move from `last` to `next` is worth a fresh type-28 emit. A COMPLETED block compares
+    /// on EVERY field (the completion emit must be exact). A still-RUNNING block IGNORES `outputLen`
+    /// growth (the per-chunk churn we suppress) and re-emits only on a state/text/exit/duration change.
+    private static func meaningfullyChanged(from last: BlockMeta, to next: BlockMeta) -> Bool {
+        if next.complete || last.complete {
+            return last != next // a (de)completion or any completed-block field change always emits.
+        }
+        // Both running: an outputLen-only delta is NOT meaningful — strip it from the comparison.
+        return last.exitCode != next.exitCode
+            || last.durationMS != next.durationMS
+            || last.commandText != next.commandText
     }
 
     /// Retains a COMPLETED block's output in the ring (replacing any prior record for that index),

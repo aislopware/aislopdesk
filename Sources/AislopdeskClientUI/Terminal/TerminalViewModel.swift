@@ -723,7 +723,7 @@ public final class TerminalViewModel {
             onResult(nil)
             return
         }
-        blocks.requestOutput(
+        let generation = blocks.requestOutput(
             index: index,
             send: { idx in sink(idx) },
             completion: { result in
@@ -732,10 +732,12 @@ public final class TerminalViewModel {
             },
         )
         // Belt-and-braces timeout: if the host never replies, resolve the request as unavailable so the
-        // copy UI's spinner can't spin forever. A no-op once the real reply resolves it.
+        // copy UI's spinner can't spin forever. A no-op once the real reply resolves it. The captured
+        // `generation` gates the timeout (#5): a stale timer from a prior copy of the SAME block can't
+        // resolve a fresh copy that opened a newer request after this one already resolved.
         Task { [weak self] in
             try? await Task.sleep(for: Self.blockOutputTimeout)
-            self?.blocks.timeoutPending(index: index)
+            self?.blocks.timeoutPending(index: index, generation: generation)
         }
     }
 

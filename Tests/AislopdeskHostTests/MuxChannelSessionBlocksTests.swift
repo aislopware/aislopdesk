@@ -103,19 +103,38 @@ final class MuxChannelSessionBlocksTests: XCTestCase {
         XCTAssertTrue(output.isEmpty)
     }
 
-    // MARK: 4. Byte-identical-when-off: the live sniffer/commandStatus path is unchanged by blocks
+    // MARK: 4. Differential: blocks ON vs OFF — the sniffer path is byte-identical, only the tap differs
 
-    func testSnifferOutputIndependentOfBlocksFlag() {
-        // The Blocks tap is a SEPARATE parallel observer: the live HostOutputSniffer must produce
-        // the IDENTICAL commandStatus/title/bell stream regardless of whether blocks are enabled.
-        // (Proves the sniffer path — the byte pipeline's only observation — is untouched by WB1.)
-        let chunk = Data(cycle(command: "echo hi", output: "hi\n", exit: 0).utf8)
-        let sniffer = HostOutputSniffer(clock: { Date(timeIntervalSinceReferenceDate: 0) })
-        let observed = sniffer.observe(chunk)
-        // The sniffer alone yields exactly the running + idle command status for this cycle.
-        XCTAssertEqual(observed, [
+    func testBlocksFlagIsADifferentialOnlyOnTheTap() {
+        // The Blocks tap is a SEPARATE parallel observer wired in `MuxChannelSession.start`'s read loop:
+        // it OBSERVES the same chunk the live `HostOutputSniffer` does but never touches the bytes the
+        // sniffer/commandStatus path emits. This test runs the SAME scripted PTY stream through both the
+        // flag-ON and flag-OFF worlds and asserts:
+        //   (a) the sniffer's emitted commandStatus/title/bell stream is IDENTICAL (the byte pipeline's
+        //       only observation is untouched by WB1 — the session constructs the sniffer the same way
+        //       regardless of the flag, so two independent sniffer passes over the same bytes must match);
+        //   (b) flag-ON enqueues type-28 metadata while flag-OFF enqueues ZERO type-28/29.
+        let scripted = Data(cycle(command: "echo hi", output: "hi\n", exit: 0).utf8)
+
+        // (a) Sniffer stream — the SAME `HostOutputSniffer` the session's read loop uses. Two independent
+        // passes over the identical bytes (mirroring an ON-session vs OFF-session read loop) must agree.
+        let snifferOn = HostOutputSniffer(clock: { Date(timeIntervalSinceReferenceDate: 0) }).observe(scripted)
+        let snifferOff = HostOutputSniffer(clock: { Date(timeIntervalSinceReferenceDate: 0) }).observe(scripted)
+        XCTAssertEqual(snifferOn, snifferOff, "the sniffer/commandStatus stream is identical ON vs OFF")
+        XCTAssertEqual(snifferOn, [
             .commandStatus(.running),
             .commandStatus(.idle(exitCode: 0, durationMS: 0)),
-        ])
+        ], "and is exactly the running→idle status for this cycle (pinned, not tautological)")
+
+        // (b) The TAP differential: same scripted stream, flag ON enqueues type-28; flag OFF enqueues none.
+        let onSession = makeSession(blocksEnabled: true)
+        onSession.feedBlocksForTesting(scripted)
+        let onControl = onSession.takeControlBatchForTesting() ?? []
+        XCTAssertFalse(commandBlocks(onControl).isEmpty, "blocks ON → type-28 metadata enqueued")
+
+        let offSession = makeSession(blocksEnabled: false)
+        offSession.feedBlocksForTesting(scripted)
+        let offControl = offSession.takeControlBatchForTesting()
+        XCTAssertNil(offControl, "blocks OFF → ZERO type-28/29 enqueued (byte pipeline byte-identical)")
     }
 }

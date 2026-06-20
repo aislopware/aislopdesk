@@ -218,6 +218,23 @@ final class CommandBlockSegmenterTests: XCTestCase {
         XCTAssertTrue(blocks[0].output.contains(0x1B))
     }
 
+    func testColorizedCommandLineIsEscapeStripped() {
+        // A colorized command line (zsh-syntax-highlighting / fish / oh-my-zsh wrap the typed line in
+        // CSI SGR runs as you type) emits CSI escapes in the B→C command-entry region. Those must be
+        // STRIPPED from `commandText` (the doc pins it as OSC/escape-stripped) — only the typed text
+        // survives. Contrast with `testControlSequencesPreservedInOutput`: escapes in OUTPUT are kept.
+        let coloredCommand = "\(ESC)[32mecho hi\(ESC)[0m"
+        let stream = a() + "$ " + b() + coloredCommand + c() + "hi\n" + d(0)
+        let blocks = CommandBlockSegmenter.segment(bytes(stream))
+        XCTAssertEqual(blocks.count, 1)
+        // The CSI SGR runs are gone; only the literal typed command remains.
+        XCTAssertEqual(blocks[0].commandText, "echo hi")
+        // No raw ESC leaked into the command text (the byte-level proof the strip happened).
+        XCTAssertFalse(Array(blocks[0].commandText.utf8).contains(0x1B), "no ESC bytes in commandText")
+        // Output still carries its own bytes faithfully (the strip is command-phase only).
+        XCTAssertEqual(text(blocks[0].output), "hi\n")
+    }
+
     func testCommandWithNoBStillCapturesOutput() {
         // First-prompt case: a C with no preceding B (joined mid-session). The block opens
         // at C with an empty commandText, output captured, closes on D.

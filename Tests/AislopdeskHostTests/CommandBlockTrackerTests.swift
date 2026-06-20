@@ -71,14 +71,45 @@ final class CommandBlockTrackerTests: XCTestCase {
         XCTAssertEqual(running.last?.outLen, 7) // "line 1\n"
     }
 
-    // MARK: 3. Dedup — re-ingesting nothing-changing emits nothing
+    // MARK: 3. Dedup — a RUNNING block's per-chunk output growth does NOT re-emit; a real change does
 
     func testIdenticalMetadataNotReEmitted() {
         var tracker = CommandBlockTracker()
-        _ = tracker.ingest(bytes(cycle(prompt: "$ ", command: "true", output: "", exit: 0)))
-        // Feed a chunk with NO new marks and no open block → no metadata at all.
-        let again = tracker.ingest(bytes("plain banner text with no marks\n"))
-        XCTAssertTrue(again.isEmpty, "no block changed → nothing re-emitted")
+        // Open a RUNNING block (A→B→C, NO D) and emit its first running metadata.
+        let opened = metas(a() + "$ " + b() + "tail -f log" + c() + "line 1\n", &tracker)
+        XCTAssertEqual(opened.last(where: { !$0.complete })?.cmd, "tail -f log", "running block opened + emitted")
+
+        // A 2nd chunk that adds NO new output and no new mark → the RUNNING block is unchanged →
+        // NOTHING re-emitted. (This drives the dedup compare directly: without the #8 churn guard the
+        // running block would re-emit on the previous chunk's outputLen alone — but here outputLen is
+        // also unchanged, so even the un-fixed dedup must stay quiet; this is the floor.)
+        let noChange = tracker.ingest(bytes("\u{1B}]0;a title\u{07}")) // a non-133 OSC = no block change
+        XCTAssertTrue(commandBlocks(noChange).isEmpty, "running block unchanged → nothing re-emitted")
+
+        // A chunk that GROWS the running block's output (more output bytes, still no D) must NOT
+        // re-emit a type-28 — this is the #8 churn guard. Mutation test: if the guard is removed
+        // (outputLen back in the running dedup key) this WILL emit and the assert fails.
+        let grew = tracker.ingest(bytes("line 2\n"))
+        XCTAssertTrue(
+            commandBlocks(grew).isEmpty,
+            "a running block's output growth must NOT churn the control channel (#8)",
+        )
+
+        // Completion (D arrives) IS a meaningful change → it DOES emit, with the final exit + length.
+        let done = metas(d(0), &tracker)
+        let completed = done.filter(\.complete)
+        XCTAssertEqual(completed.count, 1, "completion always emits a fresh type-28")
+        XCTAssertEqual(completed[0].cmd, "tail -f log")
+        XCTAssertEqual(completed[0].exit, 0)
+        XCTAssertEqual(completed[0].outLen, 14, "final outputLen = 'line 1\\nline 2\\n' = 14 bytes")
+    }
+
+    /// All `commandBlock` metadata in a raw `[WireMessage]` batch (for chunks ingested directly).
+    private func commandBlocks(_ messages: [WireMessage]) -> [Meta] {
+        messages.compactMap {
+            guard case let .commandBlock(index, exit, dur, complete, outLen, cmd) = $0 else { return nil }
+            return Meta(index: index, exit: exit, dur: dur, complete: complete, outLen: outLen, cmd: cmd)
+        }
     }
 
     // MARK: 4. Serve the retained output for a completed block (type 29)

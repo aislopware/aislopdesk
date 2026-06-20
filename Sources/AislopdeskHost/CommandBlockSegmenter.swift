@@ -160,6 +160,7 @@ public struct CommandBlockSegmenter {
     private enum State {
         case ground
         case escape
+        case csi
         case osc
         case oscEscape
         case oscDiscard
@@ -196,6 +197,7 @@ public struct CommandBlockSegmenter {
 
     private static let esc: UInt8 = 0x1B
     private static let bel: UInt8 = 0x07
+    private static let leftBracket: UInt8 = 0x5B // '['
     private static let rightBracket: UInt8 = 0x5D // ']'
     private static let backslash: UInt8 = 0x5C // '\'
     private static let dcs: UInt8 = 0x50 // 'P'
@@ -224,6 +226,18 @@ public struct CommandBlockSegmenter {
 
         case .escape:
             switch byte {
+            case Self.leftBracket:
+                // CSI `ESC [ … <final 0x40–0x7E>` (SGR colour runs, cursor ops, erases). A colorized
+                // command line (zsh-syntax-highlighting / fish / oh-my-zsh wrap the typed line in SGR
+                // runs as you type) emits CSI in the B→C region, so the WHOLE sequence — introducer,
+                // parameters, AND final byte — must be tracked and stripped from `commandText`. The old
+                // code returned to ground after the introducer, leaking the `32m`/`0m` parameter+final
+                // bytes as ground text. For OUTPUT the sequence is preserved verbatim (see `.csi`).
+                if phase == .output {
+                    appendContent(Self.esc)
+                    appendContent(byte)
+                }
+                state = .csi
             case Self.rightBracket:
                 state = .osc
                 oscBuffer.removeAll(keepingCapacity: true)
@@ -238,13 +252,35 @@ public struct CommandBlockSegmenter {
             case Self.esc:
                 state = .escape
             default:
-                // Some other escape (CSI `ESC[`, a 2-byte escape). Not an OSC. The two consumed
-                // bytes (`ESC` + this) are part of the opaque VT stream — for OUTPUT we preserve
-                // them so the captured bytes stay a faithful VT stream; for the COMMAND span they
-                // are stripped (the typed line carries no raw escapes we surface).
-                appendContent(Self.esc)
-                appendContent(byte)
+                // Some OTHER (non-CSI, non-OSC) escape: a 2-byte / nF escape (`ESC c`, `ESC ( B`). The two
+                // consumed bytes (`ESC` + this) are part of the opaque VT stream — for OUTPUT we preserve
+                // them so the captured bytes stay a faithful VT stream; for the COMMAND span they are
+                // STRIPPED (the typed line carries no raw escapes we surface — `commandText` is doc-pinned
+                // as OSC/escape-stripped). `appendContent` no-ops for `.idle`, so only the `.output` phase
+                // preserves the ESC+byte; the guard makes the `.command` strip explicit.
+                if phase == .output {
+                    appendContent(Self.esc)
+                    appendContent(byte)
+                }
                 state = .ground
+            }
+
+        case .csi:
+            // CSI body: parameter / intermediate bytes (0x20–0x3F) until a FINAL byte (0x40–0x7E) ends
+            // the sequence. Preserve every byte for OUTPUT (so the captured stream stays a faithful VT
+            // stream — `testControlSequencesPreservedInOutput` pins this); strip ALL of it for the COMMAND
+            // span. A final byte returns to ground; anything else (incl. an unexpected `ESC`, which a
+            // conformant terminal treats as aborting the CSI) is handled defensively.
+            if phase == .output { appendContent(byte) }
+            switch byte {
+            case 0x40...0x7E:
+                state = .ground // final byte — CSI complete.
+            case Self.esc:
+                // A stray ESC inside a CSI aborts it and starts a new escape (the ESC byte we just
+                // appended for OUTPUT is the abort marker — faithful to the raw stream).
+                state = .escape
+            default:
+                break // parameter / intermediate byte — stay in the CSI body.
             }
 
         case .osc:
