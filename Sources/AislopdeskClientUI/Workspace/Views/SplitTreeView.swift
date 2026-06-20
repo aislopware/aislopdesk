@@ -20,10 +20,16 @@ import SwiftUI
 /// resolve against the exact rects the user sees.
 struct SplitTreeView: View {
     @Bindable var store: WorkspaceStore
-    /// The active session + tab to render. Passed by ``SplitWorkspaceView`` so this view stays a pure
+    /// The session + tab to render. Passed by ``SplitWorkspaceView`` so this view stays a pure
     /// function of (tab, bounds) — it does not re-derive the active tab itself.
     let session: Session
     let tab: Tab
+    /// Whether THIS tab is the one on screen. ``SplitWorkspaceView`` mounts EVERY tab of every session
+    /// at once (so a libghostty surface is never torn down + recreated on a tab/session switch — the
+    /// recreate is what reflowed the grid and dropped a segment of the prompt) and hides the inactive
+    /// ones at `opacity 0`. Only the active tab reports its solved layout to the store (the focus
+    /// resolver's single source of truth) — otherwise a hidden tab would clobber it.
+    var isActive: Bool = true
 
     var body: some View {
         GeometryReader { geo in
@@ -57,6 +63,9 @@ struct SplitTreeView: View {
             // Report the solved active-tab layout so geometric focus moves resolve against these rects.
             .onChange(of: geo.size) { _, _ in reportLayout(placement) }
             .onAppear { reportLayout(placement) }
+            // When this tab BECOMES the active one (a tab/session switch flips it visible without a
+            // remount), re-publish its solved layout so geometric focus moves resolve against it.
+            .onChange(of: isActive) { _, active in if active { reportLayout(placement) } }
         }
         .background(.background)
     }
@@ -119,6 +128,9 @@ struct SplitTreeView: View {
     }
 
     private func reportLayout(_ placement: [PaneID: CGRect]) {
+        // Only the on-screen tab owns the store's solved layout (focus-resolver source of truth); a hidden
+        // mounted tab must NOT overwrite it.
+        guard isActive else { return }
         store.updateSolvedLayout(SolvedLayout(frames: placement))
     }
 }

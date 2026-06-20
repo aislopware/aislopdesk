@@ -38,10 +38,10 @@ struct SplitWorkspaceView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let session = store.tree.activeSession, let tab = session.activeTab {
+        if let session = store.tree.activeSession, let activeTab = session.activeTab {
             VStack(spacing: 0) {
                 TabBarView(store: store, session: session)
-                SplitTreeView(store: store, session: session, tab: tab)
+                panesHost(activeTabID: activeTab.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             #if os(macOS)
@@ -52,6 +52,32 @@ struct SplitWorkspaceView: View {
             // pre-materialize state.
             emptyState
         }
+    }
+
+    /// Mounts EVERY tab of every session at once, showing only the active one. Keeping the inactive tabs
+    /// mounted (at `opacity 0`, hit-testing off — the same no-teardown trick `SplitTreeView` uses for zoom,
+    /// here extended ACROSS tabs/sessions) means a pane's libghostty surface is NEVER torn down + recreated
+    /// on a tab/session switch. That recreate — surface rebuilt at a possibly-different backing scale, byte
+    /// ring replayed, grid reflowed — is exactly what dropped a segment of the prompt on switch (HW-found).
+    /// Switching is now a pure visibility flip; the hidden surfaces keep rendering their live output, so a
+    /// tab is already current the instant it is shown. (Creating/closing a tab still mounts/unmounts that
+    /// one tab — only SWITCHING is teardown-free.)
+    private func panesHost(activeTabID: TabID) -> some View {
+        ZStack {
+            ForEach(hostedTabs, id: \.tab.id) { hosted in
+                let active = hosted.tab.id == activeTabID
+                SplitTreeView(store: store, session: hosted.session, tab: hosted.tab, isActive: active)
+                    .opacity(active ? 1 : 0)
+                    .allowsHitTesting(active)
+                    .zIndex(active ? 1 : 0)
+            }
+        }
+    }
+
+    /// Every (session, tab) pair across the whole workspace, in a stable order. `TabID` is globally unique,
+    /// so the `ForEach` identity is stable → no view (and no surface) remounts on a switch.
+    private var hostedTabs: [(session: Session, tab: Tab)] {
+        store.tree.sessions.flatMap { session in session.tabs.map { (session: session, tab: $0) } }
     }
 
     private var emptyState: some View {
