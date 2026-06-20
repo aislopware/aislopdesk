@@ -108,3 +108,44 @@ A follow-on requested in conversation; spiked → built → reviewed → fast-fo
   timeout race, copy-while-running. Full suite **2799**, `make check` + `check-ios` + loopback all green.
 - **Needs eyes-on** (`check-macos`): the navigator/header/chip render + live jump/copy over a real libghostty
   surface. Needs a shell with **OSC 133 shell-integration** (`ShellIntegration.swift`) for blocks to appear.
+
+## Addendum — three more follow-on features (same overnight session, "tiếp tục ý tưởng hay khác")
+
+Each was orchestrated as an **implement → 5-dimension adversarial review → verify → fix** workflow and committed
+only after I re-ran `make check` myself (lint + build + full suite + golden). **All three are client-only: no
+wire/host/FFI/golden/schema change; golden byte-identical every time.** Branch now **31 commits vs main, unpushed.**
+
+1. **Blocks++** (`87c7223`) — the Warp block superpowers on top of the Blocks feature above:
+   - **Re-run command** (`⌃⌘R` last-command + per-row button): `BlockReRunEncoder` re-injects the captured
+     `commandText` as **verbatim literal UTF-8 + one `\n`** through the existing input path — never via
+     `SendKeysParser`, so a command literally containing `<Enter>`/`<cr>` re-runs unchanged (correctness + injection safety).
+   - **Status filter + jump-to-failed** (`⌃⌘⇧[` / `⌃⌘⇧]`): navigator segmented control (all/failed/bookmarked) +
+     a per-pane cursor jumping over FAILED blocks only.
+   - **Bookmark/star**: persisted via `PreferencesStore` keyed by a **per-session `bookmarkScopeKey`** (NOT the
+     relaunch-stable `PaneID` — block indices restart at 0/session; review caught a real "stars graft onto unrelated
+     commands after relaunch" bug here).
+   - Review: 14 raw → 7 confirmed → all fixed (incl. a tautological routing test replaced by 10 mutation-proven
+     dispatch tests via a `TerminalModelProviding` seam + recording double).
+2. **Session templates / project profiles** (`08b3bb6`) — open a named workspace with a predefined split layout +
+   per-pane cwd/startup command; capture the current layout as a reusable template.
+   - Recursive `TemplateNode` (`PaneSpec` deliberately has no cwd/command → those ride the keystroke path); pure
+     `SessionTemplateEngine` (makeSession / captureTemplate round-trip / `launchBytes` reusing the cd-as-literal-UTF-8
+     safe path); `TreeWorkspace.sessionTemplates` via `decodeIfPresent` (old v10 files decode `[]` + reseed — **no
+     migration**); 3 built-ins incl. **Claude + Terminal** (ties into the Claude auto-detect work).
+   - Surfaced as a dynamic **Command Palette** section (no chord pressure). `newSessionFromTemplate` mirrors
+     `applyLaunchPreset`; the 1400 ms launch-send is testable via an injectable `launchGrace` seam (proves the Claude
+     pane gets `claude\n`, the plain pane nothing). Review: 10 → 4 confirmed → all fixed.
+3. **Keyboard-driven pane management** (`e319049`) — the split-tree primitives already existed; this adds the
+   user-facing layer so panes are fully keyboard-drivable:
+   - **Move/swap** in direction (`⌥⌘⇧←→↑↓`), **resize** active split (`⌃⌘←→↑↓`, right/down grow · left/up shrink),
+     **balance** splits (`⌃⌘=`). New pure ops (`movePaneInDirection`, `enclosingSplit(of:axis:)` query,
+     `resizeActivePane`, `rebalanced`) carry the tests; the 9 chords are pinned by `TreeCommandRoutingTests`.
+   - Review: 11 → 4 confirmed → all fixed (resize now mutates the *located* tab not the active one; two real
+     test-rigor holes closed).
+
+### Needs YOUR eyes-on for these three (still impossible headless)
+- **Blocks++**: re-run button + `⌃⌘R`; the all/failed/bookmarked filter + `⌃⌘⇧[`/`⌃⌘⇧]` jump-to-failed; star toggle +
+  persistence across a relaunch (stars should NOT reappear on unrelated commands).
+- **Templates**: the Command Palette "Session Templates" section opens a multi-pane session that auto-`cd`s/runs the
+  per-pane command; "Save Layout as Template…" round-trips.
+- **Pane management**: move/resize/balance chords on a real multi-pane tab (divider actually nudges; balance evens out).
