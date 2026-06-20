@@ -1,14 +1,14 @@
 import Foundation
 
-// SPIKE — feasibility PoC, not wired into the live path.
+// The HOST-side per-command "Blocks" segmenter (Warp-style). Segments the raw PTY OUTBOUND
+// byte stream into per-command blocks using ONLY the OSC 133 A/B/C/D marks the live
+// ``HostOutputSniffer`` already sniffs — no libghostty region-extract.
 //
-// Question this answers: can the HOST segment the raw PTY OUTBOUND byte stream into
-// per-command "Blocks" (Warp-style) using ONLY the OSC 133 A/B/C/D marks the live
-// ``HostOutputSniffer`` already sniffs — without libghostty region-extract?
-//
-// This is a PURE, headless, ADDITIVE value-ish type. It does NOT touch the live sniffer,
-// the wire, or the golden corpus; it is never instantiated on the byte pipeline. It exists
-// to PROVE the segmentation, with tests, and nothing else.
+// This is a PURE value type. It runs as an ADDITIVE PARALLEL tap alongside the live
+// ``HostOutputSniffer`` (which is unchanged): the segmenter only OBSERVES the same outbound
+// chunks the sniffer sees; the byte pipeline forwards the original bytes unchanged. It is
+// env-gated (`AISLOPDESK_BLOCKS`, default-ON) at its call site so the byte pipeline + sniffer
+// stay byte-identical when off.
 //
 // ## OSC 133 semantics (the shell-integration marks, FinalTerm/iTerm2)
 //   - `A` = prompt start
@@ -134,6 +134,25 @@ public struct CommandBlockSegmenter {
     public mutating func finish() -> [CommandBlock] {
         guard let open = takeOpenBlock(complete: false) else { return [] }
         return [open]
+    }
+
+    /// A NON-DESTRUCTIVE snapshot of the currently-OPEN (still-running) block, or `nil` if none is
+    /// open. Unlike ``finish()`` this does NOT materialize/clear the block, so the segmenter keeps
+    /// accumulating its output — it lets the live tap emit a `commandBlock` METADATA update for a
+    /// running command (RUNNING indicator, partial output length) without disturbing segmentation.
+    /// The snapshot carries the index the block WILL receive when it closes (the next free index),
+    /// `complete == false`, and a `nil` duration (it has not finished).
+    public func peekOpenBlock() -> CommandBlock? {
+        guard hasOpenBlock else { return nil }
+        return CommandBlock(
+            index: nextIndex,
+            commandText: Self.decodeCommand(openCommandBytes),
+            output: openOutputBytes,
+            exitCode: nil,
+            durationMS: nil,
+            complete: false,
+            outputTruncated: openOutputTruncated,
+        )
     }
 
     // MARK: Parser state — mirrors HostOutputSniffer's OSC machine (NOT shared, NOT changed)

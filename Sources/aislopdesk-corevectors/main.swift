@@ -789,6 +789,81 @@ root["terminalWireMessages"] = [
     ),
 ]
 
+// WB1 — Warp-style "Blocks" wire messages (terminal CONTROL).
+// type 15 requestBlockOutput (c→h): body = [UInt32 index].
+// type 28 commandBlock (h→c): metadata only = [UInt32 index][UInt8 hasExit][Int32 BE exit]
+//   [UInt8 hasDuration][UInt32 BE duration][UInt8 complete][UInt32 BE outputLen][UInt16 BE cmdLen][cmd].
+// type 29 blockOutput (h→c): [UInt32 index][UInt32 BE outputLen][output bytes].
+root["blocksWireMessages"] = [
+    wmRecord("requestBlockOutput", .requestBlockOutput(index: 0), ["index": UInt32(0)]),
+    wmRecord("requestBlockOutput", .requestBlockOutput(index: 0x0102_0304), ["index": UInt32(0x0102_0304)]),
+    wmRecord("requestBlockOutput", .requestBlockOutput(index: UInt32.max), ["index": UInt32.max]),
+    wmRecord(
+        "commandBlock",
+        .commandBlock(index: 7, exitCode: 0, durationMS: 1250, complete: true, outputLen: 3, commandText: "ls"),
+        [
+            "index": UInt32(7),
+            "hasExit": true,
+            "exitCode": Int(0),
+            "hasDuration": true,
+            "durationMs": UInt64(1250),
+            "complete": true,
+            "outputLen": UInt64(3),
+            "commandText": "ls",
+        ],
+    ),
+    wmRecord(
+        "commandBlock",
+        .commandBlock(index: 0, exitCode: nil, durationMS: nil, complete: false, outputLen: 0, commandText: ""),
+        [
+            "index": UInt32(0),
+            "hasExit": false,
+            "exitCode": Int(0),
+            "hasDuration": false,
+            "durationMs": UInt64(0),
+            "complete": false,
+            "outputLen": UInt64(0),
+            "commandText": "",
+        ],
+    ),
+    wmRecord(
+        "commandBlock",
+        .commandBlock(
+            index: 42,
+            exitCode: Int32.min,
+            durationMS: UInt32.max,
+            complete: true,
+            outputLen: 262_144,
+            commandText: "grep · 文字 🚀",
+        ),
+        [
+            "index": UInt32(42),
+            "hasExit": true,
+            "exitCode": Int(Int32.min),
+            "hasDuration": true,
+            "durationMs": UInt64(UInt32.max),
+            "complete": true,
+            "outputLen": UInt64(262_144),
+            "commandText": "grep · 文字 🚀",
+        ],
+    ),
+    wmRecord(
+        "blockOutput",
+        .blockOutput(index: 5, output: Data([0xAA, 0xBB, 0xCC])),
+        ["index": UInt32(5), "outputHex": hex([0xAA, 0xBB, 0xCC])],
+    ),
+    wmRecord(
+        "blockOutput",
+        .blockOutput(index: 0, output: Data()),
+        ["index": UInt32(0), "outputHex": ""],
+    ),
+    wmRecord(
+        "blockOutput",
+        .blockOutput(index: 42, output: Data([0x1B, 0x5B, 0x33, 0x31, 0x6D, 0x00, 0xFF])),
+        ["index": UInt32(42), "outputHex": hex([0x1B, 0x5B, 0x33, 0x31, 0x6D, 0x00, 0xFF])],
+    ),
+]
+
 // MARK: AislopdeskProtocol — MuxEnvelopeCodec.encode (byte parity)
 
 func muxRecord(_ kind: String, _ f: MuxFrame, _ fields: [String: Any]) -> [String: Any] {

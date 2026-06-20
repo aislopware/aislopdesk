@@ -78,6 +78,10 @@ let log: @Sendable (String) -> Void = { message in
 // (Decision #5) — default-ON, only `AISLOPDESK_AGENT_DETECT=0` disables it.
 let agentDetectEnabled = HostEnvironment.agentDetectEnabled()
 
+// WB1: the Warp-style "Blocks" tap (per-command segmentation) — default-ON, only
+// `AISLOPDESK_BLOCKS=0` disables it. When off the byte pipeline + sniffer are byte-identical.
+let blocksEnabled = HostEnvironment.blocksEnabled()
+
 // W10: the OPT-IN Claude-hook listener (Decision #5: SECOND/opt-in). Bound only when
 // `AISLOPDESK_AGENT_HOOKS=1` (default-OFF). The socket lives in the user's temp dir, keyed by
 // pid so concurrent hosts don't collide. The installed hook (`integration install claude`)
@@ -99,6 +103,7 @@ let server = HostServer(
     agentDetectEnabled: agentDetectEnabled,
     agentHookListener: agentHookListener,
     agentHookSocketPath: agentHookSocketPath,
+    blocksEnabled: blocksEnabled,
 )
 server.onLog = log
 

@@ -55,6 +55,9 @@ extension WireMessage {
         case 14: // ping
             return try .ping(timestampMS: reader.readUInt64())
 
+        case 15: // requestBlockOutput
+            return try .requestBlockOutput(index: reader.readUInt32())
+
         case 20: // helloAck
             let idBytes = try reader.readBytes(sessionIDByteCount)
             let resumeFromSeq = try reader.readInt64()
@@ -125,6 +128,39 @@ extension WireMessage {
                 throw AislopdeskError.malformedBody("claudeStatus: invalid label UTF-8")
             }
             return .claudeStatus(state: state, kind: kind, label: label)
+
+        case 28: // commandBlock
+            let index = try reader.readUInt32()
+            let hasExit = try reader.readUInt8()
+            let exitRaw = try reader.readInt32()
+            let hasDuration = try reader.readUInt8()
+            let durationRaw = try reader.readUInt32()
+            let complete = try reader.readUInt8()
+            let outputLen = try reader.readUInt32()
+            // Validate the declared command-text length BEFORE reading: readBytes throws
+            // `truncated` if the body is shorter than the declared count — never over-reading.
+            let cmdLen = try Int(reader.readUInt16())
+            let cmdBytes = try reader.readBytes(cmdLen)
+            guard let commandText = String(data: cmdBytes, encoding: .utf8) else {
+                throw AislopdeskError.malformedBody("commandBlock: invalid commandText UTF-8")
+            }
+            return .commandBlock(
+                index: index,
+                exitCode: hasExit != 0 ? exitRaw : nil,
+                durationMS: hasDuration != 0 ? durationRaw : nil,
+                complete: complete != 0,
+                outputLen: outputLen,
+                commandText: commandText,
+            )
+
+        case 29: // blockOutput
+            let index = try reader.readUInt32()
+            // Validate the declared output length BEFORE allocating/reading: readBytes throws
+            // `truncated` if the body is shorter than the declared count — never over-reading a
+            // hostile body. The output is raw bytes (control sequences preserved), not UTF-8.
+            let outputLen = try Int(reader.readUInt32())
+            let output = try reader.readBytes(outputLen)
+            return .blockOutput(index: index, output: output)
 
         default:
             throw AislopdeskError.unknownMessageType(type)

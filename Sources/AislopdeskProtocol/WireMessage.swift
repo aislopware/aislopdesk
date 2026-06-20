@@ -104,6 +104,41 @@ public enum WireMessage: Equatable, Sendable {
     /// estimate stays honest under an output flood.
     case pong(timestampMS: UInt64)
 
+    /// A per-command "Block" METADATA update (WB1, type 28, host → client, CONTROL). The host
+    /// segments the OUTBOUND PTY byte stream into Warp-style per-command blocks (via the OSC 133
+    /// A/B/C/D marks) and emits this on each block create / update / complete. It carries ONLY the
+    /// metadata — NOT the output bytes (those are fetched on demand via ``requestBlockOutput(index:)``
+    /// → ``blockOutput(index:output:)``), so the CONTROL channel never floods with command output.
+    ///
+    /// - `index` is the 0-based block index in the channel's segmenter lifetime (the request key).
+    /// - `exitCode` is the command's `$?` (nil while running / if the shell did not report one).
+    /// - `durationMS` is the host-measured C→D wall-clock time (nil while still running).
+    /// - `complete` is true once the matching OSC 133 `D` arrived.
+    /// - `outputLen` is how many output bytes the host currently holds for this block (for the UI to
+    ///   show a size / decide whether to fetch); the host caps captured output at the segmenter's
+    ///   256 KiB ceiling.
+    /// - `commandText` is the typed command line (capped). Rides CONTROL like ``commandStatus``.
+    case commandBlock(
+        index: UInt32,
+        exitCode: Int32?,
+        durationMS: UInt32?,
+        complete: Bool,
+        outputLen: UInt32,
+        commandText: String,
+    )
+
+    /// A request for a Block's captured OUTPUT bytes (WB1, type 15, client → host, CONTROL). The
+    /// client sends this when the user expands / copies a block whose `index` it learned from a
+    /// ``commandBlock`` metadata update; the host replies with ``blockOutput(index:output:)`` from
+    /// its bounded per-channel block ring (empty output if that block was evicted / never existed).
+    case requestBlockOutput(index: UInt32)
+
+    /// A Block's captured OUTPUT bytes (WB1, type 29, host → client, CONTROL), in reply to a
+    /// ``requestBlockOutput(index:)``. `output` is the RAW captured VT bytes (control sequences
+    /// preserved), capped at the segmenter's 256 KiB ceiling; an empty `output` means the block was
+    /// evicted from the ring or never existed. Rides CONTROL like the other inline signals.
+    case blockOutput(index: UInt32, output: Data)
+
     /// The PTY's current foreground-process basename (W9, type 26, host → client, CONTROL).
     /// The COARSE Claude-Code detection path: the host watches the PTY master's foreground
     /// process group (`tcgetpgrp` → `proc_name`, W10) and emits this on a basename edge —
@@ -156,6 +191,7 @@ public enum WireMessage: Equatable, Sendable {
         case .ack: 12
         case .bye: 13
         case .ping: 14
+        case .requestBlockOutput: 15
         case .helloAck: 20
         case .title: 21
         case .bell: 22
@@ -164,6 +200,8 @@ public enum WireMessage: Equatable, Sendable {
         case .notification: 25
         case .foregroundProcess: 26
         case .claudeStatus: 27
+        case .commandBlock: 28
+        case .blockOutput: 29
         }
     }
 
@@ -179,6 +217,7 @@ public enum WireMessage: Equatable, Sendable {
              .ack,
              .bye,
              .ping,
+             .requestBlockOutput,
              .helloAck,
              .title,
              .bell,
@@ -186,7 +225,9 @@ public enum WireMessage: Equatable, Sendable {
              .pong,
              .notification,
              .foregroundProcess,
-             .claudeStatus:
+             .claudeStatus,
+             .commandBlock,
+             .blockOutput:
             .control
         }
     }

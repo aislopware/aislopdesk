@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import AislopdeskHost
 
-/// SPIKE test suite for ``CommandBlockSegmenter`` — proves the host can segment the raw
+/// Test suite for ``CommandBlockSegmenter`` — proves the host can segment the raw
 /// OUTBOUND PTY byte stream into per-command Blocks from the OSC 133 A/B/C/D marks alone.
 ///
 /// Non-tautological by construction: the fixtures are built from STRING literals (the

@@ -528,6 +528,77 @@
       "tier": 4
     }
   ],
+  "blocksWireMessages":   [
+    {
+      "hex": "000000050f00000000",
+      "index": 0,
+      "kind": "requestBlockOutput"
+    },
+    {
+      "hex": "000000050f01020304",
+      "index": 16909060,
+      "kind": "requestBlockOutput"
+    },
+    {
+      "hex": "000000050fffffffff",
+      "index": 4294967295,
+      "kind": "requestBlockOutput"
+    },
+    {
+      "commandText": "ls",
+      "complete": true,
+      "durationMs": 1250,
+      "exitCode": 0,
+      "hasDuration": true,
+      "hasExit": true,
+      "hex": "000000181c00000007010000000001000004e2010000000300026c73",
+      "index": 7,
+      "kind": "commandBlock",
+      "outputLen": 3
+    },
+    {
+      "commandText": "",
+      "complete": false,
+      "durationMs": 0,
+      "exitCode": 0,
+      "hasDuration": false,
+      "hasExit": false,
+      "hex": "000000161c000000000000000000000000000000000000000000",
+      "index": 0,
+      "kind": "commandBlock",
+      "outputLen": 0
+    },
+    {
+      "commandText": "grep · 文字 🚀",
+      "complete": true,
+      "durationMs": 4294967295,
+      "exitCode": -2147483648,
+      "hasDuration": true,
+      "hasExit": true,
+      "hex": "000000291c0000002a018000000001ffffffff010004000000136772657020c2b720e69687e5ad9720f09f9a80",
+      "index": 42,
+      "kind": "commandBlock",
+      "outputLen": 262144
+    },
+    {
+      "hex": "0000000c1d0000000500000003aabbcc",
+      "index": 5,
+      "kind": "blockOutput",
+      "outputHex": "aabbcc"
+    },
+    {
+      "hex": "000000091d0000000000000000",
+      "index": 0,
+      "kind": "blockOutput",
+      "outputHex": ""
+    },
+    {
+      "hex": "000000101d0000002a000000071b5b33316d00ff",
+      "index": 42,
+      "kind": "blockOutput",
+      "outputHex": "1b5b33316d00ff"
+    }
+  ],
   "captureRetarget": [
     {
       "cH": 4647503709213818880,

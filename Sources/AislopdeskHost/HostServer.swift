@@ -115,6 +115,11 @@ public final class HostServer: @unchecked Sendable {
     /// silently dies. May be invoked off the main actor; the app hops to its actor.
     public var onListenerFailed: (@Sendable (AislopdeskTransportError) -> Void)?
 
+    /// WB1 — whether new channels run the additive "Blocks" tap (the ``CommandBlockSegmenter`` +
+    /// the type-28/29 wire). Resolved from `AISLOPDESK_BLOCKS` (default-ON; only `"0"` disables) by
+    /// the daemon and passed in. When false, a channel's byte pipeline is byte-identical to pre-WB1.
+    public let blocksEnabled: Bool
+
     public init(
         port: UInt16,
         shellPath: String? = nil,
@@ -122,6 +127,7 @@ public final class HostServer: @unchecked Sendable {
         agentDetectEnabled: Bool = false,
         agentHookListener: AgentHookListener? = nil,
         agentHookSocketPath: String = "",
+        blocksEnabled: Bool = true,
     ) {
         self.port = port
         self.shellPath = shellPath ?? HostEnvironment.loginShell()
@@ -129,6 +135,7 @@ public final class HostServer: @unchecked Sendable {
         self.agentDetectEnabled = agentDetectEnabled
         self.agentHookListener = agentHookListener
         self.agentHookSocketPath = agentHookSocketPath
+        self.blocksEnabled = blocksEnabled
         transport = HostTransport()
     }
 
@@ -400,6 +407,7 @@ public final class HostServer: @unchecked Sendable {
             control: open.control,
             shimDir: shimDir,
             agentDetectEnabled: agentDetectEnabled,
+            blocksEnabled: blocksEnabled,
         )
         // The shell-exit reaper closes over the SAME composite key so it only removes THIS
         // connection's session (idempotent with the peer-close `setHostCloseHandler` path).

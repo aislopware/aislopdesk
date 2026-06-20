@@ -52,6 +52,18 @@ final class MuxChannelSession: @unchecked Sendable {
     /// drive it, though the poll itself is never run in a unit test — hang-safety).
     private let agentPollInterval: Duration
 
+    /// WB1 — whether the additive "Blocks" tap runs for this channel. When false the byte pipeline
+    /// + the live ``HostOutputSniffer`` are byte-identical (the segmenter is never instantiated, no
+    /// type-28/29 ever emitted). Resolved from `AISLOPDESK_BLOCKS` (default-ON) by the owner.
+    private let blocksEnabled: Bool
+
+    /// WB1 — the per-channel "Blocks" tracker (the segmenter + bounded output ring + dedup), or
+    /// `nil` when ``blocksEnabled`` is false. Touched from TWO contexts — the serial read-loop
+    /// thread (`ingest` in `onChunk`) and the control task (`serveOutput` on a `requestBlockOutput`)
+    /// — so it is guarded by ``blocksLock``. A pure value type, so it lives behind the lock.
+    private let blocksLock = NSLock()
+    private var blockTracker: CommandBlockTracker?
+
     /// P1 — the SINGLE per-pane Claude detector (ONE ``ClaudeStatusMachine``). Fed by ALL detection
     /// inputs — the foreground poll's `processPresent`, the per-poll `tick` (drives the `.done→.idle`
     /// decay), and the hook socket's bytes — so the host is the single source of truth (review #1/#9).
@@ -221,6 +233,7 @@ final class MuxChannelSession: @unchecked Sendable {
         shimDir: URL? = nil,
         agentDetectEnabled: Bool = false,
         agentPollInterval: Duration = .seconds(1),
+        blocksEnabled: Bool = true,
     ) {
         self.channelID = channelID
         self.pty = pty
@@ -231,6 +244,10 @@ final class MuxChannelSession: @unchecked Sendable {
         self.shimDir = shimDir
         self.agentDetectEnabled = agentDetectEnabled
         self.agentPollInterval = agentPollInterval
+        self.blocksEnabled = blocksEnabled
+        // WB1: instantiate the per-channel Blocks tracker only when enabled — otherwise the byte
+        // pipeline + sniffer stay byte-identical (no segmenter touches the stream, no emit).
+        blockTracker = blocksEnabled ? CommandBlockTracker() : nil
     }
 
     func startRelay() {
@@ -309,6 +326,12 @@ final class MuxChannelSession: @unchecked Sendable {
                 // grouped-per-sniffer order was already chunk-boundary-dependent; consumers
                 // fold each type independently).
                 let controlMsgs = sniffer.observe(chunk)
+                // WB1: ADDITIVE PARALLEL tap — feed the SAME chunk to the per-channel Blocks
+                // segmenter and enqueue any type-28 `commandBlock` metadata on the CONTROL sender.
+                // Only OBSERVES; the bytes below are forwarded unchanged. `nil` when AISLOPDESK_BLOCKS
+                // is off, so the pipeline stays byte-identical. Kept OFF the data drain (its own
+                // CONTROL FIFO) so block metadata never stalls data sends.
+                feedBlocks(chunk)
                 // Account the chunk in the bounded queue BEFORE enqueueing; if it pushes the FIFO
                 // to/over the bound, PAUSE the read loop so the kernel PTY buffer fills and
                 // backpressures the shell (the real flood fix).
@@ -393,6 +416,11 @@ final class MuxChannelSession: @unchecked Sendable {
                         // flushPendingResize — a periodic ping must not defeat the resize
                         // micro-debounce, and a ping orders against nothing.
                         self.enqueueControl([.pong(timestampMS: timestampMS)])
+                    case let .requestBlockOutput(index):
+                        // WB1: serve the block's retained output (type 29) from the ring, or an
+                        // empty response if evicted / blocks disabled. Orders against nothing — like
+                        // a ping, deliberately NO flushPendingResize so it can't defeat the debounce.
+                        self.serveBlockOutput(index: index)
                     default:
                         self.flushPendingResize()
                     }
@@ -682,6 +710,27 @@ final class MuxChannelSession: @unchecked Sendable {
         if !emission.isEmpty { enqueueControl(emission.messages) }
     }
 
+    /// WB1 — feeds one outbound chunk to the per-channel Blocks tracker (under ``blocksLock``) and
+    /// enqueues any resulting type-28 `commandBlock` metadata on the CONTROL sender. A no-op when
+    /// blocks are disabled (`blockTracker == nil`), so the byte pipeline stays byte-identical.
+    private func feedBlocks(_ chunk: Data) {
+        guard blocksEnabled else { return }
+        blocksLock.lock()
+        let messages = blockTracker?.ingest(chunk) ?? []
+        blocksLock.unlock()
+        if !messages.isEmpty { enqueueControl(messages) }
+    }
+
+    /// WB1 — serves a `requestBlockOutput(index)` by enqueueing the block's retained output (type
+    /// 29) from the ring on the CONTROL sender. Always replies (an EMPTY `blockOutput` when the
+    /// block was evicted / never existed / blocks are disabled) so the client never hangs waiting.
+    private func serveBlockOutput(index: UInt32) {
+        blocksLock.lock()
+        let message = blockTracker?.serveOutput(index: index) ?? .blockOutput(index: index, output: Data())
+        blocksLock.unlock()
+        enqueueControl([message])
+    }
+
     /// Atomically takes the whole pending control batch; `nil` when empty (drain re-parks).
     private func takeControlBatch() -> [WireMessage]? {
         controlOutLock.lock()
@@ -833,6 +882,14 @@ final class MuxChannelSession: @unchecked Sendable {
     func enqueueControlForTesting(_ messages: [WireMessage]) { enqueueControl(messages) }
     func takeControlBatchForTesting() -> [WireMessage]? { takeControlBatch() }
     static var maxControlOutQueuedForTesting: Int { maxControlOutQueued }
+
+    /// WB1 — drive the real `feedBlocks` glue (segmenter tap → enqueueControl) WITHOUT a PTY/read
+    /// loop, so the type-28 emission + the byte-identical-when-off contract are provable headlessly.
+    func feedBlocksForTesting(_ chunk: Data) { feedBlocks(chunk) }
+    /// WB1 — drive the real `serveBlockOutput` glue (ring lookup → enqueueControl).
+    func serveBlockOutputForTesting(index: UInt32) { serveBlockOutput(index: index) }
+    /// WB1 — whether the Blocks tap is active for this channel (the tracker was instantiated).
+    var blocksEnabledForTesting: Bool { blocksEnabled }
 
     private static func writeAll(fd: Int32, data: Data) {
         #if canImport(Darwin)

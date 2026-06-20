@@ -116,6 +116,24 @@ public enum HostEnvironment {
         environment[agentDetectEnvKey] != "0"
     }
 
+    /// WB1 — whether the host segments the outbound PTY stream into Warp-style "Blocks" (the
+    /// additive parallel ``CommandBlockSegmenter`` tap + the type-28/29 wire). Default idiom =
+    /// DEFAULT-ON via `env[key] != "0"` (only an explicit `"0"` disables): when off, the byte
+    /// pipeline + the live ``HostOutputSniffer`` stay byte-identical (no segmenter, no emit).
+    public static let blocksEnvKey = "AISLOPDESK_BLOCKS"
+
+    /// Resolves whether the Blocks tap is enabled. Default-ON: only the exact string `"0"`
+    /// disables it; anything else (unset, `"1"`, etc.) enables. Same ``EnvConfig`` overlay
+    /// resolution as ``agentDetectEnabled(environment:)`` (an empty overlay is byte-identical to
+    /// the previous `ProcessInfo` read, so the default-ON `!= "0"` truth table is unchanged).
+    public static func blocksEnabled(
+        environment: [String: String] = configEnv(blocksEnvKey),
+    )
+        -> Bool
+    {
+        environment[blocksEnvKey] != "0"
+    }
+
     /// W10 — whether the opt-in Claude-Code HOOK listener (the `AF_UNIX` socket) is enabled.
     /// Default idiom = DEFAULT-OFF via `env[key] == "1"` (only an explicit `"1"` enables):
     /// hooks are the SECOND/opt-in signal (Decision #5), so the socket is bound only when the
