@@ -135,7 +135,7 @@ func ghosttyOnMainActor(_ body: @escaping @MainActor () -> Void) {
 /// enqueues onto the per-surface serial ``feedGate`` queue (docs/31 follow-up #5 — see
 /// the header THREADING CONTRACT).
 @MainActor
-public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressuring {
+public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressuring, TerminalSurfaceActions {
 
     // MARK: Stored state
 
@@ -631,6 +631,32 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
         defer { ghostty_surface_free_text(s, &text) }                        // header 1221 — libghostty owns the buffer
         guard let ptr = text.text else { return nil }
         return String(cString: ptr)                                          // upstream copies via String(cString:)
+    }
+
+    /// A flat, line-oriented text mirror of the FULL screen (visible viewport + retained scrollback) for
+    /// the client-side ``TerminalSearchController`` (W14 #5 ⌘F find). Reads the whole screen via
+    /// `ghostty_surface_read_text` (header 1220) over a `GHOSTTY_POINT_SCREEN` selection spanning top-left
+    /// → bottom-right (the full scrollback range), then splits on newlines. libghostty owns the returned
+    /// buffer, so we copy + `free_text` (the `defer`, every path). Returns `[]` when the surface is gone or
+    /// the read fails (validate-then-drop). NOT a test path — the real surface hangs headless; the find
+    /// engine itself is unit-tested against an in-memory buffer.
+    public func scrollbackTextLines() -> [String] {
+        guard let s = surface else { return [] }
+        // The whole screen: SCREEN-space top-left to bottom-right (coord hints pick the extremes).
+        var sel = ghostty_selection_s()
+        sel.top_left.tag = GHOSTTY_POINT_SCREEN
+        sel.top_left.coord = GHOSTTY_POINT_COORD_TOP_LEFT
+        sel.bottom_right.tag = GHOSTTY_POINT_SCREEN
+        sel.bottom_right.coord = GHOSTTY_POINT_COORD_BOTTOM_RIGHT
+        sel.rectangle = false
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_text(s, sel, &text) else { return [] }   // header 1220
+        defer { ghostty_surface_free_text(s, &text) }                       // libghostty owns the buffer
+        guard let ptr = text.text else { return [] }
+        // Split into lines (drop a single trailing empty so a final newline doesn't add a phantom row).
+        var lines = String(cString: ptr).components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }
+        return lines
     }
 
     /// Performs a named libghostty keybinding action (e.g. `copy_to_clipboard`,

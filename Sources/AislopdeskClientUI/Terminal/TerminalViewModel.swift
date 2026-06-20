@@ -157,6 +157,17 @@ public final class TerminalViewModel {
     /// `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers (never invoked).
     @ObservationIgnored public var broadcastTap: ((Data) -> Void)?
 
+    /// W14 #10: the terminal right-click menu's "Split Right / Split Down" item — the renderer's
+    /// `menu(for:)` calls this with the chosen axis; the leaf wires it to `store.splitPaneTree(paneID, …)`.
+    /// `true` = horizontal (side-by-side), `false` = vertical (stacked). `@ObservationIgnored`: wiring, not
+    /// view state. Nil for headless/preview callers (never invoked).
+    @ObservationIgnored public var onContextMenuSplit: ((_ horizontal: Bool) -> Void)?
+
+    /// W14 #5: the ⌘F / right-click "Find…" action — opens the find-in-terminal bar over THIS pane. The
+    /// renderer's menu (and the `find:` responder selector) call it; the leaf wires it to the find-bar
+    /// `@State`. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
+    @ObservationIgnored public var onRequestFind: (() -> Void)?
+
     // MARK: Replay byte-ring (surface-rebuild survival)
 
     /// Bounded FIFO of the COMPLETE `output` chunks fed to the surface, kept so a

@@ -162,7 +162,10 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     on a basename edge, type 27 only when the `(state, kind, label)` triple changes — an idle
     `claude` never spams identical frames.
 
-The next free host → client CONTROL type byte is **28** (reserved for the W14 OSC-8 hyperlink type).
+The next free host → client CONTROL type byte is **28**. (It was reserved for a W14 OSC-8 hyperlink type,
+but W14 ships OSC-8 click-to-open via **libghostty's own hit-testing** — `GHOSTTY_ACTION_OPEN_URL` /
+`GHOSTTY_ACTION_MOUSE_OVER_LINK` — so **no wire change was needed** and 28 is left free. See
+DECISIONS.md "W14 terminal parity".)
 
 ## 5. Seq / ack / replay semantics
 

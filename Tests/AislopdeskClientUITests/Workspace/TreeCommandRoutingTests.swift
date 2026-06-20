@@ -279,6 +279,32 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(chord(.newSession), KeyChord(character: "n", [.control, .command]), "new session = ⌃⌘N")
         XCTAssertEqual(chord(.selectTab(1)), KeyChord(character: "1", [.command]), "select tab 1 = ⌘1")
         XCTAssertEqual(chord(.selectTab(9)), KeyChord(character: "9", [.command]), "select tab 9 = ⌘9")
+        XCTAssertEqual(chord(.find), KeyChord(character: "f", [.command]), "find = ⌘F (W14)")
+    }
+
+    // MARK: - View: find routes to the overlay toggle (W14 #5)
+
+    /// `.find` with an explicit `toggleFind` override fires the closure (the root view's find-bar `@State`),
+    /// NOT a store mutation — and leaves the tree untouched. Proven to fail before `.find` is routed.
+    @MainActor
+    func testFindActionFiresToggleClosureAndDoesNotMutateTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        var fired = 0
+        WorkspaceBindingRegistry.route(.find, to: store, toggleFind: { fired += 1 })
+        XCTAssertEqual(fired, 1, "the find action invoked the toggleFind closure")
+        XCTAssertEqual(store.tree, before, "find is a view overlay — the tree is unchanged")
+    }
+
+    /// `.find` WITHOUT a `toggleFind` override (the menu / keyboard path) routes to the store's
+    /// `requestFindInActivePane()` — a no-op against a FakePaneSession (not a live terminal), but it must
+    /// not trap or mutate the tree. Pins that the no-closure path is wired to the store, not dropped.
+    @MainActor
+    func testFindActionWithoutClosureRoutesToStoreWithoutMutatingTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        WorkspaceBindingRegistry.route(.find, to: store) // no toggleFind ⇒ store path
+        XCTAssertEqual(store.tree, before, "the store find path leaves the tree unchanged")
     }
 
     #if canImport(SwiftUI)

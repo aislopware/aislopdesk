@@ -29,6 +29,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     case toggleZoom // ⌥⌘↩ — maximize / restore the active pane (render-only)
     case commandPalette // ⌘K — show/hide the ⌘K command palette
     case cheatSheet // ⌘/ — show/hide the keyboard cheat sheet
+    case find // ⌘F — show/hide the find-in-terminal bar over the active pane (W14 #5)
 
     // Tabs
     case newTab // ⌘T
@@ -64,6 +65,10 @@ public extension WorkspaceAction {
              .focusUp,
              .focusDown,
              .toggleZoom:
+            true
+        case .find:
+            // Find targets the active TERMINAL pane (its scrollback), so it needs one — but it is opened
+            // as a view overlay, so a no-pane shell just no-ops gracefully (not greyed out aggressively).
             true
         case .commandPalette,
              .cheatSheet,
@@ -218,6 +223,11 @@ public enum WorkspaceBindingRegistry {
             id: "view.cheatSheet", action: .cheatSheet, title: "Keyboard Shortcuts",
             category: .view, chord: KeyChord(character: "/", [.command]),
             symbol: "keyboard", keywords: "shortcuts cheat sheet help keys reference",
+        ),
+        WorkspaceBinding(
+            id: "view.find", action: .find, title: "Find…",
+            category: .view, chord: KeyChord(character: "f", [.command]),
+            symbol: "magnifyingglass", keywords: "search scrollback grep locate text in terminal",
         ),
     ]
 

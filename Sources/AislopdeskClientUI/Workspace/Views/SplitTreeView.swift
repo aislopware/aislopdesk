@@ -85,6 +85,19 @@ struct SplitTreeView: View {
         // The no-teardown trick: a zoomed-away leaf stays MOUNTED but invisible + inert.
         .opacity(isVisible ? 1 : 0)
         .allowsHitTesting(isVisible)
+        // W14 #10: wire the terminal right-click menu's "Split Right / Split Down" to the store for THIS
+        // leaf (find self-wires in TerminalScreenView). A non-terminal / faked leaf has no model → no-op.
+        .onAppear { wireContextMenu(for: id) }
+    }
+
+    /// Points the leaf's terminal model's context-menu split callback at the store (W14 #10). Captures only
+    /// `store` + `id` (both stable). No-op for a leaf without a live terminal model.
+    private func wireContextMenu(for id: PaneID) {
+        guard let live = store.handle(for: id) as? LivePaneSession,
+              let model = live.terminalModel else { return }
+        model.onContextMenuSplit = { [weak store] horizontal in
+            store?.splitPaneTree(id, axis: horizontal ? .horizontal : .vertical, kind: .terminal)
+        }
     }
 
     // MARK: Geometry helpers

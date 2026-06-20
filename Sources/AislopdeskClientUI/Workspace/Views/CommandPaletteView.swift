@@ -398,7 +398,8 @@ struct CommandPaletteView: View {
         return WorkspaceBindingRegistry.bindings.compactMap { binding -> Entry? in
             switch binding.action {
             case .commandPalette,
-                 .cheatSheet: return nil
+                 .cheatSheet,
+                 .find: return nil // view-overlay actions: opened via their chord / menu, not from the palette
             default: break
             }
             guard hasActivePane || !binding.action.requiresActivePane else { return nil }

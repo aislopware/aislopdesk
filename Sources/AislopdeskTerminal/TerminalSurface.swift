@@ -55,6 +55,35 @@ public extension TerminalSurface {
     }
 }
 
+// MARK: - TerminalSurfaceActions (the W14 editor-action capability seam)
+
+/// The OPTIONAL capability seam (docs/42 W14) the right-click context menu and the ⌘F find bar drive: a
+/// renderer that wraps a real terminal (``GhosttySurface``) exposes selection state + named keybinding
+/// actions + scrollback search through these, so the SwiftUI find bar / `NSMenu` route through the SEAM
+/// instead of importing libghostty. Headless conformers (tests, the CLI) DO NOT conform — the GUI probes
+/// with `as? TerminalSurfaceActions` and degrades gracefully (a no-selection, no-search surface), exactly
+/// like ``FeedBackpressuring``. None of these are exercised in a test (the real surface hangs without a
+/// window server — the hang-safety rule); they are compiled + code-reviewed, and their PURE inputs
+/// (``TerminalSearchController`` over a text mirror) carry the unit tests.
+public protocol TerminalSurfaceActions: AnyObject {
+    /// Whether the surface currently holds a text selection (gates Copy in the context menu).
+    func hasSelection() -> Bool
+
+    /// The current selection as text, or `nil` (drives "copy" + the find-from-selection seed).
+    func readSelection() -> String?
+
+    /// Fires a named libghostty keybinding action (`copy_to_clipboard` / `paste_from_clipboard` /
+    /// `select_all` / `clear_screen` / `jump_to_prompt:-1` / `start_search:<needle>` …). Returns whether it
+    /// ran. The single lever the menu + find bar + jump-to-prompt all route through.
+    @discardableResult
+    func performBindingAction(_ action: String) -> Bool
+
+    /// A flat, line-oriented text mirror of the visible scrollback (newest screen + retained scrollback),
+    /// for the client-side ``TerminalSearchController`` fallback when libghostty's in-surface search result
+    /// callbacks are not plumbed through the C `action_cb`. One entry per line, no trailing newline.
+    func scrollbackTextLines() -> [String]
+}
+
 /// Backpressure seam for renderers whose ``TerminalSurface/feed(_:)`` is an
 /// ASYNCHRONOUS enqueue (GhosttySurface's per-surface serial feed queue, docs/31 #5).
 ///

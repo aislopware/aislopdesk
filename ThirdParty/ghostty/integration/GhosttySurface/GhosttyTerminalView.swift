@@ -209,9 +209,28 @@ final class GhosttyApp {
             // (A bare `MainActor.assumeIsolated` here would TRAP off-main — the historical launch crash.)
             GhosttyApp.requestAppTick()
         }
-        // action_cb returns whether the action was handled; the viewer handles none
-        // of the app-level actions (split/new-window/etc.) — return false.
-        runtime.action_cb = { _, _, _ in false }
+        // action_cb returns whether the action was handled. The viewer handles none of the app-level
+        // window/split/tab actions (Aislopdesk does its OWN tiling at the SwiftUI layer) — EXCEPT
+        // GHOSTTY_ACTION_OPEN_URL: libghostty owns OSC 8 hyperlink hit-testing + the click internally and
+        // asks the embedder to OPEN the resolved URL (W14 #7). We hand it to the system opener (the
+        // embedder's job upstream too) so a clicked OSC 8 link / hovered-URL click opens — no wire change,
+        // no host-side OSC 8 parsing needed (see docs/DECISIONS.md). Everything else returns false.
+        runtime.action_cb = { (_, _, action) -> Bool in
+            guard action.tag == GHOSTTY_ACTION_OPEN_URL else { return false }
+            let urlAction = action.action.open_url
+            guard let cstr = urlAction.url else { return false }
+            let urlString = String(cString: cstr)
+            guard !urlString.isEmpty else { return false }
+            // NSWorkspace/UIApplication open are main-thread; the action fires on the main loop tick.
+            ghosttyOnMainActor {
+                #if os(macOS)
+                if let url = URL(string: urlString) { NSWorkspace.shared.open(url) }
+                #else
+                if let url = URL(string: urlString) { UIApplication.shared.open(url) }
+                #endif
+            }
+            return true
+        }
 
         // Clipboard callbacks — modeled on upstream `Ghostty.App.swift:324-405`. The `userdata`
         // here is the SURFACE's userdata (libghostty passes it through), which aislopdesk set to the
@@ -1008,6 +1027,79 @@ final class GhosttyLayerBackedView: NSView {
 
     @objc override func selectAll(_ sender: Any?) {
         surface?.performBindingAction("select_all")
+    }
+
+    // MARK: Jump to prompt (W14 #6 — OSC 133 shell-integration, Ghostty/Warp signature)
+    //
+    // libghostty owns OSC 133 prompt marks (the same C/D sequences `HostOutputSniffer` reads host-side)
+    // and exposes `jump_to_prompt:<delta>` as a binding action (negative = previous prompt, positive =
+    // next). We surface it through the SAME `performBindingAction` lever the copy/paste path uses — so a
+    // future menu item / chord binding routes straight to libghostty's prompt navigation with no
+    // host/wire change. Compile-only (the real surface hangs headless); these are responder selectors a
+    // command can target. `find:` is the responder twin of the right-click "Find…" / ⌘F.
+
+    /// Jump the viewport to the PREVIOUS shell prompt (OSC 133 mark). libghostty `jump_to_prompt:-1`.
+    @objc func jumpToPreviousPrompt(_ sender: Any?) {
+        surface?.performBindingAction("jump_to_prompt:-1")
+    }
+
+    /// Jump the viewport to the NEXT shell prompt (OSC 133 mark). libghostty `jump_to_prompt:1`.
+    @objc func jumpToNextPrompt(_ sender: Any?) {
+        surface?.performBindingAction("jump_to_prompt:1")
+    }
+
+    /// Responder-chain twin of the right-click "Find…" — opens this pane's find bar (W14 #5).
+    @objc func find(_ sender: Any?) {
+        model?.onRequestFind?()
+    }
+
+    // MARK: Right-click context menu (W14 #10)
+    //
+    // A native `NSMenu` built from the PURE `TerminalContextMenu` model (item list + per-item enablement),
+    // so copy/paste/select-all/clear route to libghostty binding actions, paste-as-keystrokes types the
+    // pasteboard string, and split/find route to the store via the model callbacks. The enablement logic
+    // (copy needs a selection, paste needs clipboard text) lives in the unit-tested `TerminalContextMenu`;
+    // this view is the thin renderer. `rightMouseDown` already gives libghostty first refusal (it may turn
+    // a right-click into a paste in mouse-reporting apps) — `menu(for:)` only fires when AppKit falls
+    // through to the default menu path, so a TUI that wants the right-click still gets it.
+
+    /// Builds the terminal context menu for `event`, with each item enabled per `TerminalContextMenu`.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let ctx = TerminalContextMenu.Context(
+            hasSelection: surface?.hasSelection() ?? false,
+            clipboardHasText: !(NSPasteboard.general.string(forType: .string)?.isEmpty ?? true),
+            paneConnected: true,
+        )
+        let menu = NSMenu()
+        for item in TerminalContextMenu.items {
+            if item.separatorBefore { menu.addItem(.separator()) }
+            let menuItem = NSMenuItem(title: item.title, action: #selector(contextMenuAction(_:)), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.representedObject = item.rawValue
+            menuItem.isEnabled = TerminalContextMenu.isEnabled(item, context: ctx)
+            menu.addItem(menuItem)
+        }
+        return menu
+    }
+
+    /// Dispatches a context-menu item (tagged by its `TerminalContextMenu.Item.rawValue`) to the matching
+    /// libghostty binding action / model callback. Unknown tags are ignored (validate-then-drop).
+    @objc private func contextMenuAction(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let item = TerminalContextMenu.Item(rawValue: raw) else { return }
+        switch item {
+        case .copy: surface?.performBindingAction("copy_to_clipboard")
+        case .paste: surface?.performBindingAction("paste_from_clipboard")
+        case .pasteAsKeystrokes:
+            // Type the pasteboard string as raw keystrokes (no bracketed-paste) — the "paste literally"
+            // affordance for TUIs that swallow bracketed paste.
+            if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty { surface?.text(s) }
+        case .selectAll: surface?.performBindingAction("select_all")
+        case .clear: surface?.performBindingAction("clear_screen")
+        case .splitRight: model?.onContextMenuSplit?(true)
+        case .splitDown: model?.onContextMenuSplit?(false)
+        case .find: model?.onRequestFind?()
+        }
     }
 
     /// Catch Cmd-C / Cmd-V / Cmd-A DIRECTLY, regardless of whether an Edit menu is installed. Returning

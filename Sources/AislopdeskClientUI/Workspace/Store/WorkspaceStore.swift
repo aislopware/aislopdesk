@@ -2449,6 +2449,92 @@ public final class WorkspaceStore {
         "Session \(tree.sessions.count + 1)"
     }
 
+    // MARK: - Launch presets (W14 #9 — Warp launch-configuration parity)
+
+    /// The user's launch presets (built-ins + any they created), in display order. The settings / palette
+    /// read this; ``applyLaunchPreset(_:)`` opens one.
+    public var launchPresets: [LaunchPreset] { tree.launchPresets }
+
+    /// Adds (or replaces, by id) a launch preset, then persists. The settings "save preset" path.
+    public func upsertLaunchPreset(_ preset: LaunchPreset) {
+        if let idx = tree.launchPresets.firstIndex(where: { $0.id == preset.id }) {
+            tree.launchPresets[idx] = preset
+        } else {
+            tree.launchPresets.append(preset)
+        }
+        scheduleSave()
+    }
+
+    /// Removes a launch preset by id, then persists. The settings "delete preset" path.
+    public func removeLaunchPreset(_ id: UUID) {
+        tree.launchPresets.removeAll { $0.id == id }
+        scheduleSave()
+    }
+
+    /// Resets the launch-preset list back to the shipped built-ins (settings "reset to defaults").
+    public func resetLaunchPresetsToBuiltIns() {
+        tree.launchPresets = LaunchPreset.builtIns
+        scheduleSave()
+    }
+
+    /// Applies a launch preset by id: opens a NEW TAB whose first pane runs the preset's command (and, for
+    /// a two-pane preset, splits it and runs the secondary command), then types each pane's keystrokes once
+    /// its PTY is live. Returns the created pane ids (for tests / the caller), or `[]` for an unknown id.
+    ///
+    /// The keystroke send is deferred ~1.4s after materialize (the same "let the remote prompt come up"
+    /// grace the autotype path uses) — the PTY shell must be ready before the `cd`/command lands. Pure
+    /// expansion is done by ``LaunchPresetEngine`` (unit-tested); the store only materializes + sends.
+    @discardableResult
+    public func applyLaunchPreset(_ id: UUID) -> [PaneID] {
+        guard let preset = tree.launchPresets.first(where: { $0.id == id }) else { return [] }
+        return applyLaunchPreset(preset)
+    }
+
+    /// Applies an explicit ``LaunchPreset`` value (used by the apply-by-id path and directly by the palette
+    /// for a transient preset). See ``applyLaunchPreset(_:)`` by id for the contract.
+    @discardableResult
+    public func applyLaunchPreset(_ preset: LaunchPreset) -> [PaneID] {
+        let plan = LaunchPresetEngine.plan(for: preset)
+        guard let first = plan.panes.first else { return [] }
+
+        // Pane 0: a new tab carrying the preset's first pane.
+        let (afterTab, firstID) = WorkspaceTreeOps.newTab(in: tree, spec: first.spec)
+        tree = afterTab
+        var createdIDs = [firstID]
+
+        // Pane 1 (optional): split pane 0 along the preset's axis.
+        if let axis = plan.splitAxis, plan.panes.count > 1 {
+            let (afterSplit, secondID) = WorkspaceTreeOps.splitPane(
+                firstID, axis: axis, newSpec: plan.panes[1].spec, in: tree,
+            )
+            tree = afterSplit
+            createdIDs.append(secondID)
+        }
+        reconcileTree()
+
+        // Send each pane's keystrokes once its PTY is live (deferred — the shell prompt must come up first).
+        let sends: [(PaneID, [UInt8])] = zip(createdIDs, plan.panes.map(\.keystrokes)).map { ($0, $1) }
+        for (paneID, bytes) in sends where !bytes.isEmpty {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(1400))
+                self?.registry[paneID]?.sendBytes(bytes)
+            }
+        }
+        return createdIDs
+    }
+
+    // MARK: - Find-in-terminal (W14 #5)
+
+    /// Opens the ⌘F find bar over the active pane (the keyboard / menu / right-click "Find…" entry). Routes
+    /// to the active terminal's ``TerminalViewModel/onRequestFind`` (set by ``TerminalScreenView``); a no-op
+    /// for a non-terminal active pane or an empty shell. The find bar's PURE engine is
+    /// ``TerminalSearchController`` (unit-tested).
+    public func requestFindInActivePane() {
+        guard let active = tree.activeSession?.activeTab?.activePane,
+              let live = registry[active] as? LivePaneSession else { return }
+        live.terminalModel?.onRequestFind?()
+    }
+
     /// Closes the active pane through the busy-shell guard (W6): an idle pane closes immediately (cascading
     /// the tab/session), a pane mid-command parks behind the `pendingClose` confirmation the root view
     /// hosts — mirroring the canvas ``requestClosePane(_:)``. No-op without an active pane.

@@ -23,10 +23,19 @@ public extension WorkspaceBindingRegistry {
         to store: WorkspaceStore,
         togglePalette: (() -> Void)? = nil,
         toggleCheatSheet: (() -> Void)? = nil,
+        toggleFind: (() -> Void)? = nil,
     ) {
         switch store.liveModel {
-        case .tree: routeTree(action, to: store, togglePalette: togglePalette, toggleCheatSheet: toggleCheatSheet)
-        case .canvas: routeCanvas(action, to: store, togglePalette: togglePalette, toggleCheatSheet: toggleCheatSheet)
+        case .tree:
+            routeTree(
+                action, to: store, togglePalette: togglePalette,
+                toggleCheatSheet: toggleCheatSheet, toggleFind: toggleFind,
+            )
+        case .canvas:
+            routeCanvas(
+                action, to: store, togglePalette: togglePalette,
+                toggleCheatSheet: toggleCheatSheet, toggleFind: toggleFind,
+            )
         }
     }
 
@@ -37,6 +46,7 @@ public extension WorkspaceBindingRegistry {
         to store: WorkspaceStore,
         togglePalette: (() -> Void)?,
         toggleCheatSheet: (() -> Void)?,
+        toggleFind: (() -> Void)?,
     ) {
         switch action {
         // Panes
@@ -54,6 +64,9 @@ public extension WorkspaceBindingRegistry {
         case .toggleZoom: store.toggleZoomActivePane()
         case .commandPalette: togglePalette?()
         case .cheatSheet: toggleCheatSheet?()
+        // Find opens the active pane's find bar via the store (so the menu + chord work without threading a
+        // view closure); an explicit `toggleFind` override wins when supplied.
+        case .find: if let toggleFind { toggleFind() } else { store.requestFindInActivePane() }
         // Tabs
         case .newTab: store.newTabDefault()
         case .nextTab: store.cycleTab(by: 1)
@@ -73,6 +86,7 @@ public extension WorkspaceBindingRegistry {
         to store: WorkspaceStore,
         togglePalette: (() -> Void)?,
         toggleCheatSheet: (() -> Void)?,
+        toggleFind: (() -> Void)?,
     ) {
         switch action {
         case .splitRight,
@@ -90,6 +104,7 @@ public extension WorkspaceBindingRegistry {
         case .toggleZoom: apply(.toggleZoom, to: store)
         case .commandPalette: togglePalette?()
         case .cheatSheet: toggleCheatSheet?()
+        case .find: toggleFind?() // canvas path: find is view-overlay only (no tree active-pane store hook)
         case .nextTab,
              .prevTab,
              .selectTab: break // no canvas tab model

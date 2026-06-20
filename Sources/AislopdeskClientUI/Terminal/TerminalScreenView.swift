@@ -18,6 +18,10 @@ public struct TerminalScreenView: View {
     /// preview callers that do not thread focus.
     private let isFocused: Bool
 
+    /// W14 #5: whether the ⌘F find bar is showing over this pane. Owned here as VIEW state (not the tree);
+    /// ⌘F / the right-click "Find…" flip it through ``TerminalViewModel/onRequestFind`` (wired below).
+    @State private var isFindPresented = false
+
     public init(model: TerminalViewModel, isFocused: Bool = true) {
         _model = State(initialValue: model)
         self.isFocused = isFocused
@@ -45,11 +49,23 @@ public struct TerminalScreenView: View {
                     .allowsHitTesting(false) // the pane has a history of scroll-swallowing chrome
                     .transition(.opacity)
             }
+            // W14 #5: the find-in-terminal bar, top-trailing so it doesn't cover the prompt.
+            if isFindPresented {
+                TerminalFindBar(model: model, isPresented: $isFindPresented)
+                    .frame(maxWidth: .infinity, alignment: .topTrailing)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         // The visibility flips happen in plain (un-animated) model code — without an
         // animation bound to the VALUE the .transition above would be skipped and the
         // caret would pop. Scoped to this value so nothing else animates.
         .animation(.easeInOut(duration: 0.15), value: model.glitchCaretVisible)
+        .animation(.easeInOut(duration: 0.15), value: isFindPresented)
+        .onAppear {
+            // ⌘F / right-click "Find…" toggle the bar through the model's find request (set here so the
+            // closure captures THIS pane's @State; the leaf's onRequestFind is set on the same model).
+            model.onRequestFind = { isFindPresented.toggle() }
+        }
     }
 }
 

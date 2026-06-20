@@ -30,6 +30,13 @@ public struct TreeWorkspace: Codable, Sendable, Equatable {
     public var snippets: [Snippet]
     /// Named launch templates — carried from v9; repurposed to Session/Tab templates in a later item.
     public var layoutPresets: [LayoutPreset]
+    /// Named **launch configurations** (docs/42 W14 #9): a title + a command (+ optional cwd / split) that
+    /// SPAWN a terminal pane running that command (Warp launch-configurations parity). Distinct from
+    /// ``layoutPresets`` (a saved geometry) and ``snippets`` (a macro typed into an existing pane). Seeded
+    /// with ``LaunchPreset/builtIns`` (Claude Code / htop / Git log) on a fresh workspace; a v10 file
+    /// written before W14 has no `launchPresets` key, so the decode below tolerates its absence and the
+    /// store re-seeds the built-ins (see ``seedingBuiltInLaunchPresetsIfEmpty()``).
+    public var launchPresets: [LaunchPreset]
 
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -37,12 +44,37 @@ public struct TreeWorkspace: Codable, Sendable, Equatable {
         activeSessionID: SessionID?,
         snippets: [Snippet] = [],
         layoutPresets: [LayoutPreset] = [],
+        launchPresets: [LaunchPreset] = LaunchPreset.builtIns,
     ) {
         self.schemaVersion = schemaVersion
         self.sessions = sessions
         self.activeSessionID = activeSessionID
         self.snippets = snippets
         self.layoutPresets = layoutPresets
+        self.launchPresets = launchPresets
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case sessions
+        case activeSessionID
+        case snippets
+        case layoutPresets
+        case launchPresets
+    }
+
+    /// Additive-tolerant decode (docs/42 W14): every existing key decodes normally; `launchPresets` is the
+    /// only NEW key, so it is `decodeIfPresent` — a v10 file written before W14 (no `launchPresets`)
+    /// decodes with an empty list, which the store then re-seeds with the built-ins. Never traps on the
+    /// missing key (the persisted-data contract — a forward-compatible additive field must not brick load).
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        sessions = try c.decode([Session].self, forKey: .sessions)
+        activeSessionID = try c.decodeIfPresent(SessionID.self, forKey: .activeSessionID)
+        snippets = try c.decodeIfPresent([Snippet].self, forKey: .snippets) ?? []
+        layoutPresets = try c.decodeIfPresent([LayoutPreset].self, forKey: .layoutPresets) ?? []
+        launchPresets = try c.decodeIfPresent([LaunchPreset].self, forKey: .launchPresets) ?? []
     }
 
     /// The schema version this redesigned shape writes (docs/42 §Domain model = 10). The live v9
@@ -207,9 +239,20 @@ public extension TreeWorkspace {
         return copy
     }
 
+    /// Seeds ``LaunchPreset/builtIns`` (Claude Code / htop / Git log) when ``launchPresets`` is empty — the
+    /// fresh-workspace and pre-W14-file case (a v10 file with no `launchPresets` key decodes to `[]`). A
+    /// workspace the user has curated (≥ 1 preset, even after deleting some) is left untouched, so the
+    /// re-seed never resurrects a built-in the user removed. Pure.
+    func seedingBuiltInLaunchPresetsIfEmpty() -> TreeWorkspace {
+        guard launchPresets.isEmpty else { return self }
+        var copy = self
+        copy.launchPresets = LaunchPreset.builtIns
+        return copy
+    }
+
     /// Both repairs in the order `load()` applies them (specs first so the active-pane repair sees a
-    /// consistent leaf set). Pure.
+    /// consistent leaf set), plus the built-in launch-preset seed for a fresh / pre-W14 file. Pure.
     func normalized() -> TreeWorkspace {
-        normalizingSpecs().normalizingActive()
+        normalizingSpecs().normalizingActive().seedingBuiltInLaunchPresetsIfEmpty()
     }
 }
