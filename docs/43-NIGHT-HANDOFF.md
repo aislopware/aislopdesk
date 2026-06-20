@@ -75,6 +75,18 @@ Run on the real MacBook (unlocked Aqua + Screen-Recording TCC):
 - `AISLOPDESK_LEGACY_CANVAS` — reserved intent (the `liveModel` switch); the app defaults to the tree shell.
 - Settings persist to `UserDefaults` (`settings.<model>.v1`) + `video-prefs.json` sidecar in App Support.
 
-## Final gate
+## Final gate (all green)
 
-<!-- FINAL_GATE -->
+- **`make check`** (lint + build + test + golden) → **PASS**. Full XCTest suite **2707 tests, 0 failures**
+  (from a 2322 baseline — ~385 new). `make lint` (SwiftFormat + SwiftLint `--strict`, the CI gate) clean.
+- **`golden-check.sh`** → **PASS, byte-identical**; all 13 frozen wire keys intact. Wire types 26/27 added
+  additively + golden-pinned.
+- **`scripts/check-ios.sh`** → **BUILD SUCCEEDED** (both `ClientApp-iOS` + `AislopdeskClientUI` schemes).
+- **`aislopdesk-loopback-validate --frames 120`** (real-VT encode→FEC→reassemble→decode) → **exit 0**
+  across clean / 2% / 10% loss, FEC tiers, interleave, RS m=2/3, LTR.
+- **22 atomic green commits** on `feat/coding-workspace-redesign` (HEAD `0436798`). Unpushed, unmerged.
+- **5 adversarial review rounds** (C1×2, C2, C3, C4+C5) — every confirmed finding fixed + re-gated.
+
+Each layer was committed only after building + testing green; the wire/golden corpus was never broken.
+Push / merge / `git diff main...HEAD` whenever you're ready; the dead canvas cleanup + the deferred items
+above are the natural follow-ups after your `check-macos.sh` pass.
