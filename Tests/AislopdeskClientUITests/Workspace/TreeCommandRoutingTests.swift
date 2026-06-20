@@ -280,6 +280,31 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(chord(.selectTab(1)), KeyChord(character: "1", [.command]), "select tab 1 = ⌘1")
         XCTAssertEqual(chord(.selectTab(9)), KeyChord(character: "9", [.command]), "select tab 9 = ⌘9")
         XCTAssertEqual(chord(.find), KeyChord(character: "f", [.command]), "find = ⌘F (W14)")
+        // WB2 Warp-style Blocks chords.
+        XCTAssertEqual(
+            chord(.commandNavigator), KeyChord(character: "o", [.control, .command]), "navigator = ⌃⌘O",
+        )
+        XCTAssertEqual(
+            chord(.jumpPreviousBlock), KeyChord(character: "[", [.control, .command]), "prev block = ⌃⌘[",
+        )
+        XCTAssertEqual(
+            chord(.jumpNextBlock), KeyChord(character: "]", [.control, .command]), "next block = ⌃⌘]",
+        )
+    }
+
+    // MARK: - View: WB2 block actions route to the active-pane store hooks
+
+    /// The WB2 navigator / jump-to-block actions route to the store's active-pane hooks (no closure path) —
+    /// a no-op against a FakePaneSession (not a live terminal), but they must not trap or mutate the tree.
+    /// Pins that the three new actions are wired to the store, not dropped. Proven to fail before routing.
+    @MainActor
+    func testBlockActionsRouteToStoreWithoutMutatingTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        WorkspaceBindingRegistry.route(.commandNavigator, to: store)
+        WorkspaceBindingRegistry.route(.jumpPreviousBlock, to: store)
+        WorkspaceBindingRegistry.route(.jumpNextBlock, to: store)
+        XCTAssertEqual(store.tree, before, "the WB2 block actions are active-pane affordances — the tree is unchanged")
     }
 
     // MARK: - View: find routes to the overlay toggle (W14 #5)

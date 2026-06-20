@@ -94,6 +94,10 @@ struct PaneChromeView<Content: View>: View {
                     .accessibilityLabel(Text("command running"))
             }
 
+            // WB2: the Warp-style block STATUS CHIP — the latest command's status (running ⏳ / ✓ exit 0 /
+            // ✗ exit N + duration), tappable to open the Command Navigator. Hidden until the first block.
+            blockStatusChip
+
             Spacer(minLength: 8)
 
             controls
@@ -120,6 +124,52 @@ struct PaneChromeView<Content: View>: View {
             // A plain TAP on the title bar focuses the pane (the natural way to select a window).
             .simultaneousGesture(TapGesture().onEnded { focusThisLeaf() })
         #endif
+    }
+
+    // MARK: WB2 block status chip
+
+    /// The pane's latest Warp-style block (the current/last command), or `nil` until one has run. Reading
+    /// the `@Observable` block model re-renders the chip as the latest block's status changes.
+    private var latestBlock: CommandBlock? { PanePresentation.latestBlock(handle) }
+
+    /// The block status chip: the latest command's status icon + a compact "exit N · 1.2s" label, tappable
+    /// to open the Command Navigator. Hidden until the first block lands (and while the shell is RUNNING the
+    /// existing "running…" cue already covers it, so the chip stays quiet on a still-running latest block to
+    /// avoid a duplicate amber cue — it appears once the command completes with its exit badge).
+    @ViewBuilder
+    private var blockStatusChip: some View {
+        if let block = latestBlock, block.complete {
+            Button { PanePresentation.openBlockNavigator(handle) } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: block.statusSymbol)
+                        .foregroundStyle(blockTint(block))
+                    Text(blockChipLabel(block))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.borderless)
+            .help("Open Command Navigator (⌃⌘O)")
+            .accessibilityLabel(Text("Last command \(block.statusLabel)"))
+        }
+    }
+
+    /// The chip's compact label: the exit badge plus a duration when known ("exit 0 · 1.2s").
+    private func blockChipLabel(_ block: CommandBlock) -> String {
+        if let duration = block.durationLabel {
+            return "\(block.statusLabel) · \(duration)"
+        }
+        return block.statusLabel
+    }
+
+    /// The chip's status tint (green succeeded / red failed; the running case is filtered out above).
+    private func blockTint(_ block: CommandBlock) -> Color {
+        switch block.status {
+        case .running: .orange
+        case .succeeded: .green
+        case .failed: .red
+        }
     }
 
     /// Focuses this leaf in whichever live model is active (W5): the tree's active pane on the IDE shell,

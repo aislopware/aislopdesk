@@ -67,6 +67,10 @@ public extension WorkspaceBindingRegistry {
         // Find opens the active pane's find bar via the store (so the menu + chord work without threading a
         // view closure); an explicit `toggleFind` override wins when supplied.
         case .find: if let toggleFind { toggleFind() } else { store.requestFindInActivePane() }
+        // Blocks (WB2): the navigator toggle + jump-to-block both target the active terminal pane via the store.
+        case .commandNavigator: store.requestBlockNavigatorInActivePane()
+        case .jumpPreviousBlock: store.jumpToBlockInActivePane(delta: -1)
+        case .jumpNextBlock: store.jumpToBlockInActivePane(delta: 1)
         // Tabs
         case .newTab: store.newTabDefault()
         case .nextTab: store.cycleTab(by: 1)
@@ -105,6 +109,11 @@ public extension WorkspaceBindingRegistry {
         case .commandPalette: togglePalette?()
         case .cheatSheet: toggleCheatSheet?()
         case .find: toggleFind?() // canvas path: find is view-overlay only (no tree active-pane store hook)
+        // Blocks (WB2): the canvas path is retained-but-dead; route through the same store hooks (they
+        // resolve the active pane via the canvas focus, so the navigator/jump still work there).
+        case .commandNavigator: store.requestBlockNavigatorInActivePane()
+        case .jumpPreviousBlock: store.jumpToBlockInActivePane(delta: -1)
+        case .jumpNextBlock: store.jumpToBlockInActivePane(delta: 1)
         case .nextTab,
              .prevTab,
              .selectTab: break // no canvas tab model

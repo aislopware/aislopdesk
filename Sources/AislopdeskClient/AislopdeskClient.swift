@@ -72,6 +72,25 @@ public actor AislopdeskClient {
         /// (`0 none / 1 permission / 2 waitingForInput / 3 other`), `label` an optional human chip
         /// string. Surfaced verbatim; the UI maps `state`/`kind` back to a `ClaudeStatus`.
         case claudeStatus(state: UInt8, kind: UInt8, label: String)
+        /// A per-command Warp-style "Block" METADATA update (WB1 wire type 28, host → client). The
+        /// host segments the outbound PTY byte stream into per-command blocks and emits this on each
+        /// create / update / complete; it carries ONLY the metadata (NOT the output bytes). The UI
+        /// upserts a per-pane block keyed by `index` (the request key for ``blockOutput``). A running
+        /// block: `complete == false`, nil exit/duration, partial `outputLen`. See
+        /// ``WireMessage/commandBlock(index:exitCode:durationMS:complete:outputLen:commandText:)``.
+        case commandBlock(
+            index: UInt32,
+            exitCode: Int32?,
+            durationMS: UInt32?,
+            complete: Bool,
+            outputLen: UInt32,
+            commandText: String,
+        )
+        /// A Block's captured OUTPUT bytes (WB1 wire type 29, host → client), in reply to a
+        /// ``requestBlockOutput(index:)``. `output` is the RAW captured VT bytes (control sequences
+        /// preserved — the UI strips them for clipboard). An EMPTY `output` means the block was evicted
+        /// from the host's ring or never existed → the UI shows "output no longer available", never hangs.
+        case blockOutput(index: UInt32, output: Data)
         /// The remote child process exited with `code`. Terminal — ``output`` finishes
         /// right after this is surfaced.
         case exit(code: Int32)
@@ -427,6 +446,16 @@ public actor AislopdeskClient {
             // RICH Claude status (type 27): surface the raw bytes; the UI maps them back to a
             // ClaudeStatus (AislopdeskClient does not depend on AislopdeskAgentDetect).
             eventBroadcaster.yield(.claudeStatus(state: state, kind: kind, label: label))
+        case let .commandBlock(index, exitCode, durationMS, complete, outputLen, commandText):
+            // BLOCK metadata (type 28): surface verbatim; the UI upserts a per-pane block keyed by index.
+            eventBroadcaster.yield(.commandBlock(
+                index: index, exitCode: exitCode, durationMS: durationMS,
+                complete: complete, outputLen: outputLen, commandText: commandText,
+            ))
+        case let .blockOutput(index, output):
+            // BLOCK output (type 29): the reply to a requestBlockOutput. Surface the raw VT bytes; the
+            // UI resolves the pending request (empty == evicted/unknown — the UI must not hang).
+            eventBroadcaster.yield(.blockOutput(index: index, output: output))
         case let .pong(timestampMS):
             recordPong(sentAtMS: timestampMS)
         default:
@@ -565,6 +594,15 @@ public actor AislopdeskClient {
         lastSentResize = (cols, rows, pxWidth, pxHeight)
         guard let transport else { throw ClientError.invalidState("sendResize before connect") }
         try await transport.sendResize(cols: cols, rows: rows, pxWidth: pxWidth, pxHeight: pxHeight)
+    }
+
+    /// Requests a Block's captured OUTPUT bytes (WB2, wire type 15) — fired when the user copies/expands a
+    /// block whose `index` came from a `.commandBlock` event. The host replies with a `.blockOutput`
+    /// (type 29) the inbound pump surfaces as a `.blockOutput` event (empty == evicted/unknown). Rides the
+    /// CONTROL channel, so it never head-of-line-blocks behind an output flood on DATA.
+    public func requestBlockOutput(index: UInt32) async throws {
+        guard let transport else { throw ClientError.invalidState("requestBlockOutput before connect") }
+        try await transport.sendRequestBlockOutput(index: index)
     }
 
     // MARK: iOS lifecycle seam ([17] §2.5)

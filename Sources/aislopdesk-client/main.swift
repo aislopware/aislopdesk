@@ -370,6 +370,12 @@ Task {
                 // Claude-Code detection signals (wire types 26/27) drive the GUI client's per-pane
                 // agent-status dot. The raw-mode CLI has no such affordance — a no-op here.
                 break
+            case .commandBlock,
+                 .blockOutput:
+                // WB2 Warp-style Blocks (wire types 28/29) are a GUI-client affordance (the Command
+                // Navigator / sticky header / copy-output). The raw-mode interactive CLI's local terminal
+                // already renders the OSC 133 marks natively, so the structured events are a no-op here.
+                break
             }
         }
     }

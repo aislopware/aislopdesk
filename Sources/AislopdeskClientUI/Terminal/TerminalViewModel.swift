@@ -73,6 +73,12 @@ public final class TerminalViewModel {
     /// notification trigger. `nil` until the first command completes.
     public private(set) var lastCommand: (exitCode: Int32?, durationMS: UInt32)?
 
+    /// The per-pane Warp-style "Blocks" store (WB2): the host's `commandBlock` metadata (wire type 28)
+    /// folded into an ordered, bounded `[CommandBlock]`. Drives the Command Navigator, the sticky command
+    /// header, and the chrome status chip. The captured output is fetched on demand (the copy-output flow,
+    /// ``copyBlockOutput(index:onResult:)``). Observed so the navigator/header re-render as blocks land.
+    public let blocks = TerminalBlockModel()
+
     // MARK: Wiring
 
     /// The terminal renderer the model feeds inbound bytes to. `nil` in the headless /
@@ -167,6 +173,17 @@ public final class TerminalViewModel {
     /// renderer's menu (and the `find:` responder selector) call it; the leaf wires it to the find-bar
     /// `@State`. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
     @ObservationIgnored public var onRequestFind: (() -> Void)?
+
+    /// WB2: the "Command Navigator" toggle (⌃⌘O / the chrome chip / a menu item) — opens the searchable
+    /// recent-blocks popover over THIS pane. The leaf wires it to the navigator `@State` (the same pattern
+    /// as ``onRequestFind``). `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
+    @ObservationIgnored public var onRequestBlockNavigator: (() -> Void)?
+
+    /// WB2: the OUT-path sink that fires a `requestBlockOutput(index)` (wire type 15) on the live client.
+    /// Set by ``ConnectionViewModel`` on connect (forwards to ``AislopdeskClient/requestBlockOutput(index:)``)
+    /// and cleared on teardown; while `nil` (disconnected) a copy-output request resolves immediately as
+    /// "unavailable" rather than hanging. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var requestBlockOutputSink: ((UInt32) -> Void)?
 
     // MARK: Replay byte-ring (surface-rebuild survival)
 
@@ -647,6 +664,11 @@ public final class TerminalViewModel {
             // ClaudeStatusMachine at the connection/store layer (→ WorkspaceStore.setAgentStatus).
             // The terminal model holds no state for them.
             break
+        case .commandBlock,
+             .blockOutput:
+            // WB2 Warp-style Blocks (wire types 28/29): the metadata upsert + the output-request resolve
+            // both fold into the per-pane block store, which drives the navigator / sticky header / chip.
+            blocks.handle(event)
         case let .exit(code):
             connectionStatus = .exited(code: code)
             // The shell died mid-"command" (e.g. `exit` itself emits OSC 133;C but never a
@@ -680,6 +702,43 @@ public final class TerminalViewModel {
         }
     }
 
+    // MARK: WB2 Blocks — copy-output flow
+
+    /// How long to wait for a `blockOutput` reply before giving up (the belt-and-braces guard so the copy
+    /// UI never spins forever if the host drops the type-29). The empty-reply path is the common case and
+    /// resolves on its own — this only fires for a genuinely lost reply.
+    static let blockOutputTimeout: Duration = .seconds(5)
+
+    /// Requests block `index`'s captured output (wire type 15 → 29), then hands the result back through
+    /// `onResult`: the VT-stripped PLAIN TEXT on success, or `nil` when the block was evicted / unavailable
+    /// / there is no live connection (so the caller shows a brief "output unavailable" — NEVER hangs). The
+    /// raw VT bytes are sanitised here (``BlockOutputSanitizer``) so the clipboard gets clean text.
+    ///
+    /// The wire request fires through ``requestBlockOutputSink`` (set on connect). While disconnected the
+    /// sink is `nil`; ``TerminalBlockModel/requestOutput(index:send:completion:)`` still registers the
+    /// pending request, so we resolve it immediately as unavailable rather than leaving it stranded.
+    public func copyBlockOutput(index: UInt32, onResult: @escaping (String?) -> Void) {
+        // No live connection → resolve as unavailable without sending (the request would never get a reply).
+        guard let sink = requestBlockOutputSink else {
+            onResult(nil)
+            return
+        }
+        blocks.requestOutput(
+            index: index,
+            send: { idx in sink(idx) },
+            completion: { result in
+                // Empty/nil reply == evicted/unknown → "output unavailable". Otherwise strip VT → plain text.
+                onResult(result.map { BlockOutputSanitizer.plainText(from: $0) })
+            },
+        )
+        // Belt-and-braces timeout: if the host never replies, resolve the request as unavailable so the
+        // copy UI's spinner can't spin forever. A no-op once the real reply resolves it.
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.blockOutputTimeout)
+            self?.blocks.timeoutPending(index: index)
+        }
+    }
+
     /// Marks that the reconnect campaign has begun (the chrome shows "reconnecting" rather
     /// than a bare "disconnected"). Called by the ConnectionViewModel on a non-deliberate drop.
     public func markReconnecting() {
@@ -692,6 +751,10 @@ public final class TerminalViewModel {
         // next output clears the dead session's screen/scrollback before painting the new prompt.
         pendingFreshSessionReset = true
         sessionEpoch += 1 // in-hand batches taken from the dead session stop painting
+        // The fresh shell will re-segment its own blocks from index 0 — drop the dead session's blocks (and
+        // resolve any in-flight copy-output request as unavailable) so the navigator/header don't show stale
+        // commands grafted onto the new shell.
+        blocks.reset()
         clearGlitchCaret() // keystrokes in flight died with the old session
         // The dead session's terminal MODE is a lie for the fresh shell (a drop inside
         // vim leaves .altScreen latched and would disarm the caret for the entire new
@@ -713,6 +776,7 @@ public final class TerminalViewModel {
         bellPending = false
         shellActivity = .idle // a fresh session is idle until its first command runs
         lastCommand = nil
+        blocks.reset() // a fresh session has no blocks — the navigator/header start empty
         lastResumeSeq = 0
         lastSentSize = nil // a fresh session must re-assert its grid size
         ring.removeAll() // stale scrollback must not survive into a new session

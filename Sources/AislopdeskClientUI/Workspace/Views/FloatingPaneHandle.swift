@@ -50,6 +50,20 @@ enum PanePresentation {
         return code == 0 ? "✓ \(duration)" : "✗ exit \(code) · \(duration)"
     }
 
+    /// WB2: the pane's LATEST Warp-style command block (the current/last command), or `nil` when none has
+    /// run / the pane has no terminal. Drives the chrome status chip. Reading the `@Observable` block model
+    /// re-renders the chip as the latest block's status changes (running → exit badge).
+    static func latestBlock(_ handle: (any PaneSessionHandle)?) -> CommandBlock? {
+        (handle as? LivePaneSession)?.terminalModel?.blocks.latest
+    }
+
+    /// WB2: opens the Command Navigator over `handle`'s pane (the chrome chip's tap action) — routes to the
+    /// terminal model's ``TerminalViewModel/onRequestBlockNavigator`` (set by ``TerminalScreenView``). A
+    /// no-op for a non-terminal pane / an empty shell / before the view appeared.
+    static func openBlockNavigator(_ handle: (any PaneSessionHandle)?) {
+        (handle as? LivePaneSession)?.terminalModel?.onRequestBlockNavigator?()
+    }
+
     /// The display title: the LIVE OSC 0/2 terminal title when the shell has set one, else the static
     /// `spec.title` (whitespace-only titles fall back so a pane is never blank).
     static func displayTitle(_ handle: (any PaneSessionHandle)?, spec: PaneSpec) -> String {

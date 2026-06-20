@@ -22,6 +22,10 @@ public struct TerminalScreenView: View {
     /// ⌘F / the right-click "Find…" flip it through ``TerminalViewModel/onRequestFind`` (wired below).
     @State private var isFindPresented = false
 
+    /// WB2: whether the Command Navigator popover is showing over this pane. VIEW state (not the tree);
+    /// ⌃⌘O / the chrome chip flip it through ``TerminalViewModel/onRequestBlockNavigator`` (wired below).
+    @State private var isNavigatorPresented = false
+
     public init(model: TerminalViewModel, isFocused: Bool = true) {
         _model = State(initialValue: model)
         self.isFocused = isFocused
@@ -49,12 +53,23 @@ public struct TerminalScreenView: View {
                     .allowsHitTesting(false) // the pane has a history of scroll-swallowing chrome
                     .transition(.opacity)
             }
+            // WB2: the sticky command header — a slim overlay pinned at the TOP showing the CURRENT block's
+            // command + running spinner / exit badge. Behind the find bar (top-leading) so they don't fight
+            // for the same corner; non-interactive so it never swallows a scroll. Hidden until a block lands.
+            StickyCommandHeader(model: model)
+                .frame(maxWidth: .infinity, alignment: .top)
             // W14 #5: the find-in-terminal bar, top-trailing so it doesn't cover the prompt.
             if isFindPresented {
                 TerminalFindBar(model: model, isPresented: $isFindPresented)
                     .frame(maxWidth: .infinity, alignment: .topTrailing)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+        }
+        // WB2: the Command Navigator popover (⌃⌘O / the chrome chip). A popover on macOS anchors near the
+        // pane; on iOS SwiftUI presents it as a sheet automatically. Pure-block-list content; the surface
+        // jump + copy-output flows are exercised on real hardware.
+        .popover(isPresented: $isNavigatorPresented, arrowEdge: .top) {
+            CommandNavigatorView(model: model, isPresented: $isNavigatorPresented)
         }
         // The visibility flips happen in plain (un-animated) model code — without an
         // animation bound to the VALUE the .transition above would be skipped and the
@@ -65,6 +80,9 @@ public struct TerminalScreenView: View {
             // ⌘F / right-click "Find…" toggle the bar through the model's find request (set here so the
             // closure captures THIS pane's @State; the leaf's onRequestFind is set on the same model).
             model.onRequestFind = { isFindPresented.toggle() }
+            // WB2: ⌃⌘O / the chrome chip toggle the Command Navigator through the model's request hook
+            // (same pattern — captures THIS pane's @State on the same model the store reaches).
+            model.onRequestBlockNavigator = { isNavigatorPresented.toggle() }
         }
     }
 }

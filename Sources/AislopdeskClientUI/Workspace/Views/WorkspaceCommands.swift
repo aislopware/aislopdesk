@@ -138,6 +138,14 @@ public struct WorkspaceCommands: Commands {
 
         actionButton("New Session", .newSession)
         actionButton("Maximize Pane", .toggleZoom)
+
+        Divider()
+
+        // WB2 Warp-style Blocks: the Command Navigator + jump-to-block prev/next, targeting the active
+        // terminal pane (the chord glyph is registry-derived, so the menu + the fired chord can't drift).
+        actionButton("Command Navigator", .commandNavigator)
+        actionButton("Jump to Previous Block", .jumpPreviousBlock)
+        actionButton("Jump to Next Block", .jumpNextBlock)
     }
 
     /// A menu `Button` for a tree ``WorkspaceAction`` that routes through ``WorkspaceBindingRegistry`` and

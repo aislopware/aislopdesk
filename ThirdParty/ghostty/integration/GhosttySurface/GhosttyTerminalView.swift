@@ -1069,6 +1069,8 @@ final class GhosttyLayerBackedView: NSView {
             hasSelection: surface?.hasSelection() ?? false,
             clipboardHasText: !(NSPasteboard.general.string(forType: .string)?.isEmpty ?? true),
             paneConnected: true,
+            // WB2: "Copy Command Output" is enabled when this pane has at least one completed command block.
+            hasCommandOutput: model?.blocks.latest?.complete ?? false,
         )
         let menu = NSMenu()
         for item in TerminalContextMenu.items {
@@ -1096,6 +1098,17 @@ final class GhosttyLayerBackedView: NSView {
             if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty { surface?.text(s) }
         case .selectAll: surface?.performBindingAction("select_all")
         case .clear: surface?.performBindingAction("clear_screen")
+        case .copyOutput:
+            // WB2: copy the LATEST completed command block's output. The model requests it (wire type 15),
+            // strips VT control sequences, and (on a non-empty reply) puts plain text on the clipboard; an
+            // empty/unavailable reply is a graceful no-op (the model resolves it — never hangs).
+            if let index = model?.blocks.latest?.index {
+                model?.copyBlockOutput(index: index) { text in
+                    guard let text, !text.isEmpty else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+            }
         case .splitRight: model?.onContextMenuSplit?(true)
         case .splitDown: model?.onContextMenuSplit?(false)
         case .find: model?.onRequestFind?()

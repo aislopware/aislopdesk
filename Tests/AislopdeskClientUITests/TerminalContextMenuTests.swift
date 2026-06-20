@@ -32,14 +32,26 @@ final class TerminalContextMenuTests: XCTestCase {
     func testItemOrderAndCoverage() {
         XCTAssertEqual(
             TerminalContextMenu.items,
-            [.copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .splitRight, .splitDown, .find],
+            [.copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput, .splitRight, .splitDown, .find],
         )
     }
 
-    func testSeparatorsGroupClipboardEditSplitFind() {
-        // A separator above Select All, Split Right, and Find — three group boundaries.
+    func testSeparatorsGroupClipboardEditBlocksSplitFind() {
+        // A separator above Select All, Copy Command Output (WB2 blocks group), Split Right, and Find —
+        // four group boundaries (clipboard | edit | blocks | split | find).
         let withSeparator = TerminalContextMenu.items.filter(\.separatorBefore)
-        XCTAssertEqual(withSeparator, [.selectAll, .splitRight, .find])
+        XCTAssertEqual(withSeparator, [.selectAll, .copyOutput, .splitRight, .find])
+    }
+
+    func testCopyOutputRequiresCommandOutput() {
+        let withOutput = TerminalContextMenu.Context(
+            hasSelection: false, clipboardHasText: false, hasCommandOutput: true,
+        )
+        let noOutput = TerminalContextMenu.Context(
+            hasSelection: false, clipboardHasText: false, hasCommandOutput: false,
+        )
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.copyOutput, context: withOutput))
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.copyOutput, context: noOutput))
     }
 
     func testEveryItemHasTitleAndSymbol() {

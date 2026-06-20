@@ -307,6 +307,15 @@ public final class ConnectionViewModel {
             outQueue.append(.resize(cols: cols, rows: rows))
             outWakeContinuation?.yield()
         }
+        // WB2: the Block-output request sink (wire type 15). Fired by the terminal model's copy-output flow
+        // (``TerminalViewModel/copyBlockOutput(index:onResult:)``). It rides CONTROL, not the windowed OUT
+        // FIFO — a request is a single small control frame whose reply (type 29) the inbound pump surfaces;
+        // it never needs to order against keystrokes/resizes. Fire-and-forget: a dropped request resolves
+        // via the model's timeout (the copy UI never hangs). Captures `weak client` so a torn-down client
+        // is never targeted.
+        terminal.requestBlockOutputSink = { [weak client] index in
+            Task { try? await client?.requestBlockOutput(index: index) }
+        }
 
         // Single UI-layer events loop (chrome status + forward to the terminal model).
         observeEvents(client)
@@ -546,6 +555,11 @@ public final class ConnectionViewModel {
             // agent-status hook (which folds it into the pane's ClaudeStatusMachine). A pure
             // side-effect — the chrome status is unaffected.
             onAgentSignal?(event)
+        case .commandBlock,
+             .blockOutput:
+            // WB2 Warp-style Blocks (wire types 28/29): folded into the terminal model's per-pane block
+            // store below (terminal.handle). The chrome status is unaffected.
+            break
         case .title,
              .bell:
             break
@@ -616,6 +630,9 @@ public final class ConnectionViewModel {
         // so the renderer cannot route keystrokes/resizes into a closed client.
         terminal.inputSink = nil
         terminal.resizeSink = nil
+        // WB2: drop the Block-output request sink too — a copy-output request after teardown then resolves
+        // immediately as "unavailable" (no live client to ask) rather than targeting a closed client.
+        terminal.requestBlockOutputSink = nil
         outWakeContinuation?.finish()
         outWakeContinuation = nil
         outDrainTask?.cancel()

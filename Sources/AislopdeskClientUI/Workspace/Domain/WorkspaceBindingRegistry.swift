@@ -31,6 +31,11 @@ public enum WorkspaceAction: Hashable, Sendable {
     case cheatSheet // ⌘/ — show/hide the keyboard cheat sheet
     case find // ⌘F — show/hide the find-in-terminal bar over the active pane (W14 #5)
 
+    // Blocks (WB2 — Warp-style per-command blocks)
+    case commandNavigator // ⌃⌘O — show/hide the searchable recent-blocks navigator over the active pane
+    case jumpPreviousBlock // ⌃⌘[ — jump the viewport to the previous shell prompt (OSC 133, libghostty)
+    case jumpNextBlock // ⌃⌘] — jump the viewport to the next shell prompt
+
     // Tabs
     case newTab // ⌘T
     case nextTab // ⌘⇧]
@@ -66,9 +71,13 @@ public extension WorkspaceAction {
              .focusDown,
              .toggleZoom:
             true
-        case .find:
-            // Find targets the active TERMINAL pane (its scrollback), so it needs one — but it is opened
-            // as a view overlay, so a no-pane shell just no-ops gracefully (not greyed out aggressively).
+        case .find,
+             .commandNavigator,
+             .jumpPreviousBlock,
+             .jumpNextBlock:
+            // Block / find affordances target the active TERMINAL pane (its blocks / scrollback / prompt
+            // marks), so they need one — but they degrade gracefully (a no-pane shell just no-ops), so
+            // they are not greyed out aggressively.
             true
         case .commandPalette,
              .cheatSheet,
@@ -228,6 +237,24 @@ public enum WorkspaceBindingRegistry {
             id: "view.find", action: .find, title: "Find…",
             category: .view, chord: KeyChord(character: "f", [.command]),
             symbol: "magnifyingglass", keywords: "search scrollback grep locate text in terminal",
+        ),
+        // Blocks (WB2): the Command Navigator toggle + jump-to-block prev/next. ⌃⌘O / ⌃⌘[ / ⌃⌘] are all
+        // ⌘-prefixed (the §5 conflict rule) and collision-free against the rest of the table (tab cycling
+        // is ⌘⇧[/], focus is ⌥⌘arrows — neither uses ⌃⌘bracket). They target the active terminal pane.
+        WorkspaceBinding(
+            id: "view.commandNavigator", action: .commandNavigator, title: "Command Navigator",
+            category: .view, chord: KeyChord(character: "o", [.control, .command]),
+            symbol: "list.bullet.rectangle", keywords: "blocks commands history recent navigator output jump warp",
+        ),
+        WorkspaceBinding(
+            id: "view.jumpPreviousBlock", action: .jumpPreviousBlock, title: "Jump to Previous Block",
+            category: .view, chord: KeyChord(character: "[", [.control, .command]),
+            symbol: "chevron.up.circle", keywords: "previous prompt block command back up jump scroll osc133",
+        ),
+        WorkspaceBinding(
+            id: "view.jumpNextBlock", action: .jumpNextBlock, title: "Jump to Next Block",
+            category: .view, chord: KeyChord(character: "]", [.control, .command]),
+            symbol: "chevron.down.circle", keywords: "next prompt block command forward down jump scroll osc133",
         ),
     ]
 

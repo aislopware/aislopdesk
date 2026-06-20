@@ -18,6 +18,7 @@ public enum TerminalContextMenu {
         case pasteAsKeystrokes
         case selectAll
         case clear
+        case copyOutput // WB2: copy the latest command BLOCK's output (request type 15 → VT-strip → clipboard)
         case splitRight
         case splitDown
         case find
@@ -30,6 +31,7 @@ public enum TerminalContextMenu {
             case .pasteAsKeystrokes: "Paste as Keystrokes"
             case .selectAll: "Select All"
             case .clear: "Clear"
+            case .copyOutput: "Copy Command Output"
             case .splitRight: "Split Right"
             case .splitDown: "Split Down"
             case .find: "Find…"
@@ -44,16 +46,18 @@ public enum TerminalContextMenu {
             case .pasteAsKeystrokes: "keyboard"
             case .selectAll: "selection.pin.in.out"
             case .clear: "eraser"
+            case .copyOutput: "text.alignleft"
             case .splitRight: "rectangle.split.2x1"
             case .splitDown: "rectangle.split.1x2"
             case .find: "magnifyingglass"
             }
         }
 
-        /// Whether a thin SEPARATOR is drawn ABOVE this item, grouping clipboard / edit / split / find.
+        /// Whether a thin SEPARATOR is drawn ABOVE this item, grouping clipboard / edit / blocks / split / find.
         public var separatorBefore: Bool {
             switch self {
             case .selectAll,
+                 .copyOutput,
                  .splitRight,
                  .find: true
             default: false
@@ -72,11 +76,21 @@ public enum TerminalContextMenu {
         /// stay enabled here because they target the WORKSPACE, not the byte stream; only the byte-stream
         /// items gate on it). Kept for symmetry / future gating.
         public var paneConnected: Bool
+        /// WB2: the pane has at least one completed command BLOCK whose output can be fetched (gates
+        /// "Copy Command Output"). The request still tolerates an empty reply, but greying it out when there
+        /// is no block at all is the honest affordance.
+        public var hasCommandOutput: Bool
 
-        public init(hasSelection: Bool, clipboardHasText: Bool, paneConnected: Bool = true) {
+        public init(
+            hasSelection: Bool,
+            clipboardHasText: Bool,
+            paneConnected: Bool = true,
+            hasCommandOutput: Bool = false,
+        ) {
             self.hasSelection = hasSelection
             self.clipboardHasText = clipboardHasText
             self.paneConnected = paneConnected
+            self.hasCommandOutput = hasCommandOutput
         }
     }
 
@@ -86,6 +100,7 @@ public enum TerminalContextMenu {
     /// Whether `item` is enabled for `context` — the testable enablement rule:
     /// - **Copy** needs a live selection.
     /// - **Paste / Paste as Keystrokes** need non-empty clipboard text.
+    /// - **Copy Command Output** (WB2) needs a completed command block to fetch.
     /// - **Select All / Clear / Split Right / Split Down / Find** are always available (Select-All/Clear
     ///   act on the surface regardless of selection; splits + find act on the workspace).
     public static func isEnabled(_ item: Item, context: Context) -> Bool {
@@ -95,6 +110,8 @@ public enum TerminalContextMenu {
         case .paste,
              .pasteAsKeystrokes:
             context.clipboardHasText
+        case .copyOutput:
+            context.hasCommandOutput
         case .selectAll,
              .clear,
              .splitRight,
