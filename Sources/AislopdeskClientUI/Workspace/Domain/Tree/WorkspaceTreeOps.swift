@@ -261,6 +261,24 @@ public enum WorkspaceTreeOps {
         return (copy, session.allPaneIDs()[0])
     }
 
+    /// Inserts a pre-built `session` (e.g. one ``SessionTemplateEngine/makeSession(from:name:)`` expanded)
+    /// into `ws`, appending it to `sessions`; when `makeActive` it also becomes the selected session. Other
+    /// sessions are untouched (their tabs / specs / active state are preserved), so the **specs == leafIDs
+    /// invariant** holds for the whole workspace as long as the inserted session holds it. Mirrors the tail
+    /// of ``newSession(in:name:spec:)`` for an already-constructed session. Pure.
+    public static func insertSession(
+        _ session: Session,
+        in ws: TreeWorkspace,
+        makeActive: Bool,
+    ) -> TreeWorkspace {
+        var copy = ws
+        copy.sessions.append(session)
+        if makeActive {
+            copy.activeSessionID = session.id
+        }
+        return copy
+    }
+
     /// Closes session `sessionID` (dropping all its tabs/panes); selects another session, or re-seeds a
     /// default when it was the only one (the workspace is never empty). No-op if absent.
     public static func closeSession(_ sessionID: SessionID, in ws: TreeWorkspace) -> TreeWorkspace {

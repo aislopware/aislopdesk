@@ -2487,6 +2487,24 @@ public final class WorkspaceStore {
         scheduleSave()
     }
 
+    // MARK: - Tree-mutation seams for store extensions
+
+    /// Replaces the live ``tree`` with `next` — the in-file mutation seam the `WorkspaceStore+Templates`
+    /// extension calls (the `private(set)` setter + `private` `scheduleSave()` are not reachable from a
+    /// cross-file extension, so the feature's logic lives there but touches the tree through this one
+    /// internal hook). The caller is responsible for the following `reconcileTree()` / `mutateTree { … }`.
+    func replaceTree(_ next: TreeWorkspace) {
+        tree = next
+    }
+
+    /// Mutates the live ``tree`` in place via `transform` and schedules the debounced save — the
+    /// side-collection (snippets / presets / templates) edit seam for cross-file store extensions, mirroring
+    /// the launch-preset CRUD's `tree.launchPresets … ; scheduleSave()` shape so the two paths can't drift.
+    func mutateTree(_ transform: (inout TreeWorkspace) -> Void) {
+        transform(&tree)
+        scheduleSave()
+    }
+
     /// Applies a launch preset by id: opens a NEW TAB whose first pane runs the preset's command (and, for
     /// a two-pane preset, splits it and runs the secondary command), then types each pane's keystrokes once
     /// its PTY is live. Returns the created pane ids (for tests / the caller), or `[]` for an unknown id.

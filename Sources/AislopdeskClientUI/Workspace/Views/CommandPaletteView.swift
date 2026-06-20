@@ -271,6 +271,16 @@ struct CommandPaletteView: View {
             // Apply a launch preset: opens a new tab/pane(s) and runs the preset's command(s) once each
             // PTY is live (the store defers the keystroke send). The expansion is pure (LaunchPresetEngine).
             store.applyLaunchPreset(id)
+        case let .sessionTemplate(id):
+            // Open a session template: a fresh named session with the template's split layout, each pane
+            // auto-cd-ing + running its command once live (pure expansion in SessionTemplateEngine).
+            if let template = store.sessionTemplates.first(where: { $0.id == id }) {
+                store.newSessionFromTemplate(template)
+            }
+        case .saveSessionAsTemplate:
+            // Capture the active session's layout into a new reusable template (default name/symbol; v1
+            // has no naming modal — the user can rename it in settings later).
+            store.saveCurrentSessionAsTemplate(name: "", symbol: "rectangle.split.2x1")
         case let .action(action):
             // The live IDE shell: route through the SAME single-source-of-truth registry the menu bar +
             // chord dispatcher use. The palette/cheat-sheet view actions are no-ops from the palette
@@ -328,9 +338,10 @@ struct CommandPaletteView: View {
             switch store.liveModel {
             case .tree:
                 switch scope {
-                case .all: treeActionEntries + launchPresetEntries + treeTabEntries + treeSessionEntries +
-                    snippetEntries + treePaneEntries
-                case .commands: treeActionEntries + launchPresetEntries + snippetEntries
+                case .all: treeActionEntries + launchPresetEntries + sessionTemplateEntries + saveTemplateEntry
+                    + treeTabEntries + treeSessionEntries + snippetEntries + treePaneEntries
+                case .commands: treeActionEntries + launchPresetEntries + sessionTemplateEntries
+                    + saveTemplateEntry + snippetEntries
                 case .panes: treePaneEntries + treeTabEntries + treeSessionEntries
                 case .hostWindows: hostWindowEntries
                 }
@@ -591,6 +602,37 @@ struct CommandPaletteView: View {
         }
     }
 
+    /// One entry per session template (built-ins + user-captured): opens a NEW named session laid out by
+    /// the template, each pane auto-cd-ing + running its command once live. The whole-session "project
+    /// profile" power feature — distinct from a launch preset (one tab in the current session). The store's
+    /// ``WorkspaceStore/newSessionFromTemplate(_:)`` materializes + sends (pure expansion in
+    /// ``SessionTemplateEngine``).
+    private var sessionTemplateEntries: [Entry] {
+        store.sessionTemplates.map { template in
+            Entry(
+                id: "sessiontemplate.\(template.id.uuidString)",
+                kind: .sessionTemplate(template.id),
+                title: "Open Session “\(template.name)”",
+                subtitle: "\(template.layout.paneCount)-pane layout · new session",
+                symbol: template.symbol,
+                keywords: "session template project profile layout new split workspace \(template.name)",
+            )
+        }
+    }
+
+    /// The "capture the current layout" entry: saves the active session's split geometry as a new reusable
+    /// session template (the inverse of ``sessionTemplateEntries``). One static row.
+    private var saveTemplateEntry: [Entry] {
+        [Entry(
+            id: "savesessiontemplate",
+            kind: .saveSessionAsTemplate,
+            title: "Save Layout as Template…",
+            subtitle: "Capture this session's split layout as a reusable template",
+            symbol: "square.and.arrow.down.on.square",
+            keywords: "save capture session template project profile layout snapshot current",
+        )]
+    }
+
     /// One "open this host window" entry per discovered host window. Selecting one spawns a Remote
     /// Window pane pre-bound to it. Built from the async-fetched ``hostWindows`` cache.
     private var hostWindowEntries: [Entry] {
@@ -715,6 +757,10 @@ struct CommandPaletteView: View {
             case snippet(UUID)
             /// Apply a launch preset (by id): opens a new tab/pane(s) and runs the preset's command(s).
             case launchPreset(UUID)
+            /// Open a session template (by id): a fresh named session with the template's split layout.
+            case sessionTemplate(UUID)
+            /// Capture the active session's layout into a new reusable session template.
+            case saveSessionAsTemplate
             /// Run a TREE workspace action (routed via ``WorkspaceBindingRegistry``) — the live IDE shell.
             case action(WorkspaceAction)
             /// Focus a TREE leaf (the live IDE shell's per-pane jump).

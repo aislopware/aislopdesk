@@ -167,7 +167,9 @@ public struct WorkspacePersistence: @unchecked Sendable {
         // on launch (the same ceiling the canvas load + portable import enforce).
         guard tree.allPaneIDs().count <= WorkspaceTransfer.maxItems,
               tree.snippets.count <= WorkspaceTransfer.maxItems,
-              tree.layoutPresets.count <= WorkspaceTransfer.maxItems else { return resetTreeToDefault() }
+              tree.layoutPresets.count <= WorkspaceTransfer.maxItems,
+              tree.launchPresets.count <= WorkspaceTransfer.maxItems,
+              tree.sessionTemplates.count <= WorkspaceTransfer.maxItems else { return resetTreeToDefault() }
         return tree.normalized()
     }
 
