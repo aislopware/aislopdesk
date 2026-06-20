@@ -90,3 +90,21 @@ Run on the real MacBook (unlocked Aqua + Screen-Recording TCC):
 Each layer was committed only after building + testing green; the wire/golden corpus was never broken.
 Push / merge / `git diff main...HEAD` whenever you're ready; the dead canvas cleanup + the deferred items
 above are the natural follow-ups after your `check-macos.sh` pass.
+
+## Addendum — Terminal "Blocks" (Warp-style, added post-handoff, now merged in)
+
+A follow-on requested in conversation; spiked → built → reviewed → fast-forward-merged into this branch
+(4 commits on top: `bb70903` spike, `082b178` WB1, `1795730` WB2, `25796eb` review-fix). Now **27 commits vs main**.
+
+- **Host segments the PTY stream into per-command blocks from the OSC 133 marks it already sniffs**
+  (`CommandBlockSegmenter` + `CommandBlockTracker`, bounded ring). New wire types **28 `commandBlock`** /
+  **15 `requestBlockOutput`** / **29 `blockOutput`** (additive, golden-pinned `blocksWireMessages`, 13 frozen
+  keys intact). Gated `AISLOPDESK_BLOCKS` (default-ON; off ⇒ byte-pipeline byte-identical, proven).
+- **Client UI**: Command Navigator (⌃⌘O), sticky command header, chrome status chip, jump prev/next
+  (⌃⌘[ / ⌃⌘]), "Copy Command Output" in the right-click menu. **No inline row-aligned gutter** — libghostty 1.3.1
+  exposes no prompt-mark positions (verified in `ghostty.h` + `PageList.zig`), so jump uses `scroll_to_bottom`
+  re-anchor + `jump_to_prompt`; the navigator/header/chip are the row-alignment-free surfaces.
+- Review caught + fixed: viewport-relative jump math, CSI-leak into commandText (colorized shells), copy
+  timeout race, copy-while-running. Full suite **2799**, `make check` + `check-ios` + loopback all green.
+- **Needs eyes-on** (`check-macos`): the navigator/header/chip render + live jump/copy over a real libghostty
+  surface. Needs a shell with **OSC 133 shell-integration** (`ShellIntegration.swift`) for blocks to appear.
