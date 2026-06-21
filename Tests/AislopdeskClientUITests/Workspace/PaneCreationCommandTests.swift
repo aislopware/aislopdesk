@@ -7,8 +7,8 @@ import XCTest
 ///
 /// - ⌘N and ⌘T both map to `.newPane(.terminal)` (⌘N is the macOS-native "new" — the File menu
 ///   replaces the default New-Window item; ⌘T is the muscle-memory alias carried by the Pane menu).
-/// - ⇧⌘N → `.newPane(.claudeCode)`, ⌥⌘N → `.newPane(.remoteGUI)` — every prior creation path was
-///   Terminal-only.
+/// - ⌥⌘N → `.newPane(.remoteGUI)`. (W11: the retired Claude Code kind freed ⇧⌘N — a `claude` running
+///   in any terminal is auto-detected, so there is no per-kind Claude creation chord.)
 /// - ``CommandInterpreter/defaultChords(for:)`` is DETERMINISTIC (fewest modifiers, then lexicographic)
 ///   so menu items and palette hints can never flap with dictionary order: ⌘N is the canonical chord.
 /// - `duplicatePane` copies the spec verbatim (title, kind, committed video endpoint), lands beside
@@ -34,7 +34,10 @@ final class PaneCreationCommandTests: XCTestCase {
             .newPane(.terminal),
             "⌘T always makes a Terminal (the alias the Pane-menu item depends on)",
         )
-        XCTAssertEqual(interpreter.feed(KeyChord(character: "n", [.command, .shift])), .newPane(.claudeCode))
+        XCTAssertNil(
+            interpreter.feed(KeyChord(character: "n", [.command, .shift])),
+            "⇧⌘N is unbound (W11 retired the Claude Code pane kind)",
+        )
         XCTAssertEqual(interpreter.feed(KeyChord(character: "n", [.command, .option])), .newPane(.remoteGUI))
         XCTAssertEqual(interpreter.feed(KeyChord(character: "d", [.command])), .duplicatePane)
         XCTAssertEqual(
@@ -71,11 +74,11 @@ final class PaneCreationCommandTests: XCTestCase {
         apply(.newPaneDefault, to: store) // default → terminal
         XCTAssertEqual(try store.workspace.canvas.spec(for: XCTUnwrap(store.focusedPane))?.kind, .terminal)
 
-        UserDefaults.standard.set(PaneKind.claudeCode.rawValue, forKey: key)
+        UserDefaults.standard.set(PaneKind.remoteGUI.rawValue, forKey: key)
         apply(.newPaneDefault, to: store)
         XCTAssertEqual(
             try store.workspace.canvas.spec(for: XCTUnwrap(store.focusedPane))?.kind,
-            .claudeCode,
+            .remoteGUI,
             "⌘N respects the Settings default kind",
         )
         XCTAssertEqual(store.workspace.canvas.items.count, before + 2)
@@ -85,10 +88,11 @@ final class PaneCreationCommandTests: XCTestCase {
 
     func testApplyNewPanePerKind() {
         let store = makeStore()
-        apply(.newPane(.claudeCode), to: store)
+        apply(.newPane(.terminal), to: store)
         apply(.newPane(.remoteGUI), to: store)
         let kinds = store.workspace.canvas.allIDs().compactMap { store.workspace.canvas.spec(for: $0)?.kind }
-        XCTAssertEqual(kinds.count(where: { $0 == .claudeCode }), 1)
+        // The default workspace seeds one terminal; +1 terminal here = 2 terminals + 1 remote.
+        XCTAssertEqual(kinds.count(where: { $0 == .terminal }), 2)
         XCTAssertEqual(kinds.count(where: { $0 == .remoteGUI }), 1)
     }
 

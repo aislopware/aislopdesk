@@ -67,6 +67,23 @@ final class PaneStatusIndicatorTests: XCTestCase {
         XCTAssertEqual(PaneConnectionStatus.from(.unreachable).color, .red)
         XCTAssertEqual(PaneConnectionStatus.from(.failed("x")).color, .red)
     }
+
+    /// The P2 SEMANTIC palette projection (`semanticColor`) — a SEPARATE accessor from `color` (which
+    /// stays pinned to the raw system hues above) routing every phase through the fixed-hue
+    /// `AislopdeskTheme.status*` tokens. Green = ok, yellow = degraded/in-flight, red = down, dim = idle,
+    /// clear = none. This pins the new status-bar/dot palette so a refactor can't silently re-tint it.
+    func testSemanticColorMapping() {
+        XCTAssertEqual(PaneConnectionStatus.from(.connected).semanticColor, AislopdeskTheme.statusGreen)
+        XCTAssertEqual(PaneConnectionStatus.from(.connecting).semanticColor, AislopdeskTheme.statusYellow)
+        XCTAssertEqual(
+            PaneConnectionStatus.from(.reconnecting(attempt: 1, nextRetry: nil)).semanticColor,
+            AislopdeskTheme.statusYellow,
+        )
+        XCTAssertEqual(PaneConnectionStatus.from(.unreachable).semanticColor, AislopdeskTheme.statusRed)
+        XCTAssertEqual(PaneConnectionStatus.from(.failed("x")).semanticColor, AislopdeskTheme.statusRed)
+        XCTAssertEqual(PaneConnectionStatus.from(.disconnected).semanticColor, AislopdeskTheme.fgDim)
+        XCTAssertEqual(PaneConnectionStatus.from(nil).semanticColor, .clear)
+    }
     #endif
 
     // MARK: - OSC 133 running activity is ORTHOGONAL to the connection status (WF11)

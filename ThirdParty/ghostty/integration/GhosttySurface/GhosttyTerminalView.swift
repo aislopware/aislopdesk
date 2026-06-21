@@ -130,6 +130,30 @@ final class GhosttyApp {
         }
     }
 
+    /// The last `TerminalConfigBroadcaster.generation` we applied — so an idempotent re-publish of the
+    /// same string is a no-op (we still apply when the generation bumps, even if the string is equal).
+    private var lastAppliedConfigGeneration = 0
+
+    /// W13: apply a NEW terminal-render config string LIVE to the running app (and thus every surface).
+    /// Builds a fresh `ghostty_config_t`, loads the string, finalizes, and pushes it via
+    /// `ghostty_app_update_config` (header 1153) which reflows all surfaces. Called from the SwiftUI
+    /// `.onChange(of: TerminalConfigBroadcaster.shared.generation)` seam in `GhosttyTerminalView`; the
+    /// view then re-measures the cell size and resizes the host PTY grid (the grid-mismatch fix). A
+    /// no-op when the generation hasn't advanced past the last apply.
+    func applyTerminalConfig(_ configString: String, generation: Int) {
+        guard generation != lastAppliedConfigGeneration else { return }
+        lastAppliedConfigGeneration = generation
+        let config = ghostty_config_new()
+        if !configString.isEmpty {
+            configString.withCString { cstr in
+                ghostty_config_load_string(config, cstr, UInt(strlen(cstr)))
+            }
+        }
+        ghostty_config_finalize(config)
+        ghostty_app_update_config(app, config)
+        ghostty_config_free(config)
+    }
+
     private init() {
         // 1. ghostty_init (header 1117): once per process, before any config/app.
         //    Signature is `int ghostty_init(uintptr_t, char**)` — argc/argv; we pass
@@ -151,6 +175,19 @@ final class GhosttyApp {
         //    zsh-autosuggestion was NOT a palette issue — it was the empty-HISTFILE shim bug, fixed in
         //    AislopdeskHost/ShellIntegration.swift.)
         let config = ghostty_config_new()
+        // W13: apply the user's terminal-render prefs (font / theme / cursor / scrollback) BEFORE
+        // finalize. `TerminalConfigBroadcaster` (set by the client's `PreferencesStore` on every
+        // settings change, and at launch) holds the libghostty config string built by
+        // `TerminalConfigBuilder`. Loading it here means a fresh surface starts with the user's font/
+        // theme; a LATER change re-applies live via `GhosttyApp.applyTerminalConfig(_:)` →
+        // `ghostty_app_update_config` (which reflows every surface, after which the view re-measures the
+        // cell size and resizes the host PTY grid — fixing the documented grid-mismatch on a font reflow).
+        let initialConfig = MainActor.assumeIsolated { TerminalConfigBroadcaster.shared.configString }
+        if !initialConfig.isEmpty {
+            initialConfig.withCString { cstr in
+                ghostty_config_load_string(config, cstr, UInt(strlen(cstr)))
+            }
+        }
         ghostty_config_finalize(config)
 
         // 3. Runtime config (header 1073). The embedder must supply the callback set;
@@ -172,9 +209,28 @@ final class GhosttyApp {
             // (A bare `MainActor.assumeIsolated` here would TRAP off-main — the historical launch crash.)
             GhosttyApp.requestAppTick()
         }
-        // action_cb returns whether the action was handled; the viewer handles none
-        // of the app-level actions (split/new-window/etc.) — return false.
-        runtime.action_cb = { _, _, _ in false }
+        // action_cb returns whether the action was handled. The viewer handles none of the app-level
+        // window/split/tab actions (Aislopdesk does its OWN tiling at the SwiftUI layer) — EXCEPT
+        // GHOSTTY_ACTION_OPEN_URL: libghostty owns OSC 8 hyperlink hit-testing + the click internally and
+        // asks the embedder to OPEN the resolved URL (W14 #7). We hand it to the system opener (the
+        // embedder's job upstream too) so a clicked OSC 8 link / hovered-URL click opens — no wire change,
+        // no host-side OSC 8 parsing needed (see docs/DECISIONS.md). Everything else returns false.
+        runtime.action_cb = { (_, _, action) -> Bool in
+            guard action.tag == GHOSTTY_ACTION_OPEN_URL else { return false }
+            let urlAction = action.action.open_url
+            guard let cstr = urlAction.url else { return false }
+            let urlString = String(cString: cstr)
+            guard !urlString.isEmpty else { return false }
+            // NSWorkspace/UIApplication open are main-thread; the action fires on the main loop tick.
+            ghosttyOnMainActor {
+                #if os(macOS)
+                if let url = URL(string: urlString) { NSWorkspace.shared.open(url) }
+                #else
+                if let url = URL(string: urlString) { UIApplication.shared.open(url) }
+                #endif
+            }
+            return true
+        }
 
         // Clipboard callbacks — modeled on upstream `Ghostty.App.swift:324-405`. The `userdata`
         // here is the SURFACE's userdata (libghostty passes it through), which aislopdesk set to the
@@ -324,6 +380,18 @@ public struct GhosttyTerminalView: TerminalRenderingView {
     public var body: some View {
         GhosttyMetalLayerView(model: model, isFocused: isFocused)
             .accessibilityLabel(Text("Terminal"))
+            // W13: LIVE terminal-config apply. The client's `PreferencesStore` publishes a new libghostty
+            // config string to `TerminalConfigBroadcaster` (bumping `generation`) on every Settings ▸
+            // Terminal change. Push it app-wide (reflows every surface), then nudge the surface to
+            // re-measure its cell size + resize the host PTY grid so a font reflow doesn't desync the grid.
+            .onChange(of: TerminalConfigBroadcaster.shared.generation, initial: true) {
+                // `ghostty_app_update_config` reflows + re-draws every surface; the surface's
+                // resize_callback then fires onResize → the host PTY grid tracks the new font metrics.
+                GhosttyApp.shared.applyTerminalConfig(
+                    TerminalConfigBroadcaster.shared.configString,
+                    generation: TerminalConfigBroadcaster.shared.generation,
+                )
+            }
     }
 }
 
@@ -401,8 +469,17 @@ final class GhosttyLayerBackedView: NSView {
     /// here (the sibling that becomes focused makes ITSELF first responder, which resigns this one) and
     /// never touches `surface.setFocus` (render-focus stays on for repaint — the multi-pane fix).
     private func applyKeyboardFocus() {
-        guard isFocusedPane, let window, window.firstResponder !== self else { return }
-        window.makeFirstResponder(self)
+        guard isFocusedPane else { return }
+        // Defer off the SwiftUI update/commit pass: makeFirstResponder synchronously tears down + sets up
+        // the AppKit responder chain (and draws the focus ring), which stalls the main thread when it runs
+        // inside updateNSView during a tab/session switch. One runloop hop makes the switch a single CA
+        // commit; the keyboard first-responder transfer happens imperceptibly after.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isFocusedPane,
+                  let window = self.window,
+                  window.firstResponder !== self else { return }
+            window.makeFirstResponder(self)
+        }
     }
 
     /// Drives libghostty's renderer thread via `ghostty_surface_draw_now`. GATED on `presentTicks`:
@@ -610,6 +687,14 @@ final class GhosttyLayerBackedView: NSView {
     /// setPixelSize.
     private var lastAppliedLayout: (size: CGSize, scale: CGFloat)?
 
+    /// P5b: the keyCode whose PRESS copy-mode consumed but whose RELEASE will arrive AFTER the mode flag has
+    /// already cleared (the q/Esc/Enter exit key flips `isCopyMode` false synchronously inside keyDown, so the
+    /// matching keyUp's `isCopyMode == true` guard is already false). Stamped in keyDown's copy-mode branch and
+    /// swallowed ONCE by keyUp — otherwise a kitty `report_events` TUI would emit an orphan CSI-u release for
+    /// the exit key (the exact failure the keyUp symmetry guard targets, which the flag check alone misses for
+    /// the key that DID the exit). `nil` = nothing pending.
+    private var copyModeConsumedReleaseKeyCode: UInt16?
+
     override func layout() {
         super.layout()
         let scale = window?.backingScaleFactor ?? 2.0
@@ -651,6 +736,21 @@ final class GhosttyLayerBackedView: NSView {
             CATransaction.setDisableActions(true)
             hosted.frame = CGRect(origin: .zero, size: bounds.size)
             hosted.contentsScale = scale
+            // ROUNDED-CARD METAL CLIPPING: SwiftUI .clipShape on the NSViewRepresentable clips the
+            // SwiftUI render tree but NOT this hosted IOSurfaceLayer (libghostty's Metal sublayer).
+            // Setting cornerRadius + masksToBounds directly on the hosted layer is the only way to
+            // round the actual terminal pixels — exactly how NSView/CALayer-backed views are clipped
+            // at the system level. The radius matches AislopdeskTheme.Radius.pane (8pt); continuous
+            // curve is approximated by the layer's own antialiasing (CALayer cornerCurve .continuous
+            // is only available on iOS 13+ / macOS 10.15+; we check below for safety).
+            //
+            // contentsGravity stays .topLeft (already the default for this layer) so the clip does
+            // not shift the rendered surface. masksToBounds is already likely false; explicit set.
+            if #available(macOS 10.15, *) {
+                hosted.cornerCurve = .continuous
+            }
+            hosted.cornerRadius = 8  // AislopdeskTheme.Radius.pane — imported from AislopdeskClientUI
+            hosted.masksToBounds = true
             CATransaction.commit()
         }
         rdbg("macOS layout bounds=\(Int(bounds.width))x\(Int(bounds.height)) scale=\(scale) px=\(pxW)x\(pxH) rendered=\(surface?.renderedPixelSize.map { "\($0.width)x\($0.height)" } ?? "nil")")
@@ -672,6 +772,19 @@ final class GhosttyLayerBackedView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        // P5b COPY-MODE: when this pane is armed, its keys drive scrollback navigation / search / copy /
+        // exit instead of the shell. Map the NSEvent → the abstract key HERE (the only NSEvent-aware point)
+        // and hand the PURE intent to the view model; consume unconditionally so nothing leaks to libghostty
+        // / the PTY. All logic lives in `handleCopyModeKey` (compiled + tested under `swift build`).
+        if model?.isCopyMode == true {
+            // Stamp this keyCode so its RELEASE is swallowed even if the dispatch EXITS the mode (q/Esc/Enter
+            // flip `isCopyMode` false synchronously here, so the matching keyUp's `isCopyMode == true` guard
+            // would already be false and fall through to an orphan CSI-u release under a report_events TUI).
+            copyModeConsumedReleaseKeyCode = UInt16(event.keyCode)
+            model?.handleCopyModeKey(TerminalViewModel.makeCopyModeKey(event: event))
+            return
+        }
+
         // CTRL+<key> → LEGACY C0 control byte (the universal-interrupt fix). The host shell (oh-my-zsh
         // / a plugin) enables the kitty keyboard protocol, which makes libghostty's encoder emit a
         // CSI-u ESCAPE for Ctrl-C/Z/D/… (e.g. `^[[3;5u`) instead of the raw control byte. A remote
@@ -728,6 +841,17 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
+        // P5b COPY-MODE symmetry: keyDown CONSUMES every key while armed (routing it to copy-mode dispatch),
+        // so libghostty never saw the PRESS — suppress the RELEASE too, or a kitty-`report_events` TUI would
+        // emit an orphan CSI-u release after exit. Mirror the keyDown guard.
+        if model?.isCopyMode == true { return }
+        // …and the ONE exit key whose press copy-mode consumed but whose mode flag is now already cleared (q/Esc/
+        // Enter exited synchronously in keyDown, so the guard above is false for THIS release). Swallow it once.
+        if let pending = copyModeConsumedReleaseKeyCode, pending == UInt16(event.keyCode) {
+            copyModeConsumedReleaseKeyCode = nil
+            return
+        }
+
         // PRESS/RELEASE SYMMETRY (R5 rank 7): keyDown SUPPRESSES the libghostty PRESS for a
         // Ctrl+<single C0/DEL> key (it sends the raw control byte directly, bypassing the kitty encoder),
         // so the surface never saw that PRESS. Its RELEASE must be suppressed symmetrically — otherwise,
@@ -959,6 +1083,92 @@ final class GhosttyLayerBackedView: NSView {
 
     @objc override func selectAll(_ sender: Any?) {
         surface?.performBindingAction("select_all")
+    }
+
+    // MARK: Jump to prompt (W14 #6 — OSC 133 shell-integration, Ghostty/Warp signature)
+    //
+    // libghostty owns OSC 133 prompt marks (the same C/D sequences `HostOutputSniffer` reads host-side)
+    // and exposes `jump_to_prompt:<delta>` as a binding action (negative = previous prompt, positive =
+    // next). We surface it through the SAME `performBindingAction` lever the copy/paste path uses — so a
+    // future menu item / chord binding routes straight to libghostty's prompt navigation with no
+    // host/wire change. Compile-only (the real surface hangs headless); these are responder selectors a
+    // command can target. `find:` is the responder twin of the right-click "Find…" / ⌘F.
+
+    /// Jump the viewport to the PREVIOUS shell prompt (OSC 133 mark). libghostty `jump_to_prompt:-1`.
+    @objc func jumpToPreviousPrompt(_ sender: Any?) {
+        surface?.performBindingAction("jump_to_prompt:-1")
+    }
+
+    /// Jump the viewport to the NEXT shell prompt (OSC 133 mark). libghostty `jump_to_prompt:1`.
+    @objc func jumpToNextPrompt(_ sender: Any?) {
+        surface?.performBindingAction("jump_to_prompt:1")
+    }
+
+    /// Responder-chain twin of the right-click "Find…" — opens this pane's find bar (W14 #5).
+    @objc func find(_ sender: Any?) {
+        model?.onRequestFind?()
+    }
+
+    // MARK: Right-click context menu (W14 #10)
+    //
+    // A native `NSMenu` built from the PURE `TerminalContextMenu` model (item list + per-item enablement),
+    // so copy/paste/select-all/clear route to libghostty binding actions, paste-as-keystrokes types the
+    // pasteboard string, and split/find route to the store via the model callbacks. The enablement logic
+    // (copy needs a selection, paste needs clipboard text) lives in the unit-tested `TerminalContextMenu`;
+    // this view is the thin renderer. `rightMouseDown` already gives libghostty first refusal (it may turn
+    // a right-click into a paste in mouse-reporting apps) — `menu(for:)` only fires when AppKit falls
+    // through to the default menu path, so a TUI that wants the right-click still gets it.
+
+    /// Builds the terminal context menu for `event`, with each item enabled per `TerminalContextMenu`.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let ctx = TerminalContextMenu.Context(
+            hasSelection: surface?.hasSelection() ?? false,
+            clipboardHasText: !(NSPasteboard.general.string(forType: .string)?.isEmpty ?? true),
+            paneConnected: true,
+            // WB2: "Copy Command Output" is enabled when this pane has at least one completed command block.
+            hasCommandOutput: model?.blocks.latest?.complete ?? false,
+        )
+        let menu = NSMenu()
+        for item in TerminalContextMenu.items {
+            if item.separatorBefore { menu.addItem(.separator()) }
+            let menuItem = NSMenuItem(title: item.title, action: #selector(contextMenuAction(_:)), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.representedObject = item.rawValue
+            menuItem.isEnabled = TerminalContextMenu.isEnabled(item, context: ctx)
+            menu.addItem(menuItem)
+        }
+        return menu
+    }
+
+    /// Dispatches a context-menu item (tagged by its `TerminalContextMenu.Item.rawValue`) to the matching
+    /// libghostty binding action / model callback. Unknown tags are ignored (validate-then-drop).
+    @objc private func contextMenuAction(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let item = TerminalContextMenu.Item(rawValue: raw) else { return }
+        switch item {
+        case .copy: surface?.performBindingAction("copy_to_clipboard")
+        case .paste: surface?.performBindingAction("paste_from_clipboard")
+        case .pasteAsKeystrokes:
+            // Type the pasteboard string as raw keystrokes (no bracketed-paste) — the "paste literally"
+            // affordance for TUIs that swallow bracketed paste.
+            if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty { surface?.text(s) }
+        case .selectAll: surface?.performBindingAction("select_all")
+        case .clear: surface?.performBindingAction("clear_screen")
+        case .copyOutput:
+            // WB2: copy the LATEST completed command block's output. The model requests it (wire type 15),
+            // strips VT control sequences, and (on a non-empty reply) puts plain text on the clipboard; an
+            // empty/unavailable reply is a graceful no-op (the model resolves it — never hangs).
+            if let index = model?.blocks.latest?.index {
+                model?.copyBlockOutput(index: index) { text in
+                    guard let text, !text.isEmpty else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+            }
+        case .splitRight: model?.onContextMenuSplit?(true)
+        case .splitDown: model?.onContextMenuSplit?(false)
+        case .find: model?.onRequestFind?()
+        }
     }
 
     /// Catch Cmd-C / Cmd-V / Cmd-A DIRECTLY, regardless of whether an Edit menu is installed. Returning
@@ -1353,6 +1563,14 @@ final class GhosttyLayerBackedView: UIView {
         // early-returns (renderer/generic.zig zero-size guard) → blank screen, no error.
         // (macOS works because libghostty makes its layer the view's *backing* layer,
         // which AppKit auto-sizes.) Size every sublayer to our bounds + scale.
+        //
+        // ROUNDED-CARD METAL CLIPPING (iOS): apply the same rounded-corner clip to the
+        // hosting UIView's own layer so the Metal sublayer is masked. The sublayers are
+        // sized to `bounds` above, and `masksToBounds = true` on THIS layer clips them all.
+        // Matches the macOS hosted-layer clip in GhosttyLayerBackedView.layout().
+        layer.cornerRadius = 8   // AislopdeskTheme.Radius.pane
+        if #available(iOS 13.0, *) { layer.cornerCurve = .continuous }
+        layer.masksToBounds = true
         layer.sublayers?.forEach { sub in
             sub.frame = bounds
             sub.contentsScale = scale

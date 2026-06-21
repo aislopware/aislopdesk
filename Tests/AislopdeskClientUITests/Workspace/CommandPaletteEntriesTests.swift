@@ -73,6 +73,26 @@ final class CommandPaletteEntriesTests: XCTestCase {
         XCTAssertNotNil(CommandPaletteView.fuzzyScore(query: "ab", in: "axxxxb"), "still matches, just lower")
     }
 
+    // MARK: - Selection-index clamp (the ↑/↓ navigation transform — no wrap, clamp at the ends)
+
+    /// The pure `clampedSelection` (factored out of `moveSelection`): arrowing past either end of the
+    /// list STOPS at that end (Spotlight/Open-Quickly behaviour, no wrap), and an empty list keeps the
+    /// current index (there is nothing to move to).
+    func testClampedSelectionStopsAtEndsAndNoWrap() {
+        // Down past the bottom clamps to the last row; up past the top clamps to 0.
+        XCTAssertEqual(CommandPaletteView.clampedSelection(5, count: 4, current: 3), 3, "clamps to count-1")
+        XCTAssertEqual(CommandPaletteView.clampedSelection(-1, count: 4, current: 0), 0, "clamps to 0 (no wrap)")
+        // Interior moves are the identity (within bounds).
+        XCTAssertEqual(CommandPaletteView.clampedSelection(2, count: 4, current: 1), 2)
+        XCTAssertEqual(CommandPaletteView.clampedSelection(0, count: 4, current: 1), 0)
+        // A single-row list pins selection at 0 regardless of delta.
+        XCTAssertEqual(CommandPaletteView.clampedSelection(7, count: 1, current: 0), 0)
+        XCTAssertEqual(CommandPaletteView.clampedSelection(-3, count: 1, current: 0), 0)
+        // An EMPTY list keeps the current index (nothing to move to) — never returns a -1 out-of-bounds.
+        XCTAssertEqual(CommandPaletteView.clampedSelection(3, count: 0, current: 2), 2, "empty list keeps current")
+        XCTAssertEqual(CommandPaletteView.clampedSelection(0, count: 0, current: 0), 0)
+    }
+
     // MARK: - Keyword aliases (the verbs people actually type)
 
     /// The fuzzy haystack for a catalog command, mirroring `commandEntries` (title + keywords; commands
@@ -185,7 +205,7 @@ final class CommandPaletteEntriesTests: XCTestCase {
         let workspace = Workspace.make(
             panes: [
                 (groupedID, PaneSpec(kind: .terminal, title: "Left")),
-                (ungroupedID, PaneSpec(kind: .claudeCode, title: "Right")),
+                (ungroupedID, PaneSpec(kind: .remoteGUI, title: "Right")),
             ],
             focused: groupedID,
             groups: [group],

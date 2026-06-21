@@ -53,6 +53,23 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(model.title, "~/proj — zsh")
     }
 
+    /// Regression: an empty .title("") used to store "" which PanePresentation.displayTitle
+    /// discards — effectively silently clobbering the last real title.  After the fix an empty
+    /// title message collapses to nil so the previous non-empty title is preserved.
+    func testEmptyTitleDoesNotClobberPriorRealTitle() {
+        let model = TerminalViewModel()
+        // Establish a real title first.
+        model.handle(.title("~/proj — zsh"))
+        XCTAssertEqual(model.title, "~/proj — zsh", "precondition: real title stored")
+        // A subsequent empty-title message must NOT overwrite it.
+        model.handle(.title(""))
+        XCTAssertEqual(
+            model.title,
+            "~/proj — zsh",
+            "empty .title(\"\") must not shadow the previous real title",
+        )
+    }
+
     func testBellEventSetsAndClears() {
         let model = TerminalViewModel()
         XCTAssertFalse(model.bellPending)
@@ -461,5 +478,82 @@ final class TerminalViewModelTests: XCTestCase {
             [Data("a".utf8), Data("b".utf8)],
             "after attach, live output still feeds straight through to the surface",
         )
+    }
+
+    // MARK: WB2 — copyBlockOutput (request → sanitized clipboard text; unavailable; #5 stale-timer)
+
+    func testCopyBlockOutputRequestsThenSanitizesReply() {
+        // With a live sink wired, copyBlockOutput fires a type-15 request for the index, and when the
+        // host's type-29 reply lands it is VT-stripped to plain clipboard text via BlockOutputSanitizer.
+        let model = TerminalViewModel()
+        var requested: [UInt32] = []
+        model.requestBlockOutputSink = { requested.append($0) }
+
+        var result: String?
+        var resolved = false
+        model.copyBlockOutput(index: 4) { text in
+            result = text
+            resolved = true
+        }
+        XCTAssertEqual(requested, [4], "the copy fires a type-15 request for the right index")
+        XCTAssertFalse(resolved, "stays pending until the host replies")
+
+        // Host replies with colorized output (raw VT) → sanitized to plain text on resolve.
+        let colored = Data("\u{1B}[32mok\u{1B}[0m\nline2\n".utf8)
+        model.blocks.resolveOutput(index: 4, output: colored)
+        XCTAssertTrue(resolved)
+        XCTAssertEqual(result, "ok\nline2\n", "the VT colour runs are stripped for the clipboard")
+    }
+
+    func testCopyBlockOutputWithoutSinkResolvesUnavailableImmediately() {
+        // No live connection (requestBlockOutputSink == nil): the copy resolves as "unavailable" (nil)
+        // immediately WITHOUT registering a pending request — it must never hang waiting for a reply
+        // that can't come.
+        let model = TerminalViewModel()
+        model.requestBlockOutputSink = nil
+
+        var result: String? = "sentinel"
+        var resolved = false
+        model.copyBlockOutput(index: 9) { text in
+            result = text
+            resolved = true
+        }
+        XCTAssertTrue(resolved, "disconnected → resolves synchronously (no hang)")
+        XCTAssertNil(result, "no sink → 'unavailable' (nil)")
+        XCTAssertFalse(model.blocks.isOutputPending(index: 9), "no pending request was left stranded")
+    }
+
+    func testCopyBlockOutputStaleTimerDoesNotKillAFreshCopy() {
+        // The #5 race at the view-model layer: copy#1 of a block resolves, copy#2 of the SAME block opens
+        // a fresh request, and copy#1's (already-armed) 5s timeout must not resolve copy#2 as unavailable.
+        // copyBlockOutput now captures the request generation and gates timeoutPending on it; we drive the
+        // generation lifecycle directly (the real Task.sleep(5s) is irrelevant — only the gating matters).
+        let model = TerminalViewModel()
+        model.requestBlockOutputSink = { _ in }
+
+        var firstResult: String?
+        model.copyBlockOutput(index: 2) { firstResult = $0 }
+        let staleGen = model.blocks.currentRequestGeneration(index: 2)
+        XCTAssertNotNil(staleGen, "copy#1 is in flight with a generation token")
+        model.blocks.resolveOutput(index: 2, output: Data("first\n".utf8))
+        XCTAssertEqual(firstResult, "first\n")
+
+        // copy#2 opens a fresh request for the same index (a newer generation).
+        var secondResult: String? = "sentinel"
+        var secondResolved = false
+        model.copyBlockOutput(index: 2) { text in
+            secondResult = text
+            secondResolved = true
+        }
+        XCTAssertTrue(model.blocks.isOutputPending(index: 2))
+
+        // copy#1's stale timer fires with the OLD generation → must be ignored.
+        model.blocks.timeoutPending(index: 2, generation: staleGen)
+        XCTAssertFalse(secondResolved, "the stale timer must not resolve the fresh copy")
+        XCTAssertTrue(model.blocks.isOutputPending(index: 2))
+
+        // The fresh copy still resolves on its real reply.
+        model.blocks.resolveOutput(index: 2, output: Data("second\n".utf8))
+        XCTAssertEqual(secondResult, "second\n")
     }
 }

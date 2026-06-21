@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // MARK: - Identity
@@ -34,16 +35,19 @@ public struct PaneGroupID: Hashable, Codable, Sendable {
 // MARK: - Leaf intent (what a pane IS — never a live object)
 
 /// What a pane *is*. The kind selects which proven per-session stack the live layer will
-/// materialize for the leaf (docs/22 §7): a plain remote terminal, a Claude Code terminal with
-/// a second read-only inspector channel, or a remote-GUI video window.
+/// materialize for the leaf (docs/22 §7): a plain remote terminal or a remote-GUI video window.
+///
+/// **Claude Code is no longer a kind (docs/42 W11).** A `claude` session is just a `.terminal`
+/// pane: the host watches its PTY foreground process / hooks and the client auto-detects it
+/// (wire types 26/27 → the per-pane `ClaudeStatus`), opening the read-only inspector channel
+/// dynamically. There is no dedicated "Claude Code pane".
 ///
 /// `String`-raw + hand-stable so the persisted JSON discriminator is human-readable and
-/// versionable.
+/// versionable. **Forward/back-tolerant decode** (below): an OLD persisted `"claudeCode"` raw
+/// value maps to `.terminal` so a v9 / pre-W11-v10 file never traps now the case is gone.
 public enum PaneKind: String, Codable, Sendable, Equatable {
-    /// A remote PTY terminal (PATH 1 byte pipeline).
+    /// A remote PTY terminal (PATH 1 byte pipeline). Also hosts an auto-detected `claude` session.
     case terminal
-    /// A Claude Code terminal — a `terminal` plus the read-only structured inspector channel.
-    case claudeCode
     /// A remote-GUI video window (PATH 2 UDP media + cursor side-channel).
     case remoteGUI
     /// An EPHEMERAL pane auto-spawned by the client's system-dialog monitor to stream a host SYSTEM
@@ -51,6 +55,30 @@ public enum PaneKind: String, Codable, Sendable, Equatable {
     /// ``remoteGUI``, but auto-managed (spawn/close follow the host poll), NOT persisted, and it skips
     /// the picker + stale-binding revalidation (its windowID is always fresh from the live poll).
     case systemDialog
+
+    /// The retired-but-tolerated legacy raw value of the removed "Claude Code" pane kind (docs/42 W11).
+    /// A `.claudeCode` pane is now just a `.terminal`; an OLD persisted file (v9, or a v10 written before
+    /// W11) may still carry this discriminator. Kept ONLY as the migration/decode bridge below.
+    static let legacyClaudeCodeRawValue = "claudeCode"
+
+    /// **Forward/back-tolerant decode (validate-then-repair, CLAUDE.md untrusted-persisted-data
+    /// contract).** A persisted `"claudeCode"` raw value (the removed kind, W11) maps to `.terminal` so
+    /// an old workspace file never traps now the case is gone — a Claude session is just a terminal. Any
+    /// OTHER unknown raw value still throws (it is genuine corruption the loader's reset path handles),
+    /// preserving the strict behaviour for everything except the one intentionally-retired value.
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if raw == Self.legacyClaudeCodeRawValue {
+            self = .terminal
+            return
+        }
+        guard let value = Self(rawValue: raw) else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "unknown PaneKind raw value \"\(raw)\""),
+            )
+        }
+        self = value
+    }
 }
 
 public extension PaneKind {
@@ -60,9 +88,9 @@ public extension PaneKind {
     /// An auto-managed, never-persisted overlay pane (the system-dialog surface).
     var isEphemeral: Bool { self == .systemDialog }
     /// Whether this pane has a shell input funnel that text can be typed into — the recipient set for
-    /// broadcast/synchronized input (tmux `synchronize-panes`). Only the PTY-backed kinds; the video
-    /// kinds (`remoteGUI`/`systemDialog`) take input through the cursor/key side-channel, not a text bar.
-    var canReceiveText: Bool { self == .terminal || self == .claudeCode }
+    /// broadcast/synchronized input (tmux `synchronize-panes`). Only the PTY-backed `.terminal` kind; the
+    /// video kinds (`remoteGUI`/`systemDialog`) take input through the cursor/key side-channel, not a text bar.
+    var canReceiveText: Bool { self == .terminal }
 }
 
 /// Which remote window a `.remoteGUI` (video) pane mirrors. The host + UDP ports are no longer here —
@@ -96,16 +124,105 @@ public struct VideoEndpoint: Codable, Sendable, Equatable {
 /// A `PaneSpec` is pure intent: it is what the pane *should* be, not a handle to anything live.
 /// The store reads it to materialize a session; mutating it (e.g. rename) is done through
 /// ``PaneNode/updatingSpec(_:_:)`` and triggers a reconcile downstream.
-public struct PaneSpec: Codable, Sendable, Equatable {
+///
+/// ### Additive persistence fields (Stage 1 — schema v11)
+/// Four optional fields are persisted when a pane has been connected at least once. They are ADDITIVE:
+/// a v10 file that does not carry these keys decodes with all four `nil` (never traps). Only
+/// `lastKnownTitle` feeds the load-time auto-title promotion (see ``WorkspacePersistence/loadTree()``);
+/// the resume fields are reserved for Stage 2 (host-side detach/reattach) and are NOT fed into
+/// `connect()` yet.
+public struct PaneSpec: Sendable, Equatable {
     public var kind: PaneKind
     public var title: String
     /// Set for `remoteGUI` panes (which host-side window to mirror).
     public var video: VideoEndpoint?
 
-    public init(kind: PaneKind, title: String, video: VideoEndpoint? = nil) {
+    // MARK: Stage-1 additive persistence fields (schema v11)
+
+    /// The session ID assigned by the host on the most-recent successful connection. Reserved for Stage 2
+    /// (host-side detach/reattach). NOT fed into `connect()` in Stage 1.
+    public var resumeSessionID: UUID?
+    /// The last sequence number successfully received from the host (used to resume from a mid-stream
+    /// disconnect in Stage 2). NOT fed into `connect()` in Stage 1.
+    public var resumeLastReceivedSeq: Int64?
+    /// The working directory reported by the host shell at last-seen time. Used as the display subtitle
+    /// and as a hint for Stage 2 cwd-restore. Read-only from the client perspective.
+    public var lastKnownCwd: String?
+    /// The shell title (e.g. the running process or tab title) as last reported by the host. Written into
+    /// ``title`` on load only when the user has not renamed the pane (see
+    /// ``WorkspacePersistence/loadTree()``). Read-only from the client perspective.
+    public var lastKnownTitle: String?
+
+    // MARK: Floating overlay field (additive — schema v11)
+
+    /// Non-`nil` marks this pane as a **floating** (scratch) pane that overlays the tiled layout instead
+    /// of occupying a tree leaf rect (zellij-style floating panes). The rect is expressed in the
+    /// `SplitTreeView` bounds coordinate space (top-left origin) and is the pane's last placed frame; the
+    /// render model (``SplitTreeRenderModel/Layout/floatingLeaves``) clamps it into the live container on
+    /// every layout, so a stale/oversized persisted rect can never escape the viewport. A pane that has
+    /// never floated (or one that was embedded back into the tree) has `nil` here and tiles normally. The
+    /// pane's membership in the floating layer is owned by ``Tab/floatingPanes``; this rect is just its
+    /// geometry. Additive: a v10/v11 file written before this field decodes `nil` (tiled). `CGRect` is
+    /// `Codable`/`Equatable`/`Sendable`, so the auto-synthesis on ``PaneSpec`` still holds.
+    public var floatingFrame: CGRect?
+
+    public init(
+        kind: PaneKind,
+        title: String,
+        video: VideoEndpoint? = nil,
+        resumeSessionID: UUID? = nil,
+        resumeLastReceivedSeq: Int64? = nil,
+        lastKnownCwd: String? = nil,
+        lastKnownTitle: String? = nil,
+        floatingFrame: CGRect? = nil,
+    ) {
         self.kind = kind
         self.title = title
         self.video = video
+        self.resumeSessionID = resumeSessionID
+        self.resumeLastReceivedSeq = resumeLastReceivedSeq
+        self.lastKnownCwd = lastKnownCwd
+        self.lastKnownTitle = lastKnownTitle
+        self.floatingFrame = floatingFrame
+    }
+}
+
+// MARK: - PaneSpec Codable (additive — new keys are decodeIfPresent so v10 files still load)
+
+extension PaneSpec: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case title
+        case video
+        case resumeSessionID
+        case resumeLastReceivedSeq
+        case lastKnownCwd
+        case lastKnownTitle
+        case floatingFrame
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(PaneKind.self, forKey: .kind)
+        title = try c.decode(String.self, forKey: .title)
+        video = try c.decodeIfPresent(VideoEndpoint.self, forKey: .video)
+        resumeSessionID = try c.decodeIfPresent(UUID.self, forKey: .resumeSessionID)
+        resumeLastReceivedSeq = try c.decodeIfPresent(Int64.self, forKey: .resumeLastReceivedSeq)
+        lastKnownCwd = try c.decodeIfPresent(String.self, forKey: .lastKnownCwd)
+        lastKnownTitle = try c.decodeIfPresent(String.self, forKey: .lastKnownTitle)
+        floatingFrame = try c.decodeIfPresent(CGRect.self, forKey: .floatingFrame)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(title, forKey: .title)
+        try c.encodeIfPresent(video, forKey: .video)
+        try c.encodeIfPresent(resumeSessionID, forKey: .resumeSessionID)
+        try c.encodeIfPresent(resumeLastReceivedSeq, forKey: .resumeLastReceivedSeq)
+        try c.encodeIfPresent(lastKnownCwd, forKey: .lastKnownCwd)
+        try c.encodeIfPresent(lastKnownTitle, forKey: .lastKnownTitle)
+        try c.encodeIfPresent(floatingFrame, forKey: .floatingFrame)
     }
 }
 

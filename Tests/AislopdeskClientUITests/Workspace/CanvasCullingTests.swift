@@ -26,12 +26,6 @@ final class CanvasCullingTests: XCTestCase {
         XCTAssertEqual(Set(visible.map(\.id)), [pid(1), pid(2)], "terminals stay mounted even far off-viewport")
     }
 
-    func testClaudeCodeAlsoNeverCulled() {
-        let items = [item(1, farOff, kind: .claudeCode)]
-        let visible = CanvasGeometry.visibleItems(items, camera: .zero, viewport: viewport, focused: nil)
-        XCTAssertEqual(visible.map(\.id), [pid(1)])
-    }
-
     func testVideoCulledOffViewport() {
         let items = [item(1, onScreen, kind: .remoteGUI), item(2, farOff, kind: .remoteGUI)]
         let visible = CanvasGeometry.visibleItems(items, camera: .zero, viewport: viewport, focused: nil)

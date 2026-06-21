@@ -57,6 +57,9 @@ extension WireMessage {
         case let .ping(timestampMS):
             frame.appendBE(timestampMS)
 
+        case let .requestBlockOutput(index):
+            frame.appendBE(index)
+
         case let .pong(timestampMS):
             frame.appendBE(timestampMS)
 
@@ -78,6 +81,50 @@ extension WireMessage {
             frame.appendBE(UInt16(titleBytes.count))
             frame.append(titleBytes)
             frame.append(Data(body.utf8))
+
+        case let .foregroundProcess(name):
+            // [remaining bytes = UTF-8 process basename] — like `title`, the name is the
+            // unambiguous remainder (no length prefix needed for a single trailing string).
+            frame.append(Data(name.utf8))
+
+        case let .claudeStatus(state, kind, label):
+            // [UInt8 state][UInt8 kind][UInt16 BE labelLen][label UTF-8] — fixed state+kind
+            // bytes then a length-prefixed UTF-8 label (so an empty label is unambiguous).
+            // Clamp the label to the UInt16 length the field can hold (see clampedClaudeLabel):
+            // a raw `truncatingIfNeeded` would WRAP the length on a >64KiB label while still
+            // appending every byte, so the decoder would over-read and corrupt the trailer.
+            frame.append(state)
+            frame.append(kind)
+            let labelBytes = Data(Self.clampedClaudeLabel(label).utf8)
+            frame.appendBE(UInt16(labelBytes.count))
+            frame.append(labelBytes)
+
+        case let .commandBlock(index, exitCode, durationMS, complete, outputLen, commandText):
+            // [UInt32 index][UInt8 hasExit][Int32 BE exit (0 absent)][UInt8 hasDuration]
+            // [UInt32 BE duration (0 absent)][UInt8 complete][UInt32 BE outputLen]
+            // [UInt16 BE cmdLen][commandText UTF-8]. Fixed fields then a length-prefixed,
+            // capped command line (so the decoder can validate its declared length before reading).
+            // Clamp the command text to the UInt16 length field (see clampedCommandText): a raw
+            // truncatingIfNeeded would WRAP the length on a >64KiB text while still appending every
+            // byte → the decoder would over-read and corrupt nothing trailing (cmd is the last field)
+            // but mis-report the length, so clamp the BYTES too to stay self-consistent.
+            frame.appendBE(index)
+            frame.append(exitCode != nil ? 1 : 0) // hasExit
+            frame.appendBE(exitCode ?? 0) // Int32 BE (0 when absent)
+            frame.append(durationMS != nil ? 1 : 0) // hasDuration
+            frame.appendBE(durationMS ?? 0) // UInt32 BE (0 when absent)
+            frame.append(complete ? 1 : 0)
+            frame.appendBE(outputLen)
+            let cmdBytes = Data(Self.clampedCommandText(commandText).utf8)
+            frame.appendBE(UInt16(cmdBytes.count))
+            frame.append(cmdBytes)
+
+        case let .blockOutput(index, output):
+            // [UInt32 index][UInt32 BE outputLen][output bytes]. The output is length-prefixed so the
+            // decoder validates the declared length before reading (never over-reads a hostile body).
+            frame.appendBE(index)
+            frame.appendBE(UInt32(truncatingIfNeeded: output.count))
+            frame.append(output)
 
         case .bell:
             break // empty body
@@ -129,6 +176,42 @@ extension WireMessage {
         }
         return String(clamped)
     }
+
+    /// A Claude-status label whose UTF-8 fits the wire's UInt16 length field (≤ 65535 bytes),
+    /// clamped at a Unicode SCALAR boundary so it stays valid UTF-8. Identity for any sane
+    /// label (the host caps Stop/Notification text well under 1KiB); only an absurd >64KiB
+    /// label is shortened — preventing the length field from wrapping and corrupting the body.
+    /// Shared by ``encode()`` and ``wireByteCount`` so the two stay consistent.
+    static func clampedClaudeLabel(_ label: String) -> String {
+        guard label.utf8.count > Int(UInt16.max) else { return label }
+        var clamped = String.UnicodeScalarView()
+        var count = 0
+        for scalar in label.unicodeScalars {
+            let n = String(scalar).utf8.count
+            if count + n > Int(UInt16.max) { break }
+            clamped.append(scalar)
+            count += n
+        }
+        return String(clamped)
+    }
+
+    /// A Block command line whose UTF-8 fits the wire's UInt16 length field (≤ 65535 bytes),
+    /// clamped at a Unicode SCALAR boundary so it stays valid UTF-8. Identity for any sane command
+    /// (the segmenter caps captured command text at 256 bytes); only an absurd >64KiB text is
+    /// shortened — preventing the length field from wrapping and the decoder mis-reading the count.
+    /// Shared by ``encode()`` and ``wireByteCount`` so the two stay consistent.
+    static func clampedCommandText(_ text: String) -> String {
+        guard text.utf8.count > Int(UInt16.max) else { return text }
+        var clamped = String.UnicodeScalarView()
+        var count = 0
+        for scalar in text.unicodeScalars {
+            let n = String(scalar).utf8.count
+            if count + n > Int(UInt16.max) { break }
+            clamped.append(scalar)
+            count += n
+        }
+        return String(clamped)
+    }
 }
 
 public extension WireMessage {
@@ -150,10 +233,18 @@ public extension WireMessage {
             case .bye: 0
             case .ping,
                  .pong: 8 // timestampMS UInt64
+            case .requestBlockOutput: 4 // index UInt32
+            case let .commandBlock(_, _, _, _, _, commandText):
+                // index + hasExit + Int32 + hasDuration + UInt32 + complete + outputLen + UInt16 len + cmd
+                4 + 1 + 4 + 1 + 4 + 1 + 4 + 2 + Self.clampedCommandText(commandText).utf8.count
+            case let .blockOutput(_, output): 4 + 4 + output.count // index + UInt32 len + output bytes
             case .helloAck: Self.sessionIDByteCount + 8 + 1 // UUID + Int64 + Bool
             case let .title(string): string.utf8.count
             case let .notification(title, bodyText): 2 + Self.clampedNotificationTitle(title).utf8.count + bodyText.utf8
                 .count // UInt16 len + (clamped) title + body
+            case let .foregroundProcess(name): name.utf8.count
+            case let .claudeStatus(_, _, label): 1 + 1 + 2 + Self.clampedClaudeLabel(label).utf8
+                .count // state + kind + UInt16 len + (clamped) label
             case .bell: 0
             case let .commandStatus(status):
                 switch status {

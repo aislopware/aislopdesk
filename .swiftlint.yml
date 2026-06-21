@@ -218,7 +218,41 @@ type_body_length:
   # 1500 with the adaptive-m FEC + NACK/ARQ features — all on its one serial isolation domain by
   # design. Per the note above the soft cap is tuned NOT to force-refactor working realtime code; the
   # 2700 hard error still catches genuine bloat.
-  warning: 1600
+  # 1600 → 1610 (2026-06-20): WorkspaceStore needs ONE stored property for the WB3 block-bookmark /
+  # jump-cursor seam (stored state can't live in the WorkspaceStore+Blocks extension); the body logic
+  # for the feature lives in that extension, so this is a single declaration, not bloat.
+  # 1610 → 1630 (2026-06-20): WorkspaceStore gains the keyboard pane-management entry points
+  # (swapActivePaneInDirection / resizeActivePane / balanceActivePaneSplits) — thin wrappers over the
+  # pure WorkspaceTreeOps that carry the geometry/active-pane resolution that can't live in the pure op.
+  # 1630 → 1660 (2026-06-20): WorkspaceStore gains the B3 background-pane command-completion STORED state
+  # (panePendingCompletion + isAppActive[+didSet focus-clear] + onLongCommandNotify) — `@Observable`
+  # synthesises on stored properties so they can't live in WorkspaceStore+Completion.swift; ALL the badge
+  # query/setter/rollup/handler logic DOES live in that extension. Single declaration cluster, not bloat.
+  # 1660 → 1680 (2026-06-20): WorkspaceStore gains the live-title `onTitleChanged` wire in both the tree
+  # path (`wireMaterializedLeaf`) and the canvas path (`reconcile()`'s inline onMaterialize closure) —
+  # Goal A live OSC title persistence into PaneSpec.lastKnownTitle. Wire-only closures, no new stored state.
+  # 1680 → 1690 (2026-06-20): WorkspaceStore gains the `onResumeIdentitySnapshot` wire in
+  # `wireMaterializedLeaf` (detach/reattach Stage 2, C2/C3) — mirrors the `onTitleChanged` pattern.
+  # Wire-only closure, no new stored state.
+  # 1690 → 1720 (2026-06-20): WorkspaceStore gains the sync-input feature stored state
+  # (`syncInputEnabled`, `syncInputSessions`) plus the `toggleSyncInput` / `isSyncInputActive`
+  # entry points — `@Observable` synthesises on stored properties so they must live in the main
+  # class body; all broadcast logic lives in `WorkspaceStore+SyncInput.swift`. Stored-property
+  # cluster only, not bloat.
+  # 1720 → 1760 (2026-06-21): WorkspaceStore gains the P5a floating-pane entry points
+  # (toggleFloatActivePane / spawnFloatingPane / move·resize·close·embedFloating + the
+  # floatingViewportBounds derivation) — thin wrappers over the pure WorkspaceTreeOps floating ops that
+  # carry the viewport-bounds resolution + the `tree`-setter (private(set), only settable in the main
+  # body) that an extension can't reach. Wrapper cluster, not bloat.
+  # 1760 → 1780 (2026-06-21): P5a finalize — WorkspaceStore gains the `lastFloatingBounds` STORED state +
+  # `updateFloatingBounds` (the float viewport now shares one coordinate space with the render model's
+  # place-clamp) and the z-order `raiseFloating` / embed-anchor wiring in focusPaneTree·moveFloating·
+  # embedFloating. `@Observable` synthesises on the stored property so it must live in the main body.
+  # 1780 → 1800 (2026-06-21): WorkspaceStore gains the select-layout (tmux/zellij) entry points
+  # `applyLayout(_)` / `cycleLayout()` + the `lastAppliedLayout` cycle-cursor STORED state — thin
+  # wrappers over the pure `WorkspaceTreeOps.applyLayout`/`cycleLayout` that carry the active-pane
+  # resolution + the `tree`-setter (private(set), only settable in the main body) an extension can't reach.
+  warning: 1800
   error: 2700
 
 function_body_length:

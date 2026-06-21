@@ -32,6 +32,7 @@ let package = Package(
         .library(name: "AislopdeskTTY", targets: ["AislopdeskTTY"]),
         .library(name: "AislopdeskInspector", targets: ["AislopdeskInspector"]),
         .library(name: "AislopdeskClaudeCode", targets: ["AislopdeskClaudeCode"]),
+        .library(name: "AislopdeskAgentDetect", targets: ["AislopdeskAgentDetect"]),
         .library(name: "AislopdeskClientUI", targets: ["AislopdeskClientUI"]),
         // PATH 2 (GUI video path, Phase 4 / WF-9).
         .library(name: "AislopdeskVideoProtocol", targets: ["AislopdeskVideoProtocol"]),
@@ -69,9 +70,22 @@ let package = Package(
         // Also hosts the inspector's second-connection server (InspectorServer):
         // AislopdeskHost depends on AislopdeskInspector for the wire types + replay log. This is
         // acyclic — AislopdeskInspector depends ONLY on AislopdeskProtocol, never on AislopdeskHost.
+        //
+        // W10 adds AislopdeskAgentDetect: the host folds foreground-process / Claude-hook signals
+        // through the pure `ClaudeStatusMachine` to decide the type-26/27 CONTROL emissions. The
+        // edge stays acyclic — AislopdeskAgentDetect depends on NOTHING (it physically cannot
+        // import AislopdeskHost), and AislopdeskInspector still depends only on AislopdeskProtocol.
+        // W12: AislopdeskHost also depends on AislopdeskVideoProtocol for `EnvConfig` — the host's
+        // agent-detection gates (`AISLOPDESK_AGENT_DETECT`/`_HOOKS`) resolve through the settings overlay
+        // so a GUI toggle reaches them (it loads the same `video-prefs.json` sidecar). The edge is
+        // acyclic — AislopdeskVideoProtocol is the cross-platform PURE wire/settings leaf (deps only
+        // CAislopdeskSIMD) and never imports any host module.
         .target(
             name: "AislopdeskHost",
-            dependencies: ["AislopdeskTransport", "AislopdeskProtocol", "AislopdeskInspector"],
+            dependencies: [
+                "AislopdeskTransport", "AislopdeskProtocol", "AislopdeskInspector",
+                "AislopdeskAgentDetect", "AislopdeskVideoProtocol",
+            ],
         ),
 
         // Shared client: connection mgr, reconnect, input encoding. (WF-4.)
@@ -103,6 +117,17 @@ let package = Package(
         // launch env + auth resolution live in AislopdeskHost (macOS, the WF-7 seam).
         .target(name: "AislopdeskClaudeCode", dependencies: ["AislopdeskProtocol"]),
 
+        // Pure, headless Claude-Code DETECTION CORE (W7): the per-pane status enum
+        // (`ClaudeStatus`), the deterministic, clock-injected state machine
+        // (`ClaudeStatusMachine` — `Date()` is physically unreachable; time arrives as
+        // a `TimeInterval` parameter), and the Herdr-style no-hooks fallback
+        // (`ClaudeManifestMatcher`) that reads a terminal pane's title/screen for
+        // recognizable Claude TUI cues. Foundation-only — it depends on NOTHING
+        // GUI/transport/video so it physically cannot import them; the adapter that
+        // maps `AislopdeskInspector.HookPayload` → `ClaudeSignal` is W8/W10, not here.
+        // Validate-then-drop on every foreign string; no force-unwrap.
+        .target(name: "AislopdeskAgentDetect"),
+
         // Cross-platform SwiftUI client UI (WF-8): the views + @MainActor @Observable
         // view-models that bind the existing modules — AislopdeskClient (byte pipeline +
         // reconnect), AislopdeskInspector (read-only structured panel), AislopdeskClaudeCode
@@ -129,7 +154,16 @@ let package = Package(
                 "AislopdeskTransport",
                 "AislopdeskInspector",
                 "AislopdeskClaudeCode",
+                // W5: the pure headless Claude-status enum (`ClaudeStatus`) the sidebar/chrome dots read.
+                // AgentDetect depends on nothing GUI/transport/video, so this never widens the GUI graph.
+                "AislopdeskAgentDetect",
                 "AislopdeskTerminal",
+                // W13: the W12 settings MODELS + the pure config bridges (`VideoPreferences`,
+                // `TerminalPreferences`, `AgentPreferences`, `KeybindingPreferences`, `EnvConfig`,
+                // `EnvBridge`, `TerminalConfigBuilder`) the `PreferencesStore` + Settings panels bind to.
+                // AislopdeskVideoProtocol is the cross-platform PURE wire/settings target (no
+                // ScreenCaptureKit/VideoToolbox/AppKit), so this does NOT widen the GUI graph with HW deps.
+                "AislopdeskVideoProtocol",
             ],
         ),
 
@@ -179,6 +213,19 @@ let package = Package(
 
         // Headless host daemon (PTY + transport). Sources under Sources/aislopdesk-hostd.
         .executableTarget(name: "aislopdesk-hostd", dependencies: ["AislopdeskHost"]),
+
+        // Pure, testable core for aislopdesk-ctl: arg-parsing (GlobalArgs / parseGlobal) and
+        // NDJSON request/response helpers (encodeRequestLine / decodeResponseLine / verb
+        // param builders). No socket I/O — Foundation-only so it builds for macOS + iOS and
+        // is unit-testable without any AF_UNIX socket (hang-safety rule). The thin
+        // `aislopdesk-ctl` executable imports this and adds the socket I/O + exit calls.
+        .target(name: "AislopdeskCtlCore"),
+
+        // Agent-control CLI: the reference client for the agent-control Unix-domain socket.
+        // Sends a single NDJSON request to $AISLOPDESK_CONTROL_SOCKET (or --socket PATH),
+        // prints the result, and exits. Agents shell out to this. Pure socket I/O in main.swift;
+        // the testable logic lives in AislopdeskCtlCore.
+        .executableTarget(name: "aislopdesk-ctl", dependencies: ["AislopdeskCtlCore"]),
 
         // Interactive remote terminal client. Sources under Sources/aislopdesk-client.
         .executableTarget(
@@ -246,9 +293,23 @@ let package = Package(
 
         // MARK: Tests
 
+        // aislopdesk-ctl CLI: arg-parsing + request-encoding tests. No real socket — the pure
+        // AislopdeskCtlCore logic (parseGlobal, encodeRequestLine, verb param builders) is
+        // exercised directly (hang-safety: no AF_UNIX in tests).
+        .testTarget(name: "AislopdeskCtlTests", dependencies: ["AislopdeskCtlCore"]),
+
         .testTarget(name: "AislopdeskProtocolTests", dependencies: ["AislopdeskProtocol"]),
+        // W7: the pure detection core — state-machine transitions (incl. injected-clock
+        // timeouts, idempotent/out-of-order signals), the conservative manifest matcher,
+        // and the rollup most-urgent order. No GUI/socket/PTY — signals are fed directly.
+        .testTarget(name: "AislopdeskAgentDetectTests", dependencies: ["AislopdeskAgentDetect"]),
         .testTarget(name: "AislopdeskTransportTests", dependencies: ["AislopdeskTransport"]),
-        .testTarget(name: "AislopdeskHostTests", dependencies: ["AislopdeskHost", "AislopdeskInspector"]),
+        .testTarget(
+            name: "AislopdeskHostTests",
+            // W12: AislopdeskVideoProtocol for `EnvConfig` — the agent-gate reaches-consumer test sets
+            // `EnvConfig.overlay` and asserts the default-arg path (overlay → env) reaches the gate.
+            dependencies: ["AislopdeskHost", "AislopdeskInspector", "AislopdeskAgentDetect", "AislopdeskVideoProtocol"],
+        ),
         // AislopdeskClientTests exercises the REAL PATH 1 e2e: a HostServer (AislopdeskHost) +
         // AislopdeskClient over loopback, so it depends on AislopdeskHost + AislopdeskTTY too.
         .testTarget(
@@ -292,6 +353,7 @@ let package = Package(
                 "AislopdeskHost",
                 "AislopdeskInspector",
                 "AislopdeskClaudeCode",
+                "AislopdeskAgentDetect",
                 "AislopdeskTerminal",
             ],
         ),

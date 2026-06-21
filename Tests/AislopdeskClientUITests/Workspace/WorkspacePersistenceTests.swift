@@ -97,7 +97,7 @@ final class WorkspacePersistenceTests: XCTestCase {
                 ),
                 CanvasItem(
                     id: pC,
-                    spec: PaneSpec(kind: .claudeCode, title: "agent"),
+                    spec: PaneSpec(kind: .remoteGUI, title: "agent"),
                     frame: CGRect(x: 0, y: 0, width: 640, height: 420),
                     z: 2,
                     groupID: groupB.id,
@@ -237,7 +237,7 @@ final class WorkspacePersistenceTests: XCTestCase {
         let p0 = PaneID(), p1 = PaneID()
         let original = Workspace.make(panes: [
             (p0, PaneSpec(kind: .terminal, title: "shell")),
-            (p1, PaneSpec(kind: .claudeCode, title: "agent")),
+            (p1, PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
         let data = try makeEncoder().encode(original)
         let restored = decodeOrDefault(data)
@@ -250,7 +250,7 @@ final class WorkspacePersistenceTests: XCTestCase {
     func testMigrationIdentityForCurrentVersion() {
         let original = Workspace.make(panes: [
             (PaneID(), PaneSpec(kind: .terminal, title: "shell")),
-            (PaneID(), PaneSpec(kind: .claudeCode, title: "agent")),
+            (PaneID(), PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
         let migrated = WorkspaceSchemaMigration.migrate(original, from: Workspace.currentSchemaVersion)
         XCTAssertEqual(migrated, original, "from == to is the identity migration")
@@ -290,7 +290,7 @@ final class WorkspacePersistenceTests: XCTestCase {
         let persistence = WorkspacePersistence(fileURL: url)
         let original = Workspace.make(panes: [
             (PaneID(), PaneSpec(kind: .terminal, title: "shell")),
-            (PaneID(), PaneSpec(kind: .claudeCode, title: "agent")),
+            (PaneID(), PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
         try persistence.save(original)
         XCTAssertEqual(persistence.load(), original, "a current-version payload loads verbatim")
@@ -348,7 +348,7 @@ final class WorkspacePersistenceTests: XCTestCase {
     func testLoadDoesNotBackUpAGoodFile() throws {
         let url = try tempURL()
         let persistence = WorkspacePersistence(fileURL: url)
-        try persistence.save(Workspace.make(panes: [(PaneID(), PaneSpec(kind: .claudeCode, title: "x"))]))
+        try persistence.save(Workspace.make(panes: [(PaneID(), PaneSpec(kind: .remoteGUI, title: "x"))]))
         _ = persistence.load()
         let backup = url.appendingPathExtension("corrupt")
         XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path), "a good load writes no backup")
@@ -402,7 +402,7 @@ final class WorkspacePersistenceTests: XCTestCase {
         let p0 = PaneID(), p1 = PaneID()
         let base = Workspace.make(panes: [
             (p0, PaneSpec(kind: .terminal, title: "shell")),
-            (p1, PaneSpec(kind: .claudeCode, title: "agent")),
+            (p1, PaneSpec(kind: .remoteGUI, title: "agent")),
         ])
 
         let (withGroup, gid) = base.addingGroup(name: "Work")
@@ -449,6 +449,269 @@ final class WorkspacePersistenceTests: XCTestCase {
         let moved = c.movingGroup(from: IndexSet(integer: 0), to: 3) // A → end
         XCTAssertEqual(moved.groups.map(\.name), ["B", "C", "A"], "group order changed")
         XCTAssertEqual(moved.canvas, c.canvas, "membership unchanged by a reorder")
+    }
+
+    // MARK: - 8. W3 migration seams (peek / migrateV9toV10 / migrateToTree) — exposed, not yet on load()
+
+    /// `peekSchemaVersion` reads ONLY the version discriminator off raw bytes without a full typed decode:
+    /// 9 off a valid v9 ``Workspace`` JSON, 11 off a v11 ``TreeWorkspace`` JSON (the current schema), and
+    /// `nil` (validate-then-drop) on garbage / a JSON object missing `schemaVersion`.
+    func testPeekSchemaVersionReadsVersionOrDropsCleanly() throws {
+        // A real v9 Workspace file.
+        let v9Data = try makeEncoder().encode(Workspace.defaultWorkspace())
+        XCTAssertEqual(WorkspacePersistence.peekSchemaVersion(in: v9Data), 9, "peeks 9 off a v9 Workspace file")
+
+        // A real v11 TreeWorkspace file (no canvas/groups — would FAIL a typed v9 decode).
+        let v11Data = try makeEncoder().encode(TreeWorkspace.defaultWorkspace())
+        XCTAssertEqual(
+            WorkspacePersistence.peekSchemaVersion(in: v11Data),
+            TreeWorkspace.currentSchemaVersion,
+            "peeks the current schema version off a current TreeWorkspace file",
+        )
+
+        // Garbage bytes → nil, never a throw.
+        XCTAssertNil(
+            WorkspacePersistence.peekSchemaVersion(in: Data("not json at all }{".utf8)),
+            "garbage bytes peek to nil (validate-then-drop, no throw)",
+        )
+        // A JSON object that simply lacks `schemaVersion` → nil.
+        XCTAssertNil(
+            WorkspacePersistence.peekSchemaVersion(in: Data("{\"foo\": 1}".utf8)),
+            "a JSON object missing schemaVersion peeks to nil",
+        )
+    }
+
+    /// `migrateV9toV10` decodes raw v9 bytes through the frozen mirror and migrates to a round-trippable
+    /// ``TreeWorkspace`` on good bytes, and returns `nil` on garbage.
+    func testMigrateV9toV10ProducesRoundTrippableTreeOrNil() throws {
+        let p0 = PaneID(), p1 = PaneID()
+        let v9 = Workspace.make(panes: [
+            (p0, PaneSpec(kind: .terminal, title: "shell")),
+            (p1, PaneSpec(kind: .remoteGUI, title: "agent")),
+        ])
+        let data = try makeEncoder().encode(v9)
+        let tree = try XCTUnwrap(
+            WorkspacePersistence.migrateV9toV10(from: data),
+            "good v9 bytes migrate to a non-nil TreeWorkspace",
+        )
+        XCTAssertEqual(Set(tree.allPaneIDs()), Set([p0, p1]), "every pane survives the migration")
+        XCTAssertTrue(tree.isInvariantHeld(), "the migrated tree holds specs == leafIDs")
+        // Round-trippable: encode → decode == migrated.
+        let encoder = makeEncoder(sortedKeys: true)
+        let restored = try decoder.decode(TreeWorkspace.self, from: encoder.encode(tree))
+        XCTAssertEqual(restored, tree, "the migrated TreeWorkspace round-trips")
+
+        // Garbage bytes → nil.
+        XCTAssertNil(
+            WorkspacePersistence.migrateV9toV10(from: Data("garbage }{".utf8)),
+            "non-decodable bytes migrate to nil, never trap",
+        )
+    }
+
+    /// `WorkspaceSchemaMigration.migrateToTree` is the registered seam:
+    /// - non-nil for `from ∈ {5,8,9}` — all decode through the v9 mirror (5...9 forward-tolerant range).
+    /// - non-nil for `from == 10` — identity re-decode as a v10 ``TreeWorkspace``; the four new optional
+    ///   ``PaneSpec`` fields are absent from a v10 file but `decodeIfPresent` resolves them to `nil` without
+    ///   any data loss (additive schema step).
+    /// - `nil` for `from == 11` (the current version — caller decodes directly, nothing to upgrade).
+    /// - `nil` for out-of-range versions.
+    func testMigrateToTreeAcceptsV5ThroughV10AndRejectsOthers() throws {
+        let v9Data = try makeEncoder().encode(Workspace.defaultWorkspace())
+        for from in [5, 8, 9] {
+            XCTAssertNotNil(
+                WorkspaceSchemaMigration.migrateToTree(v9Data, from: from),
+                "from=\(from) decodes through the v9 mirror and migrates (5...9 forward-tolerant)",
+            )
+        }
+
+        // from=10: a valid v10 TreeWorkspace JSON is identity-decoded (new optional fields → nil).
+        let v10JSON = try """
+        {
+          "schemaVersion": 10,
+          "sessions": [\(String(data: makeEncoder().encode(
+              Session.singlePane(name: "Local", spec: PaneSpec(kind: .terminal, title: "Terminal")),
+          ), encoding: .utf8)!)],
+          "activeSessionID": null
+        }
+        """
+        let v10Data = Data(v10JSON.utf8)
+        let v10Result = WorkspaceSchemaMigration.migrateToTree(v10Data, from: 10)
+        XCTAssertNotNil(v10Result, "from=10 is an identity re-decode to TreeWorkspace (additive step)")
+        XCTAssertEqual(v10Result?.allPaneIDs().count, 1, "the single pane survives the v10 identity decode")
+
+        // from=11 (current) and out-of-range → nil.
+        XCTAssertNil(
+            WorkspaceSchemaMigration.migrateToTree(v9Data, from: 11),
+            "from=11 is the current version — caller decodes directly → nil",
+        )
+        for from in [0, 99] {
+            XCTAssertNil(
+                WorkspaceSchemaMigration.migrateToTree(v9Data, from: from),
+                "from=\(from) is out of the forward-tolerant range → nil",
+            )
+        }
+        // Garbage bytes in the valid range still fail soft (nil, not a trap).
+        XCTAssertNil(
+            WorkspaceSchemaMigration.migrateToTree(Data("garbage }{".utf8), from: 9),
+            "garbage bytes in the 5...9 range migrate to nil",
+        )
+        XCTAssertNil(
+            WorkspaceSchemaMigration.migrateToTree(Data("garbage }{".utf8), from: 10),
+            "garbage bytes for from=10 migrate to nil (not a trap)",
+        )
+    }
+
+    /// A synthetic v5–v8-shaped file (OMITTING fields added in later schema bumps — e.g. `snippets`,
+    /// `layoutPresets`, `bookmarks`, `connection`) must still decode through the forward-tolerant frozen
+    /// ``WorkspaceV9`` mirror (those fields default) and migrate to a valid tree. Proves the documented
+    /// "5...9 forward-tolerant" claim with actual bytes, not just the version-int switch.
+    func testSyntheticOlderShapedFileDecodesThroughV9MirrorAndMigrates() throws {
+        let id = PaneID()
+        // A v5–v8-era file: schemaVersion + canvas + focusedPane + groups, but NO snippets / layoutPresets
+        // / bookmarks / connection / maximizedPane keys (those landed in later schema versions).
+        let json = """
+        {
+          "schemaVersion": 5,
+          "canvas": {
+            "camera": { "origin": { "x": 0, "y": 0 } },
+            "items": [
+              { "id": { "raw": "\(id.raw.uuidString)" }, "z": 0,
+                "frame": { "origin": {"x":0,"y":0}, "size": {"width":640,"height":420} },
+                "spec": { "kind": "terminal", "title": "legacy" } }
+            ]
+          },
+          "focusedPane": { "raw": "\(id.raw.uuidString)" },
+          "groups": []
+        }
+        """
+        let data = Data(json.utf8)
+        // It peeks as version 5 and routes through migrateToTree's 5...9 arm.
+        XCTAssertEqual(WorkspacePersistence.peekSchemaVersion(in: data), 5)
+        let tree = try XCTUnwrap(
+            WorkspaceSchemaMigration.migrateToTree(data, from: 5),
+            "an older-shaped file (omitting later fields) migrates through the v9 mirror",
+        )
+        XCTAssertEqual(tree.allPaneIDs(), [id], "the single legacy pane survives")
+        XCTAssertEqual(tree.spec(for: id)?.title, "legacy", "its spec is preserved")
+        XCTAssertTrue(tree.snippets.isEmpty, "the omitted snippets field defaulted to empty")
+        XCTAssertTrue(tree.layoutPresets.isEmpty, "the omitted layoutPresets field defaulted to empty")
+        XCTAssertTrue(tree.isInvariantHeld())
+    }
+
+    // MARK: - 9. loadTree() — the LIVE load path's safety branches (C2)
+
+    /// A real v11 ``TreeWorkspace`` file decodes + round-trips through `loadTree()` with NO migration
+    /// (the steady-state path), no `.corrupt` sidecar written.
+    func testLoadTreeRoundTripsCurrentVersionFileWithoutMigration() throws {
+        let url = try tempURL()
+        let persistence = WorkspacePersistence(fileURL: url)
+        let session = Session.singlePane(name: "Local", spec: PaneSpec(kind: .terminal, title: "build"))
+        // Add a second tab so the round-trip exercises more than a singleton.
+        let (grown, _) = WorkspaceTreeOps.newTab(
+            in: TreeWorkspace(sessions: [session], activeSessionID: session.id),
+            spec: PaneSpec(kind: .remoteGUI, title: "agent"),
+        )
+        try persistence.save(grown)
+
+        let loaded = persistence.loadTree()
+        XCTAssertEqual(
+            loaded.schemaVersion,
+            TreeWorkspace.currentSchemaVersion,
+            "a current-version file loads at the current schema version, no migration",
+        )
+        XCTAssertEqual(Set(loaded.allPaneIDs()), Set(grown.allPaneIDs()), "every leaf survived the round-trip")
+        XCTAssertTrue(loaded.isInvariantHeld(), "the loaded tree holds specs == leafIDs")
+        let backup = url.appendingPathExtension("corrupt")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: backup.path),
+            "a good current-version load writes no .corrupt sidecar",
+        )
+    }
+
+    /// Garbage / non-JSON bytes → `loadTree()` returns the default AND copies the file aside as `.corrupt`
+    /// (it never throws). Pins the validate-then-drop + preserve-aside contract on the live load path.
+    func testLoadTreeGarbageResetsToDefaultAndWritesCorruptSidecar() throws {
+        let url = try tempURL()
+        try Data("{ this is not valid tree json ".utf8).write(to: url, options: [.atomic])
+        let persistence = WorkspacePersistence(fileURL: url)
+
+        let loaded = persistence.loadTree()
+
+        assertIsDefaultTreeShape(loaded, "garbage bytes → the default tree")
+        let backup = url.appendingPathExtension("corrupt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path), "the unrestorable file is preserved aside")
+    }
+
+    /// A FUTURE `schemaVersion` (> current) is un-migratable by this build → safe reset to the default (+ sidecar).
+    func testLoadTreeFutureVersionSafelyResets() throws {
+        let url = try tempURL()
+        let persistence = WorkspacePersistence(fileURL: url)
+        var future = TreeWorkspace.defaultWorkspace()
+        future.schemaVersion = TreeWorkspace.currentSchemaVersion + 99
+        try persistence.save(future)
+
+        let loaded = persistence.loadTree()
+
+        assertIsDefaultTreeShape(loaded, "a future tree schemaVersion → safe default reset")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: url.appendingPathExtension("corrupt").path),
+            "the future-version file is preserved aside",
+        )
+    }
+
+    /// A file whose leaf count EXCEEDS ``WorkspaceTransfer/maxItems`` is bounded-reset (a corrupt file must
+    /// not make the store eagerly allocate a session per leaf on launch).
+    func testLoadTreeExceedingMaxItemsIsBoundedReset() throws {
+        let url = try tempURL()
+        let persistence = WorkspacePersistence(fileURL: url)
+        // A single session whose one tab carries maxItems + 1 leaves (a deep split), via the tree ops.
+        var tree = TreeWorkspace.defaultWorkspace()
+        let firstLeaf = try XCTUnwrap(tree.allPaneIDs().first)
+        // Split the active pane repeatedly to grow leaves past the ceiling. Each split adds one leaf.
+        for _ in 0...(WorkspaceTransfer.maxItems) {
+            let active = tree.activeSession?.activeTab?.activePane ?? firstLeaf
+            let (next, _) = WorkspaceTreeOps.splitPane(
+                active, axis: .horizontal,
+                newSpec: PaneSpec(kind: .terminal, title: "x"), in: tree,
+            )
+            tree = next
+        }
+        XCTAssertGreaterThan(tree.allPaneIDs().count, WorkspaceTransfer.maxItems, "the fixture is over the ceiling")
+        try persistence.save(tree)
+
+        let loaded = persistence.loadTree()
+        assertIsDefaultTreeShape(loaded, "an over-ceiling file is bounded-reset to the default")
+    }
+
+    /// Asserts `tree` has the default-workspace SHAPE (one "Local" session, one tab, one terminal leaf) —
+    /// not value-equality, since `defaultWorkspace()` mints fresh random ids on every call.
+    private func assertIsDefaultTreeShape(
+        _ tree: TreeWorkspace,
+        _ message: String = "",
+        file: StaticString = #filePath,
+        line: UInt = #line,
+    ) {
+        XCTAssertEqual(tree.schemaVersion, TreeWorkspace.currentSchemaVersion, message, file: file, line: line)
+        XCTAssertEqual(tree.sessions.count, 1, "default tree has one session. \(message)", file: file, line: line)
+        XCTAssertEqual(tree.allPaneIDs().count, 1, "default tree has one leaf. \(message)", file: file, line: line)
+        XCTAssertEqual(
+            tree.sessions.first?.tabs.count,
+            1,
+            "default tree has one tab. \(message)",
+            file: file,
+            line: line,
+        )
+        guard let leaf = tree.allPaneIDs().first else {
+            XCTFail("default tree must have one leaf. \(message)", file: file, line: line)
+            return
+        }
+        XCTAssertEqual(
+            tree.spec(for: leaf)?.kind,
+            .terminal,
+            "default leaf is a terminal. \(message)",
+            file: file,
+            line: line,
+        )
     }
 
     // MARK: - Helpers

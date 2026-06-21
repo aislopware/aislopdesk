@@ -10,8 +10,9 @@ import Foundation
 /// **store** depends on, so the store's session-lifecycle logic (materialize / teardown / scenePhase
 /// fan-out / video cap) can be exercised with a `FakePaneSession` that never opens a socket. The
 /// production conformer ``LivePaneSession`` wraps the proven per-session objects verbatim
-/// (one `ConnectionViewModel` + `TerminalViewModel` + `InputBarModel`, plus an optional inspector
-/// for `.claudeCode` or a `RemoteWindowModel` for `.remoteGUI`).
+/// (one `ConnectionViewModel` + `TerminalViewModel` + `InputBarModel`, plus a latent inspector for a
+/// `.terminal` — opened dynamically when a `claude` is detected, W11 — or a `RemoteWindowModel` for
+/// `.remoteGUI`).
 ///
 /// `@MainActor` because every conformer owns `@Observable` UI state bound on the main actor; `AnyObject`
 /// because the registry stores it by reference (1:1 with a ``PaneID``, never copied, never shared).

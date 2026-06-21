@@ -104,6 +104,71 @@ public enum WireMessage: Equatable, Sendable {
     /// estimate stays honest under an output flood.
     case pong(timestampMS: UInt64)
 
+    /// A per-command "Block" METADATA update (WB1, type 28, host → client, CONTROL). The host
+    /// segments the OUTBOUND PTY byte stream into Warp-style per-command blocks (via the OSC 133
+    /// A/B/C/D marks) and emits this on each block create / update / complete. It carries ONLY the
+    /// metadata — NOT the output bytes (those are fetched on demand via ``requestBlockOutput(index:)``
+    /// → ``blockOutput(index:output:)``), so the CONTROL channel never floods with command output.
+    ///
+    /// - `index` is the 0-based block index in the channel's segmenter lifetime (the request key).
+    /// - `exitCode` is the command's `$?` (nil while running / if the shell did not report one).
+    /// - `durationMS` is the host-measured C→D wall-clock time (nil while still running).
+    /// - `complete` is true once the matching OSC 133 `D` arrived.
+    /// - `outputLen` is how many output bytes the host currently holds for this block (for the UI to
+    ///   show a size / decide whether to fetch); the host caps captured output at the segmenter's
+    ///   256 KiB ceiling.
+    /// - `commandText` is the typed command line (capped). Rides CONTROL like ``commandStatus``.
+    case commandBlock(
+        index: UInt32,
+        exitCode: Int32?,
+        durationMS: UInt32?,
+        complete: Bool,
+        outputLen: UInt32,
+        commandText: String,
+    )
+
+    /// A request for a Block's captured OUTPUT bytes (WB1, type 15, client → host, CONTROL). The
+    /// client sends this when the user expands / copies a block whose `index` it learned from a
+    /// ``commandBlock`` metadata update; the host replies with ``blockOutput(index:output:)`` from
+    /// its bounded per-channel block ring (empty output if that block was evicted / never existed).
+    case requestBlockOutput(index: UInt32)
+
+    /// A Block's captured OUTPUT bytes (WB1, type 29, host → client, CONTROL), in reply to a
+    /// ``requestBlockOutput(index:)``. `output` is the RAW captured VT bytes (control sequences
+    /// preserved), capped at the segmenter's 256 KiB ceiling; an empty `output` means the block was
+    /// evicted from the ring or never existed. Rides CONTROL like the other inline signals.
+    case blockOutput(index: UInt32, output: Data)
+
+    /// The PTY's current foreground-process basename (W9, type 26, host → client, CONTROL).
+    /// The COARSE Claude-Code detection path: the host watches the PTY master's foreground
+    /// process group (`tcgetpgrp` → `proc_name`, W10) and emits this on a basename edge —
+    /// `"claude"` means a `claude` is in the foreground, `""` (or any other name) clears it.
+    /// The client derives a `ClaudeStatus` FLOOR from the name (claude present → at least
+    /// `.idle`); the richer state arrives via ``claudeStatus(state:kind:label:)``. Rides the
+    /// CONTROL channel like ``title``/``commandStatus`` (an output flood can't delay it). The
+    /// pane identity is carried by the mux channel envelope, not in this body.
+    case foregroundProcess(name: String)
+
+    /// A rich Claude-Code agent-status update (W9, type 27, host → client, CONTROL). The
+    /// HOOK path (docs/41 §4.2): the host folds Claude Code hook events (`Notification` /
+    /// `Stop` / `SessionEnd`, via `AislopdeskInspector.HookParser`, W8/W10) into a coarse
+    /// state + a notification class + an optional human-readable label.
+    ///
+    /// - `state` is the raw `UInt8` of `AislopdeskAgentDetect.ClaudeStatus.urgency`
+    ///   (`0 none / 1 idle / 2 done / 3 working / 4 needsPermission`). The wire layer is kept
+    ///   minimal — it carries the raw byte, NOT the enum (`AislopdeskProtocol` does not depend
+    ///   on `AislopdeskAgentDetect`); the client maps it back. An unknown future state byte is
+    ///   carried verbatim (forward-tolerant) — the consumer, not the decoder, clamps it.
+    /// - `kind` is the notification class (`0 none / 1 permission / 2 waitingForInput /
+    ///   3 other`), mirroring `ClaudeHookEvent.NotificationKind`; `0` for non-Notification
+    ///   transitions (Stop/SessionEnd/SessionStart).
+    /// - `label` is the (often empty) Stop `last_assistant_message` / Notification message,
+    ///   capped to the wire's UInt16 length field. Carried as length-prefixed UTF-8 so an
+    ///   empty label is unambiguous.
+    case claudeStatus(state: UInt8, kind: UInt8, label: String)
+
+    /// The semantic state of the foreground command in a pane's shell (from OSC 133).
+
     /// The semantic state of the foreground command in a pane's shell (from OSC 133).
     public enum CommandStatus: Equatable, Sendable {
         /// OSC 133;C — a command began executing (preexec). The pane is RUNNING.
@@ -126,12 +191,17 @@ public enum WireMessage: Equatable, Sendable {
         case .ack: 12
         case .bye: 13
         case .ping: 14
+        case .requestBlockOutput: 15
         case .helloAck: 20
         case .title: 21
         case .bell: 22
         case .commandStatus: 23
         case .pong: 24
         case .notification: 25
+        case .foregroundProcess: 26
+        case .claudeStatus: 27
+        case .commandBlock: 28
+        case .blockOutput: 29
         }
     }
 
@@ -147,12 +217,17 @@ public enum WireMessage: Equatable, Sendable {
              .ack,
              .bye,
              .ping,
+             .requestBlockOutput,
              .helloAck,
              .title,
              .bell,
              .commandStatus,
              .pong,
-             .notification:
+             .notification,
+             .foregroundProcess,
+             .claudeStatus,
+             .commandBlock,
+             .blockOutput:
             .control
         }
     }

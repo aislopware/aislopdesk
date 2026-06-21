@@ -51,6 +51,11 @@ public struct AislopdeskClientApp: App {
     #endif
     /// Polls the host window list to auto-switch a layout when its trigger app launches.
     @State private var appLaunchMonitor: AppLaunchMonitor
+    /// W13: the GUI Settings store, built ONCE at launch so its apply paths run BEFORE the video
+    /// pipeline / any `static let` env flag is forced — folding the persisted client/agent prefs into
+    /// ``EnvConfig/overlay`` and publishing the terminal config to ``TerminalConfigBroadcaster``. The
+    /// Settings scene binds to THIS instance so an in-app edit and the launch-time apply share one store.
+    @State private var preferences: PreferencesStore
     @Environment(\.scenePhase) private var scenePhase
     /// Serializes the iOS background/foreground lifecycle transitions so the LAST phase observed is the
     /// LAST applied: each `handleScenePhase` chains its work behind the previous transition's, so a
@@ -67,9 +72,18 @@ public struct AislopdeskClientApp: App {
         // `AISLOPDESK_NO_VSYNC`, pacer `AISLOPDESK_ADAPTIVE_DEPTH`/`_JITTER_DEPTH`, …) settable remotely
         // for on-device A/B, matching how `automationInputs` already overlays the same args for the seam.
         Self.applyLaunchArgumentEnvironment()
+        // W13: build the GUI Settings store FIRST so its apply paths run before the video pipeline /
+        // any `static let` env flag is forced — it folds the persisted client/agent prefs into
+        // `EnvConfig.overlay` and publishes the terminal config to `TerminalConfigBroadcaster`. A fresh
+        // install has all-default (all-nil video/agent) prefs ⇒ an EMPTY overlay ⇒ behaviour-identical
+        // to today (the golden corpus is unaffected). In automation we still build it (an empty overlay
+        // is inert) so the seam is identical. The Settings scene re-uses this same instance.
+        let preferences = PreferencesStore()
+        _preferences = State(initialValue: preferences)
         // Build the store exactly once with the production session factory. `makeInspector` is now the
-        // live builder (`WorkspaceStore.liveMakeInspector`): a `.claudeCode` pane's read-only inspector
-        // second channel (NWConnection #2) is an `NWByteChannel` → `InspectorClient` over the
+        // live builder (`WorkspaceStore.liveMakeInspector`): a terminal pane's read-only inspector
+        // second channel (NWConnection #2, opened dynamically once a `claude` is detected, W11) is an
+        // `NWByteChannel` → `InspectorClient` over the
         // terminal-port+1 convention (docs/16, docs/20, docs/22 §7), connected LAZILY on appear. The
         // GUARDRAIL holds: the host does not yet serve an inspector port, so the channel simply never
         // completes its handshake against today's `aislopdesk-hostd` and the terminal is unaffected — the
@@ -106,16 +120,20 @@ public struct AislopdeskClientApp: App {
         // The ONE app-global connection (docs/31). Seed its target from the env in automation (so
         // check-macos.sh/check-video.sh keep working), else from the persisted `Workspace.connection`,
         // else the default. Every pane reads `connection.target` for its host/ports.
-        let restored = persistence?.load() // nil in automation ⇒ bootstrap replaces it anyway
+        // W5: the LIVE model is now the v10 ``TreeWorkspace`` (the IDE shell). `loadTree()` peeks the
+        // persisted schema version and either decodes a v10 tree directly or migrates an existing v9
+        // canvas file forward (preserving every PaneID + PaneSpec); a fresh launch gets the default tree.
+        let restoredTree = persistence?.loadTree() // nil in automation ⇒ bootstrap replaces it anyway
         // The automation inputs (env + `AISLOPDESK_…=value` launch args), so the app-global target is
         // seeded identically whether the seam is driven by environment or by `open --args` (SSH/remote).
         let env = WorkspaceStore.automationInputs()
         let seedTarget: ConnectionTarget = isAutomation
             ? (WorkspaceStore.videoTarget(from: env)?.0 ?? WorkspaceStore.terminalTarget(from: env) ?? .default)
-            : (restored?.connection ?? .default)
+            : (restoredTree?.activeSession?.connection ?? .default)
         let appConnection = AppConnection(registry: muxRegistry, seed: seedTarget)
         let store = WorkspaceStore(
-            restoring: restored,
+            restoringTree: restoredTree,
+            liveModel: .tree,
             makeSession: WorkspaceStore.liveMakeSession(
                 makeInspector: WorkspaceStore.liveMakeInspector,
                 muxRegistry: muxRegistry,
@@ -129,6 +147,20 @@ public struct AislopdeskClientApp: App {
             // releases the stack before a same-tick sibling is admitted (avoids a transient cap+1).
             videoTeardownSettle: .milliseconds(250),
         )
+        // WB3 BOOKMARKS: wire the per-pane block-bookmark persistence to the live PreferencesStore, keyed
+        // by the per-SESSION scope key the store resolves (`LivePaneSession.bookmarkScopeKey`) — NOT the
+        // stable pane id. The block-index space restarts at 0 each session, so persisting raw indices under
+        // a relaunch-stable pane id would re-star unrelated commands; a fresh session token instead starts
+        // with no stars (and a within-launch reconnect keeps the same token, matching the PreferencesStore
+        // `sessionUUID → [block index]` contract). `wireMaterializedLeaf` seeds each pane's block model from
+        // this and persists back on every star toggle. CLIENT-only display state — never touches the env
+        // overlay / sidecar / golden corpus.
+        store.blockBookmarks.load = { [weak preferences] scopeKey in
+            preferences?.blockBookmarks(for: scopeKey) ?? []
+        }
+        store.blockBookmarks.save = { [weak preferences] scopeKey, indices in
+            preferences?.setBlockBookmarks(indices, for: scopeKey)
+        }
         // Automation seams (docs/22 §7): only when the env vars are present do we let the bootstrap
         // REPLACE the restored workspace with the autoconnect/video shape (a normal launch restores the
         // persisted tree untouched). With nil persistence above, the bootstrap reconcile's
@@ -162,6 +194,30 @@ public struct AislopdeskClientApp: App {
             guard SettingsKey.oscNotificationsEnabled else { return }
             explicitNotifier.notifyExplicit(
                 paneIDKey: paneID.raw.uuidString, paneTitle: paneTitle, title: title, body: body,
+            )
+        }
+        // B3 LONG-COMMAND NOTIFICATION SINK: the store already applied the focus gate (unfocused + long +
+        // enabled), so this thin sink just posts — tagged with the pane id so a click reveals it (the same
+        // router already installed above). Reuses the notifier so its lazy-auth state is shared.
+        store.onLongCommandNotify = { paneIDKey, paneTitle, exitCode, durationMS in
+            explicitNotifier.notifyIfLong(
+                paneTitle: paneTitle, exitCode: exitCode, durationMS: durationMS, paneIDKey: paneIDKey,
+            )
+        }
+        // P3 AGENT-ATTENTION SINK: on a needsPermission/done EDGE (the store already coalesced the flap),
+        // post a notification — title = pane name, body = "needs your input" / "finished" (+ the cheap
+        // host blocking line when present). Reuses the same notifier so lazy-auth state is shared; the
+        // click reveals the pane via the router already installed above (revealPane). Respects the OSC
+        // notification toggle (read live).
+        store.onAgentAttention = { paneIDKey, name, needsInput, detail in
+            guard SettingsKey.oscNotificationsEnabled else { return }
+            let headline = needsInput ? "needs your input" : "finished"
+            let body: String = {
+                guard let detail, !detail.isEmpty else { return headline }
+                return "\(headline) — \(detail)"
+            }()
+            explicitNotifier.notifyExplicit(
+                paneIDKey: paneIDKey, paneTitle: name, title: name, body: body,
             )
         }
         #endif
@@ -242,6 +298,15 @@ public struct AislopdeskClientApp: App {
                         connection.markConnectedForAutomation()
                     }
                 }
+                // AUTO-RECONNECT (Goal B): on a normal (non-automation) launch, silently re-connect to
+                // the most-recently-used host so the user doesn't have to press Connect again. The
+                // automation seam keeps precedence — this task is a no-op under any AISLOPDESK_*AUTOCONNECT*
+                // env, so check-macos.sh / check-video.sh are unaffected. The escape hatch
+                // AISLOPDESK_SKIP_AUTO_RECONNECT=1 suppresses it for tests or headless runs.
+                .task {
+                    guard !Self.hasAutomationEnvironment() else { return }
+                    await connection.connectIfSavedTarget()
+                }
             #if os(macOS)
                 // AUTOMATION ONLY (env-gated): bring the window to front + make it key at launch so the
                 // NavigationSplitView detail subtree appears and the .remoteGUI pane's connect-on-appear
@@ -273,13 +338,26 @@ public struct AislopdeskClientApp: App {
         // state + an overlay), so it is wired there, not here.
         .commands { WorkspaceCommands() }
         #if os(macOS)
-            .windowResizability(.contentSize)
+            // W5: coding-IDE chrome — a hidden/unified title bar with full-size content so the traffic
+            // lights float over the sessions sidebar (the `SplitWorkspaceView` shell draws to the window
+            // edge). `.automatic` resizability replaces `.contentSize` so the split content can be sized
+            // freely by the user, not pinned to its intrinsic size.
+            .windowStyle(.hiddenTitleBar)
+            .windowResizability(.automatic)
+            // Open at a sensible size. WITHOUT this, `.automatic` resizability sizes a fresh window to the
+            // content's INITIAL ideal — and when the workspace shell is the first content shown (the
+            // autoconnect/automation path dismisses the connect gate immediately), that ideal is the
+            // not-yet-laid-out `NavigationSplitView`'s near-zero height, so the window opens collapsed to
+            // titlebar-only (HW-found on a 1× display: a 30px-tall window, no visible workspace). A
+            // `.defaultSize` pins the initial frame so the shell always opens usable; the user can still
+            // resize freely. (The manual-connect path was unaffected because the gate sized the window first.)
+            .defaultSize(width: 1280, height: 820)
         #endif
 
         #if os(macOS)
         // The Settings scene (⌘,): canvas / notification / advanced prefs that retire the env-var gates
         // into real, discoverable @AppStorage settings (SettingsKey is the shared source of truth).
-        Settings { SettingsView() }
+        Settings { SettingsView(store: preferences) }
         #endif
     }
 
@@ -313,6 +391,11 @@ public struct AislopdeskClientApp: App {
     /// closed), then persist the tree; foreground → `resumeAll()` (byte-exact + inspector re-tail).
     /// On macOS scene phase is informational only.
     private func handleScenePhase(_ phase: ScenePhase) {
+        // B3: keep the store's app-active flag in step with the scene phase so the completion focus gate
+        // (badge an unfocused pane / notify only a backgrounded long command) knows whether the user is
+        // looking at the app. Setting it `true` on `.active` also clears the focused leaf's pending badge
+        // (the store's `isAppActive` didSet). Cross-platform — read before the per-platform fan-out below.
+        store.isAppActive = (phase == .active)
         #if os(iOS)
         // Chain behind the previous transition so a queued resume can't start until the preceding pause
         // has fully completed (and vice-versa). The new Task is @MainActor-isolated (inherits from this

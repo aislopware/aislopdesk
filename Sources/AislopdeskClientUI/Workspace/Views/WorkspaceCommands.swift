@@ -38,22 +38,42 @@ public struct WorkspaceCommands: Commands {
     @FocusedValue(\.workspaceStore) private var store: WorkspaceStore?
     @FocusedValue(\.commandPaletteToggle) private var paletteToggle: CommandPaletteToggle?
     @FocusedValue(\.cheatSheetToggle) private var cheatSheetToggle: CommandPaletteToggle?
+    @FocusedValue(\.peekReplyToggle) private var peekReplyToggle: CommandPaletteToggle?
 
     public init() {}
 
     public var body: some Commands {
-        // REPLACE the default File > New Window (⌘N): in a one-window canvas app a second window is
-        // never what ⌘N means — it now creates panes, per kind. ⌘N mirrors ⌘T (the Pane-menu alias)
-        // for terminals; ⇧⌘N / ⌥⌘N create the other kinds directly (every prior creation path was
-        // Terminal-only).
+        // REPLACE the default File > New Window (⌘N): in a one-window IDE app a second window is never
+        // what ⌘N / ⌘T mean — they create tabs/panes. The LIVE IDE shell (`.tree`) routes through the
+        // single ``WorkspaceBindingRegistry``; the retained-but-dead canvas keeps its ``WorkspaceCommand``
+        // items so the canvas tests/menu stay intact.
         CommandGroup(replacing: .newItem) {
-            commandButton("New Pane", .newPaneDefault)
-            Divider()
-            commandButton("New Terminal Pane", .newPane(.terminal))
-            commandButton("New Claude Code Pane", .newPane(.claudeCode))
-            commandButton("New Remote Window Pane", .newPane(.remoteGUI))
-            Divider()
-            commandButton("Duplicate Pane", .duplicatePane)
+            if store?.liveModel == .canvas {
+                commandButton("New Pane", .newPaneDefault)
+                Divider()
+                commandButton("New Terminal Pane", .newPane(.terminal))
+                commandButton("New Remote Window Pane", .newPane(.remoteGUI))
+                Divider()
+                commandButton("Duplicate Pane", .duplicatePane)
+            } else {
+                actionButton("New Tab", .newTab)
+                actionButton("New Session", .newSession)
+                Divider()
+                actionButton("Split Right", .splitRight)
+                actionButton("Split Down", .splitDown)
+                Divider()
+                Button("Close Pane") {
+                    guard let store else {
+                        #if os(macOS)
+                        NSApp.keyWindow?.performClose(nil)
+                        #endif
+                        return
+                    }
+                    WorkspaceBindingRegistry.route(.closePane, to: store)
+                }
+                .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .closePane)?.shortcut))
+                actionButton("Close Tab", .closeTab)
+            }
         }
         #if os(macOS)
         // Portable workspace backup / share, next to the OS's import/export menu slot.
@@ -71,23 +91,127 @@ public struct WorkspaceCommands: Commands {
         // scene's toggle so it targets the key window; disabled when no workspace window is key.
         CommandGroup(after: .toolbar) {
             Button("Command Palette") { paletteToggle?.toggle() }
-                .keyboardShortcut("k", modifiers: .command)
+                .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .commandPalette)?.shortcut))
                 .disabled(paletteToggle == nil)
             Button("Keyboard Shortcuts") { cheatSheetToggle?.toggle() }
-                .keyboardShortcut("/", modifiers: .command)
+                .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .cheatSheet)?.shortcut))
                 .disabled(cheatSheetToggle == nil)
-            Divider()
-            // The canvas interaction prefs, surfaced app-globally for discoverability — the SAME
-            // @AppStorage keys the per-pane pill menu toggles, so the two surfaces cannot drift.
-            // Bound Toggles render as native checkmarked menu items.
-            SnapPreferenceToggles()
+            actionButton("Toggle Sidebar", .toggleSidebar)
+            // The canvas interaction prefs are inert on the tree shell — surface them only on the
+            // retained-but-dead canvas (the SAME @AppStorage keys the per-pane pill menu toggles).
+            if store?.liveModel == .canvas {
+                Divider()
+                SnapPreferenceToggles()
+            }
         }
         // The Pane menu reads as a workspace-level menu alongside the OS chrome. `CommandMenu`'s
-        // trailing closure is a `@ViewBuilder` (Buttons + Dividers), not nested `Commands` — every
-        // Button funnels its `WorkspaceCommand` through `apply(_:to:)`.
+        // trailing closure is a `@ViewBuilder` (Buttons + Dividers), not nested `Commands`. The LIVE IDE
+        // shell (`.tree`) renders the registry-driven tree menu; the canvas keeps its `apply(_:to:)` menu.
         CommandMenu("Pane") {
-            paneMenu
+            if store?.liveModel == .canvas {
+                paneMenu
+            } else {
+                treePaneMenu
+            }
         }
+    }
+
+    // MARK: - Tree pane menu (the LIVE IDE shell — every item routes through WorkspaceBindingRegistry)
+
+    /// The IDE-shell `Pane` menu, every item sourced from + routed through the single
+    /// ``WorkspaceBindingRegistry`` (so the chord glyph the menu shows can never drift from the chord that
+    /// actually fires). Grouped panes / tabs / sessions / focus / view, with the ⌘1…⌘9 select-tab chords
+    /// surfaced as a submenu.
+    @ViewBuilder
+    private var treePaneMenu: some View {
+        actionButton("Split Right", .splitRight)
+        actionButton("Split Down", .splitDown)
+        actionButton("Break Pane to Tab", .breakPaneToTab)
+        // Floating panes (zellij toggle-float / new floating pane). A registry binding fires ONLY via its
+        // menu item (there is no NSEvent monitor — sync-input / jumpToAttention prove the pattern), so these
+        // two menu items are what make ⌘⇧F / ⌃⌘F actually dispatch.
+        actionButton("Float Pane", .toggleFloat)
+        actionButton("New Floating Pane", .spawnFloating)
+        actionButton("Rename Tab…", .renamePane) // ITEM B1: ⌘⇧R renames the active tab on the tree shell
+
+        // Layouts (tmux/zellij select-layout): re-tile the active tab's panes into an algorithmic layout.
+        // The five named presets are menu/palette-only (no chord); "Cycle Layout" carries ⌃⌘L. A registry
+        // binding fires ONLY via its menu item (no NSEvent monitor — same as float / sync-input), so THIS
+        // submenu is what makes ⌃⌘L actually dispatch; the "Cycle Layout" item is REQUIRED.
+        Menu("Layouts") {
+            actionButton("Even Horizontal", .applyLayout(.evenHorizontal))
+            actionButton("Even Vertical", .applyLayout(.evenVertical))
+            actionButton("Main Vertical", .applyLayout(.mainVertical))
+            actionButton("Main Horizontal", .applyLayout(.mainHorizontal))
+            actionButton("Tiled", .applyLayout(.tiled))
+            Divider()
+            actionButton("Cycle Layout", .cycleLayout)
+        }
+
+        Divider()
+
+        actionButton("Focus Left", .focusLeft)
+        actionButton("Focus Right", .focusRight)
+        actionButton("Focus Up", .focusUp)
+        actionButton("Focus Down", .focusDown)
+
+        Divider()
+
+        actionButton("New Tab", .newTab)
+        actionButton("Next Tab", .nextTab)
+        actionButton("Previous Tab", .prevTab)
+        Menu("Select Tab") {
+            ForEach(1...9, id: \.self) { n in
+                actionButton("Tab \(n)", .selectTab(n))
+            }
+        }
+
+        Divider()
+
+        actionButton("New Session", .newSession)
+        actionButton("Maximize Pane", .toggleZoom)
+        // Sync Input to All Panes (⌘⇧I): fan every keystroke in the active tab to all its sibling panes
+        // (zellij's ToggleActiveSyncTab). Sourced from the registry so the chord glyph + the fired chord
+        // can't drift — and so the chord actually dispatches (a registry binding fires ONLY via this menu;
+        // there is no NSEvent monitor). The live on/off state shows in the tab bar + pane status bar.
+        actionButton("Sync Input to All Panes", .toggleSyncInput)
+        // Jump to Pane Needing Attention (⌘⇧U, P3): focus the oldest pane that is blocked
+        // (needsPermission) or done across all tabs/sessions — the supervision "take me to who needs me".
+        actionButton("Jump to Pane Needing Attention", .jumpToAttention)
+        // Peek & Reply (⌘⇧J, P4): open the inline overlay over the oldest blocked pane so the human ANSWERS
+        // it without a context switch. Like Command Palette, this is a VIEW @State overlay reached through a
+        // focused-scene toggle — NOT `apply(_:to:)` — so it routes through `peekReplyToggle`, not
+        // `actionButton`. A registry binding fires ONLY via its menu item (no NSEvent monitor — same as
+        // sync-input / jumpToAttention), so THIS item is what makes ⌘⇧J actually dispatch; it is REQUIRED.
+        Button("Peek & Reply") { peekReplyToggle?.toggle() }
+            .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .peekAndReply)?.shortcut))
+            .disabled(peekReplyToggle == nil)
+
+        Divider()
+
+        // WB2 Warp-style Blocks: the Command Navigator + jump-to-block prev/next, targeting the active
+        // terminal pane (the chord glyph is registry-derived, so the menu + the fired chord can't drift).
+        actionButton("Command Navigator", .commandNavigator)
+        actionButton("Jump to Previous Block", .jumpPreviousBlock)
+        actionButton("Jump to Next Block", .jumpNextBlock)
+        // Copy Mode (P5b, ⌘⇧C): arm modal keyboard scrollback navigation over the active terminal pane. A
+        // registry binding fires ONLY via its menu item (no NSEvent monitor — same as sync-input / float),
+        // so THIS item is what makes ⌘⇧C actually dispatch; it is REQUIRED, not optional.
+        actionButton("Copy Mode", .toggleCopyMode)
+    }
+
+    /// A menu `Button` for a tree ``WorkspaceAction`` that routes through ``WorkspaceBindingRegistry`` and
+    /// derives its key equivalent from the SAME registry binding (so the displayed chord and the fired
+    /// chord cannot drift). Disabled when no workspace store is key.
+    private func actionButton(_ title: String, _ action: WorkspaceAction) -> some View {
+        Button(title) {
+            if let store { WorkspaceBindingRegistry.route(action, to: store) }
+        }
+        .disabled(store == nil)
+        // W13: derive the shortcut from the OVERRIDE-AWARE resolution so a user rebind (Settings ▸
+        // Keyboard Shortcuts → ``KeybindingPreferences``) updates the menu glyph + the fired chord
+        // together. Empty overrides ⇒ the registry default (W6 behaviour unchanged).
+        .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: action)?.shortcut))
     }
 
     // MARK: - Pane menu (tabs are gone — everything is on the single canvas)
@@ -151,8 +275,10 @@ public struct WorkspaceCommands: Commands {
         // Viewport bookmarks: recall items are titled with the LIVE bookmark name (the focused
         // pane's title at save time) and disabled while their slot is empty; save items always
         // overwrite. The chords (⌘n / ⇧⌘n) derive from the bindings table like every other item.
-        // Named layout presets: switch to a saved canvas, or snapshot the current one.
-        Menu("Layouts") {
+        // Named layout presets: switch to a saved canvas, or snapshot the current one. Titled "Saved
+        // Layouts" so it never collides with the LIVE `.tree` shell's "Layouts" re-tile submenu (the two
+        // shells are mutually exclusive, but distinct titles keep the grep / revival clear).
+        Menu("Saved Layouts") {
             Button("Save Current Layout…") {
                 if let store { apply(.saveLayout, to: store) }
             }

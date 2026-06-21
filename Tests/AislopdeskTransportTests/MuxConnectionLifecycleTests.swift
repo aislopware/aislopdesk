@@ -171,6 +171,151 @@ final class MuxConnectionLifecycleTests: XCTestCase {
         await client.close()
     }
 
+    // MARK: - S3 detach / link-drop routing tests
+
+    /// (a) detachShellsOnLinkDrop=true + clean FIN (error==nil): DATA-link end MUST fire
+    /// linkDownHandler and MUST NOT call hostCloseHandler per-channel. HostServer.handleLinkDown
+    /// will then detach the sessions; the shells survive rather than being killed.
+    func testDetachModeCleanFINFiresLinkDownNotHostClose() async throws {
+        let (cc, hc) = InMemoryMuxLink.pair()
+        let (cd, hd) = InMemoryMuxLink.pair()
+        let client = MuxNWConnection(role: .client, controlLink: cc, dataLink: cd)
+        let host = MuxNWConnection(role: .host, controlLink: hc, dataLink: hd)
+        let reaped = IDRecorder()
+        let linkDownCounter = Counter()
+        await host.setDetachShellsOnLinkDrop(true)
+        await host.setHostOpenHandler { open in Task { await host.sendOpenAck(open.channelID, accepted: true) } }
+        await host.setHostCloseHandler { id in reaped.add(id) }
+        await host.setLinkDownHandler { linkDownCounter.bump() }
+        await client.start()
+        await host.start()
+
+        // Open a channel so the host has a live session to (not-)kill.
+        _ = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+        try await pollUntil { await host.hasLiveChannels }
+
+        // Simulate a CLEAN FIN: close the client-side data link so its peer (hd) gets error==nil.
+        cd.close() // sends finish (no error) to hd's receiveChunks → finishLink(.data, error:nil)
+        try await pollUntil { linkDownCounter.value >= 1 }
+        try await Task.sleep(for: .milliseconds(40)) // let any stray hostCloseHandler calls settle
+
+        XCTAssertEqual(
+            linkDownCounter.value, 1,
+            "clean FIN with detach=true must fire linkDownHandler exactly once",
+        )
+        XCTAssertTrue(
+            reaped.ids.isEmpty,
+            "clean FIN with detach=true must NOT call hostCloseHandler per-channel (detach, not kill)",
+        )
+        _ = (cc, hc)
+    }
+
+    /// (b) detachShellsOnLinkDrop=true + hard error (TCP RST): DATA-link end MUST fire
+    /// linkDownHandler and MUST NOT call hostCloseHandler per-channel.
+    func testDetachModeHardErrorFiresLinkDownNotHostClose() async throws {
+        let (cc, hc) = InMemoryMuxLink.pair()
+        let (cd, hd) = InMemoryMuxLink.pair()
+        let client = MuxNWConnection(role: .client, controlLink: cc, dataLink: cd)
+        let host = MuxNWConnection(role: .host, controlLink: hc, dataLink: hd)
+        let reaped = IDRecorder()
+        let linkDownCounter = Counter()
+        await host.setDetachShellsOnLinkDrop(true)
+        await host.setHostOpenHandler { open in Task { await host.sendOpenAck(open.channelID, accepted: true) } }
+        await host.setHostCloseHandler { id in reaped.add(id) }
+        await host.setLinkDownHandler { linkDownCounter.bump() }
+        await client.start()
+        await host.start()
+
+        _ = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+        try await pollUntil { await host.hasLiveChannels }
+
+        // Simulate a hard failure (TCP RST): error propagates to hd's receiveChunks.
+        cd.fail()
+        try await pollUntil { linkDownCounter.value >= 1 }
+        try await Task.sleep(for: .milliseconds(40))
+
+        XCTAssertEqual(
+            linkDownCounter.value, 1,
+            "hard error with detach=true must fire linkDownHandler exactly once",
+        )
+        XCTAssertTrue(
+            reaped.ids.isEmpty,
+            "hard error with detach=true must NOT call hostCloseHandler per-channel (detach, not kill)",
+        )
+        _ = (cc, hc)
+    }
+
+    /// (c) detachShellsOnLinkDrop=false (S1 default): a DATA-link end MUST call hostCloseHandler
+    /// per-channel (kill the shell) and linkDownHandler fires ONLY for a hard error, not a clean FIN.
+    func testS1ModeKillsChannelsOnDataLinkEndAndLinkDownOnlyOnError() async throws {
+        let (cc, hc) = InMemoryMuxLink.pair()
+        let (cd, hd) = InMemoryMuxLink.pair()
+        let client = MuxNWConnection(role: .client, controlLink: cc, dataLink: cd)
+        let host = MuxNWConnection(role: .host, controlLink: hc, dataLink: hd)
+        let reaped = IDRecorder()
+        let linkDownCounter = Counter()
+        await host.setDetachShellsOnLinkDrop(false)
+        await host.setHostOpenHandler { open in Task { await host.sendOpenAck(open.channelID, accepted: true) } }
+        await host.setHostCloseHandler { id in reaped.add(id) }
+        await host.setLinkDownHandler { linkDownCounter.bump() }
+        await client.start()
+        await host.start()
+
+        let (dataCh, _) = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+        try await pollUntil { await host.hasLiveChannels }
+
+        // Clean FIN: S1 must kill the channel but NOT fire linkDownHandler.
+        cd.close()
+        try await pollUntil { !reaped.ids.isEmpty }
+        try await Task.sleep(for: .milliseconds(40))
+
+        XCTAssertTrue(
+            reaped.ids.contains(dataCh.channelID),
+            "S1 mode must call hostCloseHandler to kill the channel on a DATA-link clean FIN",
+        )
+        XCTAssertEqual(
+            linkDownCounter.value, 0,
+            "S1 mode must NOT fire linkDownHandler on a clean FIN (error==nil)",
+        )
+        _ = (cc, hc)
+    }
+
+    /// (d) Explicit per-channel channelClose (.lifecycle(.closed) in route) MUST still call
+    /// hostCloseHandler (kill that pane's shell) regardless of detachShellsOnLinkDrop. Only the
+    /// whole-link drop changes behaviour; a deliberate single-pane ⌘W close is always a hard kill.
+    func testExplicitChannelCloseStillCallsHostCloseHandlerWithDetachEnabled() async throws {
+        let (cc, hc) = InMemoryMuxLink.pair()
+        let (cd, hd) = InMemoryMuxLink.pair()
+        let client = MuxNWConnection(role: .client, controlLink: cc, dataLink: cd)
+        let host = MuxNWConnection(role: .host, controlLink: hc, dataLink: hd)
+        let reaped = IDRecorder()
+        let linkDownCounter = Counter()
+        await host.setDetachShellsOnLinkDrop(true) // detach mode ON
+        await host.setHostOpenHandler { open in Task { await host.sendOpenAck(open.channelID, accepted: true) } }
+        await host.setHostCloseHandler { id in reaped.add(id) }
+        await host.setLinkDownHandler { linkDownCounter.bump() }
+        await client.start()
+        await host.start()
+
+        let (dataCh, _) = try await client.openChannel(sessionID: UUID(), lastReceivedSeq: 0)
+        try await pollUntil { await host.hasLiveChannels }
+
+        // Client sends an explicit channelClose for this one pane (⌘W / LivePaneSession.close()).
+        await client.closeChannel(dataCh.channelID)
+        try await pollUntil { !reaped.ids.isEmpty }
+        try await Task.sleep(for: .milliseconds(40))
+
+        XCTAssertTrue(
+            reaped.ids.contains(dataCh.channelID),
+            "an explicit per-channel channelClose must still kill the shell even with detach=true",
+        )
+        XCTAssertEqual(
+            linkDownCounter.value, 0,
+            "an explicit channelClose must NOT fire linkDownHandler (not a link drop)",
+        )
+        _ = (cc, cd, hc, hd)
+    }
+
     // MARK: - Helpers
 
     private final class Sentinel: @unchecked Sendable {}

@@ -1,3 +1,4 @@
+import AislopdeskAgentDetect
 import AislopdeskProtocol
 import AislopdeskTransport
 import Foundation
@@ -28,19 +29,90 @@ import Foundation
 /// gate stops issuing `read()`, so the kernel PTY buffer fills and backpressures the shell — the
 /// real fix for the flood); it RESUMES when the drain brings the queue back under the bound.
 ///
+/// ### Detach / reattach (tmux-style survival, C1–C4)
+/// When the client disconnects with `AISLOPDESK_DETACH_ENABLED` on, ``detach()`` is called
+/// instead of ``shutdown()``. It cancels the relay tasks and engages the ReplayBuffer's offline
+/// gate so the PTY drain pauses, but it does NOT stop or close the ``PTYReadLoop`` — `stop()` is
+/// irreversible. The shell (and the read loop, in its paused state) survive. When the client
+/// returns, ``rebindRelay(data:control:)`` replaces the stale sub-channels, clears the stale
+/// out-FIFO/control-out (bytes already in the ReplayBuffer — re-sending would double-replay),
+/// rebuilds the wake streams, and restarts the relay tasks.
+///
 /// `@unchecked Sendable`: mutable state is touched under `taskLock` / `replayLock` / the
 /// ``PausableQueueGate``'s own lock; the PTY/channels are themselves thread-safe.
 final class MuxChannelSession: @unchecked Sendable {
     let channelID: UInt32
     let pty: PTYProcess
-    private let data: MuxSubChannel
-    private let control: MuxSubChannel
+
+    /// The session identity the client sent in the `channelOpen` preamble. Used by
+    /// ``DetachedSessionStore`` and ``HostServer`` to match a returning client to its live
+    /// shell. Immutable after init.
+    private(set) var sessionID: UUID
+
+    /// Whether this session is currently in the detached state (client gone, shell alive).
+    /// Guarded by `taskLock`. A detached session must NOT be `shutdown()`'d — use
+    /// ``detach()`` / ``shutdownDetached()`` from ``DetachedSessionStore.evict`` paths.
+    private(set) var isDetached: Bool = false
+
+    // data/control are var so rebindRelay can swap in new sub-channels on reattach (C3/C4).
+    private var data: MuxSubChannel
+    private var control: MuxSubChannel
 
     /// The per-session ZDOTDIR shim directory (R8 #3), if the zsh shell-integration shim was installed
     /// for this pane. Deleted in ``shutdown()`` once the child has exited — the shell read its rc files
     /// at exec time, so the dir is safe to remove on teardown. Without this, every opened pane leaked one
     /// `aislopdesk-zdotdir-*` dir + 4 files into the temp dir for the host's (long-lived) lifetime.
     private let shimDir: URL?
+
+    /// W10 — whether host-side Claude-Code agent detection (the foreground process-watch) is
+    /// enabled for this channel. When true, ``startRelay()`` spins a low-rate poll that resolves
+    /// the PTY's foreground basename and drives ``ForegroundProcessDetector`` → type-26/27.
+    private let agentDetectEnabled: Bool
+
+    /// The interval between foreground-process samples (~1 Hz; injected so a future test could
+    /// drive it, though the poll itself is never run in a unit test — hang-safety).
+    private let agentPollInterval: Duration
+
+    /// WB1 — whether the additive "Blocks" tap runs for this channel. When false the byte pipeline
+    /// + the live ``HostOutputSniffer`` are byte-identical (the segmenter is never instantiated, no
+    /// type-28/29 ever emitted). Resolved from `AISLOPDESK_BLOCKS` (default-ON) by the owner.
+    private let blocksEnabled: Bool
+
+    /// WB1 — the per-channel "Blocks" tracker (the segmenter + bounded output ring + dedup), or
+    /// `nil` when ``blocksEnabled`` is false. Touched from TWO contexts — the serial read-loop
+    /// thread (`ingest` in `onChunk`) and the control task (`serveOutput` on a `requestBlockOutput`)
+    /// — so it is guarded by ``blocksLock``. A pure value type, so it lives behind the lock.
+    private let blocksLock = NSLock()
+    private var blockTracker: CommandBlockTracker?
+
+    /// P1 — the SINGLE per-pane Claude detector (ONE ``ClaudeStatusMachine``). Fed by ALL detection
+    /// inputs — the foreground poll's `processPresent`, the per-poll `tick` (drives the `.done→.idle`
+    /// decay), and the hook socket's bytes — so the host is the single source of truth (review #1/#9).
+    /// Touched from TWO contexts (the serial `agentWatchTask` and the socket-accept thread when a hook
+    /// POSTs), so it is guarded by `agentDetectLock` — replacing the pre-P1 pair of independent machines
+    /// (`foregroundDetector` + `agentHookHandler`) that fought over the one type-27 stream.
+    private let agentDetectLock = NSLock()
+    private var agentDetector = ClaudePaneDetector()
+
+    /// The foreground-watch poll task (cancel on shutdown).
+    private var agentWatchTask: Task<Void, Never>?
+
+    // MARK: - Agent-control surface state
+
+    /// The last OSC-0/2 title sniffed from the PTY output stream. Updated on the PTY
+    /// read-loop thread under `titleLock`; read by the agent-control `list-panes` verb.
+    private let titleLock = NSLock()
+    private var _currentTitle: String = ""
+
+    /// Observer closures registered by the agent-control `wait` and `subscribe` verbs. Each is
+    /// called with the raw PTY chunk immediately after the sniffer pass (non-destructive, never
+    /// modifies the byte stream). Guarded by `observersLock`.
+    private let observersLock = NSLock()
+    private var outputObservers: [UUID: @Sendable (Data) -> Void] = [:]
+    /// Close-observer closures registered by the agent-control `subscribe` verb. Called once,
+    /// after the PTY read loop has drained to EOF (so all output observers fire before this),
+    /// from the exit task. Guarded by `observersLock`.
+    private var closeObservers: [UUID: @Sendable () -> Void] = [:]
 
     private let taskLock = NSLock()
     private var replay: ReplayBuffer
@@ -182,6 +254,20 @@ final class MuxChannelSession: @unchecked Sendable {
     /// Called once when the child exits so the owner can drop this channel from its map.
     var onExit: (@Sendable (UInt32) -> Void)?
 
+    /// P1 supervision hook — fired whenever this pane's detected Claude status TRANSITIONS to a
+    /// new value (foreground poll, hook POST, or a self-report). The ``HostServer`` sets it (like
+    /// ``onExit``) to fan the cross-pane `agent_status_changed` event to top-level subscribers.
+    /// `nil` by default → no fan-out (the headless smoke daemon never sets it). The closure is
+    /// invoked OUTSIDE `agentDetectLock` to avoid holding the detector lock across the server's
+    /// observer fan-out. Deduping consecutive identical states is the server's responsibility.
+    var onAgentStatusChanged: (@Sendable (ClaudeStatus) -> Void)?
+
+    /// Invokes ``onAgentStatusChanged`` (if set) with `status`. Called from the detector-folding
+    /// sites AFTER `agentDetectLock` is released, only on a real status transition.
+    private func notifyAgentStatusChanged(_ status: ClaudeStatus) {
+        onAgentStatusChanged?(status)
+    }
+
     private enum OutputItem {
         case chunk(bytes: Data, control: [WireMessage])
         case exit(code: Int32)
@@ -189,22 +275,35 @@ final class MuxChannelSession: @unchecked Sendable {
 
     /// - Parameter resizeDebounce: the latest-wins settle window for `TIOCSWINSZ` applies (default
     ///   ~one frame). See ``scheduleResize(cols:rows:px:py:)`` for WHY a host-side debounce exists.
+    /// - Parameter sessionID: the UUID the client included in the `channelOpen` preamble; used by
+    ///   ``DetachedSessionStore`` to match a returning client to its detached shell.
     init(
         channelID: UInt32,
         pty: PTYProcess,
         data: MuxSubChannel,
         control: MuxSubChannel,
+        sessionID: UUID = UUID(),
         resizeDebounce: Duration = .milliseconds(16),
-        replay: ReplayBuffer = ReplayBuffer(),
+        replay: ReplayBuffer = MuxChannelSession.makeReplayBuffer(),
         shimDir: URL? = nil,
+        agentDetectEnabled: Bool = false,
+        agentPollInterval: Duration = .seconds(1),
+        blocksEnabled: Bool = true,
     ) {
         self.channelID = channelID
         self.pty = pty
         self.data = data
         self.control = control
+        self.sessionID = sessionID
         self.resizeDebounce = resizeDebounce
         self.replay = replay
         self.shimDir = shimDir
+        self.agentDetectEnabled = agentDetectEnabled
+        self.agentPollInterval = agentPollInterval
+        self.blocksEnabled = blocksEnabled
+        // WB1: instantiate the per-channel Blocks tracker only when enabled — otherwise the byte
+        // pipeline + sniffer stay byte-identical (no segmenter touches the stream, no emit).
+        blockTracker = blocksEnabled ? CommandBlockTracker() : nil
     }
 
     func startRelay() {
@@ -264,8 +363,9 @@ final class MuxChannelSession: @unchecked Sendable {
         controlSendTask = Task { [weak self] in
             for await _ in controlWakeups {
                 while let batch = self?.takeControlBatch() {
+                    guard let self else { break }
                     for message in batch {
-                        try? await control.send(message)
+                        try? await self.control.send(message)
                     }
                 }
             }
@@ -283,6 +383,28 @@ final class MuxChannelSession: @unchecked Sendable {
                 // grouped-per-sniffer order was already chunk-boundary-dependent; consumers
                 // fold each type independently).
                 let controlMsgs = sniffer.observe(chunk)
+                // Agent-control: cache the latest title from any sniffed title message so
+                // `list-panes` can return it without an extra sniffer pass. Runs on the PTY
+                // read-loop thread (serial) — update under titleLock (read from control socket
+                // handler threads). O(N) over the tiny `controlMsgs` list; happens at most once
+                // per chunk (title dedup is inside HostOutputSniffer).
+                for msg in controlMsgs {
+                    if case let .title(t) = msg {
+                        titleLock.lock()
+                        _currentTitle = t
+                        titleLock.unlock()
+                    }
+                }
+                // Agent-control: fire output observers for the `wait` verb AFTER the sniffer
+                // (so a wait-observer sees the same stream order as the client) and BEFORE the
+                // FIFO append (non-destructive — observers only READ the chunk).
+                notifyOutputObservers(chunk)
+                // WB1: ADDITIVE PARALLEL tap — feed the SAME chunk to the per-channel Blocks
+                // segmenter and enqueue any type-28 `commandBlock` metadata on the CONTROL sender.
+                // Only OBSERVES; the bytes below are forwarded unchanged. `nil` when AISLOPDESK_BLOCKS
+                // is off, so the pipeline stays byte-identical. Kept OFF the data drain (its own
+                // CONTROL FIFO) so block metadata never stalls data sends.
+                feedBlocks(chunk)
                 // Account the chunk in the bounded queue BEFORE enqueueing; if it pushes the FIFO
                 // to/over the bound, PAUSE the read loop so the kernel PTY buffer fills and
                 // backpressures the shell (the real flood fix).
@@ -367,6 +489,11 @@ final class MuxChannelSession: @unchecked Sendable {
                         // flushPendingResize — a periodic ping must not defeat the resize
                         // micro-debounce, and a ping orders against nothing.
                         self.enqueueControl([.pong(timestampMS: timestampMS)])
+                    case let .requestBlockOutput(index):
+                        // WB1: serve the block's retained output (type 29) from the ring, or an
+                        // empty response if evicted / blocks disabled. Orders against nothing — like
+                        // a ping, deliberately NO flushPendingResize so it can't defeat the debounce.
+                        self.serveBlockOutput(index: index)
                     default:
                         self.flushPendingResize()
                     }
@@ -385,6 +512,11 @@ final class MuxChannelSession: @unchecked Sendable {
             // guarantees `.exit` follows the last `.chunk` (the FIFO + single sequential drain preserve
             // that order on the wire). Bounded so a wedged/paused read never hangs exit delivery forever.
             await self?.awaitEOFOrTimeout()
+            // Notify close observers (subscribe verb) AFTER the read loop has drained all output
+            // to the output observers, so subscribers see a complete output stream before the
+            // {"event":"closed"} line. Called here, before enqueueExit, so the ordering matches
+            // the output-observer → close-observer → wire-exit sequence.
+            self?.notifyCloseObservers()
             self?.enqueueExit(code: code)
             // R13 #7: wait until the drain actually SENT `.exit` on the wire before firing onExit (which
             // triggers shutdown → outputTask.cancel()). Otherwise teardown can cancel the drain before
@@ -394,6 +526,303 @@ final class MuxChannelSession: @unchecked Sendable {
             await self?.awaitExitSentOrTimeout()
             self?.onExit?(id)
         }
+
+        // W10: foreground-process watch (Decision #5 PRIMARY signal). A low-rate poll resolves
+        // the PTY's foreground basename and folds it through the pure ``ForegroundProcessDetector``,
+        // enqueueing the resulting type-26/27 CONTROL messages on a basename edge / status change
+        // (the detector dedupes — an idle `claude` does not spam identical frames). The OS probe
+        // (`tcgetpgrp`/`proc_pidpath`) is the thin shim; the decision logic is the pure detector.
+        // Gated by `agentDetectEnabled` so the headless byte pipeline is byte-identical when off.
+        if agentDetectEnabled {
+            let interval = agentPollInterval
+            agentWatchTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    sampleForeground(masterFD: masterFD)
+                    do { try await Task.sleep(for: interval) } catch { return }
+                }
+            }
+        }
+    }
+
+    /// Resolves the PTY's foreground basename via the OS probe, folds it (plus a clock TICK) through the
+    /// single ``ClaudePaneDetector``, and enqueues any resulting type-26/27 CONTROL messages. The clock
+    /// is the monotonic uptime — a plain `Double` seconds, honouring the no-wall-clock-in-logic
+    /// convention (the pure detector takes the time as a parameter; only this driver reads it).
+    ///
+    /// The per-poll `tick(at:)` is what drives the `.done → .idle` decay (review #4: nobody ticked the
+    /// host machine before P1, so a finished turn stayed 🔵 forever). Both folds share the one machine
+    /// under `agentDetectLock` (the hook socket-accept thread also folds into it).
+    private func sampleForeground(masterFD: Int32) {
+        let name = PTYForegroundProbe.foregroundName(masterFD: masterFD)
+        let now = ProcessInfo.processInfo.systemUptime
+        agentDetectLock.lock()
+        // Tick FIRST so the decay is evaluated at this `now`, then the presence sample; both emit
+        // type-27 only on a real triple change (the detector dedupes), so at most one status frame ships.
+        let tickEmission = agentDetector.tick(at: now)
+        let sampleEmission = agentDetector.sample(name: name, at: now)
+        // A status transition (from EITHER fold) → notify the cross-pane supervision observer.
+        // Both folds share the one machine, so the final `status` is the post-fold value.
+        let statusChanged = (tickEmission.status != nil || sampleEmission.status != nil)
+        let newStatus = statusChanged ? agentDetector.status : nil
+        agentDetectLock.unlock()
+        if !tickEmission.isEmpty { enqueueControl(tickEmission.messages) }
+        if !sampleEmission.isEmpty { enqueueControl(sampleEmission.messages) }
+        if let newStatus { notifyAgentStatusChanged(newStatus) }
+    }
+
+    // MARK: - Detach / reattach (tmux-style survival — C1–C4)
+
+    /// Non-destructively detaches the relay from its current client connection.
+    ///
+    /// **C1 — read loop is NOT stopped.** `PTYReadLoop.stop()` sets a PERMANENT `stopped`
+    /// flag (irreversible) and would prevent rebinding. Instead, `setClientOnline(false)`
+    /// engages the ReplayBuffer's 4 MiB offline gate which causes `PausableQueueGate` to
+    /// pause the read loop via its replay-pause source. The shell stays alive; the loop
+    /// parks on the `NSCondition` gate consuming zero syscalls.
+    ///
+    /// **C2 — onExit is rewired before detach completes** so a shell that exits WHILE IN
+    /// THE STORE fires `onDetachedExit` (provided by the caller) instead of the old
+    /// `onExit`, which may already have been replaced by the HostServer on a previous
+    /// connection. Pass a closure that calls `store.remove(sessionID)` +
+    /// `session.shutdownDetached()`.
+    func detach(onDetachedExit: @escaping @Sendable (UUID) -> Void) {
+        taskLock.lock()
+        isDetached = true
+        // Rewire onExit (C2): if the child exits while we are in the store, fire the
+        // detached-exit handler instead of whatever the previous connection wired.
+        let id = sessionID
+        onExit = { _ in onDetachedExit(id) }
+        // Cancel the relay tasks (input/output/control/controlSend). The exit task is NOT
+        // cancelled — it must keep watching the child so onExit fires if the shell dies.
+        fifoLock.lock()
+        outputWakeContinuation?.finish()
+        outputWakeContinuation = nil
+        fifoLock.unlock()
+        controlOutLock.lock()
+        controlWakeContinuation?.finish()
+        controlWakeContinuation = nil
+        controlOutLock.unlock()
+        controlSendTask?.cancel()
+        controlSendTask = nil
+        inputTask?.cancel()
+        inputTask = nil
+        controlTask?.cancel()
+        controlTask = nil
+        outputTask?.cancel()
+        outputTask = nil
+        taskLock.unlock()
+        // Engage the offline gate so the PTY drain pauses (C1): the read loop parks on its
+        // NSCondition and the kernel PTY buffer backpressures the shell.
+        setClientOnline(false)
+    }
+
+    /// Rebinds the relay to a fresh pair of sub-channels from a returning client.
+    ///
+    /// **C3 — clears the stale out-FIFO and control-out** before restarting the relay.
+    /// Those queues still hold bytes that are also in the ReplayBuffer. Re-sending them would
+    /// double-replay: the replayTail pump below ships the ReplayBuffer tail to the client, so
+    /// anything already in the FIFO is already covered. Clearing prevents the drain picking
+    /// them up again after restart.
+    ///
+    /// **onExit atomicity**: `onExit` is assigned INSIDE `taskLock`, BEFORE the new `exitTask`
+    /// is started, so the handler installed by `detach()` (which routes to `shutdownDetached`)
+    /// can never be the one a reattached exit task fires. The caller MUST pass the new handler
+    /// here and must NOT reassign `session.onExit` after this call returns — doing so reopens
+    /// the very window this parameter closes.
+    ///
+    /// - Parameters:
+    ///   - newData: The new data sub-channel from the returning client.
+    ///   - newControl: The new control sub-channel from the returning client.
+    ///   - onExit: The handler the reattached session's exit task must fire. Assigned under
+    ///     `taskLock` before `exitTask` is (re)started, making the assignment atomic with the
+    ///     task launch and eliminating the race between a racing exit and a post-call assignment.
+    ///
+    /// - Precondition: `isDetached == true`. A no-op (safe) if called on a live session.
+    func rebindRelay(
+        data newData: MuxSubChannel,
+        control newControl: MuxSubChannel,
+        onExit newOnExit: (@Sendable (UInt32) -> Void)?,
+    ) {
+        taskLock.lock()
+        guard isDetached else { taskLock.unlock()
+            return
+        }
+        // Swap the sub-channels.
+        data = newData
+        control = newControl
+        isDetached = false
+
+        // CRITICAL — assign onExit FIRST, while taskLock is still held and BEFORE exitTask is
+        // (re)started below. This atomically replaces the detached-exit handler that detach()
+        // installed (which calls store.remove + shutdownDetached) with the new reattach handler
+        // (which calls removeMuxSession → the new connection's teardown). Without this, a shell
+        // that exits between rebindRelay returning and the caller's post-call `session.onExit =`
+        // assignment could fire the stale detached-exit handler and kill the just-reattached PTY.
+        onExit = newOnExit
+
+        // C3: clear the stale queues — bytes already in ReplayBuffer; the replayTail pump
+        // ships them; don't send them again from these queues.
+        fifoLock.lock()
+        outFIFO.removeAll()
+        fifoLock.unlock()
+        controlOutLock.lock()
+        controlOut.removeAll(keepingCapacity: false)
+        controlOutLock.unlock()
+
+        // Rebuild the output wake stream and restart the output drain task.
+        let (outputWakeups, outputWake) =
+            AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        fifoLock.lock()
+        outputWakeContinuation = outputWake
+        fifoLock.unlock()
+        outputTask = Task { [weak self] in
+            for await _ in outputWakeups {
+                while let frame = self?.takeMergedFrame() {
+                    guard let self else { return }
+                    switch frame {
+                    case let .output(bytes, byteCount, controlMessages):
+                        let seq = nextSeq(for: bytes)
+                        try? await data.send(.output(seq: seq, bytes: bytes))
+                        dequeueOutput(byteCount)
+                        if !controlMessages.isEmpty { enqueueControl(controlMessages) }
+                    case let .exit(code):
+                        try? await data.send(.exit(code: code))
+                        signalExitSent()
+                    }
+                }
+            }
+        }
+
+        // Rebuild the control wake stream and restart the control sender.
+        let (controlWakeups, controlWake) =
+            AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        controlOutLock.lock()
+        controlWakeContinuation = controlWake
+        controlOutLock.unlock()
+        controlSendTask = Task { [weak self] in
+            for await _ in controlWakeups {
+                while let batch = self?.takeControlBatch() {
+                    guard let self else { break }
+                    for message in batch {
+                        try? await control.send(message)
+                    }
+                }
+            }
+        }
+
+        // Restart the input task (reads from the NEW data sub-channel).
+        let masterFD = pty.masterFD
+        let localChannelID = channelID
+        let inputQueue = DispatchQueue(
+            label: "aislopdesk.host.pty-input.\(localChannelID).rebind", qos: .userInitiated,
+        )
+        inputTask = Task.detached { [weak self] in
+            do {
+                for try await message in newData.inbound {
+                    if case let .input(bytes) = message {
+                        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                            inputQueue.async {
+                                Self.writeAll(fd: masterFD, data: bytes)
+                                done.resume()
+                            }
+                        }
+                    }
+                    await newData.noteConsumed(message.wireByteCount)
+                }
+            } catch {}
+            self?.setClientOnline(false)
+        }
+
+        // Restart the control task (reads from the NEW control sub-channel).
+        controlTask = Task { [weak self] in
+            do {
+                for try await message in newControl.inbound {
+                    switch message {
+                    case let .resize(cols, rows, px, py):
+                        self?.scheduleResize(cols: cols, rows: rows, px: px, py: py)
+                    case let .ack(seq):
+                        self?.flushPendingResize()
+                        self?.acknowledge(upTo: seq)
+                    case .bye:
+                        self?.flushPendingResize()
+                    case let .ping(timestampMS):
+                        self?.enqueueControl([.pong(timestampMS: timestampMS)])
+                    case let .requestBlockOutput(index):
+                        self?.serveBlockOutput(index: index)
+                    default:
+                        self?.flushPendingResize()
+                    }
+                }
+            } catch {}
+            self?.flushPendingResize()
+        }
+
+        // Restart the exit task ONLY if the child is still alive (C2: if it exited while
+        // detached, onExit was already rewired to fire the detached-exit handler; we must
+        // not start a second exit task that double-fires onExit on the SAME channel ID).
+        //
+        // onExit was assigned above (under taskLock) BEFORE this task is started, so the
+        // reattach handler is atomically in place when the exit task can first fire. The task
+        // captures `rebindChannelID` (not `self.channelID`) to avoid retaining `self` strongly
+        // through the channel property.
+        if !isChildExited() {
+            let rebindChannelID = channelID
+            let rebindPTY = pty // local capture so the task does not capture `self` strongly
+            exitTask?.cancel()
+            exitTask = Task { [weak self] in
+                let code = await rebindPTY.waitForExit()
+                await self?.awaitEOFOrTimeout()
+                self?.enqueueExit(code: code)
+                await self?.awaitExitSentOrTimeout()
+                self?.onExit?(rebindChannelID)
+            }
+        }
+
+        // R2 (benign): agentWatchTask was NOT cancelled by detach() — it survives the detached
+        // window intentionally so the poll keeps running. However, its control wake continuation
+        // was finished by detach(), so any agent-status update emitted WHILE DETACHED is dropped
+        // (the controlWakeContinuation was nil). The new continuation rebuilt above will carry
+        // future updates; a brief stale status display until the next poll tick (~1 s) is
+        // acceptable. A cheap nudge here would require exporting sampleForeground to be called
+        // after unlock; the risk is not worth it vs. the natural 1-s poll cadence.
+
+        taskLock.unlock()
+
+        // R1 (safe): setClientOnline(true) is called just AFTER taskLock is released so it can
+        // acquire replayLock without nesting locks. The wake it triggers goes to the new
+        // outputWakeContinuation (rebuilt inside taskLock above with bufferingNewest(1)), so the
+        // wake is retained even if the drain task hasn't started its `for await` loop yet —
+        // bufferingNewest(1) holds one pending yield. No output is lost.
+        setClientOnline(true)
+    }
+
+    /// Pumps the ReplayBuffer tail (`seq > lastReceivedSeq`) into `channel` as sequential
+    /// `output` wire messages — the reconnect replay that brings the returning client up to date.
+    ///
+    /// Called BEFORE ``rebindRelay`` starts the live drain so the tail is delivered in order
+    /// without interleaving live output. Non-blocking: iterates the already-retained entries
+    /// (O(N) over the retained tail) without any timer or suspension point between frames.
+    func replayTail(after lastReceivedSeq: Int64, on channel: MuxSubChannel) async {
+        let messages = snapshotReplayTail(after: lastReceivedSeq)
+        for message in messages {
+            try? await channel.send(message)
+        }
+    }
+
+    /// Synchronously snapshots the ReplayBuffer tail under `replayLock` (NSLock is unavailable
+    /// from the async ``replayTail(after:on:)`` directly — same discipline as ``rebindRelay``).
+    private func snapshotReplayTail(after lastReceivedSeq: Int64) -> [WireMessage] {
+        replayLock.lock()
+        defer { replayLock.unlock() }
+        return replay.replay(after: lastReceivedSeq)
+    }
+
+    /// Non-blocking check: returns `true` if the child shell has already exited (been reaped
+    /// by `PTYProcess.startReaper`). Used by ``DetachedSessionStore/lookup(_:)`` and
+    /// ``rebindRelay`` to avoid reattaching to a dead shell (PATH C → spawn fresh).
+    func isChildExited() -> Bool {
+        pty.waitExitCode() != nil
     }
 
     /// Tears this channel down FOR GOOD and releases its PTY + master fd.
@@ -435,6 +864,8 @@ final class MuxChannelSession: @unchecked Sendable {
         inputTask?.cancel()
         controlTask?.cancel()
         exitTask?.cancel()
+        agentWatchTask?.cancel() // W10: stop the foreground-process poll
+        agentWatchTask = nil
         // `outputTask.cancel()` now GENUINELY unblocks a drain parked on an exhausted DATA credit
         // window: `MuxSubChannel.awaitChunkCredit`'s park is cancellation-aware, so a cancelled sender
         // wakes + throws and the task completes. Without that, the `HostServer.stop()` teardown — which
@@ -603,6 +1034,220 @@ final class MuxChannelSession: @unchecked Sendable {
         wake?.yield(())
     }
 
+    /// W10 — ingests one received Claude-hook record (raw POST body bytes) for THIS pane and, if it
+    /// produced a status change, enqueues the resulting type-27 on the CONTROL sender. Folds through the
+    /// SAME ``ClaudePaneDetector`` the foreground poll drives (P1 single source of truth — no second
+    /// machine), under `agentDetectLock` because the socket-accept thread is a different context than the
+    /// watch task. Validate-then-drop: malformed bytes are silently ignored. The clock is monotonic
+    /// uptime (a plain `Double`; the decision logic is in the pure detector, which takes the time).
+    func ingestAgentHookRecord(_ bytes: Data) {
+        agentDetectLock.lock()
+        let emission = agentDetector.hook(bytes: bytes, at: ProcessInfo.processInfo.systemUptime)
+        let changed = emission.status != nil ? agentDetector.status : nil
+        agentDetectLock.unlock()
+        if !emission.isEmpty { enqueueControl(emission.messages) }
+        if let changed { notifyAgentStatusChanged(changed) }
+    }
+
+    /// Folds an AGENT SELF-REPORT (the P1 `report` ctl verb) into the ONE ``ClaudePaneDetector``
+    /// under `agentDetectLock`. The state string has already been validated by the caller; an
+    /// unrecognised string is a no-op inside the detector (validate-then-drop). Any resulting
+    /// type-27 is enqueued to the (possibly absent) client AND fans the cross-pane
+    /// `agent_status_changed` observer (P1 supervision stream) on a real transition.
+    func reportAgentStatusForControl(state: String, message: String?) {
+        agentDetectLock.lock()
+        let emission = agentDetector.report(
+            state: state, message: message, at: ProcessInfo.processInfo.systemUptime,
+        )
+        let changed = emission.status != nil ? agentDetector.status : nil
+        agentDetectLock.unlock()
+        if !emission.isEmpty { enqueueControl(emission.messages) }
+        if let changed { notifyAgentStatusChanged(changed) }
+    }
+
+    // MARK: - Agent-control surface (public primitives used by AgentControlListener)
+
+    /// Writes `bytes` to the PTY master fd (control-plane input injection).
+    ///
+    /// Fire-and-forget on a background queue: the blocking `write(2)` on a stalled PTY must
+    /// NOT park the control socket's per-connection handler thread (it serves other verbs).
+    /// Uses the same `writeAll` helper the regular input task uses (handles `EINTR`, partial writes).
+    /// Validate-then-drop: an empty slice or a closed PTY master fd is silently ignored.
+    func writeRawForControl(_ bytes: Data) {
+        guard !bytes.isEmpty else { return }
+        let masterFD = pty.masterFD
+        guard masterFD >= 0 else { return }
+        // Hop off the caller's thread: `write(2)` on a blocking master fd may park if the
+        // PTY kernel buffer is full (shell not reading). Use a low-priority background queue
+        // so a stalled shell never blocks the control listener.
+        DispatchQueue.global(qos: .utility).async {
+            Self.writeAll(fd: masterFD, data: bytes)
+        }
+    }
+
+    /// Resizes the PTY for the agent-control `resize` verb.
+    ///
+    /// Delegates directly to ``PTYProcess/setWindowSize(cols:rows:pxWidth:pxHeight:)`` which
+    /// performs `TIOCSWINSZ` under `exitLock` (TOCTOU-safe, non-blocking O(1) ioctl). The
+    /// kernel delivers `SIGWINCH` to the PTY's foreground process group automatically as part
+    /// of the `TIOCSWINSZ` call on macOS — no separate `kill`/`killpg` call is needed.
+    ///
+    /// Called on the control socket's per-connection handler thread. Safe to call there:
+    /// `setWindowSize` is documented non-blocking and the lock held (``PTYProcess/exitLock``)
+    /// is never contended from this path (it guards PTY-fd lifetime, not application state).
+    func resizeForControl(rows: UInt16, cols: UInt16) {
+        pty.setWindowSize(cols: cols, rows: rows)
+    }
+
+    /// Returns a plain-text snapshot of the ReplayBuffer scrollback (all acked + live tail).
+    ///
+    /// Joins every stored output chunk in sequence order, converts to UTF-8 (replacing invalid
+    /// sequences with `?`), then optionally strips ANSI escape codes via ``ANSIStripper``.
+    /// The snapshot is taken under `replayLock` (same discipline as `snapshotReplayTail`).
+    func scrollbackTextForControl(ansiStrip: Bool = true) -> String {
+        replayLock.lock()
+        let messages = replay.messages(after: 0)
+        replayLock.unlock()
+        var data = Data()
+        for m in messages { data.append(m.bytes) }
+        let text: String =
+            if let utf8 = String(bytes: data, encoding: .utf8) {
+                utf8
+            } else {
+                String(data.map { $0 < 0x80 ? $0 : UInt8(0x3F) }.map { Character(UnicodeScalar($0)) })
+            }
+        return ansiStrip ? ANSIStripper.strip(text) : text
+    }
+
+    /// Returns the pane's scrollback as an array of LOGICAL lines (P1 `read --unwrapped`).
+    ///
+    /// The host keeps NO screen buffer and the scrollback ring stores RAW PTY read-chunk byte
+    /// slices (NOT terminal-width-aware lines), so TRUE reverse-of-terminal-wrapping is impossible
+    /// host-side — a soft-wrapped visual row carries no marker to un-wrap. What this DOES give an
+    /// agent regex is robustness to arbitrary read-CHUNK / transport boundaries: it joins every
+    /// stored chunk in seq order (so a hard line split across two chunks is one string),
+    /// ANSI-strips (same as ``scrollbackTextForControl(ansiStrip:)``), then splits on the hard
+    /// `\n` into logical lines. A partial (no trailing newline) last line is DROPPED so a regex
+    /// never matches a half-written prompt. When `lines` is non-nil, only the last N are returned.
+    func recentUnwrappedTextForControl(lines limit: Int? = nil) -> [String] {
+        let text = scrollbackTextForControl(ansiStrip: true)
+        return Self.unwrapLogicalLines(text, lines: limit)
+    }
+
+    /// Pure logical-line split (P1 `read --unwrapped`): split `text` on hard `\n`, keep blank
+    /// lines, and optionally keep only the last `limit`. Extracted as a `static` so it is
+    /// unit-testable with no PTY/ReplayBuffer.
+    ///
+    /// Trailing-element handling (review finding): only DROP the final element when the text ended
+    /// in `\n` (so the split's trailing `""` is a separator artifact, not content). When the text
+    /// does NOT end in `\n`, the final element is a complete-but-unterminated logical line — which
+    /// host-side is INDISTINGUISHABLE from the very signal an orchestrator scrapes (a live shell
+    /// prompt or a Claude "awaiting input" line that carries no trailing newline). Dropping it
+    /// unconditionally silently swallowed the freshest line, so we KEEP it. (A genuine half-written
+    /// partial is rare and harmless to include; losing the prompt is the worse failure.)
+    static func unwrapLogicalLines(_ text: String, lines limit: Int? = nil) -> [String] {
+        guard !text.isEmpty else { return [] }
+        var rows = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        // Drop ONLY the empty trailing artifact of a terminating newline; keep an unterminated
+        // final logical line (the prompt / awaiting-input cue).
+        if text.hasSuffix("\n"), !rows.isEmpty, rows[rows.count - 1].isEmpty {
+            rows.removeLast()
+        }
+        if let limit, limit > 0, rows.count > limit { rows = Array(rows.suffix(limit)) }
+        return rows
+    }
+
+    /// The last OSC-sniffed window title for this pane (empty string if none has arrived yet).
+    var currentTitle: String {
+        titleLock.lock()
+        defer { titleLock.unlock() }
+        return _currentTitle
+    }
+
+    /// The current rolled-up Claude detection status for this pane (P1 supervision API).
+    ///
+    /// Read under `agentDetectLock` because `agentDetector` is folded from TWO contexts (the
+    /// serial `agentWatchTask` foreground poll and the hook socket-accept thread); a bare read
+    /// of the private detector would race. Used by ``HostServer/listPanesForControl()`` to surface
+    /// per-pane agent state in the `list-panes` verb. A pane whose detector never saw `claude`
+    /// returns ``ClaudeStatus/none``.
+    var agentStatusForControl: ClaudeStatus {
+        agentDetectLock.lock()
+        defer { agentDetectLock.unlock() }
+        return agentDetector.status
+    }
+
+    /// Registers an output observer for the `wait` verb. The closure is called from the PTY
+    /// read-loop thread with each raw output chunk immediately after sniffer processing. The
+    /// observer must be non-blocking and short-running (it runs on the read-loop thread).
+    /// Replaces any prior observer for the same `id` (idempotent).
+    func registerOutputObserver(id: UUID, _ observer: @escaping @Sendable (Data) -> Void) {
+        observersLock.lock()
+        outputObservers[id] = observer
+        observersLock.unlock()
+    }
+
+    /// Removes the observer registered under `id`. Idempotent (a missing id is a no-op).
+    func removeOutputObserver(id: UUID) {
+        observersLock.lock()
+        outputObservers[id] = nil
+        observersLock.unlock()
+    }
+
+    /// Registers a close observer for the `subscribe` verb. Called once when the PTY exits
+    /// (after EOF has been drained through the output observers). Replaces any prior observer
+    /// for the same `id` (idempotent).
+    func registerCloseObserver(id: UUID, _ observer: @escaping @Sendable () -> Void) {
+        observersLock.lock()
+        closeObservers[id] = observer
+        observersLock.unlock()
+    }
+
+    /// Removes the close observer registered under `id`. Idempotent.
+    func removeCloseObserver(id: UUID) {
+        observersLock.lock()
+        closeObservers[id] = nil
+        observersLock.unlock()
+    }
+
+    /// Calls all registered close observers. Called from the exit task after EOF drains.
+    private func notifyCloseObservers() {
+        observersLock.lock()
+        let observers = closeObservers
+        observersLock.unlock()
+        for (_, observer) in observers { observer() }
+    }
+
+    /// Calls all registered output observers with `chunk`. Called from `onChunk` on the
+    /// PTY read-loop thread (serial) — snapshot the dict under lock, then call outside.
+    private func notifyOutputObservers(_ chunk: Data) {
+        observersLock.lock()
+        let observers = outputObservers
+        observersLock.unlock()
+        for (_, observer) in observers { observer(chunk) }
+    }
+
+    /// WB1 — feeds one outbound chunk to the per-channel Blocks tracker (under ``blocksLock``) and
+    /// enqueues any resulting type-28 `commandBlock` metadata on the CONTROL sender. A no-op when
+    /// blocks are disabled (`blockTracker == nil`), so the byte pipeline stays byte-identical.
+    private func feedBlocks(_ chunk: Data) {
+        guard blocksEnabled else { return }
+        blocksLock.lock()
+        let messages = blockTracker?.ingest(chunk) ?? []
+        blocksLock.unlock()
+        if !messages.isEmpty { enqueueControl(messages) }
+    }
+
+    /// WB1 — serves a `requestBlockOutput(index)` by enqueueing the block's retained output (type
+    /// 29) from the ring on the CONTROL sender. Always replies (an EMPTY `blockOutput` when the
+    /// block was evicted / never existed / blocks are disabled) so the client never hangs waiting.
+    private func serveBlockOutput(index: UInt32) {
+        blocksLock.lock()
+        let message = blockTracker?.serveOutput(index: index) ?? .blockOutput(index: index, output: Data())
+        blocksLock.unlock()
+        enqueueControl([message])
+    }
+
     /// Atomically takes the whole pending control batch; `nil` when empty (drain re-parks).
     private func takeControlBatch() -> [WireMessage]? {
         controlOutLock.lock()
@@ -710,6 +1355,28 @@ final class MuxChannelSession: @unchecked Sendable {
         }
     }
 
+    // MARK: - Scrollback env resolution
+
+    /// Resolves a `ReplayBuffer` from the scrollback env vars, called once at channel-open time.
+    ///
+    /// - `AISLOPDESK_SCROLLBACK_PERSIST` — default-ON (`env != "0"`). When `"0"`, the scrollback
+    ///   ring is disabled (cap = 0), disabling cold-reattach scrollback replay.
+    /// - `AISLOPDESK_SCROLLBACK_BYTES` — integer byte cap for the ring. Defaults to
+    ///   `ReplayBuffer.defaultScrollbackBytes` (4 MiB). Ignored when scrollback persist is off.
+    static func makeReplayBuffer() -> ReplayBuffer {
+        let env = ProcessInfo.processInfo.environment
+        let persist = env["AISLOPDESK_SCROLLBACK_PERSIST"] != "0"
+        let scrollbackCap: Int =
+            if !persist {
+                0
+            } else if let raw = env["AISLOPDESK_SCROLLBACK_BYTES"], let parsed = Int(raw), parsed >= 0 {
+                parsed
+            } else {
+                ReplayBuffer.defaultScrollbackBytes
+            }
+        return ReplayBuffer(scrollbackBytes: scrollbackCap)
+    }
+
     // MARK: - Test seams (replay-backpressure wiring, R5 rank 2)
 
     // These drive the append/ack/online glue against a real ``PausableQueueGate`` WITHOUT a PTY or
@@ -754,6 +1421,14 @@ final class MuxChannelSession: @unchecked Sendable {
     func enqueueControlForTesting(_ messages: [WireMessage]) { enqueueControl(messages) }
     func takeControlBatchForTesting() -> [WireMessage]? { takeControlBatch() }
     static var maxControlOutQueuedForTesting: Int { maxControlOutQueued }
+
+    /// WB1 — drive the real `feedBlocks` glue (segmenter tap → enqueueControl) WITHOUT a PTY/read
+    /// loop, so the type-28 emission + the byte-identical-when-off contract are provable headlessly.
+    func feedBlocksForTesting(_ chunk: Data) { feedBlocks(chunk) }
+    /// WB1 — drive the real `serveBlockOutput` glue (ring lookup → enqueueControl).
+    func serveBlockOutputForTesting(index: UInt32) { serveBlockOutput(index: index) }
+    /// WB1 — whether the Blocks tap is active for this channel (the tracker was instantiated).
+    var blocksEnabledForTesting: Bool { blocksEnabled }
 
     private static func writeAll(fd: Int32, data: Data) {
         #if canImport(Darwin)

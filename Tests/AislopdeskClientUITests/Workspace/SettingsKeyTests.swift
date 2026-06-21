@@ -1,3 +1,4 @@
+import AislopdeskVideoProtocol
 import XCTest
 @testable import AislopdeskClientUI
 
@@ -18,6 +19,8 @@ final class SettingsKeyTests: XCTestCase {
             SettingsKey.autoSwitchLayouts,
             SettingsKey.redactSecrets,
             SettingsKey.recordClipboardHistory,
+            SettingsKey.hideStatusBar,
+            SettingsKey.showBlockDividers,
         ]
     }
 
@@ -61,11 +64,87 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertFalse(SettingsKey.autoSwitchLayoutsEnabled)
     }
 
+    /// P5 disappearing-chrome toggles: `hideStatusBar` defaults OFF (the strip shows) and
+    /// `showBlockDividers` defaults ON (dividers shown), each respecting a persisted explicit value — the
+    /// toggle-persistence proof. The wire key strings are pinned so a rename can't split-brain the Settings
+    /// UI from the SplitWorkspaceView / TerminalScreenView consumers.
+    func testChromeTogglesDefaultsAndPersistence() {
+        // Defaults when unset.
+        XCTAssertFalse(SettingsKey.hideStatusBarEnabled, "status bar shows by default (hide is OFF)")
+        XCTAssertTrue(SettingsKey.showBlockDividersEnabled, "block dividers show by default")
+        // An explicit persisted value is respected (the toggle persists across reads).
+        UserDefaults.standard.set(true, forKey: SettingsKey.hideStatusBar)
+        UserDefaults.standard.set(false, forKey: SettingsKey.showBlockDividers)
+        XCTAssertTrue(SettingsKey.hideStatusBarEnabled)
+        XCTAssertFalse(SettingsKey.showBlockDividersEnabled)
+        // The wire keys are the single source of truth shared with the @AppStorage consumers.
+        XCTAssertEqual(SettingsKey.hideStatusBar, "appearance.hideStatusBar")
+        XCTAssertEqual(SettingsKey.showBlockDividers, "terminal.showBlockDividers")
+        XCTAssertEqual(SettingsKey.density, "appearance.density")
+    }
+
     func testDefaultPaneKindDefaultsToTerminalAndRoundTrips() {
         XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal)
-        UserDefaults.standard.set(PaneKind.claudeCode.rawValue, forKey: SettingsKey.defaultPaneKindKey)
-        XCTAssertEqual(SettingsKey.defaultPaneKind, .claudeCode)
+        UserDefaults.standard.set(PaneKind.remoteGUI.rawValue, forKey: SettingsKey.defaultPaneKindKey)
+        XCTAssertEqual(SettingsKey.defaultPaneKind, .remoteGUI)
+        // W11: a stale persisted `claudeCode` value (the retired kind) is no longer a valid raw value
+        // here → falls back to `.terminal` (the safe default), like any other invalid raw value.
+        UserDefaults.standard.set("claudeCode", forKey: SettingsKey.defaultPaneKindKey)
+        XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal, "a retired/invalid raw value falls back to terminal")
         UserDefaults.standard.set("garbage", forKey: SettingsKey.defaultPaneKindKey)
         XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal, "an invalid raw value falls back to terminal")
+    }
+
+    // MARK: - PreferencesStore (W13) — the live source the Settings panels bind to
+
+    /// An isolated `UserDefaults` suite so the round-trips don't touch the real defaults.
+    private func makeIsolatedDefaults(_ name: String = #function) -> UserDefaults {
+        let suite = "PreferencesStoreTest." + name
+        let d = UserDefaults(suiteName: suite)!
+        d.removePersistentDomain(forName: suite)
+        return d
+    }
+
+    func testPreferencesStoreLoadsModelDefaultsOnFreshInstall() {
+        // A fresh install (no persisted prefs) loads the model DEFAULTS, and the all-nil video/agent
+        // models contribute NOTHING to the EnvConfig overlay (behaviour-preserving). `applyOnInit: false`
+        // so we assert the loaded models without mutating the process-wide overlay.
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
+        XCTAssertEqual(store.terminal, TerminalPreferences())
+        XCTAssertEqual(store.video, VideoPreferences())
+        XCTAssertEqual(store.agent, AgentPreferences())
+        XCTAssertEqual(store.keybindings, KeybindingPreferences())
+        XCTAssertTrue(store.rawOverrides.isEmpty)
+        // The behaviour-preservation proof: the default video ∪ agent overlay is EMPTY.
+        XCTAssertTrue(EnvBridge.toEnv(store.video).isEmpty)
+        XCTAssertTrue(EnvBridge.toEnv(store.agent).isEmpty)
+    }
+
+    func testPreferencesStoreRoundTripsEachModelThroughUserDefaults() {
+        let defaults = makeIsolatedDefaults()
+        // Write a custom value for each model, then reload a NEW store from the SAME defaults.
+        let store = PreferencesStore(defaults: defaults, sidecarURL: nil, applyOnInit: false)
+        store.terminal = TerminalPreferences(fontFamily: "JetBrains Mono", fontSize: 15, cursorStyle: .bar)
+        store.video = VideoPreferences(qpSharp: 22, fecM: 2, fecK: 5)
+        store.agent = AgentPreferences(agentDetect: true)
+        store.keybindings = KeybindingPreferences(overrides: ["pane.splitRight": .init(key: "e", command: true)])
+        store.rawOverrides = ["AISLOPDESK_FOO": "1"]
+
+        let reloaded = PreferencesStore(defaults: defaults, sidecarURL: nil, applyOnInit: false)
+        XCTAssertEqual(reloaded.terminal, store.terminal)
+        XCTAssertEqual(reloaded.video, store.video)
+        XCTAssertEqual(reloaded.agent, store.agent)
+        XCTAssertEqual(reloaded.keybindings, store.keybindings)
+        XCTAssertEqual(reloaded.rawOverrides, store.rawOverrides)
+    }
+
+    func testResetAllReturnsToBehaviourPreservingDefaults() {
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
+        store.video = VideoPreferences(qpSharp: 30)
+        store.rawOverrides = ["AISLOPDESK_X": "9"]
+        store.resetAll()
+        XCTAssertEqual(store.video, VideoPreferences())
+        XCTAssertTrue(store.rawOverrides.isEmpty)
+        XCTAssertTrue(EnvBridge.toEnv(store.video).isEmpty)
     }
 }

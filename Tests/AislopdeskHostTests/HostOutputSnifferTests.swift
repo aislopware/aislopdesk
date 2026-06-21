@@ -372,10 +372,48 @@ final class HostOutputSnifferTests: XCTestCase {
         assertForwardsUnchanged(bytes)
     }
 
-    func testEmptyTitleIsEmittedOnce() {
-        // `ESC]2; BEL` — an explicitly empty title (clears the title). Valid; emit "".
+    func testEmptyTitleIsSuppressed() {
+        // `ESC]2; BEL` — an empty-body OSC 0/2, as emitted by zsh/p10k/starship during
+        // prompt redraw before the real title arrives. The sniffer must silently drop it
+        // so the client keeps the last real title across the command boundary.
         let bytes = Array("\(ESC)]2;\(BEL)".utf8)
-        XCTAssertEqual(observeWhole(bytes), [.title("")])
+        XCTAssertEqual(observeWhole(bytes), [])
+        assertForwardsUnchanged(bytes)
+    }
+
+    // MARK: empty-body OSC title suppression (tab-title-loss fix)
+
+    /// REGRESSION: zsh/p10k/starship send `ESC]0; BEL` (empty body) during prompt redraw
+    /// before setting the real title.  Previously that empty body propagated to the client
+    /// and wiped the shown title.  The sniffer must now drop it.
+    func testEmptyBodyOSCTitleSuppressedKeepsPriorTitle() {
+        // Feed a real title, then an empty-body OSC 0, then an empty-body OSC 2.
+        // Only the one real title must be emitted; no .title("") must ever appear.
+        let stream =
+            "\(ESC)]0;real-title\(BEL)" // real title → emit
+            + "\(ESC)]0;\(BEL)" // empty body (prompt-redraw artefact) → suppressed
+            + "\(ESC)]2;\(BEL)" // empty body via OSC 2 → suppressed
+        let bytes = Array(stream.utf8)
+        let msgs = observeWhole(bytes)
+
+        // Exactly one .title message, and it must be the real one.
+        XCTAssertEqual(msgs, [.title("real-title")], "expected exactly one .title(\"real-title\")")
+        // Explicit: no .title("") must have been wired.
+        XCTAssertFalse(
+            msgs.contains(.title("")),
+            "empty-body OSC title must not be wired to the client",
+        )
+
+        // Split-boundary equivalence: suppression must be consistent at every chunk size.
+        for size in 1...bytes.count {
+            let chunked = observeChunked(bytes, size: size)
+            XCTAssertEqual(
+                chunked,
+                [.title("real-title")],
+                "chunk size \(size): empty-body suppression diverged",
+            )
+        }
+
         assertForwardsUnchanged(bytes)
     }
 

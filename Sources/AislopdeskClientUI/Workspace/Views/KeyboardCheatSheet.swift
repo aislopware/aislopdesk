@@ -31,7 +31,6 @@ enum KeyboardCheatSheet {
         ("Panes", [
             (.newPaneDefault, "New pane"),
             (.newPane(.terminal), "New terminal"),
-            (.newPane(.claudeCode), "New Claude Code pane"),
             (.newPane(.remoteGUI), "New remote window"),
             (.duplicatePane, "Duplicate pane"),
             (.closePane, "Close pane"),
@@ -102,6 +101,37 @@ enum KeyboardCheatSheet {
         ]))
         return out
     }
+
+    // MARK: - Tree shell sections (W6 — generated from the SINGLE WorkspaceBindingRegistry source)
+
+    /// The cheat-sheet sections for the LIVE IDE shell (``WorkspaceStore/LiveModel/tree``), generated
+    /// entirely from ``WorkspaceBindingRegistry`` — the SAME single source of truth the menu bar and the ⌘K
+    /// palette consume — so a rebinding can never drift the sheet. Grouped by the registry's display
+    /// categories (Panes / Tabs / Sessions / Focus / View); the nine ⌘-digit select-tab chords are
+    /// collapsed into one representative "⌘1…⌘9" row, and the terminal extras are appended (the §5 chords
+    /// the focused libghostty surface claims itself, outside the workspace table).
+    static func treeSections() -> [Section] {
+        var out: [Section] = WorkspaceBindingRegistry.groupedForDisplay.compactMap { group -> Section? in
+            var items = group.bindings.compactMap { binding -> Item? in
+                guard let chord = binding.chord else { return nil }
+                return Item(glyph: WorkspaceBindingRegistry.glyph(chord), label: binding.title)
+            }
+            // Append the collapsed "select tab N" row to the Tabs group (the nine ⌘-digit chords).
+            if group.category == .tabs {
+                items.append(Item(glyph: "⌘1…⌘9", label: "Select Tab 1–9"))
+            }
+            guard !items.isEmpty else { return nil }
+            return Section(title: group.category.rawValue, items: items)
+        }
+        // The terminal chords the focused surface handles itself (curated, not generated — they live
+        // outside the workspace table, exactly as the canvas sheet documents).
+        out.append(Section(title: "Terminal", items: [
+            Item(glyph: "⌘C / ⌘V", label: "Copy / paste (focused terminal)"),
+            Item(glyph: "⌘A", label: "Select all text (focused terminal)"),
+            Item(glyph: "⌘= / ⌘− / ⌘0", label: "Font size (focused terminal)"),
+        ]))
+        return out
+    }
 }
 
 // MARK: - KeyboardCheatSheetView (the ⌘/ overlay)
@@ -110,12 +140,25 @@ enum KeyboardCheatSheet {
 /// Mirrors ``CommandPaletteView``'s overlay shape (dim backdrop, top-third card) but is read-only.
 struct KeyboardCheatSheetView: View {
     @Binding var isPresented: Bool
+    /// Which command model the live store drives (W6): ``WorkspaceStore/LiveModel/tree`` renders the
+    /// registry-generated tree shortcuts; ``WorkspaceStore/LiveModel/canvas`` the retained canvas sheet.
+    /// Defaults `.tree` (the live app) so a caller that omits it gets the IDE-shell sheet.
+    var liveModel: WorkspaceStore.LiveModel = .tree
+
+    /// The sections to render, picked by the live model — both come from the one drift-guarded source for
+    /// their model (the registry for `.tree`, `defaultBindings` for `.canvas`).
+    private var sections: [KeyboardCheatSheet.Section] {
+        switch liveModel {
+        case .tree: KeyboardCheatSheet.treeSections()
+        case .canvas: KeyboardCheatSheet.sections()
+        }
+    }
 
     var body: some View {
         if isPresented {
             ZStack {
                 Rectangle()
-                    .fill(.black.opacity(0.18))
+                    .fill(DSColor.scrim)
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
                     .onTapGesture { isPresented = false }
@@ -137,48 +180,46 @@ struct KeyboardCheatSheetView: View {
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
             }
-            .padding(14)
+            .padding(DSSpace.s5)
             Divider()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(KeyboardCheatSheet.sections()) { section in
-                        VStack(alignment: .leading, spacing: 6) {
+                LazyVStack(alignment: .leading, spacing: DSSpace.s6) {
+                    ForEach(sections) { section in
+                        VStack(alignment: .leading, spacing: DSSpace.s3) {
                             Text(section.title.uppercased())
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(DSColor.textTertiary)
                             ForEach(section.items) { item in
-                                HStack(spacing: 12) {
+                                HStack(spacing: DSSpace.s5) {
                                     Text(item.label)
                                         .font(.callout)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     Text(item.glyph)
                                         .font(.system(.callout, design: .rounded).monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                        .padding(.horizontal, 7).padding(.vertical, 2)
-                                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                            .fill(Color.primary.opacity(0.06)))
+                                        .foregroundStyle(DSColor.textTertiary)
+                                        .padding(.horizontal, DSSpace.s3).padding(.vertical, DSSpace.s1)
+                                        .background(RoundedRectangle(cornerRadius: DSRadius.sm, style: .continuous)
+                                            .fill(DSColor.chrome))
                                 }
                             }
                         }
                     }
                 }
-                .padding(16)
+                .padding(DSSpace.s6)
             }
         }
         .frame(maxWidth: 520, maxHeight: 540)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(
-            Color.primary.opacity(0.08),
-            lineWidth: 1,
-        ) }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .shadow(color: .black.opacity(0.28), radius: 28, y: 12)
-        .padding(.horizontal, 24)
+        // L4 overlay: glass (the helper supplies the hairline border, so the manual strokeBorder is gone)
+        // + inner top-edge highlight + the ONE tokenized overlay shadow — unified with the palette / peek
+        // / floating layer. A transient overlay (NOT a hard modal), so shadowOverlay, not shadowModal.
+        .glassedSurface(corner: DSRadius.overlay)
+        .overlay(alignment: .top) { DSElevation.innerTopHighlight() }
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.overlay, style: .continuous))
+        .dsShadow(DSElevation.shadowOverlay)
+        .padding(.horizontal, DSSpace.s8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 70)
-        #if os(macOS)
-            .onExitCommand { isPresented = false }
-        #endif
+        .padding(.top, DSScale.scaled(70))
+        .onEscapeKey { isPresented = false }
     }
 }
 #endif

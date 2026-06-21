@@ -41,6 +41,9 @@ public protocol ClientTransporting: Sendable {
     func sendBye() async throws
     /// Sends an RTT probe (`ping`) on the control channel. Default no-op (fakes).
     func sendPing(timestampMS: UInt64) async throws
+    /// Requests a Block's captured OUTPUT bytes (WB2, wire type 15 → host) on the CONTROL channel; the
+    /// host replies with a `blockOutput` (type 29) the inbound stream surfaces. Default no-op (fakes).
+    func sendRequestBlockOutput(index: UInt32) async throws
 
     /// Reports that the consumer actually CONSUMED `wireBytes` of data-class inbound
     /// (`output`/`exit`) — drives the mux receive-window re-grant (credit-at-consumption).
@@ -56,4 +59,7 @@ public extension ClientTransporting {
     func noteOutputConsumed(wireBytes _: Int) {}
     /// Default no-op: only the mux transport carries the RTT probe.
     func sendPing(timestampMS _: UInt64) {}
+    /// Default no-op: only the mux transport carries the Block-output request (fakes/tests that drive
+    /// `blockOutput` directly through the inbound stream don't need to send the request).
+    func sendRequestBlockOutput(index _: UInt32) {}
 }

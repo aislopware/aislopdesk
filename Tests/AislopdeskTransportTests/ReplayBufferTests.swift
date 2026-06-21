@@ -52,8 +52,11 @@ final class ReplayBufferTests: XCTestCase {
         for i in 1...5 { buffer.append(bytes: Data("\(i)".utf8)) }
         buffer.ack(upTo: 3)
         XCTAssertEqual(buffer.ackedSeq, 3)
-        let tail = buffer.messages(after: 0).map(\.seq)
-        XCTAssertEqual(tail, [4, 5], "ack(3) must drop seq 1..3 and keep 4..5")
+        // messages(after: ackedSeq) returns ONLY the un-acked tail (seq > 3). With scrollback
+        // enabled, messages(after: 0) would also include the ring (seq 1..3); use ackedSeq here
+        // to isolate un-acked behavior. The ring content is separately tested in the scrollback suite.
+        let tail = buffer.messages(after: buffer.ackedSeq).map(\.seq)
+        XCTAssertEqual(tail, [4, 5], "ack(3) must remove seq 1..3 from un-acked entries")
     }
 
     func testAckIsIdempotent() {
@@ -64,7 +67,8 @@ final class ReplayBufferTests: XCTestCase {
         buffer.ack(upTo: 3) // duplicate
         XCTAssertEqual(buffer.retainedBytes, bytesAfterFirstAck)
         XCTAssertEqual(buffer.ackedSeq, 3)
-        XCTAssertEqual(buffer.messages(after: 0).map(\.seq), [4, 5])
+        // Un-acked tail only (after: ackedSeq); ring is separately verified in the scrollback suite.
+        XCTAssertEqual(buffer.messages(after: buffer.ackedSeq).map(\.seq), [4, 5])
     }
 
     func testStaleAckIsNoOp() {
@@ -73,7 +77,8 @@ final class ReplayBufferTests: XCTestCase {
         buffer.ack(upTo: 4)
         buffer.ack(upTo: 2) // stale, lower than acked
         XCTAssertEqual(buffer.ackedSeq, 4, "ackedSeq must only advance")
-        XCTAssertEqual(buffer.messages(after: 0).map(\.seq), [5])
+        // Un-acked tail only; ring (seq 1..4) is accessible via messages(after: 0).
+        XCTAssertEqual(buffer.messages(after: buffer.ackedSeq).map(\.seq), [5])
     }
 
     func testAckPastHighestClearsAll() {
@@ -81,7 +86,19 @@ final class ReplayBufferTests: XCTestCase {
         for _ in 1...3 { buffer.append(bytes: Data(count: 7)) }
         buffer.ack(upTo: 100)
         XCTAssertEqual(buffer.retainedBytes, 0)
-        XCTAssertTrue(buffer.messages(after: 0).isEmpty)
+        // Un-acked tail is empty; acked history lives in the scrollback ring and IS returned
+        // by messages(after: 0). Use scrollbackBytes: 0 to verify the no-ring contract.
+        XCTAssertTrue(
+            buffer.messages(after: buffer.ackedSeq).isEmpty,
+            "no un-acked entries remain after acking past highestSeq",
+        )
+        var noRing = ReplayBuffer(scrollbackBytes: 0)
+        for _ in 1...3 { noRing.append(bytes: Data(count: 7)) }
+        noRing.ack(upTo: 100)
+        XCTAssertTrue(
+            noRing.messages(after: 0).isEmpty,
+            "with scrollback disabled, acking past highestSeq leaves nothing in messages(after:0)",
+        )
         XCTAssertEqual(buffer.append(bytes: Data(count: 1)), 4, "seq still continues from highestSeq")
     }
 
@@ -214,5 +231,196 @@ final class ReplayBufferTests: XCTestCase {
         XCTAssertFalse(buf.shouldPauseDrain, "ack released the backlog → resume")
         // The public statics remain the production contract values (unchanged by the instance caps).
         XCTAssertEqual(ReplayBuffer.maxBackupBytes, 64 * 1024 * 1024)
+    }
+
+    // MARK: Scrollback ring — default constant
+
+    func testDefaultScrollbackBytesIsCorrect() {
+        XCTAssertEqual(ReplayBuffer.defaultScrollbackBytes, 4 * 1024 * 1024)
+    }
+
+    // MARK: Scrollback ring — retention up to cap
+
+    /// Acked entries move into the scrollback ring and are visible via messages(after:0).
+    func testAckedEntriesMovedIntoScrollbackRing() {
+        var buf = ReplayBuffer(scrollbackBytes: 1024)
+        let s1 = buf.append(bytes: Data("hello".utf8))
+        let s2 = buf.append(bytes: Data("world".utf8))
+        buf.append(bytes: Data("tail".utf8))
+        buf.ack(upTo: s2)
+        // un-acked entries: only seq 3 remains
+        XCTAssertEqual(buf.retainedBytes, 4, "only the un-acked 'tail' entry counts toward retainedBytes")
+        // scrollback ring holds the two acked entries
+        XCTAssertEqual(buf.scrollbackRingSeqsForTesting, [s1, s2])
+        // cold replay (after:0) returns ring + live tail in order
+        let msgs = buf.messages(after: 0)
+        XCTAssertEqual(msgs.map(\.seq), [1, 2, 3])
+        XCTAssertEqual(msgs[0].bytes, Data("hello".utf8))
+        XCTAssertEqual(msgs[1].bytes, Data("world".utf8))
+        XCTAssertEqual(msgs[2].bytes, Data("tail".utf8))
+    }
+
+    /// messages(after:0) when everything is acked returns only the scrollback ring.
+    func testColdReplayAfterFullAckReturnsScrollbackOnly() {
+        var buf = ReplayBuffer(scrollbackBytes: 512)
+        buf.append(bytes: Data("a".utf8))
+        buf.append(bytes: Data("b".utf8))
+        buf.ack(upTo: buf.highestSeq)
+        XCTAssertEqual(buf.retainedBytes, 0)
+        let msgs = buf.messages(after: 0)
+        XCTAssertEqual(msgs.map(\.seq), [1, 2])
+    }
+
+    // MARK: Scrollback ring — eviction stays within cap
+
+    func testScrollbackRingEvictsOldestToStayWithinCap() {
+        // 10-byte cap; each entry is 4 bytes ("abcd", "efgh", "ijkl").
+        var buf = ReplayBuffer(scrollbackBytes: 10)
+        let s1 = buf.append(bytes: Data("abcd".utf8)) // 4 B
+        let s2 = buf.append(bytes: Data("efgh".utf8)) // 4 B
+        let s3 = buf.append(bytes: Data("ijkl".utf8)) // 4 B
+        buf.ack(upTo: s1) // ring: [s1=4B] → 4B total, under cap
+        XCTAssertTrue(buf.scrollbackRingBytesForTesting <= 10)
+        buf.ack(upTo: s2) // ring: [s1, s2] → 8B, still under cap
+        XCTAssertTrue(buf.scrollbackRingBytesForTesting <= 10)
+        buf.ack(upTo: s3) // adding s3 (4B) → would be 12B, must evict s1 → 8B
+        XCTAssertTrue(
+            buf.scrollbackRingBytesForTesting <= 10,
+            "ring must not exceed scrollbackBytesCap after eviction",
+        )
+        // s1 must have been evicted; s2 and s3 (or a tail including them) are still available
+        let seqs = buf.scrollbackRingSeqsForTesting
+        XCTAssertFalse(seqs.contains(s1), "oldest entry must be evicted to satisfy cap")
+        XCTAssertTrue(seqs.contains(s3), "newest acked entry must survive")
+    }
+
+    // MARK: Scrollback ring — line-aligned eviction
+
+    /// After eviction the new oldest ring entry must not start mid-line; the trim must advance
+    /// past the nearest \n so a cold replay starts on a clean line boundary.
+    func testScrollbackRingEvictionIsLineAligned() {
+        // Cap = 10 bytes. We feed:
+        //   s1 = "line1\nli"   (8 bytes, contains a \n at index 5)
+        //   s2 = "ne2\n"       (4 bytes)
+        // After acking s1, ring holds s1 (8 B ≤ 10 B cap → no eviction yet).
+        // After acking s2 (ring = s1 + s2 = 12 B > 10 B → evict s1 (8 B) → 4 B, under cap; no trim needed).
+        // Use a tighter scenario: cap = 6, entries overlap the boundary.
+        //   s1 = "AB\nCD"  (5 bytes, \n at index 2)
+        //   s2 = "EF"      (2 bytes)
+        // Ack s1 → ring = [s1=5B] ≤ 6B cap → no eviction.
+        // Ack s2 → ring = [s1=5B, s2=2B] = 7B > 6B cap → evict s1 → ring = [s2=2B] = 2B ≤ 6B;
+        //   now trim the NEW oldest (s2 = "EF", no \n) → left intact.
+        // So trim fires when eviction leaves us at/under cap and the new oldest starts mid-line.
+        // Demonstrate the trim:
+        //   s1 = "AB\nCD"    (5 bytes, \n at 2; after trimming: "CD" remains if s1 is now oldest after eviction)
+        // Better: two entries where the new-oldest (after evicting s1) is "half\nrest" and we expect trim.
+        //   cap = 8
+        //   s1 = "AAAA"    (4 bytes)
+        //   s2 = "BB\nCC"  (5 bytes, \n at index 2)
+        // Ack s1 → ring = [s1=4B] ≤ 8B → no evict.
+        // Ack s2 → ring = [s1=4, s2=5] = 9 > 8 → evict s1 → ring = [s2=5] = 5 ≤ 8 → trim s2:
+        //   s2 = "BB\nCC": \n at index 2 → afterNL index 3 → trimmed = "CC" (2 bytes); removed = 3.
+        //   ring = [entry(seq:s2, bytes:"CC")] with scrollbackBytes = 2.
+        var buf = ReplayBuffer(scrollbackBytes: 8)
+        let s1 = buf.append(bytes: Data("AAAA".utf8)) // 4 bytes
+        let s2 = buf.append(bytes: Data("BB\nCC".utf8)) // 5 bytes, \n at index 2
+        _ = buf.append(bytes: Data("live".utf8)) // un-acked, stays in entries
+        buf.ack(upTo: s1)
+        // s1 (4B) in ring, under cap (8B) — no eviction yet
+        XCTAssertEqual(buf.scrollbackRingSeqsForTesting, [s1])
+        buf.ack(upTo: s2)
+        // s1(4) + s2(5) = 9 > 8 → evict s1 → ring=[s2(5)] = 5 ≤ 8 → trim s2 from 'BB\nCC' → 'CC'
+        XCTAssertEqual(
+            buf.scrollbackRingSeqsForTesting,
+            [s2],
+            "s1 must be evicted; s2 (trimmed) must survive",
+        )
+        let oldest = buf.scrollbackRingOldestBytesForTesting
+        XCTAssertEqual(
+            oldest,
+            Data("CC".utf8),
+            "line-aligned trim must advance past the \\n in the new oldest entry",
+        )
+        XCTAssertEqual(buf.scrollbackRingBytesForTesting, 2)
+    }
+
+    // MARK: Scrollback ring — offline gate is unaffected
+
+    /// The offline gate and 64 MiB ceiling must continue to use ONLY retainedBytes (un-acked),
+    /// not scrollbackBytes. A full scrollback ring must not trigger shouldPauseDrain.
+    func testScrollbackRingDoesNotAffectOfflineGate() {
+        // Use a tiny scrollback cap (8 bytes) but a standard offline gate (4 MiB).
+        var buf = ReplayBuffer(maxBackupBytes: 64 * 1024, offlineGateBytes: 32 * 1024, scrollbackBytes: 8)
+        buf.isClientOnline = false
+        // Append two 3-byte entries and ack them → they move into the scrollback ring
+        buf.append(bytes: Data("abc".utf8))
+        buf.append(bytes: Data("def".utf8))
+        buf.ack(upTo: buf.highestSeq)
+        // retainedBytes is 0 (all acked), scrollbackBytes = 6 (under tiny cap of 8)
+        XCTAssertEqual(buf.retainedBytes, 0)
+        XCTAssertFalse(
+            buf.shouldPauseDrain,
+            "scrollback ring bytes must NOT contribute to shouldPauseDrain",
+        )
+    }
+
+    // MARK: Scrollback ring — warm reconnect returns only un-acked tail
+
+    func testWarmReconnectSeesOnlyUnackedTail() {
+        var buf = ReplayBuffer(scrollbackBytes: 512)
+        buf.append(bytes: Data("A".utf8)) // seq 1
+        buf.append(bytes: Data("B".utf8)) // seq 2
+        buf.append(bytes: Data("C".utf8)) // seq 3
+        buf.ack(upTo: 2) // seqs 1+2 → scrollback ring; seq 3 stays in entries
+        // Warm reconnect: client already received seq 2; only seq 3 is new.
+        let msgs = buf.messages(after: 2)
+        XCTAssertEqual(msgs.map(\.seq), [3], "warm reconnect must return only seq 3 (un-acked tail)")
+    }
+
+    // MARK: Scrollback ring — scrollbackBytes == 0 disables ring
+
+    func testScrollbackDisabledWhenCapIsZero() {
+        var buf = ReplayBuffer(scrollbackBytes: 0)
+        buf.append(bytes: Data("hello".utf8))
+        buf.ack(upTo: buf.highestSeq)
+        // With cap 0, ring stays empty — acked entries are discarded as before.
+        XCTAssertEqual(buf.scrollbackRingCountForTesting, 0)
+        XCTAssertEqual(buf.scrollbackRingBytesForTesting, 0)
+        // Cold replay returns nothing (ring is empty and nothing is un-acked).
+        XCTAssertTrue(
+            buf.messages(after: 0).isEmpty,
+            "scrollback disabled: cold replay must return empty when everything is acked",
+        )
+    }
+
+    // MARK: Scrollback ring — un-acked never-drop invariant unchanged
+
+    func testScrollbackDoesNotDropUnackedEntries() {
+        // Even with a tiny scrollback cap, un-acked entries are NEVER moved to the ring
+        // (and thus never evicted). The never-drop invariant for `entries` is unchanged.
+        var buf = ReplayBuffer(scrollbackBytes: 4)
+        for _ in 0..<5 {
+            buf.append(bytes: Data("XX".utf8)) // 2 bytes each, 10 bytes un-acked total
+        }
+        // Ack none → entries stays full; ring is empty.
+        XCTAssertEqual(buf.scrollbackRingCountForTesting, 0)
+        XCTAssertEqual(buf.retainedBytes, 10)
+        // All five are still replayable.
+        XCTAssertEqual(buf.messages(after: 0).map(\.seq), [1, 2, 3, 4, 5])
+    }
+
+    // MARK: Scrollback ring — replay(after:) delegates to updated messages(after:)
+
+    func testReplayAfterZeroIncludesScrollback() {
+        var buf = ReplayBuffer(scrollbackBytes: 256)
+        buf.append(bytes: Data("x".utf8)) // seq 1
+        buf.append(bytes: Data("y".utf8)) // seq 2
+        buf.ack(upTo: 1) // seq 1 → scrollback ring
+        // replay(after:0) must include seq 1 from the ring plus seq 2 from entries.
+        let replayed = buf.replay(after: 0)
+        XCTAssertEqual(replayed, [
+            .output(seq: 1, bytes: Data("x".utf8)),
+            .output(seq: 2, bytes: Data("y".utf8)),
+        ])
     }
 }

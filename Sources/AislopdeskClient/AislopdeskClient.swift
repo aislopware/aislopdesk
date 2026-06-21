@@ -62,6 +62,35 @@ public actor AislopdeskClient {
         /// An EXPLICIT desktop notification the child requested (OSC 9 / OSC 777, sniffed
         /// host-side). The client posts it as a local notification; clicking focuses the pane.
         case notification(title: String, body: String)
+        /// The PTY's current foreground-process basename (wire type 26, host → client). The COARSE
+        /// Claude-Code detection signal: `"claude"` means a `claude` is in the foreground, `""`/any
+        /// other name clears it. The UI folds this into the pane's ``ClaudeStatusMachine`` presence
+        /// floor. The pane identity comes from the channel envelope, not this body.
+        case foregroundProcess(name: String)
+        /// A rich Claude-Code agent-status update (wire type 27, host → client). `state` is the raw
+        /// `AislopdeskAgentDetect.ClaudeStatus.urgency` byte, `kind` the notification class
+        /// (`0 none / 1 permission / 2 waitingForInput / 3 other`), `label` an optional human chip
+        /// string. Surfaced verbatim; the UI maps `state`/`kind` back to a `ClaudeStatus`.
+        case claudeStatus(state: UInt8, kind: UInt8, label: String)
+        /// A per-command Warp-style "Block" METADATA update (WB1 wire type 28, host → client). The
+        /// host segments the outbound PTY byte stream into per-command blocks and emits this on each
+        /// create / update / complete; it carries ONLY the metadata (NOT the output bytes). The UI
+        /// upserts a per-pane block keyed by `index` (the request key for ``blockOutput``). A running
+        /// block: `complete == false`, nil exit/duration, partial `outputLen`. See
+        /// ``WireMessage/commandBlock(index:exitCode:durationMS:complete:outputLen:commandText:)``.
+        case commandBlock(
+            index: UInt32,
+            exitCode: Int32?,
+            durationMS: UInt32?,
+            complete: Bool,
+            outputLen: UInt32,
+            commandText: String,
+        )
+        /// A Block's captured OUTPUT bytes (WB1 wire type 29, host → client), in reply to a
+        /// ``requestBlockOutput(index:)``. `output` is the RAW captured VT bytes (control sequences
+        /// preserved — the UI strips them for clipboard). An EMPTY `output` means the block was evicted
+        /// from the host's ring or never existed → the UI shows "output no longer available", never hangs.
+        case blockOutput(index: UInt32, output: Data)
         /// The remote child process exited with `code`. Terminal — ``output`` finishes
         /// right after this is surfaced.
         case exit(code: Int32)
@@ -235,6 +264,23 @@ public actor AislopdeskClient {
 
     // MARK: Connect / reconnect
 
+    /// Pre-seeds the resume identity so the NEXT ``connect(...)`` presents this session
+    /// UUID and last-received seq to the host (the AISLOPDESK_DETACH_ENABLED path). The
+    /// caller is ``LivePaneSession/makeTerminal(_:makeClient:makeInspector:target:)`` when a
+    /// restored ``PaneSpec`` carries a non-nil ``PaneSpec/resumeSessionID``.
+    ///
+    /// Design: seeding into the existing actor state (`sessionID` / `highestContiguousSeq`)
+    /// means the established ``connect(...)`` line `let resume = sessionID ?? WireMessage.newSessionID`
+    /// picks it up with no new parameter — the connect path is unmodified. Calling this BEFORE
+    /// `connect()` is the only safe window: `connect()` immediately reads both fields on the fast
+    /// (pre-suspension) path. Calling it after `connect()` has no effect (the live session has
+    /// already presented its own learned identity). Must only be called before the first connect.
+    public func seedResumeIdentity(sessionID: UUID, seq: Int64) {
+        self.sessionID = sessionID
+        highestContiguousSeq = seq
+        highestSeqFed = seq
+    }
+
     /// Connects to `host:port`. A first call uses a NEW session (zero sessionID); a
     /// later call (driven by ``ReconnectManager`` or ``resume()``) reuses the learned
     /// ``sessionID`` and presents ``highestContiguousSeq`` so the host replays the tail.
@@ -300,34 +346,36 @@ public actor AislopdeskClient {
         let returning = await transport.returningClient
         if let learnedID { sessionID = learnedID }
 
-        // RESET DEDUP / ACK STATE ON EVERY (RE)CONNECT. The mux transport — the SOLE terminal
-        // connectivity — has NO per-channel server-side resume: `HostServer.spawnMuxChannel` mints a
-        // BRAND-NEW PTY on every channelOpen and `MuxChannelSession` documents "S1 has no per-channel
-        // reconnect/resume … the shell MUST die" on any drop. So the host's `output` ALWAYS restarts at
-        // seq 1, even on a "reconnect". Our `highestSeqFed`/`highestContiguousSeq` high-water marks
-        // belong to the OLD (now-dead) session and MUST be reset here, before the pumps start —
-        // otherwise:
-        //   • `deliverOutput` drops every fresh `output` with seq <= the stale `highestSeqFed`,
-        //     SILENTLY SWALLOWING the new shell's first prompt until its seq passes the old mark; and
-        //   • the ack ticker sends `ack(stale highestContiguousSeq)` against the fresh session.
-        // (On a first connect these are already 0 — a harmless no-op.)
+        // RESET DEDUP / ACK STATE — conditional on the HOST's authoritative resumeFromSeq.
         //
-        // WHY UNCONDITIONAL (not gated on `returning`): `MuxClientTransport.returningClient` is computed
-        // CLIENT-SIDE as `resume != newSessionID`, so it is `true` on EVERY reconnect — but the host
-        // never actually preserved anything (it always spawned a fresh shell). Gating the reset on
-        // `!returning` (the old code) therefore SKIPPED it on the exact path that needs it most. The
-        // reset is correct as long as no transport performs a real server-side resume-with-replay; IF
-        // host-side per-channel survival ever lands (docs/20 §8.3 / an openAck-carried returning flag),
-        // this must become conditional on that HOST-AUTHORITATIVE signal, not the client-side guess.
-        highestSeqFed = 0
-        highestContiguousSeq = 0
-        ackPending = false
-        // Drop the DEAD session's undrained inbox entries with the seq marks. Two reasons
-        // (night-review findings): (a) a consumer drain racing the reconnect could paint
-        // the old session's tail AFTER the fresh-session wipe; (b) takeOutputBatch credits
-        // taken entries to the CURRENT transport — stale entries would emit a phantom
-        // windowAdjust over-grant on the NEW channel (its peer never sent those bytes).
-        outputInbox.removeAll(keepingCapacity: true)
+        // The correct signal is the HOST-AUTHORITATIVE `resumeFromSeq` returned in the handshake
+        // ack, NOT the client-side `returningClient` flag (which is computed as `resume != newSessionID`
+        // and was ALWAYS true on reconnect, making the old `!returning` gate skip the reset exactly
+        // when it was most needed — the existing dedup-regression test pins this).
+        //
+        //   • resumeFromSeq == 0  →  HOST spawned a FRESH shell. The old session is gone; its
+        //     `highestSeqFed`/`highestContiguousSeq` belong to the dead session and MUST be reset
+        //     so `deliverOutput` doesn't silently drop the fresh shell's seq-1 output. The inbox
+        //     is also flushed for the same reason (see below).
+        //
+        //   • resumeFromSeq > 0  →  HOST honored a real RETURNING_CLIENT resume (AISLOPDESK_DETACH_ENABLED
+        //     path): the host will replay the tail from `resumeFromSeq` onward. The client's marks
+        //     were seeded by ``seedResumeIdentity(sessionID:seq:)`` to match, so the dedup
+        //     high-water is ALREADY correct — resetting would discard the marks and cause
+        //     `deliverOutput` to re-deliver the replayed tail as new, duplicating output on the
+        //     pane. Leave them in place; the inbox is already empty (it was drained on the prior
+        //     disconnect / before seeding).
+        if resumeFromSeq == 0 {
+            highestSeqFed = 0
+            highestContiguousSeq = 0
+            ackPending = false
+            // Drop the DEAD session's undrained inbox entries with the seq marks. Two reasons
+            // (night-review findings): (a) a consumer drain racing the reconnect could paint
+            // the old session's tail AFTER the fresh-session wipe; (b) takeOutputBatch credits
+            // taken entries to the CURRENT transport — stale entries would emit a phantom
+            // windowAdjust over-grant on the NEW channel (its peer never sent those bytes).
+            outputInbox.removeAll(keepingCapacity: true)
+        }
 
         if returning, let learnedID {
             // Surface the reconnect so the UI flips `.reconnecting` → `.connected`
@@ -409,6 +457,24 @@ public actor AislopdeskClient {
             eventBroadcaster.yield(.commandStatus(status))
         case let .notification(title, body):
             eventBroadcaster.yield(.notification(title: title, body: body))
+        case let .foregroundProcess(name):
+            // COARSE Claude detection (type 26): surface the PTY foreground-process basename so the UI
+            // can derive a presence floor for this pane. Rides CONTROL; never blocks output.
+            eventBroadcaster.yield(.foregroundProcess(name: name))
+        case let .claudeStatus(state, kind, label):
+            // RICH Claude status (type 27): surface the raw bytes; the UI maps them back to a
+            // ClaudeStatus (AislopdeskClient does not depend on AislopdeskAgentDetect).
+            eventBroadcaster.yield(.claudeStatus(state: state, kind: kind, label: label))
+        case let .commandBlock(index, exitCode, durationMS, complete, outputLen, commandText):
+            // BLOCK metadata (type 28): surface verbatim; the UI upserts a per-pane block keyed by index.
+            eventBroadcaster.yield(.commandBlock(
+                index: index, exitCode: exitCode, durationMS: durationMS,
+                complete: complete, outputLen: outputLen, commandText: commandText,
+            ))
+        case let .blockOutput(index, output):
+            // BLOCK output (type 29): the reply to a requestBlockOutput. Surface the raw VT bytes; the
+            // UI resolves the pending request (empty == evicted/unknown — the UI must not hang).
+            eventBroadcaster.yield(.blockOutput(index: index, output: output))
         case let .pong(timestampMS):
             recordPong(sentAtMS: timestampMS)
         default:
@@ -547,6 +613,15 @@ public actor AislopdeskClient {
         lastSentResize = (cols, rows, pxWidth, pxHeight)
         guard let transport else { throw ClientError.invalidState("sendResize before connect") }
         try await transport.sendResize(cols: cols, rows: rows, pxWidth: pxWidth, pxHeight: pxHeight)
+    }
+
+    /// Requests a Block's captured OUTPUT bytes (WB2, wire type 15) — fired when the user copies/expands a
+    /// block whose `index` came from a `.commandBlock` event. The host replies with a `.blockOutput`
+    /// (type 29) the inbound pump surfaces as a `.blockOutput` event (empty == evicted/unknown). Rides the
+    /// CONTROL channel, so it never head-of-line-blocks behind an output flood on DATA.
+    public func requestBlockOutput(index: UInt32) async throws {
+        guard let transport else { throw ClientError.invalidState("requestBlockOutput before connect") }
+        try await transport.sendRequestBlockOutput(index: index)
     }
 
     // MARK: iOS lifecycle seam ([17] §2.5)

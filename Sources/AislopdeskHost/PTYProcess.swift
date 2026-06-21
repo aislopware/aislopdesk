@@ -257,6 +257,50 @@ public final class PTYProcess: @unchecked Sendable {
         _ = ioctl(masterFD, TIOCSWINSZ, &ws)
     }
 
+    // MARK: Redraw nudge
+
+    /// Delivers `SIGWINCH` to the foreground process group of the PTY so that shells
+    /// and full-screen apps (vim, top, …) repaint immediately after a client reattach.
+    ///
+    /// On reattach the client terminal is fresh and holds no buffered output, so the pane
+    /// is blank until the user presses a key (which triggers zsh/bash to redraw the
+    /// prompt). A `SIGWINCH` is the correct, safe repaint signal — it asks the foreground
+    /// process to re-query the terminal size and redraw; it cannot corrupt a running app.
+    ///
+    /// ## Delivery strategy
+    /// 1. `tcgetpgrp(masterFD)` — the kernel resolves the **foreground** process group of
+    ///    the terminal, which may be a child `vim` / `make` / … rather than the shell
+    ///    itself.  Preferred over `killpg(childPid's pgrp)` because it honours job-control
+    ///    (the shell may have suspended itself and put a child in the foreground).
+    /// 2. `killpg(fgPgrp, SIGWINCH)` — signals the whole foreground group.
+    /// 3. Fallback: if `tcgetpgrp` returns `≤ 0` (terminal has no foreground group yet, or
+    ///    the master is already closed) fall back to `kill(childPid, SIGWINCH)` to catch
+    ///    the shell itself.
+    ///
+    /// All guards are checked under `exitLock` (same TOCTOU discipline as
+    /// ``setWindowSize(cols:rows:pxWidth:pxHeight:)``). A closed / invalid fd or a
+    /// non-positive pgrp is a safe no-op — never traps.
+    ///
+    /// - Important: Call this ONLY on the **reattach** path, not on fresh-shell spawn
+    ///   (the shell prints its first prompt naturally; a redundant `SIGWINCH` is harmless
+    ///   but noisy for full-screen apps that re-clear the screen).
+    public func nudgeRedraw() {
+        exitLock.lock()
+        let fd = masterFD
+        let childPid = pid
+        exitLock.unlock()
+
+        guard fd >= 0, childPid > 0 else { return }
+
+        let fgPgrp = tcgetpgrp(fd)
+        if fgPgrp > 0 {
+            killpg(fgPgrp, SIGWINCH)
+        } else {
+            // No foreground pgrp yet (terminal quiescent) — nudge the child directly.
+            kill(childPid, SIGWINCH)
+        }
+    }
+
     // MARK: Lifecycle
 
     /// Sends `SIGTERM` to the child (it is a session leader, so this reaches the group

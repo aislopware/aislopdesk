@@ -355,6 +355,11 @@ public final class HostOutputSniffer: @unchecked Sendable {
             // icon-name-ONLY and is deliberately ignored — it never sets the window title.
             let titleBytes = oscBuffer[oscBuffer.index(after: sep)...]
             let title = String(bytes: titleBytes, encoding: .utf8) ?? ""
+            // zsh/p10k/starship emit an empty-body OSC 0/2 during prompt redraw BEFORE
+            // setting the real title. Wiring that empty title clears the client's shown
+            // title across the command boundary. Drop it silently — the client keeps the
+            // last real title until a non-empty one arrives.
+            guard !title.isEmpty else { return }
             // Trivial dedup: don't spam an identical title back-to-back.
             if title == lastTitle { return }
             lastTitle = title

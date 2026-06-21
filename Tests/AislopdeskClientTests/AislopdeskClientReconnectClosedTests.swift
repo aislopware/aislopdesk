@@ -98,11 +98,11 @@ final class AislopdeskClientReconnectClosedTests: XCTestCase {
             host _: String,
             port _: UInt16,
             resume: UUID,
-            lastReceivedSeq: Int64,
+            lastReceivedSeq _: Int64,
             handshakeTimeout _: Duration,
         ) {
             _sessionID = (resume == WireMessage.newSessionID) ? UUID() : resume
-            _resumeFromSeq = lastReceivedSeq
+            _resumeFromSeq = 0 // Mirrors MuxClientTransport: no host-authoritative resumeFromSeq yet.
             _returningClient = (resume != WireMessage.newSessionID)
         }
 

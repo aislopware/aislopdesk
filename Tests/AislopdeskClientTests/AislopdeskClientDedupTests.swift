@@ -140,11 +140,13 @@ final class AislopdeskClientDedupTests: XCTestCase {
             host _: String,
             port _: UInt16,
             resume: UUID,
-            lastReceivedSeq: Int64,
+            lastReceivedSeq _: Int64,
             handshakeTimeout _: Duration,
         ) {
             _sessionID = (resume == WireMessage.newSessionID) ? UUID() : resume
-            _resumeFromSeq = lastReceivedSeq
+            // Mirror MuxClientTransport: `resumeFromSeq = 0` (no host-authoritative confirmation
+            // of resume on the mux path yet — the openAck only carries `accepted: Bool`).
+            _resumeFromSeq = 0
             _returningClient = (resume != WireMessage.newSessionID)
         }
 

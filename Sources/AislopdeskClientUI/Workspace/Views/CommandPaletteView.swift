@@ -33,6 +33,8 @@ struct CommandPaletteView: View {
     /// Drives presentation. The palette dismisses by setting this to `false` (⎋, backdrop tap, or a
     /// run). Owned by the mounting view so the ⌘K shortcut toggles it.
     @Binding var isPresented: Bool
+    /// Reduce-Motion gate for the keep-selection-visible scroll animation.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The live query text.
     @State private var query: String = ""
@@ -55,7 +57,7 @@ struct CommandPaletteView: View {
                 backdrop
                 panel
             }
-            .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
         }
     }
 
@@ -65,7 +67,7 @@ struct CommandPaletteView: View {
     /// "click-away closes the palette" behaviour.
     private var backdrop: some View {
         Rectangle()
-            .fill(.black.opacity(0.18))
+            .fill(DSColor.scrim)
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .onTapGesture { dismiss() }
@@ -79,19 +81,20 @@ struct CommandPaletteView: View {
             Divider()
             resultsList
         }
-        .frame(maxWidth: 560)
-        .frame(maxHeight: 460)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .shadow(color: .black.opacity(0.28), radius: 28, y: 12)
-        .padding(.horizontal, 24)
+        // Fixed-size modal (a palette should not reflow with density) — the extents are named DS tokens
+        // (DesignSystem/, so the leak gate exempts them), 640×464 per the Warp/Raycast IDE spec.
+        .frame(width: DSSpace.paletteWidth, height: DSSpace.paletteHeight)
+        // L4 overlay: glass on the transient ⌘K overlay (the allowed glass case — never on content/
+        // terminal panes). The helper supplies the hairline border; the inner top-edge highlight is the
+        // premium dark-surface tell; the ONE tokenized overlay shadow replaces the inline radius/y/colour.
+        .glassedSurface(corner: DSRadius.overlay)
+        .overlay(alignment: .top) { DSElevation.innerTopHighlight() }
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.overlay, style: .continuous))
+        .dsShadow(DSElevation.shadowOverlay)
+        .padding(.horizontal, DSSpace.s9)
         // Sit the card near the top third — Spotlight/Open-Quickly placement, not dead-centre.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 80)
+        .padding(.top, DSScale.scaled(80))
         .onAppear {
             resetState()
             searchFocused = true
@@ -116,14 +119,14 @@ struct CommandPaletteView: View {
     // MARK: Search field (owns the keyboard + the local nav keys)
 
     private var searchField: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DSSpace.s5) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(DSColor.textTertiary)
+                .dsFont(.subhead)
 
             TextField("Run a command, jump to a pane, or open a window  (> @ #)", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 16))
+                .dsFont(.subhead)
                 .focused($searchFocused)
             #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -150,8 +153,8 @@ struct CommandPaletteView: View {
                     return .handled
                 }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, DSSpace.s6)
+        .padding(.vertical, DSSpace.s5)
     }
 
     // MARK: Results list
@@ -178,11 +181,13 @@ struct CommandPaletteView: View {
                             #endif
                         }
                     }
-                    .padding(6)
+                    .padding(DSSpace.s3)
                 }
                 // Keep the highlighted row visible as the user arrows through the list.
+                // P5 MOTION: the scroll-follow routes through DSMotion.appear, Reduce-Motion-gated to the
+                // near-instant crossfade so the list snaps without an eased scroll for a motion-sensitive user.
                 .onChange(of: selection) { _, new in
-                    withAnimation(.easeOut(duration: 0.12)) {
+                    withAnimation(DSMotion.resolve(DSMotion.appear, reduceMotion: reduceMotion)) {
                         proxy.scrollTo(new, anchor: .center)
                     }
                 }
@@ -191,46 +196,59 @@ struct CommandPaletteView: View {
     }
 
     private func row(for entry: Entry, selected: Bool) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DSSpace.s5) {
             Image(systemName: entry.symbol)
-                .font(.system(size: 14))
-                .foregroundStyle(selected ? Color.white : .secondary)
+                .dsFont(.body)
+                // Selected text resolves to textPrimary over the selectionWash (accent·0.18) — it stays
+                // legible under ANY accent. The old `selected ? Color.white` over a SOLID Color.accentColor
+                // fill went illegible on a light system accent (the spec-named bug) and is gone.
+                .foregroundStyle(selected ? DSColor.textPrimary : DSColor.textSecondary)
                 .frame(width: 22)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: DSSpace.s1) {
                 Text(entry.title)
-                    .font(.system(size: 14))
-                    .foregroundStyle(selected ? Color.white : .primary)
+                    .dsFont(.body)
+                    .foregroundStyle(DSColor.textPrimary)
                     .lineLimit(1)
                 if let subtitle = entry.subtitle {
                     Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(selected ? Color.white.opacity(0.85) : .secondary)
+                        .dsFont(.caption2)
+                        .foregroundStyle(selected ? DSColor.textSecondary : DSColor.textTertiary)
                         .lineLimit(1)
                 }
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: DSSpace.s4)
 
             if let shortcut = entry.shortcutHint {
                 Text(shortcut)
-                    .font(.system(.caption, design: .rounded))
+                    .dsFont(.caption)
                     .monospacedDigit()
-                    .foregroundStyle(selected ? Color.white.opacity(0.9) : .secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                    .foregroundStyle(DSColor.textTertiary)
+                    .padding(.horizontal, DSSpace.s3)
+                    .padding(.vertical, DSSpace.s1)
                     .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(selected ? Color.white.opacity(0.18) : Color.primary.opacity(0.06)),
+                        RoundedRectangle(cornerRadius: DSRadius.sm, style: .continuous)
+                            .fill(DSColor.chrome),
                     )
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, DSSpace.s5)
+        .padding(.vertical, DSSpace.s3)
+        // SELECTED row = selectionWash (accent·0.18 — never a solid accent fill) inside the rounded clip…
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(selected ? Color.accentColor : Color.clear),
+            RoundedRectangle(cornerRadius: DSRadius.sm, style: .continuous)
+                .fill(selected ? DSColor.selectionWash : Color.clear),
         )
+        // …plus a 3pt accent left-edge bar drawn OUTSIDE the rounded clip (the sidebar P3b idiom), so the
+        // selected row reads at a glance without tinting the whole row a solid accent.
+        .overlay(alignment: .leading) {
+            if selected {
+                Rectangle()
+                    .fill(DSColor.accentSolid)
+                    .frame(width: 3)
+            }
+        }
     }
 
     // MARK: Actions
@@ -267,6 +285,32 @@ struct CommandPaletteView: View {
             // (WorkspaceRootView) so its `{{slots}}` are resolved before injection rather than sent
             // literally. Either way routes to the focused pane, or the broadcast group when armed.
             store.beginRunSnippet(id)
+        case let .launchPreset(id):
+            // Apply a launch preset: opens a new tab/pane(s) and runs the preset's command(s) once each
+            // PTY is live (the store defers the keystroke send). The expansion is pure (LaunchPresetEngine).
+            store.applyLaunchPreset(id)
+        case let .sessionTemplate(id):
+            // Open a session template: a fresh named session with the template's split layout, each pane
+            // auto-cd-ing + running its command once live (pure expansion in SessionTemplateEngine).
+            if let template = store.sessionTemplates.first(where: { $0.id == id }) {
+                store.newSessionFromTemplate(template)
+            }
+        case .saveSessionAsTemplate:
+            // Capture the active session's layout into a new reusable template (default name/symbol; v1
+            // has no naming modal — the user can rename it in settings later).
+            store.saveCurrentSessionAsTemplate(name: "", symbol: "rectangle.split.2x1")
+        case let .action(action):
+            // The live IDE shell: route through the SAME single-source-of-truth registry the menu bar +
+            // chord dispatcher use. The palette/cheat-sheet view actions are no-ops from the palette
+            // (showing the palette to dismiss-then-show itself is meaningless), so they are not offered.
+            WorkspaceBindingRegistry.route(action, to: store)
+        case let .treePane(id):
+            store.focusPaneTree(id)
+        case let .selectTab(sessionID, index):
+            store.selectSession(sessionID)
+            store.selectTab(index)
+        case let .selectSession(sessionID):
+            store.selectSession(sessionID)
         }
         dismiss()
     }
@@ -274,9 +318,15 @@ struct CommandPaletteView: View {
     /// Moves the highlighted row by `delta`, clamped to the current list bounds (no wrap — a list
     /// stops at its ends, matching Spotlight/Open-Quickly).
     private func moveSelection(by delta: Int) {
-        let count = entries.count
-        guard count > 0 else { return }
-        selection = min(max(selection + delta, 0), count - 1)
+        selection = Self.clampedSelection(selection + delta, count: entries.count, current: selection)
+    }
+
+    /// Pure clamp for the highlighted-row index (no wrap — a list stops at its ends, matching
+    /// Spotlight/Open-Quickly). Factored out so the selection transform is unit-testable without a view:
+    /// an empty list keeps `current` (nothing to move to), otherwise the target is clamped to `0...count-1`.
+    nonisolated static func clampedSelection(_ target: Int, count: Int, current: Int) -> Int {
+        guard count > 0 else { return current }
+        return min(max(target, 0), count - 1)
     }
 
     /// Clears state and lowers the presentation binding. Called by ⎋, backdrop tap, and after a run.
@@ -304,20 +354,38 @@ struct CommandPaletteView: View {
         // stripped before fuzzy matching; an empty post-prefix query lists just that section.
         let raw = query.trimmingCharacters(in: .whitespaces)
         let (scope, stripped) = Self.parseScope(raw)
+        // The LIVE IDE shell (`.tree`) sources its rows from the single ``WorkspaceBindingRegistry`` source
+        // of truth (the same table the menu bar + cheat sheet read) plus the live tab/session/pane jump
+        // rows; the retained-but-dead canvas (`.canvas`) keeps its catalog. The view's run handler routes
+        // each accordingly.
         let all: [Entry] =
-            switch scope {
-            case .all: commandEntries + layoutEntries + snippetEntries + groupEntries + paneEntries + bookmarkEntries +
-                hostWindowEntries
-            case .commands: commandEntries + layoutEntries + snippetEntries
-            case .panes: groupEntries + paneEntries + bookmarkEntries
-            case .hostWindows: hostWindowEntries
+            switch store.liveModel {
+            case .tree:
+                switch scope {
+                case .all: treeActionEntries + launchPresetEntries + sessionTemplateEntries + saveTemplateEntry
+                    + treeTabEntries + treeSessionEntries + snippetEntries + treePaneEntries
+                case .commands: treeActionEntries + launchPresetEntries + sessionTemplateEntries
+                    + saveTemplateEntry + snippetEntries
+                case .panes: treePaneEntries + treeTabEntries + treeSessionEntries
+                case .hostWindows: hostWindowEntries
+                }
+            case .canvas:
+                switch scope {
+                case .all: commandEntries + launchPresetEntries + layoutEntries + snippetEntries +
+                    groupEntries + paneEntries + bookmarkEntries + hostWindowEntries
+                case .commands: commandEntries + launchPresetEntries + layoutEntries + snippetEntries
+                case .panes: groupEntries + paneEntries + bookmarkEntries
+                case .hostWindows: hostWindowEntries
+                }
             }
         let trimmed = stripped
         // Empty query (the '.all' / '.commands' scopes): float the recently-run commands to the top so
         // the verbs you use most are one keystroke away. Only on an empty query — once the user types,
         // fuzzy ranking over the full list takes over (a recent command is already in `commandEntries`).
         guard !trimmed.isEmpty else {
-            if scope == .all || scope == .commands {
+            // The canvas path floats its recently-run command verbs to the top; the tree path has no
+            // recents ring yet (C4), so it shows the registry catalog in display order.
+            if store.liveModel == .canvas, scope == .all || scope == .commands {
                 let recents = recentEntries
                 let recentIDs = Set(recents.map(\.id))
                 return recents + all.filter { !recentIDs.contains($0.id) }
@@ -354,6 +422,82 @@ struct CommandPaletteView: View {
                 symbol: item.symbol,
                 shortcutHint: Self.shortcutHint(for: item.command),
                 keywords: item.keywords,
+            )
+        }
+    }
+
+    // MARK: - Tree shell entries (W6 — sourced from the single WorkspaceBindingRegistry)
+
+    /// Every TREE workspace action runnable from ⌘K, sourced from ``WorkspaceBindingRegistry`` (the SAME
+    /// table the menu bar + cheat sheet read) in its display order. The two view-overlay actions (command
+    /// palette / cheat sheet) are excluded — running them from inside the palette is meaningless — and
+    /// the active-pane verbs are dropped when the active tab has no pane (so "Close Pane" on an empty shell
+    /// doesn't read as broken, mirroring the canvas `visibleCommands`).
+    private var treeActionEntries: [Entry] {
+        let hasActivePane = store.tree.activeSession?.activeTab?.activePane != nil
+        return WorkspaceBindingRegistry.bindings.compactMap { binding -> Entry? in
+            switch binding.action {
+            case .commandPalette,
+                 .cheatSheet,
+                 .find,
+                 .peekAndReply: return nil // view-overlay actions: opened via their chord / menu, not the palette
+            default: break
+            }
+            guard hasActivePane || !binding.action.requiresActivePane else { return nil }
+            return Entry(
+                id: "action.\(binding.id)",
+                kind: .action(binding.action),
+                title: binding.title,
+                symbol: binding.symbol,
+                shortcutHint: binding.chord.map(WorkspaceBindingRegistry.glyph),
+                keywords: binding.keywords,
+            )
+        }
+    }
+
+    /// One "switch to tab" entry per tab in the active session, by title — the live IDE shell's tab jump.
+    private var treeTabEntries: [Entry] {
+        guard let session = store.tree.activeSession else { return [] }
+        return session.tabs.enumerated().map { index, tab in
+            let title = tab.title.isEmpty ? "Tab \(index + 1)" : tab.title
+            return Entry(
+                id: "treetab.\(tab.id.raw.uuidString)",
+                kind: .selectTab(session.id, index),
+                title: "Switch to “\(title)”",
+                subtitle: "Tab",
+                symbol: "rectangle.on.rectangle",
+                keywords: "tab switch select jump \(title)",
+            )
+        }
+    }
+
+    /// One "switch to session" entry per session, by name — the live IDE shell's session jump.
+    private var treeSessionEntries: [Entry] {
+        store.tree.sessions.map { session in
+            Entry(
+                id: "treesession.\(session.id.raw.uuidString)",
+                kind: .selectSession(session.id),
+                title: "Switch to “\(session.name)”",
+                subtitle: "Session",
+                symbol: "macwindow",
+                keywords: "session host workspace switch select jump \(session.name)",
+            )
+        }
+    }
+
+    /// One "focus pane" entry per leaf in the active session, titled by its spec — the live IDE shell's
+    /// per-pane jump (focuses + selects its tab). Derived live from the tree.
+    private var treePaneEntries: [Entry] {
+        guard let session = store.tree.activeSession else { return [] }
+        return session.allPaneIDs().compactMap { id -> Entry? in
+            guard let spec = store.tree.spec(for: id) else { return nil }
+            return Entry(
+                id: "treepane.\(id.raw.uuidString)",
+                kind: .treePane(id),
+                title: spec.title,
+                subtitle: "Pane",
+                symbol: PaneLeafView.icon(for: spec.kind),
+                keywords: "pane focus jump \(spec.title)",
             )
         }
     }
@@ -464,6 +608,54 @@ struct CommandPaletteView: View {
                 keywords: "snippet macro run send keys \(snippet.name)",
             )
         }
+    }
+
+    /// One entry per launch preset (built-ins + user-created). Selecting it opens a NEW TAB whose
+    /// pane(s) run the preset's command(s) — the "launch Claude / htop / git log into a fresh pane"
+    /// power feature (W14 #9). The store's ``WorkspaceStore/applyLaunchPreset(_:)`` does the materialize
+    /// + keystroke send (the pure expansion is ``LaunchPresetEngine``).
+    private var launchPresetEntries: [Entry] {
+        store.launchPresets.map { preset in
+            Entry(
+                id: "launchpreset.\(preset.id.uuidString)",
+                kind: .launchPreset(preset.id),
+                title: "Launch “\(preset.name)”",
+                subtitle: preset.command.isEmpty ? "New shell pane" : "Run: \(preset.command)",
+                symbol: preset.symbol,
+                keywords: "launch preset configuration new pane tab \(preset.command)",
+            )
+        }
+    }
+
+    /// One entry per session template (built-ins + user-captured): opens a NEW named session laid out by
+    /// the template, each pane auto-cd-ing + running its command once live. The whole-session "project
+    /// profile" power feature — distinct from a launch preset (one tab in the current session). The store's
+    /// ``WorkspaceStore/newSessionFromTemplate(_:)`` materializes + sends (pure expansion in
+    /// ``SessionTemplateEngine``).
+    private var sessionTemplateEntries: [Entry] {
+        store.sessionTemplates.map { template in
+            Entry(
+                id: "sessiontemplate.\(template.id.uuidString)",
+                kind: .sessionTemplate(template.id),
+                title: "Open Session “\(template.name)”",
+                subtitle: "\(template.layout.paneCount)-pane layout · new session",
+                symbol: template.symbol,
+                keywords: "session template project profile layout new split workspace \(template.name)",
+            )
+        }
+    }
+
+    /// The "capture the current layout" entry: saves the active session's split geometry as a new reusable
+    /// session template (the inverse of ``sessionTemplateEntries``). One static row.
+    private var saveTemplateEntry: [Entry] {
+        [Entry(
+            id: "savesessiontemplate",
+            kind: .saveSessionAsTemplate,
+            title: "Save Layout as Template…",
+            subtitle: "Capture this session's split layout as a reusable template",
+            symbol: "square.and.arrow.down.on.square",
+            keywords: "save capture session template project profile layout snapshot current",
+        )]
     }
 
     /// One "open this host window" entry per discovered host window. Selecting one spawns a Remote
@@ -588,6 +780,20 @@ struct CommandPaletteView: View {
             case switchLayout(String)
             /// Run a saved command snippet (by id) into the focused pane (or the broadcast group).
             case snippet(UUID)
+            /// Apply a launch preset (by id): opens a new tab/pane(s) and runs the preset's command(s).
+            case launchPreset(UUID)
+            /// Open a session template (by id): a fresh named session with the template's split layout.
+            case sessionTemplate(UUID)
+            /// Capture the active session's layout into a new reusable session template.
+            case saveSessionAsTemplate
+            /// Run a TREE workspace action (routed via ``WorkspaceBindingRegistry``) — the live IDE shell.
+            case action(WorkspaceAction)
+            /// Focus a TREE leaf (the live IDE shell's per-pane jump).
+            case treePane(PaneID)
+            /// Select a TREE tab by index in its session.
+            case selectTab(SessionID, Int)
+            /// Select a TREE session.
+            case selectSession(SessionID)
         }
 
         let id: String
@@ -657,14 +863,11 @@ struct CommandPaletteView: View {
         CatalogItem(
             command: .newPane(.terminal),
             title: "New Terminal Pane",
+            // W11: Claude Code is no longer a dedicated pane — a `claude` running in ANY terminal is
+            // auto-detected. The "claude/ai/assistant" keywords ride the plain New Terminal entry so the
+            // discoverable verb still lands the user on a terminal they can run `claude` in.
             symbol: "plus.rectangle",
-            keywords: "split window shell add open create",
-        ),
-        CatalogItem(
-            command: .newPane(.claudeCode),
-            title: "New Claude Code Pane",
-            symbol: "sparkles.rectangle.stack",
-            keywords: "split ai assistant add open create",
+            keywords: "split window shell add open create claude ai assistant agent",
         ),
         CatalogItem(
             command: .newPane(.remoteGUI),

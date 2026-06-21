@@ -1,3 +1,4 @@
+import AislopdeskVideoProtocol
 import Foundation
 
 /// Link-adaptive constant-QP controller (own rate control, 2026-06-18) — native Swift, the single
@@ -21,9 +22,14 @@ struct QPController: Equatable {
     /// Clean reports per one-QP sharpen (ease back slowly). `AISLOPDESK_QP_DOWN_INTERVAL` (default 4).
     static let downInterval: Int = envInt("AISLOPDESK_QP_DOWN_INTERVAL", 4, min: 1, max: 10000)
 
-    /// Parse + clamp an int env to `[min, max]`, falling back to `def`.
+    /// Parse + CLAMP an int config value to `[min, max]`, falling back to `def`. Resolves through
+    /// ``EnvConfig`` (ProcessInfo env → overlay) instead of `ProcessInfo` directly — W12 — so a GUI
+    /// setting can override it. With an EMPTY overlay `EnvConfig.string(key)` is byte-identical to the
+    /// previous `ProcessInfo.processInfo.environment[key]`, so this site (and the golden corpus that
+    /// pins these defaults) is unchanged. NOTE: this site CLAMPS out-of-range values (it does not reject
+    /// them), distinct from `LiveCongestionController`'s validate-then-default — that law stays here.
     static func envInt(_ key: String, _ def: Int, min lo: Int, max hi: Int) -> Int {
-        guard let s = ProcessInfo.processInfo.environment[key], let v = Int(s) else { return def }
+        guard let s = EnvConfig.string(key), let v = Int(s) else { return def }
         return Swift.max(lo, Swift.min(hi, v))
     }
 

@@ -1,3 +1,4 @@
+import AislopdeskVideoProtocol
 import Foundation
 
 /// PURE AIMD congestion controller for the live HEVC stream (WF-2 adaptive bitrate, 2026-06-09).
@@ -96,8 +97,7 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// Backing the rate off cannot reduce that loss; it only degrades quality and (pre-#1) paced the
     /// recovery IDR at the collapsed rate. Loss WITH RTT inflation = a building queue = real
     /// congestion → the classic AIMD response stays. `AISLOPDESK_ABR_LOSS_NEEDS_RTT=0` reverts.
-    public static let lossNeedsRTTCorroboration = ProcessInfo.processInfo
-        .environment["AISLOPDESK_ABR_LOSS_NEEDS_RTT"] != "0"
+    public static let lossNeedsRTTCorroboration = EnvConfig.boolDefaultOn("AISLOPDESK_ABR_LOSS_NEEDS_RTT")
     /// EWMA loss-rate above THIS halves even at flat RTT: a queue-less policer / true link collapse
     /// drops without inflating RTT, and at a SUSTAINED ≥25% the stream is unusable regardless of
     /// cause — backing off is the only safe move. Keyed on the EWMA ``NetworkEstimate/lossRate``
@@ -221,7 +221,7 @@ public struct LiveCongestionController: Sendable, Equatable {
     /// DELAY-GRADIENT EARLY CUT (component 3) — DEFAULT OFF until the HW feel-test (repo convention:
     /// two prior delay designs were falsified live by rate-independent 4G wobble). `AISLOPDESK_ABR_GRAD=1`
     /// enables on the host; the client-side estimator + wire fields are pure telemetry and default ON.
-    public static let gradientCutEnabledDefault = ProcessInfo.processInfo.environment["AISLOPDESK_ABR_GRAD"] == "1"
+    public static let gradientCutEnabledDefault = EnvConfig.boolDefaultOff("AISLOPDESK_ABR_GRAD")
     /// Multiplicative factor for a gradient-authorized cut. 0.85 = GCC overuse beta (libwebrtc
     /// AimdRateControl), same depth as the loss path — one early conventional cut, then the
     /// proportional path sizes any standing queue. `AISLOPDESK_ABR_GRAD_DEC`.
@@ -563,14 +563,19 @@ public struct LiveCongestionController: Sendable, Equatable {
 
     // MARK: Env parsing helpers
 
+    // W12: resolve through `EnvConfig` (ProcessInfo env → overlay) so a GUI setting can override these
+    // tunables. With an EMPTY overlay `EnvConfig.string(key)` is byte-identical to the previous
+    // `ProcessInfo.processInfo.environment[key]`, so the validate-then-default law below — and the
+    // golden corpus that pins these defaults — is unchanged. (Validate-then-default: out-of-range or
+    // garbage falls back to `fallback`; never traps.)
     private static func envInt(_ key: String, _ fallback: Int, min lo: Int, max hi: Int) -> Int {
-        guard let s = ProcessInfo.processInfo.environment[key], let v = Int(s), v >= lo,
+        guard let s = EnvConfig.string(key), let v = Int(s), v >= lo,
               v <= hi else { return fallback }
         return v
     }
 
     private static func envDouble(_ key: String, _ fallback: Double, min lo: Double, max hi: Double) -> Double {
-        guard let s = ProcessInfo.processInfo.environment[key], let v = Double(s), v >= lo,
+        guard let s = EnvConfig.string(key), let v = Double(s), v >= lo,
               v <= hi else { return fallback }
         return v
     }

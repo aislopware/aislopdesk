@@ -26,6 +26,8 @@ public struct WorkspaceRootView: View {
     /// The ONE app-global connection (docs/31): drives the modal connect-gate + the toolbar status.
     @Bindable var connection: AppConnection
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Reduce-Motion gate for the connection-gate appear/dismiss fade.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The sidebar's visibility — `.automatic` by default (the system shows sidebar + detail on regular
     /// width and collapses on compact). Bound so the toolbar's sidebar toggle and the compact collapse
@@ -42,6 +44,11 @@ public struct WorkspaceRootView: View {
     /// Whether the ⌘/ keyboard-shortcut cheat sheet is presented. Window-level UI state like the palette;
     /// a ⌘-prefixed chord, so the focused terminal never sees it (the §5 conflict rule).
     @State private var showCheatSheet = false
+
+    /// Whether the ⌘⇧J Peek & Reply overlay (P4) is presented. Window-level `@State` like the palette/cheat
+    /// sheet — NOT store state (so it never re-mounts the tree); a ⌘-prefixed chord obeys the §5 rule, and
+    /// the Pane-menu item flips it through the `peekReplyToggle` focused-scene value below.
+    @State private var showPeekReply = false
 
     /// Whether the app has connected at least once this launch. The canvas (and its panes' auto-connect
     /// `.task`s) only MOUNT after the first successful connect — otherwise a pane behind the gate would
@@ -68,121 +75,167 @@ public struct WorkspaceRootView: View {
     }
 
     public var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            PaneSidebarView(store: store)
-            #if os(macOS)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
-            #endif
-        } detail: {
-            detail
-                .toolbar { detailToolbar }
-                .navigationTitle(windowTitle)
-            #if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
-            #endif
-        }
+        shell
+            // LIVE-SCALE FIX (P1): inject the @Observable DSScale ONCE here, at the very top of the chain —
+            // strictly ABOVE the `shell` switch (SplitWorkspaceView vs the dead canvas NavigationSplitView) and
+            // therefore above the SplitTreeView no-teardown ZStack + its `ForEach(tab.allPaneIDs())` mount
+            // loop. SwiftUI inherits the environment downward, so every `dsFont`/`dsSpace` modifier reads
+            // @Environment(DSScale.self) and repaints on a density change. Placed above the macOS frame/window
+            // readers so it scopes the WHOLE tree, never inside a mount loop (zero edits to SplitTreeView /
+            // the hostedTabs ZStack). This replaces the dead UIScale notification path (no view subscribed).
+            .environment(DSScale.shared)
+            // P5: inject DSThemeStore alongside DSScale so the `.dsFrame(height:)` chrome heights (TabBar /
+            // PaneStatusBar) reflow LIVE on a density TIER flip — the height VALUE comes from the tier
+            // (DSThemeStore.density.<height>), which DSScale's multiplier alone cannot carry. Same injection
+            // point (strictly ABOVE the shell switch + the SplitTreeView no-teardown mount loop), so a tier
+            // flip is a pure geometry repaint that never changes the leaf PaneID set / tears down a surface.
+            .environment(DSThemeStore.shared)
         #if os(macOS)
-        .frame(minWidth: 720, minHeight: 480)
-        // ITEM #6: observe the outer window's width so the compact breakpoint keys on the whole window,
-        // not the detail column. A zero-size background reader; iOS keeps its size-class-primary path
-        // (no reader, `windowWidth` stays nil).
-        .background(WindowWidthReader(width: $windowWidth))
+            .frame(minWidth: 720, minHeight: 480)
+            // ITEM #6: observe the outer window's width so the compact breakpoint keys on the whole window,
+            // not the detail column. A zero-size background reader; iOS keeps its size-class-primary path
+            // (no reader, `windowWidth` stays nil).
+            .background(WindowWidthReader(width: $windowWidth))
         #endif
-        // Publish the store so the scene-level ``WorkspaceCommands`` (menu bar / iPad ⌘-HUD) resolve
-        // THIS window's store via `@FocusedValue(\.workspaceStore)` — one window today, the key window
-        // automatically with multi-window later (docs/22 §5).
-        .publishingWorkspaceStore(store)
-        // The ⌘K command palette overlay (docs/22 §5): a Spotlight-style floating card with its own
-        // dimming backdrop, top-third placement. An unconditional overlay because the view renders an
-        // empty branch when hidden (zero cost) — and an overlay, not a `.sheet`, so it owns its own
-        // backdrop + placement rather than fighting sheet chrome.
-        // The ⌘K palette + ⌘/ cheat-sheet overlays, in their own modifier so the root body's chain stays
-        // inside the Swift type-checker's budget. Both render an empty branch when hidden (zero cost).
-        .modifier(WorkspaceOverlayModals(
-            store: store,
-            showPalette: $showCommandPalette,
-            showCheatSheet: $showCheatSheet,
-        ))
-        // The app-global connect-gate (docs/31): a modal over the WHOLE shell — including the sidebar +
-        // palette — whenever the one connection is not `.connected`. Placed here (above the regular↔compact
-        // switch in `detail`) so a projection flip never re-mounts it. The canvas is unusable until
-        // connected; on a mid-session drop it reappears ("reconnecting…") and auto-dismisses on recovery.
-        .overlay {
-            if !isConnected {
-                ConnectionGateView(connection: connection)
-                    .transition(.opacity)
+            // Publish the store so the scene-level ``WorkspaceCommands`` (menu bar / iPad ⌘-HUD) resolve
+            // THIS window's store via `@FocusedValue(\.workspaceStore)` — one window today, the key window
+            // automatically with multi-window later (docs/22 §5).
+            .publishingWorkspaceStore(store)
+            // The ⌘K command palette overlay (docs/22 §5): a Spotlight-style floating card with its own
+            // dimming backdrop, top-third placement. An unconditional overlay because the view renders an
+            // empty branch when hidden (zero cost) — and an overlay, not a `.sheet`, so it owns its own
+            // backdrop + placement rather than fighting sheet chrome.
+            // The ⌘K palette + ⌘/ cheat-sheet overlays, in their own modifier so the root body's chain stays
+            // inside the Swift type-checker's budget. Both render an empty branch when hidden (zero cost).
+            .modifier(WorkspaceOverlayModals(
+                store: store,
+                showPalette: $showCommandPalette,
+                showCheatSheet: $showCheatSheet,
+                showPeekReply: $showPeekReply,
+            ))
+            // The app-global connect-gate (docs/31): a modal over the WHOLE shell — including the sidebar +
+            // palette — whenever the one connection is not `.connected`. Placed here (above the regular↔compact
+            // switch in `detail`) so a projection flip never re-mounts it. The canvas is unusable until
+            // connected; on a mid-session drop it reappears ("reconnecting…") and auto-dismisses on recovery.
+            .overlay {
+                if !isConnected {
+                    ConnectionGateView(connection: connection)
+                        .transition(.opacity)
+                }
+            }
+            // The fade's missing driver: `.transition(.opacity)` alone pops without an animation tied to
+            // the value that inserts/removes the gate. Value-scoped so nothing else animates off this.
+            // P5 MOTION: DSMotion.appear (the gate fades in/out), Reduce-Motion-gated to the near-instant
+            // crossfade so a motion-sensitive user gets an instant swap rather than the eased fade.
+            .animation(DSMotion.resolve(DSMotion.appear, reduceMotion: reduceMotion), value: isConnected)
+            // Latch "connected at least once" so the canvas mounts on first connect and stays mounted across
+            // later drops (panes preserved; the gate just overlays). Seed it now in case we launch connected.
+            .onChange(of: connection.status) { _, _ in if isConnected { hasConnectedOnce = true } }
+            .onAppear { if isConnected { hasConnectedOnce = true } }
+            // ⌘R with the sidebar column collapsed was a silent no-op (the rename field lives in the
+            // sidebar). Reveal the rail first — Xcode's reveal-navigator-on-rename behaviour; the sidebar
+            // acts on the still-pending request when it mounts.
+            .onChange(of: store.pendingRename) { _, pending in
+                if pending != nil { columnVisibility = .all }
+            }
+            // Toggle the palette with ⌘K. The chord lives on the VISIBLE menu-bar "Command Palette" item
+            // (``WorkspaceCommands``) — discoverable + scene-targeted — reached through this focused-scene
+            // value rather than a hidden background button. A ⌘-prefixed chord obeys the §5 conflict rule
+            // (the terminal never receives it), and `focusedSceneValue` keeps it reachable while a pane has
+            // keyboard focus (exactly like `\.workspaceStore`).
+            .focusedSceneValue(\.commandPaletteToggle, CommandPaletteToggle { showCommandPalette.toggle() })
+            .focusedSceneValue(\.cheatSheetToggle, CommandPaletteToggle { showCheatSheet.toggle() })
+            // ⌘⇧J Peek & Reply (P4): toggle the inline-reply overlay. When already open it closes; when opening,
+            // it opens unconditionally — the overlay resolves its own target on appear and shows a graceful
+            // empty / read-only peek when nothing needs attention (so the chord is never a silent dead key).
+            .focusedSceneValue(\.peekReplyToggle, CommandPaletteToggle { showPeekReply.toggle() })
+            // The busy-shell close guard (store.pendingClose): ⌘W / a close affordance on a pane whose
+            // shell is mid-command parks here instead of killing the command. The dialog reads the pane's
+            // title at present-time; Cancel (the automatic dismiss) clears the pending id.
+            .confirmationDialog(
+                pendingCloseTitle,
+                isPresented: Binding(
+                    get: { store.pendingClose != nil },
+                    set: { if !$0 { store.cancelPendingClose() } },
+                ),
+            ) {
+                Button("Close Pane", role: .destructive) { store.confirmPendingClose() }
+            } message: {
+                Text("A command is still running in this pane. Closing it ends the session and the command.")
+            }
+            // "Save Current Layout…" name prompt (store.pendingSaveLayout). The TextField defaults to a
+            // suggestion; an empty name is a no-op (saveLayoutPreset trims+guards).
+            .alert("Save Layout", isPresented: Binding(
+                get: { store.pendingSaveLayout },
+                set: { if !$0 { store.clearSaveLayoutRequest() } },
+            )) {
+                TextField("Layout name", text: $saveLayoutName)
+                TextField("Auto-switch when this host app launches (optional)", text: $saveLayoutTriggerApp)
+                Button("Save") {
+                    store.saveLayoutPreset(name: saveLayoutName, triggerAppName: saveLayoutTriggerApp)
+                    saveLayoutName = ""
+                    saveLayoutTriggerApp = ""
+                    store.clearSaveLayoutRequest()
+                }
+                Button("Cancel", role: .cancel) {
+                    saveLayoutName = ""
+                    saveLayoutTriggerApp = ""
+                    store.clearSaveLayoutRequest()
+                }
+            } message: {
+                Text(
+                    """
+                    Save the current panes, groups, and focus as a named layout you can switch back to. \
+                    Optionally bind it to a host app so it switches in automatically when that app launches.
+                    """,
+                )
+            }
+            // Snippet sheets (value-entry + manager) live in their own modifier so the root body's modifier
+            // chain stays inside the Swift type-checker's budget.
+            .modifier(SnippetModals(store: store))
+    }
+
+    // MARK: Shell (W5 — the IDE split shell vs the retained-but-dead canvas shell)
+
+    /// The workspace shell. W5 cutover: when the store's live model is ``WorkspaceStore/LiveModel/tree``
+    /// (the app) it is the new IDE ``SplitWorkspaceView`` (sessions sidebar + tab bar + recursive split
+    /// content); otherwise the retained-but-dead canvas ``NavigationSplitView`` (so the canvas views keep
+    /// compiling + the old tests render). The shared overlays (connect-gate, ⌘K palette, dialogs, snippet
+    /// modals, `publishingWorkspaceStore`) wrap WHICHEVER shell — they live below on the `body` chain.
+    @ViewBuilder
+    private var shell: some View {
+        switch store.liveModel {
+        case .tree:
+            // W5 Muxy cutover: the IDE shell is now self-contained (its own hand-built HStack skeleton +
+            // hidden-title-bar window foundation via `WindowConfigurator`), NOT wrapped in this view's
+            // `NavigationSplitView`. The old `.toolbar { detailToolbar }` host is gone — its affordances
+            // (new tab / split / new session) now live in the shell's tab strip + sessions sidebar, and the
+            // app-global connection control moved into the sidebar. The shared overlays (connect-gate, ⌘K
+            // palette, dialogs, snippet modals, `publishingWorkspaceStore`) still wrap this from `body`.
+            SplitWorkspaceView(store: store)
+        case .canvas:
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                PaneSidebarView(store: store)
+                #if os(macOS)
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
+                #endif
+            } detail: {
+                detail
+                    .toolbar { detailToolbar }
+                    .navigationTitle(windowTitle)
+                #if os(iOS)
+                    .navigationBarTitleDisplayMode(.inline)
+                #endif
             }
         }
-        // The fade's missing driver: `.transition(.opacity)` alone pops without an animation tied to
-        // the value that inserts/removes the gate. Value-scoped so nothing else animates off this.
-        .animation(.easeInOut(duration: 0.18), value: isConnected)
-        // Latch "connected at least once" so the canvas mounts on first connect and stays mounted across
-        // later drops (panes preserved; the gate just overlays). Seed it now in case we launch connected.
-        .onChange(of: connection.status) { _, _ in if isConnected { hasConnectedOnce = true } }
-        .onAppear { if isConnected { hasConnectedOnce = true } }
-        // ⌘R with the sidebar column collapsed was a silent no-op (the rename field lives in the
-        // sidebar). Reveal the rail first — Xcode's reveal-navigator-on-rename behaviour; the sidebar
-        // acts on the still-pending request when it mounts.
-        .onChange(of: store.pendingRename) { _, pending in
-            if pending != nil { columnVisibility = .all }
-        }
-        // Toggle the palette with ⌘K. The chord lives on the VISIBLE menu-bar "Command Palette" item
-        // (``WorkspaceCommands``) — discoverable + scene-targeted — reached through this focused-scene
-        // value rather than a hidden background button. A ⌘-prefixed chord obeys the §5 conflict rule
-        // (the terminal never receives it), and `focusedSceneValue` keeps it reachable while a pane has
-        // keyboard focus (exactly like `\.workspaceStore`).
-        .focusedSceneValue(\.commandPaletteToggle, CommandPaletteToggle { showCommandPalette.toggle() })
-        .focusedSceneValue(\.cheatSheetToggle, CommandPaletteToggle { showCheatSheet.toggle() })
-        // The busy-shell close guard (store.pendingClose): ⌘W / a close affordance on a pane whose
-        // shell is mid-command parks here instead of killing the command. The dialog reads the pane's
-        // title at present-time; Cancel (the automatic dismiss) clears the pending id.
-        .confirmationDialog(
-            pendingCloseTitle,
-            isPresented: Binding(
-                get: { store.pendingClose != nil },
-                set: { if !$0 { store.cancelPendingClose() } },
-            ),
-        ) {
-            Button("Close Pane", role: .destructive) { store.confirmPendingClose() }
-        } message: {
-            Text("A command is still running in this pane. Closing it ends the session and the command.")
-        }
-        // "Save Current Layout…" name prompt (store.pendingSaveLayout). The TextField defaults to a
-        // suggestion; an empty name is a no-op (saveLayoutPreset trims+guards).
-        .alert("Save Layout", isPresented: Binding(
-            get: { store.pendingSaveLayout },
-            set: { if !$0 { store.clearSaveLayoutRequest() } },
-        )) {
-            TextField("Layout name", text: $saveLayoutName)
-            TextField("Auto-switch when this host app launches (optional)", text: $saveLayoutTriggerApp)
-            Button("Save") {
-                store.saveLayoutPreset(name: saveLayoutName, triggerAppName: saveLayoutTriggerApp)
-                saveLayoutName = ""
-                saveLayoutTriggerApp = ""
-                store.clearSaveLayoutRequest()
-            }
-            Button("Cancel", role: .cancel) {
-                saveLayoutName = ""
-                saveLayoutTriggerApp = ""
-                store.clearSaveLayoutRequest()
-            }
-        } message: {
-            Text(
-                """
-                Save the current panes, groups, and focus as a named layout you can switch back to. \
-                Optionally bind it to a host app so it switches in automatically when that app launches.
-                """,
-            )
-        }
-        // Snippet sheets (value-entry + manager) live in their own modifier so the root body's modifier
-        // chain stays inside the Swift type-checker's budget.
-        .modifier(SnippetModals(store: store))
     }
 
     /// The busy-close dialog title, naming the pane it would close (best-effort — falls back to a
     /// generic title if the pane vanished while the dialog was up).
     private var pendingCloseTitle: String {
-        if let id = store.pendingClose, let spec = store.workspace.canvas.spec(for: id) {
+        // ITEM A1: resolve the spec from the LIVE model (tree or canvas) so the dialog names the leaf it
+        // would close on the IDE shell too — the old canvas-only lookup returned a generic title under .tree.
+        if let id = store.pendingClose, let spec = store.pendingCloseSpec {
             return "Close “\(PanePresentation.displayTitle(store.handle(for: id), spec: spec))”?"
         }
         return "Close Pane?"
@@ -269,22 +322,48 @@ public struct WorkspaceRootView: View {
             .help("Connection: \(connection.target.host) — \(ConnectionPresenter.headline(for: connection.status))")
         }
         ToolbarItem(placement: .primaryAction) {
-            Menu {
-                Button { store.addPane(kind: .terminal) } label: {
-                    Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
+            switch store.liveModel {
+            case .tree:
+                // The IDE shell: the primary "+" opens a new TAB; the menu offers split / new session.
+                Menu {
+                    Button { store.newTab(kind: SettingsKey.defaultPaneKind) } label: {
+                        Label("New Tab", systemImage: "plus.rectangle.on.rectangle")
+                    }
+                    if let active = store.tree.activeSession?.activeTab?.activePane {
+                        Button { store.splitPaneTree(active, axis: .horizontal, kind: SettingsKey.defaultPaneKind)
+                        } label: {
+                            Label("Split Right", systemImage: "rectangle.split.2x1")
+                        }
+                        Button { store.splitPaneTree(active, axis: .vertical, kind: SettingsKey.defaultPaneKind)
+                        } label: {
+                            Label("Split Down", systemImage: "rectangle.split.1x2")
+                        }
+                    }
+                    Divider()
+                    Button { store.newSession(name: "Local", kind: SettingsKey.defaultPaneKind) } label: {
+                        Label("New Session", systemImage: "square.stack.3d.up")
+                    }
+                } label: {
+                    Label("New Tab", systemImage: "plus")
+                } primaryAction: {
+                    store.newTab(kind: SettingsKey.defaultPaneKind)
                 }
-                Button { store.addPane(kind: .claudeCode) } label: {
-                    Label("Claude Code", systemImage: PaneLeafView.icon(for: .claudeCode))
+                .help("New tab")
+            case .canvas:
+                Menu {
+                    Button { store.addPane(kind: .terminal) } label: {
+                        Label("Terminal", systemImage: PaneLeafView.icon(for: .terminal))
+                    }
+                    Button { store.addPane(kind: .remoteGUI) } label: {
+                        Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
+                    }
+                } label: {
+                    Label("New Pane", systemImage: "plus")
+                } primaryAction: {
+                    store.addPane(kind: SettingsKey.defaultPaneKind)
                 }
-                Button { store.addPane(kind: .remoteGUI) } label: {
-                    Label("Remote Window", systemImage: PaneLeafView.icon(for: .remoteGUI))
-                }
-            } label: {
-                Label("New Pane", systemImage: "plus")
-            } primaryAction: {
-                store.addPane(kind: SettingsKey.defaultPaneKind)
+                .help("New pane")
             }
-            .help("New pane")
         }
     }
 }
@@ -298,12 +377,23 @@ private struct WorkspaceOverlayModals: ViewModifier {
     let store: WorkspaceStore
     @Binding var showPalette: Bool
     @Binding var showCheatSheet: Bool
+    @Binding var showPeekReply: Bool
+    /// Reduce-Motion gate for the three overlay appear/dismiss drivers.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
             .overlay { CommandPaletteView(store: store, isPresented: $showPalette) }
-            .overlay { KeyboardCheatSheetView(isPresented: $showCheatSheet) }
-            .animation(.easeOut(duration: 0.12), value: showCheatSheet)
+            .overlay { KeyboardCheatSheetView(isPresented: $showCheatSheet, liveModel: store.liveModel) }
+            // P4 Peek & Reply (⌘⇧J): an inline-reply glass card over the oldest blocked pane. Empty branch
+            // when hidden (zero cost), so an unconditional overlay is cheap — like the palette.
+            .overlay { PeekReplyView(store: store, isPresented: $showPeekReply) }
+            // P5 MOTION: the overlay appear/dismiss drivers route through DSMotion.appear, Reduce-Motion-
+            // gated to the near-instant crossfade (so the scale/translate entrance never plays for a
+            // motion-sensitive user). Each is value-scoped so nothing else animates off these flags.
+            .animation(DSMotion.resolve(DSMotion.appear, reduceMotion: reduceMotion), value: showPalette)
+            .animation(DSMotion.resolve(DSMotion.appear, reduceMotion: reduceMotion), value: showCheatSheet)
+            .animation(DSMotion.resolve(DSMotion.appear, reduceMotion: reduceMotion), value: showPeekReply)
     }
 }
 

@@ -1,3 +1,4 @@
+import AislopdeskAgentDetect
 import CoreGraphics
 import XCTest
 @testable import AislopdeskClientUI
@@ -112,5 +113,31 @@ final class Round2FixTests: XCTestCase {
         XCTAssertTrue(store.hasNativeSize(a))
         store.closePane(a)
         XCTAssertFalse(store.hasNativeSize(a), "a closed pane's cached native size is evicted (no leak)")
+    }
+
+    // MARK: - paneAgentStatus eviction on close (review #10/#13)
+
+    /// A closed pane's per-pane Claude status (``WorkspaceStore/paneAgentStatus``) must be pruned in
+    /// `reconcileRegistry` — like the sibling `selectedPanes` / `nativeFrameSize` caches. Before the fix
+    /// the entry lingered forever (unbounded growth + a dead pane could surface in a rollup). The other
+    /// pane's status survives (the prune is selective, not a blanket clear) — revert-to-confirm-fail.
+    func testPaneAgentStatusEvictedWhenPaneCloses() {
+        let a = PaneID(), b = PaneID()
+        let store = makeStore(restoring: Workspace(canvas: Canvas(items: [
+            item(a, CGRect(x: 0, y: 0, width: 800, height: 600)),
+            item(b, CGRect(x: 820, y: 0, width: 800, height: 600)),
+        ]), focusedPane: a))
+        store.setAgentStatus(.needsPermission, for: a)
+        store.setAgentStatus(.working, for: b)
+        XCTAssertEqual(store.agentStatus(for: a), .needsPermission)
+
+        store.closePane(a)
+        XCTAssertEqual(store.agentStatus(for: a), .none, "a closed pane's agent status entry is pruned")
+        XCTAssertFalse(store.paneAgentStatus.keys.contains(a), "the dict no longer holds the orphaned pane's key")
+        XCTAssertEqual(
+            store.agentStatus(for: b),
+            .working,
+            "the surviving pane's status is untouched (selective prune)",
+        )
     }
 }

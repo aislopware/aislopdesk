@@ -43,7 +43,7 @@ public final class AppLaunchMonitor {
         guard let store else { return }
         // Cheap early-out: nothing to do unless the feature is on and some preset carries a trigger.
         guard SettingsKey.autoSwitchLayoutsEnabled,
-              store.workspace.layoutPresets.contains(where: { $0.triggerAppName != nil }),
+              store.liveLayoutPresets.contains(where: { $0.triggerAppName != nil }),
               isConnected(), let query = RemoteWindowDiscovery.shared
         else {
             // Not ready (feature off / no trigger / DISCONNECTED): treat it like the host's whole app set
@@ -69,7 +69,7 @@ public final class AppLaunchMonitor {
         // One switch per poll, with a DETERMINISTIC winner when several trigger apps appear at once
         // (e.g. a multi-poll reconnect batch): iterate the presets in saved order, not the unordered
         // newApps Set, so the same launch always picks the same layout.
-        for preset in store.workspace.layoutPresets {
+        for preset in store.liveLayoutPresets {
             guard let trigger = preset.triggerAppName,
                   newApps.contains(where: { $0.lowercased() == trigger.lowercased() }) else { continue }
             if store.autoSwitchForLaunchedApp(trigger) { break }

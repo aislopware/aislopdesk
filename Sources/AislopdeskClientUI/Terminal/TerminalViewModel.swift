@@ -2,6 +2,9 @@ import AislopdeskClaudeCode
 import AislopdeskClient
 import AislopdeskTerminal
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// The terminal screen's view-model: it consumes a ``AislopdeskClient``'s `output` byte stream +
 /// `events` and projects connection / title / exit / byte-count state for the SwiftUI views.
@@ -72,6 +75,12 @@ public final class TerminalViewModel {
     /// the host-measured duration in ms. Used by the header/tooltip + the long-command
     /// notification trigger. `nil` until the first command completes.
     public private(set) var lastCommand: (exitCode: Int32?, durationMS: UInt32)?
+
+    /// The per-pane Warp-style "Blocks" store (WB2): the host's `commandBlock` metadata (wire type 28)
+    /// folded into an ordered, bounded `[CommandBlock]`. Drives the Command Navigator, the sticky command
+    /// header, and the chrome status chip. The captured output is fetched on demand (the copy-output flow,
+    /// ``copyBlockOutput(index:onResult:)``). Observed so the navigator/header re-render as blocks land.
+    public let blocks = TerminalBlockModel()
 
     // MARK: Wiring
 
@@ -156,6 +165,198 @@ public final class TerminalViewModel {
     /// so mirroring into a sibling does not loop back). Local delivery via ``inputSink`` is unchanged.
     /// `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers (never invoked).
     @ObservationIgnored public var broadcastTap: ((Data) -> Void)?
+
+    /// W14 #10: the terminal right-click menu's "Split Right / Split Down" item — the renderer's
+    /// `menu(for:)` calls this with the chosen axis; the leaf wires it to `store.splitPaneTree(paneID, …)`.
+    /// `true` = horizontal (side-by-side), `false` = vertical (stacked). `@ObservationIgnored`: wiring, not
+    /// view state. Nil for headless/preview callers (never invoked).
+    @ObservationIgnored public var onContextMenuSplit: ((_ horizontal: Bool) -> Void)?
+
+    /// W14 #5: the ⌘F / right-click "Find…" action — opens the find-in-terminal bar over THIS pane. The
+    /// renderer's menu (and the `find:` responder selector) call it; the leaf wires it to the find-bar
+    /// `@State`. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
+    @ObservationIgnored public var onRequestFind: (() -> Void)?
+
+    // MARK: Copy-mode (P5b — modal keyboard scrollback navigation)
+
+    /// TRUE while this pane is in modal keyboard COPY-MODE (tmux/zellij parity): every keystroke this pane's
+    /// `keyDown` sees is intercepted and routed through ``handleCopyModeKey(_:)`` (navigation / search / copy
+    /// / exit) instead of being forwarded to the shell. VIEW state, NOT persisted (mirrors `isFindPresented`):
+    /// `@ObservationIgnored` because the keyDown intercept READS it from inside the renderer event path and
+    /// the overlay drives it via the `onRequestCopyMode` hook — it must not register a SwiftUI dependency.
+    @ObservationIgnored public var isCopyMode = false {
+        didSet { copyModeBadgeActive = isCopyMode }
+    }
+
+    /// OBSERVABLE mirror of ``isCopyMode`` for the SwiftUI status-bar badge. ``isCopyMode`` itself is
+    /// `@ObservationIgnored` because the keyDown intercept reads it from inside the renderer's AttributeGraph
+    /// update path (the same infinite-render-loop hazard documented on ``surface``). The "COPY" chip in
+    /// ``PaneStatusBar`` reads THIS twin from a normal view body, where observation is exactly what we want,
+    /// so the badge lights/clears reactively. Kept in lock-step by ``isCopyMode``'s `didSet`.
+    public private(set) var copyModeBadgeActive = false
+
+    /// P5b: the ⌘⇧C entry / Pane-menu "Copy Mode" / `q`·Esc exit hook — toggles the ``CopyModeOverlay``
+    /// `@State` in ``TerminalScreenView`` (set there so the closure captures THIS pane's overlay state, the
+    /// exact ``onRequestFind`` pattern). The store reaches it via `requestCopyModeInActivePane()`.
+    /// `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers (never invoked).
+    @ObservationIgnored public var onRequestCopyMode: (() -> Void)?
+
+    /// P5b: a brief "copied" confirmation flash hook the ``CopyModeOverlay`` wires to a transient `@State`
+    /// toast (<=0.22s). Fired by ``handleCopyModeKey`` after a successful `y`/Enter copy.
+    /// `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
+    @ObservationIgnored public var onCopyConfirmation: (() -> Void)?
+
+    /// The AppKit pasteboard write, injected so ``handleCopyModeKey`` stays PURE of AppKit (unit-testable
+    /// without a pasteboard). The default writes to the general `NSPasteboard` on macOS (a no-op elsewhere);
+    /// tests override it with a capturing closure. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var copyToPasteboard: (String) -> Void = { text in
+        #if canImport(AppKit)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        #endif
+    }
+
+    /// An abstract key the copy-mode dispatch consumes — deliberately FREE of `NSEvent` so
+    /// ``handleCopyModeKey(_:)`` is unit-testable without a window server (the renderer's `CopyModeKey(event:)`
+    /// initializer maps the real `NSEvent` at the single NSEvent-aware point, and is excluded from tests).
+    public enum CopyModeKey: Equatable, Sendable {
+        /// A character key with its control/shift modifier state (Command-combos are app shortcuts, never
+        /// reach here). `g` lower vs `G` upper arrive as distinct `Character`s; `shift` is belt-and-braces.
+        case char(Character, control: Bool, shift: Bool)
+        case up
+        case down
+        case escape
+        case enter
+    }
+
+    #if canImport(AppKit)
+    /// Maps a real `NSEvent` to the abstract ``CopyModeKey`` — the ONLY NSEvent-touching code (called from
+    /// the app-target renderer's `keyDown`). Excluded from the pure unit tests (they build `CopyModeKey`
+    /// cases directly). Special keys (Esc / Return / ↑ / ↓) are recognised by their `NSEvent` key codes; any
+    /// other key collapses to a `.char` carrying its first character + the control/shift modifier state
+    /// (Command-combos are app shortcuts intercepted upstream, never reaching the surface keyDown).
+    public static func makeCopyModeKey(event: NSEvent) -> CopyModeKey {
+        let control = event.modifierFlags.contains(.control)
+        let shift = event.modifierFlags.contains(.shift)
+        // Special keys by key code (53 = Escape, 36 = Return, 76 = keypad Enter, 126 = ↑, 125 = ↓).
+        switch event.keyCode {
+        case 53: return .escape
+        case 36,
+             76: return .enter
+        case 126: return .up
+        case 125: return .down
+        default: break
+        }
+        // `charactersIgnoringModifiers` keeps the layout base (and Shift, so `G` vs `g` is distinguished),
+        // but strips Control's C0 folding so Ctrl-D reads as `d` not U+0004. Fall back to a NUL on no char.
+        let char = event.charactersIgnoringModifiers?.first ?? "\u{0}"
+        return .char(char, control: control, shift: shift)
+    }
+    #endif
+
+    /// The PURE copy-mode dispatch (P5b): maps an abstract ``CopyModeKey`` to a navigation / search / copy /
+    /// exit intent, driving the active surface's ``TerminalSurfaceActions`` seam (scroll/jump/search bindings)
+    /// or the find / copy / exit hooks. Everything else is SWALLOWED (consumed while armed → nothing leaks to
+    /// the shell). No `NSEvent`, no AppKit — fully unit-testable against a mock `TerminalSurfaceActions`.
+    ///
+    /// DOCUMENTED ABI CEILING: the pinned libghostty fork exposes NO programmatic cursor-move / set-selection
+    /// action, so there is NO rendered vi visual-char-select. `y`/Enter copies the MOUSE-made libghostty
+    /// selection (``TerminalSurfaceActions/readSelection``) when one exists, else the visible scrollback text
+    /// — never a client-guessed character range (the anti-"rung lắc" rule: never claim a position the host /
+    /// libghostty can contradict).
+    ///
+    /// Scroll-sign convention (Binding.zig): NEGATIVE = UP toward older scrollback, so `j`/↓ = `+1` (down),
+    /// `k`/↑ = `-1` (up). `jump_to_prompt`/scroll actions are re-resolved every call (the seam reads live
+    /// libghostty truth — never cache a client line index, which drifts under host output).
+    public func handleCopyModeKey(_ key: CopyModeKey) {
+        let actions = surface as? TerminalSurfaceActions
+        // Plain (non-Control) nav/copy/exit keys match `control: false` so a Ctrl-<key> chord is a clean
+        // no-op (swallowed via `default`) rather than silently aliasing onto a nav action — e.g. Ctrl-J must
+        // not scroll, Ctrl-N must not navigate_search. Ctrl-D / Ctrl-U deliberately require `control: true`.
+        switch key {
+        case .char("j", control: false, _),
+             .down:
+            actions?.performBindingAction("scroll_page_lines:1")
+        case .char("k", control: false, _),
+             .up:
+            actions?.performBindingAction("scroll_page_lines:-1")
+        case .char("d", control: true, _):
+            actions?.performBindingAction("scroll_page_fractional:0.5")
+        case .char("u", control: true, _):
+            actions?.performBindingAction("scroll_page_fractional:-0.5")
+        case .char("g", control: false, shift: false):
+            actions?.performBindingAction("scroll_to_top")
+        case .char("g", control: false, shift: true),
+             .char("G", control: false, _):
+            actions?.performBindingAction("scroll_to_bottom")
+        case .char("[", control: false, _):
+            actions?.performBindingAction("jump_to_prompt:-1")
+        case .char("]", control: false, _):
+            actions?.performBindingAction("jump_to_prompt:1")
+        case .char("/", control: false, _):
+            onRequestFind?() // REUSE the existing find bar / TerminalSearchController — no second search impl
+        case .char("n", control: false, shift: false):
+            actions?.performBindingAction("navigate_search:next")
+        case .char("n", control: false, shift: true),
+             .char("N", control: false, _):
+            actions?.performBindingAction("navigate_search:previous")
+        case .char("y", control: false, _),
+             .enter:
+            copyCurrentSelectionOrScrollback(actions)
+        case .char("q", control: false, _),
+             .escape:
+            exitCopyMode()
+        default:
+            break // swallow every other key (consumed while in mode — nothing reaches the shell)
+        }
+    }
+
+    /// Copies the libghostty selection if one exists, else the visible scrollback text — then flashes the
+    /// "copied" confirmation. Nothing to copy (no selection, empty scrollback) → no pasteboard write and no
+    /// confirmation. Reads libghostty truth only (never a client-guessed range).
+    private func copyCurrentSelectionOrScrollback(_ actions: TerminalSurfaceActions?) {
+        let text: String?
+        if actions?.hasSelection() == true, let selection = actions?.readSelection(), !selection.isEmpty {
+            text = selection
+        } else {
+            let lines = actions?.scrollbackTextLines() ?? []
+            text = lines.isEmpty ? nil : lines.joined(separator: "\n")
+        }
+        guard let payload = text, !payload.isEmpty else { return }
+        copyToPasteboard(payload)
+        onCopyConfirmation?()
+    }
+
+    /// Arms copy-mode and fires ``onRequestCopyMode`` so the overlay shows (the ⌘⇧C / menu / store entry).
+    public func enterCopyMode() {
+        guard !isCopyMode else { return }
+        isCopyMode = true
+        onRequestCopyMode?()
+    }
+
+    /// Exits copy-mode (the `q`/Esc keys, or a programmatic dismiss) and fires ``onRequestCopyMode`` so the
+    /// overlay back-off matches the flag. Idempotent.
+    public func exitCopyMode() {
+        guard isCopyMode else {
+            // Defensive: a key arrived with the flag already cleared (overlay raced) — still dismiss cleanly.
+            onRequestCopyMode?()
+            return
+        }
+        isCopyMode = false
+        onRequestCopyMode?()
+    }
+
+    /// WB2: the "Command Navigator" toggle (⌃⌘O / the chrome chip / a menu item) — opens the searchable
+    /// recent-blocks popover over THIS pane. The leaf wires it to the navigator `@State` (the same pattern
+    /// as ``onRequestFind``). `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
+    @ObservationIgnored public var onRequestBlockNavigator: (() -> Void)?
+
+    /// WB2: the OUT-path sink that fires a `requestBlockOutput(index)` (wire type 15) on the live client.
+    /// Set by ``ConnectionViewModel`` on connect (forwards to ``AislopdeskClient/requestBlockOutput(index:)``)
+    /// and cleared on teardown; while `nil` (disconnected) a copy-output request resolves immediately as
+    /// "unavailable" rather than hanging. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var requestBlockOutputSink: ((UInt32) -> Void)?
 
     // MARK: Replay byte-ring (surface-rebuild survival)
 
@@ -615,7 +816,10 @@ public final class TerminalViewModel {
     public func handle(_ event: AislopdeskClient.Event) {
         switch event {
         case let .title(text):
-            title = text
+            // Empty-body OSC title messages (e.g. zsh/p10k prompt redraws) are silently dropped;
+            // only a non-empty string updates the stored title so the previous real title is
+            // preserved across command boundaries.
+            if !text.isEmpty { title = text }
         case .bell:
             bellPending = true
         case let .commandStatus(status):
@@ -630,6 +834,17 @@ public final class TerminalViewModel {
             // An explicit child notification (OSC 9 / OSC 777) is handled at the connection/store
             // layer (it posts a local UNUserNotification). The terminal model holds no state for it.
             break
+        case .foregroundProcess,
+             .claudeStatus:
+            // Claude-Code detection signals (wire types 26/27) are folded into the pane's
+            // ClaudeStatusMachine at the connection/store layer (→ WorkspaceStore.setAgentStatus).
+            // The terminal model holds no state for them.
+            break
+        case .commandBlock,
+             .blockOutput:
+            // WB2 Warp-style Blocks (wire types 28/29): the metadata upsert + the output-request resolve
+            // both fold into the per-pane block store, which drives the navigator / sticky header / chip.
+            blocks.handle(event)
         case let .exit(code):
             connectionStatus = .exited(code: code)
             // The shell died mid-"command" (e.g. `exit` itself emits OSC 133;C but never a
@@ -663,6 +878,45 @@ public final class TerminalViewModel {
         }
     }
 
+    // MARK: WB2 Blocks — copy-output flow
+
+    /// How long to wait for a `blockOutput` reply before giving up (the belt-and-braces guard so the copy
+    /// UI never spins forever if the host drops the type-29). The empty-reply path is the common case and
+    /// resolves on its own — this only fires for a genuinely lost reply.
+    static let blockOutputTimeout: Duration = .seconds(5)
+
+    /// Requests block `index`'s captured output (wire type 15 → 29), then hands the result back through
+    /// `onResult`: the VT-stripped PLAIN TEXT on success, or `nil` when the block was evicted / unavailable
+    /// / there is no live connection (so the caller shows a brief "output unavailable" — NEVER hangs). The
+    /// raw VT bytes are sanitised here (``BlockOutputSanitizer``) so the clipboard gets clean text.
+    ///
+    /// The wire request fires through ``requestBlockOutputSink`` (set on connect). While disconnected the
+    /// sink is `nil`; ``TerminalBlockModel/requestOutput(index:send:completion:)`` still registers the
+    /// pending request, so we resolve it immediately as unavailable rather than leaving it stranded.
+    public func copyBlockOutput(index: UInt32, onResult: @escaping (String?) -> Void) {
+        // No live connection → resolve as unavailable without sending (the request would never get a reply).
+        guard let sink = requestBlockOutputSink else {
+            onResult(nil)
+            return
+        }
+        let generation = blocks.requestOutput(
+            index: index,
+            send: { idx in sink(idx) },
+            completion: { result in
+                // Empty/nil reply == evicted/unknown → "output unavailable". Otherwise strip VT → plain text.
+                onResult(result.map { BlockOutputSanitizer.plainText(from: $0) })
+            },
+        )
+        // Belt-and-braces timeout: if the host never replies, resolve the request as unavailable so the
+        // copy UI's spinner can't spin forever. A no-op once the real reply resolves it. The captured
+        // `generation` gates the timeout (#5): a stale timer from a prior copy of the SAME block can't
+        // resolve a fresh copy that opened a newer request after this one already resolved.
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.blockOutputTimeout)
+            self?.blocks.timeoutPending(index: index, generation: generation)
+        }
+    }
+
     /// Marks that the reconnect campaign has begun (the chrome shows "reconnecting" rather
     /// than a bare "disconnected"). Called by the ConnectionViewModel on a non-deliberate drop.
     public func markReconnecting() {
@@ -675,6 +929,10 @@ public final class TerminalViewModel {
         // next output clears the dead session's screen/scrollback before painting the new prompt.
         pendingFreshSessionReset = true
         sessionEpoch += 1 // in-hand batches taken from the dead session stop painting
+        // The fresh shell will re-segment its own blocks from index 0 — drop the dead session's blocks (and
+        // resolve any in-flight copy-output request as unavailable) so the navigator/header don't show stale
+        // commands grafted onto the new shell.
+        blocks.reset()
         clearGlitchCaret() // keystrokes in flight died with the old session
         // The dead session's terminal MODE is a lie for the fresh shell (a drop inside
         // vim leaves .altScreen latched and would disarm the caret for the entire new
@@ -696,6 +954,7 @@ public final class TerminalViewModel {
         bellPending = false
         shellActivity = .idle // a fresh session is idle until its first command runs
         lastCommand = nil
+        blocks.reset() // a fresh session has no blocks — the navigator/header start empty
         lastResumeSeq = 0
         lastSentSize = nil // a fresh session must re-assert its grid size
         ring.removeAll() // stale scrollback must not survive into a new session

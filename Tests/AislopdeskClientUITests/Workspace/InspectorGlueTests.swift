@@ -4,7 +4,7 @@ import AislopdeskTransport
 import XCTest
 @testable import AislopdeskClientUI
 
-/// An `AislopdeskClient` whose transport factory is inert (never invoked — these `.claudeCode` panes are
+/// An `AislopdeskClient` whose transport factory is inert (never invoked — these terminal panes are
 /// never connected: the inspector fold is driven over an in-process loopback channel, no socket).
 @Sendable
 private func makeUnconnectedClient() -> AislopdeskClient {
@@ -18,7 +18,8 @@ private func makeUnconnectedClient() -> AislopdeskClient {
 
 /// WF5 — Inspector pane-content glue.
 ///
-/// These tests prove the `.claudeCode` pane's structured inspector folds host events correctly
+/// These tests prove a terminal pane's structured inspector (revealed once a `claude` is detected, W11)
+/// folds host events correctly
 /// **using only the genuine in-process seam** `LoopbackByteChannel.pair()` (docs/22 §0, §8) — the
 /// same seam the existing `InspectorTransportTests` use. There is:
 ///
@@ -33,8 +34,8 @@ private func makeUnconnectedClient() -> AislopdeskClient {
 ///
 ///   1. The raw view-model fold over the transport (tool-card upsert/dedup, todos replace, session,
 ///      subagents) — the InspectorPanel's own `.task` would drive exactly this stream.
-///   2. The `LivePaneSession` glue: a `.claudeCode` session whose `makeInspector` returns a
-///      loopback-backed `InspectorClient`, driven via the single fold point `subscribeInspector()`
+///   2. The `LivePaneSession` glue: a `.terminal` session with a detected `claude` (W11) whose
+///      `makeInspector` returns a loopback-backed `InspectorClient`, driven via `subscribeInspector()`
 ///      (the leaf's `.task` on appear, WF5) — proving the production glue path folds, that it
 ///      subscribes (`fromSeq: 0`), and that the single-consumer rule holds.
 ///
@@ -227,25 +228,36 @@ final class InspectorGlueTests: XCTestCase {
         await source.close()
     }
 
-    // MARK: - 2. The LivePaneSession glue path (the production .claudeCode fold point)
+    // MARK: - 2. The LivePaneSession glue path (the production terminal+claude fold point)
 
-    /// Builds a `.claudeCode` `LivePaneSession` whose `makeInspector` returns a loopback-backed
-    /// `InspectorClient`, then drives the SINGLE fold point `subscribeInspector()` (the WF5 leaf
-    /// `.task`). Asserts the session's own `inspector` view model folds host events — proving the
-    /// production glue, not just the raw transport.
-    func testLivePaneSessionClaudeCodeFoldsViaSubscribeInspector() async throws {
+    /// Lifts a terminal session's `claudeStatus` off `.none` (a `claude` was detected in it) so the
+    /// inspector second channel is allowed to subscribe — the W11 runtime gate that replaced the
+    /// static `.claudeCode` kind. P1: the client TRUSTS the host's type-27, so this mirrors the HOST
+    /// reporting an `.idle` claude via wire type-27 (a type-26 alone is display-only — it never sets
+    /// status under the single-source-of-truth contract).
+    private func detectClaude(in session: LivePaneSession) {
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // state 1 = .idle urgency
+        XCTAssertNotEqual(session.claudeStatus, .none, "claude must be detected before the inspector opens")
+    }
+
+    /// Builds a `.terminal` `LivePaneSession` whose `makeInspector` returns a loopback-backed
+    /// `InspectorClient`, detects a `claude` in it (W11), then drives the SINGLE fold point
+    /// `subscribeInspector()` (the WF5 leaf `.task`). Asserts the session's own `inspector` view model
+    /// folds host events — proving the production glue, not just the raw transport.
+    func testLivePaneSessionClaudeFoldsViaSubscribeInspector() async throws {
         let (hostCh, clientCh) = LoopbackByteChannel.pair()
         let source = InspectorSource(channel: hostCh)
 
         // The store's makeInspector seam: hand the session a loopback-backed client (no network).
         let session = LivePaneSession.make(
-            PaneSpec(kind: .claudeCode, title: "claude"),
+            PaneSpec(kind: .terminal, title: "claude"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) },
         )
 
-        XCTAssertEqual(session.kind, .claudeCode)
-        let vm = try XCTUnwrap(session.inspector, "a claudeCode session must own an InspectorViewModel")
+        XCTAssertEqual(session.kind, .terminal)
+        let vm = try XCTUnwrap(session.inspector, "a terminal session owns a latent InspectorViewModel (W11)")
+        detectClaude(in: session)
 
         // subscribeInspector is the single fold point (the WF5 leaf .task). It subscribes(fromSeq:0)
         // then consumes client.events() into the session's own view model.
@@ -277,10 +289,11 @@ final class InspectorGlueTests: XCTestCase {
         let source = InspectorSource(channel: hostCh)
 
         let session = LivePaneSession.make(
-            PaneSpec(kind: .claudeCode, title: "claude"),
+            PaneSpec(kind: .terminal, title: "claude"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) },
         )
+        detectClaude(in: session)
 
         // Observe the host's inbound control channel.
         let controls = await source.controls()
@@ -308,7 +321,7 @@ final class InspectorGlueTests: XCTestCase {
 
         var clientHandedOut = 0
         let session = LivePaneSession.make(
-            PaneSpec(kind: .claudeCode, title: "claude"),
+            PaneSpec(kind: .terminal, title: "claude"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in
                 clientHandedOut += 1
@@ -316,15 +329,14 @@ final class InspectorGlueTests: XCTestCase {
             },
         )
         let vm = try XCTUnwrap(session.inspector)
-
-        // First subscribe starts the live fold.
-        let fold1 = Task { await session.subscribeInspector() }
-        defer { fold1.cancel() }
+        // Detecting a claude auto-spawns the FIRST subscribe (the dynamic open, W11).
+        detectClaude(in: session)
 
         try await source.send(.toolCard(sampleCard(id: "only", status: .pending)))
         await waitUntil({ vm.toolCards.count == 1 }, "first fold never folded the card")
 
-        // Second subscribe must early-out (client already live) — no new client, no second consumer.
+        // A second explicit subscribe must early-out (client already live) — no new client, no second
+        // consumer. (The auto-spawned open already handed out exactly one client.)
         await session.subscribeInspector()
         XCTAssertEqual(clientHandedOut, 1, "a live inspector must not be rebuilt / re-subscribed")
 
@@ -348,11 +360,12 @@ final class InspectorGlueTests: XCTestCase {
         let source = InspectorSource(channel: hostCh)
 
         let session = LivePaneSession.make(
-            PaneSpec(kind: .claudeCode, title: "claude"),
+            PaneSpec(kind: .terminal, title: "claude"),
             makeClient: { makeUnconnectedClient() },
             makeInspector: { _ in InspectorClient(channel: clientCh) },
         )
         let vm = try XCTUnwrap(session.inspector)
+        detectClaude(in: session)
 
         // resume() spawns the detached re-subscribe; teardown() in the SAME turn must cancel it BEFORE
         // it stores/uses a client, so no live consumer lingers. (No `await Task.yield()` between them —
@@ -373,9 +386,48 @@ final class InspectorGlueTests: XCTestCase {
         await source.close()
     }
 
-    /// A non-`.claudeCode` session (`.terminal`) owns NO inspector and `subscribeInspector()` is a
-    /// no-op (it must never reach for a second channel) — the terminal pane has only PATH 1.
-    func testTerminalSessionHasNoInspectorAndSubscribeIsNoOp() async {
+    /// P5 #7 — the DYNAMIC inspector CLOSE-on-clear. A claude is detected (type-27 lifts status off
+    /// `.none`) → the inspector second channel opens and folds host events. Then the claude LEAVES (the
+    /// host pushes a type-27 `.none`) → the inspector client is TORN DOWN: no event sent afterward is
+    /// folded (the consumer is gone), and the status is back to `.none`. This is the `non-none → .none`
+    /// boundary in `applyDetectedStatus`. Mirrors the open-on-detect test, run in reverse.
+    func testInspectorClosesWhenClaudeLeaves() async throws {
+        let (hostCh, clientCh) = LoopbackByteChannel.pair()
+        let source = InspectorSource(channel: hostCh)
+
+        let session = LivePaneSession.make(
+            PaneSpec(kind: .terminal, title: "claude"),
+            makeClient: { makeUnconnectedClient() },
+            makeInspector: { _ in InspectorClient(channel: clientCh) },
+        )
+        let vm = try XCTUnwrap(session.inspector)
+
+        // Claude detected (type-27 idle) → the inspector auto-opens (the dynamic OPEN, W11).
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // .idle
+        XCTAssertNotEqual(session.claudeStatus, .none)
+        try await source.send(.toolCard(sampleCard(id: "live", status: .pending)))
+        await waitUntil({ vm.toolCards.count == 1 }, "inspector never folded while claude was live")
+
+        // Claude LEAVES: the host pushes type-27 .none → the inspector client must be torn down.
+        session.feedAgentSignal(.claudeStatus(state: 0, kind: 0, label: "")) // .none
+        XCTAssertEqual(session.claudeStatus, .none, "claude gone → status none")
+
+        // Give the detached close a chance to run, then prove no further event is folded.
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        try? await source.send(.toolCard(sampleCard(id: "after", status: .pending)))
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(vm.toolCards.count, 1, "no event folds after claude leaves — the inspector channel was closed")
+        XCTAssertEqual(vm.toolCards.first?.id, "live", "only the pre-close card remains")
+
+        await source.close()
+    }
+
+    /// W11: a terminal session owns a LATENT inspector view model, but with NO `claude` detected
+    /// (`claudeStatus == .none`) `subscribeInspector()` is a clean no-op — it must NOT reach for a
+    /// second channel. A plain terminal opens no inspector socket; only a detected `claude` does.
+    func testPlainTerminalDoesNotOpenInspectorUntilClaudeDetected() async {
         var makeInspectorCalled = false
         let session = LivePaneSession.make(
             PaneSpec(kind: .terminal, title: "term"),
@@ -386,10 +438,11 @@ final class InspectorGlueTests: XCTestCase {
             },
         )
 
-        XCTAssertNil(session.inspector, "a terminal pane has no structured inspector")
+        XCTAssertNotNil(session.inspector, "a terminal pane owns a latent InspectorViewModel (W11)")
+        XCTAssertEqual(session.claudeStatus, .none, "no claude detected → status is none")
 
-        await session.subscribeInspector() // must be a clean no-op
-        XCTAssertFalse(makeInspectorCalled, "a terminal session must never open a second channel")
+        await session.subscribeInspector() // must be a clean no-op while claudeStatus == .none
+        XCTAssertFalse(makeInspectorCalled, "a plain terminal must NOT open a second channel until claude is detected")
     }
 
     // MARK: - 3. The real makeInspector wiring — pure port convention (no socket dialed)

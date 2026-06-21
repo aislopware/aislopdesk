@@ -50,6 +50,20 @@ enum PanePresentation {
         return code == 0 ? "✓ \(duration)" : "✗ exit \(code) · \(duration)"
     }
 
+    /// WB2: the pane's LATEST Warp-style command block (the current/last command), or `nil` when none has
+    /// run / the pane has no terminal. Drives the chrome status chip. Reading the `@Observable` block model
+    /// re-renders the chip as the latest block's status changes (running → exit badge).
+    static func latestBlock(_ handle: (any PaneSessionHandle)?) -> CommandBlock? {
+        (handle as? LivePaneSession)?.terminalModel?.blocks.latest
+    }
+
+    /// WB2: opens the Command Navigator over `handle`'s pane (the chrome chip's tap action) — routes to the
+    /// terminal model's ``TerminalViewModel/onRequestBlockNavigator`` (set by ``TerminalScreenView``). A
+    /// no-op for a non-terminal pane / an empty shell / before the view appeared.
+    static func openBlockNavigator(_ handle: (any PaneSessionHandle)?) {
+        (handle as? LivePaneSession)?.terminalModel?.onRequestBlockNavigator?()
+    }
+
     /// The display title: the LIVE OSC 0/2 terminal title when the shell has set one, else the static
     /// `spec.title` (whitespace-only titles fall back so a pane is never blank).
     static func displayTitle(_ handle: (any PaneSessionHandle)?, spec: PaneSpec) -> String {
@@ -98,6 +112,8 @@ struct FloatingPaneHandle: View {
     /// Latched ">100ms" RTT badge with an engage/release band (110/90ms) so the pill width does not
     /// pop on every 3s sample when the RTT hovers at the boundary (the CanvasSnap hysteresis idea).
     @State private var laggyLatched = false
+    /// Reduce-Motion gate for the status-fade opacity transitions (DSMotion.hover → near-instant crossfade).
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Visual pill height (the hit target is taller — see the platform padding below).
     private static let pillHeight: CGFloat = 20
@@ -112,14 +128,14 @@ struct FloatingPaneHandle: View {
         // (focusing the pane clears it via store.focus → handle.clearBell).
         let bellRang = (handle?.bellPending ?? false) && !isFocused
 
-        HStack(spacing: 5) {
+        HStack(spacing: DSSpace.s2) {
             Image(systemName: PaneLeafView.icon(for: spec.kind))
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(isFocused ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                .dsFont(.emphasis)
+                .foregroundStyle(isFocused ? AnyShapeStyle(DSColor.accentSolid) : AnyShapeStyle(DSColor.textSecondary))
             PaneStatusDot(status: status, running: running)
             if bellRang {
                 Image(systemName: "bell.fill")
-                    .font(.system(size: 10))
+                    .dsFont(.footnote)
                     .foregroundStyle(.orange)
                     .help("The terminal rang the bell")
                     .transition(.scale.combined(with: .opacity))
@@ -151,7 +167,7 @@ struct FloatingPaneHandle: View {
             .background { ScrollPanForwarder(store: store) }
         #endif
             .background(hovering ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial), in: Capsule())
-            .overlay { Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5) }
+            .overlay { Capsule().strokeBorder(DSColor.borderSubtle, lineWidth: 0.5) }
         // Taller hit target than the visual pill: 44×28 on macOS (pointer-precise); 44pt tall on iOS
         // (the HIG touch minimum — the extra reach over the top terminal row converts a near-miss
         // selection into a successful pill grab, and the 10pt dead zone absorbs tap jitter).
@@ -164,11 +180,13 @@ struct FloatingPaneHandle: View {
             // Quiet when idle; fully opaque when it matters. A pane in trouble — or one actively running
             // a command — is NEVER 70%-transparent.
             .opacity(trouble || running || bellRang || hovering || menuShown || isFocused ? 1 : 0.7)
-            .animation(.easeOut(duration: 0.12), value: bellRang)
-            .animation(.easeOut(duration: 0.12), value: trouble)
-            .animation(.easeOut(duration: 0.12), value: running)
-            .animation(.easeOut(duration: 0.12), value: laggy)
-            .animation(.easeOut(duration: 0.12), value: hovering)
+            // P5 MOTION: the pill's quiet↔opaque status fades route through DSMotion.hover, Reduce-Motion-
+            // gated to the near-instant crossfade. Each stays value-scoped so only its own flag animates.
+            .animation(DSMotion.resolve(DSMotion.hover, reduceMotion: reduceMotion), value: bellRang)
+            .animation(DSMotion.resolve(DSMotion.hover, reduceMotion: reduceMotion), value: trouble)
+            .animation(DSMotion.resolve(DSMotion.hover, reduceMotion: reduceMotion), value: running)
+            .animation(DSMotion.resolve(DSMotion.hover, reduceMotion: reduceMotion), value: laggy)
+            .animation(DSMotion.resolve(DSMotion.hover, reduceMotion: reduceMotion), value: hovering)
             // The latch: engage past 110ms, release under 90ms; drop instantly when not connected.
             .onChange(of: latency ?? 0) { _, ms in
                 if status.phase != .connected { laggyLatched = false } else if !laggyLatched,
@@ -325,24 +343,29 @@ struct PaneDeadScrim: View {
             #if os(macOS)
             ScrollPanForwarder(store: store)
             #endif
-            Color.black.opacity(0.35)
+            // PaneDeadScrim is a CONTENT-level dim (white-on-dim labels on a dead pane), NOT one of the
+            // named L4 overlay backdrops — its black/white literals + the 24pt glyph are a deliberate,
+            // contrast-tuned dead-pane affordance, grandfathered out of the P4 overlay pass. Each literal
+            // carries its own end-of-line `// ds-leak-allow` so the font/radius AND scrim ratchets exempt
+            // exactly these lines (not the whole file).
+            Color.black.opacity(0.35) // ds-leak-allow: dead-pane content dim (not an L4 backdrop)
             VStack(spacing: 6) {
                 Image(systemName: "wifi.exclamationmark")
-                    .font(.system(size: 24, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .font(.system(size: 24, weight: .regular)) // ds-leak-allow: dead-pane content dim
+                    .foregroundStyle(.white.opacity(0.9)) // ds-leak-allow: dead-pane content dim
                 Text(status.detailedLabel)
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(.white.opacity(0.9)) // ds-leak-allow: dead-pane content dim
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                 #if os(iOS)
                 Text("Tap to reconnect")
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.6)) // ds-leak-allow: dead-pane content dim
                 #else
                 Text("Click to reconnect")
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.6)) // ds-leak-allow: dead-pane content dim
                 #endif
             }
             .padding(12)
@@ -634,7 +657,6 @@ struct PaneMenuView: View {
             Label("New Pane", systemImage: "plus")
             Spacer(minLength: 12)
             kindButton(.terminal, help: "New Terminal")
-            kindButton(.claudeCode, help: "New Claude Code")
             kindButton(.remoteGUI, help: "New Remote Window")
         }
         .padding(.vertical, 2)

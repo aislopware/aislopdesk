@@ -760,6 +760,108 @@ root["terminalWireMessages"] = [
         .notification(title: "semis;in;title", body: "and;in;body;too"),
         ["title": "semis;in;title", "body": "and;in;body;too"],
     ),
+    // W9 — Claude-Code agent status (terminal CONTROL, host → client).
+    // type 26 foregroundProcess: coarse process-watch path, body = UTF-8 basename.
+    wmRecord("foregroundProcess", .foregroundProcess(name: "claude"), ["name": "claude"]),
+    wmRecord("foregroundProcess", .foregroundProcess(name: ""), ["name": ""]),
+    wmRecord(
+        "foregroundProcess",
+        .foregroundProcess(name: "node — café 🚀"),
+        ["name": "node — café 🚀"],
+    ),
+    // type 27 claudeStatus: rich hook path, body = [state][kind][UInt16 labelLen][label UTF-8].
+    // state = ClaudeStatus.urgency (0 none/1 idle/2 done/3 working/4 needsPermission);
+    // kind = NotificationKind (0 none/1 permission/2 waitingForInput/3 other).
+    wmRecord(
+        "claudeStatus",
+        .claudeStatus(state: 0, kind: 0, label: ""),
+        ["state": Int(0), "kindByte": Int(0), "label": ""],
+    ),
+    wmRecord(
+        "claudeStatus",
+        .claudeStatus(state: 4, kind: 1, label: "Allow Bash(rm -rf)?"),
+        ["state": Int(4), "kindByte": Int(1), "label": "Allow Bash(rm -rf)?"],
+    ),
+    wmRecord(
+        "claudeStatus",
+        .claudeStatus(state: 2, kind: 3, label: "Done — ✅ build green 🚀"),
+        ["state": Int(2), "kindByte": Int(3), "label": "Done — ✅ build green 🚀"],
+    ),
+]
+
+// WB1 — Warp-style "Blocks" wire messages (terminal CONTROL).
+// type 15 requestBlockOutput (c→h): body = [UInt32 index].
+// type 28 commandBlock (h→c): metadata only = [UInt32 index][UInt8 hasExit][Int32 BE exit]
+//   [UInt8 hasDuration][UInt32 BE duration][UInt8 complete][UInt32 BE outputLen][UInt16 BE cmdLen][cmd].
+// type 29 blockOutput (h→c): [UInt32 index][UInt32 BE outputLen][output bytes].
+root["blocksWireMessages"] = [
+    wmRecord("requestBlockOutput", .requestBlockOutput(index: 0), ["index": UInt32(0)]),
+    wmRecord("requestBlockOutput", .requestBlockOutput(index: 0x0102_0304), ["index": UInt32(0x0102_0304)]),
+    wmRecord("requestBlockOutput", .requestBlockOutput(index: UInt32.max), ["index": UInt32.max]),
+    wmRecord(
+        "commandBlock",
+        .commandBlock(index: 7, exitCode: 0, durationMS: 1250, complete: true, outputLen: 3, commandText: "ls"),
+        [
+            "index": UInt32(7),
+            "hasExit": true,
+            "exitCode": Int(0),
+            "hasDuration": true,
+            "durationMs": UInt64(1250),
+            "complete": true,
+            "outputLen": UInt64(3),
+            "commandText": "ls",
+        ],
+    ),
+    wmRecord(
+        "commandBlock",
+        .commandBlock(index: 0, exitCode: nil, durationMS: nil, complete: false, outputLen: 0, commandText: ""),
+        [
+            "index": UInt32(0),
+            "hasExit": false,
+            "exitCode": Int(0),
+            "hasDuration": false,
+            "durationMs": UInt64(0),
+            "complete": false,
+            "outputLen": UInt64(0),
+            "commandText": "",
+        ],
+    ),
+    wmRecord(
+        "commandBlock",
+        .commandBlock(
+            index: 42,
+            exitCode: Int32.min,
+            durationMS: UInt32.max,
+            complete: true,
+            outputLen: 262_144,
+            commandText: "grep · 文字 🚀",
+        ),
+        [
+            "index": UInt32(42),
+            "hasExit": true,
+            "exitCode": Int(Int32.min),
+            "hasDuration": true,
+            "durationMs": UInt64(UInt32.max),
+            "complete": true,
+            "outputLen": UInt64(262_144),
+            "commandText": "grep · 文字 🚀",
+        ],
+    ),
+    wmRecord(
+        "blockOutput",
+        .blockOutput(index: 5, output: Data([0xAA, 0xBB, 0xCC])),
+        ["index": UInt32(5), "outputHex": hex([0xAA, 0xBB, 0xCC])],
+    ),
+    wmRecord(
+        "blockOutput",
+        .blockOutput(index: 0, output: Data()),
+        ["index": UInt32(0), "outputHex": ""],
+    ),
+    wmRecord(
+        "blockOutput",
+        .blockOutput(index: 42, output: Data([0x1B, 0x5B, 0x33, 0x31, 0x6D, 0x00, 0xFF])),
+        ["index": UInt32(42), "outputHex": hex([0x1B, 0x5B, 0x33, 0x31, 0x6D, 0x00, 0xFF])],
+    ),
 ]
 
 // MARK: AislopdeskProtocol — MuxEnvelopeCodec.encode (byte parity)

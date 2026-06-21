@@ -1,3 +1,4 @@
+import AislopdeskAgentDetect
 import AislopdeskClient
 import AislopdeskInspector
 import Foundation
@@ -13,10 +14,12 @@ import Foundation
 /// session is never shared across panes (docs/22 §1.2).
 ///
 /// What it wraps, by kind:
-/// - `.terminal`   → `connection` (+ its `terminalModel`) + `inputBar`.
-/// - `.claudeCode` → the same, PLUS an `inspector` (a read-only `InspectorViewModel` fed by an
-///   `InspectorClient` over NWConnection #2). The terminal|inspector split is per-pane VIEW state
-///   (WF5), NOT a tree node — a Claude Code pane is a single leaf.
+/// - `.terminal`   → `connection` (+ its `terminalModel`) + `inputBar`, PLUS a latent `inspector`
+///   (a read-only `InspectorViewModel` fed by an `InspectorClient` over NWConnection #2). Claude Code
+///   is no longer a stored `PaneKind` (docs/42 W11): ANY `.terminal` pane running `claude` is
+///   auto-detected (wire types 26/27 fold into the per-pane ``claudeStatus``), and the inspector
+///   second channel is opened/closed DYNAMICALLY on that runtime status (≠ `.none` opens it). The
+///   terminal|inspector split is per-pane VIEW state (WF5), NOT a tree node — one leaf.
 /// - `.remoteGUI`  → a `remoteWindow` (`RemoteWindowModel`) instead of a connection-backed terminal.
 ///
 /// ### Lazy connect (load-bearing, docs/22 §6 RESTORED-vs-RECONNECTED)
@@ -26,7 +29,9 @@ import Foundation
 @preconcurrency
 @MainActor
 @Observable
-public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiable, PaneSessionIDAdopting {
+public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiable, PaneSessionIDAdopting,
+    TerminalModelProviding
+{
     // MARK: Identity
 
     /// Set at construction to a placeholder, then re-pointed to the leaf's id by the store's
@@ -42,14 +47,37 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     public let connection: ConnectionViewModel?
 
     /// The per-pane external input affordance (A / B1 dedup ring). Present whenever there is a
-    /// terminal connection (`.terminal` / `.claudeCode`).
+    /// terminal connection (the `.terminal` kind).
     public let inputBar: InputBarModel?
 
-    /// The read-only structured inspector for a `.claudeCode` pane (NWConnection #2). `nil` for other
-    /// kinds. The model is durable across pause/resume; the `client` is closed on pause and rebuilt on
-    /// resume (see the pause/resume contract below). `model` is `let` (the upsert/dedup keeps a
-    /// re-tail safe); `client` is `var` because resume swaps in a fresh one.
+    /// The read-only structured inspector for a terminal pane (NWConnection #2). `nil` for non-terminal
+    /// kinds (`.remoteGUI` / `.systemDialog`). Present for EVERY `.terminal` pane now (W11) because any
+    /// terminal can become a Claude session at runtime; the second channel itself is only SUBSCRIBED
+    /// while ``claudeStatus`` `≠ .none`. The model is durable across pause/resume; the `client` is closed
+    /// on pause and rebuilt on resume (see the pause/resume contract below). `model` is `let` (the
+    /// upsert/dedup keeps a re-tail safe); `client` is `var` because resume swaps in a fresh one.
     public let inspector: InspectorViewModel?
+
+    // MARK: Claude-Code auto-detection (W11 / P1 — client TRUSTS the host's type-27)
+
+    /// P1: the CLIENT is a passive display — the HOST owns the one ``ClaudeStatusMachine`` and is the
+    /// single source of truth. The client no longer runs its own machine or re-derives presence from
+    /// type-26 (which fought the host's type-27 + caused inspector flap, review #2/#3). It simply maps
+    /// the host's type-27 `state` byte → ``ClaudeStatus`` (forward-tolerant) and trusts it. Whether a
+    /// terminal can ever host a claude is a build-time fact (only `.terminal` panes), kept as this flag.
+    private let isAgentDetectable: Bool
+
+    /// The current Claude status for this pane — the HOST's type-27 verdict, trusted verbatim. Drives the
+    /// sidebar/tab/chrome ``AgentStatusDot`` (via ``WorkspaceStore/setAgentStatus(_:for:)``) AND the
+    /// dynamic open/close of the inspector second channel. `.none` until the host reports a `claude`.
+    /// Observed so the leaf chrome re-renders on a change.
+    public private(set) var claudeStatus: ClaudeStatus = .none
+
+    /// The last foreground process basename the host reported (type 26) — a COARSE display-only hint, NOT
+    /// a status source (P1, review #3): a transient child process taking the PTY must never wipe a
+    /// `.needsPermission` the host set via a hook, so type-26 updates THIS string and nothing else. `nil`
+    /// until the host reports one. Observed so any chrome that shows it re-renders.
+    public private(set) var foregroundProcessName: String?
     /// The live inspector second-channel client. Set when the inspector is subscribed; nilled on
     /// pause/teardown. Private so callers go through the lifecycle methods.
     private var inspectorClient: InspectorClient?
@@ -68,11 +96,12 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
 
     /// The factory the store handed in, retained so `resume()` can rebuild a fresh ``InspectorClient``
     /// after `pause()` closed the previous one (iOS would otherwise kill the app for stranding a
-    /// background socket — docs/22 DECISIONS). `nil` for non-`.claudeCode` panes.
+    /// background socket — docs/22 DECISIONS). Set for every `.terminal` pane (W11 — any terminal can
+    /// become a Claude session); `nil` for the video kinds (`.remoteGUI` / `.systemDialog`).
     private let makeInspector: (@MainActor (ConnectionTarget) -> InspectorClient?)?
     /// Resolves the CURRENT app target for the inspector second-channel build/rebuild (the inspector
     /// rides the same host as the terminal, on the terminal port + 1). Read fresh at subscribe-time so a
-    /// host change is picked up. `nil` for non-`.claudeCode` panes.
+    /// host change is picked up. Set for every `.terminal` pane; `nil` for the video kinds.
     private let target: (@MainActor () -> ConnectionTarget)?
 
     // MARK: Video activation
@@ -113,6 +142,15 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// `connection.terminalModel` so the view never reaches into the connection.
     public var terminalModel: TerminalViewModel? { connection?.terminalModel }
 
+    /// WB3 BOOKMARKS persistence scope (``TerminalModelProviding/bookmarkScopeKey``): a token minted FRESH
+    /// per materialization of this session (so a relaunch — which re-numbers blocks from 0 in a brand-new
+    /// segmenter — starts with NO stars instead of grafting a prior run's raw block indices onto unrelated
+    /// commands). Stable across a transport reconnect within one launch (the same `LivePaneSession`
+    /// instance survives a reconnect; only the host shell + block-index space restart). Keyed by THIS rather
+    /// than the stable pane id precisely to make the persisted index set per-SESSION, matching the
+    /// ``PreferencesStore`` contract (a `sessionUUID → [block index]` map).
+    public let bookmarkScopeKey = UUID().uuidString
+
     /// Whether an OSC 133 command is currently executing in this pane's shell — the
     /// ``PaneSessionHandle/isShellBusy`` close-guard signal and the pill's "running…" cue. `false`
     /// for panes with no terminal (`.remoteGUI` / `.systemDialog`).
@@ -147,6 +185,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         remoteWindow: RemoteWindowModel?,
         makeInspector: (@MainActor (ConnectionTarget) -> InspectorClient?)?,
         target: (@MainActor () -> ConnectionTarget)?,
+        isAgentDetectable: Bool,
     ) {
         self.id = id
         self.kind = kind
@@ -157,6 +196,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         self.remoteWindow = remoteWindow
         self.makeInspector = makeInspector
         self.target = target
+        self.isAgentDetectable = isAgentDetectable
     }
 
     // MARK: - Factory (the store's makeSession production path)
@@ -170,9 +210,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     ///   - makeClient: the threaded `@Sendable () -> AislopdeskClient` the `ConnectionViewModel` uses to
     ///     stand up the client on `connect()`. Passed through verbatim — the store never fakes the
     ///     client (it fakes the whole session via `makeSession`, docs/22 §0).
-    ///   - makeInspector: builds the read-only `InspectorClient` (NWConnection #2) for a `.claudeCode`
-    ///     pane's endpoint, or returns `nil` when no second channel is available. Retained for the
-    ///     `resume()` rebuild.
+    ///   - makeInspector: builds the read-only `InspectorClient` (NWConnection #2) for a `.terminal`
+    ///     pane's endpoint (subscribed dynamically once `claude` is detected, W11), or returns `nil`
+    ///     when no second channel is available. Retained for the `resume()` rebuild.
     @preconcurrency
     public static func make(
         _ spec: PaneSpec,
@@ -185,9 +225,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // immediately re-points it to the real leaf id via `adopt(id:)` before registering it.
         switch spec.kind {
         case .terminal:
-            makeTerminal(spec, claudeCode: false, makeClient: makeClient, makeInspector: makeInspector, target: target)
-        case .claudeCode:
-            makeTerminal(spec, claudeCode: true, makeClient: makeClient, makeInspector: makeInspector, target: target)
+            makeTerminal(spec, makeClient: makeClient, makeInspector: makeInspector, target: target)
         case .remoteGUI,
              .systemDialog:
             // A system-dialog pane uses the SAME video stack as a remote-GUI pane (it streams one host
@@ -197,20 +235,50 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         }
     }
 
-    /// Builds a `.terminal` / `.claudeCode` session: a `ConnectionViewModel` bound to the app target
-    /// (NOT connected) + an `InputBarModel`, plus an inspector model for `.claudeCode`.
+    /// Builds a `.terminal` session: a `ConnectionViewModel` bound to the app target (NOT connected) +
+    /// an `InputBarModel`, plus the LATENT Claude-detection seam — an inspector model + the status
+    /// machine — wired for EVERY terminal (W11). The inspector second channel is not opened here; it is
+    /// subscribed dynamically once ``claudeStatus`` lifts off `.none` (a `claude` is detected).
     private static func makeTerminal(
         _ spec: PaneSpec,
-        claudeCode: Bool,
         makeClient: @escaping @Sendable () -> AislopdeskClient,
         makeInspector: @escaping @MainActor (ConnectionTarget) -> InspectorClient?,
         target: @escaping @MainActor () -> ConnectionTarget,
     ) -> LivePaneSession {
         let terminal = TerminalViewModel()
+        // AISLOPDESK_DETACH_ENABLED (default ON — env != "0"): when the restored spec carries a
+        // saved session UUID (set by Stage 2's capture path), pre-seed the client's resume identity
+        // BEFORE the first connect() so the channelOpen preamble presents the host with the saved
+        // UUID + last-received seq, enabling a RETURNING_CLIENT reattach. A spec with nil
+        // resumeSessionID (a brand-new or never-connected pane) takes the existing fresh-shell path.
+        let detachEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_DETACH_ENABLED"] != "0"
+        let savedResumeID = detachEnabled ? spec.resumeSessionID : nil
+        // COLD LAUNCH: always seed seq=0 even when spec.resumeLastReceivedSeq is non-nil.
+        //
+        // This is a COLD path — the client actor is brand-new (process relaunch), so
+        // highestContiguousSeq starts at 0 regardless. Seeding a non-zero seq here would
+        // present lastReceivedSeq=N to the host, which would replay only messages with
+        // seq > N — skipping the entire scrollback ring (which holds history with seq ≤ N).
+        //
+        // By always seeding seq=0 the host receives lastReceivedSeq=0, triggering the full
+        // scrollback ring replay (ring entries 1..ackedSeq) followed by the un-acked tail —
+        // the same as `tmux attach-session` (AISLOPDESK_SCROLLBACK_PERSIST gate on the host).
+        //
+        // WARM in-process reconnect (iOS background/foreground, transport drop without process exit):
+        // seedResumeIdentity is NOT called — the actor's live highestContiguousSeq is presented
+        // directly in AislopdeskClient.connect() (line: `let lastSeq = highestContiguousSeq`).
+        // That path is unaffected.
+        let makeClientSeeded: @Sendable () -> AislopdeskClient = {
+            let c = makeClient()
+            if let id = savedResumeID {
+                Task { await c.seedResumeIdentity(sessionID: id, seq: 0) }
+            }
+            return c
+        }
         let connection = ConnectionViewModel(
             terminal: terminal,
             target: target,
-            makeClient: makeClient,
+            makeClient: makeClientSeeded,
         )
         let inputBar = InputBarModel()
         // SINGLE OUT FUNNEL: input-bar bytes ride the pane's ONE ordered OUT FIFO
@@ -219,18 +287,19 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // (docs/29 dual-OUT-drain reorder fix). Weak: the sink must not retain the model.
         inputBar.sendSink = { [weak terminal] data in terminal?.sendInput(data) }
 
-        let inspectorModel: InspectorViewModel? = claudeCode ? InspectorViewModel() : nil
-
         return LivePaneSession(
             id: PaneID(),
             kind: spec.kind,
             connection: connection,
             inputBar: inputBar,
-            inspector: inspectorModel,
-            inspectorClient: nil, // opened lazily by subscribeInspector()
+            inspector: InspectorViewModel(),
+            inspectorClient: nil, // opened lazily by subscribeInspector() once claudeStatus ≠ .none
             remoteWindow: nil,
-            makeInspector: claudeCode ? makeInspector : nil,
-            target: claudeCode ? target : nil,
+            makeInspector: makeInspector,
+            target: target,
+            // Every terminal can host an auto-detected claude — the host's type-27 verdict (folded via
+            // `feedAgentSignal`) lifts `claudeStatus` off `.none`. The client TRUSTS that verdict (P1).
+            isAgentDetectable: true,
         )
     }
 
@@ -261,6 +330,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             remoteWindow: model,
             makeInspector: nil,
             target: nil,
+            isAgentDetectable: false, // a video pane has no PTY → no claude to detect
         )
     }
 
@@ -282,7 +352,10 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// re-tail-safe because the model upserts/dedupes tool cards by id (docs/22 DECISIONS) — so a
     /// resume that replays the whole transcript tail does not duplicate cards.
     public func subscribeInspector() async {
-        guard kind == .claudeCode, let model = inspector else { return }
+        // W11: the inspector second channel is gated on the RUNTIME Claude status, not a stored kind —
+        // a plain terminal opens NO inspector socket until a `claude` is detected in it (`claudeStatus`
+        // lifts off `.none`). `subscribeInspector` is re-driven on that transition (see feedAgentSignal).
+        guard claudeStatus != .none, let model = inspector else { return }
         guard inspectorClient == nil else { return }
         guard let target, let client = makeInspector?(target()) else { return }
         // Cancelled before we stored anything (e.g. pause()/teardown() fired between resume's spawn and
@@ -304,6 +377,68 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // later `resume()` can rebuild.
         await model.consume(client.events())
         if inspectorClient === client { inspectorClient = nil }
+    }
+
+    // MARK: - Claude-Code agent signal fold (W11 / P1 — client TRUSTS the host's type-27)
+
+    /// Folds one wire agent-detection event (type 26 `foregroundProcess` / type 27 `claudeStatus`) into
+    /// this pane's DISPLAY state. P1: the client is a passive display — it does NOT run a state machine
+    /// or re-derive presence:
+    /// - **type 27 `claudeStatus`** is the SINGLE source of truth: the `state` byte maps directly to a
+    ///   ``ClaudeStatus`` (forward-tolerant — an unknown/future byte degrades to `.none`), and that
+    ///   verdict is trusted verbatim. It drives the dot AND the dynamic inspector open/close.
+    /// - **type 26 `foregroundProcess`** is a COARSE display-only process-name hint (review #3): it
+    ///   updates ``foregroundProcessName`` and NOTHING else — it can NEVER override the type-27 status,
+    ///   so a transient child process taking the PTY can't wipe a `.needsPermission` the host set.
+    ///
+    /// Returns the current status so the store can mirror it into ``WorkspaceStore/setAgentStatus(_:for:)``.
+    /// A no-op (returns `.none`) for a non-detectable pane (a video pane — no PTY).
+    @discardableResult
+    func feedAgentSignal(
+        _ event: AislopdeskClient.Event,
+        now _: TimeInterval = Date().timeIntervalSinceReferenceDate,
+    ) -> ClaudeStatus {
+        guard isAgentDetectable else { return claudeStatus }
+        switch event {
+        case let .foregroundProcess(name):
+            // DISPLAY-ONLY: a coarse process-name hint. Never touches `claudeStatus` (the type-27 verdict
+            // is authoritative) — so a child process briefly taking the PTY can't clobber a hook status.
+            let trimmed = name.isEmpty ? nil : name
+            if foregroundProcessName != trimmed { foregroundProcessName = trimmed }
+            return claudeStatus
+        case let .claudeStatus(state, _, _):
+            // TRUST the host's verdict: map the raw urgency byte → ClaudeStatus directly (forward-tolerant
+            // — an unknown/future byte degrades to `.none`; a hostile datagram can never trap the client).
+            applyDetectedStatus(ClaudeStatus(urgency: Int(state)))
+            return claudeStatus
+        default:
+            // Not an agent-detect event — ignore (the store only forwards 26/27 here).
+            return claudeStatus
+        }
+    }
+
+    /// Applies the host's freshly-trusted status: dedupes no-op updates, then opens/closes the inspector
+    /// second channel on the `.none` boundary. `.none → non-none` spawns a subscribe; `non-none → .none`
+    /// tears the client down (the pane is back to a plain terminal — hold no inspector socket).
+    private func applyDetectedStatus(_ newStatus: ClaudeStatus) {
+        let wasActive = claudeStatus != .none
+        let isActive = newStatus != .none
+        guard claudeStatus != newStatus else { return } // dedupe identical updates (no churn)
+        claudeStatus = newStatus
+        if !wasActive, isActive {
+            // A claude just appeared in this terminal → open the read-only inspector second channel.
+            inspectorTask?.cancel()
+            inspectorTask = Task { [weak self] in await self?.subscribeInspector() }
+        } else if wasActive, !isActive {
+            // The claude is gone → close the inspector socket (idempotent).
+            inspectorTask?.cancel()
+            inspectorTask = nil
+            if let client = inspectorClient {
+                let toClose = client
+                inspectorClient = nil
+                Task { await toClose.close() }
+            }
+        }
     }
 
     // MARK: - PaneSessionHandle: video activation
@@ -384,11 +519,12 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             wasVideoActiveBeforePause = false
             setVideoActive(true)
         }
-        if kind == .claudeCode, inspector != nil, inspectorClient == nil {
-            // Track + cancel a prior re-subscribe before spawning a fresh one, so a teardown/pause that
-            // arrives in the same main-actor turn can cancel this (the subscribeInspector() cancellation
-            // re-checks then close the just-built client). NOT awaited — the fold blocks until the
-            // stream closes, so awaiting here would hang the scenePhase foreground fan-out.
+        if claudeStatus != .none, inspector != nil, inspectorClient == nil {
+            // W11: re-subscribe only when a claude is still detected in this pane (runtime status, not a
+            // stored kind). Track + cancel a prior re-subscribe before spawning a fresh one, so a
+            // teardown/pause that arrives in the same main-actor turn can cancel this (the
+            // subscribeInspector() cancellation re-checks then closes the just-built client). NOT awaited
+            // — the fold blocks until the stream closes, so awaiting here would hang the foreground fan-out.
             inspectorTask?.cancel()
             inspectorTask = Task { [weak self] in await self?.subscribeInspector() }
         }

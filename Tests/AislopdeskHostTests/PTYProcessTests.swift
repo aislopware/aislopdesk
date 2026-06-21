@@ -517,6 +517,72 @@ final class PTYProcessTests: XCTestCase {
         XCTAssertEqual(pty.masterFD, -1)
     }
 
+    // MARK: nudgeRedraw guard tests
+
+    /// `nudgeRedraw()` on an unspawned `PTYProcess` (masterFD = -1, pid = -1) must be a
+    /// safe no-op — the guard rejects the invalid fd/pid before any syscall. No crash, no
+    /// assertion failure.
+    func testNudgeRedrawIsNoOpOnUnspawnedPTY() {
+        let pty = PTYProcess()
+        // Guard path: masterFD == -1 → returns immediately without calling tcgetpgrp/killpg.
+        pty.nudgeRedraw() // must not crash or trap
+    }
+
+    /// `nudgeRedraw()` after `closeMaster()` marks `masterFD` as `-1`, so the guard
+    /// short-circuits and the call is a safe no-op. Verifies the TOCTOU discipline —
+    /// the method reads `masterFD` under `exitLock`, so a concurrent close cannot race
+    /// the subsequent `tcgetpgrp` call.
+    func testNudgeRedrawIsNoOpAfterCloseMaster() throws {
+        let pty = PTYProcess()
+        try pty.spawn("/bin/sh", arguments: ["-c", "exit 0"], environment: curatedEnv())
+        XCTAssertGreaterThanOrEqual(pty.masterFD, 0)
+        _ = readUntil(fd: pty.masterFD, needle: "\u{04}", timeout: 1) // drain to EOF
+        pty.closeMaster()
+        XCTAssertEqual(pty.masterFD, -1)
+        pty.nudgeRedraw() // must not crash: fd is -1, guard fires
+    }
+
+    /// `nudgeRedraw()` on a live interactive zsh delivers `SIGWINCH` to the foreground
+    /// process group, causing the shell to redraw its prompt. We verify this with the
+    /// same `TRAPWINCH`/`$COLUMNS` technique used by
+    /// `testInteractiveZshControllingTTYAndSigwinch`: after `nudgeRedraw()` zsh must
+    /// report the current `$COLUMNS` in its TRAPWINCH handler, proving the signal was
+    /// actually delivered. This is the production-equivalent of what the reattach path
+    /// does after 200 ms.
+    func testNudgeRedrawDeliversSigwinchToInteractiveZsh() throws {
+        let zsh = "/bin/zsh"
+        guard FileManager.default.isExecutableFile(atPath: zsh) else {
+            throw XCTSkip("/bin/zsh not present")
+        }
+        let pty = PTYProcess()
+        var env = curatedEnv()
+        env["ZDOTDIR"] = "/nonexistent-aislopdesk-test"
+        try pty.spawn(zsh, arguments: ["-f", "-i"], environment: env, argv0: "-zsh", cols: 80, rows: 24)
+
+        defer {
+            pty.forceTerminate()
+            pty.waitUntilExited(timeout: 1.0)
+            pty.closeMaster()
+        }
+
+        // Install a TRAPWINCH that prints a recognisable marker containing $COLUMNS.
+        Self.write(pty.masterFD, "TRAPWINCH() { print -r -- NUDGE_COLS=$COLUMNS }\n")
+        Thread.sleep(forTimeInterval: 0.3) // let zsh execute the function definition
+
+        // nudgeRedraw() delivers SIGWINCH to the foreground pgrp (interactive zsh).
+        pty.nudgeRedraw()
+
+        // zsh's TRAPWINCH fires and prints NUDGE_COLS=<current columns>. At 80 cols spawn
+        // the shell should report NUDGE_COLS=80. We just need the marker to appear — the
+        // specific value proves SIGWINCH was delivered.
+        let out = readUntil(fd: pty.masterFD, needle: "NUDGE_COLS=", timeout: 5.0)
+        XCTAssertTrue(
+            out.contains("NUDGE_COLS="),
+            "nudgeRedraw() must deliver SIGWINCH to the interactive zsh foreground pgrp "
+                + "(TRAPWINCH never fired): \(out)",
+        )
+    }
+
     func testMasterFDIsBlockingAfterSpawn() throws {
         let pty = PTYProcess()
         try pty.spawn("/bin/sh", arguments: ["-c", "exit 0"], environment: curatedEnv())
