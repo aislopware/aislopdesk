@@ -69,6 +69,10 @@ struct PaneChromeView<Content: View>: View {
     var body: some View {
         if showsHeader {
             // The compact carousel keeps a slim header over the content (no tab strip to carry focus).
+            // P2 ELEVATION NOTE: the inner-top highlight is INTENTIONALLY omitted on this branch — the
+            // header bar + its bottom `Divider` already own the card's top edge, so a 1pt highlight would
+            // sit UNDER chrome rather than on a bare card top. The highlight lives only on the chrome-less
+            // tree-shell branch below, where the card top edge is exposed.
             VStack(spacing: 0) {
                 header
                 Divider()
@@ -104,6 +108,20 @@ struct PaneChromeView<Content: View>: View {
                 .clipShape(
                     RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous),
                 )
+                // P2 ELEVATION: the inner top-edge highlight (white·0.12 → clear, 1pt) — the premium
+                // dark-surface "tell" the redesign adds to the pane card. Depth on L2/L3 comes from the
+                // lightness ladder + hairline + THIS highlight; there is deliberately NO drop-shadow here
+                // (shadows are L4-overlay-only, adopted in P4). Clipped to the SAME rounded card shape so
+                // the 1pt highlight follows the corner radius and never bleeds past the card edge.
+                // `allowsHitTesting(false)` lives inside `innerTopHighlight()`, so it never swallows a tap
+                // meant for the terminal content. The libghostty IOSurface keeps drawing its own opaque
+                // content bg underneath — the card stays flat-opaque; this is a decorative leaf stroke.
+                .overlay(alignment: .top) {
+                    DSElevation.innerTopHighlight()
+                        .clipShape(
+                            RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous),
+                        )
+                }
                 .overlay(
                     RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous)
                         .strokeBorder(

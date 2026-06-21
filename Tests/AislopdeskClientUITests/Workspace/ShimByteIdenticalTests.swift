@@ -7,50 +7,94 @@ import SwiftUI
 import AppKit
 #endif
 
-/// The P1 INVARIANT GUARD: every still-live legacy accessor (``AislopdeskTheme`` / ``UIMetrics``) resolves
-/// to its EXACT pre-P1 value, so the screenshot is pixel-identical after the shim conversion. And the
-/// PIXEL-IDENTITY guard: the legacy ink-ramp / type / spacing accessors must NOT forward to the changed DS
-/// tokens (whose TARGET values differ) — `AislopdeskTheme.bg != DSColor.bg`, etc. The new vocabulary
-/// exists but no legacy accessor adopts the changed value; the migration happens in P2..P5.
+/// The P2 REGRESSION PINS for the recalibrated surface ladder. P1 pinned every legacy accessor to its
+/// pre-P1 literal (so the screenshot was pixel-identical through the shim conversion); P2 REPOINTS the
+/// ``AislopdeskTheme`` colour accessors at the ``DSColor`` / ``DSPalette`` semantic tokens, so the new cool
+/// ink ramp + indigo accent + recalibrated text ladder are VISIBLE everywhere at once. These tests are
+/// FLIPPED accordingly — they now assert each legacy accessor resolves to its NEW DS target value, so they
+/// become the regression pins for the new ramp. (A test still asserting the OLD warm literal would be the
+/// bug: it would mean the repoint silently did not land.)
 ///
 /// Uses SwiftUI `Color` `Equatable` (the existing `PaneStatusIndicatorTests` / `AgentStatusDotColorTests`
-/// pattern) — a legacy literal compares equal to itself; the colour tests below reconstruct the EXACT
-/// legacy constructor so a representation drift is caught.
+/// pattern) — each accessor compares equal to the exact DS token / primitive it now forwards to, so a
+/// representation drift is still caught. The type / spacing TARGET values still DIFFER from the legacy
+/// `UIMetrics` geometry (P2 is colour + elevation ONLY; geometry migrates in P3/P5) — that guard is kept.
 @MainActor
 final class ShimByteIdenticalTests: XCTestCase {
     #if canImport(SwiftUI)
 
-    // MARK: - AislopdeskTheme colours stay at today's literals
+    // MARK: - AislopdeskTheme colours now resolve to the NEW DS ramp (P2 repoint)
 
-    func testThemeBaseColorsUnchanged() {
-        XCTAssertEqual(AislopdeskTheme.bg, Color(red: 0.086, green: 0.090, blue: 0.086))
-        XCTAssertEqual(AislopdeskTheme.bgRaised, Color(red: 0.122, green: 0.122, blue: 0.118))
-        XCTAssertEqual(AislopdeskTheme.bgSunken, Color(red: 0.063, green: 0.067, blue: 0.063))
-        XCTAssertEqual(AislopdeskTheme.fg, Color(red: 0.918, green: 0.910, blue: 0.890))
+    func testThemeBaseColorsRepointedToDSRamp() {
+        // bg -> n1, bgRaised -> chrome(n3), bgSunken -> n0, fg -> n12.
+        XCTAssertEqual(AislopdeskTheme.bg, DSColor.bg)
+        XCTAssertEqual(AislopdeskTheme.bg, DSPalette.n1)
+        XCTAssertEqual(AislopdeskTheme.bgRaised, DSColor.chrome)
+        XCTAssertEqual(AislopdeskTheme.bgRaised, DSPalette.n3)
+        XCTAssertEqual(AislopdeskTheme.bgSunken, DSColor.bgSunken)
+        XCTAssertEqual(AislopdeskTheme.bgSunken, DSPalette.n0)
+        XCTAssertEqual(AislopdeskTheme.fg, DSColor.textPrimary)
+        XCTAssertEqual(AislopdeskTheme.fg, DSPalette.n12)
     }
 
-    func testThemeForegroundLadderUnchanged() {
-        let fg = Color(red: 0.918, green: 0.910, blue: 0.890)
-        XCTAssertEqual(AislopdeskTheme.fgPrimary, fg.opacity(0.90))
-        XCTAssertEqual(AislopdeskTheme.fgMuted, fg.opacity(0.65))
-        XCTAssertEqual(AislopdeskTheme.fgDim, fg.opacity(0.40))
-        XCTAssertEqual(AislopdeskTheme.fgFaint, fg.opacity(0.20))
+    /// CONCRETE-VALUE BACKSTOP for the base ink ramp. The token-against-token pins above follow the
+    /// primitive, so they would STILL pass if `DSPalette.n1` were re-authored to a wrong hex. This pin
+    /// hardcodes the spec hexes ONCE so an accidental repoint of the underlying primitive is caught —
+    /// making the suite a true regression pin for the new ramp, not just a token-follower. The hexes are
+    /// the spec values: n1 #121316 (bg), n3 #1D1F24 (bgRaised), n0 #0C0D0F (bgSunken), n12 #ECEEF1 (fg).
+    func testThemeBaseColorsResolveToSpecHexes() {
+        XCTAssertEqual(AislopdeskTheme.bg, Color(hex: 0x121316), "bg must be the cool ink n1 #121316")
+        XCTAssertEqual(AislopdeskTheme.bgRaised, Color(hex: 0x1D1F24), "bgRaised must be the chrome n3 #1D1F24")
+        XCTAssertEqual(AislopdeskTheme.bgSunken, Color(hex: 0x0C0D0F), "bgSunken must be the sunken floor n0 #0C0D0F")
+        XCTAssertEqual(AislopdeskTheme.fg, Color(hex: 0xECEEF1), "fg must be the off-white n12 #ECEEF1")
     }
 
-    func testThemeSurfaceLadderUnchanged() {
-        let fg = Color(red: 0.918, green: 0.910, blue: 0.890)
-        XCTAssertEqual(AislopdeskTheme.surface05, fg.opacity(0.05))
-        XCTAssertEqual(AislopdeskTheme.surface, fg.opacity(0.08))
-        XCTAssertEqual(AislopdeskTheme.surface12, fg.opacity(0.12))
-        XCTAssertEqual(AislopdeskTheme.border, fg.opacity(0.10))
-        XCTAssertEqual(AislopdeskTheme.hover, fg.opacity(0.06))
+    func testThemeForegroundLadderRepointedToDSTextTokens() {
+        // The recalibrated text ladder: primary -> n12, muted -> n11, dim -> n10, faint -> n9.
+        XCTAssertEqual(AislopdeskTheme.fgPrimary, DSColor.textPrimary)
+        XCTAssertEqual(AislopdeskTheme.fgMuted, DSColor.textSecondary)
+        XCTAssertEqual(AislopdeskTheme.fgDim, DSColor.textTertiary)
+        XCTAssertEqual(AislopdeskTheme.fgFaint, DSColor.textDisabled)
     }
 
-    func testThemeAccentLadderUnchanged() {
-        XCTAssertEqual(AislopdeskTheme.accent, Color.accentColor)
-        XCTAssertEqual(AislopdeskTheme.accentSoft, Color.accentColor.opacity(0.10))
-        XCTAssertEqual(AislopdeskTheme.accentHover, Color.accentColor.opacity(0.25))
-        XCTAssertEqual(AislopdeskTheme.accentSelected, Color.accentColor.opacity(0.40))
+    /// CONCRETE-VALUE BACKSTOP for the recalibrated text ladder. As above, the token-against-token pins
+    /// follow the primitive; this hardcodes the spec hexes ONCE so a drift in `DSPalette.n9…n12` is caught:
+    /// primary n12 #ECEEF1, muted n11 #C3C7CE, dim n10 #9AA0AB, faint n9 #6B7280.
+    func testThemeForegroundLadderResolvesToSpecHexes() {
+        XCTAssertEqual(AislopdeskTheme.fgPrimary, Color(hex: 0xECEEF1), "fgPrimary must be n12 #ECEEF1")
+        XCTAssertEqual(AislopdeskTheme.fgMuted, Color(hex: 0xC3C7CE), "fgMuted must be n11 #C3C7CE")
+        XCTAssertEqual(AislopdeskTheme.fgDim, Color(hex: 0x9AA0AB), "fgDim must be n10 #9AA0AB")
+        XCTAssertEqual(AislopdeskTheme.fgFaint, Color(hex: 0x6B7280), "fgFaint must be n9 #6B7280")
+    }
+
+    func testThemeSurfaceLadderRepointedToDSTints() {
+        // White-over-bg tints: surface05/hover -> hoverFill(0.05), surface/surface12 -> activeFill(0.08),
+        // border -> borderSubtle(0.07). surface12's distinct rung flattens onto activeFill by design.
+        XCTAssertEqual(AislopdeskTheme.surface05, DSColor.hoverFill)
+        XCTAssertEqual(AislopdeskTheme.surface, DSColor.activeFill)
+        XCTAssertEqual(AislopdeskTheme.surface12, DSColor.activeFill)
+        XCTAssertEqual(AislopdeskTheme.border, DSColor.borderSubtle)
+        XCTAssertEqual(AislopdeskTheme.hover, DSColor.hoverFill)
+        // Explicit white-opacity equivalents (the values the tokens hold).
+        XCTAssertEqual(AislopdeskTheme.surface05, Color.white.opacity(0.05))
+        XCTAssertEqual(AislopdeskTheme.surface, Color.white.opacity(0.08))
+        XCTAssertEqual(AislopdeskTheme.border, Color.white.opacity(0.07))
+    }
+
+    func testThemeAccentLadderRepointedToDSIndigo() {
+        // No DSThemeStore override active (the P1 default): accentSolid resolves to the DS indigo a9.
+        XCTAssertNil(DSThemeStore.shared.accent, "no accent override → accentSolid is the DS indigo default")
+        // CONCRETE-VALUE BACKSTOP (was a tautological `accent == accentSolid`): the accent fill must be the
+        // DS indigo a9 #5E6AD2. Hardcoding the hex here catches a re-author of `DSPalette.a9` to a wrong
+        // value — the token-against-token line below is only a forwarding sanity check.
+        XCTAssertEqual(AislopdeskTheme.accent, Color(hex: 0x5E6AD2), "accent must be the DS indigo a9 #5E6AD2")
+        // The washes keep the SAME 0.10/0.25/0.40 opacities over the indigo fill.
+        XCTAssertEqual(AislopdeskTheme.accentSoft, Color(hex: 0x5E6AD2).opacity(0.10))
+        XCTAssertEqual(AislopdeskTheme.accentHover, Color(hex: 0x5E6AD2).opacity(0.25))
+        XCTAssertEqual(AislopdeskTheme.accentSelected, Color(hex: 0x5E6AD2).opacity(0.40))
+        // Forwarding sanity checks (token-followers): the accessor still routes through the DS token.
+        XCTAssertEqual(AislopdeskTheme.accent, DSColor.accentSolid)
+        XCTAssertEqual(AislopdeskTheme.accent, DSPalette.a9)
     }
 
     func testThemeStatusColorsUnchanged() {
@@ -127,21 +171,24 @@ final class ShimByteIdenticalTests: XCTestCase {
         XCTAssertEqual(UIMetrics.scaled(0), 0)
     }
 
-    // MARK: - PIXEL-IDENTITY GUARD: legacy accessors do NOT forward to the changed DS tokens
+    // MARK: - REPOINT GUARD: legacy COLOUR accessors now DO forward to the DS tokens (P2)
 
-    /// The single most important assertion: the legacy `bg` must NOT have been pointed at the new cool
-    /// ramp (`DSColor.bg` / `DSPalette.n1`). If it had, the window background would shift — a visible
-    /// change P1 forbids. (`Color(red:0.086…)` warm near-black vs `#121316` cool — different by design.)
-    func testLegacyInkRampDidNotForwardToDSTokens() {
-        XCTAssertNotEqual(AislopdeskTheme.bg, DSColor.bg, "legacy bg must keep its warm literal, not n1")
-        XCTAssertNotEqual(AislopdeskTheme.bg, DSPalette.n1)
-        XCTAssertNotEqual(AislopdeskTheme.bgSunken, DSColor.bgSunken)
-        XCTAssertNotEqual(AislopdeskTheme.fg, DSColor.textPrimary)
+    /// The single most important P2 assertion, INVERTED from the P1 `DidNotForward` pin: the legacy ink
+    /// ramp NOW forwards to the new cool DS ramp (`DSColor.bg` / `DSPalette.n1`), so every `AislopdeskTheme`
+    /// call site picks up the new surface at once. (P1 asserted `NotEqual` to keep the screenshot frozen;
+    /// P2 makes the new ramp visible, so the correct assertion is `Equal`.)
+    func testLegacyInkRampForwardsToDSTokens() {
+        XCTAssertEqual(AislopdeskTheme.bg, DSColor.bg, "legacy bg now resolves to the new cool n1")
+        XCTAssertEqual(AislopdeskTheme.bg, DSPalette.n1)
+        XCTAssertEqual(AislopdeskTheme.bgSunken, DSColor.bgSunken)
+        XCTAssertEqual(AislopdeskTheme.fg, DSColor.textPrimary)
     }
 
-    /// The DS type / spacing TARGET values differ from the legacy ones (they are forward vocabulary): the
-    /// DS body font is 13pt while legacy `fontBody` is 12pt, and `DSSpace.s5` is 12 while legacy
-    /// `spacing5` stays 10 — proving the shim did NOT collapse the values together.
+    /// The DS type / spacing TARGET values STILL differ from the legacy ones — P2 repoints COLOUR +
+    /// ELEVATION only and does NOT touch `UIMetrics` geometry (that is P3/P5). The DS body font is 13pt
+    /// while legacy `fontBody` stays 12pt, `DSSpace.s5` is 12 while legacy `spacing5` stays 10, and
+    /// `DSSpace.tabHeight` is 30 while legacy `Metrics.tabHeight` stays 32 — proving the geometry is
+    /// untouched.
     func testDSTargetValuesDifferFromLegacy() {
         XCTAssertEqual(DSFont.body.size, 13, "DS body is the target 13pt ladder base")
         XCTAssertNotEqual(DSFont.body.size, UIMetrics.fontBody, "legacy fontBody stays 12pt")

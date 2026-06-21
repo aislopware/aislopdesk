@@ -20,67 +20,108 @@ import AppKit
 enum AislopdeskTheme {
     // MARK: Base (the two colors everything else derives from)
 
-    /// The window/chrome background — a deep, very slightly warm dark (Muxy: `bg` = terminal background
-    /// color). Nudged from pure neutral #161820 toward a warmer near-black (~#161716) so it pairs with
-    /// the warmer off-white fg without the cool-vs-warm clash.
-    static let bg = Color(red: 0.086, green: 0.090, blue: 0.086) // ~#161716 (warm near-black)
+    // P2 REPOINT: these point at the ``DSPalette`` primitives (non-isolated `static let`s) that the
+    // matching ``DSColor`` role tokens themselves return — `DSColor.bg` IS `DSPalette.n1`, so pointing
+    // here at `DSPalette.n1` is byte-identical to `DSColor.bg` while staying a plain `static let` (no
+    // `@MainActor` hop; `DSColor` is `@MainActor`-isolated, `DSPalette` is not). The accent ladder below
+    // DOES read `DSColor` (for the live ``DSThemeStore`` override) and so is `@MainActor` computed.
 
-    /// A slightly raised opaque surface for overlays / popovers that need a hard background (Muxy: a
-    /// hair lighter than `bg`; use `surface` / `surface12` for translucent overlays in the chrome).
-    static let bgRaised = Color(red: 0.122, green: 0.122, blue: 0.118) // ~#1F1F1E (warm raised)
+    /// The window/chrome background.
+    ///
+    /// P2 REPOINT: now the new cool ink `n1` `#121316` (== ``DSColor/bg``) — the legacy warm near-black
+    /// `#161716` literal is retired. All ~12 `AislopdeskTheme.bg` call sites pick up the new surface
+    /// ladder at once without a per-site migration (that structural work is P3). COLOR-ONLY: no geometry.
+    static let bg = DSPalette.n1
 
-    /// The DEEPEST elevation level — one subtle step BELOW `bg` (~2% luminance). Used as the gutter
-    /// "canvas behind cards": the SplitTreeView seam + the outer half-gap padding paint this so the
-    /// `bg` panes read as raised cards floating on a sunken floor. The 3-step ladder is
-    /// `bgRaised` (sidebar) > `bg` (pane card) > `bgSunken` (gutter) — present but deliberately subtle.
-    static let bgSunken = Color(red: 0.063, green: 0.067, blue: 0.063) // ~#101110 (gutter behind panes)
+    /// A slightly raised opaque surface for overlays / popovers that need a hard background.
+    ///
+    /// P2 REPOINT: now the raised chrome step `n3` `#1D1F24` (== ``DSColor/chrome``: sidebar / tab strip
+    /// / raised panel), replacing the legacy warm `#1F1F1E`.
+    static let bgRaised = DSPalette.n3
 
-    /// The foreground (text/icon) base — a warm off-white (Muxy: `fg` = terminal foreground color).
-    /// Warmed slightly toward Warp Phenomenon's #FAF9F6 for a richer reading tone while staying
-    /// cohesive with the dark chrome (was #E2E5EC, now #EAE8E3).
-    static let fg = Color(red: 0.918, green: 0.910, blue: 0.890) // ~#EAE8E3 (warm off-white)
+    /// The DEEPEST elevation level — the gutter "canvas behind cards".
+    ///
+    /// P2 REPOINT: now the sunken floor `n0` `#0C0D0F` (== ``DSColor/bgSunken``). The SplitTreeView seam +
+    /// the outer half-gap padding paint this so the `bg` panes read as raised cards floating on a sunken
+    /// floor; the new ramp deepens the spread so the ladder is actually felt.
+    static let bgSunken = DSPalette.n0
 
-    // MARK: Derived foreground tokens (fg-opacity text ladder + surface/border ladder)
+    /// The foreground (text/icon) base.
+    ///
+    /// P2 REPOINT: now ``DSPalette/n12`` (`#ECEEF1`, the cool off-white primary text — NOT pure #FFF),
+    /// replacing the legacy warm `#EAE8E3`. The text ladder below is RECALIBRATED against the new base by
+    /// repointing each step at the matching opaque cool token (see each accessor).
+    static let fg = DSPalette.n12
 
-    /// Primary text — main labels, active tab titles (fg @ 90% so it reads as warm off-white rather
-    /// than harsh full-white; identical in practice to `fg` itself for most uses).
-    static let fgPrimary = fg.opacity(0.90)
-    /// Secondary text — labels, inactive tab titles (Muxy `fgMuted` = fg · 0.65).
-    static let fgMuted = fg.opacity(0.65)
-    /// Tertiary text / dim icons — close glyphs, counts (Muxy `fgDim` = fg · 0.40).
-    static let fgDim = fg.opacity(0.40)
-    /// Placeholder / disabled text — hint strings, fully disabled controls (fg · 0.20).
-    static let fgFaint = fg.opacity(0.20)
+    // MARK: Derived foreground tokens (recalibrated text ladder on the new cool base)
 
-    // MARK: Surface ladder (fg blended over bg at increasing opacity)
+    /// Primary text — main labels, active tab titles.
+    ///
+    /// P2 REPOINT: `n12` (== ``DSColor/textPrimary``). The old `fg·0.90` is retired; the new opaque cool
+    /// token reads better against the deeper `n1`/`n2` surfaces.
+    static let fgPrimary = DSPalette.n12
+    /// Secondary text — labels, inactive tab titles.
+    ///
+    /// P2 REPOINT: `n11` `#C3C7CE` (== ``DSColor/textSecondary``, ≈ the old `fg·0.65` step but opaque + cool).
+    static let fgMuted = DSPalette.n11
+    /// Tertiary text / dim icons — close glyphs, counts.
+    ///
+    /// P2 REPOINT: `n10` `#9AA0AB` (== ``DSColor/textTertiary``, ≈ the old `fg·0.40` step, opaque + cool).
+    static let fgDim = DSPalette.n10
+    /// Placeholder / disabled text — hint strings, fully disabled controls.
+    ///
+    /// P2 REPOINT: `n9` `#6B7280` (== ``DSColor/textDisabled``, ≈ the old `fg·0.20` step, opaque + cool).
+    static let fgFaint = DSPalette.n9
 
-    /// The lightest raised surface — hover / subtle fill (fg · 0.05).
-    static let surface05 = fg.opacity(0.05)
-    /// Active-tab / selected-row fill (Muxy `surface` = fg · 0.08).
-    static let surface = fg.opacity(0.08)
-    /// A slightly stronger surface — focused input / active sidebar row (fg · 0.12).
-    static let surface12 = fg.opacity(0.12)
-    /// Every divider / separator / hairline border — soft 1px lines (fg · 0.10).
-    static let border = fg.opacity(0.10)
-    /// Row hover background (Muxy `hover` = fg · 0.06 ≈ surface05 split for clarity).
-    static let hover = fg.opacity(0.06)
+    // MARK: Surface ladder (white-over-bg tints matching the new semantic tokens)
+
+    /// The lightest raised surface — hover / subtle fill.
+    ///
+    /// P2 REPOINT: white·0.05 (== ``DSColor/hoverFill``).
+    static let surface05 = Color.white.opacity(0.05)
+    /// Active-tab / selected-row fill.
+    ///
+    /// P2 REPOINT: white·0.08 (== ``DSColor/activeFill``).
+    static let surface = Color.white.opacity(0.08)
+    /// A slightly stronger surface — focused input / active sidebar row.
+    ///
+    /// P2 REPOINT: white·0.08 (== ``DSColor/activeFill``). The legacy `surface12` (fg·0.12) flattens to the
+    /// same `activeFill` step in the new ladder (the distinct `12` rung is not in the semantic token set);
+    /// the only call site is a fill tint, so the merge is intentional and invisible in practice.
+    static let surface12 = Color.white.opacity(0.08)
+    /// Every divider / separator / hairline border — soft 1px lines.
+    ///
+    /// P2 REPOINT: white·0.07 (== ``DSColor/borderSubtle``).
+    static let border = Color.white.opacity(0.07)
+    /// Row hover background.
+    ///
+    /// P2 REPOINT: white·0.05 (== ``DSColor/hoverFill``).
+    static let hover = Color.white.opacity(0.05)
 
     // MARK: Accent + accent-overlay ladder
 
-    /// The focus / active accent. Muxy uses the terminal theme's accent (typically blue); we use the
-    /// user's system accent so it tracks their preference, which reads the same way (Muxy: the active
-    /// theme's accent; ours = `NSColor.controlAccentColor` surfaced as `Color.accentColor`).
+    // These are `@MainActor` COMPUTED (not stored) because they read ``DSColor/accentSolid`` which
+    // resolves the live ``DSThemeStore`` accent override (`store.accent ?? DSPalette.a9`) — a stored
+    // `static let` would snapshot the default at init and miss a later user override.
+
+    /// The focus / active accent.
     ///
-    /// PALETTE DECISION: keeping `Color.accentColor` (system) rather than a fixed steel-blue
-    /// (#2E5D9E). The system accent ensures the chrome respects the user's macOS preference, which
-    /// typically IS a near-Warp-steel blue by default while still adapting to e.g. graphite mode.
-    static let accent = Color.accentColor
-    /// A soft accent wash — hover / light fill (accent · 0.10).
-    static let accentSoft = Color.accentColor.opacity(0.10)
-    /// A medium accent wash — hover-active / focused interactive rows (accent · 0.25).
-    static let accentHover = Color.accentColor.opacity(0.25)
-    /// A strong accent wash — selected / active state tint (accent · 0.40).
-    static let accentSelected = Color.accentColor.opacity(0.40)
+    /// P2 REPOINT: now ``DSColor/accentSolid`` — the DS indigo (`a9` `#5E6AD2`) as the new DEFAULT,
+    /// replacing the system `Color.accentColor`. Still user-overridable via ``DSThemeStore`` (the store's
+    /// `accent` wins when set). The accent stays a SCARCE resource (focus ring / active-tab line / fill).
+    @MainActor static var accent: Color { DSColor.accentSolid }
+    /// A soft accent wash — hover / light fill (accentSolid · 0.10).
+    ///
+    /// P2 REPOINT: derived from the DS indigo at the SAME 0.10 opacity (was `Color.accentColor·0.10`).
+    @MainActor static var accentSoft: Color { DSColor.accentSolid.opacity(0.10) }
+    /// A medium accent wash — hover-active / focused interactive rows (accentSolid · 0.25).
+    ///
+    /// P2 REPOINT: DS indigo at the SAME 0.25 opacity (was `Color.accentColor·0.25`).
+    @MainActor static var accentHover: Color { DSColor.accentSolid.opacity(0.25) }
+    /// A strong accent wash — selected / active state tint (accentSolid · 0.40).
+    ///
+    /// P2 REPOINT: DS indigo at the SAME 0.40 opacity (was `Color.accentColor·0.40`).
+    @MainActor static var accentSelected: Color { DSColor.accentSolid.opacity(0.40) }
     /// A contrasting foreground for text/glyphs painted ON the accent fill — black on a light accent,
     /// white on a dark one (Muxy `accentForeground` = `contrastingForeground(for: accent)`, threshold 0.6).
     /// Our base accent is the system accent, so this is derived from `NSColor.controlAccentColor` on
@@ -121,20 +162,33 @@ enum AislopdeskTheme {
     // MARK: AppKit color tokens (Muxy `nsBg` / `nsFg` / `nsFgMuted`)
 
     #if canImport(AppKit)
-    /// The chrome background as an `NSColor` for AppKit views (matches `bg` warm near-black).
-    static let nsBg = NSColor(srgbRed: 0.086, green: 0.090, blue: 0.086, alpha: 1.0) // ~#161716
-    /// The foreground as an `NSColor` for AppKit views (matches `fg` warm off-white).
-    static let nsFg = NSColor(srgbRed: 0.918, green: 0.910, blue: 0.890, alpha: 1.0) // ~#EAE8E3
-    /// Secondary foreground as an `NSColor` (fg · 0.65 — matches `fgMuted`).
-    static let nsFgMuted = nsFg.withAlphaComponent(0.65)
-    /// The sunken gutter as an `NSColor` for AppKit views (matches `bgSunken` ~#101110).
-    static let nsBgSunken = NSColor(srgbRed: 0.063, green: 0.067, blue: 0.063, alpha: 1.0) // ~#101110
+    /// The chrome background as an `NSColor` for AppKit views (matches `bg`).
+    ///
+    /// P2 REPOINT: now ``DSPalette/nsN1`` (`n1` `#121316`) — the AppKit mirror of the new window bg. The
+    /// ``WindowConfigurator`` titlebar reads THIS for the window content-layer background, so repointing it
+    /// re-matches the title strip to `n1` in lockstep with the SwiftUI `bg` — no seam (`bg` and `nsBg` are
+    /// the same `n1` ink).
+    static let nsBg = DSPalette.nsN1
+    /// The foreground as an `NSColor` for AppKit views (matches `fg`).
+    ///
+    /// P2 REPOINT: now ``DSPalette/nsN12`` (`n12` `#ECEEF1`, the cool off-white).
+    static let nsFg = DSPalette.nsN12
+    /// Secondary foreground as an `NSColor` (matches `fgMuted`).
+    ///
+    /// P2 REPOINT: now ``DSPalette/nsN11`` (`n11` `#C3C7CE`) — the opaque cool secondary-text mirror,
+    /// replacing the old `nsFg·0.65` alpha blend.
+    static let nsFgMuted = DSPalette.nsN11
+    /// The sunken gutter as an `NSColor` for AppKit views (matches `bgSunken`).
+    ///
+    /// P2 REPOINT: now ``DSPalette/nsN0`` (`n0` `#0C0D0F`).
+    static let nsBgSunken = DSPalette.nsN0
     #endif
 
     // MARK: Color scheme
 
     /// The chrome's effective appearance. Muxy derives this from the background luminance (light if
-    /// luminance > 0.5, else dark); our base `bg` (#161820) is deeply dark, so this is `.dark`.
+    /// luminance > 0.5, else dark); our base `bg` is the cool ink `n1` `#121316` (P2 repoint), deeply
+    /// dark, so this is `.dark`.
     static let colorScheme: ColorScheme = .dark
 
     // MARK: Contrast helper (Muxy `Snapshot.contrastingForeground(for:)`)

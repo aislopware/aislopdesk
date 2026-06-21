@@ -106,6 +106,9 @@ public enum DSPalette {
     public static let nsN1 = NSColor(srgbRed: 0x12 / 255, green: 0x13 / 255, blue: 0x16 / 255, alpha: 1)
     public static let nsN2 = NSColor(srgbRed: 0x17 / 255, green: 0x18 / 255, blue: 0x1C / 255, alpha: 1)
     public static let nsN3 = NSColor(srgbRed: 0x1D / 255, green: 0x1F / 255, blue: 0x24 / 255, alpha: 1)
+    /// secondary-text mirror (`n11` `#C3C7CE`) — used by the legacy `nsFgMuted` shim. Added in P2 (the P1
+    /// set stopped at `nsN3`/`nsN12`); validate-then-clamp via the integer `/255` divides, no trap.
+    public static let nsN11 = NSColor(srgbRed: 0xC3 / 255, green: 0xC7 / 255, blue: 0xCE / 255, alpha: 1)
     public static let nsN12 = NSColor(srgbRed: 0xEC / 255, green: 0xEE / 255, blue: 0xF1 / 255, alpha: 1)
 
     /// Returns black or white — whichever reads against `color` — using the sRGB relative luminance

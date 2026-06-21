@@ -85,8 +85,11 @@ struct TabBarView: View {
                 #endif
             }
             .frame(height: AislopdeskTheme.Metrics.tabHeight)
-            // Use surface12 (fg·0.12) for the active inline-rename field so it reads as an
-            // open/focused input rather than the same weight as a resting selected tab (surface fg·0.08).
+            // The active inline-rename field background. P2 NOTE: `surface12` (the legacy fg·0.12 rung) now
+            // flattens onto `activeFill` (white·0.08) — the DS semantic token set has no distinct 0.12 rung,
+            // so this fill currently reads at the same weight as a resting selected tab. The field still
+            // reads as an open/focused input via its own trailing edge + focus; if a stronger lift is wanted
+            // it must be promoted to a dedicated interactive-tint token in P3 (out of P2 colour scope).
             .background(AislopdeskTheme.surface12)
             .overlay(alignment: .trailing) { Rectangle().fill(AislopdeskTheme.border).frame(width: 1) }
         } else {
