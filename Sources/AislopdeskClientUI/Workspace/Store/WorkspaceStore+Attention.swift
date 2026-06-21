@@ -108,6 +108,62 @@ public extension WorkspaceStore {
         focusPaneTree(target)
     }
 
+    // MARK: Peek & Reply (⌘⇧J, P4 — answer a blocked agent INLINE)
+
+    /// The pane the P4 "Peek & Reply" overlay (⌘⇧J) should target: the FOCUSED pane when it is itself
+    /// blocked (`.needsPermission` — you are already looking at it), else the oldest attention pane across
+    /// all tabs/sessions (``AttentionJump`` order: needsPermission before done, oldest-first). `nil` when
+    /// nothing needs attention. The selection is the pure ``PeekReplyTarget`` so it is unit-tested without
+    /// the store.
+    ///
+    /// `excluding` is the advance-to-next exclusion (default empty): after a reply lands, the just-answered
+    /// pane may still report `.needsPermission` until the host re-reports, so the immediate advance passes
+    /// it here to skip re-targeting the same pane.
+    func peekReplyTargetPane(excluding: Set<PaneID> = []) -> PaneID? {
+        PeekReplyTarget.select(
+            focused: tree.activeSession?.activeTab?.activePane,
+            status: { agentStatus(for: $0) },
+            panes: tree.allPaneIDs(),
+            excluding: excluding,
+        )
+    }
+
+    /// The cheap, headless peek DTO for pane `id` (P4 piece 2): its display name, its host-provided blocking
+    /// question (the type-27 ``paneAgentLabel``, or `nil`), and the last few command-block lines as the
+    /// "recent output" stand-in. ALL client-side + swift-build-visible — the spec title from the tree, the
+    /// label from ``agentLabel(for:)``, and the recent lines from the per-pane ``TerminalBlockModel`` (no
+    /// `GhosttySurface`/`scrollbackTextLines()` app-target dependency, so the overlay compiles + tests
+    /// headlessly). When neither a label nor any block exists, `recent` is empty (the view shows a
+    /// "no recent output" note).
+    func peekContent(for id: PaneID, recentLimit: Int = 4) -> PeekContent {
+        let title = tree.spec(for: id)?.title ?? "Pane"
+        let question = agentLabel(for: id)
+        let recent = recentBlockLines(for: id, limit: recentLimit)
+        return PeekContent(title: title, question: question, recent: recent)
+    }
+
+    /// The newest `limit` command blocks for pane `id`, formatted one line each ("`<command>` · <status>"),
+    /// oldest-first — the cheap "last N lines" the peek overlay shows. Empty for a non-terminal pane, an
+    /// unmaterialized pane, or one with no blocks. Reads the per-pane ``TerminalBlockModel`` through the
+    /// ``TerminalModelProviding`` seam (NOT the renderer), so it stays headless.
+    private func recentBlockLines(for id: PaneID, limit: Int) -> [String] {
+        guard limit > 0, let model = (handle(for: id) as? TerminalModelProviding)?.terminalModel else { return [] }
+        return PeekContent.recentLines(from: model.blocks.blocks, limit: limit)
+    }
+
+    /// Sends `text` (plus one trailing newline) to pane `id`'s PTY — the ONE testable chokepoint the P4
+    /// overlay routes every reply through, so the view never touches the private `registry`. Goes through
+    /// the public ``handle(for:)`` to the same `sendText` per-pane funnel the broadcast / sync-input fan-out
+    /// uses — so a reply reaches a pane that is NOT focused. A no-op for an unmaterialized / non-text pane
+    /// (``LivePaneSession`` / ``FakePaneSession`` drop text for video kinds).
+    ///
+    /// The caller pre-formats with ``PeekReplyFormatter`` (digit / bang-shell / plain), which already
+    /// appends the newline — so this method sends the formatted string VERBATIM (it does not re-append).
+    func sendPeekReply(_ text: String, to id: PaneID) {
+        guard !text.isEmpty else { return }
+        handle(for: id)?.sendText(text)
+    }
+
     // MARK: Sidebar activity summary + liveness (P3 piece 5)
 
     /// A coarse session liveness verdict for the sidebar glyph: `alive` when ANY pane in the session has a

@@ -57,6 +57,20 @@ extension FocusedValues {
         get { self[CheatSheetToggleKey.self] }
         set { self[CheatSheetToggleKey.self] = newValue }
     }
+
+    /// Key for the focused scene's P4 Peek & Reply overlay toggle.
+    private struct PeekReplyToggleKey: FocusedValueKey {
+        typealias Value = CommandPaletteToggle
+    }
+
+    /// The key scene's ⌘⇧J Peek & Reply toggle (reuses ``CommandPaletteToggle``'s closure box — it is the
+    /// same "toggle a view-`@State` overlay" shape as the palette / cheat sheet). The P4 overlay's open/close
+    /// is view-`@State` in ``WorkspaceRootView`` (not store state), so the Pane-menu "Peek & Reply" item
+    /// reaches it through this focused value rather than `apply(_:to:)`. `nil` when no workspace window is key.
+    var peekReplyToggle: CommandPaletteToggle? {
+        get { self[PeekReplyToggleKey.self] }
+        set { self[PeekReplyToggleKey.self] = newValue }
+    }
 }
 
 /// A tiny wrapper around the key window's command-palette toggle action, published as a focused scene

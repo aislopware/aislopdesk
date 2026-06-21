@@ -414,7 +414,8 @@ struct CommandPaletteView: View {
             switch binding.action {
             case .commandPalette,
                  .cheatSheet,
-                 .find: return nil // view-overlay actions: opened via their chord / menu, not from the palette
+                 .find,
+                 .peekAndReply: return nil // view-overlay actions: opened via their chord / menu, not the palette
             default: break
             }
             guard hasActivePane || !binding.action.requiresActivePane else { return nil }

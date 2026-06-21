@@ -1,6 +1,14 @@
 import AislopdeskTerminal
 import Foundation
 
+// MARK: - CommandBlock → PeekBlockLine (the P4 peek "recent output" shape)
+
+/// ``CommandBlock`` already carries the typed command line + a short status label, so it satisfies the
+/// pure ``PeekBlockLine`` shape ``PeekContent/recentLines(from:limit:)`` reads — letting the peek DTO be
+/// built off the live ``TerminalBlockModel`` while the builder itself stays free of an `AislopdeskTerminal`
+/// import (the P4 overlay's recent-lines text is then unit-tested with a stand-in).
+extension CommandBlock: PeekBlockLine {}
+
 // MARK: - TerminalModelProviding (the store↔live-session seam the block ops resolve through)
 
 /// The tiny capability seam the WB2/WB3 active-pane block ops resolve through INSTEAD of an

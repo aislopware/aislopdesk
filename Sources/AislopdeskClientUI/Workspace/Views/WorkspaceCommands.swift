@@ -38,6 +38,7 @@ public struct WorkspaceCommands: Commands {
     @FocusedValue(\.workspaceStore) private var store: WorkspaceStore?
     @FocusedValue(\.commandPaletteToggle) private var paletteToggle: CommandPaletteToggle?
     @FocusedValue(\.cheatSheetToggle) private var cheatSheetToggle: CommandPaletteToggle?
+    @FocusedValue(\.peekReplyToggle) private var peekReplyToggle: CommandPaletteToggle?
 
     public init() {}
 
@@ -163,6 +164,14 @@ public struct WorkspaceCommands: Commands {
         // Jump to Pane Needing Attention (⌘⇧U, P3): focus the oldest pane that is blocked
         // (needsPermission) or done across all tabs/sessions — the supervision "take me to who needs me".
         actionButton("Jump to Pane Needing Attention", .jumpToAttention)
+        // Peek & Reply (⌘⇧J, P4): open the inline overlay over the oldest blocked pane so the human ANSWERS
+        // it without a context switch. Like Command Palette, this is a VIEW @State overlay reached through a
+        // focused-scene toggle — NOT `apply(_:to:)` — so it routes through `peekReplyToggle`, not
+        // `actionButton`. A registry binding fires ONLY via its menu item (no NSEvent monitor — same as
+        // sync-input / jumpToAttention), so THIS item is what makes ⌘⇧J actually dispatch; it is REQUIRED.
+        Button("Peek & Reply") { peekReplyToggle?.toggle() }
+            .modifier(OptionalShortcut(WorkspaceBindingRegistry.resolvedChord(for: .peekAndReply)?.shortcut))
+            .disabled(peekReplyToggle == nil)
 
         Divider()
 

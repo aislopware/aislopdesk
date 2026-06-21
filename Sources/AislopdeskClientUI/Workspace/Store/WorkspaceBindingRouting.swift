@@ -24,17 +24,20 @@ public extension WorkspaceBindingRegistry {
         togglePalette: (() -> Void)? = nil,
         toggleCheatSheet: (() -> Void)? = nil,
         toggleFind: (() -> Void)? = nil,
+        togglePeekReply: (() -> Void)? = nil,
     ) {
         switch store.liveModel {
         case .tree:
             routeTree(
                 action, to: store, togglePalette: togglePalette,
                 toggleCheatSheet: toggleCheatSheet, toggleFind: toggleFind,
+                togglePeekReply: togglePeekReply,
             )
         case .canvas:
             routeCanvas(
                 action, to: store, togglePalette: togglePalette,
                 toggleCheatSheet: toggleCheatSheet, toggleFind: toggleFind,
+                togglePeekReply: togglePeekReply,
             )
         }
     }
@@ -47,6 +50,7 @@ public extension WorkspaceBindingRegistry {
         togglePalette: (() -> Void)?,
         toggleCheatSheet: (() -> Void)?,
         toggleFind: (() -> Void)?,
+        togglePeekReply: (() -> Void)?,
     ) {
         switch action {
         // Panes
@@ -107,6 +111,9 @@ public extension WorkspaceBindingRegistry {
             if let tabID = store.tree.activeSession?.activeTab?.id { store.toggleSyncInput(tabID: tabID) }
         // Supervision (P3): focus the oldest pane needing attention across all tabs/sessions.
         case .jumpToAttention: store.jumpToOldestAttentionPane()
+        // Supervision (P4): open the Peek & Reply overlay (a VIEW @State toggle, like the palette) over the
+        // oldest pane needing attention. The toggle closure itself no-ops when nothing needs attention.
+        case .peekAndReply: togglePeekReply?()
         }
     }
 
@@ -120,6 +127,7 @@ public extension WorkspaceBindingRegistry {
         togglePalette: (() -> Void)?,
         toggleCheatSheet: (() -> Void)?,
         toggleFind: (() -> Void)?,
+        togglePeekReply: (() -> Void)?,
     ) {
         switch action {
         case .splitRight,
@@ -170,6 +178,9 @@ public extension WorkspaceBindingRegistry {
              .closeTab: break // no canvas tab model
         case .toggleSyncInput: break // no canvas analogue (tab-scoped, tree-only)
         case .jumpToAttention: break // tree-only (no canvas attention rollup)
+        // P4 Peek & Reply is a view overlay; the canvas path still toggles it (the overlay's own selector
+        // returns nil under .canvas, where there is no attention rollup, so it opens read-only / no-ops).
+        case .peekAndReply: togglePeekReply?()
         }
     }
 }

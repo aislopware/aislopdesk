@@ -73,6 +73,9 @@ public enum WorkspaceAction: Hashable, Sendable {
 
     // Supervision (P3 — jump to the pane that needs you)
     case jumpToAttention // ⌘⇧U — focus the oldest pane needing attention (needsPermission first, then done)
+
+    // Supervision (P4 — answer the blocked pane INLINE without a context switch)
+    case peekAndReply // ⌘⇧J — open the Peek & Reply overlay over the oldest pane needing attention
 }
 
 public extension WorkspaceAction {
@@ -133,7 +136,8 @@ public extension WorkspaceAction {
              .newSession,
              .spawnFloating, // creates its own pane — needs none
              .toggleSyncInput, // the tab must exist, but the palette can still show it (mirrors .newTab)
-             .jumpToAttention: // acts globally across all tabs/sessions — needs no active pane
+             .jumpToAttention, // acts globally across all tabs/sessions — needs no active pane
+             .peekAndReply: // acts globally (targets the oldest attention pane) — needs no active pane
             false
         }
     }
@@ -321,6 +325,17 @@ public enum WorkspaceBindingRegistry {
             category: .tabs, chord: KeyChord(character: "u", [.command, .shift]),
             symbol: "bell.badge",
             keywords: "jump unread attention needs permission blocked done next pane supervise oldest",
+        ),
+        // Supervision (P4): ⌘⇧J opens the Peek & Reply overlay over the oldest pane needing attention so
+        // the human can ANSWER a blocked agent INLINE — no full tab/context switch. The partner of ⌘⇧U
+        // (jump TO the pane): "J" = jump-in-and-reply. ⌘⇧J is FREE (`j` is in NO other binding); pinned
+        // unique by the chord-uniqueness test. A registry chord fires ONLY via its menu item, so the Pane
+        // menu carries the matching "Peek & Reply" item.
+        WorkspaceBinding(
+            id: "view.peekReply", action: .peekAndReply, title: "Peek & Reply to Blocked Pane",
+            category: .tabs, chord: KeyChord(character: "j", [.command, .shift]),
+            symbol: "bubble.left.and.text.bubble.right",
+            keywords: "peek reply answer respond blocked needs permission inline quick supervise prompt",
         ),
         // Sessions
         WorkspaceBinding(

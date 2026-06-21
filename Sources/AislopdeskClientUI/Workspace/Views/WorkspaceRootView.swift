@@ -43,6 +43,11 @@ public struct WorkspaceRootView: View {
     /// a ⌘-prefixed chord, so the focused terminal never sees it (the §5 conflict rule).
     @State private var showCheatSheet = false
 
+    /// Whether the ⌘⇧J Peek & Reply overlay (P4) is presented. Window-level `@State` like the palette/cheat
+    /// sheet — NOT store state (so it never re-mounts the tree); a ⌘-prefixed chord obeys the §5 rule, and
+    /// the Pane-menu item flips it through the `peekReplyToggle` focused-scene value below.
+    @State private var showPeekReply = false
+
     /// Whether the app has connected at least once this launch. The canvas (and its panes' auto-connect
     /// `.task`s) only MOUNT after the first successful connect — otherwise a pane behind the gate would
     /// open a channel and build the shared mux WITHOUT the gate's pin, leaving the gate stuck at
@@ -90,6 +95,7 @@ public struct WorkspaceRootView: View {
             store: store,
             showPalette: $showCommandPalette,
             showCheatSheet: $showCheatSheet,
+            showPeekReply: $showPeekReply,
         ))
         // The app-global connect-gate (docs/31): a modal over the WHOLE shell — including the sidebar +
         // palette — whenever the one connection is not `.connected`. Placed here (above the regular↔compact
@@ -121,6 +127,10 @@ public struct WorkspaceRootView: View {
         // keyboard focus (exactly like `\.workspaceStore`).
         .focusedSceneValue(\.commandPaletteToggle, CommandPaletteToggle { showCommandPalette.toggle() })
         .focusedSceneValue(\.cheatSheetToggle, CommandPaletteToggle { showCheatSheet.toggle() })
+        // ⌘⇧J Peek & Reply (P4): toggle the inline-reply overlay. When already open it closes; when opening,
+        // it opens unconditionally — the overlay resolves its own target on appear and shows a graceful
+        // empty / read-only peek when nothing needs attention (so the chord is never a silent dead key).
+        .focusedSceneValue(\.peekReplyToggle, CommandPaletteToggle { showPeekReply.toggle() })
         // The busy-shell close guard (store.pendingClose): ⌘W / a close affordance on a pane whose
         // shell is mid-command parks here instead of killing the command. The dialog reads the pane's
         // title at present-time; Cancel (the automatic dismiss) clears the pending id.
@@ -349,14 +359,19 @@ private struct WorkspaceOverlayModals: ViewModifier {
     let store: WorkspaceStore
     @Binding var showPalette: Bool
     @Binding var showCheatSheet: Bool
+    @Binding var showPeekReply: Bool
 
     func body(content: Content) -> some View {
         content
             .overlay { CommandPaletteView(store: store, isPresented: $showPalette) }
             .overlay { KeyboardCheatSheetView(isPresented: $showCheatSheet, liveModel: store.liveModel) }
+            // P4 Peek & Reply (⌘⇧J): an inline-reply glass card over the oldest blocked pane. Empty branch
+            // when hidden (zero cost), so an unconditional overlay is cheap — like the palette.
+            .overlay { PeekReplyView(store: store, isPresented: $showPeekReply) }
             // The palette's .scale(0.97)/.opacity entrance rides a soft, quick spring (spec F).
             .animation(.smooth(duration: 0.16), value: showPalette)
             .animation(.easeOut(duration: 0.12), value: showCheatSheet)
+            .animation(.smooth(duration: 0.16), value: showPeekReply)
     }
 }
 
