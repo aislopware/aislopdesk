@@ -111,6 +111,16 @@ struct PaneStatusBar: View {
                     "Sync Input to All Panes is ON — keystrokes are mirrored to every pane in this tab (⌘⇧I to toggle)",
                 )
         }
+
+        // Copy-mode chip (P5b): shown while THIS focused pane is in modal keyboard copy-mode (⌘⇧C). Resolves
+        // the live terminal model via the store helper so pane A's mode never lights pane B's badge.
+        if store.isCopyMode(for: id) {
+            separator
+            Label("COPY", systemImage: "doc.on.clipboard")
+                .font(.system(size: UIMetrics.fontMicro))
+                .foregroundStyle(AislopdeskTheme.accent)
+                .help("Copy mode — keyboard scrollback navigation (q/Esc to exit)")
+        }
     }
 
     /// A 1px vertical separator between right-cluster items (Muxy `ProjectStatusBar.separator`), ~14pt tall.

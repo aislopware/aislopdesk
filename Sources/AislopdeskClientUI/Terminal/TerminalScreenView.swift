@@ -26,6 +26,20 @@ public struct TerminalScreenView: View {
     /// ⌃⌘O / the chrome chip flip it through ``TerminalViewModel/onRequestBlockNavigator`` (wired below).
     @State private var isNavigatorPresented = false
 
+    /// P5b: whether the modal copy-mode hint bar is showing over this pane. VIEW state (not the tree); ⌘⇧C /
+    /// the Pane menu flip it through ``TerminalViewModel/onRequestCopyMode`` (wired below). Toggling it also
+    /// flips `model.isCopyMode`, which arms the keyDown intercept that routes keys to copy-mode dispatch.
+    @State private var isCopyModePresented = false
+
+    /// P5b: a transient "copied" toast flag, flipped by ``TerminalViewModel/onCopyConfirmation`` and
+    /// auto-cleared after <=0.9s (off the keystroke path). Shown inside the copy-mode hint bar.
+    @State private var copyConfirmationVisible = false
+
+    /// P5b: monotonic generation token for the "copied" toast. Each copy bumps it and the auto-clear task
+    /// only clears if it is still the CURRENT generation — so rapid `y` presses can't have an early task
+    /// clear a later toast (the un-cancelled-overlapping-Task flicker). View state, not the tree.
+    @State private var copyConfirmationGeneration = 0
+
     /// WB2: whether to draw the slim ``StickyCommandHeader`` overlay at the top of each pane. DEFAULT-OFF
     /// so panes are CHROME-LESS like Muxy (the block info is still reachable via the ⌃⌘O Command Navigator
     /// below — only the always-on top strip is gone, which also stops it overlaying the terminal's top
@@ -73,6 +87,15 @@ public struct TerminalScreenView: View {
                     .frame(maxWidth: .infinity, alignment: .topTrailing)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+            // P5b: the modal copy-mode hint bar, pinned top-leading (so it never collides with the
+            // top-trailing find bar, which copy-mode's `/` can open simultaneously). Documents the ABI
+            // ceiling: no rendered char/line/rect visual-select — copy reads the mouse-made libghostty
+            // selection or the visible scrollback.
+            if isCopyModePresented {
+                CopyModeOverlay(copied: copyConfirmationVisible)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         // WB2: the Command Navigator popover (⌃⌘O / the chrome chip). A popover on macOS anchors near the
         // pane; on iOS SwiftUI presents it as a sheet automatically. Pure-block-list content; the surface
@@ -85,6 +108,7 @@ public struct TerminalScreenView: View {
         // caret would pop. Scoped to this value so nothing else animates.
         .animation(.easeInOut(duration: 0.15), value: model.glitchCaretVisible)
         .animation(.easeInOut(duration: 0.15), value: isFindPresented)
+        .animation(.easeInOut(duration: 0.15), value: isCopyModePresented)
         .onAppear {
             // ⌘F / right-click "Find…" toggle the bar through the model's find request (set here so the
             // closure captures THIS pane's @State; the leaf's onRequestFind is set on the same model).
@@ -92,6 +116,34 @@ public struct TerminalScreenView: View {
             // WB2: ⌃⌘O / the chrome chip toggle the Command Navigator through the model's request hook
             // (same pattern — captures THIS pane's @State on the same model the store reaches).
             model.onRequestBlockNavigator = { isNavigatorPresented.toggle() }
+            // P5b: ⌘⇧C / the Pane menu "Copy Mode" hook. The MODEL is the single source of truth: entry/exit
+            // flip `model.isCopyMode` (via enter/exitCopyMode in the store route + q/Esc dispatch) and fire
+            // this hook; the overlay @State just MIRRORS the model — never an independent inverting toggle that
+            // could desync and re-arm on q/Esc (a fresh @State after a remount would invert false→true). SET,
+            // don't toggle, so the overlay always agrees with the keyDown-read flag.
+            model.onRequestCopyMode = {
+                isCopyModePresented = model.isCopyMode
+            }
+            // P5b: a successful y/Enter copy flashes a brief "copied" toast inside the hint bar. A generation
+            // token gates the auto-clear so a rapid second `y` can't have the FIRST task clear the LATER toast.
+            model.onCopyConfirmation = {
+                copyConfirmationGeneration += 1
+                let generation = copyConfirmationGeneration
+                copyConfirmationVisible = true
+                Task {
+                    try? await Task.sleep(for: .milliseconds(900))
+                    if copyConfirmationGeneration == generation { copyConfirmationVisible = false }
+                }
+            }
+        }
+        // P5b: a modal mode must not survive an un-mount. If TerminalScreenView re-mounts while the model
+        // outlives it (panes are normally kept mounted, but identity passes still recreate the representable),
+        // a fresh `isCopyModePresented` would reset to false while `model.isCopyMode` stayed armed — the keyDown
+        // intercept would then keep swallowing keystrokes with NO visible overlay. Clear both on disappear so a
+        // backgrounded/re-mounted pane is never left silently armed.
+        .onDisappear {
+            model.isCopyMode = false
+            isCopyModePresented = false
         }
     }
 }
@@ -110,6 +162,50 @@ struct GlitchCaretOverlay: View {
             .animation(.easeInOut(duration: 0.45).repeatForever(autoreverses: true), value: pulsing)
             .onAppear { pulsing = true }
             .accessibilityHidden(true)
+    }
+}
+
+/// P5b: the modal copy-mode hint bar — a slim, top-leading strip shown while the pane is in keyboard
+/// copy-mode (⌘⇧C). It documents the achievable keymap AND the ABI ceiling (no rendered char/line/rect
+/// visual-select — copy reads the mouse-made libghostty selection or the visible scrollback). A transient
+/// "copied" pill replaces the hint for ~0.9s after a successful `y`/Enter copy. All sizes route through
+/// `UIMetrics`; colours through `AislopdeskTheme`. Pure chrome — the dispatch is on `TerminalViewModel`.
+struct CopyModeOverlay: View {
+    /// Flipped true for ~0.9s right after a copy so the bar flashes "copied".
+    let copied: Bool
+
+    var body: some View {
+        HStack(spacing: AislopdeskTheme.Space.s) {
+            Image(systemName: "doc.on.clipboard")
+                .font(.system(size: UIMetrics.fontMicro, weight: .semibold))
+            if copied {
+                Text("copied")
+                    .font(.system(size: UIMetrics.fontMicro, weight: .semibold))
+            } else {
+                Text("COPY")
+                    .font(.system(size: UIMetrics.fontMicro, weight: .bold))
+                Text(
+                    "j/k scroll · ⌃D/⌃U half-page · g/G top/bottom · [ ] prompt · / search (n/N after) · y copy · q quit",
+                )
+                .font(.system(size: UIMetrics.fontMicro))
+                .foregroundStyle(AislopdeskTheme.fgMuted)
+                .lineLimit(1)
+            }
+        }
+        .foregroundStyle(AislopdeskTheme.accent)
+        .padding(.horizontal, AislopdeskTheme.Space.m)
+        .padding(.vertical, AislopdeskTheme.Space.s)
+        .background(
+            RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.md)
+                .fill(AislopdeskTheme.bgRaised)
+                .overlay(
+                    RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.md)
+                        .strokeBorder(AislopdeskTheme.border, lineWidth: 1),
+                ),
+        )
+        .padding(AislopdeskTheme.Space.l)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Copy mode")
     }
 }
 

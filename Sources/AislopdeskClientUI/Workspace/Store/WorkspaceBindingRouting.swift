@@ -82,6 +82,8 @@ public extension WorkspaceBindingRegistry {
         // Find opens the active pane's find bar via the store (so the menu + chord work without threading a
         // view closure); an explicit `toggleFind` override wins when supplied.
         case .find: if let toggleFind { toggleFind() } else { store.requestFindInActivePane() }
+        // Copy Mode (P5b): arm modal keyboard scrollback navigation over the active terminal pane.
+        case .toggleCopyMode: store.requestCopyModeInActivePane()
         case .toggleSidebar: store.toggleSidebarCollapsed()
         // Blocks (WB2): the navigator toggle + jump-to-block both target the active terminal pane via the store.
         case .commandNavigator: store.requestBlockNavigatorInActivePane()
@@ -150,6 +152,9 @@ public extension WorkspaceBindingRegistry {
         case .commandPalette: togglePalette?()
         case .cheatSheet: toggleCheatSheet?()
         case .find: toggleFind?() // canvas path: find is view-overlay only (no tree active-pane store hook)
+        // Copy Mode (P5b): the canvas path resolves the active pane via canvas focus, so the same store hook
+        // arms copy-mode there too (a no-op for a non-terminal active pane / empty shell).
+        case .toggleCopyMode: store.requestCopyModeInActivePane()
         case .toggleSidebar: break // sidebar is tree-shell only
         // Blocks (WB2): the canvas path is retained-but-dead; route through the same store hooks (they
         // resolve the active pane via the canvas focus, so the navigator/jump still work there).

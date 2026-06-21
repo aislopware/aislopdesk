@@ -171,6 +171,10 @@ public struct WorkspaceCommands: Commands {
         actionButton("Command Navigator", .commandNavigator)
         actionButton("Jump to Previous Block", .jumpPreviousBlock)
         actionButton("Jump to Next Block", .jumpNextBlock)
+        // Copy Mode (P5b, ⌘⇧C): arm modal keyboard scrollback navigation over the active terminal pane. A
+        // registry binding fires ONLY via its menu item (no NSEvent monitor — same as sync-input / float),
+        // so THIS item is what makes ⌘⇧C actually dispatch; it is REQUIRED, not optional.
+        actionButton("Copy Mode", .toggleCopyMode)
     }
 
     /// A menu `Button` for a tree ``WorkspaceAction`` that routes through ``WorkspaceBindingRegistry`` and

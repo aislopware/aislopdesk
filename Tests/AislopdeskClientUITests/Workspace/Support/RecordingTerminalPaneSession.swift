@@ -18,6 +18,13 @@ final class RecordingSurfaceActions: TerminalSurface, TerminalSurfaceActions, @u
     private var recorded: [String] = []
     var onWrite: ((Data) -> Void)?
 
+    /// Drives ``readSelection``/``hasSelection`` so a copy-mode test can stage a mouse-made selection
+    /// (non-nil = a selection exists). Default `nil` = no selection (the WB2/WB3 jump tests want that).
+    var selectionText: String?
+
+    /// Drives ``scrollbackTextLines`` so the no-selection copy fallback has something to return.
+    var scrollbackLines: [String] = []
+
     /// Every `performBindingAction` argument, in call order — the assertion surface for jump routing.
     var actions: [String] {
         lock.lock()
@@ -38,8 +45,8 @@ final class RecordingSurfaceActions: TerminalSurface, TerminalSurfaceActions, @u
     func handleInput(_: Data) {}
 
     // TerminalSurfaceActions: the menu/find/jump lever. We record the action and report success.
-    func hasSelection() -> Bool { false }
-    func readSelection() -> String? { nil }
+    func hasSelection() -> Bool { selectionText != nil }
+    func readSelection() -> String? { selectionText }
     @discardableResult
     func performBindingAction(_ action: String) -> Bool {
         lock.lock()
@@ -48,7 +55,7 @@ final class RecordingSurfaceActions: TerminalSurface, TerminalSurfaceActions, @u
         return true
     }
 
-    func scrollbackTextLines() -> [String] { [] }
+    func scrollbackTextLines() -> [String] { scrollbackLines }
 }
 
 // MARK: - RecordingTerminalPaneSession (a LivePaneSession-shaped recording double)

@@ -47,6 +47,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     case commandPalette // ⌘K — show/hide the ⌘K command palette
     case cheatSheet // ⌘/ — show/hide the keyboard cheat sheet
     case find // ⌘F — show/hide the find-in-terminal bar over the active pane (W14 #5)
+    case toggleCopyMode // ⌘⇧C — enter modal keyboard copy-mode over the active pane's scrollback (P5b)
     case toggleSidebar // ⌘B — show/hide the sessions sidebar
 
     // Blocks (WB2 — Warp-style per-command blocks)
@@ -110,6 +111,7 @@ public extension WorkspaceAction {
              .toggleFloat: // needs a pane to float/embed
             true
         case .find,
+             .toggleCopyMode,
              .commandNavigator,
              .jumpPreviousBlock,
              .jumpNextBlock,
@@ -367,6 +369,16 @@ public enum WorkspaceBindingRegistry {
             id: "view.find", action: .find, title: "Find…",
             category: .view, chord: KeyChord(character: "f", [.command]),
             symbol: "magnifyingglass", keywords: "search scrollback grep locate text in terminal",
+        ),
+        // Copy Mode (P5b): modal keyboard scrollback navigation (tmux/zellij copy-mode). ⌘⇧C is FREE —
+        // `c` appears in NO other binding, and ⌘⇧C does not collide with the system plain ⌘C copy (a
+        // different modifier set, handled by the terminal's own copy responder). Verified unique by the
+        // chord-uniqueness guard.
+        WorkspaceBinding(
+            id: "view.copyMode", action: .toggleCopyMode, title: "Copy Mode",
+            category: .view, chord: KeyChord(character: "c", [.command, .shift]),
+            symbol: "doc.on.clipboard",
+            keywords: "copy mode scrollback keyboard navigate select yank vi tmux zellij",
         ),
         WorkspaceBinding(
             id: "view.toggleSidebar", action: .toggleSidebar, title: "Toggle Sidebar",

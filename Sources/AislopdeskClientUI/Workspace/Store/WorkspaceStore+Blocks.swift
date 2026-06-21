@@ -105,6 +105,30 @@ public extension WorkspaceStore {
         activeTerminalModel?.onRequestBlockNavigator?()
     }
 
+    /// P5b: TOGGLES modal keyboard COPY-MODE over the active pane (the ⌘⇧C chord / Pane-menu "Copy Mode" entry).
+    /// Drives the MODEL as the single source of truth — ``TerminalViewModel/enterCopyMode()`` /
+    /// ``TerminalViewModel/exitCopyMode()`` (which flip `isCopyMode` and fire `onRequestCopyMode` so the overlay
+    /// `@State` syncs FROM the model, never an independent inverting toggle). A no-op for a non-terminal active
+    /// pane or an empty shell. The mode's keyboard dispatch is the PURE ``TerminalViewModel/handleCopyModeKey(_:)``
+    /// (unit-tested). Resolves the active terminal model so copy-mode arms only on the focused pane.
+    func requestCopyModeInActivePane() {
+        guard let model = activeTerminalModel else { return }
+        if model.isCopyMode {
+            model.exitCopyMode()
+        } else {
+            model.enterCopyMode()
+        }
+    }
+
+    /// Whether the pane `id` is currently in copy-mode — drives the "COPY" badge in ``PaneStatusBar``. Reads
+    /// the OBSERVABLE ``TerminalViewModel/copyModeBadgeActive`` twin (NOT the keyDown-read `@ObservationIgnored`
+    /// `isCopyMode`) so the badge re-renders reactively. Resolves the LIVE terminal model so pane A's copy-mode
+    /// never lights pane B's badge (mirrors ``agentStatus(for:)``). `false` for a non-terminal / no-live-model
+    /// pane.
+    func isCopyMode(for id: PaneID) -> Bool {
+        (handle(for: id) as? TerminalModelProviding)?.terminalModel?.copyModeBadgeActive == true
+    }
+
     /// Jumps the active pane's viewport to the previous (`delta < 0`) / next (`delta > 0`) shell prompt —
     /// WB2's ⌃⌘[ / ⌃⌘] (and the navigator's per-row jump). Routes to libghostty's `jump_to_prompt:<delta>`
     /// via the active surface's ``TerminalSurfaceActions`` seam (the same lever W14's jump-to-prompt uses).

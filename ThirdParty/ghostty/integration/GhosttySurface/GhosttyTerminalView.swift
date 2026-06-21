@@ -687,6 +687,14 @@ final class GhosttyLayerBackedView: NSView {
     /// setPixelSize.
     private var lastAppliedLayout: (size: CGSize, scale: CGFloat)?
 
+    /// P5b: the keyCode whose PRESS copy-mode consumed but whose RELEASE will arrive AFTER the mode flag has
+    /// already cleared (the q/Esc/Enter exit key flips `isCopyMode` false synchronously inside keyDown, so the
+    /// matching keyUp's `isCopyMode == true` guard is already false). Stamped in keyDown's copy-mode branch and
+    /// swallowed ONCE by keyUp — otherwise a kitty `report_events` TUI would emit an orphan CSI-u release for
+    /// the exit key (the exact failure the keyUp symmetry guard targets, which the flag check alone misses for
+    /// the key that DID the exit). `nil` = nothing pending.
+    private var copyModeConsumedReleaseKeyCode: UInt16?
+
     override func layout() {
         super.layout()
         let scale = window?.backingScaleFactor ?? 2.0
@@ -764,6 +772,19 @@ final class GhosttyLayerBackedView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        // P5b COPY-MODE: when this pane is armed, its keys drive scrollback navigation / search / copy /
+        // exit instead of the shell. Map the NSEvent → the abstract key HERE (the only NSEvent-aware point)
+        // and hand the PURE intent to the view model; consume unconditionally so nothing leaks to libghostty
+        // / the PTY. All logic lives in `handleCopyModeKey` (compiled + tested under `swift build`).
+        if model?.isCopyMode == true {
+            // Stamp this keyCode so its RELEASE is swallowed even if the dispatch EXITS the mode (q/Esc/Enter
+            // flip `isCopyMode` false synchronously here, so the matching keyUp's `isCopyMode == true` guard
+            // would already be false and fall through to an orphan CSI-u release under a report_events TUI).
+            copyModeConsumedReleaseKeyCode = UInt16(event.keyCode)
+            model?.handleCopyModeKey(TerminalViewModel.makeCopyModeKey(event: event))
+            return
+        }
+
         // CTRL+<key> → LEGACY C0 control byte (the universal-interrupt fix). The host shell (oh-my-zsh
         // / a plugin) enables the kitty keyboard protocol, which makes libghostty's encoder emit a
         // CSI-u ESCAPE for Ctrl-C/Z/D/… (e.g. `^[[3;5u`) instead of the raw control byte. A remote
@@ -820,6 +841,17 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
+        // P5b COPY-MODE symmetry: keyDown CONSUMES every key while armed (routing it to copy-mode dispatch),
+        // so libghostty never saw the PRESS — suppress the RELEASE too, or a kitty-`report_events` TUI would
+        // emit an orphan CSI-u release after exit. Mirror the keyDown guard.
+        if model?.isCopyMode == true { return }
+        // …and the ONE exit key whose press copy-mode consumed but whose mode flag is now already cleared (q/Esc/
+        // Enter exited synchronously in keyDown, so the guard above is false for THIS release). Swallow it once.
+        if let pending = copyModeConsumedReleaseKeyCode, pending == UInt16(event.keyCode) {
+            copyModeConsumedReleaseKeyCode = nil
+            return
+        }
+
         // PRESS/RELEASE SYMMETRY (R5 rank 7): keyDown SUPPRESSES the libghostty PRESS for a
         // Ctrl+<single C0/DEL> key (it sends the raw control byte directly, bypassing the kitty encoder),
         // so the surface never saw that PRESS. Its RELEASE must be suppressed symmetrically — otherwise,
