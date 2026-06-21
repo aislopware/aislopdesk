@@ -85,6 +85,10 @@ enum AislopdeskTheme {
     /// white on a dark one (Muxy `accentForeground` = `contrastingForeground(for: accent)`, threshold 0.6).
     /// Our base accent is the system accent, so this is derived from `NSColor.controlAccentColor` on
     /// macOS and falls back to white where AppKit is unavailable.
+    ///
+    /// P1 SHIM: the `contrastingForeground(for:)` body below now forwards to the deduped single contrast
+    /// helper (``DSPalette.contrastingForeground(for:)``), so this stored value is byte-identical to the
+    /// pre-P1 computation (same 0.6 threshold, same separated products).
     static let accentForeground: Color = {
         #if canImport(AppKit)
         return Color(nsColor: contrastingForeground(for: NSColor.controlAccentColor))
@@ -138,12 +142,12 @@ enum AislopdeskTheme {
     #if canImport(AppKit)
     /// Returns black or white — whichever reads against `color` — using the sRGB relative luminance
     /// (0.2126·r + 0.7152·g + 0.0722·b), with Muxy's 0.6 threshold. Used to pick `accentForeground`.
+    ///
+    /// P1 SHIM: forwards to the deduped single contrast helper (``DSPalette.contrastingForeground(for:)``)
+    /// so there is ONE implementation. The DS helper keeps the SAME separated `*` then `+` products
+    /// (never fused to `addingProduct`/`fma`) and the same 0.6 threshold — byte-identical output.
     static func contrastingForeground(for color: NSColor) -> NSColor {
-        guard let srgb = color.usingColorSpace(.sRGB) else { return .white }
-        let luminance = 0.2126 * srgb.redComponent
-            + 0.7152 * srgb.greenComponent
-            + 0.0722 * srgb.blueComponent
-        return luminance > 0.6 ? .black : .white
+        DSPalette.contrastingForeground(for: color)
     }
     #endif
 
