@@ -76,7 +76,7 @@ struct PeekReplyView: View {
 
     private var backdrop: some View {
         Rectangle()
-            .fill(.black.opacity(0.18))
+            .fill(DSColor.scrim)
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .onTapGesture { dismiss() }
@@ -94,10 +94,13 @@ struct PeekReplyView: View {
         }
         .padding(UIMetrics.spacing7)
         .frame(maxWidth: UIMetrics.scaled(520))
-        // Glass on the transient overlay (the allowed glass case — never on content/terminal panes).
-        .glassedSurface(corner: UIMetrics.radiusXL)
-        .clipShape(RoundedRectangle(cornerRadius: UIMetrics.radiusXL, style: .continuous))
-        .shadow(color: .black.opacity(0.28), radius: UIMetrics.scaled(28), y: UIMetrics.scaled(12))
+        // L4 overlay: glass on the transient overlay (the allowed glass case — never on content/terminal
+        // panes) + the inner top-edge highlight + the ONE tokenized overlay shadow (unified across the
+        // floating layer in P4).
+        .glassedSurface(corner: DSRadius.overlay)
+        .overlay(alignment: .top) { DSElevation.innerTopHighlight() }
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.overlay, style: .continuous))
+        .dsShadow(DSElevation.shadowOverlay)
         .padding(.horizontal, UIMetrics.spacing9)
         // Sit the card near the top third (Spotlight/palette placement, not dead-centre).
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

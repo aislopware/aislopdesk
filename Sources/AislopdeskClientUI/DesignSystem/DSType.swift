@@ -72,16 +72,21 @@ public struct DSFont: Sendable {
 /// This is the live-scale wiring that ``UIMetrics`` (static-var reads of `UIScale.shared`) can never get.
 @preconcurrency @MainActor
 public struct DSFontModifier: ViewModifier {
-    @Environment(DSScale.self) private var scale
+    // OPTIONAL form (`DSScale?`) — returns nil instead of TRAPPING when this modifier renders outside the
+    // injected scope (e.g. the pre-connect ConnectionGateView, a sheet, or a detached NSHostingView that
+    // does not inherit WorkspaceRootView's `.environment(DSScale.shared)`). When nil we fall back to the
+    // single shared instance (the bridged source DSScale.scaled already reads), so scaling stays correct;
+    // we only lose the live-repaint dependency in that unscoped context, which is acceptable.
+    @Environment(DSScale.self) private var scale: DSScale?
     let token: DSFont
 
     public func body(content: Content) -> some View {
-        // Read `scale.multiplier` so the @Environment dependency is recorded — referencing the injected
-        // instance is what SwiftUI tracks for the live repaint. Then route ALL scaling through the SINGLE
-        // `DSScale.scaled` path (the same route as `DSFont.font`) so there is exactly one scaling formula
-        // and the two cannot drift in a later phase. (DSScale.scaled reads `shared.multiplier`, which equals
-        // the injected `scale.multiplier` we just observed — same value, one route.)
-        _ = scale.multiplier
+        // Read `scale?.multiplier` so the @Environment dependency is recorded WHEN injected — referencing the
+        // injected instance is what SwiftUI tracks for the live repaint. Then route ALL scaling through the
+        // SINGLE `DSScale.scaled` path (the same route as `DSFont.font`) so there is exactly one scaling
+        // formula and the two cannot drift in a later phase. (DSScale.scaled reads `shared.multiplier`, which
+        // equals the injected `scale.multiplier` we just observed — same value, one route.)
+        _ = scale?.multiplier
         return content
             .font(token.font)
             .tracking(token.tracking)

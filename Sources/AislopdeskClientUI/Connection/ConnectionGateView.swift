@@ -25,21 +25,27 @@ public struct ConnectionGateView: View {
 
             card
                 .frame(maxWidth: 460)
-                .padding(24)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.separator))
-                .shadow(radius: 24, y: 8)
-                .padding(24)
+                .padding(DSSpace.s8)
+                // Hard modal (NOT a transient overlay): keep the .regularMaterial backing + the modal
+                // corner, but tokenize the radius (DSRadius.modal=16), the shadow (the single
+                // DSElevation.shadowModal profile), and add the L4 inner top-edge highlight.
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DSRadius.modal, style: .continuous))
+                // Inner top-edge highlight, clipped to the modal corner so the 1pt strip follows the round.
+                .overlay(alignment: .top) { DSElevation.innerTopHighlight() }
+                .clipShape(RoundedRectangle(cornerRadius: DSRadius.modal, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: DSRadius.modal, style: .continuous).strokeBorder(.separator))
+                .dsShadow(DSElevation.shadowModal)
+                .padding(DSSpace.s8)
         }
     }
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
+            HStack(spacing: DSSpace.s5) {
                 Image(systemName: "network")
-                    .font(.system(size: 26, weight: .regular))
+                    .dsFont(.title2)
                     .foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: DSSpace.s1) {
                     Text("Connect to a host")
                         .font(.title3.weight(.semibold))
                     Text("Enter the address of a machine running aislopdesk-hostd.")

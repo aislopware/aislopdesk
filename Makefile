@@ -50,12 +50,17 @@ fix: fmt ## Format + apply all safe lint autofixes
 
 # ---------------------------------------------------------------------------- #
 # Linting (no writes) — the CI gate
-.PHONY: lint lint-swift lint-shell lint-python
-lint: lint-swift lint-shell lint-python ## Run every linter strictly
+.PHONY: lint lint-swift lint-shell lint-python lint-ds-leaks
+lint: lint-swift lint-shell lint-python lint-ds-leaks ## Run every linter strictly
 
 lint-swift: ## SwiftFormat --lint + SwiftLint --strict
 	swiftformat $(SWIFTFMT_PATHS) --lint
 	swiftlint --strict --quiet
+
+# Design-system leak RATCHET: fail on a new raw .font(.system(size:)) / integer cornerRadius: in a view
+# file (text-only, no compile — runs in the lint gate, not the build gate). See scripts/check-ds-leaks.sh.
+lint-ds-leaks: ## Design-system token-leak ratchet (raw font/radius literals)
+	bash scripts/check-ds-leaks.sh
 
 lint-shell: ## shellcheck + shfmt --diff
 	@[ -n "$(SHELL_FILES)" ] && shellcheck $(SHELL_FILES) || true

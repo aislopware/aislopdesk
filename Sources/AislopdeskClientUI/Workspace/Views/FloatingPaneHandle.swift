@@ -126,14 +126,14 @@ struct FloatingPaneHandle: View {
         // (focusing the pane clears it via store.focus → handle.clearBell).
         let bellRang = (handle?.bellPending ?? false) && !isFocused
 
-        HStack(spacing: 5) {
+        HStack(spacing: DSSpace.s2) {
             Image(systemName: PaneLeafView.icon(for: spec.kind))
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(isFocused ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                .dsFont(.emphasis)
+                .foregroundStyle(isFocused ? AnyShapeStyle(DSColor.accentSolid) : AnyShapeStyle(DSColor.textSecondary))
             PaneStatusDot(status: status, running: running)
             if bellRang {
                 Image(systemName: "bell.fill")
-                    .font(.system(size: 10))
+                    .dsFont(.footnote)
                     .foregroundStyle(.orange)
                     .help("The terminal rang the bell")
                     .transition(.scale.combined(with: .opacity))
@@ -165,7 +165,7 @@ struct FloatingPaneHandle: View {
             .background { ScrollPanForwarder(store: store) }
         #endif
             .background(hovering ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(.ultraThinMaterial), in: Capsule())
-            .overlay { Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5) }
+            .overlay { Capsule().strokeBorder(DSColor.borderSubtle, lineWidth: 0.5) }
         // Taller hit target than the visual pill: 44×28 on macOS (pointer-precise); 44pt tall on iOS
         // (the HIG touch minimum — the extra reach over the top terminal row converts a near-miss
         // selection into a successful pill grab, and the 10pt dead zone absorbs tap jitter).
@@ -339,24 +339,29 @@ struct PaneDeadScrim: View {
             #if os(macOS)
             ScrollPanForwarder(store: store)
             #endif
-            Color.black.opacity(0.35)
+            // PaneDeadScrim is a CONTENT-level dim (white-on-dim labels on a dead pane), NOT one of the
+            // named L4 overlay backdrops — its black/white literals + the 24pt glyph are a deliberate,
+            // contrast-tuned dead-pane affordance, grandfathered out of the P4 overlay pass. Each literal
+            // carries its own end-of-line `// ds-leak-allow` so the font/radius AND scrim ratchets exempt
+            // exactly these lines (not the whole file).
+            Color.black.opacity(0.35) // ds-leak-allow: dead-pane content dim (not an L4 backdrop)
             VStack(spacing: 6) {
                 Image(systemName: "wifi.exclamationmark")
-                    .font(.system(size: 24, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .font(.system(size: 24, weight: .regular)) // ds-leak-allow: dead-pane content dim
+                    .foregroundStyle(.white.opacity(0.9)) // ds-leak-allow: dead-pane content dim
                 Text(status.detailedLabel)
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(.white.opacity(0.9)) // ds-leak-allow: dead-pane content dim
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                 #if os(iOS)
                 Text("Tap to reconnect")
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.6)) // ds-leak-allow: dead-pane content dim
                 #else
                 Text("Click to reconnect")
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.6)) // ds-leak-allow: dead-pane content dim
                 #endif
             }
             .padding(12)

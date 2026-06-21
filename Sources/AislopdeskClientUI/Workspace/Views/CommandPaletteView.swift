@@ -65,7 +65,7 @@ struct CommandPaletteView: View {
     /// "click-away closes the palette" behaviour.
     private var backdrop: some View {
         Rectangle()
-            .fill(.black.opacity(0.18))
+            .fill(DSColor.scrim)
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .onTapGesture { dismiss() }
@@ -79,18 +79,20 @@ struct CommandPaletteView: View {
             Divider()
             resultsList
         }
-        // Fixed-width modal (a palette should not reflow with density) — the frame extents stay literal.
-        .frame(maxWidth: 560)
-        .frame(maxHeight: 460)
-        // Glass on the transient ⌘K overlay (the allowed glass case — never on content/terminal panes).
-        // The helper supplies the hairline border, so the manual strokeBorder overlay is gone.
-        .glassedSurface(corner: UIMetrics.radiusXL)
-        .clipShape(RoundedRectangle(cornerRadius: UIMetrics.radiusXL, style: .continuous))
-        .shadow(color: .black.opacity(0.28), radius: UIMetrics.scaled(28), y: UIMetrics.scaled(12))
-        .padding(.horizontal, UIMetrics.spacing9)
+        // Fixed-size modal (a palette should not reflow with density) — the extents are named DS tokens
+        // (DesignSystem/, so the leak gate exempts them), 640×464 per the Warp/Raycast IDE spec.
+        .frame(width: DSSpace.paletteWidth, height: DSSpace.paletteHeight)
+        // L4 overlay: glass on the transient ⌘K overlay (the allowed glass case — never on content/
+        // terminal panes). The helper supplies the hairline border; the inner top-edge highlight is the
+        // premium dark-surface tell; the ONE tokenized overlay shadow replaces the inline radius/y/colour.
+        .glassedSurface(corner: DSRadius.overlay)
+        .overlay(alignment: .top) { DSElevation.innerTopHighlight() }
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.overlay, style: .continuous))
+        .dsShadow(DSElevation.shadowOverlay)
+        .padding(.horizontal, DSSpace.s9)
         // Sit the card near the top third — Spotlight/Open-Quickly placement, not dead-centre.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, UIMetrics.scaled(80))
+        .padding(.top, DSScale.scaled(80))
         .onAppear {
             resetState()
             searchFocused = true
@@ -115,14 +117,14 @@ struct CommandPaletteView: View {
     // MARK: Search field (owns the keyboard + the local nav keys)
 
     private var searchField: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DSSpace.s5) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(DSColor.textTertiary)
+                .dsFont(.subhead)
 
             TextField("Run a command, jump to a pane, or open a window  (> @ #)", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 16))
+                .dsFont(.subhead)
                 .focused($searchFocused)
             #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -149,8 +151,8 @@ struct CommandPaletteView: View {
                     return .handled
                 }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, DSSpace.s6)
+        .padding(.vertical, DSSpace.s5)
     }
 
     // MARK: Results list
@@ -177,7 +179,7 @@ struct CommandPaletteView: View {
                             #endif
                         }
                     }
-                    .padding(6)
+                    .padding(DSSpace.s3)
                 }
                 // Keep the highlighted row visible as the user arrows through the list.
                 .onChange(of: selection) { _, new in
@@ -190,46 +192,59 @@ struct CommandPaletteView: View {
     }
 
     private func row(for entry: Entry, selected: Bool) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DSSpace.s5) {
             Image(systemName: entry.symbol)
-                .font(.system(size: 14))
-                .foregroundStyle(selected ? Color.white : .secondary)
+                .dsFont(.body)
+                // Selected text resolves to textPrimary over the selectionWash (accent·0.18) — it stays
+                // legible under ANY accent. The old `selected ? Color.white` over a SOLID Color.accentColor
+                // fill went illegible on a light system accent (the spec-named bug) and is gone.
+                .foregroundStyle(selected ? DSColor.textPrimary : DSColor.textSecondary)
                 .frame(width: 22)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: DSSpace.s1) {
                 Text(entry.title)
-                    .font(.system(size: 14))
-                    .foregroundStyle(selected ? Color.white : .primary)
+                    .dsFont(.body)
+                    .foregroundStyle(DSColor.textPrimary)
                     .lineLimit(1)
                 if let subtitle = entry.subtitle {
                     Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(selected ? Color.white.opacity(0.85) : .secondary)
+                        .dsFont(.caption2)
+                        .foregroundStyle(selected ? DSColor.textSecondary : DSColor.textTertiary)
                         .lineLimit(1)
                 }
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: DSSpace.s4)
 
             if let shortcut = entry.shortcutHint {
                 Text(shortcut)
-                    .font(.system(.caption, design: .rounded))
+                    .dsFont(.caption)
                     .monospacedDigit()
-                    .foregroundStyle(selected ? Color.white.opacity(0.9) : .secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                    .foregroundStyle(DSColor.textTertiary)
+                    .padding(.horizontal, DSSpace.s3)
+                    .padding(.vertical, DSSpace.s1)
                     .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(selected ? Color.white.opacity(0.18) : Color.primary.opacity(0.06)),
+                        RoundedRectangle(cornerRadius: DSRadius.sm, style: .continuous)
+                            .fill(DSColor.chrome),
                     )
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, DSSpace.s5)
+        .padding(.vertical, DSSpace.s3)
+        // SELECTED row = selectionWash (accent·0.18 — never a solid accent fill) inside the rounded clip…
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(selected ? Color.accentColor : Color.clear),
+            RoundedRectangle(cornerRadius: DSRadius.sm, style: .continuous)
+                .fill(selected ? DSColor.selectionWash : Color.clear),
         )
+        // …plus a 3pt accent left-edge bar drawn OUTSIDE the rounded clip (the sidebar P3b idiom), so the
+        // selected row reads at a glance without tinting the whole row a solid accent.
+        .overlay(alignment: .leading) {
+            if selected {
+                Rectangle()
+                    .fill(DSColor.accentSolid)
+                    .frame(width: 3)
+            }
+        }
     }
 
     // MARK: Actions
@@ -299,9 +314,15 @@ struct CommandPaletteView: View {
     /// Moves the highlighted row by `delta`, clamped to the current list bounds (no wrap — a list
     /// stops at its ends, matching Spotlight/Open-Quickly).
     private func moveSelection(by delta: Int) {
-        let count = entries.count
-        guard count > 0 else { return }
-        selection = min(max(selection + delta, 0), count - 1)
+        selection = Self.clampedSelection(selection + delta, count: entries.count, current: selection)
+    }
+
+    /// Pure clamp for the highlighted-row index (no wrap — a list stops at its ends, matching
+    /// Spotlight/Open-Quickly). Factored out so the selection transform is unit-testable without a view:
+    /// an empty list keeps `current` (nothing to move to), otherwise the target is clamped to `0...count-1`.
+    nonisolated static func clampedSelection(_ target: Int, count: Int, current: Int) -> Int {
+        guard count > 0 else { return current }
+        return min(max(target, 0), count - 1)
     }
 
     /// Clears state and lowers the presentation binding. Called by ⎋, backdrop tap, and after a run.

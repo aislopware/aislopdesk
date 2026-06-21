@@ -158,7 +158,7 @@ struct KeyboardCheatSheetView: View {
         if isPresented {
             ZStack {
                 Rectangle()
-                    .fill(.black.opacity(0.18))
+                    .fill(DSColor.scrim)
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
                     .onTapGesture { isPresented = false }
@@ -180,45 +180,45 @@ struct KeyboardCheatSheetView: View {
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
             }
-            .padding(14)
+            .padding(DSSpace.s5)
             Divider()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: DSSpace.s6) {
                     ForEach(sections) { section in
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: DSSpace.s3) {
                             Text(section.title.uppercased())
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(DSColor.textTertiary)
                             ForEach(section.items) { item in
-                                HStack(spacing: 12) {
+                                HStack(spacing: DSSpace.s5) {
                                     Text(item.label)
                                         .font(.callout)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     Text(item.glyph)
                                         .font(.system(.callout, design: .rounded).monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                        .padding(.horizontal, 7).padding(.vertical, 2)
-                                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                            .fill(Color.primary.opacity(0.06)))
+                                        .foregroundStyle(DSColor.textTertiary)
+                                        .padding(.horizontal, DSSpace.s3).padding(.vertical, DSSpace.s1)
+                                        .background(RoundedRectangle(cornerRadius: DSRadius.sm, style: .continuous)
+                                            .fill(DSColor.chrome))
                                 }
                             }
                         }
                     }
                 }
-                .padding(16)
+                .padding(DSSpace.s6)
             }
         }
         .frame(maxWidth: 520, maxHeight: 540)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(
-            Color.primary.opacity(0.08),
-            lineWidth: 1,
-        ) }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .shadow(color: .black.opacity(0.28), radius: 28, y: 12)
-        .padding(.horizontal, 24)
+        // L4 overlay: glass (the helper supplies the hairline border, so the manual strokeBorder is gone)
+        // + inner top-edge highlight + the ONE tokenized overlay shadow — unified with the palette / peek
+        // / floating layer. A transient overlay (NOT a hard modal), so shadowOverlay, not shadowModal.
+        .glassedSurface(corner: DSRadius.overlay)
+        .overlay(alignment: .top) { DSElevation.innerTopHighlight() }
+        .clipShape(RoundedRectangle(cornerRadius: DSRadius.overlay, style: .continuous))
+        .dsShadow(DSElevation.shadowOverlay)
+        .padding(.horizontal, DSSpace.s8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 70)
+        .padding(.top, DSScale.scaled(70))
         .onEscapeKey { isPresented = false }
     }
 }

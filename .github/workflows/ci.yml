@@ -48,6 +48,9 @@ jobs:
       - run: brew install swiftlint swiftformat
       - run: swiftformat Package.swift Sources Tests Apps --lint
       - run: swiftlint --strict --quiet
+      # Design-system leak ratchet — text-only (no Xcode/compile), so it belongs in the lint job.
+      - name: Design-system leak ratchet
+        run: bash scripts/check-ds-leaks.sh
 
   # ----------------------------------------------- Swift build & test -------
   # NOTE: the package targets macOS 26 / iOS 26 (.v26), which needs Xcode 26.5+.

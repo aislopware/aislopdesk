@@ -76,20 +76,22 @@ struct FloatingPaneView<Content: View>: View {
                 .clipped()
         }
         .frame(width: frame.width, height: frame.height)
-        // Solid raised card body (NOT glass — content stays opaque). Border + drop shadow give the lift.
+        // Solid raised card body (NOT glass — content stays opaque, one-surface rule). Border + the ONE
+        // tokenized overlay shadow give the lift; the inner top-edge highlight is the premium dark tell.
         .background(
-            RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous)
-                .fill(AislopdeskTheme.bg),
+            RoundedRectangle(cornerRadius: PaneTokens.radius, style: .continuous)
+                .fill(DSColor.paneBg),
         )
         .overlay(
-            RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous)
+            RoundedRectangle(cornerRadius: PaneTokens.radius, style: .continuous)
                 .strokeBorder(
-                    tab.activePane == id ? AislopdeskTheme.accent.opacity(0.55) : AislopdeskTheme.border,
-                    lineWidth: tab.activePane == id ? 1.5 : 1,
+                    tab.activePane == id ? PaneTokens.focusRingColor : PaneTokens.idleBorder,
+                    lineWidth: tab.activePane == id ? PaneTokens.focusRingWidth : 1,
                 ),
         )
-        .clipShape(RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous))
-        .shadow(color: .black.opacity(0.45), radius: 18, x: 0, y: 8)
+        .overlay(alignment: .top) { DSElevation.innerTopHighlight() }
+        .clipShape(RoundedRectangle(cornerRadius: PaneTokens.radius, style: .continuous))
+        .dsShadow(DSElevation.shadowOverlay)
         // The SE-corner resize grip (an overlay so it sits above the content's hit area).
         .overlay(alignment: .bottomTrailing) { resizeGrip }
         .position(x: frame.midX, y: frame.midY)
@@ -99,17 +101,17 @@ struct FloatingPaneView<Content: View>: View {
     // MARK: Title strip (move + close/embed — the ONLY glass chrome)
 
     private var titleStrip: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: DSSpace.s3) {
             Image(systemName: PaneLeafView.icon(for: spec.kind))
-                .font(.system(size: 11, weight: .semibold))
+                .dsFont(.emphasis)
                 .foregroundStyle(tab
-                    .activePane == id ? AnyShapeStyle(AislopdeskTheme.accent) : AnyShapeStyle(.secondary))
+                    .activePane == id ? AnyShapeStyle(DSColor.accentSolid) : AnyShapeStyle(DSColor.textSecondary))
             Text(PanePresentation.displayTitle(store.handle(for: id), spec: spec))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .dsFont(.caption)
+                .foregroundStyle(DSColor.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: 8)
+            Spacer(minLength: DSSpace.s4)
             // Embed back into the tiled tree.
             ChromeIconButton(systemImage: "arrow.down.right.and.arrow.up.left", help: "Embed in layout") {
                 store.embedFloating(id)
@@ -119,12 +121,18 @@ struct FloatingPaneView<Content: View>: View {
                 store.closeFloating(id)
             }
         }
-        .padding(.horizontal, AislopdeskTheme.Space.l)
+        .padding(.horizontal, DSSpace.s5)
         .frame(height: Self.stripHeight)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
-        // Glass is permitted HERE (transient floating chrome) — never on the content below.
-        .glassedSurface(corner: 0)
+        // Glass is permitted HERE (transient floating chrome — the ONE glass surface on the float) — never
+        // on the content below. Corner matches the card radius (PaneTokens.radius) so the strip's top edge
+        // follows the card's rounded top (the whole card is clipped to that radius). The inner top-edge
+        // highlight is supplied ONCE at the card level (body, alignment .top) — the strip sits flush at the
+        // card's clipped top so that single highlight already lifts its top row. A second strip-level
+        // highlight would stack two 1pt white·0.12 gradients at the same Y (the float would read brighter
+        // than every other L4 surface), so it is deliberately NOT repeated here.
+        .glassedSurface(corner: PaneTokens.radius)
         .gesture(moveGesture)
         #if os(macOS)
             .onHover { inside in
@@ -163,15 +171,16 @@ struct FloatingPaneView<Content: View>: View {
 
     private var resizeGrip: some View {
         Image(systemName: "arrow.down.right.and.arrow.up.left")
-            .font(.system(size: 9, weight: .bold))
+            .dsFont(.caption2)
+            .fontWeight(.bold)
             .rotationEffect(.degrees(90))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DSColor.textSecondary)
             .frame(width: Self.gripSize, height: Self.gripSize)
             .background(
-                RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.sm, style: .continuous)
-                    .fill(AislopdeskTheme.surface),
+                RoundedRectangle(cornerRadius: DSRadius.sm, style: .continuous)
+                    .fill(DSColor.hoverFill),
             )
-            .padding(3)
+            .padding(DSSpace.s1)
             .contentShape(Rectangle())
         #if os(macOS)
             .onHover { inside in if inside { NSCursor.crosshair.push() } else { NSCursor.pop() } }

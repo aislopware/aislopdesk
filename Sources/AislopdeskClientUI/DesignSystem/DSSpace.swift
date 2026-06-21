@@ -52,6 +52,17 @@ public enum DSSpace {
     public static var paneGutter: CGFloat { DSScale.scaled(4) }
     /// The split-divider grab band hit area (unchanged from today — forward-safe).
     public static var dividerHit: CGFloat { DSScale.scaled(16) }
+
+    // MARK: Command-palette modal extents (Warp/Raycast IDE spec — fixed, NOT density-reflowing)
+
+    /// The ⌘K command-palette panel WIDTH — a LITERAL 640pt (Warp/Raycast IDE spec). Deliberately NOT
+    /// `DSScale`-scaled: a palette is a fixed modal whose frame extents stay constant across density
+    /// (the spec's "a palette should not reflow with density" rule), so this is a plain named constant —
+    /// living in `DesignSystem/` so the leak gate exempts it rather than two inline `640`/`464` literals.
+    public static let paletteWidth: CGFloat = 640
+    /// The ⌘K command-palette panel HEIGHT — a LITERAL 464pt (Warp/Raycast IDE spec). Fixed (see
+    /// ``paletteWidth``).
+    public static let paletteHeight: CGFloat = 464
 }
 
 // MARK: - DSRadius (LAYER 2 — the ONE radius scale)
@@ -71,8 +82,12 @@ public enum DSRadius {
     public static var xl: CGFloat { DSScale.scaled(10) }
     /// the per-pane rounded-card radius (8pt continuous)
     public static var pane: CGFloat { DSScale.scaled(8) }
-    /// L4 overlay / palette / floating-pane radius (target-only in P1)
+    /// L4 overlay / palette / floating-pane radius
     public static var overlay: CGFloat { DSScale.scaled(12) }
+    /// hard-modal radius (connection gate / settings sheet) — the larger 16pt corner the spec's
+    /// `shadowModal` profile pairs with (DSElevation.shadowModal). Distinct from `overlay` (12) so the
+    /// connection-gate card reads as a heavier modal than a transient ⌘K overlay.
+    public static var modal: CGFloat { DSScale.scaled(16) }
 }
 
 // MARK: - dsSpace ViewModifier (reads @Environment(DSScale.self) — the tracked repaint path)
@@ -82,13 +97,16 @@ public enum DSRadius {
 /// vocabulary in P1 — no view adopts it yet.
 @preconcurrency @MainActor
 public struct DSSpaceModifier: ViewModifier {
-    @Environment(DSScale.self) private var scale
+    // OPTIONAL form (`DSScale?`) — nil instead of TRAPPING when rendered outside the injected scope (the
+    // pre-connect gate, a sheet, a detached NSHostingView). Falls back to the shared instance's multiplier
+    // (the bridged source) so padding stays correct; only the live-repaint dependency is lost when unscoped.
+    @Environment(DSScale.self) private var scale: DSScale?
     let edges: Edge.Set
     let base: CGFloat
 
     public func body(content: Content) -> some View {
         // Read the injected instance's multiplier so SwiftUI records the dependency (single `*`, no FMA).
-        content.padding(edges, base * scale.multiplier)
+        content.padding(edges, base * (scale?.multiplier ?? DSScale.shared.multiplier))
     }
 }
 
