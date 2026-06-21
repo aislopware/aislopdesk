@@ -101,6 +101,8 @@ struct SessionSidebarView: View {
                 isActive: session.id == activeSessionID,
                 agentStatus: store.rollupStatus(forSession: session.id),
                 completion: store.rollupPendingCompletion(forSession: session.id),
+                summary: store.activitySummary(forSession: session.id),
+                liveness: store.sessionLiveness(forSession: session.id),
                 onSelect: { store.selectSession(session.id) },
                 onRename: { beginRename(session) },
             )
@@ -159,6 +161,10 @@ private struct SessionRow: View {
     let isActive: Bool
     let agentStatus: ClaudeStatus
     let completion: PaneCompletionBadge?
+    /// P3 piece 5: the cheap one-line activity summary (the host blocking line / state label), or `nil`.
+    let summary: String?
+    /// P3 piece 5: the session's liveness (alive vs exited-resumable) for the leading glyph.
+    let liveness: WorkspaceStore.SessionLiveness
     let onSelect: () -> Void
     let onRename: () -> Void
 
@@ -166,6 +172,28 @@ private struct SessionRow: View {
 
     private var displayName: String {
         session.name.isEmpty ? "Session" : session.name
+    }
+
+    /// The liveness glyph, immediately before the agent dot in the trailing cluster. Both cases share ONE
+    /// font size (`fontXS`) so the baseline/width is stable as a session flips alive↔detached. Alive uses a
+    /// `bolt.fill` (live link) rather than a second filled circle so it never reads as a redundant double
+    /// green dot beside the adjacent ``AgentStatusDot``; detached uses a muted `moon.zzz`.
+    @ViewBuilder
+    private var livenessGlyph: some View {
+        switch liveness {
+        case .alive:
+            Image(systemName: "bolt.fill")
+                .font(.system(size: UIMetrics.fontXS))
+                .foregroundStyle(AislopdeskTheme.statusGreen)
+                .help("Connected")
+                .accessibilityLabel("connected")
+        case .exitedResumable:
+            Image(systemName: "moon.zzz")
+                .font(.system(size: UIMetrics.fontXS))
+                .foregroundStyle(AislopdeskTheme.fgMuted)
+                .help("Detached — reattach on select")
+                .accessibilityLabel("detached, resumable")
+        }
     }
 
     /// The active-row plate. With the 2pt leading accent BAR now carrying the primary "selected" signal,
@@ -188,10 +216,21 @@ private struct SessionRow: View {
                     .foregroundStyle(isActive ? AislopdeskTheme.fg : AislopdeskTheme.fgMuted)
                     .lineLimit(1)
                     .truncationMode(.tail)
+
+                // P3 piece 5: a cheap one-line activity summary under the name — the host blocking line /
+                // last assistant message, else the agent state label. Hidden when no agent is present.
+                if let summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.system(size: UIMetrics.fontCaption))
+                        .foregroundStyle(AislopdeskTheme.fgDim)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
 
             Spacer(minLength: UIMetrics.spacing2)
 
+            livenessGlyph
             AgentStatusDot(status: agentStatus, size: UIMetrics.scaled(8))
         }
         .padding(.horizontal, UIMetrics.spacing3)

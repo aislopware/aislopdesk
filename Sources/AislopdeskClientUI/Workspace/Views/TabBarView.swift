@@ -252,6 +252,12 @@ private struct TabCell: View {
             }
         }
         .background(isActive ? AislopdeskTheme.surface : (hovering ? AislopdeskTheme.hover : .clear))
+        // P3 TAB GLOW: when this tab's rolled-up agent status needs attention (blocked / done) a soft
+        // status-coloured wash + bottom glow line announces a BACKGROUND tab so the human notices it
+        // without first switching to it. Layered UNDER the active accent line so an active+attention tab
+        // still shows its accent focus cue on top. NEVER dims the tab.
+        .background(attentionGlowBackground)
+        .overlay(alignment: .bottom) { attentionGlowLine }
         .overlay(alignment: .bottom) {
             // The active-tab accent line — the primary focus cue (Muxy: 2pt accent bottom line).
             Rectangle()
@@ -273,15 +279,56 @@ private struct TabCell: View {
     }
 
     /// The top-trailing unread/completion accent dot on the icon, shown only on an INACTIVE tab (the active
-    /// tab is in view, so its agent/completion state is already visible inline). Muxy: a 6pt accent circle.
+    /// tab is in view, so its agent/completion state is already visible inline). Muxy: a 6pt circle — P3
+    /// colours it in the SEMANTIC status colour (blocked=red, done=green) so the cue reads the urgency, not
+    /// just "something happened"; a bare completion badge keeps the neutral accent.
     @ViewBuilder
     private var unreadDot: some View {
         let pending = agentStatus == .done || agentStatus == .needsPermission || completion != nil
         if pending, !isActive {
             Circle()
-                .fill(AislopdeskTheme.accent)
+                .fill(attentionColor ?? AislopdeskTheme.accent)
                 .frame(width: 6, height: 6)
                 .offset(x: 3, y: -3)
+        }
+    }
+
+    // MARK: P3 attention glow (supervision cockpit)
+
+    /// The semantic status colour when this tab's rollup needs attention (needsPermission → red /
+    /// done → green), else `nil`. A pure function of `agentStatus` so it clears automatically.
+    private var attentionColor: Color? {
+        switch agentStatus {
+        case .needsPermission: AislopdeskTheme.statusRed
+        case .done: AislopdeskTheme.statusGreen
+        default: nil
+        }
+    }
+
+    /// A soft status-coloured wash behind a tab needing attention (≈8% fill) — a quiet background cue that
+    /// a tab is blocked / done. Clear otherwise.
+    @ViewBuilder
+    private var attentionGlowBackground: some View {
+        if let color = attentionColor {
+            color.opacity(0.08)
+        }
+    }
+
+    /// A bright status-coloured bottom glow line on a tab needing attention — a stronger "look here" cue
+    /// than the dot for a BACKGROUND tab. Drawn under the active accent line so an active tab still shows
+    /// its accent on top. A `needsPermission` line breathes; a `done` line is steady.
+    @ViewBuilder
+    private var attentionGlowLine: some View {
+        if let color = attentionColor {
+            Rectangle()
+                .fill(color)
+                .frame(height: 2)
+                // A soft halo — kept restrained (radius 2 / opacity 0.4) so a row of several attention
+                // tabs reads as a calm set of glows, not a heavy stack. The 8% wash + solid 2pt line is
+                // already the primary cue; the halo just lifts it off the strip.
+                .shadow(color: color.opacity(0.4), radius: 2)
+                .modifier(TabAttentionPulse(active: agentStatus == .needsPermission))
+                .allowsHitTesting(false)
         }
     }
 
@@ -319,6 +366,29 @@ private struct TabCell: View {
             .buttonStyle(.plain)
             .help("Close tab")
             .accessibilityLabel("Close tab")
+        }
+    }
+}
+
+// MARK: - TabAttentionPulse (gentle breathe for the BLOCKED tab glow line)
+
+/// The leaf-local breathe for the P3 tab attention glow line — the SAME sanctioned `repeatForever`
+/// pattern as the working dot: a single repeating `.easeInOut` opacity fade on a glow line (NOT on the
+/// keystroke/terminal path). Active for `needsPermission` (blocked, pulses); `done` is steady.
+private struct TabAttentionPulse: ViewModifier {
+    let active: Bool
+    @State private var breathing = false
+
+    func body(content: Content) -> some View {
+        if active {
+            content
+                // Match the house ``WorkingPulse`` cadence (floor 0.6, ~1.4s half-cycle) so the tab glow
+                // line inhales as calmly as the working dot rather than blinking.
+                .opacity(breathing ? 1.0 : 0.6)
+                .animation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true), value: breathing)
+                .onAppear { breathing = true }
+        } else {
+            content
         }
     }
 }

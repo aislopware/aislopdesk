@@ -155,6 +155,9 @@ public struct WorkspaceCommands: Commands {
         // can't drift — and so the chord actually dispatches (a registry binding fires ONLY via this menu;
         // there is no NSEvent monitor). The live on/off state shows in the tab bar + pane status bar.
         actionButton("Sync Input to All Panes", .toggleSyncInput)
+        // Jump to Pane Needing Attention (⌘⇧U, P3): focus the oldest pane that is blocked
+        // (needsPermission) or done across all tabs/sessions — the supervision "take me to who needs me".
+        actionButton("Jump to Pane Needing Attention", .jumpToAttention)
 
         Divider()
 

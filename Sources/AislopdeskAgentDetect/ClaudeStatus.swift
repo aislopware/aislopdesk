@@ -23,6 +23,19 @@ public enum ClaudeStatus: String, Sendable, Equatable, Codable, CaseIterable {
     /// True when this status demands human attention (the "blocked" bucket).
     public var isBlocked: Bool { self == .needsPermission }
 
+    /// A short human label for the status — the sidebar activity-summary fallback (P3) and the
+    /// ``AgentStatusDot`` tooltip/accessibility text both read this ONE source so they cannot drift.
+    /// `none` → "idle" so a fallback summary is never the literal word "none".
+    public var displayLabel: String {
+        switch self {
+        case .none: "idle"
+        case .idle: "idle"
+        case .working: "working"
+        case .done: "done"
+        case .needsPermission: "needs permission"
+        }
+    }
+
     /// Rollup priority — STRICTLY increasing urgency. A session's status = the
     /// most-urgent over its panes (Herdr: blocked > working > done > idle > none).
     /// Total order: `none(0) < idle(1) < done(2) < working(3) < needsPermission(4)`.

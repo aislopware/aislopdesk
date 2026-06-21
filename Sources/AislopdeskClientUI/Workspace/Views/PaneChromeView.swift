@@ -1,5 +1,6 @@
 // Adapted from Muxy (https://github.com/muxy-app/muxy) — MIT © 2026 Muxy.
 #if canImport(SwiftUI)
+import AislopdeskAgentDetect
 import SwiftUI
 
 // MARK: - PaneChromeView (chrome-less on the tree shell; compact header on iOS carousel)
@@ -66,6 +67,11 @@ struct PaneChromeView<Content: View>: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(AislopdeskTheme.bg)
+            // P3 ATTENTION RING on the compact/iOS carousel pane too: the carousel shows one pane at a
+            // time so the "background pane" motivation is weaker, but the blocked/done cue on the visible
+            // pane must not be lost. Same self-contained, status-gated, hit-test-disabled leaf overlay.
+            .overlay(attentionOverlay)
+            .animation(.easeInOut(duration: 0.18), value: paneStatus)
         } else {
             // The IDE tree shell: CHROME-LESS pane body — no per-pane header, no opacity dim. The Warp
             // "floating card" look: 8pt continuous rounded corners floating on the sunken gutter that
@@ -99,6 +105,75 @@ struct PaneChromeView<Content: View>: View {
                         )
                         .animation(.easeInOut(duration: 0.15), value: ringActive),
                 )
+                // P3 ATTENTION RING: layered OUTSIDE the focus-ring overlay above so it shows EVEN WHEN
+                // UNFOCUSED (the whole point — notice a background pane). Gated purely on the pane's
+                // status (`attentionColor != nil`), independent of `ringActive`. Blocked pulses, done is
+                // steady. NEVER an opacity dim on content (the hard invariant) — this is a leaf stroke.
+                //
+                // CONCENTRIC, NOT CO-EDGE: the attention ring is drawn on the OUTER edge (a strokeBorder
+                // on the full bounds, same radius as the focus ring), and when the pane is ALSO focused a
+                // thin accent focus ring is redrawn on an INSET shape inside it (see `attentionOverlay`).
+                // A bare co-edge stroke would fully cover the 1.5pt focus ring; insetting keeps both legible
+                // so a focused+blocked pane unambiguously reads "this is the active pane AND it's blocked".
+                .overlay(attentionOverlay)
+                // Ease the attention overlay in/out (≤0.22s) so a status change fades like the focus ring
+                // rather than popping a heavy 2pt colored ring instantly. Keyed on `paneStatus` so it fires
+                // exactly on a blocked/done enter/clear.
+                .animation(.easeInOut(duration: 0.18), value: paneStatus)
+        }
+    }
+
+    // MARK: P3 attention ring (supervision cockpit)
+
+    /// This pane's current agent status (the same source the carousel dot reads). Drives the attention
+    /// ring + the pulse predicate — a pure function of the current status (no history), so it clears
+    /// automatically when the pane returns to idle/working/none.
+    private var paneStatus: ClaudeStatus { store.agentStatus(for: id) }
+
+    /// The attention ring colour, or `nil` when the pane needs no attention: needsPermission → statusRed
+    /// (blocked, the most urgent), done → statusGreen (finished, waiting to be seen). idle/working/none
+    /// → `nil` (no ring).
+    private var attentionColor: Color? {
+        switch paneStatus {
+        case .needsPermission: AislopdeskTheme.statusRed
+        case .done: AislopdeskTheme.statusGreen
+        case .none,
+             .idle,
+             .working: nil
+        }
+    }
+
+    /// The status-coloured attention ring on the OUTER edge of the chrome-less card, plus — when the pane
+    /// is ALSO focused — a thin accent focus ring redrawn on an INSET shape inside it, so the two read
+    /// concentrically (outer status ring, inner blue focus ring) rather than the status ring covering the
+    /// focus ring at the same edge. A `needsPermission` ring breathes (the leaf-local sanctioned pulse,
+    /// like the working dot); a `done` ring is steady. Empty when the pane needs no attention. A short
+    /// ease (≤0.22s) fades the whole overlay in/out so a background pane going blocked/done — or clearing
+    /// back to idle — matches the focus ring's easing instead of popping.
+    @ViewBuilder
+    private var attentionOverlay: some View {
+        if let color = attentionColor {
+            ZStack {
+                // Outer status ring on the full bounds.
+                RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous)
+                    .strokeBorder(color, lineWidth: UIMetrics.paneAttentionRing)
+                    .modifier(AttentionPulse(active: paneStatus == .needsPermission))
+
+                // Inner focus ring (concentric) only when the pane is also focused — inset by the
+                // attention-ring width so a thin blue ring shows INSIDE the red/green status ring. The
+                // outer status ring is the dominant "needs you" cue; this keeps "you are here" legible too.
+                if ringActive {
+                    RoundedRectangle(
+                        cornerRadius: AislopdeskTheme.Radius.pane - UIMetrics.paneAttentionRing,
+                        style: .continuous,
+                    )
+                    .strokeBorder(AislopdeskTheme.accent.opacity(0.55), lineWidth: 1.5)
+                    .padding(UIMetrics.paneAttentionRing)
+                }
+            }
+            .transition(.opacity)
+            .allowsHitTesting(false) // decorative — never swallow a tap meant for the content
+            .accessibilityHidden(true)
         }
     }
 
@@ -389,6 +464,42 @@ struct PaneChromeView<Content: View>: View {
         let remaining = Int(nextRetry.timeIntervalSince(now).rounded(.up))
         guard remaining > 0 else { return status.label }
         return "\(status.label) retrying in \(remaining)s"
+    }
+}
+
+// MARK: - AttentionPulse (a gentle breathe for the BLOCKED attention ring only)
+
+/// Wraps the P3 attention ring in a calm opacity breathe when `active` — used for the `needsPermission`
+/// (blocked) ring so it gently pulses to demand attention; the `done` ring is steady (`active == false`).
+/// The SAME sanctioned leaf-local `repeatForever` pattern as ``WorkingPulse`` (the breathing working
+/// dot): a single repeating `.easeInOut` opacity fade driven by a local `@State` on `.onAppear`. It is a
+/// leaf stroke overlay (NOT on the keystroke/echo path, NOT over the terminal/IOSurface), so the
+/// interpolated fade is correct + cheap. When `active` is false the receiver is returned untouched.
+private struct AttentionPulse: ViewModifier {
+    let active: Bool
+
+    /// Floor / ceiling of the breathe — never fully fades (the ring stays legible). Matches the house
+    /// ``WorkingPulse`` floor (`0.6` ≈ `0.65`) so a whole-pane ring inhales as calmly as the working dot
+    /// rather than reading as a blink — only a touch deeper since "attention" is a hair more insistent.
+    private static let floor = 0.6
+    /// One half-cycle; `autoreverses` doubles it to ~2.8s end-to-end — the same cadence as ``WorkingPulse``
+    /// so the pulse reads as a slow, insistent inhale rather than a busy blink.
+    private static let period = 1.4
+
+    @State private var breathing = false
+
+    func body(content: Content) -> some View {
+        if active {
+            content
+                .opacity(breathing ? 1.0 : Self.floor)
+                .animation(
+                    .easeInOut(duration: Self.period).repeatForever(autoreverses: true),
+                    value: breathing,
+                )
+                .onAppear { breathing = true }
+        } else {
+            content
+        }
     }
 }
 

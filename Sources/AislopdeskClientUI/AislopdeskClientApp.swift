@@ -204,6 +204,22 @@ public struct AislopdeskClientApp: App {
                 paneTitle: paneTitle, exitCode: exitCode, durationMS: durationMS, paneIDKey: paneIDKey,
             )
         }
+        // P3 AGENT-ATTENTION SINK: on a needsPermission/done EDGE (the store already coalesced the flap),
+        // post a notification — title = pane name, body = "needs your input" / "finished" (+ the cheap
+        // host blocking line when present). Reuses the same notifier so lazy-auth state is shared; the
+        // click reveals the pane via the router already installed above (revealPane). Respects the OSC
+        // notification toggle (read live).
+        store.onAgentAttention = { paneIDKey, name, needsInput, detail in
+            guard SettingsKey.oscNotificationsEnabled else { return }
+            let headline = needsInput ? "needs your input" : "finished"
+            let body: String = {
+                guard let detail, !detail.isEmpty else { return headline }
+                return "\(headline) — \(detail)"
+            }()
+            explicitNotifier.notifyExplicit(
+                paneIDKey: paneIDKey, paneTitle: name, title: name, body: body,
+            )
+        }
         #endif
         // The system-dialog monitor (the "system popups in their own pane" feature): polls the host while
         // connected and auto-manages ephemeral dialog panes. `isConnected` reads the app connection status;

@@ -100,6 +100,8 @@ public extension WorkspaceBindingRegistry {
         // Synchronized input (Zellij ToggleActiveSyncTab)
         case .toggleSyncInput:
             if let tabID = store.tree.activeSession?.activeTab?.id { store.toggleSyncInput(tabID: tabID) }
+        // Supervision (P3): focus the oldest pane needing attention across all tabs/sessions.
+        case .jumpToAttention: store.jumpToOldestAttentionPane()
         }
     }
 
@@ -156,6 +158,7 @@ public extension WorkspaceBindingRegistry {
              .selectTab,
              .closeTab: break // no canvas tab model
         case .toggleSyncInput: break // no canvas analogue (tab-scoped, tree-only)
+        case .jumpToAttention: break // tree-only (no canvas attention rollup)
         }
     }
 }

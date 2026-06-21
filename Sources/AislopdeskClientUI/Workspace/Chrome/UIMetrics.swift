@@ -60,6 +60,13 @@ public enum UIMetrics {
     public static var radiusLG: CGFloat { scaled(8) }
     public static var radiusXL: CGFloat { scaled(10) }
 
+    // MARK: Stroke widths
+
+    /// The P3 supervision ATTENTION ring stroke width — a status-coloured ring on a pane that is blocked
+    /// (needsPermission) or done, drawn OUTSIDE the P2 focus ring so a background pane announces itself.
+    /// Heavier than the P2 focus ring (1.5pt) so the attention cue wins when both are present.
+    public static var paneAttentionRing: CGFloat { scaled(2) }
+
     // MARK: Layout
 
     public static var sidebarCollapsedWidth: CGFloat { scaled(44) }

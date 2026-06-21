@@ -1829,9 +1829,18 @@ public final class WorkspaceStore {
     /// Reveals the pane whose id string (`PaneID.raw.uuidString`) matches — the entry point for the
     /// notification-click handler, which only carries the string from `userInfo`. No-op on an
     /// unparseable / unknown id (the pane was closed).
+    ///
+    /// LIVE-MODEL aware (P3 fix): the canvas ``revealPane(_:)`` guards `canvas.contains` + centres, which
+    /// is a NO-OP on the live TREE shell — so a clicked notification (long-command / OSC / agent-attention)
+    /// would silently do nothing. Route to the tree focus path when ``liveModel`` is ``LiveModel/tree`` so
+    /// the click actually switches session+tab+pane to the originating pane.
     public func revealPane(byIDString idString: String) {
         guard let uuid = UUID(uuidString: idString) else { return }
-        revealPane(PaneID(raw: uuid))
+        let id = PaneID(raw: uuid)
+        switch liveModel {
+        case .tree: focusPaneTree(id)
+        case .canvas: revealPane(id)
+        }
     }
 
     // MARK: - Named layout presets (save / switch canvas contexts)
@@ -2719,37 +2728,33 @@ public final class WorkspaceStore {
     /// observable source. PRUNED to the live leaf set on every reconcile (review #10/#13) — in the same
     /// shared diff core as the `selectedPanes` / `nativeFrameSize` caches — so a closed pane's entry drops
     /// out (no unbounded growth, no dead-pane status surfacing in a rollup).
-    public private(set) var paneAgentStatus: [PaneID: ClaudeStatus] = [:]
+    public internal(set) var paneAgentStatus: [PaneID: ClaudeStatus] = [:]
 
-    /// The rolled-up agent status for `id` (`.none` when unknown — the common case until W10/W11).
-    public func agentStatus(for id: PaneID) -> ClaudeStatus {
-        paneAgentStatus[id] ?? .none
-    }
+    /// The per-pane host-provided agent LABEL (the type-27 `label`: the blocking prompt / last assistant
+    /// line) — the genuinely cheap, host-trusted activity summary the sidebar shows under the session name
+    /// (P3 piece 5). No scrollback access, no LLM, no round-trip; it is carried verbatim on the wire and
+    /// captured here. PRUNED to the live leaf set alongside ``paneAgentStatus`` (reconcileRegistry) so a
+    /// closed pane's label drops out. An empty / whitespace label is treated as absent (no key).
+    public internal(set) var paneAgentLabel: [PaneID: String] = [:]
 
-    /// Sets the per-pane agent status (the W10/W11 detection sink — exposed now so the sidebar/chrome dots
-    /// have a stable write path). Idempotent: a no-op when unchanged so it never churns the views.
-    public func setAgentStatus(_ status: ClaudeStatus, for id: PaneID) {
-        guard paneAgentStatus[id] != status else { return }
-        if status == .none { paneAgentStatus.removeValue(forKey: id) } else { paneAgentStatus[id] = status }
-    }
+    /// The COALESCING memory for the attention notification (P3 piece 3): the last status we fired an
+    /// attention edge for, per pane. So a flap that re-enters the same attention state (`done → working →
+    /// done`) does not re-notify — only a transition INTO `needsPermission`/`done` from the last-notified
+    /// state fires. PRUNED with `paneAgentStatus` so a recycled / closed pane id can't leak or mis-flap.
+    var lastNotifiedStatus: [PaneID: ClaudeStatus] = [:]
 
-    /// The most-urgent agent status over every leaf of session `sessionID` (Herdr rollup:
-    /// blocked > working > done > idle > none) — the sidebar session-row dot. `.none` for an unknown
-    /// session or one whose panes are all `.none`.
-    public func rollupStatus(forSession sessionID: SessionID) -> ClaudeStatus {
-        guard let session = tree.sessions.first(where: { $0.id == sessionID }) else { return .none }
-        return ClaudeStatus.rollup(session.allPaneIDs().map { agentStatus(for: $0) })
-    }
+    /// The THIN attention-notification sink (P3 piece 3 — the same seam shape as ``onLongCommandNotify`` /
+    /// ``onPaneNotification``): the app shell sets it to call `explicitNotifier.notifyExplicit(...)` on a
+    /// needsPermission/done EDGE. Kept off the store so `UNUserNotificationCenter` never enters the store
+    /// (→ the edge logic stays headless-testable with a spy). `nil` in tests / headless / iOS ⇒ dropped.
+    /// `needsInput == true` for `.needsPermission` (blocked), `false` for `.done`. `detail` is the cheap
+    /// host label (the blocking line) when present.
+    public var onAgentAttention: ((_ paneIDKey: String, _ name: String, _ needsInput: Bool, _ detail: String?) -> Void)?
 
-    /// The most-urgent agent status over every leaf of tab `tabID` (the tab-pill dot).
-    public func rollupStatus(forTab tabID: TabID) -> ClaudeStatus {
-        for session in tree.sessions {
-            if let tab = session.tabs.first(where: { $0.id == tabID }) {
-                return ClaudeStatus.rollup(tab.allPaneIDs().map { agentStatus(for: $0) })
-            }
-        }
-        return .none
-    }
+    // setAgentStatus + the agent-status reads/rollups/edge live in `WorkspaceStore+Attention.swift`
+    // (keeping this class under the type-body-length ceiling). The stored `paneAgentStatus` /
+    // `paneAgentLabel` / `lastNotifiedStatus` / `onAgentAttention` stay here because `@Observable`
+    // synthesises on them.
 
     // MARK: - Background-pane command-completion awareness (B3 — badge + focus-gated notify)
 
@@ -2900,6 +2905,12 @@ public final class WorkspaceStore {
     private func handleAgentSignal(id: PaneID, event: AislopdeskClient.Event) {
         guard let session = registry[id] as? LivePaneSession else { return }
         let status = session.feedAgentSignal(event)
+        // CAPTURE the cheap host-provided label (the type-27 blocking prompt / last line) for the sidebar
+        // activity summary (P3 piece 5) — set BEFORE setAgentStatus so an attention edge's notification
+        // detail reads the fresh label. type 26 carries no label, so only type 27 updates it.
+        if case let .claudeStatus(_, _, label) = event {
+            setAgentLabel(label, for: id)
+        }
         setAgentStatus(status, for: id)
     }
 
@@ -2965,6 +2976,15 @@ public final class WorkspaceStore {
         // per-pane caches are pruned (the shared diff core).
         if !paneAgentStatus.isEmpty {
             paneAgentStatus = paneAgentStatus.filter { leafSet.contains($0.key) }
+        }
+        // Prune the per-pane agent label + the attention-notify coalescing memory in lockstep with the
+        // status above (P3): a closed pane must not keep a stale sidebar summary, and a recycled pane id
+        // must re-arm cleanly so the next genuine edge notifies (no leak, no mis-flap on a reused id).
+        if !paneAgentLabel.isEmpty {
+            paneAgentLabel = paneAgentLabel.filter { leafSet.contains($0.key) }
+        }
+        if !lastNotifiedStatus.isEmpty {
+            lastNotifiedStatus = lastNotifiedStatus.filter { leafSet.contains($0.key) }
         }
         // Prune the per-pane completion badge for orphaned panes (same leak/stale-rollup hazard as the
         // agent status above — a closed pane must not keep a ✓/✗ in a rollup).

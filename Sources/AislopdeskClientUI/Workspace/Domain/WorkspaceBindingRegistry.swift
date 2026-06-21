@@ -67,6 +67,9 @@ public enum WorkspaceAction: Hashable, Sendable {
 
     // Synchronized input (Zellij ToggleActiveSyncTab)
     case toggleSyncInput // ⌘⇧I — broadcast keystrokes to every other pane in the active tab
+
+    // Supervision (P3 — jump to the pane that needs you)
+    case jumpToAttention // ⌘⇧U — focus the oldest pane needing attention (needsPermission first, then done)
 }
 
 public extension WorkspaceAction {
@@ -123,7 +126,8 @@ public extension WorkspaceAction {
              .closeTab,
              .toggleSidebar,
              .newSession,
-             .toggleSyncInput: // the tab must exist, but the palette can still show it (mirrors .newTab)
+             .toggleSyncInput, // the tab must exist, but the palette can still show it (mirrors .newTab)
+             .jumpToAttention: // acts globally across all tabs/sessions — needs no active pane
             false
         }
     }
@@ -289,6 +293,15 @@ public enum WorkspaceBindingRegistry {
             category: .tabs, chord: KeyChord(character: "i", [.command, .shift]),
             symbol: "keyboard.badge.ellipsis",
             keywords: "sync broadcast input panes tab synchronize mirror zellij",
+        ),
+        // Supervision (P3): jump to the oldest pane needing attention (needsPermission first, then done) —
+        // a global action across all tabs/sessions, so it lives in the Tabs group beside sync-input. ⌘⇧U is
+        // FREE (no other binding uses `u`); pinned unique by the chord-uniqueness test.
+        WorkspaceBinding(
+            id: "view.jumpToAttention", action: .jumpToAttention, title: "Jump to Pane Needing Attention",
+            category: .tabs, chord: KeyChord(character: "u", [.command, .shift]),
+            symbol: "bell.badge",
+            keywords: "jump unread attention needs permission blocked done next pane supervise oldest",
         ),
         // Sessions
         WorkspaceBinding(
