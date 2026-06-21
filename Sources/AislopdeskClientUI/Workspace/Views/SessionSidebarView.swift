@@ -6,11 +6,12 @@ import SwiftUI
 // MARK: - SessionSidebarView (the sessions sidebar — Muxy-styled)
 
 /// The coding-IDE sessions sidebar, ported from Muxy's `Sidebar` (not a stock `List`/`.sidebar`): a solid
-/// `bg` column of custom rows grouped by host. Each row is the wide "project" look — a rounded session icon
-/// (the session's initial in a `surface` square, a 1.5pt `accent` ring when active) carrying a top-trailing
-/// rolled-up completion badge, the session name, and a trailing rolled-up agent-status dot — laid on a soft
-/// `accentSoft` (active) / `hover` (hovered) row plate. The footer is an `IconButton` "New Session".
-/// Drives the store's tree ops (`selectSession` / `newSession` / `closeSession` / `renameSession`).
+/// L3 `chrome` column of custom rows grouped by host. Each row is the wide "project" look — a rounded
+/// session icon (the session's initial in a `surface` square) carrying a top-trailing rolled-up completion
+/// badge, the session name, and a trailing rolled-up agent-status dot — laid on a `selectionWash`
+/// (accent·0.18, active) / `hoverFill` (white·0.05, hovered) row plate, with a 3pt accent leading bar on
+/// the active row. The footer is one full-width "New Session" Button. Drives the store's tree ops
+/// (`selectSession` / `newSession` / `closeSession` / `renameSession`).
 struct SessionSidebarView: View {
     @Bindable var store: WorkspaceStore
 
@@ -26,11 +27,14 @@ struct SessionSidebarView: View {
         VStack(spacing: 0) {
             sessionList
 
-            Rectangle().fill(AislopdeskTheme.border).frame(height: 1)
+            // P3b: the chrome-meets-content hairline above the footer reads at `DSColor.borderComponent`
+            // (white·0.11) so it's a visible separator, not the old near-invisible `border` (white·0.07).
+            Rectangle().fill(DSColor.borderComponent).frame(height: 1)
             SidebarFooter(onNewSession: newSession)
         }
-        // Elevation: the sidebar is the RAISED level so it reads a step above the `bg` pane cards.
-        .background(AislopdeskTheme.bgRaised)
+        // Elevation: the sidebar is the L3 chrome surface (DSColor.chrome == n3 == the legacy `bgRaised`,
+        // byte-identical) so it reads a step above the `paneBg` pane cards.
+        .background(DSColor.chrome)
     }
 
     // MARK: List (Muxy's `scrollableProjects`: a `ScrollView` of a `LazyVStack` grouped by host)
@@ -54,16 +58,24 @@ struct SessionSidebarView: View {
 
     // MARK: Section header (a small uppercase host label — not a `List` `Section`)
 
+    /// The section-header type token (P3b): 10pt SEMIBOLD SF, lh14, +0.4 tracking — a dedicated stronger
+    /// twin of ``DSFont/caption`` (which is `.medium`, +0.1). The spec wants section eyebrows SEMIBOLD with
+    /// +0.4 tracking, ALL-CAPS, at `textTertiary` — readable as a label, not the old unreadable
+    /// `fgFaint`·0.20. Applied via `.dsFont` so it lands tracking + leading + the live-scale repaint path.
+    @MainActor static let sectionHeaderFont = DSFont(10, .semibold, .default, leading: 14, tracking: 0.4)
+
     private func sectionHeader(_ host: String) -> some View {
         Text(host.uppercased())
-            .font(.system(size: UIMetrics.fontCaption, weight: .semibold))
-            // Structural ALL-CAPS section labels recede further than body text — use fgFaint (fg·0.20)
-            // so they read as silent dividers rather than competing with session names.
-            .foregroundStyle(AislopdeskTheme.fgFaint)
+            // P3b: SEMIBOLD 10pt +0.4-tracking textTertiary (readable section eyebrow) — replaces the
+            // unreadable `fgFaint`·0.20. ALL-CAPS already via `.uppercased()`.
+            .dsFont(Self.sectionHeaderFont)
+            .foregroundStyle(DSColor.textTertiary)
             .lineLimit(1)
             .padding(.horizontal, UIMetrics.spacing3)
             .padding(.top, UIMetrics.spacing3)
-            .padding(.bottom, UIMetrics.spacing1)
+            // P3b: 6pt bottom breathing room (DSSpace.s3) so the eyebrow doesn't touch the first row, vs the
+            // old 2pt (spacing1). `.dsSpace` keeps it on the live-scale path.
+            .dsSpace(.bottom, 6)
             .accessibilityAddTraits(.isHeader)
     }
 
@@ -80,8 +92,9 @@ struct SessionSidebarView: View {
                 )
                 TextField("Session", text: $renameText)
                     .textFieldStyle(.plain)
-                    .font(.system(size: UIMetrics.fontEmphasis))
-                    .foregroundStyle(AislopdeskTheme.fg)
+                    // P3b: the inline rename field reads at the active-row weight (DSFont.emphasis) textPrimary.
+                    .dsFont(.emphasis)
+                    .foregroundStyle(DSColor.textPrimary)
                     .onSubmit { commitRename(session.id) }
                     .onEscapeKey { renamingSession = nil }
                 #if os(iOS)
@@ -153,10 +166,14 @@ struct SessionSidebarView: View {
 
 // MARK: - SessionRow (Muxy's `ExpandedProjectRow` projectHeader, mapped to a session)
 
-/// A single sidebar session row: the session icon + name + a trailing agent-status dot, on a soft
-/// `accentSoft` plate when active and a `hover` plate on hover (Muxy's `headerBackground`). Its own
-/// `hovered` state keeps the wash local.
-private struct SessionRow: View {
+/// A single sidebar session row: the session icon + name + a trailing agent-status dot, on a
+/// `selectionWash` plate when active (accent·0.18 — clearly beating the `hoverFill` hover plate) and a 3pt
+/// accent leading bar. Its own `hovered` state keeps the wash local.
+///
+/// NOTE: `internal` (not `private`) so the PURE row-state transforms (``Self/rowVisual(isActive:isHovered:)``,
+/// ``Self/rowFill(_:)``) are reachable from the headless `P3bChromeTransformTests` via `@testable import` —
+/// no SwiftUI layout is exercised there.
+struct SessionRow: View {
     let session: Session
     let isActive: Bool
     let agentStatus: ClaudeStatus
@@ -196,14 +213,37 @@ private struct SessionRow: View {
         }
     }
 
-    /// The active-row plate. With the 2pt leading accent BAR now carrying the primary "selected" signal,
-    /// the fill softens from `accentHover` (accent·0.25) to `accentSoft` (accent·0.10) so the row reads
-    /// as a quiet selection — bar + subtle wash — rather than a heavy accent tint. `hover` (fg·0.06) on
-    /// hover, else clear.
-    private var headerBackground: AnyShapeStyle {
-        if isActive { return AnyShapeStyle(AislopdeskTheme.accentSoft) }
-        if hovered { return AnyShapeStyle(AislopdeskTheme.hover) }
-        return AnyShapeStyle(Color.clear)
+    // MARK: - Pure row-state → style transform (unit-tested headlessly — no SwiftUI layout)
+
+    /// The three mutually-exclusive visual states of a sidebar row. Extracted so the load-bearing
+    /// "selected clearly BEATS hovered" mapping is testable without driving SwiftUI layout. Selection wins
+    /// over hover (a row can be both active and hovered — the active wash takes precedence).
+    enum RowVisual: Equatable { case active, hovered, idle }
+
+    /// The row's visual state, a PURE function of (isActive, isHovered). `active` takes precedence over
+    /// `hovered` so the selected row never downgrades to the hover plate while the pointer is over it.
+    static func rowVisual(isActive: Bool, isHovered: Bool) -> RowVisual {
+        if isActive { return .active }
+        if isHovered { return .hovered }
+        return .idle
+    }
+
+    /// The row's fill colour, a PURE function of ``RowVisual`` (P3b — the core "selected beats hover" fix):
+    /// `.active` ⇒ ``DSColor/selectionWash`` (accent·0.18) which CLEARLY beats `.hovered` ⇒
+    /// ``DSColor/hoverFill`` (white·0.05); `.idle` ⇒ `.clear`. Selection is shown ADDITIVELY (this wash +
+    /// the accent leading bar) — an idle row is `.clear`, NEVER dimmed.
+    @MainActor
+    static func rowFill(_ visual: RowVisual) -> Color {
+        switch visual {
+        case .active: DSColor.selectionWash
+        case .hovered: DSColor.hoverFill
+        case .idle: .clear
+        }
+    }
+
+    /// The resolved fill for THIS row's live state.
+    private var rowFill: Color {
+        Self.rowFill(Self.rowVisual(isActive: isActive, isHovered: hovered))
     }
 
     var body: some View {
@@ -212,8 +252,11 @@ private struct SessionRow: View {
 
             VStack(alignment: .leading, spacing: UIMetrics.scaled(1)) {
                 Text(displayName)
-                    .font(.system(size: UIMetrics.fontEmphasis, weight: isActive ? .semibold : .medium))
-                    .foregroundStyle(isActive ? AislopdeskTheme.fg : AislopdeskTheme.fgMuted)
+                    // P3b: active name = DSFont.emphasis (13pt semibold) textPrimary; inactive = DSFont.body
+                    // (13pt regular) textSecondary. Hierarchy is weight + colour at a stable size — an idle
+                    // row rests at textSecondary, NEVER dimmed.
+                    .dsFont(isActive ? .emphasis : .body)
+                    .foregroundStyle(isActive ? DSColor.textPrimary : DSColor.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
@@ -221,8 +264,9 @@ private struct SessionRow: View {
                 // last assistant message, else the agent state label. Hidden when no agent is present.
                 if let summary, !summary.isEmpty {
                     Text(summary)
-                        .font(.system(size: UIMetrics.fontCaption))
-                        .foregroundStyle(AislopdeskTheme.fgDim)
+                        // P3b: the sub-line is subordinate telemetry — DSFont.caption (10pt) textTertiary.
+                        .dsFont(.caption)
+                        .foregroundStyle(DSColor.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -233,20 +277,28 @@ private struct SessionRow: View {
             livenessGlyph
             AgentStatusDot(status: agentStatus, size: UIMetrics.scaled(8))
         }
-        .padding(.horizontal, UIMetrics.spacing3)
-        .padding(.vertical, UIMetrics.spacing2)
-        .background(headerBackground, in: RoundedRectangle(cornerRadius: UIMetrics.radiusLG, style: .continuous))
-        // Selection = fill + accent EDGE: a 2pt leading accent bar carries the primary "this is selected"
-        // signal alongside the soft plate, the Linear/Raycast idiom. Shown only on the active row.
+        // P3b: row padding migrates to the 4pt scale via the live-scale `.dsSpace` path — 6pt H / 4pt V.
+        .dsSpace(.horizontal, 6)
+        .dsSpace(.vertical, 4)
+        // P3b: selected ⇒ selectionWash (accent·0.18) which CLEARLY beats hover ⇒ hoverFill (white·0.05);
+        // idle ⇒ clear. The `.background(_, in:)` clip applies only to THIS fill shape — the accent bar below
+        // is a sibling `.overlay`, so it is NOT clipped by the 8pt corner.
+        .background(rowFill, in: RoundedRectangle(cornerRadius: DSRadius.lg, style: .continuous))
+        // P3b SELECTION = fill + accent EDGE: a 3pt accent leading bar carries the primary "this is selected"
+        // signal alongside the wash (the Linear/Raycast idiom). It is an `.overlay` (NOT a child of the
+        // `.background(_, in:)` fill) so the 8pt corner radius never clips it; it spans the FULL row height
+        // (no vertical inset) as a plain `Rectangle` — `DSColor.accentSolid`, 3pt wide, pinned `.leading`.
+        // `.allowsHitTesting(false)` so the decorative bar NEVER steals the row tap (select / double-tap
+        // rename still fire across the full row). Shown only on the active row — additive, never dims peers.
         .overlay(alignment: .leading) {
             if isActive {
-                RoundedRectangle(cornerRadius: UIMetrics.scaled(1), style: .continuous)
-                    .fill(AislopdeskTheme.accent)
-                    .frame(width: UIMetrics.scaled(2))
-                    .padding(.vertical, UIMetrics.spacing2)
+                Rectangle()
+                    .fill(DSColor.accentSolid)
+                    .frame(width: UIMetrics.scaled(3))
+                    .allowsHitTesting(false)
             }
         }
-        .contentShape(RoundedRectangle(cornerRadius: UIMetrics.radiusLG, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: DSRadius.lg, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(displayName)
         .accessibilityAddTraits(isActive ? .isSelected : [])
@@ -262,10 +314,10 @@ private struct SessionRow: View {
 // MARK: - SessionIcon (Muxy's `projectIcon`: the rounded badge + active ring + top-trailing completion)
 
 /// The session's rounded icon: a continuous `surface`-filled rounded square holding the session's initial,
-/// with the rolled-up completion badge overlaid top-trailing. The active row's selection signal is the 2pt
-/// leading accent bar + soft plate on `SessionRow` (the single accent cue); to avoid stacking three accent
-/// strokes on one row the icon keeps only a quiet neutral `border` frame (no accent ring), bumping just its
-/// foreground/letter weight when active.
+/// with the rolled-up completion badge overlaid top-trailing. The active row's selection signal is the 3pt
+/// leading accent bar + `selectionWash` plate on `SessionRow` (the single accent cue); to avoid stacking
+/// accent strokes on one row the icon keeps only a quiet neutral `border` frame (no accent ring), bumping
+/// just its foreground/letter weight when active — monochrome glyph at `fgMuted`/`fg`.
 private struct SessionIcon: View {
     let session: Session
     let isActive: Bool
@@ -309,19 +361,42 @@ private struct SessionIcon: View {
 private struct SidebarFooter: View {
     let onNewSession: () -> Void
 
+    @State private var hovered = false
+
     var body: some View {
-        HStack(spacing: UIMetrics.spacing2) {
-            IconButton(symbol: "plus", accessibilityLabel: "New Session") { onNewSession() }
-                .help("New Session")
-            Text("New Session")
-                .font(.system(size: UIMetrics.fontEmphasis))
-                .foregroundStyle(AislopdeskTheme.fgMuted)
-            Spacer()
+        // P3b: ONE full-width Button wrapping icon+label so the WHOLE row is the hit target (the old layout
+        // put the "New Session" Text OUTSIDE the IconButton, so the label beside the icon was non-tappable —
+        // only the small plus glyph fired). `Label{}` weight-matches the SF Symbol (.medium) to the .body
+        // text so icon + label read as one type system; `.contentShape(Rectangle())` makes the icon, label,
+        // AND the trailing space all hittable.
+        Button(action: onNewSession) {
+            Label {
+                Text("New Session")
+                    .dsFont(.body)
+            } icon: {
+                Image(systemName: "plus")
+                    .font(.system(size: UIMetrics.scaled(13), weight: .medium))
+            }
+            .foregroundStyle(DSColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, UIMetrics.spacing3)
+            .padding(.vertical, UIMetrics.spacing2)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, UIMetrics.spacing3)
-        .padding(.vertical, UIMetrics.spacing2)
-        // Match the sidebar's raised elevation so the footer doesn't read as a different surface.
-        .background(AislopdeskTheme.bgRaised)
+        .buttonStyle(.plain)
+        .help("New Session")
+        // Match the sidebar's L3 chrome elevation (base layer) so the footer doesn't read as a different
+        // surface, then lay the translucent hover wash (white·0.05) ON TOP via a ZStack so it tints the
+        // chrome rather than being painted over by it. P3b.
+        .background {
+            ZStack {
+                DSColor.chrome
+                if hovered { DSColor.hoverFill }
+            }
+        }
+        #if os(macOS)
+        .onHover { hovered = $0 }
+        #endif
     }
 }
 #endif

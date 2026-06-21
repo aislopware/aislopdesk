@@ -4,13 +4,15 @@ import SwiftUI
 
 // MARK: - PaneStatusBar (the bottom status strip — Muxy ProjectStatusBar)
 
-/// The 28pt bottom status bar (Muxy `ProjectStatusBar`): since the Muxy redesign removed the per-pane
-/// header, the FOCUSED pane's connection dot / title / RTT / agent status live here instead — one quiet
-/// strip at the bottom of the detail rather than a header bar on every pane. The bar is the theme `bg`
-/// with a 1px `border` hairline along its TOP edge; the left side carries a kind glyph + the display
-/// title, the right CLUSTER carries the live status (running / agent / RTT) split by 1px vertical
-/// separators. Reads the same shared ``PanePresentation`` derivations the old header used, so nothing
-/// drifts; reading the `@Observable` handle re-renders the strip as the focused pane's status changes.
+/// The DS-density bottom status bar (Muxy `ProjectStatusBar`, default `DSSpace.statusBarHeight` = 26pt):
+/// since the Muxy redesign removed the per-pane header, the FOCUSED pane's connection dot / title / RTT /
+/// agent status live here instead — one quiet strip at the bottom of the detail rather than a header bar on
+/// every pane. P3b: the bar is `DSColor.chrome` (L3, n3 — a step above the `paneBg` content it summarises)
+/// with a 1px `borderComponent` (white·0.11) hairline along its TOP edge; the LEFT identity cluster carries
+/// a semibold kind glyph + the display title as the HEADING, the right CLUSTER carries the subordinate live
+/// telemetry (running / agent / RTT) split by 1px vertical separators. Reads the same shared
+/// ``PanePresentation`` derivations the old header used, so nothing drifts; reading the `@Observable` handle
+/// re-renders the strip as the focused pane's status changes.
 struct PaneStatusBar: View {
     @Bindable var store: WorkspaceStore
 
@@ -30,15 +32,19 @@ struct PaneStatusBar: View {
             if let id = resolvedPaneID, let spec = store.tree.spec(for: id) {
                 content(id: id, spec: spec)
             } else {
-                // Guard nil focus: render an empty 28pt bar so the shell keeps its bottom strip.
+                // Guard nil focus: render an empty bar so the shell keeps its bottom strip.
                 Spacer()
             }
         }
         .padding(.horizontal, AislopdeskTheme.Space.l)
-        .frame(height: AislopdeskTheme.Metrics.statusBarHeight)
-        .background(AislopdeskTheme.bg)
+        // P3b: the status bar is L3 chrome, so its height comes from the DS density token (default 26) and
+        // its bg is `DSColor.chrome` (n3), a step above the `paneBg` content it summarises.
+        .frame(height: DSSpace.statusBarHeight)
+        .background(DSColor.chrome)
         .overlay(alignment: .top) {
-            Rectangle().fill(AislopdeskTheme.border).frame(height: 1)
+            // The chrome-meets-content top hairline reads at `borderComponent` (white·0.11) — a visible
+            // seam, vs the old near-invisible `border` (white·0.07).
+            Rectangle().fill(DSColor.borderComponent).frame(height: 1)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Status bar")
@@ -47,36 +53,65 @@ struct PaneStatusBar: View {
         }
     }
 
+    // MARK: - Pure telemetry transforms (unit-tested headlessly — no SwiftUI layout)
+
+    /// The RTT label, a PURE function of milliseconds: "<1ms" for a sub-millisecond ping, else a rounded
+    /// integer + "ms". Extracted so the format (which must pair with `.monospacedDigit()` to never jitter)
+    /// is testable. `ms` is in practice a VALIDATED non-nil measured Double (from `PanePresentation.latencyMS`),
+    /// but a TOTAL formatter must not be able to crash the GUI on a single bad sample: a non-finite `ms`
+    /// (NaN — for which `ms < 1` is `false` — or ±inf, which overflows `Int`) would trap in `Int(_:)`, so we
+    /// guard finiteness up front and emit the em-dash placeholder. The `< 1` boundary is then a plain ordered
+    /// comparison on a finite value.
+    static func rttLabel(_ ms: Double) -> String {
+        guard ms.isFinite else { return "—" }
+        return ms < 1 ? "<1ms" : "\(Int(ms.rounded()))ms"
+    }
+
+    /// The RTT colour, a PURE function of the over-threshold flag: amber (``DSColor/statusYellow``) when the
+    /// ping is past the "this will feel laggy" line, else the subordinate ``DSColor/textTertiary``. The
+    /// threshold comparison (`ms > 100`) is computed by the caller on a validated Double; this maps the
+    /// resolved boolean to a colour so the telemetry colour rule is documented + testable.
+    @MainActor
+    static func rttColor(overThreshold: Bool) -> Color {
+        overThreshold ? DSColor.statusYellow : DSColor.textTertiary
+    }
+
     @ViewBuilder
     private func content(id: PaneID, spec: PaneSpec) -> some View {
         let handle = store.handle(for: id)
         let status = PanePresentation.connectionStatus(handle)
         let running = PanePresentation.isRunning(handle)
 
-        // Left: kind glyph + display title (PanePresentation.displayTitle).
+        // LEFT identity cluster — the HEADING (P3b): a semibold kind glyph + a footnote-medium title at
+        // `textSecondary`, clearly heavier than the right-side telemetry so the strip reads identity-first.
         Image(systemName: PaneLeafView.icon(for: spec.kind))
-            .font(.system(size: UIMetrics.fontCaption, weight: .semibold))
-            .foregroundStyle(AislopdeskTheme.fgMuted)
+            .font(.system(size: DSScale.scaled(11), weight: .semibold))
+            .foregroundStyle(DSColor.textSecondary)
             .accessibilityHidden(true)
         Text(PanePresentation.displayTitle(handle, spec: spec))
-            .font(.system(size: UIMetrics.fontCaption))
-            .foregroundStyle(AislopdeskTheme.fgMuted)
+            // P3b: footnote (11pt) + .medium weight, textSecondary — the heading role (heavier than the
+            // caption2 telemetry, which is 9pt regular textTertiary).
+            .dsFont(.footnote)
+            .fontWeight(.medium)
+            .foregroundStyle(DSColor.textSecondary)
             .lineLimit(1)
             .truncationMode(.middle)
 
         Spacer(minLength: AislopdeskTheme.Space.m)
 
-        // Right cluster: PaneStatusDot · running · AgentStatusDot · RTT, split by 1px separators.
+        // RIGHT cluster — TELEMETRY, subordinate (P3b): every item is caption2 (9pt) textTertiary, numeric
+        // values `.monospacedDigit()`. Split by 1px separators, each with `DSSpace.s2` breathing room per
+        // side. Order: PaneStatusDot · running · AgentStatusDot · RTT · sync · copy.
         separator
         PaneStatusDot(status: status, running: running, size: UIMetrics.scaled(7))
 
         if running {
             separator
             Text("running…")
-                .font(.system(size: UIMetrics.fontMicro))
-                // Routed through the semantic statusYellow token (matches the RTT amber below) so the
-                // whole right cluster shares one palette — no raw system .orange sitting beside it.
-                .foregroundStyle(AislopdeskTheme.statusYellow)
+                // Subordinate telemetry size (caption2 9pt) in the semantic statusYellow token (matches the
+                // RTT amber) so the whole right cluster shares one palette — no raw system .orange.
+                .dsFont(.caption2)
+                .foregroundStyle(DSColor.statusYellow)
                 .lineLimit(1)
         }
 
@@ -86,16 +121,15 @@ struct PaneStatusBar: View {
             AgentStatusDot(status: store.agentStatus(for: id), size: UIMetrics.scaled(7))
         }
 
-        // Live RTT (the same smoothed app-layer ping the old header showed): amber past 100ms.
+        // Live RTT (the same smoothed app-layer ping the old header showed): amber past 100ms. The label +
+        // colour route through the pure `rttLabel` / `rttColor` transforms; `.monospacedDigit()` keeps the
+        // numeric column from jittering as the value updates.
         if case .connected = status.phase, let ms = PanePresentation.latencyMS(handle) {
             separator
-            Text(ms < 1 ? "<1ms" : "\(Int(ms.rounded()))ms")
-                .font(.system(size: UIMetrics.fontMicro).monospacedDigit())
-                // Amber past 100ms (the "this will feel laggy" line) — routed through the semantic
-                // statusYellow token for palette consistency; fgDim for the ok case.
-                .foregroundStyle(ms > 100
-                    ? AnyShapeStyle(AislopdeskTheme.statusYellow)
-                    : AnyShapeStyle(AislopdeskTheme.fgDim))
+            Text(Self.rttLabel(ms))
+                .dsFont(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(Self.rttColor(overThreshold: ms > 100))
                 .help("Round-trip time to the host")
         }
 
@@ -105,8 +139,8 @@ struct PaneStatusBar: View {
         {
             separator
             Label("sync", systemImage: "keyboard.badge.ellipsis")
-                .font(.system(size: UIMetrics.fontMicro))
-                .foregroundStyle(AislopdeskTheme.accent)
+                .dsFont(.caption2)
+                .foregroundStyle(DSColor.accentSolid)
                 .help(
                     "Sync Input to All Panes is ON — keystrokes are mirrored to every pane in this tab (⌘⇧I to toggle)",
                 )
@@ -117,17 +151,25 @@ struct PaneStatusBar: View {
         if store.isCopyMode(for: id) {
             separator
             Label("COPY", systemImage: "doc.on.clipboard")
-                .font(.system(size: UIMetrics.fontMicro))
-                .foregroundStyle(AislopdeskTheme.accent)
+                .dsFont(.caption2)
+                .foregroundStyle(DSColor.accentSolid)
                 .help("Copy mode — keyboard scrollback navigation (q/Esc to exit)")
         }
+
+        // P3b: a trailing pad (DSSpace.s4 = 8pt) AFTER the right cluster so the last chip anchors to the
+        // edge with breathing room rather than butting the window edge. `.dsSpace` keeps it on the
+        // live-scale path.
+        Color.clear.frame(width: 0).dsSpace(.trailing, 8)
     }
 
     /// A 1px vertical separator between right-cluster items (Muxy `ProjectStatusBar.separator`), ~14pt tall.
+    /// P3b: `borderSubtle` colour + `DSSpace.s2` (4pt) breathing room on EACH side (via `.dsSpace`) so the
+    /// separators don't share the dense HStack item gap — each gets its own air.
     private var separator: some View {
         Rectangle()
-            .fill(AislopdeskTheme.border)
+            .fill(DSColor.borderSubtle)
             .frame(width: 1, height: 14)
+            .dsSpace(.horizontal, 4)
             .accessibilityHidden(true)
     }
 }

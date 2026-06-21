@@ -32,8 +32,23 @@ struct DividerHandleView: View {
     @State private var hovering = false
     @GestureState private var dragging = false
 
+    /// Reduce-Motion gate: the at-rest↔accent seam fade is tokenized motion, so it honours the system
+    /// preference (via ``DSMotion/resolve(_:reduceMotion:)`` → a near-instant crossfade) per the spec's
+    /// Motion section, rather than hardcoding the 0.13s ease.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// Active = hovered OR mid-drag → the seam line washes to accent (Muxy `active`).
     private var active: Bool { hovering || dragging }
+
+    /// The seam line colour, a PURE function of `active` (P3b). At REST the seam is
+    /// ``DSColor/borderComponent`` (white·0.11) — discoverable over the sunken gutter but recessive (the
+    /// legacy `AislopdeskTheme.border` = white·0.07 was invisible dark-on-dark, the "can't find the seam"
+    /// bug). Hover/drag washes to ``DSColor/focusRing`` (== accentSolid). Extracted so the at-rest-discoverable
+    /// vs active-accent mapping is unit-testable headlessly.
+    @MainActor
+    static func lineColor(active: Bool) -> Color {
+        active ? DSColor.focusRing : DSColor.borderComponent
+    }
 
     var body: some View {
         let isHorizontal = handle.axis == .horizontal
@@ -53,10 +68,18 @@ struct DividerHandleView: View {
         // crisp hairline rather than the old fat fill band.
         Color.clear
             .overlay {
-                // The crisp 1px hairline at the band's centre — `border` at rest, `accent` when active.
+                // The crisp 1px hairline at the band's centre. P3b: `DSColor.borderComponent` (white·0.11) at
+                // REST — discoverable over the sunken gutter, vs the old invisible `AislopdeskTheme.border`
+                // (white·0.07) — washing to `DSColor.focusRing` (accent) when active, via `Self.lineColor`.
+                // The colour swap eases with `DSMotion.hover` (0.13s easeOut), collapsed to a near-instant
+                // crossfade under Reduce Motion via `DSMotion.resolve`. The animation is STRICTLY
+                // `value:`-scoped to `active` so it ONLY animates the at-rest↔accent colour fade — it must NOT
+                // animate the `.position` relocations during a SplitTreeView relayout (an unscoped
+                // `.animation` here would make the divider slide on resize).
                 Rectangle()
-                    .fill(active ? AislopdeskTheme.accent : AislopdeskTheme.border)
+                    .fill(Self.lineColor(active: active))
                     .frame(width: isHorizontal ? 1 : nil, height: isHorizontal ? nil : 1)
+                    .animation(DSMotion.resolve(DSMotion.hover, reduceMotion: reduceMotion), value: active)
             }
             .frame(
                 width: isHorizontal ? UIMetrics.resizeHandleHitArea : handle.rect.width,
