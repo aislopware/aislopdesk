@@ -1,10 +1,11 @@
 # Aislopdesk
 
 Aislopdesk drives a remote Mac from another Apple device. A macOS **host** exposes its
-shells and windows; macOS and iOS/iPadOS **clients** present them as an infinite canvas of
-panes. A pane is either a terminal or a live GUI window, and you mix both on the same
-canvas. The usual setup is a shell and **Claude Code** running on a workstation, driven from
-a laptop or iPad with no perceptible lag.
+shells and windows; macOS and iOS/iPadOS **clients** present them as a tiling workspace of
+panes — sessions grouped by host, tabs per session, and recursive splits per tab, with
+optional floating scratch panes on top. A pane is either a terminal or a live GUI window,
+and you mix both in the same workspace. The usual setup is several shells and **Claude Code**
+agents running on a workstation, supervised from a laptop or iPad with no perceptible lag.
 
 Two things make that work:
 
@@ -21,8 +22,10 @@ Build floor is macOS 26 / iOS 26 (`Package.swift` pins `.v26`). The terminal ren
 
 ## The workspace
 
-The client is one pan-and-zoom canvas. Each pane connects to the host over the transport
-that fits its content:
+The client is a coding-IDE shell: a sessions sidebar grouped by host, a tab bar per session,
+and a recursive split tree per tab (panes split vertically or horizontally and tile
+n-ary). Any pane can pop out as a movable, resizable **floating scratch pane** that persists
+across reloads. Each pane connects to the host over the transport that fits its content:
 
 **Terminal panes** stream raw VT bytes from a host PTY over TCP and render them with
 libghostty — a full terminal, so vim, tmux, and the Claude Code TUI all work as if local.
@@ -40,6 +43,20 @@ window with CGEvent.
 Alongside the panes, a **read-only Claude Code inspector** tails the JSONL transcript and
 hooks on a second TCP connection and surfaces tool calls, subagents, and todos. It only
 observes the transcript; it never drives the agent.
+
+Because the point is supervising several agents at once, the workspace is built around a
+**"which agent needs me?" loop**. The host detects a `claude` running in any terminal pane
+and tracks its state (idle / working / blocked / done); the client renders that as a
+concentric attention ring (red when an agent is blocked on a permission prompt, green when
+done) that shows even on a background pane, plus tab glow, an OS notification on the edge, and
+**jump-to-unread** (⌘⇧U) to focus the oldest pane needing attention. The app never adds its
+own approval gate — it surfaces the agent's own blocked state and lets you type the answer;
+the security boundary stays the network. The same status is exposed headlessly through
+`aislopdesk-ctl`: a push events stream and per-pane state so an orchestrator can supervise
+without polling. Other workspace conveniences: **sync-input** (⌘⇧I) fans keystrokes to every
+pane in a tab, and a keyboard **copy-mode** (⌘⇧C) navigates and copies scrollback with
+tmux/zellij-style keys. The UI is a modern dark IDE — pane focus ring, elevation, semantic
+status accents, and a glass command palette — over the libghostty surfaces.
 
 The three transports share nothing — separate sockets, message sets, and version constants.
 The host rejects any version other than `1` rather than negotiating.
