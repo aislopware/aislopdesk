@@ -231,8 +231,8 @@ private struct TabCell: View {
                 .foregroundStyle(isActive ? AislopdeskTheme.fg : AislopdeskTheme.fgMuted)
                 .overlay(alignment: .topTrailing) { unreadDot }
                 .overlay(alignment: .bottomLeading) { syncInputDot }
-            AgentStatusDot(status: agentStatus, size: 6)
-            CompletionBadge(badge: completion, size: 6)
+            AgentStatusDot(status: agentStatus, size: UIMetrics.scaled(6))
+            CompletionBadge(badge: completion, size: UIMetrics.scaled(6))
             if !titleHidden {
                 Text(title)
                     .font(.system(size: UIMetrics.fontBody))

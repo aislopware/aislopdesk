@@ -68,20 +68,22 @@ struct PaneStatusBar: View {
 
         // Right cluster: PaneStatusDot · running · AgentStatusDot · RTT, split by 1px separators.
         separator
-        PaneStatusDot(status: status, running: running, size: 7)
+        PaneStatusDot(status: status, running: running, size: UIMetrics.scaled(7))
 
         if running {
             separator
             Text("running…")
                 .font(.system(size: UIMetrics.fontMicro))
-                .foregroundStyle(.orange)
+                // Routed through the semantic statusYellow token (matches the RTT amber below) so the
+                // whole right cluster shares one palette — no raw system .orange sitting beside it.
+                .foregroundStyle(AislopdeskTheme.statusYellow)
                 .lineLimit(1)
         }
 
         // The per-pane Claude/agent status dot (hidden when `.none`).
         if store.agentStatus(for: id) != .none {
             separator
-            AgentStatusDot(status: store.agentStatus(for: id), size: 7)
+            AgentStatusDot(status: store.agentStatus(for: id), size: UIMetrics.scaled(7))
         }
 
         // Live RTT (the same smoothed app-layer ping the old header showed): amber past 100ms.
@@ -89,7 +91,11 @@ struct PaneStatusBar: View {
             separator
             Text(ms < 1 ? "<1ms" : "\(Int(ms.rounded()))ms")
                 .font(.system(size: UIMetrics.fontMicro).monospacedDigit())
-                .foregroundStyle(ms > 100 ? AnyShapeStyle(.orange) : AnyShapeStyle(AislopdeskTheme.fgDim))
+                // Amber past 100ms (the "this will feel laggy" line) — routed through the semantic
+                // statusYellow token for palette consistency; fgDim for the ok case.
+                .foregroundStyle(ms > 100
+                    ? AnyShapeStyle(AislopdeskTheme.statusYellow)
+                    : AnyShapeStyle(AislopdeskTheme.fgDim))
                 .help("Round-trip time to the host")
         }
 

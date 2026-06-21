@@ -354,6 +354,8 @@ private struct WorkspaceOverlayModals: ViewModifier {
         content
             .overlay { CommandPaletteView(store: store, isPresented: $showPalette) }
             .overlay { KeyboardCheatSheetView(isPresented: $showCheatSheet, liveModel: store.liveModel) }
+            // The palette's .scale(0.97)/.opacity entrance rides a soft, quick spring (spec F).
+            .animation(.smooth(duration: 0.16), value: showPalette)
             .animation(.easeOut(duration: 0.12), value: showCheatSheet)
     }
 }

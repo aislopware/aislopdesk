@@ -67,7 +67,9 @@ struct SplitTreeView: View {
             // remount), re-publish its solved layout so geometric focus moves resolve against it.
             .onChange(of: isActive) { _, active in if active { reportLayout(placement) } }
         }
-        .background(AislopdeskTheme.bg) // Muxy: the gutter between split panes is the solid theme bg.
+        // Elevation: the gutter between split panes is the SUNKEN floor (one step below `bg`) so the
+        // `bg` pane cards read as raised. The half-gap padding around each leaf exposes this gutter.
+        .background(AislopdeskTheme.bgSunken)
     }
 
     // MARK: Leaf

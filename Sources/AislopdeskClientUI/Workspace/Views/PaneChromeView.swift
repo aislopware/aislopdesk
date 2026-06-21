@@ -5,9 +5,15 @@ import SwiftUI
 // MARK: - PaneChromeView (chrome-less on the tree shell; compact header on iOS carousel)
 
 /// Wraps every leaf's content. The Muxy redesign makes the IDE tree shell CHROME-LESS: no per-pane
-/// header, no border stroke, no focus ring, no opacity dim — focus lives on the TAB (its bottom accent
-/// line), not the pane. The focused pane is full-opacity and seamless with its split siblings; the
+/// header, no opacity dim. The focused pane is full-opacity and seamless with its split siblings; the
 /// bottom ``PaneStatusBar`` surfaces the focused pane's connection / title / RTT / agent state.
+///
+/// FOCUS RING (P2 polish): on a SPLIT tab the card border becomes a soft accent FOCUS RING on the
+/// focused leaf (accent·0.55, 1.5pt) and a neutral hairline (`border`, 1pt) on the others — the
+/// Linear/Raycast "active surface" cue. This intentionally reverses the earlier "no focus ring, focus
+/// lives on the tab only" stance (the tab accent line still marks the active TAB; the ring marks the
+/// active PANE within a split). The hard invariant that survives: NEVER dim an inactive pane — both
+/// panes stay full-opacity; only the border colour/width changes.
 ///
 /// The iOS compact carousel keeps a slim header (``showsHeader == true``): a single carousel pane has no
 /// tab strip, so its header is the only place to surface the title + split/zoom/close controls. All
@@ -19,8 +25,8 @@ struct PaneChromeView<Content: View>: View {
     let spec: PaneSpec
     /// The live session, for the header status dot (read-only).
     let handle: (any PaneSessionHandle)?
-    /// Whether this pane is focused. On the chrome-less tree shell this is IGNORED for visuals (focus is
-    /// shown on the tab); it still tints the compact carousel header.
+    /// Whether this pane is focused. On the tree shell this drives the soft accent FOCUS RING (see the
+    /// type doc); it also tints the compact carousel header.
     let isFocused: Bool
     /// Whether the tab is currently maximized on THIS pane (flips the maximize button's glyph/intent).
     let isZoomed: Bool
@@ -33,6 +39,23 @@ struct PaneChromeView<Content: View>: View {
     /// The wrapped content (the leaf view).
     @ViewBuilder let content: () -> Content
 
+    #if os(macOS)
+    /// Whether THIS view's window is the key window. A FREE SwiftUI environment value (no NSWindow access,
+    /// hang-safe) — when the window is backgrounded the focus ring falls back to the neutral border so a
+    /// backgrounded window doesn't show a stale accent ring. On iOS this value is always `.active`, so the
+    /// ring gates on `isFocused` alone there.
+    @Environment(\.controlActiveState) private var controlActiveState
+    #endif
+
+    /// Whether the soft accent focus ring should show: the leaf is focused AND (on macOS) its window is key.
+    private var ringActive: Bool {
+        #if os(macOS)
+        return isFocused && controlActiveState == .key
+        #else
+        return isFocused
+        #endif
+    }
+
     var body: some View {
         if showsHeader {
             // The compact carousel keeps a slim header over the content (no tab strip to carry focus).
@@ -44,14 +67,15 @@ struct PaneChromeView<Content: View>: View {
             }
             .background(AislopdeskTheme.bg)
         } else {
-            // The IDE tree shell: CHROME-LESS pane body — no per-pane header, no focus ring, no opacity
-            // dim (focus is shown by the tab's bottom accent line). The Warp "floating card" look:
-            // 8pt continuous rounded corners + a soft 1px fg@10% border so each pane reads as a
-            // raised card floating on the `bg` gutter that SplitTreeView's half-gap padding exposes.
+            // The IDE tree shell: CHROME-LESS pane body — no per-pane header, no opacity dim. The Warp
+            // "floating card" look: 8pt continuous rounded corners floating on the sunken gutter that
+            // SplitTreeView's half-gap padding exposes.
             //
-            // BORDER: uniform across ALL panes (no dim, no conditional focus tint) — the invariant from
-            // the design spec. The accent-line on the active TAB is the focus cue; the card border is
-            // purely structural chrome.
+            // BORDER → FOCUS RING: the focused pane gets a soft accent ring (accent·0.55, 1.5pt); the
+            // others keep the neutral `border` hairline (1pt). NEVER an opacity dim on the inactive
+            // branch — both panes stay full-opacity; only the border colour/width changes (the documented
+            // hard invariant). The tab's bottom accent line still marks the active TAB; this ring marks
+            // the active PANE within a split.
             //
             // METAL CLIPPING: SwiftUI `.clipShape` clips the SwiftUI render tree but NOT the hosted
             // AppKit/UIKit sublayer that libghostty installs (the IOSurfaceLayer — see
@@ -67,7 +91,13 @@ struct PaneChromeView<Content: View>: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: AislopdeskTheme.Radius.pane, style: .continuous)
-                        .strokeBorder(AislopdeskTheme.border, lineWidth: 1),
+                        .strokeBorder(
+                            ringActive
+                                ? AnyShapeStyle(AislopdeskTheme.accent.opacity(0.55))
+                                : AnyShapeStyle(AislopdeskTheme.border),
+                            lineWidth: ringActive ? 1.5 : 1,
+                        )
+                        .animation(.easeInOut(duration: 0.15), value: ringActive),
                 )
         }
     }

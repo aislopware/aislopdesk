@@ -29,6 +29,12 @@ enum AislopdeskTheme {
     /// hair lighter than `bg`; use `surface` / `surface12` for translucent overlays in the chrome).
     static let bgRaised = Color(red: 0.122, green: 0.122, blue: 0.118) // ~#1F1F1E (warm raised)
 
+    /// The DEEPEST elevation level — one subtle step BELOW `bg` (~2% luminance). Used as the gutter
+    /// "canvas behind cards": the SplitTreeView seam + the outer half-gap padding paint this so the
+    /// `bg` panes read as raised cards floating on a sunken floor. The 3-step ladder is
+    /// `bgRaised` (sidebar) > `bg` (pane card) > `bgSunken` (gutter) — present but deliberately subtle.
+    static let bgSunken = Color(red: 0.063, green: 0.067, blue: 0.063) // ~#101110 (gutter behind panes)
+
     /// The foreground (text/icon) base — a warm off-white (Muxy: `fg` = terminal foreground color).
     /// Warmed slightly toward Warp Phenomenon's #FAF9F6 for a richer reading tone while staying
     /// cohesive with the dark chrome (was #E2E5EC, now #EAE8E3).
@@ -87,6 +93,23 @@ enum AislopdeskTheme {
         #endif
     }()
 
+    // MARK: Semantic status accents (state colours — NOT the interactive accent)
+
+    /// Saturated, FIXED-hue status colours (sRGB literals, NOT system colours) so they read identically
+    /// regardless of the user's macOS accent or appearance. The chrome reserves `accent` for the active
+    /// /focus signal; these four carry SEMANTIC state — connection / agent / telemetry health — so a
+    /// "working" or "down" cue never collides with the user's accent. Each has a soft `.opacity(0.15)`
+    /// fill twin for plate backgrounds.
+    static let statusBlue = Color(red: 0.341, green: 0.757, blue: 1.0) // #57C1FF (active / in-flight)
+    static let statusGreen = Color(red: 0.349, green: 0.831, blue: 0.600) // #59D499 (ok / done)
+    static let statusRed = Color(red: 1.0, green: 0.380, blue: 0.380) // #FF6161 (down / blocked)
+    static let statusYellow = Color(red: 1.0, green: 0.773, blue: 0.200) // #FFC533 (degraded / caution)
+    /// Soft `.15` fill twins for status plates / wash backgrounds.
+    static let statusBlueSoft = statusBlue.opacity(0.15)
+    static let statusGreenSoft = statusGreen.opacity(0.15)
+    static let statusRedSoft = statusRed.opacity(0.15)
+    static let statusYellowSoft = statusYellow.opacity(0.15)
+
     /// A warning / caution tint (Muxy `warning` = the active theme's bright-yellow palette slot, falling
     /// back to `systemYellow`). We use `systemYellow` directly per the contract.
     static let warning = Color(.systemYellow)
@@ -100,6 +123,8 @@ enum AislopdeskTheme {
     static let nsFg = NSColor(srgbRed: 0.918, green: 0.910, blue: 0.890, alpha: 1.0) // ~#EAE8E3
     /// Secondary foreground as an `NSColor` (fg · 0.65 — matches `fgMuted`).
     static let nsFgMuted = nsFg.withAlphaComponent(0.65)
+    /// The sunken gutter as an `NSColor` for AppKit views (matches `bgSunken` ~#101110).
+    static let nsBgSunken = NSColor(srgbRed: 0.063, green: 0.067, blue: 0.063, alpha: 1.0) // ~#101110
     #endif
 
     // MARK: Color scheme
@@ -205,6 +230,30 @@ struct ChromeIconButton: View {
         #endif
             .help(help)
             .accessibilityLabel(help)
+    }
+}
+
+// MARK: - Glass surface helper (transient overlays only)
+
+extension View {
+    /// Backs a TRANSIENT overlay (the ⌘K palette, future floating/peek overlays) with a glass surface.
+    /// On macOS 26 / iOS 26 it uses the native `.glassEffect(.regular,…)`; on older OSes it falls back to
+    /// `.ultraThinMaterial` plus a hairline `border` stroke so the look degrades gracefully.
+    ///
+    /// HARD RULE (one-surface invariant): NEVER call this on a content / terminal / GUI-video pane or the
+    /// full window — glass is reserved for transient floating chrome, so the window keeps reading as one
+    /// solid theme surface with the terminal.
+    @ViewBuilder
+    func glassedSurface(corner: CGFloat) -> some View {
+        if #available(macOS 26.0, iOS 26.0, *) {
+            glassEffect(.regular, in: .rect(cornerRadius: corner))
+        } else {
+            background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: corner, style: .continuous)
+                        .strokeBorder(AislopdeskTheme.border, lineWidth: 1),
+                )
+        }
     }
 }
 #endif

@@ -87,6 +87,23 @@ struct PaneConnectionStatus: Equatable {
         }
     }
 
+    /// The dot colour in the premium SEMANTIC status palette (P2 polish) — the same mapping as `color`
+    /// but routed through the fixed-hue `AislopdeskTheme.status*` tokens so the dot reads as one palette
+    /// with the rest of the chrome (green = ok, yellow = degraded/in-flight, red = down, dim = idle).
+    /// A SEPARATE accessor from `color` (which stays pinned to the raw system hues its tests assert) so
+    /// the two never have to diverge from one source. `.none` returns clear (never drawn).
+    var semanticColor: Color {
+        switch phase {
+        case .connecting,
+             .reconnecting: AislopdeskTheme.statusYellow
+        case .connected: AislopdeskTheme.statusGreen
+        case .unreachable,
+             .failed: AislopdeskTheme.statusRed
+        case .idle: AislopdeskTheme.fgDim
+        case .none: .clear
+        }
+    }
+
     /// Whether the dot pulses (the "something is in flight" cue): connecting + reconnecting only.
     var pulses: Bool {
         switch phase {
@@ -227,7 +244,9 @@ struct PaneStatusDot: View {
 
     private var circle: some View {
         Circle()
-            .fill(status.color)
+            // Use the premium SEMANTIC palette (status.semanticColor), not the raw system hues — so the
+            // connection dot reads as one palette with the rest of the chrome.
+            .fill(status.semanticColor)
             .frame(width: size, height: size)
     }
 

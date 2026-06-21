@@ -55,7 +55,7 @@ struct CommandPaletteView: View {
                 backdrop
                 panel
             }
-            .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
         }
     }
 
@@ -79,19 +79,18 @@ struct CommandPaletteView: View {
             Divider()
             resultsList
         }
+        // Fixed-width modal (a palette should not reflow with density) — the frame extents stay literal.
         .frame(maxWidth: 560)
         .frame(maxHeight: 460)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .shadow(color: .black.opacity(0.28), radius: 28, y: 12)
-        .padding(.horizontal, 24)
+        // Glass on the transient ⌘K overlay (the allowed glass case — never on content/terminal panes).
+        // The helper supplies the hairline border, so the manual strokeBorder overlay is gone.
+        .glassedSurface(corner: UIMetrics.radiusXL)
+        .clipShape(RoundedRectangle(cornerRadius: UIMetrics.radiusXL, style: .continuous))
+        .shadow(color: .black.opacity(0.28), radius: UIMetrics.scaled(28), y: UIMetrics.scaled(12))
+        .padding(.horizontal, UIMetrics.spacing9)
         // Sit the card near the top third — Spotlight/Open-Quickly placement, not dead-centre.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 80)
+        .padding(.top, UIMetrics.scaled(80))
         .onAppear {
             resetState()
             searchFocused = true

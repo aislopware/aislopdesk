@@ -59,7 +59,9 @@ struct SplitWorkspaceView: View {
             if !store.sidebarCollapsed {
                 leftNavColumn
                     .frame(width: sidebarWidth)
-                    .background(AislopdeskTheme.bg)
+                    // Elevation: the sidebar is the RAISED level (one step above `bg`) so the reserved
+                    // title-bar drag strip + sessions rail read as a distinct chrome surface.
+                    .background(AislopdeskTheme.bgRaised)
                     .overlay(alignment: .trailing) {
                         Rectangle().fill(AislopdeskTheme.border).frame(width: 1)
                     }
@@ -154,8 +156,11 @@ struct SplitWorkspaceView: View {
                 panesHost(activeTabID: activeTab.id)
                     // Outer half-gap so panes at the window edge float by the same amount as
                     // panes that are interior siblings — the tab strip / status bar / sidebar
-                    // seam shows the `bg` gutter rather than a flush butt joint.
+                    // seam shows the SUNKEN gutter rather than a flush butt joint.
                     .padding(AislopdeskTheme.Space.paneGap / 2)
+                    // Back the half-gap outer padding with the same sunken gutter SplitTreeView paints,
+                    // so the window-edge gutter matches the inter-pane seam (one continuous sunken floor).
+                    .background(AislopdeskTheme.bgSunken)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 PaneStatusBar(store: store)
             }

@@ -29,7 +29,8 @@ struct SessionSidebarView: View {
             Rectangle().fill(AislopdeskTheme.border).frame(height: 1)
             SidebarFooter(onNewSession: newSession)
         }
-        .background(AislopdeskTheme.bg)
+        // Elevation: the sidebar is the RAISED level so it reads a step above the `bg` pane cards.
+        .background(AislopdeskTheme.bgRaised)
     }
 
     // MARK: List (Muxy's `scrollableProjects`: a `ScrollView` of a `LazyVStack` grouped by host)
@@ -167,10 +168,12 @@ private struct SessionRow: View {
         session.name.isEmpty ? "Session" : session.name
     }
 
-    /// Muxy's `headerBackground`: `accentHover` (accent·0.25) when active so the active row reads clearly
-    /// against the `accentSoft` (accent·0.10) icon ring; `hover` (fg·0.06) on hover, else clear.
+    /// The active-row plate. With the 2pt leading accent BAR now carrying the primary "selected" signal,
+    /// the fill softens from `accentHover` (accent·0.25) to `accentSoft` (accent·0.10) so the row reads
+    /// as a quiet selection — bar + subtle wash — rather than a heavy accent tint. `hover` (fg·0.06) on
+    /// hover, else clear.
     private var headerBackground: AnyShapeStyle {
-        if isActive { return AnyShapeStyle(AislopdeskTheme.accentHover) }
+        if isActive { return AnyShapeStyle(AislopdeskTheme.accentSoft) }
         if hovered { return AnyShapeStyle(AislopdeskTheme.hover) }
         return AnyShapeStyle(Color.clear)
     }
@@ -194,6 +197,16 @@ private struct SessionRow: View {
         .padding(.horizontal, UIMetrics.spacing3)
         .padding(.vertical, UIMetrics.spacing2)
         .background(headerBackground, in: RoundedRectangle(cornerRadius: UIMetrics.radiusLG, style: .continuous))
+        // Selection = fill + accent EDGE: a 2pt leading accent bar carries the primary "this is selected"
+        // signal alongside the soft plate, the Linear/Raycast idiom. Shown only on the active row.
+        .overlay(alignment: .leading) {
+            if isActive {
+                RoundedRectangle(cornerRadius: UIMetrics.scaled(1), style: .continuous)
+                    .fill(AislopdeskTheme.accent)
+                    .frame(width: UIMetrics.scaled(2))
+                    .padding(.vertical, UIMetrics.spacing2)
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: UIMetrics.radiusLG, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(displayName)
@@ -210,8 +223,10 @@ private struct SessionRow: View {
 // MARK: - SessionIcon (Muxy's `projectIcon`: the rounded badge + active ring + top-trailing completion)
 
 /// The session's rounded icon: a continuous `surface`-filled rounded square holding the session's initial,
-/// framed by a 1.5pt `accent` ring when active (Muxy's project-icon active indicator), with the rolled-up
-/// completion badge overlaid top-trailing.
+/// with the rolled-up completion badge overlaid top-trailing. The active row's selection signal is the 2pt
+/// leading accent bar + soft plate on `SessionRow` (the single accent cue); to avoid stacking three accent
+/// strokes on one row the icon keeps only a quiet neutral `border` frame (no accent ring), bumping just its
+/// foreground/letter weight when active.
 private struct SessionIcon: View {
     let session: Session
     let isActive: Bool
@@ -236,9 +251,10 @@ private struct SessionIcon: View {
         }
         .frame(width: UIMetrics.iconXXL, height: UIMetrics.iconXXL)
         .overlay {
+            // Neutral hairline only — the row's leading accent bar (SessionRow) is the single "selected"
+            // accent cue, so the icon never adds a second accent stroke.
             RoundedRectangle(cornerRadius: UIMetrics.radiusMD + UIMetrics.scaled(3), style: .continuous)
-                .strokeBorder(isActive ? AislopdeskTheme.accent : .clear, lineWidth: 1.5)
-                .animation(.easeInOut(duration: 0.15), value: isActive)
+                .strokeBorder(AislopdeskTheme.border, lineWidth: 1)
         }
         .overlay(alignment: .topTrailing) {
             CompletionBadge(badge: completion, size: UIMetrics.scaled(8))
@@ -265,7 +281,8 @@ private struct SidebarFooter: View {
         }
         .padding(.horizontal, UIMetrics.spacing3)
         .padding(.vertical, UIMetrics.spacing2)
-        .background(AislopdeskTheme.bg)
+        // Match the sidebar's raised elevation so the footer doesn't read as a different surface.
+        .background(AislopdeskTheme.bgRaised)
     }
 }
 #endif
