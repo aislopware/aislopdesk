@@ -51,17 +51,21 @@ public enum SplitTreeRenderModel {
         }
     }
 
-    /// The full render layout: the visible leaves + their dividers. `dividers` is empty for a single-leaf
-    /// or zoomed tab.
+    /// The full render layout: the visible tiled leaves + their dividers + the floating overlay leaves.
+    /// `dividers` is empty for a single-leaf or zoomed tab; `floatingLeaves` is empty when the tab has no
+    /// floating panes (or is zoomed — zoom hides floats). `floatingLeaves` is ordered by
+    /// `tab.floatingPanes` (z-order: last = topmost) and each rect is already clamped into `bounds`.
     public struct Layout: Equatable, Sendable {
         public let leaves: [PlacedLeaf]
         public let dividers: [DividerHandle]
-        public init(leaves: [PlacedLeaf], dividers: [DividerHandle]) {
+        public let floatingLeaves: [PlacedLeaf]
+        public init(leaves: [PlacedLeaf], dividers: [DividerHandle], floatingLeaves: [PlacedLeaf] = []) {
             self.leaves = leaves
             self.dividers = dividers
+            self.floatingLeaves = floatingLeaves
         }
 
-        public static let empty = Self(leaves: [], dividers: [])
+        public static let empty = Self(leaves: [], dividers: [], floatingLeaves: [])
     }
 
     /// The on-screen thickness of a divider handle's hit/draw band, centered on the seam between two
@@ -73,20 +77,48 @@ public enum SplitTreeRenderModel {
     // MARK: - Entry points
 
     /// The layout for `tab` solved into `bounds` — honors `tab.zoomedPane` (zoom → one full-bounds leaf,
-    /// no dividers) and the floating layer is ignored (MVP `floatingPanes` is always empty).
+    /// no dividers, no floats) and the FLOATING overlay layer.
+    ///
+    /// `floating` carries each floating pane's id paired with its persisted `floatingFrame` (a `nil` frame
+    /// means "never placed" → centered default). The caller (`SplitTreeView`) supplies it from
+    /// `tab.floatingPanes` + `session.specs[id]?.floatingFrame`; this overload clamps each into `bounds`
+    /// and emits `floatingLeaves` in `tab.floatingPanes` order (z-order). A zoomed tab returns no floats.
     public static func layout(
         for tab: Tab,
         in bounds: CGRect,
+        floating: [(id: PaneID, frame: CGRect?)] = [],
         minLeaf: CGSize = SplitLayoutSolver.defaultMinLeaf,
         dividerThickness: CGFloat = Self.dividerThickness,
     ) -> Layout {
-        layout(
+        let base = layout(
             root: tab.root,
             zoomedPane: tab.zoomedPane,
             in: bounds,
             minLeaf: minLeaf,
             dividerThickness: dividerThickness,
         )
+        // A zoomed tab hides floats (one leaf fills the bound). Read the SAME zoom-validity rule the
+        // bare-root overload used (a zoom that names a live leaf) from the one shared `isZoomActive` helper,
+        // so the float-suppression decision can't drift from the base layout's own zoom guard.
+        if isZoomActive(root: tab.root, zoomedPane: tab.zoomedPane) {
+            return base
+        }
+        let floats = floatingLeaves(for: floating, in: bounds)
+        return Layout(leaves: base.leaves, dividers: base.dividers, floatingLeaves: floats)
+    }
+
+    /// Builds the clamped `floatingLeaves` for the given (id, frame?) pairs in order: a `nil` frame centers
+    /// a default rect; a present frame is clamped into `bounds` with the min-size floor. Pure; house float
+    /// idiom (ordered `Double.maximum`/`Double.minimum`, separate `*`/`+`/`/`).
+    static func floatingLeaves(
+        for floating: [(id: PaneID, frame: CGRect?)],
+        in bounds: CGRect,
+    ) -> [PlacedLeaf] {
+        floating.map { entry in
+            let rect = entry.frame.map { WorkspaceTreeOps.clampFloatingFrame($0, in: bounds) }
+                ?? WorkspaceTreeOps.defaultFloatingFrame(in: bounds)
+            return PlacedLeaf(id: entry.id, rect: rect)
+        }
     }
 
     /// The layout for a bare `root` + optional `zoomedPane` solved into `bounds`. Total: a finite bound
@@ -100,7 +132,7 @@ public enum SplitTreeRenderModel {
     ) -> Layout {
         // Zoom: a single leaf fills the whole bound, no dividers. Only honor a zoom that names a leaf that
         // actually exists in the tree (a stale zoom id falls through to the normal tiled layout).
-        if let zoomed = zoomedPane, root.contains(zoomed) {
+        if isZoomActive(root: root, zoomedPane: zoomedPane), let zoomed = zoomedPane {
             return Layout(leaves: [PlacedLeaf(id: zoomed, rect: bounds)], dividers: [])
         }
 
@@ -117,6 +149,15 @@ public enum SplitTreeRenderModel {
         var dividers: [DividerHandle] = []
         collectDividers(root, in: bounds, thickness: dividerThickness, into: &dividers)
         return Layout(leaves: placed, dividers: dividers)
+    }
+
+    /// Whether a zoom is in effect: `zoomedPane` is non-nil AND names a leaf that actually lives in `root`
+    /// (a stale zoom id is ignored → normal tiled layout). The SINGLE source of truth for "is the tab
+    /// zoomed", read by BOTH the bare-root overload (to collapse to one leaf) and the float overload (to
+    /// suppress floats) so the two can never drift.
+    static func isZoomActive(root: SplitNode, zoomedPane: PaneID?) -> Bool {
+        guard let zoomed = zoomedPane else { return false }
+        return root.contains(zoomed)
     }
 
     // MARK: - Divider descent (un-clamped partition → handle rects)

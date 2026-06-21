@@ -227,16 +227,19 @@ public extension TreeWorkspace {
             if !s.tabs.indices.contains(s.activeTabIndex) {
                 s.activeTabIndex = 0
             }
-            // Repair per-tab focus / zoom against the tab's own leaves.
+            // Repair per-tab focus / zoom. The active pane may be a TILED leaf OR a FLOATING pane, so it is
+            // validated against the tab's FULL leaf set (`allPaneIDs()` = tree + floating). Zoom stays
+            // TREE-only — zoom never applies to a float — so its validity is checked against the tree leaves.
             s.tabs = s.tabs.map { tab in
                 var t = tab
-                let leafIDs = Set(t.root.allPaneIDs())
-                if let active = t.activePane, !leafIDs.contains(active) {
-                    t.activePane = t.root.allPaneIDs().first
+                let allLeafIDs = Set(t.allPaneIDs())
+                let treeLeafIDs = Set(t.root.allPaneIDs())
+                if let active = t.activePane, !allLeafIDs.contains(active) {
+                    t.activePane = t.allPaneIDs().first
                 } else if t.activePane == nil {
-                    t.activePane = t.root.allPaneIDs().first
+                    t.activePane = t.allPaneIDs().first
                 }
-                if let zoom = t.zoomedPane, !leafIDs.contains(zoom) {
+                if let zoom = t.zoomedPane, !treeLeafIDs.contains(zoom) {
                     t.zoomedPane = nil
                 }
                 return t

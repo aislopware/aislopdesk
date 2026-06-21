@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // MARK: - Identity
@@ -152,6 +153,19 @@ public struct PaneSpec: Sendable, Equatable {
     /// ``WorkspacePersistence/loadTree()``). Read-only from the client perspective.
     public var lastKnownTitle: String?
 
+    // MARK: Floating overlay field (additive — schema v11)
+
+    /// Non-`nil` marks this pane as a **floating** (scratch) pane that overlays the tiled layout instead
+    /// of occupying a tree leaf rect (zellij-style floating panes). The rect is expressed in the
+    /// `SplitTreeView` bounds coordinate space (top-left origin) and is the pane's last placed frame; the
+    /// render model (``SplitTreeRenderModel/Layout/floatingLeaves``) clamps it into the live container on
+    /// every layout, so a stale/oversized persisted rect can never escape the viewport. A pane that has
+    /// never floated (or one that was embedded back into the tree) has `nil` here and tiles normally. The
+    /// pane's membership in the floating layer is owned by ``Tab/floatingPanes``; this rect is just its
+    /// geometry. Additive: a v10/v11 file written before this field decodes `nil` (tiled). `CGRect` is
+    /// `Codable`/`Equatable`/`Sendable`, so the auto-synthesis on ``PaneSpec`` still holds.
+    public var floatingFrame: CGRect?
+
     public init(
         kind: PaneKind,
         title: String,
@@ -160,6 +174,7 @@ public struct PaneSpec: Sendable, Equatable {
         resumeLastReceivedSeq: Int64? = nil,
         lastKnownCwd: String? = nil,
         lastKnownTitle: String? = nil,
+        floatingFrame: CGRect? = nil,
     ) {
         self.kind = kind
         self.title = title
@@ -168,6 +183,7 @@ public struct PaneSpec: Sendable, Equatable {
         self.resumeLastReceivedSeq = resumeLastReceivedSeq
         self.lastKnownCwd = lastKnownCwd
         self.lastKnownTitle = lastKnownTitle
+        self.floatingFrame = floatingFrame
     }
 }
 
@@ -182,6 +198,7 @@ extension PaneSpec: Codable {
         case resumeLastReceivedSeq
         case lastKnownCwd
         case lastKnownTitle
+        case floatingFrame
     }
 
     public init(from decoder: any Decoder) throws {
@@ -193,6 +210,7 @@ extension PaneSpec: Codable {
         resumeLastReceivedSeq = try c.decodeIfPresent(Int64.self, forKey: .resumeLastReceivedSeq)
         lastKnownCwd = try c.decodeIfPresent(String.self, forKey: .lastKnownCwd)
         lastKnownTitle = try c.decodeIfPresent(String.self, forKey: .lastKnownTitle)
+        floatingFrame = try c.decodeIfPresent(CGRect.self, forKey: .floatingFrame)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -204,6 +222,7 @@ extension PaneSpec: Codable {
         try c.encodeIfPresent(resumeLastReceivedSeq, forKey: .resumeLastReceivedSeq)
         try c.encodeIfPresent(lastKnownCwd, forKey: .lastKnownCwd)
         try c.encodeIfPresent(lastKnownTitle, forKey: .lastKnownTitle)
+        try c.encodeIfPresent(floatingFrame, forKey: .floatingFrame)
     }
 }
 

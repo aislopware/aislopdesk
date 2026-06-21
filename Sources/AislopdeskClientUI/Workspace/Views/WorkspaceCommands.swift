@@ -126,6 +126,11 @@ public struct WorkspaceCommands: Commands {
         actionButton("Split Right", .splitRight)
         actionButton("Split Down", .splitDown)
         actionButton("Break Pane to Tab", .breakPaneToTab)
+        // Floating panes (zellij toggle-float / new floating pane). A registry binding fires ONLY via its
+        // menu item (there is no NSEvent monitor — sync-input / jumpToAttention prove the pattern), so these
+        // two menu items are what make ⌘⇧F / ⌃⌘F actually dispatch.
+        actionButton("Float Pane", .toggleFloat)
+        actionButton("New Floating Pane", .spawnFloating)
         actionButton("Rename Tab…", .renamePane) // ITEM B1: ⌘⇧R renames the active tab on the tree shell
 
         Divider()

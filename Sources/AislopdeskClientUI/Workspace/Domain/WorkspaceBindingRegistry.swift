@@ -18,6 +18,8 @@ public enum WorkspaceAction: Hashable, Sendable {
     case renamePane // ⌘⇧R — rename the active TAB on the tree shell (opens its tab-strip inline field);
     // the active canvas pane on the retained-but-dead canvas path
     case breakPaneToTab // ⌃⌘T — eject the active pane into a new tab
+    case toggleFloat // ⌘⇧F — float / embed the active pane (zellij toggle-float)
+    case spawnFloating // ⌃⌘F — spawn a new floating scratch pane
 
     // Move pane (Zellij "move pane" — swap with the geometric neighbour)
     case movePaneLeft // ⌥⌘⇧←
@@ -104,7 +106,8 @@ public extension WorkspaceAction {
              .focusRight,
              .focusUp,
              .focusDown,
-             .toggleZoom:
+             .toggleZoom,
+             .toggleFloat: // needs a pane to float/embed
             true
         case .find,
              .commandNavigator,
@@ -126,6 +129,7 @@ public extension WorkspaceAction {
              .closeTab,
              .toggleSidebar,
              .newSession,
+             .spawnFloating, // creates its own pane — needs none
              .toggleSyncInput, // the tab must exist, but the palette can still show it (mirrors .newTab)
              .jumpToAttention: // acts globally across all tabs/sessions — needs no active pane
             false
@@ -215,6 +219,19 @@ public enum WorkspaceBindingRegistry {
             id: "pane.breakToTab", action: .breakPaneToTab, title: "Break Pane to Tab",
             category: .panes, chord: KeyChord(character: "t", [.control, .command]),
             symbol: "rectangle.portrait.and.arrow.right", keywords: "eject move detach pop out promote",
+        ),
+        // Floating panes (zellij toggle-float / new floating pane). ⌘⇧F floats/embeds the active pane
+        // (⌘F is find, so ⌘⇧F is free); ⌃⌘F spawns a new floating scratch pane (the "F = float" family,
+        // ⌃⌘F free vs the used ⌃⌘O/R/N/T/=). Both verified unique by `TreeCommandRoutingTests`.
+        WorkspaceBinding(
+            id: "pane.toggleFloat", action: .toggleFloat, title: "Float Pane",
+            category: .panes, chord: KeyChord(character: "f", [.command, .shift]),
+            symbol: "macwindow", keywords: "float overlay scratch detach embed unfloat windowed",
+        ),
+        WorkspaceBinding(
+            id: "pane.spawnFloating", action: .spawnFloating, title: "New Floating Pane",
+            category: .panes, chord: KeyChord(character: "f", [.control, .command]),
+            symbol: "plus.rectangle.on.rectangle", keywords: "new floating scratch overlay terminal window",
         ),
         // Move pane (Zellij "move pane" — swap with the geometric neighbour). ⌥⌘⇧+arrows = the focus chords
         // (⌥⌘arrows) with ⇧ added, so they read as "carry the pane along the focus move" and stay distinct

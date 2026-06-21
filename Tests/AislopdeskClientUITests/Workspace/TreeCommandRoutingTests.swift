@@ -278,6 +278,59 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(chord(.balancePanes), KeyChord(character: "=", [.control, .command]), "balance = ⌃⌘=")
     }
 
+    // MARK: - Floating panes (P5a): chord pins + routing
+
+    /// The two floating-pane chords are the documented free defaults: ⌘⇧F float-toggle, ⌃⌘F new-floating.
+    /// Pinning them here makes a future rebind/typo a loud failure (the uniqueness test only catches a
+    /// COLLISION, not a wrong-but-unique value).
+    func testFloatingPaneChordsAreTheDocumentedDefaults() {
+        func chord(_ action: WorkspaceAction) -> KeyChord? {
+            WorkspaceBindingRegistry.binding(for: action)?.chord
+        }
+        XCTAssertEqual(chord(.toggleFloat), KeyChord(character: "f", [.command, .shift]), "toggle float = ⌘⇧F")
+        XCTAssertEqual(chord(.spawnFloating), KeyChord(character: "f", [.control, .command]), "new floating = ⌃⌘F")
+    }
+
+    /// `.toggleFloat` on a 2-leaf tab moves the active pane into the floating layer (and keeps it as the
+    /// active pane); routing it again embeds it back.
+    func testToggleFloatRoutesPaneIntoAndOutOfFloatingLayer() throws {
+        let ws0 = TreeWorkspace.singlePane(spec: PaneSpec(kind: .terminal, title: "a"))
+        let a = ws0.allPaneIDs()[0]
+        let (ws1, b) = WorkspaceTreeOps.splitPane(
+            a, axis: .horizontal, newSpec: PaneSpec(kind: .terminal, title: "b"), in: ws0,
+        )
+        let store = makeTreeStore(restoringTree: ws1)
+        store.focusPaneTree(b)
+
+        route(.toggleFloat, store)
+        var tab = try XCTUnwrap(store.tree.activeSession?.activeTab)
+        XCTAssertTrue(tab.floatingPanes.contains(b), "the active pane floated")
+        XCTAssertFalse(tab.root.contains(b), "and left the tiled tree")
+        XCTAssertNotNil(store.tree.spec(for: b)?.floatingFrame, "with a stamped frame")
+        XCTAssertEqual(leaves(store).count, 2, "no leaf was torn down — the float is still a leaf")
+
+        route(.toggleFloat, store)
+        tab = try XCTUnwrap(store.tree.activeSession?.activeTab)
+        XCTAssertFalse(tab.floatingPanes.contains(b), "routing again embeds it back")
+        XCTAssertTrue(tab.root.contains(b))
+        XCTAssertNil(store.tree.spec(for: b)?.floatingFrame, "the frame is cleared on embed")
+    }
+
+    /// `.spawnFloating` mints a NEW floating pane (a new leaf, materialized) without touching the tiled tree.
+    func testSpawnFloatingAddsAFloatingLeaf() throws {
+        let store = makeTreeStore()
+        let before = Set(leaves(store))
+
+        route(.spawnFloating, store)
+
+        let after = Set(leaves(store))
+        let newID = try XCTUnwrap(after.subtracting(before).first, "a new leaf was minted")
+        let tab = try XCTUnwrap(store.tree.activeSession?.activeTab)
+        XCTAssertTrue(tab.floatingPanes.contains(newID), "the new pane is floating")
+        XCTAssertFalse(tab.root.contains(newID), "and NOT in the tiled tree")
+        XCTAssertNotNil(store.tree.spec(for: newID)?.floatingFrame)
+    }
+
     // MARK: - Sessions: new session changes the active session + materializes its leaf
 
     /// `.newSession` adds a session (one tab/leaf) and selects it; its leaf is materialized.

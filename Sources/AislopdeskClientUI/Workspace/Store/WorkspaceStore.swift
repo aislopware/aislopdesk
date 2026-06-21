@@ -230,6 +230,13 @@ public final class WorkspaceStore {
     /// solves a multi-pane layout — `.next`/`.previous` still work via the pre-order cycle fallback).
     private var lastSolvedLayout: SolvedLayout?
 
+    /// The full `SplitTreeView` container bounds (origin .zero, `geo.size`) the active tab last reported via
+    /// ``updateFloatingBounds(_:)`` — the TRUE float viewport. The render model (`SplitTreeView`) clamps a
+    /// float's placement against this same rect, so the store's commit-clamp and the view's place-clamp
+    /// share one coordinate space (no edge-discrepancy from the leaf-union approximation). `nil` until the
+    /// view reports one → ``floatingViewportBounds`` falls back to the leaf-union, then a sane default.
+    private var lastFloatingBounds: CGRect?
+
     /// The last viewport size the canvas view reported (docs/30 §5.3). Used by new-pane placement, the
     /// in-view guarantee, and the centre/tidy camera ops so the store can position panes without the
     /// view passing a size into every mutation. A nominal desktop default until the view reports one.
@@ -354,6 +361,14 @@ public final class WorkspaceStore {
     /// View-only state — does NOT touch the tree or registry, so reporting it never reconciles.
     public func updateSolvedLayout(_ solved: SolvedLayout) {
         lastSolvedLayout = solved
+    }
+
+    /// The active-tab `SplitTreeView` reports its FULL container bounds (origin .zero, `geo.size`) so the
+    /// floating layer's commit-clamp matches the view's place-clamp exactly (the float coordinate space).
+    /// View-only state — never touches the tree, so reporting it never reconciles.
+    public func updateFloatingBounds(_ bounds: CGRect) {
+        guard bounds.width.isFinite, bounds.height.isFinite, bounds.width > 0, bounds.height > 0 else { return }
+        lastFloatingBounds = bounds
     }
 
     // MARK: - Group mutations (pure op → reconcile; groups are metadata, so reconcile only persists)
@@ -2472,8 +2487,15 @@ public final class WorkspaceStore {
     /// Focuses leaf `id` in the tree (sets its tab's `activePane` + selects that session/tab). The full
     /// leaf set stays registered — a pure active-state change. The IDE shell calls this on a leaf tap.
     public func focusPaneTree(_ id: PaneID) {
-        guard tree.contains(id), tree.activeSession?.activeTab?.activePane != id else { return }
-        tree = WorkspaceTreeOps.focusPane(id, in: tree)
+        guard tree.contains(id) else { return }
+        let alreadyActive = tree.activeSession?.activeTab?.activePane == id
+        // A focused float raises to the front of its tab's z-order (zellij/any WM raises the active float),
+        // so grabbing a card that overlaps a neighbour brings it above. `raiseFloating` is a no-op for a
+        // tiled / already-topmost pane, so this never churns a reconcile when nothing moves.
+        let raised = WorkspaceTreeOps.raiseFloating(id, in: tree)
+        let changedZOrder = raised != tree
+        guard !alreadyActive || changedZOrder else { return }
+        tree = WorkspaceTreeOps.focusPane(id, in: raised)
         reconcileTree()
     }
 
@@ -2505,6 +2527,95 @@ public final class WorkspaceStore {
     public func renameSession(_ sessionID: SessionID, to name: String) {
         tree = WorkspaceTreeOps.renameSession(sessionID, to: name, in: tree)
         reconcileTree()
+    }
+
+    // MARK: - Floating panes (P5a — zellij-style overlay scratch panes)
+
+    /// The live viewport rect the floating layer is placed/clamped into — the union of the frames the
+    /// active-tab `SplitTreeView` last reported via ``updateSolvedLayout(_:)``. Falls back to a sane default
+    /// before the first layout report (so a chord fired before the view laid out still clamps sanely). The
+    /// floating-frame coordinate space IS this rect (top-left origin), matching the render model.
+    private var floatingViewportBounds: CGRect {
+        // Prefer the TRUE container bounds the view reported (shared coordinate space with the render
+        // model's place-clamp). Fall back to the leaf-union (a couple-points smaller at the gutter) then a
+        // sane default before the first report.
+        if let reported = lastFloatingBounds, reported.width > 0, reported.height > 0 {
+            return reported
+        }
+        guard let solved = lastSolvedLayout, !solved.frames.isEmpty else {
+            return CGRect(x: 0, y: 0, width: 1280, height: 800)
+        }
+        var bounds = CGRect.null
+        for rect in solved.frames.values { bounds = bounds.union(rect) }
+        guard !bounds.isNull, bounds.width > 0, bounds.height > 0 else {
+            return CGRect(x: 0, y: 0, width: 1280, height: 800)
+        }
+        return bounds
+    }
+
+    /// Toggles the active tab's active pane between tiled and floating (the ⌘⇧F "Float Pane" entry). A
+    /// no-op when there is no active pane, or when it is its tab's only tiled leaf (floating it would empty
+    /// the tree — the op guards this). Reconcile keeps every leaf mounted (a float is just placed by its
+    /// frame instead of a solver rect — no teardown).
+    public func toggleFloatActivePane(embedAnchor: PaneID? = nil) {
+        guard let active = tree.activeSession?.activeTab?.activePane else { return }
+        let bounds = floatingViewportBounds
+        // Re-use a remembered frame if the pane has floated before, else a centered default.
+        let frame = tree.spec(for: active)?.floatingFrame ?? WorkspaceTreeOps.defaultFloatingFrame(in: bounds)
+        tree = WorkspaceTreeOps.toggleFloating(
+            active, defaultFrame: frame, bounds: bounds, embedAnchor: embedAnchor, in: tree,
+        )
+        reconcileTree()
+    }
+
+    /// The command/menu entry for "Float Pane" (resolves nothing extra — the toggle reads the active pane).
+    public func toggleFloatActivePaneCommand() { toggleFloatActivePane() }
+
+    /// Spawns a BRAND-NEW floating scratch pane of `kind` into the active tab (the ⌃⌘F "New Floating Pane"
+    /// entry). Materialized by reconcile like any new leaf; it overlays the tiled layout centered.
+    public func spawnFloatingPane(kind: PaneKind) {
+        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        let bounds = floatingViewportBounds
+        let frame = WorkspaceTreeOps.defaultFloatingFrame(in: bounds)
+        let (next, _) = WorkspaceTreeOps.spawnFloating(spec, defaultFrame: frame, bounds: bounds, in: tree)
+        tree = next
+        reconcileTree()
+    }
+
+    /// The command/menu entry for "New Floating Pane" — resolves the user's default pane kind (Settings).
+    public func spawnFloatingPaneDefault() { spawnFloatingPane(kind: SettingsKey.defaultPaneKind) }
+
+    /// Commits a floating pane's MOVE (gesture `.onEnded`): writes the new origin (size kept), clamped into
+    /// the viewport. ONE reconcile — the live drag preview is held in the view's `@GestureState`, so this
+    /// never fires per-frame (keystroke/render-path safe).
+    public func moveFloating(_ id: PaneID, to origin: CGPoint) {
+        // A moved float raises to the front + takes focus (you grabbed it), then commits the new origin.
+        let raised = WorkspaceTreeOps.focusPane(id, in: WorkspaceTreeOps.raiseFloating(id, in: tree))
+        tree = WorkspaceTreeOps.moveFloating(id, to: origin, bounds: floatingViewportBounds, in: raised)
+        reconcileTree()
+    }
+
+    /// Commits a floating pane's RESIZE (gesture `.onEnded`): writes the new frame, clamped + min-size
+    /// floored. ONE reconcile (the live resize preview lives in the view's `@GestureState`).
+    public func resizeFloating(_ id: PaneID, to frame: CGRect) {
+        tree = WorkspaceTreeOps.resizeFloating(id, to: frame, bounds: floatingViewportBounds, in: tree)
+        reconcileTree()
+    }
+
+    /// Closes floating pane `id` (its close/embed control's close action) — routes through the shared
+    /// close path, which now drops the float from BOTH the floating layer and the spec table.
+    public func closeFloating(_ id: PaneID) { closePaneTree(id) }
+
+    /// Embeds floating pane `id` back into the tiled tree (the float's "embed" control): focuses it then
+    /// toggles it back. A no-op if it is not floating.
+    public func embedFloating(_ id: PaneID) {
+        guard tree.spec(for: id)?.floatingFrame != nil else { return }
+        // Remember the pane the user was last on (a TILED leaf) BEFORE focus moves to the float, so the
+        // embedded card re-inserts next to where focus was rather than always next to the first leaf.
+        let prior = tree.activeSession?.activeTab?.activePane
+        let anchor = prior.flatMap { tree.spec(for: $0)?.floatingFrame == nil ? $0 : nil }
+        tree = WorkspaceTreeOps.focusPane(id, in: tree)
+        toggleFloatActivePane(embedAnchor: anchor)
     }
 
     // MARK: - Tree command-routing conveniences (W6 — the keyboard/menu/palette entry points)

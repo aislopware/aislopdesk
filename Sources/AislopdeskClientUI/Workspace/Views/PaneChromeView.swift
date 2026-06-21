@@ -37,6 +37,12 @@ struct PaneChromeView<Content: View>: View {
     /// FALSE — Muxy has NO per-pane header (the tab strip is the only header; focus is the tab's accent
     /// line). The iOS compact carousel keeps it TRUE.
     var showsHeader: Bool = true
+    /// Whether this chrome is mounted INSIDE a floating card (``FloatingPaneView``). When true the FLOATING
+    /// CARD border is the single focus authority, so the chrome-less branch SUPPRESSES its own accent focus
+    /// ring (keeping only the neutral hairline so the content keeps its rounded edge) to avoid a redundant
+    /// double ring (outer card edge + inner pane edge). The P3 attention ring is UNAFFECTED — it must stay
+    /// visible on a float (that is the whole point of P3).
+    var isFloating: Bool = false
     /// The wrapped content (the leaf view).
     @ViewBuilder let content: () -> Content
 
@@ -49,7 +55,10 @@ struct PaneChromeView<Content: View>: View {
     #endif
 
     /// Whether the soft accent focus ring should show: the leaf is focused AND (on macOS) its window is key.
+    /// SUPPRESSED for a floating mount — the floating card's own border is the focus authority there, so the
+    /// inner chrome must not draw a second concentric ring.
     private var ringActive: Bool {
+        guard !isFloating else { return false }
         #if os(macOS)
         return isFocused && controlActiveState == .key
         #else

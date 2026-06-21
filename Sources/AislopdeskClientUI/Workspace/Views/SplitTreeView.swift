@@ -34,16 +34,37 @@ struct SplitTreeView: View {
     var body: some View {
         GeometryReader { geo in
             let bounds = CGRect(origin: .zero, size: geo.size)
-            let layout = SplitTreeRenderModel.layout(for: tab, in: bounds)
+            // The floating layer's persisted frames (id → spec.floatingFrame); feeds the render model so a
+            // floated leaf is placed by its frame (clamped) instead of the solver rect.
+            let floating = tab.floatingPanes.map { (id: $0, frame: store.tree.spec(for: $0)?.floatingFrame) }
+            let layout = SplitTreeRenderModel.layout(for: tab, in: bounds, floating: floating)
             let visible = Set(layout.leaves.map(\.id))
             let placement = Dictionary(layout.leaves.map { ($0.id, $0.rect) }, uniquingKeysWith: { a, _ in a })
+            let floatingPlacement = Dictionary(
+                layout.floatingLeaves.map { ($0.id, $0.rect) }, uniquingKeysWith: { a, _ in a },
+            )
 
             ZStack(alignment: .topLeading) {
-                // Every leaf of the tab is mounted once (so libghostty surfaces persist across zoom / tab
-                // switches). A visible leaf sits at its solved rect; a hidden one (zoomed-away) stays
-                // mounted at opacity 0 with hit-testing off.
+                // Every leaf of the tab is mounted ONCE (so libghostty surfaces persist across zoom / tab /
+                // float toggles — a float↔tile toggle is a pure geometry change here, the `.id(PaneID)` host
+                // never moves between containers → true no-teardown). A tiled leaf sits at its solved rect; a
+                // FLOATING leaf is placed by its (clamped) floating frame, raised + wrapped in the floating
+                // card chrome; a hidden one (zoomed-away) stays mounted at opacity 0 with hit-testing off.
                 ForEach(tab.allPaneIDs(), id: \.self) { id in
-                    leaf(id: id, rect: placement[id] ?? bounds, isVisible: visible.contains(id))
+                    if let floatRect = floatingPlacement[id] {
+                        FloatingPaneView(
+                            store: store,
+                            tab: tab,
+                            id: id,
+                            rect: floatRect,
+                            bounds: bounds,
+                        ) { embeddedRect, isVisibleFloat in
+                            leaf(id: id, rect: embeddedRect, isVisible: isVisibleFloat, isFloating: true)
+                        }
+                        .zIndex(2)
+                    } else {
+                        leaf(id: id, rect: placement[id] ?? bounds, isVisible: visible.contains(id))
+                    }
                 }
 
                 // Dividers between adjacent siblings (none when zoomed / single-leaf). Each converts a pixel
@@ -57,15 +78,17 @@ struct SplitTreeView: View {
                         pairPixelLength: pairPixelLength(for: divider, in: bounds),
                         store: store,
                     )
+                    .zIndex(1)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            // Report the solved active-tab layout so geometric focus moves resolve against these rects.
-            .onChange(of: geo.size) { _, _ in reportLayout(placement) }
-            .onAppear { reportLayout(placement) }
+            // Report the solved active-tab layout so geometric focus moves resolve against these rects, and
+            // the FULL container bounds so the floating layer's commit-clamp matches the view's place-clamp.
+            .onChange(of: geo.size) { _, _ in reportLayout(placement, bounds: bounds) }
+            .onAppear { reportLayout(placement, bounds: bounds) }
             // When this tab BECOMES the active one (a tab/session switch flips it visible without a
             // remount), re-publish its solved layout so geometric focus moves resolve against it.
-            .onChange(of: isActive) { _, active in if active { reportLayout(placement) } }
+            .onChange(of: isActive) { _, active in if active { reportLayout(placement, bounds: bounds) } }
         }
         // Elevation: the gutter between split panes is the SUNKEN floor (one step below `bg`) so the
         // `bg` pane cards read as raised. The half-gap padding around each leaf exposes this gutter.
@@ -75,7 +98,7 @@ struct SplitTreeView: View {
     // MARK: Leaf
 
     @ViewBuilder
-    private func leaf(id: PaneID, rect: CGRect, isVisible: Bool) -> some View {
+    private func leaf(id: PaneID, rect: CGRect, isVisible: Bool, isFloating: Bool = false) -> some View {
         let spec = store.tree.spec(for: id) ?? PaneSpec(kind: .terminal, title: "Terminal")
         PaneChromeView(
             id: id,
@@ -85,6 +108,7 @@ struct SplitTreeView: View {
             isZoomed: tab.zoomedPane == id,
             store: store,
             showsHeader: false, // Muxy: no per-pane header — the tab strip is the only header.
+            isFloating: isFloating, // float card border owns focus → inner chrome skips its accent ring
         ) {
             PaneLeafView(
                 handle: store.handle(for: id),
@@ -94,8 +118,10 @@ struct SplitTreeView: View {
                 store: store,
             )
         }
-        // Half-gap around every leaf so sibling halves form a full `paneGap`-pt gutter.
-        .padding(AislopdeskTheme.Space.paneGap / 2)
+        // Half-gap around every TILED leaf so sibling halves form a full `paneGap`-pt gutter. A FLOATING
+        // mount drops it — the card already provides the frame, so the content fills flush to the card
+        // interior (no card-bg hairline sliver around the terminal).
+        .padding(isFloating ? 0 : AislopdeskTheme.Space.paneGap / 2)
         .frame(width: rect.width, height: rect.height)
         .position(x: rect.midX, y: rect.midY)
         // The no-teardown trick: a zoomed-away leaf stays MOUNTED but invisible + inert.
@@ -141,11 +167,12 @@ struct SplitTreeView: View {
         }
     }
 
-    private func reportLayout(_ placement: [PaneID: CGRect]) {
+    private func reportLayout(_ placement: [PaneID: CGRect], bounds: CGRect) {
         // Only the on-screen tab owns the store's solved layout (focus-resolver source of truth); a hidden
         // mounted tab must NOT overwrite it.
         guard isActive else { return }
         store.updateSolvedLayout(SolvedLayout(frames: placement))
+        store.updateFloatingBounds(bounds)
     }
 }
 #endif

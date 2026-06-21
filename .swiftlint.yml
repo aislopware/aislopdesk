@@ -239,7 +239,16 @@ type_body_length:
   # entry points — `@Observable` synthesises on stored properties so they must live in the main
   # class body; all broadcast logic lives in `WorkspaceStore+SyncInput.swift`. Stored-property
   # cluster only, not bloat.
-  warning: 1720
+  # 1720 → 1760 (2026-06-21): WorkspaceStore gains the P5a floating-pane entry points
+  # (toggleFloatActivePane / spawnFloatingPane / move·resize·close·embedFloating + the
+  # floatingViewportBounds derivation) — thin wrappers over the pure WorkspaceTreeOps floating ops that
+  # carry the viewport-bounds resolution + the `tree`-setter (private(set), only settable in the main
+  # body) that an extension can't reach. Wrapper cluster, not bloat.
+  # 1760 → 1780 (2026-06-21): P5a finalize — WorkspaceStore gains the `lastFloatingBounds` STORED state +
+  # `updateFloatingBounds` (the float viewport now shares one coordinate space with the render model's
+  # place-clamp) and the z-order `raiseFloating` / embed-anchor wiring in focusPaneTree·moveFloating·
+  # embedFloating. `@Observable` synthesises on the stored property so it must live in the main body.
+  warning: 1780
   error: 2700
 
 function_body_length:
