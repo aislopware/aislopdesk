@@ -17,6 +17,8 @@ struct VerticalTabRail: View {
     let store: WorkspaceStore
 
     @State private var searchText = ""
+    /// The row whose kebab (⋮) context menu is open (nil ⇒ none). One-at-a-time.
+    @State private var kebabRow: PaneID?
 
     private var allRows: [RailRow] { RailRowsBuilder.rows(for: store) }
     private var rows: [RailRow] { RailRowsBuilder.filtered(allRows, query: searchText) }
@@ -38,6 +40,18 @@ struct VerticalTabRail: View {
                                 row: row,
                                 onSelect: { select(row) },
                                 onClose: { store.requestClosePaneTree(row.id) },
+                                onKebab: { kebabRow = (kebabRow == row.id) ? nil : row.id },
+                                kebabMenuShown: Binding(
+                                    get: { kebabRow == row.id },
+                                    set: { kebabRow = $0 ? row.id : nil },
+                                ),
+                                kebabMenu: {
+                                    ThemedContextMenu(
+                                        items: ContextMenuModel.tabItems(paneID: row.id, tabID: row.tabID),
+                                        store: store,
+                                        onDismiss: { kebabRow = nil },
+                                    )
+                                },
                             )
                         }
                     }

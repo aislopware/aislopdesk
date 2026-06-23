@@ -23,7 +23,7 @@ enum PaneHeaderControls {
     static func controlsRevealed(isHovered: Bool, isActive: Bool) -> Bool { isHovered || isActive }
 }
 
-struct PaneHeader: View {
+struct PaneHeader<OverflowMenu: View>: View {
     @Environment(\.theme) private var theme
 
     let title: String
@@ -32,10 +32,32 @@ struct PaneHeader: View {
     /// Whether the pane lives in a split (gates the × close button).
     let isInSplit: Bool
 
-    var onClose: () -> Void = {}
-    var onOverflow: () -> Void = {}
+    let onClose: () -> Void
+    let onOverflow: () -> Void
+    /// Whether the ⋮ overflow context menu is presented (bound by the parent — L5).
+    let overflowMenuShown: Binding<Bool>
+    /// The themed context-menu content shown in a popover anchored on the ⋮ button.
+    @ViewBuilder let overflowMenu: () -> OverflowMenu
 
     @State private var hovering = false
+
+    init(
+        title: String,
+        isActive: Bool,
+        isInSplit: Bool,
+        onClose: @escaping () -> Void = {},
+        onOverflow: @escaping () -> Void = {},
+        overflowMenuShown: Binding<Bool> = .constant(false),
+        @ViewBuilder overflowMenu: @escaping () -> OverflowMenu,
+    ) {
+        self.title = title
+        self.isActive = isActive
+        self.isInSplit = isInSplit
+        self.onClose = onClose
+        self.onOverflow = onOverflow
+        self.overflowMenuShown = overflowMenuShown
+        self.overflowMenu = overflowMenu
+    }
 
     /// Matched edge-column width so the title stays optically centered (spec §2.1; 2 icons ⋮+× = 52pt,
     /// clamped to the terminal-pane max of 200 / a sensible min).
@@ -61,6 +83,10 @@ struct PaneHeader: View {
                 Spacer(minLength: 0)
                 if PaneHeaderControls.showsOverflow(controlsRevealed: revealed) {
                     IconButton(systemName: "ellipsis", help: "Pane menu", action: onOverflow)
+                        .popover(isPresented: overflowMenuShown, arrowEdge: .top) {
+                            overflowMenu()
+                                .environment(\.theme, theme)
+                        }
                 }
                 if PaneHeaderControls.showsClose(isInSplit: isInSplit, controlsRevealed: revealed) {
                     IconButton(systemName: "xmark", help: "Close pane", action: onClose)
@@ -74,5 +100,22 @@ struct PaneHeader: View {
         .background(Color.clear)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+    }
+}
+
+extension PaneHeader where OverflowMenu == EmptyView {
+    /// Convenience init with no overflow menu (snapshots / previews).
+    init(
+        title: String,
+        isActive: Bool,
+        isInSplit: Bool,
+        onClose: @escaping () -> Void = {},
+        onOverflow: @escaping () -> Void = {},
+    ) {
+        self.init(
+            title: title, isActive: isActive, isInSplit: isInSplit,
+            onClose: onClose, onOverflow: onOverflow,
+            overflowMenuShown: .constant(false), overflowMenu: { EmptyView() },
+        )
     }
 }

@@ -20,15 +20,35 @@ struct RailRow: Identifiable, Equatable {
     let isSelected: Bool
 }
 
-struct TabRow: View {
+struct TabRow<KebabMenu: View>: View {
     @Environment(\.theme) private var theme
 
     let row: RailRow
     let onSelect: () -> Void
     let onClose: () -> Void
-    var onKebab: () -> Void = {}
+    let onKebab: () -> Void
+    /// Whether the kebab (⋮) context menu is presented (bound by the rail — L5).
+    let kebabMenuShown: Binding<Bool>
+    /// The themed context-menu content shown in a popover anchored on the kebab button.
+    @ViewBuilder let kebabMenu: () -> KebabMenu
 
     @State private var hovering = false
+
+    init(
+        row: RailRow,
+        onSelect: @escaping () -> Void,
+        onClose: @escaping () -> Void,
+        onKebab: @escaping () -> Void = {},
+        kebabMenuShown: Binding<Bool> = .constant(false),
+        @ViewBuilder kebabMenu: @escaping () -> KebabMenu,
+    ) {
+        self.row = row
+        self.onSelect = onSelect
+        self.onClose = onClose
+        self.onKebab = onKebab
+        self.kebabMenuShown = kebabMenuShown
+        self.kebabMenu = kebabMenu
+    }
 
     var body: some View {
         Button(action: onSelect) {
@@ -89,9 +109,12 @@ struct TabRow: View {
 
     /// The hover-revealed floating close/kebab pill (warp-vertical-tabs.md §5.1).
     @ViewBuilder private var actionPill: some View {
-        if hovering {
+        if hovering || kebabMenuShown.wrappedValue {
             HStack(spacing: WarpSpace.xxs) {
                 pillButton(systemName: "ellipsis", action: onKebab)
+                    .popover(isPresented: kebabMenuShown, arrowEdge: .leading) {
+                        kebabMenu().environment(\.theme, theme)
+                    }
                 pillButton(systemName: "xmark", action: onClose)
             }
             .padding(WarpSpace.xxs)
@@ -118,5 +141,20 @@ struct TabRow: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+extension TabRow where KebabMenu == EmptyView {
+    /// Convenience init with no kebab menu (snapshots / previews).
+    init(
+        row: RailRow,
+        onSelect: @escaping () -> Void,
+        onClose: @escaping () -> Void,
+        onKebab: @escaping () -> Void = {},
+    ) {
+        self.init(
+            row: row, onSelect: onSelect, onClose: onClose, onKebab: onKebab,
+            kebabMenuShown: .constant(false), kebabMenu: { EmptyView() },
+        )
     }
 }

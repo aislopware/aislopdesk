@@ -18,6 +18,8 @@ struct PaneContainer: View {
     /// The single live preferences owner (injected at the scene root) — the agent footer's W4
     /// notification dismissal/enable persistence. `nil` outside the app scene (tests/previews).
     @Environment(\.preferencesStore) private var preferences
+    /// The overlay coordinator (palette / settings / toasts) — the footer's "open settings" hook (L5).
+    @Environment(\.overlayCoordinator) private var overlayCoordinator
 
     let store: WorkspaceStore
     let paneID: PaneID
@@ -31,6 +33,9 @@ struct PaneContainer: View {
     /// The Claude-Code bottom-bar coordinator — built lazily once per pane (PaneContainer is `.id`-keyed
     /// so a fresh `@State` is fine). `nil` until first built.
     @State private var footerCoordinator: AgentInputFooterCoordinator?
+
+    /// Whether the ⋮ pane overflow context menu is presented (L5).
+    @State private var overflowMenuShown = false
 
     /// The live session for this pane (terminal model / input bar / claude status), if materialized.
     private var live: LivePaneSession? { store.handle(for: paneID) as? LivePaneSession }
@@ -59,8 +64,9 @@ struct PaneContainer: View {
         // W1: open the remote-window picker (the full video pane mount is L6). For now this surfaces the
         // intent; TODO(L6): route to RemoteWindowModel.open / the host window picker + video pane mount.
         coordinator.onStartRemoteControl = {}
-        // Route to the coding-agent settings (Settings overlay lands in L5). TODO(L5).
-        coordinator.onOpenSettings = {}
+        // L5: route to the Settings overlay via the single overlay coordinator (injected at the root).
+        let overlay = overlayCoordinator
+        coordinator.onOpenSettings = { [weak overlay] in overlay?.openSettings() }
         coordinator.onAddContext = {}
         // A file chosen in the explorer → insert its path into the prompt (the input-bar compose buffer).
         coordinator.onSelectFile = { [weak inputBar = live?.inputBar] path in
@@ -82,7 +88,17 @@ struct PaneContainer: View {
                 isActive: isFocused,
                 isInSplit: isInSplit,
                 onClose: { store.requestClosePaneTree(paneID) },
-                onOverflow: {}, // pane overflow menu wired in L5
+                onOverflow: { overflowMenuShown.toggle() },
+                overflowMenuShown: $overflowMenuShown,
+                overflowMenu: {
+                    ThemedContextMenu(
+                        items: ContextMenuModel.paneItems(
+                            paneID: paneID, lastKnownCwd: spec?.lastKnownCwd, isInSplit: isInSplit,
+                        ),
+                        store: store,
+                        onDismiss: { overflowMenuShown = false },
+                    )
+                },
             )
             TerminalLeafView(
                 live: live,
