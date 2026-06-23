@@ -155,3 +155,47 @@
 - ✅ **A leak ratchet (`scripts/check-ds-leaks.sh`, wired into `make lint` + CI).** Greps `AislopdeskClientUI` view code (excluding `DesignSystem/` + the legacy shim files) for raw `.font(.system(size:N))` / `cornerRadius:N` and a scrim/shadow-colour scan over the 6 L4 overlay files; the overlay files are un-allowlisted (a new leak there fails immediately), ~10 out-of-scope files carry WARN-only `TODO(ds-migrate)` debt — a ratchet (no NEW leaks) not a one-shot burn-down. Proven by revert-to-confirm-fail.
 - ✅ **Density tiers + tokenized motion + chrome-recede toggles (P5).** `Density {compact 0.92 / default 1.00 / comfortable 1.10}` replaces the font-only `UIScale.Preset`, driving the multiplier (fonts+padding) AND the chrome HEIGHT tokens (taken UNSCALED from the tier so they don't compound) — the end-to-end proof of the live-scale fix. `AISLOPDESK_DENSITY` uses the default-OFF idiom (`== "1"` enables compact). Selection/focus/overlay animations use `DSMotion` springs gated behind `DSMotion.resolve(_, reduceMotion:)` (a translate collapses to opacity-only under Reduce Motion). Persisted Settings toggles let the status bar + block dividers hide so the tool recedes to pure terminal output.
 - Phases (each: map → test-first → 3-lens adversarial review → full gate → HW-verify on macstudio → commit): P1 `cf9dcc8`, P2 `7ac103b`, P3a `a360b74`, P3b `905cb5c`, P4 `ebf6e85`, P5 `60153d4`. No wire change across any phase (golden byte-identical throughout).
+
+## Client UI (chrome) — rewrite as a Warp design-system clone
+
+> Append to `docs/DECISIONS.md` (under a new "## Client UI / design system" section, or after the existing
+> workspace-UI entries). Status legend per the file: ✅ decided · 🔬 needs a measurement spike · ⏸️ deferred · ❓ open.
+
+- ✅ **RE-SCOPE — delete all prior client chrome attempts; rebuild the SwiftUI UI as a 1:1 clone of Warp's design
+  system.** The infinite-canvas → otty flat-reskin → LG-glass / design-system P1–P5 line of chrome work is retired.
+  We delete every view/chrome/design-token file in `AislopdeskClientUI` (and `AislopdeskInspector/InspectorViews`),
+  KEEP all proven logic (the tree-of-intent domain, `WorkspaceStore`, `AppConnection`, terminal/block/search engines,
+  agent-detect, the video/remote-window logic) and KEEP every seam (`TerminalRendererFactory`, `VideoWindowFactory`,
+  `RemoteWindowDiscovery`, `SystemDialogDiscovery`, `TerminalSurface`). The wire/transport/FEC/host/golden core is
+  untouched. → [REBUILD-PLAN], [deletion-manifest], [package-surgery]
+- ✅ **Theme is an abstraction that DEFAULTS to Warp, not a hardcoded skin.** New headless `AislopdeskDesignSystem`
+  module ports Warp's theme MODEL faithfully: a theme = a handful of seeds (`background`/`foreground`/`accent`/
+  `cursor?`/`details`/16 ANSI) + the runtime derivation formulas (`neutral_n` = bg⊕fg@N%, `fg_overlay_n`,
+  `accent_overlay_n`, contrast-picked text tiers, fixed `ui_*` literals). `WarpTheme` carries the Dark seeds
+  verbatim (bg `#000000`, fg `#FFFFFF`, terminal/theme accent teal `#19AAD8`, Darker details). The agentic-UI brand
+  orange is a SEPARATE constant (`#E8704E` color-model / footer brand tint `#D97757`), applied independently of the
+  terminal accent. Future themes/extensions = new seeds + reused derivation. The module builds headless (SwiftUI
+  value types only, no AppKit/UIKit/view bodies) and is unit-pinned, replacing the deleted `DS*Tests`. → [REBUILD-PLAN §1]
+- ✅ **Single source of UI truth = the existing logic; views are thin.** The rebuilt UI binds ONLY the `.tree` path;
+  every mutation goes through `WorkspaceStore` (never write `tree`); each leaf host view is keyed `.id(PaneID)`; the
+  renderer + video views stay behind the seams so the library + tests stay headless (no `SCStream`/`VTCompression*`/
+  `VTDecompression*`/Metal/`TerminalSurface` instantiated in a test). Proven logic is promoted into a new headless
+  `AislopdeskWorkspaceCore` target; the rebuilt `AislopdeskClientUI` depends on Core + DesignSystem. AUTOCONNECT env
+  seams and front-on-autoconnect are preserved in the new App scene. → [REBUILD-PLAN §1/§4], [logic-api-surface]
+- ✅ **Cloned chrome surfaces (committed green, layer by layer):** window top bar (= Warp's 34pt tab bar with native
+  macOS traffic lights + centered omnibar pill), left vertical-tab rail (248pt, control bar, pane-granularity rows
+  with status icon + activity dot), pane split/divider/header (34pt, sub-text centered title, hover ⋮/×, accent corner
+  triangle), terminal blocks + rich input bar + cwd pill, the claude-code agent bottom bar (surface-1 bar of radius-4
+  hairline pills + green suggestion pill), and the overlay set (640×464 command palette / omnibar, 70%-scrim modal,
+  toasts, ⋮ context menu). Build arc L0–L7 (delete+extract → tokens → chrome shell → panes → bottom bar → overlays →
+  remote-window → odiff). → [REBUILD-PLAN §2/§3], [warp-* specs]
+- ✅ **Verification = odiff pixel-diff against Warp, per-component, with class-based acceptance.** Capture Warp
+  reference crops at fixed geometry/zoom; render the SwiftUI app via `scripts/check-macos.sh` (real Aqua + TCC, on
+  macStudio, isolated home :7799) at the same geometry; `scripts/check-odiff.sh` slices the same crops and runs odiff.
+  Flat chrome (bars/fills/borders/radii/overlays) must hit ≤1% changed pixels; text regions accept ≤6–8% (bundle
+  Warp's Hack+Roboto to kill family drift — residual is glyph-edge AA only, since SwiftUI/CoreText ≠ Warp's GPU
+  rasterizer); PTY/agent content + the agent status-hint line are EXCLUDED (they bleed through from libghostty/the CLI
+  agent, not our chrome). → [REBUILD-PLAN §5]
+- ⏸️/❓ **NOT wired today (greenfield, render chrome only):** `/remote-control`, File-explorer, and Rich-Input bottom-bar
+  pills have NO existing logic subsystem; the green "Enable … notifications" suggestion pill has no host wire (dismissal
+  persisted client-side). Build the pills as feature-flag stubs; treat real backing as later feature work. → [REBUILD-PLAN §4.3], [logic-api-surface §5.4]

@@ -21,8 +21,9 @@ targets:
     sources:
       - path: ../Shared
     dependencies:
+      # TODO(L2): retarget to the rebuilt AislopdeskClientUI scene (L0 → AislopdeskWorkspaceCore). WIP.
       - package: Aislopdesk
-        product: AislopdeskClientUI
+        product: AislopdeskWorkspaceCore
       - package: Aislopdesk
         product: AislopdeskVideoClient
     info:

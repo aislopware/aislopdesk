@@ -35,6 +35,18 @@ set -euo pipefail
 cd "$(dirname "${0}")/.."
 
 # ---------------------------------------------------------------------------- #
+# L0 (Warp-clone UI rewrite): the old AislopdeskClientUI view target + its DesignSystem/ tokens were
+# DELETED and the proven logic extracted into the headless AislopdeskWorkspaceCore. Until the rebuilt
+# AislopdeskClientUI + AislopdeskDesignSystem land (L1/L2), there is no VIEW tree to ratchet — exit 0
+# gracefully so `make lint` / `make check` stays green. (T2 will repoint this scan at the new
+# DesignSystem/ClientUI dirs once they exist.)
+if [[ ! -d "Sources/AislopdeskClientUI" && ! -d "Sources/AislopdeskDesignSystem" ]]; then
+  echo "check-ds-leaks: no view target present (Sources/AislopdeskClientUI + Sources/AislopdeskDesignSystem absent) — SKIP (L0)."
+  echo "PASS — nothing to scan yet."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------- #
 # Allowlist: files that legitimately still carry an out-of-P4-scope leak. A match in one of these is a
 # known-debt WARNING, never a failure. The trailing comment is the reason / migration phase. The six P4
 # overlay files (CommandPaletteView, FloatingPaneView, FloatingPaneHandle, PeekReplyView,

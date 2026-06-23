@@ -33,7 +33,7 @@ let package = Package(
         .library(name: "AislopdeskInspector", targets: ["AislopdeskInspector"]),
         .library(name: "AislopdeskClaudeCode", targets: ["AislopdeskClaudeCode"]),
         .library(name: "AislopdeskAgentDetect", targets: ["AislopdeskAgentDetect"]),
-        .library(name: "AislopdeskClientUI", targets: ["AislopdeskClientUI"]),
+        .library(name: "AislopdeskWorkspaceCore", targets: ["AislopdeskWorkspaceCore"]),
         // PATH 2 (GUI video path, Phase 4 / WF-9).
         .library(name: "AislopdeskVideoProtocol", targets: ["AislopdeskVideoProtocol"]),
         .library(name: "AislopdeskVideoHost", targets: ["AislopdeskVideoHost"]),
@@ -128,41 +128,38 @@ let package = Package(
         // Validate-then-drop on every foreign string; no force-unwrap.
         .target(name: "AislopdeskAgentDetect"),
 
-        // Cross-platform SwiftUI client UI (WF-8): the views + @MainActor @Observable
-        // view-models that bind the existing modules — AislopdeskClient (byte pipeline +
-        // reconnect), AislopdeskInspector (read-only structured panel), AislopdeskClaudeCode
-        // (input-box A/B1 affordance), AislopdeskTerminal (the renderer SEAM) — into a
-        // working client.
+        // Headless workspace CORE (L0 of the Warp-clone UI rewrite): the proven logic extracted out
+        // of the dying `AislopdeskClientUI` view target — the tree-of-intent domain value types, the
+        // single `@MainActor @Observable WorkspaceStore` + its extensions, `AppConnection`/
+        // `ConnectionViewModel`, the terminal block/search/context-menu engines, the video &
+        // remote-window LOGIC, `InputBarModel`, the pure iOS input logic, `PreferencesStore`, and the
+        // injection SEAMS (`TerminalRendererFactory`, `VideoWindowFactory`, `RemoteWindowDiscovery`,
+        // `SystemDialogDiscovery`).
         //
-        // The terminal pixels are a SEAM (`TerminalRenderingView`): production =
-        // `GhosttyTerminalView` (Metal-hosted `GhosttySurface`, the gated binding under
-        // ThirdParty/ghostty/integration, compiled only inside the Xcode app target with
-        // the xcframework); the no-framework case shows a labelled BUILD-STATUS
-        // placeholder — build-status telemetry, not a terminal (libghostty is the renderer).
-        //
-        // The iOS UIKit native-feel table-stakes (doc 17 §2.5) live here too: all
-        // timing/threshold/mapping LOGIC is in pure, `#if`-unguarded types
-        // (`KeyRepeater`/`FloatingCursorMapping`/`KeyboardAccessoryDecision`/`InputRouting`)
-        // unit-tested on macOS; the UIKit view wrappers that drive them are `#if os(iOS)`
-        // and are typechecked via an iOS-triple build.
+        // This target imports NO view chrome / design-system tokens — every SwiftUI/AppKit/UIKit
+        // *presentation* file was deleted (D1) and the SEAM placeholder `View` bodies were split out
+        // (A2). The rebuilt `AislopdeskClientUI` (L1+) will be a thin SwiftUI layer over this core +
+        // a new headless `AislopdeskDesignSystem`. The terminal pixels and the remote-GUI video view
+        // stay behind the factory seams so the library + tests stay headless (no libghostty / Metal /
+        // VideoToolbox / SCStream in `swift build` or a test).
         //
         // Builds for macOS 26 + iOS 26 (the deployment floor — no fallback below that).
         .target(
-            name: "AislopdeskClientUI",
+            name: "AislopdeskWorkspaceCore",
             dependencies: [
                 "AislopdeskClient",
                 "AislopdeskTransport",
                 "AislopdeskInspector",
                 "AislopdeskClaudeCode",
                 // W5: the pure headless Claude-status enum (`ClaudeStatus`) the sidebar/chrome dots read.
-                // AgentDetect depends on nothing GUI/transport/video, so this never widens the GUI graph.
+                // AgentDetect depends on nothing GUI/transport/video, so this never widens the graph.
                 "AislopdeskAgentDetect",
                 "AislopdeskTerminal",
                 // W13: the W12 settings MODELS + the pure config bridges (`VideoPreferences`,
                 // `TerminalPreferences`, `AgentPreferences`, `KeybindingPreferences`, `EnvConfig`,
-                // `EnvBridge`, `TerminalConfigBuilder`) the `PreferencesStore` + Settings panels bind to.
+                // `EnvBridge`, `TerminalConfigBuilder`) the `PreferencesStore` binds to.
                 // AislopdeskVideoProtocol is the cross-platform PURE wire/settings target (no
-                // ScreenCaptureKit/VideoToolbox/AppKit), so this does NOT widen the GUI graph with HW deps.
+                // ScreenCaptureKit/VideoToolbox/AppKit), so this does NOT widen the graph with HW deps.
                 "AislopdeskVideoProtocol",
             ],
         ),
@@ -338,16 +335,16 @@ let package = Package(
             name: "AislopdeskClaudeCodeTests",
             dependencies: ["AislopdeskClaudeCode", "AislopdeskHost", "AislopdeskProtocol"],
         ),
-        // WF-8 client UI: the iOS table-stakes PURE logic (key-repeat cadence via an
-        // injected scheduler, floating-cursor delta→arrow mapping, accessory-bar show/hide
-        // decision, IME-vs-key routing) + the view-model state transitions on AislopdeskClient
-        // events (driven by an in-process stub client over loopback). Deterministic, runs
-        // on macOS — the UIKit view wrappers are iOS-gated and typechecked via the iOS
-        // triple build, not here.
+        // L0 workspace-core: the rescued PURE logic tests from the old AislopdeskClientUITests —
+        // the tree-of-intent domain ops, WorkspaceStore reconcile, AppConnection/ConnectionViewModel
+        // lifecycle, the terminal block/search engines, the iOS input timing/mapping logic, the
+        // PreferencesStore, and the video/remote-window logic. Genuinely view-rendering tests
+        // (DS tokens, chrome transforms, palette-entry/sidebar views) were deleted with the views.
+        // Deterministic, runs on macOS — no libghostty / Metal / VideoToolbox instantiated.
         .testTarget(
-            name: "AislopdeskClientUITests",
+            name: "AislopdeskWorkspaceCoreTests",
             dependencies: [
-                "AislopdeskClientUI",
+                "AislopdeskWorkspaceCore",
                 "AislopdeskClient",
                 "AislopdeskTransport",
                 "AislopdeskHost",
@@ -355,6 +352,7 @@ let package = Package(
                 "AislopdeskClaudeCode",
                 "AislopdeskAgentDetect",
                 "AislopdeskTerminal",
+                "AislopdeskVideoProtocol",
             ],
         ),
         // WF-9 GUI video path: ONLY the PURE AislopdeskVideoProtocol is unit-tested
