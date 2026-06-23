@@ -69,7 +69,12 @@ struct PaneContainer: View {
         // L5: route to the Settings overlay via the single overlay coordinator (injected at the root).
         let overlay = overlayCoordinator
         coordinator.onOpenSettings = { [weak overlay] in overlay?.openSettings() }
-        coordinator.onAddContext = {}
+        // W7: the "+" add-context pill reuses the per-pane file-explorer path (the same model the
+        // "File explorer" pill drives) — a file pick inserts its path into the prompt via `onSelectFile`.
+        // This turns the previously dead no-op into a working add-context-via-file-attach affordance.
+        coordinator.onAddContext = { [weak coordinator, cwd = spec?.lastKnownCwd] in
+            coordinator?.fileExplorer.toggle(cwd: cwd, isRemote: false)
+        }
         // A file chosen in the explorer → insert its path into the prompt (the input-bar compose buffer).
         coordinator.onSelectFile = { [weak inputBar = live?.inputBar] path in
             guard let inputBar else { return }
@@ -137,8 +142,13 @@ struct PaneContainer: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
         .onAppear { ensureCoordinator() }
-        // Keep the coordinator's cwd current so the file explorer lists the right directory.
-        .onChange(of: spec?.lastKnownCwd) { _, newCwd in footerCoordinator?.cwd = newCwd }
+        // Keep the coordinator's cwd current so the file explorer lists the right directory (re-lists an
+        // already-open explorer so the panel follows the pane's `cd`).
+        .onChange(of: spec?.lastKnownCwd) { _, newCwd in footerCoordinator?.updateCwd(newCwd) }
+        // Refresh the agent name once the real foreground process is detected at runtime (it is typically
+        // nil at first appear, so the coordinator was built with "Claude Code"). Keeps the green pill label,
+        // `.help`, and the per-agent persistence key current. `agentName` folds foregroundProcessName.
+        .onChange(of: live?.foregroundProcessName) { _, _ in footerCoordinator?.agentName = agentName }
         // Dim an unfocused pane that is in a split (spec §1.3) — a foreground overlay, never a content swap.
         .overlay {
             if isInSplit, !isFocused {

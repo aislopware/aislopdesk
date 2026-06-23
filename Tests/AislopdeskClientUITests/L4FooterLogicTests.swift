@@ -181,6 +181,90 @@ final class AgentInputFooterCoordinatorTests: XCTestCase {
         XCTAssertFalse(prefs2.shouldShowNotificationChip(for: "Claude Code"))
     }
 
+    func testUpdateCwdReListsOpenExplorer() throws {
+        // W2: an OPEN explorer must follow the pane's `cd` — updateCwd re-lists when open.
+        let fm = FileManager.default
+        let dirA = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cwdA-\(UUID().uuidString)")
+        let dirB = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cwdB-\(UUID().uuidString)")
+        try fm.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dirB, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dirA)
+            try? fm.removeItem(at: dirB)
+        }
+        try Data().write(to: dirA.appendingPathComponent("only-in-a.txt"))
+        try Data().write(to: dirB.appendingPathComponent("only-in-b.txt"))
+
+        let coord = AgentInputFooterCoordinator(
+            agentName: "Claude Code", inputBar: nil, preferences: nil, cwd: dirA.path, isRemote: false,
+        )
+        coord.handle(.toggleFileExplorer) // open on A
+        XCTAssertEqual(coord.fileExplorer.cwd, dirA.path)
+        guard case let .entries(aEntries) = coord.fileExplorer.listing else {
+            XCTFail("expected A entries")
+            return
+        }
+        XCTAssertEqual(aEntries.map(\.name), ["only-in-a.txt"])
+
+        coord.updateCwd(dirB.path) // cd to B while OPEN
+        XCTAssertEqual(coord.cwd, dirB.path)
+        XCTAssertEqual(coord.fileExplorer.cwd, dirB.path, "the open panel followed the cd")
+        guard case let .entries(bEntries) = coord.fileExplorer.listing else {
+            XCTFail("expected B entries")
+            return
+        }
+        XCTAssertEqual(bEntries.map(\.name), ["only-in-b.txt"])
+    }
+
+    func testUpdateCwdDoesNotOpenAClosedExplorer() {
+        let coord = AgentInputFooterCoordinator(
+            agentName: "Claude Code", inputBar: nil, preferences: nil, cwd: "/tmp", isRemote: false,
+        )
+        XCTAssertFalse(coord.fileExplorerActive)
+        coord.updateCwd("/var") // closed ⇒ only the stored cwd changes, no listing
+        XCTAssertFalse(coord.fileExplorerActive)
+        XCTAssertEqual(coord.cwd, "/var")
+    }
+
+    func testAgentNameIsMutableAndUpdatesDerivedLabel() {
+        // W3-low: the coordinator's agentName can be refreshed once the real foreground process is detected.
+        let coord = AgentInputFooterCoordinator(
+            agentName: "Claude Code", inputBar: nil, preferences: nil, cwd: nil,
+        )
+        XCTAssertEqual(coord.agentName, "Claude Code")
+        coord.agentName = "Codex"
+        XCTAssertEqual(coord.agentName, "Codex")
+    }
+
+    func testEnableNotificationsTurnsGlobalOscBackOn() {
+        // W4: the green CTA must actually enable delivery — even if the user had turned the global OSC
+        // notification toggle OFF, clicking enable flips it back ON.
+        let (prefs, defaults, suite) = makePrefs()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: SettingsKey.oscNotifications) // user disabled delivery
+        let coord = AgentInputFooterCoordinator(
+            agentName: "Claude Code", inputBar: nil, preferences: prefs, cwd: nil,
+        )
+        coord.handle(.installNotifications)
+        XCTAssertTrue(prefs.isNotificationChipEnabled(for: "Claude Code"))
+        XCTAssertEqual(defaults.bool(forKey: SettingsKey.oscNotifications), true, "delivery re-enabled")
+    }
+
+    func testAddContextWiredToFileExplorerToggles() {
+        // W7: the production wiring (PaneContainer.ensureCoordinator) routes onAddContext into the same
+        // file-explorer toggle the "File explorer" pill drives. Replicate that wiring and assert the effect
+        // (the "+" pill is no longer a dead no-op).
+        let coord = AgentInputFooterCoordinator(
+            agentName: "Claude Code", inputBar: nil, preferences: nil, cwd: NSTemporaryDirectory(),
+        )
+        coord
+            .onAddContext = { [weak coord] in coord?.fileExplorer.toggle(cwd: NSTemporaryDirectory(), isRemote: false) }
+        XCTAssertFalse(coord.fileExplorerActive)
+        coord.handle(.addContext)
+        XCTAssertTrue(coord.fileExplorerActive, "+ opens the file explorer")
+        coord.handle(.addContext)
+        XCTAssertFalse(coord.fileExplorerActive, "+ toggles it closed")
+    }
+
     func testParentHooksFire() {
         var startedRemote = false
         var openedSettings = false
@@ -217,6 +301,15 @@ final class InputBarRichModeTests: XCTestCase {
         XCTAssertTrue(bar.richMode)
         XCTAssertFalse(bar.toggleRichMode())
         XCTAssertFalse(bar.richMode)
+    }
+}
+
+// MARK: - InputBar rich-mode rendering effect (W3 — the field actually goes multi-line)
+
+final class InputBarLayoutTests: XCTestCase {
+    func testRichModeGivesAMultiLineRange() {
+        XCTAssertEqual(InputBarLayout.lineLimit(richMode: false), 1...1, "plain mode is single-line")
+        XCTAssertEqual(InputBarLayout.lineLimit(richMode: true), 3...8, "rich mode is multi-line 3…8")
     }
 }
 

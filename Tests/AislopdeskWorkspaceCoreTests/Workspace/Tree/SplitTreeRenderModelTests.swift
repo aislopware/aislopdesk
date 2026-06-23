@@ -212,6 +212,72 @@ final class SplitTreeRenderModelTests: XCTestCase {
         XCTAssertTrue(layout.dividers.isEmpty)
     }
 
+    // MARK: - Divider drag → on-screen seam movement (revert-to-confirm-fail for the flexSum fix)
+
+    /// The production pixel→weight conversion (mirrors `PaneMath.weightDelta`, which lives in ClientUI):
+    /// `Δweight = Δpixel / span * flexSum`. Pinning it HERE proves the seam moves 1:1 with the cursor once
+    /// the conversion is span-and-flexSum aware. With the OLD `Δpixel / span` (flexSum == 1 implicit) the
+    /// top-level case moves N/2 and the nested case N/4 — these assertions fail on the un-fixed code.
+    private func weightDelta(pixel: CGFloat, span: CGFloat, flexSum: CGFloat) -> Double {
+        Double(pixel) / Double(span) * Double(flexSum)
+    }
+
+    /// A top-level 50/50 horizontal split: dragging the divider by N points moves the leading leaf's
+    /// trailing edge by ~N points (NOT N/2). Uses the `flexSum` the render model now publishes.
+    func testDividerDragMovesSeamOneToOneTopLevel() throws {
+        let a = PaneID(), b = PaneID()
+        let splitID = SplitNodeID()
+        let root = SplitNode.split(id: splitID, axis: .horizontal, children: [
+            WeightedChild(weight: .flex(1), node: .leaf(a)),
+            WeightedChild(weight: .flex(1), node: .leaf(b)),
+        ])
+        let span: CGFloat = 800
+        let bounds = CGRect(x: 0, y: 0, width: span, height: 600)
+
+        let layout = SplitTreeRenderModel.layout(root: root, zoomedPane: nil, in: bounds)
+        let handle = try XCTUnwrap(layout.dividers.first)
+        XCTAssertEqual(handle.flexSum, 2, "a seeded 50/50 split has flexSum == 2")
+        XCTAssertEqual(handle.parentSpan, span, "a top-level divider's parentSpan is the full bound")
+
+        let x0 = try XCTUnwrap(SplitLayoutSolver.solve(root, in: bounds)[a]?.maxX)
+        let n: CGFloat = 120
+        let delta = weightDelta(pixel: n, span: handle.parentSpan, flexSum: handle.flexSum)
+        let moved = root.resizingDivider(splitID: splitID, leadingIndex: 0, delta: delta)
+        let x1 = try XCTUnwrap(SplitLayoutSolver.solve(moved, in: bounds)[a]?.maxX)
+
+        XCTAssertEqual(x1 - x0, n, accuracy: 0.5, "the seam tracks the cursor 1:1 (N/2 on the un-fixed code)")
+    }
+
+    /// A NESTED split: the inner split's `parentSpan` is half the bound, so the 4× under-tracking of the
+    /// un-fixed code (N/4) is pinned to ~N here.
+    func testDividerDragMovesSeamOneToOneNested() throws {
+        let a = PaneID(), b = PaneID(), c = PaneID()
+        let innerID = SplitNodeID()
+        // outer: [a | inner(b|c)] with equal outer weights ⇒ inner occupies the trailing HALF of the bound.
+        let root = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            WeightedChild(weight: .flex(1), node: .leaf(a)),
+            WeightedChild(weight: .flex(1), node: .split(id: innerID, axis: .horizontal, children: [
+                WeightedChild(weight: .flex(1), node: .leaf(b)),
+                WeightedChild(weight: .flex(1), node: .leaf(c)),
+            ])),
+        ])
+        let span: CGFloat = 800
+        let bounds = CGRect(x: 0, y: 0, width: span, height: 600)
+
+        let layout = SplitTreeRenderModel.layout(root: root, zoomedPane: nil, in: bounds)
+        let inner = try XCTUnwrap(layout.dividers.first { $0.splitID == innerID })
+        XCTAssertEqual(inner.parentSpan, span / 2, accuracy: eps, "the inner split spans half the bound")
+        XCTAssertEqual(inner.flexSum, 2)
+
+        let x0 = try XCTUnwrap(SplitLayoutSolver.solve(root, in: bounds)[b]?.maxX)
+        let n: CGFloat = 60
+        let delta = weightDelta(pixel: n, span: inner.parentSpan, flexSum: inner.flexSum)
+        let moved = root.resizingDivider(splitID: innerID, leadingIndex: 0, delta: delta)
+        let x1 = try XCTUnwrap(SplitLayoutSolver.solve(moved, in: bounds)[b]?.maxX)
+
+        XCTAssertEqual(x1 - x0, n, accuracy: 0.5, "nested seam tracks 1:1 (N/4 on the un-fixed code)")
+    }
+
     // MARK: - Helpers
 
     private func assertRectEqual(

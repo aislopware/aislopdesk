@@ -11,7 +11,6 @@ struct RailControlBar: View {
 
     @Binding var searchText: String
     var onNewTab: () -> Void
-    var onViewOptions: () -> Void = {}
 
     var body: some View {
         HStack(spacing: WarpSpace.s) {
@@ -27,8 +26,24 @@ struct RailControlBar: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            IconButton(systemName: "line.3.horizontal.decrease", help: "View options", action: onViewOptions)
-                .frame(width: WarpSize.controlHeightSmall, height: WarpSize.controlHeightSmall)
+            // View options / filter — a real Menu (was a no-op). "Clear filter" resets the search; the
+            // pane-vs-tab granularity toggle lands once WorkspaceCore grows a tabs mode (RailRowsBuilder).
+            Menu {
+                Button("Clear filter") { searchText = "" }
+                    .disabled(searchText.isEmpty)
+            } label: {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: WarpSize.iconGlyph * 0.78, weight: .regular))
+                    .frame(width: WarpSize.iconGlyph, height: WarpSize.iconGlyph)
+                    .padding(WarpSize.iconButtonPadding)
+                    .foregroundStyle(theme.textSub)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("View options")
+            .accessibilityLabel("View options")
+            .frame(width: WarpSize.controlHeightSmall, height: WarpSize.controlHeightSmall)
             IconButton(systemName: "plus", help: "New tab", action: onNewTab)
                 .frame(width: WarpSize.controlHeightSmall, height: WarpSize.controlHeightSmall)
         }

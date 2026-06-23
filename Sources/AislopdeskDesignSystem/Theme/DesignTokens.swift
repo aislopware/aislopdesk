@@ -34,7 +34,7 @@ public struct DesignTokens: Sendable {
     public var surface2: Color { Color(resolved.surface2) }
     public var surface3: Color { Color(resolved.surface3) }
     public var neutral4: Color { Color(resolved.neutral4) }
-    public var neutral25: Color { Color(resolved.neutral25) } // standard footer-pill fill tier
+    public var neutral25: Color { Color(resolved.neutral25) } // (footerPillFill resolves to neutral4, not this)
     public var neutral5: Color { Color(resolved.neutral5) }
     public var neutral6: Color { Color(resolved.neutral6) }
     public var neutral7: Color { Color(resolved.neutral7) }
@@ -84,11 +84,12 @@ public struct DesignTokens: Sendable {
 
     // MARK: Pill fills (L7 polish — matched to the live window)
 
-    /// Standard FooterPill fill (≈ #565859 over the slate base).
+    /// Standard FooterPill fill = resolved.footerPillFill (neutral4 ≈ #26292B; live rest pill #262A2C).
     public var footerPillFill: Color { Color(resolved.footerPillFill) }
-    /// Active/hover FooterPill fill (one tier brighter ≈ #616364).
+    /// Active/hover FooterPill fill = resolved.footerPillFillActive (neutral18 ≈ #46484A; live filled #44494C).
     public var footerPillFillActive: Color { Color(resolved.footerPillFillActive) }
-    /// Muted green for the suggestion pill (≈ #486A59 over the slate base).
+    /// Muted green for the suggestion pill = resolved.suggestionGreenFill (neutral13 ⊕ uiGreen@8% ≈ #384541;
+    /// live #374442).
     public var suggestionGreenFill: Color { Color(resolved.suggestionGreenFill) }
     /// CwdPill surface (faint teal-tinted standard pill).
     public var cwdPillFill: Color { Color(resolved.cwdPillFill) }

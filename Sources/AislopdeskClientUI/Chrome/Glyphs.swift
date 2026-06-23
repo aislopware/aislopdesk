@@ -42,8 +42,8 @@ struct AgentBrandGlyph: View {
     }
 }
 
-/// A solid accent circle holding the avatar initials (warp-window-chrome.md §6 — 20×20, accent fill,
-/// black bold 12pt initials).
+/// A solid accent circle holding the avatar initials (20×20, accent fill, contrast-derived bold initials —
+/// the ink is WCAG-picked against the accent seed so a dark-accent theme stays legible).
 struct AvatarCircle: View {
     @Environment(\.theme) private var theme
     var initials: String = "A"
@@ -55,7 +55,9 @@ struct AvatarCircle: View {
             .overlay(
                 Text(initials)
                     .font(WarpType.ui(WarpType.uiSize, weight: .bold))
-                    .foregroundStyle(Color.black),
+                    // Contrast-derived ink (WCAG-best of [fg, white, black] over the accent) — not a literal
+                    // black, so swapping the accent seed can't render unreadable initials.
+                    .foregroundStyle(Color(theme.resolved.fontColor(on: theme.resolved.accent))),
             )
     }
 }

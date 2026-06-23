@@ -199,3 +199,12 @@
 - ⏸️/❓ **NOT wired today (greenfield, render chrome only):** `/remote-control`, File-explorer, and Rich-Input bottom-bar
   pills have NO existing logic subsystem; the green "Enable … notifications" suggestion pill has no host wire (dismissal
   persisted client-side). Build the pills as feature-flag stubs; treat real backing as later feature work. → [REBUILD-PLAN §4.3], [logic-api-surface §5.4]
+- ✅ **FINAL theme = `#1D2022` default + `PureBlackDark` alternate.** The shipping default is `WarpTheme.dark`
+  (`DesignTokens.warpDark`), background seed **#1D2022** — the live-Warp bundled chrome surface
+  (`ColorU::from_u32(0x1D2022FF)`), so the slate the user actually SEES is reproduced exactly by the seed+derive model;
+  the theme/terminal accent is teal #19AAD8 and the agentic brand orange (#E8704E / footer-brand #D97757) is a SEPARATE
+  constant applied independently of the accent. A `PureBlackDark` alternate (`DesignTokens.pureBlack`) keeps the same
+  derivation at background #000000 so the abstraction still offers a pure-black option. Adding a theme = new seeds +
+  reused derivation; views never hardcode colors (contrast-pickers keep ink legible over any accent). The full UI
+  architecture (3-module split, component inventory, env seams, the headless ImageRenderer odiff harness at full-window
+  ≈ 3.64%) is documented in `docs/30-ui-architecture.md`. → [30-ui-architecture]

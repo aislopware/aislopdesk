@@ -5,12 +5,17 @@
 import CoreGraphics
 
 enum PaneMath {
-    /// Convert an incremental pixel drag along the split axis into a flex-weight delta over the parent
-    /// span. Returns 0 for a non-finite / non-positive span (the divider then sends nothing). The drag is
-    /// the INCREMENT since the last `onChanged` (the view tracks the running translation).
-    static func weightDelta(pixelIncrement: CGFloat, axisSpan: CGFloat) -> Double {
-        guard axisSpan.isFinite, axisSpan > 0, pixelIncrement.isFinite else { return 0 }
-        return Double(pixelIncrement) / Double(axisSpan)
+    /// Convert an incremental pixel drag along the split axis into a flex-weight delta over the OWNING
+    /// split's span. Because a flex child's on-screen extent is `flexBudget * weight / flexSum` (see
+    /// `SplitLayoutSolver.extents`), moving the seam by Δpixels needs `Δweight = Δpixel * flexSum / span`
+    /// — without the `flexSum` factor a 50/50 split (`flexSum == 2`) tracked at HALF cursor speed and a
+    /// nested split (smaller `span`, `flexSum == 2`) under-tracked further. Returns 0 for a non-finite /
+    /// non-positive span or flex-sum (the divider then sends nothing). The drag is the INCREMENT since the
+    /// last gesture update.
+    static func weightDelta(pixelIncrement: CGFloat, axisSpan: CGFloat, flexSum: CGFloat) -> Double {
+        guard axisSpan.isFinite, axisSpan > 0, flexSum.isFinite, flexSum > 0, pixelIncrement.isFinite
+        else { return 0 }
+        return Double(pixelIncrement) / Double(axisSpan) * Double(flexSum)
     }
 
     /// Truncate a cwd path from the BEGINNING (keep the trailing leaf dirs visible), max `maxChars`

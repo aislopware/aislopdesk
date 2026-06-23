@@ -54,7 +54,8 @@ struct SplitContainer: View {
                 ForEach(layout.dividers, id: \.self) { handle in
                     PaneDivider(
                         handle: handle,
-                        axisSpan: handle.axis == .horizontal ? bounds.width : bounds.height,
+                        axisSpan: handle.parentSpan,
+                        flexSum: handle.flexSum,
                         onResize: { delta in
                             store.resizeDividerTree(
                                 splitID: handle.splitID,

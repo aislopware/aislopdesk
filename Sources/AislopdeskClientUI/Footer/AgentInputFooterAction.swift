@@ -11,7 +11,7 @@
 //   - selectFile              ← a chosen file from the file explorer / picker
 //   - startRemoteControl      ← the "/remote-control" pill            (W1)
 //   - toggleFileExplorer      ← the "File explorer" pill              (W2)
-//   - toggleRichInput         ← the "Rich Input ⌃G" pill              (W3)
+//   - toggleRichInput         ← the "Rich Input" pill                 (W3)
 //   - openAgentSettings       ← the "Settings" sliders pill
 
 import Foundation
@@ -22,7 +22,7 @@ public enum AgentInputFooterAction: Equatable, Sendable {
     case installNotifications
     /// The green pill's trailing ✕ — dismiss the suggestion chip, persisted (W4).
     case dismissNotifications
-    /// The "+" pill — open the add-context menu (stub at L4).
+    /// The "+" pill — add context (toggles the per-pane file explorer; a file pick inserts its path).
     case addContext
     /// A file chosen via the file-explorer panel / picker → its absolute path (W2).
     case selectFile(String)
@@ -30,7 +30,7 @@ public enum AgentInputFooterAction: Equatable, Sendable {
     case startRemoteControl
     /// The "File explorer" pill — toggle the per-pane file panel (W2).
     case toggleFileExplorer
-    /// The "Rich Input ⌃G" pill — toggle multi-line rich-input mode (W3).
+    /// The "Rich Input" pill — toggle multi-line rich-input mode (W3).
     case toggleRichInput
     /// The "Settings" sliders pill — open the coding-agent settings.
     case openAgentSettings

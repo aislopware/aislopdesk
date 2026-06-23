@@ -3,7 +3,7 @@
 // (`claudeStatus != .none`, W5). One `Wrap::row` with `space-between`:
 //
 //   left cluster  = [ brand ✳ icon (trailing pad 8) ] + [ optional green suggestion pill ] +
-//                   [ "+" ] [ "/remote-control" ] [ "File explorer" ] [ "Rich Input ⌃G" ]   (gap 4)
+//                   [ "+" ] [ "/remote-control" ] [ "File explorer" ] [ "Rich Input" ]   (gap 4)
 //   right cluster = [ Settings sliders ] [ cwd chip ]                                        (gap 4)
 //
 // Container: surface_1 bg, 16pt horizontal gutter, 4pt vertical padding. Pills are `FooterPill`s
@@ -75,7 +75,7 @@ struct AgentInputFooter: View {
                 action: { emit(.toggleFileExplorer) },
             )
             FooterPill(
-                systemIcon: "text.cursor", label: "Rich Input", keybind: "⌃G",
+                systemIcon: "text.cursor", label: "Rich Input",
                 isActive: coordinator.richInputActive,
                 help: "Toggle rich input", staticMirror: staticMirror,
                 action: { emit(.toggleRichInput) },

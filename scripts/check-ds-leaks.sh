@@ -6,12 +6,13 @@
 # through one token system (DSFont / DSSpace / DSRadius / DSColor / DSElevation). This gate fails the build
 # if a VIEW file reintroduces:
 #   (1) a raw `.font(.system(size: <number>))` or a raw integer `cornerRadius:`  — WHOLE-TREE scan; or
-#   (2) a raw `.black.opacity(…)` scrim / `Color.white` literal in one of the SIX named L4 overlay files —
-#       a TIGHT inverse-allowlist scan (the P4 scrim/shadow-colour unification headline; only those six
-#       files are scanned for it, since the rest of the tree legitimately uses black/white tints).
-# It is a RATCHET, not a burn-down: the six P4-migrated overlay files must stay clean (any new leak there
-# trips immediately), while the ~10 out-of-scope files that still carry pre-P4 font/radius debt are
-# allowlisted with a TODO so they cannot REGRESS but are not force-migrated here.
+#   (2) a raw `.black.opacity(…)` scrim / `Color.white` literal in one of the named L0-rebuild overlay /
+#       palette surfaces — a TIGHT inverse-allowlist scan (the scrim/shadow-colour unification headline;
+#       only those overlay surfaces are scanned for it, since the rest of the tree legitimately uses
+#       black/white tints). The real scrim/shadow now lives in AislopdeskDesignSystem (WarpShadow.scrim /
+#       WarpShadow.modalBackdrop / WarpShadow.color), NOT the deleted DSColor.scrim / DSElevation.shadow*.
+# It is a RATCHET, not a burn-down: the listed overlay surfaces must stay clean (any new leak there trips
+# immediately). The rebuilt tree is font/radius-clean, so the ALLOWLIST is empty.
 #
 # SCOPE LIMIT (read before trusting this as a full token gate): it is TEXT-ONLY. It catches raw numeric
 # literals via a leading-digit heuristic — `.font(.system(size: 14))` and `cornerRadius: 8` are caught;
@@ -21,14 +22,14 @@
 # the integer run excludes the decimal point), so TerminalScreenView's 1.5 corner is naturally skipped.
 #
 # PER-LINE ESCAPE HATCH: a single grandfathered line may carry an end-of-line `// ds-leak-allow` marker to
-# exempt it (used for the PaneDeadScrim content-dim glyph, which is a deliberate white-on-dim affordance,
-# not an L4 overlay). Use sparingly.
+# exempt it (used for DismissBackdrop's near-zero-opacity hit-test fill, which is a click-blocker, not a
+# scrim). Use sparingly.
 #
-# REVERT-TO-CONFIRM-FAIL (the ratchet's own proof): add a synthetic leak to a NON-allowlisted, clean view
-# file, e.g. append to PaneStatusBar.swift:
-#     Text("x").font(.system(size: 99))
+# REVERT-TO-CONFIRM-FAIL (the ratchet's own proof): temporarily insert a synthetic scrim leak into one of
+# the listed SCRIM_FILES, e.g. add to Overlays/ConfirmModal.swift:
+#     Color.black.opacity(0.7)
 # then run `bash scripts/check-ds-leaks.sh` — it MUST exit 1 and report the file:line. Revert the line and
-# it MUST exit 0. (This is exactly what the P4 hand-off ran to prove the gate bites.)
+# it MUST exit 0.
 #
 # Wired into `make lint` (and therefore `make check`) and the CI `swift-lint` job (text-only, no Xcode).
 set -euo pipefail
@@ -47,48 +48,39 @@ if [[ ! -d "Sources/AislopdeskClientUI" && ! -d "Sources/AislopdeskDesignSystem"
 fi
 
 # ---------------------------------------------------------------------------- #
-# Allowlist: files that legitimately still carry an out-of-P4-scope leak. A match in one of these is a
-# known-debt WARNING, never a failure. The trailing comment is the reason / migration phase. The six P4
-# overlay files (CommandPaletteView, FloatingPaneView, FloatingPaneHandle, PeekReplyView,
-# KeyboardCheatSheet, ConnectionGateView) are DELIBERATELY ABSENT — they were migrated in P4 and must stay
-# clean.
+# Allowlist: files that legitimately still carry an out-of-scope font/radius leak (known-debt WARNING, not
+# a failure). The rebuilt L0 tree is font/radius-clean, so this is EMPTY; add a path + TODO here only if a
+# genuine out-of-scope debt lands.
 ALLOWLIST=(
-  "Sources/AislopdeskClientUI/Terminal/TerminalBlocksView.swift"       # TODO(ds-migrate): terminal block chrome
-  "Sources/AislopdeskClientUI/Terminal/TerminalFindBar.swift"          # TODO(ds-migrate): terminal find bar
-  "Sources/AislopdeskClientUI/Terminal/TerminalRenderingView.swift"    # TODO(ds-migrate): headless placeholder glyph
-  "Sources/AislopdeskClientUI/Video/VideoWindowSeam.swift"             # TODO(ds-migrate): video placeholder glyph
-  "Sources/AislopdeskClientUI/Video/RemoteWindowPanel.swift"           # TODO(ds-migrate): remote-window panel radius
-  "Sources/AislopdeskClientUI/Workspace/Views/PaneLeafView.swift"      # TODO(ds-migrate): pane empty-state glyph + radius
-  "Sources/AislopdeskClientUI/Workspace/Views/CanvasView.swift"        # TODO(ds-migrate): retained (dead) canvas radii
-  "Sources/AislopdeskClientUI/Workspace/Views/TabBarView.swift"        # TODO(ds-migrate): P3 residual size:7 badge glyph
-  "Sources/AislopdeskClientUI/Workspace/Views/WorkspaceRootView.swift" # TODO(ds-migrate): badge chip radius
-  "Sources/AislopdeskClientUI/Input/InputBarView.swift"                # TODO(ds-migrate): input bar chip radii
 )
 
-# The DesignSystem token sources + the three legacy shim files legitimately HOLD raw literals (they ARE the
-# token source). DesignSystem/ is excluded by path; the shims by basename.
-SHIM_BASENAMES='AislopdeskTheme.swift UIMetrics.swift UIScale.swift'
+# The DesignSystem token sources legitimately HOLD raw literals (they ARE the token source). They live
+# under Sources/AislopdeskDesignSystem/ and are excluded by the */DesignSystem/* path-skip below. No
+# separate shim basenames exist in the rebuilt tree (the old AislopdeskTheme/UIMetrics/UIScale shims were
+# deleted in L0), so this list is empty.
+SHIM_BASENAMES=''
 
 # The two whole-tree leak regexes (raw font size / integer corner radius).
 FONT_RE='\.font\(\.system\(size: *[0-9]'
 RADIUS_RE='cornerRadius: *[0-9]+ *[,)]|\.cornerRadius\( *[0-9]'
 
-# Scrim / shadow-COLOUR ratchet (the P4 scrim-unification headline): a raw `.black.opacity(…)` backdrop
-# or a `Color.white` literal in one of the SIX named L4 overlay files is a regression — those scrims/
-# shadow colours were unified onto DSColor.scrim / DSElevation.shadow* in P4 and must not creep back. This
-# is a TIGHT inverse-allowlist (only the six overlay files are scanned for it; the rest of the tree may
-# legitimately use black/white tints). The per-line `// ds-leak-allow` escape hatch still applies — e.g.
-# PaneDeadScrim's CONTENT-level dim (in FloatingPaneHandle.swift) is grandfathered line-by-line.
-# `Color\.white\b` is matched with perl (BSD/macOS awk chokes on this ERE) so the prose/escape-hatch
-# handling below is reliable across awk variants.
+# Scrim / shadow-COLOUR ratchet (the scrim-unification headline): a raw `.black.opacity(…)` backdrop or a
+# `Color.white` literal in one of the named L0-rebuild overlay / palette surfaces is a regression — those
+# scrims / shadow colours are unified onto WarpShadow.scrim / WarpShadow.modalBackdrop / WarpShadow.color
+# (DesignTokens.shadowColor / .scrim) and must not creep back. This is a TIGHT inverse-allowlist (only
+# these overlay surfaces are scanned for it; the rest of the tree may legitimately use black/white tints).
+# The per-line `// ds-leak-allow` escape hatch still applies — e.g. DismissBackdrop's near-zero-opacity
+# hit-test fill is grandfathered line-by-line. `Color\.white\b` is matched with perl (BSD/macOS awk chokes
+# on this ERE) so the prose/escape-hatch handling below is reliable across awk variants.
 SCRIM_RE='\.black\.opacity\(|Color\.white\b'
 SCRIM_FILES=(
-  "Sources/AislopdeskClientUI/Workspace/Views/CommandPaletteView.swift"
-  "Sources/AislopdeskClientUI/Workspace/Views/FloatingPaneView.swift"
-  "Sources/AislopdeskClientUI/Workspace/Views/FloatingPaneHandle.swift"
-  "Sources/AislopdeskClientUI/Workspace/Views/PeekReplyView.swift"
-  "Sources/AislopdeskClientUI/Workspace/Views/KeyboardCheatSheet.swift"
-  "Sources/AislopdeskClientUI/Connection/ConnectionGateView.swift"
+  "Sources/AislopdeskClientUI/Overlays/SettingsOverlay.swift"
+  "Sources/AislopdeskClientUI/Overlays/ConfirmModal.swift"
+  "Sources/AislopdeskClientUI/Overlays/ToastStackView.swift"
+  "Sources/AislopdeskClientUI/Overlays/OverlayLayer.swift"
+  "Sources/AislopdeskClientUI/Overlays/DismissBackdrop.swift"
+  "Sources/AislopdeskClientUI/Palette/CommandPaletteView.swift"
+  "Sources/AislopdeskClientUI/Remote/RemoteWindowPicker.swift"
 )
 
 is_scrim_scanned() {
@@ -140,9 +132,9 @@ while IFS= read -r file; do
     fi
   fi
 
-  # (2) Scrim / shadow-colour leaks — ONLY in the six named L4 overlay files (the P4 unification set).
-  # A match here is ALWAYS a failure (no allowlist — these six files are the unified set and must stay
-  # clean). The line's trailing `//` comment is blanked before the match so PROSE that merely NAMES the
+  # (2) Scrim / shadow-colour leaks — ONLY in the named L0-rebuild overlay/palette surfaces (the
+  # unification set). A match here is ALWAYS a failure (no allowlist — these files are the unified set and
+  # must stay clean). The line's trailing `//` comment is blanked before the match so PROSE that NAMES the
   # banned literal (e.g. a doc-comment "the old Color.white over a solid fill is gone") does not trip the
   # gate — only a literal in LIVE CODE does — while a line carrying `// ds-leak-allow` is skipped wholesale
   # (the per-line escape hatch, used for PaneDeadScrim's content-level dim). Perl gives reliable regex +
@@ -155,7 +147,7 @@ while IFS= read -r file; do
     ' "${file}" || true)"
     if [[ -n "${scrim_hits}" ]]; then
       while IFS= read -r line; do
-        printf 'FAIL  (raw scrim/shadow colour — use DSColor.scrim / DSElevation.shadow*) %s:%s\n' \
+        printf 'FAIL  (raw scrim/shadow colour — use WarpShadow.scrim / .modalBackdrop / .color) %s:%s\n' \
           "${file}" "${line}"
         failures=$((failures + 1))
       done <<< "${scrim_hits}"
@@ -171,9 +163,9 @@ echo "---"
 echo "check-ds-leaks: ${failures} failure(s), ${warnings} allowlisted-debt warning(s)"
 if [[ "${failures}" -gt 0 ]]; then
   echo "A view file reintroduced a raw .font(.system(size:)) / integer cornerRadius:, or a raw scrim/"
-  echo "shadow colour (.black.opacity / Color.white) in one of the six L4 overlay files. Migrate it to a"
-  echo "DSFont / DSRadius / DSColor.scrim / DSElevation.shadow* token, or (rarely) add an end-of-line"
-  echo "// ds-leak-allow marker."
+  echo "shadow colour (.black.opacity / Color.white) in one of the listed overlay/palette surfaces. Migrate"
+  echo "it to a WarpType / WarpRadius / WarpShadow token (e.g. WarpShadow.scrim / .modalBackdrop / .color),"
+  echo "or (rarely) add an end-of-line // ds-leak-allow marker."
   exit 1
 fi
 echo "PASS — no new design-system leaks."

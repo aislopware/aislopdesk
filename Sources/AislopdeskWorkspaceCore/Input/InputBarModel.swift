@@ -36,11 +36,11 @@ public final class InputBarModel {
 
     /// Rich-input mode (L4 / W3): a functional toggle that switches the input bar from the single-line
     /// command/compose field into a multi-line rich-input editor. Flipped by the footer's "Rich Input"
-    /// pill (⌃G) — purely a presentation/affordance flag here; the byte-level submit semantics are
+    /// pill — purely a presentation/affordance flag here; the byte-level submit semantics are
     /// unchanged (Enter still funnels through ``submit()``/``sendSink``). Default OFF.
     public var richMode: Bool = false
 
-    /// Toggles ``richMode`` (the ⌃G keybind / "Rich Input" footer pill). Returns the new value so a
+    /// Toggles ``richMode`` (the "Rich Input" footer pill). Returns the new value so a
     /// caller can update a toggle-pill's active state in one hop.
     @discardableResult
     public func toggleRichMode() -> Bool {

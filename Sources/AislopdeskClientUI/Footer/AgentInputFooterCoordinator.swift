@@ -2,7 +2,7 @@
 // wiring each to the real logic (warp-bottom-bar.md §5 dispatch-then-handle). It owns the per-pane
 // view-state the footer needs (the file-explorer model) and routes the rest into the proven models:
 //
-//   - installNotifications  → PreferencesStore.enableNotifications(agent)   (W4; TODO host OSC wire)
+//   - installNotifications  → PreferencesStore.enableNotifications(agent)   (W4; re-enables global OSC)
 //   - dismissNotifications  → PreferencesStore.dismissNotificationChip(agent) (W4, persisted)
 //   - toggleRichInput       → InputBarModel.toggleRichMode()                (W3, real toggle)
 //   - toggleFileExplorer    → FileExplorerModel.toggle(cwd:isRemote:)       (W2, real listing)
@@ -23,7 +23,10 @@ import Observation
 @Observable
 public final class AgentInputFooterCoordinator {
     /// The agent display name (folds into the green pill label + the dismissal/enable persistence key).
-    public let agentName: String
+    /// `var` so the footer can refresh it once the real foreground process name is detected at runtime
+    /// (type-26 `foregroundProcess` arrives after first appear — it is typically `nil` then). Observed so
+    /// the green pill label + `.help` re-render on assignment.
+    public var agentName: String
     /// The pane's input bar — the rich-input toggle target (W3). `nil` ⇒ the Rich-Input pill is inert.
     @ObservationIgnored public let inputBar: InputBarModel?
     /// The single live preferences owner — drives notification dismissal/enable persistence (W4).
@@ -60,6 +63,13 @@ public final class AgentInputFooterCoordinator {
         self.isRemote = isRemote
     }
 
+    /// Update the bound cwd and re-list the explorer if it is currently open (so an open panel follows the
+    /// pane's `cd` instead of showing the old directory — W2).
+    public func updateCwd(_ newCwd: String?) {
+        cwd = newCwd
+        if fileExplorer.isOpen { fileExplorer.refresh(cwd: newCwd, isRemote: isRemote) }
+    }
+
     // MARK: Derived view-state the footer binds
 
     /// Whether the green suggestion chip should be shown (not dismissed, not already enabled — W4).
@@ -79,7 +89,7 @@ public final class AgentInputFooterCoordinator {
     public func handle(_ action: AgentInputFooterAction) {
         switch action {
         case .installNotifications:
-            // W4: record intent + (TODO host) fire the OSC/notification-enable wire when it exists.
+            // W4: record per-agent intent + re-enable the global OSC/notification delivery gate.
             preferences?.enableNotifications(for: agentName)
         case .dismissNotifications:
             preferences?.dismissNotificationChip(for: agentName) // W4: persisted dismissal

@@ -88,11 +88,10 @@ struct TerminalLeafView: View {
 
     private var cwdRow: some View {
         HStack(spacing: WarpSpace.m) {
-            CwdPill(
-                cwd: cwd,
-                interactive: live?.claudeStatus == ClaudeStatus.none,
-                onChangeDirectory: {}, // stubbed menu hook (L3)
-            )
+            // Non-interactive context chip: a real change-directory action does not exist yet, so don't
+            // present a clickable "Change working directory" affordance that no-ops. (Pass `interactive:
+            // true` + a real `onChangeDirectory` when a cd action lands.)
+            CwdPill(cwd: cwd, interactive: false)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, WarpSpace.xl)

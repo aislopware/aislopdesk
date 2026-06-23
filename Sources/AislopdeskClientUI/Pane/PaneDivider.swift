@@ -15,8 +15,11 @@ struct PaneDivider: View {
     @Environment(\.theme) private var theme
 
     let handle: SplitTreeRenderModel.DividerHandle
-    /// The parent span (points) along the split axis — divides a pixel drag into a weight delta.
+    /// The owning split's span (points) along the split axis — divides a pixel drag into a weight delta.
     let axisSpan: CGFloat
+    /// The owning split's flex-weight sum — scales the pixel→weight conversion so the seam tracks the
+    /// cursor 1:1 (a 50/50 split has `flexSum == 2`). Defaults to the handle's own `flexSum`.
+    var flexSum: CGFloat = 1
     /// Drag → weight delta (incremental). Wired to `store.resizeDividerTree`.
     var onResize: (_ delta: Double) -> Void = { _ in }
     /// Double-click → reset split to even. Wired to `store.balanceActivePaneSplits`.
@@ -25,7 +28,10 @@ struct PaneDivider: View {
     /// The drawn hairline thickness (the hit band is the handle rect; the line is thinner + crisp).
     private let hairline: CGFloat = 1.5
 
-    @State private var lastTranslation: CGFloat = 0
+    /// SwiftUI-owned transient drag baseline — auto-resets to 0 on every gesture end/cancel/interrupt, so
+    /// the next drag always starts from a clean baseline even if `onEnded` never fired (a relayout mid-drag
+    /// removes the host view, so an interrupted drag is a realistic trigger).
+    @GestureState private var lastTranslation: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -40,19 +46,22 @@ struct PaneDivider: View {
         #endif
             .gesture(
                 DragGesture(minimumDistance: 1)
-                    .onChanged { value in
+                    .updating($lastTranslation) { value, lastTranslation, _ in
                         let translation = handle.axis == .horizontal
                             ? value.translation.width
                             : value.translation.height
                         let increment = translation - lastTranslation
                         lastTranslation = translation
-                        // Convert the pixel increment → a flex-weight delta over the parent span (pure,
-                        // tested in PaneMath; guards a zero/NaN span via an ordered compare).
-                        let delta = PaneMath.weightDelta(pixelIncrement: increment, axisSpan: axisSpan)
+                        // Convert the pixel increment → a flex-weight delta over the owning split's span
+                        // (pure, tested in PaneMath; guards a zero/NaN span/flexSum via ordered compares).
+                        let delta = PaneMath.weightDelta(
+                            pixelIncrement: increment,
+                            axisSpan: axisSpan,
+                            flexSum: flexSum,
+                        )
                         guard delta != 0 else { return }
                         onResize(delta)
-                    }
-                    .onEnded { _ in lastTranslation = 0 },
+                    },
             )
             .onTapGesture(count: 2) { onReset() }
     }

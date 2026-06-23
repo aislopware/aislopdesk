@@ -65,6 +65,8 @@ struct ToastCard: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss notification")
+                .help("Dismiss")
             }
         }
         .padding(.horizontal, WarpSpace.xl)

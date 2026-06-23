@@ -43,11 +43,29 @@ public enum SplitTreeRenderModel {
         public let childIndex: Int
         public let axis: SplitAxis
         public let rect: CGRect
-        public init(splitID: SplitNodeID, childIndex: Int, axis: SplitAxis, rect: CGRect) {
+        /// The OWNING split's axis length (points) — the same `rect`-along-axis the solver partitions and
+        /// the denominator for the pixel→flex-weight conversion. For a NESTED split this is the nested
+        /// split's rect, NOT the full container, so a nested divider tracks the cursor 1:1.
+        public let parentSpan: CGFloat
+        /// The sum of the owning split's `.flex` weights (computed exactly as the solver does — sum of
+        /// `Double.maximum(w,0)` over `.flex` children, falling back to the flex-child count when that sum
+        /// is 0). The pixel→weight conversion multiplies by this so a drag moves the seam 1:1 regardless of
+        /// how the split was seeded (a 2-pane split seeds `.flex(1)+.flex(1)` ⇒ `flexSum == 2`).
+        public let flexSum: CGFloat
+        public init(
+            splitID: SplitNodeID,
+            childIndex: Int,
+            axis: SplitAxis,
+            rect: CGRect,
+            parentSpan: CGFloat = 0,
+            flexSum: CGFloat = 1,
+        ) {
             self.splitID = splitID
             self.childIndex = childIndex
             self.axis = axis
             self.rect = rect
+            self.parentSpan = parentSpan
+            self.flexSum = flexSum
         }
     }
 
@@ -175,11 +193,16 @@ public enum SplitTreeRenderModel {
             guard !children.isEmpty else { return }
             // Partition `rect` along `axis` by the children's weights — the SAME extents the solver uses
             // (un-clamped) so a divider sits exactly on a sibling seam.
-            let extents = SplitLayoutSolver.extents(for: children, total: axisLength(of: rect, axis: axis))
+            let parentSpan = axisLength(of: rect, axis: axis)
+            let extents = SplitLayoutSolver.extents(for: children, total: parentSpan)
+            // The flex-weight sum used by the pixel→weight conversion — mirrors `SplitLayoutSolver.extents`
+            // (sum of `Double.maximum(w,0)` over `.flex` children; fall back to the flex-child COUNT when
+            // that sum is 0, matching the solver's all-zero-flex equal-split branch).
+            let flexSum = dividerFlexSum(for: children)
             var cursor = axisOrigin(of: rect, axis: axis)
             var childRects: [CGRect] = []
             childRects.reserveCapacity(children.count)
-            for (child, extent) in zip(children, extents) {
+            for extent in extents {
                 let childRect = subRect(of: rect, axis: axis, origin: cursor, extent: extent)
                 childRects.append(childRect)
                 cursor += extent
@@ -192,6 +215,8 @@ public enum SplitTreeRenderModel {
                     childIndex: i,
                     axis: axis,
                     rect: handleRect(at: seam, axis: axis, span: rect, thickness: thickness),
+                    parentSpan: parentSpan,
+                    flexSum: flexSum,
                 ))
             }
             // Recurse into the children for nested splits.
@@ -199,6 +224,24 @@ public enum SplitTreeRenderModel {
                 collectDividers(child.node, in: childRect, thickness: thickness, into: &out)
             }
         }
+    }
+
+    /// The flex-weight sum of a split's children for the pixel→weight conversion — the SAME quantity
+    /// `SplitLayoutSolver.extents` divides by: the sum of `Double.maximum(w,0)` over `.flex` children, or
+    /// the flex-child COUNT when that sum is 0 (the solver's all-zero-flex equal-split fallback). Returns 1
+    /// when there are no flex children at all (no seam to drag in that degenerate case).
+    private static func dividerFlexSum(for children: [WeightedChild]) -> CGFloat {
+        var sum = 0.0
+        var count = 0
+        for child in children {
+            if case let .flex(w) = child.weight {
+                sum += Double.maximum(w, 0)
+                count += 1
+            }
+        }
+        if sum > 0 { return CGFloat(sum) }
+        if count > 0 { return CGFloat(count) }
+        return 1
     }
 
     // MARK: - Axis-aware helpers (mirror the solver's geometry)

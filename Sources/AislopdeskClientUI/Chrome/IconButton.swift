@@ -33,6 +33,10 @@ struct IconButton: View {
         .buttonStyle(.plain)
         .frame(width: WarpSize.iconButton, height: WarpSize.iconButton)
         .onHover { hovering = $0 }
+        // Always give VoiceOver a real name independent of the tooltip: `.help("")` would otherwise leave
+        // only the raw SF Symbol identifier as the accessible name. Falls back to `systemName` when `help`
+        // is nil so a future call site that omits `help:` still gets a meaningful (if imperfect) label.
+        .accessibilityLabel(help ?? systemName)
         .help(help ?? "")
     }
 

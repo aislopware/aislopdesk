@@ -234,16 +234,21 @@ public final class PreferencesStore {
     }
 
     /// Whether the user has ENABLED rich notifications for `agent` (clicked the green pill's main half).
-    /// There is no host wire for the actual OSC/notification-enable path yet (logic-api §5.4), so this is
-    /// the recorded intent — and, like a dismissal, it hides the chip. TODO(host): when an
-    /// OSC/notification-enable wire lands, fire it here instead of (only) recording the flag.
+    /// Recorded per-agent (also hides the chip, like a dismissal). The actual delivery is the GLOBAL OSC
+    /// notification toggle (`SettingsKey.oscNotifications`, default-ON), which `enableNotifications` turns
+    /// back on so the green CTA is a real action.
     public func isNotificationChipEnabled(for agent: String) -> Bool {
         notificationChipMap(Key.notificationChipEnabled)[agent] ?? false
     }
 
-    /// Record that the user enabled notifications for `agent` (clicked the green pill). Hides the chip.
+    /// Record that the user enabled notifications for `agent` (clicked the green pill) AND actually enable
+    /// delivery by turning the global OSC/notification toggle ON (it is the delivery gate read by the app
+    /// sinks). Default-ON already, but a user who turned it OFF and then clicks the green CTA expects it
+    /// back ON. Hides the chip via the per-agent flag.
     public func enableNotifications(for agent: String) {
         setNotificationChipFlag(true, for: agent, key: Key.notificationChipEnabled)
+        // W4: deliver on the promise — re-enable the global OSC/notification delivery gate.
+        defaults.set(true, forKey: SettingsKey.oscNotifications)
     }
 
     /// Whether the green suggestion chip should be SHOWN for `agent`: not already dismissed and not

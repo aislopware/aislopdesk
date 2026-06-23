@@ -18,7 +18,7 @@ struct DismissBackdrop<Content: View>: View {
             // Transparent click-blocker — `Color.clear` doesn't hit-test, so use a near-zero-opacity fill
             // with an explicit contentShape so the outside-tap closes the overlay.
             Rectangle()
-                .fill(Color.black.opacity(0.001))
+                .fill(Color.black.opacity(0.001)) // ds-leak-allow: near-zero hit-test fill, not a scrim
                 .contentShape(Rectangle())
                 .onTapGesture { onDismiss() }
             content

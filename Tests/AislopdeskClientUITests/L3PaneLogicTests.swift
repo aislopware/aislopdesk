@@ -60,16 +60,21 @@ final class BlockSelectionMappingTests: XCTestCase {
 }
 
 final class PaneMathTests: XCTestCase {
-    func testWeightDeltaIsPixelIncrementOverSpan() {
-        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: 500), 0.1, accuracy: 1e-9)
-        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: -25, axisSpan: 500), -0.05, accuracy: 1e-9)
+    func testWeightDeltaIsPixelIncrementOverSpanTimesFlexSum() {
+        // flexSum == 1 → bare pixel/span (the old primitive).
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: 500, flexSum: 1), 0.1, accuracy: 1e-9)
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: -25, axisSpan: 500, flexSum: 1), -0.05, accuracy: 1e-9)
+        // flexSum == 2 (a seeded 50/50 split) → twice the weight delta so the seam tracks the cursor 1:1.
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: 500, flexSum: 2), 0.2, accuracy: 1e-9)
     }
 
-    func testWeightDeltaGuardsNonPositiveOrNonFiniteSpan() {
-        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: 0), 0)
-        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: -10), 0)
-        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: .nan), 0)
-        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: .infinity, axisSpan: 500), 0)
+    func testWeightDeltaGuardsNonPositiveOrNonFiniteSpanOrFlexSum() {
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: 0, flexSum: 2), 0)
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: -10, flexSum: 2), 0)
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: .nan, flexSum: 2), 0)
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: .infinity, axisSpan: 500, flexSum: 2), 0)
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: 500, flexSum: 0), 0)
+        XCTAssertEqual(PaneMath.weightDelta(pixelIncrement: 50, axisSpan: 500, flexSum: .nan), 0)
     }
 
     func testCwdTruncatesFromBeginning() {
