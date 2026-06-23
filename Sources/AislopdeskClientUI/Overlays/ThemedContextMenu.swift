@@ -37,10 +37,10 @@ struct ThemedContextMenu: View {
         .padding(.vertical, 9) // MENU_VERTICAL_PADDING
         .frame(minWidth: 200, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 5, style: .continuous).fill(theme.surface2),
+            RoundedRectangle(cornerRadius: WarpRadius.menu, style: .continuous).fill(theme.surface2),
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
+            RoundedRectangle(cornerRadius: WarpRadius.menu, style: .continuous)
                 .strokeBorder(theme.outline, lineWidth: WarpBorder.width),
         )
         .shadow(color: Color(Self.menuShadowColor), radius: WarpShadow.blur, x: 0, y: WarpShadow.offset.height)

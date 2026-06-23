@@ -52,13 +52,12 @@ public struct ActionsPaletteSource: PaletteDataSource {
                 store.recordRecentCommand(.newPane(.terminal))
             },
         ),
-        item(
+        // L6 / W1: "New Remote Window Tab" opens the Remote-Window picker (the host window list) rather
+        // than minting an UNBOUND `.remoteGUI` pane — the pick then opens a pre-bound streaming pane. The
+        // overlay coordinator handles `.openRemotePicker` (it records the recent command on open).
+        PaletteItem(
             id: "action.newRemoteTab", icon: "rectangle.on.rectangle", title: "New Remote Window Tab",
-            shortcut: "⌥⌘N",
-            run: { store in
-                store.newTab(kind: .remoteGUI)
-                store.recordRecentCommand(.newPane(.remoteGUI))
-            },
+            shortcut: "⌥⌘N", filter: .actions, action: .openRemotePicker,
         ),
         item(
             id: "action.splitRight", icon: "rectangle.split.2x1", title: "Split Pane Right",

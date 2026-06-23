@@ -3,7 +3,7 @@ import Foundation
 // L0: extracted from the deleted SwiftUI `PaneLeafView.swift`. `RemoteGUIDisplay` is the PURE
 // (SwiftUI- and store-free) display decision for a remote-GUI pane — live vs entry-form vs
 // cap-gated — unit-tested directly (LiveVideoCapTests). The rebuilt pane leaf (L6) reads it.
-enum RemoteGUIDisplay: Equatable {
+public enum RemoteGUIDisplay: Equatable {
     /// The live ``RemoteWindowPanel`` (admitted to a cap slot — its decode stack may run).
     case live
     /// The ``RemoteWindowPanel`` entry FORM: either the model is not yet configured (no host/port — the
@@ -24,7 +24,7 @@ enum RemoteGUIDisplay: Equatable {
     ///   admits the now-configured pane and flips `admitted` true — F1: the form must not disappear
     ///   the instant the endpoint becomes valid);
     /// - else (configured AND no free slot) ⇒ `.gated` (admission was genuinely refused by the cap).
-    static func resolve(admitted: Bool, configured: Bool, hasFreeSlot: Bool) -> Self {
+    public static func resolve(admitted: Bool, configured: Bool, hasFreeSlot: Bool) -> Self {
         if admitted { return .live }
         guard configured else { return .entryForm }
         return hasFreeSlot ? .entryForm : .gated

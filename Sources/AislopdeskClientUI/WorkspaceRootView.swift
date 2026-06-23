@@ -46,6 +46,8 @@ public struct WorkspaceRootView: View {
         #endif
             .onAppear {
                 overlay.attach(store)
+                // L6: the Remote-Window picker discovers against the live app host.
+                overlay.connectionTarget = { [weak connection] in connection?.target ?? .default }
                 bridgeNotificationsToToasts()
             }
         // Keyboard entry points for the palette. ⌘⇧P (toggle, Command mode) + ⌘K (open). Both ⌘-prefixed

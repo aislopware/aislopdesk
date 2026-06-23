@@ -41,6 +41,16 @@ struct OverlayLayer: View {
             if coordinator.settingsVisible {
                 SettingsOverlay(model: settings, staticMirror: staticMirror, onClose: { coordinator.closeSettings() })
             }
+
+            // L6 / W1: the Remote-Window picker (opened by the /remote-control pill + the palette action).
+            if coordinator.remotePickerVisible, let model = coordinator.remotePickerModel {
+                RemoteWindowPicker(
+                    model: model,
+                    onOpen: { coordinator.openRemoteWindow($0) },
+                    onCancel: { coordinator.closeRemotePicker() },
+                    staticMirror: staticMirror,
+                )
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

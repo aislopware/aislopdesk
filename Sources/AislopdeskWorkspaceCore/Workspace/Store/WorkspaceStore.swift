@@ -62,7 +62,9 @@ public final class WorkspaceStore {
     /// update loop keeps using the canvas `reconcile()` (the still-canvas Views bind `workspace`). The W5
     /// cutover promotes it to the live source of truth and retires the canvas. `private(set)`: only the
     /// tree-mutation methods change it (each then `reconcileTree()`s), so the registry can never drift.
-    public private(set) var tree: TreeWorkspace
+    /// `internal(set)`: read-only to the UI (cross-module), settable only by the store's own tree-mutation
+    /// methods + same-module extensions (e.g. `WorkspaceStore+RemoteWindow`).
+    public internal(set) var tree: TreeWorkspace
 
     /// The table of liveness: 1:1 with the leaves of `workspace` on the live canvas path (and 1:1 with
     /// ``tree``'s leaves on the dormant tree path — both paths diff the SAME registry, but only one drives

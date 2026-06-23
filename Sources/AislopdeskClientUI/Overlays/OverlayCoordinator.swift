@@ -44,6 +44,17 @@ public final class OverlayCoordinator {
     /// Whether the Settings overlay is presented.
     public private(set) var settingsVisible = false
 
+    // MARK: Remote-window picker state (L6)
+
+    /// Whether the Remote-Window picker modal is presented (the `/remote-control` pill + the "New Remote
+    /// Window Tab" palette action open it; a pick opens a `.remoteGUI` pane).
+    public private(set) var remotePickerVisible = false
+    /// The dedicated discovery-driving model for the live picker (NOT a pane's). Built per open from a
+    /// fresh app target so its `refresh()` queries the current host. `nil` until first opened.
+    @ObservationIgnored public private(set) var remotePickerModel: RemoteWindowModel?
+    /// Resolves the app-global ``ConnectionTarget`` for the picker's discovery query. Injected by the root.
+    @ObservationIgnored public var connectionTarget: @MainActor () -> ConnectionTarget = { .default }
+
     // MARK: Toasts
 
     /// The live toast stack (newest last). Bounded; auto-dismissed by the view's timers.
@@ -197,6 +208,9 @@ public final class OverlayCoordinator {
         case .openSettings:
             closePalette()
             openSettings()
+        case .openRemotePicker:
+            closePalette()
+            openRemotePicker()
         case .noOp:
             break
         }
@@ -212,6 +226,31 @@ public final class OverlayCoordinator {
 
     public func openSettings() { settingsVisible = true }
     public func closeSettings() { settingsVisible = false }
+
+    // MARK: Remote-window picker (L6 / W1)
+
+    /// Present the Remote-Window picker (the `/remote-control` pill + the "New Remote Window Tab" action).
+    /// Builds a fresh discovery-driving ``RemoteWindowModel`` bound to the live app target so its
+    /// `refresh()` lists the current host's windows.
+    public func openRemotePicker() {
+        remotePickerModel = RemoteWindowModel(target: connectionTarget)
+        remotePickerVisible = true
+    }
+
+    public func closeRemotePicker() {
+        remotePickerVisible = false
+        remotePickerModel = nil
+    }
+
+    /// A window was chosen in the picker → open a NEW `.remoteGUI` tab pre-bound to it (logic-api §4),
+    /// then close the picker. The materialized pane's own ``RemoteWindowModel`` drives the live stream.
+    public func openRemoteWindow(_ summary: RemoteWindowSummary) {
+        store?.newRemoteWindowTab(
+            windowID: summary.windowID, title: summary.title, appName: summary.appName,
+        )
+        store?.recordRecentCommand(.newPane(.remoteGUI))
+        closeRemotePicker()
+    }
 
     // MARK: Toasts
 

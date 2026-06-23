@@ -61,9 +61,11 @@ struct PaneContainer: View {
             cwd: spec?.lastKnownCwd,
             isRemote: false, // terminal pane — local cwd listing (remote stub handled in the model)
         )
-        // W1: open the remote-window picker (the full video pane mount is L6). For now this surfaces the
-        // intent; TODO(L6): route to RemoteWindowModel.open / the host window picker + video pane mount.
-        coordinator.onStartRemoteControl = {}
+        // W1 (L6): the /remote-control pill opens the Remote-Window picker via the single overlay
+        // coordinator; a pick opens a `.remoteGUI` pane streaming that host window (RemoteWindowLeafView
+        // over the VideoWindowFactory seam). Fully wired — no longer a stub.
+        let pickerHost = overlayCoordinator
+        coordinator.onStartRemoteControl = { [weak pickerHost] in pickerHost?.openRemotePicker() }
         // L5: route to the Settings overlay via the single overlay coordinator (injected at the root).
         let overlay = overlayCoordinator
         coordinator.onOpenSettings = { [weak overlay] in overlay?.openSettings() }
@@ -76,9 +78,38 @@ struct PaneContainer: View {
         footerCoordinator = coordinator
     }
 
+    /// The pane's kind drives which leaf view renders (logic-api §1.2 / §4): a `.terminal` pane → the
+    /// `TerminalLeafView` (L3); a `.remoteGUI` / `.systemDialog` (video) pane → the `RemoteWindowLeafView`
+    /// over the `VideoWindowFactory` seam (L6). Reads the live handle's kind (falls back to the spec).
+    private var kind: PaneKind { live?.kind ?? spec?.kind ?? .terminal }
+
     private var title: String {
         let t = spec?.lastKnownTitle ?? live?.terminalModel?.title ?? spec?.title ?? ""
-        return t.isEmpty ? "Terminal" : t
+        if t.isEmpty { return kind.isVideo ? "Remote window" : "Terminal" }
+        return t
+    }
+
+    /// The leaf content, routed by pane kind (L6 PaneKind routing): a video pane → `RemoteWindowLeafView`
+    /// (over the `VideoWindowFactory` seam), else the `TerminalLeafView`.
+    @ViewBuilder private var paneContent: some View {
+        if kind.isVideo {
+            RemoteWindowLeafView(
+                live: live,
+                store: store,
+                paneID: paneID,
+                isFocused: isFocused,
+                isSecureDialog: live?.isSecureDialog ?? false,
+                staticMirror: staticMirror,
+            )
+        } else {
+            TerminalLeafView(
+                live: live,
+                isFocused: isFocused,
+                cwd: spec?.lastKnownCwd,
+                footerCoordinator: footerCoordinator,
+                staticMirror: staticMirror,
+            )
+        }
     }
 
     var body: some View {
@@ -100,14 +131,8 @@ struct PaneContainer: View {
                     )
                 },
             )
-            TerminalLeafView(
-                live: live,
-                isFocused: isFocused,
-                cwd: spec?.lastKnownCwd,
-                footerCoordinator: footerCoordinator,
-                staticMirror: staticMirror,
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            paneContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)

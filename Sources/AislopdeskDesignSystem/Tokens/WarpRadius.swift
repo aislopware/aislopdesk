@@ -11,6 +11,8 @@ public enum WarpRadius {
     public static let pill: CGFloat = 3
     /// Checkbox box radius (builder.rs:674).
     public static let checkbox: CGFloat = 2
+    /// Floating context-menu surface radius (warp-overlays-actions.md §3.3).
+    public static let menu: CGFloat = 5
     /// Full pill / circle (Radius::Percentage(50.)) — switch/slider/radio/avatar.
     public static let full: CGFloat = .infinity
 }

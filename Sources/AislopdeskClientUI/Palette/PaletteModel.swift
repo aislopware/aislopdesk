@@ -55,6 +55,9 @@ public enum PaletteAction: Sendable {
     case selectFilter(QueryFilter)
     /// Open the Settings overlay (handled by the overlay coordinator).
     case openSettings
+    /// Open the Remote-Window picker (L6 / W1 — handled by the overlay coordinator; a pick opens a
+    /// `.remoteGUI` pane streaming the chosen host window).
+    case openRemotePicker
     /// A non-interactable separator/zero row.
     case noOp
 }
