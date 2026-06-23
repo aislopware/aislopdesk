@@ -26,16 +26,39 @@ struct TerminalLeafView: View {
     let isFocused: Bool
     /// The pane's last-known cwd (from its spec) bound to the cwd pill. `nil`/empty ⇒ pill hidden.
     var cwd: String?
+    /// The Claude-Code bottom integration bar coordinator. The footer mounts BELOW the InputBar only
+    /// when the pane has an active agent (`claudeStatus != .none`, W5). `nil` ⇒ no footer (no agent).
+    var footerCoordinator: AgentInputFooterCoordinator?
     /// EAGER/STATIC render path for headless ImageRenderer snapshots.
     var staticMirror: Bool = false
 
+    /// W5: the footer is shown only when the pane has an active agent. In a static snapshot a supplied
+    /// coordinator forces it on (so the bar can be rendered headlessly).
+    private var showsFooter: Bool {
+        guard footerCoordinator != nil else { return false }
+        if staticMirror { return true }
+        return AgentInputFooterVisibility.isVisible(isNone: (live?.claudeStatus ?? ClaudeStatus.none) == .none)
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            terminalSurface
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if let inputBar = live?.inputBar {
-                InputBar(model: inputBar, staticMirror: staticMirror)
-                cwdRow
+        HStack(spacing: 0) {
+            if let footerCoordinator, footerCoordinator.fileExplorer.isOpen {
+                FileExplorerPanel(
+                    model: footerCoordinator.fileExplorer,
+                    onSelect: { footerCoordinator.handle(.selectFile($0)) },
+                )
+            }
+            VStack(spacing: 0) {
+                terminalSurface
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let inputBar = live?.inputBar {
+                    InputBar(model: inputBar, staticMirror: staticMirror)
+                    cwdRow
+                }
+                // The Claude-Code bottom integration bar — under the InputBar, agent-gated (W5).
+                if showsFooter, let footerCoordinator {
+                    AgentInputFooter(coordinator: footerCoordinator, cwd: cwd, staticMirror: staticMirror)
+                }
             }
         }
         .background(theme.background)

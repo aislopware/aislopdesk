@@ -171,6 +171,9 @@ public struct AislopdeskClientApp: App {
         WindowGroup {
             WorkspaceRootView(store: store, connection: connection)
                 .theme(DesignTokens.warpDark)
+                // L4: hand the single live PreferencesStore to deep views (the agent footer's W4
+                // notification dismissal/enable persistence reads it via `\.preferencesStore`).
+                .preferencesStore(preferences)
                 .onChange(of: scenePhase) { _, phase in handleScenePhase(phase) }
                 // System-dialog monitor poll loop, scoped to the scene. Skipped under automation / when
                 // AISLOPDESK_SYSTEM_DIALOG_PANES=0; inert anyway with no discovery seam registered.
