@@ -38,9 +38,12 @@ struct FooterPill: View {
     /// Icon-only when there is an icon but no visible label.
     private var isIconOnly: Bool { (label?.isEmpty ?? true) && systemIcon != nil }
 
-    /// Rest vs hover/active fill (spec §4A: surface_1 → surface_2).
+    /// Rest vs hover/active fill. The live REST footer pills sit at ≈ #262A2C (`footerPillFill` =
+    /// neutral4); the FILLED/highlighted pill (e.g. /remote-control) reads ≈ #44494C
+    /// (`footerPillFillActive` = neutral18). Re-sampled from the live ref crops — the old neutral25
+    /// (#565859) rest tier was ~3 tiers too bright.
     private var fill: Color {
-        (isActive || (hovering && !staticMirror)) ? theme.surface2 : theme.surface1
+        (isActive || (hovering && !staticMirror)) ? theme.footerPillFillActive : theme.footerPillFill
     }
 
     private var iconSize: CGFloat { WarpType.monospaceSize }

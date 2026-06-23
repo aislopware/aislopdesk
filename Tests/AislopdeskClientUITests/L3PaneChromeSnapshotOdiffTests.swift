@@ -58,7 +58,9 @@ final class L3PaneChromeSnapshotOdiffTests: XCTestCase {
             view
                 .environment(\.theme, DesignTokens(theme: WarpTheme()))
                 .frame(width: size.width, height: size.height)
-                .background(Color.black),
+                // Composite over the live-matching theme base (#1D2022) — the WarpTheme bg SEED — so the
+                // components' transparent edges sit on the same slate as the live-Warp reference crops.
+                .background(Color(red: 29.0 / 255.0, green: 32.0 / 255.0, blue: 34.0 / 255.0)),
         )
         renderer.scale = 1.0
         renderer.isOpaque = true

@@ -34,6 +34,7 @@ public struct DesignTokens: Sendable {
     public var surface2: Color { Color(resolved.surface2) }
     public var surface3: Color { Color(resolved.surface3) }
     public var neutral4: Color { Color(resolved.neutral4) }
+    public var neutral25: Color { Color(resolved.neutral25) } // standard footer-pill fill tier
     public var neutral5: Color { Color(resolved.neutral5) }
     public var neutral6: Color { Color(resolved.neutral6) }
     public var neutral7: Color { Color(resolved.neutral7) }
@@ -81,6 +82,19 @@ public struct DesignTokens: Sendable {
     /// Claude bottom-bar/footer brand tint.
     public var agentFooterBrand: Color { Color(AgentAccent.footerBrand) }
 
+    // MARK: Pill fills (L7 polish — matched to the live window)
+
+    /// Standard FooterPill fill (≈ #565859 over the slate base).
+    public var footerPillFill: Color { Color(resolved.footerPillFill) }
+    /// Active/hover FooterPill fill (one tier brighter ≈ #616364).
+    public var footerPillFillActive: Color { Color(resolved.footerPillFillActive) }
+    /// Muted green for the suggestion pill (≈ #486A59 over the slate base).
+    public var suggestionGreenFill: Color { Color(resolved.suggestionGreenFill) }
+    /// CwdPill surface (faint teal-tinted standard pill).
+    public var cwdPillFill: Color { Color(resolved.cwdPillFill) }
+    /// CwdPill border (accent@25%).
+    public var cwdPillBorder: Color { Color(resolved.cwdPillBorder) }
+
     // MARK: Terminal ANSI palette (SwiftUI)
 
     public var ansiNormal: AnsiColors { seeds.terminal.normal }
@@ -100,6 +114,8 @@ public struct DesignTokens: Sendable {
 }
 
 public extension DesignTokens {
-    /// The default tokens (Warp Dark).
+    /// The default tokens — the live-window slate (`WarpTheme`, bg #1D2022). This is the app default.
     static let warpDark = DesignTokens(theme: WarpTheme.dark)
+    /// Alternate tokens — Warp's literal pure-black "Dark" default (bg #000000).
+    static let pureBlack = DesignTokens(theme: PureBlackDark.pureBlack)
 }

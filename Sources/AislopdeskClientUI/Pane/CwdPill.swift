@@ -51,12 +51,15 @@ struct CwdPill: View {
         .padding(.horizontal, WarpSpace.chipPadHorizontal)
         .padding(.vertical, WarpSpace.chipPadVertical)
         .background(
+            // The cwd chip surface is the low neutral chrome tier (`cwdPillFill` = neutral4 ≈ #262A2C),
+            // one tier brighter on hover; the cyan lives only in the glyph + path text, not the fill.
             RoundedRectangle(cornerRadius: WarpRadius.control, style: .continuous)
-                .fill(interactive && hovering ? theme.surface2 : theme.surface1),
+                .fill(interactive && hovering ? theme.footerPillFillActive : theme.cwdPillFill),
         )
         .overlay(
+            // Faint accent (teal) border to read the cyan cwd context (accent@25%).
             RoundedRectangle(cornerRadius: WarpRadius.control, style: .continuous)
-                .strokeBorder(theme.surface3, lineWidth: WarpBorder.width),
+                .strokeBorder(theme.cwdPillBorder, lineWidth: WarpBorder.width),
         )
 
         if interactive {

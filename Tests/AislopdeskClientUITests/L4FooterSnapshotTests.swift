@@ -1,13 +1,12 @@
 // L4FooterSnapshotTests — a HEADLESS EAGER/STATIC snapshot harness for the L4 Claude-Code bottom
 // integration bar (AgentInputFooter + FooterPill + SuggestionPill). Sibling of the L2/L3 odiff harnesses.
 //
-// BG-TONE FIX (the recurring finding): the live-Warp footer paints over surface_1 == #1D2022, but the
-// `WarpTheme` background SEED is pure #000000, so its derived surface_1 is a near-black gray. Rendering a
-// transparent-edged component over `Color.black` (the old L2/L3 idiom) therefore diffs the *background*
-// tone, not the *component*. So here we render every footer view over the SAMPLED live-Warp surface bg
-// (`#1D2022`, measured from warp-main-window.png) — the same tone the reference crops sit on — so the odiff
-// metric reflects component fidelity, not a bg-seed mismatch. The footer/pills still paint their own
-// `theme.surface1`/green fills on top; the sampled bg only governs the transparent gutters + edges.
+// BG-TONE FIX (the recurring finding, now resolved at the SEED): the live-Warp footer paints over the
+// slate base #1D2022. As of L7 the `WarpTheme` background SEED IS #1D2022 (the live-window slate), so its
+// derived surface_1 ≈ #282B2D matches the live top bar. We still composite every footer view over the
+// SAMPLED live-Warp surface bg (`#1D2022`, measured from warp-main-window.png) — which now equals the
+// theme bg — so transparent gutters/edges sit on the same tone as the reference crops and the odiff metric
+// reflects component fidelity. The footer/pills paint their own `theme.surface1`/muted-green fills on top.
 //
 // EAGER/STATIC discipline: every footer sub-view is non-lazy (HStack/Text/Image — no ScrollView /
 // LazyVStack / interactive TextField). All pills are rendered with `staticMirror: true` so they paint
@@ -110,10 +109,13 @@ final class L4FooterSnapshotTests: XCTestCase {
         let greenPath = Self.shotsDir + "/render-suggestionpill.png"
         XCTAssertTrue(renderPNG(greenPill, size: Self.greenPillSize, to: greenPath))
 
-        // --- A single standard FooterPill ("/remote-control"), at rest (the reference pill). ---
+        // --- A single standard FooterPill ("/remote-control"). The live reference crop captures the
+        // FILLED/highlighted pill (≈ #44494C), so we render it `isActive` to compare the active fill
+        // tier (`footerPillFillActive` = neutral18 ≈ #46484A) against the same live state. The REST
+        // tier (neutral4) is exercised by the unfilled pills in the bottombar render. ---
         let standardPill = FooterPill(
             systemIcon: "phone", label: "/remote-control",
-            help: "Start remote control", staticMirror: true, action: {},
+            isActive: true, help: "Start remote control", staticMirror: true, action: {},
         )
         let pillPath = Self.shotsDir + "/render-pill.png"
         XCTAssertTrue(renderPNG(standardPill, size: Self.pillSize, to: pillPath))

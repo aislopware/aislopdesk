@@ -97,7 +97,10 @@ final class L2SnapshotOdiffTests: XCTestCase {
             view
                 .environment(\.theme, DesignTokens(theme: WarpTheme()))
                 .frame(width: size.width, height: size.height)
-                .background(Color.black), // window bg = #000 (so transparent edges match Warp)
+                // Composite over the live-matching theme base (#1D2022). As of L7 the WarpTheme bg SEED is
+                // #1D2022, so transparent edges sit on the SAME slate as the live-Warp reference crops (the
+                // top bar / rail are above the slate base) instead of the old pure-#000 mismatch.
+                .background(Color(red: 29.0 / 255.0, green: 32.0 / 255.0, blue: 34.0 / 255.0)),
         )
         renderer.scale = 1.0
         renderer.isOpaque = true

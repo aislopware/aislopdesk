@@ -69,10 +69,12 @@ public struct ResolvedColors: Sendable {
     /// `neutral_N` for N ∈ {5,10,15,20,40,60,90}% → surfaces/banner/subshell/tooltip.
     public func neutral(_ pct: Int) -> ColorU { background.blend(foreground.withOpacity(pct)) }
 
-    public var surface1: ColorU { neutral(5) } // ≈ #0D0D0D
-    public var surface2: ColorU { neutral(10) } // ≈ #1A1A1A
-    public var surface3: ColorU { neutral(15) } // ≈ #262626
-    public var neutral4: ColorU { neutral(20) } // ≈ #333333 (subshell bg)
+    public var surface1: ColorU { neutral(5) } // ≈ #282B2D over slate (top bar)
+    public var surface2: ColorU { neutral(10) } // ≈ #343638 over slate
+    public var surface3: ColorU { neutral(15) } // ≈ #3F4143 over slate
+    public var neutral4: ColorU { neutral(20) } // ≈ #4A4D4E over slate (subshell bg)
+    /// fg@25% — the standard FOOTER-PILL fill tier (≈ #565859 over slate; live ≈ #565B5E).
+    public var neutral25: ColorU { neutral(25) }
     public var neutral5: ColorU { neutral(40) } // ≈ #666666 (disabled-text basis)
     public var neutral6: ColorU { neutral(60) } // ≈ #999999 (tooltip bg)
     public var neutral7: ColorU { neutral(90) } // ≈ #E6E6E6
@@ -173,6 +175,31 @@ public struct ResolvedColors: Sendable {
     public var foregroundButton: ColorU { background.blend(foreground.withOpacity(30)) }
     /// `accent_button_color()` = `accent.blend(fg @ 0%)` = accent (`color.rs:235-242`).
     public var accentButton: ColorU { accent.blend(foreground.withOpacity(0)) }
+
+    // MARK: Footer / suggestion / cwd pill fills (derived — L7 polish, matched to the live window)
+
+    /// Standard FooterPill fill = `neutral4` (fg@20% over the base) ≈ #4A4D4E over slate. The live
+    /// window's REST footer pills (`+`, File explorer, Rich Input) sit at ≈ #262A2C — the unfilled
+    /// chrome surface — so the rest fill is the low neutral tier, NOT the bright `neutral25`. Re-sampled
+    /// from the live ref crops (`ref-pill.png` / `ref-bottombar.png`): the old `neutral25` (#565859) was
+    /// ~3 tiers too bright and was the recurring base-tone delta across every footer/cwd/suggestion pill.
+    public var footerPillFill: ColorU { neutral(4) } // ≈ #26292B (live rest pill #262A2C)
+    /// Active/hover FooterPill fill — the live FILLED/highlighted pill (e.g. `/remote-control`) reads
+    /// ≈ #44494C, the `neutral18` tier (fg@18%); one step under the old `neutral30`.
+    public var footerPillFillActive: ColorU { neutral(18) } // ≈ #46484A (live filled #44494C)
+
+    /// MUTED green for the suggestion pill ("Enable Claude Code notifications"): a low neutral surface
+    /// (`neutral13`) tinted by the fixed `uiGreen` status literal at 8% — a grayed, dark green matching
+    /// the live window's chip (≈ #384541; live ≈ #374442). Far less saturated than `uiGreen` over a
+    /// bright pill surface (the old `neutral25`⊕green@25% #486A59 was both too bright and too green).
+    public var suggestionGreenFill: ColorU { neutral(13).blend(UIStatus.green.withOpacity(8)) }
+
+    /// CwdPill surface = the low neutral chrome tier (`neutral4`). The live working-directory pill reads
+    /// ≈ #262A2C — an achromatic chrome surface; the cyan only lives in the folder glyph + path text, NOT
+    /// the fill, so the old `neutral25`⊕accent@8% (#515F63) was both too bright and over-tinted.
+    public var cwdPillFill: ColorU { neutral(4) } // ≈ #26292B (live cwd fill #262A2C)
+    /// CwdPill border = `accent_overlay_2` (accent@25%) — the same selection/tint accent overlay.
+    public var cwdPillBorder: ColorU { accentOverlay2 }
 
     // MARK: ANSI-derived tints (warp-tokens-color.md §3g)
 

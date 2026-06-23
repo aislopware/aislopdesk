@@ -34,10 +34,13 @@ struct SuggestionPill: View {
     private var fontSize: CGFloat { WarpType.monospaceSize - 1 }
     private var iconSize: CGFloat { WarpType.monospaceSize }
 
-    /// Green fill = surface_1 ⊕ green@{15,30}% (spec §4B). Resolved through the blend helpers so the bytes
-    /// match the derivation, not a gray approximation.
+    /// Green fill — the MUTED suggestion green. Re-sampled from the live ref crop (`ref-suggestionpill.png`
+    /// ≈ #374442): a grayed, DARK green. The fill is a low neutral chrome surface (`neutral13`) tinted by
+    /// `ui_green`@{8,15}% (rest/hover) — the same recipe exposed as `theme.suggestionGreenFill`. The old
+    /// `neutral25`⊕green@25% (#486A59) was both too bright and too green. Resolved through the blend
+    /// helpers so the bytes match the derivation, not a gray approximation.
     private func greenFill(hovered: Bool) -> Color {
-        Color(GreenChip.fill(surface1: theme.resolved.surface1, hovered: hovered))
+        Color(GreenChip.fill(pillSurface: theme.resolved.neutral(13), hovered: hovered))
     }
 
     private var greenInk: Color { theme.uiGreen }
@@ -139,16 +142,18 @@ enum SuggestionPillCopy {
     }
 }
 
-/// The green chip palette constants (spec §8). The fill uses `ui_green` blended into surface_1; the
-/// border is the same green at ~a80.
+/// The green chip palette constants (spec §8). The fill uses `ui_green` blended into a low neutral
+/// chrome surface (`neutral13`), so the grayed dark green matches the live window; the border is the same
+/// green at ~a80.
 enum GreenChip {
     /// Warp's `ui_green` (#1CA05A) — the chip ink + the blend overlay (UIStatus.green in the DS).
     static let green = UIStatus.green
     /// The border green at alpha 80 (spec §4B: `ColorU{green.rgb, a:80}`).
     static let borderGreen = ColorU(r: green.r, g: green.g, b: green.b, a: 80)
 
-    /// The fill = surface_1 ⊕ green@{15,30}% (rest/hover). Pure → unit-tested for the blend bytes.
-    static func fill(surface1: ColorU, hovered: Bool) -> ColorU {
-        surface1.blend(green.withOpacity(hovered ? 30 : 15))
+    /// The fill = pill-surface (neutral13) ⊕ green@{8,15}% (rest/hover) ≈ #384541 / #36482? — the live
+    /// chip's grayed dark green. Pure → unit-tested for the blend bytes.
+    static func fill(pillSurface: ColorU, hovered: Bool) -> ColorU {
+        pillSurface.blend(green.withOpacity(hovered ? 15 : 8))
     }
 }

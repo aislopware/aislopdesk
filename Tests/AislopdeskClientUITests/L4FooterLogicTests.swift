@@ -92,13 +92,22 @@ final class SuggestionPillTests: XCTestCase {
     }
 
     func testHoverFillIsGreenerThanRest() {
-        // The hover fill blends green @30% vs rest @15% over the same surface_1 ⇒ a stronger green tint.
-        let surface1 = DesignTokens.warpDark.resolved.surface1
-        let rest = GreenChip.fill(surface1: surface1, hovered: false)
-        let hover = GreenChip.fill(surface1: surface1, hovered: true)
+        // The hover fill blends green @15% vs rest @8% over the same low neutral surface ⇒ a stronger tint.
+        let pillSurface = DesignTokens.warpDark.resolved.neutral(13)
+        let rest = GreenChip.fill(pillSurface: pillSurface, hovered: false)
+        let hover = GreenChip.fill(pillSurface: pillSurface, hovered: true)
         XCTAssertNotEqual(rest, hover)
-        // Green channel rises with more green overlay (surface_1 is near-black, green dominates G).
+        // Green channel rises with more green overlay.
         XCTAssertGreaterThanOrEqual(Int(hover.g), Int(rest.g))
+    }
+
+    func testMutedSuggestionGreenMatchesLiveWindow() {
+        // Live-window match: rest green chip ≈ #384541 (sampled live ≈ #374442), a grayed DARK green —
+        // far less saturated/bright than the old neutral25⊕green@25% (#486A59).
+        let pillSurface = DesignTokens.warpDark.resolved.neutral(13)
+        let rest = GreenChip.fill(pillSurface: pillSurface, hovered: false)
+        XCTAssertEqual(rest, ColorU(r: 0x38, g: 0x45, b: 0x41, a: 255))
+        XCTAssertEqual(rest, DesignTokens.warpDark.resolved.suggestionGreenFill)
     }
 }
 
