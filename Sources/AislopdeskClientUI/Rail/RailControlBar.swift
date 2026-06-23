@@ -17,7 +17,7 @@ struct RailControlBar: View {
         HStack(spacing: WarpSpace.s) {
             HStack(spacing: WarpSpace.xs + WarpSpace.xs) { // 6pt gap (keyCapGap*2)
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12 * 0.85))
+                    .font(.system(size: WarpType.uiSize * 0.85))
                     .foregroundStyle(theme.textSub)
                     .frame(width: 12, height: 12)
                 TextField("Search tabs…", text: $searchText)

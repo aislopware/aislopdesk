@@ -111,7 +111,7 @@ struct TabRow: View {
     private func pillButton(systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: WarpType.uiSize - WarpSpace.xs, weight: .semibold))
                 .frame(width: 12, height: 12)
                 .padding(WarpSpace.xxs)
                 .foregroundStyle(theme.textSub)
