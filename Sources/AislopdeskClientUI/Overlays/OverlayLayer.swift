@@ -42,6 +42,11 @@ struct OverlayLayer: View {
                 SettingsOverlay(model: settings, staticMirror: staticMirror, onClose: { coordinator.closeSettings() })
             }
 
+            // Keyboard cheat sheet (⌘/ + the palette "Keyboard Shortcuts" row) — registry-generated.
+            if coordinator.cheatSheetVisible {
+                CheatSheetOverlay(staticMirror: staticMirror, onClose: { coordinator.closeCheatSheet() })
+            }
+
             // L6 / W1: the Remote-Window picker (opened by the /remote-control pill + the palette action).
             if coordinator.remotePickerVisible, let model = coordinator.remotePickerModel {
                 RemoteWindowPicker(

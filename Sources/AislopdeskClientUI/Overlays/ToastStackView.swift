@@ -80,7 +80,12 @@ struct ToastCard: View {
                 .strokeBorder(tint.opacity(0.5), lineWidth: WarpBorder.width),
         )
         .onHover { hovering = $0 }
-        .task(id: toast.id) {
+        // Keyed on the WHOLE `toast` value (not just its id) so a same-id REPLACEMENT — which keeps this
+        // SwiftUI view identity because the `ForEach` is id-keyed — re-evaluates the timer whenever
+        // `autoDismiss` (or content) changes. A needsInput→finished replacement now restarts and schedules
+        // the dismiss; a finished→needsInput one cancels the stale timer and the `guard` keeps the sticky
+        // toast. `Toast: Equatable`, so this is well-defined; a harmless restart on a title-only change is OK.
+        .task(id: toast) {
             guard !staticMirror, let delay = toast.autoDismiss else { return }
             try? await Task.sleep(for: delay)
             if !Task.isCancelled { onDismiss() }

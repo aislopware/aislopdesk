@@ -491,7 +491,7 @@ public enum WorkspaceBindingRegistry {
     /// Renders a ``KeyChord`` in native modifier-glyph order (⌃⌥⇧⌘ + key) — the same form the canvas
     /// palette uses, kept here as the registry's own pure renderer so the menu/palette/cheat sheet read
     /// ONE place. `nonisolated` (no view / actor) so it composes from any context.
-    nonisolated static func glyph(_ chord: KeyChord) -> String {
+    public nonisolated static func glyph(_ chord: KeyChord) -> String {
         var out = ""
         if chord.modifiers.contains(.control) { out += "⌃" }
         if chord.modifiers.contains(.option) { out += "⌥" }
@@ -501,8 +501,9 @@ public enum WorkspaceBindingRegistry {
         return out
     }
 
-    /// The display glyph for `action`'s default chord, or `nil` when it has none.
-    nonisolated static func glyph(for action: WorkspaceAction) -> String? {
+    /// The display glyph for `action`'s default chord, or `nil` when it has none. `public` so the rebuilt
+    /// ClientUI palette derives its row hints from the SAME registry the keyboard bank registers (no drift).
+    public nonisolated static func glyph(for action: WorkspaceAction) -> String? {
         binding(for: action)?.chord.map(glyph)
     }
 
@@ -523,7 +524,8 @@ public enum WorkspaceBindingRegistry {
     /// The bindings grouped by category in display order (panes, tabs, sessions, focus, view), with the
     /// nine ⌘-digit select-tab chords collapsed into one representative "⌘1…⌘9" row in the Tabs group. The
     /// SINGLE source the cheat sheet renders and the palette catalog iterates — so they cannot drift.
-    static var groupedForDisplay: [(category: WorkspaceAction.Category, bindings: [WorkspaceBinding])] {
+    /// `public` so the rebuilt ClientUI cheat-sheet overlay generates its rows from this one table.
+    public static var groupedForDisplay: [(category: WorkspaceAction.Category, bindings: [WorkspaceBinding])] {
         WorkspaceAction.Category.allCases.compactMap { category in
             let rows = bindings.filter { $0.category == category }
             guard !rows.isEmpty else { return nil }

@@ -115,8 +115,12 @@ public extension WorkspaceBindingRegistry {
         // Supervision (P3): focus the oldest pane needing attention across all tabs/sessions.
         case .jumpToAttention: store.jumpToOldestAttentionPane()
         // Supervision (P4): open the Peek & Reply overlay (a VIEW @State toggle, like the palette) over the
-        // oldest pane needing attention. The toggle closure itself no-ops when nothing needs attention.
-        case .peekAndReply: togglePeekReply?()
+        // oldest pane needing attention. The toggle closure itself no-ops when nothing needs attention. When
+        // no overlay closure is supplied (the keyboard bank, until the Peek & Reply overlay lands), the chord
+        // must not be DEAD — fall back to focusing the oldest attention pane (mirrors the `.find` fallback to
+        // `requestFindInActivePane()`), so ⌘⇧J does something useful rather than nothing.
+        case .peekAndReply:
+            if let togglePeekReply { togglePeekReply() } else { store.jumpToOldestAttentionPane() }
         }
     }
 

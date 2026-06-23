@@ -1,3 +1,4 @@
+import AislopdeskAgentDetect
 import CoreGraphics
 import XCTest
 @testable import AislopdeskWorkspaceCore
@@ -567,6 +568,36 @@ final class TreeCommandRoutingTests: XCTestCase {
         let before = store.tree
         WorkspaceBindingRegistry.route(.find, to: store) // no toggleFind ⇒ store path
         XCTAssertEqual(store.tree, before, "the store find path leaves the tree unchanged")
+    }
+
+    // MARK: - View: peek-and-reply falls back to the store when no overlay closure (no dead ⌘⇧J)
+
+    /// `.peekAndReply` WITH an explicit `togglePeekReply` override fires the closure (the future overlay
+    /// toggle) and does NOT mutate the tree.
+    @MainActor
+    func testPeekReplyFiresToggleClosureWhenProvided() {
+        let store = makeTreeStore()
+        let before = store.tree
+        var fired = 0
+        WorkspaceBindingRegistry.route(.peekAndReply, to: store, togglePeekReply: { fired += 1 })
+        XCTAssertEqual(fired, 1, "the peekAndReply action invoked the togglePeekReply closure")
+        XCTAssertEqual(store.tree, before, "with a closure, peek-reply is a view overlay — tree unchanged")
+    }
+
+    /// `.peekAndReply` WITHOUT a `togglePeekReply` override (the keyboard-bank path, until the overlay
+    /// lands) must NOT be a dead key: it falls back to focusing the oldest attention pane. Proven to fail
+    /// on the pre-fix routing where the nil closure was a silent no-op (focus would NOT move).
+    @MainActor
+    func testPeekReplyWithoutClosureFocusesOldestAttentionPane() throws {
+        let store = makeTreeStore()
+        let firstPane = try XCTUnwrap(store.tree.allPaneIDs().first)
+        route(.newTab, store) // a second tab becomes active
+        let secondPane = try XCTUnwrap(activePane(store))
+        XCTAssertNotEqual(firstPane, secondPane)
+        store.setAgentStatus(.needsPermission, for: firstPane) // the BACKGROUND pane is blocked
+
+        WorkspaceBindingRegistry.route(.peekAndReply, to: store) // no closure ⇒ store fallback
+        XCTAssertEqual(activePane(store), firstPane, "⌘⇧J without an overlay jumps to the blocked pane")
     }
 
     // L0: the cheat-sheet drift-guard tests (testTreeCheatSheetChordsEqualRegistryChords /

@@ -48,6 +48,8 @@ struct WorkspaceKeyboardBank: View {
     let store: WorkspaceStore
     /// ⌘K command-palette toggle (also drives ⌘⇧P below).
     var togglePalette: () -> Void = {}
+    /// ⌘/ cheat-sheet toggle (the L5 cheat-sheet overlay). `nil` ⇒ the chord no-ops (test/headless default).
+    var toggleCheatSheet: (() -> Void)?
 
     var body: some View {
         Group {
@@ -60,9 +62,11 @@ struct WorkspaceKeyboardBank: View {
                             binding.action,
                             to: store,
                             togglePalette: togglePalette,
-                            // cheatSheet / peekReply have no overlay in the rebuilt tree yet → no-op (the
-                            // registry routing tolerates nil); find lands on the store's active-pane hook.
-                            toggleCheatSheet: nil,
+                            // ⌘/ drives the L5 cheat-sheet overlay (no longer a dead chord). peekReply has
+                            // no overlay yet → its routing falls back to a store action (jump-to-attention),
+                            // so ⌘⇧J does something useful rather than nothing. find lands on the store's
+                            // active-pane hook.
+                            toggleCheatSheet: toggleCheatSheet,
                             toggleFind: nil,
                             togglePeekReply: nil,
                         )

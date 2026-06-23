@@ -43,10 +43,16 @@ public struct ActionsPaletteSource: PaletteDataSource {
 
     /// The fixed action catalog. IDs are stable so recents/tests can reference them. Each `.store` closure
     /// drives the tree-path store API (not the canvas-era `apply`), then records the matching recent command.
+    ///
+    /// Shortcut hints are NEVER hardcoded — each row derives its glyph from
+    /// ``WorkspaceBindingRegistry/glyph(for:)`` (the SAME single source the keyboard bank registers and the
+    /// cheat sheet renders) so a chord change can't desync the displayed glyph. A verb with no registry
+    /// chord (New Remote Window Tab, Reconnect Pane, …) resolves to `nil` ⇒ no hint chip — correct, since
+    /// the chord genuinely does not exist.
     public static let catalog: [PaletteItem] = [
         item(
             id: "action.newTerminalTab", icon: "plus.rectangle", title: "New Tab",
-            shortcut: "⌘T",
+            shortcut: glyph(.newTab),
             run: { store in
                 store.newTab(kind: .terminal)
                 store.recordRecentCommand(.newPane(.terminal))
@@ -54,26 +60,29 @@ public struct ActionsPaletteSource: PaletteDataSource {
         ),
         // L6 / W1: "New Remote Window Tab" opens the Remote-Window picker (the host window list) rather
         // than minting an UNBOUND `.remoteGUI` pane — the pick then opens a pre-bound streaming pane. The
-        // overlay coordinator handles `.openRemotePicker` (it records the recent command on open).
+        // overlay coordinator handles `.openRemotePicker` (it records the recent command on open). No
+        // registry chord exists for it ⇒ no hint.
         PaletteItem(
             id: "action.newRemoteTab", icon: "rectangle.on.rectangle", title: "New Remote Window Tab",
-            shortcut: "⌥⌘N", filter: .actions, action: .openRemotePicker,
+            shortcut: nil, filter: .actions, action: .openRemotePicker,
         ),
         item(
             id: "action.splitRight", icon: "rectangle.split.2x1", title: "Split Pane Right",
+            shortcut: glyph(.splitRight),
             run: { store in
                 store.splitActivePane(axis: .horizontal, kind: .terminal)
             },
         ),
         item(
             id: "action.splitDown", icon: "rectangle.split.1x2", title: "Split Pane Down",
+            shortcut: glyph(.splitDown),
             run: { store in
                 store.splitActivePane(axis: .vertical, kind: .terminal)
             },
         ),
         item(
             id: "action.closePane", icon: "xmark.square", title: "Close Pane",
-            shortcut: "⌘W",
+            shortcut: glyph(.closePane),
             run: { store in
                 store.requestCloseActivePaneTree()
                 store.recordRecentCommand(.closePane)
@@ -81,11 +90,12 @@ public struct ActionsPaletteSource: PaletteDataSource {
         ),
         item(
             id: "action.closeTab", icon: "xmark.rectangle", title: "Close Tab",
+            shortcut: glyph(.closeTab),
             run: { store in store.closeActiveTab() },
         ),
         item(
             id: "action.toggleZoom", icon: "arrow.up.left.and.arrow.down.right", title: "Toggle Maximize Pane",
-            shortcut: "⇧⌘↩",
+            shortcut: glyph(.toggleZoom),
             run: { store in
                 store.toggleZoomActivePane()
                 store.recordRecentCommand(.toggleZoom)
@@ -93,16 +103,18 @@ public struct ActionsPaletteSource: PaletteDataSource {
         ),
         item(
             id: "action.toggleSidebar", icon: "sidebar.left", title: "Toggle Tabs Panel",
+            shortcut: glyph(.toggleSidebar),
             run: { store in store.toggleSidebarCollapsed() },
         ),
         item(
             id: "action.renamePane", icon: "pencil", title: "Rename Pane",
-            shortcut: "⌘R",
+            shortcut: glyph(.renamePane),
             run: { store in store.requestRenameActivePane() },
         ),
+        // No registry chord exists for reconnect (the keyboard bank never registers one) ⇒ no hint chip.
         item(
             id: "action.reconnect", icon: "arrow.clockwise", title: "Reconnect Pane",
-            shortcut: "⇧⌘R",
+            shortcut: nil,
             run: { store in
                 if let pane = store.tree.activeSession?.activeTab?.activePane {
                     store.reconnect(pane)
@@ -114,7 +126,19 @@ public struct ActionsPaletteSource: PaletteDataSource {
             id: "action.openSettings", icon: "slider.horizontal.3", title: "Open Settings",
             subtitle: nil, shortcut: nil, filter: .actions, action: .openSettings,
         ),
+        // The cheat sheet is also reachable by ⌘/; surfacing it here means the keyboard reference is
+        // discoverable without knowing the chord. Its hint derives from the registry (no drift).
+        PaletteItem(
+            id: "action.cheatSheet", icon: "keyboard", title: "Keyboard Shortcuts",
+            subtitle: nil, shortcut: glyph(.cheatSheet), filter: .actions, action: .openCheatSheet,
+        ),
     ]
+
+    /// The live registry glyph for `action`'s default chord (nil when unbound) — the ONE source the catalog
+    /// hints derive from, so the displayed chord can never drift from the keyboard bank.
+    private static func glyph(_ action: WorkspaceAction) -> String? {
+        WorkspaceBindingRegistry.glyph(for: action)
+    }
 
     /// Build a `.store` action row.
     private static func item(

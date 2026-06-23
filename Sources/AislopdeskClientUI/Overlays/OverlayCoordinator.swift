@@ -44,6 +44,12 @@ public final class OverlayCoordinator {
     /// Whether the Settings overlay is presented.
     public private(set) var settingsVisible = false
 
+    // MARK: Cheat-sheet state
+
+    /// Whether the keyboard cheat sheet (⌘/) is presented. Its rows are generated from
+    /// ``WorkspaceBindingRegistry/groupedForDisplay`` so the displayed glyphs can't drift from the chords.
+    public private(set) var cheatSheetVisible = false
+
     // MARK: Remote-window picker state (L6)
 
     /// Whether the Remote-Window picker modal is presented (the `/remote-control` pill + the "New Remote
@@ -208,6 +214,9 @@ public final class OverlayCoordinator {
         case .openSettings:
             closePalette()
             openSettings()
+        case .openCheatSheet:
+            closePalette()
+            openCheatSheet()
         case .openRemotePicker:
             closePalette()
             openRemotePicker()
@@ -226,6 +235,12 @@ public final class OverlayCoordinator {
 
     public func openSettings() { settingsVisible = true }
     public func closeSettings() { settingsVisible = false }
+
+    // MARK: Cheat sheet (⌘/)
+
+    public func toggleCheatSheet() { cheatSheetVisible.toggle() }
+    public func closeCheatSheet() { cheatSheetVisible = false }
+    public func openCheatSheet() { cheatSheetVisible = true }
 
     // MARK: Remote-window picker (L6 / W1)
 

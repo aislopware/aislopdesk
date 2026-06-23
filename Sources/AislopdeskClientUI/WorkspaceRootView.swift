@@ -64,7 +64,11 @@ public struct WorkspaceRootView: View {
         // command-mode entry. All chords are ⌘/⌥-prefixed (registry-guarded).
         #if os(macOS) || os(iOS)
             .background {
-                WorkspaceKeyboardBank(store: store, togglePalette: { overlay.togglePalette(mode: .command) })
+                WorkspaceKeyboardBank(
+                    store: store,
+                    togglePalette: { overlay.togglePalette(mode: .command) },
+                    toggleCheatSheet: { overlay.toggleCheatSheet() },
+                )
             }
         #endif
     }
@@ -76,6 +80,17 @@ public struct WorkspaceRootView: View {
                 onToggleSidebar: { store.toggleSidebarCollapsed() },
                 onOpenSettings: { overlay.openSettings() },
                 onOpenOmnibar: { overlay.openPalette(mode: .titleBarSearch) },
+                // Inbox badge tracks any unfocused-pane completion the store has parked; clicking it jumps to
+                // the oldest pane needing attention (the store no-ops when nothing is pending).
+                hasUnread: !store.panePendingCompletion.isEmpty,
+                onInbox: { store.jumpToOldestAttentionPane() },
+                // App-global connection status (AppConnection is @Observable, so this re-renders on change):
+                // a down/reconnecting/unreachable host is now visible in the chrome, with a manual Retry in a
+                // give-up state.
+                statusLabel: connectionStatusLabel,
+                statusColor: connectionStatusColor,
+                statusHelp: connectionStatusHelp,
+                onReconnect: connectionReconnectAction,
             )
             HStack(spacing: 0) {
                 if !store.sidebarCollapsed {
@@ -87,6 +102,32 @@ public struct WorkspaceRootView: View {
             }
         }
         .padding(WarpSpace.workspacePadding)
+    }
+
+    // MARK: Connection status pill derivation (pure → testable; AppConnection is @Observable)
+
+    private var connectionStatusLabel: String {
+        TopBarConnectionPill.label(for: connection.status)
+    }
+
+    private var connectionStatusColor: Color {
+        switch TopBarConnectionPill.colorRole(for: connection.status) {
+        case .connected: theme.success
+        case .inFlight: theme.uiWarning
+        case .trouble: theme.uiError
+        case .idle: theme.textSub
+        }
+    }
+
+    private var connectionStatusHelp: String {
+        TopBarConnectionPill.help(host: connection.target.host, status: connection.status)
+    }
+
+    /// The manual-retry closure for a give-up state (`.failed`/`.unreachable`), else `nil` so the affordance
+    /// is hidden when connected/connecting/reconnecting.
+    private var connectionReconnectAction: (() -> Void)? {
+        guard TopBarConnectionPill.showsReconnect(for: connection.status) else { return nil }
+        return { [weak connection] in Task { await connection?.retry() } }
     }
 
     /// Bridge the store's pane-notification / long-command / agent-attention sinks to toasts. These sinks

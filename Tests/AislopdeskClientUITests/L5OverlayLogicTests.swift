@@ -288,6 +288,120 @@ final class ToastLifecycleTests: XCTestCase {
         c.dismissToast("a")
         XCTAssertEqual(c.toasts.map(\.id), ["b"])
     }
+
+    /// The value-level invariant the ToastCard auto-dismiss-timer fix depends on: a same-id REPLACEMENT
+    /// must carry the NEW `autoDismiss`. The agent-attention bridge pushes a sticky (`autoDismiss == nil`)
+    /// toast when an agent needs input, then a 4s-auto-dismiss toast (same id) when it later finishes; the
+    /// replacement has to surface the new delay so `ToastCard.task(id: toast)` reschedules. The view timer
+    /// itself is view-only (not observable here), so this pins the model contract the view keys on.
+    func testSameIdReplacementCarriesNewAutoDismiss() {
+        let c = OverlayCoordinator()
+        // needsInput → sticky (no auto-dismiss).
+        c.pushToast(Toast(id: "attn.x", flavor: .attention, title: "Agent", autoDismiss: nil))
+        XCTAssertNil(c.toasts.first?.autoDismiss)
+        // finished → same id, now auto-dismissing after 4s. The replacement must adopt the new delay.
+        c.pushToast(Toast(id: "attn.x", flavor: .attention, title: "Agent", autoDismiss: .seconds(4)))
+        XCTAssertEqual(c.toasts.count, 1, "same id de-dupes to one toast")
+        XCTAssertEqual(c.toasts.first?.autoDismiss, .seconds(4), "the replacement carries the new autoDismiss")
+        // Inverse direction: a finished (auto-dismiss) toast replaced by a needsInput (sticky) one stays.
+        c.pushToast(Toast(id: "attn.x", flavor: .attention, title: "Agent", autoDismiss: nil))
+        XCTAssertNil(c.toasts.first?.autoDismiss, "the sticky replacement drops the timer")
+    }
+}
+
+// MARK: - Palette shortcut hints derive from the registry (no drift)
+
+/// The ActionsPaletteSource catalog must NEVER hardcode a `shortcut:` glyph that drifts from the chord the
+/// `WorkspaceKeyboardBank` actually registers. Each catalog row's hint must equal
+/// `WorkspaceBindingRegistry.glyph(for:)` of its mapped action — and be `nil` when the action has no
+/// registry chord (so the palette never advertises a chord that fires nothing). Proven to FAIL on the
+/// pre-fix hardcoded strings (e.g. Rename showed "⌘R" but the chord is ⇧⌘R; Toggle Maximize showed "⇧⌘↩"
+/// but the chord is ⌥⌘↩; Reconnect showed "⇧⌘R" but no reconnect chord exists).
+@MainActor
+final class PaletteShortcutDriftTests: XCTestCase {
+    /// Catalog row id → the WorkspaceAction whose registry glyph it must mirror (nil ⇒ no registry chord).
+    private static let expected: [(id: String, action: WorkspaceAction?)] = [
+        ("action.newTerminalTab", .newTab),
+        ("action.newRemoteTab", nil),
+        ("action.splitRight", .splitRight),
+        ("action.splitDown", .splitDown),
+        ("action.closePane", .closePane),
+        ("action.closeTab", .closeTab),
+        ("action.toggleZoom", .toggleZoom),
+        ("action.toggleSidebar", .toggleSidebar),
+        ("action.renamePane", .renamePane),
+        ("action.reconnect", nil),
+        ("action.openSettings", nil),
+        ("action.cheatSheet", .cheatSheet),
+    ]
+
+    func testEachCatalogShortcutEqualsRegistryGlyphOrNilWhenUnbound() throws {
+        for (id, action) in Self.expected {
+            let row = try XCTUnwrap(
+                ActionsPaletteSource.catalog.first { $0.id == id }, "missing catalog row \(id)",
+            )
+            let expectedGlyph = action.flatMap { WorkspaceBindingRegistry.glyph(for: $0) }
+            XCTAssertEqual(
+                row.shortcut, expectedGlyph,
+                "catalog row \(id) shortcut \(String(describing: row.shortcut)) must equal the registry "
+                    + "glyph \(String(describing: expectedGlyph)) for its action",
+            )
+        }
+    }
+
+    /// Spot-check the concrete glyphs the drift bug got wrong, so a future hardcode regression is caught.
+    func testKnownDriftedGlyphsAreNowCorrect() throws {
+        func shortcut(_ id: String) throws -> String? {
+            try XCTUnwrap(ActionsPaletteSource.catalog.first { $0.id == id }).shortcut
+        }
+        XCTAssertEqual(try shortcut("action.renamePane"), "⇧⌘R")
+        XCTAssertEqual(try shortcut("action.toggleZoom"), "⌥⌘↩")
+        XCTAssertNil(try shortcut("action.reconnect"), "no reconnect chord exists ⇒ no hint")
+    }
+}
+
+// MARK: - Top-bar connection status pill derivation
+
+/// The chrome must surface a down / reconnecting / unreachable host (previously `AppConnection.status` was
+/// never read by any chrome view). These pin the PURE `TopBarConnectionPill` derivation the WindowTopBar +
+/// WorkspaceRootView feed: a give-up state yields a visible non-empty label, a "trouble" colour role, and a
+/// reconnect affordance; an in-flight state hides the manual Retry. Proven to fail before the derivation
+/// existed (there was no status surface at all).
+@MainActor
+final class TopBarConnectionPillTests: XCTestCase {
+    func testUnreachableSurfacesLabelTroubleAndReconnect() {
+        let status = ConnectionStatus.unreachable
+        XCTAssertFalse(TopBarConnectionPill.label(for: status).isEmpty, "unreachable shows a non-empty label")
+        XCTAssertEqual(TopBarConnectionPill.colorRole(for: status), .trouble)
+        XCTAssertTrue(TopBarConnectionPill.showsReconnect(for: status), "give-up state offers manual Retry")
+    }
+
+    func testFailedSurfacesLabelTroubleAndReconnect() {
+        let status = ConnectionStatus.failed("huge raw NWError dump")
+        XCTAssertFalse(TopBarConnectionPill.label(for: status).isEmpty)
+        XCTAssertEqual(TopBarConnectionPill.colorRole(for: status), .trouble)
+        XCTAssertTrue(TopBarConnectionPill.showsReconnect(for: status))
+        // The compact label never dumps the raw payload into the chrome.
+        XCTAssertFalse(TopBarConnectionPill.label(for: status).contains("NWError"))
+    }
+
+    func testReconnectingShowsInFlightAndHidesRetry() {
+        let status = ConnectionStatus.reconnecting(attempt: 2, nextRetry: nil)
+        XCTAssertFalse(TopBarConnectionPill.label(for: status).isEmpty)
+        XCTAssertEqual(TopBarConnectionPill.colorRole(for: status), .inFlight)
+        XCTAssertFalse(TopBarConnectionPill.showsReconnect(for: status), "the supervisor is already retrying")
+    }
+
+    func testConnectedIsConnectedRoleNoRetry() {
+        XCTAssertEqual(TopBarConnectionPill.colorRole(for: .connected), .connected)
+        XCTAssertFalse(TopBarConnectionPill.showsReconnect(for: .connected))
+    }
+
+    func testHelpCarriesHostAndHeadline() {
+        let help = TopBarConnectionPill.help(host: "studio.local", status: .unreachable)
+        XCTAssertTrue(help.contains("studio.local"))
+        XCTAssertTrue(help.contains("Unreachable"))
+    }
 }
 
 // MARK: - ContextMenuModel action mapping
