@@ -23,8 +23,51 @@ struct PaneContainer: View {
     let paneID: PaneID
     /// Whether this pane is the active tab's active (focused) pane.
     let isFocused: Bool
+    /// This pane's current laid-out size (from the solver, via ``SplitContainer``). The SINGLE generic resize
+    /// signal: whenever it changes — a pane-divider commit, a window-edge / sidebar / inspector resize, a
+    /// split add/remove, a zoom, a balance, a tab switch — the content has been resized and its (frozen /
+    /// stretched) surface won't match until it re-renders, so the scrim is shown until things settle.
+    var size: CGSize = .zero
     /// EAGER/STATIC render path for headless ImageRenderer snapshots.
     var staticMirror: Bool = false
+
+    /// `true` from the moment ``size`` changes until it has held steady for ``resizeScrimSettle``. This is
+    /// the geometry signal that STARTS the scrim — it covers EVERY resize source and self-clears. On its
+    /// own it is only a TIMER proxy for "re-rendered"; the real "fresh pixels landed" signal that HOLDS the
+    /// scrim past this timer is the model's ``LivePaneSession/awaitingResizeReflow`` (OR-ed in below).
+    @State private var resizing = false
+    /// The last ``size`` the settle task observed — distinguishes the initial mount (no scrim) from a real
+    /// resize, and lets the task keep the scrim up across a continuous drag (every step restarts the settle).
+    @State private var settledSize: CGSize?
+
+    /// STICKY for the duration of an interactive divider drag: set the first time THIS pane changes size
+    /// while a drag is active, cleared when the drag ends. It holds the scrim across a PAUSED drag (mouse
+    /// held, cursor still) — the geometry-settle timer clears `resizing` after 200 ms, but the host send is
+    /// deferred to release so `awaitingReflow` is not armed yet, leaving a gap the overlay would flash
+    /// through. Gating on a real size-change keeps it scoped to the panes actually being resized.
+    @State private var resizedDuringDrag = false
+
+    /// How long ``size`` must hold steady before the scrim fades — long enough to span the host grid-reflow /
+    /// surface relayout that lands the fresh pixels, short enough not to linger once they have.
+    private let resizeScrimSettle: Duration = .milliseconds(200)
+
+    /// The pane content model's "resized but not re-rendered yet" signal (terminal host-reflow wait OR
+    /// remote-GUI host-re-capture wait), `false` for a pane with no live model. HOLDS the scrim past the
+    /// geometry settle so the overlay clears only when the fresh pixels actually land — on a slow link the
+    /// geometry timer alone would uncover the stretched / stale frame ~1 RTT too early.
+    private var awaitingReflow: Bool { live?.awaitingResizeReflow ?? false }
+
+    /// Whether an interactive divider drag is in progress anywhere (pane or sidebar divider). Combined with
+    /// ``resizedDuringDrag`` it holds the scrim across a paused drag without showing it on untouched panes.
+    private var dragging: Bool { store.isInteractiveResizeActive }
+
+    /// Cover the surface with the resize scrim while a resize is settling (never on the static snapshot
+    /// path). THREE signals OR together: the geometry settle STARTS it; the drag-in-progress hold keeps it
+    /// up while the mouse is held (even paused); the model's reflow signal HOLDS it across the host
+    /// round-trip until the fresh pixels land. Together they leave no gap to flash through.
+    private var showResizeScrim: Bool {
+        !staticMirror && (resizing || (dragging && resizedDuringDrag) || awaitingReflow)
+    }
 
     /// The live session for this pane (terminal model / input bar), if materialized.
     private var live: LivePaneSession? { store.handle(for: paneID) as? LivePaneSession }
@@ -71,6 +114,46 @@ struct PaneContainer: View {
         paneContent
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Otty.Surface.card)
+            // While this pane is mid-resize, cover its (frozen / stretched) surface with a calm scrim so the
+            // moment reads as a deliberate "resizing" state, not a glitchy stretch. Kept in the tree at
+            // opacity 0 (cheap) and faded in — never hit-tests, so taps / the divider gesture pass through.
+            .overlay {
+                PaneResizeScrim()
+                    .opacity(showResizeScrim ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .animation(Otty.Anim.reveal, value: showResizeScrim)
+            }
+            // Generic resize signal: when this pane's laid-out `size` changes (from ANY source) show the
+            // scrim, then hold it until the size has been steady for `resizeScrimSettle`. `.task(id:)`
+            // cancels + restarts on every change, so a continuous drag keeps the scrim up. The first run
+            // (initial mount, `settledSize == nil`) is NOT a resize, so it shows nothing. This timer is only
+            // the START + a floor — once it elapses, `awaitingReflow` (the model's real "fresh pixels
+            // landed" signal, OR-ed into `showResizeScrim`) keeps the overlay up across the host round-trip
+            // and clears it the instant the reflowed / re-captured content actually renders.
+            .task(id: size) {
+                guard !staticMirror else { return }
+                let prev = settledSize
+                settledSize = size
+                // A change between two REAL (non-empty) sizes is a resize. A transition from / to `.zero` is
+                // just the initial layout settling (or teardown), which must NOT flash the scrim on mount.
+                if let prev, prev != size,
+                   prev.width > 0, prev.height > 0, size.width > 0, size.height > 0
+                {
+                    resizing = true
+                    // Mark this pane as part of the active drag (sticky through pauses) so the scrim
+                    // survives a still-held cursor — see ``resizedDuringDrag``.
+                    if dragging { resizedDuringDrag = true }
+                }
+                guard resizing else { return }
+                do { try await Task.sleep(for: resizeScrimSettle) } catch { return }
+                resizing = false
+            }
+            // Drag ENDED → drop the sticky drag-hold. The release commit arms `awaitingReflow`, which now
+            // carries the scrim across the host round-trip until the reflowed pixels land — so clearing the
+            // hold here (both settle in the same runloop turn) leaves no gap for the overlay to flash through.
+            .onChange(of: dragging) { _, active in
+                if !active { resizedDuringDrag = false }
+            }
             // otty: the terminal is a FLUSH, borderless panel on paper — fills the leaf rect edge-to-edge.
             // No rounded card, no accent ring, no drop shadow, no gutter, and NO per-pane header bar (the
             // active pane's title + split/close controls live in the titlebar `⋯` menu). Adjacent split

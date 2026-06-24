@@ -52,6 +52,11 @@ public enum SplitTreeRenderModel {
         /// is 0). The pixel→weight conversion multiplies by this so a drag moves the seam 1:1 regardless of
         /// how the split was seeded (a 2-pane split seeds `.flex(1)+.flex(1)` ⇒ `flexSum == 2`).
         public let flexSum: CGFloat
+        /// The leading child's current `.flex` weight (the child at ``childIndex``) — the ANCHOR a live drag
+        /// reads ONCE at drag start, then sets `leadingWeight + Δpx·flexSum/parentSpan` absolutely each frame
+        /// (cursor-matched, drift-free; the store clamps it at ``SplitWeight/minWeight`` so the seam stops on
+        /// the neighbour). `0` when the leading child is `.fixed` (the divider is not resizable).
+        public let leadingWeight: Double
         public init(
             splitID: SplitNodeID,
             childIndex: Int,
@@ -59,6 +64,7 @@ public enum SplitTreeRenderModel {
             rect: CGRect,
             parentSpan: CGFloat = 0,
             flexSum: CGFloat = 1,
+            leadingWeight: Double = 0,
         ) {
             self.splitID = splitID
             self.childIndex = childIndex
@@ -66,7 +72,25 @@ public enum SplitTreeRenderModel {
             self.rect = rect
             self.parentSpan = parentSpan
             self.flexSum = flexSum
+            self.leadingWeight = leadingWeight
         }
+
+        /// A **stable** SwiftUI identity for the handle — its STRUCTURAL position in the tree
+        /// `(splitID, childIndex, axis)`, INDEPENDENT of the live `rect`/`leadingWeight`. A `ForEach`
+        /// rendering the dividers MUST key on this, NOT `\.self`: `DividerHandle`'s synthesized `==`
+        /// includes `rect`+`leadingWeight`, which change on EVERY live-drag frame, so a `\.self` id changes
+        /// every frame → SwiftUI tears down + recreates the divider view mid-drag and CANCELS the in-flight
+        /// resize gesture (the drag "khựng" — stalls partway — and fires its release early, so the final
+        /// reflow never lands). Keyed on `key`, the view keeps its identity and the gesture tracks to the
+        /// clamp. There is at most one divider per `(split, leading-index)`, so this is unique per layout.
+        public struct Key: Hashable, Sendable {
+            public let splitID: SplitNodeID
+            public let childIndex: Int
+            public let axis: SplitAxis
+        }
+
+        /// The stable identity key (see ``Key``). Use this for `ForEach`/`id:` — never `\.self`.
+        public var key: Key { Key(splitID: splitID, childIndex: childIndex, axis: axis) }
     }
 
     /// The full render layout: the visible tiled leaves + their dividers + the floating overlay leaves.
@@ -210,6 +234,8 @@ public enum SplitTreeRenderModel {
             // A handle band centered on each interior seam (between child i and i+1).
             for i in 0..<(children.count - 1) {
                 let seam = trailingEdge(of: childRects[i], axis: axis)
+                // The leading child's flex weight is the live-drag anchor; 0 for a `.fixed` (unresizable) seam.
+                let leadingWeight: Double = if case let .flex(w) = children[i].weight { w } else { 0 }
                 out.append(DividerHandle(
                     splitID: id,
                     childIndex: i,
@@ -217,6 +243,7 @@ public enum SplitTreeRenderModel {
                     rect: handleRect(at: seam, axis: axis, span: rect, thickness: thickness),
                     parentSpan: parentSpan,
                     flexSum: flexSum,
+                    leadingWeight: leadingWeight,
                 ))
             }
             // Recurse into the children for nested splits.

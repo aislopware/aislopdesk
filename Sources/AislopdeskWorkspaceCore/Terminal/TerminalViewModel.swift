@@ -82,6 +82,16 @@ public final class TerminalViewModel {
     /// ``copyBlockOutput(index:onResult:)``). Observed so the navigator/header re-render as blocks land.
     public let blocks = TerminalBlockModel()
 
+    /// TRUE from the instant a COMMITTED resize forwards a CHANGED grid to the host (cols/rows differ)
+    /// until the host's reflow bytes land (the next ``ingestPass``) — the real "the resized content has
+    /// re-rendered" signal the pane resize-scrim waits on. It replaces a fixed settle TIMER, which on a
+    /// slow link clears the scrim BEFORE the ~1 RTT reflow arrives and briefly reveals the stretched /
+    /// stale frame. The FIRST grid delivery after a (re)connect does NOT arm it (the surface paints from
+    /// scratch — there is no stale frame to bridge); a disconnect / exit / reconnect and a safety timeout
+    /// all clear it so it can never stick. Observed by ``PaneContainer`` (OR-ed with its geometry resize
+    /// signal: geometry STARTS the scrim, this HOLDS it until the fresh pixels land).
+    public private(set) var awaitingResizeReflow = false
+
     // MARK: Wiring
 
     /// The terminal renderer the model feeds inbound bytes to. `nil` in the headless /
@@ -183,6 +193,23 @@ public final class TerminalViewModel {
     /// renderer's menu (and the `find:` responder selector) call it; the leaf wires it to the find-bar
     /// `@State`. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
     @ObservationIgnored public var onRequestFind: (() -> Void)?
+
+    /// Fired the instant an interactive resize ENDS — i.e. ``setResizeSuspended(false)`` flushes the
+    /// settled grid to the host. The renderer wires it to RE-ARM its post-resize present burst.
+    ///
+    /// Why this is needed (the intermittent "kéo xong không re-render" race): the renderer keeps the
+    /// size-unconditional sync-present path alive for a bounded window (~400 ms) ANCHORED to its last
+    /// `layout()`, so a late reflow frame / late host-redraw bytes get painted after the initial
+    /// present ticks drain. But with the live-resize design the host `TIOCSWINSZ` is DEFERRED to
+    /// release — so the host's SIGWINCH-driven redraw bytes arrive ~1 RTT AFTER release, which can be
+    /// LATER than the layout-anchored burst (the final layout often even hits the renderer's same-size
+    /// guard and arms no fresh burst at all). When the burst has expired, those bytes' only present is
+    /// a one-shot `requestPresent`, which can drain before libghostty finishes lazily rasterizing the
+    /// reflowed grid → the pane stays blank/stale until the next content event. Re-arming the burst at
+    /// the FLUSH moment (here) anchors the keep-alive window to the release, covering the RTT until the
+    /// reflow bytes land and rasterize. `@ObservationIgnored`: wiring, not view state. Nil for
+    /// headless/preview callers (never invoked).
+    @ObservationIgnored public var onResizeSettled: (() -> Void)?
 
     // MARK: Copy-mode (P5b — modal keyboard scrollback navigation)
 
@@ -584,7 +611,13 @@ public final class TerminalViewModel {
     public func setResizeSuspended(_ suspended: Bool) {
         guard suspended != resizeDeliverySuspended else { return }
         resizeDeliverySuspended = suspended
-        if !suspended { deliverResizeIfNeeded() } // flush the grid the drag settled on
+        if !suspended {
+            deliverResizeIfNeeded() // flush the grid the drag settled on
+            // …then let the renderer re-anchor its present-burst to THIS release moment, so the host's
+            // SIGWINCH redraw bytes (arriving ~1 RTT after the deferred flush above) are painted even
+            // when the layout-anchored burst has already expired. See ``onResizeSettled``.
+            onResizeSettled?()
+        }
     }
 
     /// Forwards ``pendingSize`` to the host via ``resizeSink`` if it differs from the last delivered
@@ -595,9 +628,15 @@ public final class TerminalViewModel {
     private func deliverResizeIfNeeded() {
         guard !resizeDeliverySuspended else { return } // held for the interactive divider drag
         guard let sink = resizeSink, let sz = pendingSize else { return }
-        if let last = lastSentSize, last.cols == sz.cols, last.rows == sz.rows { return }
+        let previous = lastSentSize
+        if let last = previous, last.cols == sz.cols, last.rows == sz.rows { return }
         lastSentSize = sz
         sink(sz.cols, sz.rows)
+        // A grid CHANGE from a KNOWN prior size means the host will reflow → hold the resize scrim until
+        // those bytes land. The FIRST delivery after a (re)connect / `resendCurrentSize` / a freshly-wired
+        // sink all reset `lastSentSize` to nil (previous == nil) and so do NOT arm it — the surface paints
+        // from scratch there, with no stale frame to bridge. See ``awaitingResizeReflow``.
+        if previous != nil { beginAwaitingReflow() }
     }
 
     /// Forces a re-delivery of the latest grid (``pendingSize``) to the sink, bypassing the dedup.
@@ -610,6 +649,37 @@ public final class TerminalViewModel {
     public func resendCurrentSize() {
         lastSentSize = nil
         deliverResizeIfNeeded()
+    }
+
+    // MARK: Resize-reflow scrim signal
+
+    /// Belt-and-braces ceiling on ``awaitingResizeReflow``: if the host answers a committed grid change
+    /// with NO output (a dead link, or a foreground app that ignores SIGWINCH), the scrim must still
+    /// clear. Long enough not to pre-empt a slow-WAN reflow (so the scrim genuinely bridges to the fresh
+    /// pixels), short enough that a no-reflow corner case does not linger a calm dim for seconds.
+    /// Instance-settable so tests drive it without real-time waits.
+    @ObservationIgnored var reflowScrimTimeout: Duration = .milliseconds(1200)
+    @ObservationIgnored private var reflowTimeoutTask: Task<Void, Never>?
+
+    /// Arms ``awaitingResizeReflow`` for a just-sent grid change and (re)starts the safety timeout.
+    private func beginAwaitingReflow() {
+        awaitingResizeReflow = true
+        reflowTimeoutTask?.cancel()
+        let timeout = reflowScrimTimeout
+        reflowTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            self?.endAwaitingReflow()
+        }
+    }
+
+    /// Clears ``awaitingResizeReflow`` (the reflow bytes landed, the link died, or the safety timeout
+    /// fired) and cancels the pending timeout. Idempotent — the observable is only written when it
+    /// actually changes, so the per-pass call from ``ingestPass`` is free once the flag is already down.
+    private func endAwaitingReflow() {
+        reflowTimeoutTask?.cancel()
+        reflowTimeoutTask = nil
+        if awaitingResizeReflow { awaitingResizeReflow = false }
     }
 
     // MARK: Stream observation
@@ -777,6 +847,11 @@ public final class TerminalViewModel {
         bytesReceived += passBytes
 
         surface?.feedBatch(chunks)
+        // Host output after a committed grid change = the reflow has landed and is rendering → release the
+        // resize scrim. Idempotent + cheap when not awaiting (the common keystroke-echo case). The clear is
+        // on ANY post-resize content, not only the SIGWINCH redraw — both repaint at the new grid, so either
+        // is a faithful "the resized content has re-rendered". See ``awaitingResizeReflow``.
+        if awaitingResizeReflow { endAwaitingReflow() }
     }
 
     // MARK: Surface attach / detach (replay across rebuild)
@@ -872,6 +947,7 @@ public final class TerminalViewModel {
             // `markReconnecting`, which already clears this stale state on a drop.)
             shellActivity = .idle
             clearGlitchCaret() // no host left to echo — drop the nudge immediately
+            endAwaitingReflow() // a dead shell will not reflow — never leave the scrim hung
         case let .disconnected(reason):
             // A drop while we still want to be connected reads as "reconnecting" (the
             // ReconnectManager is retrying); the ConnectionViewModel owns the authoritative
@@ -881,6 +957,7 @@ public final class TerminalViewModel {
             // would otherwise pin the indicator on "running…" across the disconnect.
             shellActivity = .idle
             clearGlitchCaret()
+            endAwaitingReflow() // a dropped link will not reflow — release the scrim
         case let .reconnected(sessionID, resumeFromSeq):
             self.sessionID = sessionID
             lastResumeSeq = resumeFromSeq
@@ -953,6 +1030,7 @@ public final class TerminalViewModel {
         // commands grafted onto the new shell.
         blocks.reset()
         clearGlitchCaret() // keystrokes in flight died with the old session
+        endAwaitingReflow() // the dead session's pending reflow is moot — release the scrim
         // The dead session's terminal MODE is a lie for the fresh shell (a drop inside
         // vim leaves .altScreen latched and would disarm the caret for the entire new
         // session; a drop mid-DCS would swallow the new session's markers).
@@ -987,6 +1065,7 @@ public final class TerminalViewModel {
         pendingFreshSessionReset = true
         sessionEpoch += 1
         clearGlitchCaret()
+        endAwaitingReflow() // a fresh session has nothing pending to reflow
         glitchModeTracker.reset() // same session-boundary truth as markReconnecting()
     }
 }

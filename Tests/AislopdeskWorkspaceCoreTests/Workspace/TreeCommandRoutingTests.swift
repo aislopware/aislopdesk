@@ -45,6 +45,22 @@ final class TreeCommandRoutingTests: XCTestCase {
         WorkspaceBindingRegistry.route(action, to: store)
     }
 
+    // MARK: - Interactive resize flag (drives the pane scrim's paused-drag hold)
+
+    /// `setTerminalResizeSuspended(true/false)` (the divider-drag bracket, shared by the pane divider and
+    /// the AppKit sidebar divider) drives the store's `isInteractiveResizeActive`, which the pane scrim
+    /// reads to stay up across a PAUSED drag. Idempotent at both edges.
+    func testInteractiveResizeFlagTracksTheDividerBracket() {
+        let store = makeTreeStore()
+        XCTAssertFalse(store.isInteractiveResizeActive, "idle: no drag in progress")
+        store.setTerminalResizeSuspended(true) // divider mouse-down
+        XCTAssertTrue(store.isInteractiveResizeActive)
+        store.setTerminalResizeSuspended(true) // redundant begin — still active, no flap
+        XCTAssertTrue(store.isInteractiveResizeActive)
+        store.setTerminalResizeSuspended(false) // mouse-up / settle
+        XCTAssertFalse(store.isInteractiveResizeActive)
+    }
+
     // MARK: - Panes: split adds a leaf + materializes a fake
 
     /// `.splitRight` adds exactly one leaf (a horizontal sibling) to the active tab and materializes a new

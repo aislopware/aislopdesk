@@ -278,6 +278,84 @@ final class SplitTreeRenderModelTests: XCTestCase {
         XCTAssertEqual(x1 - x0, n, accuracy: 0.5, "nested seam tracks 1:1 (N/4 on the un-fixed code)")
     }
 
+    // MARK: - Divider live-drag anchor (leadingWeight)
+
+    /// Each divider handle carries the LEADING child's current `.flex` weight — the anchor a live drag reads
+    /// once at drag start, then offsets by the cursor translation (`leadingWeight + Δpx·flexSum/parentSpan`).
+    /// Pins that it mirrors the tree weight and is per-seam (each seam reports ITS leading child).
+    func testDividerLeadingWeightMirrorsTheChildFlexWeight() {
+        let a = PaneID(), b = PaneID(), c = PaneID()
+        let root = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            WeightedChild(weight: .flex(1), node: .leaf(a)),
+            WeightedChild(weight: .flex(3), node: .leaf(b)),
+            WeightedChild(weight: .flex(2), node: .leaf(c)),
+        ])
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 300)
+        let dividers = SplitTreeRenderModel.layout(root: root, zoomedPane: nil, in: bounds).dividers
+            .sorted { $0.childIndex < $1.childIndex }
+
+        XCTAssertEqual(dividers.count, 2)
+        XCTAssertEqual(dividers[0].leadingWeight, 1, accuracy: 1e-9, "seam 0's leading child is weight 1")
+        XCTAssertEqual(dividers[1].leadingWeight, 3, accuracy: 1e-9, "seam 1's leading child is weight 3")
+    }
+
+    /// A `.fixed` leading child makes the seam unresizable, so the handle reports `leadingWeight == 0`.
+    func testDividerLeadingWeightZeroForFixedLeadingChild() throws {
+        let a = PaneID(), b = PaneID()
+        let root = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            WeightedChild(weight: .fixed(200), node: .leaf(a)),
+            WeightedChild(weight: .flex(1), node: .leaf(b)),
+        ])
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let handle = try XCTUnwrap(
+            SplitTreeRenderModel.layout(root: root, zoomedPane: nil, in: bounds).dividers.first,
+        )
+        XCTAssertEqual(handle.leadingWeight, 0, "a fixed leading child reports 0 (unresizable)")
+    }
+
+    // MARK: - Stable identity key (load-bearing for the live-drag ForEach)
+
+    /// The divider's `key` MUST be invariant to the live `rect`/`leadingWeight`: it's the SwiftUI identity the
+    /// `ForEach` keys on, and during a live drag the weight (hence rect) changes every frame. If the key moved
+    /// with the weight, SwiftUI would tear down + recreate the divider view mid-drag and cancel the in-flight
+    /// resize gesture (the drag stalls partway). Same structural seam `(splitID, childIndex, axis)` → equal key,
+    /// regardless of weight; a different seam → different key. (Revert: key off `\.self` and this fails.)
+    func testDividerKeyIsStableAcrossWeightAndRect() {
+        let a = PaneID(), b = PaneID(), c = PaneID()
+        let splitID = SplitNodeID()
+        func seam0Key(leadingWeight: Double) -> SplitTreeRenderModel.DividerHandle.Key {
+            let root = SplitNode.split(id: splitID, axis: .horizontal, children: [
+                WeightedChild(weight: .flex(leadingWeight), node: .leaf(a)),
+                WeightedChild(weight: .flex(1), node: .leaf(b)),
+                WeightedChild(weight: .flex(1), node: .leaf(c)),
+            ])
+            let bounds = CGRect(x: 0, y: 0, width: 800, height: 300)
+            let dividers = SplitTreeRenderModel.layout(root: root, zoomedPane: nil, in: bounds).dividers
+                .sorted { $0.childIndex < $1.childIndex }
+            return dividers[0].key
+        }
+        // Dragging seam 0 changes its leading weight (1 → 5) and so its rect — the key must NOT move.
+        XCTAssertEqual(
+            seam0Key(leadingWeight: 1),
+            seam0Key(leadingWeight: 5),
+            "the same seam's key is invariant to weight/rect (else the gesture is cancelled mid-drag)",
+        )
+    }
+
+    /// Distinct seams of the same split get distinct keys (so the `ForEach` renders them as separate handles).
+    func testDividerKeysAreDistinctPerSeam() {
+        let a = PaneID(), b = PaneID(), c = PaneID()
+        let splitID = SplitNodeID()
+        let root = SplitNode.split(id: splitID, axis: .horizontal, children: [
+            WeightedChild(weight: .flex(1), node: .leaf(a)),
+            WeightedChild(weight: .flex(1), node: .leaf(b)),
+            WeightedChild(weight: .flex(1), node: .leaf(c)),
+        ])
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 300)
+        let keys = SplitTreeRenderModel.layout(root: root, zoomedPane: nil, in: bounds).dividers.map(\.key)
+        XCTAssertEqual(Set(keys).count, keys.count, "every seam has a unique identity key")
+    }
+
     // MARK: - Helpers
 
     private func assertRectEqual(

@@ -159,6 +159,27 @@ public enum WorkspaceTreeOps {
         return copy
     }
 
+    /// Sets split `splitID`'s leading-child weight (at `leadingChildIndex`) to an ABSOLUTE value in the active
+    /// session's active tab — the cursor-matched form for a live divider drag (sum-preserving + clamped, see
+    /// ``SplitNode/settingDividerWeight(splitID:leadingIndex:leadingWeight:)``). No-op if absent.
+    public static func setDividerWeight(
+        splitID: SplitNodeID,
+        leadingChildIndex: Int,
+        leadingWeight: Double,
+        in ws: TreeWorkspace,
+    ) -> TreeWorkspace {
+        guard let sIdx = ws.activeSessionIndex else { return ws }
+        var copy = ws
+        let tIdx = copy.sessions[sIdx].activeTabIndex
+        guard copy.sessions[sIdx].tabs.indices.contains(tIdx) else { return ws }
+        var tab = copy.sessions[sIdx].tabs[tIdx]
+        tab.root = tab.root.settingDividerWeight(
+            splitID: splitID, leadingIndex: leadingChildIndex, leadingWeight: leadingWeight,
+        )
+        copy.sessions[sIdx].tabs[tIdx] = tab
+        return copy
+    }
+
     // MARK: Move / swap
 
     /// Exchanges the positions of two leaves within whichever tab(s) own them (same-tab swap moves both

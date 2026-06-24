@@ -313,6 +313,62 @@ public extension SplitNode {
         return out
     }
 
+    /// Sets the ABSOLUTE leading-child weight of split `splitID`'s divider at `leadingIndex` (the trailing
+    /// sibling takes the remainder, so the pair SUM is preserved and both stay ≥ ``SplitWeight/minWeight``).
+    /// The cursor-matched form of ``resizingDivider(splitID:leadingIndex:delta:)`` for a LIVE drag: the caller
+    /// passes `startWeight + Δpx·flexSum/span` from a stable cursor translation, so the seam holds at the clamp
+    /// during an over-drag and resumes only when the cursor returns — no drift an incremental delta would
+    /// accumulate. No-op if `splitID` / the indices are absent, or either child is `.fixed`.
+    func settingDividerWeight(splitID: SplitNodeID, leadingIndex: Int, leadingWeight: Double) -> SplitNode {
+        switch self {
+        case .leaf:
+            return self
+
+        case let .split(id, axis, children):
+            if id == splitID {
+                return .split(
+                    id: id,
+                    axis: axis,
+                    children: setWeight(children, leadingIndex: leadingIndex, leadingWeight: leadingWeight),
+                )
+            }
+            let newChildren = children.map { child in
+                WeightedChild(
+                    weight: child.weight,
+                    node: child.node.settingDividerWeight(
+                        splitID: splitID, leadingIndex: leadingIndex, leadingWeight: leadingWeight,
+                    ),
+                )
+            }
+            return .split(id: id, axis: axis, children: newChildren)
+        }
+    }
+
+    /// Sum-preserving, clamped ABSOLUTE weight set between two adjacent flex children. Pure.
+    private func setWeight(
+        _ children: [WeightedChild],
+        leadingIndex: Int,
+        leadingWeight: Double,
+    ) -> [WeightedChild] {
+        let trailingIndex = leadingIndex + 1
+        guard children.indices.contains(leadingIndex), children.indices.contains(trailingIndex),
+              case let .flex(lead) = children[leadingIndex].weight,
+              case let .flex(trail) = children[trailingIndex].weight
+        else { return children }
+
+        let pairSum = lead + trail
+        // Clamp the requested leading weight into [minWeight, pairSum - minWeight] so BOTH stay ≥ floor and the
+        // sum is preserved. Ordered min/max (NaN-faithful): a NaN request floors at minWeight.
+        let upper = Double.maximum(pairSum - SplitWeight.minWeight, SplitWeight.minWeight)
+        let newLead = Double.minimum(Double.maximum(leadingWeight, SplitWeight.minWeight), upper)
+        let newTrail = pairSum - newLead
+
+        var out = children
+        out[leadingIndex] = WeightedChild(weight: .flex(newLead), node: children[leadingIndex].node)
+        out[trailingIndex] = WeightedChild(weight: .flex(newTrail), node: children[trailingIndex].node)
+        return out
+    }
+
     // MARK: Swap two leaves
 
     /// Returns a tree with leaves `a` and `b` exchanged in position (weights stay with the slot, the leaf

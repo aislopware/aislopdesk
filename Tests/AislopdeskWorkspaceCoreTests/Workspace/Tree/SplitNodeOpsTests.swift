@@ -157,6 +157,51 @@ final class SplitNodeOpsTests: XCTestCase {
         XCTAssertLessThanOrEqual(w[0], 2 - SplitWeight.minWeight, "leading child capped so trailing keeps its floor")
     }
 
+    // MARK: Resize — ABSOLUTE set (live drag)
+
+    func testSetDividerWeightSetsLeadingAbsolutelyAndPreservesSum() {
+        let a = PaneID(), b = PaneID()
+        let sid = SplitNodeID()
+        let two = SplitNode.split(id: sid, axis: .horizontal, children: [
+            .init(weight: .flex(1), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        // Absolute set (NOT a delta): leading becomes exactly 1.6, trailing the remainder of the pair sum.
+        let w = flexWeights(two.settingDividerWeight(splitID: sid, leadingIndex: 0, leadingWeight: 1.6))
+        XCTAssertEqual(w[0], 1.6, accuracy: 1e-9)
+        XCTAssertEqual(w[1], 0.4, accuracy: 1e-9)
+        XCTAssertEqual(w[0] + w[1], 2, accuracy: 1e-9, "sum preserved")
+    }
+
+    func testSetDividerWeightClampsBelowAndAboveTheFloor() {
+        let a = PaneID(), b = PaneID()
+        let sid = SplitNodeID()
+        let two = SplitNode.split(id: sid, axis: .horizontal, children: [
+            .init(weight: .flex(1), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        // A target far below the floor pins the leading at minWeight (trailing keeps the rest) — this is the
+        // over-drag-into-the-clamp case the live drag relies on (it HOLDS at the floor, no drift).
+        let low = flexWeights(two.settingDividerWeight(splitID: sid, leadingIndex: 0, leadingWeight: -5))
+        XCTAssertEqual(low[0], SplitWeight.minWeight, accuracy: 1e-9, "leading pinned at the floor")
+        XCTAssertEqual(low[0] + low[1], 2, accuracy: 1e-9, "sum preserved at the clamp")
+        // A target far above pins the TRAILING at minWeight (leading capped at pairSum - minWeight).
+        let high = flexWeights(two.settingDividerWeight(splitID: sid, leadingIndex: 0, leadingWeight: 99))
+        XCTAssertEqual(high[1], SplitWeight.minWeight, accuracy: 1e-9, "trailing pinned at the floor")
+        XCTAssertEqual(high[0], 2 - SplitWeight.minWeight, accuracy: 1e-9, "leading capped")
+    }
+
+    func testSetDividerWeightNoOpForFixedChild() {
+        let a = PaneID(), b = PaneID()
+        let sid = SplitNodeID()
+        let two = SplitNode.split(id: sid, axis: .horizontal, children: [
+            .init(weight: .fixed(120), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        // A `.fixed` leading child can't be re-weighted — the tree is returned unchanged.
+        XCTAssertEqual(two.settingDividerWeight(splitID: sid, leadingIndex: 0, leadingWeight: 1.5), two)
+    }
+
     // MARK: Swap
 
     func testSwappingExchangesLeafPositions() {

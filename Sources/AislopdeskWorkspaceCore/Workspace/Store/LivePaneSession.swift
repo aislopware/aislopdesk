@@ -165,6 +165,16 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// bar, NOT recorded for echo-dedup (a programmatic send has no local pre-echo to suppress).
     public func sendBytes(_ bytes: [UInt8]) { inputBar?.sendRaw(bytes, record: false) }
 
+    /// GENERIC resize-scrim signal: TRUE while this pane's content has been resized but the fresh
+    /// (reflowed / re-captured) pixels have not yet rendered — so ``PaneContainer`` holds its calm resize
+    /// overlay until they do, instead of clearing on a geometry settle timer. Kind-agnostic: a terminal
+    /// pane reports its host-reflow wait (``TerminalViewModel/awaitingResizeReflow``), a remote-GUI pane
+    /// its host-re-capture wait (``RemoteWindowModel/awaitingResizeReflow``); `false` when neither model
+    /// is live. Observed (both underlying flags are `@Observable`), so the scrim re-renders on a change.
+    public var awaitingResizeReflow: Bool {
+        terminalModel?.awaitingResizeReflow ?? remoteWindow?.awaitingResizeReflow ?? false
+    }
+
     /// Whether the remote rang the bell since last cleared (drives the unfocused-pane attention badge).
     public var bellPending: Bool { terminalModel?.bellPending ?? false }
 

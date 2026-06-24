@@ -272,8 +272,55 @@ public final class RemoteWindowModel {
         }
     }
 
+    // MARK: Resize-reflow scrim signal (generic with the terminal pane)
+
+    /// TRUE from the instant this pane is resized until the host re-captures the window at the new size
+    /// and the first SHARP frame at that size renders — the video analogue of the terminal's
+    /// ``TerminalViewModel/awaitingResizeReflow``. The pane resize-scrim (``PaneContainer``) waits on it
+    /// so the calm overlay BRIDGES the gap during which the Metal view shows the last frame STRETCHED /
+    /// upscaled (blurry) before the re-captured pixels arrive — instead of clearing on a fixed geometry
+    /// settle timer that uncovers the blur early. The app-target ``VideoWindowView`` drives it:
+    /// ``noteResized()`` on a layout-size change (which prompts the 1:1 host re-capture) and
+    /// ``noteRendered()`` on the first frame at the new native size. A safety timeout + ``close()`` clear
+    /// it so it can never stick. (The live-video pane mount is deferred — see ``PaneContainer`` — so this
+    /// seam is exercised by tests today and goes live the moment the video pane is wired.)
+    public private(set) var awaitingResizeReflow = false
+
+    /// Belt-and-braces ceiling on ``awaitingResizeReflow`` (mirrors the terminal model): clears the scrim
+    /// even if the host never re-captures (a frozen window, a dropped UDP flow). Instance-settable so
+    /// tests drive it without real-time waits.
+    @ObservationIgnored var reflowScrimTimeout: Duration = .milliseconds(1200)
+    @ObservationIgnored private var reflowTimeoutTask: Task<Void, Never>?
+
+    /// The pane was resized (a layout-size change that will prompt a host re-capture at the new native
+    /// size) — arm the resize scrim until the first re-captured frame lands. (Re)starts the safety
+    /// timeout. Idempotent-safe to call per layout pass during a live drag — each call just re-arms.
+    public func noteResized() {
+        awaitingResizeReflow = true
+        reflowTimeoutTask?.cancel()
+        let timeout = reflowScrimTimeout
+        reflowTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            self?.endAwaitingReflow()
+        }
+    }
+
+    /// The first frame at the new native size rendered (the host re-capture caught up) — release the
+    /// resize scrim. Idempotent + cheap when not awaiting.
+    public func noteRendered() { endAwaitingReflow() }
+
+    /// Clears ``awaitingResizeReflow`` + cancels the safety timeout. Idempotent — the observable is only
+    /// written when it actually changes.
+    private func endAwaitingReflow() {
+        reflowTimeoutTask?.cancel()
+        reflowTimeoutTask = nil
+        if awaitingResizeReflow { awaitingResizeReflow = false }
+    }
+
     /// Closes the remote window (tears down the live view → its orchestrator `stop()`).
     public func close() {
         active = nil
+        endAwaitingReflow() // a closed window will not re-capture — never leave the scrim hung
     }
 }

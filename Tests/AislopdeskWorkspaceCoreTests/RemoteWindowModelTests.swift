@@ -58,6 +58,42 @@ final class RemoteWindowModelTests: XCTestCase {
         XCTAssertNil(m.active)
     }
 
+    // MARK: awaitingResizeReflow (the resize-scrim "fresh pixels landed" signal — generic with terminal)
+
+    /// The video analogue of the terminal scrim-hold: a resize arms the hold (the Metal view shows the
+    /// last frame upscaled/blurry until the host re-captures), and the first frame at the new native size
+    /// clears it. Drives the SAME `PaneContainer` scrim via `LivePaneSession.awaitingResizeReflow`.
+    func testAwaitingReflowArmsOnResizeClearsOnRender() {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "1")
+        XCTAssertFalse(m.awaitingResizeReflow)
+        m.noteResized() // the pane was resized → hold the scrim until the re-captured frame lands
+        XCTAssertTrue(m.awaitingResizeReflow)
+        m.noteRendered() // first frame at the new native size rendered
+        XCTAssertFalse(m.awaitingResizeReflow, "the re-captured frame releases the scrim")
+    }
+
+    /// A closed window will never re-capture — `close()` must release the hold (not wait the safety timeout).
+    func testAwaitingReflowClearsOnClose() {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "1")
+        m.noteResized()
+        XCTAssertTrue(m.awaitingResizeReflow)
+        m.close()
+        XCTAssertFalse(m.awaitingResizeReflow)
+    }
+
+    /// Belt-and-braces: if the host never re-captures (frozen window / dropped UDP), the safety timeout
+    /// still clears the hold so the scrim can never stick.
+    func testAwaitingReflowSafetyTimeoutClears() async {
+        let m = RemoteWindowModel(target: { self.target }, windowID: "1")
+        m.reflowScrimTimeout = .milliseconds(20)
+        m.noteResized()
+        XCTAssertTrue(m.awaitingResizeReflow)
+        // Poll up to ~1 s for the 20 ms safety timeout (robust under the full parallel suite — see the
+        // terminal sibling test).
+        for _ in 0..<100 where m.awaitingResizeReflow { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(m.awaitingResizeReflow, "the scrim never sticks if the host never re-captures")
+    }
+
     func testTitleOnlyDescriptorHasNoEndpoint() {
         // The placeholder/preview path: a descriptor with no host is NOT live.
         let d = RemoteWindowDescriptor(title: "x", windowID: 3)

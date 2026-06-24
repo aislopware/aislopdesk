@@ -286,6 +286,136 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(calls, 1, "a drag that nets no grid change forwards nothing on release")
     }
 
+    /// The renderer re-arms its post-resize present burst via `onResizeSettled`, fired exactly once when an
+    /// interactive resize ENDS — and AFTER the settled grid has been flushed to the host, so the burst it
+    /// arms can cover the host's SIGWINCH-redraw bytes (which that flush triggers, ~1 RTT later). Pins the
+    /// "kéo xong không re-render" hardening: without the hook those late bytes can land after the
+    /// layout-anchored burst has expired and never get presented (intermittent blank after resize).
+    func testResizeSettledFiresOnceOnReleaseAfterFlush() {
+        let model = TerminalViewModel()
+        var flushedCols: [UInt16] = []
+        model.resizeSink = { cols, _ in flushedCols.append(cols) }
+        model.sendResize(cols: 80, rows: 24) // baseline, delivered (flushedCols == [80])
+
+        var settledCount = 0
+        var sinkCountAtSettle = -1
+        model.onResizeSettled = {
+            settledCount += 1
+            sinkCountAtSettle = flushedCols.count // observe ordering: the flush ran BEFORE this fires
+        }
+
+        model.setResizeSuspended(true) // mouse-down — must NOT settle
+        XCTAssertEqual(settledCount, 0, "suspending (mouse-down) does not settle")
+        model.sendResize(cols: 120, rows: 24) // a cell-step during the drag (held, not forwarded)
+
+        model.setResizeSuspended(false) // mouse-up — settles exactly once, after the flush
+        XCTAssertEqual(settledCount, 1, "release fires onResizeSettled exactly once")
+        XCTAssertEqual(flushedCols.last, 120, "the settled grid was flushed to the host…")
+        XCTAssertEqual(sinkCountAtSettle, 2, "…BEFORE onResizeSettled fired (the flush is ordered first)")
+    }
+
+    /// Idempotency: a redundant resume (no suspend→resume transition) must NOT re-fire `onResizeSettled`.
+    /// The begin/end bracket is called defensively (e.g. `AislopdeskSplitViewController.viewWillDisappear`),
+    /// so a double-settle would arm a wasteful extra present burst on every spurious resume.
+    func testResizeSettledDoesNotFireWithoutTransition() {
+        let model = TerminalViewModel()
+        model.resizeSink = { _, _ in }
+        var settledCount = 0
+        model.onResizeSettled = { settledCount += 1 }
+
+        model.setResizeSuspended(false) // never suspended → no transition → no settle
+        XCTAssertEqual(settledCount, 0)
+
+        model.setResizeSuspended(true)
+        model.setResizeSuspended(false) // one real transition → one settle
+        XCTAssertEqual(settledCount, 1)
+        model.setResizeSuspended(false) // redundant resume → no extra settle
+        XCTAssertEqual(settledCount, 1)
+    }
+
+    // MARK: awaitingResizeReflow (the resize-scrim "fresh pixels landed" signal)
+
+    /// The scrim-hold signal arms only on a grid CHANGE from a known prior size, and clears on the first
+    /// host output after it (the reflow). The FIRST delivery (connect) paints from scratch and must NOT
+    /// arm — else the scrim would flash on every connect. Pins the "overlay until re-render, not until
+    /// resize-end" fix.
+    func testAwaitingReflowArmsOnGridChangeAndClearsOnContent() {
+        let model = TerminalViewModel()
+        model.resizeSink = { _, _ in }
+
+        model.sendResize(cols: 80, rows: 24) // FIRST delivery (previous == nil) — paints from scratch
+        XCTAssertFalse(model.awaitingResizeReflow, "the first grid after connect must not arm the scrim")
+
+        model.sendResize(cols: 120, rows: 24) // a real grid CHANGE from a known prior size → arm
+        XCTAssertTrue(model.awaitingResizeReflow, "a committed grid change holds the scrim until the reflow")
+
+        model.ingestOutput(Data("reflowed".utf8)) // host reflow bytes land
+        XCTAssertFalse(model.awaitingResizeReflow, "the first content after the change releases the scrim")
+    }
+
+    /// The interactive divider commit (suspend → drag → release) arms the hold on the release FLUSH: held
+    /// grids during the drag forward nothing, so nothing is awaited until the single release flush sends a
+    /// changed grid. This is the path the deferred-host-send race lives on (the scrim must bridge the RTT).
+    func testAwaitingReflowArmedByInteractiveDividerCommit() {
+        let model = TerminalViewModel()
+        model.resizeSink = { _, _ in }
+        model.sendResize(cols: 80, rows: 24) // baseline (first delivery — no arm)
+        XCTAssertFalse(model.awaitingResizeReflow)
+
+        model.setResizeSuspended(true) // divider mouse-down
+        model.sendResize(cols: 120, rows: 24) // a cell-step during the drag (held, not forwarded)
+        XCTAssertFalse(model.awaitingResizeReflow, "nothing is sent while suspended → nothing to await")
+
+        model.setResizeSuspended(false) // mouse-up: flush the changed grid → arm
+        XCTAssertTrue(model.awaitingResizeReflow, "the release flush is a grid change → await the reflow")
+
+        model.ingestOutput(Data([0x41]))
+        XCTAssertFalse(model.awaitingResizeReflow, "the reflow content releases the scrim")
+    }
+
+    /// A drag that nets no grid change forwards nothing on release (dedup), so there is no reflow to await
+    /// → the hold must NOT arm (else the scrim would stick for the full safety timeout over unchanged
+    /// content).
+    func testAwaitingReflowNotArmedWhenCommitNetsNoGridChange() {
+        let model = TerminalViewModel()
+        model.resizeSink = { _, _ in }
+        model.sendResize(cols: 80, rows: 24)
+        model.setResizeSuspended(true)
+        model.sendResize(cols: 95, rows: 24) // dragged out…
+        model.sendResize(cols: 80, rows: 24) // …and back to the start
+        model.setResizeSuspended(false) // dedup → no sink fired → no arm
+        XCTAssertFalse(model.awaitingResizeReflow, "a no-net-change commit reflows nothing → no scrim hold")
+    }
+
+    /// A dead link will never reflow — a disconnect / exit must release the hold immediately (not wait out
+    /// the safety timeout), so a pane resized right as it drops can't sit under a stuck scrim.
+    func testAwaitingReflowClearsOnDisconnectAndExit() {
+        for drop in [AislopdeskClient.Event.disconnected(reason: "drop"), .exit(code: 1)] {
+            let model = TerminalViewModel()
+            model.resizeSink = { _, _ in }
+            model.sendResize(cols: 80, rows: 24)
+            model.sendResize(cols: 120, rows: 24) // arm
+            XCTAssertTrue(model.awaitingResizeReflow)
+            model.handle(drop)
+            XCTAssertFalse(model.awaitingResizeReflow, "a dead link releases the scrim: \(drop)")
+        }
+    }
+
+    /// Belt-and-braces: if the host answers a grid change with NO output (a frozen foreground app), the
+    /// safety timeout still clears the hold so the scrim can never stick.
+    func testAwaitingReflowSafetyTimeoutClearsWithoutContent() async {
+        let model = TerminalViewModel()
+        model.reflowScrimTimeout = .milliseconds(20)
+        model.resizeSink = { _, _ in }
+        model.sendResize(cols: 80, rows: 24)
+        model.sendResize(cols: 120, rows: 24) // arm — but no content will arrive
+        XCTAssertTrue(model.awaitingResizeReflow)
+        // Poll up to ~1 s for the 20 ms safety timeout to fire — robust against MainActor contention under
+        // the full parallel suite (a fixed sleep could race the timer on a loaded machine).
+        for _ in 0..<100 where model.awaitingResizeReflow { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(model.awaitingResizeReflow, "the scrim never sticks when the host sends no reflow")
+    }
+
     func testResetReArmsResize() {
         let model = TerminalViewModel()
         var calls = 0

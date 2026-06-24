@@ -8,8 +8,9 @@
 // add/remove, a resize all just re-emit rects — the leaf views keep their identity and the libghostty
 // surface survives). Do NOT switch to HSplitView/VSplitView — they rebuild subtrees and kill surfaces.
 //
-// Dividers drag → `store.resizeDividerTree`; double-click → `store.balanceActivePaneSplits` (even reset).
-// SYSTEM colours only.
+// Dividers drag → LIVE resize: `store.setDividerWeightLive` each frame (panes move live) bracketed by
+// `store.setTerminalResizeSuspended` (defer the host grid-resize to release) + `store.commitDividerResize`;
+// double-click → `store.balanceActivePaneSplits` (even reset). SYSTEM colours only.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -48,27 +49,16 @@ struct SplitContainer: View {
                         store: store,
                         paneID: leaf.id,
                         isFocused: leaf.id == focusedPane,
+                        // The pane's laid-out size IS the generic resize signal (any source) the scrim keys off.
+                        size: leaf.rect.size,
                         staticMirror: staticMirror,
                     )
                     .id(leaf.id) // identity hazard: never reuse a surface across panes
                     .frame(width: leaf.rect.width, height: leaf.rect.height)
                     .position(x: leaf.rect.midX, y: leaf.rect.midY)
                 }
-                ForEach(layout.dividers, id: \.self) { handle in
-                    PaneDivider(
-                        handle: handle,
-                        axisSpan: handle.parentSpan,
-                        flexSum: handle.flexSum,
-                        onResize: { delta in
-                            store.resizeDividerTree(
-                                splitID: handle.splitID,
-                                leadingChildIndex: handle.childIndex,
-                                delta: delta,
-                            )
-                        },
-                        onReset: { store.balanceActivePaneSplits() },
-                    )
-                    .position(x: handle.rect.midX, y: handle.rect.midY)
+                ForEach(layout.dividers, id: \.key) { handle in
+                    dividerView(handle)
                 }
                 // otty grab-handles + the live drag overlay (extracted to keep this ZStack type-checkable).
                 moveLayer(leaves: layout.leaves, frames: frames, container: bounds)
@@ -78,6 +68,35 @@ struct SplitContainer: View {
         } else {
             Color.clear
         }
+    }
+
+    /// One divider, placed at its LIVE solved seam (`handle.rect.mid`, which the solver re-emits as the panes
+    /// resize each drag frame). The view sits at its solved position the whole time — moving `.position` does
+    /// NOT interrupt the drag because (a) the `ForEach` keys on the STABLE `handle.key` so the view identity
+    /// survives the per-frame weight mutation (no teardown), and (b) `PaneDivider` reads its translation in
+    /// the fixed `PaneMoveSpace.name` coordinate space, so the cursor delta is correct regardless of where
+    /// the handle has slid. (No frozen-host / `.offset` dance: that treated a symptom of the OLD `id: \.self`
+    /// identity churn, which keying on `handle.key` fixes at the source.)
+    private func dividerView(_ handle: SplitTreeRenderModel.DividerHandle) -> some View {
+        PaneDivider(
+            handle: handle,
+            // Live resize: hold the host grid-resize for the drag, set the leading weight absolutely each
+            // frame (panes move live), then flush + persist ONCE on release.
+            onResizeBegin: { store.setTerminalResizeSuspended(true) },
+            onResizeChange: { leadingWeight in
+                store.setDividerWeightLive(
+                    splitID: handle.splitID,
+                    leadingChildIndex: handle.childIndex,
+                    leadingWeight: leadingWeight,
+                )
+            },
+            onResizeEnd: {
+                store.setTerminalResizeSuspended(false)
+                store.commitDividerResize()
+            },
+            onReset: { store.balanceActivePaneSplits() },
+        )
+        .position(x: handle.rect.midX, y: handle.rect.midY)
     }
 
     /// The otty move affordance: a top grab handle per leaf (≥2 leaves only) plus the live drag overlay.
@@ -261,16 +280,6 @@ struct SplitContainer: View {
         var best = penetrations[0]
         for entry in penetrations.dropFirst() where entry.pen > best.pen { best = entry }
         return best.edge
-    }
-}
-
-// `DividerHandle` needs to be `Hashable` to key the `ForEach`. It is `Equatable + Sendable`; derive a
-// stable id from its split + index + axis (a tab has at most one divider per (split, leading-index)).
-extension SplitTreeRenderModel.DividerHandle: Hashable {
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(splitID)
-        hasher.combine(childIndex)
-        hasher.combine(axis)
     }
 }
 #endif

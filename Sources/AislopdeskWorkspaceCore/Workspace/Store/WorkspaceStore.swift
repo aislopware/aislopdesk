@@ -71,6 +71,15 @@ public final class WorkspaceStore {
     /// a given store: the live app uses the canvas `reconcile()`, the W4 tests drive ``reconcileTree()``).
     private var registry: [PaneID: any PaneSessionHandle] = [:]
 
+    /// TRUE while an INTERACTIVE divider drag is in progress (a pane-divider OR the sidebar/inspector
+    /// `NSSplitView` divider) — bracketed by ``setTerminalResizeSuspended(_:)``'s begin (`true`) / end
+    /// (`false`). The pane resize-scrim reads it so the overlay stays up across a PAUSED drag (mouse held,
+    /// cursor still): the per-frame geometry-settle timer would otherwise clear the scrim mid-drag, then it
+    /// would flash back on release (the "nháy" — the host grid-send is DEFERRED to release, so during the
+    /// pause nothing else holds the scrim). ``PaneContainer`` gates it on THIS pane having actually changed
+    /// size during the drag, so only the panes being resized scrim — never the untouched ones.
+    public private(set) var isInteractiveResizeActive = false
+
     /// The injection seam (docs/22 §0). Spec-only — the store re-points the built handle at the leaf
     /// id via `adopt(id:)` (see ``PaneSessionIDAdopting``).
     private let makeSession: @MainActor (PaneSpec) -> any PaneSessionHandle
@@ -3567,9 +3576,32 @@ public extension WorkspaceStore {
     /// content from re-rendering per drag step (the same commit-on-release rule as the pane divider). The
     /// non-terminal handles (`.remoteGUI`/`.systemDialog`) have no `terminalModel`, so they are skipped.
     func setTerminalResizeSuspended(_ suspended: Bool) {
+        // The interactive-resize bracket for BOTH dividers (the SwiftUI pane divider's begin/end and the
+        // AppKit sidebar divider's drag-active/settle). Drives the pane scrim's "drag in progress" hold so
+        // a PAUSED drag keeps the overlay up (see ``isInteractiveResizeActive``).
+        isInteractiveResizeActive = suspended
         for handle in allSessions {
             (handle as? LivePaneSession)?.terminalModel?.setResizeSuspended(suspended)
         }
+    }
+
+    /// LIVE pane-divider drag: set the leading child's ABSOLUTE flex weight (clamped) and re-solve the layout,
+    /// WITHOUT reconciling the registry or persisting. A divider drag changes only weights, not the SET of
+    /// panes, so each frame is a pure tree assign + SwiftUI re-layout (the panes resize live). The shell
+    /// brackets the drag with ``setTerminalResizeSuspended(_:)`` — holding the host grid-resize send until
+    /// release, the "update the layout live but defer the server event to drag-end" rule — and commits once on
+    /// release via ``commitDividerResize()``.
+    func setDividerWeightLive(splitID: SplitNodeID, leadingChildIndex: Int, leadingWeight: Double) {
+        tree = WorkspaceTreeOps.setDividerWeight(
+            splitID: splitID, leadingChildIndex: leadingChildIndex, leadingWeight: leadingWeight, in: tree,
+        )
+    }
+
+    /// Commits a finished live divider drag: reconcile (housekeeping) + persist the settled ratio ONCE. The
+    /// per-frame ``setDividerWeightLive(splitID:leadingChildIndex:leadingWeight:)`` skips this, so it runs a
+    /// single time on release rather than every frame.
+    func commitDividerResize() {
+        reconcileTree()
     }
 }
 

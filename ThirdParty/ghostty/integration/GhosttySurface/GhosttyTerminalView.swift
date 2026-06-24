@@ -616,6 +616,18 @@ final class GhosttyLayerBackedView: NSView {
         // ring into a rebuilt surface (tab switch / reshape). No-op replay when unchanged.
         if let surface { model.attachSurface(surface) }
         surface?.setFocus(true)
+        // Resize-END → RE-ANCHOR the settle present burst to the release moment. The host `TIOCSWINSZ`
+        // is DEFERRED to release, so its SIGWINCH-driven redraw bytes land ~1 RTT AFTER the layout-
+        // anchored burst (armed by the last `layout()`) may have already expired — and the final layout
+        // often hits the same-size guard and arms no burst at all. Re-arming here keeps the size-
+        // unconditional sync-present path alive across that RTT so the reflowed frame is painted (the
+        // intermittent "kéo xong không re-render" race). Set on the MODEL each attach (it persists
+        // across view rebuilds; a stale prior view's `[weak self]` closure no-ops once overwritten).
+        model.onResizeSettled = { [weak self] in
+            guard let self else { return }
+            requestPresent(3)             // paint whatever already arrived this instant
+            scheduleSettlePresentBurst()  // …and sustain the sync-present path ~400ms for the late bytes
+        }
         requestPresent(8)   // flush whatever the replay just fed
     }
 

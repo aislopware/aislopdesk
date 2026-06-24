@@ -107,6 +107,19 @@ final class AislopdeskSplitViewController: NSSplitViewController {
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
+    /// Resume terminal grid-resize forwarding if the column disappears mid-drag. The settle that resumes it is
+    /// a `[weak self]` work item fired ~`resizeSettleDelay` after the last step; were this controller torn down
+    /// inside that window (window closed mid-resize), the work item would early-return on the nil `self` and
+    /// leave forwarding suspended (the next session on the SAME store would never flush its grid). Resuming
+    /// here on a real lifecycle hook (not a timer) closes that gap.
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        guard resizeForwardingSuspended else { return }
+        resizeSettleWork?.cancel()
+        resizeForwardingSuspended = false
+        store.setTerminalResizeSuspended(false)
+    }
+
     /// One step of a divider/window-edge resize burst: suspend remote terminal resize forwarding on the first
     /// step, then (re)arm a settle timer that resumes + flushes the final grid `resizeSettleDelay` after the
     /// last step — i.e. when the drag is released. Commit-on-release, without subclassing the split view.
