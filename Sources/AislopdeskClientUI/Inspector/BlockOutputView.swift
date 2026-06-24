@@ -49,12 +49,7 @@ struct BlockOutputView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
             }
-            .background(Otty.Surface.element)
-            .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusControl))
-            .overlay(
-                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                    .strokeBorder(Otty.Line.subtle, lineWidth: 1),
-            )
+            .ottyCard()
         } else if outputLen == 0 {
             note("No output", "The command produced no captured output.")
         } else {

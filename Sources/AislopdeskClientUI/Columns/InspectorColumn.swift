@@ -60,17 +60,18 @@ struct InspectorColumn: View {
                 .textCase(.uppercase)
 
             // Connection status — dot + label.
-            sessionRow("Status") {
+            OttyKeyValueRow(label: "Status") {
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(StatusPresentation.connectionColor(status))
-                        .frame(width: 7, height: 7)
+                    OttyStatusDot(
+                        color: StatusPresentation.connectionColor(status),
+                        glowKey: StatusPresentation.connectionLabel(status),
+                    )
                     Text(StatusPresentation.connectionLabel(status))
                 }
             }
 
             // Host:port.
-            sessionRow("Host") {
+            OttyKeyValueRow(label: "Host") {
                 Text("\(connection.target.host):\(String(connection.target.port))")
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -78,7 +79,7 @@ struct InspectorColumn: View {
 
             // Ping (ms) — only meaningful while connected and once an RTT probe has completed.
             if case .connected = status, let activePingMS {
-                sessionRow("Ping") {
+                OttyKeyValueRow(label: "Ping") {
                     Text("\(Int(activePingMS.rounded())) ms")
                         .monospacedDigit()
                 }
@@ -86,7 +87,7 @@ struct InspectorColumn: View {
 
             // Agent status — only when an agent is active in the active pane.
             if let symbol = StatusPresentation.agentSymbol(activeAgentStatus) {
-                sessionRow("Agent") {
+                OttyKeyValueRow(label: "Agent") {
                     HStack(spacing: 6) {
                         Image(systemName: symbol)
                             .foregroundStyle(StatusPresentation.agentTint(activeAgentStatus))
@@ -98,17 +99,6 @@ struct InspectorColumn: View {
         .font(.system(size: Otty.Typeface.base))
         .padding(.horizontal, Otty.Metric.space3)
         .padding(.vertical, Otty.Metric.space2 + 2)
-    }
-
-    /// A compact label/value row: a secondary label on the left, the value trailing.
-    private func sessionRow(_ label: String, @ViewBuilder value: () -> some View) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .foregroundStyle(Otty.Text.secondary)
-            Spacer(minLength: 8)
-            value()
-                .foregroundStyle(Otty.Text.primary)
-        }
     }
 
     // MARK: Commands

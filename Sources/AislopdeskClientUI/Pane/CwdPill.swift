@@ -3,6 +3,7 @@
 // (Truncation logic stays in the kept-pure `PaneMath.truncatedCwd`.)
 
 #if canImport(SwiftUI)
+import SFSafeSymbols
 import SwiftUI
 
 struct CwdPill: View {
@@ -17,11 +18,7 @@ struct CwdPill: View {
 
     var body: some View {
         if let cwd, !cwd.isEmpty {
-            Label(displayPath, systemImage: "folder")
-                .font(.system(size: Otty.Typeface.small + 1))
-                .foregroundStyle(Otty.Text.secondary)
-                .lineLimit(1)
-                .truncationMode(.head)
+            OttyPill(symbol: .folder, text: displayPath)
                 .help(cwd)
         }
     }
