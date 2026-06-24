@@ -1,16 +1,21 @@
 // NavigatorColumn — the left sidebar navigator (REBUILD-V2, L2 → L7 otty restyle).
 //
-// A clean otty-style sidebar: a `ScrollView` of `OttySidebarRow` buttons (one per visible pane of the
-// active session's tabs, via the kept-pure `RailRowsBuilder`) under an `OttySectionHeader` ("Workspace" +
-// a "+" plate button). The background is left CLEAR so the hosting `NSSplitViewItem`'s native sidebar
-// vibrancy shows through (otty's "one shared material backdrop"); selection is a NEUTRAL gray plate (otty),
-// not the system accent highlight. Selecting a row makes its tab active and focuses its pane.
+// macOS: a clean otty-style sidebar — a `ScrollView` of `OttySidebarRow` buttons (one per visible pane of
+// the active session's tabs, via the kept-pure `RailRowsBuilder`) under an `OttySectionHeader`. Background
+// left CLEAR so the hosting `NSSplitViewItem`'s native sidebar vibrancy shows through (otty's "one shared
+// material backdrop"); selection is a NEUTRAL gray plate (otty), not the system accent highlight.
+//
+// iOS: a `List(selection:)` so the NavigationSplitView actually PUSHES to the content column on a compact
+// iPhone (a custom button list does not drive NavigationSplitView's column navigation). It is otty-styled
+// (Paper background, accent tint, the same icon/title rows) but keeps the system list's navigation wiring.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
 import SFSafeSymbols
 import SwiftUI
+#if os(macOS)
 import SwiftUIIntrospect
+#endif
 
 struct NavigatorColumn: View {
     let store: WorkspaceStore
@@ -21,8 +26,18 @@ struct NavigatorColumn: View {
     }
 
     var body: some View {
+        #if os(macOS)
+        macSidebar
+        #else
+        iosSidebar
+        #endif
+    }
+
+    #if os(macOS)
+    /// macOS: custom otty row list over the NSSplitViewItem vibrancy (neutral selection, full control).
+    private var macSidebar: some View {
         let rows = RailRowsBuilder.rows(for: store)
-        ScrollView {
+        return ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
                 OttySectionHeader("Workspace") {
                     OttyPlateButton(symbol: .plus, help: "New tab", plate: 20) {
@@ -52,22 +67,59 @@ struct NavigatorColumn: View {
         .scrollContentBackground(.hidden)
         .scrollIndicators(.hidden) // otty's invisible scrollbars
         .background(.clear)
-        #if os(macOS)
-            // Let the NSSplitViewItem sidebar vibrancy show through cleanly (otty's shared material backdrop):
-            // stop the NSScrollView from painting its own opaque background.
-            .introspect(.scrollView, on: .macOS(.v26)) { (scrollView: NSScrollView) in
-                scrollView.drawsBackground = false
-                scrollView.backgroundColor = .clear
+        // Let the NSSplitViewItem sidebar vibrancy show through cleanly (otty's shared material backdrop):
+        // stop the NSScrollView from painting its own opaque background.
+        .introspect(.scrollView, on: .macOS(.v26)) { (scrollView: NSScrollView) in
+            scrollView.drawsBackground = false
+            scrollView.backgroundColor = .clear
+        }
+    }
+    #else
+    /// iOS: a system `List(selection:)` so NavigationSplitView pushes to content on compact; otty-styled.
+    private var iosSidebar: some View {
+        let rows = RailRowsBuilder.rows(for: store)
+        let selection = Binding<PaneID?>(
+            get: { selectedPane },
+            set: { if let paneID = $0 { select(paneID) } },
+        )
+        return List(selection: selection) {
+            Section("Workspace") {
+                if rows.isEmpty {
+                    Label("No tabs open", systemSymbol: .squareSplit2x1)
+                        .foregroundStyle(Otty.Text.secondary)
+                } else {
+                    ForEach(rows) { row in
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(row.title.isEmpty ? defaultTitle(for: row.kind) : row.title)
+                                    .lineLimit(1)
+                                if let subtitle = row.subtitle, !subtitle.isEmpty {
+                                    Text(subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(Otty.Text.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.head)
+                                }
+                            }
+                        } icon: {
+                            Image(systemSymbol: Self.symbol(for: row.kind))
+                        }
+                        .tag(row.id)
+                    }
+                }
             }
-        #endif
-        #if os(iOS)
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(Otty.Surface.sidebar)
+        .tint(Otty.State.accent)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { store.newTabDefault() } label: { Image(systemSymbol: .plus) }
             }
         }
-        #endif
     }
+    #endif
 
     /// Make the row's tab active (if it isn't) then focus its pane. Both go through the store.
     private func select(_ paneID: PaneID) {
