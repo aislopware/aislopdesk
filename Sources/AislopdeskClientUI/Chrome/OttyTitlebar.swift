@@ -1,0 +1,244 @@
+// OttyTitlebar — otty's full-width hover-reveal titlebar (`TitlebarHoverView` + chrome controls), ported from
+// /Volumes/Lacie/Workspace/oss/otty-reversed (`OttyReplica.titlebar` + `TitleMenuButton`). It floats as a top
+// overlay over the content area (the window runs `.hiddenTitleBar`, so there is NO system unified toolbar —
+// this IS the chrome). A click-through hover catcher reveals the controls (fade-in 0.15s; on exit, dwell
+// 0.40s + fade-out 0.20s) so the resting window is clean otty:
+//   • left  — new-tab `+` and the sidebar toggle (the toggle stays visible while the sidebar is collapsed)
+//   • centre— the active tab's title as a `⋯` menu (working dir / split / move / find / close pane)
+//   • right — the Details (inspector) toggle (stays visible while Details is open)
+// The sidebar/Details toggles flip the shared `WorkspaceChromeState` flags that the split representable reads
+// to collapse the matching `NSSplitViewItem` — same machinery the old toolbar drove.
+
+#if canImport(SwiftUI)
+import AislopdeskWorkspaceCore
+import Foundation
+import SwiftUI
+#if os(macOS)
+import AppKit // NSPasteboard for "Copy Path"
+#endif
+
+struct OttyTitlebar: View {
+    let store: WorkspaceStore
+    let chrome: WorkspaceChromeState
+
+    @State private var chromeShown = false
+    @State private var hideWork: DispatchWorkItem?
+
+    /// The active tab's active pane id — drives the centre title + the menu's pane actions.
+    private var activePane: PaneID? { store.tree.activeSession?.activeTab?.activePane }
+
+    private var activeTitle: String {
+        guard let id = activePane else { return "~" }
+        let spec = store.tree.activeSession?.specs[id]
+        let title = spec?.lastKnownTitle ?? spec?.title ?? ""
+        return title.isEmpty ? "~" : title
+    }
+
+    private var sidebarVisible: Bool { !chrome.sidebarCollapsed }
+    private var detailsVisible: Bool { !chrome.inspectorCollapsed }
+
+    var body: some View {
+        ZStack {
+            #if os(macOS)
+            TitlebarHoverCatcher { setHover($0) }
+            #endif
+
+            // Left: new tab + sidebar toggle (toggle stays clickable while the sidebar is collapsed).
+            HStack(spacing: 3) {
+                PlateIconButton(systemName: "plus") { store.newTabDefault() }
+                    .opacity(chromeShown ? 1 : 0)
+                    .allowsHitTesting(chromeShown)
+                PlateIconButton(systemName: "sidebar.left") { chrome.toggleSidebar() }
+                    .opacity(sidebarVisible ? (chromeShown ? 1 : 0) : 1)
+                    .allowsHitTesting(sidebarVisible ? chromeShown : true)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 12)
+
+            // Centre: the active title as a menu.
+            TitleMenuButton(title: activeTitle, store: store, activePane: activePane)
+
+            // Right: Details toggle (stays visible while Details is open).
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                PlateIconButton(systemName: detailsVisible ? "sidebar.trailing" : "sidebar.right") {
+                    chrome.toggleInspector()
+                }
+                .opacity(chromeShown || detailsVisible ? 1 : 0)
+                .allowsHitTesting(chromeShown || detailsVisible)
+            }
+            .padding(.trailing, 10)
+
+            keyboardShortcuts
+        }
+        .frame(height: Otty.Metric.titlebarHeight)
+        .animation(Otty.Anim.standard, value: sidebarVisible)
+        .animation(Otty.Anim.standard, value: detailsVisible)
+    }
+
+    /// Hidden always-present buttons carrying otty's chrome shortcuts (⌘⇧L sidebar, ⌘⇧R Details).
+    private var keyboardShortcuts: some View {
+        ZStack {
+            Button("") { chrome.toggleSidebar() }.keyboardShortcut("l", modifiers: [.command, .shift])
+            Button("") { chrome.toggleInspector() }.keyboardShortcut("r", modifiers: [.command, .shift])
+        }
+        .opacity(0)
+        .allowsHitTesting(false)
+    }
+
+    /// otty's reveal timing: fade-in 0.15s on enter; on exit, dwell 0.40s then fade-out 0.20s (keeps the
+    /// controls clickable while the pointer travels to them).
+    private func setHover(_ over: Bool) {
+        hideWork?.cancel()
+        if over {
+            withAnimation(Otty.Anim.reveal) { chromeShown = true }
+            return
+        }
+        let work = DispatchWorkItem {
+            withAnimation(.timingCurve(0.42, 0, 1, 1, duration: Otty.Anim.titlebarFadeOut)) { chromeShown = false }
+        }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Otty.Anim.titlebarDwell, execute: work)
+    }
+}
+
+// MARK: - Title menu (centre)
+
+/// The centred active-title button. Hover shows a `⋯` + plate; click opens the pane menu (working dir /
+/// split / move / find / close pane). Ported from otty's `TitleMenuButton`, wired to the live store.
+private struct TitleMenuButton: View {
+    let title: String
+    let store: WorkspaceStore
+    let activePane: PaneID?
+
+    @State private var hover = false
+    @State private var show = false
+
+    var body: some View {
+        Button { show.toggle() } label: {
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(hover || show ? Otty.Text.primary : Otty.Text.secondary)
+                    .lineLimit(1)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Otty.Text.icon)
+                    .opacity(hover || show ? 1 : 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(hover || show ? Otty.State.hover : .clear, in: .rect(cornerRadius: Otty.Metric.radiusControl))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .animation(Otty.Anim.smallFade, value: hover)
+        .popover(isPresented: $show, arrowEdge: .bottom) { menu }
+    }
+
+    private var cwd: String? {
+        guard let id = activePane else { return nil }
+        return store.tree.activeSession?.specs[id]?.lastKnownCwd
+    }
+
+    private var menu: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TitleMenuSection("WORKING DIRECTORY")
+            TitleMenuRow(icon: "folder", title: cwd ?? "~", dim: true) {}
+            TitleMenuRow(title: "Copy Path") { copyPath() }
+            TitleMenuDivider()
+            TitleMenuRow(title: "Split Right", shortcut: "⌘D") { split(.horizontal) }
+            TitleMenuRow(title: "Split Down", shortcut: "⌘⇧D") { split(.vertical) }
+            TitleMenuRow(title: "Move Pane Left", shortcut: "⌥⌘←") { move(.left) }
+            TitleMenuRow(title: "Move Pane Right", shortcut: "⌥⌘→") { move(.right) }
+            TitleMenuDivider()
+            TitleMenuRow(title: "Close Pane", shortcut: "⌘W") { close() }
+                .padding(.bottom, 6)
+        }
+        .frame(width: 260)
+    }
+
+    private func split(_ axis: SplitAxis) {
+        guard let id = activePane else { return }
+        show = false
+        store.splitPaneTree(id, axis: axis, kind: .terminal)
+    }
+
+    private func move(_ direction: FocusDirection) {
+        show = false
+        store.swapActivePaneInDirection(direction)
+    }
+
+    private func close() {
+        guard let id = activePane else { return }
+        show = false
+        store.requestClosePaneTree(id)
+    }
+
+    private func copyPath() {
+        show = false
+        #if os(macOS)
+        guard let path = cwd else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        #endif
+    }
+}
+
+// MARK: - Title-menu row chrome (ported from otty's TMRow/TMSection/TMDivider)
+
+private struct TitleMenuSection: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+    var body: some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(0.4)
+            .foregroundStyle(Otty.State.header)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
+    }
+}
+
+private struct TitleMenuDivider: View {
+    var body: some View {
+        Rectangle().fill(Otty.Line.divider).frame(height: 1)
+            .padding(.vertical, 5).padding(.horizontal, 10)
+    }
+}
+
+private struct TitleMenuRow: View {
+    var icon: String?
+    var title: String
+    var shortcut: String?
+    var dim = false
+    var action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 12)).foregroundStyle(Otty.Text.icon).frame(width: 16)
+                }
+                Text(title)
+                    .font(.system(size: 12))
+                    .foregroundStyle(dim ? Otty.Text.secondary : Otty.Text.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                if let shortcut {
+                    Text(shortcut).font(.system(size: 11)).foregroundStyle(Otty.Text.secondary)
+                }
+            }
+            .padding(.horizontal, 12).frame(height: 28)
+            .background(hovering ? Otty.State.hover : .clear)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+#endif

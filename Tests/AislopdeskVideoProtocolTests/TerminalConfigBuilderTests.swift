@@ -25,6 +25,8 @@ final class TerminalConfigBuilderTests: XCTestCase {
         XCTAssertEqual(map["font-size"], "13") // integral → no decimal
         XCTAssertEqual(map["font-style"], "regular")
         XCTAssertEqual(map["theme"], "Aislopdesk Dark")
+        XCTAssertEqual(map["background"], "FCFBF9") // otty Paper — overrides the (unbundled) named theme
+        XCTAssertEqual(map["foreground"], "37352F")
         XCTAssertEqual(map["cursor-style"], "block")
         XCTAssertEqual(map["cursor-style-blink"], "true")
         // 10000 lines × 256 B/line.
@@ -64,6 +66,31 @@ final class TerminalConfigBuilderTests: XCTestCase {
         XCTAssertNil(map["theme"], "an empty theme is omitted")
         XCTAssertNotNil(map["font-size"], "size always emits")
         XCTAssertNotNil(map["cursor-style"])
+    }
+
+    func testBackgroundForegroundEmittedAfterThemeAndEmptySkipped() {
+        // A custom bg/fg emit their lines; an empty one is skipped (so it never clears Ghostty's value).
+        let custom = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(background: "112233", foreground: "AABBCC"),
+        ))
+        XCTAssertEqual(custom["background"], "112233")
+        XCTAssertEqual(custom["foreground"], "AABBCC")
+
+        let empty = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(background: "  ", foreground: ""),
+        ))
+        XCTAssertNil(empty["background"], "an empty background is omitted, not emitted blank")
+        XCTAssertNil(empty["foreground"], "an empty foreground is omitted")
+
+        // Order: background/foreground come AFTER theme so they override the named theme.
+        let lines = TerminalConfigBuilder.string(for: TerminalPreferences()).split(separator: "\n").map(String.init)
+        guard let themeIdx = lines.firstIndex(where: { $0.hasPrefix("theme = ") }),
+              let bgIdx = lines.firstIndex(where: { $0.hasPrefix("background = ") })
+        else {
+            XCTFail("expected both theme and background lines")
+            return
+        }
+        XCTAssertLessThan(themeIdx, bgIdx, "background must follow theme so it overrides it")
     }
 
     func testScrollbackLimitClampsNonPositiveToZero() {

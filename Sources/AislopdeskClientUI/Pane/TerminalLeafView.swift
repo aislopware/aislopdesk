@@ -1,7 +1,8 @@
 // TerminalLeafView — the content of a terminal pane leaf (REBUILD-V2, L2 MINIMAL). Composes, top→bottom:
 //   [ terminal surface seam (TerminalRendererFactory.make — the SEAM, else BuildStatusPlaceholderView) ]
 //   [ InputBar (over InputBarModel) ]
-//   [ cwd label row (CwdPill bound to the pane's last-known cwd) ]
+// otty shows NO persistent cwd chrome in the resting window — the working-directory chip only appears in
+// menus/overlays — so there is no bottom cwd pill here.
 //
 // SEAM usage: the terminal pixels come from `TerminalRendererFactory.make(model:isFocused:)`. The Xcode
 // app target injects the production `GhosttyTerminalView`; a headless `swift build` registers no factory,
@@ -26,8 +27,6 @@ struct TerminalLeafView: View {
     let live: LivePaneSession?
     /// Workspace focus → drives the production renderer's first responder (only the focused pane types).
     let isFocused: Bool
-    /// The pane's last-known cwd (from its spec) bound to the cwd row. `nil`/empty ⇒ row hidden.
-    var cwd: String?
     /// EAGER/STATIC render path for headless ImageRenderer snapshots.
     var staticMirror: Bool = false
 
@@ -38,7 +37,6 @@ struct TerminalLeafView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if let inputBar = live?.inputBar {
                 InputBar(model: inputBar, staticMirror: staticMirror)
-                cwdRow
             }
             // TODO(L5): mount `AgentInputFooter` here (under the InputBar, agent-gated).
         }
@@ -62,16 +60,6 @@ struct TerminalLeafView: View {
                 Color.clear
             }
         }
-    }
-
-    private var cwdRow: some View {
-        HStack(spacing: 8) {
-            CwdPill(cwd: cwd)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 6)
-        .background(NativePaneColor.terminalBackground)
     }
 
     private func connectIfNeeded() async {

@@ -37,14 +37,12 @@ struct SplitContainer: View {
     private func content(in bounds: CGRect) -> some View {
         if let tab {
             let layout = SplitTreeRenderModel.layout(for: tab, in: bounds)
-            let isSplit = layout.leaves.count > 1
             ZStack(alignment: .topLeading) {
                 ForEach(layout.leaves, id: \.id) { leaf in
                     PaneContainer(
                         store: store,
                         paneID: leaf.id,
                         isFocused: leaf.id == focusedPane,
-                        isInSplit: isSplit,
                         staticMirror: staticMirror,
                     )
                     .id(leaf.id) // identity hazard: never reuse a surface across panes

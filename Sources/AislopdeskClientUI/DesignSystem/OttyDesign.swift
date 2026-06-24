@@ -29,7 +29,8 @@ struct OttyTheme {
     let window: Color // titlebar + margin backdrop (the "bg")
     let sidebar: Color // navigator / tabs panel
     let content: Color // the area behind the floating card
-    let card: Color // the floating terminal card surface
+    let card: Color // the terminal surface — flush paper (RC.bg), NOT a brighter-white card
+    let selectedCard: Color // the active sidebar-tab card fill (white-on-paper, RC.card)
     let element: Color // inset controls (search field, kbd, chips)
 
     // Text
@@ -66,7 +67,8 @@ struct OttyTheme {
         window: Color(ottyHex: 0xFCFBF9),
         sidebar: Color(ottyHex: 0xF5F4F0),
         content: Color(ottyHex: 0xFCFBF9),
-        card: .white,
+        card: Color(ottyHex: 0xFCFBF9), // terminal surface = warm paper (RC.bg) — otty's flush, borderless panel
+        selectedCard: .white, // active-tab card = pure white on paper (RC.card)
         element: Color(ottyHex: 0xF0EFEA),
         textPrimary: Color(ottyHex: 0x37352F),
         textSecondary: Color(ottyHex: 0xB8B5AE),
@@ -95,6 +97,7 @@ struct OttyTheme {
         sidebar: Color(ottyHex: 0x1C1C1C),
         content: Color(ottyHex: 0x121212),
         card: Color(ottyHex: 0x1A1A1A),
+        selectedCard: Color(ottyHex: 0x2A2A2A), // active-tab card = slightly elevated panel on the dark sidebar
         element: Color(ottyHex: 0x262626),
         textPrimary: Color(ottyHex: 0xEEEEEE),
         textSecondary: Color(ottyHex: 0x888888),
@@ -131,6 +134,7 @@ enum Otty {
         static var sidebar: Color { Otty.theme.sidebar }
         static var content: Color { Otty.theme.content }
         static var card: Color { Otty.theme.card }
+        static var selectedCard: Color { Otty.theme.selectedCard }
         static var element: Color { Otty.theme.element }
     }
 
@@ -183,6 +187,9 @@ enum Otty {
 
         // Chrome dimensions
         static let paneHeaderHeight: CGFloat = 28
+        /// The hover-reveal titlebar strip height — the content area reserves this at its top so the
+        /// terminal starts BELOW the titlebar (otty's resting silhouette), not under the centred title.
+        static let titlebarHeight: CGFloat = 40
         static let sidebarWidth: CGFloat = 220
         static let hairline: CGFloat = 1
         static let cardBorderWidth: CGFloat = 1
@@ -217,6 +224,8 @@ enum Otty {
 
         /// Titlebar hover-reveal DWELL before fade-out (seconds) — keeps controls clickable on exit.
         static let titlebarDwell: Double = 0.40
+        /// Titlebar chrome fade-out duration (seconds) after the dwell — otty's `PanelToggleButton.hide`.
+        static let titlebarFadeOut: Double = 0.20
         /// Unfocused-pane dim opacity (`⌘D` split — non-focused panes fade to this).
         static let unfocusedPaneOpacity: Double = 0.6
     }

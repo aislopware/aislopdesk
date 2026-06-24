@@ -1,10 +1,12 @@
-// OttyRow — otty's sidebar/list row idiom on the token layer (REBUILD-V2, L7/L9).
+// OttyRow — otty's sidebar/list row idiom on the token layer (REBUILD-V2, L7/L9 → otty-fidelity restyle).
 //
-// Reconstructs the binary's row hover/selection rule (Docs/05 §4 + ReplicaKit `selRow`/`hoverBg`):
+// Reconstructs the binary's row hover/selection rule (Docs/05 §4 + ReplicaKit `card`/`hoverBg`):
 //   idle     → transparent, icon tint, secondary title
 //   hover    → `Otty.State.hover` plate, title → primary
-//   selected → `Otty.State.selected` (NEUTRAL gray, NOT accent), title → primary
-// A radius-6 item plate, 8pt padding, `smallFade` on hover. The whole row is a plain button.
+//   selected → a WHITE CARD: `Otty.Surface.selectedCard` fill + a 1px `Otty.Line.card` border + a faint
+//              `black@0.04` shadow (radius 2, y 1) — otty's signature white-card-on-paper active tab
+//              (ReplicaKit `card`, OttyReplica TabRowView), NOT a flat neutral-gray plate.
+// A radius-7 item card, `smallFade` on hover. The whole row is a plain button.
 
 #if canImport(SwiftUI)
 import SFSafeSymbols
@@ -15,6 +17,8 @@ struct OttySidebarRow: View {
     let symbol: SFSymbol
     let title: String
     var subtitle: String?
+    /// otty's right-aligned tab badge (e.g. the shell name "zsh"). `nil` ⇒ no badge.
+    var badge: String?
     var isSelected: Bool
     var action: () -> Void
 
@@ -41,21 +45,37 @@ struct OttySidebarRow: View {
                     }
                 }
                 Spacer(minLength: 0)
+                if let badge, !badge.isEmpty {
+                    Text(badge)
+                        .font(.system(size: Otty.Typeface.small))
+                        .foregroundStyle(Otty.Text.tertiary)
+                        .fixedSize()
+                }
             }
             .padding(.horizontal, Otty.Metric.space2)
-            .padding(.vertical, 5)
-            .background(rowBackground, in: .rect(cornerRadius: Otty.Metric.radiusItem))
+            .padding(.vertical, 6)
+            .background { rowBackground }
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(Otty.Anim.smallFade, value: hovering)
+        .animation(Otty.Anim.smallFade, value: isSelected)
     }
 
-    private var rowBackground: Color {
-        if isSelected { Otty.State.selected }
-        else if hovering { Otty.State.hover }
-        else { .clear }
+    /// The selected row is otty's white card (fill + hairline border + faint shadow); hover is a flat plate.
+    @ViewBuilder private var rowBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+        if isSelected {
+            shape
+                .fill(Otty.Surface.selectedCard)
+                .overlay(shape.strokeBorder(Otty.Line.card, lineWidth: 1))
+                .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
+        } else if hovering {
+            shape.fill(Otty.State.hover)
+        } else {
+            Color.clear
+        }
     }
 }
 

@@ -1,21 +1,16 @@
-// NavigatorColumn — the left sidebar navigator (REBUILD-V2, L2 → L7 otty restyle).
+// NavigatorColumn — the left sidebar navigator (otty port). macOS renders otty's flat "TABS" panel: a warm
+// `Otty.Surface.sidebar` background (NOT the native `.sidebar` vibrancy/inset-grouped selection — the host
+// split item is a PLAIN item now), a "TABS" header with the sort hamburger, and one `OttyTabRow` per visible
+// pane of the active session's tabs (name-only rows; ACTIVE = otty's white card). The top 40pt is reserved
+// for the traffic lights under the hidden titlebar.
 //
-// macOS: a clean otty-style sidebar — a `ScrollView` of `OttySidebarRow` buttons (one per visible pane of
-// the active session's tabs, via the kept-pure `RailRowsBuilder`) under an `OttySectionHeader`. Background
-// left CLEAR so the hosting `NSSplitViewItem`'s native sidebar vibrancy shows through (otty's "one shared
-// material backdrop"); selection is a NEUTRAL gray plate (otty), not the system accent highlight.
-//
-// iOS: a `List(selection:)` so the NavigationSplitView actually PUSHES to the content column on a compact
-// iPhone (a custom button list does not drive NavigationSplitView's column navigation). It is otty-styled
-// (Paper background, accent tint, the same icon/title rows) but keeps the system list's navigation wiring.
+// iOS: a `List(selection:)` so NavigationSplitView pushes to the content column on a compact iPhone (a custom
+// button list does not drive column navigation). otty-styled but keeps the system list's navigation wiring.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
 import SFSafeSymbols
 import SwiftUI
-#if os(macOS)
-import SwiftUIIntrospect
-#endif
 
 struct NavigatorColumn: View {
     let store: WorkspaceStore
@@ -34,45 +29,49 @@ struct NavigatorColumn: View {
     }
 
     #if os(macOS)
-    /// macOS: custom otty row list over the NSSplitViewItem vibrancy (neutral selection, full control).
+    /// macOS: otty's flat "TABS" panel — name-only rows, white-card active, hamburger sort. Paints its own
+    /// warm background (the host `NSSplitViewItem` is a plain item, so there is no native vibrancy/rounding).
     private var macSidebar: some View {
         let rows = RailRowsBuilder.rows(for: store)
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2) {
-                OttySectionHeader("Workspace") {
-                    OttyPlateButton(symbol: .plus, help: "New tab", plate: 20) {
-                        store.newTabDefault()
-                    }
-                }
-                if rows.isEmpty {
-                    Label("No tabs open", systemSymbol: .squareSplit2x1)
-                        .font(.system(size: Otty.Typeface.base))
-                        .foregroundStyle(Otty.Text.secondary)
-                        .padding(.horizontal, Otty.Metric.space2)
-                        .padding(.vertical, 5)
-                } else {
-                    ForEach(rows) { row in
-                        OttySidebarRow(
-                            symbol: Self.symbol(for: row.kind),
-                            title: row.title.isEmpty ? defaultTitle(for: row.kind) : row.title,
-                            subtitle: row.subtitle,
-                            isSelected: row.id == selectedPane,
-                            action: { select(row.id) },
-                        )
-                    }
-                }
+        return VStack(alignment: .leading, spacing: 0) {
+            Color.clear.frame(height: 40) // reserve the titlebar / traffic-light strip
+            HStack(spacing: 0) {
+                Text("TABS")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(Otty.State.header)
+                Spacer(minLength: 0)
+                OttySortMenuButton()
             }
-            .padding(Otty.Metric.space2)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if rows.isEmpty {
+                        Text("No tabs open")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Otty.Text.secondary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                    } else {
+                        ForEach(rows) { row in
+                            OttyTabRow(
+                                title: row.title.isEmpty ? defaultTitle(for: row.kind) : row.title,
+                                active: row.id == selectedPane,
+                                onSelect: { select(row.id) },
+                                onClose: { store.requestClosePaneTree(row.id) },
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+            .scrollIndicators(.hidden) // otty's invisible scrollbars
+            Spacer(minLength: 0)
         }
-        .scrollContentBackground(.hidden)
-        .scrollIndicators(.hidden) // otty's invisible scrollbars
-        .background(.clear)
-        // Let the NSSplitViewItem sidebar vibrancy show through cleanly (otty's shared material backdrop):
-        // stop the NSScrollView from painting its own opaque background.
-        .introspect(.scrollView, on: .macOS(.v26)) { (scrollView: NSScrollView) in
-            scrollView.drawsBackground = false
-            scrollView.backgroundColor = .clear
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Otty.Surface.sidebar)
     }
     #else
     /// iOS: a system `List(selection:)` so NavigationSplitView pushes to content on compact; otty-styled.
@@ -83,24 +82,15 @@ struct NavigatorColumn: View {
             set: { if let paneID = $0 { select(paneID) } },
         )
         return List(selection: selection) {
-            Section("Workspace") {
+            Section("Tabs") {
                 if rows.isEmpty {
                     Label("No tabs open", systemSymbol: .squareSplit2x1)
                         .foregroundStyle(Otty.Text.secondary)
                 } else {
                     ForEach(rows) { row in
                         Label {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(row.title.isEmpty ? defaultTitle(for: row.kind) : row.title)
-                                    .lineLimit(1)
-                                if let subtitle = row.subtitle, !subtitle.isEmpty {
-                                    Text(subtitle)
-                                        .font(.caption)
-                                        .foregroundStyle(Otty.Text.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.head)
-                                }
-                            }
+                            Text(row.title.isEmpty ? defaultTitle(for: row.kind) : row.title)
+                                .lineLimit(1)
                         } icon: {
                             Image(systemSymbol: Self.symbol(for: row.kind))
                         }
@@ -142,10 +132,10 @@ struct NavigatorColumn: View {
         }
     }
 
-    /// Type-safe SF Symbol for a pane kind (via SFSafeSymbols — compile-time availability-checked).
+    /// Type-safe SF Symbol for a pane kind (iOS rows only; macOS otty rows are name-only).
     private static func symbol(for kind: PaneKind) -> SFSymbol {
         switch kind {
-        case .terminal: .terminal
+        case .terminal: .appleTerminal
         case .remoteGUI: .display
         case .systemDialog: .lockShield
         }

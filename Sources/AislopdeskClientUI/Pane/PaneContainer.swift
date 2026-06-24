@@ -1,9 +1,11 @@
-// PaneContainer — one placed leaf = a PaneHeader over the pane content (REBUILD-V2, L2).
+// PaneContainer — one placed leaf = the flush, borderless pane content (otty port).
 //
 // Resolves the pane's `LivePaneSession` handle + `PaneSpec` from the store, routes by pane kind to the
 // content view (terminal → `TerminalLeafView`; `.remoteGUI`/`.systemDialog` → the `VideoWindowFactory`
-// seam, else a native placeholder), and composes the header over the content. A native focus ring
-// (accent stroke when focused, else separator hairline). Tap anywhere focuses the pane via the store.
+// seam, else a native placeholder). otty renders the terminal as a FLUSH, borderless panel on paper — there
+// is NO floating card, NO accent ring, NO drop shadow and NO inset gutter. The per-pane controls
+// (split/close) hover-reveal as a top overlay instead of a resting header bar; focus is conveyed only by
+// dimming the unfocused panes (otty's `⌘D` split treatment). Tap anywhere focuses the pane via the store.
 //
 // The whole pane is keyed `.id(PaneID)` by the SplitContainer so the surface/connection are never reused
 // across panes (identity hazard). SYSTEM colours/fonts only.
@@ -21,8 +23,6 @@ struct PaneContainer: View {
     let paneID: PaneID
     /// Whether this pane is the active tab's active (focused) pane.
     let isFocused: Bool
-    /// Whether this pane lives in a split (≥2 panes in the tab) — gates the header close button.
-    let isInSplit: Bool
     /// EAGER/STATIC render path for headless ImageRenderer snapshots.
     var staticMirror: Bool = false
 
@@ -38,12 +38,6 @@ struct PaneContainer: View {
     /// equivalent check is inlined here (the case set matches `PaneKind.isVideo`).
     private var isVideo: Bool { kind == .remoteGUI || kind == .systemDialog }
 
-    private var title: String {
-        let t = spec?.lastKnownTitle ?? live?.terminalModel?.title ?? spec?.title ?? ""
-        if t.isEmpty { return isVideo ? "Remote window" : "Terminal" }
-        return t
-    }
-
     /// The leaf content, routed by pane kind. A terminal pane renders the `TerminalLeafView` over the
     /// terminal-renderer seam; a video pane shows a native placeholder for now.
     @ViewBuilder private var paneContent: some View {
@@ -55,7 +49,6 @@ struct PaneContainer: View {
             TerminalLeafView(
                 live: live,
                 isFocused: isFocused,
-                cwd: spec?.lastKnownCwd,
                 staticMirror: staticMirror,
             )
         }
@@ -75,40 +68,18 @@ struct PaneContainer: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            PaneHeader(
-                title: title,
-                isActive: isFocused,
-                isInSplit: isInSplit,
-                onSplitRight: { store.splitPaneTree(paneID, axis: .horizontal, kind: .terminal) },
-                onSplitDown: { store.splitPaneTree(paneID, axis: .vertical, kind: .terminal) },
-                onClose: { store.requestClosePaneTree(paneID) },
-            )
-            paneContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Otty.Surface.card)
-        // otty "floating card": a radius-8 rounded card with a 1px border — accent when focused, a quiet
-        // card hairline otherwise.
-        .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard, style: .continuous)
-                .strokeBorder(
-                    isFocused ? Otty.State.accent : Otty.Line.card,
-                    lineWidth: Otty.Metric.cardBorderWidth,
-                ),
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { store.focusPaneTree(paneID) }
-        // Floating-card shadow + the unfocused dim (otty's `⌘D` split treatment).
-        .shadow(color: Otty.State.shadow, radius: isFocused ? 6 : 3, y: 1)
-        .opacity(isFocused ? 1 : Otty.Anim.unfocusedPaneOpacity)
-        .animation(Otty.Anim.standard, value: isFocused)
-        // The gutter that lets the shared backdrop wrap around the card (margin insets it from neighbours
-        // and the window edge — otty's signature "floating" look). Insets WITHIN the solver's leaf rect, so
-        // the absolute layout math is untouched.
-        .padding(Otty.Metric.space1)
+        paneContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Otty.Surface.card)
+            // otty: the terminal is a FLUSH, borderless panel on paper — fills the leaf rect edge-to-edge.
+            // No rounded card, no accent ring, no drop shadow, no gutter, and NO per-pane header bar (the
+            // active pane's title + split/close controls live in the titlebar `⋯` menu). Adjacent split
+            // panes are separated only by the `PaneDivider` hairline `SplitContainer` places between leaves.
+            .contentShape(Rectangle())
+            .onTapGesture { store.focusPaneTree(paneID) }
+            // Focus is conveyed ONLY by dimming the unfocused panes (otty's `⌘D` split treatment) — no ring.
+            .opacity(isFocused ? 1 : Otty.Anim.unfocusedPaneOpacity)
+            .animation(Otty.Anim.standard, value: isFocused)
     }
 }
 #endif

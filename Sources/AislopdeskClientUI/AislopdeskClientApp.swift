@@ -234,6 +234,9 @@ public struct AislopdeskClientApp: App {
             #endif
         }
         #if os(macOS)
+        // otty has NO system unified toolbar: hide the titlebar (the window keeps traffic lights + a
+        // full-size content view) so otty's own hover-reveal titlebar (`OttyTitlebar`) is the only chrome.
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.automatic)
         // G1: open at the odiff reference geometry (1280×800) so a fresh window matches the reference.
         .defaultSize(width: 1280, height: 800)

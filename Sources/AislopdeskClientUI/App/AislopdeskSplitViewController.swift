@@ -15,14 +15,16 @@ import SwiftUI
 final class AislopdeskSplitViewController: NSSplitViewController {
     private let store: WorkspaceStore
     private let connection: AppConnection
+    private let chrome: WorkspaceChromeState
 
-    /// Retained so the toolbar toggles can animate their collapse (set in `viewDidLoad`).
+    /// Retained so the titlebar toggles can animate their collapse (set in `viewDidLoad`).
     private var sidebarItem: NSSplitViewItem?
     private var inspectorItem: NSSplitViewItem?
 
-    init(store: WorkspaceStore, connection: AppConnection) {
+    init(store: WorkspaceStore, connection: AppConnection, chrome: WorkspaceChromeState) {
         self.store = store
         self.connection = connection
+        self.chrome = chrome
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -36,26 +38,34 @@ final class AislopdeskSplitViewController: NSSplitViewController {
 
         splitView.dividerStyle = .thin
 
-        // 1) Sidebar — the navigator (sessions / panes). Collapsible, spring-loaded so a drag over the
-        //    collapsed edge reveals it. Width clamped to a sidebar-typical range.
+        // 1) Sidebar — the navigator (sessions / panes). A PLAIN split item, NOT
+        //    `NSSplitViewItem(sidebarWithViewController:)`: the native sidebar style paints system vibrancy +
+        //    inset-grouped/rounded selection, which is the "native SwiftUI rounded corners" look we are
+        //    replacing. A plain item lets `NavigatorColumn` paint otty's flat warm panel + white-card rows.
+        //    Holding priority above the content's default so window-resize grows the content, not the sidebar.
         let navigator = NSHostingController(rootView: NavigatorColumn(store: store))
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: navigator)
+        let sidebarItem = NSSplitViewItem(viewController: navigator)
         sidebarItem.minimumThickness = 220
         sidebarItem.maximumThickness = 360
         sidebarItem.canCollapse = true
-        sidebarItem.isSpringLoaded = true
+        sidebarItem.holdingPriority = NSLayoutConstraint.Priority(260)
 
-        // 2) Content — the pane grid (terminal / claude / remote). The non-collapsible centre.
-        let content = NSHostingController(rootView: ContentColumn(store: store, connection: connection))
+        // 2) Content — the pane grid (terminal / claude / remote) + otty's hover-reveal titlebar overlay.
+        //    The non-collapsible centre. `chrome` drives the titlebar's sidebar/Details toggles.
+        let content = NSHostingController(
+            rootView: ContentColumn(store: store, connection: connection, chrome: chrome),
+        )
         let contentItem = NSSplitViewItem(viewController: content)
         contentItem.minimumThickness = 420
 
         // 3) Inspector — the Session + Commands navigator (host/ping/agent status + the active pane's
-        //    command blocks). Visible by default (L3); toggled from the toolbar (L4a).
+        //    command blocks). HIDDEN by default so the resting window is otty's two-column (sidebar | content)
+        //    silhouette; revealed from the toolbar (L4a). Matches otty, whose Details panel is hidden until
+        //    ⌘⇧R.
         let inspector = NSHostingController(rootView: InspectorColumn(store: store, connection: connection))
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspector)
         inspectorItem.minimumThickness = 240
-        inspectorItem.isCollapsed = false
+        inspectorItem.isCollapsed = true
 
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)

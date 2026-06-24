@@ -34,15 +34,16 @@ final class OttySnapshotRender: XCTestCase {
     }
 }
 
-/// A static mock of the otty chrome: sidebar + floating card + inspector, built from the real token layer
-/// and component kit (OttySidebarRow / OttySectionHeader / OttyPlateButton / OttyStatusDot / OttyKeyValueRow
-/// / OttyPill / .ottyCard).
+/// A static mock of the otty chrome, built from the real token layer + component kit. Mirrors otty's resting
+/// window: a "TABS" sidebar (white-card active tab via `OttySidebarRow` + a hamburger `OttySectionHeader`
+/// accessory) beside a FLUSH, borderless two-pane terminal on paper — NO floating card, NO accent ring, NO
+/// per-pane header bar, NO cwd pill and NO right inspector. Green appears ONLY on the prompt `❯` glyph
+/// (otty's accent rationing), never as chrome.
 private struct OttyShowcase: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
             content
-            inspector
         }
         .frame(width: 920, height: 560)
         .background(Otty.Surface.window)
@@ -50,95 +51,60 @@ private struct OttyShowcase: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 2) {
-            OttySectionHeader("Workspace") {
-                OttyPlateButton(symbol: .plus, plate: 20)
+            OttySectionHeader("Tabs") {
+                Image(systemSymbol: .line3Horizontal)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Otty.Text.icon)
             }
-            OttySidebarRow(symbol: .terminal, title: "zsh — main", subtitle: "~/oss/aislopdesk", isSelected: true) {}
-            OttySidebarRow(symbol: .terminal, title: "build", subtitle: "swift build", isSelected: false) {}
-            OttySidebarRow(symbol: .display, title: "Remote window", subtitle: nil, isSelected: false) {}
-            OttySidebarRow(symbol: .lockShield, title: "System dialog", subtitle: nil, isSelected: false) {}
+            OttySidebarRow(symbol: .terminal, title: "~/aislopdesk", badge: "zsh", isSelected: true) {}
+            OttySidebarRow(symbol: .terminal, title: "build", badge: "zsh", isSelected: false) {}
+            OttySidebarRow(symbol: .display, title: "Remote window", isSelected: false) {}
             Spacer()
         }
         .padding(Otty.Metric.space2)
-        .frame(width: 220)
+        .frame(width: Otty.Metric.sidebarWidth)
         .background(Otty.Surface.sidebar)
     }
 
     private var content: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Text("zsh — main")
-                    .font(.system(size: Otty.Typeface.base, weight: .medium))
-                    .foregroundStyle(Otty.Text.primary)
-                Spacer()
-                OttyPlateButton(symbol: .squareSplit2x1, plate: 22)
-                OttyPlateButton(symbol: .xmark, plate: 22)
+            // otty puts the active path in the window titlebar, centered + muted — not a per-pane header bar.
+            Text("~/aislopdesk")
+                .font(.system(size: Otty.Typeface.base))
+                .foregroundStyle(Otty.Text.secondary)
+                .frame(maxWidth: .infinity)
+                .frame(height: Otty.Metric.paneHeaderHeight)
+            // Two flush, borderless terminal panes separated by a single hairline divider (otty's split).
+            HStack(spacing: 0) {
+                terminalPane(
+                    promptPath: "~",
+                    command: "swift build",
+                )
+                Rectangle().fill(Otty.Line.divider).frame(width: Otty.Metric.hairline)
+                terminalPane(
+                    promptPath: "~/aislopdesk",
+                    command: nil,
+                )
             }
-            .padding(.horizontal, Otty.Metric.space2)
-            .frame(height: Otty.Metric.paneHeaderHeight)
-            .background(Otty.Surface.window)
-            .overlay(alignment: .bottom) { Rectangle().fill(Otty.Line.divider).frame(height: 1) }
-
-            VStack(alignment: .leading, spacing: 2) {
-                (Text("~ ").foregroundStyle(Otty.Status.info)
-                    + Text("via ").foregroundStyle(Otty.Text.secondary)
-                    + Text("🥭 jmango").foregroundStyle(Otty.Status.ok))
-                    .font(.system(size: 13, design: .monospaced))
-                (Text("❯ ").foregroundStyle(Otty.State.accent)
-                    + Text("swift build").foregroundStyle(Otty.Text.primary))
-                    .font(.system(size: 13, design: .monospaced))
-                Spacer()
-                OttyPill(symbol: .folder, text: "~/oss/aislopdesk")
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(Otty.Metric.space3)
-            .background(Otty.Surface.card)
         }
-        .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard, style: .continuous)
-                .strokeBorder(Otty.State.accent, lineWidth: 1),
-        )
-        .shadow(color: Otty.State.shadow, radius: 6, y: 1)
-        .padding(Otty.Metric.space2)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Otty.Surface.card) // flush paper terminal surface (#FCFBF9), not a brighter-white card
     }
 
-    private var inspector: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("SESSION")
-                .font(.system(size: Otty.Typeface.small, weight: .semibold))
-                .foregroundStyle(Otty.State.header)
-            OttyKeyValueRow(label: "Status") {
-                HStack(spacing: 6) {
-                    OttyStatusDot(color: Otty.Status.ok, glowKey: nil)
-                    Text("connected")
-                }
-            }
-            OttyKeyValueRow(label: "Host") { Text("macstudio:7799") }
-            OttyKeyValueRow(label: "Ping") { Text("1 ms").monospacedDigit() }
-            OttyKeyValueRow(label: "Agent") {
-                HStack(spacing: 6) {
-                    Image(systemSymbol: .gearshapeFill).foregroundStyle(Otty.Status.warn)
-                    Text("working")
-                }
-            }
-            Rectangle().fill(Otty.Line.divider).frame(height: 1).padding(.vertical, 4)
-            Text("COMMANDS")
-                .font(.system(size: Otty.Typeface.small, weight: .semibold))
-                .foregroundStyle(Otty.State.header)
-            Text("$ swift test")
+    private func terminalPane(promptPath: String, command: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            (Text("\(promptPath) ").foregroundStyle(Otty.Status.info)
+                + Text("via ").foregroundStyle(Otty.Text.secondary)
+                + Text("🥭 jmango").foregroundStyle(Otty.Status.ok))
                 .font(.system(size: 13, design: .monospaced))
-                .foregroundStyle(Otty.Text.primary)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .ottyCard()
+            (Text("/\\ - τ -▽ ").foregroundStyle(Otty.Text.secondary)
+                + Text("❯ ").foregroundStyle(Otty.State.accent) // the ONLY green — otty's accent rationing
+                + Text(command ?? "").foregroundStyle(Otty.Text.primary))
+                .font(.system(size: 13, design: .monospaced))
             Spacer()
         }
-        .font(.system(size: Otty.Typeface.base))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(Otty.Metric.space3)
-        .frame(width: 240)
-        .background(Otty.Surface.sidebar)
     }
 }
 #endif

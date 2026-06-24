@@ -17,6 +17,8 @@ import Foundation
 ///   • `font-size`          — point size.
 ///   • `font-style`         — weight / style token (e.g. `Regular`, `Bold`).
 ///   • `theme`              — named theme / palette.
+///   • `background`         — surface background colour (6-hex; overrides the theme).
+///   • `foreground`         — text colour (6-hex; overrides the theme).
 ///   • `cursor-style`       — `block` / `bar` / `underline`.
 ///   • `cursor-style-blink` — `true` / `false`.
 ///   • `scrollback-limit`   — scrollback buffer size (BYTES in Ghostty; we map lines × a per-line
@@ -50,6 +52,13 @@ public enum TerminalConfigBuilder {
         if !weight.isEmpty { lines.append("font-style = \(weight)") }
         let theme = prefs.theme.trimmingCharacters(in: .whitespaces)
         if !theme.isEmpty { lines.append("theme = \(theme)") }
+        // Emit explicit background/foreground AFTER `theme` so they override the named theme (which isn't
+        // bundled and won't resolve) — this is what actually pins the surface to otty's Paper palette. An
+        // empty value is skipped (same "unset is honoured" rule as family/theme).
+        let background = prefs.background.trimmingCharacters(in: .whitespaces)
+        if !background.isEmpty { lines.append("background = \(background)") }
+        let foreground = prefs.foreground.trimmingCharacters(in: .whitespaces)
+        if !foreground.isEmpty { lines.append("foreground = \(foreground)") }
 
         lines.append("cursor-style = \(prefs.cursorStyle.rawValue)")
         lines.append("cursor-style-blink = \(prefs.cursorBlink ? "true" : "false")")

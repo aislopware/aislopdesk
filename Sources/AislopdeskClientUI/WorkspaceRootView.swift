@@ -40,14 +40,15 @@ public struct WorkspaceRootView: View {
 
     public var body: some View {
         #if os(macOS)
+        // No system unified toolbar / header — the window runs `.hiddenTitleBar` and otty's hover-reveal
+        // titlebar (`OttyTitlebar`, hosted inside `ContentColumn`) IS the chrome.
         WorkspaceSplitRepresentable(store: store, connection: connection, chrome: chrome)
             .ignoresSafeArea()
-            .toolbar { macToolbar }
         #else
         NavigationSplitView {
             NavigatorColumn(store: store)
         } content: {
-            ContentColumn(store: store, connection: connection)
+            ContentColumn(store: store, connection: connection, chrome: chrome)
         } detail: {
             InspectorColumn(store: store, connection: connection)
         }
@@ -55,49 +56,7 @@ public struct WorkspaceRootView: View {
         #endif
     }
 
-    #if os(macOS)
-    @ToolbarContentBuilder
-    private var macToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button {
-                chrome.toggleSidebar()
-            } label: {
-                Image(systemName: "sidebar.left")
-            }
-            .help("Toggle Navigator")
-            .keyboardShortcut("s", modifiers: [.command, .option])
-        }
-        ToolbarItem(placement: .navigation) {
-            Button {
-                store.newTabDefault()
-            } label: {
-                Image(systemName: "plus")
-            }
-            .help("New Tab")
-        }
-        ToolbarItem(placement: .principal) {
-            ConnectionStatusPill(connection: connection, pingMS: activePingMS, onTap: openConnect)
-        }
-        ToolbarItem(placement: .primaryAction) {
-            // Agent-status indicator — only when an agent is active in the active pane.
-            if let symbol = StatusPresentation.agentSymbol(activeAgentStatus) {
-                Image(systemName: symbol)
-                    .foregroundStyle(StatusPresentation.agentTint(activeAgentStatus))
-                    .help("Agent: \(StatusPresentation.agentLabel(activeAgentStatus))")
-                    .accessibilityLabel("Agent \(StatusPresentation.agentLabel(activeAgentStatus))")
-            }
-        }
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                chrome.toggleInspector()
-            } label: {
-                Image(systemName: "sidebar.right")
-            }
-            .help("Toggle Inspector")
-            .keyboardShortcut("i", modifiers: [.command, .option])
-        }
-    }
-    #else
+    #if os(iOS)
     @ToolbarContentBuilder
     private var iosToolbar: some ToolbarContent {
         // iOS uses NavigationSplitView's own column-visibility chrome; surface the connection pill + the
@@ -137,7 +96,7 @@ struct WorkspaceSplitRepresentable: NSViewControllerRepresentable {
     let chrome: WorkspaceChromeState
 
     func makeNSViewController(context _: Context) -> AislopdeskSplitViewController {
-        AislopdeskSplitViewController(store: store, connection: connection)
+        AislopdeskSplitViewController(store: store, connection: connection, chrome: chrome)
     }
 
     func updateNSViewController(_ controller: AislopdeskSplitViewController, context _: Context) {

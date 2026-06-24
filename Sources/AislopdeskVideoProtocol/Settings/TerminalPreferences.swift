@@ -17,6 +17,12 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
     public var fontWeight: String
     /// Theme name / palette (libghostty `theme`).
     public var theme: String
+    /// Terminal background colour (libghostty `background`, 6-hex). Defaults to otty's "Paper" warm
+    /// off-white so the terminal surface matches the Paper chrome (named themes are not bundled, so an
+    /// explicit colour — applied AFTER `theme` — is what actually pins the surface light).
+    public var background: String
+    /// Terminal foreground / text colour (libghostty `foreground`, 6-hex). otty's primary text on Paper.
+    public var foreground: String
 
     /// Cursor style (libghostty `cursor-style`).
     public enum CursorStyle: String, Codable, Sendable, CaseIterable {
@@ -37,6 +43,8 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
         fontSize: Double = 13,
         fontWeight: String = "regular",
         theme: String = "Aislopdesk Dark",
+        background: String = "FCFBF9",
+        foreground: String = "37352F",
         cursorStyle: CursorStyle = .block,
         cursorBlink: Bool = true,
         scrollbackLines: Int = 10000,
@@ -45,6 +53,8 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
         self.fontSize = fontSize
         self.fontWeight = fontWeight
         self.theme = theme
+        self.background = background
+        self.foreground = foreground
         self.cursorStyle = cursorStyle
         self.cursorBlink = cursorBlink
         self.scrollbackLines = scrollbackLines
