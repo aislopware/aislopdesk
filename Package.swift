@@ -34,11 +34,9 @@ let package = Package(
         .library(name: "AislopdeskClaudeCode", targets: ["AislopdeskClaudeCode"]),
         .library(name: "AislopdeskAgentDetect", targets: ["AislopdeskAgentDetect"]),
         .library(name: "AislopdeskWorkspaceCore", targets: ["AislopdeskWorkspaceCore"]),
-        // L1 of the Warp-clone UI rewrite: the headless design-system tokens (Theme seeds + derivation
-        // + WarpTheme default + token scales + DesignTokens resolver). SwiftUI value types only.
-        .library(name: "AislopdeskDesignSystem", targets: ["AislopdeskDesignSystem"]),
-        // L2 of the Warp-clone UI rewrite: the rebuilt SwiftUI client UI (window top bar + vertical tab
-        // rail + app scene), a thin layer over AislopdeskWorkspaceCore + AislopdeskDesignSystem.
+        // The native-SwiftUI rewrite (REBUILD-V2): the rebuilt SwiftUI client UI (a thin layer over
+        // AislopdeskWorkspaceCore using STOCK SwiftUI + system semantic colours/fonts — no custom token
+        // target). The deleted `AislopdeskDesignSystem` (Warp-clone token system) is gone for good.
         .library(name: "AislopdeskClientUI", targets: ["AislopdeskClientUI"]),
         // PATH 2 (GUI video path, Phase 4 / WF-9).
         .library(name: "AislopdeskVideoProtocol", targets: ["AislopdeskVideoProtocol"]),
@@ -170,29 +168,16 @@ let package = Package(
             ],
         ),
 
-        // Headless design-system (L1 of the Warp-clone UI rewrite): a faithful, ABSTRACTED port of
-        // Warp's seed-and-derive theme model. Imports SwiftUI ONLY for `Color`/`Font` value types —
-        // NO AppKit/UIKit, NO view bodies, NO GUI/VideoToolbox/Metal — so it builds + unit-tests fully
-        // headless (same discipline as the old DSColor*/DSScale* tests). `ColorU` RGBA8 + the verbatim
-        // blend/contrast math is the single source of truth; `WarpTheme` carries Warp's Dark seeds; a
-        // `Theme` protocol + `ThemeSeeds` allow future themes. Depends on nothing but SwiftUI (implicit).
-        // F2: bundles the open Hack (MIT) + Roboto (Apache-2.0) `.ttf` faces as a resource so
-        // `Fonts.register()` can register them with CoreText from `Bundle.module` (NOT Warp's proprietary
-        // fonts — only the freely licensed families).
-        .target(
-            name: "AislopdeskDesignSystem",
-            resources: [.process("Resources/Fonts")],
-        ),
-
-        // L2 of the Warp-clone UI rewrite: the rebuilt `AislopdeskClientUI` — pure SwiftUI views over
-        // `AislopdeskWorkspaceCore` (the proven headless logic) + `AislopdeskDesignSystem` (the Warp-clone
-        // tokens). The window TOP BAR + vertical TAB RAIL + app SCENE land here in L2; pane/terminal/video
-        // content stays behind the `TerminalRendererFactory`/`VideoWindowFactory` seams (it renders the
-        // headless placeholder in `swift build`/tests — NO libghostty/Metal/VideoToolbox). The macOS app
-        // chrome (`WindowConfigurator`, menu `Commands`) is `#if os(macOS)`; the iOS glue is `#if os(iOS)`.
+        // The native-SwiftUI rewrite (REBUILD-V2): the rebuilt `AislopdeskClientUI` — pure SwiftUI views
+        // over `AislopdeskWorkspaceCore` (the proven headless logic), built from STOCK SwiftUI components
+        // and SYSTEM semantic colours/fonts (no custom design-system token target — the old
+        // `AislopdeskDesignSystem` was deleted in L0). The app SCENE + the native IDE shell land here; the
+        // pane/terminal/video content stays behind the `TerminalRendererFactory`/`VideoWindowFactory` seams
+        // (it renders the headless placeholder in `swift build`/tests — NO libghostty/Metal/VideoToolbox).
+        // L0 ships a minimal placeholder scene; L1+ rebuild the real shell.
         .target(
             name: "AislopdeskClientUI",
-            dependencies: ["AislopdeskWorkspaceCore", "AislopdeskDesignSystem"],
+            dependencies: ["AislopdeskWorkspaceCore"],
         ),
 
         // MARK: PATH 2 — GUI video path (Phase 4 / WF-9)
@@ -386,18 +371,13 @@ let package = Package(
                 "AislopdeskVideoProtocol",
             ],
         ),
-        // L1 design-system: pins the theme contract so it can't silently drift — hex round-trips, the
-        // verbatim blend math (fg@10% over #000 = #1A1A1A + numeric neutral_n), WarpTheme resolved Dark
-        // values (bg/fg/accent, derived neutrals/overlays, outline, selection, fixed ui_* literals), the
-        // token scales (sizes/radii), and the contrast text-tier pick on a dark bg. Headless.
-        .testTarget(name: "AislopdeskDesignSystemTests", dependencies: ["AislopdeskDesignSystem"]),
-
-        // L2 client UI: view-logic + snapshot/odiff tests for the rebuilt chrome (top bar + tab rail +
-        // scene). VIEW-MODEL level only — never instantiates Ghostty/VT/Metal/SCStream (the hang-safety
-        // rule); the renderer/video views stay behind the factory seams.
+        // Client UI: view-logic tests for the rebuilt native-SwiftUI chrome. VIEW-MODEL level only —
+        // never instantiates Ghostty/VT/Metal/SCStream (the hang-safety rule); the renderer/video views
+        // stay behind the factory seams. L0 carries only a placeholder test (the old Warp-clone view +
+        // design-system tests were deleted with their views); L1+ re-add per-layer view-logic tests.
         .testTarget(
             name: "AislopdeskClientUITests",
-            dependencies: ["AislopdeskClientUI", "AislopdeskWorkspaceCore", "AislopdeskDesignSystem"],
+            dependencies: ["AislopdeskClientUI", "AislopdeskWorkspaceCore"],
         ),
 
         // WF-9 GUI video path: ONLY the PURE AislopdeskVideoProtocol is unit-tested

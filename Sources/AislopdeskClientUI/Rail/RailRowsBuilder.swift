@@ -5,6 +5,20 @@
 import AislopdeskAgentDetect
 import AislopdeskWorkspaceCore
 
+/// The data a single rail row binds to (derived from a pane within the active session's tabs). A pure value
+/// type — kept with the builder logic (it previously lived in the deleted `TabRow` view, but carries no view
+/// / design-system coupling). The native rail in L1+ rebuilds the row VIEW over this same model.
+struct RailRow: Identifiable, Equatable {
+    let id: PaneID
+    let tabID: TabID
+    let kind: PaneKind
+    let title: String
+    let subtitle: String?
+    let status: ClaudeStatus
+    /// Selected = the row's tab is active AND this pane is the tab's active pane.
+    let isSelected: Bool
+}
+
 enum RailRowsBuilder {
     /// Build the rail rows for the active session. One row per visible (non-floating) pane of each tab,
     /// in tab order then pre-order pane order. `selected` = the tab is active AND the pane is that tab's
