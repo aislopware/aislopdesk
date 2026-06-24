@@ -3036,6 +3036,18 @@ public final class WorkspaceStore {
         // sibling's re-entrant sendInput from looping back into another fan-out. A no-op while disarmed.
         let terminal = (handle as? LivePaneSession)?.terminalModel
         terminal?.broadcastTap = { [weak self] data in self?.fanSyncInput(from: id, data) }
+        // TILING from the terminal surface: the renderer's right-click "Split Right/Down" AND the cmd+d /
+        // cmd+shift+d keybind (intercepted in GhosttySurface.keyDown before libghostty's default `new_split`
+        // swallows the key) both fire `onContextMenuSplit`. Route it to the tree split — without this the hook
+        // is nil and the key/menu silently do NOTHING (the reported "cmd+d đứng yên"). `true` = side-by-side
+        // (horizontal), `false` = stacked (vertical). Splits THIS pane (`id`), so the key-focused surface
+        // splits even if the workspace focus lags.
+        terminal?.onContextMenuSplit = { [weak self] horizontal in
+            self?.splitPaneTree(id, axis: horizontal ? .horizontal : .vertical, kind: .terminal)
+        }
+        // FOCUS-ON-CLICK: the surface's mouseDown calls `onRequestFocus`; route it to the tree focus so the
+        // workspace focus (chrome / inspector / which pane the next split or close targets) follows a click.
+        terminal?.onRequestFocus = { [weak self] in self?.focusPaneTree(id) }
         // WB3 BOOKMARKS: seed the pane's block model from persistence + wire its change closure to persist
         // back (the helper lives in WorkspaceStore+Blocks so this body stays under the lint ceiling).
         seedBlockBookmarks(id: id, handle: handle)

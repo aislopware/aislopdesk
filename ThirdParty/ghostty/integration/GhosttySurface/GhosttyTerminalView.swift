@@ -808,6 +808,23 @@ final class GhosttyLayerBackedView: NSView {
             return
         }
 
+        // TILING CHORDS (cmd+d / cmd+shift+d): libghostty's DEFAULT keymap binds these to new_split:right /
+        // new_split:down, but Aislopdesk does its OWN tiling at the SwiftUI layer and the app-level action_cb
+        // drops every split/tab action — so forwarding the chord to the encoder just SWALLOWS the key (the
+        // reported "cmd+d đứng yên": the key is consumed, no split happens, nothing reaches the PTY).
+        // Intercept the split PAIR here and route to the workspace split via `onContextMenuSplit` — the SAME
+        // hook the right-click "Split Right/Down" menu uses (wired in WorkspaceStore.wireMaterializedLeaf to
+        // `splitPaneTree(THIS pane, …)`). Guard: cmd WITHOUT ctrl/option, the D key, not an auto-repeat (a
+        // held chord must not spam splits). cmd+D = split right (side-by-side); cmd+shift+D = split down.
+        if !event.isARepeat,
+           event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.control),
+           !event.modifierFlags.contains(.option),
+           event.charactersIgnoringModifiers?.lowercased() == "d" {
+            model?.onContextMenuSplit?(!event.modifierFlags.contains(.shift))
+            return
+        }
+
         // Route every other key through libghostty's encoder (DECISIONS: never hand-roll VT).
         // ghostty_input_key_s (header 322): action / mods / keycode / text /
         // unshifted_codepoint / composing.
