@@ -45,11 +45,12 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         let contentItem = NSSplitViewItem(viewController: content)
         contentItem.minimumThickness = 420
 
-        // 3) Inspector — agent status / branch / host / ping / tokens / exit codes. Hidden by default.
+        // 3) Inspector — the Commands navigator (command blocks for the active terminal pane). Shown by
+        //    default in L3 (a proper toolbar toggle lands in L4).
         let inspector = NSHostingController(rootView: InspectorColumn(store: store))
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspector)
         inspectorItem.minimumThickness = 240
-        inspectorItem.isCollapsed = true
+        inspectorItem.isCollapsed = false
 
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
