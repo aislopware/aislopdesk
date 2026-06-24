@@ -65,6 +65,17 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         self.inspectorItem = inspectorItem
     }
 
+    /// Pin the WINDOW's appearance to the active otty theme. The three columns are hosted in
+    /// `NSHostingController`s inside this AppKit split controller, so they do NOT inherit the SwiftUI
+    /// `.preferredColorScheme` set on `WorkspaceRootView` — any system-dynamic colour / material in a column
+    /// would otherwise resolve to the OS appearance and clash with the pinned otty palette (e.g. white text
+    /// on the light Paper chrome when the user's Mac is in Dark mode). Setting it on the NSWindow propagates
+    /// to every hosted NSView. Done in `viewDidAppear` because the window only exists once attached.
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        view.window?.appearance = NSAppearance(named: Otty.theme.isLight ? .aqua : .darkAqua)
+    }
+
     /// Apply the toolbar collapse flags to the sidebar/inspector items (idempotent — only animates a real
     /// change so a steady-state update doesn't re-trigger the animation).
     func applyCollapse(sidebarCollapsed: Bool, inspectorCollapsed: Bool) {
