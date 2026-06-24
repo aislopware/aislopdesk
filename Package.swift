@@ -43,6 +43,16 @@ let package = Package(
         .library(name: "AislopdeskVideoHost", targets: ["AislopdeskVideoHost"]),
         .library(name: "AislopdeskVideoClient", targets: ["AislopdeskVideoClient"]),
     ],
+    // External UI dependencies — attach ONLY to the GUI target `AislopdeskClientUI` (the headless core +
+    // wire/codec/controller targets stay dependency-free, so `swift test` / golden never fetch). Adopting
+    // these trades the "clean checkout builds with no prerequisite" property for SPM network resolution;
+    // versions are pinned in Package.resolved. KeyboardShortcuts is macOS-only → platform-conditioned.
+    dependencies: [
+        .package(url: "https://github.com/siteline/swiftui-introspect.git", from: "26.0.0"),
+        .package(url: "https://github.com/SFSafeSymbols/SFSafeSymbols.git", from: "7.0.0"),
+        .package(url: "https://github.com/EmergeTools/Pow.git", from: "1.0.0"),
+        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "3.0.0"),
+    ],
     targets: [
         // MARK: Libraries
 
@@ -184,6 +194,17 @@ let package = Package(
                 // a direct dependency of WorkspaceCore, but a `swift build` import needs the module
                 // declared here; this does NOT widen the headless graph (no HW deps in Transport).
                 "AislopdeskTransport",
+                // L8: external UI libraries (otty chrome). Cross-platform: SwiftUIIntrospect (reach AppKit
+                // under SwiftUI), SFSafeSymbols (type-safe SF Symbols), Pow (micro-interactions).
+                .product(name: "SwiftUIIntrospect", package: "swiftui-introspect"),
+                .product(name: "SFSafeSymbols", package: "SFSafeSymbols"),
+                .product(name: "Pow", package: "Pow"),
+                // macOS-only: user-customizable global shortcuts + the recorder view.
+                .product(
+                    name: "KeyboardShortcuts",
+                    package: "KeyboardShortcuts",
+                    condition: .when(platforms: [.macOS]),
+                ),
             ],
         ),
 

@@ -7,6 +7,7 @@
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
+import Pow
 import SwiftUI
 
 struct ConnectionStatusPill: View {
@@ -27,6 +28,11 @@ struct ConnectionStatusPill: View {
                 Circle()
                     .fill(StatusPresentation.connectionColor(status))
                     .frame(width: 7, height: 7)
+                    // Pow: a brief glow when the connection state flips (connecting → connected, etc.).
+                    .changeEffect(
+                        .glow(color: StatusPresentation.connectionColor(status)),
+                        value: StatusPresentation.connectionLabel(status),
+                    )
                 Text(host)
                     .font(.system(size: Otty.Typeface.base, weight: .medium))
                     .foregroundStyle(Otty.Text.primary)

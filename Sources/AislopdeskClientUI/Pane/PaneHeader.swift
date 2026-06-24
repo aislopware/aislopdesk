@@ -7,6 +7,7 @@
 // view (hover-reveal + close-only-in-split rules).
 
 #if canImport(SwiftUI)
+import SFSafeSymbols
 import SwiftUI
 
 /// Pure visibility rules for the header's right-side controls (testable).
@@ -49,11 +50,11 @@ struct PaneHeader: View {
                 .truncationMode(.head)
             Spacer(minLength: 0)
             if PaneHeaderControls.showsOverflow(controlsRevealed: revealed) {
-                headerButton("square.split.2x1", help: "Split right", action: onSplitRight)
-                headerButton("square.split.1x2", help: "Split down", action: onSplitDown)
+                headerButton(.squareSplit2x1, help: "Split right", action: onSplitRight)
+                headerButton(.squareSplit1x2, help: "Split down", action: onSplitDown)
             }
             if PaneHeaderControls.showsClose(isInSplit: isInSplit, controlsRevealed: revealed) {
-                headerButton("xmark", help: "Close pane", action: onClose)
+                headerButton(.xmark, help: "Close pane", action: onClose)
             }
         }
         .padding(.horizontal, Otty.Metric.space2)
@@ -66,8 +67,8 @@ struct PaneHeader: View {
         .animation(Otty.Anim.smallFade, value: revealed)
     }
 
-    private func headerButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
-        OttyPlateButton(systemName: systemName, help: help, action: action)
+    private func headerButton(_ symbol: SFSymbol, help: String, action: @escaping () -> Void) -> some View {
+        OttyPlateButton(symbol: symbol, help: help, action: action)
     }
 }
 #endif

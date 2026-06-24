@@ -8,7 +8,9 @@
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
+import SFSafeSymbols
 import SwiftUI
+import SwiftUIIntrospect
 
 struct NavigatorColumn: View {
     let store: WorkspaceStore
@@ -23,12 +25,12 @@ struct NavigatorColumn: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
                 OttySectionHeader("Workspace") {
-                    OttyPlateButton(systemName: "plus", help: "New tab", plate: 20) {
+                    OttyPlateButton(symbol: .plus, help: "New tab", plate: 20) {
                         store.newTabDefault()
                     }
                 }
                 if rows.isEmpty {
-                    Label("No tabs open", systemImage: "square.split.2x1")
+                    Label("No tabs open", systemSymbol: .squareSplit2x1)
                         .font(.system(size: Otty.Typeface.base))
                         .foregroundStyle(Otty.Text.secondary)
                         .padding(.horizontal, Otty.Metric.space2)
@@ -36,7 +38,7 @@ struct NavigatorColumn: View {
                 } else {
                     ForEach(rows) { row in
                         OttySidebarRow(
-                            systemImage: Self.symbol(for: row.kind),
+                            symbol: Self.symbol(for: row.kind),
                             title: row.title.isEmpty ? defaultTitle(for: row.kind) : row.title,
                             subtitle: row.subtitle,
                             isSelected: row.id == selectedPane,
@@ -48,13 +50,22 @@ struct NavigatorColumn: View {
             .padding(Otty.Metric.space2)
         }
         .scrollContentBackground(.hidden)
+        .scrollIndicators(.hidden) // otty's invisible scrollbars
         .background(.clear)
-        #if os(iOS)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { store.newTabDefault() } label: { Image(systemName: "plus") }
-                }
+        #if os(macOS)
+            // Let the NSSplitViewItem sidebar vibrancy show through cleanly (otty's shared material backdrop):
+            // stop the NSScrollView from painting its own opaque background.
+            .introspect(.scrollView, on: .macOS(.v26)) { (scrollView: NSScrollView) in
+                scrollView.drawsBackground = false
+                scrollView.backgroundColor = .clear
             }
+        #endif
+        #if os(iOS)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { store.newTabDefault() } label: { Image(systemSymbol: .plus) }
+            }
+        }
         #endif
     }
 
@@ -79,12 +90,12 @@ struct NavigatorColumn: View {
         }
     }
 
-    /// SF Symbol for a pane kind (system glyphs only — no bundled icon set).
-    private static func symbol(for kind: PaneKind) -> String {
+    /// Type-safe SF Symbol for a pane kind (via SFSafeSymbols — compile-time availability-checked).
+    private static func symbol(for kind: PaneKind) -> SFSymbol {
         switch kind {
-        case .terminal: "terminal"
-        case .remoteGUI: "display"
-        case .systemDialog: "lock.shield"
+        case .terminal: .terminal
+        case .remoteGUI: .display
+        case .systemDialog: .lockShield
         }
     }
 }

@@ -13,6 +13,7 @@
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
+import SFSafeSymbols
 import SwiftUI
 
 struct PaneContainer: View {
@@ -62,7 +63,7 @@ struct PaneContainer: View {
 
     private var remotePlaceholder: some View {
         VStack(spacing: 12) {
-            Image(systemName: kind == .systemDialog ? "lock.shield" : "display")
+            Image(systemSymbol: kind == .systemDialog ? .lockShield : .display)
                 .font(.system(size: 40, weight: .regular))
                 .foregroundStyle(Otty.Text.secondary)
             Text(kind == .systemDialog ? "system dialog" : "remote window")

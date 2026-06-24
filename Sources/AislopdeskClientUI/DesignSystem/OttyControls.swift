@@ -7,11 +7,12 @@
 // No springs — every transition uses the otty timing curves in `Otty.Anim`.
 
 #if canImport(SwiftUI)
+import SFSafeSymbols
 import SwiftUI
 
 /// A small icon button with a rounded hover plate — otty's `PanelToggleButton`/`HoverIconButton` idiom.
 struct OttyPlateButton: View {
-    let systemName: String
+    let symbol: SFSymbol
     var help: String?
     var size: CGFloat = Otty.Metric.iconSize
     var plate: CGFloat = Otty.Metric.plate
@@ -22,7 +23,7 @@ struct OttyPlateButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemName)
+            Image(systemSymbol: symbol)
                 .font(.system(size: size, weight: .medium))
                 .foregroundStyle(tint)
                 .frame(width: plate, height: plate)

@@ -7,11 +7,12 @@
 // A radius-6 item plate, 8pt padding, `smallFade` on hover. The whole row is a plain button.
 
 #if canImport(SwiftUI)
+import SFSafeSymbols
 import SwiftUI
 
 /// One navigator/sidebar row: leading SF Symbol + title (+ optional subtitle), with otty hover/selection.
 struct OttySidebarRow: View {
-    let systemImage: String
+    let symbol: SFSymbol
     let title: String
     var subtitle: String?
     var isSelected: Bool
@@ -22,7 +23,7 @@ struct OttySidebarRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Otty.Metric.space2) {
-                Image(systemName: systemImage)
+                Image(systemSymbol: symbol)
                     .font(.system(size: Otty.Metric.iconSize))
                     .foregroundStyle(isSelected ? Otty.Text.primary : Otty.Text.icon)
                     .frame(width: 18)
