@@ -175,6 +175,80 @@ public enum WorkspaceTreeOps {
         return copy
     }
 
+    /// Relocates leaf `source` to sit beside leaf `target` along `axis`, on the BEFORE side when `before`
+    /// (else after) — the drag-drop **re-split** commit: you grabbed `source`'s top handle and dropped it on
+    /// an EDGE of `target` (top/bottom/left/right), so `source` becomes a new row/column beside `target` on
+    /// that side. `source` is pruned from its current slot (collapsing/re-balancing exactly as a close would)
+    /// and re-inserted as `target`'s sibling **keeping its `PaneID`** — so reconcile is a registry no-op (no
+    /// surface teardown, the remote stream survives) and only the solved geometry changes. `source` stays the
+    /// active pane. Dropping side-by-side panes onto each other's TOP/BOTTOM edge turns the side-by-side
+    /// (`.horizontal`) split into a stacked (`.vertical`) one (and vice-versa) — the user's "dọc → ngang".
+    ///
+    /// No-op (returns `ws` unchanged) if `source == target`, either is absent, or they are in different tabs
+    /// (cross-tab relocation isn't attempted — matches ``swapPanes(_:_:in:)``). Preserves the **specs ==
+    /// leafIDs invariant** (the leaf set + specs are unchanged — only a position moves).
+    public static func moveLeaf(
+        _ source: PaneID,
+        beside target: PaneID,
+        axis: SplitAxis,
+        before: Bool,
+        in ws: TreeWorkspace,
+    ) -> TreeWorkspace {
+        guard source != target,
+              let (sa, ta) = locate(source, in: ws), let (sb, tb) = locate(target, in: ws),
+              sa == sb, ta == tb
+        else { return ws }
+        var copy = ws
+        var tab = copy.sessions[sa].tabs[ta]
+        // Prune `source` first — it can NEVER empty the tab (target lives in the same tab, so ≥1 leaf
+        // survives), so the optional is non-nil for a valid tab; guard it defensively anyway. Then re-insert
+        // beside `target` on the requested side. A cross-axis insert wraps the target's slot in one extra
+        // level: reject (no-op) if that would breach the decoder's ``SplitNode/maxDepth`` ceiling — a tree
+        // the decoder would later truncate loses a leaf, i.e. a remote surface.
+        guard let pruned = tab.root.removing(source),
+              let relocated = pruned.inserting(source, beside: target, axis: axis, before: before),
+              relocated.depth <= SplitNode.maxDepth,
+              // A drop that reproduces the same arrangement (e.g. onto the edge the pane already occupies)
+              // would still differ by `==` because the rebuild mints a fresh split id — skip the no-op so it
+              // doesn't churn a reconcile/save.
+              !relocated.isStructurallyEqual(to: tab.root)
+        else { return ws }
+        tab.root = relocated
+        tab.activePane = source // the moved pane keeps focus
+        copy.sessions[sa].tabs[ta] = tab
+        return copy
+    }
+
+    /// Docks leaf `source` to the OUTERMOST `edge` of its tab — the drag-to-CONTAINER-edge commit: you
+    /// dragged `source`'s handle into the container's outer gutter, so it becomes a full-span column
+    /// (`.left`/`.right`) or row (`.top`/`.bottom`) spanning the whole tab. `source` is pruned (collapse +
+    /// rebalance) then re-inserted at the ROOT on `edge.axis`, KEEPING its `PaneID` (reconcile is a registry
+    /// no-op — no surface teardown). `source` stays active. Distinct from
+    /// ``moveLeaf(_:beside:axis:before:in:)`` which needs a target leaf to sit beside; a gutter drop has
+    /// none, so this prepends/appends at the root (or wraps it). No-op if `source` is absent, its tab has
+    /// only the one leaf (nothing to dock against), or the dock would breach ``SplitNode/maxDepth``.
+    /// Preserves the **specs == leafIDs invariant**.
+    public static func moveLeafToRootEdge(
+        _ source: PaneID,
+        edge: PaneDropEdge,
+        in ws: TreeWorkspace,
+    ) -> TreeWorkspace {
+        guard let (sIdx, tIdx) = locate(source, in: ws) else { return ws }
+        var copy = ws
+        var tab = copy.sessions[sIdx].tabs[tIdx]
+        // A lone-leaf tab has nothing to dock against (and wrapping `[source, .leaf(source)]` would dup the
+        // id); the >1 guard also makes `removing` non-nil.
+        guard tab.root.leafCount > 1, let pruned = tab.root.removing(source) else { return ws }
+        let relocated = pruned.insertingAtRoot(source, axis: edge.axis, before: edge.insertsBefore)
+        // Reject too-deep or structurally-identical docks (the latter would churn a reconcile under a fresh
+        // split id even though the pane already sits at that root edge).
+        guard relocated.depth <= SplitNode.maxDepth, !relocated.isStructurallyEqual(to: tab.root) else { return ws }
+        tab.root = relocated
+        tab.activePane = source
+        copy.sessions[sIdx].tabs[tIdx] = tab
+        return copy
+    }
+
     /// Moves pane `pane` in `direction` by EXCHANGING it with its geometric neighbour on that side (Zellij
     /// "move pane"): resolves the directional neighbour against the active tab solved into `bounds` (the same
     /// geometry the user sees + ``moveFocus(_:bounds:in:)`` reads), then ``swapPanes(_:_:in:)`` the two.

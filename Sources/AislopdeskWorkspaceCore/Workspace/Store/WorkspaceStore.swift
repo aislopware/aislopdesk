@@ -3517,6 +3517,62 @@ public final class WorkspaceStore {
     }
 }
 
+// MARK: - Interactive layout drags (commit-on-release)
+
+public extension WorkspaceStore {
+    /// Swaps two leaves in the active tab — the commit for a drag-to-move: you grabbed `source`'s top handle
+    /// and dropped it onto `target`. Both keep their `PaneID`, so reconcile is a registry no-op (no surface
+    /// teardown) and only the solved geometry changes. ONE reconcile, fired from the gesture's `.onEnded`
+    /// (the live drag is the view's overlay) so the keystroke / terminal-resize path stays quiet during the
+    /// drag. No-op if the ids are equal or either is absent / they are in different tabs.
+    func swapPanesTree(_ source: PaneID, _ target: PaneID) {
+        guard source != target else { return }
+        let next = WorkspaceTreeOps.swapPanes(source, target, in: tree)
+        guard next != tree else { return }
+        tree = next
+        reconcileTree()
+    }
+
+    /// Relocates `source` to sit beside `target` along `axis`, on the BEFORE side when `before` (else after)
+    /// — the commit for a drag-to-EDGE drop: you grabbed `source`'s top handle and dropped it on an edge of
+    /// `target`, so it becomes a new row/column on that side (the directional re-split, incl. the user's
+    /// side-by-side → stacked "dọc → ngang"). `source` keeps its `PaneID`, so reconcile tears down nothing —
+    /// only the solved geometry changes. ONE reconcile, fired from the gesture's `.onEnded`. No-op if the ids
+    /// are equal / either is absent / they are in different tabs, or the relocation would not change the tree.
+    func moveLeafTree(_ source: PaneID, beside target: PaneID, axis: SplitAxis, before: Bool) {
+        guard source != target else { return }
+        let next = WorkspaceTreeOps.moveLeaf(source, beside: target, axis: axis, before: before, in: tree)
+        guard next != tree else { return }
+        tree = next
+        reconcileTree()
+    }
+
+    /// Docks `source` to the OUTERMOST `edge` of its tab — the commit for a drag-to-CONTAINER-edge drop: you
+    /// dragged `source`'s handle into the container's outer gutter, so it becomes a full-span column
+    /// (`.left`/`.right`) or row (`.top`/`.bottom`). `source` keeps its `PaneID`, so reconcile tears down
+    /// nothing. ONE reconcile, fired from the gesture's `.onEnded`. No-op if `source` is absent, its tab has
+    /// only one leaf, the dock would breach the depth ceiling, or it would not change the tree (already
+    /// docked there).
+    func moveLeafToRootEdgeTree(_ source: PaneID, edge: PaneDropEdge) {
+        let next = WorkspaceTreeOps.moveLeafToRootEdge(source, edge: edge, in: tree)
+        guard next != tree else { return }
+        tree = next
+        reconcileTree()
+    }
+
+    /// Suspends/resumes host grid-resize delivery for EVERY live terminal pane — the shell raises this for
+    /// the duration of a sidebar/inspector-divider drag. Dragging an AppKit `NSSplitView` divider
+    /// live-resizes the content column every cell-step; for a remote terminal each forward is a host PTY
+    /// reflow + a re-streamed redraw. Holding them and flushing the final grid ONCE on release keeps the
+    /// content from re-rendering per drag step (the same commit-on-release rule as the pane divider). The
+    /// non-terminal handles (`.remoteGUI`/`.systemDialog`) have no `terminalModel`, so they are skipped.
+    func setTerminalResizeSuspended(_ suspended: Bool) {
+        for handle in allSessions {
+            (handle as? LivePaneSession)?.terminalModel?.setResizeSuspended(suspended)
+        }
+    }
+}
+
 // MARK: - Production session factory
 
 public extension WorkspaceStore {

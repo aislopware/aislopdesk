@@ -100,6 +100,33 @@ final class SplitNodeOpsTests: XCTestCase {
         XCTAssertEqual(weights[0], 2, accuracy: 1e-9)
     }
 
+    func testRemovingFlattensSameAxisNestOnCollapse() throws {
+        // V[ H[ V[a,b], c ], d ] — remove c. The inner H collapses its lone survivor V[a,b] straight up
+        // under the V root; without the same-axis merge that leaves a redundant V[ V[a,b], d ] (vertical
+        // nested in vertical), which skews geometry + over-counts depth. The merge splices it flat to
+        // V[a,b,d]. This is the shared `removing` so closePane/breakPaneToTab/toggleFloating gain it too.
+        let a = PaneID(), b = PaneID(), c = PaneID(), d = PaneID()
+        func wc(_ node: SplitNode) -> WeightedChild { WeightedChild(weight: .flex(1), node: node) }
+        let innerV = SplitNode.split(id: SplitNodeID(), axis: .vertical, children: [wc(.leaf(a)), wc(.leaf(b))])
+        let h = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [wc(innerV), wc(.leaf(c))])
+        let root = SplitNode.split(id: SplitNodeID(), axis: .vertical, children: [wc(h), wc(.leaf(d))])
+
+        let removed = root.removing(c)
+
+        guard case let .split(_, axis, children)? = removed else { XCTFail("expected a split")
+            return
+        }
+        XCTAssertEqual(axis, .vertical)
+        XCTAssertEqual(children.count, 3, "the V[a,b] nest is flattened into the V root → 3 flat children")
+        XCTAssertEqual(removed?.allPaneIDs(), [a, b, d])
+        for child in children {
+            if case .split(_, .vertical, _) = child.node { XCTFail("a same-axis (vertical) nest survived") }
+        }
+        // Flattened ⇒ a decode round-trip is a fixed point (no reshape-on-reload).
+        let roundTrip = try? JSONDecoder().decode(SplitNode.self, from: try JSONEncoder().encode(XCTUnwrap(removed)))
+        XCTAssertEqual(roundTrip, removed, "the flattened tree is decode-stable (no reshape on reload)")
+    }
+
     // MARK: Resize
 
     func testResizeDividerShiftsAndPreservesSum() {
@@ -140,6 +167,150 @@ final class SplitNodeOpsTests: XCTestCase {
             .init(weight: .flex(1), node: .leaf(c)),
         ])
         XCTAssertEqual(three.swapping(a, c).allPaneIDs(), [c, b, a], "a and c exchanged, b fixed")
+    }
+
+    // MARK: Insert an existing leaf beside a target (drag-to-re-split)
+
+    func testInsertingBesideLoneTargetBeforeOrdersNewLeafFirst() {
+        let s = PaneID(), t = PaneID()
+        let tree = SplitNode.leaf(t).inserting(s, beside: t, axis: .vertical, before: true)
+        guard case let .split(_, axis, children) = tree else { XCTFail("expected a split")
+            return
+        }
+        XCTAssertEqual(axis, .vertical, "the bare leaf becomes a split on the requested axis")
+        XCTAssertEqual(children.count, 2)
+        XCTAssertEqual(tree?.allPaneIDs(), [s, t], "before:true puts the inserted leaf FIRST")
+    }
+
+    func testInsertingBesideLoneTargetAfterOrdersTargetFirst() {
+        let s = PaneID(), t = PaneID()
+        let tree = SplitNode.leaf(t).inserting(s, beside: t, axis: .horizontal, before: false)
+        XCTAssertEqual(tree?.allPaneIDs(), [t, s], "before:false puts the inserted leaf AFTER the target")
+    }
+
+    func testInsertingSameAxisInsertsPlainSiblingNoNesting() {
+        // [a | b] horizontal; insert s beside b along the SAME axis, after → [a, b, s], one flat split.
+        let a = PaneID(), b = PaneID(), s = PaneID()
+        let two = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            .init(weight: .flex(1), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        let three = two.inserting(s, beside: b, axis: .horizontal, before: false)
+        guard case let .split(_, axis, children) = three else { XCTFail("expected split")
+            return
+        }
+        XCTAssertEqual(axis, .horizontal)
+        XCTAssertEqual(children.count, 3, "same-axis insert adds a flat sibling, never a nested split")
+        XCTAssertEqual(three?.allPaneIDs(), [a, b, s])
+    }
+
+    func testInsertingSameAxisBeforeTargetSlotsAhead() {
+        let a = PaneID(), b = PaneID(), s = PaneID()
+        let two = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            .init(weight: .flex(1), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        XCTAssertEqual(two.inserting(s, beside: b, axis: .horizontal, before: true)?.allPaneIDs(), [a, s, b])
+    }
+
+    func testInsertingCrossAxisNestsAtTheTargetSlot() {
+        // [a | b] horizontal; insert s beside b along the OTHER axis → b's slot becomes a nested vertical
+        // split [s, b] (before:true), so dropping a pane on b's TOP edge stacks it above b. This is the
+        // "side-by-side (horizontal) → stacked (vertical)" the user asked for.
+        let a = PaneID(), b = PaneID(), s = PaneID()
+        let two = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            .init(weight: .flex(1), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        let nested = two.inserting(s, beside: b, axis: .vertical, before: true)
+        guard case let .split(_, outerAxis, children) = nested, children.count == 2,
+              case let .split(_, innerAxis, inner) = children[1].node
+        else {
+            XCTFail("b's slot must become a nested vertical split")
+            return
+        }
+        XCTAssertEqual(outerAxis, .horizontal, "the outer split keeps its axis")
+        XCTAssertEqual(innerAxis, .vertical, "b's slot re-splits on the other axis")
+        XCTAssertEqual(inner.count, 2)
+        XCTAssertEqual(nested?.allPaneIDs(), [a, s, b], "before:true stacks s above b")
+    }
+
+    func testInsertingBesideAbsentTargetIsNil() {
+        let a = PaneID(), s = PaneID(), ghost = PaneID()
+        XCTAssertNil(
+            SplitNode.leaf(a).inserting(s, beside: ghost, axis: .vertical, before: true),
+            "inserting beside a target not in the tree is a no-op (nil)",
+        )
+    }
+
+    // MARK: Insert at the root edge (drag-to-dock)
+
+    func testInsertingAtRootSameAxisAppendsOutermostFlatSibling() {
+        // [a | b] horizontal; dock s to the RIGHT (axis .horizontal, before:false) → [a, b, s], flat split.
+        let a = PaneID(), b = PaneID(), s = PaneID()
+        let two = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            .init(weight: .flex(1), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        let docked = two.insertingAtRoot(s, axis: .horizontal, before: false)
+        guard case let .split(_, axis, children) = docked else { XCTFail("expected split")
+            return
+        }
+        XCTAssertEqual(axis, .horizontal)
+        XCTAssertEqual(children.count, 3, "same-axis root dock appends a flat sibling (no nesting)")
+        XCTAssertEqual(docked.allPaneIDs(), [a, b, s])
+    }
+
+    func testInsertingAtRootSameAxisBeforePrependsOutermost() {
+        let a = PaneID(), b = PaneID(), s = PaneID()
+        let two = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            .init(weight: .flex(1), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        XCTAssertEqual(two.insertingAtRoot(s, axis: .horizontal, before: true).allPaneIDs(), [s, a, b])
+    }
+
+    func testInsertingAtRootCrossAxisWrapsTheWholeRoot() {
+        // [a | b] horizontal; dock s to the TOP (axis .vertical, before:true) → vertical[s, (a|b)] — s is a
+        // full-width top row above the preserved side-by-side pair.
+        let a = PaneID(), b = PaneID(), s = PaneID()
+        let two = SplitNode.split(id: SplitNodeID(), axis: .horizontal, children: [
+            .init(weight: .flex(1), node: .leaf(a)),
+            .init(weight: .flex(1), node: .leaf(b)),
+        ])
+        let wrapped = two.insertingAtRoot(s, axis: .vertical, before: true)
+        guard case let .split(_, outer, children) = wrapped, children.count == 2,
+              case let .split(_, inner, _) = children[1].node
+        else {
+            XCTFail("the whole root must wrap in a vertical 2-child split [s, (a|b)]")
+            return
+        }
+        XCTAssertEqual(children[0].node, .leaf(s), "s docked as the FIRST (top) child")
+        XCTAssertEqual(outer, .vertical)
+        XCTAssertEqual(inner, .horizontal, "the original side-by-side split is preserved inside the wrap")
+        XCTAssertEqual(wrapped.allPaneIDs(), [s, a, b])
+    }
+
+    func testInsertingAtRootBareLeafBecomesTwoChildSplit() {
+        let a = PaneID(), s = PaneID()
+        XCTAssertEqual(
+            SplitNode.leaf(a).insertingAtRoot(s, axis: .vertical, before: false).allPaneIDs(),
+            [a, s],
+            "docking against a bare-leaf root wraps it in a 2-child split",
+        )
+    }
+
+    // MARK: Drop-edge → axis mapping (anti-drift: the easy place to invert columns vs rows)
+
+    func testPaneDropEdgeAxisAndSideMapping() {
+        XCTAssertEqual(PaneDropEdge.left.axis, .horizontal, "left/right form COLUMNS (.horizontal)")
+        XCTAssertEqual(PaneDropEdge.right.axis, .horizontal)
+        XCTAssertEqual(PaneDropEdge.top.axis, .vertical, "top/bottom form ROWS (.vertical) — the dọc→ngang stack")
+        XCTAssertEqual(PaneDropEdge.bottom.axis, .vertical)
+        XCTAssertTrue(PaneDropEdge.left.insertsBefore, "left inserts BEFORE the target")
+        XCTAssertTrue(PaneDropEdge.top.insertsBefore, "top inserts BEFORE the target")
+        XCTAssertFalse(PaneDropEdge.right.insertsBefore, "right inserts AFTER")
+        XCTAssertFalse(PaneDropEdge.bottom.insertsBefore, "bottom inserts AFTER")
     }
 
     // MARK: Adversarial inputs (must never trap; degenerate args are safe no-ops)

@@ -82,6 +82,92 @@ public extension SplitNode {
         return sum / Double(count)
     }
 
+    // MARK: Insert an EXISTING leaf beside a target (drag-to-re-split)
+
+    /// Inserts the EXISTING leaf id `leaf` as a sibling of `target` along `axis`, on the BEFORE side when
+    /// `before == true` (else after). The drop-on-an-edge counterpart to ``splitting(_:axis:inserting:)``:
+    /// that one mints a brand-new pane and only inserts AFTER; this one carries an id the caller already
+    /// pruned from elsewhere and can insert on EITHER side, so a pane dragged onto a target's left/top edge
+    /// lands before it and onto the right/bottom edge after it. Returns the new tree, or `nil` if `target`
+    /// is absent (caller treats `nil` as a no-op).
+    ///
+    /// Same n-ary rule as `splitting`: if `target`'s parent split already has `axis`, `leaf` is inserted as
+    /// a plain sibling at the before/after slot (no redundant same-axis nesting — the Zellij merge); else
+    /// the `target` leaf is replaced by a fresh 2-child `.split(axis:)` ordered per `before`. The caller
+    /// guarantees `leaf` is not already in this tree (it pruned `leaf` first), so the leaf set grows by one.
+    func inserting(_ leaf: PaneID, beside target: PaneID, axis: SplitAxis, before: Bool) -> SplitNode? {
+        guard contains(target) else { return nil }
+        return insertBesideImpl(leaf, beside: target, axis: axis, before: before)
+    }
+
+    private func insertBesideImpl(_ leaf: PaneID, beside target: PaneID, axis: SplitAxis, before: Bool) -> SplitNode {
+        switch self {
+        case let .leaf(id):
+            guard id == target else { return self }
+            // Replace the bare leaf with a 2-child split along `axis`, ordering the new leaf per `before`.
+            let targetChild = WeightedChild(weight: .flex(1), node: .leaf(target))
+            let newChild = WeightedChild(weight: .flex(1), node: .leaf(leaf))
+            return .split(
+                id: SplitNodeID(),
+                axis: axis,
+                children: before ? [newChild, targetChild] : [targetChild, newChild],
+            )
+
+        case let .split(id, splitAxis, children):
+            // A DIRECT child leaf equals target AND this split shares `axis` → plain sibling insert (n-ary).
+            if splitAxis == axis,
+               let idx = children.firstIndex(where: { if case .leaf(target) = $0.node { return true }
+                   return false
+               })
+            {
+                var newChildren = children
+                let inserted = WeightedChild(weight: .flex(insertWeight(of: children)), node: .leaf(leaf))
+                newChildren.insert(inserted, at: before ? idx : idx + 1)
+                return .split(id: id, axis: splitAxis, children: newChildren)
+            }
+            // Otherwise recurse into the child subtree that contains target.
+            let newChildren = children.map { child -> WeightedChild in
+                guard child.node.contains(target) else { return child }
+                return WeightedChild(
+                    weight: child.weight,
+                    node: child.node.insertBesideImpl(leaf, beside: target, axis: axis, before: before),
+                )
+            }
+            return .split(id: id, axis: splitAxis, children: newChildren)
+        }
+    }
+
+    // MARK: Insert an EXISTING leaf at the ROOT edge (drag-to-dock)
+
+    /// Inserts the EXISTING leaf id `leaf` as the OUTERMOST child of the tree along `axis`, on the BEFORE
+    /// side when `before` (else after) — the drag-to-dock counterpart of
+    /// ``inserting(_:beside:axis:before:)`` for a drop on the CONTAINER's outer edge, where there is no
+    /// target leaf to sit beside. The new pane spans the full cross-axis extent of the whole tab.
+    ///
+    /// - If the ROOT is a `.split` already on `axis`: `leaf` is prepended/appended as the outermost flat
+    ///   sibling (full span falls out of the flat split — the Zellij merge, no nesting).
+    /// - Otherwise (the root is a bare leaf, or a `.split` on the OTHER axis): the whole root is WRAPPED in a
+    ///   fresh 2-child `.split(axis:)` of `[leaf, root]` (before) or `[root, leaf]` (after).
+    ///
+    /// The caller guarantees `leaf` is not already in the tree (it pruned `leaf` first), so the leaf set
+    /// grows by one. Pure; preserves the ≥2-children / no-same-axis-nesting / minWeight guarantees.
+    func insertingAtRoot(_ leaf: PaneID, axis: SplitAxis, before: Bool) -> SplitNode {
+        if case let .split(id, splitAxis, children) = self, splitAxis == axis {
+            var newChildren = children
+            let inserted = WeightedChild(weight: .flex(insertWeight(of: children)), node: .leaf(leaf))
+            newChildren.insert(inserted, at: before ? 0 : newChildren.count)
+            return .split(id: id, axis: splitAxis, children: newChildren)
+        }
+        // Wrap the whole root (a bare leaf, or a split on the OTHER axis) in a fresh 2-child split.
+        let rootChild = WeightedChild(weight: .flex(1), node: self)
+        let newChild = WeightedChild(weight: .flex(1), node: .leaf(leaf))
+        return .split(
+            id: SplitNodeID(),
+            axis: axis,
+            children: before ? [newChild, rootChild] : [rootChild, newChild],
+        )
+    }
+
     // MARK: Remove a leaf
 
     /// Removes leaf `target` from the tree, collapsing the now-single-child parent and re-balancing the
@@ -111,19 +197,44 @@ public extension SplitNode {
                 // A child that pruned to nil (e.g. a nested split whose only leaf was the target) is
                 // dropped too.
             }
-            switch survivors.count {
+            // Splice any surviving child that is itself a `.split` on THIS axis up into this level (the
+            // Zellij same-axis merge). A collapse can promote a single-child parent's survivor that happens
+            // to share the grandparent's axis (e.g. `V[ H[V[a,b], c], d ]` losing `c` collapses the `H` and
+            // floats `V[a,b]` straight under the `V` root → a redundant `V[V[a,b], d]`). Without this merge
+            // the live tree carries a same-axis nest the decoder would later flatten — skewing the
+            // rebalance + over-counting depth (the live-op path never re-runs `normalized()`). One pass
+            // suffices: a valid child split never nests its own axis, so a spliced grandchild can't share
+            // `axis`. Mirrors `SplitNode.normalized()`'s flatten.
+            let merged = mergingSameAxis(survivors, axis: axis)
+            switch merged.count {
             case 0:
                 return nil // the whole split emptied
             case 1:
                 // Single-child split collapses into its child (no orphan intermediary).
-                return survivors[0].node
+                return merged[0].node
             default:
                 // Re-balance the survivors' FLEX weights to an equal share (sum-preserving): the total
                 // flex weight is conserved and split evenly so the freed space redistributes equally
                 // among the N survivors — the n-ary close-rebalance the plan specifies.
-                return .split(id: id, axis: axis, children: rebalanced(survivors))
+                return .split(id: id, axis: axis, children: rebalanced(merged))
             }
         }
+    }
+
+    /// Splices any child that is itself a `.split` on `axis` up into this level (the Zellij same-axis
+    /// merge the decoder applies in `normalized()`). The spliced grandchildren keep their nodes (the caller
+    /// re-balances the flex weights). Pure; one pass is enough because a valid child split never nests its
+    /// own axis.
+    private func mergingSameAxis(_ children: [WeightedChild], axis: SplitAxis) -> [WeightedChild] {
+        var out: [WeightedChild] = []
+        for child in children {
+            if case let .split(_, childAxis, grandchildren) = child.node, childAxis == axis {
+                out.append(contentsOf: grandchildren)
+            } else {
+                out.append(child)
+            }
+        }
+        return out
     }
 
     /// Re-balances a survivor list so every `.flex` child carries an equal share of the original total

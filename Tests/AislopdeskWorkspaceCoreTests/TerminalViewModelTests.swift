@@ -248,6 +248,44 @@ final class TerminalViewModelTests: XCTestCase {
         XCTAssertEqual(calls.last?.cols, 100)
     }
 
+    /// While a sidebar/inspector-divider drag is in flight the shell suspends resize forwarding: each
+    /// cell-step `sendResize` is RECORDED but not forwarded, and resuming on release flushes the final grid
+    /// exactly once. Fails if `setResizeSuspended` doesn't gate `deliverResizeIfNeeded`.
+    func testResizeSuspendedHoldsForwardsThenFlushesFinalGridOnResume() {
+        let model = TerminalViewModel()
+        var calls: [(cols: UInt16, rows: UInt16)] = []
+        model.resizeSink = { calls.append((cols: $0, rows: $1)) }
+
+        model.sendResize(cols: 80, rows: 24) // baseline, delivered
+        XCTAssertEqual(calls.count, 1)
+
+        model.setResizeSuspended(true) // divider mouse-down
+        model.sendResize(cols: 90, rows: 24) // each cell-step during the drag…
+        model.sendResize(cols: 100, rows: 24)
+        model.sendResize(cols: 110, rows: 24)
+        XCTAssertEqual(calls.count, 1, "no grid is forwarded to the host while suspended")
+
+        model.setResizeSuspended(false) // divider mouse-up
+        XCTAssertEqual(calls.count, 2, "exactly ONE flush on release")
+        XCTAssertEqual(calls.last?.cols, 110, "the flush forwards the grid the drag settled on")
+    }
+
+    /// A drag that nets no grid change (dragged out, then back to the start) forwards nothing on release —
+    /// the dedup against `lastSentSize` survives the suspend window, so no spurious host reflow fires.
+    func testResizeSuspendResumeWithNoNetChangeFlushesNothing() {
+        let model = TerminalViewModel()
+        var calls = 0
+        model.resizeSink = { _, _ in calls += 1 }
+        model.sendResize(cols: 80, rows: 24)
+        XCTAssertEqual(calls, 1)
+
+        model.setResizeSuspended(true)
+        model.sendResize(cols: 95, rows: 24) // dragged out…
+        model.sendResize(cols: 80, rows: 24) // …and back to where it started
+        model.setResizeSuspended(false)
+        XCTAssertEqual(calls, 1, "a drag that nets no grid change forwards nothing on release")
+    }
+
     func testResetReArmsResize() {
         let model = TerminalViewModel()
         var calls = 0

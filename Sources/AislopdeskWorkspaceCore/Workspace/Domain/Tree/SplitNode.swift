@@ -14,6 +14,48 @@ public enum SplitAxis: String, Codable, Sendable, Equatable {
     case vertical
 }
 
+// MARK: - Drop edge (drag-to-re-split / dock)
+
+/// A side a pane can be dropped against in the drag-to-re-split / dock-to-edge gesture — of a hovered
+/// target leaf (``WorkspaceTreeOps/moveLeaf(_:beside:axis:before:in:)``) or of the whole container
+/// (``WorkspaceTreeOps/moveLeafToRootEdge(_:edge:in:)``). It maps a screen edge to the split ``SplitAxis``
+/// and the insertion side, so the UI hit-test and the pure tree ops read ONE source of truth and the
+/// edge→axis mapping can never drift (the easy place to invert it). `.left`/`.right` form COLUMNS (a
+/// `.horizontal` split partitions width); `.top`/`.bottom` form ROWS (a `.vertical` split partitions
+/// height) — so dropping a side-by-side pane on another's TOP edge stacks them (the user's "dọc → ngang").
+public enum PaneDropEdge: String, Sendable, Equatable, CaseIterable {
+    case left
+    case right
+    case top
+    case bottom
+
+    /// The split axis a drop on this edge forms: `.left`/`.right` → `.horizontal` (columns), `.top`/
+    /// `.bottom` → `.vertical` (rows).
+    public var axis: SplitAxis {
+        switch self {
+        case .left,
+             .right:
+            .horizontal
+        case .top,
+             .bottom:
+            .vertical
+        }
+    }
+
+    /// Whether the dropped pane is inserted BEFORE the target/root along the axis (`.left`/`.top`) or
+    /// after it (`.right`/`.bottom`).
+    public var insertsBefore: Bool {
+        switch self {
+        case .left,
+             .top:
+            true
+        case .right,
+             .bottom:
+            false
+        }
+    }
+}
+
 // MARK: - Child weight
 
 /// A child's share of its parent split along the split axis (docs/42 §Domain model).
@@ -143,6 +185,26 @@ public extension SplitNode {
             return leafID == id
         case let .split(_, _, children):
             for child in children where child.node.contains(id) { return true }
+            return false
+        }
+    }
+
+    /// Structural equality that IGNORES ``SplitNodeID``s: two trees are structurally equal iff they have the
+    /// same shape (axis + ordered children count), the same leaf ids in the same positions, and the same
+    /// weights. The synthesized `==` includes the split id, so a rebuild that reproduces the same
+    /// arrangement under a freshly-minted id looks "changed" to `!=`; a relocate uses this to detect a true
+    /// no-op drop (drop a pane where it already sits) and skip the reconcile/save churn. Pure.
+    func isStructurallyEqual(to other: SplitNode) -> Bool {
+        switch (self, other) {
+        case let (.leaf(a), .leaf(b)):
+            return a == b
+        case let (.split(_, axisA, childrenA), .split(_, axisB, childrenB)):
+            guard axisA == axisB, childrenA.count == childrenB.count else { return false }
+            for (ca, cb) in zip(childrenA, childrenB) {
+                guard ca.weight == cb.weight, ca.node.isStructurallyEqual(to: cb.node) else { return false }
+            }
+            return true
+        default:
             return false
         }
     }

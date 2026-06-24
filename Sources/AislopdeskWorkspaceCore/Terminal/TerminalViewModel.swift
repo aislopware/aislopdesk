@@ -142,6 +142,13 @@ public final class TerminalViewModel {
     /// suppress the real send once the sink is wired.
     @ObservationIgnored private var lastSentSize: (cols: UInt16, rows: UInt16)?
 
+    /// While true, grid resizes are RECORDED (`pendingSize`) but NOT forwarded to the host — the gate the
+    /// shell raises for the duration of an interactive sidebar/inspector-divider drag. Dragging a divider
+    /// live-resizes the content column every cell-step; for a REMOTE terminal each forward is a host PTY
+    /// reflow + a re-streamed redraw, so we hold them and flush the FINAL grid ONCE on release (the same
+    /// commit-on-release rule the pane divider + floating-pane move already follow). Default off.
+    @ObservationIgnored private var resizeDeliverySuspended = false
+
     /// Click-to-focus hook (macOS). The terminal NSView (`GhosttyLayerBackedView`) now installs
     /// `mouseDown`, which CONSUMES the click that the pane's `.onTapGesture { store.focus(id) }`
     /// used to receive — so a body click would start a libghostty selection but NOT make the pane
@@ -569,12 +576,24 @@ public final class TerminalViewModel {
         deliverResizeIfNeeded()
     }
 
+    /// Suspends/resumes forwarding grid resizes to the host (the interactive divider-drag gate). While
+    /// suspended, `sendResize` keeps recording the latest grid but delivers nothing; resuming flushes the
+    /// final grid ONCE. Idempotent — a redundant call does nothing (so begin/begin or end/end can't
+    /// double-flush). The shell raises it on a sidebar/inspector-divider mouse-down and drops it on
+    /// mouse-up.
+    public func setResizeSuspended(_ suspended: Bool) {
+        guard suspended != resizeDeliverySuspended else { return }
+        resizeDeliverySuspended = suspended
+        if !suspended { deliverResizeIfNeeded() } // flush the grid the drag settled on
+    }
+
     /// Forwards ``pendingSize`` to the host via ``resizeSink`` if it differs from the last delivered
     /// size. Called from ``sendResize`` (grid changed) AND from `resizeSink.didSet` (sink wired on
     /// connect) — so the host learns the real grid regardless of which happens first. A no-op while
     /// the sink is nil, leaving `lastSentSize` untouched so the dedup never suppresses the eventual
     /// first real send.
     private func deliverResizeIfNeeded() {
+        guard !resizeDeliverySuspended else { return } // held for the interactive divider drag
         guard let sink = resizeSink, let sz = pendingSize else { return }
         if let last = lastSentSize, last.cols == sz.cols, last.rows == sz.rows { return }
         lastSentSize = sz

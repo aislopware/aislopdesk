@@ -262,6 +262,113 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(leaves(store).count, 2, "balance never changes the leaf set")
     }
 
+    /// `store.swapPanesTree(a, b)` exchanges two leaves' positions (the drag-to-move-pane commit) while
+    /// keeping the EXACT leaf set + every materialized handle — both ids survive, so reconcile is a registry
+    /// no-op (no surface teardown). A self-swap is a guarded no-op. Fails if the store method doesn't swap.
+    func testSwapPanesTreeExchangesPositionsKeepingHandles() {
+        let store = makeTreeStore()
+        route(.splitRight, store) // [a | b], DFS order [a, b]
+        let ordered = leaves(store)
+        XCTAssertEqual(ordered.count, 2)
+        let a = ordered[0], b = ordered[1]
+        XCTAssertNotNil(store.handle(for: a))
+        XCTAssertNotNil(store.handle(for: b))
+
+        store.swapPanesTree(a, b)
+
+        XCTAssertEqual(leaves(store), [b, a], "swap exchanged the two leaves' DFS positions")
+        XCTAssertEqual(Set(leaves(store)), Set(ordered), "swap never changes the leaf set")
+        XCTAssertNotNil(store.handle(for: a), "a keeps its handle through the swap (no teardown)")
+        XCTAssertNotNil(store.handle(for: b), "b keeps its handle through the swap (no teardown)")
+
+        store.swapPanesTree(a, a) // self-swap is a no-op
+        XCTAssertEqual(leaves(store), [b, a], "self-swap left the order unchanged")
+    }
+
+    /// `store.moveLeafTree(source, beside: target, axis:before:)` is the drag-to-EDGE-drop commit: it prunes
+    /// `source` and re-inserts it beside `target` on the requested side, KEEPING both ids (reconcile is a
+    /// registry no-op — no surface teardown). Here a side-by-side `[a | b]` becomes a STACKED split when `a`
+    /// is dropped on `b`'s TOP edge (axis `.vertical`, `before: true`) — the user's "dọc → ngang". Proven to
+    /// fail before the store method relocates.
+    func testMoveLeafTreeReSplitsAlongTheOtherAxisKeepingHandles() {
+        let store = makeTreeStore()
+        route(.splitRight, store) // [a | b] horizontal (side-by-side), DFS [a, b]
+        let ordered = leaves(store)
+        XCTAssertEqual(ordered.count, 2)
+        let a = ordered[0], b = ordered[1]
+        guard case .split(_, .horizontal, _)? = store.tree.activeSession?.activeTab?.root else {
+            XCTFail("precondition: a horizontal (side-by-side) split")
+            return
+        }
+        XCTAssertNotNil(store.handle(for: a))
+        XCTAssertNotNil(store.handle(for: b))
+
+        store.moveLeafTree(a, beside: b, axis: .vertical, before: true)
+
+        XCTAssertEqual(Set(leaves(store)), Set(ordered), "re-split never changes the leaf set")
+        XCTAssertEqual(leaves(store), [a, b], "a re-inserted ABOVE b (before:true)")
+        guard case .split(_, .vertical, _)? = store.tree.activeSession?.activeTab?.root else {
+            XCTFail("the side-by-side split became a stacked (vertical) one")
+            return
+        }
+        XCTAssertNotNil(store.handle(for: a), "a keeps its handle through the re-split (no teardown)")
+        XCTAssertNotNil(store.handle(for: b), "b keeps its handle through the re-split (no teardown)")
+        XCTAssertEqual(activePane(store), a, "the moved pane stays focused")
+    }
+
+    /// `store.moveLeafToRootEdgeTree(source, edge:)` docks a pane to the tab's OUTERMOST edge: dropped in the
+    /// container's TOP gutter, a nested pane becomes a full-width top row spanning the WHOLE tab (not just
+    /// beside one leaf), every id surviving (no teardown). Proven to fail before the store method docks.
+    func testMoveLeafToRootEdgeDocksFullSpanKeepingHandles() throws {
+        let store = makeTreeStore()
+        route(.splitRight, store) // [a | b] horizontal
+        let a = leaves(store)[0]
+        let b = try XCTUnwrap(activePane(store)) // b is the new active pane
+        route(.splitDown, store) // b's slot → nested [b / c]; root = horizontal[a, vertical[b, c]]
+        let c = try XCTUnwrap(activePane(store)) // c is the new active pane
+        XCTAssertEqual(Set(leaves(store)), Set([a, b, c]))
+        for id in [a, b, c] { XCTAssertNotNil(store.handle(for: id)) }
+
+        store.moveLeafToRootEdgeTree(c, edge: .top) // dock c to the full-width TOP of the whole tab
+
+        XCTAssertEqual(Set(leaves(store)), Set([a, b, c]), "dock never changes the leaf set")
+        XCTAssertEqual(leaves(store), [c, a, b], "c docked as the FIRST (top) row, a|b below")
+        guard case let .split(_, .vertical, children)? = store.tree.activeSession?.activeTab?.root,
+              children.count == 2
+        else {
+            XCTFail("the root wrapped into a vertical 2-child split [c, (a|b)]")
+            return
+        }
+        XCTAssertEqual(children[0].node, .leaf(c), "c spans the whole top edge (full-width row)")
+        for id in [a, b, c] { XCTAssertNotNil(store.handle(for: id), "leaf \(id) keeps its handle (no teardown)") }
+        XCTAssertEqual(activePane(store), c, "the docked pane stays focused")
+    }
+
+    /// A drop that REPRODUCES the current arrangement (drop a pane on the edge it already occupies relative
+    /// to its sibling) must be a true no-op — NOT churn a reconcile/save under a freshly-minted split id.
+    /// `[a|b]`, dropping `a` on `b`'s LEFT edge re-creates `[a|b]` at equal weights, so the split id must be
+    /// unchanged. Proven to fail before the structural-equality guard short-circuits the op.
+    func testMoveLeafTreeReproducingArrangementIsANoOp() {
+        let store = makeTreeStore()
+        route(.splitRight, store) // [a|b], DFS [a, b]
+        let a = leaves(store)[0]
+        let b = leaves(store)[1]
+        guard case let .split(idBefore, _, _)? = store.tree.activeSession?.activeTab?.root else {
+            XCTFail("expected a split")
+            return
+        }
+
+        // a before b along .horizontal == the current arrangement → structural no-op.
+        store.moveLeafTree(a, beside: b, axis: .horizontal, before: true)
+
+        XCTAssertEqual(leaves(store), [a, b], "order unchanged")
+        guard case let .split(idAfter, _, _)? = store.tree.activeSession?.activeTab?.root else {
+            XCTFail("expected a split")
+            return
+        }
+        XCTAssertEqual(idBefore, idAfter, "a structural no-op must not rebuild the split (no reconcile churn)")
+    }
+
     // MARK: - Layouts (select-layout parity): routing + chord pin
 
     /// `.applyLayout(.evenHorizontal)` re-tiles the active tab into a single horizontal split while keeping

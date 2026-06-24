@@ -33,6 +33,12 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         fatalError("init(coder:) is not supported — AislopdeskSplitViewController is created in code")
     }
 
+    /// Coalesces the bursts of `NSSplitView.didResizeSubviewsNotification` a divider (or window-edge) drag
+    /// emits: `true` once the burst starts, flipped back `false` `resizeSettleDelay` after it stops.
+    private var resizeForwardingSuspended = false
+    private var resizeSettleWork: DispatchWorkItem?
+    private let resizeSettleDelay: TimeInterval = 0.1
+
     override func viewDidLoad() {
         super.viewDidLoad()
 
@@ -84,6 +90,40 @@ final class AislopdeskSplitViewController: NSSplitViewController {
 
         self.sidebarItem = sidebarItem
         self.inspectorItem = inspectorItem
+
+        // Defer remote terminal grid-resize forwarding while a sidebar/inspector divider (or the window edge)
+        // is being dragged: NSSplitView re-lays its subviews every step and posts this notification, so each
+        // step would otherwise be a host PTY reflow + a re-streamed redraw. We pause forwarding on the first
+        // step and flush the FINAL grid once the drag settles (see `splitViewSubviewsDidResize`). We OBSERVE
+        // the default split view rather than subclassing it — a custom `NSSplitView` destabilises
+        // `NSSplitViewController._setupSplitView` and traps during constraint setup.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(splitViewSubviewsDidResize(_:)),
+            name: NSSplitView.didResizeSubviewsNotification,
+            object: splitView,
+        )
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// One step of a divider/window-edge resize burst: suspend remote terminal resize forwarding on the first
+    /// step, then (re)arm a settle timer that resumes + flushes the final grid `resizeSettleDelay` after the
+    /// last step — i.e. when the drag is released. Commit-on-release, without subclassing the split view.
+    @objc
+    private func splitViewSubviewsDidResize(_: Notification) {
+        if !resizeForwardingSuspended {
+            resizeForwardingSuspended = true
+            store.setTerminalResizeSuspended(true)
+        }
+        resizeSettleWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            resizeForwardingSuspended = false
+            store.setTerminalResizeSuspended(false) // flush the grid the drag settled on
+        }
+        resizeSettleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + resizeSettleDelay, execute: work)
     }
 
     /// Pin the WINDOW's appearance to the active otty theme. The three columns are hosted in
