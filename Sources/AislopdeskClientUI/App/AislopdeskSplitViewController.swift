@@ -4,7 +4,8 @@
 // each column. Keeping the split in AppKit (not a SwiftUI `HSplitView` that rebuilds subtrees) is the
 // load-bearing no-teardown choice for L2's libghostty panes — a torn-down NSView kills the surface.
 //
-// L1 hosts PLACEHOLDER columns; the real navigator/pane-grid/inspector content lands in L2/L4.
+// L4a wires the toolbar collapse toggles into the sidebar/inspector `NSSplitViewItem`s (via
+// `applyCollapse`) and threads `connection` into the inspector's Session section.
 
 #if os(macOS)
 import AislopdeskWorkspaceCore
@@ -14,6 +15,10 @@ import SwiftUI
 final class AislopdeskSplitViewController: NSSplitViewController {
     private let store: WorkspaceStore
     private let connection: AppConnection
+
+    /// Retained so the toolbar toggles can animate their collapse (set in `viewDidLoad`).
+    private var sidebarItem: NSSplitViewItem?
+    private var inspectorItem: NSSplitViewItem?
 
     init(store: WorkspaceStore, connection: AppConnection) {
         self.store = store
@@ -45,9 +50,9 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         let contentItem = NSSplitViewItem(viewController: content)
         contentItem.minimumThickness = 420
 
-        // 3) Inspector — the Commands navigator (command blocks for the active terminal pane). Shown by
-        //    default in L3 (a proper toolbar toggle lands in L4).
-        let inspector = NSHostingController(rootView: InspectorColumn(store: store))
+        // 3) Inspector — the Session + Commands navigator (host/ping/agent status + the active pane's
+        //    command blocks). Visible by default (L3); toggled from the toolbar (L4a).
+        let inspector = NSHostingController(rootView: InspectorColumn(store: store, connection: connection))
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspector)
         inspectorItem.minimumThickness = 240
         inspectorItem.isCollapsed = false
@@ -55,6 +60,20 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
         addSplitViewItem(inspectorItem)
+
+        self.sidebarItem = sidebarItem
+        self.inspectorItem = inspectorItem
+    }
+
+    /// Apply the toolbar collapse flags to the sidebar/inspector items (idempotent — only animates a real
+    /// change so a steady-state update doesn't re-trigger the animation).
+    func applyCollapse(sidebarCollapsed: Bool, inspectorCollapsed: Bool) {
+        if let sidebarItem, sidebarItem.isCollapsed != sidebarCollapsed {
+            sidebarItem.animator().isCollapsed = sidebarCollapsed
+        }
+        if let inspectorItem, inspectorItem.isCollapsed != inspectorCollapsed {
+            inspectorItem.animator().isCollapsed = inspectorCollapsed
+        }
     }
 }
 #endif
