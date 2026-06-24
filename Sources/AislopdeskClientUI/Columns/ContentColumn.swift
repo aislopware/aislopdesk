@@ -1,5 +1,6 @@
-// ContentColumn — the centre content area (REBUILD-V2, L1). Placeholder only: the real identity-keyed
-// pane grid (terminal / claude / remote splits, no-teardown for libghostty) lands in L2. SYSTEM colours.
+// ContentColumn — the centre content area (REBUILD-V2, L2). Renders the active tab's pane tree via the
+// identity-preserving `SplitContainer`; a native `ContentUnavailableView` empty-state when no session/tab.
+// SYSTEM colours only.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -9,20 +10,22 @@ struct ContentColumn: View {
     let store: WorkspaceStore
     let connection: AppConnection
 
+    private var hasActiveTab: Bool { store.tree.activeSession?.activeTab != nil }
+
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "terminal")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("Content area — panes land in L2")
-                .foregroundStyle(.secondary)
+        Group {
+            if hasActiveTab {
+                SplitContainer(store: store)
+            } else {
+                ContentUnavailableView(
+                    "No Session",
+                    systemImage: "terminal",
+                    description: Text("Connect to a host or open a tab"),
+                )
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        #if os(macOS)
-            .background(Color(.windowBackgroundColor))
-        #else
-            .background(Color(.systemBackground))
-        #endif
+        .background(NativePaneColor.window)
     }
 }
 #endif
