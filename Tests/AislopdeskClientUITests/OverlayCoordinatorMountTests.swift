@@ -125,24 +125,138 @@ final class OverlayCoordinatorMountTests: XCTestCase {
     }
 
     /// The namespaced recents row is cosmetic only — its `action` is the catalog verb, so accepting it still
-    /// mutates the store. Pin that the first selectable zero-state row (the MRU recents row) is the namespaced
-    /// id AND that running it performs the New-Tab action (a duplicate-id regression that dropped the row would
-    /// leave nothing to accept here).
-    func testNamespacedRecentRowStillRunsCatalogAction() {
+    /// mutates the store. The zero-state now LEADS with WORKING DIRECTORY (Copy Path), so the MRU recents row
+    /// is no longer index 0; locate it and pin that running it performs the New-Tab action (a duplicate-id
+    /// regression that dropped the row would leave nothing to accept here).
+    func testNamespacedRecentRowStillRunsCatalogAction() throws {
         let (overlay, store) = makeCoordinator()
         store.recordRecentCommand(.newPane(.terminal))
         overlay.openPalette()
 
-        XCTAssertEqual(
-            overlay.selectableResults.first?.id,
-            "recent.action.newTerminalTab",
-            "the first selectable zero-state row is the namespaced MRU recents row",
+        let recentIndex = try XCTUnwrap(
+            overlay.selectableResults.firstIndex { $0.id == "recent.action.newTerminalTab" },
+            "the namespaced MRU recents row is present among the selectable zero-state rows",
         )
         let before = store.tree.activeSession?.tabs.count ?? 0
-        overlay.paletteSelection = 0
+        overlay.paletteSelection = recentIndex
         overlay.acceptSelected()
         let after = store.tree.activeSession?.tabs.count ?? 0
         XCTAssertEqual(after, before + 1, "accepting the namespaced recents row still runs the catalog New-Tab verb")
+    }
+
+    // MARK: - ES-E2-1: the ⌘⇧P palette is VERBS-ONLY (no filter chips, no jump-to sources)
+
+    /// ⌘⇧P is the Command Palette (verbs) — the per-domain filter chips + the Tabs/Files/Conversations/Repos
+    /// jump-to belong to Open Quickly (⌘⇧O / E11). Pin that command mode renders no chips (`multiSource ==
+    /// false`), mixes ONLY the action sources (`availableFilters == [.actions]`), and that no jump-to row or
+    /// section leaks in — even with a second pane a Tabs source WOULD have surfaced. Fails on a palette that
+    /// still registered the Tabs/Files sources under ⌘⇧P.
+    func testCommandPaletteIsVerbsOnlyWithNoFilterChips() {
+        let (overlay, store) = makeCoordinator()
+        store.newTab(kind: .terminal) // a 2nd pane a Tabs jump-to source WOULD surface — proves it's excluded
+
+        overlay.openPalette(mode: .command)
+
+        XCTAssertFalse(overlay.paletteMode.multiSource, "the command palette renders no filter chips")
+        XCTAssertEqual(
+            overlay.mixer?.availableFilters, [.actions],
+            "only the Actions category sources are mixed under ⌘⇧P (no Tabs/Files/Conversations/Repos)",
+        )
+
+        // No jump-to section separators, and every selectable zero-state row is an action verb.
+        let separatorTitles = Set(overlay.rankedResults.filter(\.item.isSeparator).map(\.item.title))
+        XCTAssertFalse(separatorTitles.contains("Tabs"), "no Tabs section under ⌘⇧P")
+        XCTAssertFalse(separatorTitles.contains("Files"), "no Files section under ⌘⇧P")
+        XCTAssertFalse(separatorTitles.contains("Conversations"), "no Conversations section under ⌘⇧P")
+        for row in overlay.selectableResults {
+            XCTAssertEqual(row.filter, .actions, "row \(row.id) is a verb, not a jump-to result")
+            XCTAssertFalse(row.id.hasPrefix("tab."), "row \(row.id) is not a Tabs jump-to row")
+        }
+    }
+
+    /// ES-E2-1 "grouped by section": the verbs-only zero-state LEADS with the WORKING DIRECTORY section (which
+    /// owns the cwd badge in the view) carrying the client-side Copy Path row, and the catalog is grouped into
+    /// otty categories. Also pins that the Toggle Details Panel row exists (lighting up the dead `.toggleInspector`
+    /// plumbing) as a sibling of Toggle Tabs Panel. Fails on the old flat single-"Actions"-section catalog.
+    func testZeroStateLeadsWithWorkingDirectoryAndGroupsByCategory() throws {
+        let (overlay, _) = makeCoordinator()
+        overlay.openPalette()
+
+        let firstSeparator = try XCTUnwrap(
+            overlay.rankedResults.first(where: \.item.isSeparator),
+            "the zero-state opens with a section header",
+        )
+        XCTAssertEqual(
+            firstSeparator.item.title, PaletteCategory.workingDirectory.label,
+            "the palette LEADS with the WORKING DIRECTORY section (it owns the cwd badge)",
+        )
+
+        // The Copy Path row sits in the Working Directory category with the doc.on.doc icon.
+        let copyPath = try XCTUnwrap(
+            ActionsPaletteSource.catalog.first { $0.id == "action.copyPath" },
+            "the catalog has a client-side Copy Path row",
+        )
+        XCTAssertEqual(copyPath.category, .workingDirectory)
+        XCTAssertEqual(copyPath.icon, "doc.on.doc")
+
+        // The new Toggle Details Panel row runs the (previously dead) .toggleInspector action, in View.
+        let details = try XCTUnwrap(
+            ActionsPaletteSource.catalog.first { $0.id == "action.toggleInspector" },
+            "the catalog has a Toggle Details Panel row",
+        )
+        XCTAssertEqual(details.title, "Toggle Details Panel")
+        XCTAssertEqual(details.category, .view)
+        guard case .toggleInspector = details.action else {
+            XCTFail("the Toggle Details Panel row runs the .toggleInspector action")
+            return
+        }
+
+        // The catalog spans more than one otty category (it is no longer one flat "Actions" list).
+        let categories = Set(ActionsPaletteSource.catalog.compactMap(\.category))
+        XCTAssertTrue(
+            categories.isSuperset(of: [.workingDirectory, .pane, .tab, .view, .settings]),
+            "the catalog is grouped across otty categories, not one flat Actions list",
+        )
+    }
+
+    // MARK: - ES-E2-1: the keyboard selection stays valid when the query narrows (the clamp fix)
+
+    /// The bug: the palette's keyboard selection index isn't reset when the query changes, so after a query
+    /// NARROWS (fewer ranked rows) a parked index points past the end — the highlight vanishes and ↩ becomes a
+    /// silent no-op (`acceptSelected` guards `selection < rows.count`). The fix resets the selection to the
+    /// first row whenever the query changes. This FAILS on the un-fixed coordinator: the parked index survives
+    /// the narrowing (out of range), so the clamp assertion trips AND ↩ runs nothing (the tab count is unchanged).
+    func testSelectionResetsWhenQueryNarrowsSoReturnStillActivates() {
+        let (overlay, store) = makeCoordinator()
+        overlay.openPalette()
+
+        // Broad query → several selectable rows; park the highlight on the LAST one.
+        overlay.paletteQuery = "a"
+        let broad = overlay.selectableResults.count
+        XCTAssertGreaterThan(broad, 2, "the broad query yields several rows to park a high index on")
+        overlay.paletteSelection = broad - 1
+
+        // Narrow to a query with strictly fewer rows — the parked index is now out of range.
+        overlay.paletteQuery = "New Tab"
+        let narrow = overlay.selectableResults.count
+        XCTAssertGreaterThanOrEqual(narrow, 1, "the narrowed query still has a row to run")
+        XCTAssertLessThan(narrow, broad, "the narrowed query has fewer rows than the parked index (broad-1 ≥ narrow)")
+
+        // The fix: the selection is clamped back into range on the query change.
+        XCTAssertTrue(
+            overlay.paletteSelection >= 0 && overlay.paletteSelection < narrow,
+            "the selection lands on a valid row after the query narrowed (fails on the un-fixed coordinator)",
+        )
+
+        // …and ↩ activates the highlighted action (the top New-Tab row) instead of silently doing nothing.
+        XCTAssertEqual(
+            overlay.selectableResults.first?.id, "action.newTerminalTab",
+            "the narrowed query's top row is the New-Tab verb",
+        )
+        let before = store.tree.activeSession?.tabs.count ?? 0
+        overlay.acceptSelected()
+        let after = store.tree.activeSession?.tabs.count ?? 0
+        XCTAssertEqual(after, before + 1, "↩ runs the highlighted action after the query narrowed (no silent no-op)")
     }
 
     // MARK: - ES-E2-2 / WI-2a: ⌘↩ keep-open chaining vs plain ↩ close

@@ -17,15 +17,24 @@ final class AislopdeskSplitViewController: NSSplitViewController {
     private let store: WorkspaceStore
     private let connection: AppConnection
     private let chrome: WorkspaceChromeState
+    /// Opens the Connect-to-Host editor — wired into the inspector's Status row (ES-E2-6). The shell binds
+    /// this to `overlay.openConnect()`; the no-op default keeps the controller buildable without an overlay.
+    private let onConnect: () -> Void
 
     /// Retained so the titlebar toggles can animate their collapse (set in `viewDidLoad`).
     private var sidebarItem: NSSplitViewItem?
     private var inspectorItem: NSSplitViewItem?
 
-    init(store: WorkspaceStore, connection: AppConnection, chrome: WorkspaceChromeState) {
+    init(
+        store: WorkspaceStore,
+        connection: AppConnection,
+        chrome: WorkspaceChromeState,
+        onConnect: @escaping () -> Void = {},
+    ) {
         self.store = store
         self.connection = connection
         self.chrome = chrome
+        self.onConnect = onConnect
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -77,7 +86,9 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         //    command blocks). HIDDEN by default so the resting window is otty's two-column (sidebar | content)
         //    silhouette; revealed from the toolbar (L4a). Matches otty, whose Details panel is hidden until
         //    ⌘⇧R.
-        let inspector = NSHostingController(rootView: InspectorColumn(store: store, connection: connection))
+        let inspector = NSHostingController(
+            rootView: InspectorColumn(store: store, connection: connection, onConnect: onConnect),
+        )
 
         // Each column hosts SwiftUI in its own NSHostingController, which by DEFAULT insets its content below
         // the window's titlebar safe area (the traffic-light strip). With `.hiddenTitleBar` that pushed every

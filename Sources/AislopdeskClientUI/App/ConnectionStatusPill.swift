@@ -1,9 +1,11 @@
 // ConnectionStatusPill — the unified-toolbar centre status pill (REBUILD-V2, L4a). A state-coloured dot +
 // host name + status label, plus the current ping (ms) when connected. Reading `connection.status` (an
-// @Observable) keeps it live as the supervisor flips connecting → connected → reconnecting. Tapping it
-// runs the Retry path in a give-up state; otherwise it's the future connect-overlay affordance.
+// @Observable) keeps it live as the supervisor flips connecting → connected → reconnecting.
 //
-// SYSTEM colours/fonts only — no design-system.
+// TAP (ES-E2-6): tapping the pill ALWAYS opens the Connect-to-Host editor (`onTap` → `overlay.openConnect`),
+// pre-seeded with the current (possibly failing) host/port — never a silent re-dial. In a give-up state
+// (failed / unreachable) a SECONDARY "Retry" affordance sits beside the pill so the one-tap re-dial is still
+// one tap away, but the primary surface is the editor where the host/port can be corrected.
 
 #if canImport(SwiftUI)
 import AislopdeskWorkspaceCore
@@ -22,7 +24,20 @@ struct ConnectionStatusPill: View {
     private var host: String { connection.target.host }
 
     var body: some View {
-        Button(action: tap) {
+        HStack(spacing: 6) {
+            pill
+            // Give-up state (failed / unreachable): the pill opened the editor; offer Retry as a SECONDARY
+            // one-tap re-dial beside it so the fast path stays reachable without hijacking the pill.
+            if StatusPresentation.showsRetry(status) {
+                retryButton
+            }
+        }
+    }
+
+    /// The status pill itself. Tapping it ALWAYS opens the Connect-to-Host editor (`onTap`), pre-seeded with
+    /// the current host/port — never a silent re-dial.
+    private var pill: some View {
+        Button(action: onTap) {
             HStack(spacing: 6) {
                 OttyStatusDot(
                     color: StatusPresentation.connectionColor(status),
@@ -55,12 +70,24 @@ struct ConnectionStatusPill: View {
         .accessibilityLabel(StatusPresentation.connectionHelp(host: host, status: status))
     }
 
-    private func tap() {
-        if StatusPresentation.showsRetry(status) {
+    /// The secondary Retry affordance, shown only in a give-up state — the one-tap re-dial the pill no longer
+    /// performs (so the pill can lead to the editor instead).
+    private var retryButton: some View {
+        Button {
             Task { await connection.retry() }
-        } else {
-            onTap()
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: Otty.Typeface.small + 1, weight: .semibold))
+                .foregroundStyle(Otty.Text.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .background(Otty.Surface.element, in: Capsule())
+        .overlay(Capsule().strokeBorder(Otty.Line.subtle, lineWidth: 1))
+        .help("Retry connecting to \(host)")
+        .accessibilityLabel("Retry connecting to \(host)")
     }
 }
 #endif

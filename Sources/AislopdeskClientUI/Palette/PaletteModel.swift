@@ -40,6 +40,34 @@ public enum QueryFilter: String, CaseIterable, Sendable, Hashable {
     }
 }
 
+// MARK: - Palette category (the verb grouping under section headers)
+
+/// The otty action categories the verbs-only ⌘⇧P command palette groups its catalog under (spec §Behaviors:
+/// "Actions are grouped under capitalized section headers e.g. WORKING DIRECTORY, VIEW"). This is DISTINCT
+/// from ``QueryFilter`` (the Open-Quickly jump-to domains): a `PaletteCategory` only SUB-groups the single
+/// ACTIONS source so the command palette reads as otty's sectioned verb list, whereas a `QueryFilter` picks
+/// which multi-source provider runs. Every catalog row carries one; the mixer / zero-state emit a section
+/// header per non-empty category in ``commandOrder``.
+public enum PaletteCategory: String, CaseIterable, Sendable, Hashable {
+    case workingDirectory = "Working Directory"
+    case window = "Window"
+    case pane = "Pane"
+    case tab = "Tab"
+    case view = "View"
+    case shell = "Shell"
+    case settings = "Settings"
+
+    /// The section-header label (otty title case; the palette view uppercases it for display).
+    public var label: String { rawValue }
+
+    /// The fixed display order: Working Directory leads (it OWNS the cwd badge in the view, per the
+    /// screenshot), then otty's verb groups. An empty category (e.g. Shell, until shell verbs land) is
+    /// skipped by the mixer / zero-state, so it never renders an empty header.
+    public static let commandOrder: [Self] = [
+        .workingDirectory, .window, .pane, .tab, .view, .shell, .settings,
+    ]
+}
+
 // MARK: - Palette action (the typed intent a row runs)
 
 /// The typed action a palette row carries — the SwiftUI analogue of `CommandPaletteItemAction`
@@ -88,6 +116,10 @@ public struct PaletteItem: Identifiable, Sendable {
     public let shortcut: String?
     /// Which source/domain produced this row (for the section grouping + filter match).
     public let filter: QueryFilter
+    /// The otty verb category this row groups under in the verbs-only ⌘⇧P palette (Working Directory /
+    /// Window / Pane / …). `nil` for non-action rows (jump-to Tabs/Files results, separators) — only the
+    /// ACTIONS catalog tags its rows.
+    public let category: PaletteCategory?
     /// The typed action this row runs on accept.
     public let action: PaletteAction
     /// A separator row hugs the next row and never highlights/runs (warp-overlays-actions.md §1.4).
@@ -100,6 +132,7 @@ public struct PaletteItem: Identifiable, Sendable {
         subtitle: String? = nil,
         shortcut: String? = nil,
         filter: QueryFilter,
+        category: PaletteCategory? = nil,
         action: PaletteAction,
         isSeparator: Bool = false,
     ) {
@@ -109,6 +142,7 @@ public struct PaletteItem: Identifiable, Sendable {
         self.subtitle = subtitle
         self.shortcut = shortcut
         self.filter = filter
+        self.category = category
         self.action = action
         self.isSeparator = isSeparator
     }
@@ -138,6 +172,7 @@ public struct PaletteItem: Identifiable, Sendable {
             subtitle: subtitle,
             shortcut: shortcut,
             filter: filter,
+            category: category,
             action: action,
             isSeparator: isSeparator,
         )

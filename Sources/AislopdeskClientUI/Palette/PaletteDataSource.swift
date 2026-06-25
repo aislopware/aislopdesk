@@ -12,6 +12,11 @@
 import AislopdeskAgentDetect
 import AislopdeskWorkspaceCore
 import Foundation
+#if canImport(AppKit)
+import AppKit // NSPasteboard for the client-side "Copy Path"
+#elseif canImport(UIKit)
+import UIKit // UIPasteboard for the client-side "Copy Path"
+#endif
 
 // MARK: - Data source protocol
 
@@ -50,9 +55,23 @@ public struct ActionsPaletteSource: PaletteDataSource {
     /// chord (New Remote Window Tab, Reconnect Pane, …) resolves to `nil` ⇒ no hint chip — correct, since
     /// the chord genuinely does not exist.
     public static let catalog: [PaletteItem] = [
+        // WORKING DIRECTORY — leads the palette (the section header OWNS the cwd badge in the view). "Copy
+        // Path" is a CLIENT-side write of the focused pane's cwd to the platform pasteboard (the same idiom
+        // `RemoteFileTreeView` uses). otty's sibling "Reveal in Finder" / "Open in…" rows are host-routed —
+        // TODO(E10): add them once the host can resolve a local Finder/Open path over the control channel.
+        item(
+            id: "action.copyPath", icon: "doc.on.doc", title: "Copy Path",
+            category: .workingDirectory,
+            run: { store in
+                guard let session = store.tree.activeSession,
+                      let paneID = session.activeTab?.activePane,
+                      let cwd = session.specs[paneID]?.lastKnownCwd, !cwd.isEmpty else { return }
+                copyToPasteboard(cwd)
+            },
+        ),
         item(
             id: "action.newTerminalTab", icon: "plus.rectangle", title: "New Tab",
-            shortcut: glyph(.newTab),
+            shortcut: glyph(.newTab), category: .tab,
             run: { store in
                 store.newTab(kind: .terminal)
                 store.recordRecentCommand(.newPane(.terminal))
@@ -64,41 +83,57 @@ public struct ActionsPaletteSource: PaletteDataSource {
         // registry chord exists for it ⇒ no hint.
         PaletteItem(
             id: "action.newRemoteTab", icon: "rectangle.on.rectangle", title: "New Remote Window Tab",
-            shortcut: nil, filter: .actions, action: .openRemotePicker,
+            shortcut: nil, filter: .actions, category: .tab, action: .openRemotePicker,
+        ),
+        item(
+            id: "action.closeTab", icon: "xmark.rectangle", title: "Close Tab",
+            shortcut: glyph(.closeTab), category: .tab,
+            run: { store in store.closeActiveTab() },
         ),
         item(
             id: "action.splitRight", icon: "rectangle.split.2x1", title: "Split Pane Right",
-            shortcut: glyph(.splitRight),
+            shortcut: glyph(.splitRight), category: .pane,
             run: { store in
                 store.splitActivePane(axis: .horizontal, kind: .terminal)
             },
         ),
         item(
             id: "action.splitDown", icon: "rectangle.split.1x2", title: "Split Pane Down",
-            shortcut: glyph(.splitDown),
+            shortcut: glyph(.splitDown), category: .pane,
             run: { store in
                 store.splitActivePane(axis: .vertical, kind: .terminal)
             },
         ),
         item(
             id: "action.closePane", icon: "xmark.square", title: "Close Pane",
-            shortcut: glyph(.closePane),
+            shortcut: glyph(.closePane), category: .pane,
             run: { store in
                 store.requestCloseActivePaneTree()
                 store.recordRecentCommand(.closePane)
             },
         ),
         item(
-            id: "action.closeTab", icon: "xmark.rectangle", title: "Close Tab",
-            shortcut: glyph(.closeTab),
-            run: { store in store.closeActiveTab() },
-        ),
-        item(
             id: "action.toggleZoom", icon: "arrow.up.left.and.arrow.down.right", title: "Toggle Maximize Pane",
-            shortcut: glyph(.toggleZoom),
+            shortcut: glyph(.toggleZoom), category: .pane,
             run: { store in
                 store.toggleZoomActivePane()
                 store.recordRecentCommand(.toggleZoom)
+            },
+        ),
+        item(
+            id: "action.renamePane", icon: "pencil", title: "Rename Pane",
+            shortcut: glyph(.renamePane), category: .pane,
+            run: { store in store.requestRenameActivePane() },
+        ),
+        // No registry chord exists for reconnect (the keyboard bank never registers one) ⇒ no hint chip.
+        item(
+            id: "action.reconnect", icon: "arrow.clockwise", title: "Reconnect Pane",
+            shortcut: nil, category: .pane,
+            run: { store in
+                if let pane = store.tree.activeSession?.activeTab?.activePane {
+                    store.reconnect(pane)
+                }
+                store.recordRecentCommand(.reconnectPane)
             },
         ),
         // "Toggle Tabs Panel" toggles the LIVE `WorkspaceChromeState.sidebarCollapsed` (the macOS split + the
@@ -107,41 +142,63 @@ public struct ActionsPaletteSource: PaletteDataSource {
         // a visible no-op AND its ✓ could never flip from the palette). Same live flag the ⌘⇧L chord drives.
         PaletteItem(
             id: "action.toggleSidebar", icon: "sidebar.left", title: "Toggle Tabs Panel",
-            subtitle: nil, shortcut: glyph(.toggleSidebar), filter: .actions, action: .toggleSidebar,
+            subtitle: nil, shortcut: glyph(.toggleSidebar), filter: .actions, category: .view,
+            action: .toggleSidebar,
         ),
-        item(
-            id: "action.renamePane", icon: "pencil", title: "Rename Pane",
-            shortcut: glyph(.renamePane),
-            run: { store in store.requestRenameActivePane() },
-        ),
-        // No registry chord exists for reconnect (the keyboard bank never registers one) ⇒ no hint chip.
-        item(
-            id: "action.reconnect", icon: "arrow.clockwise", title: "Reconnect Pane",
-            shortcut: nil,
-            run: { store in
-                if let pane = store.tree.activeSession?.activeTab?.activePane {
-                    store.reconnect(pane)
-                }
-                store.recordRecentCommand(.reconnectPane)
-            },
+        // "Toggle Details Panel" (⇧⌘R) — sibling to "Toggle Tabs Panel". Lights up the existing dead plumbing
+        // (`.toggleInspector` run-arm + `overlay.toggleInspector` closure + the host's `action.toggleInspector`
+        // ✓ branch), routed to the live `WorkspaceChromeState.inspectorCollapsed` the ⌘⇧R chord + titlebar drive.
+        PaletteItem(
+            id: "action.toggleInspector", icon: "sidebar.right", title: "Toggle Details Panel",
+            subtitle: nil, shortcut: glyph(.toggleDetailsPanel), filter: .actions, category: .view,
+            action: .toggleInspector,
         ),
         // Connect to a (possibly non-default) host — the only entry point to the host/port editor besides
         // the top-bar status pill. No registry chord ⇒ no hint chip.
         PaletteItem(
             id: "action.connect", icon: "network", title: "Connect to Host…",
-            subtitle: nil, shortcut: nil, filter: .actions, action: .openConnect,
+            subtitle: nil, shortcut: nil, filter: .actions, category: .window, action: .openConnect,
         ),
         PaletteItem(
             id: "action.openSettings", icon: "slider.horizontal.3", title: "Open Settings",
-            subtitle: nil, shortcut: nil, filter: .actions, action: .openSettings,
+            subtitle: nil, shortcut: nil, filter: .actions, category: .settings, action: .openSettings,
         ),
         // The cheat sheet is also reachable by ⌘/; surfacing it here means the keyboard reference is
         // discoverable without knowing the chord. Its hint derives from the registry (no drift).
         PaletteItem(
             id: "action.cheatSheet", icon: "keyboard", title: "Keyboard Shortcuts",
-            subtitle: nil, shortcut: glyph(.cheatSheet), filter: .actions, action: .openCheatSheet,
+            subtitle: nil, shortcut: glyph(.cheatSheet), filter: .actions, category: .settings,
+            action: .openCheatSheet,
         ),
     ]
+
+    /// The catalog rows in `category`, preserving catalog order — the verbs-only command palette groups by
+    /// these (one section header per non-empty category).
+    public static func items(in category: PaletteCategory) -> [PaletteItem] {
+        catalog.filter { $0.category == category }
+    }
+
+    /// One ``PaletteDataSource`` per non-empty category, in ``PaletteCategory/commandOrder`` — the verbs-only
+    /// ⌘⇧P palette registers these so the mixer emits an otty-style section header per category (Working
+    /// Directory / Window / Pane / Tab / View / Settings) for a typed query. (The empty-query zero-state is
+    /// hand-built the same way in ``OverlayCoordinator/zeroStateResults()`` so it can interleave Recents.)
+    public static func categorySources() -> [any PaletteDataSource] {
+        PaletteCategory.commandOrder.compactMap { category in
+            let rows = items(in: category)
+            return rows.isEmpty ? nil : CategoryActionsSource(category: category, items: rows)
+        }
+    }
+
+    /// Write `string` to the platform pasteboard — the client-side stand-in for otty's local clipboard write
+    /// (mirrors `RemoteFileTreeView.copyPath`). Host-routed Reveal/Open land in E10.
+    private static func copyToPasteboard(_ string: String) {
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+        #elseif canImport(UIKit)
+        UIPasteboard.general.string = string
+        #endif
+    }
 
     /// The live registry glyph for `action`'s default chord (nil when unbound) — the ONE source the catalog
     /// hints derive from, so the displayed chord can never drift from the keyboard bank.
@@ -149,13 +206,35 @@ public struct ActionsPaletteSource: PaletteDataSource {
         WorkspaceBindingRegistry.glyph(for: action)
     }
 
-    /// Build a `.store` action row.
+    /// Build a `.store` action row in a category.
     private static func item(
         id: String, icon: String, title: String, shortcut: String? = nil,
+        category: PaletteCategory,
         run: @escaping @MainActor @Sendable (WorkspaceStore) -> Void,
     ) -> PaletteItem {
-        PaletteItem(id: id, icon: icon, title: title, shortcut: shortcut, filter: .actions, action: .store(run))
+        PaletteItem(
+            id: id, icon: icon, title: title, shortcut: shortcut,
+            filter: .actions, category: category, action: .store(run),
+        )
     }
+}
+
+// MARK: - CATEGORY ACTIONS source (one otty category of the verb catalog) — REAL
+
+/// A single otty verb category of ``ActionsPaletteSource/catalog`` (Working Directory / Window / Pane / …)
+/// surfaced as its own ``PaletteDataSource`` so the verbs-only ⌘⇧P palette's mixer emits one section header
+/// per category. Filters on `.actions` like the parent source; the section title is the category label.
+public struct CategoryActionsSource: PaletteDataSource {
+    public let filters: Set<QueryFilter> = [.actions]
+    public let sectionTitle: String?
+    private let items: [PaletteItem]
+
+    public init(category: PaletteCategory, items: [PaletteItem]) {
+        sectionTitle = category.label
+        self.items = items
+    }
+
+    public func candidates(query _: String) -> [PaletteItem] { items }
 }
 
 // MARK: - TABS source (jump to a pane/tab) — REAL

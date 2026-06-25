@@ -15,11 +15,28 @@ import AislopdeskWorkspaceCore
 import Foundation
 import Observation
 
-/// How the palette was opened (warp-overlays-actions.md §2.1) — purely cosmetic (the omnibar shows a
-/// friendlier label) but kept so the title-bar-search vs ⌘⇧P entry points are distinguishable.
+/// How the palette was opened (warp-overlays-actions.md §2.1). Governs the friendly omnibar label AND the
+/// load-bearing distinction between the two surfaces the docs separate: the verbs-only ⌘⇧P Command Palette
+/// vs. the multi-source ⌘⇧O Open Quickly jump-to (E11).
 public enum PaletteMode: Sendable, Equatable {
+    /// ⌘⇧P — the verbs-only Command Palette (actions/verbs grouped by otty category; NO filter chips).
     case command
+    /// The title-bar omnibar entry (still verbs-only — a friendlier label over the command palette).
     case titleBarSearch
+    /// ⌘⇧O — Open Quickly (E11): the multi-source jump-to (Tabs/Files/Conversations/Repos) WITH filter chips.
+    case openQuickly
+
+    /// Whether this entry point mixes the multi-source jump-to providers (Tabs/Files/Conversations/Repos)
+    /// AND shows the per-domain filter chips. ⌘⇧P + the title-bar omnibar are verbs-only (`false`); only
+    /// Open Quickly is multi-source. The chip/source machinery stays built — it simply doesn't render
+    /// under ⌘⇧P (the chips + jump-to belong to Open Quickly, E11).
+    public var multiSource: Bool {
+        switch self {
+        case .command,
+             .titleBarSearch: false
+        case .openQuickly: true
+        }
+    }
 }
 
 @preconcurrency
@@ -32,8 +49,19 @@ public final class OverlayCoordinator {
     public private(set) var paletteVisible = false
     /// The mode the palette was opened in (cosmetic).
     public private(set) var paletteMode: PaletteMode = .command
-    /// The live query text (the palette view's search field binds this).
-    public var paletteQuery = ""
+    /// The live query text (the palette view's search field binds this). Editing it RESETS the keyboard
+    /// selection to the first row (E2 fix): the ranked result set changes with every keystroke, so a parked
+    /// index would otherwise point past the end after a narrowing edit — the highlight would vanish and ↩
+    /// would silently no-op (`acceptSelected` guards `selection < rows.count`). Row 0 is always the first
+    /// selectable row (separators are excluded from the selection index), so the highlight always lands on a
+    /// valid, runnable row.
+    public var paletteQuery = "" {
+        didSet {
+            guard paletteQuery != oldValue else { return }
+            paletteSelection = 0
+        }
+    }
+
     /// The active filter chip (nil ⇒ all sources / zero-state chips shown when query empty).
     public var paletteFilter: QueryFilter?
     /// The keyboard-selected row index into the SELECTABLE rows of the current result list.
@@ -114,10 +142,10 @@ public final class OverlayCoordinator {
     /// Open the palette. `titleBarSearch` mode reads identically but starts empty (the omnibar friendly
     /// label); `command` mode is the ⌘⇧P entry. Rebuilds the mixer from a fresh store snapshot.
     public func openPalette(mode: PaletteMode = .command, query: String = "") {
-        rebuildMixer()
-        paletteMode = mode
-        paletteQuery = query
+        paletteMode = mode // BEFORE rebuildMixer — the mixer's source set depends on the mode (verbs-only ⌘⇧P
+        rebuildMixer() //      registers only the action categories; multi-source Open Quickly adds the rest).
         paletteFilter = nil
+        paletteQuery = query
         paletteSelection = 0
         paletteVisible = true
     }
@@ -134,23 +162,34 @@ public final class OverlayCoordinator {
         paletteSelection = 0
     }
 
-    /// Rebuild the mixer from the current store (TABS source = a live snapshot; the rest are fixed/stub).
+    /// Rebuild the mixer for the current `paletteMode`. The verbs-only Command Palette (⌘⇧P) registers ONLY
+    /// the action catalog, grouped into otty categories (one section header each) — no Tabs/Files/jump-to
+    /// sources, so no filter chips. Open Quickly (⌘⇧O / E11) registers the multi-source providers (Actions +
+    /// a live Tabs snapshot + the file/conversation/repo stubs); that machinery stays built so E11 only has to
+    /// flip the entry point.
     public func rebuildMixer() {
-        var sources: [any PaletteDataSource] = [ActionsPaletteSource()]
-        if let store {
-            sources.append(TabsPaletteSource.snapshot(store))
+        var sources: [any PaletteDataSource]
+        if paletteMode.multiSource {
+            sources = [ActionsPaletteSource()]
+            if let store {
+                sources.append(TabsPaletteSource.snapshot(store))
+            }
+            // Files / conversations / repos: protocol present, no client data yet (TODO host wires).
+            sources.append(EmptyPaletteSource(filter: .files, sectionTitle: "Files"))
+            sources.append(EmptyPaletteSource(filter: .conversations, sectionTitle: "Conversations"))
+            sources.append(EmptyPaletteSource(filter: .repos, sectionTitle: "Repositories"))
+        } else {
+            // Verbs-only ⌘⇧P: the action catalog grouped into otty categories (Working Directory / Window /
+            // Pane / Tab / View / Settings). A typed query gets one section header per matching category.
+            sources = ActionsPaletteSource.categorySources()
         }
-        // Files / conversations / repos: protocol present, no client data yet (TODO host wires).
-        sources.append(EmptyPaletteSource(filter: .files, sectionTitle: "Files"))
-        sources.append(EmptyPaletteSource(filter: .conversations, sectionTitle: "Conversations"))
-        sources.append(EmptyPaletteSource(filter: .repos, sectionTitle: "Repositories"))
         mixer = SearchMixer(sources: sources)
     }
 
     // MARK: Palette results (view binds these)
 
-    /// The current ordered, sectioned result list. Empty query ⇒ the recents block (or the full action
-    /// catalog when there are no recents) so the palette is never blank.
+    /// The current ordered, sectioned result list. Empty query ⇒ the otty-sectioned zero-state (WORKING
+    /// DIRECTORY, then Recents, then the catalog grouped by category) so the palette is never blank.
     public var paletteResults: [PaletteItem] {
         guard let mixer else { return [] }
         let q = paletteQuery.trimmingCharacters(in: .whitespaces)
@@ -175,17 +214,33 @@ public final class OverlayCoordinator {
         return mixer.ranked(query: q, activeFilter: paletteFilter)
     }
 
-    /// Zero-state (empty query, no filter): the recent commands first, then the full action catalog under a
-    /// separator (warp-overlays-actions.md §1.5 — recents + suggested).
+    /// Zero-state (empty query, no filter): the otty-sectioned verb list. WORKING DIRECTORY leads (its header
+    /// OWNS the cwd badge in the view, per command-palette.png) with its Copy Path row; then the MRU Recents
+    /// block; then the remaining catalog grouped into otty categories (Window / Pane / Tab / View / Settings).
+    /// An empty category is skipped (no empty header). Hand-built (rather than `mixer.ranked("")`) so the
+    /// aislopdesk-only Recents block can interleave after Working Directory.
     private func zeroStateResults() -> [PaletteItem] {
         var out: [PaletteItem] = []
+        // Working Directory first — its header carries the cwd badge; Copy Path (+ TODO(E10) host rows) below.
+        let workingDir = ActionsPaletteSource.items(in: .workingDirectory)
+        if !workingDir.isEmpty {
+            out.append(.separator(PaletteCategory.workingDirectory.label, filter: .actions))
+            out.append(contentsOf: workingDir)
+        }
+        // Recents (MRU), namespaced so they can't collide with the same catalog rows under their categories.
         let recentItems = recentPaletteItems()
         if !recentItems.isEmpty {
             out.append(.separator("Recents", filter: .actions))
             out.append(contentsOf: recentItems)
         }
-        out.append(.separator("Actions", filter: .actions))
-        out.append(contentsOf: ActionsPaletteSource.catalog)
+        // The rest of the catalog, grouped into otty categories in display order (Working Directory already
+        // led above). A category with no rows (e.g. Shell, today) is skipped — no empty section header.
+        for category in PaletteCategory.commandOrder where category != .workingDirectory {
+            let items = ActionsPaletteSource.items(in: category)
+            guard !items.isEmpty else { continue }
+            out.append(.separator(category.label, filter: .actions))
+            out.append(contentsOf: items)
+        }
         return out
     }
 

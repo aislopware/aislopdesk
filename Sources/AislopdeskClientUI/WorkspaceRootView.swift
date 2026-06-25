@@ -69,7 +69,7 @@ public struct WorkspaceRootView: View {
         #if os(macOS)
         // No system unified toolbar / header — the window runs `.hiddenTitleBar` and otty's hover-reveal
         // titlebar (`OttyTitlebar`, hosted inside `ContentColumn`) IS the chrome.
-        WorkspaceSplitRepresentable(store: store, connection: connection, chrome: chrome)
+        WorkspaceSplitRepresentable(store: store, connection: connection, chrome: chrome, overlay: overlay)
             .ignoresSafeArea()
             // The floating-overlay layer (palette / cheat sheet / connect / remote-window picker / toasts)
             // floats above the AppKit split — SwiftUI overlays compose over an `NSViewControllerRepresentable`.
@@ -94,7 +94,7 @@ public struct WorkspaceRootView: View {
         } content: {
             ContentColumn(store: store, connection: connection, chrome: chrome)
         } detail: {
-            InspectorColumn(store: store, connection: connection)
+            InspectorColumn(store: store, connection: connection, onConnect: openConnect)
         }
         .toolbar { iosToolbar }
         // The floating-overlay layer mounts on iOS too (palette / connect / remote-window picker / toasts read
@@ -164,9 +164,15 @@ struct WorkspaceSplitRepresentable: NSViewControllerRepresentable {
     let store: WorkspaceStore
     let connection: AppConnection
     let chrome: WorkspaceChromeState
+    /// The overlay reducer — threaded so the controller can wire the inspector's Status row to
+    /// `openConnect()` (ES-E2-6, the macOS connect affordance). Captured once in `makeNSViewController`.
+    let overlay: OverlayCoordinator
 
     func makeNSViewController(context _: Context) -> AislopdeskSplitViewController {
-        AislopdeskSplitViewController(store: store, connection: connection, chrome: chrome)
+        AislopdeskSplitViewController(
+            store: store, connection: connection, chrome: chrome,
+            onConnect: { [overlay] in overlay.openConnect() },
+        )
     }
 
     func updateNSViewController(_ controller: AislopdeskSplitViewController, context _: Context) {

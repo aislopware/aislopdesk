@@ -17,6 +17,10 @@ import SwiftUI
 struct InspectorColumn: View {
     let store: WorkspaceStore
     let connection: AppConnection
+    /// Opens the Connect-to-Host editor (ES-E2-6). Bound to `overlay.openConnect()` by the shell so the
+    /// macOS Details panel's Status row is a GUI-verifiable connect affordance (the iOS toolbar pill is the
+    /// other entry point). No-op default keeps the column standalone-mountable (previews / tests).
+    var onConnect: () -> Void = {}
 
     @State private var selected: DetailsTab = .info
 
@@ -242,15 +246,26 @@ struct InspectorColumn: View {
         let status = connection.status
         return VStack(alignment: .leading, spacing: 8) {
             OttySectionHeader("Session")
-            OttyKeyValueRow(label: "Status") {
-                HStack(spacing: 6) {
-                    OttyStatusDot(
-                        color: StatusPresentation.connectionColor(status),
-                        glowKey: StatusPresentation.connectionLabel(status),
-                    )
-                    Text(StatusPresentation.connectionLabel(status))
+            // The Status row is a button: tapping it opens the Connect-to-Host editor (ES-E2-6) — the
+            // GUI-verifiable macOS connect affordance, pre-seeded with the current (possibly failing) host.
+            Button(action: onConnect) {
+                OttyKeyValueRow(label: "Status") {
+                    HStack(spacing: 6) {
+                        OttyStatusDot(
+                            color: StatusPresentation.connectionColor(status),
+                            glowKey: StatusPresentation.connectionLabel(status),
+                        )
+                        Text(StatusPresentation.connectionLabel(status))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: Otty.Typeface.small))
+                            .foregroundStyle(Otty.Text.tertiary)
+                    }
                 }
+                .contentShape(.rect)
             }
+            .buttonStyle(.plain)
+            .help("Connect to a host…")
+            .accessibilityLabel("Connection status — tap to connect to a host")
             OttyKeyValueRow(label: "Host") {
                 Text("\(connection.target.host):\(String(connection.target.port))")
                     .lineLimit(1).truncationMode(.middle)

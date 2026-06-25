@@ -108,7 +108,12 @@ struct PaletteView: View {
     // MARK: - Filter chips (zero-state)
 
     @ViewBuilder private var filterChipsRow: some View {
-        if coordinator.paletteQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+        // The per-domain filter chips + the multi-source jump-to belong to Open Quickly (⌘⇧O / E11). The
+        // verbs-only ⌘⇧P Command Palette NEVER shows them (it groups verbs by otty category instead). The
+        // chip machinery below stays built — it simply doesn't render unless the palette is multi-source.
+        if coordinator.paletteMode.multiSource,
+           coordinator.paletteQuery.trimmingCharacters(in: .whitespaces).isEmpty
+        {
             let filters = coordinator.mixer?.availableFilters ?? []
             if !filters.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -185,8 +190,10 @@ struct PaletteView: View {
                 .tracking(0.8)
                 .foregroundStyle(Otty.State.header)
             Spacer(minLength: Otty.Metric.space2)
-            // The contextual cwd badge sits flush-right on the FIRST section header (otty's WORKING DIRECTORY).
-            if item.id == firstSeparatorID, let cwd = workingDirectory {
+            // The contextual cwd badge sits flush-right on the WORKING DIRECTORY header it OWNS — matched by
+            // the category label, NOT "whichever separator sorts first" (which mislabelled a Recents/Actions
+            // header before this section existed).
+            if item.title == PaletteCategory.workingDirectory.label, let cwd = workingDirectory {
                 cwdBadge(cwd)
             }
         }
@@ -322,11 +329,6 @@ struct PaletteView: View {
             }
         }
         return out
-    }
-
-    /// The id of the first separator row — the header that carries the WORKING DIRECTORY badge.
-    private var firstSeparatorID: String? {
-        coordinator.rankedResults.first(where: \.item.isSeparator)?.id
     }
 
     /// The id of the currently keyboard-selected row (for `scrollTo`), or nil if nothing is selectable.
