@@ -116,28 +116,20 @@ public struct PaletteItem: Identifiable, Sendable {
             isSeparator: true,
         )
     }
+}
 
-    /// Whether `query` matches this row's title or subtitle (case-insensitive substring). Empty query ⇒
-    /// matches (the zero-state path filters elsewhere).
-    func matches(_ query: String) -> Bool {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return true }
-        if title.lowercased().contains(q) { return true }
-        if let subtitle, subtitle.lowercased().contains(q) { return true }
-        return false
-    }
+// MARK: - Ranked row (item + fzf match ranges)
 
-    /// A simple relevance score for `query` (higher = better). 0 ⇒ no match. Prefix matches outrank
-    /// mid-word substring matches; a title hit outranks a subtitle hit (warp's mixer ranks per-source then
-    /// by match quality — this is the SwiftUI analogue, deterministic + testable).
-    func score(for query: String) -> Int {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return 1 }
-        let t = title.lowercased()
-        if t == q { return 100 }
-        if t.hasPrefix(q) { return 80 }
-        if t.contains(q) { return 50 }
-        if let subtitle, subtitle.lowercased().contains(q) { return 20 }
-        return 0
+/// A result row paired with the title code-point ranges fzf matched (``FuzzyMatcher``) — carried WITHOUT
+/// mutating ``PaletteItem`` so the palette view can highlight the matched characters. `titleRanges` is
+/// empty for a separator, an empty-query row, or a row matched only on its subtitle.
+public struct RankedRow: Sendable, Identifiable {
+    public let item: PaletteItem
+    public let titleRanges: [Range<String.Index>]
+    public var id: String { item.id }
+
+    public init(item: PaletteItem, titleRanges: [Range<String.Index>] = []) {
+        self.item = item
+        self.titleRanges = titleRanges
     }
 }

@@ -52,6 +52,19 @@ let package = Package(
         .package(url: "https://github.com/SFSafeSymbols/SFSafeSymbols.git", from: "7.0.0"),
         .package(url: "https://github.com/EmergeTools/Pow.git", from: "1.0.0"),
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "3.0.0"),
+        // Type-safe UserDefaults for the global app-flag namespace (`SettingsKey`). We depend ONLY on the
+        // `Defaults` library product — it is pure-Foundation with NO transitive deps; the package's
+        // swift-syntax dependency is reachable only from the `DefaultsMacros`/macro targets, which we do
+        // NOT use (verified: swift-syntax is absent from Package.resolved). `Defaults` is exempt from the
+        // "UI deps attach only to ClientUI" rule because it is not UI — it lands on the headless
+        // `AislopdeskWorkspaceCore` where `SettingsKey` lives (and on ClientUI for the `@Default` views).
+        .package(url: "https://github.com/sindresorhus/Defaults.git", from: "8.2.0"),
+        // Markdown rendering (gonzalezreal/Textual — the pure-Swift `AttributedString`-based successor to
+        // swift-markdown-ui/MarkdownUI). Used by `MarkdownText` for the Claude transcript / rich block
+        // output. Runtime deps are pure-Swift only (ConcurrencyExtras + SwiftUIMath; no swift-cmark / C
+        // build step, no swift-syntax). ClientUI-only (it is SwiftUI rendering). NOTE: pinned to 0.5.0 —
+        // upstream issue #23 (crash on very large docs) is mitigated by `MarkdownText`'s plain-text guard.
+        .package(url: "https://github.com/gonzalezreal/textual.git", from: "0.5.0"),
     ],
     targets: [
         // MARK: Libraries
@@ -175,6 +188,9 @@ let package = Package(
                 // AislopdeskVideoProtocol is the cross-platform PURE wire/settings target (no
                 // ScreenCaptureKit/VideoToolbox/AppKit), so this does NOT widen the graph with HW deps.
                 "AislopdeskVideoProtocol",
+                // Type-safe UserDefaults for the global `SettingsKey` app-flag namespace. Pure-Foundation,
+                // zero transitive deps (the macro/swift-syntax targets are not pulled — see the dep note).
+                .product(name: "Defaults", package: "Defaults"),
             ],
         ),
 
@@ -205,6 +221,11 @@ let package = Package(
                     package: "KeyboardShortcuts",
                     condition: .when(platforms: [.macOS]),
                 ),
+                // Type-safe UserDefaults — the `@Default(.key)` SwiftUI bindings in SettingsView (replacing
+                // the stringly-typed `@AppStorage`). Same pure-Foundation `Defaults` product as the core.
+                .product(name: "Defaults", package: "Defaults"),
+                // Markdown rendering (`MarkdownText` → Textual's `StructuredText`). SwiftUI-only renderer.
+                .product(name: "Textual", package: "textual"),
             ],
         ),
 
@@ -313,6 +334,14 @@ let package = Package(
 
         // Micro-benchmark for the Swift-level hot paths (frame hash, GF region multiply, RS FEC).
         .executableTarget(name: "aislopdesk-bench", dependencies: ["AislopdeskVideoProtocol"]),
+
+        // Fuzzy-match benchmark + parity validator: drives the vendored `FuzzyMatcher` (the in-tree fzf
+        // FuzzyMatchV2 port behind the command palette) against the REAL `fzf --filter` binary and a
+        // Bitap (Fuse-style) baseline on a shared corpus — reports ranking parity (match-set + top-K
+        // agreement) and throughput. macOS dev instrument: shells out to `fzf` when present (skips that
+        // comparison otherwise), so it is NOT part of `swift test`. Depends on AislopdeskClientUI for
+        // `FuzzyMatcher`. `swift run -c release aislopdesk-fuzzybench [scaleN]`.
+        .executableTarget(name: "aislopdesk-fuzzybench", dependencies: ["AislopdeskClientUI"]),
 
         // Golden-vector dumper: emits the golden reference corpus for the Rust core's
         // parity test — a deterministic JSON corpus from the AislopdeskVideoProtocol codecs

@@ -21,6 +21,7 @@
 #if canImport(SwiftUI)
 import AislopdeskVideoProtocol
 import AislopdeskWorkspaceCore
+import Defaults
 import SwiftUI
 
 // MARK: - Settings scene (stock SwiftUI, ⌘,)
@@ -120,11 +121,12 @@ struct SettingsView: View {
 private struct GeneralSettingsTab: View {
     @Bindable var store: PreferencesStore
 
-    /// The fire-time keys are NOT in the typed models, so bind UserDefaults directly through `@AppStorage`.
-    @AppStorage(SettingsKey.oscNotifications) private var oscNotifications = true
-    @AppStorage(SettingsKey.longCommandNotifications) private var longCommandNotifications = true
-    @AppStorage(SettingsKey.redactSecrets) private var redactSecrets = true
-    @AppStorage(SettingsKey.defaultPaneKindKey) private var defaultPaneKindRaw = PaneKind.terminal.rawValue
+    /// The fire-time keys are NOT in the typed models, so bind the global `Defaults.Keys` directly through
+    /// the type-safe `@Default(.key)` wrapper (the default lives in the key declaration, not here).
+    @Default(.oscNotifications) private var oscNotifications
+    @Default(.longCommandNotifications) private var longCommandNotifications
+    @Default(.redactSecrets) private var redactSecrets
+    @Default(.defaultPaneKind) private var defaultPaneKind
 
     var body: some View {
         Form {
@@ -161,9 +163,9 @@ private struct GeneralSettingsTab: View {
 
             Section("Privacy & New Panes") {
                 Toggle("Redact likely secrets from titles", isOn: $redactSecrets)
-                Picker("Default pane kind", selection: $defaultPaneKindRaw) {
-                    Text("Terminal").tag(PaneKind.terminal.rawValue)
-                    Text("Remote GUI").tag(PaneKind.remoteGUI.rawValue)
+                Picker("Default pane kind", selection: $defaultPaneKind) {
+                    Text("Terminal").tag(PaneKind.terminal)
+                    Text("Remote GUI").tag(PaneKind.remoteGUI)
                 }
                 timingFooter(.live)
             }

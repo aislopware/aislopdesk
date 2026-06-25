@@ -261,29 +261,45 @@ public struct SearchMixer: Sendable {
         return source.filters.contains(activeFilter)
     }
 
-    /// Produce the ordered, sectioned result list for `query` under an optional `activeFilter`. Each
-    /// source's matched rows are ranked highest-score-first (stable for ties), prefixed by a separator when
-    /// the source declares a section title and contributes ≥1 row. Capped to `maxResults`.
-    public func results(query: String, activeFilter: QueryFilter? = nil) -> [PaletteItem] {
-        var out: [PaletteItem] = []
+    /// Produce the ordered, sectioned result list for `query` under an optional `activeFilter`, with the
+    /// fzf title-match ranges attached (``RankedRow``). Within a source, rows that match on the title
+    /// outrank rows that match only on the subtitle; inside each tier, higher fzf score wins, ties keep
+    /// source-registration order (stable). A separator precedes each source that declares a section title
+    /// and contributes ≥1 row. Capped to `maxResults`.
+    public func ranked(query: String, activeFilter: QueryFilter? = nil) -> [RankedRow] {
+        var out: [RankedRow] = []
         for source in sources where runs(source, for: activeFilter) {
-            let ranked = source.candidates(query: query)
-                .filter { $0.score(for: query) > 0 }
+            // (row, score, tier, sourceOffset) — tier 1 = title match, tier 0 = subtitle-only match.
+            let scored: [(row: RankedRow, score: Int, tier: Int, offset: Int)] = source
+                .candidates(query: query)
                 .enumerated()
-                .sorted { lhs, rhs in
-                    let (ls, rs) = (lhs.element.score(for: query), rhs.element.score(for: query))
-                    if ls != rs { return ls > rs }
-                    return lhs.offset < rhs.offset // stable: keep source order for equal scores
+                .compactMap { offset, item in
+                    if let title = FuzzyMatcher.score(query, item.title) {
+                        return (RankedRow(item: item, titleRanges: title.ranges), title.score, 1, offset)
+                    }
+                    if let subtitle = item.subtitle, let sub = FuzzyMatcher.score(query, subtitle) {
+                        return (RankedRow(item: item), sub.score, 0, offset)
+                    }
+                    return nil
                 }
-                .map(\.element)
-            guard !ranked.isEmpty else { continue }
+            let rows = scored.sorted { lhs, rhs in
+                if lhs.tier != rhs.tier { return lhs.tier > rhs.tier } // title beats subtitle-only
+                if lhs.score != rhs.score { return lhs.score > rhs.score }
+                return lhs.offset < rhs.offset // stable: keep source order for equal scores
+            }.map(\.row)
+            guard !rows.isEmpty else { continue }
             if let title = source.sectionTitle {
-                out.append(.separator(title, filter: source.filters.first ?? .actions))
+                out.append(RankedRow(item: .separator(title, filter: source.filters.first ?? .actions)))
             }
-            out.append(contentsOf: ranked)
+            out.append(contentsOf: rows)
             if out.count >= Self.maxResults { break }
         }
         return Array(out.prefix(Self.maxResults))
+    }
+
+    /// The ordered, sectioned result list for `query` (the ``RankedRow`` items without their match ranges).
+    public func results(query: String, activeFilter: QueryFilter? = nil) -> [PaletteItem] {
+        ranked(query: query, activeFilter: activeFilter).map(\.item)
     }
 
     /// The selectable (non-separator) rows of a result list — for keyboard ↑/↓ navigation + ⏎ accept.

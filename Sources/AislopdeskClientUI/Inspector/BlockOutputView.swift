@@ -5,10 +5,13 @@
 // While the host reply is in flight it shows a `ProgressView`; a block the host captured no bytes for
 // (`outputLen == 0`) shows a neutral note; an unavailable/evicted block (`text == nil` after fetch) says so.
 //
-// NO ANSI-colour renderer (none exists; plain text is the reliable v1 — per the L3 brief). SYSTEM colours
-// + monospaced/system fonts only.
+// Plain VT-stripped text is the reliable DEFAULT (per the L3 brief). An opt-in "rich" toggle re-renders
+// the same text as Markdown via `MarkdownText` (Textual) — useful for `gh pr view`, READMEs catted to the
+// terminal, or a Claude reply — without changing the default (so no output is ever misformatted unasked).
+// SYSTEM colours + monospaced/system fonts only.
 
 #if canImport(SwiftUI)
+import SFSafeSymbols
 import SwiftUI
 #if canImport(AppKit)
 import AppKit
@@ -23,6 +26,10 @@ struct BlockOutputView: View {
     /// The host's byte-count hint for the block — `0` means "command produced no output" (a distinct empty
     /// state from "output unavailable / evicted").
     let outputLen: UInt32
+
+    /// Opt-in Markdown rendering of the output (default OFF — terminal output is plain by default so it is
+    /// never misinterpreted as Markdown; the user flips this per-block when the output IS Markdown).
+    @State private var renderRich = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -42,12 +49,18 @@ struct BlockOutputView: View {
             .padding(.vertical, 8)
         } else if let text, !text.isEmpty {
             ScrollView([.vertical, .horizontal]) {
-                Text(text)
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(Otty.Text.primary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
+                Group {
+                    if renderRich {
+                        MarkdownText(markdown: text)
+                    } else {
+                        Text(text)
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(Otty.Text.primary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
             }
             .ottyCard()
         } else if outputLen == 0 {
@@ -64,6 +77,15 @@ struct BlockOutputView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Otty.State.header)
             Spacer(minLength: 0)
+            Button {
+                renderRich.toggle()
+            } label: {
+                Label("Render Markdown", systemSymbol: renderRich ? .docPlaintext : .docRichtext)
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help(renderRich ? "Show raw text" : "Render as Markdown")
+            .disabled((text ?? "").isEmpty)
             Button {
                 copy()
             } label: {

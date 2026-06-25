@@ -21,11 +21,6 @@ public struct WorkspaceRootView: View {
     let connection: AppConnection
     /// The two split-collapse flags the toolbar toggles drive (owned here, read by the representable).
     @State private var chrome = WorkspaceChromeState()
-    #if os(iOS)
-    /// The pane-type chooser (WS-C) for the iOS toolbar's `+`. Pure resolver — the popover maps the
-    /// outcome to the store op. (macOS surfaces the chooser via `OttyTitlebar`'s own model.)
-    @State private var chooser = PaneChooserModel()
-    #endif
 
     public init(store: WorkspaceStore, connection: AppConnection) {
         self.store = store
@@ -79,9 +74,11 @@ public struct WorkspaceRootView: View {
             }
         }
         ToolbarItem(placement: .primaryAction) {
-            Button { chooser.present(.newTab) } label: { Image(systemSymbol: .plus) }
+            // The `+` opens a focused `.chooser` pane (the in-pane chooser UX — same as macOS's titlebar),
+            // which renders `InPaneChooserView` for the Terminal/Remote pick. (The old centred
+            // `PaneChooserModel` popover was removed in the in-pane-chooser refactor.)
+            Button { store.openChooserPane(.newTab) } label: { Image(systemSymbol: .plus) }
                 .help("New Tab")
-                .paneChooserPopover(chooser, store: store, arrowEdge: .top)
         }
     }
     #endif
