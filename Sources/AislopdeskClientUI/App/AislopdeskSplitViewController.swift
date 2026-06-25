@@ -174,10 +174,20 @@ final class AislopdeskSplitViewController: NSSplitViewController {
     /// Pin the WINDOW's `NSAppearance` to the active otty theme. Factored out so both `viewDidAppear` (first
     /// attach) and `themeDidChange` (runtime switch) drive the SAME re-pin.
     private func pinWindowAppearance() {
+        // Concrete sRGB backdrop (NOT `NSColor(Otty.theme.window)`): the SwiftUI-Color→NSColor bridge resolves
+        // through the effective appearance and left the divider reading black on the LIGHT themes; a plain
+        // sRGB triple is appearance-stable. The theme's `terminalBackgroundHex` IS the flat window tone in hex.
+        let backdrop = NSColor(ottyHex6: Otty.theme.terminalBackgroundHex)
         view.window?.appearance = NSAppearance(named: Otty.theme.isLight ? .aqua : .darkAqua)
-        view.window?.backgroundColor = NSColor(Otty.theme.window)
-        // The flat-divider repaint reads the live theme in `drawDivider(in:)`, so on a theme switch just
-        // force the split view (and its dividers) to redraw with the new tone.
+        view.window?.backgroundColor = backdrop
+        // The sidebar/content divider is the 1px GAP between the hosting columns. Once the split view is
+        // layer-backed (it hosts layer-backed `NSHostingController` columns) `drawDivider(in:)` is bypassed and
+        // the gap shows the split view's OWN backdrop — the default dark seam, invisible on the dark themes but
+        // a black line on the LIGHT ones. Pin that backdrop to the faint DIVIDER tone (the theme hairline
+        // composited over the window tone) so the seam reads as the SAME mờ-mờ line as the pane dividers
+        // (which draw `Otty.Line.divider` over the flat pane) — theme-aware, in both appearances.
+        splitView.wantsLayer = true
+        splitView.layer?.backgroundColor = flatDividerTone().cgColor
         splitView.needsDisplay = true
     }
 
@@ -215,8 +225,42 @@ final class AislopdeskSplitViewController: NSSplitViewController {
 /// hairline. Adds NO stored properties — the isa-swizzle keeps the original instance's ivar layout intact.
 private final class FlatDividerSplitView: NSSplitView {
     override func drawDivider(in rect: NSRect) {
-        NSColor(Otty.theme.window).setFill()
+        flatDividerTone().setFill()
         NSBezierPath(rect: rect).fill()
+    }
+}
+
+/// The flat divider tone: the theme hairline ``Otty/Line/divider`` composited OVER the flat window backdrop
+/// into an OPAQUE sRGB colour, so the 1px split gap reads as the SAME faint line as the pane dividers (which
+/// draw that hairline over the flat pane) — in BOTH appearances. Built from concrete sRGB components (the
+/// window tone from the theme hex, the overlay resolved through `.sRGB`) so it never resolves to black on the
+/// light themes the way a raw `NSColor(_: SwiftUI.Color)` fill did.
+@MainActor
+private func flatDividerTone() -> NSColor {
+    let backdrop = NSColor(ottyHex6: Otty.theme.terminalBackgroundHex)
+    guard let base = backdrop.usingColorSpace(.sRGB),
+          let overlay = NSColor(Otty.theme.divider).usingColorSpace(.sRGB) else { return backdrop }
+    let a = overlay.alphaComponent
+    return NSColor(
+        srgbRed: base.redComponent * (1 - a) + overlay.redComponent * a,
+        green: base.greenComponent * (1 - a) + overlay.greenComponent * a,
+        blue: base.blueComponent * (1 - a) + overlay.blueComponent * a,
+        alpha: 1,
+    )
+}
+
+private extension NSColor {
+    /// Concrete sRGB `NSColor` from a 6-hex backdrop string (the theme's flat window tone). Avoids the
+    /// appearance-sensitivity of `NSColor(_: SwiftUI.Color)` — a plain sRGB triple resolves identically in
+    /// `.aqua` and `.darkAqua`, so the flat divider no longer reads black on the light themes.
+    convenience init(ottyHex6 hex: String) {
+        let v = UInt64(hex, radix: 16) ?? 0
+        self.init(
+            srgbRed: CGFloat((v >> 16) & 0xFF) / 255,
+            green: CGFloat((v >> 8) & 0xFF) / 255,
+            blue: CGFloat(v & 0xFF) / 255,
+            alpha: 1,
+        )
     }
 }
 #endif

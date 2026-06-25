@@ -3,7 +3,7 @@
 // overlay over the content area (the window runs `.hiddenTitleBar`, so there is NO system unified toolbar —
 // this IS the chrome). A click-through hover catcher reveals the controls (fade-in 0.15s; on exit, dwell
 // 0.40s + fade-out 0.20s) so the resting window is clean otty:
-//   • left  — new-tab `+` and the sidebar toggle (the toggle stays visible while the sidebar is collapsed)
+//   • left  — the sidebar toggle (hover-revealed; stays visible while the sidebar is collapsed)
 //   • centre— the active tab's title as a `⋯` menu (working dir / split / move / find / close pane)
 //   • right — the Details (inspector) toggle (stays visible while Details is open)
 // The sidebar/Details toggles flip the shared `WorkspaceChromeState` flags that the split representable reads
@@ -41,29 +41,35 @@ struct OttyTitlebar: View {
     var body: some View {
         // otty aligns the controls to the TRAFFIC-LIGHT row: top-anchored at `rowTop` so a 24pt plate's icon
         // centres at y≈15 (the row the red/yellow/green buttons sit on), NOT the vertical centre of the 40pt
-        // strip — that is what kept the title + Details toggle a full row below the lights. When the sidebar
-        // is collapsed the content fills to the window's left edge, so the left group shifts right past the
-        // traffic lights (≈80pt) instead of colliding with them.
+        // strip.
         let rowTop: CGFloat = 3
-        let leftLead: CGFloat = sidebarVisible ? 12 : 80
         return ZStack(alignment: .top) {
             #if os(macOS)
             TitlebarHoverCatcher { setHover($0) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             #endif
 
-            // Left: new tab + sidebar toggle (toggle stays clickable while the sidebar is collapsed).
-            HStack(spacing: 3) {
-                // New tab → mint an in-pane CHOOSER pane (Terminal / Remote window), focused. Hover-revealed.
-                PlateIconButton(symbol: .plus) { store.openChooserPane(.newTab) }
-                    .opacity(chromeShown ? 1 : 0)
-                    .allowsHitTesting(chromeShown)
+            // Left: the sidebar toggle, on the traffic-light row (aligned with the Details toggle on the
+            // right). The toggle lives in the CONTENT overlay, whose origin is the DIVIDER when the sidebar is
+            // expanded but the WINDOW's left edge when collapsed. A single button with a state-dependent lead
+            // therefore either DARTED right on collapse (the lead grew a frame before the content slid) or sat
+            // too far in (a constant lead). So render TWO cross-fading instances, each at a FIXED lead, gated
+            // by opacity + hit-testing so only one is live:
+            //   • EXPANDED → tucked just past the divider (lead 12), hover-revealed.
+            //   • COLLAPSED → clear of the traffic lights (lead 80), always visible; it fades in only AFTER the
+            //     collapse settles (delay), so it never flashes at the wide-content position.
+            ZStack(alignment: .topLeading) {
                 PlateIconButton(symbol: .sidebarLeft) { chrome.toggleSidebar() }
-                    .opacity(sidebarVisible ? (chromeShown ? 1 : 0) : 1)
-                    .allowsHitTesting(sidebarVisible ? chromeShown : true)
-                Spacer(minLength: 0)
+                    .opacity(sidebarVisible && chromeShown ? 1 : 0)
+                    .allowsHitTesting(sidebarVisible && chromeShown)
+                    .padding(.leading, 12)
+                PlateIconButton(symbol: .sidebarLeft) { chrome.toggleSidebar() }
+                    .opacity(sidebarVisible ? 0 : 1)
+                    .allowsHitTesting(!sidebarVisible)
+                    .padding(.leading, 80)
+                    .animation(Otty.Anim.standard.delay(sidebarVisible ? 0 : 0.15), value: sidebarVisible)
             }
-            .padding(.leading, leftLead)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, rowTop)
 
             // Centre: the active title as a menu, on the traffic-light row.
