@@ -105,7 +105,7 @@ struct NavigatorColumn: View {
         .tint(Otty.State.accent)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { store.newTabDefault() } label: { Image(systemSymbol: .plus) }
+                Button { store.openChooserPane(.newTab) } label: { Image(systemSymbol: .plus) }
             }
         }
     }
@@ -125,20 +125,13 @@ struct NavigatorColumn: View {
     }
 
     private func defaultTitle(for kind: PaneKind) -> String {
-        switch kind {
-        case .terminal: "Terminal"
-        case .remoteGUI: "Remote window"
-        case .systemDialog: "System dialog"
-        }
+        PaneChooserRegistry.option(for: kind).title
     }
 
-    /// Type-safe SF Symbol for a pane kind (iOS rows only; macOS otty rows are name-only).
+    /// Type-safe SF Symbol for a pane kind (iOS rows only; macOS otty rows are name-only). Reads the
+    /// symbol *name* from the shared ``PaneChooserRegistry`` and wraps it in a type-safe `SFSymbol`.
     private static func symbol(for kind: PaneKind) -> SFSymbol {
-        switch kind {
-        case .terminal: .appleTerminal
-        case .remoteGUI: .display
-        case .systemDialog: .lockShield
-        }
+        SFSymbol(rawValue: PaneChooserRegistry.option(for: kind).symbol)
     }
 }
 #endif

@@ -35,9 +35,18 @@ final class SyncInputTests: XCTestCase {
         store.tree.activeSession?.activeTab?.id
     }
 
-    /// Routes `action` through the production single-source-of-truth registry.
+    /// Routes `action` through the production registry — EXCEPT the new-pane verbs, which the production
+    /// `route(...)` now lands as an in-pane `.chooser` pane (pinned by `PaneChooserRoutingTests`). Sync-input
+    /// only fans to TEXT panes, so translate those verbs to a direct terminal creation for setup.
     private func route(_ action: WorkspaceAction, _ store: WorkspaceStore) {
-        WorkspaceBindingRegistry.route(action, to: store)
+        switch action {
+        case .splitRight: store.splitActivePane(axis: .horizontal, kind: .terminal)
+        case .splitDown: store.splitActivePane(axis: .vertical, kind: .terminal)
+        case .newTab: store.newTab(kind: .terminal)
+        case .newSession: store.newSession(name: store.defaultSessionName, kind: .terminal)
+        case .spawnFloating: store.spawnFloatingPane(kind: .terminal)
+        default: WorkspaceBindingRegistry.route(action, to: store)
+        }
     }
 
     /// The `[UInt8]` payloads delivered to pane `id` via `sendBytes`.

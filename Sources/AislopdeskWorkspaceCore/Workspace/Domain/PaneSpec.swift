@@ -55,6 +55,12 @@ public enum PaneKind: String, Codable, Sendable, Equatable {
     /// ``remoteGUI``, but auto-managed (spawn/close follow the host poll), NOT persisted, and it skips
     /// the picker + stale-binding revalidation (its windowID is always fresh from the live poll).
     case systemDialog
+    /// A TRANSIENT, just-created pane whose CONTENT is the pane-type CHOOSER (Terminal / Remote window).
+    /// `WorkspaceBindingRegistry.route` mints this immediately on a split / new-tab / new-session / floating
+    /// gesture and FOCUSES it, so the user picks the kind INSIDE the pane (no modal popup). It materializes
+    /// NO live session (the reconcile skips it); ``WorkspaceStore/choosePaneKind(_:kind:)`` flips it to a real
+    /// kind, at which point reconcile materializes the terminal / remote-GUI session IN PLACE (same `PaneID`).
+    case chooser
 
     /// The retired-but-tolerated legacy raw value of the removed "Claude Code" pane kind (docs/42 W11).
     /// A `.claudeCode` pane is now just a `.terminal`; an OLD persisted file (v9, or a v10 written before

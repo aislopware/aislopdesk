@@ -584,6 +584,23 @@ final class MetalLayerBackedView: NSView {
     // the old duplicate-character bug, because the host injects a char from EACH path.
     // The `.text` / pipeline.text(...) / host `postText` plumbing stays in place (now unused
     // by live typing) for future layout-independent input such as clipboard paste.
+    // WS-B / B6 — WORKSPACE PREFIX over the video pane.
+    //
+    // The tmux/zellij prefix (⌃A by default) MUST NOT leak to the remote host when it is meant to arm a
+    // LOCAL workspace command. That interception happens UPSTREAM of this responder: the app-level
+    // `WorkspaceKeyDispatcher` (B3) installs ONE `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` at
+    // launch, which fires BEFORE the first responder — so a prefix arm / resolved chord / send-prefix
+    // double-tap is consumed (the handler returns `nil`) and this `keyDown` is NEVER reached for those
+    // keystrokes. A bare/unmodified key returns from the monitor unchanged and lands here, where it is
+    // forwarded to the host as normal typing — exactly the intended behaviour.
+    //
+    // No thin pre-check is mirrored here (unlike B4's libghostty surface) ON PURPOSE: the
+    // `TerminalKeyInterceptor` lives in `AislopdeskWorkspaceCore`, and `AislopdeskVideoClient` depends ONLY
+    // on `AislopdeskVideoProtocol` (Package.swift) — importing WorkspaceCore here would invert the module
+    // graph (the HARD RULE keeps these layers separated). The B4 belt-and-suspenders pass exists because the
+    // libghostty surface is hosted INSIDE the WorkspaceCore-importing app target and can reach the engine;
+    // this gated video surface cannot, and does not need to — the monitor already covers it. (Gated module:
+    // never instantiated in tests; verified by REVIEW per the brief.)
     override func keyDown(with event: NSEvent) {
         pipeline.key(keyCode: event.keyCode, down: true, modifiers: mods(event))
     }

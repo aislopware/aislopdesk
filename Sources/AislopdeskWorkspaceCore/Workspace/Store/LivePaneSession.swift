@@ -1,6 +1,7 @@
 import AislopdeskAgentDetect
 import AislopdeskClient
 import AislopdeskInspector
+import AislopdeskVideoProtocol // W12: EnvConfig — the behaviour-preserving config resolver (env → overlay → default)
 import Foundation
 
 // MARK: - LivePaneSession (the production handle)
@@ -242,6 +243,11 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             // window by id); the differences — auto-management, no picker, skip revalidation, not
             // persisted — live in the store/monitor and in `setVideoActive`, not in the session shape.
             makeRemoteGUI(spec, target: target)
+        case .chooser:
+            // A `.chooser` pane materializes NO live session — the store's reconcile SKIPS it (it renders the
+            // in-pane kind picker from the spec). This arm only satisfies exhaustiveness; if a chooser ever
+            // reached here it degrades to a terminal rather than trapping.
+            makeTerminal(spec, makeClient: makeClient, makeInspector: makeInspector, target: target)
         }
     }
 
@@ -261,7 +267,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // BEFORE the first connect() so the channelOpen preamble presents the host with the saved
         // UUID + last-received seq, enabling a RETURNING_CLIENT reattach. A spec with nil
         // resumeSessionID (a brand-new or never-connected pane) takes the existing fresh-shell path.
-        let detachEnabled = ProcessInfo.processInfo.environment["AISLOPDESK_DETACH_ENABLED"] != "0"
+        // W12: route through `EnvConfig` (ProcessInfo env → settings overlay → default). Default-ON
+        // (`!= "0"`) idiom preserved exactly via `boolDefaultOn`; an EMPTY overlay is byte-identical.
+        let detachEnabled = EnvConfig.boolDefaultOn("AISLOPDESK_DETACH_ENABLED")
         let savedResumeID = detachEnabled ? spec.resumeSessionID : nil
         // COLD LAUNCH: always seed seq=0 even when spec.resumeLastReceivedSeq is non-nil.
         //

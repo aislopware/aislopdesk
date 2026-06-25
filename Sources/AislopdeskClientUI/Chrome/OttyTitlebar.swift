@@ -54,7 +54,8 @@ struct OttyTitlebar: View {
 
             // Left: new tab + sidebar toggle (toggle stays clickable while the sidebar is collapsed).
             HStack(spacing: 3) {
-                PlateIconButton(symbol: .plus) { store.newTabDefault() }
+                // New tab → mint an in-pane CHOOSER pane (Terminal / Remote window), focused. Hover-revealed.
+                PlateIconButton(symbol: .plus) { store.openChooserPane(.newTab) }
                     .opacity(chromeShown ? 1 : 0)
                     .allowsHitTesting(chromeShown)
                 PlateIconButton(symbol: .sidebarLeft) { chrome.toggleSidebar() }
@@ -172,9 +173,10 @@ private struct TitleMenuButton: View {
     }
 
     private func split(_ axis: SplitAxis) {
-        guard let id = activePane else { return }
         show = false
-        store.splitPaneTree(id, axis: axis, kind: .terminal)
+        // A split MINTS a pane → create an in-pane CHOOSER pane (Terminal / Remote window), focused. Defer one
+        // runloop tick so dismissing THIS menu's popover doesn't race the split's reconcile + focus.
+        DispatchQueue.main.async { store.openChooserPane(.split(axis: axis)) }
     }
 
     private func move(_ direction: FocusDirection) {

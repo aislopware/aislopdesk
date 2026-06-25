@@ -20,6 +20,8 @@ struct ContentColumn: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Otty.Surface.window)
         #if os(macOS)
+            // The hover-reveal titlebar floats as a TOP overlay. New-pane gestures (`+` / title-menu split)
+            // mint an in-pane `.chooser` pane directly — the chooser is the pane's CONTENT, not a modal.
             .overlay(alignment: .top) { OttyTitlebar(store: store, chrome: chrome) }
         #endif
     }

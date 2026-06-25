@@ -15,6 +15,7 @@
 
 #if canImport(SwiftUI)
 import AislopdeskTransport // ConnectionRegistry + LiveMuxConnectionFactory (the per-host shared mux pool)
+import AislopdeskVideoProtocol // W12: EnvConfig — the behaviour-preserving config resolver (env → overlay → default)
 import AislopdeskWorkspaceCore
 import SwiftUI
 import SwiftUIIntrospect // reach THIS scene's NSWindow from the SwiftUI WindowGroup (no NSApplication.windows hack)
@@ -40,6 +41,13 @@ public struct AislopdeskClientApp: App {
     #endif
     @State private var appLaunchMonitor: AppLaunchMonitor
     @State private var preferences: PreferencesStore
+    #if os(macOS)
+    /// WS-B / B3: the live keybinding dispatcher. ONE app-level `NSEvent` `.keyDown` local monitor (the
+    /// re-scope of DECISIONS.md's "no NSEvent monitor" rule — a multi-key prefix can't be a `.commands`
+    /// menu item and the menu can't swallow a sequence's follow-up before the terminal first responder).
+    /// Installed once at launch in a scene `.task`.
+    @State private var keyDispatcher: WorkspaceKeyDispatcher
+    #endif
     @Environment(\.scenePhase) private var scenePhase
     @State private var lifecycleTask: Task<Void, Never>?
 
@@ -48,6 +56,22 @@ public struct AislopdeskClientApp: App {
         // env-gated knob is read (a LaunchServices `open` sanitises the inherited env, so `--args` is the
         // only remote channel).
         Self.applyLaunchArgumentEnvironment()
+
+        // D3: register the runtime-theme hook BEFORE building `PreferencesStore` so its init-time
+        // `applyAppearance` repoints `ThemeStore.shared` (and the persisted theme is live from the first
+        // frame). `WorkspaceCore` owns the `AppearanceApplier` seam but cannot import this SwiftUI layer, so
+        // the closure lives here — it maps the persisted `ThemeChoice` onto `ThemeStore.shared`, which posts
+        // the cross-`NSHostingController` repaint notification the split controller re-pins on.
+        AppearanceApplier.apply = { choice in
+            ThemeStore.shared.apply(choice)
+        }
+        // The terminal CELLS adopt the active theme's flat background/foreground (otty flat design): this
+        // hook reads the already-resolved `ThemeStore.active` (so `.system` is concrete) and hands its
+        // libghostty 6-hex colours to `PreferencesStore` when it (re)builds the terminal config.
+        AppearanceApplier.resolveTerminalColors = {
+            let theme = ThemeStore.shared.active
+            return (theme.terminalBackgroundHex, theme.terminalForegroundHex)
+        }
 
         // Build the GUI Settings store FIRST so its apply paths run before the video pipeline / any
         // `static let` env flag is forced (folds persisted prefs into `EnvConfig.overlay`).
@@ -164,6 +188,11 @@ public struct AislopdeskClientApp: App {
         _appLaunchMonitor = State(initialValue: launchMonitor)
         #if os(macOS)
         _clipboardMonitor = State(initialValue: ClipboardMonitor(store: store))
+        // WS-B / B3: build the live keybinding dispatcher over the single store. A new-pane action (split /
+        // new-tab / new-session / floating) mints an in-pane `.chooser` pane via the store's routing, focused,
+        // so the user picks Terminal / Remote window INSIDE the new pane; ⌘T stays a direct-terminal escape
+        // hatch (it routes via `.newPane(.terminal)`, never `.newTab`). The default prefix is ⌃A (tmux-like).
+        _keyDispatcher = State(initialValue: WorkspaceKeyDispatcher(store: store))
         #endif
     }
 
@@ -173,7 +202,7 @@ public struct AislopdeskClientApp: App {
                 // L4: hand the single live PreferencesStore to deep views (the agent footer's W4
                 // notification dismissal/enable persistence reads it via `\.preferencesStore`).
                 .preferencesStore(preferences)
-                // L6: the otty chrome is a PINNED palette (default "Paper" — warm off-white + green accent).
+                // L6: the otty chrome is a PINNED palette (default Monokai Pro Classic — flat dark filter).
                 // Pin the window's colour scheme to the active theme so every system semantic colour we don't
                 // tokenize resolves with the right contrast, and route the global tint to the otty accent so
                 // stock controls/selection adopt it.
@@ -183,7 +212,11 @@ public struct AislopdeskClientApp: App {
                 // System-dialog monitor poll loop, scoped to the scene. Skipped under automation / when
                 // AISLOPDESK_SYSTEM_DIALOG_PANES=0; inert anyway with no discovery seam registered.
                 .task {
-                    let flag = ProcessInfo.processInfo.environment["AISLOPDESK_SYSTEM_DIALOG_PANES"]
+                    // W12: resolve through `EnvConfig` (ProcessInfo env → settings overlay → nil) so a
+                    // GUI toggle can drive it; an EMPTY overlay is byte-identical to the raw read. This is
+                    // the 3-state flag (unset / "0" / "force"), so route the lookup through `EnvConfig.string`
+                    // and keep the 3-state branch VERBATIM — no polarity helper collapses the "force" arm.
+                    let flag = EnvConfig.string("AISLOPDESK_SYSTEM_DIALOG_PANES")
                     guard flag != "0" else { return }
                     if flag != "force", !SettingsKey.systemDialogPanesEnabled { return }
                     guard !Self.hasAutomationEnvironment() || flag == "force" else { return }
@@ -194,6 +227,11 @@ public struct AislopdeskClientApp: App {
                     guard !Self.hasAutomationEnvironment() else { return }
                     await clipboardMonitor.run()
                 }
+                // WS-B / B3: install the app-level keybinding dispatcher's `.keyDown` local monitor once the
+                // scene is up. It runs under automation too (the keybinding path is part of what HW E2E
+                // drives); the monitor swallows ONLY the prefix + armed follow-ups + bound chords and passes
+                // every bare key through, so it never interferes with autoconnect typing.
+                .task { keyDispatcher.install() }
             #endif
                 .task {
                     guard !Self.hasAutomationEnvironment() else { return }
@@ -245,6 +283,15 @@ public struct AislopdeskClientApp: App {
         .windowResizability(.automatic)
         // G1: open at the odiff reference geometry (1280×800) so a fresh window matches the reference.
         .defaultSize(width: 1280, height: 800)
+        #endif
+
+        // D4: the GUI Settings surface (⌘,). A STOCK SwiftUI `Settings` scene — the main window is
+        // `.hiddenTitleBar` and the otty overlay host (`OverlayCoordinator`) is not yet mounted, so a
+        // separate system-chromed window is the non-clashing home for now (it relocates into an in-window
+        // otty panel once the coordinator lands). Binds the SAME single live `PreferencesStore`. macOS-only:
+        // `Settings` is unavailable on iOS (the iOS settings surface lands as an in-app sheet later).
+        #if os(macOS)
+        AislopdeskSettingsScene(store: preferences)
         #endif
     }
 

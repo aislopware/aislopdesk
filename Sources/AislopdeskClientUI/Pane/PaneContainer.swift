@@ -82,12 +82,22 @@ struct PaneContainer: View {
     private var isVideo: Bool { kind == .remoteGUI || kind == .systemDialog }
 
     /// The leaf content, routed by pane kind. A terminal pane renders the `TerminalLeafView` over the
-    /// terminal-renderer seam; a video pane shows a native placeholder for now.
+    /// terminal-renderer seam; a video pane renders the `GuiLeafView` over the `VideoWindowFactory` seam
+    /// (live surface / in-pane picker / cap-gated placeholder, with the cap-enforced activation lifecycle).
     @ViewBuilder private var paneContent: some View {
-        if isVideo {
-            // TODO(L5): mount the `VideoWindowFactory` seam (descriptor/context, host-window picker, key
-            // injection) for real remote-window streaming. L2 shows a native placeholder.
-            remotePlaceholder
+        if kind == .chooser {
+            // A just-created, unconfigured pane: its CONTENT is the pane-type chooser (Terminal / Remote
+            // window). Picking flips the spec kind in place (`choosePaneKind`) and reconcile materializes the
+            // real session here on the SAME PaneID — no modal, no new leaf.
+            InPaneChooserView(store: store, paneID: paneID)
+        } else if isVideo {
+            GuiLeafView(
+                live: live,
+                isFocused: isFocused,
+                staticMirror: staticMirror,
+                store: store,
+                paneID: paneID,
+            )
         } else {
             TerminalLeafView(
                 live: live,
@@ -95,19 +105,6 @@ struct PaneContainer: View {
                 staticMirror: staticMirror,
             )
         }
-    }
-
-    private var remotePlaceholder: some View {
-        VStack(spacing: 12) {
-            Image(systemSymbol: kind == .systemDialog ? .lockShield : .display)
-                .font(.system(size: Otty.Typeface.display, weight: .regular))
-                .foregroundStyle(Otty.Text.secondary)
-            Text(kind == .systemDialog ? "system dialog" : "remote window")
-                .font(.system(size: Otty.Typeface.body, weight: .semibold))
-                .foregroundStyle(Otty.Text.primary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(NativePaneColor.terminalBackground)
     }
 
     var body: some View {

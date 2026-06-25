@@ -1838,6 +1838,15 @@ public final class WorkspaceStore {
     /// ``revealPane(_:)``. `nil` in tests / headless ⇒ the notification is dropped (no UN dependency).
     public var onPaneNotification: ((_ paneID: PaneID, _ paneTitle: String, _ title: String, _ body: String) -> Void)?
 
+    /// WS-B / B4·B5·B6·B7: the configured tmux/zellij PREFIX chord (default ⌃A, CONFIGURABLE off a
+    /// Ctrl-letter). Both the app-level `WorkspaceKeyDispatcher` (B3) and the per-surface
+    /// ``TerminalKeyInterceptor``s the store wires into each pane (`wireMaterializedLeaf`) must read the SAME
+    /// prefix or they disagree on what arms the engine — so it lives here, on the single store, as the one
+    /// place a settings change re-points it. Re-wiring already-materialized panes is intentionally NOT done
+    /// here (a process restart re-reads it; a single-user tool changing its prefix mid-session is rare and
+    /// the new panes pick it up). `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var workspaceKeyPrefix: KeyChord = .init(character: "a", [.control])
+
     /// Routes a child-requested notification from pane `id` to the app poster. Internal seam — wired
     /// onto each terminal pane's connection in ``reconcile()``.
     func handlePaneNotification(id: PaneID, paneTitle: String, title: String, body: String) {
@@ -2382,6 +2391,7 @@ public final class WorkspaceStore {
     public func splitActivePane(axis: SplitAxis, kind: PaneKind) {
         guard let active = tree.activeSession?.activeTab?.activePane else { return }
         let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        // `splitPane` already makes the new leaf the active pane, so an in-pane `.chooser` split lands focused.
         let (next, _) = WorkspaceTreeOps.splitPane(active, axis: axis, newSpec: spec, in: tree)
         tree = next
         reconcileTree()
@@ -2588,9 +2598,11 @@ public final class WorkspaceStore {
         let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
         let bounds = floatingViewportBounds
         let frame = WorkspaceTreeOps.defaultFloatingFrame(in: bounds)
-        let (next, _) = WorkspaceTreeOps.spawnFloating(spec, defaultFrame: frame, bounds: bounds, in: tree)
+        let (next, newID) = WorkspaceTreeOps.spawnFloating(spec, defaultFrame: frame, bounds: bounds, in: tree)
         tree = next
         reconcileTree()
+        // A freshly-spawned float takes focus so its in-pane chooser / content is active immediately.
+        focusPaneTree(newID)
     }
 
     /// The command/menu entry for "New Floating Pane" — resolves the user's default pane kind (Settings).
@@ -3045,15 +3057,20 @@ public final class WorkspaceStore {
         // sibling's re-entrant sendInput from looping back into another fan-out. A no-op while disarmed.
         let terminal = (handle as? LivePaneSession)?.terminalModel
         terminal?.broadcastTap = { [weak self] data in self?.fanSyncInput(from: id, data) }
-        // TILING from the terminal surface: the renderer's right-click "Split Right/Down" AND the cmd+d /
-        // cmd+shift+d keybind (intercepted in GhosttySurface.keyDown before libghostty's default `new_split`
-        // swallows the key) both fire `onContextMenuSplit`. Route it to the tree split — without this the hook
-        // is nil and the key/menu silently do NOTHING (the reported "cmd+d đứng yên"). `true` = side-by-side
-        // (horizontal), `false` = stacked (vertical). Splits THIS pane (`id`), so the key-focused surface
-        // splits even if the workspace focus lags.
+        // TILING from the terminal surface: the renderer's right-click "Split Right/Down" fires
+        // `onContextMenuSplit` (the rebindable ⌘D/⌘⇧D now flows through `wireKeyInterceptor` → the shared
+        // `route(...)`, not here). A split MINTS a pane, so — like the `+`/⌘D/title-menu — it offers the
+        // pane-type chooser (terminal / remote window) instead of a hard-coded terminal. Focus THIS pane
+        // first so the chooser's active-pane split targets the surface the user acted on. No chooser host
+        // (headless / no titlebar) → the legacy direct terminal split. `true` = side-by-side (horizontal),
+        // `false` = stacked (vertical).
         terminal?.onContextMenuSplit = { [weak self] horizontal in
-            self?.splitPaneTree(id, axis: horizontal ? .horizontal : .vertical, kind: .terminal)
+            self?.splitFromContextMenu(paneID: id, horizontal: horizontal)
         }
+        // WS-B / B4·B5: hand the libghostty surface its PURE keybinding interceptor (prefix engine +
+        // override-aware single-chord table). The helper lives in WorkspaceStore+Keybinding so this body
+        // stays under the lint ceiling (same pattern as `seedBlockBookmarks`).
+        wireKeyInterceptor(terminal: terminal)
         // FOCUS-ON-CLICK: the surface's mouseDown calls `onRequestFocus`; route it to the tree focus so the
         // workspace focus (chrome / inspector / which pane the next split or close targets) follows a click.
         terminal?.onRequestFocus = { [weak self] in self?.focusPaneTree(id) }
@@ -3220,6 +3237,10 @@ public final class WorkspaceStore {
         //    let the caller wire it (the canvas path's pane-rebind / OSC-9 closures).
         for id in desiredLeafIDs where registry[id] == nil {
             guard let spec = spec(id) else { continue }
+            // A `.chooser` pane is a pure IN-PANE kind picker — it has NO live session until the user picks a
+            // real kind (`choosePaneKind` flips the spec and this loop then materializes it). Skip it so
+            // `handle(for:)` stays nil and the leaf view renders the chooser from the spec kind.
+            if spec.kind == .chooser { continue }
             let handle = makeSession(spec)
             (handle as? PaneSessionIDAdopting)?.adopt(id: id)
             registry[id] = handle
@@ -3518,11 +3539,7 @@ public final class WorkspaceStore {
     // MARK: - Titles
 
     private func defaultTitle(for kind: PaneKind) -> String {
-        switch kind {
-        case .terminal: "Terminal"
-        case .remoteGUI: "Remote window"
-        case .systemDialog: "System dialog"
-        }
+        PaneChooserRegistry.option(for: kind).title
     }
 }
 
@@ -3806,5 +3823,37 @@ public func apply(_ command: WorkspaceCommand, to store: WorkspaceStore) {
         store.requestSaveLayout()
     case .selectAllPanes:
         store.selectAllPanes()
+    }
+}
+
+// MARK: - In-pane pane-type chooser (WS-C v2 — content-as-chooser, no modal)
+
+/// Factored into a same-file extension (like `splitFromContextMenu`) so the new-pane chooser entry points
+/// stay OUT of the `WorkspaceStore` primary body's `type_body_length` budget. `choosePaneKind` must live in
+/// THIS file (it calls the file-private `updateSpecLive` / `defaultTitle`).
+public extension WorkspaceStore {
+    /// Create a new pane whose CONTENT is the pane-type chooser (Terminal / Remote window), placed by
+    /// `context` and FOCUSED — the user picks the kind INSIDE the pane, no modal popup. The pane carries the
+    /// `.chooser` kind, which materializes NO session until ``choosePaneKind(_:kind:)`` flips it to a real one.
+    func openChooserPane(_ context: PaneChooserContext) {
+        switch context {
+        case let .split(axis): splitActivePane(axis: axis, kind: .chooser)
+        case .newTab: newTab(kind: .chooser)
+        case .newSession: newSession(name: defaultSessionName, kind: .chooser)
+        case .floating: spawnFloatingPane(kind: .chooser)
+        }
+    }
+
+    /// Resolve a `.chooser` pane to the real `kind` the user picked from its in-pane rows: flip the spec kind
+    /// + retitle IN PLACE (same `PaneID`), then reconcile so the now-real leaf materializes its session
+    /// (terminal channel / remote-GUI video). Keeps focus on the pane. No-op if `paneID` is not a chooser.
+    func choosePaneKind(_ paneID: PaneID, kind: PaneKind) {
+        guard tree.spec(for: paneID)?.kind == .chooser else { return }
+        let title = defaultTitle(for: kind)
+        updateSpecLive(paneID) { spec in
+            spec.kind = kind
+            spec.title = title
+        }
+        focusPaneTree(paneID)
     }
 }

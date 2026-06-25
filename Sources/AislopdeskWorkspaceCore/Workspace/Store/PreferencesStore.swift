@@ -68,6 +68,16 @@ public final class PreferencesStore {
         } }
     }
 
+    /// CLIENT-chrome appearance (otty theme + density). A `didSet` persists + applies. CRITICAL: this is
+    /// pure client chrome — it is NEVER folded into ``EnvConfig/overlay`` nor written to the sidecar (so
+    /// the golden corpus is untouched); it repoints the runtime ``ThemeStore`` (via ``AppearanceApplier``)
+    /// and writes ``SettingsKey/density`` only. Default (all-`nil`) ⇒ no behaviour change.
+    public var appearance: AppearancePreferences {
+        didSet { if appearance != oldValue { persistAppearance()
+            applyAppearance()
+        } }
+    }
+
     /// Raw `AISLOPDESK_*` overrides for power users (the Advanced panel). A sparse `[key: value]` that is
     /// folded LAST into the ``EnvConfig`` overlay so an explicit raw override wins over the typed prefs.
     /// Persisted separately; an empty map (the default) contributes nothing (behavior-preserving).
@@ -89,6 +99,7 @@ public final class PreferencesStore {
         static let video = "settings.video.v1"
         static let agent = "settings.agent.v1"
         static let keybindings = "settings.keybindings.v1"
+        static let appearance = "settings.appearance.v1"
         static let rawOverrides = "settings.rawOverrides.v1"
         static let blockBookmarks = "settings.blockBookmarks.v1"
         /// L4 / W4: the dismissed agent-notification suggestion chips, keyed by agent display-name. A
@@ -118,11 +129,13 @@ public final class PreferencesStore {
         video = Self.decode(VideoPreferences.self, defaults, Key.video) ?? VideoPreferences()
         agent = Self.decode(AgentPreferences.self, defaults, Key.agent) ?? AgentPreferences()
         keybindings = Self.decode(KeybindingPreferences.self, defaults, Key.keybindings) ?? KeybindingPreferences()
+        appearance = Self.decode(AppearancePreferences.self, defaults, Key.appearance) ?? AppearancePreferences()
         rawOverrides = (defaults.dictionary(forKey: Key.rawOverrides) as? [String: String]) ?? [:]
         if applyOnInit {
             applyTerminal()
             applyVideoAndAgent()
             applyKeybindings()
+            applyAppearance()
         }
     }
 
@@ -132,6 +145,7 @@ public final class PreferencesStore {
     private func persistVideo() { Self.encode(video, defaults, Key.video) }
     private func persistAgent() { Self.encode(agent, defaults, Key.agent) }
     private func persistKeybindings() { Self.encode(keybindings, defaults, Key.keybindings) }
+    private func persistAppearance() { Self.encode(appearance, defaults, Key.appearance) }
     private func persistRawOverrides() { defaults.set(rawOverrides, forKey: Key.rawOverrides) }
 
     private static func encode(_ value: some Encodable, _ defaults: UserDefaults, _ key: String) {
@@ -148,7 +162,14 @@ public final class PreferencesStore {
     /// Rebuild the libghostty config string from the live terminal prefs (+ any terminal keybind lines)
     /// and bump the broadcaster so the (Xcode-only) `GhosttyTerminalView` re-applies it live.
     private func applyTerminal() {
-        let config = TerminalConfigBuilder.string(for: terminal)
+        // The active otty THEME pins the terminal CELL bg/fg (flat design) — `resolveTerminalColors` reads
+        // the resolved `ThemeStore.active` (GUI only; `nil` headless ⇒ the pref's own colours stand).
+        let themeColors = AppearanceApplier.resolveTerminalColors?()
+        let config = TerminalConfigBuilder.string(
+            for: terminal,
+            backgroundOverride: themeColors?.background,
+            foregroundOverride: themeColors?.foreground,
+        )
         TerminalConfigBroadcaster.shared.publish(config)
     }
 
@@ -183,6 +204,23 @@ public final class PreferencesStore {
         WorkspaceBindingRegistry.activeOverrides = keybindings
     }
 
+    /// Apply the CLIENT-chrome appearance: repoint the runtime ``ThemeStore`` (via ``AppearanceApplier`` —
+    /// the GUI layer's injected closure; `nil` on headless) and write ``SettingsKey/density`` when set.
+    ///
+    /// GOLDEN-SAFE BY CONSTRUCTION: appearance NEVER touches ``EnvConfig/overlay`` nor the sidecar — it is
+    /// pure client chrome. A `nil` density leaves the key untouched (so a default ``AppearancePreferences``
+    /// is a pure no-op, behaviour-preserving). The theme hook is invoked with the (possibly `nil`) choice
+    /// so the GUI can fall back to its compile-time default when appearance is reset.
+    private func applyAppearance() {
+        AppearanceApplier.apply?(appearance.theme)
+        // The theme also drives the terminal CELL bg/fg (flat design), so rebuild the terminal config AFTER
+        // the theme is repointed — a theme switch then repaints the terminal surface, not just the chrome.
+        applyTerminal()
+        if let density = appearance.density {
+            defaults.set(density, forKey: SettingsKey.density)
+        }
+    }
+
     // MARK: Convenience for the UI
 
     /// Reset EVERY pref to its model default (the "Restore Defaults" affordance). The `didSet`s persist
@@ -193,6 +231,7 @@ public final class PreferencesStore {
         video = VideoPreferences()
         agent = AgentPreferences()
         keybindings = KeybindingPreferences()
+        appearance = AppearancePreferences()
         rawOverrides = [:]
     }
 

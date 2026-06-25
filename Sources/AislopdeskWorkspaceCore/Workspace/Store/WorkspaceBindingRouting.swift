@@ -54,14 +54,23 @@ public extension WorkspaceBindingRegistry {
     ) {
         switch action {
         // Panes
-        case .splitRight: store.splitActivePaneDefault(axis: .horizontal)
-        case .splitDown: store.splitActivePaneDefault(axis: .vertical)
+        // A split MINTS a new pane → create an in-pane CHOOSER pane (Terminal / Remote window), focused, so
+        // the user picks the kind INSIDE the new pane (no modal). `openChooserPane(.split(axis:))` splits the
+        // active pane into a `.chooser` leaf; `choosePaneKind` later flips it to the real kind in place.
+        case .splitRight:
+            store.openChooserPane(.split(axis: .horizontal))
+        case .splitDown:
+            store.openChooserPane(.split(axis: .vertical))
         case .closePane: store.requestCloseActivePaneTree()
         case .renamePane: store.requestRenameActivePane()
         case .breakPaneToTab: store.breakActivePaneToTab()
-        // Floating panes (zellij toggle-float / new floating pane)
+        // Floating panes (zellij toggle-float / new floating pane). Spawning a NEW floating pane mints a
+        // pane → route through the chooser (`.floating` context) when a host is supplied; `nil` keeps the
+        // direct default-kind spawn. `.toggleFloat` only floats/un-floats the EXISTING active pane (mints
+        // nothing), so it never gates.
         case .toggleFloat: store.toggleFloatActivePaneCommand()
-        case .spawnFloating: store.spawnFloatingPaneDefault()
+        case .spawnFloating:
+            store.openChooserPane(.floating)
         // Move pane (swap with the geometric neighbour, against the reported layout)
         case .movePaneLeft: store.swapActivePaneInDirection(.left)
         case .movePaneRight: store.swapActivePaneInDirection(.right)
@@ -102,13 +111,19 @@ public extension WorkspaceBindingRegistry {
         case .jumpPreviousFailed: store.jumpToFailedBlockInActivePane(forward: false)
         case .jumpNextFailed: store.jumpToFailedBlockInActivePane(forward: true)
         // Tabs
-        case .newTab: store.newTabDefault()
+        // `.newTab` is the generic new-pane entry (the `+` button / a future generic chord): it creates an
+        // in-pane `.chooser` pane (Terminal / Remote window), focused. ⌘T stays a direct-terminal escape hatch
+        // via `.newPane(.terminal)` on the canvas command path — it never opens the chooser.
+        case .newTab:
+            store.openChooserPane(.newTab)
         case .nextTab: store.cycleTab(by: 1)
         case .prevTab: store.cycleTab(by: -1)
         case let .selectTab(n): store.selectTabNumber(n)
         case .closeTab: store.closeActiveTab()
-        // Sessions
-        case .newSession: store.newSessionDefault()
+        // Sessions — a new session carries one fresh leaf, so it mints a pane → create it as an in-pane
+        // `.chooser` pane (the user picks the kind inside the new session's pane).
+        case .newSession:
+            store.openChooserPane(.newSession)
         // Synchronized input (Zellij ToggleActiveSyncTab)
         case .toggleSyncInput:
             if let tabID = store.tree.activeSession?.activeTab?.id { store.toggleSyncInput(tabID: tabID) }

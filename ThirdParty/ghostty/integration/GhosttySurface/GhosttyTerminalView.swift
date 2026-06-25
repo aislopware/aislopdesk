@@ -707,6 +707,14 @@ final class GhosttyLayerBackedView: NSView {
     /// the key that DID the exit). `nil` = nothing pending.
     private var copyModeConsumedReleaseKeyCode: UInt16?
 
+    /// WS-B / B4: the keyCode whose PRESS the workspace interceptor SWALLOWED (a prefix arm, a resolved
+    /// chord, a send-prefix double-tap, or a tmux-faithful disarm) so the matching RELEASE is suppressed too.
+    /// libghostty never saw the press, so without this its `keyUp` would encode an orphan CSI-u release under
+    /// a kitty `report_events` TUI (the exact press/release-symmetry hazard the copy-mode + Ctrl+C0 branches
+    /// already guard). Stamped in `keyDown` on swallow, cleared once by the matching `keyUp`. `nil` = nothing
+    /// pending.
+    private var workspaceConsumedReleaseKeyCode: UInt16?
+
     override func layout() {
         super.layout()
         let scale = window?.backingScaleFactor ?? 2.0
@@ -748,20 +756,11 @@ final class GhosttyLayerBackedView: NSView {
             CATransaction.setDisableActions(true)
             hosted.frame = CGRect(origin: .zero, size: bounds.size)
             hosted.contentsScale = scale
-            // ROUNDED-CARD METAL CLIPPING: SwiftUI .clipShape on the NSViewRepresentable clips the
-            // SwiftUI render tree but NOT this hosted IOSurfaceLayer (libghostty's Metal sublayer).
-            // Setting cornerRadius + masksToBounds directly on the hosted layer is the only way to
-            // round the actual terminal pixels — exactly how NSView/CALayer-backed views are clipped
-            // at the system level. The radius matches AislopdeskTheme.Radius.pane (8pt); continuous
-            // curve is approximated by the layer's own antialiasing (CALayer cornerCurve .continuous
-            // is only available on iOS 13+ / macOS 10.15+; we check below for safety).
-            //
-            // contentsGravity stays .topLeft (already the default for this layer) so the clip does
-            // not shift the rendered surface. masksToBounds is already likely false; explicit set.
-            if #available(macOS 10.15, *) {
-                hosted.cornerCurve = .continuous
-            }
-            hosted.cornerRadius = 8  // AislopdeskTheme.Radius.pane — imported from AislopdeskClientUI
+            // FLAT PANE (otty flat design): the terminal fills its leaf edge-to-edge with NO corner
+            // radius — its surface is the same flat colour as the backdrop beneath, so a pane never reads
+            // as a floating card. `masksToBounds` clips the libghostty Metal sublayer to the exact bounds
+            // RECTANGLE (radius 0); contentsGravity stays .topLeft so the clip does not shift the surface.
+            hosted.cornerRadius = 0
             hosted.masksToBounds = true
             CATransaction.commit()
         }
@@ -797,6 +796,39 @@ final class GhosttyLayerBackedView: NSView {
             return
         }
 
+        // WS-B / B4·B5 — WORKSPACE KEYBINDING INTERCEPT (claimed BEFORE the Ctrl+C0 raw-byte branch below).
+        // The app-level `WorkspaceKeyDispatcher` (B3) is the PRIMARY interceptor — its `.keyDown` monitor
+        // fires before this responder — but when this focused libghostty surface handles the event in its own
+        // `keyDown` (the monitor bypassed), this belt-and-suspenders pass keeps the prefix engine + the
+        // rebindable workspace chords working. ALL transition logic lives in the pure, headless-tested
+        // `TerminalKeyInterceptor` (B2 prefix machine + override-aware single-chord table); here we ONLY map
+        // the NSEvent → `KeyChord` and act on the returned disposition.
+        //
+        // CRITICAL ORDERING: this MUST precede the Ctrl+<C0> branch — the tmux prefix is ⌃A by default, whose
+        // raw byte (0x01) that branch would otherwise send straight to the PTY, so the prefix would leak
+        // instead of arming. The interceptor claims the prefix; only a send-prefix DOUBLE-TAP emits the
+        // literal byte (via `.sendLiteral`).
+        if let interceptor = model?.keyInterceptor,
+           let chord = Self.workspaceChord(for: event)
+        {
+            switch interceptor.intercept(chord) {
+            case .forward:
+                break // not a workspace chord/prefix — fall through to the normal libghostty path below
+            case .swallow:
+                // Armed/resolved/disarmed: swallow the PRESS and remember to swallow its matching RELEASE,
+                // so a kitty `report_events` TUI never sees an orphan CSI-u release for a key the surface
+                // never sent a press for (the same symmetry the copy-mode / Ctrl+C0 branches enforce).
+                workspaceConsumedReleaseKeyCode = UInt16(event.keyCode)
+                return
+            case let .sendLiteral(bytes):
+                // tmux `send-prefix` double-tap: emit the literal prefix byte to the PTY, then swallow PRESS +
+                // RELEASE. `sendInput` carries the byte; the release is suppressed for the same reason.
+                if !bytes.isEmpty { model?.sendInput(Data(bytes)) }
+                workspaceConsumedReleaseKeyCode = UInt16(event.keyCode)
+                return
+            }
+        }
+
         // CTRL+<key> → LEGACY C0 control byte (the universal-interrupt fix). The host shell (oh-my-zsh
         // / a plugin) enables the kitty keyboard protocol, which makes libghostty's encoder emit a
         // CSI-u ESCAPE for Ctrl-C/Z/D/… (e.g. `^[[3;5u`) instead of the raw control byte. A remote
@@ -820,22 +852,12 @@ final class GhosttyLayerBackedView: NSView {
             return
         }
 
-        // TILING CHORDS (cmd+d / cmd+shift+d): libghostty's DEFAULT keymap binds these to new_split:right /
-        // new_split:down, but Aislopdesk does its OWN tiling at the SwiftUI layer and the app-level action_cb
-        // drops every split/tab action — so forwarding the chord to the encoder just SWALLOWS the key (the
-        // reported "cmd+d đứng yên": the key is consumed, no split happens, nothing reaches the PTY).
-        // Intercept the split PAIR here and route to the workspace split via `onContextMenuSplit` — the SAME
-        // hook the right-click "Split Right/Down" menu uses (wired in WorkspaceStore.wireMaterializedLeaf to
-        // `splitPaneTree(THIS pane, …)`). Guard: cmd WITHOUT ctrl/option, the D key, not an auto-repeat (a
-        // held chord must not spam splits). cmd+D = split right (side-by-side); cmd+shift+D = split down.
-        if !event.isARepeat,
-           event.modifierFlags.contains(.command),
-           !event.modifierFlags.contains(.control),
-           !event.modifierFlags.contains(.option),
-           event.charactersIgnoringModifiers?.lowercased() == "d" {
-            model?.onContextMenuSplit?(!event.modifierFlags.contains(.shift))
-            return
-        }
+        // WS-B / B5: the hard-coded cmd+D / cmd+⇧D split branch is GONE. libghostty's default keymap binds
+        // those to new_split:right/down (dropped by the app action_cb), so the workspace must own them — but
+        // string-matching `charactersIgnoringModifiers == "d"` here made the split UN-rebindable. The split
+        // chords now flow through the `TerminalKeyInterceptor` above (its idle-single-chord path resolves
+        // ⌘D/⌘⇧D against the override-aware `resolvedChordTable` and routes `.splitRight`/`.splitDown`), so a
+        // user rebind takes effect and the live dispatcher owns the chord. Nothing to do here.
 
         // Route every other key through libghostty's encoder (DECISIONS: never hand-roll VT).
         // ghostty_input_key_s (header 322): action / mods / keycode / text /
@@ -878,6 +900,15 @@ final class GhosttyLayerBackedView: NSView {
         // Enter exited synchronously in keyDown, so the guard above is false for THIS release). Swallow it once.
         if let pending = copyModeConsumedReleaseKeyCode, pending == UInt16(event.keyCode) {
             copyModeConsumedReleaseKeyCode = nil
+            return
+        }
+
+        // WS-B / B4 PRESS/RELEASE SYMMETRY: keyDown swallowed this key's PRESS via the workspace interceptor
+        // (prefix arm / resolved chord / send-prefix / disarm), so libghostty never saw it — suppress the
+        // matching RELEASE once, or a kitty `report_events` TUI emits an orphan CSI-u release. Mirrors the
+        // copy-mode pending-release guard above.
+        if let pending = workspaceConsumedReleaseKeyCode, pending == UInt16(event.keyCode) {
+            workspaceConsumedReleaseKeyCode = nil
             return
         }
 
@@ -1266,6 +1297,39 @@ final class GhosttyLayerBackedView: NSView {
         // integer instead — matches upstream Ghostty.Input.swift `ghosttyMods`.
         return ghostty_input_mods_e(raw)
     }
+
+    /// WS-B / B4: map an `NSEvent` keystroke to the framework-neutral `KeyChord` the `TerminalKeyInterceptor`
+    /// keys on, or `nil` for a pure-modifier / non-chord key (which the caller then leaves to the normal
+    /// libghostty path — never swallowed). This is the ONLY new logic the view layer carries, and it is a
+    /// VERBATIM mirror of `KeyChordNormalizer.chord` in ClientUI (which `swift build` DOES type-check and
+    /// `KeyChordNormalizerTests` pins) — duplicated, not shared, because `KeyChordNormalizer` lives in
+    /// ClientUI and this gated file cannot import it. Keep the two in lock-step: named keys by keyCode FIRST
+    /// (parity with the keybindings editor's `baseKey`), else a single printable `charactersIgnoringModifiers`
+    /// (⌘/⌥/⌃-independent; ⇧ rides `modifiers`); reject whitespace / control scalars so a bare/Ctrl key still
+    /// reports its printable base (⌃A → "a") and normal typing falls through.
+    static func workspaceChord(for event: NSEvent) -> KeyChord? {
+        var mods: KeyChord.Modifiers = []
+        if event.modifierFlags.contains(.shift) { mods.insert(.shift) }
+        if event.modifierFlags.contains(.control) { mods.insert(.control) }
+        if event.modifierFlags.contains(.option) { mods.insert(.option) }
+        if event.modifierFlags.contains(.command) { mods.insert(.command) }
+
+        switch event.keyCode {
+        case 36, 76: return KeyChord(.return, mods) // Return / keypad Enter
+        case 48: return KeyChord(.tab, mods)
+        case 123: return KeyChord(.leftArrow, mods)
+        case 124: return KeyChord(.rightArrow, mods)
+        case 126: return KeyChord(.upArrow, mods)
+        case 125: return KeyChord(.downArrow, mods)
+        default: break
+        }
+
+        guard let chars = event.charactersIgnoringModifiers, let first = chars.first, chars.count == 1 else {
+            return nil
+        }
+        guard !first.isWhitespace, first.unicodeScalars.allSatisfy({ $0.value >= 0x20 }) else { return nil }
+        return KeyChord(character: first, mods)
+    }
 }
 
 #elseif os(iOS)
@@ -1593,12 +1657,10 @@ final class GhosttyLayerBackedView: UIView {
         // (macOS works because libghostty makes its layer the view's *backing* layer,
         // which AppKit auto-sizes.) Size every sublayer to our bounds + scale.
         //
-        // ROUNDED-CARD METAL CLIPPING (iOS): apply the same rounded-corner clip to the
-        // hosting UIView's own layer so the Metal sublayer is masked. The sublayers are
-        // sized to `bounds` above, and `masksToBounds = true` on THIS layer clips them all.
-        // Matches the macOS hosted-layer clip in GhosttyLayerBackedView.layout().
-        layer.cornerRadius = 8   // AislopdeskTheme.Radius.pane
-        if #available(iOS 13.0, *) { layer.cornerCurve = .continuous }
+        // FLAT PANE (otty flat design, iOS): NO corner radius; `masksToBounds = true` clips the
+        // Metal sublayer to the exact bounds RECTANGLE. Matches the macOS clip in
+        // GhosttyLayerBackedView.layout().
+        layer.cornerRadius = 0
         layer.masksToBounds = true
         layer.sublayers?.forEach { sub in
             sub.frame = bounds

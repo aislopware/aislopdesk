@@ -10,6 +10,7 @@
 #if os(macOS)
 import AislopdeskWorkspaceCore
 import AppKit
+import ObjectiveC
 import SwiftUI
 
 final class AislopdeskSplitViewController: NSSplitViewController {
@@ -43,6 +44,14 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         super.viewDidLoad()
 
         splitView.dividerStyle = .thin
+        // FLAT DIVIDER: the default `.thin` NSSplitView draws its divider PURE BLACK in `drawDivider(in:)`,
+        // a harsh "đen xì" seam on the lighter Monokai chrome. We cannot subclass `NSSplitView` via `loadView`
+        // (it traps `_setupSplitView` during the controller's constraint setup — see the OBSERVE note below),
+        // so we let the controller build its default split view, then ISA-SWIZZLE that fully-set-up instance
+        // to a subclass that ONLY overrides `drawDivider(in:)` to fill the divider with the flat theme
+        // backdrop. `object_setClass` is memory-safe here — `FlatDividerSplitView` adds no stored properties
+        // (identical ivar layout) — and side-steps the constructor path that traps.
+        object_setClass(splitView, FlatDividerSplitView.self)
 
         // 1) Sidebar — the navigator (sessions / panes). A PLAIN split item, NOT
         //    `NSSplitViewItem(sidebarWithViewController:)`: the native sidebar style paints system vibrancy +
@@ -103,6 +112,18 @@ final class AislopdeskSplitViewController: NSSplitViewController {
             name: NSSplitView.didResizeSubviewsNotification,
             object: splitView,
         )
+
+        // D3: SwiftUI `@Environment`/`.preferredColorScheme` does NOT cross into the three
+        // `NSHostingController` columns, so a runtime theme change can't be observed inside them. Observe
+        // the appearance-changed notification (posted by the `AppearanceApplier` hook after it repoints
+        // `ThemeStore.shared`) and re-pin the WINDOW appearance + nudge each column to re-read the tokens —
+        // otherwise the window half-repaints (the chrome flips but the columns keep the old palette).
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(themeDidChange),
+            name: ThemeStore.didChangeNotification,
+            object: nil,
+        )
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -147,7 +168,31 @@ final class AislopdeskSplitViewController: NSSplitViewController {
     /// to every hosted NSView. Done in `viewDidAppear` because the window only exists once attached.
     override func viewDidAppear() {
         super.viewDidAppear()
+        pinWindowAppearance()
+    }
+
+    /// Pin the WINDOW's `NSAppearance` to the active otty theme. Factored out so both `viewDidAppear` (first
+    /// attach) and `themeDidChange` (runtime switch) drive the SAME re-pin.
+    private func pinWindowAppearance() {
         view.window?.appearance = NSAppearance(named: Otty.theme.isLight ? .aqua : .darkAqua)
+        view.window?.backgroundColor = NSColor(Otty.theme.window)
+        // The flat-divider repaint reads the live theme in `drawDivider(in:)`, so on a theme switch just
+        // force the split view (and its dividers) to redraw with the new tone.
+        splitView.needsDisplay = true
+    }
+
+    /// React to a runtime theme switch (the `AppearanceApplier` hook already repointed `ThemeStore.shared`).
+    /// Re-pin the window appearance AND force each hosted column to re-read the otty tokens — a SwiftUI
+    /// `@Observable` change inside `ThemeStore` re-renders views that READ it, but the AppKit window
+    /// appearance + any system-dynamic resolution must be re-pinned explicitly here (the boundary SwiftUI
+    /// observation does not cross). `needsDisplay` on each column view nudges a redraw so no pane is left
+    /// half-painted in the old palette.
+    @objc
+    private func themeDidChange() {
+        pinWindowAppearance()
+        for item in splitViewItems {
+            item.viewController.view.needsDisplay = true
+        }
     }
 
     /// Apply the toolbar collapse flags to the sidebar/inspector items (idempotent — only animates a real
@@ -159,6 +204,19 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         if let inspectorItem, inspectorItem.isCollapsed != inspectorCollapsed {
             inspectorItem.animator().isCollapsed = inspectorCollapsed
         }
+    }
+}
+
+/// A drop-in `NSSplitView` whose ONLY change is a flat, theme-coloured divider — installed via
+/// `object_setClass` onto the controller's already-built split view (so it never goes through the
+/// `NSSplitViewController` construction path that traps `_setupSplitView` when a custom split view is
+/// supplied up front). `drawDivider(in:)` fills the 1px `.thin` divider rect with the active otty backdrop,
+/// so the sidebar/content/inspector seam blends into the flat chrome instead of AppKit's default pure-black
+/// hairline. Adds NO stored properties — the isa-swizzle keeps the original instance's ivar layout intact.
+private final class FlatDividerSplitView: NSSplitView {
+    override func drawDivider(in rect: NSRect) {
+        NSColor(Otty.theme.window).setFill()
+        NSBezierPath(rect: rect).fill()
     }
 }
 #endif

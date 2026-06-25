@@ -8,6 +8,8 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+// `@MainActor` because the aliases read the runtime ``Otty/theme`` (D3) — call sites are SwiftUI views.
+@MainActor
 enum NativePaneColor {
     /// The chrome / window background (pane header, divider bands, empty content) — otty window backdrop.
     static var window: Color { Otty.Surface.window }

@@ -160,7 +160,13 @@ public struct WorkspaceBinding: Sendable, Equatable {
     public let title: String
     public let category: WorkspaceAction.Category
     /// The default chord, or `nil` for a binding surfaced only in the palette / menu (no key equivalent).
+    /// For a multi-key binding this is the FIRST chord (the prefix); ``sequence`` carries the full list.
     public let chord: KeyChord?
+    /// The default multi-key SEQUENCE (tmux/zellij prefix idiom — e.g. `⌃A` then `D`), or `nil` for a
+    /// single-chord / palette-only binding. When set, ``chord`` mirrors `sequence.head` so the existing
+    /// single-chord glyph / menu-shortcut derivation keeps working off `chord` and the prefix dispatcher
+    /// reads the full sequence. The single source of truth for "what fires this" is ``effectiveSequence``.
+    public let sequence: KeySequence?
     /// SF Symbol for the menu / palette row.
     public let symbol: String
     /// Extra non-displayed fuzzy-match terms (synonyms the user might type) — folded into the palette
@@ -173,6 +179,7 @@ public struct WorkspaceBinding: Sendable, Equatable {
         title: String,
         category: WorkspaceAction.Category,
         chord: KeyChord?,
+        sequence: KeySequence? = nil,
         symbol: String,
         keywords: String? = nil,
     ) {
@@ -180,9 +187,21 @@ public struct WorkspaceBinding: Sendable, Equatable {
         self.action = action
         self.title = title
         self.category = category
-        self.chord = chord
+        // Keep `chord` in lock-step with a multi-key sequence's head so single-chord consumers (menu /
+        // palette glyph) keep working without knowing about sequences.
+        self.chord = sequence?.head ?? chord
+        self.sequence = sequence
         self.symbol = symbol
         self.keywords = keywords
+    }
+
+    /// The full key sequence that fires this binding: the explicit ``sequence`` if multi-key, else a
+    /// length-1 sequence wrapping ``chord``, else `nil` (palette-only). The ONE accessor the prefix
+    /// dispatcher + conflict detection read so single and multi-key bindings are handled uniformly.
+    public var effectiveSequence: KeySequence? {
+        if let sequence { return sequence }
+        if let chord { return KeySequence(single: chord) }
+        return nil
     }
 }
 
@@ -478,11 +497,23 @@ public enum WorkspaceBindingRegistry {
     }
 
     /// The chord → action lookup table (drives the keyboard dispatcher). Built from ``allBindings`` so the
-    /// keyboard layer reads the SAME source as the menu/palette/cheat sheet.
+    /// keyboard layer reads the SAME source as the menu/palette/cheat sheet. For a multi-key binding this
+    /// maps its PREFIX (head) chord — the prefix dispatcher then walks the rest via ``sequenceTable``.
     public static var chordTable: [KeyChord: WorkspaceAction] {
         var map: [KeyChord: WorkspaceAction] = [:]
         for binding in allBindings {
             if let chord = binding.chord { map[chord] = binding.action }
+        }
+        return map
+    }
+
+    /// The full key SEQUENCE → action lookup table (single AND multi-key). The prefix state machine reads
+    /// this to resolve a completed sequence; a single-chord binding appears as its length-1 sequence so one
+    /// table serves both. Built from ``allBindings`` (the same source as everything else).
+    public static var sequenceTable: [KeySequence: WorkspaceAction] {
+        var map: [KeySequence: WorkspaceAction] = [:]
+        for binding in allBindings {
+            if let seq = binding.effectiveSequence { map[seq] = binding.action }
         }
         return map
     }
@@ -502,10 +533,22 @@ public enum WorkspaceBindingRegistry {
         return out
     }
 
-    /// The display glyph for `action`'s default chord, or `nil` when it has none. `public` so the rebuilt
-    /// ClientUI palette derives its row hints from the SAME registry the keyboard bank registers (no drift).
+    /// Renders a ``KeySequence`` as space-separated chord glyphs (e.g. `⌃A D` for the prefix-then-key
+    /// idiom). A length-1 sequence renders exactly like ``glyph(_:)`` of its single chord, so the cheat
+    /// sheet / palette show one string for both single and multi-key bindings. `nonisolated` so it composes
+    /// from any context.
+    public nonisolated static func glyph(_ sequence: KeySequence) -> String {
+        sequence.chords.map(glyph).joined(separator: " ")
+    }
+
+    /// The display glyph for `action`'s default binding, or `nil` when it has none. Renders the full
+    /// SEQUENCE (so a multi-key prefix binding shows e.g. `⌃A D`), falling back to the single chord for an
+    /// ordinary binding. `public` so the rebuilt ClientUI palette derives its row hints from the SAME
+    /// registry the keyboard bank registers (no drift).
     public nonisolated static func glyph(for action: WorkspaceAction) -> String? {
-        binding(for: action)?.chord.map(glyph)
+        guard let binding = binding(for: action) else { return nil }
+        if let seq = binding.sequence { return glyph(seq) }
+        return binding.chord.map(glyph)
     }
 
     private nonisolated static func keyGlyph(_ key: KeyChord.Key) -> String {
@@ -545,7 +588,7 @@ public enum WorkspaceBindingRegistry {
     /// the real per-digit chords live in ``selectTabBindings``). `.selectTab(1)` is a stand-in action; the
     /// glyph range is hand-rendered into the title because one ``KeyChord`` can't represent the range, and
     /// `chord: nil` keeps the overlay from rendering a separate (single-chord) hint chip.
-    static let selectTabRepresentative = WorkspaceBinding(
+    public static let selectTabRepresentative = WorkspaceBinding(
         id: "tab.selectN", action: .selectTab(1),
         title: "Select Tab (⌘1…⌘9)", category: .tabs,
         chord: nil, symbol: "number.square",

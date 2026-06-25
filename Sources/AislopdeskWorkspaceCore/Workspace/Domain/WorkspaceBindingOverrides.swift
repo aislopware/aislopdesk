@@ -59,6 +59,43 @@ public extension WorkspaceBindingRegistry {
         }
         return map
     }
+
+    // MARK: - Sequence-aware resolution (W-B prefix sequences)
+
+    /// The full SEQUENCE that should fire `action` RIGHT NOW: the user override sequence (single-chord OR
+    /// multi-key) if one is set for the action's binding id, else the registry default sequence. The prefix
+    /// dispatcher reads this so a rebind to a multi-key prefix takes effect everywhere from one place.
+    static func resolvedSequence(for action: WorkspaceAction) -> KeySequence? {
+        resolvedSequence(for: action, overrides: activeOverrides)
+    }
+
+    /// Sequence resolution against an EXPLICIT override set (pure, testable). An override sequence whose
+    /// chords can't all map to registry chords (a malformed stored value) is IGNORED → falls back to the
+    /// registry default (validate-then-default, never traps).
+    static func resolvedSequence(for action: WorkspaceAction, overrides: KeybindingPreferences) -> KeySequence? {
+        guard let binding = binding(for: action) else { return nil }
+        if let override = overrides.sequence(for: binding.id), let mapped = override.asRegistrySequence {
+            return mapped
+        }
+        return binding.effectiveSequence
+    }
+
+    /// The sequence → action lookup table WITH the active overrides applied — the override-aware sibling of
+    /// ``sequenceTable``. The prefix state machine reads THIS so a rebind (single OR multi-key) routes.
+    static var resolvedSequenceTable: [KeySequence: WorkspaceAction] {
+        resolvedSequenceTable(overrides: activeOverrides)
+    }
+
+    /// The override-aware sequence table against an explicit override set (pure, testable).
+    static func resolvedSequenceTable(overrides: KeybindingPreferences) -> [KeySequence: WorkspaceAction] {
+        var map: [KeySequence: WorkspaceAction] = [:]
+        for binding in allBindings {
+            if let seq = resolvedSequence(for: binding.action, overrides: overrides) {
+                map[seq] = binding.action
+            }
+        }
+        return map
+    }
 }
 
 // MARK: - KeybindingPreferences.KeyChord → registry KeyChord
@@ -98,5 +135,22 @@ public extension KeybindingPreferences.KeyChord {
             guard key.count == 1, let c = key.first else { return nil }
             return .character(c)
         }
+    }
+}
+
+// MARK: - KeybindingPreferences.KeySequence → registry KeySequence
+
+public extension KeybindingPreferences.KeySequence {
+    /// Map the persisted W-B sequence (a list of serialisable chords) into the dispatcher's framework-neutral
+    /// ``KeySequence``. EVERY chord must map (via ``KeybindingPreferences/KeyChord/asRegistryChord``); if ANY
+    /// chord is unmappable (a malformed stored value) the whole sequence yields `nil` (validate-then-default:
+    /// the resolver then keeps the registry default rather than firing a partial / wrong sequence).
+    var asRegistrySequence: KeySequence? {
+        var mapped: [KeyChord] = []
+        for chord in chords {
+            guard let registryChord = chord.asRegistryChord else { return nil }
+            mapped.append(registryChord)
+        }
+        return KeySequence(mapped) // nil only if `chords` was empty (rejected at decode/init)
     }
 }

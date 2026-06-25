@@ -18,6 +18,7 @@ final class PreferencesStoreApplyTests: XCTestCase {
         // Restore the process-wide overlays the apply paths mutate so a later test isn't polluted.
         EnvConfig.overlay = [:]
         WorkspaceBindingRegistry.activeOverrides = KeybindingPreferences()
+        AppearanceApplier.apply = nil
         super.tearDown()
     }
 
@@ -76,6 +77,74 @@ final class PreferencesStoreApplyTests: XCTestCase {
         XCTAssertGreaterThan(TerminalConfigBroadcaster.shared.generation, afterInit, "a change re-publishes")
         XCTAssertTrue(TerminalConfigBroadcaster.shared.configString.contains("font-family = Menlo"))
         XCTAssertTrue(TerminalConfigBroadcaster.shared.configString.contains("font-size = 16"))
+    }
+
+    // MARK: Appearance (D2 — client chrome; NEVER touches the overlay/sidecar)
+
+    /// A default ``AppearancePreferences`` + a default ``PreferencesStore`` leaves ``EnvConfig/overlay``
+    /// empty — the GOLDEN CANARY. Appearance is pure client chrome; if it ever leaked into the overlay the
+    /// 43-key corpus would shift on a fresh install.
+    func testDefaultAppearanceLeavesOverlayEmpty() {
+        EnvConfig.overlay = [:]
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil)
+        XCTAssertEqual(store.appearance, AppearancePreferences(), "default appearance is all-nil")
+        XCTAssertTrue(EnvConfig.overlay.isEmpty, "default appearance must not write the env overlay")
+    }
+
+    func testAppearanceApplyRepointsThemeAndWritesDensityWithoutOverlayOrSidecar() {
+        EnvConfig.overlay = [:]
+        // Capture what the GUI-layer ThemeStore hook would receive (the store can't import ClientUI).
+        var appliedTheme: ThemeChoice??
+        AppearanceApplier.apply = { appliedTheme = $0 }
+
+        let defaults = makeIsolatedDefaults()
+        // A temp sidecar URL that must NOT be written by an appearance change.
+        let sidecar = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aislopdesk-appearance-sidecar-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: sidecar) }
+
+        let store = PreferencesStore(defaults: defaults, sidecarURL: sidecar)
+        // init applies the default (all-nil) appearance once → hook fired with nil.
+        XCTAssertEqual(appliedTheme, .some(.none), "init applies the default appearance (theme nil)")
+        appliedTheme = nil
+        // init's applyVideoAndAgent already wrote the (default) sidecar; capture its bytes to prove an
+        // appearance change does NOT re-touch it.
+        let sidecarBefore = try? Data(contentsOf: sidecar)
+
+        store.appearance = AppearancePreferences(theme: .dark, density: "compact")
+
+        // 1) Repoints the theme (via the AppearanceApplier hook → ThemeStore.shared in the GUI layer).
+        XCTAssertEqual(appliedTheme, .some(.dark), "appearance apply repoints the theme")
+        // 2) Persists under settings.appearance.v1.
+        let blob = defaults.data(forKey: "settings.appearance.v1")
+        XCTAssertNotNil(blob)
+        let decoded = try? JSONDecoder().decode(AppearancePreferences.self, from: blob ?? Data())
+        XCTAssertEqual(decoded, AppearancePreferences(theme: .dark, density: "compact"))
+        // 3) Writes SettingsKey.density.
+        XCTAssertEqual(defaults.string(forKey: SettingsKey.density), "compact")
+        // 4) Does NOT mutate the env overlay …
+        XCTAssertTrue(EnvConfig.overlay.isEmpty, "appearance must not touch EnvConfig.overlay")
+        // 5) … and does NOT re-touch the sidecar (the only writer is the video/agent apply path; an
+        //    appearance change leaves the sidecar bytes exactly as init left them).
+        let sidecarAfter = try? Data(contentsOf: sidecar)
+        XCTAssertEqual(sidecarAfter, sidecarBefore, "an appearance change must not rewrite the sidecar")
+    }
+
+    func testResetAllResetsAppearance() {
+        let defaults = makeIsolatedDefaults()
+        let store = PreferencesStore(defaults: defaults, sidecarURL: nil)
+        store.appearance = AppearancePreferences(theme: .dark, density: "compact")
+        XCTAssertNotEqual(store.appearance, AppearancePreferences())
+        store.resetAll()
+        XCTAssertEqual(store.appearance, AppearancePreferences(), "resetAll restores the default appearance")
+    }
+
+    func testMalformedPersistedAppearanceDecodesToDefault() {
+        let defaults = makeIsolatedDefaults()
+        // Seed a malformed blob under the appearance key (unknown theme raw → whole-struct decode fails).
+        defaults.set(Data(#"{"theme":"midnight"}"#.utf8), forKey: "settings.appearance.v1")
+        let store = PreferencesStore(defaults: defaults, sidecarURL: nil)
+        XCTAssertEqual(store.appearance, AppearancePreferences(), "a malformed blob decode-fails to default")
     }
 
     // MARK: Keybinding overrides → the W6 registry

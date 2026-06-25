@@ -75,9 +75,9 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     /// wait for the body to be in flight without racing the suspension.
     private(set) var teardownEntered = false
 
-    /// Mirrors ``LivePaneSession``: a `.remoteGUI` pane that was video-active before `pause()` is
-    /// remembered so `resume()` re-activates it. Guarded to `.remoteGUI` so the unconditional-flip cap
-    /// tests (which never call pause/resume) are unaffected.
+    /// Mirrors ``LivePaneSession``: a video pane that was video-active before `pause()` is remembered so
+    /// `resume()` re-activates it. Guarded to `kind.isVideo` so the unconditional-flip cap tests (which
+    /// never call pause/resume) are unaffected.
     private var wasVideoActiveBeforePause = false
 
     // MARK: Init
@@ -126,8 +126,10 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     // MARK: PaneSessionHandle: video
 
     func setVideoActive(_ active: Bool) {
-        // Match LivePaneSession: a no-op for non-video kinds.
-        guard kind == .remoteGUI else { return }
+        // Match LivePaneSession.setVideoActive, which gates on `kind.isVideo` — so EVERY video kind
+        // (`.remoteGUI` AND the auto `.systemDialog`, plus any future video kind) accounts against the
+        // cap faithfully. A no-op for non-video kinds.
+        guard kind.isVideo else { return }
         isVideoActive = active
         events.append(.videoActive(active))
     }
@@ -137,7 +139,7 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     func pause() {
         pauseCount += 1
         events.append(.pause)
-        // Mirror LivePaneSession: suspend live video and remember it for resume (.remoteGUI only).
+        // Mirror LivePaneSession: suspend live video and remember it for resume (any video kind).
         if isVideoActive {
             wasVideoActiveBeforePause = true
             isVideoActive = false
@@ -148,8 +150,8 @@ final class FakePaneSession: @MainActor PaneSessionHandle, @MainActor Identifiab
     func resume() {
         resumeCount += 1
         events.append(.resume)
-        // Mirror LivePaneSession: re-activate video that was active before pause (.remoteGUI only).
-        if kind == .remoteGUI, wasVideoActiveBeforePause {
+        // Mirror LivePaneSession: re-activate video that was active before pause (any video kind).
+        if kind.isVideo, wasVideoActiveBeforePause {
             wasVideoActiveBeforePause = false
             isVideoActive = true
             events.append(.videoActive(true))

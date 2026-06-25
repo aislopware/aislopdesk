@@ -80,4 +80,64 @@ public enum InputRouting {
     public static func routesToKeyEncoding(_ press: KeyPress) -> Bool {
         route(press) == .keyEncoding
     }
+
+    /// WS-B / B7 — map a `KeyPress` to the framework-neutral ``KeyChord`` the ``TerminalKeyInterceptor``
+    /// keys on, or `nil` for a key it cannot classify (which the iOS responder then routes normally —
+    /// never swallows). The iOS UIKit responder (`pressesBegan`) consults this BEFORE ``route(_:)`` /
+    /// ``KeyEncoding/encode(_:arrowFallback:)`` so the SAME pure prefix machine + override-aware
+    /// `resolvedChordTable` that drives macOS owns the workspace chords / tmux-style prefix on iOS too:
+    ///
+    /// ```swift
+    /// // inside pressesBegan, per UIPress.key:
+    /// let press = InputRouting.KeyPress(/* from UIKey */)
+    /// if let chord = InputRouting.keyChord(for: press) {
+    ///     switch interceptor.intercept(chord) {        // interceptor: a TerminalKeyInterceptor the host owns
+    ///     case .forward:               break            // fall through to the normal iOS key/IME path
+    ///     case .swallow:               return           // armed/resolved/disarmed — send nothing
+    ///     case let .sendLiteral(bytes): sendInput(Data(bytes)); return  // tmux send-prefix double-tap
+    ///     }
+    /// }
+    /// // …existing route(press)/KeyEncoding.encode(press) path…
+    /// ```
+    ///
+    /// Mirrors the macOS `KeyChordNormalizer`/`GhosttyLayerBackedView.workspaceChord`: named special keys
+    /// FIRST (Return/Tab/arrows), else a single printable `charactersIgnoringModifiers` base with ⇧/⌃/⌥/⌘
+    /// carried in the modifier set (⇧ rides `modifiers`, not the char). Whitespace / control scalars are
+    /// rejected so a bare key (or ⌃-letter, which still reports its printable base) is classifiable but
+    /// normal typing falls through.
+    public static func keyChord(for press: KeyPress) -> KeyChord? {
+        var mods: KeyChord.Modifiers = []
+        if press.shift { mods.insert(.shift) }
+        if press.control { mods.insert(.control) }
+        if press.option { mods.insert(.option) }
+        if press.command { mods.insert(.command) }
+
+        // Named special keys by their committed characters (UIKit reports these for arrows/Return/Tab),
+        // mirroring KeyEncoding.characterSpecialBytes' character-keyed switch + the macOS keyCode map.
+        if let named = specialKeyChord(for: press, mods: mods) { return named }
+
+        // A single printable base key. `charactersIgnoringModifiers` is the ⌘/⌥/⌃-independent base (⇧ is
+        // carried in `mods`); reject whitespace / control scalars (those are never workspace chords).
+        let base = press.charactersIgnoringModifiers
+        guard let first = base.first, base.count == 1 else { return nil }
+        guard !first.isWhitespace, first.unicodeScalars.allSatisfy({ $0.value >= 0x20 }) else { return nil }
+        return KeyChord(character: first, mods)
+    }
+
+    /// The named-key ``KeyChord`` for a special press (Return / Tab / arrows), or `nil` if it is not one we
+    /// model. Arrows are reported by UIKit as the `UIKeyCommand.input*Arrow` private-use scalars, which the
+    /// iOS layer normalizes into `characters` before building the `KeyPress`; we match those plus the
+    /// ESC/Tab/Return committed strings (KeyEncoding already keys on the same committed `characters`).
+    private static func specialKeyChord(for press: KeyPress, mods: KeyChord.Modifiers) -> KeyChord? {
+        switch press.characters {
+        case "\r",
+             "\n": KeyChord(.return, mods)
+        case "\t": KeyChord(.tab, mods)
+        case "\u{F702}": KeyChord(.leftArrow, mods) // UIKeyCommand.inputLeftArrow
+        case "\u{F703}": KeyChord(.rightArrow, mods) // UIKeyCommand.inputRightArrow
+        case "\u{F700}": KeyChord(.upArrow, mods) // UIKeyCommand.inputUpArrow
+        case "\u{F701}": KeyChord(.downArrow, mods) // UIKeyCommand.inputDownArrow
+        default: nil
+        }
+    }
 }

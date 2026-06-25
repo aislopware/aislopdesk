@@ -40,6 +40,45 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(try roundTrip(custom), custom)
     }
 
+    // MARK: Appearance (D2 — client chrome, golden-irrelevant)
+
+    func testAppearancePreferencesDefaultIsAllNil() {
+        let def = AppearancePreferences()
+        XCTAssertNil(def.theme)
+        XCTAssertNil(def.density)
+    }
+
+    func testAppearancePreferencesRoundTrip() throws {
+        // Every theme choice (System, the six Monokai Pro filters, and legacy Paper/Dark) round-trips.
+        for theme in ThemeChoice.allCases {
+            let prefs = AppearancePreferences(theme: theme, density: "comfortable")
+            XCTAssertEqual(try roundTrip(prefs), prefs)
+        }
+        // The default Monokai Pro Classic choice persists explicitly.
+        XCTAssertEqual(try roundTrip(AppearancePreferences(theme: .monokaiProClassic)).theme, .monokaiProClassic)
+        // A partially-set model round-trips too (density unset).
+        let partial = AppearancePreferences(theme: .dark)
+        XCTAssertEqual(try roundTrip(partial), partial)
+        XCTAssertNil(try roundTrip(partial).density)
+    }
+
+    /// A malformed persisted blob must decode-FAIL to the all-`nil` default (validate-then-default, no
+    /// migration). The store wraps this in `try? decode ?? .init()`, so the throw is the load-bearing
+    /// behaviour: an unknown `theme` raw value invalidates the WHOLE blob.
+    func testAppearancePreferencesMalformedDecodeFails() {
+        // An unknown ThemeChoice raw value → the enum decode throws → the whole struct decode throws.
+        let badTheme = Data(#"{"theme":"midnight"}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(AppearancePreferences.self, from: badTheme))
+        // Wholly non-object JSON also throws.
+        let notObject = Data("[1,2,3]".utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(AppearancePreferences.self, from: notObject))
+        // The store idiom collapses both to the all-nil default.
+        XCTAssertEqual(
+            (try? JSONDecoder().decode(AppearancePreferences.self, from: badTheme)) ?? AppearancePreferences(),
+            AppearancePreferences(),
+        )
+    }
+
     // MARK: Keybindings
 
     func testKeyChordCanonical() {
@@ -62,12 +101,59 @@ final class PreferencesTests: XCTestCase {
     }
 
     /// The same normalisation applies through a full `KeybindingPreferences` decode + the `chord(for:)`
-    /// lookup, so an uppercase override in a persisted prefs file resolves correctly.
+    /// lookup, so an uppercase override in a persisted prefs file resolves correctly. The blob carries the
+    /// CURRENT `schemaVersion` (2) — no-backcompat: a versionless / stale blob is rejected (see below).
     func testKeybindingPreferencesDecodeNormalisesKey() throws {
-        let json = Data(#"{"overrides":{"pane.splitRight":{"key":"D","command":true}}}"#.utf8)
+        let json = Data(#"{"schemaVersion":2,"overrides":{"pane.splitRight":{"key":"D","command":true}}}"#.utf8)
         let prefs = try JSONDecoder().decode(KeybindingPreferences.self, from: json)
         XCTAssertEqual(prefs.chord(for: "pane.splitRight")?.key, "d")
         XCTAssertEqual(prefs.chord(for: "pane.splitRight")?.canonical, "cmd+d")
+    }
+
+    /// No-backcompat (single-user): a persisted blob MISSING the schema version (the pre-W-B shape) or
+    /// carrying a STALE version decode-FAILS — the store's `try? decode ?? .init()` then lands on the empty
+    /// default rather than importing a stale shape. (FAILS on the un-versioned model: it would decode fine.)
+    func testKeybindingPreferencesStaleSchemaDecodeFails() {
+        let versionless = Data(#"{"overrides":{"pane.splitRight":{"key":"d","command":true}}}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(KeybindingPreferences.self, from: versionless))
+        let stale = Data(#"{"schemaVersion":1,"overrides":{"pane.splitRight":{"key":"d","command":true}}}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(KeybindingPreferences.self, from: stale))
+    }
+
+    /// A multi-key SEQUENCE override round-trips and bridges to the registry: `⌃A` then `D` (the tmux split
+    /// idiom). The sequence canonical distinguishes it from a single-chord override, and `sequence(for:)`
+    /// returns the full list. (FAILS on the single-chord-only model — no `sequenceOverrides` / `KeySequence`.)
+    func testKeySequenceOverrideRoundTrips() throws {
+        let seq = KeybindingPreferences.KeySequence(chords: [
+            .init(key: "a", control: true),
+            .init(key: "d"),
+        ])
+        let prefs = KeybindingPreferences(sequenceOverrides: ["pane.splitRight": seq])
+        XCTAssertEqual(try roundTrip(prefs), prefs)
+        XCTAssertEqual(prefs.sequence(for: "pane.splitRight")?.chords.count, 2)
+        XCTAssertTrue(prefs.sequence(for: "pane.splitRight")?.isMultiKey == true)
+        XCTAssertEqual(prefs.sequence(for: "pane.splitRight")?.canonical, "ctrl+a ; d")
+    }
+
+    /// `conflicts()` detects a SEQUENCE-vs-SINGLE collision: a single-chord override and a length-1 sequence
+    /// override of the SAME chord collide (their canonicals match); a multi-key sequence only collides with
+    /// an identical full sequence. (FAILS on the single-chord-only model — sequences aren't compared.)
+    func testKeySequenceVsSingleConflictDetection() {
+        // A single-chord override `⌘X` and a length-1 SEQUENCE override `⌘X` on a different id collide.
+        let collide = KeybindingPreferences(
+            overrides: ["a": .init(key: "x", command: true)],
+            sequenceOverrides: ["b": .init(chords: [.init(key: "x", command: true)])],
+        )
+        let conflicts = collide.conflicts()
+        XCTAssertEqual(conflicts.count, 1)
+        XCTAssertEqual(conflicts["cmd+x"].map { Set($0) }, Set(["a", "b"]))
+
+        // A multi-key sequence does NOT collide with a single chord sharing only its HEAD.
+        let noCollide = KeybindingPreferences(
+            overrides: ["a": .init(key: "a", control: true)], // ⌃A single
+            sequenceOverrides: ["b": .init(chords: [.init(key: "a", control: true), .init(key: "d")])], // ⌃A D
+        )
+        XCTAssertTrue(noCollide.conflicts().isEmpty, "a prefix-head overlap is not a full-sequence collision")
     }
 
     func testKeybindingPreferencesRoundTrip() throws {

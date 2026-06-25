@@ -42,7 +42,17 @@ public enum TerminalConfigBuilder {
     /// with real defaults, unlike the nil-able video env overlay), so the string is deterministic and
     /// fully pins the surface's appearance. An EMPTY family / theme is SKIPPED (an empty `font-family =`
     /// would clear Ghostty's default to nothing) — the one place "unset" is honoured.
-    public static func string(for prefs: TerminalPreferences, keybinds: [String] = []) -> String {
+    /// `backgroundOverride` / `foregroundOverride` (6-hex, no `#`) — when a non-empty value is supplied it
+    /// REPLACES the pref's own `background`/`foreground`. This is the seam the active otty THEME drives
+    /// (``PreferencesStore`` passes the theme's `terminalBackgroundHex`/`terminalForegroundHex`) so the
+    /// terminal cells track the chrome flat-design palette. Omit them (the default `nil`) to keep the pref's
+    /// own colours — existing callers are unchanged.
+    public static func string(
+        for prefs: TerminalPreferences,
+        keybinds: [String] = [],
+        backgroundOverride: String? = nil,
+        foregroundOverride: String? = nil,
+    ) -> String {
         var lines: [String] = []
 
         let family = prefs.fontFamily.trimmingCharacters(in: .whitespaces)
@@ -53,11 +63,11 @@ public enum TerminalConfigBuilder {
         let theme = prefs.theme.trimmingCharacters(in: .whitespaces)
         if !theme.isEmpty { lines.append("theme = \(theme)") }
         // Emit explicit background/foreground AFTER `theme` so they override the named theme (which isn't
-        // bundled and won't resolve) — this is what actually pins the surface to otty's Paper palette. An
-        // empty value is skipped (same "unset is honoured" rule as family/theme).
-        let background = prefs.background.trimmingCharacters(in: .whitespaces)
+        // bundled and won't resolve) — this is what actually pins the surface palette. A non-empty
+        // theme override wins over the pref's own; an empty value is skipped (the "unset is honoured" rule).
+        let background = resolved(backgroundOverride, or: prefs.background)
         if !background.isEmpty { lines.append("background = \(background)") }
-        let foreground = prefs.foreground.trimmingCharacters(in: .whitespaces)
+        let foreground = resolved(foregroundOverride, or: prefs.foreground)
         if !foreground.isEmpty { lines.append("foreground = \(foreground)") }
 
         lines.append("cursor-style = \(prefs.cursorStyle.rawValue)")
@@ -70,6 +80,16 @@ public enum TerminalConfigBuilder {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    /// Resolve a colour value: the `override` (trimmed) if it is non-empty, else the `fallback` (trimmed).
+    /// Lets the theme override win while an empty / absent override transparently keeps the pref's colour.
+    static func resolved(_ override: String?, or fallback: String) -> String {
+        if let override {
+            let trimmed = override.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return fallback.trimmingCharacters(in: .whitespaces)
     }
 
     /// Format the font size without a spurious decimal / exponent: an integral size prints `13`, a

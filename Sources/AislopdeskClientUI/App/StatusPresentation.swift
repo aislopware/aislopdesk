@@ -10,6 +10,9 @@ import AislopdeskAgentDetect
 import AislopdeskWorkspaceCore
 import SwiftUI
 
+// `@MainActor` because the colour mappers read the runtime ``Otty/theme`` (D3) — every call site is a
+// SwiftUI view body, all MainActor.
+@MainActor
 enum StatusPresentation {
     // MARK: Connection
 

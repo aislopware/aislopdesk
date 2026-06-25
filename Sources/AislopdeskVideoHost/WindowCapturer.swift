@@ -145,8 +145,11 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// "almost-static editing" case. DEFAULT OFF ⇒ no measurement, byte-identical. Host-only, no wire.
     /// `AISLOPDESK_ADAPTIVE_QP=1`; `AISLOPDESK_AQP_SHARP` (sharp ceiling, default 22),
     /// `AISLOPDESK_AQP_BLO_MILLI`/`_BHI_MILLI` (change-fraction band ×1000, default 20/300).
+    /// W12: routed through `EnvConfig` (ProcessInfo env → settings overlay → default) so a GUI setting
+    /// can drive it. The default-OFF (`== "1"`) idiom is preserved exactly via `boolDefaultOff`; an
+    /// EMPTY overlay is byte-identical to the old `ProcessInfo` read.
     private static let adaptiveQPEnabled =
-        ProcessInfo.processInfo.environment["AISLOPDESK_ADAPTIVE_QP"] == "1"
+        EnvConfig.boolDefaultOff("AISLOPDESK_ADAPTIVE_QP")
     private static let adaptiveQPSharp: Int = {
         if let s = ProcessInfo.processInfo.environment["AISLOPDESK_AQP_SHARP"], let v = Int(s) {
             return min(51, max(1, v))
@@ -220,8 +223,11 @@ public final class WindowCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @
     /// gate violated (it re-anchored on every dropped duplicate → the quiet window never opened → the
     /// stream froze). REUSES the adaptive-QP measurement, so it needs `AISLOPDESK_ADAPTIVE_QP=1` too.
     /// Gate OFF ⇒ `idleSkip` is always false ⇒ byte-identical to today. `AISLOPDESK_IDLE_SKIP=1`.
+    /// W12: routed through `EnvConfig` (ProcessInfo env → settings overlay → default) so a GUI setting
+    /// can drive it. The default-OFF (`== "1"`) idiom is preserved exactly via `boolDefaultOff`; an
+    /// EMPTY overlay is byte-identical to the old `ProcessInfo` read.
     private static let idleSkipEnabled =
-        ProcessInfo.processInfo.environment["AISLOPDESK_IDLE_SKIP"] == "1"
+        EnvConfig.boolDefaultOff("AISLOPDESK_IDLE_SKIP")
 
     /// Pure eligibility for an idle-skip: a REAL measurement (`measured`) with zero changed rows.
     /// The `measured` guard rejects the FFI's degenerate-frame fallback (which also reports change 0

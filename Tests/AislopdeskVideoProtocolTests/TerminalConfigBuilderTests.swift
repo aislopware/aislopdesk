@@ -93,6 +93,27 @@ final class TerminalConfigBuilderTests: XCTestCase {
         XCTAssertLessThan(themeIdx, bgIdx, "background must follow theme so it overrides it")
     }
 
+    func testThemeBackgroundForegroundOverrideWins() {
+        // The theme-driven override REPLACES the pref's own bg/fg — the otty flat-design seam that pins the
+        // terminal cells to the active chrome palette.
+        let overridden = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(background: "FCFBF9", foreground: "37352F"),
+            backgroundOverride: "2D2A2E",
+            foregroundOverride: "FCFCFA",
+        ))
+        XCTAssertEqual(overridden["background"], "2D2A2E", "the theme override wins over the pref background")
+        XCTAssertEqual(overridden["foreground"], "FCFCFA", "the theme override wins over the pref foreground")
+
+        // An empty / nil override transparently KEEPS the pref's own colour (so existing callers are unchanged).
+        let kept = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(background: "112233", foreground: "AABBCC"),
+            backgroundOverride: "   ",
+            foregroundOverride: nil,
+        ))
+        XCTAssertEqual(kept["background"], "112233", "an empty override keeps the pref colour")
+        XCTAssertEqual(kept["foreground"], "AABBCC", "a nil override keeps the pref colour")
+    }
+
     func testScrollbackLimitClampsNonPositiveToZero() {
         XCTAssertEqual(TerminalConfigBuilder.scrollbackLimitBytes(lines: 0), 0)
         XCTAssertEqual(TerminalConfigBuilder.scrollbackLimitBytes(lines: -5), 0)

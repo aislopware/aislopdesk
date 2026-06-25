@@ -108,7 +108,10 @@ public final class InputInjector: @unchecked Sendable {
     /// 60 fps smooth-scroll — fixing the stutter at the source instead of client-side reprojection.
     /// `0` keeps the legacy direct-post path (byte-identical). Set to `250` to enable. Clamped [60, 1000].
     private static let scrollResampleHz: Int = {
-        guard let s = ProcessInfo.processInfo.environment["AISLOPDESK_SCROLL_RESAMPLE_HZ"], let v = Int(s), v > 0
+        // W12: resolve through `EnvConfig` (ProcessInfo env → settings overlay → nil) so a GUI setting
+        // can drive it; an EMPTY overlay is byte-identical to the raw read. The parse + 0-default +
+        // [60, 1000] clamp idiom is kept VERBATIM (this site clamps, not validate-then-default).
+        guard let s = EnvConfig.string("AISLOPDESK_SCROLL_RESAMPLE_HZ"), let v = Int(s), v > 0
         else { return 0 }
         return max(60, min(1000, v))
     }()

@@ -1,0 +1,156 @@
+// WorkspaceKeyDispatcher — the LIVE keybinding dispatcher (WS-B / B3).
+//
+// THE re-scope: docs/DECISIONS.md previously recorded "there is no NSEvent monitor — a binding absent from
+// the menu is a dead chord" (the ⌘⇧I sync-input note). That rule held while every workspace chord was a
+// single ⌘/⌥-prefixed shortcut a SwiftUI `.commands` menu could express. The WS-B prefix engine breaks that
+// premise: a tmux/zellij-style MULTI-KEY prefix (e.g. ⌃A then D) cannot be expressed by `.keyboardShortcut`,
+// and — more importantly — a `.commands` menu cannot SWALLOW the follow-up key BEFORE the terminal first
+// responder (libghostty's `GhosttyLayerBackedView`) sees it, so the second key of a sequence would leak into
+// the PTY. Hence ONE app-level `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` installed at launch.
+// docs/DECISIONS.md is updated to record this re-scope (per CLAUDE.md "update DECISIONS.md when re-scoping").
+//
+// CONTRACT (the load-bearing rule): a BARE unmodified key MUST pass through untouched — normal typing always
+// reaches the PTY/video responder. The monitor only intercepts:
+//   • the configured prefix (arm / send-prefix double-tap),
+//   • armed-state follow-up keys (resolve a bound chord/sequence, or swallow an unbound one), and
+//   • bound single chords (the existing ⌘D/⌘T/… table, override-aware via `resolvedChordTable`).
+// Everything else returns the event UNCHANGED so it flows to the focused responder.
+//
+// PURITY: the NSEvent→`KeyChord` normalization is factored into the pure, AppKit-free `KeyChordNormalizer`
+// (mirroring GhosttyTerminalView's `ghosttyMods` + `charactersIgnoringModifiers` for parity) so the chord
+// mapping is unit-tested headlessly; the transition logic lives entirely in the pure `PrefixStateMachine`
+// (B2). Only the thin NSEvent→intent wiring lives here.
+
+#if os(macOS)
+import AislopdeskWorkspaceCore
+import AppKit
+
+/// Owns the app-level `.keyDown` local monitor and the pure `PrefixStateMachine`, turning each keystroke
+/// into a `WorkspaceBindingRegistry.route(...)` call (single chord OR completed prefix sequence) or a
+/// passthrough. `@MainActor` — installed once at app launch and retained for the process lifetime.
+@MainActor
+final class WorkspaceKeyDispatcher {
+    private let store: WorkspaceStore
+    /// The view-overlay toggles `route(...)` takes (palette / cheat sheet / find / peek-reply). The live app
+    /// wires these to its `@State`; omitted here keeps those actions graceful no-ops.
+    private let togglePalette: (() -> Void)?
+    private let toggleCheatSheet: (() -> Void)?
+
+    /// The pure prefix machine (B2). Its sequence resolver reads the override-aware `resolvedSequenceTable`
+    /// (single-chord fallback to `resolvedChordTable`) so a rebind — single OR multi-key — takes effect; the
+    /// prefix chord itself is configurable (defaults to the store's live `workspaceKeyPrefix`).
+    private let machine: PrefixStateMachine
+
+    private var monitor: Any?
+
+    /// - Parameter prefix: the configured prefix chord. Pass `nil` (the default) to adopt the store's live
+    ///   ``WorkspaceStore/workspaceKeyPrefix`` so the app monitor and the per-surface ``TerminalKeyInterceptor``
+    ///   arm on ONE shared, configured prefix (no split-brain when the prefix is moved off ⌃A). An explicit
+    ///   value overrides the store (test seam).
+    init(
+        store: WorkspaceStore,
+        prefix: KeyChord? = nil,
+        togglePalette: (() -> Void)? = nil,
+        toggleCheatSheet: (() -> Void)? = nil,
+    ) {
+        self.store = store
+        self.togglePalette = togglePalette
+        self.toggleCheatSheet = toggleCheatSheet
+        // The prefix machine resolves a post-prefix key against the override-aware SEQUENCE table FIRST (so a
+        // multi-key prefix sequence whose tail key is not a standalone binding still fires), falling back to
+        // the SINGLE-CHORD table (so the seeded ⌃A→⌘D, where ⌘D is also a standalone chord, keeps working and
+        // an override is honoured). The prefix itself defaults to the store's live `workspaceKeyPrefix`.
+        machine = PrefixStateMachine(
+            prefix: prefix ?? store.workspaceKeyPrefix,
+            resolveAfterPrefix: { chord in WorkspaceBindingRegistry.resolvedChordTable[chord] },
+            resolveSequenceAfterPrefix: { sequence in WorkspaceBindingRegistry.resolvedSequenceTable[sequence] },
+        )
+    }
+
+    /// Re-point the configured prefix (a settings change moved it off ⌃A). Keeps the app monitor and the
+    /// per-surface interceptors arming on ONE shared prefix.
+    func setPrefix(_ chord: KeyChord) { machine.prefix = chord }
+
+    /// Install the `.keyDown` local monitor. Returning `nil` from the handler SWALLOWS the event; returning
+    /// the event passes it through to the focused responder (the terminal / video pane).
+    func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return handle(event)
+        }
+    }
+
+    /// Remove the monitor (app-lifetime in practice, so rarely called — exposed for completeness / tests).
+    /// No `deinit`-time removal: the monitor captures `self` weakly and the dispatcher lives for the whole
+    /// process, and a `nonisolated deinit` cannot touch the non-`Sendable` monitor token anyway.
+    func teardown() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    /// Map one `NSEvent` keystroke to swallow (`nil`) or pass-through (the event), routing any resolved
+    /// action through `WorkspaceBindingRegistry.route(...)`. Pure transition logic lives in the machine; this
+    /// only does NSEvent→chord normalization + the intent→effect wiring.
+    private func handle(_ event: NSEvent) -> NSEvent? {
+        // A keystroke that does not normalize to a chord we model (a pure modifier, a dead key, …) is left
+        // untouched — never swallow what we cannot classify.
+        guard let chord = KeyChordNormalizer.chord(
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            keyCode: event.keyCode,
+            modifierFlags: KeyChordNormalizer.Modifiers(
+                shift: event.modifierFlags.contains(.shift),
+                control: event.modifierFlags.contains(.control),
+                option: event.modifierFlags.contains(.option),
+                command: event.modifierFlags.contains(.command),
+            ),
+        ) else { return event }
+
+        switch machine.feed(chord, at: ProcessInfo.processInfo.systemUptime) {
+        case let .passthrough(passed):
+            // Idle + an unbound key: a workspace single chord still resolves here (the machine only owns the
+            // prefix-sequence path). A plain/Ctrl-letter the table does not bind falls through to the PTY.
+            if let action = WorkspaceBindingRegistry.resolvedChordTable[passed] {
+                dispatch(action)
+                return nil // swallow — the workspace owns this chord
+            }
+            return event // bare typing / unbound chord → reaches the focused responder UNCHANGED
+
+        case .consumedArm:
+            return nil // armed on the prefix; swallow it (never leak the prefix to the terminal)
+
+        case let .resolved(action):
+            dispatch(action)
+            return nil // a bound key resolved while armed → run + swallow
+
+        case .sendPrefixLiteral:
+            // Double-tap the prefix (tmux `send-prefix`): emit the literal prefix byte to the focused pane,
+            // then swallow. The prefix chord's C0 byte is what the terminal would have received raw.
+            if let bytes = KeyChordNormalizer.literalBytes(for: machine.prefix),
+               let active = activePaneID
+            {
+                store.handle(for: active)?.sendBytes(bytes)
+            }
+            return nil
+
+        case .disarmSwallow:
+            return nil // an unbound key while armed (tmux-faithful: disarm + eat the key, prefix not replayed)
+        }
+    }
+
+    /// The active pane id (the send-prefix-literal target). `nil` when no pane is focused (the send is then a
+    /// no-op, which is correct — there is nothing to type into).
+    private var activePaneID: PaneID? {
+        store.tree.activeSession?.activeTab?.activePane
+    }
+
+    private func dispatch(_ action: WorkspaceAction) {
+        WorkspaceBindingRegistry.route(
+            action,
+            to: store,
+            togglePalette: togglePalette,
+            toggleCheatSheet: toggleCheatSheet,
+        )
+    }
+}
+#endif

@@ -1,0 +1,96 @@
+// KeyChordNormalizer — the PURE NSEvent→`KeyChord` mapping (WS-B / B3), AppKit-free so the chord mapping is
+// unit-tested headlessly. The live dispatcher (`WorkspaceKeyDispatcher`) destructures the `NSEvent` into the
+// primitives this takes (`charactersIgnoringModifiers`, `keyCode`, the four modifier booleans) and feeds
+// them here; this file imports NO AppKit so a ClientUI test can exercise every chord without an `NSEvent`.
+//
+// PARITY with GhosttyTerminalView: the terminal's `keyDown` reads `event.modifierFlags` (mapped by
+// `ghosttyMods`) + `charactersIgnoringModifiers` to key its own chords (the ⌘D/⌘⇧D split branch). We mirror
+// the SAME two signals — modifier flags → `KeyChord.Modifiers`, and `charactersIgnoringModifiers` (which
+// ignores ⌘/⌥/⌃ but NOT ⇧, so a shifted key still reports its base via the lowercase normalization in
+// `KeyChord.init(character:)`) → the base key — so the dispatcher and the terminal agree on what a chord is.
+// Named non-printable keys (Return/Tab/arrows) are mapped from `keyCode` exactly as the keybindings editor's
+// `baseKey(for:)` does, so a rebind captured in the editor matches a chord the dispatcher produces.
+
+#if canImport(SwiftUI)
+import AislopdeskWorkspaceCore
+import Foundation
+
+/// Pure NSEvent→`KeyChord` normalization (no AppKit). The dispatcher passes the destructured event fields;
+/// this returns the framework-neutral `KeyChord` the binding tables key on, or `nil` for a pure-modifier /
+/// unmapped keystroke (which the dispatcher then leaves untouched — never swallowed).
+enum KeyChordNormalizer {
+    /// The four modifier booleans, destructured from `NSEvent.modifierFlags` by the caller so this stays
+    /// AppKit-free and testable. Mirrors the set `ghosttyMods` reads (shift/control/option/command).
+    struct Modifiers {
+        let shift: Bool
+        let control: Bool
+        let option: Bool
+        let command: Bool
+
+        init(shift: Bool = false, control: Bool = false, option: Bool = false, command: Bool = false) {
+            self.shift = shift
+            self.control = control
+            self.option = option
+            self.command = command
+        }
+    }
+
+    /// Build a `KeyChord` from the destructured NSEvent fields, or `nil` when there is no chord to key on (a
+    /// pure-modifier press, or a key with no printable base + no recognised named key).
+    ///
+    /// - `keyCode` maps the non-printable named keys (Return/Tab/arrows) FIRST — exactly the keybindings
+    ///   editor's `baseKey(for:)` codes — so an editor-captured rebind and a dispatcher-produced chord agree.
+    /// - otherwise `charactersIgnoringModifiers` (the ⌘/⌥/⌃-independent base; ⇧ is carried in `modifiers`,
+    ///   not in the char) supplies a single printable character.
+    static func chord(
+        charactersIgnoringModifiers: String?,
+        keyCode: UInt16,
+        modifierFlags: Modifiers,
+    ) -> KeyChord? {
+        var mods: KeyChord.Modifiers = []
+        if modifierFlags.shift { mods.insert(.shift) }
+        if modifierFlags.control { mods.insert(.control) }
+        if modifierFlags.option { mods.insert(.option) }
+        if modifierFlags.command { mods.insert(.command) }
+
+        // Named keys by keyCode (parity with KeybindingsEditorView.baseKey).
+        switch keyCode {
+        case 36,
+             76: return KeyChord(.return, mods) // Return / keypad Enter
+        case 48: return KeyChord(.tab, mods)
+        case 123: return KeyChord(.leftArrow, mods)
+        case 124: return KeyChord(.rightArrow, mods)
+        case 126: return KeyChord(.upArrow, mods)
+        case 125: return KeyChord(.downArrow, mods)
+        default: break
+        }
+
+        // A single printable character. `charactersIgnoringModifiers` ignores ⌘/⌥/⌃ but still reflects ⇧;
+        // `KeyChord.init(character:)` lowercases it, so ⇧-state lives in `mods`, not the char (a shifted
+        // letter and its lowercase produce the same base key, matching the table's case-insensitive lookup).
+        guard let chars = charactersIgnoringModifiers, let first = chars.first, chars.count == 1 else {
+            return nil
+        }
+        // Reject whitespace / control scalars: those are never workspace chords and must pass through to the
+        // terminal (a bare key is normal typing). A Ctrl-letter still reports its printable base here (e.g.
+        // ⌃A → "a") so a Ctrl-prefixed chord/prefix is recognised.
+        guard !first.isWhitespace, first.unicodeScalars.allSatisfy({ $0.value >= 0x20 }) else { return nil }
+        return KeyChord(character: first, mods)
+    }
+
+    /// The literal C0 byte(s) a Ctrl-letter prefix would have sent raw to the PTY (tmux `send-prefix`). For
+    /// the default ⌃A this is `0x01`; for any `Control + <a…z>` it is the letter's position in the alphabet
+    /// (the standard C0 mapping `Ctrl-letter → letter & 0x1F`). Returns `nil` for a non-Ctrl-letter prefix
+    /// (a custom prefix moved off a Ctrl-letter has no single literal byte — the double-tap then no-ops).
+    static func literalBytes(for prefix: KeyChord) -> [UInt8]? {
+        guard prefix.modifiers.contains(.control),
+              !prefix.modifiers.contains(.command),
+              !prefix.modifiers.contains(.option),
+              case let .character(c) = prefix.key,
+              let ascii = c.asciiValue,
+              ascii >= 0x61, ascii <= 0x7A // a…z (already lowercased by KeyChord.init)
+        else { return nil }
+        return [ascii & 0x1F]
+    }
+}
+#endif
