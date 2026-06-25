@@ -1,0 +1,358 @@
+// PaletteView — the floating command palette overlay (E2 / WI-2). Renders the live state of the injected
+// ``OverlayCoordinator`` as the otty-style command palette: a pre-focused search field, zero-state filter
+// chips, and a sectioned, fzf-highlighted result list with keycap chips, a ✓ toggled-state gutter, and a
+// keyboard-selected fill row.
+//
+// Faithful to `spec/user-interface__command-palette.md` (the centered floating panel, the magnifier +
+// blue/accent caret, ALL-CAPS section headers with the WORKING-DIRECTORY badge, per-symbol keycap chips,
+// the subtle selected-row fill) — mapped onto the DARK Monokai-default Otty token layer (`Otty.Surface.card`
+// panel, `Otty.State.selected` row fill, `Otty.State.accent` caret/highlight, `Otty.State.header` section
+// labels) rather than the otty Paper light shown in the screenshot.
+//
+// SEAM discipline: the palette OWNS no state — every read/mutation goes through the coordinator (the single
+// `@Observable` reducer) so the GUI and the headless model can't drift. The scrim, centering, and fade-in
+// are added by the `OverlayHostView` (WI-5) that mounts this; PaletteView IS the panel. `Otty.*` tokens
+// ONLY (raw font/colour/radius literals fail `scripts/check-ds-leaks.sh`).
+
+#if canImport(SwiftUI)
+import AislopdeskWorkspaceCore
+import SwiftUI
+
+struct PaletteView: View {
+    /// The single overlay reducer — bound so the search field can two-way edit `paletteQuery` and `body`
+    /// re-renders on `paletteSelection` / `rankedResults` changes.
+    @Bindable var coordinator: OverlayCoordinator
+    /// The live store — read-only here, for the WORKING-DIRECTORY badge (the focused pane's `lastKnownCwd`).
+    let store: WorkspaceStore
+    /// Whether a row currently shows its ✓ (toggled-on) gutter. Built by the host (WI-5) from the chrome
+    /// state (e.g. `id == "action.toggleSidebar" ? !chrome.sidebarCollapsed : false`) so the pure coordinator
+    /// never learns about chrome. `@MainActor` so the host's closure can read the `@MainActor`
+    /// ``WorkspaceChromeState`` synchronously. Defaults to "nothing toggled" for standalone mounts / previews.
+    var toggledState: @MainActor (PaletteItem) -> Bool = { _ in false }
+
+    /// Pre-focuses the search field on appear so typing reaches it immediately (spec: pre-focused on open).
+    @FocusState private var searchFocused: Bool
+
+    // The fixed panel width (spec: a centered floating panel, ~720pt) + the results viewport cap (~7 rows).
+    private let panelWidth: CGFloat = 720
+    private let resultsMaxHeight: CGFloat = 336
+
+    var body: some View {
+        VStack(spacing: 0) {
+            searchBar
+            Rectangle()
+                .fill(Otty.Line.divider)
+                .frame(height: Otty.Metric.hairline)
+            filterChipsRow
+            resultsList
+        }
+        .frame(width: panelWidth)
+        .background(Otty.Surface.card)
+        .clipShape(RoundedRectangle(cornerRadius: Otty.Metric.radiusCard))
+        .overlay(
+            RoundedRectangle(cornerRadius: Otty.Metric.radiusCard)
+                .stroke(Otty.Line.card, lineWidth: Otty.Metric.hairline),
+        )
+        .shadow(color: Otty.State.shadow, radius: 30, x: 0, y: 12)
+        // Keyboard: the app NSEvent monitor passes bare arrows/Return through (it only swallows the prefix +
+        // bound chords), so they reach this focused overlay. Plain ↩ is handled by the field's `.onSubmit`
+        // (TextField-native, reliable); ⌘↩ is NOT a TextField submit, so it reaches THIS container handler —
+        // guarding on `.command` (else `.ignored`) keeps the two from double-firing.
+        .onKeyPress(.upArrow, phases: .down) { _ in
+            coordinator.moveSelection(-1)
+            return .handled
+        }
+        .onKeyPress(.downArrow, phases: .down) { _ in
+            coordinator.moveSelection(1)
+            return .handled
+        }
+        .onKeyPress(.return, phases: .down) { press in
+            guard press.modifiers.contains(.command) else { return .ignored }
+            coordinator.acceptSelectedKeepingOpen()
+            return .handled
+        }
+        #if os(macOS)
+        .onExitCommand { coordinator.closePalette() }
+        #else
+        .onKeyPress(.escape, phases: .down) { _ in
+            coordinator.closePalette()
+            return .handled
+        }
+        #endif
+    }
+
+    // MARK: - Search bar
+
+    private var searchBar: some View {
+        HStack(spacing: Otty.Metric.space2) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: Otty.Typeface.body))
+                .foregroundStyle(Otty.Text.secondary)
+            TextField("Search for commands…", text: $coordinator.paletteQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: Otty.Typeface.body))
+                .foregroundStyle(Otty.Text.primary)
+                .tint(Otty.State.accent) // the active caret is the accent colour (spec)
+                .focused($searchFocused)
+                .onSubmit { coordinator.acceptSelected() } // plain ↩ runs + closes
+        }
+        .padding(.horizontal, Otty.Metric.space4)
+        .frame(height: 48)
+        .onAppear {
+            // A `@FocusState` set in the same tick the view appears (before its backing responder exists) is
+            // dropped — defer one runloop hop (the same idiom InPaneChooserView uses).
+            DispatchQueue.main.async { searchFocused = true }
+        }
+    }
+
+    // MARK: - Filter chips (zero-state)
+
+    @ViewBuilder private var filterChipsRow: some View {
+        if coordinator.paletteQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+            let filters = coordinator.mixer?.availableFilters ?? []
+            if !filters.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Otty.Metric.space1) {
+                        ForEach(filters, id: \.self) { filter in
+                            filterChip(filter)
+                        }
+                    }
+                    .padding(.horizontal, Otty.Metric.space3)
+                    .padding(.vertical, Otty.Metric.space2)
+                }
+            }
+        }
+    }
+
+    private func filterChip(_ filter: QueryFilter) -> some View {
+        let active = coordinator.paletteFilter == filter
+        return Button {
+            coordinator.selectFilter(filter)
+        } label: {
+            HStack(spacing: Otty.Metric.space1) {
+                Image(systemName: filter.icon)
+                    .font(.system(size: Otty.Typeface.small))
+                Text(filter.label)
+                    .font(.system(size: Otty.Typeface.footnote, weight: .medium))
+            }
+            .foregroundStyle(active ? Otty.Text.primary : Otty.Text.secondary)
+            .padding(.horizontal, Otty.Metric.space2)
+            .padding(.vertical, Otty.Metric.space1)
+            .background(
+                RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
+                    .fill(active ? Otty.State.selected : Otty.Surface.element),
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Results list
+
+    private var resultsList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(displayRows) { entry in
+                        row(entry.ranked, selectableIndex: entry.selectableIndex)
+                    }
+                }
+                .padding(.vertical, Otty.Metric.space1)
+            }
+            .frame(maxHeight: resultsMaxHeight)
+            .onChange(of: coordinator.paletteSelection) { _, _ in
+                guard let id = selectedRowID else { return }
+                withAnimation(Otty.Anim.smallFade) { proxy.scrollTo(id, anchor: .center) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ ranked: RankedRow, selectableIndex: Int?) -> some View {
+        if ranked.item.isSeparator {
+            sectionHeader(ranked.item)
+        } else {
+            actionRow(ranked, selectableIndex: selectableIndex ?? 0)
+        }
+    }
+
+    // MARK: - Section header (+ WORKING DIRECTORY badge)
+
+    private func sectionHeader(_ item: PaletteItem) -> some View {
+        HStack(spacing: Otty.Metric.space2) {
+            Text(item.title.uppercased())
+                .font(.system(size: Otty.Typeface.small, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(Otty.State.header)
+            Spacer(minLength: Otty.Metric.space2)
+            // The contextual cwd badge sits flush-right on the FIRST section header (otty's WORKING DIRECTORY).
+            if item.id == firstSeparatorID, let cwd = workingDirectory {
+                cwdBadge(cwd)
+            }
+        }
+        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.top, Otty.Metric.space3)
+        .padding(.bottom, Otty.Metric.space1)
+        .id(item.id)
+    }
+
+    private func cwdBadge(_ cwd: String) -> some View {
+        HStack(spacing: Otty.Metric.space1) {
+            Image(systemName: "folder")
+                .font(.system(size: Otty.Typeface.small))
+            Text(cwd)
+                .font(.system(size: Otty.Typeface.small))
+                .lineLimit(1)
+        }
+        .foregroundStyle(Otty.Text.secondary)
+        .padding(.horizontal, Otty.Metric.space2)
+        .padding(.vertical, Otty.Metric.space1)
+        .background(
+            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
+                .fill(Otty.Surface.element),
+        )
+    }
+
+    // MARK: - Action row
+
+    private func actionRow(_ ranked: RankedRow, selectableIndex: Int) -> some View {
+        let item = ranked.item
+        let isSelected = selectableIndex == coordinator.paletteSelection
+        return HStack(spacing: Otty.Metric.space2) {
+            // Leading 24pt gutter: the ✓ toggled-state checkmark (Unicode check, dark accent), or empty.
+            ZStack {
+                if toggledState(item) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: Otty.Typeface.footnote, weight: .semibold))
+                        .foregroundStyle(Otty.State.accent)
+                }
+            }
+            .frame(width: 20, alignment: .center)
+
+            highlightedTitle(ranked)
+                .font(.system(size: Otty.Typeface.body))
+                .lineLimit(1)
+
+            Spacer(minLength: Otty.Metric.space2)
+
+            if let shortcut = item.shortcut, !shortcut.isEmpty {
+                HStack(spacing: Otty.Metric.space1) {
+                    ForEach(Array(keycaps(shortcut).enumerated()), id: \.offset) { _, key in
+                        keycapChip(key)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, Otty.Metric.space3)
+        .frame(height: 34)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Otty.Metric.radiusItem)
+                .fill(isSelected ? Otty.State.selected : Color.clear),
+        )
+        .padding(.horizontal, Otty.Metric.space2)
+        .contentShape(Rectangle())
+        // Hover moves the keyboard selection onto this row (spec: hover/tap → run).
+        .onHover { hovering in
+            if hovering { coordinator.paletteSelection = selectableIndex }
+        }
+        .onTapGesture { coordinator.run(item) }
+        .id(item.id)
+    }
+
+    private func keycapChip(_ key: String) -> some View {
+        Text(key)
+            .font(.system(size: Otty.Typeface.small, weight: .medium))
+            .foregroundStyle(Otty.Text.secondary)
+            .frame(minWidth: 18, minHeight: 18)
+            .padding(.horizontal, Otty.Metric.space1)
+            .background(
+                RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
+                    .fill(Otty.Surface.element),
+            )
+    }
+
+    // MARK: - Title highlight (fzf ranges)
+
+    /// The row title as a `Text`, with the fzf-matched code-point runs (``RankedRow/titleRanges``) tinted the
+    /// accent colour + semibold. A range-less row (separator / zero-state / subtitle-only match) renders flat.
+    private func highlightedTitle(_ ranked: RankedRow) -> Text {
+        let title = ranked.item.title
+        guard !ranked.titleRanges.isEmpty else {
+            return Text(title).foregroundStyle(Otty.Text.primary)
+        }
+        // Accumulate `Text` segments then fold with `+` — `Text` has no `+=`, so a `result = result + …`
+        // reassignment can't be a shorthand op; the array fold keeps it clean.
+        var segments: [Text] = []
+        var cursor = title.startIndex
+        for range in ranked.titleRanges where range.lowerBound >= cursor {
+            if cursor < range.lowerBound {
+                segments.append(Text(title[cursor..<range.lowerBound]).foregroundStyle(Otty.Text.primary))
+            }
+            segments.append(Text(title[range]).foregroundStyle(Otty.State.accent).fontWeight(.semibold))
+            cursor = range.upperBound
+        }
+        if cursor < title.endIndex {
+            segments.append(Text(title[cursor...]).foregroundStyle(Otty.Text.primary))
+        }
+        return segments.reduce(Text(verbatim: "")) { $0 + $1 }
+    }
+
+    // MARK: - Derived data
+
+    /// One result row paired with its selectable index (nil for separators). The keyboard selection indexes
+    /// into the non-separator rows, so each action row knows whether it is the selected one. `Identifiable`
+    /// (by the underlying row id) so `ForEach` diffs cleanly without a tuple key path.
+    private struct DisplayRow: Identifiable {
+        let ranked: RankedRow
+        let selectableIndex: Int?
+        var id: String { ranked.id }
+    }
+
+    /// The result rows paired with their selectable index — separators carry `nil`.
+    private var displayRows: [DisplayRow] {
+        var index = 0
+        var out: [DisplayRow] = []
+        for ranked in coordinator.rankedResults {
+            if ranked.item.isSeparator {
+                out.append(DisplayRow(ranked: ranked, selectableIndex: nil))
+            } else {
+                out.append(DisplayRow(ranked: ranked, selectableIndex: index))
+                index += 1
+            }
+        }
+        return out
+    }
+
+    /// The id of the first separator row — the header that carries the WORKING DIRECTORY badge.
+    private var firstSeparatorID: String? {
+        coordinator.rankedResults.first(where: \.item.isSeparator)?.id
+    }
+
+    /// The id of the currently keyboard-selected row (for `scrollTo`), or nil if nothing is selectable.
+    private var selectedRowID: String? {
+        var index = 0
+        for ranked in coordinator.rankedResults where !ranked.item.isSeparator {
+            if index == coordinator.paletteSelection { return ranked.id }
+            index += 1
+        }
+        return nil
+    }
+
+    /// The focused pane's last-known working directory (E4 cwd over the wire; stale-by-RTT is acceptable for
+    /// display). nil ⇒ no badge. Reads the same active-pane chain the rest of the chrome uses.
+    private var workingDirectory: String? {
+        guard let session = store.tree.activeSession,
+              let paneID = session.activeTab?.activePane else { return nil }
+        let cwd = session.specs[paneID]?.lastKnownCwd
+        guard let cwd, !cwd.isEmpty else { return nil }
+        return cwd
+    }
+
+    /// Split a shortcut glyph string ("⇧⌘L", or a space-separated multi-chord sequence "⌃A D") into one chip
+    /// per key symbol (the spec renders each key as its own rounded badge). Whitespace separators are dropped.
+    private func keycaps(_ shortcut: String) -> [String] {
+        shortcut.split(separator: " ").flatMap { chord in chord.map(String.init) }
+    }
+}
+#endif

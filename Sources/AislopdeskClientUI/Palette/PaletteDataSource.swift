@@ -101,10 +101,13 @@ public struct ActionsPaletteSource: PaletteDataSource {
                 store.recordRecentCommand(.toggleZoom)
             },
         ),
-        item(
+        // "Toggle Tabs Panel" toggles the LIVE `WorkspaceChromeState.sidebarCollapsed` (the macOS split + the
+        // palette ✓ both read it) via a typed action the overlay coordinator routes to the injected chrome
+        // closure — NOT the legacy `store.sidebarCollapsed`, which nothing reads on macOS (running it there was
+        // a visible no-op AND its ✓ could never flip from the palette). Same live flag the ⌘⇧L chord drives.
+        PaletteItem(
             id: "action.toggleSidebar", icon: "sidebar.left", title: "Toggle Tabs Panel",
-            shortcut: glyph(.toggleSidebar),
-            run: { store in store.toggleSidebarCollapsed() },
+            subtitle: nil, shortcut: glyph(.toggleSidebar), filter: .actions, action: .toggleSidebar,
         ),
         item(
             id: "action.renamePane", icon: "pencil", title: "Rename Pane",

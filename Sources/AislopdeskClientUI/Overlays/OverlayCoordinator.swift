@@ -68,6 +68,28 @@ public final class OverlayCoordinator {
     /// Resolves the app-global ``ConnectionTarget`` for the picker's discovery query. Injected by the root.
     @ObservationIgnored public var connectionTarget: @MainActor () -> ConnectionTarget = { .default }
 
+    // MARK: Chrome toggles (injected by the root, which owns the live `WorkspaceChromeState`)
+
+    /// Toggles the left navigator / Tabs panel. Bound by ``WorkspaceRootView`` to `chrome.toggleSidebar()` so
+    /// the "Toggle Tabs Panel" palette row flips the SAME live `chrome.sidebarCollapsed` the ⌘⇧L chord + the
+    /// titlebar button + the palette ✓ all read — never the legacy `store.sidebarCollapsed` the native shell
+    /// never reads. The default is a no-op (iOS / tests / previews), so the row is never a trap.
+    @ObservationIgnored public var toggleSidebar: @MainActor () -> Void = {}
+    /// Toggles the right Details / inspector panel. Bound by ``WorkspaceRootView`` to `chrome.toggleInspector()`
+    /// (the same live flag ⌘⇧R + the titlebar button drive). No-op by default (iOS / tests / previews).
+    @ObservationIgnored public var toggleInspector: @MainActor () -> Void = {}
+
+    // MARK: Modal gate
+
+    /// Whether ANY focus-stealing modal overlay is presented — the `OverlayHostView` hit-testing gate (E2 /
+    /// WI-5). True ⇒ the host's ZStack swallows clicks (the scrim + the centered panel); false ⇒ the host is
+    /// transparent to hits so the workspace beneath stays interactive (the always-mounted toast stack is NOT
+    /// a modal, so it is gated separately by the host on `!toasts.isEmpty`). Mirrors the four scrimmed panels
+    /// the host composes — Settings is presented on its own surface, so it is deliberately excluded here.
+    public var anyModalVisible: Bool {
+        paletteVisible || cheatSheetVisible || connectVisible || remotePickerVisible
+    }
+
     // MARK: Toasts
 
     /// The live toast stack (newest last). Bounded; auto-dismissed by the view's timers.
@@ -138,6 +160,21 @@ public final class OverlayCoordinator {
         return mixer.results(query: q, activeFilter: paletteFilter)
     }
 
+    /// The current ordered, sectioned result list WITH each row's fzf title-match ranges (``RankedRow``) —
+    /// the palette view binds THIS (not ``paletteResults``) so it can highlight the matched code points.
+    /// Mirrors ``paletteResults`` exactly but via ``SearchMixer/ranked(query:activeFilter:)``; the zero-state
+    /// (empty query, no filter) wraps each recents/catalog row in a range-less ``RankedRow`` (the highlight is
+    /// only meaningful for a typed query). Kept alongside ``paletteResults`` so existing callers/tests that
+    /// only need the items are unaffected.
+    public var rankedResults: [RankedRow] {
+        guard let mixer else { return [] }
+        let q = paletteQuery.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty, paletteFilter == nil {
+            return zeroStateResults().map { RankedRow(item: $0) }
+        }
+        return mixer.ranked(query: q, activeFilter: paletteFilter)
+    }
+
     /// Zero-state (empty query, no filter): the recent commands first, then the full action catalog under a
     /// separator (warp-overlays-actions.md §1.5 — recents + suggested).
     private func zeroStateResults() -> [PaletteItem] {
@@ -153,12 +190,15 @@ public final class OverlayCoordinator {
     }
 
     /// Map the store's `recentCommands` ring onto the action catalog rows (by matching the verb), in MRU
-    /// order. Verbs not present in the catalog (focus/cycle/etc.) are skipped.
+    /// order. Verbs not present in the catalog (focus/cycle/etc.) are skipped. Each row is re-id'd into the
+    /// `recent.*` namespace (``PaletteItem/namespacedForRecents()``) so a recents row and its identical
+    /// Actions-catalog row never collide on the same `ForEach`/`.id` key — the action is preserved, so accept
+    /// still runs the catalog verb.
     private func recentPaletteItems() -> [PaletteItem] {
         guard let store else { return [] }
         var out: [PaletteItem] = []
         for command in store.recentCommands {
-            if let item = Self.catalogItem(for: command) { out.append(item) }
+            if let item = Self.catalogItem(for: command) { out.append(item.namespacedForRecents()) }
         }
         return out
     }
@@ -197,24 +237,45 @@ public final class OverlayCoordinator {
         paletteSelection = max(0, min(n - 1, next))
     }
 
-    /// Accept the currently keyboard-selected row.
+    /// Accept the currently keyboard-selected row (the ↩ chord): runs it AND closes the palette.
     public func acceptSelected() {
         let rows = selectableResults
         guard paletteSelection >= 0, paletteSelection < rows.count else { return }
         run(rows[paletteSelection])
     }
 
+    /// Accept the keyboard-selected row but KEEP the palette open (the ⌘↩ chord) so the user can chain
+    /// another action without re-opening (Warp command-chaining — spec §Behaviors / ES-E2-2). Runs the row
+    /// with `keepOpen: true` so a `.store`/`.command` row mutates the store WITHOUT closing; the query is left
+    /// intact for the next ⌘↩, and the selection is re-clamped in case the selectable set shrank.
+    public func acceptSelectedKeepingOpen() {
+        let rows = selectableResults
+        guard paletteSelection >= 0, paletteSelection < rows.count else { return }
+        run(rows[paletteSelection], keepOpen: true)
+        moveSelection(0) // re-clamp to the (possibly shrunk) selectable set; never leaves a stale index
+    }
+
     /// Run one palette row's action against the store, then close (or apply a filter in place). Separators
-    /// are no-ops. This is the ONE place a palette intent becomes a store mutation.
-    public func run(_ item: PaletteItem) {
+    /// are no-ops. This is the ONE place a palette intent becomes a store mutation. `keepOpen` (the ⌘↩
+    /// chaining path) suppresses the close for the `.store`/`.command`/chrome-toggle rows — the chainable
+    /// kinds; the overlay-switching rows (settings/connect/cheat/picker) always close-then-open regardless.
+    /// The chrome-toggle rows route through the injected ``toggleSidebar``/``toggleInspector`` closures so they
+    /// flip the LIVE `WorkspaceChromeState` the split + the ✓ read — not the dead `store.sidebarCollapsed`.
+    public func run(_ item: PaletteItem, keepOpen: Bool = false) {
         guard !item.isSeparator else { return }
         switch item.action {
         case let .store(closure):
             if let store { closure(store) }
-            closePalette()
+            if !keepOpen { closePalette() }
         case let .command(command):
             if let store { apply(command, to: store) }
-            closePalette()
+            if !keepOpen { closePalette() }
+        case .toggleSidebar:
+            toggleSidebar()
+            if !keepOpen { closePalette() }
+        case .toggleInspector:
+            toggleInspector()
+            if !keepOpen { closePalette() }
         case let .selectFilter(filter):
             paletteFilter = filter
             paletteSelection = 0

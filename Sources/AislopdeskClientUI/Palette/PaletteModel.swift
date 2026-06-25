@@ -62,6 +62,14 @@ public enum PaletteAction: Sendable {
     /// Open the Remote-Window picker (L6 / W1 — handled by the overlay coordinator; a pick opens a
     /// `.remoteGUI` pane streaming the chosen host window).
     case openRemotePicker
+    /// Toggle the left navigator / Tabs panel — routed by the overlay coordinator to the LIVE
+    /// ``WorkspaceChromeState`` (the macOS split + the palette's ✓ both read `chrome.sidebarCollapsed`), NOT
+    /// the legacy `store.sidebarCollapsed` the native shell never reads. Same live flag the ⌘⇧L chord + the
+    /// titlebar button drive, so the run path, the chord, the button, and the ✓ stay in lockstep.
+    case toggleSidebar
+    /// Toggle the right Details / inspector panel — routed by the overlay coordinator to the live
+    /// ``WorkspaceChromeState`` `inspectorCollapsed`, the same flag ⌘⇧R + the titlebar button drive.
+    case toggleInspector
     /// A non-interactable separator/zero row.
     case noOp
 }
@@ -114,6 +122,24 @@ public struct PaletteItem: Identifiable, Sendable {
             filter: filter,
             action: .noOp,
             isSeparator: true,
+        )
+    }
+
+    /// A copy of this row carrying a recents-namespaced id (`"recent.<id>"`) — used ONLY by the zero-state
+    /// Recents section. The same catalog row can appear under BOTH "Recents" and "Actions"; without distinct
+    /// ids the two collide in the palette's `ForEach`/`.id(_:)` (SwiftUI's documented "the ID occurs multiple
+    /// times … undefined results" — rows dropped/mis-diffed and an ambiguous `scrollTo` target). Everything
+    /// else (icon/title/shortcut/`action`) is preserved verbatim so accept still runs the catalog verb.
+    public func namespacedForRecents() -> Self {
+        Self(
+            id: "recent.\(id)",
+            icon: icon,
+            title: title,
+            subtitle: subtitle,
+            shortcut: shortcut,
+            filter: filter,
+            action: action,
+            isSeparator: isSeparator,
         )
     }
 }

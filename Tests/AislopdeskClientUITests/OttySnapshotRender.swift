@@ -6,6 +6,7 @@
 // component regression shows up visually. It is NOT a pixel-diff CI gate.
 
 #if canImport(SwiftUI) && canImport(AppKit)
+import AislopdeskWorkspaceCore
 import AppKit
 import SFSafeSymbols
 import SwiftUI
@@ -31,6 +32,67 @@ final class OttySnapshotRender: XCTestCase {
         }
         try png.write(to: URL(fileURLWithPath: out))
         print("OTTY_SNAPSHOT_WRITTEN \(out)")
+    }
+
+    // MARK: - E2 / WI-6: opt-in render of the new overlay panels (palette + cheat sheet)
+
+    /// Renders the live ``PaletteView`` (typed query, fzf-highlighted rows, a ✓ toggled gutter) and the
+    /// ``KeyboardCheatSheetView`` (the full grouped binding table) on a dimmed scrim so the E2 overlays can be
+    /// eyeballed headlessly — the SAME `ImageRenderer` opt-in idiom as `testRenderOttyShowcase`, NO CI gate.
+    /// Opt-in via a directory (not the showcase's single-file `OTTY_SNAPSHOT_OUT`, which it would otherwise
+    /// clobber): `OTTY_OVERLAY_SNAPSHOT_DIR=<dir>` writes `palette.png` + `cheatsheet.png` into it. Inert
+    /// (skipped) otherwise. Built over a headless tree-model store (reusing this target's `MountTestPaneSession`
+    /// session double) so it never opens a socket or touches video/Metal (the hang-safety rule).
+    @MainActor
+    func testRenderOverlayPanels() throws {
+        guard let dir = ProcessInfo.processInfo.environment["OTTY_OVERLAY_SNAPSHOT_DIR"] else {
+            throw XCTSkip("set OTTY_OVERLAY_SNAPSHOT_DIR=<dir> to render the E2 overlay panels")
+        }
+
+        let store = WorkspaceStore(liveModel: .tree, makeSession: { MountTestPaneSession($0) })
+        let overlay = OverlayCoordinator(store: store)
+        overlay.openPalette()
+        overlay.paletteQuery = "split" // a typed query so the fzf highlight runs render
+
+        // The sidebar row shows its ✓ — exercise the toggled-state gutter the host wires from chrome.
+        let palette = PaletteView(
+            coordinator: overlay,
+            store: store,
+            toggledState: { $0.id == "action.toggleSidebar" },
+        )
+        try render(scrimmed(palette), size: CGSize(width: 920, height: 620), to: dir, named: "palette.png")
+
+        let cheat = KeyboardCheatSheetView(coordinator: overlay)
+        try render(scrimmed(cheat), size: CGSize(width: 920, height: 700), to: dir, named: "cheatsheet.png")
+    }
+
+    /// Center an overlay panel on the dimmed scrim + window background, the way `OverlayHostView` composes it.
+    @MainActor
+    private func scrimmed(_ panel: some View) -> some View {
+        ZStack {
+            Otty.Surface.window
+            Otty.State.shadow // the host's dim scrim role
+            panel
+        }
+    }
+
+    /// Rasterize `content` at @2x and write a PNG into `dir`. Fails (not skips) if the renderer yields nothing —
+    /// reaching here means the env opt-in was set, so a nil image is a real regression in the panel's layout.
+    @MainActor
+    private func render(_ content: some View, size: CGSize, to dir: String, named name: String) throws {
+        let renderer = ImageRenderer(content: content.frame(width: size.width, height: size.height))
+        renderer.scale = 2
+        guard let image = renderer.nsImage,
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:])
+        else {
+            XCTFail("ImageRenderer produced no image for \(name)")
+            return
+        }
+        let out = URL(fileURLWithPath: dir).appendingPathComponent(name)
+        try png.write(to: out)
+        print("OTTY_SNAPSHOT_WRITTEN \(out.path)")
     }
 }
 

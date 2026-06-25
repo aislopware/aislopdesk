@@ -41,6 +41,13 @@ public struct AislopdeskClientApp: App {
     #endif
     @State private var appLaunchMonitor: AppLaunchMonitor
     @State private var preferences: PreferencesStore
+    /// E2/WI-1: the single overlay coordinator — command palette (⌘⇧P), keyboard cheat sheet (⌘/), the
+    /// toast stack, and the Connect-to-Host / remote-window-picker modals. Built once in `init()` after the
+    /// store + app connection, injected into the scene env (`\.overlayCoordinator`) and handed to
+    /// ``WorkspaceRootView``. The macOS ``WorkspaceKeyDispatcher`` threads its palette/cheat toggles so the
+    /// SAME NSEvent monitor that owns every chord drives the overlays; the store's background-event sinks
+    /// ALSO push an in-app toast through it. The panel views + the host mount land in WI-2…WI-5.
+    @State private var overlayCoordinator: OverlayCoordinator
     #if os(macOS)
     /// WS-B / B3: the live keybinding dispatcher. ONE app-level `NSEvent` `.keyDown` local monitor (the
     /// re-scope of DECISIONS.md's "no NSEvent monitor" rule — a multi-key prefix can't be a `.commands`
@@ -156,6 +163,14 @@ public struct AislopdeskClientApp: App {
             return false
         }
 
+        // E2/WI-1: the single overlay coordinator. Built HERE — after the store + app connection exist — so
+        // the macOS dispatcher (below) can thread its ⌘⇧P / ⌘/ toggles into the SAME NSEvent monitor that
+        // owns every chord, and the store's background-event sinks can ALSO surface an in-app toast.
+        // `connectionTarget` lets the remote-window-picker modal query the live host. Retained for the scene
+        // lifetime by `_overlayCoordinator` below.
+        let overlay = OverlayCoordinator(store: store)
+        overlay.connectionTarget = { [weak appConnection] in appConnection?.target ?? .default }
+
         #if os(macOS)
         // EXPLICIT NOTIFICATIONS (OSC 9 / OSC 777) + long-command + agent-attention → local macOS
         // notifications, tagged with the pane id so a click reveals the pane (the router routes back).
@@ -164,29 +179,61 @@ public struct AislopdeskClientApp: App {
         router.onReveal = { [weak store] idString in store?.revealPane(byIDString: idString) }
         UNUserNotificationCenter.current().delegate = router
         Self.notificationRouter = router
-        store.onPaneNotification = { paneID, paneTitle, title, body in
+        #endif
+
+        // E2/WI-1 (ES-E2-5): surface the SAME background events as IN-APP toasts on BOTH platforms. A toast
+        // is in-app UI, INDEPENDENT of the OS-notification setting — push it unconditionally; the macOS
+        // `UNUserNotification` stays gated on `SettingsKey.oscNotificationsEnabled` exactly as before. Each
+        // toast carries a stable `pane.<key>` id so a newer event for the same pane REPLACES the old one (the
+        // coordinator's de-dupe), and a flavour that matches the event class.
+        store.onPaneNotification = { [weak overlay] paneID, paneTitle, title, body in
+            overlay?.pushToast(Toast(
+                id: "pane.\(paneID.raw.uuidString)", flavor: .default, title: title, body: body,
+            ))
+            #if os(macOS)
             guard SettingsKey.oscNotificationsEnabled else { return }
             explicitNotifier.notifyExplicit(
                 paneIDKey: paneID.raw.uuidString, paneTitle: paneTitle, title: title, body: body,
             )
+            #endif
         }
-        store.onLongCommandNotify = { paneIDKey, paneTitle, exitCode, durationMS in
+        store.onLongCommandNotify = { [weak overlay] paneIDKey, paneTitle, exitCode, durationMS in
+            // The store fires this ONLY for an unfocused, genuinely-long command (its own gate), so a toast
+            // here is the background "your build finished" cue. A clean exit is `.success`; a non-zero exit is
+            // `.error` (a green checkmark on a failed build would mislead).
+            let secs = Int((Double(durationMS) / 1000).rounded())
+            let cleanExit = (exitCode ?? 0) == 0
+            overlay?.pushToast(Toast(
+                id: "pane.\(paneIDKey)",
+                flavor: cleanExit ? .success : .error,
+                title: paneTitle.isEmpty ? "Command finished" : paneTitle,
+                body: "command finished (exit \(exitCode.map(String.init) ?? "?"), \(secs)s)",
+            ))
+            #if os(macOS)
             explicitNotifier.notifyIfLong(
                 paneTitle: paneTitle, exitCode: exitCode, durationMS: durationMS, paneIDKey: paneIDKey,
             )
+            #endif
         }
-        store.onAgentAttention = { paneIDKey, name, needsInput, detail in
-            guard SettingsKey.oscNotificationsEnabled else { return }
+        store.onAgentAttention = { [weak overlay] paneIDKey, name, needsInput, detail in
             let headline = needsInput ? "needs your input" : "finished"
             let body: String = {
                 guard let detail, !detail.isEmpty else { return headline }
                 return "\(headline) — \(detail)"
             }()
+            // Agent-needs-input is the highest-signal background event → `.attention`; a finish is `.success`.
+            overlay?.pushToast(Toast(
+                id: "pane.\(paneIDKey)",
+                flavor: needsInput ? .attention : .success,
+                title: name, body: body,
+            ))
+            #if os(macOS)
+            guard SettingsKey.oscNotificationsEnabled else { return }
             explicitNotifier.notifyExplicit(
                 paneIDKey: paneIDKey, paneTitle: name, title: name, body: body,
             )
+            #endif
         }
-        #endif
 
         // The system-dialog monitor + app-launch monitor: poll the host while connected.
         let monitor = SystemDialogMonitor(
@@ -207,6 +254,7 @@ public struct AislopdeskClientApp: App {
         )
         _store = State(initialValue: store)
         _connection = State(initialValue: appConnection)
+        _overlayCoordinator = State(initialValue: overlay)
         _dialogMonitor = State(initialValue: monitor)
         _appLaunchMonitor = State(initialValue: launchMonitor)
         #if os(macOS)
@@ -218,11 +266,16 @@ public struct AislopdeskClientApp: App {
         //
         // E1/WI-7: the dispatcher's `textBinding`/`unbind` resolution is LIVE here regardless of E2 — a user
         // `text:`/`csi:`/`esc:` config binding injects via `sendBytes` and an `unbind:` passes through, both
-        // resolved from `WorkspaceBindingRegistry.activeOverrides`. The constructor also accepts the E2
-        // overlay toggles (`toggleFind`/`togglePeekReply`, alongside the existing palette/cheat); E2 threads
-        // them to the root view's `@State` from THIS mount point. They are nil in E1 (those overlays don't
-        // exist yet) → the corresponding actions stay graceful no-ops via `route`, never dead chords.
-        _keyDispatcher = State(initialValue: WorkspaceKeyDispatcher(store: store))
+        // resolved from `WorkspaceBindingRegistry.activeOverrides`. E2/WI-1 threads the palette (⌘⇧P) +
+        // cheat-sheet (⌘/) toggles into THIS monitor so the overlay layer is driven by the SAME single chord
+        // owner (never a competing `.keyboardShortcut`). `toggleFind`/`togglePeekReply` stay nil — their
+        // `route` arms already fall back to the tree-path behaviour (`requestFindInActivePane()` /
+        // `jumpToOldestAttentionPane()`); the Find BAR view lands in E5.
+        _keyDispatcher = State(initialValue: WorkspaceKeyDispatcher(
+            store: store,
+            togglePalette: { [overlay] in overlay.togglePalette() },
+            toggleCheatSheet: { [overlay] in overlay.toggleCheatSheet() },
+        ))
         #endif
     }
 
@@ -236,11 +289,12 @@ public struct AislopdeskClientApp: App {
         WorkspaceRootView(
             store: store,
             connection: connection,
+            overlay: overlayCoordinator,
             installDetailsToggle: { [keyDispatcher] toggle in keyDispatcher.setToggleDetailsPanel(toggle) },
             installSidebarToggle: { [keyDispatcher] toggle in keyDispatcher.setToggleSidebar(toggle) },
         )
         #else
-        WorkspaceRootView(store: store, connection: connection)
+        WorkspaceRootView(store: store, connection: connection, overlay: overlayCoordinator)
         #endif
     }
 
@@ -250,6 +304,10 @@ public struct AislopdeskClientApp: App {
                 // L4: hand the single live PreferencesStore to deep views (the agent footer's W4
                 // notification dismissal/enable persistence reads it via `\.preferencesStore`).
                 .preferencesStore(preferences)
+                // E2/WI-1: inject the single overlay coordinator so deep views (the agent footer's "open
+                // settings" hook, future toast emitters) reach it via `\.overlayCoordinator`. The host view
+                // that renders the palette / cheat sheet / toasts lands in WI-5.
+                .overlayCoordinator(overlayCoordinator)
                 // L6: the otty chrome is a PINNED palette (default Monokai Pro Classic — flat dark filter).
                 // Pin the window's colour scheme to the active theme so every system semantic colour we don't
                 // tokenize resolves with the right contrast, and route the global tint to the otty accent so
@@ -334,9 +392,16 @@ public struct AislopdeskClientApp: App {
         // E1/N6 (OPTIONAL): the discoverability-only menu bar over the SAME binding registry the dispatcher
         // reads. Each item routes through `WorkspaceBindingRegistry.route` with NO `.keyboardShortcut` — the
         // `NSEvent` monitor (`keyDispatcher`) owns chord dispatch (incl. the multi-key prefix), so a menu
-        // shortcut would double-fire / swallow a prefix tail. The overlay toggles are nil in E1 (those
-        // overlays land in later epics) → those actions stay graceful no-ops via `route`, never dead items.
-        .commands { WorkspaceCommands(store: store) }
+        // shortcut would double-fire / swallow a prefix tail. E2/WI-1 threads the palette + cheat-sheet
+        // toggles (capturing the SAME coordinator the NSEvent dispatcher drives) so the menu items toggle the
+        // identical overlays — cheap parity. `toggleFind`/`togglePeekReply` stay nil (tree-path route arms).
+        .commands {
+            WorkspaceCommands(
+                store: store,
+                togglePalette: { [overlayCoordinator] in overlayCoordinator.togglePalette() },
+                toggleCheatSheet: { [overlayCoordinator] in overlayCoordinator.toggleCheatSheet() },
+            )
+        }
         #endif
 
         // D4: the GUI Settings surface (⌘,). A STOCK SwiftUI `Settings` scene — the main window is

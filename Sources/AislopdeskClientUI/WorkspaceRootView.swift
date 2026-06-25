@@ -19,6 +19,11 @@ import SwiftUI
 public struct WorkspaceRootView: View {
     let store: WorkspaceStore
     let connection: AppConnection
+    /// The single ``OverlayCoordinator`` (command palette / cheat sheet / toasts / connect / remote-window
+    /// picker), built once at app `init` and injected into the scene env. WI-1 threads it so the iOS
+    /// connection pill (and any macOS status surface) can open the Connect-to-Host overlay via
+    /// ``OverlayCoordinator/openConnect()``; the `OverlayHostView` mount that renders the panels lands in WI-5.
+    let overlay: OverlayCoordinator
     /// The two split-collapse flags the toolbar toggles drive (owned here, read by the representable).
     @State private var chrome = WorkspaceChromeState()
     /// Installs the Details-panel toggle on the app-level keybinding dispatcher. The dispatcher is built at
@@ -36,11 +41,13 @@ public struct WorkspaceRootView: View {
     public init(
         store: WorkspaceStore,
         connection: AppConnection,
+        overlay: OverlayCoordinator,
         installDetailsToggle: ((@escaping () -> Void) -> Void)? = nil,
         installSidebarToggle: ((@escaping () -> Void) -> Void)? = nil,
     ) {
         self.store = store
         self.connection = connection
+        self.overlay = overlay
         self.installDetailsToggle = installDetailsToggle
         self.installSidebarToggle = installSidebarToggle
     }
@@ -64,6 +71,18 @@ public struct WorkspaceRootView: View {
         // titlebar (`OttyTitlebar`, hosted inside `ContentColumn`) IS the chrome.
         WorkspaceSplitRepresentable(store: store, connection: connection, chrome: chrome)
             .ignoresSafeArea()
+            // The floating-overlay layer (palette / cheat sheet / connect / remote-window picker / toasts)
+            // floats above the AppKit split — SwiftUI overlays compose over an `NSViewControllerRepresentable`.
+            // `toggledState` is built from the LIVE chrome so the palette's ✓ gutter tracks the real
+            // sidebar/inspector visibility.
+            .overlay {
+                OverlayHostView(
+                    store: store,
+                    connection: connection,
+                    coordinator: overlay,
+                    toggledState: OverlayHostView.toggledState(for: chrome),
+                )
+            }
             // Wire ⌘⇧R (Toggle Details) + ⌘⇧L (Toggle Tabs Panel / sidebar) to the live chrome once it
             // exists. The dispatcher is built at app `init` (before `chrome`), so we hand it the toggles here
             // — `[chrome]` captures the same @Observable instance the representable + titlebar read, so the
@@ -78,6 +97,12 @@ public struct WorkspaceRootView: View {
             InspectorColumn(store: store, connection: connection)
         }
         .toolbar { iosToolbar }
+        // The floating-overlay layer mounts on iOS too (palette / connect / remote-window picker / toasts read
+        // as a ZStack overlay on both platforms). No chrome-driven ✓ gutter yet on iOS, so the toggled-state
+        // predicate is the no-op default.
+        .overlay {
+            OverlayHostView(store: store, connection: connection, coordinator: overlay)
+        }
         #endif
     }
 
@@ -89,6 +114,11 @@ public struct WorkspaceRootView: View {
     private func wireChromeToggles() {
         installDetailsToggle? { [chrome] in chrome.toggleInspector() }
         installSidebarToggle? { [chrome] in chrome.toggleSidebar() }
+        // Route the palette's chrome-toggle rows through the SAME live `chrome` the chords + titlebar drive,
+        // so "Toggle Tabs Panel"/"Toggle Details Panel" from the palette flip the flag the split + the ✓ read
+        // (not the dead `store.sidebarCollapsed`). Bound here because `chrome` predates the app-built overlay.
+        overlay.toggleSidebar = { [chrome] in chrome.toggleSidebar() }
+        overlay.toggleInspector = { [chrome] in chrome.toggleInspector() }
     }
     #endif
 
@@ -117,10 +147,11 @@ public struct WorkspaceRootView: View {
     }
     #endif
 
-    /// Opens the connect-host flow. No connect overlay exists in the native rebuild yet (the old gate was
-    /// deleted in L0); a give-up state still runs Retry inside the pill. TODO(L4b): open connect overlay.
+    /// Opens the Connect-to-Host flow via the injected coordinator (sets `overlay.connectVisible`). The
+    /// `ConnectHostView` the flag drives lands in WI-5; WI-1 only routes the affordance here. A give-up
+    /// state still runs Retry inside the pill itself.
     private func openConnect() {
-        // TODO(L4b): open the Connect-to-Host overlay (host/port editor). No-op until L4b adds it.
+        overlay.openConnect()
     }
 }
 
