@@ -122,11 +122,37 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
         }
     }
 
+    /// A literal-byte override (E1/WI-6): a chord bound to send raw bytes to the focused terminal instead
+    /// of firing a named action — otty's `text:` / `csi:` / `esc:` config bindings (see
+    /// `spec/customization__custom-keybindings.md`). The bytes are RESOLVED at parse time (by
+    /// ``KeybindGrammar``, which prepends `ESC` / `ESC [` for the `esc:` / `csi:` kinds), so the dispatcher
+    /// just hands ``payload`` to `sendBytes` — no escape re-interpretation at dispatch. ``kind`` is kept for
+    /// the Settings UI to round-trip the prefix the user typed; the dispatcher only reads ``payload``.
+    public struct TextBinding: Codable, Sendable, Equatable, Hashable {
+        /// Which config prefix produced this binding — for UI display only (``payload`` already carries the
+        /// fully-resolved bytes, ESC/CSI lead bytes included).
+        public enum Kind: String, Codable, Sendable {
+            case text
+            case csi
+            case esc
+        }
+
+        public var kind: Kind
+        /// The fully-resolved bytes to send (UTF-8 of a `text:`, or ESC/ESC-`[` prefixed for `esc:`/`csi:`).
+        public var payload: [UInt8]
+
+        public init(kind: Kind, payload: [UInt8]) {
+            self.kind = kind
+            self.payload = payload
+        }
+    }
+
     /// The persisted schema version. No-backcompat (single-user): a stored blob whose version is not the
     /// CURRENT one decode-FAILS so the store falls back to a default (empty) override set rather than
-    /// mis-reading a stale shape. Bumped to 2 for the W-B sequence model (the old shape had no version field
-    /// and no sequence overrides, so an old blob — version absent / 1 — is intentionally rejected).
-    public static let currentSchemaVersion = 2
+    /// mis-reading a stale shape. Bumped to 2 for the W-B sequence model, then to 3 for E1/WI-6's
+    /// ``textBindings`` + ``unbinds`` maps (the old shape had no version field, no sequence overrides, and no
+    /// text/unbind maps, so any old blob — version absent / 1 / 2 — is intentionally rejected).
+    public static let currentSchemaVersion = 3
 
     /// Sparse override map: `bindingID → chord`. An id absent here uses the W6 registry default. A
     /// single-chord override (the editor's common case). For a MULTI-KEY override see ``sequenceOverrides``.
@@ -137,24 +163,42 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
     /// override for the same id (a sequence is the richer rebind). Empty by default ⇒ no behaviour change.
     public var sequenceOverrides: [String: KeySequence]
 
+    /// E1/WI-6: literal-byte bindings, keyed by the CHORD (not a registry binding id — a text binding has
+    /// no action id). The dispatcher consults this BEFORE the action table: a chord present here sends its
+    /// ``TextBinding/payload`` via `sendBytes` and swallows the event. Empty by default ⇒ no behaviour
+    /// change. (JSON-encodes as a flat key/value array since the key is not a `String` — round-trips fine.)
+    public var textBindings: [KeyChord: TextBinding]
+
+    /// E1/WI-6: chords whose DEFAULT action is suppressed (otty's `unbind:<chord>`). The dispatcher passes
+    /// a matching event straight through (the default responder chain handles it) instead of firing the
+    /// registry action. Empty by default ⇒ no behaviour change.
+    public var unbinds: Set<KeyChord>
+
     public init(
         overrides: [String: KeyChord] = [:],
         sequenceOverrides: [String: KeySequence] = [:],
+        textBindings: [KeyChord: TextBinding] = [:],
+        unbinds: Set<KeyChord> = [],
     ) {
         self.overrides = overrides
         self.sequenceOverrides = sequenceOverrides
+        self.textBindings = textBindings
+        self.unbinds = unbinds
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case overrides
         case sequenceOverrides
+        case textBindings
+        case unbinds
     }
 
     /// Decode with a STRICT schema-version gate (no-backcompat): a blob missing the version field (the
     /// pre-W-B shape) or carrying a version ≠ ``currentSchemaVersion`` THROWS, so the store's
     /// `try? decode ?? .init()` lands on the empty default rather than silently importing a stale shape.
-    /// `sequenceOverrides` is optional-in-decode (a forward-only additive field within v2 is fine).
+    /// `sequenceOverrides` / `textBindings` / `unbinds` are optional-in-decode (forward-only additive fields
+    /// within v3 are fine), defaulting to empty when absent.
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let version = try c.decodeIfPresent(Int.self, forKey: .schemaVersion)
@@ -167,6 +211,8 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
         }
         overrides = try c.decodeIfPresent([String: KeyChord].self, forKey: .overrides) ?? [:]
         sequenceOverrides = try c.decodeIfPresent([String: KeySequence].self, forKey: .sequenceOverrides) ?? [:]
+        textBindings = try c.decodeIfPresent([KeyChord: TextBinding].self, forKey: .textBindings) ?? [:]
+        unbinds = try c.decodeIfPresent(Set<KeyChord>.self, forKey: .unbinds) ?? []
     }
 
     /// Encode WITH the current schema version stamped (so a round-trip / future read passes the gate).
@@ -175,6 +221,8 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
         try c.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
         try c.encode(overrides, forKey: .overrides)
         try c.encode(sequenceOverrides, forKey: .sequenceOverrides)
+        try c.encode(textBindings, forKey: .textBindings)
+        try c.encode(unbinds, forKey: .unbinds)
     }
 
     /// The single-chord override for a binding id, or `nil` (⇒ use the registry default). A MULTI-KEY
@@ -197,6 +245,11 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
     /// Only considers explicit overrides — registry defaults are W6's to reconcile. A single-chord override
     /// and a 1-element SEQUENCE override of the same chord collide (their canonicals match); a multi-key
     /// sequence collides only with another binding bound to the IDENTICAL full sequence.
+    ///
+    /// E1/WI-6: ``textBindings`` and ``unbinds`` participate too — they own the SAME chord namespace as a
+    /// single-chord action override, so a text binding (or an unbind) on a chord that an action override
+    /// also resolves to is a real clash the UI must surface. They fold in under synthetic ids
+    /// (`"text:<canonical>"` / `"unbind:<canonical>"`) so a collision lists every contender on that chord.
     public func conflicts() -> [String: [String]] {
         var byCanonical: [String: [String]] = [:]
         // Iterate the unified accessor so a single-chord and a sequence override compare on one canonical
@@ -205,6 +258,14 @@ public struct KeybindingPreferences: Codable, Sendable, Equatable {
         for id in ids {
             guard let seq = sequence(for: id) else { continue }
             byCanonical[seq.canonical, default: []].append(id)
+        }
+        // Text bindings and unbinds key by chord directly — fold each under a synthetic id so a clash with
+        // an action override (or with each other) shows up on the same canonical bucket.
+        for chord in textBindings.keys {
+            byCanonical[chord.canonical, default: []].append("text:\(chord.canonical)")
+        }
+        for chord in unbinds {
+            byCanonical[chord.canonical, default: []].append("unbind:\(chord.canonical)")
         }
         return byCanonical.filter { $0.value.count > 1 }
     }

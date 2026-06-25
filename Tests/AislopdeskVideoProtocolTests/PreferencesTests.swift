@@ -102,9 +102,10 @@ final class PreferencesTests: XCTestCase {
 
     /// The same normalisation applies through a full `KeybindingPreferences` decode + the `chord(for:)`
     /// lookup, so an uppercase override in a persisted prefs file resolves correctly. The blob carries the
-    /// CURRENT `schemaVersion` (2) — no-backcompat: a versionless / stale blob is rejected (see below).
+    /// CURRENT `schemaVersion` (3, bumped by E1/WI-6) — no-backcompat: a versionless / stale blob is
+    /// rejected (see below).
     func testKeybindingPreferencesDecodeNormalisesKey() throws {
-        let json = Data(#"{"schemaVersion":2,"overrides":{"pane.splitRight":{"key":"D","command":true}}}"#.utf8)
+        let json = Data(#"{"schemaVersion":3,"overrides":{"pane.splitRight":{"key":"D","command":true}}}"#.utf8)
         let prefs = try JSONDecoder().decode(KeybindingPreferences.self, from: json)
         XCTAssertEqual(prefs.chord(for: "pane.splitRight")?.key, "d")
         XCTAssertEqual(prefs.chord(for: "pane.splitRight")?.canonical, "cmd+d")
@@ -113,11 +114,15 @@ final class PreferencesTests: XCTestCase {
     /// No-backcompat (single-user): a persisted blob MISSING the schema version (the pre-W-B shape) or
     /// carrying a STALE version decode-FAILS — the store's `try? decode ?? .init()` then lands on the empty
     /// default rather than importing a stale shape. (FAILS on the un-versioned model: it would decode fine.)
+    /// E1/WI-6 bumped the current version to 3, so a v1 AND a v2 blob are now both stale and rejected.
     func testKeybindingPreferencesStaleSchemaDecodeFails() {
         let versionless = Data(#"{"overrides":{"pane.splitRight":{"key":"d","command":true}}}"#.utf8)
         XCTAssertThrowsError(try JSONDecoder().decode(KeybindingPreferences.self, from: versionless))
         let stale = Data(#"{"schemaVersion":1,"overrides":{"pane.splitRight":{"key":"d","command":true}}}"#.utf8)
         XCTAssertThrowsError(try JSONDecoder().decode(KeybindingPreferences.self, from: stale))
+        // The previous (W-B) version 2 blob is ALSO rejected now that WI-6 advanced the schema to 3.
+        let v2 = Data(#"{"schemaVersion":2,"overrides":{"pane.splitRight":{"key":"d","command":true}}}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(KeybindingPreferences.self, from: v2))
     }
 
     /// A multi-key SEQUENCE override round-trips and bridges to the registry: `⌃A` then `D` (the tmux split
@@ -164,6 +169,60 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(try roundTrip(prefs), prefs)
         XCTAssertEqual(prefs.chord(for: "pane.splitRight")?.canonical, "cmd+d")
         XCTAssertNil(prefs.chord(for: "pane.notOverridden"))
+    }
+
+    // MARK: Keybindings — E1/WI-6 text bindings + unbinds (schema v3)
+
+    /// The new `textBindings` (chord → literal bytes) and `unbinds` (suppressed-default chords) maps
+    /// round-trip through the v3 schema. The `textBindings` map is keyed by a non-`String` `KeyChord`, so
+    /// JSON encodes it as a flat key/value array — this asserts that survives a full encode→decode.
+    /// (FAILS on the pre-WI-6 model: no `textBindings` / `unbinds` fields, schema still 2.)
+    func testTextBindingsAndUnbindsRoundTrip() throws {
+        let prefs = KeybindingPreferences(
+            textBindings: [
+                .init(key: "h", command: true, shift: true): .init(kind: .text, payload: [0x68, 0x69]),
+                .init(key: "k", control: true): .init(kind: .csi, payload: [0x1B, 0x5B, 0x31, 0x37, 0x7E]),
+            ],
+            unbinds: [.init(key: "q", command: true)],
+        )
+        let restored = try roundTrip(prefs)
+        XCTAssertEqual(restored, prefs)
+        XCTAssertEqual(
+            restored.textBindings[.init(key: "h", command: true, shift: true)]?.payload, [0x68, 0x69],
+        )
+        XCTAssertEqual(restored.textBindings[.init(key: "h", command: true, shift: true)]?.kind, .text)
+        XCTAssertTrue(restored.unbinds.contains(.init(key: "q", command: true)))
+        XCTAssertEqual(KeybindingPreferences.currentSchemaVersion, 3)
+    }
+
+    /// `conflicts()` folds text bindings + unbinds into the chord namespace: a text binding on a chord an
+    /// action override ALSO resolves to is a real clash, and so is a text-binding-vs-unbind on the same
+    /// chord. A text binding on its own (unique chord) is NOT a conflict.
+    /// (FAILS on the pre-WI-6 `conflicts()`: it ignored text bindings + unbinds entirely.)
+    func testTextBindingAndUnbindConflictFold() {
+        // An action override `⌘X` and a text binding on the SAME chord ⌘X collide.
+        let clash = KeybindingPreferences(
+            overrides: ["pane.splitRight": .init(key: "x", command: true)],
+            textBindings: [.init(key: "x", command: true): .init(kind: .text, payload: [0x78])],
+        )
+        let conflicts = clash.conflicts()
+        XCTAssertEqual(conflicts.count, 1)
+        XCTAssertEqual(
+            conflicts["cmd+x"].map { Set($0) }, Set(["pane.splitRight", "text:cmd+x"]),
+        )
+
+        // A text binding and an unbind on the SAME chord also collide (contradictory intent).
+        let textVsUnbind = KeybindingPreferences(
+            textBindings: [.init(key: "p", command: true): .init(kind: .esc, payload: [0x1B, 0x4F])],
+            unbinds: [.init(key: "p", command: true)],
+        )
+        XCTAssertEqual(textVsUnbind.conflicts().count, 1)
+
+        // A text binding on a UNIQUE chord is not a conflict.
+        let unique = KeybindingPreferences(
+            textBindings: [.init(key: "z", command: true): .init(kind: .text, payload: [0x7A])],
+        )
+        XCTAssertTrue(unique.conflicts().isEmpty)
     }
 
     func testKeybindingConflictDetection() {

@@ -128,8 +128,12 @@ public enum PaneChooserRegistry {
 public enum PaneChooserContext: Sendable, Equatable {
     /// New tab in the active session (the `+` button / ⌘T-equivalent generic action).
     case newTab
-    /// Split the active pane along `axis`.
-    case split(axis: SplitAxis)
+    /// Split the active pane along `axis`. `leading == true` inserts the new `.chooser` leaf on the
+    /// LEADING side of the active pane (left of a `.horizontal` split / above a `.vertical` split) rather
+    /// than the natural trailing side — the split-left (⌘⌥D) / split-up (⌘⌥⇧D) chords feed `leading:
+    /// true`, every other split (the ⌘D right / ⌘⇧D down) keeps the default trailing insert. Defaulted so
+    /// every existing `.split(axis:)` call site is byte-identical.
+    case split(axis: SplitAxis, leading: Bool = false)
     /// A brand-new session carrying one leaf of the chosen kind.
     case newSession
     /// A new floating scratch pane in the active tab.

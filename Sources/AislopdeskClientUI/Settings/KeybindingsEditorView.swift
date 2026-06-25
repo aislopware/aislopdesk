@@ -245,6 +245,10 @@ struct KeybindingsEditorView: View {
         case 124: return "right"
         case 126: return "up"
         case 125: return "down"
+        case 116: return "pageup"
+        case 121: return "pagedown"
+        case 115: return "home"
+        case 119: return "end"
         default: break
         }
         // `charactersIgnoringModifiers` gives the base key independent of shift/option (so ⇧2 is "2").

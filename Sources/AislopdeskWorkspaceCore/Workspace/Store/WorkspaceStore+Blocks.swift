@@ -98,8 +98,9 @@ public extension WorkspaceStore {
     /// The active pane's live terminal model in WHICHEVER live model is active (W5): the tree's active pane
     /// on the IDE shell, the canvas focus on the retained-but-dead path. `nil` for a non-terminal active
     /// pane (`.remoteGUI` / `.systemDialog`) or an empty shell. Shared by the WB2 block ops so the
-    /// navigator / jump work on both paths.
-    private var activeTerminalModel: TerminalViewModel? {
+    /// navigator / jump work on both paths — and by the E1 ``WorkspaceStore+FontScroll`` hooks (font/scroll
+    /// resolve the same active terminal model), so it is `internal` (cross-file) rather than `private`.
+    internal var activeTerminalModel: TerminalViewModel? {
         guard let activeID = activePaneID,
               let provider = handle(for: activeID) as? TerminalModelProviding else { return nil }
         return provider.terminalModel

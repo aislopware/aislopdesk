@@ -62,6 +62,10 @@ enum KeyChordNormalizer {
         case 124: return KeyChord(.rightArrow, mods)
         case 126: return KeyChord(.upArrow, mods)
         case 125: return KeyChord(.downArrow, mods)
+        case 116: return KeyChord(.pageUp, mods)
+        case 121: return KeyChord(.pageDown, mods)
+        case 115: return KeyChord(.home, mods)
+        case 119: return KeyChord(.end, mods)
         default: break
         }
 

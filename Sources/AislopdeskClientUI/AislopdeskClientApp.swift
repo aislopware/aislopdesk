@@ -76,6 +76,15 @@ public struct AislopdeskClientApp: App {
         // Build the GUI Settings store FIRST so its apply paths run before the video pipeline / any
         // `static let` env flag is forced (folds persisted prefs into `EnvConfig.overlay`).
         let preferences = PreferencesStore()
+        // E1/WI-6: fold the otty-style `~/.config/aislopdesk/config.toml` keybind lines (the `text:` / `csi:`
+        // / `esc:` / `unbind:` directives) into the live keybindings so ES-E1-6 is reachable end-to-end —
+        // setting `keybindings` republishes the merged model to `WorkspaceBindingRegistry.activeOverrides`
+        // via the store's `didSet`, which the dispatcher reads BEFORE the action table. A missing/broken
+        // file is a no-op (validate-then-drop), so a fresh install is behaviour-identical.
+        if let configURL = KeybindConfigLoader.defaultConfigURL() {
+            let merged = KeybindConfigLoader.loadFile(at: configURL, into: preferences.keybindings)
+            if merged != preferences.keybindings { preferences.keybindings = merged }
+        }
         _preferences = State(initialValue: preferences)
 
         // Automation runs against the real Application Support dir; build the bootstrap store WITHOUT a
@@ -192,6 +201,13 @@ public struct AislopdeskClientApp: App {
         // new-tab / new-session / floating) mints an in-pane `.chooser` pane via the store's routing, focused,
         // so the user picks Terminal / Remote window INSIDE the new pane; ⌘T stays a direct-terminal escape
         // hatch (it routes via `.newPane(.terminal)`, never `.newTab`). The default prefix is ⌃A (tmux-like).
+        //
+        // E1/WI-7: the dispatcher's `textBinding`/`unbind` resolution is LIVE here regardless of E2 — a user
+        // `text:`/`csi:`/`esc:` config binding injects via `sendBytes` and an `unbind:` passes through, both
+        // resolved from `WorkspaceBindingRegistry.activeOverrides`. The constructor also accepts the E2
+        // overlay toggles (`toggleFind`/`togglePeekReply`, alongside the existing palette/cheat); E2 threads
+        // them to the root view's `@State` from THIS mount point. They are nil in E1 (those overlays don't
+        // exist yet) → the corresponding actions stay graceful no-ops via `route`, never dead chords.
         _keyDispatcher = State(initialValue: WorkspaceKeyDispatcher(store: store))
         #endif
     }

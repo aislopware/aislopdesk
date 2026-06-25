@@ -109,6 +109,13 @@ public struct KeyChord: Hashable, Sendable {
         case rightArrow
         case upArrow
         case downArrow
+        /// Non-printable named navigation keys (terminal-native shift-scroll / page-jump chords). They are
+        /// the one exemption to the "every workspace chord is ⌘/⌥-prefixed" §5 rule — a ⇧-prefixed named key
+        /// cannot steal a printable terminal letter (E1 scroll bindings).
+        case pageUp
+        case pageDown
+        case home
+        case end
     }
 
     public let key: Key
@@ -217,6 +224,10 @@ public final class CommandInterpreter {
             case .rightArrow: "\u{F700}right"
             case .upArrow: "\u{F700}up"
             case .downArrow: "\u{F700}down"
+            case .pageUp: "\u{F700}pageup"
+            case .pageDown: "\u{F700}pagedown"
+            case .home: "\u{F700}home"
+            case .end: "\u{F700}end"
             }
         return "\(chord.modifiers.rawValue)-\(key)"
     }

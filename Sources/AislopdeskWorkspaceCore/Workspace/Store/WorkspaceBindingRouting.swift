@@ -61,6 +61,13 @@ public extension WorkspaceBindingRegistry {
             store.openChooserPane(.split(axis: .horizontal))
         case .splitDown:
             store.openChooserPane(.split(axis: .vertical))
+        // Split-left / split-up (E1 ES-E1-1): same chooser-split as right/down, but `leading: true` inserts
+        // the new `.chooser` leaf on the LEADING side of the active pane (left of a horizontal split / above a
+        // vertical one). The new pane is focused, matching otty's "new pane is left/up and focused".
+        case .splitLeft:
+            store.openChooserPane(.split(axis: .horizontal, leading: true))
+        case .splitUp:
+            store.openChooserPane(.split(axis: .vertical, leading: true))
         case .closePane: store.requestCloseActivePaneTree()
         case .renamePane: store.requestRenameActivePane()
         case .breakPaneToTab: store.breakActivePaneToTab()
@@ -91,6 +98,9 @@ public extension WorkspaceBindingRegistry {
         case .focusRight: store.moveFocusTreeUsingReportedLayout(.right)
         case .focusUp: store.moveFocusTreeUsingReportedLayout(.up)
         case .focusDown: store.moveFocusTreeUsingReportedLayout(.down)
+        // Sequential pane cycle (E1 ES-E1-2): step focus through the active tab's panes in DFS order (wraps).
+        case .cyclePaneNext: store.cyclePaneFocusTree(forward: true)
+        case .cyclePanePrev: store.cyclePaneFocusTree(forward: false)
         // View
         case .toggleZoom: store.toggleZoomActivePane()
         case .commandPalette: togglePalette?()
@@ -110,6 +120,22 @@ public extension WorkspaceBindingRegistry {
         // toward OLDER blocks (forward).
         case .jumpPreviousFailed: store.jumpToFailedBlockInActivePane(forward: false)
         case .jumpNextFailed: store.jumpToFailedBlockInActivePane(forward: true)
+        // E1 viewport scroll (ES-E1-3): ⇧PageUp/Down page-scroll, ⇧Home/End jump to buffer ends — through the
+        // active pane's `TerminalSurfaceActions` seam (the WorkspaceStore+FontScroll hooks). No-op off-terminal.
+        case .scrollPageUp: store.scrollActivePane(.pageUp)
+        case .scrollPageDown: store.scrollActivePane(.pageDown)
+        case .scrollToTop: store.scrollActivePane(.top)
+        case .scrollToBottom: store.scrollActivePane(.bottom)
+        // E1 command jumps (ES-E1-3): ⌘PageUp/Down REUSE the OSC-133 command-jump (prev/next prompt), NOT scroll.
+        case .commandJumpPrev: store.jumpToBlockInActivePane(delta: -1)
+        case .commandJumpNext: store.jumpToBlockInActivePane(delta: 1)
+        // E1 font size (ES-E1-4): ⌘=/⌘-/⌘0 rescale the active pane's render font (no PTY reflow). No-op off-terminal.
+        case .increaseFontSize: store.increaseFontInActivePane()
+        case .decreaseFontSize: store.decreaseFontInActivePane()
+        case .resetFontSize: store.resetFontInActivePane()
+        // Open Quickly (E1-registered, E11 behaviour): a routable no-op stub until E11 wires the fuzzy switcher
+        // overlay — registered so the chord is live, never dead. E11 threads its overlay toggle through `route`.
+        case .openQuickly: break
         // Tabs
         // `.newTab` is the generic new-pane entry (the `+` button / a future generic chord): it creates an
         // in-pane `.chooser` pane (Terminal / Remote window), focused. ⌘T stays a direct-terminal escape hatch
@@ -120,6 +146,9 @@ public extension WorkspaceBindingRegistry {
         case .prevTab: store.cycleTab(by: -1)
         case let .selectTab(n): store.selectTabNumber(n)
         case .closeTab: store.closeActiveTab()
+        // Reopen the most recently closed pane (E1 ES-E1-5): the store method is an EMPTY stub for E1 (E3 fills
+        // the closed-pane LIFO + restore), so this routes to a documented graceful no-op — live, never dead.
+        case .reopenClosed: store.reopenLastClosedPane()
         // Sessions — a new session carries one fresh leaf, so it mints a pane → create it as an in-pane
         // `.chooser` pane (the user picks the kind inside the new session's pane).
         case .newSession:
@@ -136,6 +165,12 @@ public extension WorkspaceBindingRegistry {
         // `requestFindInActivePane()`), so ⌘⇧J does something useful rather than nothing.
         case .peekAndReply:
             if let togglePeekReply { togglePeekReply() } else { store.jumpToOldestAttentionPane() }
+        // Agents (E1-registered; behaviour lands in E12/E13). Each is a routable graceful no-op stub until the
+        // owning epic threads its seam — registered so the chord is LIVE (never dead), per ES-E1-5. E12 wires
+        // composer / prompt-queue, E13 wires send-to-chat (each will route to its own store op / overlay toggle).
+        case .composer: break
+        case .promptQueue: break
+        case .sendToChat: break
         }
     }
 
@@ -154,10 +189,15 @@ public extension WorkspaceBindingRegistry {
         switch action {
         case .splitRight,
              .splitDown,
+             .splitLeft, // canvas has no split tree; a split mints a new pane (the canvas analogue)
+             .splitUp,
              .newTab,
              .newSession:
             apply(.newPaneDefault, to: store)
         case .closePane: apply(.closePane, to: store)
+        // Reopen the last closed pane: the canvas has its own retained single-slot reopen (distinct from the
+        // tree shell's E3 LIFO) — route to it so the canvas path still responds.
+        case .reopenClosed: apply(.reopenClosedPane, to: store)
         case .renamePane: apply(.renamePane, to: store)
         case .breakPaneToTab: break // no canvas analogue
         case .toggleFloat,
@@ -180,6 +220,9 @@ public extension WorkspaceBindingRegistry {
         case .focusRight: apply(.focus(.right), to: store)
         case .focusUp: apply(.focus(.up), to: store)
         case .focusDown: apply(.focus(.down), to: store)
+        // Sequential pane cycle on the canvas maps to its existing whole-canvas focus cycle (⌘]/⌘[ analogue).
+        case .cyclePaneNext: apply(.cycleFocus(forward: true), to: store)
+        case .cyclePanePrev: apply(.cycleFocus(forward: false), to: store)
         case .toggleZoom: apply(.toggleZoom, to: store)
         case .commandPalette: togglePalette?()
         case .cheatSheet: toggleCheatSheet?()
@@ -196,6 +239,18 @@ public extension WorkspaceBindingRegistry {
         case .reRunLastCommand: store.reRunLastCommandInActivePane()
         case .jumpPreviousFailed: store.jumpToFailedBlockInActivePane(forward: false)
         case .jumpNextFailed: store.jumpToFailedBlockInActivePane(forward: true)
+        // E1 scroll / font / command-jump: route through the SAME active-pane store hooks (they resolve the
+        // active pane via the canvas focus, so they no-op gracefully for a non-terminal / empty canvas).
+        case .scrollPageUp: store.scrollActivePane(.pageUp)
+        case .scrollPageDown: store.scrollActivePane(.pageDown)
+        case .scrollToTop: store.scrollActivePane(.top)
+        case .scrollToBottom: store.scrollActivePane(.bottom)
+        case .commandJumpPrev: store.jumpToBlockInActivePane(delta: -1)
+        case .commandJumpNext: store.jumpToBlockInActivePane(delta: 1)
+        case .increaseFontSize: store.increaseFontInActivePane()
+        case .decreaseFontSize: store.decreaseFontInActivePane()
+        case .resetFontSize: store.resetFontInActivePane()
+        case .openQuickly: break // E11 overlay — no canvas analogue
         case .nextTab,
              .prevTab,
              .selectTab,
@@ -205,6 +260,11 @@ public extension WorkspaceBindingRegistry {
         // P4 Peek & Reply is a view overlay; the canvas path still toggles it (the overlay's own selector
         // returns nil under .canvas, where there is no attention rollup, so it opens read-only / no-ops).
         case .peekAndReply: togglePeekReply?()
+        // Agents (E12/E13): no canvas analogue — the agent surfaces are tree-shell only. Graceful no-ops here.
+        case .composer,
+             .promptQueue,
+             .sendToChat:
+            break
         }
     }
 }

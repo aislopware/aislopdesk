@@ -614,6 +614,18 @@ final class TreeCommandRoutingTests: XCTestCase {
     func testEveryChordIsCommandOrOptionPrefixed() {
         for binding in WorkspaceBindingRegistry.allBindings {
             guard let chord = binding.chord else { continue }
+            // E1 exemption: a NON-PRINTABLE named navigation key (PageUp/PageDown/Home/End) cannot steal a
+            // printable terminal letter, so a ⇧-prefixed scroll chord (⇧PageUp, ⇧Home, …) is allowed even
+            // though it is not ⌘/⌥-prefixed. The §5 rule still binds EVERY printable-key chord (below).
+            switch chord.key {
+            case .pageUp,
+                 .pageDown,
+                 .home,
+                 .end:
+                continue
+            default:
+                break
+            }
             XCTAssertTrue(
                 chord.modifiers.contains(.command) || chord.modifiers.contains(.option),
                 "binding \(binding.id) chord must be ⌘- or ⌥-prefixed (never steal a terminal key)",
@@ -633,8 +645,11 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(chord(.splitDown), KeyChord(character: "d", [.command, .shift]), "split down = ⌘⇧D")
         XCTAssertEqual(chord(.focusLeft), KeyChord(.leftArrow, [.option, .command]), "focus left = ⌥⌘←")
         XCTAssertEqual(chord(.toggleZoom), KeyChord(.return, [.option, .command]), "zoom = ⌥⌘↩")
-        XCTAssertEqual(chord(.nextTab), KeyChord(character: "]", [.command]), "next tab = ⌘] (Muxy parity)")
-        XCTAssertEqual(chord(.prevTab), KeyChord(character: "[", [.command]), "prev tab = ⌘[ (Muxy parity)")
+        // E1 re-scope (ES-E1-2 / DECISIONS): tab cycling moved to ⌘⇧]/⌘⇧[ (was ⌘]/⌘[ under the old Muxy
+        // parity); plain ⌘]/⌘[ now drive sequential PANE cycling (`focus.cycleNext`/`focus.cyclePrev`), matching
+        // otty's reference table. These pins are ours to re-scope.
+        XCTAssertEqual(chord(.nextTab), KeyChord(character: "]", [.command, .shift]), "next tab = ⌘⇧] (E1 re-scope)")
+        XCTAssertEqual(chord(.prevTab), KeyChord(character: "[", [.command, .shift]), "prev tab = ⌘⇧[ (E1 re-scope)")
         XCTAssertEqual(chord(.closeTab), KeyChord(character: "w", [.command, .shift]), "close tab = ⌘⇧W")
         XCTAssertEqual(chord(.toggleSidebar), KeyChord(character: "b", [.command]), "toggle sidebar = ⌘B")
         XCTAssertEqual(chord(.newSession), KeyChord(character: "n", [.control, .command]), "new session = ⌃⌘N")

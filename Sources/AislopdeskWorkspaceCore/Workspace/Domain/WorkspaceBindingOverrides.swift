@@ -98,6 +98,83 @@ public extension WorkspaceBindingRegistry {
     }
 }
 
+// MARK: - Text-binding / unbind resolution (E1/WI-6 + WI-7)
+
+/// E1/WI-7: the dispatcher consults these BEFORE the action table. A `text:`/`csi:`/`esc:` config binding
+/// sends raw bytes to the focused terminal (otty's literal-byte bindings); an `unbind:` suppresses the
+/// default action so the chord passes through to the responder chain. Both maps are keyed by the persisted
+/// ``KeybindingPreferences/KeyChord`` shape, so a registry ``KeyChord`` (what the live dispatcher's
+/// `KeyChordNormalizer` produces) is bridged via ``KeyChord/asPreferencesChord`` before the lookup. Pure +
+/// headless: the byte payload is RESOLVED at parse time (by ``KeybindGrammar``), so this only forwards it.
+public extension WorkspaceBindingRegistry {
+    /// The literal-byte ``KeybindingPreferences/TextBinding`` bound to `chord` in the active overrides, or
+    /// `nil` when no text binding owns it. The dispatcher sends ``KeybindingPreferences/TextBinding/payload``
+    /// via `sendBytes` and swallows the event. The empty-`textBindings` fast path avoids bridging the chord
+    /// at all (the no-override default is a clean miss).
+    static func textBinding(for chord: KeyChord) -> KeybindingPreferences.TextBinding? {
+        textBinding(for: chord, overrides: activeOverrides)
+    }
+
+    /// Text-binding resolution against an EXPLICIT override set (the pure, testable form).
+    static func textBinding(
+        for chord: KeyChord, overrides: KeybindingPreferences,
+    ) -> KeybindingPreferences.TextBinding? {
+        guard !overrides.textBindings.isEmpty else { return nil }
+        return overrides.textBindings[chord.asPreferencesChord]
+    }
+
+    /// Whether `chord` is an `unbind:` target in the active overrides — its DEFAULT action is suppressed, so
+    /// the dispatcher passes the event straight through to the focused responder. The empty-`unbinds` fast
+    /// path short-circuits the no-override default.
+    static func isUnbound(_ chord: KeyChord) -> Bool {
+        isUnbound(chord, overrides: activeOverrides)
+    }
+
+    /// Unbind resolution against an EXPLICIT override set (pure, testable).
+    static func isUnbound(_ chord: KeyChord, overrides: KeybindingPreferences) -> Bool {
+        guard !overrides.unbinds.isEmpty else { return false }
+        return overrides.unbinds.contains(chord.asPreferencesChord)
+    }
+}
+
+// MARK: - registry KeyChord → KeybindingPreferences.KeyChord (the reverse bridge)
+
+public extension KeyChord {
+    /// Map the registry's framework-neutral ``KeyChord`` into the persisted W12 shape
+    /// (``KeybindingPreferences/KeyChord``) so a live keystroke can be looked up in the chord-keyed
+    /// `textBindings` / `unbinds` maps. The INVERSE of ``KeybindingPreferences/KeyChord/asRegistryChord``:
+    /// it emits the canonical named-key token `mapKey` round-trips (`"return"`, `"left"`, `"pageup"`, …) so
+    /// a chord parsed by ``KeybindGrammar`` and a chord produced by the dispatcher key the SAME map entry.
+    /// Total (every registry chord has a persisted spelling) — no `nil` path.
+    var asPreferencesChord: KeybindingPreferences.KeyChord {
+        KeybindingPreferences.KeyChord(
+            key: Self.preferencesKeyToken(key),
+            command: modifiers.contains(.command),
+            shift: modifiers.contains(.shift),
+            option: modifiers.contains(.option),
+            control: modifiers.contains(.control),
+        )
+    }
+
+    /// The canonical persisted-key token for a registry `Key` — the spelling `KeybindingPreferences.KeyChord
+    /// .mapKey` accepts, so the round-trip registry → prefs → registry is identity.
+    private static func preferencesKeyToken(_ key: Key) -> String {
+        switch key {
+        case let .character(c): String(c) // already lowercased by KeyChord.init
+        case .tab: "tab"
+        case .return: "return"
+        case .leftArrow: "left"
+        case .rightArrow: "right"
+        case .upArrow: "up"
+        case .downArrow: "down"
+        case .pageUp: "pageup"
+        case .pageDown: "pagedown"
+        case .home: "home"
+        case .end: "end"
+        }
+    }
+}
+
 // MARK: - KeybindingPreferences.KeyChord → registry KeyChord
 
 public extension KeybindingPreferences.KeyChord {
@@ -130,6 +207,12 @@ public extension KeybindingPreferences.KeyChord {
              "uparrow": return .upArrow
         case "down",
              "downarrow": return .downArrow
+        case "pageup",
+             "pgup": return .pageUp
+        case "pagedown",
+             "pgdn": return .pageDown
+        case "home": return .home
+        case "end": return .end
         default:
             // A single printable character (already lowercased by KeyChord.init). Reject empty / multi.
             guard key.count == 1, let c = key.first else { return nil }

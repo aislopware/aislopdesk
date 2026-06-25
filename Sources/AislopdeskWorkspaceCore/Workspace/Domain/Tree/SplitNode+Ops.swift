@@ -11,38 +11,43 @@ import Foundation
 public extension SplitNode {
     // MARK: Split a target leaf
 
-    /// Splits leaf `target` along `axis`, inserting `newLeaf` as a sibling. Returns the new tree, or
-    /// `nil` if `target` is not a leaf in this tree (caller treats `nil` as a no-op).
+    /// Splits leaf `target` along `axis`, inserting `newLeaf` as a sibling. `before == true` inserts the
+    /// new leaf on the LEADING side of `target` (left of a `.horizontal` split / above a `.vertical` split)
+    /// rather than the natural trailing side — the split-left/up chords feed `before: true`, every other
+    /// split keeps the default `before: false` (trailing). Returns the new tree, or `nil` if `target` is
+    /// not a leaf in this tree (caller treats `nil` as a no-op).
     ///
     /// - If the *parent* split of `target` already has `axis`, `newLeaf` is inserted as a sibling
-    ///   immediately after `target` (n-ary insert — no redundant intermediary; matches Zellij).
+    ///   immediately before/after `target` per `before` (n-ary insert — no redundant intermediary; matches
+    ///   Zellij).
     /// - Otherwise (the root leaf, or a parent with the other axis) the `target` leaf is replaced by a
-    ///   fresh 2-child `.split(axis:)` of `[target, newLeaf]` with equal flex weights.
-    func splitting(_ target: PaneID, axis: SplitAxis, inserting newLeaf: PaneID) -> SplitNode? {
+    ///   fresh 2-child `.split(axis:)` ordered `[newLeaf, target]` when `before` else `[target, newLeaf]`,
+    ///   with equal flex weights.
+    func splitting(_ target: PaneID, axis: SplitAxis, inserting newLeaf: PaneID, before: Bool = false) -> SplitNode? {
         guard contains(target) else { return nil }
-        return splitImpl(target, axis: axis, newLeaf: newLeaf)
+        return splitImpl(target, axis: axis, newLeaf: newLeaf, before: before)
     }
 
     /// Recursive worker. The same-axis-as-parent sibling insert is detected at each `.split` node (it owns
     /// its children), so the worker doesn't thread the parent axis down.
-    private func splitImpl(_ target: PaneID, axis: SplitAxis, newLeaf: PaneID) -> SplitNode {
+    private func splitImpl(_ target: PaneID, axis: SplitAxis, newLeaf: PaneID, before: Bool) -> SplitNode {
         switch self {
         case let .leaf(id):
             guard id == target else { return self }
-            // Replace the leaf with a 2-child split along `axis`. (The same-axis-as-parent insert is
-            // handled by the parent `.split` case below before it ever recurses into the leaf.)
+            // Replace the leaf with a 2-child split along `axis`, ordering the new leaf per `before`. (The
+            // same-axis-as-parent insert is handled by the parent `.split` case below before it ever
+            // recurses into the leaf.)
+            let targetChild = WeightedChild(weight: .flex(1), node: .leaf(target))
+            let newChild = WeightedChild(weight: .flex(1), node: .leaf(newLeaf))
             return .split(
                 id: SplitNodeID(),
                 axis: axis,
-                children: [
-                    WeightedChild(weight: .flex(1), node: .leaf(target)),
-                    WeightedChild(weight: .flex(1), node: .leaf(newLeaf)),
-                ],
+                children: before ? [newChild, targetChild] : [targetChild, newChild],
             )
 
         case let .split(id, splitAxis, children):
             // Does a DIRECT child leaf equal the target AND does this split share the requested axis?
-            // Then insert the new leaf as a sibling right after the target (the n-ary insert).
+            // Then insert the new leaf as a sibling before/after the target per `before` (the n-ary insert).
             if splitAxis == axis,
                let idx = children.firstIndex(where: { if case .leaf(target) = $0.node { return true }
                    return false
@@ -52,7 +57,7 @@ public extension SplitNode {
                 // New sibling gets the equal-share weight of the existing children's average flex so the
                 // insert doesn't visibly resize its neighbours (re-normalized at layout anyway).
                 let inserted = WeightedChild(weight: .flex(insertWeight(of: children)), node: .leaf(newLeaf))
-                newChildren.insert(inserted, at: idx + 1)
+                newChildren.insert(inserted, at: before ? idx : idx + 1)
                 return .split(id: id, axis: splitAxis, children: newChildren)
             }
             // Otherwise recurse into the child that contains the target.
@@ -60,7 +65,7 @@ public extension SplitNode {
                 guard child.node.contains(target) else { return child }
                 return WeightedChild(
                     weight: child.weight,
-                    node: child.node.splitImpl(target, axis: axis, newLeaf: newLeaf),
+                    node: child.node.splitImpl(target, axis: axis, newLeaf: newLeaf, before: before),
                 )
             }
             return .split(id: id, axis: splitAxis, children: newChildren)

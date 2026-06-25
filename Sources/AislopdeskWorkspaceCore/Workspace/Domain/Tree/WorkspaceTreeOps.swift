@@ -16,13 +16,16 @@ public enum WorkspaceTreeOps {
 
     /// Splits the pane `target` along `axis`, creating a new leaf carrying `newSpec`. The new pane is
     /// inserted as a sibling if the parent split already has `axis`, else `target` becomes a 2-child
-    /// split (see ``SplitNode/splitting(_:axis:inserting:)``). The new pane is focused/activated. Returns
-    /// the new workspace and the minted ``PaneID``. A no-op (target absent) returns the workspace
+    /// split (see ``SplitNode/splitting(_:axis:inserting:before:)``). `before == true` inserts the new pane
+    /// on the LEADING side of `target` (the split-left/up chords; the default `false` keeps the natural
+    /// trailing insert, so every existing call site is byte-identical). The new pane is focused/activated.
+    /// Returns the new workspace and the minted ``PaneID``. A no-op (target absent) returns the workspace
     /// unchanged with a throw-away id that is not in the tree — callers split a real pane.
     public static func splitPane(
         _ target: PaneID,
         axis: SplitAxis,
         newSpec: PaneSpec,
+        before: Bool = false,
         in ws: TreeWorkspace,
     ) -> (TreeWorkspace, PaneID) {
         let newID = PaneID()
@@ -30,7 +33,8 @@ public enum WorkspaceTreeOps {
         var copy = ws
         var session = copy.sessions[sIdx]
         var tab = session.tabs[tIdx]
-        guard let newRoot = tab.root.splitting(target, axis: axis, inserting: newID) else { return (ws, newID) }
+        guard let newRoot = tab.root.splitting(target, axis: axis, inserting: newID, before: before)
+        else { return (ws, newID) }
         tab.root = newRoot
         tab.activePane = newID // the freshly split pane takes focus
         session.tabs[tIdx] = tab

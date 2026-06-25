@@ -32,9 +32,13 @@ import AppKit
 final class WorkspaceKeyDispatcher {
     private let store: WorkspaceStore
     /// The view-overlay toggles `route(...)` takes (palette / cheat sheet / find / peek-reply). The live app
-    /// wires these to its `@State`; omitted here keeps those actions graceful no-ops.
+    /// wires these to its `@State`; omitted here keeps those actions graceful no-ops. E1/WI-7 widens the
+    /// construction so E2 can thread `toggleFind`/`togglePeekReply` without re-touching this seam (nil OK in
+    /// E1 — those overlays don't exist yet, so the corresponding actions stay graceful no-ops via `route`).
     private let togglePalette: (() -> Void)?
     private let toggleCheatSheet: (() -> Void)?
+    private let toggleFind: (() -> Void)?
+    private let togglePeekReply: (() -> Void)?
 
     /// The pure prefix machine (B2). Its sequence resolver reads the override-aware `resolvedSequenceTable`
     /// (single-chord fallback to `resolvedChordTable`) so a rebind — single OR multi-key — takes effect; the
@@ -52,10 +56,14 @@ final class WorkspaceKeyDispatcher {
         prefix: KeyChord? = nil,
         togglePalette: (() -> Void)? = nil,
         toggleCheatSheet: (() -> Void)? = nil,
+        toggleFind: (() -> Void)? = nil,
+        togglePeekReply: (() -> Void)? = nil,
     ) {
         self.store = store
         self.togglePalette = togglePalette
         self.toggleCheatSheet = toggleCheatSheet
+        self.toggleFind = toggleFind
+        self.togglePeekReply = togglePeekReply
         // The prefix machine resolves a post-prefix key against the override-aware SEQUENCE table FIRST (so a
         // multi-key prefix sequence whose tail key is not a standalone binding still fires), falling back to
         // the SINGLE-CHORD table (so the seeded ⌃A→⌘D, where ⌘D is also a standalone chord, keeps working and
@@ -108,6 +116,20 @@ final class WorkspaceKeyDispatcher {
 
         switch machine.feed(chord, at: ProcessInfo.processInfo.systemUptime) {
         case let .passthrough(passed):
+            // E1/WI-7: a user `text:`/`csi:`/`esc:` config binding (otty literal-byte bindings) resolves
+            // BEFORE the action table — the chord sends its already-resolved bytes (ESC/CSI lead bytes baked
+            // in by `KeybindGrammar`) to the focused pane and is swallowed.
+            if let textBinding = WorkspaceBindingRegistry.textBinding(for: passed) {
+                if let active = activePaneID {
+                    store.handle(for: active)?.sendBytes(textBinding.payload)
+                }
+                return nil // swallow — the text binding owns this chord
+            }
+            // An `unbind:` target suppresses its DEFAULT action: pass the event straight through to the
+            // focused responder (the terminal/video pane handles it) instead of firing the registry action.
+            if WorkspaceBindingRegistry.isUnbound(passed) {
+                return event
+            }
             // Idle + an unbound key: a workspace single chord still resolves here (the machine only owns the
             // prefix-sequence path). A plain/Ctrl-letter the table does not bind falls through to the PTY.
             if let action = WorkspaceBindingRegistry.resolvedChordTable[passed] {
@@ -150,6 +172,8 @@ final class WorkspaceKeyDispatcher {
             to: store,
             togglePalette: togglePalette,
             toggleCheatSheet: toggleCheatSheet,
+            toggleFind: toggleFind,
+            togglePeekReply: togglePeekReply,
         )
     }
 }

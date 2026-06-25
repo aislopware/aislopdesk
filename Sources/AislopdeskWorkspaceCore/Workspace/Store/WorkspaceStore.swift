@@ -2386,13 +2386,15 @@ public final class WorkspaceStore {
     /// ``SettingsKey/defaultPaneKind``; it is the CALLER (the W6 command routing, as for `addPane`) that
     /// resolves the user's default before invoking them.
 
-    /// Splits the active pane along `axis`, inserting a new leaf of `kind` (focused). Tree no-op when there
-    /// is no active pane.
-    public func splitActivePane(axis: SplitAxis, kind: PaneKind) {
+    /// Splits the active pane along `axis`, inserting a new leaf of `kind` (focused). `leading == true`
+    /// places the new leaf on the LEADING side of the active pane (left of a `.horizontal` split / above a
+    /// `.vertical` split) — the split-left (⌘⌥D) / split-up (⌘⌥⇧D) chords; the default `false` keeps the
+    /// natural trailing insert (the ⌘D right / ⌘⇧D down split). Tree no-op when there is no active pane.
+    public func splitActivePane(axis: SplitAxis, kind: PaneKind, leading: Bool = false) {
         guard let active = tree.activeSession?.activeTab?.activePane else { return }
         let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
         // `splitPane` already makes the new leaf the active pane, so an in-pane `.chooser` split lands focused.
-        let (next, _) = WorkspaceTreeOps.splitPane(active, axis: axis, newSpec: spec, in: tree)
+        let (next, _) = WorkspaceTreeOps.splitPane(active, axis: axis, newSpec: spec, before: leading, in: tree)
         tree = next
         reconcileTree()
     }
@@ -3837,7 +3839,7 @@ public extension WorkspaceStore {
     /// `.chooser` kind, which materializes NO session until ``choosePaneKind(_:kind:)`` flips it to a real one.
     func openChooserPane(_ context: PaneChooserContext) {
         switch context {
-        case let .split(axis): splitActivePane(axis: axis, kind: .chooser)
+        case let .split(axis, leading): splitActivePane(axis: axis, kind: .chooser, leading: leading)
         case .newTab: newTab(kind: .chooser)
         case .newSession: newSession(name: defaultSessionName, kind: .chooser)
         case .floating: spawnFloatingPane(kind: .chooser)

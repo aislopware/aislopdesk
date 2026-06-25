@@ -14,6 +14,8 @@ public enum WorkspaceAction: Hashable, Sendable {
     // Panes
     case splitRight // ⌘D  — split the active pane into a side-by-side column
     case splitDown // ⌘⇧D — split the active pane into a stacked row
+    case splitLeft // ⌘⌥D — split the active pane, inserting the new pane on the LEADING (left) side
+    case splitUp // ⌘⌥⇧D — split the active pane, inserting the new pane on the LEADING (top) side
     case closePane // ⌘W  — close the active pane (cascades the tab/session)
     case renamePane // ⌘⇧R — rename the active TAB on the tree shell (opens its tab-strip inline field);
     // the active canvas pane on the retained-but-dead canvas path
@@ -45,6 +47,8 @@ public enum WorkspaceAction: Hashable, Sendable {
     case focusRight // ⌥⌘→
     case focusUp // ⌥⌘↑
     case focusDown // ⌥⌘↓
+    case cyclePaneNext // ⌘]  — sequentially focus the NEXT pane in the active tab (DFS order, wraps)
+    case cyclePanePrev // ⌘[  — sequentially focus the PREVIOUS pane in the active tab (DFS order, wraps)
 
     // View
     case toggleZoom // ⌥⌘↩ — maximize / restore the active pane (render-only)
@@ -53,6 +57,20 @@ public enum WorkspaceAction: Hashable, Sendable {
     case find // ⌘F — show/hide the find-in-terminal bar over the active pane (W14 #5)
     case toggleCopyMode // ⌘⇧C — enter modal keyboard copy-mode over the active pane's scrollback (P5b)
     case toggleSidebar // ⌘B — show/hide the sessions sidebar
+    case openQuickly // ⌘⇧O — open the fuzzy "open quickly" file/symbol switcher (E11 stub)
+
+    // View — viewport scroll (E1 ES-E1-3; named-key chords — the §5 prefix exemption)
+    case scrollPageUp // ⇧PageUp — scroll the active pane one page toward older scrollback
+    case scrollPageDown // ⇧PageDown — scroll the active pane one page toward newer output
+    case scrollToTop // ⇧Home — jump the viewport to the top of the scrollback buffer
+    case scrollToBottom // ⇧End — jump the viewport to the bottom (newest) of the buffer
+    case commandJumpPrev // ⌘PageUp — jump to the PREVIOUS shell prompt (reuses jumpToBlock(-1))
+    case commandJumpNext // ⌘PageDown — jump to the NEXT shell prompt (reuses jumpToBlock(+1))
+
+    // View — font size (E1 ES-E1-4; libghostty render-only, no PTY reflow)
+    case increaseFontSize // ⌘= (and the auto-shifted ⌘+) — bump the active pane's render font size
+    case decreaseFontSize // ⌘- — shrink the active pane's render font size
+    case resetFontSize // ⌘0 — reset the active pane's render font size to the configured default
 
     // Blocks (WB2 — Warp-style per-command blocks)
     case commandNavigator // ⌃⌘O — show/hide the searchable recent-blocks navigator over the active pane
@@ -68,6 +86,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     case prevTab // ⌘⇧[
     case selectTab(Int) // ⌘1…⌘9 (1-based)
     case closeTab // ⌘⇧W — close the active tab (all its panes)
+    case reopenClosed // ⌘⇧T — reopen the most recently closed pane (browser idiom; E3 stub)
 
     // Sessions
     case newSession // ⌃⌘N
@@ -80,6 +99,11 @@ public enum WorkspaceAction: Hashable, Sendable {
 
     // Supervision (P4 — answer the blocked pane INLINE without a context switch)
     case peekAndReply // ⌘⇧J — open the Peek & Reply overlay over the oldest pane needing attention
+
+    // Agents (E1-registered; the behaviour lands in later epics — these are routable stubs, never dead chords)
+    case composer // ⌘⇧E — open the agent prompt composer (E12 stub)
+    case promptQueue // ⌘⇧M — open the agent prompt queue (E12 stub)
+    case sendToChat // ⌘⌃↩ — send the active pane's selection / command to the agent chat (E13 stub)
 }
 
 public extension WorkspaceAction {
@@ -90,6 +114,10 @@ public extension WorkspaceAction {
         case sessions = "Sessions"
         case focus = "Focus"
         case view = "View"
+        // Agent-facing verbs (composer / prompt queue / send-to-chat). Last in display order so the
+        // agent section sits below the terminal/IDE verbs (matches the settings taxonomy). `groupedForDisplay`
+        // iterates `Category.allCases`, so adding the case here is enough to surface the section.
+        case agents = "Agents"
     }
 
     /// Whether running this action requires an active pane (so the palette can omit it on an empty shell,
@@ -98,6 +126,8 @@ public extension WorkspaceAction {
         switch self {
         case .splitRight,
              .splitDown,
+             .splitLeft, // splits the active pane — needs one
+             .splitUp,
              .closePane,
              .renamePane,
              .breakPaneToTab,
@@ -116,6 +146,8 @@ public extension WorkspaceAction {
              .focusRight,
              .focusUp,
              .focusDown,
+             .cyclePaneNext, // steps focus through the active tab's panes — needs one to step from
+             .cyclePanePrev,
              .toggleZoom,
              .toggleFloat: // needs a pane to float/embed
             true
@@ -126,10 +158,23 @@ public extension WorkspaceAction {
              .jumpNextBlock,
              .reRunLastCommand,
              .jumpPreviousFailed,
-             .jumpNextFailed:
-            // Block / find affordances target the active TERMINAL pane (its blocks / scrollback / prompt
-            // marks), so they need one — but they degrade gracefully (a no-pane shell just no-ops), so
-            // they are not greyed out aggressively.
+             .jumpNextFailed,
+             // E1 scroll / font / command-jump target the active TERMINAL pane (its viewport / glyphs /
+             // prompt marks), and `sendToChat` carries the active pane's selection — same graceful-no-op
+             // family as the block / find affordances above.
+             .scrollPageUp,
+             .scrollPageDown,
+             .scrollToTop,
+             .scrollToBottom,
+             .commandJumpPrev,
+             .commandJumpNext,
+             .increaseFontSize,
+             .decreaseFontSize,
+             .resetFontSize,
+             .sendToChat:
+            // Block / find / scroll / font affordances target the active TERMINAL pane (its blocks /
+            // scrollback / prompt marks / glyphs), so they need one — but they degrade gracefully (a
+            // no-pane shell just no-ops), so they are not greyed out aggressively.
             true
         case .commandPalette,
              .cheatSheet,
@@ -138,12 +183,16 @@ public extension WorkspaceAction {
              .prevTab,
              .selectTab,
              .closeTab,
+             .reopenClosed, // restores a closed pane into the active tab — acts on history, not a live pane
              .toggleSidebar,
+             .openQuickly, // a global fuzzy switcher — needs no active pane
              .newSession,
              .spawnFloating, // creates its own pane — needs none
              .toggleSyncInput, // the tab must exist, but the palette can still show it (mirrors .newTab)
              .jumpToAttention, // acts globally across all tabs/sessions — needs no active pane
-             .peekAndReply: // acts globally (targets the oldest attention pane) — needs no active pane
+             .peekAndReply, // acts globally (targets the oldest attention pane) — needs no active pane
+             .composer, // opens a global agent composer — needs no active pane
+             .promptQueue: // opens the global agent prompt queue — needs no active pane
             false
         }
     }
@@ -236,6 +285,19 @@ public enum WorkspaceBindingRegistry {
             id: "pane.splitDown", action: .splitDown, title: "Split Down",
             category: .panes, chord: KeyChord(character: "d", [.command, .shift]),
             symbol: "rectangle.split.1x2", keywords: "split row stacked horizontal divider new pane below",
+        ),
+        // Split-left / split-up (E1 ES-E1-1): ⌥+ the ⌘D / ⌘⇧D split chords, inserting the new pane on the
+        // LEADING side (left of a horizontal split / above a vertical one) and focusing it. ⌘⌥D / ⌘⌥⇧D are
+        // FREE (⌥ is in no other `d` chord; ⌘D right, ⌘⇧D down). Pinned unique by the chord-uniqueness guard.
+        WorkspaceBinding(
+            id: "pane.splitLeft", action: .splitLeft, title: "Split Left",
+            category: .panes, chord: KeyChord(character: "d", [.command, .option]),
+            symbol: "rectangle.split.2x1", keywords: "split column side vertical divider new pane left leading",
+        ),
+        WorkspaceBinding(
+            id: "pane.splitUp", action: .splitUp, title: "Split Up",
+            category: .panes, chord: KeyChord(character: "d", [.command, .option, .shift]),
+            symbol: "rectangle.split.1x2", keywords: "split row stacked horizontal divider new pane above leading",
         ),
         WorkspaceBinding(
             id: "pane.close", action: .closePane, title: "Close Pane",
@@ -334,20 +396,31 @@ public enum WorkspaceBindingRegistry {
             category: .tabs, chord: KeyChord(character: "t", [.command]),
             symbol: "plus.rectangle.on.rectangle", keywords: "add open create tab",
         ),
+        // Tab cycling RE-POINTED to ⌘⇧]/⌘⇧[ (E1 ES-E1-2 / DECISIONS): plain ⌘]/⌘[ now drive sequential
+        // PANE cycling (`focus.cycleNext`/`focus.cyclePrev`), matching otty's reference table. The old
+        // ⌘]/⌘[ tab parity (Muxy) is deliberately superseded — pinned by `E1KeymapParityTests`.
         WorkspaceBinding(
             id: "tab.next", action: .nextTab, title: "Next Tab",
-            category: .tabs, chord: KeyChord(character: "]", [.command]),
-            symbol: "arrow.forward.square", keywords: "cycle forward switch tab",
+            category: .tabs, chord: KeyChord(character: "]", [.command, .shift]),
+            symbol: "arrow.forward.square", keywords: "cycle forward switch tab next",
         ),
         WorkspaceBinding(
             id: "tab.prev", action: .prevTab, title: "Previous Tab",
-            category: .tabs, chord: KeyChord(character: "[", [.command]),
+            category: .tabs, chord: KeyChord(character: "[", [.command, .shift]),
             symbol: "arrow.backward.square", keywords: "cycle back previous switch tab",
         ),
         WorkspaceBinding(
             id: "tab.close", action: .closeTab, title: "Close Tab",
             category: .tabs, chord: KeyChord(character: "w", [.command, .shift]),
             symbol: "xmark.rectangle", keywords: "close end terminate tab all panes",
+        ),
+        // Reopen the most recently closed pane (the browser "reopen tab" idiom, beside ⌘T new / ⌘⇧W close).
+        // ⌘⇧T is FREE on the tree shell (the only other `t` chords are ⌘T new tab + ⌃⌘T break-pane). The
+        // closed-pane LIFO + restore land in E3; the E1 route is a documented graceful no-op (no dead chord).
+        WorkspaceBinding(
+            id: "tab.reopenClosed", action: .reopenClosed, title: "Reopen Closed Pane",
+            category: .tabs, chord: KeyChord(character: "t", [.command, .shift]),
+            symbol: "arrow.uturn.backward", keywords: "reopen restore undo closed pane tab last recently",
         ),
         WorkspaceBinding(
             id: "tab.syncInput", action: .toggleSyncInput, title: "Sync Input to All Panes",
@@ -401,6 +474,19 @@ public enum WorkspaceBindingRegistry {
             id: "focus.down", action: .focusDown, title: "Focus Down",
             category: .focus, chord: KeyChord(.downArrow, [.option, .command]),
             symbol: "arrow.down", keywords: "move navigate pane",
+        ),
+        // Sequential pane cycle (E1 ES-E1-2): ⌘]/⌘[ step focus through the active tab's panes in DFS order
+        // (wrapping). These chords were FREED from tab cycling, which moved to ⌘⇧]/⌘⇧[ (see the `tab.next`
+        // re-point + DECISIONS). Distinct from ⌃⌘]/⌃⌘[ (block jump) and ⌘⇧]/⌘⇧[ (tab cycle).
+        WorkspaceBinding(
+            id: "focus.cycleNext", action: .cyclePaneNext, title: "Cycle to Next Pane",
+            category: .focus, chord: KeyChord(character: "]", [.command]),
+            symbol: "arrow.forward", keywords: "cycle next pane focus sequential rotate",
+        ),
+        WorkspaceBinding(
+            id: "focus.cyclePrev", action: .cyclePanePrev, title: "Cycle to Previous Pane",
+            category: .focus, chord: KeyChord(character: "[", [.command]),
+            symbol: "arrow.backward", keywords: "cycle previous pane focus sequential rotate back",
         ),
         // View
         WorkspaceBinding(
@@ -473,6 +559,84 @@ public enum WorkspaceBindingRegistry {
             id: "view.jumpNextFailed", action: .jumpNextFailed, title: "Jump to Next Failed",
             category: .view, chord: KeyChord(character: "]", [.control, .command, .shift]),
             symbol: "chevron.down.2", keywords: "next failed error nonzero exit block jump forward down",
+        ),
+        // E1 viewport scroll (ES-E1-3): the named-key chords ⇧PageUp/PageDown (page scroll) + ⇧Home/End
+        // (buffer ends). These are the ONE exemption to the §5 "every chord ⌘/⌥-prefixed" rule — a ⇧-prefixed
+        // NAMED key (PageUp/Home/End) cannot steal a printable terminal letter (pinned by the prefix test's
+        // named-key exemption). Distinct from copy-mode's half-page scroll. Target the active terminal pane.
+        WorkspaceBinding(
+            id: "view.scrollPageUp", action: .scrollPageUp, title: "Scroll Page Up",
+            category: .view, chord: KeyChord(.pageUp, [.shift]),
+            symbol: "arrow.up.to.line", keywords: "scroll page up viewport scrollback older terminal",
+        ),
+        WorkspaceBinding(
+            id: "view.scrollPageDown", action: .scrollPageDown, title: "Scroll Page Down",
+            category: .view, chord: KeyChord(.pageDown, [.shift]),
+            symbol: "arrow.down.to.line", keywords: "scroll page down viewport scrollback newer terminal",
+        ),
+        WorkspaceBinding(
+            id: "view.scrollTop", action: .scrollToTop, title: "Scroll to Top",
+            category: .view, chord: KeyChord(.home, [.shift]),
+            symbol: "arrow.up.to.line.compact", keywords: "scroll top buffer beginning start scrollback terminal",
+        ),
+        WorkspaceBinding(
+            id: "view.scrollBottom", action: .scrollToBottom, title: "Scroll to Bottom",
+            category: .view, chord: KeyChord(.end, [.shift]),
+            symbol: "arrow.down.to.line.compact", keywords: "scroll bottom buffer end newest scrollback terminal",
+        ),
+        // E1 command jumps (ES-E1-3): ⌘PageUp/PageDown jump the viewport to the previous / next shell
+        // prompt — they REUSE the OSC-133 command-jump (`jumpToBlockInActivePane(∓1)`), NOT raw scroll.
+        WorkspaceBinding(
+            id: "view.cmdJumpPrev", action: .commandJumpPrev, title: "Jump to Previous Command",
+            category: .view, chord: KeyChord(.pageUp, [.command]),
+            symbol: "chevron.up.circle", keywords: "jump previous command prompt block osc133 up",
+        ),
+        WorkspaceBinding(
+            id: "view.cmdJumpNext", action: .commandJumpNext, title: "Jump to Next Command",
+            category: .view, chord: KeyChord(.pageDown, [.command]),
+            symbol: "chevron.down.circle", keywords: "jump next command prompt block osc133 down",
+        ),
+        // E1 font size (ES-E1-4): ⌘= bumps (the auto-shifted ⌘+ lands on the same base key `=`), ⌘- shrinks,
+        // ⌘0 resets. ⌘0 is FREE (the select-tab digits start at ⌘1). libghostty rescales glyphs WITHIN the
+        // pane box, so no PTY grid reflow from the font step alone. Target the active terminal pane.
+        WorkspaceBinding(
+            id: "view.fontIncrease", action: .increaseFontSize, title: "Increase Font Size",
+            category: .view, chord: KeyChord(character: "=", [.command]),
+            symbol: "textformat.size.larger", keywords: "font size increase bigger larger zoom in plus text",
+        ),
+        WorkspaceBinding(
+            id: "view.fontDecrease", action: .decreaseFontSize, title: "Decrease Font Size",
+            category: .view, chord: KeyChord(character: "-", [.command]),
+            symbol: "textformat.size.smaller", keywords: "font size decrease smaller minus text zoom out",
+        ),
+        WorkspaceBinding(
+            id: "view.fontReset", action: .resetFontSize, title: "Reset Font Size",
+            category: .view, chord: KeyChord(character: "0", [.command]),
+            symbol: "textformat.size", keywords: "font size reset default actual original zero text",
+        ),
+        // Open Quickly (E1-registered, E11 behaviour): ⌘⇧O fuzzy file/symbol switcher. ⌘⇧O is FREE (the only
+        // other `o` chord is ⌃⌘O command navigator). Routable stub until E11 — never a dead chord.
+        WorkspaceBinding(
+            id: "view.openQuickly", action: .openQuickly, title: "Open Quickly…",
+            category: .view, chord: KeyChord(character: "o", [.command, .shift]),
+            symbol: "magnifyingglass.circle", keywords: "open quickly fuzzy file symbol switcher jump goto",
+        ),
+        // Agents (E1-registered; behaviour lands in E12/E13). ⌘⇧E composer, ⌘⇧M prompt queue, ⌘⌃↩ send-to-chat
+        // are all FREE (e/m unused as chords; ⌘⌃↩ has a distinct modifier set from ⌥⌘↩ zoom). Routable stubs.
+        WorkspaceBinding(
+            id: "agent.composer", action: .composer, title: "Open Composer",
+            category: .agents, chord: KeyChord(character: "e", [.command, .shift]),
+            symbol: "square.and.pencil", keywords: "composer prompt write agent message draft edit",
+        ),
+        WorkspaceBinding(
+            id: "agent.promptQueue", action: .promptQueue, title: "Prompt Queue",
+            category: .agents, chord: KeyChord(character: "m", [.command, .shift]),
+            symbol: "list.bullet.rectangle.portrait", keywords: "prompt queue agent messages pending backlog",
+        ),
+        WorkspaceBinding(
+            id: "agent.sendToChat", action: .sendToChat, title: "Send to Chat",
+            category: .agents, chord: KeyChord(.return, [.command, .control]),
+            symbol: "arrow.up.message", keywords: "send chat agent selection command share forward",
         ),
     ]
 
@@ -560,6 +724,11 @@ public enum WorkspaceBindingRegistry {
         case .rightArrow: "→"
         case .upArrow: "↑"
         case .downArrow: "↓"
+        // Named navigation keys — the macOS-native menu glyphs (⇞ PageUp, ⇟ PageDown, ↖ Home, ↘ End).
+        case .pageUp: "⇞"
+        case .pageDown: "⇟"
+        case .home: "↖"
+        case .end: "↘"
         }
     }
 
