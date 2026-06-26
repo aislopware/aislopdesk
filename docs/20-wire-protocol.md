@@ -180,7 +180,7 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     `requestID` is a client-chosen monotonic `UInt32` correlating a reply to one of several in-flight
     requests; the host echoes it **verbatim** (stateless responder, like `pong`). `verb` is the raw
     `UInt8` of `MetadataVerb`: `1` processes, `2` ports, `3` cwd, `4` gitStatus (subsumes branch +
-    remote + ahead/behind + changed files), `5` gitDiff, `6` listDirectory, `7` listAgentSessions,
+    remote + repo toplevel + ahead/behind + changed files), `5` gitDiff, `6` listDirectory, `7` listAgentSessions,
     `8` readAgentSession. `payload` is the verb's length-prefixed argument — empty for the pane-scoped
     verbs (`processes`/`ports`/`cwd`/`gitStatus`), a UTF-8 path/id for the parameterized ones
     (`gitDiff`/`listDirectory`/`listAgentSessions`/`readAgentSession`).

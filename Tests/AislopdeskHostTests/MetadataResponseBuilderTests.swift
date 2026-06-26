@@ -122,11 +122,13 @@ final class MetadataResponseBuilderTests: XCTestCase {
         let fake = FakeQuery()
         fake.gitStatusPayload = .init(
             hasRepo: true, branch: "main", remoteURL: "https://github.com/x/y",
+            repoRoot: "/Users/me/x", // E6 WI-7 — the pure builder passes repoRoot through verbatim
             ahead: 2, behind: 1, files: [.init(statusCode: 0x11, path: "a.swift")],
         )
         let ok = response(MetadataResponseBuilder(query: fake), .gitStatus)
         XCTAssertEqual(ok.status, MetadataStatus.ok.rawValue)
         XCTAssertEqual(try MetadataCodec.decodeGitStatus(ok.payload), fake.gitStatusPayload)
+        XCTAssertEqual(try MetadataCodec.decodeGitStatus(ok.payload).repoRoot, "/Users/me/x")
 
         fake.cwd = nil
         let err = response(MetadataResponseBuilder(query: fake), .gitStatus)

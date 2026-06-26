@@ -6,12 +6,12 @@
 // component regression shows up visually. It is NOT a pixel-diff CI gate.
 
 #if canImport(SwiftUI) && canImport(AppKit)
-import AislopdeskWorkspaceCore
 import AppKit
 import SFSafeSymbols
 import SwiftUI
 import XCTest
 @testable import AislopdeskClientUI
+@testable import AislopdeskWorkspaceCore
 
 final class OttySnapshotRender: XCTestCase {
     @MainActor
@@ -64,6 +64,104 @@ final class OttySnapshotRender: XCTestCase {
 
         let cheat = KeyboardCheatSheetView(coordinator: overlay)
         try render(scrimmed(cheat), size: CGSize(width: 920, height: 700), to: dir, named: "cheatsheet.png")
+    }
+
+    // MARK: - E6 / WI-4: opt-in render of the sidebar tab-row badge states
+
+    /// Renders `OttyTabRow` in each badge state (spinner / error / hand / check / accent dot) plus the active
+    /// white card with a cwd subtitle + `#N` + process label — the visual lock for the E6 sidebar row. SAME
+    /// `ImageRenderer` opt-in idiom as the showcase; inert (skipped) unless `OTTY_TABROW_SNAPSHOT_DIR=<dir>`
+    /// is set, where it writes `tab-row-badges.png`. NO video/Metal — a badge is pure SwiftUI.
+    @MainActor
+    func testRenderTabRowBadges() throws {
+        guard let dir = ProcessInfo.processInfo.environment["OTTY_TABROW_SNAPSHOT_DIR"] else {
+            throw XCTSkip("set OTTY_TABROW_SNAPSHOT_DIR=<dir> to render the E6 tab-row badge states")
+        }
+        let panel = VStack(alignment: .leading, spacing: 2) {
+            badgeRow("full-release.sh", number: 1, badge: .running)
+            badgeRow("running build task", number: 2, badge: .error)
+            badgeRow("plan next move", number: 3, badge: .awaitingInput)
+            badgeRow("OpenCode", number: 4, badge: .completed)
+            badgeRow("abner@MacBook-AB:…", number: 5, badge: .finished)
+            OttyTabRow(
+                title: "~/Workplace/otty",
+                active: true,
+                number: 6,
+                subtitle: "~/Workplace/otty",
+                processLabel: "zsh",
+                onSelect: {},
+                onClose: {},
+            )
+        }
+        .padding(8)
+        .frame(width: 260)
+        .background(Otty.Surface.sidebar)
+        try render(panel, size: CGSize(width: 260, height: 340), to: dir, named: "tab-row-badges.png")
+    }
+
+    /// A resting (non-active) tab row carrying one fused badge + its `#N`, for the badge-state showcase.
+    @MainActor
+    private func badgeRow(_ title: String, number: Int, badge: TabBadgeKind) -> some View {
+        OttyTabRow(title: title, active: false, number: number, badge: badge, onSelect: {}, onClose: {})
+    }
+
+    // MARK: - E6 / WI-5: opt-in render of the grouped NavigatorColumn (search + By-Project sections)
+
+    /// Renders the live ``NavigatorColumn`` over a headless store grouped By-Project — the visual lock for the
+    /// E6 WI-5 sidebar: the "TABS" header + sort hamburger, the flat search field, and the tabs bucketed into
+    /// `OttySectionHeader` sections (project basenames) with the per-row `#N` / badge chrome. SAME
+    /// `ImageRenderer` opt-in idiom as the badge render; writes `navigator-grouped.png` into
+    /// `OTTY_TABROW_SNAPSHOT_DIR`. Headless: a `.tree` store over `MountTestPaneSession` (no socket / video /
+    /// Metal — the hang-safety rule); the project keys come from each pane's `lastKnownCwd`.
+    @MainActor
+    func testRenderNavigatorGrouped() throws {
+        guard let dir = ProcessInfo.processInfo.environment["OTTY_TABROW_SNAPSHOT_DIR"] else {
+            throw XCTSkip("set OTTY_TABROW_SNAPSHOT_DIR=<dir> to render the E6 grouped navigator")
+        }
+        let nav = NavigatorColumn(store: makeGroupedNavigatorStore())
+        try render(nav, size: CGSize(width: 240, height: 470), to: dir, named: "navigator-grouped.png")
+    }
+
+    /// A headless `.tree` store with five single-pane tabs across three project cwds (so By-Project yields
+    /// three sections) plus a few seeded badges/process labels for visual variety. Sets the grouping directly
+    /// on the store (the `internal(set)` setter via `@testable`) so the render does NOT persist to `Defaults`.
+    @MainActor
+    private func makeGroupedNavigatorStore() -> WorkspaceStore {
+        let rows: [(title: String, cwd: String)] = [
+            ("full-release.sh", "/Users/abner/Workplace/otty"),
+            ("running build task", "/Users/abner/Workplace/otty"),
+            ("plan next move", "/Users/abner/Workplace/aislopdesk"),
+            ("OpenCode", "/Users/abner/Workplace/aislopdesk"),
+            ("abner@MacBook-AB", "/Users/abner/scratch"),
+        ]
+        // `Tab` is ambiguous here: SwiftUI (macOS 15+) ships its own `Tab`, and this file `@testable
+        // import`s `AislopdeskWorkspaceCore`. Qualify to the workspace domain type (same idiom as
+        // `SplitContainer.swift`) so the fixture resolves to the tree model.
+        var tabs: [AislopdeskWorkspaceCore.Tab] = []
+        var specs: [PaneID: PaneSpec] = [:]
+        for row in rows {
+            let pane = PaneID()
+            specs[pane] = PaneSpec(kind: .terminal, title: row.title, lastKnownCwd: row.cwd)
+            tabs.append(AislopdeskWorkspaceCore.Tab(title: row.title, root: .leaf(pane), activePane: pane))
+        }
+        let session = Session(name: "Local", tabs: tabs, activeTabIndex: 0, specs: specs)
+        let tree = TreeWorkspace(sessions: [session], activeSessionID: session.id)
+        let store = WorkspaceStore(
+            restoringTree: tree,
+            liveModel: .tree,
+            makeSession: { MountTestPaneSession($0) },
+            liveVideoCap: 2,
+            persistence: nil,
+        )
+        store.tabGrouping = .byProject // direct (internal) set — render-only, no Defaults write
+        let panes = tabs.compactMap(\.activePane)
+        if panes.count >= 5 {
+            store.setForegroundProcess("zsh", for: panes[0])
+            store.setAgentStatus(.working, for: panes[1])
+            store.setAgentStatus(.needsPermission, for: panes[2])
+            store.setCompletionBadge(.success, for: panes[3])
+        }
+        return store
     }
 
     /// Center an overlay panel on the dimmed scrim + window background, the way `OverlayHostView` composes it.

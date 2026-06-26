@@ -15,6 +15,14 @@ struct RailRow: Identifiable, Equatable {
     let title: String
     let subtitle: String?
     let status: ClaudeStatus
+    /// The 1-based tab shortcut number — the ⌘1…⌘9 target = tab index+1 (E6 WI-2). Split-tab panes share
+    /// the same `#N` (it is a TAB number, not a pane number), per the per-pane→per-tab mapping (plan Design #1).
+    let tabNumber: Int
+    /// The single fused status badge for the row (E6 WI-1 `TabBadgeResolver`), or `nil` when all-clear.
+    let badge: TabBadgeKind?
+    /// The coarse host-reported foreground-process name (wire type 26), shown trailing on the active row; `nil`
+    /// when the host has not reported one.
+    let processLabel: String?
     /// Selected = the row's tab is active AND this pane is the tab's active pane.
     let isSelected: Bool
 }
@@ -37,6 +45,15 @@ enum RailRowsBuilder {
                 let subtitle = spec?.lastKnownCwd
                 let status = store.paneAgentStatus[paneID] ?? .none
                 let isSelected = tabIsActive && tab.activePane == paneID
+                // E6 WI-2: the `#N` is the TAB shortcut number (1-based), the trailing label is the host's
+                // coarse foreground process, and the row carries ONE fused badge from the pure resolver.
+                let processLabel = store.paneForegroundProcess[paneID]
+                let badge = TabBadgeResolver.badge(
+                    agent: status,
+                    completion: store.panePendingCompletion[paneID],
+                    isBusy: store.paneIsBusy(paneID),
+                    foregroundProcess: processLabel,
+                )
                 out.append(RailRow(
                     id: paneID,
                     tabID: tab.id,
@@ -44,6 +61,9 @@ enum RailRowsBuilder {
                     title: title,
                     subtitle: subtitle,
                     status: status,
+                    tabNumber: tabIndex + 1,
+                    badge: badge,
+                    processLabel: processLabel,
                     isSelected: isSelected,
                 ))
             }
@@ -59,4 +79,32 @@ enum RailRowsBuilder {
             $0.title.lowercased().contains(q) || ($0.subtitle?.lowercased().contains(q) ?? false)
         }
     }
+
+    /// Compose the sidebar search filter with the store-derived tab grouping (E6 WI-5): narrow `rows` by
+    /// `query`, then bucket the survivors into sections following `groups` (``TabOrderingEngine`` tab order, as
+    /// returned by ``WorkspaceStore/orderedTabGroups(now:)``). A group whose rows all filter out is DROPPED (no
+    /// empty header). Pane order within a tab is preserved (`Dictionary(grouping:)` keeps element order). Pure +
+    /// static so the navigator's glue is unit-testable without a SwiftUI view.
+    static func sectioned(_ rows: [RailRow], groups: [OrderedTabGroup], query: String) -> [RailRowGroup] {
+        let survivors = filtered(rows, query: query)
+        let byTab = Dictionary(grouping: survivors, by: \.tabID)
+        var out: [RailRowGroup] = []
+        for group in groups {
+            var groupRows: [RailRow] = []
+            for tabID in group.tabIDs {
+                groupRows.append(contentsOf: byTab[tabID] ?? [])
+            }
+            guard !groupRows.isEmpty else { continue }
+            out.append(RailRowGroup(header: group.header, rows: groupRows))
+        }
+        return out
+    }
+}
+
+/// One rendered sidebar section: an optional `header` (the group title, `nil` ⇒ the ungrouped flat list) and
+/// the rows in render order. A pure value (`Equatable`) so ``RailRowsBuilder/sectioned(_:groups:query:)`` is
+/// pinnable headlessly; the navigator wraps it in an `Identifiable` row for `ForEach`.
+struct RailRowGroup: Equatable {
+    let header: String?
+    let rows: [RailRow]
 }

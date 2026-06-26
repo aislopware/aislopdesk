@@ -72,6 +72,15 @@ public enum SettingsKey {
     /// the typed ``NewTabPosition`` accessor below can take the bare ``newTabPosition`` name.
     public static let newTabPositionKey = "shell.newTabPosition" // NewTabPosition.rawValue
 
+    /// How the vertical sidebar BUCKETS tabs into sections (otty sort-hamburger "Group By", E6). Stored as
+    /// the ``TabGrouping`` rawValue (`none`/`byProject`/`byDate`); default `.none` (one flat list). Read +
+    /// written by ``WorkspaceStore`` (the single source of truth for row order). Named with the `Key` suffix
+    /// (like ``newTabPositionKey``) so the typed ``tabGrouping`` accessor below takes the bare name.
+    public static let tabGroupingKey = "shell.tabGrouping" // TabGrouping.rawValue
+    /// How tabs are ORDERED within a sidebar section (otty sort-hamburger "Sort By", E6). Stored as the
+    /// ``TabSort`` rawValue (`created`/`updated`/`manual`); default `.created` (= `session.tabs` array order).
+    public static let tabSortKey = "shell.tabSort" // TabSort.rawValue
+
     /// The working-directory policy for a NEW WINDOW (otty `working-directory`), default `home` — a fresh
     /// window opens at the shell's login cwd. Stored as the ``WorkingDirectoryPolicy/rawConfig`` string
     /// (`inherit` / `home` / an absolute path). Read at the new-window fire-site.
@@ -138,6 +147,14 @@ public enum SettingsKey {
     /// (= append, byte-identical to the pre-E3 behaviour). A stale / invalid persisted raw value falls back
     /// to `.auto` via the `RawRepresentableBridge`. Read at the ⌘T fire-site.
     public static var newTabPosition: NewTabPosition { Defaults[.newTabPosition] }
+
+    /// The persisted sidebar tab grouping (otty "Group By", E6), default ``TabGrouping/none``. A stale /
+    /// invalid persisted raw value repairs to `.none` via the `RawRepresentableBridge`. Read at store init.
+    public static var tabGrouping: TabGrouping { Defaults[.tabGrouping] }
+
+    /// The persisted within-section tab sort (otty "Sort By", E6), default ``TabSort/created``. A stale /
+    /// invalid persisted raw value repairs to `.created`. Read at store init.
+    public static var tabSort: TabSort { Defaults[.tabSort] }
 
     /// The working-directory policy applied when a NEW WINDOW opens (otty `working-directory`), default
     /// ``WorkingDirectoryPolicy/home``. Decoded from the persisted ``WorkingDirectoryPolicy/rawConfig``
@@ -223,6 +240,11 @@ public extension Defaults.Keys {
     static let showBlockDividers = Key<Bool>(SettingsKey.showBlockDividers, default: true)
     static let defaultPaneKind = Key<PaneKind>(SettingsKey.defaultPaneKindKey, default: .terminal)
     static let newTabPosition = Key<NewTabPosition>(SettingsKey.newTabPositionKey, default: .auto)
+    // Sidebar tab grouping / sort (otty sort-hamburger, E6) stored as the bare enum rawValue. Group default
+    // `.none` (one flat list); sort default `.created` (= `session.tabs` array order) — both byte-identical
+    // to the pre-E6 rail. The WorkspaceStore owns the read/write; these are the persisted backing.
+    static let tabGrouping = Key<TabGrouping>(SettingsKey.tabGroupingKey, default: .none)
+    static let tabSort = Key<TabSort>(SettingsKey.tabSortKey, default: .created)
     // Working-directory policies stored as the `WorkingDirectoryPolicy.rawConfig` String (otty config value).
     // New window defaults to `home` (login cwd); new tab / split default to `inherit` (active pane's cwd).
     static let workingDirectoryNewWindow = Key<String>(SettingsKey.workingDirectoryNewWindowKey, default: "home")
@@ -257,6 +279,12 @@ extension PaneKind: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 /// `new-tab-position` setting round-trips with the otty config value; `PreferRawRepresentable` selects the
 /// `RawRepresentableBridge`, which yields the key default (`.auto`) for a stale / invalid raw value.
 extension NewTabPosition: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
+/// Store ``TabGrouping`` / ``TabSort`` as their bare `String` rawValue so the persisted sidebar
+/// grouping/sort round-trips compactly; `PreferRawRepresentable` selects the `RawRepresentableBridge`,
+/// which yields the key default (`.none` / `.created`) for a stale / invalid raw value (E6).
+extension TabGrouping: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+extension TabSort: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 
 /// Store ``CloseConfirmationPolicy`` as its bare `String` rawValue (`process`/`always`/`multiple_tabs`) so
 /// the persisted close-confirmation setting round-trips with the otty config value; `PreferRawRepresentable`

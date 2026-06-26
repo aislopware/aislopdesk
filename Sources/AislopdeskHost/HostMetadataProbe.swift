@@ -166,8 +166,14 @@ struct HostMetadataProbe: MetadataQuerying {
         guard hasRepo else { return .noRepo }
         let remote = Self.runProcessString(Self.gitPath, ["-C", cwd, "remote", "get-url", "origin"])?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // E6 WI-7: the precise By-Project grouping key — the repo's absolute toplevel. Best-effort like
+        // every other probe (a missing binary / non-repo / detached state → empty; the client then falls
+        // back to the pane cwd), trimmed of the trailing newline `rev-parse` prints.
+        let toplevel = Self.runProcessString(Self.gitPath, ["-C", cwd, "rev-parse", "--show-toplevel"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return MetadataCodec.GitStatusPayload(
-            hasRepo: true, branch: branch, remoteURL: remote, ahead: ahead, behind: behind, files: files,
+            hasRepo: true, branch: branch, remoteURL: remote, repoRoot: toplevel,
+            ahead: ahead, behind: behind, files: files,
         )
     }
 

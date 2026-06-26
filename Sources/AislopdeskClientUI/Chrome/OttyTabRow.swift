@@ -5,32 +5,62 @@
 // close `×` reveals on hover. No native list selection / vibrancy — this is the flat otty silhouette.
 
 #if canImport(SwiftUI)
+import AislopdeskWorkspaceCore
 import SFSafeSymbols
 import SwiftUI
 
 /// One sidebar tab row. ACTIVE = white card (otty's active-tab treatment); hover = flat plate + close `×`.
+///
+/// E6 WI-4 grew the row from a name-only plate to otty's full chrome: an optional second-line cwd subtitle
+/// and a trailing cluster of the fused status `badge`, the monospaced light-gray `#N` shortcut number, and —
+/// on the ACTIVE row — the foreground-process label ("zsh"). Name-only rows stay ~34pt; a subtitle grows the
+/// row to ~44pt (`docs/otty-clone/screenshots/tab-badge.png`). The trailing cluster fades under the hover `×`.
 struct OttyTabRow: View {
     let title: String
     let active: Bool
+    /// The 1-based tab shortcut number (`⌘N`). `0` ⇒ render no `#N` (the default keeps existing call sites
+    /// source-compatible until the navigator wires the real number in WI-5).
+    var number: Int = 0
+    /// The pane's last-known cwd, shown as a muted truncating-middle second line. `nil`/empty ⇒ single-line.
+    var subtitle: String?
+    /// The host's coarse foreground-process label ("zsh"), shown trailing on the ACTIVE row only.
+    var processLabel: String?
+    /// The single fused status badge (spinner / check / dot / error / hand / coffee / shield). `nil` ⇒ none.
+    var badge: TabBadgeKind?
     var onSelect: () -> Void
     var onClose: () -> Void
 
     @State private var hovering = false
     @State private var closeHover = false
 
+    private var hasSubtitle: Bool { !(subtitle ?? "").isEmpty }
+
     var body: some View {
-        HStack(spacing: 0) {
-            Text(title)
-                .font(.system(size: Otty.Typeface.body, weight: active ? .medium : .regular))
-                .foregroundStyle(Otty.Text.primary)
-                .lineLimit(1)
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: Otty.Typeface.body, weight: active ? .medium : .regular))
+                    .foregroundStyle(Otty.Text.primary)
+                    .lineLimit(1)
+                if hasSubtitle {
+                    Text(subtitle ?? "")
+                        .font(.system(size: Otty.Typeface.small))
+                        .foregroundStyle(Otty.Text.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
             Spacer(minLength: 6)
+            trailingMeta
+                .opacity(hovering ? 0 : 1)
+        }
+        .overlay(alignment: .trailing) {
             closeButton
                 .opacity(hovering ? 1 : 0)
                 .allowsHitTesting(hovering)
         }
         .padding(.horizontal, 14)
-        .frame(height: 34)
+        .frame(height: hasSubtitle ? 44 : 34)
         .background(rowBackground, in: .rect(cornerRadius: Otty.Metric.radiusTab))
         .overlay { if active { RoundedRectangle(cornerRadius: Otty.Metric.radiusTab).strokeBorder(
             Otty.Line.card,
@@ -42,6 +72,28 @@ struct OttyTabRow: View {
         .onHover { hovering = $0 }
         .animation(Otty.Anim.smallFade, value: hovering)
         .animation(Otty.Anim.smallFade, value: active)
+    }
+
+    /// The trailing status cluster: the fused `badge` (if any), then the monospaced light-gray `#N`, then the
+    /// foreground-process label on the ACTIVE row — all muted, right-aligned (`tab-badge.png` /
+    /// `workspace-tabs.png`). Fades out under the hover close `×`.
+    private var trailingMeta: some View {
+        HStack(spacing: 6) {
+            if let badge {
+                TabBadgeView(kind: badge)
+            }
+            if number > 0 {
+                Text("#\(number)")
+                    .font(.system(size: Otty.Typeface.small, design: .monospaced))
+                    .foregroundStyle(Otty.Text.secondary)
+            }
+            if active, let processLabel, !processLabel.isEmpty {
+                Text(processLabel)
+                    .font(.system(size: Otty.Typeface.small, design: .monospaced))
+                    .foregroundStyle(Otty.Text.secondary)
+                    .lineLimit(1)
+            }
+        }
     }
 
     private var closeButton: some View {
@@ -64,12 +116,17 @@ struct OttyTabRow: View {
     }
 }
 
-/// otty's sidebar hamburger — a sort/group popover (`SortMenuButton`). Grouping/order are presentational for
-/// now (otty's own affordance); the row is the flat-icon button beside the "TABS" header.
+/// otty's sidebar hamburger — a sort/group popover (`SortMenuButton`). E6 WI-5 made it write the STORE (the
+/// single source of truth for row order, persisted) instead of local `@State`: each GROUP row sets
+/// ``WorkspaceStore/setTabGrouping(_:)`` and each ORDER row ``WorkspaceStore/setTabSort(_:)``; the checkmarks
+/// READ the store. (Carryover binding constraint: "mutate the store order, not local `@State`.") The row is
+/// the flat-icon button beside the "TABS" header.
 struct OttySortMenuButton: View {
+    /// The live store — owns ``WorkspaceStore/tabGrouping`` / ``WorkspaceStore/tabSort`` (the persisted row
+    /// order). Read in the popover (so the `@Observable` store ticks the checkmarks) and written by the rows.
+    let store: WorkspaceStore
+
     @State private var show = false
-    @State private var group = 0 // 0 No Grouping · 1 By Project · 2 By Date
-    @State private var order = 0 // 0 Created · 1 Updated
 
     var body: some View {
         Button { show.toggle() } label: {
@@ -84,16 +141,27 @@ struct OttySortMenuButton: View {
     private var popover: some View {
         VStack(alignment: .leading, spacing: 0) {
             SortSection("GROUP")
-            SortRow("No Grouping", icon: "list.bullet", on: group == 0) { group = 0 }
-            SortRow("By Project", icon: "folder", on: group == 1) { group = 1 }
-            SortRow("By Date", icon: "calendar", on: group == 2) { group = 2 }
+            groupRow("No Grouping", "list.bullet", .none)
+            groupRow("By Project", "folder", .byProject)
+            groupRow("By Date", "calendar", .byDate)
             SortDivider()
             SortSection("ORDER")
-            SortRow("Created Time", icon: "clock", on: order == 0) { order = 0 }
-            SortRow("Updated Time", icon: "clock.arrow.circlepath", on: order == 1) { order = 1 }
+            orderRow("Created Time", "clock", .created)
+            orderRow("Updated Time", "clock.arrow.circlepath", .updated)
+            orderRow("Manual", "arrow.up.arrow.down", .manual)
         }
         .padding(.vertical, 6)
         .frame(width: 210)
+    }
+
+    /// A GROUP row whose checkmark READS ``WorkspaceStore/tabGrouping`` and whose tap WRITES it (persisted).
+    private func groupRow(_ title: String, _ icon: String, _ value: TabGrouping) -> some View {
+        SortRow(title, icon: icon, on: store.tabGrouping == value) { store.setTabGrouping(value) }
+    }
+
+    /// An ORDER row whose checkmark READS ``WorkspaceStore/tabSort`` and whose tap WRITES it (persisted).
+    private func orderRow(_ title: String, _ icon: String, _ value: TabSort) -> some View {
+        SortRow(title, icon: icon, on: store.tabSort == value) { store.setTabSort(value) }
     }
 }
 

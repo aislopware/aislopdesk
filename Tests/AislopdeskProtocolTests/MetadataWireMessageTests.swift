@@ -190,6 +190,29 @@ final class MetadataWireMessageTests: XCTestCase {
         }
     }
 
+    // MARK: GitStatus repoRoot survives the full envelope (E6 WI-7 end-to-end)
+
+    func testGitStatusRepoRootRidesMetadataResponseEnvelope() throws {
+        // The E4 gitStatus payload (now carrying E6 WI-7's repoRoot) is OPAQUE to the type-30 envelope; it
+        // must survive a real FrameDecoder round-trip and decode back with repoRoot intact — the wire path
+        // end-to-end, not just the isolated codec. Fails on the un-fixed code (no repoRoot on the wire).
+        let payload = MetadataCodec.GitStatusPayload(
+            hasRepo: true, branch: "main", remoteURL: "",
+            repoRoot: "/Users/me/aislopdesk", ahead: 0, behind: 0, files: [],
+        )
+        let body = MetadataCodec.encodeGitStatus(payload)
+        let message = WireMessage.metadataResponse(requestID: 4, status: 0, payload: body)
+        guard case let .metadataResponse(rid, status, framed)? = try roundTrip(message) else {
+            XCTFail("expected a metadataResponse")
+            return
+        }
+        XCTAssertEqual(rid, 4)
+        XCTAssertEqual(status, 0)
+        let decoded = try MetadataCodec.decodeGitStatus(framed)
+        XCTAssertEqual(decoded, payload)
+        XCTAssertEqual(decoded.repoRoot, "/Users/me/aislopdesk")
+    }
+
     // MARK: unknown-type drop (older-peer forward-compat)
 
     func testUnknownTypeDropsNotTraps() throws {

@@ -328,6 +328,10 @@ public final class WorkspaceStore {
         self.persistence = persistence
         self.saveDebounce = saveDebounce
         self.videoTeardownSettle = videoTeardownSettle
+        // E6 WI-3: hydrate the persisted tab grouping/sort preference (otty sidebar hamburger) — see the
+        // helper in WorkspaceStore+TabOrdering. Absent keys read the declared defaults (.none / .created) ⇒
+        // array order, byte-identical to the pre-E6 rail.
+        hydrateTabPreferences()
         // W5: the live model picks the init reconcile. `.canvas` (default) materializes the canvas panes
         // (the retained-but-dead path + every existing test); `.tree` (the app) materializes the tree's
         // leaves through the SAME registry diff — exactly one of the two trees ever drives a given store.
@@ -342,6 +346,13 @@ public final class WorkspaceStore {
 
     /// The live handle for `id`, or `nil` if no such leaf is materialized.
     public func handle(for id: PaneID) -> (any PaneSessionHandle)? { registry[id] }
+
+    /// Whether pane `id`'s shell currently reports a running foreground command (the live
+    /// ``PaneSessionHandle/isShellBusy`` bit), or `false` for an unmaterialized pane. Exposes the busy
+    /// signal to the ClientUI rail (the ``TabBadgeResolver`` "running" input, E6 WI-2) WITHOUT leaking the
+    /// private `registry` handle — reading it inside a SwiftUI body registers observation on the handle,
+    /// exactly like ``PanePresentation/busy(handle:)``.
+    public func paneIsBusy(_ id: PaneID) -> Bool { registry[id]?.isShellBusy ?? false }
 
     /// All live sessions (registry values). Order is unspecified — callers that need a stable order
     /// derive it from the tree's `allLeafIDs()`.
@@ -2629,6 +2640,10 @@ public final class WorkspaceStore {
         spec.lastKnownCwd = inheritedCwd
         let (next, newPane) = WorkspaceTreeOps.newTab(in: tree, spec: spec, at: SettingsKey.newTabPosition)
         tree = next
+        // E6 WI-6: a new tab is created AND selected (`WorkspaceTreeOps.newTab` sets `activeTabIndex`), so
+        // stamp its recency (parity with `selectTab` / `breakPaneToTab`) — otherwise the tab the user just
+        // opened sorts LAST under `.updated` (nil recency) and lands in "Earlier" under By-Date.
+        if let newTabID = tree.activeSession?.activeTab?.id { stampTabActivity(newTabID) }
         reconcileTree()
         deferInheritedCwd(inheritedCwd, into: newPane, kind: kind, launchGrace: launchGrace)
     }
@@ -2670,6 +2685,8 @@ public final class WorkspaceStore {
     /// registered; only focus follows). Reconcile is a registry no-op.
     public func selectTab(_ index: Int) {
         tree = WorkspaceTreeOps.selectTab(index, in: tree)
+        // E6 WI-3: stamp the newly-active tab as just-active so the `.updated` tab sort floats it first.
+        if let activeTabID = tree.activeSession?.activeTab?.id { stampTabActivity(activeTabID) }
         reconcileTree()
     }
 
@@ -2743,7 +2760,13 @@ public final class WorkspaceStore {
     /// Ejects leaf `id` into a NEW tab of its session (Zellij/Herdr "break pane"); the source tab
     /// collapses/rebalances. No-op if it is its tab's only leaf.
     public func breakPaneToTab(_ id: PaneID) {
-        tree = WorkspaceTreeOps.breakPaneToTab(id, in: tree)
+        let next = WorkspaceTreeOps.breakPaneToTab(id, in: tree)
+        let didBreak = next != tree
+        tree = next
+        // E6 WI-6: a successful break ejects the pane into a NEW tab and selects it — stamp that
+        // newly-active tab's recency (parity with `selectTab`) so the `.updated` sidebar sort floats it
+        // first. A no-op break (the pane is its tab's only leaf) leaves the tree unchanged ⇒ nothing to stamp.
+        if didBreak, let newTabID = tree.activeSession?.activeTab?.id { stampTabActivity(newTabID) }
         reconcileTree()
     }
 
@@ -3072,27 +3095,9 @@ public final class WorkspaceStore {
         reconcileTree()
     }
 
-    /// Selects the tab `delta` away from the active tab in the active session, clamped to the tab range
-    /// (no wrap — a list stops at its ends, like the palette). The "next/prev tab" command entry. No-op
-    /// without an active session.
-    public func cycleTab(by delta: Int) {
-        guard let session = tree.activeSession else { return }
-        let count = session.tabs.count
-        guard count > 1 else { return }
-        let next = min(max(session.activeTabIndex + delta, 0), count - 1)
-        guard next != session.activeTabIndex else { return }
-        selectTab(next)
-    }
-
-    /// Selects the `number`-th tab (1-based) of the active session, if it exists. The ⌘1…⌘9 command entry;
-    /// a number past the tab count is a no-op (clamps to nothing rather than the last tab — a missing tab
-    /// number simply does nothing, the native ⌘N tab idiom).
-    public func selectTabNumber(_ number: Int) {
-        guard let session = tree.activeSession else { return }
-        let index = number - 1
-        guard session.tabs.indices.contains(index) else { return }
-        selectTab(index)
-    }
+    // cycleTab / selectTabNumber (the next-prev + ⌘1…⌘9 tab-navigation entries) live in
+    // `WorkspaceStore+TabOrdering.swift` — pure `selectTab` conveniences, factored out to keep this class
+    // body under the `type_body_length` ceiling.
 
     // MARK: - Rolled-up agent status (W5 — sidebar/tab dots; W10/W11 feed it real data)
 
@@ -3110,6 +3115,59 @@ public final class WorkspaceStore {
     /// captured here. PRUNED to the live leaf set alongside ``paneAgentStatus`` (reconcileRegistry) so a
     /// closed pane's label drops out. An empty / whitespace label is treated as absent (no key).
     public internal(set) var paneAgentLabel: [PaneID: String] = [:]
+
+    /// The per-pane COARSE foreground-process name the host reports (wire type 26 — the same display-only
+    /// hint ``LivePaneSession/foregroundProcessName`` captures), mirrored onto the store so the E6 sidebar
+    /// rail can show the trailing process label ("zsh") and the ``TabBadgeResolver`` can classify a
+    /// `caffeinate`/`sudo` session WITHOUT reaching into the private handle. Written by
+    /// ``setForegroundProcess(_:for:)`` from ``handleAgentSignal(id:event:)``; an empty / whitespace name
+    /// removes the key. PRUNED to the live leaf set on every reconcile alongside ``paneAgentStatus`` (the
+    /// shared `reconcileRegistry` cache-prune) so a closed pane's entry drops out (no unbounded growth).
+    public internal(set) var paneForegroundProcess: [PaneID: String] = [:]
+
+    // MARK: - Tab grouping / sort + recency (E6 WI-3 — the sidebar hamburger's store-backed order)
+
+    /// How the sidebar buckets tabs into sections (otty hamburger "Group By"). The SINGLE source of truth
+    /// for the rendered section order (the rail is a pure derivation via ``orderedTabGroups(now:)``).
+    /// Hydrated from ``SettingsKey/tabGrouping`` on init and persisted by ``setTabGrouping(_:)``. Default
+    /// ``TabGrouping/none`` ⇒ one flat list, byte-identical to the pre-E6 rail.
+    public internal(set) var tabGrouping: TabGrouping = .none
+
+    /// How tabs are ordered WITHIN a section (otty hamburger "Sort By"). Hydrated from ``SettingsKey/tabSort``
+    /// on init, persisted by ``setTabSort(_:)``, and flipped to ``TabSort/manual`` by a drag (``moveTab(from:to:)``).
+    /// Default ``TabSort/created`` ⇒ `session.tabs` array order (Design #2: array order == creation order).
+    public internal(set) var tabSort: TabSort = .created
+
+    /// RUNTIME-ONLY tab recency mirror driving the ``TabSort/updated`` order + the ``TabGrouping/byDate``
+    /// buckets (E6 Design #2 — NOT persisted, NOT on the `Tab` Codable, so there is no schema bump / no
+    /// migration; recency resets to load order on relaunch, which is acceptable). Stamped by
+    /// ``stampTabActivity(_:at:)`` from every became-active / activity path (`newTab` / reopen-closed /
+    /// `selectTab` / `breakPaneToTab` / agent / completion), and PRUNED to the live
+    /// tab set on every ``reconcileTree()`` (keyed by ``TabID``, so it is pruned there, not in the
+    /// pane-keyed `reconcileRegistry` cache-prune).
+    public internal(set) var tabLastActiveAt: [TabID: Date] = [:]
+
+    /// Per-pane cached git toplevel (the absolute `git rev-parse --show-toplevel`) used as the precise
+    /// ``TabGrouping/byProject`` key. Populated by the debounced E6 WI-7 fetch (``refreshProjectKeysIfNeeded()``)
+    /// while grouping By-Project, carried on the E4 `gitStatus` RPC's `repoRoot` field. Until the first fetch
+    /// resolves (and for a non-repo pane, which caches an empty string), ``paneProjectKey(_:)`` falls back to
+    /// `lastKnownCwd`, so By-Project groups by cwd immediately and WI-7 is never a hard dependency. PRUNED to
+    /// the live leaf set alongside the other per-pane mirrors.
+    public internal(set) var paneGitToplevel: [PaneID: String] = [:]
+
+    /// Panes with an in-flight git-toplevel `gitStatus` fetch (E6 WI-7) — dedupes concurrent requests so a
+    /// re-render / reconcile storm can't fan out N identical RPCs for the same pane. Cleared as each reply
+    /// lands (or is dropped). Runtime-only; never persisted.
+    private var paneGitToplevelInFlight: Set<PaneID> = []
+
+    /// The debounce handle for the By-Project git-toplevel sweep (E6 WI-7): cancelled + rescheduled on each
+    /// trigger (grouping toggle / reconcile) so a burst coalesces into ONE fetch pass.
+    private var projectKeyRefreshTask: Task<Void, Never>?
+
+    /// How long ``refreshProjectKeysIfNeeded()`` coalesces a burst of triggers before sweeping the visible
+    /// panes for their git toplevel (E6 WI-7) — short enough to feel instant, long enough to absorb a
+    /// reconcile flurry.
+    private static let projectKeyDebounce: Duration = .milliseconds(200)
 
     /// The COALESCING memory for the attention notification (P3 piece 3): the last status we fired an
     /// attention edge for, per pane. So a flap that re-enters the same attention state (`done → working →
@@ -3202,6 +3260,14 @@ public final class WorkspaceStore {
         // B3: a pane that just gained focus (selectTab / selectSession / focusPaneTree all route here)
         // is now being watched — clear its pending command-completion badge.
         clearActiveLeafCompletionBadge()
+        // E6 WI-3: prune the tree-keyed sidebar mirrors (tab recency + per-pane git toplevel) to the live
+        // tree. Keyed by TabID / a tree-only concept, so pruned here against the tree rather than in the
+        // pane-keyed `reconcileRegistry` cache-prune. The helper lives in WorkspaceStore+TabOrdering.
+        pruneTreeSidebarMirrors()
+        // E6 WI-7: a newly-materialized pane (or a launch already in By-Project, hydrated from prefs) needs
+        // its git toplevel resolved — sweep the visible panes for any uncached key. Debounced + de-duped +
+        // self-guarded (a no-op unless grouping is By-Project), so this is cheap on the hot reconcile path.
+        refreshProjectKeysIfNeeded()
         scheduleSave()
     }
 
@@ -3306,6 +3372,18 @@ public final class WorkspaceStore {
         if case let .claudeStatus(_, _, label) = event {
             setAgentLabel(label, for: id)
         }
+        // E6 WI-2: mirror the COARSE foreground-process name (wire type 26) onto the store so the sidebar
+        // rail's trailing process label + the `caffeinate`/`sudo` ``TabBadgeResolver`` classification can
+        // read it without reaching into the private handle. Display-only — it never touches the agent
+        // status (the type-27 verdict stays authoritative, exactly as `LivePaneSession.feedAgentSignal`).
+        if case let .foregroundProcess(name) = event {
+            setForegroundProcess(name, for: id)
+        }
+        // E6 WI-6: agent activity counts as tab activity, but the recency stamp now rides the genuine
+        // status change INSIDE `setAgentStatus` (the per-pane status-write chokepoint) — so a working /
+        // blocked background tab floats up under the `.updated` sort, and non-wire status writes stamp too.
+        // (Relocated from a blanket per-signal stamp here, which also fired on a type-26 foreground-process
+        // change that carries no status transition.)
         setAgentStatus(status, for: id)
     }
 
@@ -3385,6 +3463,12 @@ public final class WorkspaceStore {
         // agent status above — a closed pane must not keep a ✓/✗ in a rollup).
         if !panePendingCompletion.isEmpty {
             panePendingCompletion = panePendingCompletion.filter { leafSet.contains($0.key) }
+        }
+        // Prune the per-pane foreground-process mirror in lockstep with the agent status (E6 WI-2): a
+        // closed pane must not keep a stale process label / privilege badge, and the dict must not grow
+        // unbounded across a long session of open/close.
+        if !paneForegroundProcess.isEmpty {
+            paneForegroundProcess = paneForegroundProcess.filter { leafSet.contains($0.key) }
         }
 
         // 2. Orphans: remove from the registry synchronously (the registry is the source of truth for
@@ -4270,5 +4354,59 @@ public extension WorkspaceStore {
             guard let cwd = await connection.activeMetadataClient?.cwd() else { return }
             self?.setLastKnownCwd(cwd, for: id)
         }
+    }
+
+    // MARK: - By-Project git-toplevel precision (E6 WI-7)
+
+    /// Lazily resolves each visible tab's active pane to its precise git toplevel
+    /// (`git rev-parse --show-toplevel`, carried on the E4 `gitStatus` RPC's new `repoRoot` field) and
+    /// caches it into ``paneGitToplevel`` so ``paneProjectKey(_:)`` upgrades from the cwd fallback to the
+    /// real repo root and the By-Project sections re-derive. A no-op unless ``tabGrouping`` is
+    /// ``TabGrouping/byProject`` (so a None / By-Date sidebar never fires the probe). Debounced + de-duped +
+    /// validate-then-drop: a `nil` connection / failed RPC silently leaves the cwd fallback standing. Safe to
+    /// call from `setTabGrouping(_:)` and the reconcile tail; both are coalesced into one sweep.
+    func refreshProjectKeysIfNeeded() {
+        guard tabGrouping == .byProject else { return }
+        projectKeyRefreshTask?.cancel()
+        projectKeyRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.projectKeyDebounce)
+            guard !Task.isCancelled, let self else { return }
+            fetchMissingProjectKeys()
+        }
+    }
+
+    /// Fires one `gitStatus` RPC per visible tab's active pane that has no cached toplevel and no in-flight
+    /// request, caching the resolved `repoRoot` into ``paneGitToplevel`` on arrival (which re-derives the
+    /// grouped rows via `@Observable`). Per-pane, mirroring ``refreshCwd(for:from:)`` — each pane's own
+    /// `LivePaneSession.connection.activeMetadataClient` targets that pane's channel.
+    private func fetchMissingProjectKeys() {
+        guard let session = tree.activeSession else { return }
+        for tab in session.tabs {
+            guard let pane = tab.activePane,
+                  paneGitToplevel[pane] == nil,
+                  !paneGitToplevelInFlight.contains(pane),
+                  let connection = (handle(for: pane) as? LivePaneSession)?.connection
+            else { continue }
+            paneGitToplevelInFlight.insert(pane)
+            Task { @MainActor [weak self] in
+                let payload = await connection.activeMetadataClient?.gitStatus()
+                guard let self else { return }
+                paneGitToplevelInFlight.remove(pane)
+                // Validate-then-drop: a nil RPC leaves no cache entry, so a later sweep retries. A repo
+                // resolves to its toplevel; a non-repo cwd resolves `ok` with an empty `repoRoot`, which we
+                // still cache (marking the pane resolved so the sweep won't re-probe it) — `paneProjectKey`
+                // then keeps the cwd fallback for that pane.
+                guard let payload else { return }
+                cacheGitToplevel(payload.repoRoot, for: pane)
+            }
+        }
+    }
+
+    /// Caches the resolved git toplevel for pane `id` (E6 WI-7 arrival handler). Writing the observable
+    /// ``paneGitToplevel`` re-derives the By-Project sections. An empty `root` (a non-repo cwd) still marks
+    /// the pane resolved so the debounced sweep won't re-probe it; ``paneProjectKey(_:)`` keeps the cwd
+    /// fallback. Internal so a unit test (or the arrival task) can seed it without a live socket.
+    func cacheGitToplevel(_ root: String, for id: PaneID) {
+        paneGitToplevel[id] = root
     }
 }

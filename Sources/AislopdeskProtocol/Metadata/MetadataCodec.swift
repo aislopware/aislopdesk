@@ -106,6 +106,12 @@ public enum MetadataCodec {
         public var branch: String
         /// The `origin` remote URL (empty when no remote or no repo).
         public var remoteURL: String
+        /// The absolute git toplevel (`git rev-parse --show-toplevel`) — the precise By-Project grouping
+        /// key (E6 WI-7). Empty when ``hasRepo`` is `false` (a no-repo payload is still only the single
+        /// `0` byte) and may be empty even inside a repo if the host probe could not resolve it; the
+        /// client falls back to the pane cwd in that case (never a hard dependency). Carried ONLY when
+        /// ``hasRepo`` is `true`, length-prefixed UTF-8 right after ``remoteURL`` — same idiom as `branch`.
+        public var repoRoot: String
         /// Commits the branch is ahead of its upstream (0 when no upstream).
         public var ahead: Int32
         /// Commits the branch is behind its upstream (0 when no upstream).
@@ -117,6 +123,7 @@ public enum MetadataCodec {
             hasRepo: Bool,
             branch: String,
             remoteURL: String,
+            repoRoot: String = "",
             ahead: Int32,
             behind: Int32,
             files: [GitFileChange],
@@ -124,6 +131,7 @@ public enum MetadataCodec {
             self.hasRepo = hasRepo
             self.branch = branch
             self.remoteURL = remoteURL
+            self.repoRoot = repoRoot
             self.ahead = ahead
             self.behind = behind
             self.files = files
@@ -134,6 +142,7 @@ public enum MetadataCodec {
             hasRepo: false,
             branch: "",
             remoteURL: "",
+            repoRoot: "",
             ahead: 0,
             behind: 0,
             files: [],
@@ -283,13 +292,13 @@ public enum MetadataCodec {
         return items
     }
 
-    // MARK: - GitStatus  ([UInt8 hasRepo]; if repo: branch, remote, [Int32 ahead][Int32 behind], files)
+    // MARK: - GitStatus  ([UInt8 hasRepo]; if repo: branch, remote, repoRoot, [Int32 ahead][Int32 behind], files)
 
     /// Fixed bytes per ``GitFileChange`` (statusCode + pathLen; path may be empty).
     private static let gitFileFixedBytes = 1 + 2
 
     /// Encodes a git status. When `hasRepo` is `false` only the single `0` byte is written (the
-    /// remaining fields are not on the wire); otherwise branch + remote + ahead/behind + the
+    /// remaining fields are not on the wire); otherwise branch + remote + repoRoot + ahead/behind + the
     /// changed-file list follow. Strings clamped to ≤ 65535 bytes, file count clamped to ≤ 65535.
     public static func encodeGitStatus(_ status: GitStatusPayload) -> Data {
         var out = Data()
@@ -300,6 +309,7 @@ public enum MetadataCodec {
         out.append(1)
         appendString(status.branch, to: &out)
         appendString(status.remoteURL, to: &out)
+        appendString(status.repoRoot, to: &out)
         out.appendBE(status.ahead)
         out.appendBE(status.behind)
         let count = clampedCount(status.files.count)
@@ -319,6 +329,7 @@ public enum MetadataCodec {
         guard hasRepo else { return .noRepo }
         let branch = try readString(&reader, "gitStatus.branch")
         let remoteURL = try readString(&reader, "gitStatus.remoteURL")
+        let repoRoot = try readString(&reader, "gitStatus.repoRoot")
         let ahead = try reader.readInt32()
         let behind = try reader.readInt32()
         let count = try Int(reader.readUInt16())
@@ -334,6 +345,7 @@ public enum MetadataCodec {
             hasRepo: true,
             branch: branch,
             remoteURL: remoteURL,
+            repoRoot: repoRoot,
             ahead: ahead,
             behind: behind,
             files: files,

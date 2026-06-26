@@ -22,6 +22,9 @@ public extension WorkspaceStore {
     func setCompletionBadge(_ badge: PaneCompletionBadge?, for id: PaneID) {
         guard panePendingCompletion[id] != badge else { return }
         if let badge { panePendingCompletion[id] = badge } else { panePendingCompletion.removeValue(forKey: id) }
+        // E6 WI-3: a command finishing is tab activity — stamp the owning tab's recency so a completed
+        // background tab floats up under the `.updated` sort. Only a real badge edge (set, not clear).
+        if badge != nil { stampTabActivity(forPane: id) }
     }
 
     /// The rolled-up completion badge over every leaf of session `sessionID` — `.failure` dominates

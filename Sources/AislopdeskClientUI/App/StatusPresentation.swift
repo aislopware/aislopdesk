@@ -75,5 +75,51 @@ enum StatusPresentation {
     static func agentLabel(_ status: ClaudeStatus) -> String {
         status.displayLabel
     }
+
+    // MARK: Tab badge (E6 sidebar row, WI-4)
+
+    /// How a sidebar tab's fused ``TabBadgeKind`` renders — the otty glyph map, kept next to ``agentSymbol``
+    /// so the two status vocabularies can't drift (`terminal-features__progress-state.md` "The full badge
+    /// set"). `.spinner` (running) and `.dot` (the settled accent dot) are bespoke shapes; every other kind
+    /// is a tinted SF-symbol fill. The view layer (``TabBadgeView``) switches on this so the symbol + tint
+    /// have a single source.
+    static func tabBadge(_ kind: TabBadgeKind) -> TabBadgeStyle {
+        switch kind {
+        case .running: .spinner
+        case .completed: .symbol(name: "checkmark.circle.fill", tint: Otty.Status.ok)
+        case .finished: .dot(Otty.Status.ok)
+        case .error: .symbol(name: "exclamationmark.triangle.fill", tint: Otty.Status.err)
+        case .awaitingInput: .symbol(name: "hand.raised.fill", tint: Otty.Status.warn)
+        case .caffeinate: .symbol(name: "cup.and.saucer.fill", tint: Otty.Text.secondary)
+        case .sudo: .symbol(name: "shield.lefthalf.filled", tint: Otty.Text.secondary)
+        }
+    }
+
+    /// The accessibility / tooltip label for a tab badge, so the otherwise icon-only glyph is VoiceOver-
+    /// legible and testable. Pure text — mirrors the `progress-state.md` badge vocabulary.
+    static func tabBadgeLabel(_ kind: TabBadgeKind) -> String {
+        switch kind {
+        case .running: "Running"
+        case .completed: "Completed"
+        case .finished: "Finished"
+        case .error: "Error"
+        case .awaitingInput: "Awaiting input"
+        case .caffeinate: "Caffeinated"
+        case .sudo: "Privileged"
+        }
+    }
+}
+
+/// The rendering recipe for one tab badge (see ``StatusPresentation/tabBadge(_:)``). `.spinner` and `.dot`
+/// are bespoke shapes the view draws directly; `.symbol` is an SF-symbol name + its tint. A pure value (no
+/// view), so the badge map can be unit-tested without rendering.
+enum TabBadgeStyle {
+    /// An indeterminate gray spinner (a running command / working agent). A pure SwiftUI animation — never a
+    /// video/capture session (CLAUDE.md hang-safety rule #6).
+    case spinner
+    /// A small filled accent dot (the settled "unread output" `.finished` marker).
+    case dot(Color)
+    /// A tinted SF-symbol fill (completed / error / awaiting-input / caffeinate / sudo).
+    case symbol(name: String, tint: Color)
 }
 #endif

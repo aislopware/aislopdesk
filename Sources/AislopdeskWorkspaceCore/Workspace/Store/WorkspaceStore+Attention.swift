@@ -32,11 +32,18 @@ public extension WorkspaceStore {
     /// EDGE detection runs here. It captures the last-notified state before the mutation and, after
     /// committing, runs ``applyAttentionEdge(for:lastNotified:status:)`` — a genuine entry into
     /// needsPermission/done notifies once (coalesced), a flap does not.
+    ///
+    /// E6 WI-6: because this is the chokepoint, the tab-recency stamp rides it — a genuine status change
+    /// stamps the owning tab's ``WorkspaceStore/tabLastActiveAt`` so a working / blocked background tab
+    /// floats up under the `.updated` sidebar sort. Past the idempotency guard, so only a real transition
+    /// stamps; and from ANY source (the wire signal funnel `handleAgentSignal`, a manifest fallback, a
+    /// test) — not just the wire path.
     func setAgentStatus(_ status: ClaudeStatus, for id: PaneID) {
         guard paneAgentStatus[id] != status else { return }
         let lastNotified = lastNotifiedStatus[id] ?? .none
         if status == .none { paneAgentStatus.removeValue(forKey: id) } else { paneAgentStatus[id] = status }
         applyAttentionEdge(for: id, lastNotified: lastNotified, status: status)
+        stampTabActivity(forPane: id)
     }
 
     /// Sets (or clears, on empty) the per-pane host agent label. Idempotent. The cheap activity summary
@@ -46,6 +53,18 @@ public extension WorkspaceStore {
         let value = (trimmed?.isEmpty == false) ? trimmed : nil
         guard paneAgentLabel[id] != value else { return }
         if let value { paneAgentLabel[id] = value } else { paneAgentLabel.removeValue(forKey: id) }
+    }
+
+    /// Sets (or clears, on empty / whitespace) the per-pane COARSE foreground-process name (wire type 26) —
+    /// the trailing process label the E6 sidebar rail shows and the input the ``TabBadgeResolver`` classifies
+    /// into a `caffeinate`/`sudo` badge. Idempotent (a no-op when unchanged so it never churns the sidebar);
+    /// an empty / whitespace-only name removes the key (treated as "no process"). Mirrors ``setAgentLabel``;
+    /// the stored ``WorkspaceStore/paneForegroundProcess`` is PRUNED to the live leaf set on reconcile.
+    func setForegroundProcess(_ name: String?, for id: PaneID) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (trimmed?.isEmpty == false) ? trimmed : nil
+        guard paneForegroundProcess[id] != value else { return }
+        if let value { paneForegroundProcess[id] = value } else { paneForegroundProcess.removeValue(forKey: id) }
     }
 
     // MARK: Rollups (the sidebar/tab/chrome dot derivations)
