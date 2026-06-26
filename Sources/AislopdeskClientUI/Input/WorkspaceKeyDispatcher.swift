@@ -54,6 +54,11 @@ final class WorkspaceKeyDispatcher {
     /// ``setToggleSidebar(_:)`` on appear. Until then `nil` ⇒ `.toggleSidebar` falls back to the store flag in
     /// `route` (a non-trapping graceful op), never a dead chord.
     private var toggleSidebar: (() -> Void)?
+    /// The four `Details: *` jump commands' tab selector (E9/WI-7, ES-E9-5). View-owned state
+    /// (`DetailsPanelState` + the chrome reveal), so it is installed late by the root view via
+    /// ``setSelectDetailsTab(_:)`` once those exist; until then `nil` ⇒ `.selectDetailsTab` is a graceful
+    /// no-op (never a dead command).
+    private var selectDetailsTab: ((DetailsPanelTab) -> Void)?
 
     /// The pure prefix machine (B2). Its sequence resolver reads the override-aware `resolvedSequenceTable`
     /// (single-chord fallback to `resolvedChordTable`) so a rebind — single OR multi-key — takes effect; the
@@ -76,6 +81,7 @@ final class WorkspaceKeyDispatcher {
         toggleDetailsPanel: (() -> Void)? = nil,
         toggleSidebar: (() -> Void)? = nil,
         toggleGlobalSearch: (() -> Void)? = nil,
+        selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
     ) {
         self.store = store
         self.togglePalette = togglePalette
@@ -85,6 +91,7 @@ final class WorkspaceKeyDispatcher {
         self.toggleDetailsPanel = toggleDetailsPanel
         self.toggleSidebar = toggleSidebar
         self.toggleGlobalSearch = toggleGlobalSearch
+        self.selectDetailsTab = selectDetailsTab
         // The prefix machine resolves a post-prefix key against the override-aware SEQUENCE table FIRST (so a
         // multi-key prefix sequence whose tail key is not a standalone binding still fires), falling back to
         // the SINGLE-CHORD table (so the seeded ⌃A→⌘D, where ⌘D is also a standalone chord, keeps working and
@@ -111,6 +118,12 @@ final class WorkspaceKeyDispatcher {
     /// `route` falls back to the legacy `store.sidebarCollapsed` (which nothing reads on macOS) — so this
     /// closure makes ⌘⇧L actually collapse the native sidebar item (otty "Toggle Tabs Panel" parity).
     func setToggleSidebar(_ toggle: @escaping () -> Void) { toggleSidebar = toggle }
+
+    /// Install the `Details: *` tab selector once the `DetailsPanelState` + `WorkspaceChromeState` exist (the
+    /// root view wires this to a closure that sets the tab AND reveals the panel). Without it, a routed
+    /// `.selectDetailsTab(_:)` resolves but no-ops — so the four commands stay live (never dead) yet inert
+    /// until the view installs the closure.
+    func setSelectDetailsTab(_ select: @escaping (DetailsPanelTab) -> Void) { selectDetailsTab = select }
 
     /// Install the `.keyDown` local monitor. Returning `nil` from the handler SWALLOWS the event; returning
     /// the event passes it through to the focused responder (the terminal / video pane).
@@ -210,6 +223,7 @@ final class WorkspaceKeyDispatcher {
             toggleDetailsPanel: toggleDetailsPanel,
             toggleSidebar: toggleSidebar,
             toggleGlobalSearch: toggleGlobalSearch,
+            selectDetailsTab: selectDetailsTab,
         )
     }
 }

@@ -62,6 +62,10 @@ public enum WorkspaceAction: Hashable, Sendable {
     case toggleCopyMode // ⌘⇧C — enter modal keyboard copy-mode over the active pane's scrollback (P5b)
     case toggleSidebar // ⌘⇧L — show/hide the sessions sidebar (otty "Toggle Tabs Panel")
     case toggleDetailsPanel // ⌘⇧R — show/hide the right-hand Details / inspector panel (otty parity)
+    // Jump the Details / inspector panel to a SPECIFIC tab (Info / Outline / Git / Files) AND reveal it if
+    // hidden (otty's four `Details: *` jump commands; ES-E9-5). Parameterized like `selectTab`/`applyLayout`;
+    // unbound by default (the four registry rows carry `chord: nil`) — the user can bind any in Settings.
+    case selectDetailsTab(DetailsPanelTab)
     case openQuickly // ⌘⇧O — open the fuzzy "open quickly" file/symbol switcher (E11 stub)
 
     // View — viewport scroll (E1 ES-E1-3; named-key chords — the §5 prefix exemption)
@@ -199,6 +203,7 @@ public extension WorkspaceAction {
              .reopenClosed, // restores a closed pane into the active tab — acts on history, not a live pane
              .toggleSidebar,
              .toggleDetailsPanel, // a window-scope panel toggle — needs no active pane
+             .selectDetailsTab, // a window-scope Details-tab switch — needs no active pane (like the toggle)
              .openQuickly, // a global fuzzy switcher — needs no active pane
              .newSession,
              .spawnFloating, // creates its own pane — needs none
@@ -607,6 +612,32 @@ public enum WorkspaceBindingRegistry {
             id: "view.toggleDetails", action: .toggleDetailsPanel, title: "Toggle Details Panel",
             category: .view, chord: KeyChord(character: "r", [.command, .shift]),
             symbol: "sidebar.right", keywords: "details inspector panel right pane hide show collapse",
+        ),
+        // Details tab jump commands (E9/WI-7, ES-E9-5, B2): otty's four UNBOUND-by-default commands that
+        // switch the right-hand Details panel to a specific tab (Info / Outline / Git / Files) AND reveal the
+        // panel when hidden (the reveal is wired in the view closure). `chord: nil` — the palette/menu-only
+        // idiom (like `tab.close` / `view.openQuickly`) surfaces them in the command palette + cheat sheet
+        // without binding a key; the user can bind any of them in Settings → Keybindings. The symbols mirror
+        // the segmented Details header's tab icons. Pinned chord-less + `.view` by `DetailsTabRoutingTests`.
+        WorkspaceBinding(
+            id: "view.detailsInfo", action: .selectDetailsTab(.info), title: "Details: Info",
+            category: .view, chord: nil,
+            symbol: "info.circle", keywords: "inspector details panel tab info jump switch session process ports",
+        ),
+        WorkspaceBinding(
+            id: "view.detailsOutline", action: .selectDetailsTab(.outline), title: "Details: Outline",
+            category: .view, chord: nil,
+            symbol: "list.bullet", keywords: "inspector details panel tab outline jump switch commands marks blocks",
+        ),
+        WorkspaceBinding(
+            id: "view.detailsGit", action: .selectDetailsTab(.git), title: "Details: Git",
+            category: .view, chord: nil,
+            symbol: "arrow.triangle.branch", keywords: "inspector details panel tab git jump switch branch diff status",
+        ),
+        WorkspaceBinding(
+            id: "view.detailsFiles", action: .selectDetailsTab(.files), title: "Details: Files",
+            category: .view, chord: nil,
+            symbol: "folder", keywords: "inspector details panel tab files jump switch tree directory browse",
         ),
         // Blocks (WB2): the Command Navigator toggle + jump-to-block prev/next. ⌃⌘O / ⌃⌘[ / ⌃⌘] are all
         // ⌘-prefixed (the §5 conflict rule) and collision-free against the rest of the table (tab cycling

@@ -13,16 +13,24 @@
 import AislopdeskAgentDetect
 import AislopdeskWorkspaceCore
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 struct InspectorColumn: View {
     let store: WorkspaceStore
     let connection: AppConnection
+    /// The shared, command-drivable Details-tab selection (E9/WI-7). Hoisted out of the old private `@State`
+    /// so the four `Details: *` jump commands (ES-E9-5) can switch the tab from OUTSIDE the view — the root
+    /// view installs a `selectDetailsTab` closure that writes `details.selected` (and reveals the panel). Both
+    /// inspector mounts (macOS split item + iOS detail) share ONE instance, so the active tab is one truth.
+    let details: DetailsPanelState
     /// Opens the Connect-to-Host editor (ES-E2-6). Bound to `overlay.openConnect()` by the shell so the
     /// macOS Details panel's Status row is a GUI-verifiable connect affordance (the iOS toolbar pill is the
     /// other entry point). No-op default keeps the column standalone-mountable (previews / tests).
     var onConnect: () -> Void = {}
-
-    @State private var selected: DetailsTab = .info
 
     /// Whether the "View Session History" viewer (`AgentSessionHistoryView`) is presented over the panel.
     /// Set by the Info tab's agent-sessions action; the viewer binds the focused pane's model (its session
@@ -38,28 +46,6 @@ struct InspectorColumn: View {
     /// created (the `.task` populates `models` off the body-update path), and when no pane is focused. Its
     /// `nil` client makes every read an empty state — never a hang.
     @State private var placeholder = PaneMetadataModel()
-
-    private enum DetailsTab: String, CaseIterable, Identifiable {
-        case info
-        case git
-        case files
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .info: "Info"
-            case .git: "Git"
-            case .files: "Files"
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .info: "info.circle"
-            case .git: "arrow.triangle.branch"
-            case .files: "folder"
-            }
-        }
-    }
 
     /// The active tab's active pane id.
     private var activePaneID: PaneID? { store.tree.activeSession?.activeTab?.activePane }
@@ -77,6 +63,14 @@ struct InspectorColumn: View {
     private var cwd: String? {
         guard let id = activePaneID else { return nil }
         return store.tree.activeSession?.specs[id]?.lastKnownCwd
+    }
+
+    /// The focused pane's working directory for the Info-tab Working Directory section (E9/WI-6): the
+    /// host-resolved cwd if the metadata fetch has landed, else the pane spec's last-known cwd. An empty
+    /// string collapses to `nil` so the section shows the "—" placeholder and Copy Path stays disabled.
+    private var resolvedCwd: String? {
+        guard let candidate = activeModel.cwd ?? cwd, !candidate.isEmpty else { return nil }
+        return candidate
     }
 
     /// The focused pane's typed metadata façade, or `nil` while it is disconnected.
@@ -155,7 +149,7 @@ struct InspectorColumn: View {
     private var header: some View {
         HStack(spacing: 2) {
             Color.clear.frame(width: 8, height: 40) // clear the titlebar strip / traffic lights line
-            ForEach(DetailsTab.allCases) { tab in
+            ForEach(DetailsPanelTab.allCases, id: \.self) { tab in
                 tabButton(tab)
             }
             Spacer(minLength: 0)
@@ -164,10 +158,10 @@ struct InspectorColumn: View {
         .frame(height: 40)
     }
 
-    private func tabButton(_ tab: DetailsTab) -> some View {
-        let active = tab == selected
+    private func tabButton(_ tab: DetailsPanelTab) -> some View {
+        let active = tab == details.selected
         return Button {
-            withAnimation(Otty.Anim.standard) { selected = tab }
+            withAnimation(Otty.Anim.standard) { details.selected = tab }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: tab.icon).font(.system(size: Otty.Typeface.footnote, weight: .medium))
@@ -185,18 +179,36 @@ struct InspectorColumn: View {
     // MARK: Content
 
     @ViewBuilder private var content: some View {
-        switch selected {
+        switch details.selected {
         case .info: infoContent
-        // `.id(activePaneID)` resets each tab's local interaction state (selected diff file / find query)
-        // when the focused pane changes — `activeModel` already switches to that pane's data.
+        // `.id(activePaneID)` resets each tab's local interaction state (selected diff file / find query /
+        // scroll position) when the focused pane changes — `activeModel`/`terminalModel` already switch to
+        // that pane's data.
+        case .outline: outlineContent.id(activePaneID)
         case .git: GitStatusView(model: activeModel).id(activePaneID)
         case .files: RemoteFileTreeView(model: activeModel).id(activePaneID)
+        }
+    }
+
+    /// The Outline tab (E9, WI-5): the active pane's command-mark navigator. Bound to the focused terminal
+    /// pane's `TerminalBlockModel`; a non-terminal / unmaterialized pane shows the same empty state as the
+    /// Commands navigator.
+    @ViewBuilder private var outlineContent: some View {
+        if let terminalModel {
+            OutlineView(
+                model: terminalModel.blocks,
+                onJump: { store.jumpToNavigatorBlockInActivePane(index: $0) },
+            )
+        } else {
+            emptyState("No Commands", systemImage: "list.bullet", note: "Select a terminal pane to see its history")
         }
     }
 
     private var infoContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             sessionSection
+            sectionDivider
+            workingDirectorySection
             sectionDivider
             ProcessPortsView(model: activeModel)
                 .padding(.bottom, Otty.Metric.space2)
@@ -207,6 +219,57 @@ struct InspectorColumn: View {
             sectionDivider
             commandsSection
         }
+    }
+
+    /// The Info-tab Working Directory section (E9/WI-6, ES-E9-1): leads the host-metadata content with the
+    /// focused pane's full working-directory path — a prominent, SELECTABLE, head-truncated path string per
+    /// `info-panel.png` — and a single "Copy Path" action. Reveal-in-Finder / Open-in-VS-Code/Cursor/Xcode/
+    /// Typora are intentionally absent: the path is a REMOTE host path with no local opener (E4 mapping note);
+    /// Copy Path is the only working-directory action E9 ships. The canonical home for the cwd (the old
+    /// truncated Session "Dir" row was removed).
+    private var workingDirectorySection: some View {
+        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            OttySectionHeader("Working Directory")
+            Text(InfoTabFormatting.displayPath(resolvedCwd))
+                .font(.system(size: Otty.Typeface.body))
+                .foregroundStyle(Otty.Text.primary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Otty.Metric.space3)
+            Button(action: copyWorkingDirectory) {
+                HStack(spacing: Otty.Metric.space2) {
+                    Image(systemName: "doc.on.doc")
+                    Text("Copy Path")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: Otty.Typeface.base))
+                .foregroundStyle(Otty.State.accent)
+                .padding(.horizontal, Otty.Metric.space3)
+                .padding(.vertical, 3)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .disabled(resolvedCwd == nil)
+            .help("Copy the working-directory path")
+            .accessibilityLabel("Copy the working-directory path")
+        }
+        .padding(.top, Otty.Metric.space1)
+        .padding(.bottom, Otty.Metric.space2)
+    }
+
+    /// Writes the resolved working-directory path to the system pasteboard — the `RemoteFileTreeView.copyPath`
+    /// idiom (NSPasteboard on macOS, UIPasteboard on iOS). A `nil` cwd is a no-op (the row is disabled), so
+    /// the placeholder "—" never reaches the pasteboard.
+    private func copyWorkingDirectory() {
+        guard let path = resolvedCwd else { return }
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        #elseif canImport(UIKit)
+        UIPasteboard.general.string = path
+        #endif
     }
 
     /// The Info-tab agent-history affordance (E4/WI-6): a "View Session History" action — otty's green
@@ -275,11 +338,6 @@ struct InspectorColumn: View {
                     Text("\(Int(activePingMS.rounded())) ms").monospacedDigit()
                 }
             }
-            if let cwd {
-                OttyKeyValueRow(label: "Dir") {
-                    Text(cwd).lineLimit(1).truncationMode(.head)
-                }
-            }
             if let symbol = StatusPresentation.agentSymbol(activeAgentStatus) {
                 OttyKeyValueRow(label: "Agent") {
                     HStack(spacing: 6) {
@@ -310,6 +368,45 @@ struct InspectorColumn: View {
     private func emptyState(_ title: String, systemImage: String, note: String) -> some View {
         ContentUnavailableView(title, systemImage: systemImage, description: Text(note))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// The segmented Details header's per-tab DISPLAY (E9/WI-7): the short label + SF Symbol for each
+/// ``DetailsPanelTab``. Kept as a view-local extension (NOT on the core `DetailsPanelTab`, which stays a pure
+/// value enum) so the SF-symbol / title strings live in the UI layer; `internal` so the placement pin in
+/// `InspectorRenderingTests` reaches it via `@testable import`. otty tab order is Info | Outline | Git | Files.
+extension DetailsPanelTab {
+    /// The short header label (NOT the `Details: …` palette title) shown when the tab is active.
+    var title: String {
+        switch self {
+        case .info: "Info"
+        case .outline: "Outline"
+        case .git: "Git"
+        case .files: "Files"
+        }
+    }
+
+    /// The SF Symbol for the tab (mirrors the four `Details: *` registry binding symbols).
+    var icon: String {
+        switch self {
+        case .info: "info.circle"
+        case .outline: "list.bullet"
+        case .git: "arrow.triangle.branch"
+        case .files: "folder"
+        }
+    }
+}
+
+/// Pure formatting for the Info tab's Working Directory section (E9/WI-6) — extracted so the cwd → display
+/// normalisation is headlessly testable (no view, no `Otty` theme read). Mirrors the `MetadataFormatting`
+/// pure-helper precedent so the WD section isn't purely GUI.
+enum InfoTabFormatting {
+    /// The display string for a working-directory path: a `nil` or empty path renders the em-dash
+    /// placeholder "—" (never a blank row); any non-empty path passes through VERBATIM (it is a REMOTE host
+    /// path — no client-side normalisation, since `~`/separators are the host's, not this machine's).
+    static func displayPath(_ path: String?) -> String {
+        guard let path, !path.isEmpty else { return "—" }
+        return path
     }
 }
 #endif

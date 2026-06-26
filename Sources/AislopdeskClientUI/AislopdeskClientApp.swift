@@ -302,6 +302,10 @@ public struct AislopdeskClientApp: App {
             overlay: overlayCoordinator,
             installDetailsToggle: { [keyDispatcher] toggle in keyDispatcher.setToggleDetailsPanel(toggle) },
             installSidebarToggle: { [keyDispatcher] toggle in keyDispatcher.setToggleSidebar(toggle) },
+            // E9/WI-7: hand the dispatcher the four `Details: *` jump commands' tab selector (sets the shared
+            // `DetailsPanelState` + reveals the panel), so a user-bound chord / palette row switches the Details
+            // tab through the SAME NSEvent monitor that owns every other command.
+            installSelectDetailsTab: { [keyDispatcher] select in keyDispatcher.setSelectDetailsTab(select) },
         )
         #else
         WorkspaceRootView(store: store, connection: connection, overlay: overlayCoordinator)

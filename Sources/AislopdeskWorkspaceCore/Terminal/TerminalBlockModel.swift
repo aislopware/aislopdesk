@@ -137,6 +137,24 @@ public final class TerminalBlockModel {
 
     public init() {}
 
+    // MARK: First-seen timestamps (E9 Outline — per-index client-receive time)
+
+    /// The CLIENT-RECEIVE time of the FIRST `commandBlock` update for each block index — the Outline tab's
+    /// per-row relative-timestamp source. A SIDE-MAP (NOT a field on the ``CommandBlock`` value type) so its
+    /// many call sites + its `Equatable` stay untouched. Captured ONCE on the new-index upsert (a later
+    /// in-place running→complete update does NOT move it), dropped on eviction + on ``reset()``.
+    /// Client-receive rather than the host clock because the host time would differ by the link RTT and
+    /// there is no timestamp on the wire (E9 makes no wire change).
+    @ObservationIgnored private var firstSeenByIndex: [UInt32: Date] = [:]
+
+    /// The clock the first-seen capture reads — injectable so a unit test pins a fixed time (the production
+    /// default is the real wall clock). `@ObservationIgnored`: a wiring seam, not observed state.
+    @ObservationIgnored var now: () -> Date = { Date() }
+
+    /// The client-receive time of `index`'s first `commandBlock` update, or `nil` if unknown / evicted —
+    /// the Outline row's relative-timestamp source (rendered via ``OutlinePresentation/relativeTime(from:now:)``).
+    public func firstSeen(index: UInt32) -> Date? { firstSeenByIndex[index] }
+
     // MARK: Bookmarks (WB3 — star a block)
 
     /// The cap on how many bookmarks one pane retains, so a long-lived session can't grow the set
@@ -242,8 +260,10 @@ public final class TerminalBlockModel {
             blocks[existing] = block
             return
         }
-        // New index — insert at the index-ordered position (almost always the end, since the host emits
-        // ascending indices), then evict the oldest to stay bounded.
+        // New index — capture its client-receive time (Outline timestamp), insert at the index-ordered
+        // position (almost always the end, since the host emits ascending indices), then evict the oldest
+        // to stay bounded.
+        firstSeenByIndex[index] = now()
         let insertAt = blocks.firstIndex(where: { $0.index > index }) ?? blocks.endIndex
         blocks.insert(block, at: insertAt)
         evictIfNeeded()
@@ -268,7 +288,8 @@ public final class TerminalBlockModel {
 
     private func evictIfNeeded() {
         while blocks.count > Self.maxBlocks {
-            blocks.removeFirst()
+            let evicted = blocks.removeFirst()
+            firstSeenByIndex.removeValue(forKey: evicted.index)
         }
     }
 
@@ -276,6 +297,8 @@ public final class TerminalBlockModel {
     /// one never hangs). Called on a session reset / reconnect — the dead session's blocks are stale.
     public func reset() {
         blocks.removeAll()
+        // The dead session's first-seen timestamps die with its blocks (a fresh session re-captures them).
+        firstSeenByIndex.removeAll()
         // Bookmarks are per-SESSION display state — a fresh session starts with none. The wiring layer
         // re-seeds them from persistence on the next attach (a new materialization mints a NEW
         // per-session scope key, so a relaunch starts empty rather than re-applying stale indices).

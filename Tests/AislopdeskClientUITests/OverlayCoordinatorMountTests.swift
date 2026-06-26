@@ -379,22 +379,27 @@ final class OverlayCoordinatorMountTests: XCTestCase {
     }
 
     /// The chip-rendering contract the view depends on: a chord-bearing row resolves a non-empty glyph from
-    /// the registry (the chips), while the three chord-LESS rows the table carries (the collapsed ⌘1…⌘9
-    /// representative + the chord-less Rename Tab verb + the chord-less Close Tab verb — E7 re-scoped ⌘⇧W onto
-    /// Close Window, leaving Close Tab reachable only via the ⌘W cascade / palette, see DECISIONS.md) render
-    /// NO chip — the representative bakes its hint into its title instead. The trap this pins: `glyph(for:)` of
-    /// the representative's stand-in `.selectTab(1)` action resolves the REAL ⌘1 binding, so the view MUST gate
-    /// on the row's own `chord` (not the action's glyph) or it would wrongly stamp a "⌘1" chip onto the
-    /// "Select Tab (⌘1…⌘9)" row.
+    /// the registry (the chips), while the chord-LESS rows the table carries render NO chip. Those are the
+    /// collapsed ⌘1…⌘9 representative + the chord-less Rename Tab verb + the chord-less Close Tab verb (E7
+    /// re-scoped ⌘⇧W onto Close Window, leaving Close Tab reachable only via the ⌘W cascade / palette, see
+    /// DECISIONS.md) + the four E9 `Details: *` jump commands (Info/Outline/Git/Files — palette/menu-only,
+    /// `chord: nil` by design, pinned chord-less by `DetailsTabRoutingTests`). The representative bakes its
+    /// hint into its title instead. The trap this pins: `glyph(for:)` of the representative's stand-in
+    /// `.selectTab(1)` action resolves the REAL ⌘1 binding, so the view MUST gate on the row's own `chord`
+    /// (not the action's glyph) or it would wrongly stamp a "⌘1" chip onto the "Select Tab (⌘1…⌘9)" row.
     func testCheatSheetGlyphChipsGateOnRowChord() {
         let rows = WorkspaceBindingRegistry.groupedForDisplay.flatMap(\.bindings)
 
-        // The chord-less rows in the display table are EXACTLY the representative + Rename Tab + Close Tab.
+        // The chord-less rows in the display table are EXACTLY the representative + Rename Tab + Close Tab +
+        // the four E9 Details-tab jump commands (palette/menu-only, no default key).
         let chordLessIDs = Set(rows.filter { $0.chord == nil }.map(\.id))
         XCTAssertEqual(
             chordLessIDs,
-            ["tab.selectN", "pane.rename", "tab.close"],
-            "only the collapsed select-tab representative + the chord-less Rename and Close Tab verbs render no chip",
+            [
+                "tab.selectN", "pane.rename", "tab.close",
+                "view.detailsInfo", "view.detailsOutline", "view.detailsGit", "view.detailsFiles",
+            ],
+            "the no-chip rows: collapsed select-tab representative + chord-less Rename/Close Tab + the four Details-tab jumps",
         )
 
         // Every chord-bearing row resolves a non-empty glyph (the chips) — no drift between display + chord.

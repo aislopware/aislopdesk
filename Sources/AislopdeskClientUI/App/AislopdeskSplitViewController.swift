@@ -17,6 +17,10 @@ final class AislopdeskSplitViewController: NSSplitViewController {
     private let store: WorkspaceStore
     private let connection: AppConnection
     private let chrome: WorkspaceChromeState
+    /// The shared Details-tab selection (E9/WI-7) — forwarded to the inspector's `InspectorColumn` so a
+    /// `Details: *` jump command (which writes `details.selected` via the root view's installed closure)
+    /// switches the hosted panel's tab. The SAME instance the root view captures for the reveal closure.
+    private let details: DetailsPanelState
     /// Opens the Connect-to-Host editor — wired into the inspector's Status row (ES-E2-6). The shell binds
     /// this to `overlay.openConnect()`; the no-op default keeps the controller buildable without an overlay.
     private let onConnect: () -> Void
@@ -29,11 +33,13 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         store: WorkspaceStore,
         connection: AppConnection,
         chrome: WorkspaceChromeState,
+        details: DetailsPanelState,
         onConnect: @escaping () -> Void = {},
     ) {
         self.store = store
         self.connection = connection
         self.chrome = chrome
+        self.details = details
         self.onConnect = onConnect
         super.init(nibName: nil, bundle: nil)
     }
@@ -87,7 +93,7 @@ final class AislopdeskSplitViewController: NSSplitViewController {
         //    silhouette; revealed from the toolbar (L4a). Matches otty, whose Details panel is hidden until
         //    ⌘⇧R.
         let inspector = NSHostingController(
-            rootView: InspectorColumn(store: store, connection: connection, onConnect: onConnect),
+            rootView: InspectorColumn(store: store, connection: connection, details: details, onConnect: onConnect),
         )
 
         // Each column hosts SwiftUI in its own NSHostingController, which by DEFAULT insets its content below

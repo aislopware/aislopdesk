@@ -191,4 +191,21 @@ public extension WorkspaceStore {
         blockBookmarks.jumpCursor[paneID] = target.index
         BlockJump.toNavigatorPosition(pos, using: actions)
     }
+
+    // MARK: - E9: Jump to a specific Outline block
+
+    /// Jumps the active pane's viewport to the block with `index` — the Outline tab's per-row jump (E9), the
+    /// ONE reuse of the shared absolute re-anchor jump (``BlockJump``) that the navigator's per-row jump +
+    /// jump-to-failed also route through (so the delta math can't drift). Resolves the active terminal model
+    /// + its ``TerminalSurfaceActions`` surface seam, finds `index`'s NEWEST-FIRST position in
+    /// `navigatorBlocks`, and re-anchors there. A no-op for a non-terminal pane, an empty shell, a
+    /// headless/placeholder surface (no seam), or an unknown / evicted `index` (never traps). Mirrors
+    /// ``jumpToFailedBlockInActivePane(forward:)`` but addresses one explicit index (no cursor stepping).
+    func jumpToNavigatorBlockInActivePane(index: UInt32) {
+        guard let model = activeTerminalModel,
+              let actions = model.surface as? TerminalSurfaceActions else { return }
+        let blocks = model.blocks.navigatorBlocks
+        guard let pos = blocks.firstIndex(where: { $0.index == index }) else { return }
+        BlockJump.toNavigatorPosition(pos, using: actions)
+    }
 }

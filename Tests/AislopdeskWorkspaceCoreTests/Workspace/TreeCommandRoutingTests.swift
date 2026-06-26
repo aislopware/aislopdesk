@@ -858,6 +858,36 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertEqual(store.tree, before, "global search with no closure leaves the tree unchanged")
     }
 
+    // MARK: - View: the four Details: * jump commands (E9/WI-7, ES-E9-5)
+
+    /// `.selectDetailsTab(tab)` forwards the tab to the supplied `selectDetailsTab` closure and does NOT
+    /// mutate the tree (it is a VIEW affordance — `DetailsPanelState` + the panel reveal). Pins the routing
+    /// case exists + forwards. FAILS on the pre-WI-7 code (no `.selectDetailsTab` action / routing case).
+    @MainActor
+    func testSelectDetailsTabFiresClosureAndDoesNotMutateTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        var captured: DetailsPanelTab?
+        WorkspaceBindingRegistry.route(.selectDetailsTab(.git), to: store, selectDetailsTab: { captured = $0 })
+        XCTAssertEqual(captured, .git, "selectDetailsTab forwarded the requested tab to the closure")
+        XCTAssertEqual(store.tree, before, "a Details-tab jump is a view affordance — the tree is unchanged")
+    }
+
+    /// The four `Details: *` registry bindings exist, are `.view`, and are `chord: nil` (unbound — so they
+    /// don't collide with any chord, and aren't dead). Revert-to-confirm-fail by removing a registry case.
+    func testDetailsTabBindingsAreViewAndChordless() {
+        let expected: [(String, DetailsPanelTab)] = [
+            ("view.detailsInfo", .info), ("view.detailsOutline", .outline),
+            ("view.detailsGit", .git), ("view.detailsFiles", .files),
+        ]
+        for (id, tab) in expected {
+            let binding = WorkspaceBindingRegistry.binding(for: .selectDetailsTab(tab))
+            XCTAssertEqual(binding?.id, id, "Details: \(tab) has id \(id)")
+            XCTAssertEqual(binding?.category, .view, "Details: \(tab) is a View command")
+            XCTAssertNil(binding?.chord, "Details: \(tab) is unbound by default (chord: nil)")
+        }
+    }
+
     // MARK: - View: peek-and-reply falls back to the store when no overlay closure (no dead ⌘⇧J)
 
     /// `.peekAndReply` WITH an explicit `togglePeekReply` override fires the closure (the future overlay

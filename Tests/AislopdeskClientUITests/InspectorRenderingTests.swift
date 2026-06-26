@@ -12,6 +12,7 @@
 // pins are tied to the host's packing convention, the filter pins exclusion, the flatten pins structure.
 
 import AislopdeskProtocol
+import AislopdeskWorkspaceCore // DetailsPanelTab (the cross-module Details-tab vocabulary, hoisted in WI-7)
 import XCTest
 @testable import AislopdeskClientUI
 
@@ -255,5 +256,48 @@ final class InspectorRenderingTests: XCTestCase {
         XCTAssertEqual(AgentTranscript.clockTime(fromISO: "2026-06-25T19:30:21+02:00"), "19:30:21")
         XCTAssertNil(AgentTranscript.clockTime(fromISO: "2026-06-25"), "no time field ⇒ nil, never a trap")
         XCTAssertNil(AgentTranscript.clockTime(fromISO: "not-a-timestamp"))
+    }
+
+    // MARK: - DetailsPanelTab order (Outline tab placement — InspectorColumn)
+
+    func testDetailsTabOrderPlacesOutlineBetweenInfoAndGit() {
+        // ES-E9-2 / WI-5 + WI-7: the Details panel's segmented header iterates the hoisted cross-module
+        // `DetailsPanelTab.allCases`; the Outline tab must sit BETWEEN Info and Git (otty order Info | Outline
+        // | Git | Files). FAILS on the un-fixed code (no `.outline` case ⇒ does not compile) and on a reorder
+        // regression (the index pins below fail).
+        let order = DetailsPanelTab.allCases.map(\.rawValue)
+        XCTAssertEqual(order, ["info", "outline", "git", "files"], "otty Details tab order")
+
+        guard let info = order.firstIndex(of: "info"),
+              let outline = order.firstIndex(of: "outline"),
+              let git = order.firstIndex(of: "git")
+        else {
+            XCTFail("the Outline tab is missing from DetailsPanelTab")
+            return
+        }
+        XCTAssertLessThan(info, outline, "Outline follows Info")
+        XCTAssertLessThan(outline, git, "Outline precedes Git")
+    }
+
+    func testOutlineTabIconAndTitle() {
+        // The Outline tab uses the spec's list/lines glyph + "Outline" label (the segmented header renders it
+        // from the WI-7 view-local `DetailsPanelTab.title`/`.icon` extension).
+        XCTAssertEqual(DetailsPanelTab.outline.icon, "list.bullet")
+        XCTAssertEqual(DetailsPanelTab.outline.title, "Outline")
+    }
+
+    // MARK: - InfoTabFormatting (Working Directory section — InspectorColumn, WI-6)
+
+    func testDisplayPathFallsBackToEmDashForMissingCwd() {
+        // ES-E9-1 / WI-6: the Info tab's Working Directory section leads with the focused pane's host path.
+        // A disconnected pane (nil cwd) or an empty-string cwd must render the em-dash placeholder — never a
+        // blank row — and a non-empty path must pass through VERBATIM (it is a REMOTE host path; no
+        // client-side normalisation). FAILS on the un-fixed code (no `InfoTabFormatting`) and on a regression
+        // that dropped the empty-string guard or rewrote the path. Not tautological — the expectations are the
+        // fixed placeholder and the literal input, not the helper's own derivation.
+        XCTAssertEqual(InfoTabFormatting.displayPath(nil), "—", "no cwd ⇒ em-dash, never a blank row")
+        XCTAssertEqual(InfoTabFormatting.displayPath(""), "—", "an empty cwd is treated as missing")
+        XCTAssertEqual(InfoTabFormatting.displayPath("~/Workplace/otty"), "~/Workplace/otty")
+        XCTAssertEqual(InfoTabFormatting.displayPath("/Users/me/src/app"), "/Users/me/src/app")
     }
 }

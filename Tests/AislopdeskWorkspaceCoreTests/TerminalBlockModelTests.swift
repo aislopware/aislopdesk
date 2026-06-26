@@ -214,6 +214,56 @@ final class TerminalBlockModelTests: XCTestCase {
         XCTAssertFalse(model.isOutputPending(index: 7))
     }
 
+    // MARK: First-seen timestamps (E9 Outline — client-receive time side-map)
+
+    func testFirstSeenIsSetOnFirstUpsertAndStableAcrossUpdate() {
+        let model = TerminalBlockModel()
+        let t0 = Date(timeIntervalSince1970: 1000)
+        model.now = { t0 }
+        model.upsert(index: 0, commandText: "make", exitCode: nil, durationMS: nil, complete: false, outputLen: 0)
+        XCTAssertEqual(model.firstSeen(index: 0), t0, "firstSeen is the client-receive time of the NEW index")
+
+        // A later in-place update (running → complete) at a DIFFERENT clock must NOT move firstSeen.
+        let t1 = Date(timeIntervalSince1970: 1050)
+        model.now = { t1 }
+        model.upsert(index: 0, commandText: "make", exitCode: 0, durationMS: 50000, complete: true, outputLen: 9)
+        XCTAssertEqual(model.firstSeen(index: 0), t0, "an in-place update keeps the ORIGINAL first-seen time")
+        XCTAssertNil(model.firstSeen(index: 99), "an unknown index has no first-seen time")
+    }
+
+    func testFirstSeenIsDroppedOnEviction() {
+        let model = TerminalBlockModel()
+        var clock = Date(timeIntervalSince1970: 0)
+        model.now = { clock }
+        let n = TerminalBlockModel.maxBlocks + 5
+        for i in 0..<n {
+            clock = Date(timeIntervalSince1970: TimeInterval(i))
+            model.upsert(
+                index: UInt32(i),
+                commandText: "c\(i)",
+                exitCode: 0,
+                durationMS: 1,
+                complete: true,
+                outputLen: 0,
+            )
+        }
+        // The oldest 5 indices were evicted from the ring — and their first-seen entries cleaned up with them.
+        XCTAssertNil(model.block(at: 0), "the oldest block was evicted from the ring")
+        XCTAssertNil(model.firstSeen(index: 0), "an evicted block's first-seen entry is cleaned up (no leak)")
+        XCTAssertNil(model.firstSeen(index: 4), "all evicted indices' first-seen entries are cleaned up")
+        XCTAssertNotNil(model.firstSeen(index: UInt32(n - 1)), "a live block keeps its first-seen entry")
+    }
+
+    func testFirstSeenIsClearedOnReset() {
+        let model = TerminalBlockModel()
+        let t0 = Date(timeIntervalSince1970: 500)
+        model.now = { t0 }
+        model.upsert(index: 0, commandText: "a", exitCode: 0, durationMS: 1, complete: true, outputLen: 0)
+        XCTAssertEqual(model.firstSeen(index: 0), t0)
+        model.reset()
+        XCTAssertNil(model.firstSeen(index: 0), "reset clears the first-seen side-map along with the blocks")
+    }
+
     // MARK: Status → icon / label mapping
 
     func testStatusDerivation() {

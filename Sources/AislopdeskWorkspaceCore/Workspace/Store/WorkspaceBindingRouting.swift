@@ -24,6 +24,9 @@ struct RouteToggles {
     var detailsPanel: (() -> Void)?
     var sidebar: (() -> Void)?
     var globalSearch: (() -> Void)?
+    /// Jumps the Details panel to a specific tab (E9/WI-7). View-owned state (`DetailsPanelState` + the
+    /// chrome reveal), so — like `detailsPanel` — it is a passed-in closure; `nil` = a graceful no-op.
+    var selectDetailsTab: ((DetailsPanelTab) -> Void)?
 }
 
 public extension WorkspaceBindingRegistry {
@@ -41,11 +44,13 @@ public extension WorkspaceBindingRegistry {
         toggleDetailsPanel: (() -> Void)? = nil,
         toggleSidebar: (() -> Void)? = nil,
         toggleGlobalSearch: (() -> Void)? = nil,
+        selectDetailsTab: ((DetailsPanelTab) -> Void)? = nil,
     ) {
         let toggles = RouteToggles(
             palette: togglePalette, cheatSheet: toggleCheatSheet, find: toggleFind,
             peekReply: togglePeekReply, detailsPanel: toggleDetailsPanel,
             sidebar: toggleSidebar, globalSearch: toggleGlobalSearch,
+            selectDetailsTab: selectDetailsTab,
         )
         switch store.liveModel {
         case .tree: routeTree(action, to: store, toggles: toggles)
@@ -138,6 +143,11 @@ public extension WorkspaceBindingRegistry {
         // not store state, so it is a passed-in closure (like the palette / cheat-sheet toggles). `nil` (the
         // headless / test default) keeps it a graceful no-op — never a dead chord.
         case .toggleDetailsPanel: toggles.detailsPanel?()
+        // Details tab jump (E9/WI-7, ES-E9-5): switch the right-hand Details panel to a specific tab AND
+        // reveal it if hidden. View-owned state (`DetailsPanelState` + `WorkspaceChromeState`), so it is a
+        // passed-in closure like `.toggleDetailsPanel`; `nil` (the headless / test default) is a graceful
+        // no-op — never a dead chord.
+        case let .selectDetailsTab(tab): toggles.selectDetailsTab?(tab)
         // Blocks (WB2): the navigator toggle + jump-to-block both target the active terminal pane via the store.
         case .commandNavigator: store.requestBlockNavigatorInActivePane()
         case .jumpPreviousBlock: store.jumpToBlockInActivePane(delta: -1)
@@ -271,6 +281,8 @@ public extension WorkspaceBindingRegistry {
         case .toggleSidebar: toggles.sidebar?()
         // Details panel is a view overlay (tree-shell chrome); the canvas path still toggles it via the closure.
         case .toggleDetailsPanel: toggles.detailsPanel?()
+        // Details tab jump: a view overlay (tree-shell chrome); the canvas path still forwards it via the closure.
+        case let .selectDetailsTab(tab): toggles.selectDetailsTab?(tab)
         // Blocks (WB2): the canvas path is retained-but-dead; route through the same store hooks (they
         // resolve the active pane via the canvas focus, so the navigator/jump still work there).
         case .commandNavigator: store.requestBlockNavigatorInActivePane()

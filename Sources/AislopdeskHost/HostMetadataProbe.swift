@@ -31,6 +31,12 @@ struct HostMetadataProbe: MetadataQuerying {
     private static let maxGitFiles = 4096
     private static let maxDirEntries = 4096
     private static let maxSessions = 512
+    /// The opaque-read budget for the source-side bounded reads (`readAgentSession` / `gitDiff`). It
+    /// MIRRORS ``MetadataResponseBuilder/defaultMaxOpaquePayloadBytes`` (15 MiB) so an opaque read is
+    /// bounded at the SOURCE — we pull at most `cap + 1` bytes so the builder's `cappedOpaque()` still
+    /// trims an already-bounded tail (and its "was truncated" signal survives) instead of letting a
+    /// pathological session file / huge `git diff` spike per-request RAM before the cap is applied.
+    private static let maxOpaqueReadBytes = 15 * 1024 * 1024
     private static let gitPath = "/usr/bin/git"
     private static let lsofPath = "/usr/sbin/lsof"
 
@@ -120,7 +126,7 @@ struct HostMetadataProbe: MetadataQuerying {
     /// Parses `lsof -F cn` field output: `c<command>` sets the current command, `n<address>` yields one
     /// listening port (the integer after the LAST `:` of the address — handles `*:8080`, `127.0.0.1:80`,
     /// `[::1]:443`). A malformed line is SKIPPED (validate-then-drop) — `lsof` output is hostile input.
-    private static func parseLsof(_ output: String, proto: MetadataCodec.PortProtocol) -> [MetadataCodec.PortInfo] {
+    static func parseLsof(_ output: String, proto: MetadataCodec.PortProtocol) -> [MetadataCodec.PortInfo] {
         var out: [MetadataCodec.PortInfo] = []
         var command = ""
         for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -183,7 +189,7 @@ struct HostMetadataProbe: MetadataQuerying {
 
     /// Parses a porcelain v1 `-b` branch header: `<branch>...<upstream> [ahead N, behind M]`, or a bare
     /// `<branch>`, or `HEAD (no branch)` (detached → empty branch). Defensive: a missing field defaults.
-    private static func parseBranchHeader(
+    static func parseBranchHeader(
         _ rest: Substring, branch: inout String, ahead: inout Int32, behind: inout Int32,
     ) {
         var head = String(rest)
@@ -205,7 +211,7 @@ struct HostMetadataProbe: MetadataQuerying {
 
     /// Parses a porcelain v1 status line `XY <path>` (rename `XY old -> new` keeps the new path); the
     /// `XY` chars are packed via ``packStatus``. `nil` for a malformed line.
-    private static func parseStatusLine(_ line: Substring) -> MetadataCodec.GitFileChange? {
+    static func parseStatusLine(_ line: Substring) -> MetadataCodec.GitFileChange? {
         guard line.count >= 3 else { return nil }
         let x = line[line.startIndex]
         let y = line[line.index(after: line.startIndex)]
@@ -222,7 +228,7 @@ struct HostMetadataProbe: MetadataQuerying {
 
     /// Maps a porcelain status char to a 4-bit code. **The client (WI-5) MUST mirror this inverse** to
     /// render the change category. Convention: space=0 M=1 A=2 D=3 R=4 C=5 U=6 ?=7 !=8 T=9 (other=15).
-    private static func statusNibble(_ char: Character) -> UInt8 {
+    static func statusNibble(_ char: Character) -> UInt8 {
         switch char {
         case " ": 0
         case "M": 1
@@ -240,7 +246,7 @@ struct HostMetadataProbe: MetadataQuerying {
 
     /// Packs the porcelain `X` (index) and `Y` (worktree) status chars into one byte (high nibble = X,
     /// low nibble = Y) — the ``MetadataCodec/GitFileChange/statusCode`` host-defined packing.
-    private static func packStatus(_ x: Character, _ y: Character) -> UInt8 {
+    static func packStatus(_ x: Character, _ y: Character) -> UInt8 {
         (statusNibble(x) << 4) | statusNibble(y)
     }
 
@@ -265,6 +271,15 @@ struct HostMetadataProbe: MetadataQuerying {
 
     // MARK: - agent sessions (Claude / codex / opencode)
 
+    /// Auto-enumerates the agent sessions discoverable for `project` — Claude Code + OpenCode ONLY.
+    ///
+    /// **Codex auto-enumeration is intentionally DEFERRED (Claude-first scope reduction), NOT removed.**
+    /// There is deliberately no `codexSessions` enumerator here, so a `~/.codex/sessions` transcript is never
+    /// auto-discovered into this list. The codex scaffolding is kept intact ON PURPOSE — ``AgentKind`` still
+    /// carries `.codex`, ``sessionRoots()`` still lists the codex root, and ``readAgentSession(id:)`` still
+    /// serves an EXPLICIT absolute codex session id (the shipped E4 on-disk read capability). So only the
+    /// auto-discovery half is deferred; the explicit-id read path stays live. E9 surfaces only Claude as the
+    /// first-class agent. (E9 carry-over #3 — see `docs/DECISIONS.md`.)
     func listAgentSessions(project: String) -> [MetadataCodec.AgentSessionInfo] {
         var out = Self.claudeSessions(project: project)
         out.append(contentsOf: Self.opencodeSessions(project: project))
@@ -284,10 +299,20 @@ struct HostMetadataProbe: MetadataQuerying {
             return !rootC.isEmpty && pathC.count > rootC.count && Array(pathC.prefix(rootC.count)) == rootC
         }
         guard withinRoot, FileManager.default.isReadableFile(atPath: path) else { return nil }
-        return try? Data(contentsOf: URL(fileURLWithPath: path))
+        // Bound the read at the SOURCE: pull at most `maxOpaqueReadBytes + 1` (NOT the whole file via
+        // `Data(contentsOf:)`) so the builder's `cappedOpaque()` only trims an already-bounded tail and a
+        // pathological session file can't spike per-request RAM. Validate-then-drop: any open/read failure
+        // → `nil` (never a trap), with the handle closed on every exit.
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
+        defer { try? handle.close() }
+        return try? handle.read(upToCount: Self.maxOpaqueReadBytes + 1)
     }
 
-    /// The known agent-session roots (expanded against the host's home dir).
+    /// The known agent-session roots (expanded against the host's home dir). The `~/.codex/sessions` root is
+    /// listed for the READ path (``readAgentSession(id:)`` confines an explicit absolute id to a known root)
+    /// even though ``listAgentSessions(project:)`` does NOT auto-enumerate codex — codex auto-enumeration is
+    /// intentionally deferred (Claude-first scope reduction), so the codex root stays here BY DESIGN, not by
+    /// oversight: it keeps an explicit codex session id readable while auto-discovery is the deferred half.
     private static func sessionRoots() -> [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return [
@@ -390,9 +415,22 @@ struct HostMetadataProbe: MetadataQuerying {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Whether `accumulated` captured opaque bytes have exceeded the source-side read budget
+    /// (``maxOpaqueReadBytes``, mirroring the builder's 15 MiB opaque cap). A PURE predicate (no I/O) so
+    /// the byte-budgeted drain loop's stop condition is unit-pinned WITHOUT spinning a `Process` /
+    /// `FileHandle` in a test (the hang-safety rule keeps those compiled-and-reviewed only). `cap` → false,
+    /// `cap + 1` → true, so the loop stops once the captured buffer is one byte past the cap and the
+    /// builder's `cappedOpaque()` still trims an already-bounded tail.
+    static func opaqueBudgetExceeded(_ accumulated: Int) -> Bool {
+        accumulated > maxOpaqueReadBytes
+    }
+
     /// Runs `path arguments`, returning captured stdout bytes (stderr discarded). `nil` if the binary
-    /// is missing / not executable / cannot spawn. stdout is drained BEFORE `waitUntilExit` so a large
-    /// `git diff` can't deadlock on a full pipe buffer.
+    /// is missing / not executable / cannot spawn. stdout is drained in CHUNKS before `waitUntilExit` so
+    /// a large `git diff` can neither deadlock on a full pipe buffer nor spike per-request RAM: once the
+    /// accumulated bytes exceed the opaque budget (``opaqueBudgetExceeded``, i.e. one past the cap so the
+    /// builder still sees a truncation) the child is `terminate()`d and reading stops — bounding the read
+    /// at the SOURCE while still draining-before-wait.
     private static func runProcessData(_ path: String, _ arguments: [String]) -> Data? {
         guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
         let process = Process()
@@ -406,7 +444,19 @@ struct HostMetadataProbe: MetadataQuerying {
         } catch {
             return nil
         }
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        let reader = stdout.fileHandleForReading
+        var data = Data()
+        while true {
+            let chunk = reader.availableData
+            if chunk.isEmpty { break } // EOF — the child closed its stdout (the normal, small-diff case).
+            data.append(chunk)
+            if opaqueBudgetExceeded(data.count) {
+                // Past the budget: kill the child (a blocked `write` is interrupted by SIGTERM, so
+                // `waitUntilExit` can't wedge) and stop reading. The bounded buffer is returned as-is.
+                process.terminate()
+                break
+            }
+        }
         process.waitUntilExit()
         return data
     }
