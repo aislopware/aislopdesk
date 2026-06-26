@@ -147,76 +147,79 @@ final class GlobalSearchControllerTests: XCTestCase {
 
     // MARK: Click-to-line navigation (ES-E5-5)
 
-    /// Two DIFFERENT hits in the SAME pane must produce DIFFERENT navigation intent — the click-to-line fix.
-    /// The half-delivered behaviour armed `search:` + a SINGLE `navigate_search:next` for every row, so the
-    /// 1st and 3rd hits were indistinguishable. Here the 3rd hit advances by its ordinal (3 nexts) while the
-    /// 1st advances by 1 — revert ``navigationActions`` to a single shared next and this fails.
-    func testNavigationActionsAdvanceToTheClickedHitsOrdinal() throws {
-        // One pane, THREE hits on distinct lines (buffer order).
-        let results = GlobalSearchController.run(
-            sources: [source("pane", ["alpha doc", "beta doc", "gamma doc"])],
-            query: "doc",
-            caseSensitive: false,
-            isRegex: false,
+    /// The DEFINITIVE click-to-line invariant: two DIFFERENT hits on DIFFERENT lines in the SAME pane must
+    /// `scroll_to_row` to those two DISTINCT lines in ALL THREE modes (literal case-insensitive, literal
+    /// case-SENSITIVE, regex). Landing is mode-independent and viewport-independent — it never depends on an
+    /// ordinal that case-sensitivity / regex / viewport can desync. The OLD literal path emitted
+    /// `search:` + (ordinal+1)×`navigate_search:next` (no `scroll_to_row` at all in literal mode), so each of
+    /// these `scroll_to_row` assertions fails on the un-fixed ordinal walk.
+    func testNavigationActionsScrollToDistinctRowsInEveryMode() throws {
+        // One pane, hits on three distinct lines under each mode's query.
+        func hitsFor(query: String, caseSensitive: Bool, isRegex: Bool, lines: [String]) throws -> [GlobalSearchHit] {
+            let results = GlobalSearchController.run(
+                sources: [source("pane", lines)],
+                query: query,
+                caseSensitive: caseSensitive,
+                isRegex: isRegex,
+            )
+            let hits = try XCTUnwrap(results.groups.first?.hits)
+            XCTAssertEqual(hits.count, 3, "expected three hits on distinct lines for \(query)")
+            return hits
+        }
+
+        // --- Mode 1: literal, case-INSENSITIVE. Arms the faithful literal highlight, THEN scrolls to the row.
+        let insensitive = try hitsFor(
+            query: "doc", caseSensitive: false, isRegex: false,
+            lines: ["alpha DOC", "beta doc", "gamma Doc"],
         )
-        let hits = try XCTUnwrap(results.groups.first?.hits)
-        XCTAssertEqual(hits.count, 3)
+        let insFirst = GlobalSearchController.navigationActions(for: insensitive[0], query: "doc", caseSensitive: false)
+        let insThird = GlobalSearchController.navigationActions(for: insensitive[2], query: "doc", caseSensitive: false)
+        XCTAssertEqual(insFirst, ["search:doc", "scroll_to_row:\(insensitive[0].line)"])
+        XCTAssertEqual(insThird, ["search:doc", "scroll_to_row:\(insensitive[2].line)"])
+        XCTAssertNotEqual(insensitive[0].line, insensitive[2].line)
+        XCTAssertNotEqual(insFirst, insThird, "distinct rows must scroll to distinct targets")
 
-        let first = GlobalSearchController.navigationActions(for: hits[0], in: results, query: "doc")
-        let third = GlobalSearchController.navigationActions(for: hits[2], in: results, query: "doc")
-
-        // Both arm the same search…
-        XCTAssertEqual(first.first, "search:doc")
-        XCTAssertEqual(third.first, "search:doc")
-        // …but advance by the hit's 0-based ordinal + 1 — so the rows land DISTINCTLY.
-        XCTAssertEqual(first, ["search:doc", "navigate_search:next"])
-        XCTAssertEqual(
-            third,
-            ["search:doc", "navigate_search:next", "navigate_search:next", "navigate_search:next"],
+        // --- Mode 2: literal, case-SENSITIVE. Must NOT arm the (case-insensitive) literal matcher — clearing
+        // any stale highlight and scrolling straight to the row. This is the revert-to-confirm-fail case: the
+        // old code routed case-sensitive through the ordinal `navigate_search:next` walk, which both emits no
+        // `scroll_to_row` AND mis-lands (case-sensitive ordinal ≠ libghostty's case-insensitive cursor).
+        let sensitive = try hitsFor(
+            query: "DOC", caseSensitive: true, isRegex: false,
+            lines: ["alpha DOC", "beta DOC", "gamma DOC"],
         )
-        XCTAssertNotEqual(first, third, "distinct rows in one pane must produce distinct navigation intent")
-    }
-
-    /// REGEX-mode click-to-line must NOT arm libghostty's literal matcher (which has no regex engine — arming
-    /// the pattern matches the pattern TEXT, usually 0 hits, leaving every `navigate_search:next` dead: the
-    /// dishonest "counter says N, nav moves nothing" state). Instead it must END any stale search and scroll
-    /// straight to the clicked hit's row — mirroring the find bar's regex path. Revert `navigationActions` to
-    /// the literal `search:`/`navigate_search:` sequence and this fails.
-    func testNavigationActionsRegexScrollsToRowWithoutLiteralSearch() throws {
-        let results = GlobalSearchController.run(
-            sources: [source("pane", ["alpha 12", "beta 34", "gamma 56"])],
-            query: #"\d+"#,
-            caseSensitive: false,
-            isRegex: true,
-        )
-        let hits = try XCTUnwrap(results.groups.first?.hits)
-        XCTAssertEqual(hits.count, 3)
-
-        // The 3rd hit is on line index 2 — regex mode scrolls there directly.
-        let third = GlobalSearchController.navigationActions(
-            for: hits[2], in: results, query: #"\d+"#, isRegex: true,
-        )
-        XCTAssertEqual(third, ["end_search", "scroll_to_row:\(hits[2].line)"])
-
-        // It must NEVER arm the literal pattern or step the literal cursor (those move nothing in regex mode).
+        let senFirst = GlobalSearchController.navigationActions(for: sensitive[0], query: "DOC", caseSensitive: true)
+        let senThird = GlobalSearchController.navigationActions(for: sensitive[2], query: "DOC", caseSensitive: true)
+        XCTAssertEqual(senFirst, ["end_search", "scroll_to_row:\(sensitive[0].line)"])
+        XCTAssertEqual(senThird, ["end_search", "scroll_to_row:\(sensitive[2].line)"])
+        XCTAssertNotEqual(sensitive[0].line, sensitive[2].line)
+        XCTAssertNotEqual(senFirst, senThird, "distinct case-sensitive rows must scroll to distinct targets")
         XCTAssertFalse(
-            third.contains { $0.hasPrefix("search:") },
+            senFirst.contains { $0.hasPrefix("search:") },
+            "case-sensitive jump must not arm libghostty's case-insensitive literal matcher",
+        )
+        XCTAssertFalse(senThird.contains("navigate_search:next"), "case-sensitive jump must not step the cursor")
+
+        // --- Mode 3: regex. Must NOT arm the literal matcher (no regex engine) — end + scroll straight to row.
+        let regex = try hitsFor(
+            query: #"\d+"#, caseSensitive: false, isRegex: true,
+            lines: ["alpha 12", "beta 34", "gamma 56"],
+        )
+        let rxFirst = GlobalSearchController.navigationActions(for: regex[0], query: #"\d+"#, isRegex: true)
+        let rxThird = GlobalSearchController.navigationActions(for: regex[2], query: #"\d+"#, isRegex: true)
+        XCTAssertEqual(rxFirst, ["end_search", "scroll_to_row:\(regex[0].line)"])
+        XCTAssertEqual(rxThird, ["end_search", "scroll_to_row:\(regex[2].line)"])
+        XCTAssertNotEqual(regex[0].line, regex[2].line)
+        XCTAssertNotEqual(rxFirst, rxThird, "distinct regex rows must scroll to distinct targets")
+        XCTAssertFalse(
+            rxThird.contains { $0.hasPrefix("search:") },
             "regex jump must not arm libghostty's literal search",
         )
-        XCTAssertFalse(third.contains("navigate_search:next"), "regex jump must not step the dead literal cursor")
-        XCTAssertFalse(third.contains("navigate_search:previous"))
-
-        // Distinct regex rows still land distinctly (each scrolls to its own row).
-        let first = GlobalSearchController.navigationActions(
-            for: hits[0], in: results, query: #"\d+"#, isRegex: true,
-        )
-        XCTAssertEqual(first, ["end_search", "scroll_to_row:\(hits[0].line)"])
-        XCTAssertNotEqual(first, third, "distinct regex rows must produce distinct scroll targets")
+        XCTAssertFalse(rxThird.contains("navigate_search:next"), "regex jump must not step the dead literal cursor")
+        XCTAssertFalse(rxThird.contains("navigate_search:previous"))
     }
 
-    /// An empty query arms nothing (validate-then-drop); a hit absent from the results degrades to a single
-    /// step (ordinal 0) rather than trapping.
-    func testNavigationActionsEmptyQueryAndStaleHit() throws {
+    /// An empty query arms nothing and scrolls nowhere (validate-then-drop) in every mode.
+    func testNavigationActionsEmptyQueryYieldsNothing() throws {
         let results = GlobalSearchController.run(
             sources: [source("pane", ["a doc"])],
             query: "doc",
@@ -224,11 +227,8 @@ final class GlobalSearchControllerTests: XCTestCase {
             isRegex: false,
         )
         let hit = try XCTUnwrap(results.groups.first?.hits.first)
-        XCTAssertEqual(GlobalSearchController.navigationActions(for: hit, in: results, query: ""), [])
-        // A hit not present in an (empty) result set falls back to a single step (no trap, no over-advance).
-        XCTAssertEqual(
-            GlobalSearchController.navigationActions(for: hit, in: .empty, query: "doc"),
-            ["search:doc", "navigate_search:next"],
-        )
+        XCTAssertEqual(GlobalSearchController.navigationActions(for: hit, query: ""), [])
+        XCTAssertEqual(GlobalSearchController.navigationActions(for: hit, query: "", caseSensitive: true), [])
+        XCTAssertEqual(GlobalSearchController.navigationActions(for: hit, query: "", isRegex: true), [])
     }
 }

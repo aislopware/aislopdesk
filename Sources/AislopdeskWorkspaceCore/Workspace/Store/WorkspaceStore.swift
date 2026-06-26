@@ -3926,13 +3926,17 @@ public extension WorkspaceStore {
         guard tree.contains(hit.paneID) else { return }
         focusPaneTree(hit.paneID) // selects hit.sessionID + hit.tabID + focuses hit.paneID
         guard let model = (registry[hit.paneID] as? TerminalModelProviding)?.terminalModel else { return }
-        // ES-E5-5 click-to-line: arm the search, then advance to the CLICKED hit's ordinal within its pane
-        // group so distinct rows land distinctly (not all on the nearest match). In REGEX mode libghostty's
-        // literal matcher can't arm the pattern, so the controller instead ends any stale search and scrolls
-        // straight to the hit's row — pass the tracked regex flag so the jump matches the find bar. The pure
-        // controller computes the ordered action sequence from the current results; an empty query yields none.
+        // ES-E5-5 click-to-line: ALWAYS scroll straight to the clicked hit's mirror row so the landing is
+        // correct in every mode and independent of the current viewport. The literal `search:` matcher is armed
+        // for the amber highlight ONLY in literal + case-INSENSITIVE mode (the one mode it matches faithfully);
+        // case-sensitive literal and regex modes clear any stale highlight and just scroll — matching the find
+        // bar's literal-highlight ceiling. Pass the tracked case-sensitivity AND regex flags so the controller
+        // branches correctly. The pure controller computes the ordered actions; an empty query yields none.
         let actions = GlobalSearchController.navigationActions(
-            for: hit, in: globalSearch ?? .empty, query: globalSearchQuery, isRegex: globalSearchRegex,
+            for: hit,
+            query: globalSearchQuery,
+            caseSensitive: globalSearchCaseSensitive,
+            isRegex: globalSearchRegex,
         )
         for action in actions {
             model.performSearchSurfaceAction(action)

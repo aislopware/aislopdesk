@@ -16,8 +16,12 @@
 // (the chevrons / ⌘G / ⇧⌘G stay live). `Match.line` is the 0-based row into the same `scrollbackTextLines()`
 // mirror the controller scanned, which is the row index libghostty's `scroll_to_row:<usize>` addresses. The
 // one thing regex mode CANNOT have is the amber per-glyph highlight (libghostty can't render regex spans) —
-// that is the documented ceiling; the counter stays accurate and nav stays functional regardless. Literal
-// mode is unchanged: it arms `search:` + `navigate_search:next`/`previous`.
+// that is the documented ceiling; the counter stays accurate and nav stays functional regardless. A direct
+// corollary of that same ceiling: when several regex matches fall on the SAME already-visible row, next/previous
+// re-issue the IDENTICAL `scroll_to_row:<row>`, so the "k of N" counter advances with NO visible viewport
+// change — the matches are already on-screen and (lacking the per-span highlight) nothing on the row moves.
+// This is expected, not a stall: it is the literal-highlight ceiling surfacing at row granularity, not a bug.
+// Literal mode is unchanged: it arms `search:` + `navigate_search:next`/`previous`.
 //
 // Anatomy matches `find.png` (top-trailing of the focused pane, floating card, `Otty.*` tokens ONLY — raw
 // font / radius literals fail `scripts/check-ds-leaks.sh`):
@@ -187,10 +191,10 @@ struct TerminalFindBar: View {
     var body: some View {
         HStack(spacing: Otty.Metric.space1) {
             queryField
-            // KNOWN FIDELITY GAP: find.png shows THREE mode pills inside ONE segmented tray (Aa, an underlined
+            // KNOWN FIDELITY GAP: find.png shows THREE individually-outlined mode chips (Aa, an underlined
             // whole-word `ab`, .*); we emit only Aa + .* because ``TerminalSearchController`` has no whole-word
-            // mode. The third pill is deliberately deferred (engine-blocked, not lost) — the two-pill tray is
-            // intentional, not an accident.
+            // mode. The third chip is deliberately deferred (engine-blocked, not lost) — the two-chip set is
+            // intentional, not an accident. ``FindTogglePillTray`` lays them out identically to global-search.
             FindTogglePillTray {
                 FindTogglePill(
                     label: "Aa",
@@ -298,35 +302,38 @@ struct TerminalFindBar: View {
     }
 }
 
-/// A segmented tray that fuses the `Aa` / `.*` mode pills into ONE delineated control: a single rounded
-/// `Surface.card` backing plate + a `Line.subtle` hairline spanning the whole group, with the pills laid out
-/// as lighter chips on top. Per `find.png` / `global-search.png` the mode pills read as a continuous segmented
-/// tray, NOT detached chips — so the resting plate lives HERE (once), and each ``FindTogglePill`` inside stays
-/// transparent at rest and paints only its on/hover chip. Reused by BOTH the find bar and the global-search
-/// query bar (the EXACT same control). `Otty.*` tokens only.
+/// LOCKED MODE-PILL RENDERING — screenshot-matched, final decision; do NOT re-litigate.
+/// What `find.png` AND `global-search.png` actually show (verified by zooming both): the `Aa` / underlined-`ab`
+/// / `.*` mode pills are INDIVIDUALLY-OUTLINED rounded chips — each carries its OWN resting plate + its OWN
+/// `Line.subtle` hairline border, separated by a visible gap, sitting DIRECTLY on the bar. There is NO shared
+/// segmented backing tray fusing them into one control. Successive reviews oscillated (bare glyphs → resting
+/// plates → one shared tray → individually-outlined chips); THIS is the resolved reading — a future re-flag of
+/// "should be a shared tray" or "should be bare glyphs" is ALREADY-RESOLVED, not a new finding.
+/// Non-negotiable invariants: (1) every idle chip is visually DELINEATED (own plate + hairline, never a bare
+/// glyph); (2) the find bar and the global-search query bar render the pills IDENTICALLY — both go through this
+/// type + ``FindTogglePill``.
+///
+/// `FindTogglePillTray` is therefore just a TRANSPARENT layout container — an `HStack` with the screenshot's
+/// inter-chip gap and NO background / border of its own (the delineation lives on each ``FindTogglePill``).
+/// Reused by BOTH the find bar and the global-search query bar (the EXACT same control). `Otty.*` tokens only.
 struct FindTogglePillTray<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        // Tight inter-chip spacing + a small inset so the chips sit ON the tray plate as one segmented group.
-        HStack(spacing: 2) {
+        // No shared plate/border here — the chips delineate themselves; the tray only spaces them with a gap.
+        HStack(spacing: Otty.Metric.space1) {
             content
         }
-        .padding(2)
-        .background(Otty.Surface.card, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusControl))
-        .overlay(
-            RoundedRectangle(cornerRadius: Otty.Metric.radiusControl)
-                .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
-        )
     }
 }
 
-/// A compact `Aa` / `.*` toggle pill (the two find-bar mode buttons), always mounted inside a
-/// ``FindTogglePillTray`` segmented group. Active → accent text on an accent wash + accent hairline; hover →
-/// a `State.hover` chip; idle → TRANSPARENT (no own plate or border) so the tray's single backing plate reads
-/// as one continuous segmented control per `find.png` / `global-search.png` (the pills must NOT read as
-/// detached chips). Factored to file scope (internal) so the WI-4 GlobalSearch surface reuses the EXACT pill.
-/// `Otty.*` tokens only.
+/// A compact `Aa` / `.*` toggle pill (the two find-bar mode buttons), laid out inside a ``FindTogglePillTray``.
+/// LOCKED rendering (see the tray's doc comment — screenshot-matched, final): each chip is INDIVIDUALLY
+/// outlined. idle → its OWN `Surface.card` resting plate + a `Line.subtle` hairline border (delineated, never a
+/// bare glyph); hover → a `State.hover` plate (border held); on → accent text on an `accentMuted` wash + an
+/// accent hairline ring. There is NO shared backing tray — `find.png` / `global-search.png` show detached,
+/// individually-bordered chips with gaps between them. Factored to file scope (internal) so the WI-4
+/// GlobalSearch surface reuses the EXACT pill (the two surfaces render identically). `Otty.*` tokens only.
 struct FindTogglePill: View {
     let label: String
     let isOn: Bool
@@ -344,17 +351,17 @@ struct FindTogglePill: View {
                 .frame(minWidth: plate, minHeight: plate)
                 .padding(.horizontal, Otty.Metric.space1)
                 .background(
-                    // Inside the segmented tray: TRANSPARENT at rest so the tray's single backing plate reads as
-                    // one continuous control (find.png / global-search.png); the chip appears only on hover
-                    // (a `State.hover` plate) or when on (the accent wash).
-                    isOn ? Otty.State.accentMuted : (hovering ? Otty.State.hover : Color.clear),
+                    // Each chip carries its OWN resting plate (find.png / global-search.png): idle = a subtle
+                    // `Surface.card` plate, hover = a `State.hover` plate, on = the accent wash. No shared tray.
+                    isOn ? Otty.State.accentMuted : (hovering ? Otty.State.hover : Otty.Surface.card),
                     in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall),
                 )
                 .overlay(
-                    // Only the ON chip carries a hairline (the accent ring); idle/hover borrow the tray's border.
+                    // Every chip is individually outlined: idle/hover wear a `Line.subtle` hairline so the chip is
+                    // delineated (never a bare glyph); the ON chip swaps in the accent ring.
                     RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
                         .strokeBorder(
-                            isOn ? Otty.State.accent.opacity(0.5) : Color.clear,
+                            isOn ? Otty.State.accent.opacity(0.5) : Otty.Line.subtle,
                             lineWidth: Otty.Metric.hairline,
                         ),
                 )

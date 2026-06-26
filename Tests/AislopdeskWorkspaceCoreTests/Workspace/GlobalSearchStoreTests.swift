@@ -29,9 +29,10 @@ final class GlobalSearchStoreTests: XCTestCase {
 
     // MARK: - Fix #1: click-to-line
 
-    /// Two hits in the SAME pane land DISTINCTLY: jumping to the 1st hit arms `search:` + a single next, while
-    /// the 3rd arms `search:` + three nexts. The half-delivered behaviour emitted ONE next for every row —
-    /// revert ``jumpToGlobalSearchResult`` to that and the inequality assertion fails.
+    /// Two hits in the SAME pane land DISTINCTLY via direct `scroll_to_row:<line>`: the 1st hit scrolls to
+    /// row 0 and the 3rd to row 2. The amber highlight is armed by the leading `search:` action (literal +
+    /// case-insensitive mode). An ordinal `navigate_search:next` walk was replaced by the direct scroll because
+    /// the old approach was viewport-relative and wrong in case-sensitive mode (see GlobalSearchController).
     func testJumpAdvancesToClickedHitsOrdinalWithinPane() throws {
         let store = makeStore()
         let session = try activeSession(store)
@@ -51,14 +52,11 @@ final class GlobalSearchStoreTests: XCTestCase {
         store.jumpToGlobalSearchResult(hits[2])
         let thirdActions = recorder.actions
 
-        XCTAssertEqual(firstActions, ["search:doc", "navigate_search:next"])
-        XCTAssertEqual(
-            thirdActions,
-            ["search:doc", "navigate_search:next", "navigate_search:next", "navigate_search:next"],
-        )
+        XCTAssertEqual(firstActions, ["search:doc", "scroll_to_row:0"])
+        XCTAssertEqual(thirdActions, ["search:doc", "scroll_to_row:2"])
         XCTAssertNotEqual(
             firstActions, thirdActions,
-            "two hits in one pane must produce different navigation intent (not a single shared next)",
+            "two hits in one pane must produce different scroll targets (row 0 vs row 2)",
         )
     }
 

@@ -179,41 +179,41 @@ public enum GlobalSearchController {
     }
 
     /// E5 ES-E5-5 (click-to-line): the ORDERED libghostty surface-action sequence that lands the in-pane
-    /// viewport on the CLICKED `hit`.
+    /// viewport on the CLICKED `hit` — correct in EVERY mode (literal case-insensitive, literal case-sensitive,
+    /// and regex).
     ///
-    /// LITERAL mode — arm the search (`search:<query>`) then advance to the hit's ORDINAL within ITS pane
-    /// group so DISTINCT rows land DISTINCTLY: clicking the 10th hit in a pane issues 10 `navigate_search:next`,
-    /// not 1 (the half-delivered behaviour that made every row in a tab jump to the nearest match). The ordinal
-    /// is the hit's 0-based index among its group's `hits` (which `run` builds in buffer order), so `index + 1`
-    /// forward steps — the FIRST hit keeps the old single-step behaviour.
+    /// LANDING is mode-INDEPENDENT and viewport-INDEPENDENT: ALWAYS scroll the viewport straight to the clicked
+    /// hit's row via `scroll_to_row:<hit.line>`. `hit.line` indexes the SAME `searchScrollbackLines()` scrollback
+    /// mirror that `computeMatches` scanned AND that libghostty's `scroll_to_row:<usize>` addresses, so the
+    /// clicked row lands regardless of case-sensitivity, regex, or where the viewport currently sits — exactly
+    /// the row the find bar's chevrons scroll to. This replaces the old ordinal `navigate_search:next` walk,
+    /// which was fragile (viewport-relative, so a mid-buffer viewport mis-landed) and WRONG in case-SENSITIVE
+    /// mode: this engine counts hits case-sensitively, but libghostty `search:` is case-INSENSITIVE, so the
+    /// clicked hit's case-sensitive ordinal did NOT map to libghostty's larger case-insensitive match cursor.
     ///
-    /// REGEX mode — libghostty's in-surface search is a LITERAL substring matcher with NO regex engine (see the
-    /// find-bar header), so arming `search:<pattern>` would match the pattern TEXT (usually 0 hits once it holds
-    /// metacharacters) and every `navigate_search:next` would then move nothing — the dishonest "counter says N,
-    /// nav moves nothing" state the find bar was rewritten to eliminate. Instead, mirror the find bar exactly:
-    /// END any stale literal search (clearing a misleading highlight) and scroll the viewport DIRECTLY to the
-    /// hit's row via `scroll_to_row:<hit.line>` — `hit.line` indexes the SAME scrollback mirror libghostty's
-    /// `scroll_to_row:<usize>` addresses (both are the `searchScrollbackLines()` row index `computeMatches`
-    /// scanned), so the clicked regex row actually lands.
+    /// The literal `search:<query>` matcher is armed ONLY as an amber-highlight aid in the one mode where it is
+    /// FAITHFUL — literal + case-INSENSITIVE (libghostty's `changeNeedle` compares needles case-insensitively).
+    /// In literal case-SENSITIVE mode arming it would tint extra case-folded spans, and in REGEX mode it would
+    /// tint the pattern TEXT (usually 0 hits once it holds metacharacters); in BOTH we instead `end_search` to
+    /// clear any stale highlight and just scroll — matching the find bar's documented literal-highlight ceiling
+    /// (the amber per-glyph highlight is the one thing those two modes cannot have; the landing is still exact).
     ///
-    /// Validate-then-drop: an empty `query` yields `[]` (nothing to arm). In literal mode, a `hit` absent from
-    /// `results` (stale results vs. the clicked row) degrades to ordinal 0 (a single step) rather than trapping.
+    /// Validate-then-drop: an empty `query` yields `[]` (nothing to arm, nothing to scroll).
     public static func navigationActions(
         for hit: GlobalSearchHit,
-        in results: GlobalSearchResults,
         query: String,
+        caseSensitive: Bool = false,
         isRegex: Bool = false,
     ) -> [String] {
         guard !query.isEmpty else { return [] }
-        if isRegex {
-            // No literal needle to arm — clear any stale highlight and scroll straight to the clicked row.
-            return ["end_search", "scroll_to_row:\(hit.line)"]
+        // Literal + case-insensitive is the ONLY mode where libghostty's literal matcher highlights the SAME
+        // spans this engine found — arm it for the amber highlight, THEN scroll_to_row to land on the exact
+        // clicked row (the arm itself only scrolls to the nearest match, so the scroll must follow it).
+        if !isRegex, !caseSensitive {
+            return ["search:\(query)", "scroll_to_row:\(hit.line)"]
         }
-        let ordinal = results.groups
-            .first { $0.paneID == hit.paneID && $0.sessionID == hit.sessionID && $0.tabID == hit.tabID }?
-            .hits.firstIndex(of: hit) ?? 0
-        var actions = ["search:\(query)"]
-        actions.append(contentsOf: Array(repeating: "navigate_search:next", count: ordinal + 1))
-        return actions
+        // Case-sensitive literal OR regex: don't arm the (case-insensitive / non-regex) literal matcher — it
+        // would highlight wrong/zero spans. Clear any stale highlight and scroll straight to the clicked row.
+        return ["end_search", "scroll_to_row:\(hit.line)"]
     }
 }

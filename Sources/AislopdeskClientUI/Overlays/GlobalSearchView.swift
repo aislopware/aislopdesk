@@ -79,8 +79,9 @@ struct GlobalSearchView: View {
                 .foregroundStyle(Otty.Text.primary)
                 .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
                 .focused($queryFocused)
-            // The mode pills sit in ONE segmented tray (find.png / global-search.png) — the EXACT control the
-            // find bar reuses, so the resting plates merge into a single delineated group, not detached chips.
+            // The mode pills render as INDIVIDUALLY-OUTLINED chips (each its own resting plate + hairline,
+            // gaps between — NO shared backing tray) per global-search.png. ``FindTogglePillTray`` is the EXACT
+            // layout container the find bar reuses, so the two surfaces render the pills identically.
             FindTogglePillTray {
                 FindTogglePill(label: "Aa", isOn: caseSensitive, help: "Case sensitive") {
                     caseSensitive.toggle()
@@ -148,8 +149,13 @@ struct GlobalSearchView: View {
         // Per global-search.png the group header carries only a leading per-tab terminal glyph + the tab title.
         // (No ⌘ordinal badge: the ⌘1/⌘2/⌘3 numbers in the screenshot are SIDEBAR tab numbers, not group headers.)
         HStack(spacing: Otty.Metric.space2) {
-            // `.appleTerminal` is the project-standard terminal glyph (BuildStatusPlaceholderView); the bare
-            // `.terminal` case is deprecated (renamed in macOS 14). Safe SFSafeSymbols case, no blank-glyph risk.
+            // `.appleTerminal` (rawValue "apple.terminal") renders the `>_` PROMPT-BOX terminal glyph that
+            // global-search.png shows — it is NOT an Apple-logo mark (verified by rendering the symbol). It is
+            // the CURRENT, non-deprecated name; the bare `.terminal` case is the SAME glyph under its old name,
+            // deprecated/renamed to `.appleTerminal` in macOS 14 — so we use `.appleTerminal` to stay
+            // warning-clean (`.terminal` trips a deprecation warning for an identical pixel result). Locked: a
+            // future "this is Apple-branded, switch to `.terminal`" flag is already-resolved — both are the `>_`
+            // box; `.appleTerminal` is the non-deprecated spelling.
             Image(systemSymbol: .appleTerminal)
                 .font(.system(size: Otty.Typeface.footnote))
                 .foregroundStyle(Otty.Text.secondary)
