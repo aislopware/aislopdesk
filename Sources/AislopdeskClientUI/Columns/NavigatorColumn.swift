@@ -67,16 +67,21 @@ struct NavigatorColumn: View {
             }
     }
 
-    /// Whether the manual drag-reorder affordance is live: ONLY when ``WorkspaceStore/tabGrouping`` is
-    /// ``TabGrouping/none``. You cannot hand-order across derived buckets (By-Project / By-Date), so the rows
-    /// are neither draggable nor drop targets while grouping is on — pretending to would silently discard a
-    /// cross-group drop (it would snap back to its own bucket).
-    private var dragReorderEnabled: Bool { store.tabGrouping == .none }
+    /// Whether the manual drag-reorder affordance is live: ONLY a flat, UNFILTERED list — `tabGrouping ==`
+    /// ``TabGrouping/none`` AND an empty search `query`. You cannot hand-order across derived buckets
+    /// (By-Project / By-Date), so the rows are neither draggable nor drop targets while grouping is on —
+    /// pretending to would silently discard a cross-group drop (it would snap back to its own bucket). And a
+    /// search FILTER hides rows while ``renderedTabOrder`` / ``renderedPosition(of:)`` are computed against
+    /// the FULL ordered groups, so a drag between two visible rows would move in full-order coordinates
+    /// relative to tabs the user can't see — not WYSIWYG against the filtered list. Same flat-list-only
+    /// rationale as the grouping gate, so a filtered list is off too.
+    private var dragReorderEnabled: Bool { store.tabGrouping == .none && query.isEmpty }
 
     /// The active session's tab ids in RENDERED order — the flat sidebar order
-    /// (``WorkspaceStore/orderedTabGroups(now:)`` flattened). The basis for a WYSIWYG drag: a row's drag
-    /// payload + drop target are RENDERED positions into this list, not raw `session.tabs` indices (which
-    /// differ from the rendered order under ``TabSort/updated``). Consulted only while `dragReorderEnabled`.
+    /// (``WorkspaceStore/orderedTabGroups(now:)`` flattened). The basis for a WYSIWYG drag: the dragged tab's
+    /// IDENTITY (its payload) and the drop target are resolved into RENDERED positions into THIS list at drop
+    /// time, not raw `session.tabs` indices (which differ from the rendered order under ``TabSort/updated``).
+    /// Consulted only while `dragReorderEnabled`.
     private var renderedTabOrder: [TabID] {
         store.orderedTabGroups().flatMap(\.tabIDs)
     }
@@ -87,29 +92,32 @@ struct NavigatorColumn: View {
         renderedTabOrder.firstIndex(of: row.tabID)
     }
 
-    /// Apply a manual drag-reorder. The payload and the target are both RENDERED positions (positions into
-    /// ``renderedTabOrder``), so the move is WYSIWYG against what the user sees — not raw `session.tabs`
-    /// indices. Routes through ``WorkspaceStore/moveTabRendered(from:to:)``, which materializes the rendered
-    /// order into the tabs array then moves only the dragged tab (flipping Sort → Manual, no surface
-    /// teardown). A self / OOB drop, or any drop while grouping is on, is a no-op (validate-then-drop).
+    /// Apply a manual drag-reorder. The drag payload is the dragged row's tab IDENTITY (FIX 2), resolved at
+    /// DROP time to its CURRENT rendered position via ``TabDragPayload/resolveMove(payload:onto:in:)`` — so a
+    /// mid-drag reorder (an `.updated` completion re-derives ``renderedTabOrder`` while the drag is in flight)
+    /// still moves the DRAGGED tab, not whatever tab now sits at a stale index. Both resolved positions are
+    /// into ``renderedTabOrder``, so the move is WYSIWYG. Routes through
+    /// ``WorkspaceStore/moveTabRendered(from:to:)``, which materializes the rendered order into the tabs
+    /// array then moves only the dragged tab (flipping Sort → Manual, no surface teardown). An unparseable /
+    /// foreign payload, a self / OOB drop, or any drop while grouping is on is a no-op (validate-then-drop).
     private func handleTabDrop(_ items: [String], onto target: RailRow) -> Bool {
-        guard dragReorderEnabled else { return false }
-        guard let raw = items.first, let from = Int(raw) else { return false }
-        guard let to = renderedPosition(of: target) else { return false }
-        guard from >= 0, from != to else { return false }
-        store.moveTabRendered(from: from, to: to)
+        guard dragReorderEnabled, let raw = items.first,
+              let move = TabDragPayload.resolveMove(payload: raw, onto: target.tabID, in: renderedTabOrder)
+        else { return false }
+        store.moveTabRendered(from: move.from, to: move.to)
         return true
     }
 
     /// Conditionally attach the drag SOURCE + drop TARGET to a row's content: only while `dragReorderEnabled`
-    /// and the row has a rendered position. The drag payload is the row's RENDERED position (so the drop
-    /// translates rendered → rendered, never raw-array indices). Off (grouping on / no position) ⇒ the bare
-    /// content, so the rows aren't draggable across buckets.
+    /// and the row has a rendered position (it is shown). The drag payload is the row's tab IDENTITY (FIX 2),
+    /// so the drop resolves the dragged tab by id against the live rendered order — never a stale array index.
+    /// Off (grouping on / filtered / no position) ⇒ the bare content, so the rows aren't draggable across
+    /// buckets or against hidden rows.
     @ViewBuilder
     private func reorderable(_ content: some View, row: RailRow) -> some View {
-        if dragReorderEnabled, let position = renderedPosition(of: row) {
+        if dragReorderEnabled, renderedPosition(of: row) != nil {
             content
-                .draggable(String(position))
+                .draggable(TabDragPayload.encode(row.tabID))
                 .dropDestination(for: String.self) { items, _ -> Bool in handleTabDrop(items, onto: row) }
         } else {
             content
@@ -199,7 +207,9 @@ struct NavigatorColumn: View {
     }
 
     /// One macOS tab row: the full otty chrome (badge / `#N` / cwd subtitle / process label) plus the
-    /// drag-reorder source + drop target wired to ``WorkspaceStore/moveTab``.
+    /// drag-reorder source + drop target. The drop routes `reorderable` → `handleTabDrop` →
+    /// ``WorkspaceStore/moveTabRendered(from:to:)`` (the WYSIWYG, rendered-position entry the row uses); the
+    /// non-rendered ``WorkspaceStore/moveTab(from:to:)`` is only exercised by tests now.
     private func macRow(_ row: RailRow) -> some View {
         reorderable(
             OttyTabRow(

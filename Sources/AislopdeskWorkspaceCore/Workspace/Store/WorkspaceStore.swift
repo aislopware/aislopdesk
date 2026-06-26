@@ -3214,6 +3214,27 @@ public final class WorkspaceStore {
     /// ``completionFreshness(forPane:now:)``.
     public static let completedFlashWindow: TimeInterval = 3
 
+    /// A lightweight monotonic counter the sidebar rail OBSERVES so the completion-badge flash can decay
+    /// on its own (FIX 1). ``completionFreshness(forPane:now:)`` reads the wall clock at row-BUILD time —
+    /// NOT an `@Observable` dependency — so once a quiet completed pane stops mutating the store, nothing
+    /// would re-render its row and the brief ``TabBadgeKind/completed`` checkmark would stick forever
+    /// (until an unrelated mutation / focusing the tab clears the badge). When a clean completion stamps
+    /// ``paneCompletedAt``, the store arms a one-shot (``flashDecayScheduler``) that, after
+    /// ``completedFlashWindow``, bumps this tick → the rail re-renders EXACTLY ONCE and the row recomputes
+    /// to the settled ``TabBadgeKind/finished`` dot. The bump carries no row data (it changes nothing the
+    /// resolver reads); it exists ONLY to invalidate the observing view at the flash-window boundary.
+    public internal(set) var completionFlashTick: UInt = 0
+
+    /// The injectable one-shot that drives the ``completionFlashTick`` bump at the flash-window boundary
+    /// (FIX 1): the store calls it as `flashDecayScheduler(completedFlashWindow) { bump }` right after a
+    /// clean completion stamps ``paneCompletedAt``. The default (``mainRunLoopFlashDecay``) fires on the
+    /// main run loop — a real per-completion one-shot, NOT a global per-second timer, so a quiet workspace
+    /// never re-renders the rail on a tick. Tests inject a stub that CAPTURES the `bump` (and the delay) and
+    /// fires it synchronously, so the boundary re-render is deterministic with no wall-clock `Task.sleep`.
+    /// `@ObservationIgnored`: it is wiring, not view state (like ``onLongCommandNotify``).
+    @ObservationIgnored
+    public var flashDecayScheduler = WorkspaceStore.mainRunLoopFlashDecay
+
     /// Whether the app is foregrounded/active — fed from the SwiftUI `scenePhase` by the app shell
     /// (`.active → true`, else `false`). Defaults `true` so a headless store (tests) treats the active
     /// leaf as focused. Combined with the active-leaf identity it forms the "is this pane focused" gate

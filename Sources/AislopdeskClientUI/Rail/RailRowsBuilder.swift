@@ -4,6 +4,7 @@
 
 import AislopdeskAgentDetect
 import AislopdeskWorkspaceCore
+import Foundation
 
 /// The data a single rail row binds to (derived from a pane within the active session's tabs). A pure value
 /// type — kept with the builder logic (it previously lived in the deleted `TabRow` view, but carries no view
@@ -34,6 +35,12 @@ enum RailRowsBuilder {
     @MainActor
     static func rows(for store: WorkspaceStore) -> [RailRow] {
         guard let session = store.tree.activeSession else { return [] }
+        // FIX 1: observe the flash-decay tick so the rail re-renders ONCE at the completion flash-window
+        // boundary. `completionFreshness(forPane:)` below reads the wall clock at build time (NOT an
+        // `@Observable` dependency); without this read a quiet completed pane would never re-render and its
+        // brief `.completed` checkmark would stick. The store bumps the tick after `completedFlashWindow`
+        // to invalidate the observing rail, so the row decays to the `.finished` dot on its own.
+        _ = store.completionFlashTick
         let activeTabIndex = session.activeTabIndex
         var out: [RailRow] = []
         for (tabIndex, tab) in session.tabs.enumerated() {
@@ -111,4 +118,32 @@ enum RailRowsBuilder {
 struct RailRowGroup: Equatable {
     let header: String?
     let rows: [RailRow]
+}
+
+/// The drag payload for a sidebar tab reorder (E6 WI-5, FIX 2): a row's TAB IDENTITY (a UUID string), NOT
+/// its rendered index. Encoding identity is what makes the WYSIWYG drag correct under ``TabSort/updated``: a
+/// completion can re-derive ``WorkspaceStore/orderedTabGroups(now:)`` and visually shuffle the rows WHILE a
+/// drag is in flight, and an index-based payload would then drop whatever tab is NOW at the stale index. An
+/// id payload instead resolves the dragged tab's CURRENT rendered position at drop time. Decoding is
+/// validate-then-DROP: a payload that is not a parseable UUID, or not a LIVE tab id in the rendered order,
+/// yields no move — so a foreign plaintext drag (e.g. an in-range numeric string from another app, which the
+/// old `Int(payload)` decode would have ACCEPTED) triggers no reorder and no Sort→Manual flip. Pure + static
+/// so the navigator's drag glue is unit-testable without a SwiftUI view.
+enum TabDragPayload {
+    /// Encode a row's tab identity as its `.draggable` payload string.
+    static func encode(_ tabID: TabID) -> String { tabID.raw.uuidString }
+
+    /// Resolve a dropped `payload` plus the drop `targetTabID` into the `(from, to)` RENDERED-position move,
+    /// or `nil` to DROP the drag. `renderedOrder` is the LIVE flat sidebar order at drop time, so `from`
+    /// follows the dragged tab's identity even if the order changed since the drag began. Dropped when the
+    /// payload is unparseable / not a live tab, the target isn't shown, or it is a self-drop (`from == to`).
+    static func resolveMove(
+        payload: String, onto targetTabID: TabID, in renderedOrder: [TabID],
+    ) -> (from: Int, to: Int)? {
+        guard let uuid = UUID(uuidString: payload) else { return nil }
+        guard let from = renderedOrder.firstIndex(of: TabID(raw: uuid)) else { return nil }
+        guard let to = renderedOrder.firstIndex(of: targetTabID) else { return nil }
+        guard from != to else { return nil }
+        return (from, to)
+    }
 }

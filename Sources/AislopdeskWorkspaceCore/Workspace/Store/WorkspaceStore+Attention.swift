@@ -48,8 +48,12 @@ public extension WorkspaceStore {
         // the ephemeral `completedAt` (brief `.completed` flash, settling to `.finished`). Only the
         // positive edge stamps — a stale stamp is harmless (the resolver reads it ONLY in the
         // completed/finished branch, it is refreshed on the next `.done`/`.success`, and pruned on
-        // reconcile), so this never clobbers a coexisting completion-badge stamp.
-        if status == .done { paneCompletedAt[id] = date }
+        // reconcile), so this never clobbers a coexisting completion-badge stamp. FIX 1: arm the one-shot
+        // that decays the flash so a quiet `.done` row settles to the dot without a further mutation.
+        if status == .done {
+            paneCompletedAt[id] = date
+            armCompletionFlashDecay()
+        }
     }
 
     /// Sets (or clears, on empty) the per-pane host agent label. Idempotent. The cheap activity summary

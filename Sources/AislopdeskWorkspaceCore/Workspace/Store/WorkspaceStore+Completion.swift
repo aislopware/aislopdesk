@@ -30,9 +30,37 @@ public extension WorkspaceStore {
         // `.success` records the instant (brief `.completed` flash, settling to `.finished`). Only the
         // positive `.success` edge stamps; a `.failure` (→ `.error`) or a clear leaves any prior stamp
         // (harmless — the resolver reads it only in the completed/finished branch, and reconcile prunes
-        // it), so it never clobbers a coexisting agent `.done` stamp.
-        if badge == .success { paneCompletedAt[id] = date }
+        // it), so it never clobbers a coexisting agent `.done` stamp. FIX 1: arm the one-shot that decays
+        // the flash to the `.finished` dot — without it the rail never re-renders past the flash window.
+        if badge == .success {
+            paneCompletedAt[id] = date
+            armCompletionFlashDecay()
+        }
     }
+
+    /// Arms the FIX-1 one-shot that decays a just-stamped clean completion from the brief
+    /// ``TabBadgeKind/completed`` checkmark to the persistent ``TabBadgeKind/finished`` dot. Called right
+    /// after a POSITIVE completion edge (`.success` / agent ``ClaudeStatus/done``) stamps
+    /// ``paneCompletedAt``; after ``completedFlashWindow`` it bumps ``completionFlashTick`` so the sidebar
+    /// rail re-renders EXACTLY ONCE and recomputes ``completionFreshness(forPane:now:)`` — which, by then,
+    /// reads the wall clock as past the window → ``TabBadgeResolver/CompletionFreshness/settled``. The
+    /// tick is global (carries no pane id): by the time it fires, every still-fresh completion has settled,
+    /// so one bump covers concurrent completions. `[weak self]` so a pending one-shot can't extend the
+    /// store's lifetime past the window.
+    internal func armCompletionFlashDecay() {
+        flashDecayScheduler(Self.completedFlashWindow) { [weak self] in
+            self?.completionFlashTick &+= 1
+        }
+    }
+
+    /// The default ``flashDecayScheduler`` (FIX 1): a real per-completion one-shot on the main run loop. A
+    /// `@MainActor`-isolated `bump` is implicitly `Sendable`, so it hops onto the captured main-queue
+    /// closure (which `assumeIsolated` runs back on the main actor). Lives in this extension (not the class
+    /// body) so the closure literal stays off the `type_body_length` ledger.
+    internal static let mainRunLoopFlashDecay: (TimeInterval, @escaping @MainActor () -> Void) -> Void
+        = { delay, bump in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { bump() } }
+        }
 
     /// Whether pane `id`'s clean completion (`.success` badge / agent `.done`) is still showing its brief
     /// ``TabBadgeKind/completed`` checkmark FLASH or has ``TabBadgeKind/finished`` SETTLED into the accent
