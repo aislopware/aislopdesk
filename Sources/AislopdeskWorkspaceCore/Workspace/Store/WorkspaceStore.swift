@@ -2783,7 +2783,8 @@ public final class WorkspaceStore {
         return bounds
     }
 
-    /// Toggles the active tab's active pane between tiled and floating (the ⌘⇧F "Float Pane" entry). A
+    /// Toggles the active tab's active pane between tiled and floating (the ⌥⌘F "Float Pane" entry; E5
+    /// relocated it off ⌘⇧F to free that chord for Global Search). A
     /// no-op when there is no active pane, or when it is its tab's only tiled leaf (floating it would empty
     /// the tree — the op guards this). Reconcile keeps every leaf mounted (a float is just placed by its
     /// frame instead of a solver rect — no teardown).
@@ -2982,27 +2983,19 @@ public final class WorkspaceStore {
         live.terminalModel?.onRequestFind?()
     }
 
-    /// Closes the active pane through the busy-shell guard (W6): an idle pane closes immediately (cascading
-    /// the tab/session), a pane mid-command parks behind the `pendingClose` confirmation the root view
-    /// hosts — mirroring the canvas ``requestClosePane(_:)``. No-op without an active pane.
-    public func requestCloseActivePaneTree() {
-        guard let active = tree.activeSession?.activeTab?.activePane else { return }
-        if closeConfirmationNeeded(scope: .pane, pane: active) {
-            parkPaneClose(active)
-        } else {
-            closePaneTree(active)
-        }
-    }
+    // MARK: - Global Search (E5 ES-E5-5 — cross-tab scrollback search)
 
-    /// Breaks the active pane out into a new tab of its session (the "break pane to tab" command entry).
-    /// No-op without an active pane.
-    public func breakActivePaneToTab() {
-        guard let active = tree.activeSession?.activeTab?.activePane else { return }
-        breakPaneToTab(active)
-    }
+    /// The most-recent Global Search results (⇧⌘F), or `nil` before the first run. IN-MEMORY only (NOT
+    /// persisted) — a relaunch starts blank. `@Observable` (a normal stored var) so `GlobalSearchView`
+    /// re-renders as results land; `private(set)` so only ``runGlobalSearch(query:caseSensitive:isRegex:)``
+    /// mutates it. Reopening ⇧⌘F shows the last results until the query is re-run (E5 divergence #1).
+    public private(set) var globalSearch: GlobalSearchResults?
 
-    /// Toggles render-only zoom on the active pane (the "zoom/maximize" command entry).
-    public func toggleZoomActivePane() { toggleZoomTree() }
+    /// The query / flags the last Global Search ran with (so the overlay restores its field + `Aa`/`.*` pills
+    /// when reopened). IN-MEMORY only; mutated only by ``runGlobalSearch(query:caseSensitive:isRegex:)``.
+    public private(set) var globalSearchQuery: String = ""
+    public private(set) var globalSearchCaseSensitive = false
+    public private(set) var globalSearchRegex = false
 
     /// Moves (swaps) the active pane with its geometric neighbour in `direction` (Zellij "move pane"),
     /// resolved against the bounds the active-tab view last reported via ``updateSolvedLayout(_:)`` — the
@@ -3833,6 +3826,95 @@ public extension WorkspaceStore {
     func commitDividerResize() {
         reconcileTree()
     }
+}
+
+// MARK: - Find-in-terminal + Global Search command entries (E5)
+
+public extension WorkspaceStore {
+    /// E5 ES-E5-3: advances the active pane's find bar to the NEXT match (the ⌘G keyboard / menu entry).
+    /// Routes to the active terminal's ``TerminalViewModel/onRequestFindNext``; when that is unset (the bar
+    /// has never been opened) it FALLS BACK to ``onRequestFind`` so ⌘G OPENS the find bar — faithful
+    /// "find next opens find". A no-op for a non-terminal active pane / empty shell.
+    func requestFindNextInActivePane() {
+        guard let active = tree.activeSession?.activeTab?.activePane,
+              let model = (registry[active] as? LivePaneSession)?.terminalModel else { return }
+        if let next = model.onRequestFindNext { next() } else { model.onRequestFind?() }
+    }
+
+    /// E5 ES-E5-3: steps the active pane's find bar to the PREVIOUS match (the ⇧⌘G entry). Same
+    /// open-if-closed fallback as ``requestFindNextInActivePane()``.
+    func requestFindPrevInActivePane() {
+        guard let active = tree.activeSession?.activeTab?.activePane,
+              let model = (registry[active] as? LivePaneSession)?.terminalModel else { return }
+        if let prev = model.onRequestFindPrev { prev() } else { model.onRequestFind?() }
+    }
+
+    /// E5 ES-E5-5: runs `query` across EVERY live terminal pane's scrollback (session → tab → pane order),
+    /// building the grouped results the ⇧⌘F surface renders. Snapshots each live terminal pane's
+    /// ``TerminalViewModel/searchScrollbackLines()`` into a ``GlobalSearchSource`` (group title = the pane's
+    /// spec title, falling back to its last-known shell title, else "Tab"), then delegates the match math to
+    /// the PURE ``GlobalSearchController/run(sources:query:caseSensitive:isRegex:)`` — the SAME engine the
+    /// in-pane find bar uses, never a second matcher. Non-terminal (video) and never-connected panes
+    /// contribute no lines and so are simply absent (E5 divergence #4/#5).
+    func runGlobalSearch(query: String, caseSensitive: Bool, isRegex: Bool) {
+        globalSearchQuery = query
+        globalSearchCaseSensitive = caseSensitive
+        globalSearchRegex = isRegex
+        var sources: [GlobalSearchSource] = []
+        for session in tree.sessions {
+            for tab in session.tabs {
+                for paneID in tab.allPaneIDs() {
+                    guard let spec = session.spec(for: paneID), spec.kind == .terminal,
+                          let model = (registry[paneID] as? LivePaneSession)?.terminalModel else { continue }
+                    let title = spec.title.isEmpty ? (spec.lastKnownTitle ?? "Tab") : spec.title
+                    sources.append(GlobalSearchSource(
+                        paneID: paneID,
+                        sessionID: session.id,
+                        tabID: tab.id,
+                        groupTitle: title,
+                        lines: model.searchScrollbackLines(),
+                    ))
+                }
+            }
+        }
+        globalSearch = GlobalSearchController.run(
+            sources: sources, query: query, caseSensitive: caseSensitive, isRegex: isRegex,
+        )
+    }
+
+    /// E5 ES-E5-5: jumps to a Global Search hit — selects its session, its tab, and focuses its pane
+    /// (``focusPaneTree(_:)`` resolves session+tab+pane together), then RE-ARMS the pane's in-surface
+    /// libghostty search near the hit so the amber highlight + scroll-to-match land on the result.
+    /// A no-op if the pane is gone.
+    func jumpToGlobalSearchResult(_ hit: GlobalSearchHit) {
+        guard tree.contains(hit.paneID) else { return }
+        focusPaneTree(hit.paneID) // selects hit.sessionID + hit.tabID + focuses hit.paneID
+        guard let model = (registry[hit.paneID] as? LivePaneSession)?.terminalModel else { return }
+        guard !globalSearchQuery.isEmpty else { return }
+        model.performSearchSurfaceAction("search:\(globalSearchQuery)")
+        model.performSearchSurfaceAction("navigate_search:next")
+    }
+
+    /// Closes the active pane through the busy-shell guard (W6): an idle pane closes immediately,
+    /// a pane mid-command parks behind the `pendingClose` confirmation. No-op without an active pane.
+    func requestCloseActivePaneTree() {
+        guard let active = tree.activeSession?.activeTab?.activePane else { return }
+        if closeConfirmationNeeded(scope: .pane, pane: active) {
+            parkPaneClose(active)
+        } else {
+            closePaneTree(active)
+        }
+    }
+
+    /// Breaks the active pane out into a new tab (the "break pane to tab" command entry).
+    /// No-op without an active pane.
+    func breakActivePaneToTab() {
+        guard let active = tree.activeSession?.activeTab?.activePane else { return }
+        breakPaneToTab(active)
+    }
+
+    /// Toggles render-only zoom on the active pane (the "zoom/maximize" command entry).
+    func toggleZoomActivePane() { toggleZoomTree() }
 }
 
 // MARK: - Production session factory

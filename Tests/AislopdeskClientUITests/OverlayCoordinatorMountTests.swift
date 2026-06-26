@@ -304,6 +304,60 @@ final class OverlayCoordinatorMountTests: XCTestCase {
         XCTAssertFalse(overlay.cheatSheetVisible, "⌘/ again closes it")
     }
 
+    // MARK: - ES-E5-5 / WI-4: the ⇧⌘F Global Search overlay flag
+
+    /// The ⇧⌘F toggle the app threads into the key dispatcher + the View menu is `overlay.toggleGlobalSearch()`.
+    /// Pin that it opens, that `openGlobalSearch()`/`closeGlobalSearch()` flip the flag, and that the dispatcher
+    /// firing the SAME closure each press toggles cleanly (the wiring the app's closure depends on).
+    func testToggleGlobalSearchOpensAndCloses() {
+        let (overlay, _) = makeCoordinator()
+        XCTAssertFalse(overlay.globalSearchVisible, "the Global Search surface starts hidden")
+
+        overlay.toggleGlobalSearch()
+        XCTAssertTrue(overlay.globalSearchVisible, "the first ⇧⌘F toggle opens Global Search")
+        overlay.toggleGlobalSearch()
+        XCTAssertFalse(overlay.globalSearchVisible, "the second ⇧⌘F toggle closes it")
+
+        overlay.openGlobalSearch()
+        XCTAssertTrue(overlay.globalSearchVisible, "openGlobalSearch() presents the surface")
+        overlay.closeGlobalSearch()
+        XCTAssertFalse(overlay.globalSearchVisible, "closeGlobalSearch() dismisses it")
+    }
+
+    /// E5 divergence #1: Global Search is a NON-scrimmed full surface, so it must be EXCLUDED from
+    /// `anyModalVisible` (else the host would dim the workspace behind it). Pin that opening it does NOT flip the
+    /// modal gate — this FAILS if a refactor folds `globalSearchVisible` into `anyModalVisible`.
+    func testGlobalSearchIsNotAModal() {
+        let (overlay, _) = makeCoordinator()
+        XCTAssertFalse(overlay.anyModalVisible)
+        overlay.openGlobalSearch()
+        XCTAssertTrue(overlay.globalSearchVisible, "the surface is up")
+        XCTAssertFalse(
+            overlay.anyModalVisible,
+            "Global Search is a non-scrimmed surface — it must not register as a focus-stealing modal",
+        )
+    }
+
+    /// `openGlobalSearch(seed:)` with a non-empty selection seed runs the store search so the surface shows
+    /// results immediately (otty pre-fills ⇧⌘F with the selection), and the store retains the seed as the live
+    /// query. A nil/empty seed leaves the store's last query untouched (it restores the prior results).
+    func testOpenGlobalSearchSeedRunsTheStoreSearch() {
+        let (overlay, store) = makeCoordinator()
+        XCTAssertEqual(store.globalSearchQuery, "", "no search has run yet")
+
+        overlay.openGlobalSearch(seed: "needle")
+        XCTAssertTrue(overlay.globalSearchVisible)
+        XCTAssertEqual(store.globalSearchQuery, "needle", "a seed runs the store search with that query")
+        XCTAssertNotNil(store.globalSearch, "the seeded run populated the in-memory results")
+
+        overlay.closeGlobalSearch()
+        overlay.openGlobalSearch(seed: "   ")
+        XCTAssertEqual(
+            store.globalSearchQuery, "needle",
+            "a blank seed does NOT clobber the retained query (⇧⌘F restores the last results)",
+        )
+    }
+
     // MARK: - ES-E2-4 / WI-3: the cheat sheet's data source (categories + glyph chips)
 
     /// `KeyboardCheatSheetView` renders ``WorkspaceBindingRegistry/groupedForDisplay`` as one section per

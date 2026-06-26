@@ -85,6 +85,16 @@ public final class OverlayCoordinator {
     /// ``WorkspaceBindingRegistry/groupedForDisplay`` so the displayed glyphs can't drift from the chords.
     public private(set) var cheatSheetVisible = false
 
+    // MARK: Global Search state (E5 / WI-4)
+
+    /// Whether the cross-tab Global Search surface (⇧⌘F) is presented. UNLIKE the four scrimmed panels this is
+    /// a NON-modal, NON-scrimmed full surface — the closest faithful equivalent to otty's dedicated results
+    /// *tab* (E5 divergence #1), so it must NOT dim the workspace and is deliberately EXCLUDED from
+    /// ``anyModalVisible``. ``OverlayHostView`` mounts it WITHOUT a ``Scrim`` and gates its own hit-testing on
+    /// this flag directly. Reopening it RESTORES the store's last in-memory results (held by
+    /// ``WorkspaceStore/globalSearch``) until the query is re-run.
+    public private(set) var globalSearchVisible = false
+
     // MARK: Remote-window picker state (L6)
 
     /// Whether the Remote-Window picker modal is presented (the `/remote-control` pill + the "New Remote
@@ -113,7 +123,9 @@ public final class OverlayCoordinator {
     /// WI-5). True ⇒ the host's ZStack swallows clicks (the scrim + the centered panel); false ⇒ the host is
     /// transparent to hits so the workspace beneath stays interactive (the always-mounted toast stack is NOT
     /// a modal, so it is gated separately by the host on `!toasts.isEmpty`). Mirrors the four scrimmed panels
-    /// the host composes — Settings is presented on its own surface, so it is deliberately excluded here.
+    /// the host composes — Settings AND the non-scrimmed Global Search surface (E5) are each presented on their
+    /// own surface (Global Search must not dim the workspace), so both are deliberately excluded here; the host
+    /// gates Global Search's hit-testing separately on ``globalSearchVisible``.
     public var anyModalVisible: Bool {
         paletteVisible || cheatSheetVisible || connectVisible || remotePickerVisible
     }
@@ -372,6 +384,36 @@ public final class OverlayCoordinator {
     public func toggleCheatSheet() { cheatSheetVisible.toggle() }
     public func closeCheatSheet() { cheatSheetVisible = false }
     public func openCheatSheet() { cheatSheetVisible = true }
+
+    // MARK: Global Search (⇧⌘F)
+
+    /// Present the cross-tab Global Search surface (E5 ES-E5-5). `seed` is the active pane's current selection
+    /// when a caller has one (otty pre-fills the search with the selection): a non-empty seed that differs from
+    /// the last query immediately runs the search through ``WorkspaceStore/runGlobalSearch(query:caseSensitive:isRegex:)``
+    /// (reusing the store's last `Aa`/`.*` flags); a nil / empty seed leaves the store's last results in place so
+    /// ⇧⌘F REOPENS onto the previous results (E5 divergence #1). The view restores its field + pills from the
+    /// store's retained query/flags on appear, then live-re-runs as the user edits.
+    public func openGlobalSearch(seed: String? = nil) {
+        if let store,
+           let trimmed = seed?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmed.isEmpty, trimmed != store.globalSearchQuery
+        {
+            store.runGlobalSearch(
+                query: trimmed,
+                caseSensitive: store.globalSearchCaseSensitive,
+                isRegex: store.globalSearchRegex,
+            )
+        }
+        globalSearchVisible = true
+    }
+
+    public func closeGlobalSearch() { globalSearchVisible = false }
+
+    /// Toggle the Global Search surface (the ⇧⌘F binding the app threads into the key dispatcher + menu).
+    /// Opening with no seed restores the last in-memory results.
+    public func toggleGlobalSearch() {
+        if globalSearchVisible { closeGlobalSearch() } else { openGlobalSearch() }
+    }
 
     // MARK: Remote-window picker (L6 / W1)
 

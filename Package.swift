@@ -442,7 +442,10 @@ let package = Package(
         // design-system tests were deleted with their views); L1+ re-add per-layer view-logic tests.
         .testTarget(
             name: "AislopdeskClientUITests",
-            dependencies: ["AislopdeskClientUI", "AislopdeskWorkspaceCore", "AislopdeskProtocol"],
+            // E5/WI-3: `TerminalFindBarModelTests` conforms an in-memory fake to `AislopdeskTerminal`'s
+            // `TerminalSurface`/`TerminalSurfaceActions` (the scrollback-mirror + bind-action seam) to drive
+            // the find bar's view-model headlessly — declare the (already-transitive) module explicitly.
+            dependencies: ["AislopdeskClientUI", "AislopdeskWorkspaceCore", "AislopdeskProtocol", "AislopdeskTerminal"],
         ),
 
         // WF-9 GUI video path: ONLY the PURE AislopdeskVideoProtocol is unit-tested

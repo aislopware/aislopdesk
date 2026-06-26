@@ -21,7 +21,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     // tab-strip inline field); the active canvas pane on the retained-but-dead canvas path. Reachable from
     // the title menu / context menu / palette only (otty ships no rename chord — ⌘⇧R is Toggle Details).
     case breakPaneToTab // ⌃⌘T — eject the active pane into a new tab
-    case toggleFloat // ⌘⇧F — float / embed the active pane (zellij toggle-float)
+    case toggleFloat // ⌥⌘F — float / embed the active pane (zellij toggle-float; E5 relocated off ⌘⇧F)
     case spawnFloating // ⌃⌘F — spawn a new floating scratch pane
 
     // Move pane (Zellij "move pane" — swap with the geometric neighbour)
@@ -56,6 +56,9 @@ public enum WorkspaceAction: Hashable, Sendable {
     case commandPalette // ⌘⇧P — show/hide the command palette (otty's documented default)
     case cheatSheet // ⌘/ — show/hide the keyboard cheat sheet
     case find // ⌘F — show/hide the find-in-terminal bar over the active pane (W14 #5)
+    case findNext // ⌘G — advance to the NEXT find match (opens the find bar if closed)
+    case findPrev // ⇧⌘G — step to the PREVIOUS find match (opens the find bar if closed)
+    case globalSearch // ⇧⌘F — show/hide the cross-tab Global Search results surface (E5 ES-E5-5)
     case toggleCopyMode // ⌘⇧C — enter modal keyboard copy-mode over the active pane's scrollback (P5b)
     case toggleSidebar // ⌘⇧L — show/hide the sessions sidebar (otty "Toggle Tabs Panel")
     case toggleDetailsPanel // ⌘⇧R — show/hide the right-hand Details / inspector panel (otty parity)
@@ -156,6 +159,10 @@ public extension WorkspaceAction {
              .toggleFloat: // needs a pane to float/embed
             true
         case .find,
+             // ⌘G / ⇧⌘G drive the find-bar's match navigation over the active TERMINAL pane (and open it when
+             // closed), so they ride the same graceful-no-op family as `.find`.
+             .findNext,
+             .findPrev,
              .toggleCopyMode,
              .commandNavigator,
              .jumpPreviousBlock,
@@ -182,6 +189,7 @@ public extension WorkspaceAction {
             true
         case .commandPalette,
              .cheatSheet,
+             .globalSearch, // a cross-tab results surface — acts globally, needs no active pane (like the palette)
              .newTab,
              .nextTab,
              .prevTab,
@@ -323,12 +331,15 @@ public enum WorkspaceBindingRegistry {
             category: .panes, chord: KeyChord(character: "t", [.control, .command]),
             symbol: "rectangle.portrait.and.arrow.right", keywords: "eject move detach pop out promote",
         ),
-        // Floating panes (zellij toggle-float / new floating pane). ⌘⇧F floats/embeds the active pane
-        // (⌘F is find, so ⌘⇧F is free); ⌃⌘F spawns a new floating scratch pane (the "F = float" family,
-        // ⌃⌘F free vs the used ⌃⌘O/R/N/T/=). Both verified unique by `TreeCommandRoutingTests`.
+        // Floating panes (zellij toggle-float / new floating pane). ⌥⌘F floats/embeds the active pane; ⌃⌘F
+        // spawns a new floating scratch pane (the "F = float" family, ⌃⌘F free vs the used ⌃⌘O/R/N/T/=). The
+        // float-toggle was ⌘⇧F before E5, but otty fidelity gives ⌘⇧F to Global Search (`view.globalSearch`),
+        // so float-toggle RELOCATED to ⌥⌘F — verified free (`character: "f"` is only at find/float/spawnFloating/
+        // globalSearch, and ⌥⌘F is not in the ⌥⌘⇧+arrows move-pane family). Both verified unique by
+        // `TreeCommandRoutingTests`.
         WorkspaceBinding(
             id: "pane.toggleFloat", action: .toggleFloat, title: "Float Pane",
-            category: .panes, chord: KeyChord(character: "f", [.command, .shift]),
+            category: .panes, chord: KeyChord(character: "f", [.option, .command]),
             symbol: "macwindow", keywords: "float overlay scratch detach embed unfloat windowed",
         ),
         WorkspaceBinding(
@@ -543,6 +554,27 @@ public enum WorkspaceBindingRegistry {
             id: "view.find", action: .find, title: "Find…",
             category: .view, chord: KeyChord(character: "f", [.command]),
             symbol: "magnifyingglass", keywords: "search scrollback grep locate text in terminal",
+        ),
+        // Find Next / Previous (E5 ES-E5-3): ⌘G advances, ⇧⌘G steps back through the active pane's find
+        // matches — and OPENS the find bar when it is closed (faithful "find next opens find"). ⌘G / ⇧⌘G are
+        // FREE (`g` appears in NO other chord). Pinned unique by `TreeCommandRoutingTests`.
+        WorkspaceBinding(
+            id: "view.findNext", action: .findNext, title: "Find Next",
+            category: .view, chord: KeyChord(character: "g", [.command]),
+            symbol: "chevron.down", keywords: "next find search again forward match",
+        ),
+        WorkspaceBinding(
+            id: "view.findPrev", action: .findPrev, title: "Find Previous",
+            category: .view, chord: KeyChord(character: "g", [.command, .shift]),
+            symbol: "chevron.up", keywords: "previous find search back backward match",
+        ),
+        // Global Search (E5 ES-E5-5): ⇧⌘F searches every tab's scrollback and shows a grouped results surface.
+        // otty fidelity gives ⇧⌘F to global search; the float-toggle that used to own it relocated to ⌥⌘F
+        // (see `pane.toggleFloat`). ⇧⌘F is now FREE. Pinned unique by `TreeCommandRoutingTests`.
+        WorkspaceBinding(
+            id: "view.globalSearch", action: .globalSearch, title: "Global Search…",
+            category: .view, chord: KeyChord(character: "f", [.command, .shift]),
+            symbol: "magnifyingglass.circle", keywords: "global search all tabs scrollback grep cross pane find",
         ),
         // Copy Mode (P5b): modal keyboard scrollback navigation (tmux/zellij copy-mode). ⌘⇧C is FREE —
         // `c` appears in NO other binding, and ⌘⇧C does not collide with the system plain ⌘C copy (a

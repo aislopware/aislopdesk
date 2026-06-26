@@ -85,6 +85,15 @@ struct OverlayHostView: View {
                     onCancel: { store.cancelPendingClose() },
                 )
             }
+            // E5 / WI-4: the cross-tab Global Search surface (⇧⌘F). A LARGE, content-area-filling, NON-scrimmed
+            // card (E5 divergence #1 — the faithful equivalent of otty's dedicated results tab) so it is NOT
+            // wrapped in a `Scrim` and does NOT dim the workspace. It is mounted BELOW the toast stack so a
+            // background toast still floats over it, and it is gated separately from `anyScrimmedModal` (it is
+            // not in `anyModalVisible`) — its own `.allowsHitTesting` term below captures clicks while shown.
+            if coordinator.globalSearchVisible {
+                GlobalSearchView(store: store, coordinator: coordinator)
+                    .transition(.opacity)
+            }
             // Always mounted (renders nothing when empty) so an arriving toast animates in without a re-mount;
             // last in the ZStack ⇒ top-most, so a toast X stays clickable even with a panel up.
             ToastStackView(coordinator: coordinator)
@@ -93,8 +102,11 @@ struct OverlayHostView: View {
         // One fade for the whole panel layer, keyed on the modal gate so a panel appearing/dismissing
         // cross-fades with its scrim (the toast stack runs its own value-keyed animation internally).
         .animation(Otty.Anim.standard, value: anyScrimmedModal)
-        // Transparent to hits when nothing is up so the workspace beneath stays interactive.
-        .allowsHitTesting(anyScrimmedModal || !coordinator.toasts.isEmpty)
+        // The non-scrimmed Global Search surface fades on its own flag (it is excluded from `anyScrimmedModal`).
+        .animation(Otty.Anim.standard, value: coordinator.globalSearchVisible)
+        // Transparent to hits when nothing is up so the workspace beneath stays interactive. Global Search is a
+        // full surface (not a scrimmed modal), so it adds its own hit-testing term.
+        .allowsHitTesting(anyScrimmedModal || coordinator.globalSearchVisible || !coordinator.toasts.isEmpty)
     }
 
     /// Whether ANY scrimmed modal is up — the coordinator's four panels OR the store-driven pane/tab close

@@ -32,6 +32,11 @@ struct TerminalLeafView: View {
     /// EAGER/STATIC render path for headless ImageRenderer snapshots.
     var staticMirror: Bool = false
 
+    /// E5 ES-E5-1..4: the in-pane ⌘F find bar's view-model (pure ``TerminalSearchController`` + the libghostty
+    /// `search:` passthrough). Owned per-leaf and wired to the pane's `onRequestFind*` callbacks in `.task`;
+    /// the leaf is `.id(PaneID)`-keyed by `PaneContainer`, so this `@State` is per-pane (no cross-pane bleed).
+    @State private var findBar = TerminalFindBarModel()
+
     var body: some View {
         VStack(spacing: 0) {
             // TODO(L5): mount `FileExplorerPanel` beside the surface when the per-pane explorer is open.
@@ -43,10 +48,19 @@ struct TerminalLeafView: View {
         }
         .background(NativePaneColor.terminalBackground)
         .task(id: live?.id) { await connectIfNeeded() }
+        // Wire the pane's ⌘F / ⌘G / ⇧⌘G callbacks on appear AND on every live-session swap (`initial: true`
+        // fires once up-front, then on each `live?.id` change). A synchronous `@MainActor` closure — no actor
+        // hop, unlike the `@Sendable async` `.task` action above.
+        .onChange(of: live?.id, initial: true) { wireFindCallbacks() }
+        // Clear the callbacks when the leaf is torn down so a dead `@State` holder can't be driven by a
+        // surviving model (the model is owned by the live session, which can outlive this `.id(PaneID)` leaf).
+        .onDisappear { clearFindCallbacks() }
     }
 
     /// The terminal pixels (the seam) — production renderer if the app registered one, else the headless
-    /// placeholder. This library NEVER imports libghostty/Metal: it only calls the factory seam.
+    /// placeholder. This library NEVER imports libghostty/Metal: it only calls the factory seam. The ⌘F find
+    /// bar floats top-trailing OVER the surface (it does not reflow the buffer) — never in the static-mirror
+    /// snapshot path.
     private var terminalSurface: some View {
         ZStack(alignment: .topLeading) {
             if let model = live?.terminalModel {
@@ -61,6 +75,35 @@ struct TerminalLeafView: View {
                 Color.clear
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if !staticMirror, findBar.visible, live?.terminalModel != nil {
+                TerminalFindBar(model: findBar)
+                    .padding(Otty.Metric.space2)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(Otty.Anim.reveal, value: findBar.visible)
+    }
+
+    /// Wire the pane's ⌘F / ⌘G / ⇧⌘G callbacks to the find-bar holder (the seam the store fires via
+    /// `requestFind*InActivePane()`). No-op for a non-terminal / not-yet-live pane (`terminalModel == nil`);
+    /// `terminalModel` is non-nil from session creation for a terminal pane, so this lands on first `.task`.
+    private func wireFindCallbacks() {
+        guard let model = live?.terminalModel else { return }
+        let bar = findBar
+        bar.attach(model)
+        model.onRequestFind = { bar.open() }
+        model.onRequestFindNext = { bar.next() }
+        model.onRequestFindPrev = { bar.previous() }
+    }
+
+    /// Detach the holder + nil the callbacks so the model stops referencing a torn-down leaf's `@State`.
+    private func clearFindCallbacks() {
+        findBar.attach(nil)
+        guard let model = live?.terminalModel else { return }
+        model.onRequestFind = nil
+        model.onRequestFindNext = nil
+        model.onRequestFindPrev = nil
     }
 
     private func connectIfNeeded() async {

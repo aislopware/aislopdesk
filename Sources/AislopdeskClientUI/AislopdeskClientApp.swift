@@ -278,10 +278,13 @@ public struct AislopdeskClientApp: App {
         // owner (never a competing `.keyboardShortcut`). `toggleFind`/`togglePeekReply` stay nil — their
         // `route` arms already fall back to the tree-path behaviour (`requestFindInActivePane()` /
         // `jumpToOldestAttentionPane()`); the Find BAR view lands in E5.
+        // E5/WI-4: thread the ⇧⌘F Global Search toggle into the SAME NSEvent monitor that owns every chord, so
+        // the cross-tab results surface opens from the keyboard (and the View ▸ Global Search… menu item below).
         _keyDispatcher = State(initialValue: WorkspaceKeyDispatcher(
             store: store,
             togglePalette: { [overlay] in overlay.togglePalette() },
             toggleCheatSheet: { [overlay] in overlay.toggleCheatSheet() },
+            toggleGlobalSearch: { [overlay] in overlay.toggleGlobalSearch() },
         ))
         #endif
     }
@@ -412,6 +415,7 @@ public struct AislopdeskClientApp: App {
                 store: store,
                 togglePalette: { [overlayCoordinator] in overlayCoordinator.togglePalette() },
                 toggleCheatSheet: { [overlayCoordinator] in overlayCoordinator.toggleCheatSheet() },
+                toggleGlobalSearch: { [overlayCoordinator] in overlayCoordinator.toggleGlobalSearch() },
             )
             // E7 WI-4: File ▸ Export/Import Workspace (optional parity). Shortcut-LESS — the NSEvent
             // dispatcher owns chords (DECISIONS N6); a hostile import is a no-op + toast, never a crash.

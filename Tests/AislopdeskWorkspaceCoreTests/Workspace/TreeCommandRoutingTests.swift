@@ -488,14 +488,17 @@ final class TreeCommandRoutingTests: XCTestCase {
 
     // MARK: - Floating panes (P5a): chord pins + routing
 
-    /// The two floating-pane chords are the documented free defaults: ⌘⇧F float-toggle, ⌃⌘F new-floating.
+    /// The two floating-pane chords are the documented free defaults: ⌥⌘F float-toggle, ⌃⌘F new-floating.
     /// Pinning them here makes a future rebind/typo a loud failure (the uniqueness test only catches a
-    /// COLLISION, not a wrong-but-unique value).
+    /// COLLISION, not a wrong-but-unique value). E5 RELOCATED float-toggle ⌘⇧F → ⌥⌘F to free ⇧⌘F for otty
+    /// Global Search (`view.globalSearch`).
     func testFloatingPaneChordsAreTheDocumentedDefaults() {
         func chord(_ action: WorkspaceAction) -> KeyChord? {
             WorkspaceBindingRegistry.binding(for: action)?.chord
         }
-        XCTAssertEqual(chord(.toggleFloat), KeyChord(character: "f", [.command, .shift]), "toggle float = ⌘⇧F")
+        XCTAssertEqual(
+            chord(.toggleFloat), KeyChord(character: "f", [.option, .command]), "toggle float = ⌥⌘F (E5 relocation)",
+        )
         XCTAssertEqual(chord(.spawnFloating), KeyChord(character: "f", [.control, .command]), "new floating = ⌃⌘F")
     }
 
@@ -787,6 +790,72 @@ final class TreeCommandRoutingTests: XCTestCase {
         let before = store.tree
         WorkspaceBindingRegistry.route(.find, to: store) // no toggleFind ⇒ store path
         XCTAssertEqual(store.tree, before, "the store find path leaves the tree unchanged")
+    }
+
+    // MARK: - View: E5 find-nav (⌘G/⇧⌘G) + global search (⇧⌘F) — chords + routing
+
+    /// E5: pins the three new chords to their otty-documented free defaults — ⌘G Find Next, ⇧⌘G Find Previous,
+    /// ⇧⌘F Global Search. The generic uniqueness guard catches a COLLISION; this pins the intended values so a
+    /// transposed modifier can't slip past it.
+    func testE5FindNavAndGlobalSearchChordsAreTheDocumentedDefaults() {
+        func chord(_ action: WorkspaceAction) -> KeyChord? {
+            WorkspaceBindingRegistry.binding(for: action)?.chord
+        }
+        XCTAssertEqual(chord(.findNext), KeyChord(character: "g", [.command]), "find next = ⌘G")
+        XCTAssertEqual(chord(.findPrev), KeyChord(character: "g", [.command, .shift]), "find previous = ⇧⌘G")
+        XCTAssertEqual(chord(.globalSearch), KeyChord(character: "f", [.command, .shift]), "global search = ⇧⌘F")
+    }
+
+    /// E5: the three new chords must be present in ``allBindings`` AND chord-unique against the whole table —
+    /// in particular ⇧⌘F (global search) and ⌥⌘F (relocated float-toggle) must coexist without collision. The
+    /// generic uniqueness test asserts no two share a chord over the FULL set; this adds the explicit presence
+    /// + the float/global-search disambiguation, the exact pair E5 reshuffled.
+    func testE5NewChordsArePresentAndChordUnique() {
+        let chords = WorkspaceBindingRegistry.allBindings.compactMap(\.chord)
+        XCTAssertEqual(Set(chords).count, chords.count, "no two bindings share a chord after the E5 additions")
+        // The reshuffled `f` family: ⌘F find, ⇧⌘F global search, ⌥⌘F float-toggle, ⌃⌘F new-floating — four
+        // DISTINCT chords on the same key.
+        XCTAssertTrue(chords.contains(KeyChord(character: "f", [.command])), "⌘F find present")
+        XCTAssertTrue(chords.contains(KeyChord(character: "f", [.command, .shift])), "⇧⌘F global search present")
+        XCTAssertTrue(chords.contains(KeyChord(character: "f", [.option, .command])), "⌥⌘F float-toggle present")
+        XCTAssertTrue(chords.contains(KeyChord(character: "f", [.control, .command])), "⌃⌘F new-floating present")
+        XCTAssertTrue(chords.contains(KeyChord(character: "g", [.command])), "⌘G find next present")
+        XCTAssertTrue(chords.contains(KeyChord(character: "g", [.command, .shift])), "⇧⌘G find previous present")
+    }
+
+    /// `.findNext` / `.findPrev` WITHOUT any per-pane find callback installed (a `FakePaneSession` is not a live
+    /// terminal, so `terminalModel` is nil) must route to the store's open-if-closed path WITHOUT trapping or
+    /// mutating the tree. Pins that ⌘G / ⇧⌘G are wired to the store (not dropped) and degrade gracefully — the
+    /// behavioural "opens the bar when closed" is proven over a live model elsewhere.
+    @MainActor
+    func testFindNavActionsRouteToStoreWithoutMutatingTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        WorkspaceBindingRegistry.route(.findNext, to: store)
+        WorkspaceBindingRegistry.route(.findPrev, to: store)
+        XCTAssertEqual(store.tree, before, "the find-nav actions are active-pane affordances — the tree is unchanged")
+    }
+
+    /// `.globalSearch` WITH an explicit `toggleGlobalSearch` override fires the closure (the OverlayCoordinator
+    /// flag) and does NOT mutate the tree. Proven to fail before `.globalSearch` exists / is routed.
+    @MainActor
+    func testGlobalSearchFiresToggleClosureAndDoesNotMutateTree() {
+        let store = makeTreeStore()
+        let before = store.tree
+        var fired = 0
+        WorkspaceBindingRegistry.route(.globalSearch, to: store, toggleGlobalSearch: { fired += 1 })
+        XCTAssertEqual(fired, 1, "the global-search action invoked the toggleGlobalSearch closure")
+        XCTAssertEqual(store.tree, before, "global search is a view overlay — the tree is unchanged")
+    }
+
+    /// `.globalSearch` WITHOUT a `toggleGlobalSearch` override (the headless / test default) is a graceful
+    /// no-op — never a trap, never a tree mutation. Pins the nil-closure path stays inert.
+    @MainActor
+    func testGlobalSearchWithoutClosureIsAGracefulNoOp() {
+        let store = makeTreeStore()
+        let before = store.tree
+        WorkspaceBindingRegistry.route(.globalSearch, to: store) // no closure ⇒ no-op
+        XCTAssertEqual(store.tree, before, "global search with no closure leaves the tree unchanged")
     }
 
     // MARK: - View: peek-and-reply falls back to the store when no overlay closure (no dead ⌘⇧J)

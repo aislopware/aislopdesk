@@ -35,6 +35,9 @@ struct WorkspaceCommands: Commands {
     var togglePeekReply: (() -> Void)?
     var toggleDetailsPanel: (() -> Void)?
     var toggleSidebar: (() -> Void)?
+    /// E5 / WI-4: the cross-tab Global Search overlay toggle (otty ⇧⌘F, the View ▸ Global Search… menu item).
+    /// `nil` keeps the menu item a graceful no-op via `route`, never dead.
+    var toggleGlobalSearch: (() -> Void)?
 
     var body: some Commands {
         // One top-level menu per display category, in the registry's display order. A `CommandMenu` inserts
@@ -97,6 +100,7 @@ struct WorkspaceCommands: Commands {
                 togglePeekReply: togglePeekReply,
                 toggleDetailsPanel: toggleDetailsPanel,
                 toggleSidebar: toggleSidebar,
+                toggleGlobalSearch: toggleGlobalSearch,
             )
         }
         // Grey the item out when its action needs an active pane and there is none (mirrors the palette /

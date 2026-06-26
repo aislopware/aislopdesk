@@ -194,6 +194,30 @@ public final class TerminalViewModel {
     /// `@State`. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
     @ObservationIgnored public var onRequestFind: (() -> Void)?
 
+    /// E5 ES-E5-3: the ⌘G "Find Next" / ⇧⌘G "Find Previous" actions — advance / retreat the find bar's match
+    /// over THIS pane (and OPEN the bar when it is closed). The leaf wires these to its find-bar `@State`
+    /// (next()/previous() + the libghostty `navigate_search:` highlight); the store reaches them via
+    /// ``WorkspaceStore/requestFindNextInActivePane()`` / `requestFindPrevInActivePane()`, falling back to
+    /// ``onRequestFind`` when unset so ⌘G still opens the bar. `@ObservationIgnored`: wiring, not view state.
+    /// Nil for headless/preview callers (never invoked).
+    @ObservationIgnored public var onRequestFindNext: (() -> Void)?
+    @ObservationIgnored public var onRequestFindPrev: (() -> Void)?
+
+    /// E5 (find + global search) surface seams over the active ``TerminalSurfaceActions`` conformer (production
+    /// ``GhosttySurface``): the flat scrollback text mirror the find bar / global search scan, and the
+    /// passthrough to libghostty's own in-surface search bindings (`search:`/`navigate_search:`/`end_search`/
+    /// `scroll_to_row`, which own the amber highlight + scroll-to-match). A headless / preview surface does NOT
+    /// conform (hang-safety — never instantiated in a test) → `[]` / `false`. These are wiring funcs (read
+    /// `surface as? TerminalSurfaceActions`, the existing copy-mode pattern), NOT `@Observable` state.
+    public func searchScrollbackLines() -> [String] {
+        (surface as? TerminalSurfaceActions)?.scrollbackTextLines() ?? []
+    }
+
+    @discardableResult
+    public func performSearchSurfaceAction(_ action: String) -> Bool {
+        (surface as? TerminalSurfaceActions)?.performBindingAction(action) ?? false
+    }
+
     /// WS-B / B4·B5: the PURE keybinding interceptor (prefix engine + override-aware single-chord table) the
     /// libghostty surface's `keyDown` consults BEFORE its own raw-byte branches. The store wires it (in
     /// `wireMaterializedLeaf`) so a tmux-style prefix sequence and a rebindable ⌘D/⌘⇧D split are owned by the

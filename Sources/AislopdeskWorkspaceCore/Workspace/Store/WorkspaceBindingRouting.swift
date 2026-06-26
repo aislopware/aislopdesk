@@ -13,6 +13,19 @@ import Foundation
 /// retained-but-dead path) the tree-only actions fall back to the nearest canvas equivalent via
 /// ``apply(_:to:)`` so the canvas tests stay green. The view-layer overlays (command palette / cheat
 /// sheet) are not store state, so their toggles are passed in as closures (defaulted `nil`).
+
+/// Bundles the view-owned overlay-toggle closures passed to ``WorkspaceBindingRegistry/route(_:to:)``.
+/// Keeping them in one value lets the private dispatch helpers stay within SwiftLint's parameter-count limit.
+struct RouteToggles {
+    var palette: (() -> Void)?
+    var cheatSheet: (() -> Void)?
+    var find: (() -> Void)?
+    var peekReply: (() -> Void)?
+    var detailsPanel: (() -> Void)?
+    var sidebar: (() -> Void)?
+    var globalSearch: (() -> Void)?
+}
+
 public extension WorkspaceBindingRegistry {
     /// Routes `action` to its store op against `store`. The overlay toggles (`togglePalette` /
     /// `toggleCheatSheet`) are the view-owned `@State` switches the root view passes; `nil` (the test /
@@ -27,22 +40,16 @@ public extension WorkspaceBindingRegistry {
         togglePeekReply: (() -> Void)? = nil,
         toggleDetailsPanel: (() -> Void)? = nil,
         toggleSidebar: (() -> Void)? = nil,
+        toggleGlobalSearch: (() -> Void)? = nil,
     ) {
+        let toggles = RouteToggles(
+            palette: togglePalette, cheatSheet: toggleCheatSheet, find: toggleFind,
+            peekReply: togglePeekReply, detailsPanel: toggleDetailsPanel,
+            sidebar: toggleSidebar, globalSearch: toggleGlobalSearch,
+        )
         switch store.liveModel {
-        case .tree:
-            routeTree(
-                action, to: store, togglePalette: togglePalette,
-                toggleCheatSheet: toggleCheatSheet, toggleFind: toggleFind,
-                togglePeekReply: togglePeekReply, toggleDetailsPanel: toggleDetailsPanel,
-                toggleSidebar: toggleSidebar,
-            )
-        case .canvas:
-            routeCanvas(
-                action, to: store, togglePalette: togglePalette,
-                toggleCheatSheet: toggleCheatSheet, toggleFind: toggleFind,
-                togglePeekReply: togglePeekReply, toggleDetailsPanel: toggleDetailsPanel,
-                toggleSidebar: toggleSidebar,
-            )
+        case .tree: routeTree(action, to: store, toggles: toggles)
+        case .canvas: routeCanvas(action, to: store, toggles: toggles)
         }
     }
 
@@ -51,12 +58,7 @@ public extension WorkspaceBindingRegistry {
     private static func routeTree(
         _ action: WorkspaceAction,
         to store: WorkspaceStore,
-        togglePalette: (() -> Void)?,
-        toggleCheatSheet: (() -> Void)?,
-        toggleFind: (() -> Void)?,
-        togglePeekReply: (() -> Void)?,
-        toggleDetailsPanel: (() -> Void)?,
-        toggleSidebar: (() -> Void)?,
+        toggles: RouteToggles,
     ) {
         switch action {
         // Panes
@@ -109,11 +111,20 @@ public extension WorkspaceBindingRegistry {
         case .cyclePanePrev: store.cyclePaneFocusTree(forward: false)
         // View
         case .toggleZoom: store.toggleZoomActivePane()
-        case .commandPalette: togglePalette?()
-        case .cheatSheet: toggleCheatSheet?()
+        case .commandPalette: toggles.palette?()
+        case .cheatSheet: toggles.cheatSheet?()
         // Find opens the active pane's find bar via the store (so the menu + chord work without threading a
         // view closure); an explicit `toggleFind` override wins when supplied.
-        case .find: if let toggleFind { toggleFind() } else { store.requestFindInActivePane() }
+        case .find: if let f = toggles.find { f() } else { store.requestFindInActivePane() }
+        // Find Next / Previous (E5 ES-E5-3): advance/retreat the active pane's find match. The store opens the
+        // bar (via `onRequestFind`) when it is closed — so ⌘G works as "find next opens find". Always a store
+        // path (no view closure): the bar's match nav is owned by the per-pane TerminalViewModel callback.
+        case .findNext: store.requestFindNextInActivePane()
+        case .findPrev: store.requestFindPrevInActivePane()
+        // Global Search (E5 ES-E5-5): a VIEW overlay surface (the OverlayCoordinator owns it), so it is a
+        // passed-in closure like the palette / cheat sheet. `nil` (the headless / test default) is a graceful
+        // no-op — never a dead chord.
+        case .globalSearch: toggles.globalSearch?()
         // Copy Mode (P5b): arm modal keyboard scrollback navigation over the active terminal pane.
         case .toggleCopyMode: store.requestCopyModeInActivePane()
         // Toggle Tabs Panel (otty ⌘⇧L): the LEFT sidebar collapse on the macOS shell is VIEW @State
@@ -122,11 +133,11 @@ public extension WorkspaceBindingRegistry {
         // `.toggleDetailsPanel`). When no closure is supplied (the headless / test / iOS default) fall back to
         // the store flag so the action is a non-trapping graceful op (and any store-flag reader still toggles).
         case .toggleSidebar:
-            if let toggleSidebar { toggleSidebar() } else { store.toggleSidebarCollapsed() }
+            if let s = toggles.sidebar { s() } else { store.toggleSidebarCollapsed() }
         // Toggle Details Panel (otty ⌘⇧R): the right-hand inspector is VIEW @State (`WorkspaceChromeState`),
         // not store state, so it is a passed-in closure (like the palette / cheat-sheet toggles). `nil` (the
         // headless / test default) keeps it a graceful no-op — never a dead chord.
-        case .toggleDetailsPanel: toggleDetailsPanel?()
+        case .toggleDetailsPanel: toggles.detailsPanel?()
         // Blocks (WB2): the navigator toggle + jump-to-block both target the active terminal pane via the store.
         case .commandNavigator: store.requestBlockNavigatorInActivePane()
         case .jumpPreviousBlock: store.jumpToBlockInActivePane(delta: -1)
@@ -186,7 +197,7 @@ public extension WorkspaceBindingRegistry {
         // must not be DEAD — fall back to focusing the oldest attention pane (mirrors the `.find` fallback to
         // `requestFindInActivePane()`), so ⌘⇧J does something useful rather than nothing.
         case .peekAndReply:
-            if let togglePeekReply { togglePeekReply() } else { store.jumpToOldestAttentionPane() }
+            if let p = toggles.peekReply { p() } else { store.jumpToOldestAttentionPane() }
         // Agents (E1-registered; behaviour lands in E12/E13). Each is a routable graceful no-op stub until the
         // owning epic threads its seam — registered so the chord is LIVE (never dead), per ES-E1-5. E12 wires
         // composer / prompt-queue, E13 wires send-to-chat (each will route to its own store op / overlay toggle).
@@ -203,12 +214,7 @@ public extension WorkspaceBindingRegistry {
     private static func routeCanvas(
         _ action: WorkspaceAction,
         to store: WorkspaceStore,
-        togglePalette: (() -> Void)?,
-        toggleCheatSheet: (() -> Void)?,
-        toggleFind: (() -> Void)?,
-        togglePeekReply: (() -> Void)?,
-        toggleDetailsPanel: (() -> Void)?,
-        toggleSidebar: (() -> Void)?,
+        toggles: RouteToggles,
     ) {
         switch action {
         case .splitRight,
@@ -248,17 +254,23 @@ public extension WorkspaceBindingRegistry {
         case .cyclePaneNext: apply(.cycleFocus(forward: true), to: store)
         case .cyclePanePrev: apply(.cycleFocus(forward: false), to: store)
         case .toggleZoom: apply(.toggleZoom, to: store)
-        case .commandPalette: togglePalette?()
-        case .cheatSheet: toggleCheatSheet?()
-        case .find: toggleFind?() // canvas path: find is view-overlay only (no tree active-pane store hook)
+        case .commandPalette: toggles.palette?()
+        case .cheatSheet: toggles.cheatSheet?()
+        case .find: toggles.find?() // canvas path: find is view-overlay only (no tree active-pane store hook)
+        // Find Next / Previous: the canvas path resolves the active pane via canvas focus, so the same store
+        // hooks open + advance the find bar there too (a graceful no-op for a non-terminal / empty canvas).
+        case .findNext: store.requestFindNextInActivePane()
+        case .findPrev: store.requestFindPrevInActivePane()
+        // Global Search is a view overlay (tree-shell chrome); the canvas path still toggles it via the closure.
+        case .globalSearch: toggles.globalSearch?()
         // Copy Mode (P5b): the canvas path resolves the active pane via canvas focus, so the same store hook
         // arms copy-mode there too (a no-op for a non-terminal active pane / empty shell).
         case .toggleCopyMode: store.requestCopyModeInActivePane()
         // Sidebar is the tree-shell chrome; the canvas path still toggles it via the closure (the live macOS
         // app wires `chrome.toggleSidebar`). `nil` (the canvas test default) is a graceful no-op.
-        case .toggleSidebar: toggleSidebar?()
+        case .toggleSidebar: toggles.sidebar?()
         // Details panel is a view overlay (tree-shell chrome); the canvas path still toggles it via the closure.
-        case .toggleDetailsPanel: toggleDetailsPanel?()
+        case .toggleDetailsPanel: toggles.detailsPanel?()
         // Blocks (WB2): the canvas path is retained-but-dead; route through the same store hooks (they
         // resolve the active pane via the canvas focus, so the navigator/jump still work there).
         case .commandNavigator: store.requestBlockNavigatorInActivePane()
@@ -288,7 +300,7 @@ public extension WorkspaceBindingRegistry {
         case .jumpToAttention: break // tree-only (no canvas attention rollup)
         // P4 Peek & Reply is a view overlay; the canvas path still toggles it (the overlay's own selector
         // returns nil under .canvas, where there is no attention rollup, so it opens read-only / no-ops).
-        case .peekAndReply: togglePeekReply?()
+        case .peekAndReply: toggles.peekReply?()
         // Agents (E12/E13): no canvas analogue — the agent surfaces are tree-shell only. Graceful no-ops here.
         case .composer,
              .promptQueue,
