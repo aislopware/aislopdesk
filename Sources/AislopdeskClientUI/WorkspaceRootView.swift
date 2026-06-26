@@ -139,11 +139,10 @@ public struct WorkspaceRootView: View {
         .background {
             ComposerFloatPanelHost(floating: store.floatingComposer)
         }
-        // E12 WI-6: persist the otty "pin is a user preference" flag when a composer becomes / stops being
-        // pinned (survives relaunch). Fires only on a real change, never on initial appear.
-        .onChange(of: store.pinnedComposer != nil) { _, pinned in
-            SettingsKey.setComposerPinnedEnabled(pinned)
-        }
+        // E12 WI-6: the otty "pinned state is persisted" rule is honoured PER-PANE — `LivePaneSession.adopt`
+        // restores each pane's pin (keyed by its stable `PaneID`) on launch and wires `onPinnedChange` to
+        // persist later toggles. No window-level write here: a single global Bool could not say WHICH pane
+        // was pinned.
         // Wire ⌘⇧R (Toggle Details) + ⌘⇧L (Toggle Tabs Panel / sidebar) to the live chrome once it
         // exists. The dispatcher is built at app `init` (before `chrome`), so we hand it the toggles here
         // — `[chrome]` captures the same @Observable instance the representable + titlebar read, so the
@@ -188,10 +187,8 @@ public struct WorkspaceRootView: View {
             chrome: composerSheetChrome,
             agentActive: iosComposerTarget?.agentActive ?? false,
         )
-        // Persist the otty "pin is a user preference" flag (survives relaunch). Fires only on a real change.
-        .onChange(of: store.pinnedComposer != nil) { _, pinned in
-            SettingsKey.setComposerPinnedEnabled(pinned)
-        }
+        // E12 WI-6: pin persistence is PER-PANE (restored + persisted in `LivePaneSession.adopt`, keyed by
+        // the stable `PaneID`), not a window-level global Bool — so a relaunch re-pins the exact pane.
         #endif
     }
 
@@ -211,7 +208,7 @@ public struct WorkspaceRootView: View {
             set: { present in
                 guard !present, let target = iosComposerTarget else { return }
                 target.composer.isFloating = false
-                target.composer.isPinned = false
+                target.composer.setPinned(false)
             },
         )
     }

@@ -1781,10 +1781,11 @@ final class GhosttyLayerBackedView: NSView {
                 surface?.text(PasteTransform.bracketed(s))
             }
         case .pasteToComposer:
-            // Append the clipboard to the client Composer draft instead of sending to the shell (no wire).
-            if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty {
-                model?.onPasteToComposer?(s)
-            }
+            // Hand off to the client Composer instead of sending to the shell (no wire). The leaf reads the
+            // RICHEST clipboard flavour and converts HTML/RTF→Markdown (the same `ComposerPasteboard` the
+            // in-field ⌘V uses) before splicing it at the Composer's caret — so this path converts + inserts
+            // at the caret, not the old "plain string, appended" behaviour.
+            model?.onPasteToComposer?()
         case .selectAll: surface?.performBindingAction("select_all")
         case .clear: surface?.performBindingAction("clear_screen")
         case .copyOutput:

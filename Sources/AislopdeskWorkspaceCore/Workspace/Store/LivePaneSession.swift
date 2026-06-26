@@ -55,9 +55,9 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     /// ``inputBar``, it survives tab switches and pause/resume (panes mount at opacity-0, never torn down),
     /// so a draft / queued prompts persist. Present for `.terminal` panes; `nil` for the video kinds
     /// (`.remoteGUI` / `.systemDialog`). Its single OUT sink rides the pane's ONE ordered-OUT FIFO via the
-    /// input bar (NOT a second socket), and BOTH idle signals drain its queue: the NORMAL-pane OSC-133;A
-    /// (``TerminalViewModel/onPromptIdle``, wired in ``makeTerminal``) and the AGENT-pane
-    /// `claudeStatus → .idle` (``applyDetectedStatus``).
+    /// input bar (NOT a second socket), and BOTH turn-finished signals drain its queue: the NORMAL-pane
+    /// OSC-133;A (``TerminalViewModel/onPromptIdle``, wired in ``makeTerminal``) and the AGENT-pane
+    /// `claudeStatus → .done` (``applyDetectedStatus``).
     public let composer: ComposerModel?
 
     /// The read-only structured inspector for a terminal pane (NWConnection #2). `nil` for non-terminal
@@ -329,7 +329,7 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         // `applyDetectedStatus`. Weak so the callback can't retain the composer.
         terminal.onPromptIdle = { [weak composer] in composer?.notePromptIdle() }
 
-        return LivePaneSession(
+        let session = LivePaneSession(
             id: PaneID(),
             kind: spec.kind,
             connection: connection,
@@ -344,6 +344,22 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
             // `feedAgentSignal`) lifts `claudeStatus` off `.none`. The client TRUSTS that verdict (P1).
             isAgentDetectable: true,
         )
+        // E12 Prompt-Queue KICKSTART probe: the composer asks "is the pane idle now?" before deciding to
+        // fire the head queued item immediately on enqueue. Resolved per-pane = the normal shell at its
+        // prompt OR the agent between turns (`claudeStatus` `.idle`/`.done`). Weak so the seam can't retain
+        // the session.
+        composer.isIdleNow = { [weak session] in session?.isComposerPaneIdle ?? false }
+        return session
+    }
+
+    /// Whether the owning pane is idle RIGHT NOW for the E12 Prompt-Queue kickstart, resolved by the SAME
+    /// dual-signal split as dispatch: an AGENT pane (a `claude` detected, `claudeStatus != .none`) is idle
+    /// only between turns (`.idle`/`.done`) — the alt-screen shell-prompt state is meaningless there; a
+    /// NORMAL pane (no agent) is idle when its shell sits at the prompt (``TerminalViewModel/isAtShellPrompt``).
+    /// Read by ``ComposerModel/isIdleNow``.
+    private var isComposerPaneIdle: Bool {
+        if claudeStatus != .none { return claudeStatus == .idle || claudeStatus == .done }
+        return terminalModel?.isAtShellPrompt ?? false
     }
 
     /// Builds a `.remoteGUI` session: a `RemoteWindowModel` bound to the app target with the per-pane
@@ -381,7 +397,22 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
     // MARK: - ID adoption (store-internal)
 
     /// See ``PaneSessionIDAdopting``. The store re-points a freshly-built session at its leaf id.
-    func adopt(id: PaneID) { self.id = id }
+    ///
+    /// E12 WI-6 — the per-pane Composer PIN persistence is keyed by the stable leaf ``PaneID`` (which
+    /// survives the persistence round-trip as the tree's `{"leaf":"<uuid>"}`), so adoption is the right
+    /// moment to (1) RESTORE a persisted pin — re-pinning the RIGHT pane on a fresh launch and opening the
+    /// bar so it visibly rides along (the otty "pinned state is persisted" rule) — and (2) wire forward
+    /// persistence on later toggles. The restore runs BEFORE wiring ``ComposerModel/onPinnedChange`` so it
+    /// never re-persists what it just read.
+    func adopt(id: PaneID) {
+        self.id = id
+        guard let composer else { return }
+        if SettingsKey.isComposerPinned(paneID: id) {
+            composer.setPinned(true)
+            composer.open() // a persisted pin rides along visibly, not as a hidden empty bar.
+        }
+        composer.onPinnedChange = { pinned in SettingsKey.setComposerPinned(pinned, paneID: id) }
+    }
 
     /// SYSTEM-DIALOG: flag a just-spawned ``PaneKind/systemDialog`` session as a secure (password/auth)
     /// prompt so the pane view shows the "view-only — type on the host" hint. Set by the store right after
@@ -469,12 +500,15 @@ public final class LivePaneSession: @MainActor PaneSessionHandle, @MainActor Ide
         let isActive = newStatus != .none
         guard claudeStatus != newStatus else { return } // dedupe identical updates (no churn)
         claudeStatus = newStatus
-        // E12 AGENT-pane idle dispatch: alt-screen Claude Code emits no OSC-133 prompt marks, so its
-        // "went idle between turns" signal is the host's transition INTO `.idle`. The dedupe guard above
-        // already ruled out a no-op repeat, so reaching `.idle` here is a genuine edge → drain the next
-        // queued prompt, exactly like the normal-pane OSC-133;A path (`TerminalViewModel.onPromptIdle`).
-        // Pure dispatch through the composer's ordered-OUT sink — no UI, no socket of its own.
-        if newStatus == .idle { composer?.notePromptIdle() }
+        // E12 AGENT-pane turn-finished dispatch: alt-screen Claude Code emits no OSC-133 prompt marks, so
+        // its "turn finished" signal is the host's transition INTO `.done` — emitted IMMEDIATELY by the Stop
+        // hook, which then decays to `.idle` ~8s later. Fire on `.done` ONLY (NOT `.idle`) so each queued
+        // prompt dispatches the instant the turn ends (dispatching on the laggy `.idle` decay fired every
+        // prompt ~8s late) AND exactly once per turn (`.done → .idle` is a second edge that must not
+        // re-dispatch). The dedupe guard above already ruled out a no-op repeat, so reaching `.done` here is
+        // a genuine edge → drain the next queued prompt, exactly like the normal-pane OSC-133;A path
+        // (`TerminalViewModel.onPromptIdle`). Pure dispatch through the composer's ordered-OUT sink.
+        if newStatus == .done { composer?.notePromptIdle() }
         if !wasActive, isActive {
             // A claude just appeared in this terminal → open the read-only inspector second channel.
             inspectorTask?.cancel()

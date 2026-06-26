@@ -119,8 +119,10 @@ public enum SettingsKey {
     /// otty "Composer max height" — the fraction of the pane height the Composer grows to before internal
     /// scroll. Default ``TerminalPreferences/defaultComposerMaxHeightFraction`` (~0.4).
     public static let composerMaxHeight = "composer.maxHeightFraction"
-    /// Whether the Composer is PINNED (rides along across tab switches, E12 WI-6). Default OFF.
-    public static let composerPinned = "composer.pinned"
+    /// The set of pane UUIDs whose Composer is PINNED (rides along across tab switches, E12 WI-6). Pinning is
+    /// PER-PANE, so persistence is a set keyed by the stable leaf ``PaneID`` (NOT a single global Bool), and
+    /// each pane re-pins on a fresh launch (`LivePaneSession.adopt`). Default empty (nothing pinned).
+    public static let composerPinnedPaneIDs = "composer.pinnedPaneIDs"
     // Shell / window behaviour
     /// Where a new tab is inserted in the active session's tab bar (otty `new-tab-position`). Stored as the
     /// ``NewTabPosition`` rawValue (`auto`/`end`/`after-current`); default `.auto` (= append). Read at the
@@ -201,15 +203,25 @@ public enum SettingsKey {
         Double.minimum(0.9, Double.maximum(0.15, Defaults[.composerMaxHeight]))
     }
 
-    /// Whether the Composer is PINNED across tab switches (E12 WI-6), default OFF. Read at fire-time.
-    public static var composerPinnedEnabled: Bool { Defaults[.composerPinned] }
+    /// Whether the Composer in the pane with `paneID` is PINNED across tab switches (E12 WI-6). Read at
+    /// session materialization (`LivePaneSession.adopt`) to re-pin the RIGHT pane on a fresh launch — the
+    /// otty "pinned state is persisted as a user preference" rule, made faithful by keying on the stable
+    /// per-pane ``PaneID`` instead of a single global Bool.
+    public static func isComposerPinned(paneID: PaneID) -> Bool {
+        Defaults[.composerPinnedPaneIDs].contains(paneID.raw.uuidString)
+    }
 
-    /// PERSISTS the Composer PIN preference (E12 WI-6) so a pinned Composer survives an app relaunch
-    /// (the otty "pinned state is persisted as a user preference" rule). Written by the client UI when a
-    /// composer becomes / stops being pinned; mirrors the typed ``TerminalPreferences/composerPinned``
-    /// client-pref field. Idempotent — writing the same value is a `Defaults` no-op.
-    public static func setComposerPinnedEnabled(_ pinned: Bool) {
-        Defaults[.composerPinned] = pinned
+    /// PERSISTS the per-pane Composer PIN (E12 WI-6) so a pinned Composer survives an app relaunch and
+    /// re-pins exactly the pane that was pinned. Adds / removes the pane's ``PaneID`` UUID in the persisted
+    /// set. Idempotent — a no-op write leaves the set (and `Defaults`) untouched. Wired to
+    /// ``ComposerModel/onPinnedChange`` by the owning ``LivePaneSession``.
+    public static func setComposerPinned(_ pinned: Bool, paneID: PaneID) {
+        let token = paneID.raw.uuidString
+        var ids = Set(Defaults[.composerPinnedPaneIDs])
+        if pinned { ids.insert(token) } else { ids.remove(token) }
+        let sorted = ids.sorted()
+        guard sorted != Defaults[.composerPinnedPaneIDs] else { return }
+        Defaults[.composerPinnedPaneIDs] = sorted
     }
 
     /// The default kind for a generic "New Pane" (toolbar primary action / empty state), default
@@ -375,7 +387,7 @@ public extension Defaults.Keys {
         SettingsKey.composerMaxHeight,
         default: TerminalPreferences.defaultComposerMaxHeightFraction,
     )
-    static let composerPinned = Key<Bool>(SettingsKey.composerPinned, default: false)
+    static let composerPinnedPaneIDs = Key<[String]>(SettingsKey.composerPinnedPaneIDs, default: [])
     static let defaultPaneKind = Key<PaneKind>(SettingsKey.defaultPaneKindKey, default: .terminal)
     static let newTabPosition = Key<NewTabPosition>(SettingsKey.newTabPositionKey, default: .auto)
     // Sidebar tab grouping / sort (otty sort-hamburger, E6) stored as the bare enum rawValue. Group default

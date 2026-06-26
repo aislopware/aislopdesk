@@ -173,6 +173,14 @@ struct ComposerBar: View {
 
     @FocusState private var fieldFocused: Bool
 
+    /// The field's live text selection (caret), bound to the multi-line field so a `⌘V` / `⇧⌘V` paste splices
+    /// the converted Markdown AT THE CARET instead of appending. Mirrored into the durable
+    /// ``ComposerModel/selection`` (UTF-16) on every change so the right-click "Paste and continue in
+    /// Composer" seam — which has no live responder — also inserts at the last-known caret. The macOS-26 /
+    /// iOS-26 floor exposes `TextSelection` natively on `TextField(_:text:selection:axis:)`, so no hosted
+    /// `NSTextView`/`UITextView` is needed to reach the insertion point on either platform.
+    @State private var fieldSelection: TextSelection?
+
     /// The grow band: at least 3 lines (a comfortable multi-line start), up to the pref-derived `maxLines`.
     private var lineLimitRange: ClosedRange<Int> { 3...max(3, maxLines) }
 
@@ -210,7 +218,7 @@ struct ComposerBar: View {
     }
 
     private var interactiveField: some View {
-        TextField(placeholder, text: draftBinding, axis: .vertical)
+        TextField(placeholder, text: draftBinding, selection: $fieldSelection, axis: .vertical)
             .textFieldStyle(.plain)
             .font(.system(size: Otty.Typeface.body).monospaced())
             .foregroundStyle(Otty.Text.primary)
@@ -236,16 +244,22 @@ struct ComposerBar: View {
                 case .newline: return .ignored // let the editor insert the newline
                 }
             }
-            // ⌘V rich paste (HTML/RTF/image → Markdown) / ⇧⌘V plain. Best-effort interception of the field's
-            // native paste; the reliable rich-paste path is the context-menu `onPasteToComposer` seam (leaf).
+            // ⌘V rich paste (HTML/RTF/image → Markdown) / ⇧⌘V plain — both convert via the SAME
+            // `ComposerPasteboard` (HTML/RTF→Markdown) the right-click "Paste and continue in Composer" seam
+            // uses, and BOTH splice AT THE CARET (the field's live `TextSelection`), not appended.
             .onKeyPress(KeyEquivalent("v"), phases: .down) { press in
                 guard press.modifiers.contains(.command) else { return .ignored }
                 if press.modifiers.contains(.shift) {
-                    if let text = ComposerPasteboard.plainText() { composer.pastePlain(text) }
+                    if let text = ComposerPasteboard.plainText() { pasteAtCaret(text) }
                 } else {
-                    if let markdown = ComposerPasteboard.richMarkdown() { composer.pasteRich(markdown) }
+                    if let markdown = ComposerPasteboard.richMarkdown() { pasteAtCaret(markdown) }
                 }
                 return .handled
+            }
+            // Mirror the field's caret into the durable model so the no-responder context-menu paste path
+            // inserts at the same insertion point the user last had in the field.
+            .onChange(of: fieldSelection) { _, sel in
+                composer.selection = Self.utf16Range(of: sel, in: composer.draft)
             }
             .onAppear { focusSoon() }
             .onChange(of: chrome.focusToken) { _, _ in focusSoon() }
@@ -268,6 +282,32 @@ struct ComposerBar: View {
     /// responder exists, is dropped — the palette / find-bar idiom).
     private func focusSoon() {
         DispatchQueue.main.async { fieldFocused = true }
+    }
+
+    /// Splice already-converted `text` into the draft at the field's current caret (replacing any selected
+    /// text), then re-point the field's `TextSelection` so the visible caret follows the insertion. Uses the
+    /// freshest live `fieldSelection` (not the mirrored copy) so a paste lands exactly where the user is.
+    private func pasteAtCaret(_ text: String) {
+        composer.insert(text, at: Self.utf16Range(of: fieldSelection, in: composer.draft))
+        if let caret = composer.selection, let lower = Range(caret, in: composer.draft)?.lowerBound {
+            fieldSelection = TextSelection(insertionPoint: lower)
+        }
+    }
+
+    /// Convert a SwiftUI `TextSelection` (over `String.Index`) into a UTF-16 `NSRange` in `string` — the form
+    /// ``ComposerModel/insert(_:at:)`` splices on. A multi-range selection collapses to its first range; an
+    /// absent selection is `nil` (the model then appends at the end). Validate-then-degrade: never traps.
+    private static func utf16Range(of selection: TextSelection?, in string: String) -> NSRange? {
+        guard let selection else { return nil }
+        switch selection.indices {
+        case let .selection(range):
+            return NSRange(range, in: string)
+        case let .multiSelection(set):
+            guard let first = set.ranges.first else { return nil }
+            return NSRange(first, in: string)
+        @unknown default:
+            return nil
+        }
     }
 
     // MARK: Toolbar
@@ -293,7 +333,7 @@ struct ComposerBar: View {
                     size: iconSize,
                     plate: plate,
                     tint: composer.isPinned ? Otty.State.accent : Otty.Text.icon,
-                ) { composer.isPinned.toggle() }
+                ) { composer.togglePin() }
                 OttyPlateButton(
                     symbol: .arrowUpForwardApp,
                     help: composer.isFloating ? "Dock composer back" : "Float composer on top",

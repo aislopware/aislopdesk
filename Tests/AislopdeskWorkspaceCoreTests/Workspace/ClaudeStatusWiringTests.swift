@@ -92,64 +92,96 @@ final class ClaudeStatusWiringTests: XCTestCase {
         XCTAssertEqual(session.foregroundProcessName, "grep", "only the display name changed")
     }
 
-    // MARK: - E12: agent-pane Prompt-Queue idle dispatch (claudeStatus → .idle drains the queue)
+    // MARK: - E12: agent-pane Prompt-Queue dispatch on the `.done` turn-finished edge (NOT the laggy `.idle`)
 
-    /// E12 — the AGENT-pane idle trigger: alt-screen Claude Code emits no OSC-133 marks, so its "went idle
-    /// between turns" signal is the host's type-27 transition INTO `.idle`. On that edge the session drains
-    /// exactly the head queued prompt through the composer's ordered-OUT sink (the same path a typed line
-    /// takes). REVERT-TO-CONFIRM-FAIL: without the `if newStatus == .idle { composer?.notePromptIdle() }`
-    /// line in `applyDetectedStatus` nothing is dispatched.
-    func testAgentIdleTransitionDispatchesHeadQueuedPrompt() throws {
+    /// E12 — the AGENT-pane turn-finished trigger: alt-screen Claude Code emits no OSC-133 marks, so its
+    /// "turn finished" signal is the host's type-27 transition INTO `.done` (the Stop hook fires it
+    /// IMMEDIATELY; it then decays to `.idle` ~8s later). On the `.done` edge the session drains exactly the
+    /// head queued prompt; the subsequent `.done → .idle` decay must NOT re-dispatch (exactly one per turn).
+    /// REVERT-TO-CONFIRM-FAIL: with the old `if newStatus == .idle { ... }` line every prompt fired ~8s late
+    /// (on the decay) instead of the moment the turn ended, and this would dispatch on the `.idle` step.
+    func testAgentDoneTransitionDispatchesHeadQueuedPromptNotTheIdleDecay() throws {
         let session = makeTerminalSession()
         let composer = try XCTUnwrap(session.composer, "a .terminal session carries a composer")
         var captured: [Data] = []
         // The composer's OUT sink funnels through the input bar → terminal.sendInput → inputSink.
         session.terminalModel?.inputSink = { captured.append($0) }
 
+        // The agent is mid-turn (.working), so the enqueue does NOT kickstart — it waits for the turn edge.
+        session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "")) // state 3 = .working (busy)
         composer.draft = "first\nsecond"
-        composer.enqueueDraft() // two queued prompts
+        composer.enqueueDraft() // two queued prompts (pane busy → no kickstart)
         XCTAssertEqual(composer.promptQueue.items.count, 2)
+        XCTAssertTrue(captured.isEmpty, "enqueue while the agent is working dispatches nothing yet")
 
-        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // state 1 = .idle → drain ONE
-        XCTAssertEqual(captured, [Data("first\r".utf8)], "the idle edge dispatches the head prompt + CR")
+        session.feedAgentSignal(.claudeStatus(state: 2, kind: 0, label: "")) // state 2 = .done → drain ONE
+        XCTAssertEqual(captured, [Data("first\r".utf8)], "the .done edge dispatches the head prompt + CR")
         XCTAssertEqual(composer.promptQueue.items.count, 1, "exactly one item drained; the rest remain")
+
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // the ~8s decay to .idle
+        XCTAssertEqual(captured, [Data("first\r".utf8)], "the .done→.idle decay must NOT dispatch a second prompt")
+        XCTAssertEqual(composer.promptQueue.items.count, 1, "still exactly one queued prompt waiting")
     }
 
-    /// A NON-idle transition (`.working`) must NOT drain the queue — only the `.idle` edge dispatches.
-    func testAgentNonIdleTransitionDoesNotDispatch() throws {
+    /// A `.working` transition must NOT drain the queue — only the `.done` edge dispatches.
+    func testAgentWorkingTransitionDoesNotDispatch() throws {
         let session = makeTerminalSession()
         let composer = try XCTUnwrap(session.composer)
         var captured: [Data] = []
         session.terminalModel?.inputSink = { captured.append($0) }
+
+        session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "")) // state 3 = .working (busy)
         composer.draft = "queued"
-        composer.enqueueDraft()
+        composer.enqueueDraft() // busy → no kickstart
 
-        session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "")) // state 3 = .working
-        XCTAssertTrue(captured.isEmpty, "a non-idle (.working) transition does not drain the queue")
-        XCTAssertEqual(composer.promptQueue.items.count, 1, "the queued prompt waits for the idle edge")
+        XCTAssertTrue(captured.isEmpty, "a .working pane does not dispatch the queue (no kickstart, no edge)")
+        XCTAssertEqual(composer.promptQueue.items.count, 1, "the queued prompt waits for the .done edge")
     }
 
-    /// Each GENUINE idle EDGE dispatches one prompt, FIFO; a deduped repeat `.idle` (no edge) does not
-    /// re-dispatch — so two prompts need two real working→idle cycles, matching otty's one-per-idle cadence.
-    func testEachAgentIdleEdgeDispatchesOnePromptInOrder() throws {
+    /// Each GENUINE `.done` turn-finished EDGE dispatches one prompt, FIFO; the `.done→.idle` decay does not
+    /// re-dispatch — so two prompts need two real working→done turns, matching otty's one-per-turn cadence.
+    func testEachAgentDoneEdgeDispatchesOnePromptInOrder() throws {
         let session = makeTerminalSession()
         let composer = try XCTUnwrap(session.composer)
         var captured: [Data] = []
         session.terminalModel?.inputSink = { captured.append($0) }
+
+        session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "")) // .working (busy) so enqueue waits
         composer.draft = "one\ntwo"
         composer.enqueueDraft()
 
-        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // → .idle (edge) → "one"
-        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // dedupe (no edge) → nothing
-        XCTAssertEqual(captured, [Data("one\r".utf8)], "a deduped repeat .idle does not re-dispatch")
+        session.feedAgentSignal(.claudeStatus(state: 2, kind: 0, label: "")) // → .done (edge) → "one"
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // decay to .idle → nothing
+        XCTAssertEqual(captured, [Data("one\r".utf8)], "the .idle decay does not re-dispatch")
 
         session.feedAgentSignal(.claudeStatus(state: 3, kind: 0, label: "")) // → .working (a new turn)
-        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // → .idle again (edge) → "two"
+        session.feedAgentSignal(.claudeStatus(state: 2, kind: 0, label: "")) // → .done again (edge) → "two"
         XCTAssertEqual(
             captured, [Data("one\r".utf8), Data("two\r".utf8)],
-            "each genuine working→idle edge drains exactly one queued prompt, in order",
+            "each genuine working→done edge drains exactly one queued prompt, in order",
         )
         XCTAssertTrue(composer.promptQueue.isEmpty, "both queued prompts dispatched")
+    }
+
+    /// E12 KICKSTART (WI-1): enqueuing while the owning pane is ALREADY idle (no turn-finished edge is
+    /// coming) fires the head prompt immediately. Here the host reports the agent idle (`.idle`) — which by
+    /// itself dispatches nothing (the trigger is `.done`) — but it makes `LivePaneSession.isComposerPaneIdle`
+    /// true, so the enqueue kickstarts. Proves `ComposerModel.isIdleNow` is wired to the session's
+    /// `claudeStatus`. REVERT-TO-CONFIRM-FAIL: without the kickstart the prompt waits for a `.done` edge that
+    /// never comes (the agent is already idle), and `captured` stays empty.
+    func testEnqueueWhileAgentIdleKickstartsImmediately() throws {
+        let session = makeTerminalSession()
+        let composer = try XCTUnwrap(session.composer)
+        var captured: [Data] = []
+        session.terminalModel?.inputSink = { captured.append($0) }
+
+        session.feedAgentSignal(.claudeStatus(state: 1, kind: 0, label: "")) // → .idle (no dispatch by itself)
+        XCTAssertTrue(captured.isEmpty, "the .idle transition alone dispatches nothing")
+
+        composer.draft = "kick"
+        composer.enqueueDraft()
+        XCTAssertEqual(captured, [Data("kick\r".utf8)], "enqueue while the agent is idle kickstarts the first prompt")
+        XCTAssertTrue(composer.promptQueue.isEmpty, "the kickstarted item left the queue")
     }
 
     /// An unknown / future urgency byte degrades to `.none` (forward-tolerant validate-then-repair) —

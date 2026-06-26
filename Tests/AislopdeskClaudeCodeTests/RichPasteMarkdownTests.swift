@@ -172,4 +172,21 @@ final class RichPasteMarkdownTests: XCTestCase {
     func testDeeplyMismatchedNestingDoesNotCrash() {
         XCTAssertNoThrow(md("<ul><ol><li>x</ul></ol></li><p></strong>"))
     }
+
+    // MARK: ES-E12-3 — the right-click "Paste and continue in Composer" context path runs THIS conversion
+
+    /// The context-menu "Paste and continue in Composer" path (`TerminalViewModel.onPasteToComposer`) now
+    /// reads the richest clipboard flavour and converts HTML/RTF→Markdown via THIS engine — the same one the
+    /// in-field `⌘V` uses — before splicing at the Composer caret. This pins a representative browser-copied
+    /// HTML fragment (heading + bold + link) → Markdown, so the context path is proven to convert (it no
+    /// longer inserts the plain string unchanged).
+    func testContextMenuClipboardHTMLConvertsToMarkdown() {
+        let clipboardHTML = "<h2>Plan</h2><p>Refactor the <strong>composer</strong> " +
+            "(<a href=\"https://otty.dev\">spec</a>).</p>"
+        XCTAssertEqual(
+            md(clipboardHTML),
+            "## Plan\n\nRefactor the **composer** ([spec](https://otty.dev)).",
+            "the context-menu paste path converts clipboard HTML to Markdown, not plain text",
+        )
+    }
 }

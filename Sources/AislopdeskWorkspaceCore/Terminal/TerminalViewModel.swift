@@ -189,12 +189,15 @@ public final class TerminalViewModel {
     /// view state. Nil for headless/preview callers (never invoked).
     @ObservationIgnored public var onContextMenuSplit: ((_ horizontal: Bool) -> Void)?
 
-    /// E8 / ES-E8-4: the right-click "Paste as ▸ Paste and continue in Composer" item — instead of typing
-    /// the clipboard into the shell, the renderer hands the text here so the leaf APPENDS it to the client
-    /// Composer draft (a client-only buffer; no wire). The presence of this hook also DRIVES the menu item's
-    /// enablement (`TerminalContextMenu.Context.hasComposer`): while it is `nil` (Composer unwired, E12) the
-    /// submenu row greys out. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
-    @ObservationIgnored public var onPasteToComposer: ((String) -> Void)?
+    /// E8 / ES-E8-4: the right-click "Paste as ▸ Paste and continue in Composer" item — instead of typing the
+    /// clipboard into the shell, the renderer TRIGGERS this (parameterless) so the leaf reads the richest
+    /// clipboard flavour, converts HTML/RTF→Markdown (the SAME `ComposerPasteboard` the in-field `⌘V` uses),
+    /// and splices it into the client Composer draft AT THE CARET (a client-only buffer; no wire). The
+    /// conversion lives in the leaf (where `ComposerPasteboard` + `RichPasteMarkdown` are), not the renderer,
+    /// so the context path is never the "plain text, no conversion" path it used to be. The presence of this
+    /// hook also DRIVES the menu item's enablement (`TerminalContextMenu.Context.hasComposer`): while it is
+    /// `nil` (Composer unwired) the submenu row greys out. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var onPasteToComposer: (() -> Void)?
 
     /// W14 #5: the ⌘F / right-click "Find…" action — opens the find-in-terminal bar over THIS pane. The
     /// renderer's menu (and the `find:` responder selector) call it; the leaf wires it to the find-bar
@@ -593,6 +596,13 @@ public final class TerminalViewModel {
     /// paste-protection / backspace gates inside ordinary running commands. The E8 GUI gates read this so
     /// they suppress ONLY inside a true full-screen TUI.
     public var isAlternateScreen: Bool { modeTracker.mode == .altScreen }
+
+    /// TRUE while the host shell is at an idle prompt on the MAIN screen (the real DECSET / OSC-133 mode
+    /// parse, not the coarse `shellActivity` proxy). The E12 Prompt-Queue kickstart reads this as the
+    /// "normal terminal pane is idle now?" probe (the agent pane uses `claudeStatus` instead) so a prompt
+    /// enqueued while the shell already sits at its prompt fires immediately — `LivePaneSession` injects it
+    /// into ``ComposerModel/isIdleNow``.
+    public var isAtShellPrompt: Bool { modeTracker.mode == .shellPrompt }
 
     private var glitchCaretArmed: Bool {
         guard connectionStatus == .connected, modeTracker.mode == .shellPrompt else { return false }

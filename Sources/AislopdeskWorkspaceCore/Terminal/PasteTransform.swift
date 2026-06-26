@@ -8,8 +8,9 @@ import Foundation
 ///
 /// Two of otty's five Paste-as variants are NOT transforms and live in the GUI/store as ROUTING, not here:
 /// - **Paste Selection** reads `surface.readSelection()` instead of the clipboard (a source swap).
-/// - **Paste and continue in Composer** appends the clipboard to the client Composer draft
-///   (`TerminalViewModel.onPasteToComposer`) instead of typing it.
+/// - **Paste and continue in Composer** converts the richest clipboard flavour (HTML/RTF→Markdown) and
+///   splices it into the client Composer draft at the caret (`TerminalViewModel.onPasteToComposer`, a
+///   parameterless trigger the leaf fulfils via `ComposerPasteboard`) instead of typing it.
 ///
 /// The three that ARE transforms:
 /// - ``bracketed(_:)`` — force DEC bracketed-paste framing even if the program never advertised it.

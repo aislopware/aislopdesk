@@ -160,9 +160,11 @@ struct TerminalLeafView: View {
 
     /// Wire the pane's ⌘⇧E / ⌘⇧M callbacks (the store fires these AFTER it has toggled / opened the durable
     /// ``ComposerModel`` via `requestComposerInActivePane()` / `requestPromptQueueInActivePane()`): the view's
-    /// job is to switch the queue-input affordance and re-focus the field. Also routes the context-menu
-    /// "Paste and continue in Composer" seam (`onPasteToComposer`) into the Composer draft (rich paste). No-op
-    /// for a non-terminal pane. The chrome is leaf `@State` (per-pane); the Composer model is durable.
+    /// job is to switch the queue-input affordance and re-focus the field. Also wires the right-click
+    /// "Paste and continue in Composer" seam (`onPasteToComposer`) — it reads the richest clipboard flavour,
+    /// converts HTML/RTF→Markdown via the SAME ``ComposerPasteboard`` the in-field ⌘V uses, and splices it at
+    /// the Composer's caret (so the context path converts AND inserts at the caret, just like ⌘V). No-op for a
+    /// non-terminal pane. The chrome is leaf `@State` (per-pane); the Composer model is durable.
     private func wireComposerCallbacks() {
         guard let model = live?.terminalModel, let composer = live?.composer else { return }
         let chrome = composerChrome
@@ -174,7 +176,10 @@ struct TerminalLeafView: View {
             chrome.queueMode = true
             chrome.focusToken &+= 1
         }
-        model.onPasteToComposer = { text in composer.pasteRich(text) }
+        model.onPasteToComposer = { [weak composer] in
+            guard let markdown = ComposerPasteboard.richMarkdown() else { return }
+            composer?.pasteRich(markdown)
+        }
     }
 
     /// Nil the Composer callbacks so the durable terminal model stops referencing this torn-down leaf's

@@ -130,7 +130,7 @@ final class ComposerModelTests: XCTestCase {
         let model = ComposerModel()
         model.open()
         model.isFloating = true
-        model.isPinned = true
+        model.setPinned(true)
         model.draft = "in progress"
         model.cancel()
         XCTAssertFalse(model.isFloating, "⎋ docks the floating composer back")
@@ -254,5 +254,101 @@ final class ComposerModelTests: XCTestCase {
         model.pastePlain("")
         XCTAssertEqual(model.draft, "")
         XCTAssertFalse(model.isVisible, "an empty paste neither edits nor opens")
+    }
+
+    // MARK: ES-E12-3 — paste splices AT THE CARET (not appended)
+
+    func testPasteRichInsertsAtCaretMidDraft() {
+        // The core ES-E12-3 fix: a paste lands at the caret, not the end. REVERT-TO-CONFIRM-FAIL: the old
+        // `draft += text` append yields "abXcdZ" and fails this.
+        let model = ComposerModel()
+        model.draft = "abXcd"
+        model.selection = NSRange(location: 2, length: 0) // caret between "ab" and "Xcd"
+        model.pasteRich("Z")
+        XCTAssertEqual(model.draft, "abZXcd", "rich paste splices at the caret, not appended")
+        XCTAssertEqual(model.selection, NSRange(location: 3, length: 0), "caret advances past the insertion")
+        XCTAssertTrue(model.isVisible)
+    }
+
+    func testPastePlainReplacesSelectedRange() {
+        // A non-empty selection is REPLACED by the paste (the field's selected text is overwritten).
+        let model = ComposerModel()
+        model.draft = "hello world"
+        model.selection = NSRange(location: 6, length: 5) // selects "world"
+        model.pastePlain("there")
+        XCTAssertEqual(model.draft, "hello there", "the selected run is replaced by the plain paste")
+        XCTAssertEqual(model.selection, NSRange(location: 11, length: 0))
+    }
+
+    func testInsertWithNilSelectionAppendsAtEnd() {
+        // No live caret (never-focused composer) → append at the end, the sensible default.
+        let model = ComposerModel()
+        model.draft = "see: "
+        model.insert("# Heading")
+        XCTAssertEqual(model.draft, "see: # Heading", "a nil selection appends at the end")
+    }
+
+    func testInsertClampsStaleOutOfBoundsSelection() {
+        // Validate-then-degrade: a stale selection past the end of a now-shorter draft is clamped, never traps.
+        let model = ComposerModel()
+        model.draft = "abc"
+        model.selection = NSRange(location: 99, length: 40) // wildly out of range
+        model.insert("Z")
+        XCTAssertEqual(model.draft, "abcZ", "an out-of-bounds selection clamps to the end")
+    }
+
+    // MARK: ES-E12-4 (WI-6) — pin verbs notify onPinnedChange for per-pane persistence
+
+    func testTogglePinNotifiesOnPinnedChangeOnlyOnRealChange() {
+        let model = ComposerModel()
+        var changes: [Bool] = []
+        model.onPinnedChange = { changes.append($0) }
+        model.togglePin()
+        XCTAssertTrue(model.isPinned)
+        model.setPinned(true) // no-op — already pinned
+        model.togglePin()
+        XCTAssertFalse(model.isPinned)
+        XCTAssertEqual(changes, [true, false], "onPinnedChange fires once per REAL flip, not on a no-op set")
+    }
+
+    // MARK: ES-E12-5 (WI-1) — kickstart: enqueue into an idle pane dispatches immediately
+
+    func testEnqueueIntoIdlePaneKickstartsHeadImmediately() {
+        var sent: [Data] = []
+        let model = ComposerModel(send: { sent.append($0) })
+        model.isIdleNow = { true } // pane is idle now
+        model.draft = "go\nnext"
+        model.enqueueDraft()
+        XCTAssertEqual(sent.map { Array($0) }, [Array("go".utf8) + [CR]], "idle pane: the head item kickstarts now")
+        XCTAssertEqual(model.promptQueue.items.map(\.text), ["next"], "only the head kickstarts; the rest wait")
+    }
+
+    func testEnqueueIntoBusyPaneWaitsForTheTurnEdge() {
+        var sent: [Data] = []
+        let model = ComposerModel(send: { sent.append($0) })
+        model.isIdleNow = { false } // pane is busy
+        model.draft = "go"
+        model.enqueueDraft()
+        XCTAssertTrue(sent.isEmpty, "busy pane: nothing kickstarts")
+        model.notePromptIdle() // the turn finishes
+        XCTAssertEqual(sent.map { Array($0) }, [Array("go".utf8) + [CR]], "the turn-finished edge dispatches it")
+    }
+
+    func testKickstartDoesNotDoubleDispatchWhileInFlight() {
+        // After a kickstart sends the head, a SECOND enqueue while the status still reads idle (status lags
+        // the actual turn start) must NOT send a second prompt — the in-flight latch guards it. Only the
+        // turn-finished edge releases the next.
+        var sent: [Data] = []
+        let model = ComposerModel(send: { sent.append($0) })
+        model.isIdleNow = { true }
+        model.draft = "one"
+        model.enqueueDraft() // kickstarts "one", latches in-flight
+        XCTAssertEqual(sent.count, 1)
+        model.draft = "two"
+        model.enqueueDraft() // still reads idle, but a prompt is in flight → no double-send
+        XCTAssertEqual(sent.count, 1, "the in-flight latch blocks a second kickstart")
+        XCTAssertEqual(model.promptQueue.items.map(\.text), ["two"], "the second item waits for the edge")
+        model.notePromptIdle()
+        XCTAssertEqual(sent.map { Array($0) }, [Array("one".utf8) + [CR], Array("two".utf8) + [CR]])
     }
 }

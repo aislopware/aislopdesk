@@ -44,14 +44,14 @@ final class ComposerPinFloatResolverTests: XCTestCase {
 
         // Pin the NON-active (tab-1) composer: the pin must resolve regardless of which tab is active, so a
         // pinned composer rides along after the user switches tabs.
-        firstTabComposer.isPinned = true
+        firstTabComposer.setPinned(true)
         let resolved = try XCTUnwrap(store.pinnedComposer)
         XCTAssertIdentical(
             resolved.composer, firstTabComposer,
             "pinnedComposer resolves the PINNED pane across tabs, not the active pane",
         )
 
-        firstTabComposer.isPinned = false
+        firstTabComposer.setPinned(false)
         XCTAssertNil(store.pinnedComposer, "unpinning drops the window-level mount")
     }
 
