@@ -252,7 +252,14 @@ type_body_length:
   # `applyLayout(_)` / `cycleLayout()` + the `lastAppliedLayout` cycle-cursor STORED state — thin
   # wrappers over the pure `WorkspaceTreeOps.applyLayout`/`cycleLayout` that carry the active-pane
   # resolution + the `tree`-setter (private(set), only settable in the main body) an extension can't reach.
-  warning: 1800
+  # 1800 → 1890 (2026-06-26): E3 tree-path completion — WorkspaceStore gains the close-confirmation +
+  # window-close entry points (closeConfirmationNeeded / requestCloseWindow / confirm·cancelPendingWindowClose)
+  # + the reopen-capture wrappers (recordClosedTab / tabRemovedByClosing) + the cwd-inherit split/newTab
+  # `launchGrace` cores, plus the `recentlyClosedTabs` LIFO / `pendingWindowClose` STORED state. The methods
+  # set `pendingClose`/`pendingWindowClose`/`tree` (all `private(set)`, only settable in the main body) and
+  # `@Observable` synthesises on the stored properties, so neither can move to an extension. Wrapper +
+  # stored-state cluster, not bloat.
+  warning: 1890
   error: 2700
 
 # Error backstops tightened toward the warnings (2026-06-24): under `--strict` the WARNING is the binding

@@ -107,4 +107,72 @@ final class CyclePaneFocusTreeTests: XCTestCase {
         store.cyclePaneFocusTree(forward: false)
         XCTAssertEqual(activePane(store), only)
     }
+
+    // MARK: - Pure op (WorkspaceTreeOps.cyclePaneTarget / cyclePaneFocus) — E3 WI-5
+
+    /// The pure ``WorkspaceTreeOps/cyclePaneTarget(forward:in:)`` — the SINGLE source of the DFS-wrap math
+    /// the store now delegates to (E3 ES-E3-5) — steps through the active tab's `Tab.allPaneIDs()` DFS
+    /// order forward and backward. Asserts against the canonical `allPaneIDs()` indexing (never the op's
+    /// own derivation), so a regression in the step math fails the test.
+    func testPureOpStepsDFSOrderForwardAndBackward() {
+        let a = PaneID(), b = PaneID(), c = PaneID()
+        let ws = tiledWorkspace([a, b, c], active: b)
+        let order = ws.activeSession?.activeTab?.allPaneIDs()
+        XCTAssertEqual(order, [a, b, c], "fixture tiles the panes in DFS order")
+        XCTAssertEqual(WorkspaceTreeOps.cyclePaneTarget(forward: true, in: ws), c, "forward: b → c (next in DFS)")
+        XCTAssertEqual(WorkspaceTreeOps.cyclePaneTarget(forward: false, in: ws), a, "backward: b → a (prev in DFS)")
+    }
+
+    /// The pure op WRAPS at both ends: forward from the LAST pane lands on the first, backward from the
+    /// FIRST lands on the last; ``WorkspaceTreeOps/cyclePaneFocus(forward:in:)`` applies that target as the
+    /// new active pane.
+    func testPureOpWrapsAtBothEnds() {
+        let a = PaneID(), b = PaneID(), c = PaneID()
+        let fromLast = tiledWorkspace([a, b, c], active: c)
+        XCTAssertEqual(
+            WorkspaceTreeOps.cyclePaneTarget(forward: true, in: fromLast),
+            a,
+            "forward from last wraps → first",
+        )
+        let fromFirst = tiledWorkspace([a, b, c], active: a)
+        XCTAssertEqual(
+            WorkspaceTreeOps.cyclePaneTarget(forward: false, in: fromFirst), c, "backward from first wraps → last",
+        )
+        let cycled = WorkspaceTreeOps.cyclePaneFocus(forward: true, in: fromLast)
+        XCTAssertEqual(cycled.activeSession?.activeTab?.activePane, a, "cyclePaneFocus focuses the wrapped target")
+    }
+
+    /// A single-pane tab has nothing to cycle to: the pure op returns `nil` and ``cyclePaneFocus`` is a
+    /// no-op (returns the workspace unchanged).
+    func testPureOpNoOpBelowTwoPanes() {
+        let only = PaneID()
+        let ws = tiledWorkspace([only], active: only)
+        XCTAssertNil(WorkspaceTreeOps.cyclePaneTarget(forward: true, in: ws), "one pane → nothing to cycle to")
+        XCTAssertNil(WorkspaceTreeOps.cyclePaneTarget(forward: false, in: ws))
+        XCTAssertEqual(WorkspaceTreeOps.cyclePaneFocus(forward: true, in: ws), ws, "cyclePaneFocus leaves it unchanged")
+    }
+
+    /// No active pane to step from → the pure op no-ops (it must NOT silently jump focus to the front leaf).
+    func testPureOpNoOpWhenActivePaneNil() {
+        let a = PaneID(), b = PaneID()
+        var ws = tiledWorkspace([a, b], active: a)
+        ws.sessions[0].tabs[0].activePane = nil
+        XCTAssertNil(WorkspaceTreeOps.cyclePaneTarget(forward: true, in: ws), "nil active → nothing to step from")
+        XCTAssertNil(WorkspaceTreeOps.cyclePaneTarget(forward: false, in: ws))
+        XCTAssertEqual(WorkspaceTreeOps.cyclePaneFocus(forward: true, in: ws), ws)
+    }
+
+    /// A FLOATING active pane is not part of the tiled DFS walk → the pure op no-ops (⌘]/⌘[ cycles the
+    /// tiled panes, not the overlay layer) EVEN THOUGH `Tab.allPaneIDs()` lists the float in its order.
+    func testPureOpNoOpWhenActivePaneFloating() {
+        let a = PaneID(), b = PaneID(), f = PaneID()
+        var ws = tiledWorkspace([a, b], active: a)
+        ws.sessions[0].tabs[0].floatingPanes = [f]
+        ws.sessions[0].specs[f] = PaneSpec(kind: .terminal, title: "Float")
+        ws.sessions[0].tabs[0].activePane = f
+        XCTAssertEqual(ws.activeSession?.activeTab?.allPaneIDs(), [a, b, f], "the float IS listed in allPaneIDs…")
+        XCTAssertNil(WorkspaceTreeOps.cyclePaneTarget(forward: true, in: ws), "…but a floating active does not cycle")
+        XCTAssertNil(WorkspaceTreeOps.cyclePaneTarget(forward: false, in: ws))
+        XCTAssertEqual(WorkspaceTreeOps.cyclePaneFocus(forward: true, in: ws), ws, "no target → cyclePaneFocus no-ops")
+    }
 }

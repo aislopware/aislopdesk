@@ -24,6 +24,7 @@ import UIKit // UIDevice.current.userInterfaceIdiom — the per-device live-vide
 #endif
 #if os(macOS)
 import AppKit // NSApplication — AUTOMATION-ONLY window-front so an autoconnect launch goes live in one shot
+import ObjectiveC // objc_setAssociatedObject — retain the E3 WI-4 window-close delegate for the window's life
 import UserNotifications // explicit OSC 9/777 child notifications → local UNUserNotification
 #endif
 
@@ -372,6 +373,11 @@ public struct AislopdeskClientApp: App {
                 // NSWindow is real, and `.introspect(.window)` is the sanctioned hook for any future
                 // WindowGroup-level config. `!isKeyWindow` makes the repeat-firing callback idempotent.
                 .introspect(.window, on: .macOS(.v14, .v15, .v26)) { window in
+                    // E3 WI-4: install the window-close confirmation gate (independent of automation). The
+                    // store owns the policy decision (`requestCloseWindow()` → `pendingWindowClose`); the
+                    // delegate routes through `WindowCloseGate` and presents a synchronous confirmation so a
+                    // parked close always resolves (the window is never stranded).
+                    Self.installWindowCloseGate(on: window, store: store)
                     guard Self.hasAutomationEnvironment(), !window.isKeyWindow else { return }
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     window.makeKeyAndOrderFront(nil)
@@ -432,6 +438,28 @@ public struct AislopdeskClientApp: App {
         return keys.contains { (env[$0]?.isEmpty == false) }
     }
 
+    #if os(macOS)
+    /// Associated-object key under which a window retains its ``WindowCloseConfirmationDelegate`` (the
+    /// delegate is referenced WEAKLY by `NSWindow.delegate`, so it needs an explicit owner for the window's
+    /// lifetime). Only its ADDRESS is used (as the associated-object key), never its value — `nonisolated`
+    /// (unsafe) because an address-only key carries no shared mutable state to race on.
+    private nonisolated(unsafe) static var windowCloseDelegateKey: UInt8 = 0
+
+    /// Installs the E3 WI-4 window-close confirmation gate on `window` exactly once. SwiftUI installs its own
+    /// `NSWindowDelegate`; a transparent shim (``WindowCloseConfirmationDelegate``) wraps it — implementing
+    /// only `windowShouldClose(_:)` and forwarding every other selector to SwiftUI's delegate — so SwiftUI's
+    /// window bookkeeping is preserved while the close attempt routes through the store. The `.introspect`
+    /// closure can re-fire, so it no-ops when our shim already owns the delegate (and self-heals if SwiftUI
+    /// re-installs a delegate, by wrapping the new one).
+    @MainActor
+    private static func installWindowCloseGate(on window: NSWindow, store: WorkspaceStore) {
+        guard !(window.delegate is WindowCloseConfirmationDelegate) else { return }
+        let shim = WindowCloseConfirmationDelegate(store: store, next: window.delegate)
+        window.delegate = shim
+        objc_setAssociatedObject(window, &windowCloseDelegateKey, shim, .OBJC_ASSOCIATION_RETAIN)
+    }
+    #endif
+
     private func handleScenePhase(_ phase: ScenePhase) {
         store.isAppActive = (phase == .active)
         #if os(iOS)
@@ -457,4 +485,92 @@ public struct AislopdeskClientApp: App {
         #endif
     }
 }
+
+#if os(macOS)
+/// E3 WI-4 — the PURE window-close gate the macOS `windowShouldClose` consults. Factored out of the AppKit
+/// delegate so the close decision is unit-testable WITHOUT an `NSWindow` (the hang-safety rule), and so the
+/// gate can never strand the window: a parked close ALWAYS resolves here — it never returns the old bare
+/// `false` with no path to close (the E3 regression this replaces).
+@MainActor
+enum WindowCloseGate {
+    /// Resolves a window-close attempt against `store` and returns whether the `NSWindow` may close NOW.
+    ///
+    /// Parks the confirmation per the active session's ``CloseConfirmationPolicy``
+    /// (``WorkspaceStore/requestCloseWindow()``). When NO confirmation is required it returns `true`
+    /// immediately (byte-identical to the pre-E3 default close, the persisted layout preserved). When one IS
+    /// required it invokes `confirm` (the synchronous prompt) EXACTLY once and routes the user's choice:
+    ///   - confirmed ⇒ ``WorkspaceStore/confirmPendingWindowClose()`` (close the active session — otty window
+    ///     → ``Session`` — which tears down its panes / stops any running processes) and return `true` so the
+    ///     NSWindow then closes (the red-traffic-light intent);
+    ///   - cancelled ⇒ ``WorkspaceStore/cancelPendingWindowClose()`` and return `false` (keep the window).
+    ///
+    /// Pure of AppKit (the only AppKit is inside the injected `confirm`), so a test drives every branch with a
+    /// stub prompt and asserts the window can ALWAYS close once the user confirms.
+    static func resolve(store: WorkspaceStore, confirm: () -> Bool) -> Bool {
+        store.requestCloseWindow()
+        guard store.pendingWindowClose != nil else {
+            return true // no confirmation needed → close normally
+        }
+        if confirm() {
+            store.confirmPendingWindowClose()
+            return true
+        }
+        store.cancelPendingWindowClose()
+        return false
+    }
+}
+
+/// E3 WI-4 — a transparent `NSWindowDelegate` shim that adds the window-close confirmation gate WITHOUT
+/// displacing SwiftUI's own window delegate. It implements ONLY `windowShouldClose(_:)` and forwards every
+/// other selector to the delegate SwiftUI installed (`next`), so SwiftUI's window bookkeeping is untouched.
+///
+/// On a close attempt it routes through ``WindowCloseGate/resolve(store:confirm:)`` (the otty window → active
+/// ``Session`` map). When the configured ``CloseConfirmationPolicy`` says confirm, it presents a SYNCHRONOUS
+/// confirmation (`NSAlert`) so the attempt always resolves — the window can never be stranded with an
+/// unresolved park (the regression this fixes). The decision is store-side + unit-tested; only this NSWindow
+/// plumbing + the alert is here.
+@MainActor
+private final class WindowCloseConfirmationDelegate: NSObject, NSWindowDelegate {
+    private let store: WorkspaceStore
+    /// The delegate SwiftUI had installed; held strongly (NSWindow holds delegates weakly) so every
+    /// non-`windowShouldClose` message keeps reaching SwiftUI's own delegate via forwarding. `nonisolated`
+    /// so the `NSObject` runtime-forwarding overrides (themselves `nonisolated`) can read it — AppKit only
+    /// touches a window delegate on the main thread, so the access is single-threaded in practice.
+    private nonisolated(unsafe) let next: NSWindowDelegate?
+
+    init(store: WorkspaceStore, next: NSWindowDelegate?) {
+        self.store = store
+        self.next = next
+    }
+
+    func windowShouldClose(_: NSWindow) -> Bool {
+        WindowCloseGate.resolve(store: store) { Self.confirmWindowClose() }
+    }
+
+    /// The synchronous close confirmation — an `NSAlert` whose "Close" button maps to `true`. Kept tiny +
+    /// AppKit-only (the decision logic lives in ``WindowCloseGate``); presented app-modally (`runModal`) so
+    /// `windowShouldClose` can return the user's choice inline — the window never closes until they answer.
+    private static func confirmWindowClose() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close this window?"
+        alert.informativeText = "Closing it ends the current session and stops any running processes."
+        alert.addButton(withTitle: "Close") // first button ⇒ .alertFirstButtonReturn (the default action)
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    // Forward every selector this shim does not implement to SwiftUI's original delegate, so its window
+    // bookkeeping (key/main/resize/restoration) is preserved.
+    override nonisolated func responds(to aSelector: Selector?) -> Bool {
+        if super.responds(to: aSelector) { return true }
+        return next?.responds(to: aSelector) ?? false
+    }
+
+    override nonisolated func forwardingTarget(for aSelector: Selector?) -> Any? {
+        if let next, next.responds(to: aSelector) { return next }
+        return super.forwardingTarget(for: aSelector)
+    }
+}
+#endif
 #endif

@@ -562,10 +562,40 @@ public final class WorkspaceStore {
     /// not "Undo History".
     public private(set) var recentlyClosed: RecentlyClosedPane?
 
+    /// The most CLOSED-TABS-the-LIFO can hold before the oldest record is dropped — the tree-shell reopen
+    /// stack's bound (a long open/close session can never grow this unbounded).
+    static let recentlyClosedTabsCap = 25
+
+    /// The TREE shell's "Reopen Closed Tab" LIFO (E3 WI-3, the ⇧⌘T chord) — a bounded stack of
+    /// ``RecentlyClosedTab`` records captured before a tab-removing close, popped in last-in-first-out
+    /// order by ``reopenLastClosedPane()``. In-memory only (deliberately not persisted, exactly like the
+    /// canvas single-slot ``recentlyClosed``: a relaunch already restores the live layout, so there is no
+    /// untrusted-decode surface). Distinct from the canvas slot — the tree shell restores whole TABS (a
+    /// split tree + every pane's spec), not a single canvas pane. `internal(set)`: read-only to the UI,
+    /// mutated only by the store's close paths + the `WorkspaceStore+PaneCycle` reopen extension.
+    public internal(set) var recentlyClosedTabs: [RecentlyClosedTab] = []
+
     /// The pane awaiting close CONFIRMATION because its shell reported a running command (⌘W on a
     /// busy shell — killing the session would kill the command). The view observes this and shows a
-    /// confirmation dialog; ``confirmPendingClose()`` / ``cancelPendingClose()`` resolve it.
-    public private(set) var pendingClose: PaneID?
+    /// confirmation dialog; ``confirmPendingClose()`` / ``cancelPendingClose()`` resolve it. `internal(set)`
+    /// so the `WorkspaceStore+CloseConfirmation` extension's park/resolve helpers can arm/clear it.
+    public internal(set) var pendingClose: PaneID?
+
+    /// The whole TAB awaiting close CONFIRMATION (⌘⇧W "Close Tab" on a tab whose policy/busy-shell guard
+    /// says confirm — E3 WI-4). A tab close is NOT a single-leaf close: confirming it must drop EVERY pane
+    /// in the tab, so it is parked as the ``TabID`` (not the active leaf) and resolved through
+    /// ``closeTab(_:)``. Mutually exclusive with ``pendingClose`` — ``parkPaneClose(_:)`` /
+    /// ``parkTabClose(_:)`` keep exactly one armed so only one confirmation dialog is ever up. Resolved by
+    /// ``confirmPendingClose()`` / ``cancelPendingClose()``. In-memory only.
+    public internal(set) var pendingTabCloseID: TabID?
+
+    /// The ACTIVE session awaiting a WINDOW-close confirmation (E3 WI-4). otty's window maps to an
+    /// aislopdesk ``Session`` (the macOS window hosts the whole ``TreeWorkspace``; closing it confirms
+    /// against the active session's tab count — see `docs/DECISIONS.md`). Parked by ``requestCloseWindow()``
+    /// when ``SettingsKey/closeConfirmWindow`` says confirm; resolved by ``confirmPendingWindowClose()``
+    /// (which closes that session) / ``cancelPendingWindowClose()``. The macOS `windowShouldClose` reads this
+    /// to decide whether to block the NSWindow close while the confirmation dialog resolves. In-memory only.
+    public private(set) var pendingWindowClose: SessionID?
 
     /// The close entry point for every user-facing close affordance (⌘W, the pill menu, the sidebar
     /// context menu): closes immediately when the pane's shell is idle, parks the close behind a
@@ -575,7 +605,7 @@ public final class WorkspaceStore {
     public func requestClosePane(_ id: PaneID) {
         guard workspace.canvas.contains(id) else { return }
         if registry[id]?.isShellBusy == true {
-            pendingClose = id
+            parkPaneClose(id)
         } else {
             closePane(id)
         }
@@ -588,42 +618,73 @@ public final class WorkspaceStore {
     /// the active-pane convenience). No-op if `id` is not a live tree leaf.
     public func requestClosePaneTree(_ id: PaneID) {
         guard tree.contains(id) else { return }
-        if registry[id]?.isShellBusy == true {
-            pendingClose = id
+        if closeConfirmationNeeded(scope: .pane, pane: id) {
+            parkPaneClose(id)
         } else {
             closePaneTree(id)
         }
     }
 
-    /// Confirms the parked busy-shell close in whichever live model is current (W5, ITEM A1): under
-    /// ``LiveModel/tree`` the parked id is a live tree leaf, so it is closed via ``closePaneTree(_:)`` (the
-    /// canvas ``closePane(_:)`` would early-return on a tree id, silently dropping the close); under
-    /// ``LiveModel/canvas`` it stays the canvas path. No-op when nothing is pending (the pane was already
-    /// closed by another path — a close clears a matching `pendingClose`).
-    public func confirmPendingClose() {
-        guard let id = pendingClose else { return }
-        pendingClose = nil
-        switch liveModel {
-        case .tree: closePaneTree(id)
-        case .canvas: closePane(id)
+    /// Whether a close in `scope` must park behind a confirmation prompt (E3 WI-4), evaluating the scope's
+    /// configured ``CloseConfirmationPolicy`` against the live tree state. `.pane` / `.tab` read
+    /// ``SettingsKey/closeConfirmTab``; `.window` reads ``SettingsKey/closeConfirmWindow``. The BUSY input is
+    /// the busy-shell signal (`pane` for `.pane`; ANY pane in the active tab for `.tab`; ANY pane in the
+    /// active session for `.window`); the tab-count input is the active session's `tabs.count`. The pure
+    /// truth table lives in ``CloseConfirmationPolicy/shouldConfirm(_:isBusy:tabCount:)``. Under the default
+    /// `.process` policy this collapses to "confirm iff busy" — byte-identical to the pre-E3 busy guard.
+    func closeConfirmationNeeded(scope: CloseScope, pane: PaneID? = nil) -> Bool {
+        let tabCount = tree.activeSession?.tabs.count ?? 0
+        switch scope {
+        case .pane:
+            let busy = pane.map { registry[$0]?.isShellBusy == true } ?? false
+            return CloseConfirmationPolicy.shouldConfirm(SettingsKey.closeConfirmTab, isBusy: busy, tabCount: tabCount)
+        case .tab:
+            let busy = anyShellBusy(tree.activeSession?.activeTab?.allPaneIDs() ?? [])
+            return CloseConfirmationPolicy.shouldConfirm(SettingsKey.closeConfirmTab, isBusy: busy, tabCount: tabCount)
+        case .window:
+            let busy = anyShellBusy(tree.activeSession?.allPaneIDs() ?? [])
+            return CloseConfirmationPolicy.shouldConfirm(
+                SettingsKey.closeConfirmWindow,
+                isBusy: busy,
+                tabCount: tabCount,
+            )
         }
     }
 
-    /// Dismisses the busy-shell close confirmation without closing.
-    public func cancelPendingClose() {
-        pendingClose = nil
+    /// Whether ANY pane in `ids` reports a running child process (the busy-shell signal). Drives the
+    /// tab- / window-scope busy input for ``closeConfirmationNeeded(scope:pane:)``.
+    private func anyShellBusy(_ ids: [PaneID]) -> Bool {
+        ids.contains { registry[$0]?.isShellBusy == true }
     }
 
-    /// The ``PaneSpec`` of the pane awaiting a busy-close confirmation, resolved from whichever live model
-    /// is current (W5, ITEM A1) — the tree's side table under ``LiveModel/tree``, else the canvas. Lets the
-    /// confirmation dialog name the leaf it would close on EITHER shell (the old canvas-only lookup showed a
-    /// generic title under `.tree`). `nil` when nothing is pending or the pane vanished.
-    public var pendingCloseSpec: PaneSpec? {
-        guard let id = pendingClose else { return nil }
-        switch liveModel {
-        case .tree: return tree.spec(for: id)
-        case .canvas: return workspace.canvas.spec(for: id)
+    /// The WINDOW-close GATE (E3 WI-4, the macOS `windowShouldClose` route). otty's window maps to an
+    /// aislopdesk ``Session`` (the macOS NSWindow hosts the whole ``TreeWorkspace``; see `docs/DECISIONS.md`),
+    /// so the confirmation is evaluated against the ACTIVE session — ``SettingsKey/closeConfirmWindow`` over
+    /// the active session's tab count + any busy pane. A pure gate: when confirmation is needed it parks
+    /// ``pendingWindowClose`` (the macOS delegate then BLOCKS the NSWindow close while the dialog resolves);
+    /// when it is NOT needed it clears the park and lets the caller proceed (the macOS gate returns `true`,
+    /// so the NSWindow closes normally — the persisted layout is preserved, never wiped on a plain close).
+    /// The window → ``Session`` close action fires on the explicit ``confirmPendingWindowClose()``. No-op
+    /// without an active session.
+    public func requestCloseWindow() {
+        guard let session = tree.activeSession else {
+            pendingWindowClose = nil
+            return
         }
+        pendingWindowClose = closeConfirmationNeeded(scope: .window) ? session.id : nil
+    }
+
+    /// Confirms the parked window close (the confirmation dialog's "Close" button): closes the parked session
+    /// (otty window → ``Session``) and clears ``pendingWindowClose``. No-op when nothing is pending.
+    public func confirmPendingWindowClose() {
+        guard let id = pendingWindowClose else { return }
+        pendingWindowClose = nil
+        closeSession(id)
+    }
+
+    /// Dismisses the window-close confirmation without closing.
+    public func cancelPendingWindowClose() {
+        pendingWindowClose = nil
     }
 
     /// Reopens the most recently closed pane at its exact former frame (frontmost, focused, back in
@@ -1460,6 +1521,8 @@ public final class WorkspaceStore {
             ws.maximizedPane = nil
             workspace = ws.normalizingGroups()
             pendingClose = nil
+            pendingTabCloseID = nil // a whole-workspace swap orphans any parked tab-close id too
+            pendingWindowClose = nil // a whole-workspace swap orphans any parked window-close session id
             pendingRename = nil
             overviewActive = false
             // A whole-canvas swap invalidates the close-undo (it points at the OLD workspace) and should
@@ -2001,6 +2064,8 @@ public final class WorkspaceStore {
         // confirmation or rename targeting a now-gone pane lingers as a phantom dialog, the closePane
         // contract at the top of this type). Reconcile tears the old sessions down.
         pendingClose = nil
+        pendingTabCloseID = nil // the parked tab-close id is from the OLD workspace
+        pendingWindowClose = nil // the parked window-close session id is from the OLD workspace
         pendingRename = nil
         reconcile()
     }
@@ -2391,12 +2456,26 @@ public final class WorkspaceStore {
     /// `.vertical` split) — the split-left (⌘⌥D) / split-up (⌘⌥⇧D) chords; the default `false` keeps the
     /// natural trailing insert (the ⌘D right / ⌘⇧D down split). Tree no-op when there is no active pane.
     public func splitActivePane(axis: SplitAxis, kind: PaneKind, leading: Bool = false) {
+        splitActivePane(axis: axis, kind: kind, leading: leading, launchGrace: .milliseconds(1400))
+    }
+
+    /// The `launchGrace`-parameterized core of ``splitActivePane(axis:kind:leading:)`` — a test injects a
+    /// `0`ms grace to observe the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production
+    /// callers use the public overload (the SAME 1400 ms `applyLaunchPreset` / template apply uses).
+    func splitActivePane(axis: SplitAxis, kind: PaneKind, leading: Bool, launchGrace: Duration) {
         guard let active = tree.activeSession?.activeTab?.activePane else { return }
-        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        // A26 cwd-inheritance: resolve the new pane's initial cwd from the NEW-SPLIT working-directory policy
+        // against the active pane's last-known cwd, stamp it on the new spec (so the subtitle reflects it
+        // immediately), and — terminal only — schedule a deferred `cd` once its PTY is live.
+        let activeCwd = tree.spec(for: active)?.lastKnownCwd
+        let inheritedCwd = SettingsKey.workingDirectoryNewSplit.resolve(activePaneCwd: activeCwd)
+        var spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        spec.lastKnownCwd = inheritedCwd
         // `splitPane` already makes the new leaf the active pane, so an in-pane `.chooser` split lands focused.
-        let (next, _) = WorkspaceTreeOps.splitPane(active, axis: axis, newSpec: spec, before: leading, in: tree)
+        let (next, newPane) = WorkspaceTreeOps.splitPane(active, axis: axis, newSpec: spec, before: leading, in: tree)
         tree = next
         reconcileTree()
+        deferInheritedCwd(inheritedCwd, into: newPane, kind: kind, launchGrace: launchGrace)
     }
 
     /// Splits the specific pane `target` along `axis`, inserting a new leaf of `kind` (focused).
@@ -2414,8 +2493,60 @@ public final class WorkspaceStore {
         // Clear a matching parked busy-close so confirming/closing the same leaf twice cannot strand a
         // phantom confirmation dialog (mirrors the canvas `closePane(_:)` `pendingClose` clear).
         if pendingClose == target { pendingClose = nil }
+        // When `target` is its tab's SOLE tiled leaf, closing it cascades the whole TAB away — capture the
+        // tab for ⇧⌘T reopen BEFORE the op mutates the tree (E3 WI-3; the cascade can also drop the
+        // session, so the pre-mutation snapshot is the only source). A pane that is one of several leaves
+        // leaves its tab alive, so nothing is recorded.
+        if let removedTab = tabRemovedByClosing(target) { recordClosedTab(removedTab) }
         tree = WorkspaceTreeOps.closePane(target, in: tree)
         reconcileTree()
+    }
+
+    /// The ``TabID`` that closing leaf `target` would REMOVE — i.e. `target` is a TILED leaf and the only
+    /// one in its tab, so the close empties the tree and cascades the tab away. `nil` when the tab survives
+    /// the close (more than one tiled leaf), `target` is a FLOATING pane (the floating fast-path in
+    /// ``WorkspaceTreeOps/closePane(_:in:)`` never empties a tab), or `target` is absent. Lets the close
+    /// paths capture the whole tab for reopen BEFORE the op drops it (E3 WI-3).
+    private func tabRemovedByClosing(_ target: PaneID) -> TabID? {
+        guard let (sIdx, tIdx) = WorkspaceTreeOps.locate(target, in: tree) else { return nil }
+        let tab = tree.sessions[sIdx].tabs[tIdx]
+        // A floating pane lives outside `tab.root`, so closing it never empties the tiled tree.
+        guard !tab.floatingPanes.contains(target) else { return nil }
+        // The tab is removed only when `target` is the SOLE tiled leaf (the tree prunes to empty).
+        guard tab.root.leafCount == 1 else { return nil }
+        return tab.id
+    }
+
+    /// Captures tab `tabID` — its split tree + every leaf's ``PaneSpec`` + the owning ``SessionID`` — onto
+    /// the in-memory ``recentlyClosedTabs`` LIFO so ⇧⌘T (``reopenLastClosedPane()``) can restore it (E3
+    /// WI-3). Called BEFORE a close op mutates the tree (the cascade can drop the whole session, so the
+    /// pre-mutation snapshot is the only source). Bounded at ``recentlyClosedTabsCap`` — the oldest
+    /// record(s) drop off past the cap so a long open/close session never grows it unbounded. No-op if
+    /// `tabID` is absent.
+    func recordClosedTab(_ tabID: TabID) {
+        for session in tree.sessions {
+            guard let tab = session.tabs.first(where: { $0.id == tabID }) else { continue }
+            let leaves = tab.allPaneIDs()
+            // Skip an all-EPHEMERAL tab (a system-dialog overlay tab — the monitor auto-manages its
+            // lifecycle, so "reopening" it would resurrect a dead window stream). Mirrors the canvas
+            // `closePane(_:)` `!isEphemeral` reopen-slot guard: only a tab holding ≥1 real (non-ephemeral)
+            // pane is worth reopening.
+            let hasReopenablePane = leaves.contains { id in
+                guard let spec = session.specs[id] else { return false }
+                return !spec.kind.isEphemeral
+            }
+            guard hasReopenablePane else { return }
+            // Snapshot only the closing tab's specs (its leaf set), not the whole session's side table.
+            var specs: [PaneID: PaneSpec] = [:]
+            for id in leaves where session.specs[id] != nil {
+                specs[id] = session.specs[id]
+            }
+            recentlyClosedTabs.append(RecentlyClosedTab(tab: tab, specs: specs, sessionID: session.id))
+            if recentlyClosedTabs.count > Self.recentlyClosedTabsCap {
+                recentlyClosedTabs.removeFirst(recentlyClosedTabs.count - Self.recentlyClosedTabsCap)
+            }
+            return
+        }
     }
 
     /// Toggles render-only zoom on the active tab's active pane (the tree is untouched). Tree no-op when
@@ -2448,25 +2579,53 @@ public final class WorkspaceStore {
     }
 
     /// Adds a new tab (single leaf of `kind`) to the active session and selects it; materializes its leaf.
+    /// The tab lands at the configured ``SettingsKey/newTabPosition`` (otty `new-tab-position`): `.auto`/
+    /// `.end` append, `.afterCurrent` inserts after the active tab. The ⌘T-via-chooser path
+    /// (``openChooserPane(_:)`` `.newTab`) funnels through here, so it inherits the same placement.
     public func newTab(kind: PaneKind) {
-        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
-        let (next, _) = WorkspaceTreeOps.newTab(in: tree, spec: spec)
+        newTab(kind: kind, launchGrace: .milliseconds(1400))
+    }
+
+    /// The `launchGrace`-parameterized core of ``newTab(kind:)`` — a test injects a `0`ms grace to observe
+    /// the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production callers use the public
+    /// overload.
+    func newTab(kind: PaneKind, launchGrace: Duration) {
+        // A26 cwd-inheritance: resolve the new tab's initial cwd from the NEW-TAB working-directory policy
+        // against the active pane's last-known cwd (none when there is no active pane), stamp it on the new
+        // spec, and — terminal only — schedule a deferred `cd` once its PTY is live.
+        let activeCwd = tree.activeSession?.activeTab?.activePane.flatMap { tree.spec(for: $0)?.lastKnownCwd }
+        let inheritedCwd = SettingsKey.workingDirectoryNewTab.resolve(activePaneCwd: activeCwd)
+        var spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        spec.lastKnownCwd = inheritedCwd
+        let (next, newPane) = WorkspaceTreeOps.newTab(in: tree, spec: spec, at: SettingsKey.newTabPosition)
         tree = next
         reconcileTree()
+        deferInheritedCwd(inheritedCwd, into: newPane, kind: kind, launchGrace: launchGrace)
     }
 
     /// Closes tab `tabID` (dropping its panes) and cascades like ``closePaneTree(_:)``.
     public func closeTab(_ tabID: TabID) {
+        recordClosedTab(tabID) // capture BEFORE the op drops the tab (⇧⌘T reopen, E3 WI-3)
         tree = WorkspaceTreeOps.closeTab(tabID, in: tree)
         reconcileTree()
     }
 
     /// Close the active tab of the active session (the ⌘⇧W "Close Tab" routing target). A no-op when
     /// there is no active tab. The tree ops cascade an emptied session / re-seed a default like
-    /// `closeTab(_:)` does.
+    /// `closeTab(_:)` does. E3 WI-4: routed through ``closeConfirmationNeeded(scope:pane:)`` — under the
+    /// default ``CloseConfirmationPolicy/process`` policy this still closes immediately unless a pane in the
+    /// tab is busy (byte-identical to the prior behaviour), but `.always` / `.multipleTabs` park the close
+    /// behind a confirmation.
     public func closeActiveTab() {
-        guard let id = tree.activeSession?.activeTab?.id else { return }
-        closeTab(id)
+        guard let tab = tree.activeSession?.activeTab else { return }
+        if closeConfirmationNeeded(scope: .tab) {
+            // Park the WHOLE tab (its `TabID`, not a single leaf): `confirmPendingClose` resolves a tab park
+            // through `closeTab(_:)`, so confirming drops every pane in the tab — a multi-pane tab no longer
+            // keeps its siblings (the prior single-leaf park did, regressing ⌘⇧W into a one-pane close).
+            parkTabClose(tab.id)
+        } else {
+            closeTab(tab.id)
+        }
     }
 
     /// Whether the sessions sidebar is collapsed (hidden). Toggled by ⌘B (Muxy parity). In-memory only —
@@ -2780,8 +2939,8 @@ public final class WorkspaceStore {
     /// hosts — mirroring the canvas ``requestClosePane(_:)``. No-op without an active pane.
     public func requestCloseActivePaneTree() {
         guard let active = tree.activeSession?.activeTab?.activePane else { return }
-        if registry[active]?.isShellBusy == true {
-            pendingClose = active
+        if closeConfirmationNeeded(scope: .pane, pane: active) {
+            parkPaneClose(active)
         } else {
             closePaneTree(active)
         }
@@ -3029,10 +3188,14 @@ public final class WorkspaceStore {
         // B3 BACKGROUND-PANE COMMAND-COMPLETION: route a finished command (OSC 133;D, type 23) to the
         // focus-gated store handler — badges an UNFOCUSED pane (✓/✗) and fires the long-command
         // notification only when backgrounded (replaces the old direct notifier.notifyIfLong in the VM).
-        connection?.onCommandCompleted = { [weak self] exitCode, durationMS in
+        connection?.onCommandCompleted = { [weak self, weak connection] exitCode, durationMS in
             guard let self else { return }
             let title = tree.spec(for: id)?.title ?? ""
             handleCommandCompleted(id: id, exitCode: exitCode, durationMS: durationMS, paneTitle: title)
+            // A26 cwd-freshness (OSC-7 equivalent): refresh this pane's last-known cwd from the host `cwd`
+            // RPC on each command completion, so a `cd` here updates the inherit source for the next new
+            // tab / split. `[weak connection]` avoids a retain cycle (the closure is owned by `connection`).
+            refreshCwd(for: id, from: connection)
         }
         // LIVE TITLE PERSISTENCE (Goal A): persist the shell's live OSC title into lastKnownTitle so a
         // relaunch can restore the tab title for untouched (default-titled) panes. The dirty guard avoids
@@ -3850,13 +4013,34 @@ public extension WorkspaceStore {
     /// + retitle IN PLACE (same `PaneID`), then reconcile so the now-real leaf materializes its session
     /// (terminal channel / remote-GUI video). Keeps focus on the pane. No-op if `paneID` is not a chooser.
     func choosePaneKind(_ paneID: PaneID, kind: PaneKind) {
+        choosePaneKind(paneID, kind: kind, launchGrace: .milliseconds(1400))
+    }
+
+    /// The `launchGrace`-parameterized core of ``choosePaneKind(_:kind:)`` — a test injects a `0`ms grace to
+    /// observe the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production callers use the
+    /// public overload (the SAME 1400 ms the direct-terminal `newTab` / `splitActivePane` paths use).
+    ///
+    /// ES-E3-2 (cwd-inheritance on the PRIMARY ⌘T / ⌘D flow): those chords route through the chooser
+    /// (`openChooserPane(.newTab)` → `newTab(kind: .chooser)`, etc.), so `deferInheritedCwd` was SKIPPED at
+    /// creation (`kind != .terminal`) even though the resolved cwd was stamped on the spec's `lastKnownCwd`.
+    /// When the user now picks Terminal we re-issue that deferred `cd` against the stamped hint, so the
+    /// chooser-resolved terminal lands in the inherited directory — not just the direct-terminal palette /
+    /// context-menu paths.
+    func choosePaneKind(_ paneID: PaneID, kind: PaneKind, launchGrace: Duration) {
         guard tree.spec(for: paneID)?.kind == .chooser else { return }
+        // Capture the inherited cwd hint BEFORE the flip (the flip preserves `lastKnownCwd`, but reading it
+        // up front keeps the deferred-`cd` source explicit). `nil` ⇒ the `.home` policy / no inherit source,
+        // and `deferInheritedCwd` then sends nothing.
+        let inheritedCwd = tree.spec(for: paneID)?.lastKnownCwd
         let title = defaultTitle(for: kind)
         updateSpecLive(paneID) { spec in
             spec.kind = kind
             spec.title = title
         }
         focusPaneTree(paneID)
+        // The leaf has now materialized its real session (the reconcile in `updateSpecLive`), so deliver the
+        // deferred inheritance `cd`. Terminal-only + empty-cwd no-ops are handled inside `deferInheritedCwd`.
+        deferInheritedCwd(inheritedCwd, into: paneID, kind: kind, launchGrace: launchGrace)
     }
 
     /// Persists the host-resolved working directory of a pane into ``PaneSpec/lastKnownCwd`` (E4): the
@@ -3871,5 +4055,42 @@ public extension WorkspaceStore {
             }
         guard current != cwd else { return }
         updateSpecLive(paneID) { $0.lastKnownCwd = cwd }
+    }
+
+    /// A26 cwd-inheritance: after a new TERMINAL pane materializes, type a deferred `cd <cwd>\n` into it so
+    /// it lands in the inherited / configured working directory. REUSES the SAME deferred-keystroke route +
+    /// 1400 ms launch grace as the session-template / launch-preset apply (the remote shell prompt must come
+    /// up first), and the SAME SAFE-literal `cd` builder (``SessionTemplateEngine/launchBytes(cwd:command:)``,
+    /// `command: nil`) so a quote / `<Enter>` in a path can't inject a command. A `nil`/empty cwd (the
+    /// ``WorkingDirectoryPolicy/home`` policy, or a non-terminal kind) sends NOTHING — `launchBytes` returns
+    /// `nil` for an empty cwd, and `.home` must not emit a redundant `cd` into a login shell that already
+    /// starts at `$HOME`. `launchGrace`-parameterized so a test injects `0` ms.
+    private func deferInheritedCwd(
+        _ cwd: String?,
+        into paneID: PaneID,
+        kind: PaneKind,
+        launchGrace: Duration,
+    ) {
+        // Only a text-funnel terminal pane can take a `cd`; a `.chooser`/video pane is a no-op (the stamped
+        // `lastKnownCwd` still rides the spec, so a chooser that later resolves to terminal keeps the hint).
+        guard kind == .terminal else { return }
+        guard let bytes = SessionTemplateEngine.launchBytes(cwd: cwd, command: nil) else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: launchGrace)
+            self?.handle(for: paneID)?.sendBytes(bytes)
+        }
+    }
+
+    /// A26 cwd-freshness (the OSC-7 equivalent): after a command completes (OSC 133;D) pull pane `id`'s
+    /// current working directory from the host `cwd` RPC and persist it via the dirty-guarded
+    /// ``setLastKnownCwd(_:for:)``, so a `cd` in this pane becomes the inherit source for the NEXT new tab /
+    /// split. A `nil` connection / failed RPC is a silent no-op (validate-then-drop); the metadata client's
+    /// 5 s timeout bounds the await. Fired from ``wireMaterializedLeaf(id:handle:)``'s `onCommandCompleted`.
+    private func refreshCwd(for id: PaneID, from connection: ConnectionViewModel?) {
+        guard let connection else { return }
+        Task { @MainActor [weak self] in
+            guard let cwd = await connection.activeMetadataClient?.cwd() else { return }
+            self?.setLastKnownCwd(cwd, for: id)
+        }
     }
 }

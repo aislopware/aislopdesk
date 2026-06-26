@@ -34,6 +34,35 @@ public enum SettingsKey {
     public static let hideStatusBar = "appearance.hideStatusBar"
     /// Whether the per-block sticky command divider/header is shown over terminal panes. Default ON.
     public static let showBlockDividers = "terminal.showBlockDividers"
+    // Shell / window behaviour
+    /// Where a new tab is inserted in the active session's tab bar (otty `new-tab-position`). Stored as the
+    /// ``NewTabPosition`` rawValue (`auto`/`end`/`after-current`); default `.auto` (= append). Read at the
+    /// ⌘T fire-site (`WorkspaceStore.newTab`). Named with the `Key` suffix (like ``defaultPaneKindKey``) so
+    /// the typed ``NewTabPosition`` accessor below can take the bare ``newTabPosition`` name.
+    public static let newTabPositionKey = "shell.newTabPosition" // NewTabPosition.rawValue
+
+    /// The working-directory policy for a NEW WINDOW (otty `working-directory`), default `home` — a fresh
+    /// window opens at the shell's login cwd. Stored as the ``WorkingDirectoryPolicy/rawConfig`` string
+    /// (`inherit` / `home` / an absolute path). Read at the new-window fire-site.
+    public static let workingDirectoryNewWindowKey = "shell.workingDirectory.newWindow"
+    /// The working-directory policy for a NEW TAB, default `inherit` — a ⌘T tab starts in the active pane's
+    /// last-known cwd. Stored as the ``WorkingDirectoryPolicy/rawConfig`` string. Read at the ⌘T fire-site
+    /// (`WorkspaceStore.newTab`).
+    public static let workingDirectoryNewTabKey = "shell.workingDirectory.newTab"
+    /// The working-directory policy for a NEW SPLIT, default `inherit` — a split starts in the active pane's
+    /// last-known cwd. Stored as the ``WorkingDirectoryPolicy/rawConfig`` string. Read at the split fire-site
+    /// (`WorkspaceStore.splitActivePane`).
+    public static let workingDirectoryNewSplitKey = "shell.workingDirectory.newSplit"
+
+    /// The close-confirmation policy for a TAB / PANE close (otty close-confirmation), default `process` —
+    /// confirm only when a child process is running. Stored as the ``CloseConfirmationPolicy`` rawValue
+    /// (`process` / `always` / `multiple_tabs`). Read at the tab/pane close fire-sites
+    /// (`WorkspaceStore.requestClosePaneTree` / `requestCloseActivePaneTree` / `closeActiveTab`).
+    public static let closeConfirmTabKey = "shell.closeConfirm.tab" // CloseConfirmationPolicy.rawValue
+    /// The close-confirmation policy for a WINDOW close (mapped to the active ``Session`` — see
+    /// `docs/DECISIONS.md`), default `process`. Stored as the ``CloseConfirmationPolicy`` rawValue. Read at
+    /// the window-close fire-site (`WorkspaceStore.requestCloseWindow`).
+    public static let closeConfirmWindowKey = "shell.closeConfirm.window" // CloseConfirmationPolicy.rawValue
 
     /// Whether a layout with a trigger app auto-switches when that app launches on the host (default
     /// ON — assigning a trigger is itself the opt-in). Read at fire-time.
@@ -73,6 +102,39 @@ public enum SettingsKey {
     /// kind retired in W11) is not a valid raw value here → falls back to `.terminal`, exactly right
     /// (the `RawRepresentableBridge` returns the key default when the stored raw value no longer maps).
     public static var defaultPaneKind: PaneKind { Defaults[.defaultPaneKind] }
+
+    /// Where a new tab opens in the active session's tab bar (otty `new-tab-position`), default `.auto`
+    /// (= append, byte-identical to the pre-E3 behaviour). A stale / invalid persisted raw value falls back
+    /// to `.auto` via the `RawRepresentableBridge`. Read at the ⌘T fire-site.
+    public static var newTabPosition: NewTabPosition { Defaults[.newTabPosition] }
+
+    /// The working-directory policy applied when a NEW WINDOW opens (otty `working-directory`), default
+    /// ``WorkingDirectoryPolicy/home``. Decoded from the persisted ``WorkingDirectoryPolicy/rawConfig``
+    /// string (an empty / unknown value repairs to `.home`). Read at fire-time.
+    public static var workingDirectoryNewWindow: WorkingDirectoryPolicy {
+        WorkingDirectoryPolicy(rawConfig: Defaults[.workingDirectoryNewWindow])
+    }
+
+    /// The working-directory policy applied when a NEW TAB opens, default ``WorkingDirectoryPolicy/inherit``
+    /// (the ⌘T tab starts in the active pane's last-known cwd). Read at the ⌘T fire-site.
+    public static var workingDirectoryNewTab: WorkingDirectoryPolicy {
+        WorkingDirectoryPolicy(rawConfig: Defaults[.workingDirectoryNewTab])
+    }
+
+    /// The working-directory policy applied when a NEW SPLIT opens, default
+    /// ``WorkingDirectoryPolicy/inherit``. Read at the split fire-site.
+    public static var workingDirectoryNewSplit: WorkingDirectoryPolicy {
+        WorkingDirectoryPolicy(rawConfig: Defaults[.workingDirectoryNewSplit])
+    }
+
+    /// The close-confirmation policy applied to a TAB / PANE close (otty close-confirmation), default
+    /// ``CloseConfirmationPolicy/process``. A stale / invalid persisted raw value repairs to `.process` (via
+    /// ``CloseConfirmationPolicy/init(rawValue:)`` + the `RawRepresentableBridge`). Read at fire-time.
+    public static var closeConfirmTab: CloseConfirmationPolicy { Defaults[.closeConfirmTab] }
+
+    /// The close-confirmation policy applied to a WINDOW close (mapped to the active ``Session`` — see
+    /// `docs/DECISIONS.md`), default ``CloseConfirmationPolicy/process``. Read at fire-time.
+    public static var closeConfirmWindow: CloseConfirmationPolicy { Defaults[.closeConfirmWindow] }
 }
 
 // MARK: - Typed Defaults keys (the single source the accessors + `@Default(.key)` views read)
@@ -91,6 +153,16 @@ public extension Defaults.Keys {
     static let hideStatusBar = Key<Bool>(SettingsKey.hideStatusBar, default: false)
     static let showBlockDividers = Key<Bool>(SettingsKey.showBlockDividers, default: true)
     static let defaultPaneKind = Key<PaneKind>(SettingsKey.defaultPaneKindKey, default: .terminal)
+    static let newTabPosition = Key<NewTabPosition>(SettingsKey.newTabPositionKey, default: .auto)
+    // Working-directory policies stored as the `WorkingDirectoryPolicy.rawConfig` String (otty config value).
+    // New window defaults to `home` (login cwd); new tab / split default to `inherit` (active pane's cwd).
+    static let workingDirectoryNewWindow = Key<String>(SettingsKey.workingDirectoryNewWindowKey, default: "home")
+    static let workingDirectoryNewTab = Key<String>(SettingsKey.workingDirectoryNewTabKey, default: "inherit")
+    static let workingDirectoryNewSplit = Key<String>(SettingsKey.workingDirectoryNewSplitKey, default: "inherit")
+    // Close-confirmation policies stored as the `CloseConfirmationPolicy` rawValue (otty config value). Both
+    // default to `process` (confirm only on a running child process — the pre-E3 busy-shell guard).
+    static let closeConfirmTab = Key<CloseConfirmationPolicy>(SettingsKey.closeConfirmTabKey, default: .process)
+    static let closeConfirmWindow = Key<CloseConfirmationPolicy>(SettingsKey.closeConfirmWindowKey, default: .process)
 }
 
 /// Store ``PaneKind`` as its bare `String` rawValue (not JSON-wrapped) so the value stays wire-compatible
@@ -98,3 +170,14 @@ public extension Defaults.Keys {
 /// `PreferRawRepresentable` selects `RawRepresentableBridge`, which also yields the key default for a
 /// retired/invalid raw value (e.g. the W11 `"claudeCode"`).
 extension PaneKind: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
+/// Store ``NewTabPosition`` as its bare `String` rawValue (`auto`/`end`/`after-current`) so the persisted
+/// `new-tab-position` setting round-trips with the otty config value; `PreferRawRepresentable` selects the
+/// `RawRepresentableBridge`, which yields the key default (`.auto`) for a stale / invalid raw value.
+extension NewTabPosition: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
+/// Store ``CloseConfirmationPolicy`` as its bare `String` rawValue (`process`/`always`/`multiple_tabs`) so
+/// the persisted close-confirmation setting round-trips with the otty config value; `PreferRawRepresentable`
+/// selects the `RawRepresentableBridge`. A stale / invalid raw value repairs to `.process` via the policy's
+/// own non-failable ``CloseConfirmationPolicy/init(rawValue:)`` (and the key default is also `.process`).
+extension CloseConfirmationPolicy: Defaults.Serializable, Defaults.PreferRawRepresentable {}

@@ -16,26 +16,37 @@ public extension WorkspaceStore {
     }
 
     /// The pane a ``cyclePaneFocusTree(forward:)`` step would focus, or `nil` when it is a no-op (no active
-    /// tab, fewer than two panes, or no resolvable active pane to step from). Pure (no focus side effect) so
-    /// the `count > 1` wrap guard is unit-testable in isolation — mirrors ``recentPaneTarget(forward:)`` /
-    /// ``inGroupCycleTarget(forward:)``. The order is the active tab's ``Tab/allPaneIDs()`` (pre-order DFS +
+    /// tab, fewer than two panes, or no resolvable tiled active pane to step from). Pure (no focus side
+    /// effect) so the `count > 1` wrap guard is unit-testable in isolation — mirrors
+    /// ``recentPaneTarget(forward:)`` / ``inGroupCycleTarget(forward:)``.
+    ///
+    /// Delegates straight to the pure ``WorkspaceTreeOps/cyclePaneTarget(forward:in:)`` (E3 WI-5) so the
+    /// DFS-wrap math has ONE source — the order is the active tab's ``Tab/allPaneIDs()`` (pre-order DFS +
     /// the floating layer), the same order the reconcile diff + carousel read.
     internal func paneCycleTreeTarget(forward: Bool) -> PaneID? {
-        guard let tab = tree.activeSession?.activeTab else { return nil }
-        let ids = tab.allPaneIDs()
-        guard ids.count > 1 else { return nil }
-        // Step from the active pane; an unresolved active (absent from the list) starts the walk at the front.
-        let current = tab.activePane.flatMap { ids.firstIndex(of: $0) } ?? 0
-        let next = forward ? (current + 1) % ids.count : (current - 1 + ids.count) % ids.count
-        return ids[next]
+        WorkspaceTreeOps.cyclePaneTarget(forward: forward, in: tree)
     }
 
-    /// Reopens the most recently CLOSED tree pane (the ⌘⇧T "Reopen Closed Pane" chord). EMPTY stub for E1 —
-    /// the routing case is live (no dead chord) but the LIFO of closed-pane records the reopen restores from
-    /// lands in E3 (per the E1 plan: register + route now, behaviour later). A documented graceful no-op
-    /// until then. (The canvas path's single-slot ``reopenClosedPane()`` is a separate, retained-but-dead
-    /// mechanism; the tree shell gets its own LIFO in E3.)
+    /// Reopens the most recently CLOSED tree tab (the ⌘⇧T "Reopen Closed Tab" chord, E3 WI-3). Pops the
+    /// last ``RecentlyClosedTab`` off the in-memory ``recentlyClosedTabs`` LIFO and re-inserts it via
+    /// ``WorkspaceTreeOps/insertTab(_:specs:at:in:)`` at the configured ``NewTabPosition`` — restoring the
+    /// whole tab (its split tree + every pane's spec, keeping the original ``PaneID``s). The tab lands back
+    /// in its OWNING session when that session is still alive; otherwise (the session was closed while the
+    /// record sat on the LIFO) it falls back to the active session. A graceful no-op when the LIFO is
+    /// empty. The reopened session is FRESH — scrollback does not survive a close, by design (mirroring the
+    /// canvas single-slot ``WorkspaceStore/reopenClosedPane()``). (The canvas path's single-slot
+    /// ``WorkspaceStore/reopenClosedPane()`` is a separate, retained-but-dead mechanism.)
     func reopenLastClosedPane() {
-        // E3 fills the closed-pane LIFO + the restore. Intentionally empty for now.
+        guard let record = recentlyClosedTabs.popLast() else { return }
+        // Land the restored tab back in its owning session when it still exists; `insertTab` inserts into
+        // whichever session is active, so re-point the active session first (the fallback when the owner
+        // vanished is simply to leave the active session as-is).
+        if let owner = record.sessionID, tree.sessions.contains(where: { $0.id == owner }) {
+            tree.activeSessionID = owner
+        }
+        tree = WorkspaceTreeOps.insertTab(
+            record.tab, specs: record.specs, at: SettingsKey.newTabPosition, in: tree,
+        )
+        reconcileTree()
     }
 }

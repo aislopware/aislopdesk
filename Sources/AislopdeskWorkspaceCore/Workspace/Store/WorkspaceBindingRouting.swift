@@ -162,8 +162,9 @@ public extension WorkspaceBindingRegistry {
         case .prevTab: store.cycleTab(by: -1)
         case let .selectTab(n): store.selectTabNumber(n)
         case .closeTab: store.closeActiveTab()
-        // Reopen the most recently closed pane (E1 ES-E1-5): the store method is an EMPTY stub for E1 (E3 fills
-        // the closed-pane LIFO + restore), so this routes to a documented graceful no-op — live, never dead.
+        // Reopen the most recently closed TAB (E1 ES-E1-5 chord; E3 WI-3 behaviour): pops the tree shell's
+        // in-memory ``WorkspaceStore/recentlyClosedTabs`` LIFO and re-inserts the tab. A graceful no-op when
+        // the LIFO is empty — live, never dead.
         case .reopenClosed: store.reopenLastClosedPane()
         // Sessions — a new session carries one fresh leaf, so it mints a pane → create it as an in-pane
         // `.chooser` pane (the user picks the kind inside the new session's pane).

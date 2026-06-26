@@ -579,19 +579,90 @@ public enum WorkspaceTreeOps {
         return focusPane(next, in: ws)
     }
 
+    /// The pane a sequential ⌘]/⌘[ pane-cycle step (E1 ES-E1-2 / E3 ES-E3-5) would focus, or `nil` when it
+    /// is a no-op — the **single source** of the DFS-wrap math the store delegates to
+    /// (``WorkspaceStore/paneCycleTreeTarget(forward:)``). Walks the active session's active tab in
+    /// ``Tab/allPaneIDs()`` order (pre-order DFS + the floating layer — the same order reconcile + the
+    /// carousel read); `forward == true` steps to the NEXT id, `false` to the previous, WRAPPING at both
+    /// ends (last → first / first → last).
+    ///
+    /// A no-op (`nil`) when: there is no active session / tab; the active tab has fewer than two panes
+    /// (nothing to cycle to); or ``Tab/activePane`` is `nil` or is NOT a tiled leaf (a floating-only or
+    /// dangling active has no place in the tiled walk — cycling must not silently jump focus to the front).
+    /// Pure (no focus side effect), so the wrap + the guard is unit-testable in isolation.
+    public static func cyclePaneTarget(forward: Bool, in ws: TreeWorkspace) -> PaneID? {
+        guard let tab = ws.activeSession?.activeTab else { return nil }
+        let ids = tab.allPaneIDs()
+        guard ids.count > 1 else { return nil }
+        // Step only from a TILED active pane: a nil active, or a float / dangling id absent from the tree,
+        // has no defined predecessor / successor here, so cycling is a no-op rather than a jump-to-front.
+        guard let active = tab.activePane, tab.root.contains(active), let current = ids.firstIndex(of: active)
+        else { return nil }
+        let next = forward ? (current + 1) % ids.count : (current - 1 + ids.count) % ids.count
+        return ids[next]
+    }
+
+    /// Cycles focus to the pane ``cyclePaneTarget(forward:in:)`` resolves, routing through
+    /// ``focusPane(_:in:)`` (the shared focus/select path) so the result holds the active-selection
+    /// invariants. A no-op (returns `ws` unchanged) whenever the target is `nil` — see
+    /// ``cyclePaneTarget(forward:in:)`` for the no-op cases. Pure.
+    public static func cyclePaneFocus(forward: Bool, in ws: TreeWorkspace) -> TreeWorkspace {
+        guard let target = cyclePaneTarget(forward: forward, in: ws) else { return ws }
+        return focusPane(target, in: ws)
+    }
+
     // MARK: Tabs
 
-    /// Adds a new tab (single leaf carrying `spec`) to the active session and selects it. Returns the new
-    /// workspace + the new pane's id. No-op (returns a throw-away id) if there is no active session.
-    public static func newTab(in ws: TreeWorkspace, spec: PaneSpec) -> (TreeWorkspace, PaneID) {
+    /// Adds a new tab (single leaf carrying `spec`) to the active session at `position` and selects it.
+    /// Returns the new workspace + the new pane's id. No-op (returns a throw-away id) if there is no active
+    /// session.
+    ///
+    /// `position` defaults to ``NewTabPosition/end`` so every existing call site is byte-identical to the
+    /// pre-E3 `tabs.append(...)` (inserting at the end index is an append, and the selected index is then
+    /// `tabs.count - 1`). Only the user-facing ⌘T path passes the configured ``NewTabPosition``.
+    public static func newTab(
+        in ws: TreeWorkspace,
+        spec: PaneSpec,
+        at position: NewTabPosition = .end,
+    ) -> (TreeWorkspace, PaneID) {
         let paneID = PaneID()
         guard let sIdx = ws.activeSessionIndex else { return (ws, paneID) }
         var copy = ws
         let tab = Tab(root: .leaf(paneID), activePane: paneID)
-        copy.sessions[sIdx].tabs.append(tab)
-        copy.sessions[sIdx].activeTabIndex = copy.sessions[sIdx].tabs.count - 1
+        let index = position.insertionIndex(
+            activeTabIndex: copy.sessions[sIdx].activeTabIndex,
+            tabCount: copy.sessions[sIdx].tabs.count,
+        )
+        copy.sessions[sIdx].tabs.insert(tab, at: index)
+        copy.sessions[sIdx].activeTabIndex = index
         copy.sessions[sIdx].specs[paneID] = spec
         return (copy, paneID)
+    }
+
+    /// Inserts a PRE-BUILT `tab` (its split tree + every pane's ``PaneSpec`` in `specs`) into the active
+    /// session at `position` and selects it — the reopen-last-closed restore (E3 WI-3). Merges `specs` into
+    /// the active session's side table so the **specs == leafIDs invariant** holds for the restored leaves;
+    /// `normalizingSpecs()` repairs any leaf whose spec went missing (re-seeding a default), so the result
+    /// always holds the invariant. Pure. No-op if there is no active session.
+    public static func insertTab(
+        _ tab: Tab,
+        specs: [PaneID: PaneSpec],
+        at position: NewTabPosition,
+        in ws: TreeWorkspace,
+    ) -> TreeWorkspace {
+        guard let sIdx = ws.activeSessionIndex else { return ws }
+        var copy = ws
+        let index = position.insertionIndex(
+            activeTabIndex: copy.sessions[sIdx].activeTabIndex,
+            tabCount: copy.sessions[sIdx].tabs.count,
+        )
+        copy.sessions[sIdx].tabs.insert(tab, at: index)
+        copy.sessions[sIdx].activeTabIndex = index
+        // Merge the restored panes' specs into the active session (keep the specs == leafIDs invariant).
+        for id in tab.allPaneIDs() {
+            if let spec = specs[id] { copy.sessions[sIdx].specs[id] = spec }
+        }
+        return copy.normalizingSpecs()
     }
 
     /// Closes tab `tabID` (in whichever session owns it), dropping every pane's spec, and cascades to the
