@@ -53,6 +53,10 @@ enum RailRowsBuilder {
                     completion: store.panePendingCompletion[paneID],
                     isBusy: store.paneIsBusy(paneID),
                     foregroundProcess: processLabel,
+                    // Freshness decays the clean-completion badge from the brief `.completed` checkmark
+                    // flash to the persistent `.finished` accent dot — the store owns the clock (ephemeral
+                    // `completedAt` vs now), the resolver stays pure.
+                    completionFreshness: store.completionFreshness(forPane: paneID),
                 )
                 out.append(RailRow(
                     id: paneID,

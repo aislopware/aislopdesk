@@ -38,12 +38,18 @@ public extension WorkspaceStore {
     /// floats up under the `.updated` sidebar sort. Past the idempotency guard, so only a real transition
     /// stamps; and from ANY source (the wire signal funnel `handleAgentSignal`, a manifest fallback, a
     /// test) — not just the wire path.
-    func setAgentStatus(_ status: ClaudeStatus, for id: PaneID) {
+    func setAgentStatus(_ status: ClaudeStatus, for id: PaneID, at date: Date = Date()) {
         guard paneAgentStatus[id] != status else { return }
         let lastNotified = lastNotifiedStatus[id] ?? .none
         if status == .none { paneAgentStatus.removeValue(forKey: id) } else { paneAgentStatus[id] = status }
         applyAttentionEdge(for: id, lastNotified: lastNotified, status: status)
-        stampTabActivity(forPane: id)
+        stampTabActivity(forPane: id, at: date)
+        // Drive the otty checkmark→accent-dot decay for an agent turn: a genuine entry into `.done` stamps
+        // the ephemeral `completedAt` (brief `.completed` flash, settling to `.finished`). Only the
+        // positive edge stamps — a stale stamp is harmless (the resolver reads it ONLY in the
+        // completed/finished branch, it is refreshed on the next `.done`/`.success`, and pruned on
+        // reconcile), so this never clobbers a coexisting completion-badge stamp.
+        if status == .done { paneCompletedAt[id] = date }
     }
 
     /// Sets (or clears, on empty) the per-pane host agent label. Idempotent. The cheap activity summary

@@ -107,6 +107,53 @@ final class BackgroundCompletionWiringTests: XCTestCase {
         XCTAssertEqual(observed, [.success, .failure, nil], "one mutation per distinct value")
     }
 
+    // MARK: - completion freshness (the otty checkmark→accent-dot decay clock)
+
+    /// A `.success` badge stamps the ephemeral `completedAt`, so ``WorkspaceStore/completionFreshness``
+    /// reports `.fresh` inside the flash window and `.settled` past it — the input that decays the resolver
+    /// from `.completed` (checkmark) to `.finished` (accent dot). Dates are injected (no wall clock).
+    func testSuccessBadgeFreshnessDecaysFromFreshToSettled() throws {
+        let store = makeStore()
+        let paneID = try XCTUnwrap(store.tree.allPaneIDs().first)
+        let base = Date(timeIntervalSinceReferenceDate: 1000)
+        store.setCompletionBadge(.success, for: paneID, at: base)
+
+        let window = WorkspaceStore.completedFlashWindow
+        XCTAssertEqual(store.completionFreshness(forPane: paneID, now: base), .fresh, "just-completed is fresh")
+        XCTAssertEqual(
+            store.completionFreshness(forPane: paneID, now: base.addingTimeInterval(window - 0.5)),
+            .fresh, "still within the flash window",
+        )
+        XCTAssertEqual(
+            store.completionFreshness(forPane: paneID, now: base.addingTimeInterval(window + 0.5)),
+            .settled, "past the flash window it settles to the accent dot",
+        )
+    }
+
+    /// An agent entering `.done` stamps the SAME freshness clock, so an idle-done agent flashes `.completed`
+    /// then settles to the `.finished` dot (otty's "a dot when the agent goes idle").
+    func testAgentDoneStampsFreshness() throws {
+        let store = makeStore()
+        let paneID = try XCTUnwrap(store.tree.allPaneIDs().first)
+        let base = Date(timeIntervalSinceReferenceDate: 2000)
+        store.setAgentStatus(.done, for: paneID, at: base)
+        XCTAssertEqual(store.completionFreshness(forPane: paneID, now: base), .fresh)
+        XCTAssertEqual(
+            store.completionFreshness(
+                forPane: paneID, now: base.addingTimeInterval(WorkspaceStore.completedFlashWindow + 1),
+            ),
+            .settled,
+        )
+    }
+
+    /// No stamp ⇒ `.settled` (the persistent marker), never a perpetual checkmark — so an un-stamped row
+    /// resolves to the accent dot, not a stuck `.completed`.
+    func testFreshnessDefaultsSettledWithoutStamp() throws {
+        let store = makeStore()
+        let paneID = try XCTUnwrap(store.tree.allPaneIDs().first)
+        XCTAssertEqual(store.completionFreshness(forPane: paneID), .settled)
+    }
+
     // MARK: - clear on focus / app-active
 
     /// A badge on a pane CLEARS the instant that pane gains focus (`focusPaneTree` routes through the

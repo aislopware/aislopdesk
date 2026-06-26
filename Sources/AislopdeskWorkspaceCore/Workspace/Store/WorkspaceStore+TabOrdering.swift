@@ -43,6 +43,25 @@ public extension WorkspaceStore {
         reconcileTree()
     }
 
+    /// The WYSIWYG manual drag entry (the sidebar's `.draggable`/`.dropDestination` glue): `from`/`to` are
+    /// positions into the RENDERED flat order (``orderedTabGroups(now:)`` flattened), NOT raw `session.tabs`
+    /// indices. Manual order is a FLAT-LIST affordance, so this is a **no-op while ``tabGrouping`` is not
+    /// ``TabGrouping/none``** — you cannot hand-order across derived buckets, and pretending to would silently
+    /// discard a cross-group drop. With grouping off it materializes the rendered order into `session.tabs`
+    /// then moves the single dragged tab (``WorkspaceTreeOps/moveTab(renderedOrder:from:to:in:)``), so a
+    /// ``TabSort/updated`` list converts to ``TabSort/manual`` with ONLY the dragged row moving — the rest
+    /// stay where they visually were. The leaf set is unchanged ⇒ ``reconcileTree()`` is a registry no-op.
+    func moveTabRendered(from: Int, to: Int) {
+        // Manual reorder is a flat-list affordance — disabled (a no-op) under any grouping.
+        guard tabGrouping == .none else { return }
+        let renderedOrder = orderedTabGroups().flatMap(\.tabIDs)
+        let next = WorkspaceTreeOps.moveTab(renderedOrder: renderedOrder, from: from, to: to, in: tree)
+        guard next != tree else { return }
+        tree = next
+        setTabSort(.manual)
+        reconcileTree()
+    }
+
     /// The rendered sidebar sections for the active session, derived purely from ``tabGrouping`` /
     /// ``tabSort`` + the recency mirror via ``TabOrderingEngine``. Empty when there is no active session.
     /// `now` is injectable (tests pin the `.byDate` boundaries); production reads the wall clock once here.

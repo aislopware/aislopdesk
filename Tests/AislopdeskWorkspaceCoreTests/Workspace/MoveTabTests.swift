@@ -108,4 +108,67 @@ final class MoveTabTests: XCTestCase {
         XCTAssertEqual(Set(moved.allPaneIDs()), before, "moveTab adds/removes no leaf (reconcile stays a no-op)")
         XCTAssertTrue(moved.isInvariantHeld(), "the specs == leafIDs invariant survives the permutation")
     }
+
+    // MARK: - WYSIWYG rendered-order move (rendered order ≠ array order, e.g. Sort = Updated)
+
+    /// The fix's core: when the RENDERED order differs from the `session.tabs` array order (as it does under
+    /// ``TabSort/updated``), a drag must move ONLY the dragged row relative to what the user SEES — not
+    /// reshuffle the whole list back to array order. ``WorkspaceTreeOps/moveTab(renderedOrder:from:to:in:)``
+    /// materializes the rendered order then moves by RENDERED position. This FAILS on the old absolute-index
+    /// path (`moveTab(from:to:)` on the raw array would produce the array reshuffle, not this).
+    func testRenderedOrderMoveIsWYSIWYGNotArrayReshuffle() {
+        // Array order: [t0, t1, t2, t3]. Rendered (e.g. recency) order is a DIFFERENT permutation.
+        let (ws, ids) = workspace(tabCount: 4, activeIndex: 0)
+        let rendered = [ids[3], ids[1], ids[0], ids[2]] // what the user sees, ≠ array order
+        // Drag the row at rendered position 0 (t3) to rendered position 2.
+        let moved = WorkspaceTreeOps.moveTab(renderedOrder: rendered, from: 0, to: 2, in: ws)
+        // Expected: the RENDERED list with ONLY t3 moved to slot 2 → [t1, t0, t3, t2].
+        XCTAssertEqual(
+            tabIDs(moved), [ids[1], ids[0], ids[3], ids[2]],
+            "only the dragged row moves, relative to the rendered order the user sees",
+        )
+        // It must NOT be the raw-array reshuffle that the old absolute-index path produced.
+        let arrayReshuffle = WorkspaceTreeOps.moveTab(from: 0, to: 2, in: ws)
+        XCTAssertNotEqual(
+            tabIDs(moved), tabIDs(arrayReshuffle),
+            "the WYSIWYG move differs from the absolute-array-index move (the bug)",
+        )
+    }
+
+    func testRenderedOrderMoveBackToFront() {
+        let (ws, ids) = workspace(tabCount: 4, activeIndex: 0)
+        let rendered = [ids[3], ids[1], ids[0], ids[2]]
+        // Drag rendered position 3 (t2) to the front (rendered position 0).
+        let moved = WorkspaceTreeOps.moveTab(renderedOrder: rendered, from: 3, to: 0, in: ws)
+        XCTAssertEqual(tabIDs(moved), [ids[2], ids[3], ids[1], ids[0]])
+    }
+
+    func testRenderedOrderMoveKeepsActiveSelectionByID() {
+        // The middle-of-RENDERED tab is active; moving another tab must keep it selected.
+        let (ws, ids) = workspace(tabCount: 4, activeIndex: 1) // active = t1 (rendered position 1)
+        XCTAssertEqual(activeTabID(ws), ids[1])
+        let rendered = [ids[3], ids[1], ids[0], ids[2]]
+        let moved = WorkspaceTreeOps.moveTab(renderedOrder: rendered, from: 0, to: 2, in: ws)
+        XCTAssertEqual(tabIDs(moved), [ids[1], ids[0], ids[3], ids[2]])
+        XCTAssertEqual(activeTabID(moved), ids[1], "the previously-active tab id stays selected across the move")
+    }
+
+    func testRenderedOrderMoveToSamePositionIsANoOp() {
+        let (ws, ids) = workspace(tabCount: 4, activeIndex: 0)
+        let rendered = [ids[3], ids[1], ids[0], ids[2]]
+        let moved = WorkspaceTreeOps.moveTab(renderedOrder: rendered, from: 1, to: 1, in: ws)
+        XCTAssertEqual(moved, ws, "a move to its own rendered slot leaves the workspace (and array) untouched")
+        XCTAssertEqual(tabIDs(moved), ids, "the array is NOT materialized for a null drag")
+    }
+
+    func testRenderedOrderThatIsNotAPermutationIsDropped() {
+        let (ws, ids) = workspace(tabCount: 3, activeIndex: 0)
+        // A stale/foreign order (wrong length, or a ghost id) must be dropped — never reorder on bad input.
+        let wrongLength = WorkspaceTreeOps.moveTab(renderedOrder: [ids[0], ids[1]], from: 0, to: 1, in: ws)
+        XCTAssertEqual(wrongLength, ws, "a rendered order that isn't an exact permutation is a no-op")
+        let ghost = WorkspaceTreeOps.moveTab(
+            renderedOrder: [ids[0], ids[1], TabID()], from: 0, to: 2, in: ws,
+        )
+        XCTAssertEqual(ghost, ws, "a rendered order with a foreign tab id is dropped")
+    }
 }

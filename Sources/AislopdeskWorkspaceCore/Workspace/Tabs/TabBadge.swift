@@ -14,14 +14,17 @@ public enum TabBadgeKind: Equatable, Sendable {
     /// a working agent. Rendered as an indeterminate spinner in the view layer.
     case running
     /// **Completed** — the green checkmark. The brief success flash a command shows on a clean exit
-    /// (`OSC 133;D` exit 0) before it settles to ``finished``. This pure resolver emits ``completed``
-    /// for a stored `.success` completion / an agent that just finished its turn; the decay to the
-    /// settled accent dot (``finished``) is a time/unread concern handled by the view, not modeled here
-    /// (the four inputs carry no timestamp).
+    /// (`OSC 133;D` exit 0) before it settles to ``finished``. This resolver emits ``completed`` for a
+    /// `.success` completion / an agent that just finished its turn ONLY while the caller reports the
+    /// completion is still ``CompletionFreshness/fresh``; once it ``CompletionFreshness/settled`` the
+    /// same inputs decay to the ``finished`` accent dot. Freshness is an INPUT (the store mirrors a
+    /// per-pane `completedAt` and compares it to "now"), so this resolver stays clock-free.
     case completed
     /// **Finished** — the small accent dot, the "unread output" marker for a command that exited 0 and
-    /// has settled past the ``completed`` flash. Kept in the kind set for the view's decay rendering;
-    /// not produced by this timestamp-free resolver.
+    /// has settled past the ``completed`` flash (and for an agent that went idle/done and is still
+    /// unread). Reached when the caller reports ``CompletionFreshness/settled`` for a `.success` /
+    /// `.done` row — the persistent marker that holds until the tab is viewed (its badge is cleared on
+    /// focus). No timestamp lives here; the settle decision is the store's.
     case finished
     /// **Error** — the alert triangle. A command exited non-zero (`OSC 9;4;2` / a `.failure`
     /// completion) or an agent reported an error.
@@ -56,6 +59,18 @@ public enum TabBadgeKind: Equatable, Sendable {
 /// classified by an **allow-set on its lowercased basename**, never `contains`, and defaults to "no
 /// privilege badge" for anything unknown / `nil` (validate-then-default; no force-unwrap).
 public enum TabBadgeResolver {
+    /// Whether a clean completion (`.success` exit / agent `.done`) is still showing its brief success
+    /// FLASH or has SETTLED into the persistent unread marker. A pure, clock-free input the resolver
+    /// switches the completed/finished branch on — the caller (the store) decides it by comparing an
+    /// EPHEMERAL per-pane `completedAt` mirror against "now", so this resolver never reads a clock.
+    public enum CompletionFreshness: Sendable, Equatable {
+        /// Just completed — render the brief ``TabBadgeKind/completed`` checkmark flash.
+        case fresh
+        /// Settled past the flash — render the persistent ``TabBadgeKind/finished`` accent dot (held
+        /// until the tab is viewed). Also the default for a completion with no recorded stamp.
+        case settled
+    }
+
     /// Basenames that mark a **privileged** session (the shield). A small allow-set; matched exactly
     /// against the lowercased basename of the foreground process.
     private static let sudoBasenames: Set<String> = ["sudo", "su"]
@@ -73,12 +88,17 @@ public enum TabBadgeResolver {
     ///   - foregroundProcess: the last foreground-process string the host reported (wire type 26),
     ///     possibly a bare name or a full path; UNTRUSTED. Classified by lowercased basename into
     ///     `sudo`/`caffeinate`, else ignored.
+    ///   - completionFreshness: whether a clean completion (`.success` / agent `.done`) is still a
+    ///     ``CompletionFreshness/fresh`` checkmark FLASH or has ``CompletionFreshness/settled`` into the
+    ///     accent dot. Supplied by the store (an ephemeral `completedAt` vs "now"); defaults to
+    ///     ``CompletionFreshness/settled`` so an un-stamped completion shows the persistent marker.
     /// - Returns: the badge to render, or `nil` when the row is all-clear.
     public static func badge(
         agent: ClaudeStatus,
         completion: PaneCompletionBadge?,
         isBusy: Bool,
         foregroundProcess: String?,
+        completionFreshness: CompletionFreshness = .settled,
     ) -> TabBadgeKind? {
         // 1. Awaiting input — a blocked agent demands a human; highest urgency.
         if agent == .needsPermission { return .awaitingInput }
@@ -92,10 +112,16 @@ public enum TabBadgeResolver {
         // 4 + 5. Privilege badges, only when the shell is at rest: sudo (shield) > caffeinate (coffee).
         if let privilege = privilegeBadge(forProcess: foregroundProcess) { return privilege }
 
-        // 6. Completed/finished — a clean exit, or an agent that just finished its turn. This pure
-        // resolver emits the immediate `.completed` (checkmark); the decay to the settled `.finished`
-        // accent dot is a view-side concern (no timestamp here).
-        if completion == .success || agent == .done { return .completed }
+        // 6. Completed/finished — a clean exit, or an agent that just finished its turn. While the
+        // completion is FRESH it shows the brief `.completed` checkmark flash; once the caller reports
+        // it SETTLED it decays to the persistent `.finished` accent dot (otty's "unread output" marker,
+        // held until the tab is viewed). Freshness is an input — no clock here.
+        if completion == .success || agent == .done {
+            switch completionFreshness {
+            case .fresh: return .completed
+            case .settled: return .finished
+            }
+        }
 
         // 7. All-clear.
         return nil

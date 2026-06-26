@@ -18,12 +18,14 @@ final class TabBadgeResolverTests: XCTestCase {
         completion: PaneCompletionBadge? = nil,
         isBusy: Bool = false,
         foregroundProcess: String? = nil,
+        completionFreshness: TabBadgeResolver.CompletionFreshness = .settled,
     ) -> TabBadgeKind? {
         TabBadgeResolver.badge(
             agent: agent,
             completion: completion,
             isBusy: isBusy,
             foregroundProcess: foregroundProcess,
+            completionFreshness: completionFreshness,
         )
     }
 
@@ -49,15 +51,36 @@ final class TabBadgeResolverTests: XCTestCase {
         XCTAssertEqual(badge(agent: .working), .running)
     }
 
-    /// A clean exit ⇒ the checkmark (completed). This pure resolver emits the immediate `.completed`;
-    /// the decay to the settled `.finished` accent dot is a view concern (no timestamp here).
-    func testSuccessCompletionMapsToCompleted() {
-        XCTAssertEqual(badge(completion: .success), .completed)
+    /// A FRESH clean exit ⇒ the checkmark (completed) — the brief success flash, while the caller still
+    /// reports the completion `.fresh`.
+    func testFreshSuccessCompletionMapsToCompleted() {
+        XCTAssertEqual(badge(completion: .success, completionFreshness: .fresh), .completed)
     }
 
-    /// An agent that just finished its turn (`done`) ⇒ completed (the task-complete indicator).
-    func testDoneAgentMapsToCompleted() {
-        XCTAssertEqual(badge(agent: .done), .completed)
+    /// A SETTLED clean exit ⇒ the accent dot (finished) — the persistent "unread output" marker once the
+    /// flash decays. This exercises the previously-UNREACHABLE `.finished` state: a resolver that mapped
+    /// BOTH freshness states to `.completed` (the pre-fix behaviour) FAILS this assertion
+    /// (revert-to-confirm-fail), so it is not tautological.
+    func testSettledSuccessCompletionMapsToFinished() {
+        XCTAssertEqual(badge(completion: .success, completionFreshness: .settled), .finished)
+    }
+
+    /// A FRESH agent turn-finish (`done`) ⇒ completed (the brief task-complete checkmark).
+    func testFreshDoneAgentMapsToCompleted() {
+        XCTAssertEqual(badge(agent: .done, completionFreshness: .fresh), .completed)
+    }
+
+    /// A SETTLED idle/done agent that is still unread ⇒ the accent dot (finished) — otty's "a dot when
+    /// the agent goes idle". Also fails on the pre-fix both-to-`.completed` resolver (revert-to-confirm-fail).
+    func testSettledDoneAgentMapsToFinished() {
+        XCTAssertEqual(badge(agent: .done, completionFreshness: .settled), .finished)
+    }
+
+    /// The default freshness is `.settled` (the persistent marker): an un-stamped clean completion
+    /// resolves to the accent dot, not a perpetual checkmark.
+    func testDefaultFreshnessIsSettledFinished() {
+        XCTAssertEqual(badge(completion: .success), .finished)
+        XCTAssertEqual(badge(agent: .done), .finished)
     }
 
     /// All-clear ⇒ no badge.

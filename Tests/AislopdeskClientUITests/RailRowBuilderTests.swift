@@ -77,12 +77,24 @@ final class RailRowBuilderTests: XCTestCase {
         XCTAssertEqual(RailRowsBuilder.rows(for: store)[0].badge, .error)
     }
 
-    /// A clean exit (`.success` completion) surfaces the `.completed` badge.
-    func testCompletedBadgeFromSuccessCompletion() {
+    /// A JUST-completed clean exit (`.success`) surfaces the brief `.completed` checkmark flash — the
+    /// stamp is fresh (the rows build microseconds later, inside the flash window).
+    func testCompletedBadgeFromFreshSuccessCompletion() {
         let store = makeStore()
         let pane = paneID(store, row: 0)
         store.setCompletionBadge(.success, for: pane)
         XCTAssertEqual(RailRowsBuilder.rows(for: store)[0].badge, .completed)
+    }
+
+    /// A SETTLED clean exit (the `.success` landed longer ago than the flash window) surfaces the
+    /// persistent `.finished` accent dot — proving otty's unread-output marker is reachable end-to-end
+    /// through the rail (NOT a perpetual checkmark). The stamp is injected in the past so the row settles.
+    func testFinishedAccentDotFromSettledSuccessCompletion() {
+        let store = makeStore()
+        let pane = paneID(store, row: 0)
+        let stale = Date().addingTimeInterval(-(WorkspaceStore.completedFlashWindow + 5))
+        store.setCompletionBadge(.success, for: pane, at: stale)
+        XCTAssertEqual(RailRowsBuilder.rows(for: store)[0].badge, .finished)
     }
 
     /// Most-urgent wins: a blocked agent beats a failure completion on the same pane.

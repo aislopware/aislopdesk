@@ -18,13 +18,35 @@ public extension WorkspaceStore {
     }
 
     /// Sets the per-pane completion badge. Idempotent (a no-op when unchanged so it never churns the
-    /// views); `nil` removes the key. Mirrors ``setAgentStatus(_:for:)``.
-    func setCompletionBadge(_ badge: PaneCompletionBadge?, for id: PaneID) {
+    /// views); `nil` removes the key. Mirrors ``setAgentStatus(_:for:)``. `at` is the completion instant
+    /// (injectable for tests) used to stamp the badge-flash decay clock.
+    func setCompletionBadge(_ badge: PaneCompletionBadge?, for id: PaneID, at date: Date = Date()) {
         guard panePendingCompletion[id] != badge else { return }
         if let badge { panePendingCompletion[id] = badge } else { panePendingCompletion.removeValue(forKey: id) }
         // E6 WI-3: a command finishing is tab activity — stamp the owning tab's recency so a completed
         // background tab floats up under the `.updated` sort. Only a real badge edge (set, not clear).
-        if badge != nil { stampTabActivity(forPane: id) }
+        if badge != nil { stampTabActivity(forPane: id, at: date) }
+        // Stamp the ephemeral `completedAt` that drives the otty checkmark→accent-dot decay: a fresh
+        // `.success` records the instant (brief `.completed` flash, settling to `.finished`). Only the
+        // positive `.success` edge stamps; a `.failure` (→ `.error`) or a clear leaves any prior stamp
+        // (harmless — the resolver reads it only in the completed/finished branch, and reconcile prunes
+        // it), so it never clobbers a coexisting agent `.done` stamp.
+        if badge == .success { paneCompletedAt[id] = date }
+    }
+
+    /// Whether pane `id`'s clean completion (`.success` badge / agent `.done`) is still showing its brief
+    /// ``TabBadgeKind/completed`` checkmark FLASH or has ``TabBadgeKind/finished`` SETTLED into the accent
+    /// dot. The PURE freshness input ``TabBadgeResolver/badge(agent:completion:isBusy:foregroundProcess:completionFreshness:)``
+    /// switches on — computed HERE (the store owns the clock) by comparing the ephemeral
+    /// ``WorkspaceStore/paneCompletedAt`` stamp against `now` (injectable for tests). No stamp ⇒
+    /// ``TabBadgeResolver/CompletionFreshness/settled`` (show the persistent marker). Ordered compare —
+    /// no bare `<` on a value that could be NaN (an interval here is finite, but keep the convention).
+    func completionFreshness(
+        forPane id: PaneID, now: Date = Date(),
+    ) -> TabBadgeResolver.CompletionFreshness {
+        guard let completedAt = paneCompletedAt[id] else { return .settled }
+        let elapsed = now.timeIntervalSince(completedAt)
+        return elapsed.isLess(than: Self.completedFlashWindow) ? .fresh : .settled
     }
 
     /// The rolled-up completion badge over every leaf of session `sessionID` — `.failure` dominates

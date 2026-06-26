@@ -105,6 +105,64 @@ final class TabSortStoreTests: XCTestCase {
         XCTAssertEqual(store2.tabGrouping, .byDate, "the grouping choice persists + hydrates on a new store")
     }
 
+    // MARK: - By-Project git-toplevel cache invalidation on a cwd change (ES-E6-4)
+
+    /// A cached git toplevel (E6 WI-7) must take precedence over the cwd for By-Project — but the moment the
+    /// pane's cwd CHANGES (a `cd` across repos in the SAME live pane), the cache is stale and must be dropped
+    /// so the group FOLLOWS the new cwd. FAILS on the un-fixed store: `setLastKnownCwd` never touched
+    /// `paneGitToplevel` and the reconcile prune only drops CLOSED leaves, so `paneProjectKey` kept returning
+    /// the old repo root and By-Project silently lied.
+    func testCwdChangeInvalidatesStaleGitToplevelCache() {
+        let (store, _) = makeStore()
+        store.setTabGrouping(.byProject)
+        guard let pane = store.tree.activeSession?.tabs[0].activePane else {
+            XCTFail("tab 0 has an active pane")
+            return
+        }
+
+        // Seed a precise repo root for pane 0 (cwd `/Users/me/alpha`) — it must WIN over the cwd fallback.
+        store.cacheGitToplevel("/repo/root", for: pane)
+        XCTAssertEqual(
+            store.paneProjectKey(pane), "/repo/root",
+            "the cached git toplevel takes precedence over the cwd",
+        )
+        XCTAssertEqual(
+            store.orderedTabGroups().map(\.header),
+            ["root", "beta", "gamma"],
+            "By-Project groups pane 0 by the cached repo root (last path component), not its cwd",
+        )
+
+        // The pane `cd`s into a DIFFERENT repo — the cached toplevel is now stale and must be invalidated so
+        // the group follows the new cwd-derived key. (Post-`cd` assertions FAIL on the un-fixed store.)
+        store.setLastKnownCwd("/Users/me/delta", for: pane)
+        XCTAssertEqual(
+            store.paneProjectKey(pane), "/Users/me/delta",
+            "after a cwd change the stale cache is dropped ⇒ paneProjectKey falls back to the fresh cwd",
+        )
+        XCTAssertEqual(
+            store.orderedTabGroups().map(\.header),
+            ["delta", "beta", "gamma"],
+            "By-Project now groups pane 0 by its NEW cwd, no longer the stale repo root",
+        )
+    }
+
+    /// A re-stamp of the SAME cwd is not a change ⇒ the cached toplevel must SURVIVE (the dirty guard short-
+    /// circuits before the invalidation), so an idempotent cwd write can't churn the By-Project sections.
+    func testSameCwdReStampKeepsGitToplevelCache() {
+        let (store, _) = makeStore()
+        store.setTabGrouping(.byProject)
+        guard let pane = store.tree.activeSession?.tabs[0].activePane else {
+            XCTFail("tab 0 has an active pane")
+            return
+        }
+        store.cacheGitToplevel("/repo/root", for: pane)
+        store.setLastKnownCwd("/Users/me/alpha", for: pane) // identical to the seeded cwd ⇒ no change
+        XCTAssertEqual(
+            store.paneProjectKey(pane), "/repo/root",
+            "an unchanged cwd write does not invalidate the cache (the dirty guard short-circuits)",
+        )
+    }
+
     // MARK: - selectTab stamps recency and flips Updated order (ES-E6-5)
 
     func testSelectTabBumpsRecencyAndFlipsUpdatedOrder() {
@@ -218,6 +276,43 @@ final class TabSortStoreTests: XCTestCase {
         store.setTabSort(.created)
         store.moveTab(from: 1, to: 1) // same index ⇒ no-op
         XCTAssertEqual(store.tabSort, .created, "a no-op move must not flip the sort to Manual")
+    }
+
+    // MARK: - WYSIWYG rendered drag (moveTabRendered): rendered order ≠ array order under .updated
+
+    /// The fix: a drag under ``TabSort/updated`` must be WYSIWYG against the RENDERED order — only the dragged
+    /// row moves, the rest stay where the recency order put them. FAILS on the old absolute-index drag, which
+    /// flipped the whole list to array(manual) order at once (reshuffling every row, not just the dragged one).
+    func testMoveTabRenderedIsWYSIWYGUnderUpdated() {
+        let (store, ids) = makeStore()
+        store.setTabSort(.updated)
+        // Make the rendered order differ from the array order [t0, t1, t2]: float t2 then t0 to the front.
+        store.selectTab(2)
+        store.selectTab(0)
+        let rendered = store.orderedTabGroups()[0].tabIDs
+        XCTAssertEqual(rendered, [ids[0], ids[2], ids[1]], "precondition: rendered (recency) order ≠ array order")
+
+        // Drag the row at rendered position 0 (t0) to rendered position 2.
+        store.moveTabRendered(from: 0, to: 2)
+        XCTAssertEqual(store.tabSort, .manual, "a real drag converts the live order to Manual")
+        XCTAssertEqual(
+            store.orderedTabGroups()[0].tabIDs, [ids[2], ids[1], ids[0]],
+            "only the dragged row moves, relative to the rendered order (WYSIWYG), not the array reshuffle",
+        )
+    }
+
+    /// Manual reorder is a FLAT-LIST affordance: a drag while a grouping is active must be a NO-OP (you cannot
+    /// hand-order across derived buckets). The store guards it so a stray drop can't silently reshuffle.
+    func testMoveTabRenderedIsANoOpUnderGrouping() {
+        let (store, ids) = makeStore()
+        store.setTabGrouping(.byProject) // three distinct cwds ⇒ three single-tab buckets
+        let sortBefore = store.tabSort
+        store.moveTabRendered(from: 0, to: 2)
+        XCTAssertEqual(
+            store.tree.activeSession?.tabs.map(\.id), ids,
+            "a drag under grouping leaves the tab array untouched (no cross-bucket hand-ordering)",
+        )
+        XCTAssertEqual(store.tabSort, sortBefore, "a no-op grouped drag must not flip the sort to Manual")
     }
 
     // MARK: - Leaf set unchanged by a reorder (reconcile no-op — no surface teardown)

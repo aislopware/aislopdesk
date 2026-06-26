@@ -3198,6 +3198,22 @@ public final class WorkspaceStore {
     /// same-module extension in another file) can write it; still read-only to other modules.
     public internal(set) var panePendingCompletion: [PaneID: PaneCompletionBadge] = [:]
 
+    /// RUNTIME-ONLY per-pane "when did this clean completion land" mirror — the EPHEMERAL `completedAt`
+    /// that lets the otty badge flash decay from ``TabBadgeKind/completed`` (the brief checkmark) to
+    /// ``TabBadgeKind/finished`` (the persistent accent dot). Stamped on a `.success` completion-badge
+    /// edge (``setCompletionBadge(_:for:)``) and on an agent's entry into ``ClaudeStatus/done``
+    /// (``setAgentStatus(_:for:)``); read by ``completionFreshness(forPane:now:)`` which compares it to
+    /// "now". Like ``tabLastActiveAt`` it is NOT persisted (Design #2 — no `Tab` schema bump / migration;
+    /// it resets on relaunch, harmless) and is PRUNED to the live leaf set on every reconcile alongside
+    /// ``panePendingCompletion``.
+    public internal(set) var paneCompletedAt: [PaneID: Date] = [:]
+
+    /// How long a clean completion shows its brief ``TabBadgeKind/completed`` checkmark flash before it
+    /// settles to the persistent ``TabBadgeKind/finished`` accent dot. Short — otty's flash is a beat,
+    /// not a dwell — but long enough to register. Compared against ``paneCompletedAt`` in
+    /// ``completionFreshness(forPane:now:)``.
+    public static let completedFlashWindow: TimeInterval = 3
+
     /// Whether the app is foregrounded/active — fed from the SwiftUI `scenePhase` by the app shell
     /// (`.active → true`, else `false`). Defaults `true` so a headless store (tests) treats the active
     /// leaf as focused. Combined with the active-leaf identity it forms the "is this pane focused" gate
@@ -3463,6 +3479,11 @@ public final class WorkspaceStore {
         // agent status above — a closed pane must not keep a ✓/✗ in a rollup).
         if !panePendingCompletion.isEmpty {
             panePendingCompletion = panePendingCompletion.filter { leafSet.contains($0.key) }
+        }
+        // Prune the ephemeral completion-timestamp mirror in lockstep (the badge-flash decay clock) so a
+        // closed pane's stamp drops out — no leak, no stale freshness on a recycled id.
+        if !paneCompletedAt.isEmpty {
+            paneCompletedAt = paneCompletedAt.filter { leafSet.contains($0.key) }
         }
         // Prune the per-pane foreground-process mirror in lockstep with the agent status (E6 WI-2): a
         // closed pane must not keep a stale process label / privilege badge, and the dict must not grow
@@ -4317,6 +4338,15 @@ public extension WorkspaceStore {
             }
         guard current != cwd else { return }
         updateSpecLive(paneID) { $0.lastKnownCwd = cwd }
+        // ES-E6-4: the pane's cwd just CHANGED (the guard above proves it differs), so any cached git
+        // toplevel for this pane is now stale — a `cd` can cross repos within the SAME live pane, and the
+        // reconcile prune only drops CLOSED leaves. Invalidate the cache so `paneProjectKey` falls back to
+        // the fresh cwd-derived key immediately (no longer the old repo), then re-trigger the debounced
+        // By-Project sweep so it refetches the new precise repo root. The refresh is a self-guarded no-op
+        // unless `tabGrouping == .byProject`, so None / By-Date never spend the probe.
+        if paneGitToplevel.removeValue(forKey: paneID) != nil {
+            refreshProjectKeysIfNeeded()
+        }
     }
 
     /// A26 cwd-inheritance: after a new TERMINAL pane materializes, type a deferred `cd <cwd>\n` into it so

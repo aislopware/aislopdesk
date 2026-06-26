@@ -11,8 +11,10 @@
 //     ``WorkspaceStore/tabGrouping`` / ``WorkspaceStore/tabSort`` / recency), so the hamburger's choice — and
 //     a manual drag — mutate the STORE, never local `@State` (the E6-carryover binding constraint);
 //   • each row carries the new ``RailRow`` chrome (`#N` / cwd subtitle / fused badge / process label);
-//   • dragging a row reorders the session's tabs via ``WorkspaceStore/moveTab(from:to:)`` (which flips Sort to
-//     Manual) — the leaf set is unchanged, so reconcile is a registry no-op (no surface teardown).
+//   • dragging a row reorders the session's tabs via ``WorkspaceStore/moveTabRendered(from:to:)`` — a WYSIWYG
+//     move by RENDERED position (so only the dragged row moves, even under `.updated`), which flips Sort to
+//     Manual; the leaf set is unchanged, so reconcile is a registry no-op (no surface teardown). Manual order
+//     is a flat-list affordance, so the drag source/target are OFF whenever a grouping is active.
 //
 // iOS: a `List(selection:)` so NavigationSplitView pushes to the content column on a compact iPhone (a custom
 // button list does not drive column navigation). otty-styled but keeps the system list's navigation wiring;
@@ -65,16 +67,53 @@ struct NavigatorColumn: View {
             }
     }
 
-    /// Apply a manual drag-reorder: the payload is the dragged tab's ABSOLUTE `session.tabs` index (the row's
-    /// `#N` − 1), the target is the dropped-on row's tab. Routes through ``WorkspaceStore/moveTab(from:to:)``
-    /// (which flips Sort → Manual and permutes only the tabs array — no surface teardown). A self / OOB drop is
-    /// a no-op (validate-then-drop; never trust the decoded index).
+    /// Whether the manual drag-reorder affordance is live: ONLY when ``WorkspaceStore/tabGrouping`` is
+    /// ``TabGrouping/none``. You cannot hand-order across derived buckets (By-Project / By-Date), so the rows
+    /// are neither draggable nor drop targets while grouping is on — pretending to would silently discard a
+    /// cross-group drop (it would snap back to its own bucket).
+    private var dragReorderEnabled: Bool { store.tabGrouping == .none }
+
+    /// The active session's tab ids in RENDERED order — the flat sidebar order
+    /// (``WorkspaceStore/orderedTabGroups(now:)`` flattened). The basis for a WYSIWYG drag: a row's drag
+    /// payload + drop target are RENDERED positions into this list, not raw `session.tabs` indices (which
+    /// differ from the rendered order under ``TabSort/updated``). Consulted only while `dragReorderEnabled`.
+    private var renderedTabOrder: [TabID] {
+        store.orderedTabGroups().flatMap(\.tabIDs)
+    }
+
+    /// The rendered position of `row`'s tab in the flat sidebar order, or `nil` if it isn't shown (e.g. the
+    /// row filtered out) — in which case the row carries no drag payload / drop target.
+    private func renderedPosition(of row: RailRow) -> Int? {
+        renderedTabOrder.firstIndex(of: row.tabID)
+    }
+
+    /// Apply a manual drag-reorder. The payload and the target are both RENDERED positions (positions into
+    /// ``renderedTabOrder``), so the move is WYSIWYG against what the user sees — not raw `session.tabs`
+    /// indices. Routes through ``WorkspaceStore/moveTabRendered(from:to:)``, which materializes the rendered
+    /// order into the tabs array then moves only the dragged tab (flipping Sort → Manual, no surface
+    /// teardown). A self / OOB drop, or any drop while grouping is on, is a no-op (validate-then-drop).
     private func handleTabDrop(_ items: [String], onto target: RailRow) -> Bool {
+        guard dragReorderEnabled else { return false }
         guard let raw = items.first, let from = Int(raw) else { return false }
-        let to = target.tabNumber - 1
+        guard let to = renderedPosition(of: target) else { return false }
         guard from >= 0, from != to else { return false }
-        store.moveTab(from: from, to: to)
+        store.moveTabRendered(from: from, to: to)
         return true
+    }
+
+    /// Conditionally attach the drag SOURCE + drop TARGET to a row's content: only while `dragReorderEnabled`
+    /// and the row has a rendered position. The drag payload is the row's RENDERED position (so the drop
+    /// translates rendered → rendered, never raw-array indices). Off (grouping on / no position) ⇒ the bare
+    /// content, so the rows aren't draggable across buckets.
+    @ViewBuilder
+    private func reorderable(_ content: some View, row: RailRow) -> some View {
+        if dragReorderEnabled, let position = renderedPosition(of: row) {
+            content
+                .draggable(String(position))
+                .dropDestination(for: String.self) { items, _ -> Bool in handleTabDrop(items, onto: row) }
+        } else {
+            content
+        }
     }
 
     #if os(macOS)
@@ -162,18 +201,19 @@ struct NavigatorColumn: View {
     /// One macOS tab row: the full otty chrome (badge / `#N` / cwd subtitle / process label) plus the
     /// drag-reorder source + drop target wired to ``WorkspaceStore/moveTab``.
     private func macRow(_ row: RailRow) -> some View {
-        OttyTabRow(
-            title: row.title.isEmpty ? defaultTitle(for: row.kind) : row.title,
-            active: row.id == selectedPane,
-            number: row.tabNumber,
-            subtitle: row.subtitle,
-            processLabel: row.processLabel,
-            badge: row.badge,
-            onSelect: { select(row.id) },
-            onClose: { store.requestClosePaneTree(row.id) },
+        reorderable(
+            OttyTabRow(
+                title: row.title.isEmpty ? defaultTitle(for: row.kind) : row.title,
+                active: row.id == selectedPane,
+                number: row.tabNumber,
+                subtitle: row.subtitle,
+                processLabel: row.processLabel,
+                badge: row.badge,
+                onSelect: { select(row.id) },
+                onClose: { store.requestClosePaneTree(row.id) },
+            ),
+            row: row,
         )
-        .draggable(String(row.tabNumber - 1))
-        .dropDestination(for: String.self) { items, _ in handleTabDrop(items, onto: row) }
     }
 
     private func emptyLabel(_ text: String) -> some View {
@@ -226,26 +266,27 @@ struct NavigatorColumn: View {
     /// One iOS list row: the system `Label` (navigation wiring via `.tag`) plus the trailing fused badge and
     /// monospaced `#N`, and the same drag-reorder source/target as macOS.
     private func iosRow(_ row: RailRow) -> some View {
-        HStack(spacing: 8) {
-            Label {
-                Text(row.title.isEmpty ? defaultTitle(for: row.kind) : row.title)
-                    .lineLimit(1)
-            } icon: {
-                Image(systemSymbol: Self.symbol(for: row.kind))
+        reorderable(
+            HStack(spacing: 8) {
+                Label {
+                    Text(row.title.isEmpty ? defaultTitle(for: row.kind) : row.title)
+                        .lineLimit(1)
+                } icon: {
+                    Image(systemSymbol: Self.symbol(for: row.kind))
+                }
+                Spacer(minLength: 6)
+                if let badge = row.badge {
+                    TabBadgeView(kind: badge)
+                }
+                if row.tabNumber > 0 {
+                    Text("#\(row.tabNumber)")
+                        .font(.system(size: Otty.Typeface.small, design: .monospaced))
+                        .foregroundStyle(Otty.Text.secondary)
+                }
             }
-            Spacer(minLength: 6)
-            if let badge = row.badge {
-                TabBadgeView(kind: badge)
-            }
-            if row.tabNumber > 0 {
-                Text("#\(row.tabNumber)")
-                    .font(.system(size: Otty.Typeface.small, design: .monospaced))
-                    .foregroundStyle(Otty.Text.secondary)
-            }
-        }
-        .tag(row.id)
-        .draggable(String(row.tabNumber - 1))
-        .dropDestination(for: String.self) { items, _ in handleTabDrop(items, onto: row) }
+            .tag(row.id),
+            row: row,
+        )
     }
     #endif
 
