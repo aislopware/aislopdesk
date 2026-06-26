@@ -41,6 +41,10 @@ final class TerminalFindBarModelTests: XCTestCase {
         }
 
         func scrollbackTextLines() -> [String] { lines }
+
+        /// Drop the recorded actions so a test can assert on a fresh window of bind-actions (e.g. only those
+        /// fired by a subsequent `next()`/`previous()`), without the open/query priming noise.
+        func resetActions() { actions.removeAll() }
     }
 
     /// Build a find-bar model bound to a headless ``TerminalViewModel`` fed by a fake surface, run `body`, and
@@ -140,6 +144,67 @@ final class TerminalFindBarModelTests: XCTestCase {
             bar.toggleRegex()
             XCTAssertTrue(bar.controller.isRegex)
             XCTAssertEqual(bar.controller.matchCount, 3, "regex mode matches the three digits")
+        }
+    }
+
+    /// ES-E5-4 (regex-mode honesty fix): in `.*` mode the bar must NOT arm libghostty's LITERAL search
+    /// (`search:<pattern>` / `navigate_search:`) — that matcher has no regex engine, so it would paint a
+    /// misleading literal highlight beside the controller's correct regex count and leave the chevrons dead.
+    /// Instead each open / next / previous drives in-grid navigation from the controller's own match rows via
+    /// `scroll_to_row:<row>` (DISTINCT per match), and ends the literal search so no stale highlight lingers.
+    /// Revert-to-confirm-fail: the un-fixed `armSearch`/`next` always arm `search:` + `navigate_search:`, so
+    /// the "no literal action in regex mode" + "distinct scroll_to_row per match" assertions fail on it.
+    func testRegexModeDrivesScrollToRowNotLiteralSearch() {
+        // Three regex matches of `do.`, each on a DISTINCT row (rows 0, 2, 4 of the mirror).
+        withBar(lines: ["do1", "xxx", "do2", "yyy", "do3"]) { bar, surface in
+            bar.open()
+            bar.toggleRegex() // flip to regex BEFORE querying so no literal `search:` is ever armed for it
+            XCTAssertTrue(bar.controller.isRegex)
+
+            bar.setQuery("do.")
+            XCTAssertEqual(bar.controller.matchCount, 3, "regex `do.` matches do1/do2/do3")
+            // The literal needle is NEVER pushed to libghostty in regex mode (would highlight 0 hits + lie).
+            XCTAssertFalse(
+                surface.actions.contains("search:do."),
+                "regex mode must not arm libghostty's literal search",
+            )
+            // Open arms end_search (clear stale highlight) + scrolls to the first match's row (0).
+            XCTAssertTrue(surface.actions.contains("scroll_to_row:0"), "open scrolls to the first regex match row")
+
+            // next / previous emit DISTINCT grid-nav intent per match — and NEVER the literal navigate_search.
+            surface.resetActions()
+            bar.next() // match 2 → row 2
+            bar.next() // match 3 → row 4
+            XCTAssertEqual(
+                surface.actions,
+                ["scroll_to_row:2", "scroll_to_row:4"],
+                "regex next steps the viewport to each match's distinct row",
+            )
+            bar.previous() // back to match 2 → row 2
+            XCTAssertEqual(surface.actions.last, "scroll_to_row:2", "regex previous scrolls back to the prior row")
+            XCTAssertFalse(
+                surface.actions.contains(where: { $0.hasPrefix("navigate_search:") }),
+                "regex mode never fires libghostty's literal navigate_search (it would move nothing)",
+            )
+        }
+    }
+
+    /// Companion guard: LITERAL mode is UNCHANGED by the regex fix — it still arms `search:` and steps
+    /// libghostty's own `navigate_search:next`/`previous` (the ac2c7a8 fix), and never falls back to scroll_to_row.
+    func testLiteralModeStillArmsSearchAndNavigateSearch() {
+        withBar(lines: ["docs", "docs"]) { bar, surface in
+            bar.open()
+            bar.setQuery("docs")
+            XCTAssertTrue(surface.actions.contains("search:docs"))
+
+            surface.resetActions()
+            bar.next()
+            bar.previous()
+            XCTAssertEqual(surface.actions, ["navigate_search:next", "navigate_search:previous"])
+            XCTAssertFalse(
+                surface.actions.contains(where: { $0.hasPrefix("scroll_to_row:") }),
+                "literal mode owns its scroll via navigate_search, not scroll_to_row",
+            )
         }
     }
 }

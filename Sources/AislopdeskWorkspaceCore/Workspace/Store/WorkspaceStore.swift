@@ -3927,10 +3927,12 @@ public extension WorkspaceStore {
         focusPaneTree(hit.paneID) // selects hit.sessionID + hit.tabID + focuses hit.paneID
         guard let model = (registry[hit.paneID] as? TerminalModelProviding)?.terminalModel else { return }
         // ES-E5-5 click-to-line: arm the search, then advance to the CLICKED hit's ordinal within its pane
-        // group so distinct rows land distinctly (not all on the nearest match). The pure controller computes
-        // the ordered action sequence from the current results; an empty query yields no actions.
+        // group so distinct rows land distinctly (not all on the nearest match). In REGEX mode libghostty's
+        // literal matcher can't arm the pattern, so the controller instead ends any stale search and scrolls
+        // straight to the hit's row — pass the tracked regex flag so the jump matches the find bar. The pure
+        // controller computes the ordered action sequence from the current results; an empty query yields none.
         let actions = GlobalSearchController.navigationActions(
-            for: hit, in: globalSearch ?? .empty, query: globalSearchQuery,
+            for: hit, in: globalSearch ?? .empty, query: globalSearchQuery, isRegex: globalSearchRegex,
         )
         for action in actions {
             model.performSearchSurfaceAction(action)

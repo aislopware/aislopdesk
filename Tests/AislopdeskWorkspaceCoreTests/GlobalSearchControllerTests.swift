@@ -177,6 +177,43 @@ final class GlobalSearchControllerTests: XCTestCase {
         XCTAssertNotEqual(first, third, "distinct rows in one pane must produce distinct navigation intent")
     }
 
+    /// REGEX-mode click-to-line must NOT arm libghostty's literal matcher (which has no regex engine — arming
+    /// the pattern matches the pattern TEXT, usually 0 hits, leaving every `navigate_search:next` dead: the
+    /// dishonest "counter says N, nav moves nothing" state). Instead it must END any stale search and scroll
+    /// straight to the clicked hit's row — mirroring the find bar's regex path. Revert `navigationActions` to
+    /// the literal `search:`/`navigate_search:` sequence and this fails.
+    func testNavigationActionsRegexScrollsToRowWithoutLiteralSearch() throws {
+        let results = GlobalSearchController.run(
+            sources: [source("pane", ["alpha 12", "beta 34", "gamma 56"])],
+            query: #"\d+"#,
+            caseSensitive: false,
+            isRegex: true,
+        )
+        let hits = try XCTUnwrap(results.groups.first?.hits)
+        XCTAssertEqual(hits.count, 3)
+
+        // The 3rd hit is on line index 2 — regex mode scrolls there directly.
+        let third = GlobalSearchController.navigationActions(
+            for: hits[2], in: results, query: #"\d+"#, isRegex: true,
+        )
+        XCTAssertEqual(third, ["end_search", "scroll_to_row:\(hits[2].line)"])
+
+        // It must NEVER arm the literal pattern or step the literal cursor (those move nothing in regex mode).
+        XCTAssertFalse(
+            third.contains { $0.hasPrefix("search:") },
+            "regex jump must not arm libghostty's literal search",
+        )
+        XCTAssertFalse(third.contains("navigate_search:next"), "regex jump must not step the dead literal cursor")
+        XCTAssertFalse(third.contains("navigate_search:previous"))
+
+        // Distinct regex rows still land distinctly (each scrolls to its own row).
+        let first = GlobalSearchController.navigationActions(
+            for: hits[0], in: results, query: #"\d+"#, isRegex: true,
+        )
+        XCTAssertEqual(first, ["end_search", "scroll_to_row:\(hits[0].line)"])
+        XCTAssertNotEqual(first, third, "distinct regex rows must produce distinct scroll targets")
+    }
+
     /// An empty query arms nothing (validate-then-drop); a hit absent from the results degrades to a single
     /// step (ordinal 0) rather than trapping.
     func testNavigationActionsEmptyQueryAndStaleHit() throws {

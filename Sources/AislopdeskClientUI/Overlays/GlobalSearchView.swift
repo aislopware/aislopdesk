@@ -8,7 +8,7 @@
 //   ┌ query field [ Aa ][ .* ] ────────────────────────────────────────┐
 //   │ N results — M tabs                                               │
 //   │ ▸ <terminal-glyph> <group title (tab)>                           │
-//   │     <excerpt with the matched run highlighted amber>      ↗      │
+//   │     <excerpt with the matched run highlighted amber>      →      │  (→ on the HOVERED row only)
 //   │ ▸ <group title> …                                                │
 //   └──────────────────────────────────────────────────────────────────┘
 // (No leading magnifier on the query bar — the field is flush-left per global-search.png — and no in-bar `×`:
@@ -79,13 +79,17 @@ struct GlobalSearchView: View {
                 .foregroundStyle(Otty.Text.primary)
                 .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
                 .focused($queryFocused)
-            FindTogglePill(label: "Aa", isOn: caseSensitive, help: "Case sensitive") {
-                caseSensitive.toggle()
-                rerun()
-            }
-            FindTogglePill(label: ".*", isOn: isRegex, help: "Regex (ICU)") {
-                isRegex.toggle()
-                rerun()
+            // The mode pills sit in ONE segmented tray (find.png / global-search.png) — the EXACT control the
+            // find bar reuses, so the resting plates merge into a single delineated group, not detached chips.
+            FindTogglePillTray {
+                FindTogglePill(label: "Aa", isOn: caseSensitive, help: "Case sensitive") {
+                    caseSensitive.toggle()
+                    rerun()
+                }
+                FindTogglePill(label: ".*", isOn: isRegex, help: "Regex (ICU)") {
+                    isRegex.toggle()
+                    rerun()
+                }
             }
         }
         .padding(.horizontal, Otty.Metric.space4)
@@ -117,7 +121,7 @@ struct GlobalSearchView: View {
                     ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
                         groupHeader(group)
                         ForEach(Array(group.hits.enumerated()), id: \.offset) { _, hit in
-                            hitRow(hit)
+                            GlobalSearchHitRow(excerpt: highlightedExcerpt(hit)) { jump(to: hit) }
                         }
                     }
                 }
@@ -144,7 +148,9 @@ struct GlobalSearchView: View {
         // Per global-search.png the group header carries only a leading per-tab terminal glyph + the tab title.
         // (No ⌘ordinal badge: the ⌘1/⌘2/⌘3 numbers in the screenshot are SIDEBAR tab numbers, not group headers.)
         HStack(spacing: Otty.Metric.space2) {
-            Image(systemName: "terminal")
+            // `.appleTerminal` is the project-standard terminal glyph (BuildStatusPlaceholderView); the bare
+            // `.terminal` case is deprecated (renamed in macOS 14). Safe SFSafeSymbols case, no blank-glyph risk.
+            Image(systemSymbol: .appleTerminal)
                 .font(.system(size: Otty.Typeface.footnote))
                 .foregroundStyle(Otty.Text.secondary)
             Text(group.groupTitle)
@@ -158,25 +164,7 @@ struct GlobalSearchView: View {
         .padding(.bottom, Otty.Metric.space1)
     }
 
-    // MARK: - Hit row
-
-    private func hitRow(_ hit: GlobalSearchHit) -> some View {
-        HStack(spacing: Otty.Metric.space2) {
-            Text(highlightedExcerpt(hit))
-                .font(.system(size: Otty.Typeface.body, design: .monospaced))
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: Otty.Metric.space2)
-            Image(systemName: "arrow.up.forward")
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.tertiary)
-        }
-        .padding(.horizontal, Otty.Metric.space4)
-        .frame(height: 26)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture { jump(to: hit) }
-    }
+    // MARK: - Hit row (extracted so each row owns its own hover @State for the hover-reveal jump glyph)
 
     /// The excerpt (the full matched line) as an `AttributedString` with the matched run tinted amber + primary
     /// (the otty find highlight) and the rest muted. The hit's `highlight` is a UTF-16 column range pre-clamped
@@ -239,6 +227,38 @@ struct GlobalSearchView: View {
     private func jump(to hit: GlobalSearchHit) {
         store.jumpToGlobalSearchResult(hit)
         coordinator.closeGlobalSearch()
+    }
+}
+
+/// One result row: the highlighted excerpt + a trailing rightward-arrow (→) jump glyph that is HOVER-REVEALED
+/// — per `global-search.png` the → appears only on the hovered row, not unconditionally. Extracted to file
+/// scope so each row owns its own `@State hovering` (a parent-level hovered-index would need globally-unique
+/// ids across groups). The tap jumps via the injected closure (the parent owns the store/coordinator hop).
+private struct GlobalSearchHitRow: View {
+    let excerpt: AttributedString
+    let onJump: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: Otty.Metric.space2) {
+            Text(excerpt)
+                .font(.system(size: Otty.Typeface.body, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: Otty.Metric.space2)
+            // Horizontal → (global-search.png), hover-revealed: visible only on the row under the pointer.
+            Image(systemSymbol: .arrowRight)
+                .font(.system(size: Otty.Typeface.footnote))
+                .foregroundStyle(Otty.Text.tertiary)
+                .opacity(hovering ? 1 : 0)
+        }
+        .padding(.horizontal, Otty.Metric.space4)
+        .frame(height: 26)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture { onJump() }
     }
 }
 #endif

@@ -179,20 +179,36 @@ public enum GlobalSearchController {
     }
 
     /// E5 ES-E5-5 (click-to-line): the ORDERED libghostty surface-action sequence that lands the in-pane
-    /// viewport on the CLICKED `hit` — arm the search (`search:<query>`) then advance to the hit's ORDINAL
-    /// within ITS pane group so DISTINCT rows land DISTINCTLY: clicking the 10th hit in a pane issues 10
-    /// `navigate_search:next`, not 1 (the half-delivered behaviour that made every row in a tab jump to the
-    /// nearest match). The ordinal is the hit's 0-based index among its group's `hits` (which `run` builds in
-    /// buffer order), so `index + 1` forward steps — the FIRST hit keeps the old single-step behaviour.
+    /// viewport on the CLICKED `hit`.
     ///
-    /// Validate-then-drop: an empty `query` yields `[]` (nothing to arm). A `hit` absent from `results`
-    /// (stale results vs. the clicked row) degrades to ordinal 0 (a single step) rather than trapping.
+    /// LITERAL mode — arm the search (`search:<query>`) then advance to the hit's ORDINAL within ITS pane
+    /// group so DISTINCT rows land DISTINCTLY: clicking the 10th hit in a pane issues 10 `navigate_search:next`,
+    /// not 1 (the half-delivered behaviour that made every row in a tab jump to the nearest match). The ordinal
+    /// is the hit's 0-based index among its group's `hits` (which `run` builds in buffer order), so `index + 1`
+    /// forward steps — the FIRST hit keeps the old single-step behaviour.
+    ///
+    /// REGEX mode — libghostty's in-surface search is a LITERAL substring matcher with NO regex engine (see the
+    /// find-bar header), so arming `search:<pattern>` would match the pattern TEXT (usually 0 hits once it holds
+    /// metacharacters) and every `navigate_search:next` would then move nothing — the dishonest "counter says N,
+    /// nav moves nothing" state the find bar was rewritten to eliminate. Instead, mirror the find bar exactly:
+    /// END any stale literal search (clearing a misleading highlight) and scroll the viewport DIRECTLY to the
+    /// hit's row via `scroll_to_row:<hit.line>` — `hit.line` indexes the SAME scrollback mirror libghostty's
+    /// `scroll_to_row:<usize>` addresses (both are the `searchScrollbackLines()` row index `computeMatches`
+    /// scanned), so the clicked regex row actually lands.
+    ///
+    /// Validate-then-drop: an empty `query` yields `[]` (nothing to arm). In literal mode, a `hit` absent from
+    /// `results` (stale results vs. the clicked row) degrades to ordinal 0 (a single step) rather than trapping.
     public static func navigationActions(
         for hit: GlobalSearchHit,
         in results: GlobalSearchResults,
         query: String,
+        isRegex: Bool = false,
     ) -> [String] {
         guard !query.isEmpty else { return [] }
+        if isRegex {
+            // No literal needle to arm — clear any stale highlight and scroll straight to the clicked row.
+            return ["end_search", "scroll_to_row:\(hit.line)"]
+        }
         let ordinal = results.groups
             .first { $0.paneID == hit.paneID && $0.sessionID == hit.sessionID && $0.tabID == hit.tabID }?
             .hits.firstIndex(of: hit) ?? 0
