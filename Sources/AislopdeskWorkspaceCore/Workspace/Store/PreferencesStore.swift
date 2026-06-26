@@ -2,6 +2,7 @@
 // headless `AislopdeskWorkspaceCore`. The `import SwiftUI` + `#if canImport(SwiftUI)` guard are gone;
 // `@MainActor`/`@Observable` come from the Observation framework.
 import AislopdeskVideoProtocol
+import Defaults
 import Foundation
 import Observation
 
@@ -223,9 +224,12 @@ public final class PreferencesStore {
 
     // MARK: Convenience for the UI
 
-    /// Reset EVERY pref to its model default (the "Restore Defaults" affordance). The `didSet`s persist
-    /// + re-apply each, so the process returns to behavior-preserving defaults (empty overlay, no
-    /// sidecar override) exactly as a fresh install.
+    /// Reset EVERY pref to its model default (the "Reset All Settings" affordance). The `didSet`s persist
+    /// + re-apply each typed model, so the process returns to behavior-preserving defaults (empty overlay,
+    /// no sidecar override) exactly as a fresh install. ALSO clears the `.standard`-backed global
+    /// `Defaults.Keys` toggles (the orphan + new Controls/Scroll/Copy flags + On-Launch / new-tab-position /
+    /// working-dir / close-confirm / default-pane-kind) — a real "Reset All" must zero those too, not just
+    /// the five typed models (E7 / `customization__advanced-settings.md`).
     public func resetAll() {
         terminal = TerminalPreferences()
         video = VideoPreferences()
@@ -233,6 +237,44 @@ public final class PreferencesStore {
         keybindings = KeybindingPreferences()
         appearance = AppearancePreferences()
         rawOverrides = [:]
+        resetGlobalDefaultsKeys(advancedOnly: false)
+    }
+
+    /// Reset the ADVANCED-bucket settings only (the "Reset Advanced Only" affordance) — leaving the user's
+    /// font (`terminal`), theme + density (`appearance`), and keybinding (`keybindings`) choices intact, per
+    /// `customization__advanced-settings.md` ("leaving font, theme, and keybinding choices intact"). Clears
+    /// the `video` / `agent` host flags + the raw `AISLOPDESK_*` overrides, and resets the global
+    /// `Defaults.Keys` toggles EXCEPT the appearance-bucket `density` key.
+    public func resetAdvancedOnly() {
+        video = VideoPreferences()
+        agent = AgentPreferences()
+        rawOverrides = [:]
+        resetGlobalDefaultsKeys(advancedOnly: true)
+    }
+
+    /// The `.standard`-backed global `Defaults.Keys` app-flag toggles a "Reset Settings" must clear. These
+    /// live in `Defaults.standard` (NOT the injected ``defaults`` — the per-instance store deliberately
+    /// stays isolated for tests), so they are reset via `Defaults.reset(_:)` regardless of the store's
+    /// injected store. NONE of these is a font / theme / keybinding choice, so the same set is cleared by
+    /// both Reset-All and Reset-Advanced; the only `advancedOnly` difference is the appearance-bucket
+    /// ``SettingsKey/density`` key (preserved on an advanced-only reset).
+    private static let globalDefaultsKeys: [Defaults.Keys] = [
+        .oscNotifications, .longCommandNotifications, .systemDialogPanes, .autoSwitchLayouts,
+        .redactSecrets, .recordClipboardHistory, .hideStatusBar, .showBlockDividers,
+        .defaultPaneKind, .newTabPosition,
+        .workingDirectoryNewWindow, .workingDirectoryNewTab, .workingDirectoryNewSplit,
+        .closeConfirmTab, .closeConfirmWindow, .onLaunch,
+        .copyOnSelect, .trimTrailingSpacesOnCopy, .pasteProtection, .mouseHideWhileTyping,
+        .focusFollowsMouse, .scrollOnOutput, .scrollMultiplier,
+    ]
+
+    /// Reset the `.standard`-backed global `Defaults.Keys` toggles to their declared defaults. When
+    /// `advancedOnly` is true the appearance-bucket ``SettingsKey/density`` key is PRESERVED (Reset-Advanced
+    /// leaves font / theme / density / keybinding intact); a full reset also clears `density` on the injected
+    /// store (where ``applyAppearance()`` writes it).
+    private func resetGlobalDefaultsKeys(advancedOnly: Bool) {
+        Defaults.reset(Self.globalDefaultsKeys)
+        if !advancedOnly { defaults.removeObject(forKey: SettingsKey.density) }
     }
 
     // MARK: Block bookmarks (WB3 — per-session starred command blocks)

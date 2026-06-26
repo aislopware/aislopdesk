@@ -31,10 +31,10 @@ public enum WorkspaceAction: Hashable, Sendable {
     case movePaneDown // ⌥⌘⇧↓
 
     // Resize pane (keyboard divider nudge — grow right/down, shrink left/up)
-    case resizePaneLeft // ⌃⌘←
-    case resizePaneRight // ⌃⌘→
-    case resizePaneUp // ⌃⌘↑
-    case resizePaneDown // ⌃⌘↓
+    case resizePaneLeft // ⌃⌘⇧←
+    case resizePaneRight // ⌃⌘⇧→
+    case resizePaneUp // ⌃⌘⇧↑
+    case resizePaneDown // ⌃⌘⇧↓
 
     // Balance (tmux even-layout)
     case balancePanes // ⌃⌘=
@@ -44,15 +44,15 @@ public enum WorkspaceAction: Hashable, Sendable {
     case applyLayout(WorkspaceTreeOps.LayoutPreset) // a named preset (menu/palette only — no chord)
 
     // Focus
-    case focusLeft // ⌥⌘←
-    case focusRight // ⌥⌘→
-    case focusUp // ⌥⌘↑
-    case focusDown // ⌥⌘↓
+    case focusLeft // ⌃⌘←
+    case focusRight // ⌃⌘→
+    case focusUp // ⌃⌘↑
+    case focusDown // ⌃⌘↓
     case cyclePaneNext // ⌘]  — sequentially focus the NEXT pane in the active tab (DFS order, wraps)
     case cyclePanePrev // ⌘[  — sequentially focus the PREVIOUS pane in the active tab (DFS order, wraps)
 
     // View
-    case toggleZoom // ⌥⌘↩ — maximize / restore the active pane (render-only)
+    case toggleZoom // ⌘⇧↩ — maximize / restore the active pane (render-only)
     case commandPalette // ⌘⇧P — show/hide the command palette (otty's documented default)
     case cheatSheet // ⌘/ — show/hide the keyboard cheat sheet
     case find // ⌘F — show/hide the find-in-terminal bar over the active pane (W14 #5)
@@ -69,7 +69,7 @@ public enum WorkspaceAction: Hashable, Sendable {
     case commandJumpPrev // ⌘PageUp — jump to the PREVIOUS shell prompt (reuses jumpToBlock(-1))
     case commandJumpNext // ⌘PageDown — jump to the NEXT shell prompt (reuses jumpToBlock(+1))
 
-    // View — font size (E1 ES-E1-4; libghostty render-only, no PTY reflow)
+    // View — font size (E1 ES-E1-4; libghostty rescales the cell box, reflowing the remote PTY grid via SIGWINCH)
     case increaseFontSize // ⌘= / ⌘+ — bump the active pane's render font size (⌘+ via `aliasChords`)
     case decreaseFontSize // ⌘- — shrink the active pane's render font size
     case resetFontSize // ⌘0 — reset the active pane's render font size to the configured default
@@ -87,7 +87,9 @@ public enum WorkspaceAction: Hashable, Sendable {
     case nextTab // ⌘⇧]
     case prevTab // ⌘⇧[
     case selectTab(Int) // ⌘1…⌘9 (1-based)
-    case closeTab // ⌘⇧W — close the active tab (all its panes)
+    case closeTab // (no otty default chord) — close the active tab (all its panes); reachable via the ⌘W
+    // close cascade + palette/menu (E7 carry-over #5: otty's ⌘⇧W is Close WINDOW, so it ships no Close-Tab chord)
+    case closeWindow // ⌘⇧W — close the active window (→ Session); the close-confirmation surface gates it
     case reopenClosed // ⌘⇧T — reopen the most recently closed pane (browser idiom; E3 stub)
 
     // Sessions
@@ -185,6 +187,7 @@ public extension WorkspaceAction {
              .prevTab,
              .selectTab,
              .closeTab,
+             .closeWindow, // closes the whole window (→ Session) — a window-scope action, needs no active pane
              .reopenClosed, // restores a closed pane into the active tab — acts on history, not a live pane
              .toggleSidebar,
              .toggleDetailsPanel, // a window-scope panel toggle — needs no active pane
@@ -268,7 +271,7 @@ public struct WorkspaceBinding: Sendable, Equatable {
 /// Every chord is ⌘- or ⌥-prefixed (the load-bearing §5 conflict rule: a bare key / Ctrl-letter falls
 /// through to the focused terminal), and no two bindings share a chord — both pinned by
 /// `TreeCommandRoutingTests`. The chords mirror otty's reference keymap: ⌘T new tab, ⌘W close, ⌘D
-/// split-right, ⌘⇧D split-down, ⌃⌘+arrows focus, ⌥⌘↩ zoom, ⌘⇧]/⌘⇧[ next/prev tab, ⌘1…9 select tab,
+/// split-right, ⌘⇧D split-down, ⌃⌘+arrows focus, ⌘⇧↩ zoom, ⌘⇧]/⌘⇧[ next/prev tab, ⌘1…9 select tab,
 /// ⌃⌘N new session, ⌘⇧L toggle Tabs panel, ⌘⇧R toggle Details panel, ⌃⌘T break-pane-to-tab, ⌘⇧P palette,
 /// ⌘/ cheat sheet. Rename has no otty default chord — it is menu / palette / context-menu only (`chord: nil`).
 public enum WorkspaceBindingRegistry {
@@ -333,9 +336,9 @@ public enum WorkspaceBindingRegistry {
             category: .panes, chord: KeyChord(character: "f", [.control, .command]),
             symbol: "plus.rectangle.on.rectangle", keywords: "new floating scratch overlay terminal window",
         ),
-        // Move pane (Zellij "move pane" — swap with the geometric neighbour). ⌥⌘⇧+arrows = the focus chords
-        // (⌥⌘arrows) with ⇧ added, so they read as "carry the pane along the focus move" and stay distinct
-        // from both focus (no ⇧) and the ⌃⌘arrow resize chords below.
+        // Move pane (Zellij "move pane" — swap with the geometric neighbour). ⌥⌘⇧+arrows are the ⌥-keyed
+        // arrow family — distinct from focus (⌃⌘arrows) and the ⌃⌘⇧arrow divider chords below by the ⌥
+        // modifier (⌥ vs ⌃), so a "move pane" never collides with a focus move or a divider nudge.
         WorkspaceBinding(
             id: "pane.moveLeft", action: .movePaneLeft, title: "Move Pane Left",
             category: .panes, chord: KeyChord(.leftArrow, [.option, .command, .shift]),
@@ -420,10 +423,24 @@ public enum WorkspaceBindingRegistry {
             category: .tabs, chord: KeyChord(character: "[", [.command, .shift]),
             symbol: "arrow.backward.square", keywords: "cycle back previous switch tab",
         ),
+        // Close Tab has NO otty default chord (E7 carry-over #5 / DECISIONS): otty's ⌘⇧W is Close WINDOW, and
+        // ⌘W already cascades pane → tab → window, so otty ships no dedicated Close-Tab chord. The row stays in
+        // the palette / menu (`chord: nil` surfaces it without binding a key) and tab close stays reachable via
+        // the ⌘W cascade. Pinned chord-less by `TreeCommandRoutingTests`; the ⌘⇧W re-map is in DECISIONS.md.
         WorkspaceBinding(
             id: "tab.close", action: .closeTab, title: "Close Tab",
-            category: .tabs, chord: KeyChord(character: "w", [.command, .shift]),
+            category: .tabs, chord: nil,
             symbol: "xmark.rectangle", keywords: "close end terminate tab all panes",
+        ),
+        // Close Window ⌘⇧W (E7 carry-over #5) — otty's reference default (spec/user-interface__window-tab-
+        // split.md:99/103/104: ⌘⇧W = Close window). A window maps to an aislopdesk ``Session`` (DECISIONS.md),
+        // so routing it to `requestCloseWindow()` parks the close behind the `closeConfirmWindow` policy /
+        // busy-shell guard. ⌘⇧W was Close Tab before E7; reconciled here (Close Tab gave the chord up, keeping
+        // ⌘⇧W collision-free). Pinned by `TreeCommandRoutingTests`.
+        WorkspaceBinding(
+            id: "window.close", action: .closeWindow, title: "Close Window",
+            category: .tabs, chord: KeyChord(character: "w", [.command, .shift]),
+            symbol: "macwindow.badge.minus", keywords: "close window session end terminate all tabs quit",
         ),
         // Reopen the most recently closed pane (the browser "reopen tab" idiom, beside ⌘T new / ⌘⇧W close).
         // ⌘⇧T is FREE on the tree shell (the only other `t` chords are ⌘T new tab + ⌃⌘T break-pane). The
@@ -561,7 +578,7 @@ public enum WorkspaceBindingRegistry {
         ),
         // Blocks (WB2): the Command Navigator toggle + jump-to-block prev/next. ⌃⌘O / ⌃⌘[ / ⌃⌘] are all
         // ⌘-prefixed (the §5 conflict rule) and collision-free against the rest of the table (tab cycling
-        // is ⌘[/], focus is ⌥⌘arrows — neither uses ⌃⌘bracket). They target the active terminal pane.
+        // is ⌘[/], focus is ⌃⌘arrows — neither uses ⌃⌘bracket). They target the active terminal pane.
         WorkspaceBinding(
             id: "view.commandNavigator", action: .commandNavigator, title: "Command Navigator",
             category: .view, chord: KeyChord(character: "o", [.control, .command]),
@@ -634,9 +651,9 @@ public enum WorkspaceBindingRegistry {
         // E1 font size (ES-E1-4): ⌘= bumps, ⌘- shrinks, ⌘0 resets. ⌘0 is FREE (the select-tab digits start
         // at ⌘1). The `+` glyph (otty's ⌘+) does NOT fold onto `=` for free — on a US/ANSI layout ⌘+ is
         // delivered as `+`+⇧ (or keypad `+`), which `charactersIgnoringModifiers` keys as a DISTINCT chord —
-        // so ``aliasChords`` adds those two spellings → `.increaseFontSize` (no extra display row). libghostty
-        // rescales glyphs WITHIN the pane box, so no PTY grid reflow from the font step alone. Target the
-        // active terminal pane.
+        // so ``aliasChords`` adds those two spellings → `.increaseFontSize` (no extra display row). A font-size
+        // step resizes the cell box, so FEWER/MORE cells fit the pane and the remote PTY grid REFLOWS (SIGWINCH)
+        // — it is NOT a glyph-only rescale. Target the active terminal pane.
         WorkspaceBinding(
             id: "view.fontIncrease", action: .increaseFontSize, title: "Increase Font Size",
             category: .view, chord: KeyChord(character: "=", [.command]),
@@ -660,7 +677,7 @@ public enum WorkspaceBindingRegistry {
             symbol: "magnifyingglass.circle", keywords: "open quickly fuzzy file symbol switcher jump goto",
         ),
         // Agents (E1-registered; behaviour lands in E12/E13). ⌘⇧E composer, ⌘⇧M prompt queue, ⌘⌃↩ send-to-chat
-        // are all FREE (e/m unused as chords; ⌘⌃↩ has a distinct modifier set from ⌥⌘↩ zoom). Routable stubs.
+        // are all FREE (e/m unused as chords; ⌘⌃↩ has a distinct modifier set from ⌘⇧↩ zoom). Routable stubs.
         WorkspaceBinding(
             id: "agent.composer", action: .composer, title: "Open Composer",
             category: .agents, chord: KeyChord(character: "e", [.command, .shift]),

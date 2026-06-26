@@ -365,6 +365,49 @@ final class WorkspaceTransferTests: XCTestCase {
         )
     }
 
+    // MARK: - WI-4: file-picker document contract (store API round-trip + hostile-bytes no-op)
+
+    func testExportProducesDecodableDocument() {
+        // The exact bytes the `.fileExporter`'s `WorkspaceTransferDocument` writes to disk ARE
+        // `exportWorkspaceData()`. They must decode back through `WorkspaceTransfer.decode` (what the
+        // `.fileImporter` → `importWorkspace` consumes) into a restorable workspace, and a fresh store must
+        // rebuild the layout from them. This pins the store→document→decode→import path the picker rides.
+        let a = term(0, "alpha"), b = term(400, "beta")
+        let src = store([a, b], focus: a.id)
+        src.addSnippet(name: "deploy", body: "make deploy<Enter>")
+        let documentBytes = src.exportWorkspaceData()
+
+        let decoded = WorkspaceTransfer.decode(documentBytes)
+        XCTAssertNotNil(decoded, "the document the file exporter writes decodes back")
+        XCTAssertEqual(
+            Set(decoded?.canvas.allIDs().compactMap { decoded?.canvas.spec(for: $0)?.title } ?? []),
+            ["alpha", "beta"],
+            "the exported document carries the live layout",
+        )
+
+        let dst = WorkspaceStore(restoring: nil, makeSession: { FakePaneSession($0) }, liveVideoCap: 5)
+        XCTAssertTrue(dst.importWorkspace(documentBytes), "the file importer restores the document")
+        XCTAssertEqual(dst.snippets.first?.name, "deploy", "snippets survive the file round trip")
+    }
+
+    func testImportRejectsHostileBytesNoOp() {
+        // The `.fileImporter` hands `importWorkspace` the picked file's raw bytes. A file that is NOT an
+        // aislopdesk workspace — non-JSON garbage, a foreign JSON, or a truncated/half-written export —
+        // decodes to `nil` → `importWorkspace` returns `false` (the signal the Settings sheet turns into the
+        // "not a valid aislopdesk workspace file" alert, and the menu into a toast), and the live workspace
+        // is left exactly as it was — never a crash on a hostile pick.
+        let a = term(0, "keep")
+        let st = store([a], focus: a.id)
+        let before = st.workspace.canvas.allIDs()
+
+        let foreignJSON = Data(#"{"some":"other","json":[1,2,3]}"#.utf8)
+        let truncated = Data(st.exportWorkspaceData().prefix(12)) // a half-written / corrupt export
+        XCTAssertFalse(st.importWorkspace(Data("garbage".utf8)), "non-JSON garbage is rejected")
+        XCTAssertFalse(st.importWorkspace(foreignJSON), "a foreign JSON file is rejected (no crash)")
+        XCTAssertFalse(st.importWorkspace(truncated), "a truncated export is rejected")
+        XCTAssertEqual(st.workspace.canvas.allIDs(), before, "a rejected pick leaves the live workspace intact")
+    }
+
     func testEphemeralPanesNeverExported() throws {
         let a = term(0, "a")
         let src = store([a], focus: a.id)

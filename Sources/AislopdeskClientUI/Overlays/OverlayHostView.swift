@@ -65,6 +65,12 @@ struct OverlayHostView: View {
                 Scrim { store.cancelPendingClose() }
                 CloseConfirmationPanel(
                     title: spec.title.isEmpty ? "Close this pane?" : "Close “\(spec.title)”?",
+                    // E3 carry-over #4: branch the subtitle on the policy that ACTUALLY gated this park (the
+                    // store resolves the effective pane policy) — not a hardcoded "a process is still running",
+                    // which is false for the `always` / `multiple_tabs` policies.
+                    subtitle: CloseConfirmationPanel.reason(
+                        for: store.pendingCloseReasonPolicy ?? .process, scope: .pane,
+                    ),
                     onConfirm: { store.confirmPendingClose() },
                     onCancel: { store.cancelPendingClose() },
                 )
@@ -72,6 +78,9 @@ struct OverlayHostView: View {
                 Scrim { store.cancelPendingClose() }
                 CloseConfirmationPanel(
                     title: "Close this tab?",
+                    subtitle: CloseConfirmationPanel.reason(
+                        for: store.pendingCloseReasonPolicy ?? .process, scope: .tab,
+                    ),
                     onConfirm: { store.confirmPendingClose() },
                     onCancel: { store.cancelPendingClose() },
                 )
@@ -167,9 +176,32 @@ struct OverlayPanel<Content: View>: View {
 struct CloseConfirmationPanel: View {
     /// The headline ("Close “<pane>”?") the host builds from the pending pane's spec.
     let title: String
+    /// The policy-aware subtitle the host precomputes via ``reason(for:scope:)`` (E3 carry-over #4). A
+    /// busy-process park reads "a process is still running"; an `always` / `multiple_tabs` park reads the
+    /// softer "are you sure" / "this window has multiple tabs" copy (matching the macOS NSAlert intent).
+    let subtitle: String
     /// Resolve actions wired to the store by the host.
     var onConfirm: () -> Void
     var onCancel: () -> Void
+
+    /// The close-confirmation subtitle for a given resolved policy + close scope (E3 carry-over #4). PURE —
+    /// unit-pinnable without instantiating the view (no `NSAlert` / window). The wording mirrors otty's
+    /// softer NSAlert copy: a running process names the consequence; `always` asks plainly (scoped to "pane"
+    /// vs "tab"); `multiple_tabs` warns that the window holds several tabs.
+    static func reason(for policy: CloseConfirmationPolicy, scope: CloseScope = .tab) -> String {
+        switch policy {
+        case .process:
+            "A process is still running. Closing it will stop the command."
+        case .always:
+            switch scope {
+            case .pane: "Are you sure you want to close this pane?"
+            case .tab,
+                 .window: "Are you sure you want to close this tab?"
+            }
+        case .multipleTabs:
+            "This window has multiple tabs."
+        }
+    }
 
     var body: some View {
         OverlayPanel(width: 380) {
@@ -183,7 +215,7 @@ struct CloseConfirmationPanel: View {
                         .foregroundStyle(Otty.Text.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("A process is still running. Closing it will stop the command.")
+                Text(subtitle)
                     .font(.system(size: Otty.Typeface.footnote))
                     .foregroundStyle(Otty.Text.secondary)
                     .fixedSize(horizontal: false, vertical: true)

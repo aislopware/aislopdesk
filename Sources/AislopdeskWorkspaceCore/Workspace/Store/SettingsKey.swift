@@ -17,9 +17,39 @@ public enum SettingsKey {
     public static let showGrid = "canvas.showGrid"
     public static let nonOverlap = "canvas.nonOverlap"
     public static let defaultPaneKindKey = "canvas.defaultPaneKind" // PaneKind.rawValue
+    // General / launch
+    /// The otty `On Launch` general setting (O1) — restore the last session vs open a fresh window.
+    /// Stored as the ``OnLaunchBehavior`` rawValue (`restore-last-session` / `new-window`); default
+    /// `.restoreLastSession` (the existing launch behaviour). Read by the app-launch path.
+    public static let onLaunchKey = "general.onLaunch" // OnLaunchBehavior.rawValue
     // Notifications
     public static let oscNotifications = "notifications.osc"
     public static let longCommandNotifications = "notifications.longCommand"
+    // Controls / scroll / copy (otty Controls section). These are FIRE-TIME `Defaults.Keys` flags — they
+    // are deliberately NOT folded into any typed prefs model, so they never reach the `EnvConfig` overlay
+    // or the `video-prefs.json` sidecar (golden-safe by construction, like `oscNotifications`). E8 owns the
+    // BEHAVIOUR; E7 only declares + surfaces them. They are persisted forward-stubs that round-trip today.
+    /// otty `copy-on-select` — copy the selection to the pasteboard as soon as it is made (default OFF).
+    /// **E8 owns the behaviour.**
+    public static let copyOnSelect = "controls.copyOnSelect"
+    /// otty `clipboard-trim-trailing-spaces` — strip trailing whitespace from each copied line (default ON).
+    /// **E8 owns the behaviour.**
+    public static let trimTrailingSpacesOnCopy = "controls.trimTrailingSpaces"
+    /// otty `clipboard-paste-protection` — warn before pasting text that contains a newline / control char
+    /// (default ON). **E8 owns the behaviour.**
+    public static let pasteProtection = "controls.pasteProtection"
+    /// otty `mouse-hide-while-typing` — hide the mouse pointer while typing (default ON). **E8 owns the
+    /// behaviour.**
+    public static let mouseHideWhileTyping = "controls.mouseHideWhileTyping"
+    /// otty `focus-follows-mouse` — focus the pane the pointer is over without a click (default OFF).
+    /// **E8 owns the behaviour.**
+    public static let focusFollowsMouse = "controls.focusFollowsMouse"
+    /// otty `scroll-on-output` — scroll the viewport to the bottom on new output (default ON). **E8 owns the
+    /// behaviour.**
+    public static let scrollOnOutput = "controls.scrollOnOutput"
+    /// otty `mouse-scroll-multiplier` — multiply the scroll-wheel delta (default `1.0`). **E8 owns the
+    /// behaviour.**
+    public static let scrollMultiplier = "controls.scrollMultiplier"
     // Features / advanced
     public static let systemDialogPanes = "features.systemDialogPanes"
     public static let autoSwitchLayouts = "features.autoSwitchLayouts"
@@ -135,6 +165,43 @@ public enum SettingsKey {
     /// The close-confirmation policy applied to a WINDOW close (mapped to the active ``Session`` — see
     /// `docs/DECISIONS.md`), default ``CloseConfirmationPolicy/process``. Read at fire-time.
     public static var closeConfirmWindow: CloseConfirmationPolicy { Defaults[.closeConfirmWindow] }
+
+    /// The otty `On Launch` behaviour applied when the app opens (O1), default
+    /// ``OnLaunchBehavior/restoreLastSession`` (the existing launch behaviour — the store already restores
+    /// the persisted tree). A stale / invalid persisted raw value repairs to `.restoreLastSession` (via the
+    /// policy's own non-failable ``OnLaunchBehavior/init(rawValue:)`` + the `RawRepresentableBridge`). Read
+    /// by the app-launch path.
+    public static var onLaunch: OnLaunchBehavior { Defaults[.onLaunch] }
+
+    // MARK: Controls / scroll / copy (E8-owned behaviour — declared + persisted here)
+
+    /// Whether the selection is copied to the pasteboard as soon as it is made (otty `copy-on-select`),
+    /// default OFF. **E8 owns the behaviour**; declared + persisted here so the Controls picker round-trips.
+    public static var copyOnSelectEnabled: Bool { Defaults[.copyOnSelect] }
+
+    /// Whether trailing whitespace is trimmed from each copied line (otty `clipboard-trim-trailing-spaces`),
+    /// default ON. **E8 owns the behaviour.**
+    public static var trimTrailingSpacesOnCopyEnabled: Bool { Defaults[.trimTrailingSpacesOnCopy] }
+
+    /// Whether pasting text with a newline / control char prompts a confirmation (otty
+    /// `clipboard-paste-protection`), default ON. **E8 owns the behaviour.**
+    public static var pasteProtectionEnabled: Bool { Defaults[.pasteProtection] }
+
+    /// Whether the mouse pointer hides while typing (otty `mouse-hide-while-typing`), default ON. **E8 owns
+    /// the behaviour.**
+    public static var mouseHideWhileTypingEnabled: Bool { Defaults[.mouseHideWhileTyping] }
+
+    /// Whether focus follows the mouse pointer without a click (otty `focus-follows-mouse`), default OFF.
+    /// **E8 owns the behaviour.**
+    public static var focusFollowsMouseEnabled: Bool { Defaults[.focusFollowsMouse] }
+
+    /// Whether the viewport scrolls to the bottom on new output (otty `scroll-on-output`), default ON.
+    /// **E8 owns the behaviour.**
+    public static var scrollOnOutputEnabled: Bool { Defaults[.scrollOnOutput] }
+
+    /// The scroll-wheel delta multiplier (otty `mouse-scroll-multiplier`), default `1.0`. **E8 owns the
+    /// behaviour.**
+    public static var scrollMultiplierValue: Double { Defaults[.scrollMultiplier] }
 }
 
 // MARK: - Typed Defaults keys (the single source the accessors + `@Default(.key)` views read)
@@ -163,6 +230,19 @@ public extension Defaults.Keys {
     // default to `process` (confirm only on a running child process — the pre-E3 busy-shell guard).
     static let closeConfirmTab = Key<CloseConfirmationPolicy>(SettingsKey.closeConfirmTabKey, default: .process)
     static let closeConfirmWindow = Key<CloseConfirmationPolicy>(SettingsKey.closeConfirmWindowKey, default: .process)
+    // On-Launch behaviour stored as the `OnLaunchBehavior` rawValue (otty `On Launch`); default
+    // `.restoreLastSession` (the existing launch behaviour — the store already restores the persisted tree).
+    static let onLaunch = Key<OnLaunchBehavior>(SettingsKey.onLaunchKey, default: .restoreLastSession)
+    // Controls / scroll / copy (otty Controls). FIRE-TIME flags only — never folded into a typed prefs model
+    // (so they never reach the env overlay / sidecar → golden-safe). E8 owns the behaviour; these persist
+    // the user's choice and round-trip today.
+    static let copyOnSelect = Key<Bool>(SettingsKey.copyOnSelect, default: false)
+    static let trimTrailingSpacesOnCopy = Key<Bool>(SettingsKey.trimTrailingSpacesOnCopy, default: true)
+    static let pasteProtection = Key<Bool>(SettingsKey.pasteProtection, default: true)
+    static let mouseHideWhileTyping = Key<Bool>(SettingsKey.mouseHideWhileTyping, default: true)
+    static let focusFollowsMouse = Key<Bool>(SettingsKey.focusFollowsMouse, default: false)
+    static let scrollOnOutput = Key<Bool>(SettingsKey.scrollOnOutput, default: true)
+    static let scrollMultiplier = Key<Double>(SettingsKey.scrollMultiplier, default: 1.0)
 }
 
 /// Store ``PaneKind`` as its bare `String` rawValue (not JSON-wrapped) so the value stays wire-compatible
@@ -181,3 +261,9 @@ extension NewTabPosition: Defaults.Serializable, Defaults.PreferRawRepresentable
 /// selects the `RawRepresentableBridge`. A stale / invalid raw value repairs to `.process` via the policy's
 /// own non-failable ``CloseConfirmationPolicy/init(rawValue:)`` (and the key default is also `.process`).
 extension CloseConfirmationPolicy: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
+/// Store ``OnLaunchBehavior`` as its bare `String` rawValue (`restore-last-session`/`new-window`) so the
+/// persisted `On Launch` setting round-trips with the otty config value; `PreferRawRepresentable` selects
+/// the `RawRepresentableBridge`. A stale / invalid raw value repairs to `.restoreLastSession` via the enum's
+/// own non-failable ``OnLaunchBehavior/init(rawValue:)`` (and the key default is also `.restoreLastSession`).
+extension OnLaunchBehavior: Defaults.Serializable, Defaults.PreferRawRepresentable {}

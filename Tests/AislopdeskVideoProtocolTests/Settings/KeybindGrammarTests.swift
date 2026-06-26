@@ -145,6 +145,33 @@ final class KeybindGrammarTests: XCTestCase {
         XCTAssertNil(KeybindGrammar.parseChord("cmd+b>cmd+v"), "sequences are not single chords")
     }
 
+    /// E7/WI-6 carry-over #3 (revert-to-confirm-fail): `space`, `escape`/`esc`, `delete`, `backspace`, and
+    /// `forwarddelete` are DROPPED from the base-key vocabulary — neither `mapKey` nor the registry
+    /// `KeyChord.Key` enum can resolve them, so a chord binding one would parse but never fire (a silent
+    /// no-op). Validate-then-drop (CLAUDE.md §3) means `parseChord` must now return `nil` for them, bare OR
+    /// modifier-prefixed. This FAILS on the pre-fix code, which accepted all six as valid base keys.
+    func testSpaceEscapeDeleteBaseKeysAreRejected() {
+        for key in ["space", "escape", "esc", "delete", "backspace", "forwarddelete"] {
+            XCTAssertNil(KeybindGrammar.parseChord(key), "bare \(key) is no longer a valid base key")
+            XCTAssertNil(KeybindGrammar.parseChord("cmd+\(key)"), "cmd+\(key) is no longer a valid chord")
+        }
+        // And via the whole-line parser: a binding on a dropped key drops the whole line (no partial parse).
+        XCTAssertNil(KeybindGrammar.parseLine("cmd+escape:text:hi"), "a dropped base key drops the whole line")
+        XCTAssertNil(KeybindGrammar.parseLine("unbind:space"), "unbind on a dropped base key drops the line")
+    }
+
+    /// The still-resolvable named keys (every one `mapKey` accepts) and a single printable char STAY valid —
+    /// guards against the #3 drop over-reaching and removing a key that DOES resolve.
+    func testResolvableNamedAndSingleCharBaseKeysStayValid() {
+        for key in [
+            "return", "enter", "tab", "left", "leftarrow", "right", "rightarrow", "up", "uparrow",
+            "down", "downarrow", "pageup", "pgup", "pagedown", "pgdn", "home", "end",
+        ] {
+            XCTAssertNotNil(KeybindGrammar.parseChord("cmd+\(key)"), "cmd+\(key) stays a valid chord")
+        }
+        XCTAssertNotNil(KeybindGrammar.parseChord("cmd+a"), "a single printable char stays a valid base key")
+    }
+
     func testMalformedLinesReturnNil() {
         XCTAssertNil(KeybindGrammar.parseLine(""), "empty line")
         XCTAssertNil(KeybindGrammar.parseLine("cmd+h"), "no colon ⇒ no action")

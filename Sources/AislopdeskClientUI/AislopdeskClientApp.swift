@@ -407,6 +407,9 @@ public struct AislopdeskClientApp: App {
                 togglePalette: { [overlayCoordinator] in overlayCoordinator.togglePalette() },
                 toggleCheatSheet: { [overlayCoordinator] in overlayCoordinator.toggleCheatSheet() },
             )
+            // E7 WI-4: File ▸ Export/Import Workspace (optional parity). Shortcut-LESS — the NSEvent
+            // dispatcher owns chords (DECISIONS N6); a hostile import is a no-op + toast, never a crash.
+            WorkspaceFileCommands(store: store, overlay: overlayCoordinator)
         }
         #endif
 
@@ -416,7 +419,9 @@ public struct AislopdeskClientApp: App {
         // otty panel once the coordinator lands). Binds the SAME single live `PreferencesStore`. macOS-only:
         // `Settings` is unavailable on iOS (the iOS settings surface lands as an in-app sheet later).
         #if os(macOS)
-        AislopdeskSettingsScene(store: preferences)
+        // Thread the live `WorkspaceStore` into the Settings scene so the Advanced → Workspace rows (E7
+        // WI-4) can export/import (the Settings scene is separate from the WindowGroup above).
+        AislopdeskSettingsScene(store: preferences, workspaceStore: store)
         #endif
     }
 

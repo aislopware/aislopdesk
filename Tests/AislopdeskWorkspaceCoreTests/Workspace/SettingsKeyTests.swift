@@ -21,6 +21,14 @@ final class SettingsKeyTests: XCTestCase {
             SettingsKey.recordClipboardHistory,
             SettingsKey.hideStatusBar,
             SettingsKey.showBlockDividers,
+            SettingsKey.onLaunchKey,
+            SettingsKey.copyOnSelect,
+            SettingsKey.trimTrailingSpacesOnCopy,
+            SettingsKey.pasteProtection,
+            SettingsKey.mouseHideWhileTyping,
+            SettingsKey.focusFollowsMouse,
+            SettingsKey.scrollOnOutput,
+            SettingsKey.scrollMultiplier,
         ]
     }
 
@@ -146,5 +154,61 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(store.video, VideoPreferences())
         XCTAssertTrue(store.rawOverrides.isEmpty)
         XCTAssertTrue(EnvBridge.toEnv(store.video).isEmpty)
+    }
+
+    // MARK: - E7 WI-1: On-Launch behaviour + new Controls/Scroll/Copy toggles
+
+    /// O1: the `On Launch` general setting defaults to ``OnLaunchBehavior/restoreLastSession`` (the existing
+    /// launch behaviour — the store already restores the persisted tree), round-trips ``newWindow`` through
+    /// the persisted raw string, and a stale / junk persisted raw value repairs to `.restoreLastSession`
+    /// (validate-then-repair, never traps). Read through the public ``SettingsKey/onLaunch`` accessor + the
+    /// raw `UserDefaults` the `@Default(.onLaunch)` picker binds (the file's established no-`import Defaults`
+    /// convention).
+    func testOnLaunchDefaultsToRestore() {
+        // Default when unset.
+        XCTAssertEqual(SettingsKey.onLaunch, .restoreLastSession)
+        // Round-trips the alternative case from its persisted otty raw value.
+        UserDefaults.standard.set("new-window", forKey: SettingsKey.onLaunchKey)
+        XCTAssertEqual(SettingsKey.onLaunch, .newWindow)
+        // The case's raw value matches the otty config string.
+        XCTAssertEqual(OnLaunchBehavior.newWindow.rawValue, "new-window")
+        XCTAssertEqual(OnLaunchBehavior.restoreLastSession.rawValue, "restore-last-session")
+        // A stale / hostile persisted raw value repairs to the default rather than trapping.
+        UserDefaults.standard.set("garbage-from-a-future-version", forKey: SettingsKey.onLaunchKey)
+        XCTAssertEqual(SettingsKey.onLaunch, .restoreLastSession, "an invalid raw value repairs to restore")
+    }
+
+    /// The new E8-consumed Controls/Scroll/Copy toggles each read their declared default when unset (they are
+    /// fire-time `Defaults.Keys` flags, not typed-model fields → golden-safe). E8 owns the behaviour; this
+    /// pins the persisted defaults + round-trip so the Controls picker is faithful today.
+    func testNewControlsToggleDefaults() {
+        // Declared defaults (mirror the otty Controls config values).
+        XCTAssertFalse(SettingsKey.copyOnSelectEnabled, "copy-on-select defaults OFF")
+        XCTAssertTrue(SettingsKey.trimTrailingSpacesOnCopyEnabled, "trim trailing spaces defaults ON")
+        XCTAssertTrue(SettingsKey.pasteProtectionEnabled, "paste protection defaults ON")
+        XCTAssertTrue(SettingsKey.mouseHideWhileTypingEnabled, "mouse-hide-while-typing defaults ON")
+        XCTAssertFalse(SettingsKey.focusFollowsMouseEnabled, "focus-follows-mouse defaults OFF")
+        XCTAssertTrue(SettingsKey.scrollOnOutputEnabled, "scroll-on-output defaults ON")
+        XCTAssertEqual(SettingsKey.scrollMultiplierValue, 1.0, "scroll multiplier defaults to 1.0")
+        // An explicit persisted value is respected (the toggle persists across reads).
+        UserDefaults.standard.set(true, forKey: SettingsKey.copyOnSelect)
+        UserDefaults.standard.set(false, forKey: SettingsKey.scrollOnOutput)
+        UserDefaults.standard.set(2.5, forKey: SettingsKey.scrollMultiplier)
+        XCTAssertTrue(SettingsKey.copyOnSelectEnabled)
+        XCTAssertFalse(SettingsKey.scrollOnOutputEnabled)
+        XCTAssertEqual(SettingsKey.scrollMultiplierValue, 2.5)
+    }
+
+    /// The new E7 wire key strings are the single source of truth shared with every `@Default`/`@AppStorage`
+    /// consumer — a rename that would split-brain the Settings UI from the (E8) fire-sites fails this pin.
+    func testSettingsKeyStringsAreStable() {
+        XCTAssertEqual(SettingsKey.onLaunchKey, "general.onLaunch")
+        XCTAssertEqual(SettingsKey.copyOnSelect, "controls.copyOnSelect")
+        XCTAssertEqual(SettingsKey.trimTrailingSpacesOnCopy, "controls.trimTrailingSpaces")
+        XCTAssertEqual(SettingsKey.pasteProtection, "controls.pasteProtection")
+        XCTAssertEqual(SettingsKey.mouseHideWhileTyping, "controls.mouseHideWhileTyping")
+        XCTAssertEqual(SettingsKey.focusFollowsMouse, "controls.focusFollowsMouse")
+        XCTAssertEqual(SettingsKey.scrollOnOutput, "controls.scrollOnOutput")
+        XCTAssertEqual(SettingsKey.scrollMultiplier, "controls.scrollMultiplier")
     }
 }

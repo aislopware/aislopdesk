@@ -26,6 +26,13 @@ public struct WorkspaceRootView: View {
     let overlay: OverlayCoordinator
     /// The two split-collapse flags the toolbar toggles drive (owned here, read by the representable).
     @State private var chrome = WorkspaceChromeState()
+    #if os(iOS)
+    /// Whether the iOS settings sheet (WI-5) is presented — flipped by the toolbar gear, read by the `.sheet`.
+    @State private var showSettings = false
+    /// The single live preferences store, injected once at the WindowGroup root (`\.preferencesStore`) and
+    /// handed to the iOS ``SettingsSheet``. `nil` (no scene injection / a preview) → the gear presents nothing.
+    @Environment(\.preferencesStore) private var preferencesStore
+    #endif
     /// Installs the Details-panel toggle on the app-level keybinding dispatcher. The dispatcher is built at
     /// app `init` (before this view's `chrome` exists), so on appear the root view hands it
     /// `chrome.toggleInspector` and ⌘⇧R (otty's Toggle Details Panel) routes through the SAME NSEvent monitor
@@ -103,6 +110,15 @@ public struct WorkspaceRootView: View {
         .overlay {
             OverlayHostView(store: store, connection: connection, coordinator: overlay)
         }
+        // WI-5: the toolbar gear presents the in-app settings sheet (iOS has no `Settings` scene). The sheet
+        // hosts the same cross-platform section structs as the macOS strip. The live `WorkspaceStore` rides
+        // the `\.workspaceStore` slot so Advanced → Workspace export/import works on iOS too.
+        .sheet(isPresented: $showSettings) {
+            if let preferencesStore {
+                SettingsSheet(store: preferencesStore)
+                    .workspaceStore(store)
+            }
+        }
         #endif
     }
 
@@ -143,6 +159,14 @@ public struct WorkspaceRootView: View {
             // `PaneChooserModel` popover was removed in the in-pane-chooser refactor.)
             Button { store.openChooserPane(.newTab) } label: { Image(systemSymbol: .plus) }
                 .help("New Tab")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            // WI-5: the settings gear — iOS has no `Settings` scene (⌘, is macOS-only), so settings present
+            // as an in-app sheet. Disabled until the preferences store is injected (so the gear never opens
+            // an empty sheet in a preview / pre-scene state).
+            Button { showSettings = true } label: { Image(systemSymbol: .gearshape) }
+                .help("Settings")
+                .disabled(preferencesStore == nil)
         }
     }
     #endif

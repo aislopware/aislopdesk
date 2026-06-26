@@ -48,6 +48,18 @@ public extension WorkspaceStore {
         }
     }
 
+    /// The close-confirmation policy that GATED the currently-parked close — drives the in-app
+    /// ``CloseConfirmationPanel`` subtitle (E7 carry-over #4) so it reads accurately (a `.process` park says "a
+    /// process is still running", an `.always`/`.multiple_tabs` park does not). A parked PANE close reports its
+    /// EFFECTIVE gating policy (``WorkspaceStore/effectivePanePolicy(for:)`` — `.process` for a non-cascading
+    /// mid-tab close, else the Tab/Window policy, exactly the #8 guard); a parked TAB close reports
+    /// ``SettingsKey/closeConfirmTab``. `nil` when nothing is parked.
+    var pendingCloseReasonPolicy: CloseConfirmationPolicy? {
+        if pendingTabCloseID != nil { return SettingsKey.closeConfirmTab }
+        guard let pane = pendingClose else { return nil }
+        return effectivePanePolicy(for: pane)
+    }
+
     /// Arms a single-PANE close confirmation, clearing any parked tab close so exactly one confirmation
     /// dialog is ever up (the two parks are mutually exclusive — see ``pendingTabCloseID``).
     internal func parkPaneClose(_ id: PaneID) {

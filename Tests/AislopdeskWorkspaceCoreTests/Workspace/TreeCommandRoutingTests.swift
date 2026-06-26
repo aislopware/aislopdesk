@@ -539,6 +539,29 @@ final class TreeCommandRoutingTests: XCTestCase {
         XCTAssertNotNil(store.tree.spec(for: newID)?.floatingFrame)
     }
 
+    // MARK: - Tabs: Close Window (⌘⇧W) routes to the window-close gate (E7 carry-over #5)
+
+    /// `.closeWindow` (otty ⌘⇧W) routes to `store.requestCloseWindow()` — parking `pendingWindowClose` for the
+    /// active session when the close must confirm (here: a busy pane under the default `.process` window
+    /// policy). Proven to fail before `.closeWindow` exists / is routed (the pre-E7 ⌘⇧W closed the TAB instead).
+    @MainActor
+    func testCloseWindowRoutesToRequestCloseWindow() throws {
+        // Self-contained: the default `.process` policy + a busy pane must park the window close.
+        UserDefaults.standard.removeObject(forKey: SettingsKey.closeConfirmWindowKey)
+        let store = makeTreeStore()
+        let sessionID = try XCTUnwrap(store.tree.activeSessionID)
+        let active = try XCTUnwrap(activePane(store))
+        (store.handle(for: active) as? FakePaneSession)?.isShellBusy = true
+
+        WorkspaceBindingRegistry.route(.closeWindow, to: store)
+
+        XCTAssertEqual(
+            store.pendingWindowClose, sessionID,
+            "⌘⇧W routes to requestCloseWindow(), parking the active session's window close — not a tab close",
+        )
+        XCTAssertNil(store.pendingTabCloseID, "⌘⇧W is a WINDOW close now, never a tab close")
+    }
+
     // MARK: - Sessions: new session changes the active session + materializes its leaf
 
     /// `.newSession` adds a session (one tab/leaf) and selects it; its leaf is materialized.
@@ -668,7 +691,10 @@ final class TreeCommandRoutingTests: XCTestCase {
         // otty's reference table. These pins are ours to re-scope.
         XCTAssertEqual(chord(.nextTab), KeyChord(character: "]", [.command, .shift]), "next tab = ⌘⇧] (E1 re-scope)")
         XCTAssertEqual(chord(.prevTab), KeyChord(character: "[", [.command, .shift]), "prev tab = ⌘⇧[ (E1 re-scope)")
-        XCTAssertEqual(chord(.closeTab), KeyChord(character: "w", [.command, .shift]), "close tab = ⌘⇧W")
+        // E7 carry-over #5 / DECISIONS: ⌘⇧W reconciled Close Tab → Close WINDOW. Close Tab is now CHORD-LESS
+        // (reachable via the ⌘W cascade + palette/menu — otty ships no Close-Tab chord); ⌘⇧W = Close Window.
+        XCTAssertNil(chord(.closeTab), "close tab is chord-less (E7: ⌘⇧W moved to Close Window)")
+        XCTAssertEqual(chord(.closeWindow), KeyChord(character: "w", [.command, .shift]), "close window = ⌘⇧W (E7)")
         // E1 review fix (otty parity): the sidebar toggle was ⌘B, which routed to the LEGACY
         // `store.sidebarCollapsed` the native split shell never reads (a DEAD chord). Re-bound to otty's
         // ⌘⇧L "Toggle Tabs Panel" (spec/reference__keybindings.md:66), routed through a `chrome` view-closure.

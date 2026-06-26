@@ -637,7 +637,16 @@ public final class WorkspaceStore {
         switch scope {
         case .pane:
             let busy = pane.map { registry[$0]?.isShellBusy == true } ?? false
-            return CloseConfirmationPolicy.shouldConfirm(SettingsKey.closeConfirmTab, isBusy: busy, tabCount: tabCount)
+            // E7 carry-over #8: a mid-tab pane close that leaves its tab alive must NOT inherit the Tab/Window
+            // close-confirmation policy (otty only confirms a pane close that drops a tab/window). Gate by the
+            // EFFECTIVE pane policy — the Tab/Window policy ONLY when the close cascades a tab/window away, else
+            // the `.process` busy-shell guard alone (so a non-cascading idle pane closes immediately even under
+            // `.always`/`.multiple_tabs`).
+            return CloseConfirmationPolicy.shouldConfirm(
+                effectivePanePolicy(for: pane),
+                isBusy: busy,
+                tabCount: tabCount,
+            )
         case .tab:
             let busy = anyShellBusy(tree.activeSession?.activeTab?.allPaneIDs() ?? [])
             return CloseConfirmationPolicy.shouldConfirm(SettingsKey.closeConfirmTab, isBusy: busy, tabCount: tabCount)
@@ -655,6 +664,27 @@ public final class WorkspaceStore {
     /// tab- / window-scope busy input for ``closeConfirmationNeeded(scope:pane:)``.
     private func anyShellBusy(_ ids: [PaneID]) -> Bool {
         ids.contains { registry[$0]?.isShellBusy == true }
+    }
+
+    /// The close-confirmation policy a PANE close is GOVERNED by (E7 carry-over #8) — the single source the
+    /// `.pane` guard AND the in-app panel's subtitle (``pendingCloseReasonPolicy``) read:
+    /// - the close does NOT cascade a tab away (a mid-tab leaf with tiled siblings) → ``CloseConfirmationPolicy/process``
+    ///   (the busy-shell guard alone — otty never confirms a non-cascading pane close on the Tab policy);
+    /// - the close cascades its tab away (``tabRemovedByClosing(_:)`` ≠ nil) → ``SettingsKey/closeConfirmTab``,
+    ///   ESCALATED to ``SettingsKey/closeConfirmWindow`` when that tab is its session's LAST (the whole window /
+    ///   ``Session`` goes with it).
+    /// A `nil` pane (no target) is treated as non-cascading → `.process`.
+    func effectivePanePolicy(for pane: PaneID?) -> CloseConfirmationPolicy {
+        guard let pane, tabRemovedByClosing(pane) != nil else { return .process }
+        // Cascading close. Resolve the OWNING session's tab count (the pane may live in a non-active session)
+        // so "last tab → window scope" is keyed on the right session; fall back to the active session.
+        let owningTabCount: Int =
+            if let (sIdx, _) = WorkspaceTreeOps.locate(pane, in: tree) {
+                tree.sessions[sIdx].tabs.count
+            } else {
+                tree.activeSession?.tabs.count ?? 0
+            }
+        return owningTabCount <= 1 ? SettingsKey.closeConfirmWindow : SettingsKey.closeConfirmTab
     }
 
     /// The WINDOW-close GATE (E3 WI-4, the macOS `windowShouldClose` route). otty's window maps to an
@@ -2643,12 +2673,30 @@ public final class WorkspaceStore {
         reconcileTree()
     }
 
-    /// Adds a new session (one tab, one leaf of `kind`) and selects it; materializes its leaf.
+    /// Adds a new session (one tab, one leaf of `kind`) and selects it; materializes its leaf. The new
+    /// session's leaf inherits the configured ``SettingsKey/workingDirectoryNewWindow`` policy (otty "New
+    /// Window" working-directory; E7 carry-over #7) resolved against the active pane's last-known cwd.
     public func newSession(name: String, kind: PaneKind) {
-        let spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
-        let (next, _) = WorkspaceTreeOps.newSession(in: tree, name: name, spec: spec)
+        newSession(name: name, kind: kind, launchGrace: .milliseconds(1400))
+    }
+
+    /// The `launchGrace`-parameterized core of ``newSession(name:kind:)`` — a test injects a `0`ms grace to
+    /// observe the A26 cwd-inheritance `cd` send without a 1.4 s wall-clock wait. Production callers use the
+    /// public overload (the SAME 1400 ms grace `newTab` / `splitActivePane` use).
+    func newSession(name: String, kind: PaneKind, launchGrace: Duration) {
+        // E7 carry-over #7 (otty "New Window" working-directory — previously a DEAD accessor read nowhere):
+        // resolve the new window's initial cwd from the NEW-WINDOW policy against the active pane's last-known
+        // cwd (none when there is no active pane), stamp it on the new spec, and — terminal only — schedule a
+        // deferred `cd` once its PTY is live. Mirrors `newTab` / `splitActivePane`; `WorkspaceTreeOps.newSession`
+        // returns the new leaf id for the defer.
+        let activeCwd = tree.activeSession?.activeTab?.activePane.flatMap { tree.spec(for: $0)?.lastKnownCwd }
+        let inheritedCwd = SettingsKey.workingDirectoryNewWindow.resolve(activePaneCwd: activeCwd)
+        var spec = PaneSpec(kind: kind, title: defaultTitle(for: kind))
+        spec.lastKnownCwd = inheritedCwd
+        let (next, newPane) = WorkspaceTreeOps.newSession(in: tree, name: name, spec: spec)
         tree = next
         reconcileTree()
+        deferInheritedCwd(inheritedCwd, into: newPane, kind: kind, launchGrace: launchGrace)
     }
 
     /// Closes session `sessionID` (dropping all its tabs/panes) and selects another (or re-seeds a default

@@ -229,6 +229,45 @@ final class CloseConfirmationStoreTests: XCTestCase {
         XCTAssertEqual(store.tree.allPaneIDs().count, panes.count - 1, "the idle pane was closed")
     }
 
+    // MARK: - pane close gates by the Tab policy ONLY on a CASCADING close (E7 carry-over #8)
+
+    /// A NON-cascading mid-tab pane close (the pane has tiled siblings, so its tab SURVIVES) must fall back to
+    /// the `.process` busy-shell guard ALONE — it must NOT inherit the Tab policy. REVERT-TO-CONFIRM-FAIL: the
+    /// pre-fix `.pane` arm read `closeConfirmTab` unconditionally, so `.always` returned `true` even for an idle
+    /// non-cascading close; with the fix an idle non-cascading pane close needs no confirmation under `.always`.
+    func testNonCascadingPaneCloseUsesProcessGuardOnly() throws {
+        UserDefaults.standard.set("always", forKey: SettingsKey.closeConfirmTabKey)
+        // One tab split into TWO panes, so closing the active pane leaves the tab alive (a non-cascading close).
+        let store = makeTreeStore(restoringTree: multiTabWorkspace(tabCount: 1).0)
+        store.splitActivePane(axis: .horizontal, kind: .terminal)
+        let active = try XCTUnwrap(store.tree.activeSession?.activeTab?.activePane)
+        XCTAssertEqual(store.tree.activeSession?.activeTab?.allPaneIDs().count, 2, "the tab holds two tiled panes")
+
+        XCTAssertFalse(
+            store.closeConfirmationNeeded(scope: .pane, pane: active),
+            "an idle non-cascading pane close uses the .process guard ALONE — no confirmation under .always",
+        )
+    }
+
+    /// A CASCADING pane close (the pane is its tab's SOLE leaf, so closing it drops the whole tab) DOES gate by
+    /// the Tab policy — under `.always` an idle sole-leaf pane close confirms. The complement of the
+    /// non-cascading case: the cascade branch still honours the configured Tab policy.
+    func testCascadingPaneCloseUsesTabPolicy() {
+        UserDefaults.standard.set("always", forKey: SettingsKey.closeConfirmTabKey)
+        // Two single-pane tabs; the active tab's pane is its tab's sole leaf → closing it cascades the tab away.
+        let (tree, panes) = multiTabWorkspace(tabCount: 2)
+        let store = makeTreeStore(restoringTree: tree)
+        XCTAssertEqual(
+            store.tree.activeSession?.activeTab?.allPaneIDs(), [panes[0]],
+            "the active tab's pane is its sole (cascading) leaf",
+        )
+
+        XCTAssertTrue(
+            store.closeConfirmationNeeded(scope: .pane, pane: panes[0]),
+            "a cascading sole-leaf pane close confirms under the .always Tab policy",
+        )
+    }
+
     // MARK: - Close Tab (⌘⇧W) confirmation closes the WHOLE tab, not just the active pane
 
     /// REGRESSION (review finding): a confirmed ``WorkspaceStore/closeActiveTab()`` on a MULTI-PANE tab must

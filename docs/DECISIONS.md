@@ -256,3 +256,36 @@
   is the E4 metadata `cwd` RPC (`MetadataClient.cwd()`), refreshed each prompt via the existing `onCommandCompleted`
   (OSC-133-D) hook — the OSC-7 *equivalent*, with no new wire message. `WorkingDirectoryPolicy.inherit` reads the SAME
   `PaneSpec.lastKnownCwd` the refresh writes (single source — the "don't double-source cwd" invariant). → [otty-clone/plans/E3.md WI-2]
+
+## E7 settings parity + E1/E3 carry-overs (2026-06-26) — epic E7, plan in [otty-clone/plans/E7.md](otty-clone/plans/E7.md)
+- 🔁 **RE-SCOPE — `⌘⇧W` reconciled Close Tab → Close Window; `⌘W` keeps the close cascade; otty ships no Close-Tab
+  chord (E7 carry-over #5).** The registry bound `⌘⇧W` to `.closeTab`, but otty's reference keymap
+  (spec/user-interface__window-tab-split.md:99/103/104) lists **`⌘⇧W` = Close window**, `⌘W` = close focused
+  pane/tab/window cascade, `⌘⇧T` = reopen — otty has **no dedicated Close-Tab chord**. **Decision: reconcile to otty.**
+  A new `WorkspaceAction.closeWindow` (`requiresActivePane = false`) owns `⌘⇧W` via a `window.close` binding
+  (`macwindow.badge.minus`, category `.tabs`), routed `routeTree(.closeWindow) → store.requestCloseWindow()` (the
+  existing window-close gate that parks `pendingWindowClose` behind the `closeConfirmWindow` policy; the macOS
+  `WindowCloseConfirmationDelegate` NSAlert / in-app surface resolves it). `tab.close` (`.closeTab`) becomes
+  **chord-less** (`chord: nil`) — the Close Tab row stays in the palette / menu and tab close stays reachable via the
+  `⌘W` cascade. `routeCanvas(.closeWindow)` is a graceful no-op (the retained-but-dead canvas has no window/session
+  model). These default-chord pins were ours to re-scope (no wire/golden constant); `TreeCommandRoutingTests`
+  re-pins `chord(.closeTab) == nil` + `chord(.closeWindow) == ⌘⇧W`, the chord-uniqueness invariant
+  (`AttentionTests.testNoTwoBindingsShareAChord`) holds (Close Tab freed `⌘⇧W` before Close Window claimed it), and a
+  routing test pins `.closeWindow → requestCloseWindow()`. → [otty-clone/plans/E7.md WI-7]
+- ✅ **Pane-close confirmation gates by the Tab/Window policy ONLY on a cascading close (E7 carry-over #8).**
+  `closeConfirmationNeeded(scope: .pane, …)` evaluated `closeConfirmTab` on EVERY pane close, so an `always` /
+  `multiple_tabs` Tab policy confirmed even a mid-tab pane close that left its tab alive (otty never does). **Decision:**
+  the `.pane` arm now reads an `effectivePanePolicy(for:)` — `.process` (the busy-shell guard alone) for a
+  NON-cascading close, the Tab policy when the close cascades its tab away (`tabRemovedByClosing(pane) ≠ nil`),
+  escalated to the Window policy when that tab is its session's LAST. The `.tab` / `.window` scopes are unchanged. The
+  in-app `CloseConfirmationPanel` subtitle now branches on the resolved policy via a pure
+  `CloseConfirmationPanel.reason(for:scope:)` (process → "a process is still running"; always → "are you sure …
+  pane/tab"; multiple_tabs → "this window has multiple tabs") fed by the store's `pendingCloseReasonPolicy`, replacing
+  the hardcoded "a process is still running" (false for `always`/`multiple_tabs`) — carry-over #4. → [otty-clone/plans/E7.md WI-7]
+- ✅ **otty "New Window" working-directory policy wired into `newSession` (E7 carry-over #7).**
+  `SettingsKey.workingDirectoryNewWindow` (default `home`) was a DEAD accessor read nowhere. `WorkspaceStore.newSession`
+  now resolves it against the active pane's `lastKnownCwd`, stamps `PaneSpec.lastKnownCwd`, and (terminal only) issues
+  the deferred `cd` through the SAME `deferInheritedCwd` route + 1400 ms launch grace as `newTab` / `splitActivePane`
+  (a `launchGrace`-parameterized core overload lets a test observe the `cd` at 0 ms). `home` resolves nil → no
+  redundant `cd`. New-tab placement (`SettingsKey.newTabPosition`: after-current vs end) gains a store-level
+  regression pin. → [otty-clone/plans/E7.md WI-7]

@@ -52,15 +52,17 @@ public enum ScrollAction: Equatable, Sendable {
 /// `GhosttySurface` in a test).
 public extension WorkspaceStore {
     /// ⌘= (and the auto-shifted ⌘+) — bumps the active pane's render font size one step via libghostty's
-    /// `increase_font_size`. libghostty rescales glyphs WITHIN the same pane pixel box, so the PTY grid
-    /// (cols/rows) is unchanged unless the box itself changes — no PTY reflow / SIGWINCH from the font step
-    /// alone (ES-E1-4's "without reflowing the PTY grid"). A no-op for a non-terminal pane / no seam.
+    /// `increase_font_size`. A larger font fits FEWER cells in the same pane pixel box, so the PTY grid
+    /// (cols/rows) shrinks and the remote PTY IS reflowed via SIGWINCH (correcting ES-E1-4's earlier
+    /// "without reflowing the PTY grid" note — a font step is NOT grid-preserving). A no-op for a
+    /// non-terminal pane / no seam.
     func increaseFontInActivePane() {
         performActiveSurfaceAction("increase_font_size")
     }
 
-    /// ⌘- — shrinks the active pane's render font size one step (`decrease_font_size`). Same no-reflow
-    /// property as ``increaseFontInActivePane()``. A no-op for a non-terminal pane / no seam.
+    /// ⌘- — shrinks the active pane's render font size one step (`decrease_font_size`). Same reflow property
+    /// as ``increaseFontInActivePane()`` (a smaller font fits MORE cells → the grid grows → SIGWINCH). A
+    /// no-op for a non-terminal pane / no seam.
     func decreaseFontInActivePane() {
         performActiveSurfaceAction("decrease_font_size")
     }

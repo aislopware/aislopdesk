@@ -306,4 +306,91 @@ final class CwdInheritanceStoreTests: XCTestCase {
         await settleDeferredSends()
         XCTAssertEqual(newFake?.sentBytes ?? [], [], "a remote-GUI pane takes no `cd`")
     }
+
+    // MARK: - New session (otty "New Window") working-directory policy (E7 carry-over #7)
+
+    // `SettingsKey.workingDirectoryNewWindow` was a DEAD accessor read NOWHERE before E7. These pin that
+    // `newSession` now resolves + stamps it the same way `newTab` / `splitActivePane` do: inherit stamps the
+    // active pane's cwd on the new session's leaf and (0 ms grace) `cd`-s into it, `home` stamps nil + sends
+    // nothing, and the deferred `cd` fires for TERMINAL kind only. FAIL on the pre-fix `newSession` (it built
+    // a bare spec, never reading the policy, never deferring a `cd`).
+
+    func testNewSessionInheritStampsActiveCwdOnNewSessionLeaf() throws {
+        UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewWindowKey)
+        let pane = PaneID()
+        let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/Users/me/project"))
+        let before = allPaneIDs(store)
+
+        store.newSession(name: "Local 2", kind: .terminal)
+
+        let newPane = try XCTUnwrap(allPaneIDs(store).subtracting(before).first, "a new session mints a new leaf")
+        XCTAssertEqual(
+            store.tree.spec(for: newPane)?.lastKnownCwd, "/Users/me/project",
+            "the New-Window inherit policy stamps the active pane's cwd on the new session's leaf",
+        )
+    }
+
+    func testNewSessionDefaultsToHomeStampingNil() throws {
+        // The default New-Window policy is `home` (unset) → resolves nil, so the new session's leaf carries no
+        // cwd hint even though the active pane has one (a fresh login shell already starts at $HOME).
+        let pane = PaneID()
+        let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/Users/me/project"))
+        let before = allPaneIDs(store)
+
+        store.newSession(name: "Local 2", kind: .terminal)
+
+        let newPane = try XCTUnwrap(allPaneIDs(store).subtracting(before).first)
+        XCTAssertNil(
+            store.tree.spec(for: newPane)?.lastKnownCwd,
+            "the default `home` New-Window policy ignores the active cwd → nil (no redundant cd)",
+        )
+    }
+
+    func testNewSessionInheritSendsDeferredCdToTheNewSessionLeaf() async throws {
+        UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewWindowKey)
+        let pane = PaneID()
+        let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/srv/app"))
+        let before = allPaneIDs(store)
+
+        store.newSession(name: "Local 2", kind: .terminal, launchGrace: .zero)
+
+        let newPane = try XCTUnwrap(allPaneIDs(store).subtracting(before).first)
+        let newFake = store.handle(for: newPane) as? FakePaneSession
+        await waitForBytes(newFake)
+        XCTAssertEqual(
+            newFake?.sentBytes, [Array("cd '/srv/app'\n".utf8)],
+            "the inherited cwd is `cd`-ed into the new session's terminal leaf",
+        )
+        // The original session's pane is untouched (the `cd` targets only the freshly-minted leaf).
+        XCTAssertEqual((store.handle(for: pane) as? FakePaneSession)?.sentBytes ?? [], [])
+    }
+
+    func testNewSessionHomeSendsNoCd() async throws {
+        UserDefaults.standard.set("home", forKey: SettingsKey.workingDirectoryNewWindowKey)
+        let pane = PaneID()
+        let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/Users/me/project"))
+        let before = allPaneIDs(store)
+
+        store.newSession(name: "Local 2", kind: .terminal, launchGrace: .zero)
+
+        let newPane = try XCTUnwrap(allPaneIDs(store).subtracting(before).first)
+        let newFake = store.handle(for: newPane) as? FakePaneSession
+        await settleDeferredSends()
+        XCTAssertEqual(newFake?.sentBytes ?? [], [], "home resolves nil → no `cd` for a new session")
+    }
+
+    func testNewSessionNonTerminalKindSendsNoCd() async throws {
+        // The deferred `cd` fires for TERMINAL kind ONLY — a remote-GUI session leaf has no shell.
+        UserDefaults.standard.set("inherit", forKey: SettingsKey.workingDirectoryNewWindowKey)
+        let pane = PaneID()
+        let store = makeTreeStore(restoringTree: singlePaneWorkspace(pane, cwd: "/Users/me/project"))
+        let before = allPaneIDs(store)
+
+        store.newSession(name: "Local 2", kind: .remoteGUI, launchGrace: .zero)
+
+        let newPane = try XCTUnwrap(allPaneIDs(store).subtracting(before).first)
+        let newFake = store.handle(for: newPane) as? FakePaneSession
+        await settleDeferredSends()
+        XCTAssertEqual(newFake?.sentBytes ?? [], [], "a non-terminal new session takes no `cd`")
+    }
 }

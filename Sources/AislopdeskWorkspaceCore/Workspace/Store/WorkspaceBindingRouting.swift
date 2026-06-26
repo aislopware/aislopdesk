@@ -145,7 +145,8 @@ public extension WorkspaceBindingRegistry {
         // E1 command jumps (ES-E1-3): ⌘PageUp/Down REUSE the OSC-133 command-jump (prev/next prompt), NOT scroll.
         case .commandJumpPrev: store.jumpToBlockInActivePane(delta: -1)
         case .commandJumpNext: store.jumpToBlockInActivePane(delta: 1)
-        // E1 font size (ES-E1-4): ⌘=/⌘-/⌘0 rescale the active pane's render font (no PTY reflow). No-op off-terminal.
+        // E1 font size (ES-E1-4): ⌘=/⌘-/⌘0 rescale the active pane's render font — the cell box resizes, so the
+        // remote PTY grid REFLOWS (SIGWINCH); not grid-preserving. No-op off-terminal.
         case .increaseFontSize: store.increaseFontInActivePane()
         case .decreaseFontSize: store.decreaseFontInActivePane()
         case .resetFontSize: store.resetFontInActivePane()
@@ -162,6 +163,10 @@ public extension WorkspaceBindingRegistry {
         case .prevTab: store.cycleTab(by: -1)
         case let .selectTab(n): store.selectTabNumber(n)
         case .closeTab: store.closeActiveTab()
+        // Close Window (otty ⌘⇧W, E7 carry-over #5): a window maps to a ``Session`` — request the window close,
+        // which parks `pendingWindowClose` behind the `closeConfirmWindow` policy. The macOS
+        // `WindowCloseConfirmationDelegate` (NSAlert) resolves the park; on iOS the in-app surface does.
+        case .closeWindow: store.requestCloseWindow()
         // Reopen the most recently closed TAB (E1 ES-E1-5 chord; E3 WI-3 behaviour): pops the tree shell's
         // in-memory ``WorkspaceStore/recentlyClosedTabs`` LIFO and re-inserts the tab. A graceful no-op when
         // the LIFO is empty — live, never dead.
@@ -277,7 +282,8 @@ public extension WorkspaceBindingRegistry {
         case .nextTab,
              .prevTab,
              .selectTab,
-             .closeTab: break // no canvas tab model
+             .closeTab,
+             .closeWindow: break // no canvas tab/window model (the tree shell owns sessions)
         case .toggleSyncInput: break // no canvas analogue (tab-scoped, tree-only)
         case .jumpToAttention: break // tree-only (no canvas attention rollup)
         // P4 Peek & Reply is a view overlay; the canvas path still toggles it (the overlay's own selector
