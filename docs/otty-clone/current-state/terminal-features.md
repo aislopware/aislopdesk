@@ -1,8 +1,8 @@
 # Terminal Features — Current Implementation State
 
 > Area: Terminal features via libghostty surface
-> Date: 2026-06-25
-> Auditor: Ariadne (Sonnet 4.6)
+> Date: 2026-06-25 (E8 interaction-parity rows added 2026-06-26)
+> Auditor: Ariadne (Sonnet 4.6); E8 housekeeping per [otty-clone/plans/E8.md](../plans/E8.md)
 
 ## Overview
 
@@ -30,7 +30,7 @@ genuinely absent.
 | **Copy** (Cmd-C / context menu) | done | `performBindingAction("copy_to_clipboard")` via `TerminalSurfaceActions`; `TerminalContextMenu.Item.copy` wired in `GhosttyLayerBackedView.menu(for:)`. `GhosttySurface.swift:662-675`, `TerminalContextMenu.swift:15-38` |
 | **Paste** (Cmd-V / context menu) | done | `performBindingAction("paste_from_clipboard")` + bracketed-paste (DECSET 2004) applied by libghostty. `GhosttyTerminalView.swift:257-275`, `TerminalContextMenu.swift:18` |
 | **Paste as keystrokes** (context menu) | done | `TerminalContextMenu.Item.pasteAsKeystrokes` — routed to `surface.text(_:)` bypassing bracketed-paste. `TerminalContextMenu.swift:18`, `GhosttySurface.swift:543-551` |
-| **OSC 52 clipboard read/write** | done | `read_clipboard_cb` / `confirm_read_clipboard_cb` / `write_clipboard_cb` all wired in `GhosttyApp.init`. Auto-approved confirm path (no dialog). `GhosttyTerminalView.swift:257-325` |
+| **OSC 52 clipboard read/write** | done | `read_clipboard_cb` / `confirm_read_clipboard_cb` / `write_clipboard_cb` wired in `GhosttyApp.init`. **E8: the blanket auto-approve is replaced** — OSC-52 READ honours the live `clipboard-read` access (Allow / Ask / Deny, default **Ask**) via `aislopdeskConfirmClipboardRead` → `PasteProtectionSheet`; every completion uses `confirmed:true` (deny = empty reply) to dodge the read-gate recursion. **OSC-52 WRITE now honours `clipboard-write` too:** `write_clipboard_cb` reads the libghostty `confirm` flag (set for `clipboard-write = ask`) and routes through the pure `ClipboardWritePolicy` → `PasteProtectionSheet(kind: .clipboardWrite)`, writing only on approve (was: ignored `confirm` and wrote unconditionally, so "Ask" behaved like "Allow"). `GhosttyTerminalView.swift` (`write_clipboard_cb`, `aislopdeskWriteClipboard`), `ClipboardWritePolicy.swift` |
 | **Select All** | done | `performBindingAction("select_all")` in context menu. `TerminalContextMenu.swift:19` |
 | **Scroll (mouse wheel / trackpad)** | done | `GhosttySurface.sendMouseScroll(deltaX:deltaY:mods:)` → `ghostty_surface_mouse_scroll`. Scroll-momentum bits packed per upstream. `GhosttySurface.swift:596-604` |
 | **Scroll to top / bottom** | done | `performBindingAction("scroll_to_top")` / `scroll_to_bottom"` exposed via copy-mode and context menu paths. `TerminalViewModel.swift:330-333` |
@@ -58,7 +58,25 @@ genuinely absent.
 | **In-terminal search (⌘F)** | done | `TerminalSearchController` pure engine (literal + regex, case toggle, next/prev/wrap). Driven by libghostty `start_search:<needle>` binding. `TerminalSearchController.swift:1-194` |
 | **Copy-mode** (vi-like keyboard scrollback nav) | done | `TerminalViewModel.isCopyMode`, `handleCopyModeKey(_:)` dispatches j/k/d/u/g/G/[/]/n/N/y/Enter/q/Esc to libghostty binding actions. `TerminalViewModel.swift:221-389` |
 | **Vi visual-char selection in copy-mode** | missing (documented ceiling) | `TerminalViewModel.swift:303-308` documents: libghostty fork exposes NO programmatic cursor-move/set-selection action. `y`/Enter copies the mouse-made selection or full scrollback. |
-| **Right-click context menu** | done | `TerminalContextMenu` model (copy/paste/paste-as-keystrokes/select-all/clear/copy-output/split/find) with enablement rules. Built as `NSMenu` in `GhosttyLayerBackedView.menu(for:)`. `TerminalContextMenu.swift:12-123`, `GhosttyTerminalView.swift:1174-1203` |
+| **Right-click context menu** | done | `TerminalContextMenu` model (copy/paste/paste-as-keystrokes/select-all/clear/copy-output/split/find **+ the E8 Paste-as items**) with enablement rules. Built as `NSMenu` in `GhosttyLayerBackedView.menu(for:)`. `TerminalContextMenu.swift:12-123`, `GhosttyTerminalView.swift:1174-1203` |
+| **Right-click action** (H7/H8, E8) | done | `rightMouseDown` branches on the pure `RightClickAction.effect(controlHeld:hasSelection:)` (contextMenu / copy / paste / copyOrPaste / ignore); ⌃-right always shows the menu. Read live off `Defaults`. `GhosttyTerminalView.swift:1242` |
+| **Copy-on-Select** (I4, E8) | done | `copy-on-select = clipboard/false` config passthrough; ON writes drag-select to the private SELECTION pasteboard (system clipboard untouched until ⌘C). Default off. `TerminalConfigBuilder.swift:110`, `TerminalControls.swift` |
+| **Trim trailing spaces on copy** (I5, E8) | done | `clipboard-trim-trailing-spaces` config passthrough (default on). `TerminalConfigBuilder.swift:111` |
+| **Clear selection on typing / on copy** (I6, E8) | done | `selection-clear-on-typing` (default on) / `selection-clear-on-copy` (default off) config passthrough. `TerminalConfigBuilder.swift:112-113` |
+| **Shift+Arrow select** (I2, E8) | done | ON emits four `shift+<dir>=adjust_selection:<dir>` keybinds; OFF emits `unbind` (⇧+arrow forwards to the program). `TerminalConfigBuilder.swift:136-141` |
+| **Paste Protection sheet** (I9, E8) | done | Pure `PasteSafetyAnalyzer` (multi-line / trailing-newline / `sudo`/`su` / control-char) gates `PasteProtectionSheet` in `aislopdeskConfirmUnsafePaste`, replacing the auto-approve. Cancel completes with EMPTY data (no gate re-trip). `clipboard-paste-protection` / `clipboard-paste-bracketed-safe` config keys. `GhosttyTerminalView.swift:99-155`, `PasteSafetyAnalyzer.swift` |
+| **Paste as…** (I10, E8) | done | Pure `PasteTransform` (`.bracketed` / `.shellEscaped` / `.base64(ofFileBytes:)`) + `TerminalContextMenu` items (pasteSelection / pasteFileBase64 / pasteEscaped / pasteBracketed / pasteToComposer) routed in `contextMenuAction` via `surface.text(_:)` / `NSOpenPanel` / `model.onPasteToComposer`. `PasteTransform.swift`, `GhosttyTerminalView.swift:1561,1627` |
+| **Hide mouse while typing** (H9, E8) | done | `mouse-hide-while-typing` config passthrough (libghostty DECIDES) **+ embedder ACTUATION**: `action_cb` `GHOSTTY_ACTION_MOUSE_VISIBILITY` → pure `MouseVisibilityMapping.isVisible(forRawValue:)` ({0,1}-guarded; unknown int fails safe to visible) → `applyMouseVisibility` → `NSCursor.setHiddenUntilMouseMoves(!visible)` (mirrors ghostty `setCursorVisibility`; auto-shows on next move). The config alone is inert — libghostty delegates the hide to this action. `TerminalConfigBuilder.swift:121`, `GhosttyTerminalView.swift:356,1508`, `MouseVisibilityMapping.swift` |
+| **Allow-shift-with-click / mouse-reporting / click-to-move** (E8) | done | `mouse-shift-capture` / `mouse-reporting` (allow-mouse-capture) / `cursor-click-to-move` config passthrough. `TerminalConfigBuilder.swift:122-124` |
+| **Scroll multiplier** (E8) | done | `mouse-scroll-multiplier = precision:<m>,discrete:<m>` config passthrough. `TerminalConfigBuilder.swift:128` |
+| **Mouse-over-to-focus** (H6, E8) | done | `mouseEntered`/`mouseMoved` call `model.onRequestFocus` gated by the pure `FocusFollowsMousePolicy` + live `Defaults` (aislopdesk panes are separate surfaces; libghostty's own `focus-follows-mouse` covers only its internal split tree). `GhosttyTerminalView.swift:1296-1312`, `FocusFollowsMousePolicy.swift` |
+| **OSC-22 pointer shape** (H14, E8) | done | `action_cb` `GHOSTTY_ACTION_MOUSE_SHAPE` → pure `PointerShapeMapping.token(forRawValue:)` (validate-then-drop on unknown raw int) → `NSCursor`; reset to arrow on `default`. `GhosttyTerminalView.swift:333,1453`, `PointerShapeMapping.swift` |
+| **Cursor color / opacity / text** (H4/H5, E8) | done | `cursor-color` / `cursor-text` / `cursor-opacity` emitted from `TerminalPreferences` (empty colours skipped); live preview in `CursorPreviewView` (Appearance → Cursor). `TerminalConfigBuilder.swift:132-135`, `TerminalPreferences.swift:57-93` |
+| **Cursor smooth animation** (H3, E8) | omitted (no fork hook) | The pinned libghostty fork exposes no cursor-animation key. `TerminalPreferences.cursorAnimation` (off/smooth) persists + surfaces for forward-compat but emits no config line. `TerminalPreferences.swift:42-93` |
+| **Scroll-past-last / first** (I14/I15, E8) | **partial (rendering deferred)** | Settings persist + pure `ScrollPastPolicy.targetTopRow(...)` anchor + alt-screen suppression gate exist, BUT the policy is NOT yet called from `Sources/` (dormant anchor) and the blank-overscroll RENDERING is deferred (no libghostty viewport hook). Settings rows relabelled "Preference saved; overscroll rendering deferred" so the UI does not imply a behavior that does not occur. `ScrollPastPolicy.swift`, `GhosttyTerminalView.swift` (scrollWheel) |
+| **Smooth scroll** (I15, E8) | **partial (rendering deferred)** | `smoothScroll` setting persists; scrolling already runs at pixel granularity, but the whole-row snap when OFF is deferred (the pinned fork has no `smooth-scroll` / row-snap hook). Settings row relabelled accordingly. `SettingsKey.swift` |
+| **Backspace-deletes-selection** (I7, E8) | **not yet functional (default OFF)** | Pure `BackspaceSelectionPolicy` decision exists, but the pinned fork exposes no set-selection / cursor-geometry C API, so a faithful whole-run delete is impossible (a blind DEL run would delete the WRONG chars = data loss). With the toggle ON the effect is indistinguishable from OFF (one char deleted), so the `Defaults` default is now **OFF** and the Settings rows are relabelled "not yet functional" — the behavior is ABSENT, not degraded. Policy stays wired for a future geometry API. `BackspaceSelectionPolicy.swift`, `SettingsKey.swift` |
+| **Undo at prompt** (I18, E8) | done (redo omitted) | Pure `PromptEditPolicy` maps ⌘Z at an editable prompt → readline UNDO `0x1F`; ⌘⇧Z/⌘Y returns nil + falls through (no portable readline redo). `PromptEditPolicy.swift`, `GhosttyTerminalView.swift:1072-1101` |
 | **Hyperlinks (OSC 8)** | done | libghostty owns OSC 8 hit-testing and click internally; `action_cb` with `GHOSTTY_ACTION_OPEN_URL` forwards resolved URLs to `NSWorkspace.open` / `UIApplication.open`. `GhosttyTerminalView.swift:214-231` |
 | **Bracketed paste (DECSET 2004)** | done | Applied by libghostty inside `paste_from_clipboard` binding action. `GhosttySurface.swift:665-666` |
 | **Resize / SIGWINCH propagation** | done | `resize_callback` → `onResize` → `sendResize(cols:rows:)` → `WireMessage.resize` → host `TIOCSWINSZ`. `GhosttySurface.swift:279-292`, `GhosttyTerminalView.swift:718-778` |
@@ -109,6 +127,40 @@ genuinely absent.
 5. **In-surface search highlights** — `TerminalSearchController.swift:9-12` notes that libghostty's search-result callbacks are not plumbed through the C `action_cb` yet. `performBindingAction("start_search:<needle>")` is called (so libghostty internally highlights), but the count/navigation UX is computed from the client-side text mirror (`scrollbackTextLines()`). The two are independent and can drift if libghostty's search result set differs from the text mirror (e.g. on wrapped lines).
 
 6. **Autocomplete** — entirely absent from the codebase. The spec placeholder doc (`docs/otty-clone/spec/terminal-features__autocomplete.md`) confirms it is planned but not started.
+
+### E8 interaction-parity (2026-06-26) — ceilings & omissions
+
+E8 added otty's selection / copy / paste / scroll / mouse / cursor controls. It is **wholly client-side** —
+every OSC-52 / OSC-22 sequence already lands in the client's libghostty over the existing PATH-1 byte
+stream, so there is **no wire / golden / version change** (the new fire-time `Defaults` keys stay off the
+`EnvConfig` overlay + `video-prefs.json` sidecar; `scripts/golden-check.sh` stays zero-diff). The bulk is a
+config-passthrough job through the existing live-reload pipeline (`TerminalControls` → `TerminalConfigBuilder`
+→ `PreferencesStore.applyTerminal()` / `refreshTerminalControls()`). The honestly-stated limits:
+
+1. **Cursor "Smooth" animation (H3) — omitted.** The pinned libghostty fork exposes no cursor-animation
+   config key or hook. The `cursorAnimation` preference (off/smooth) persists + surfaces in Appearance →
+   Cursor for forward-compatibility, but no `cursor-animation` line is emitted (there is none).
+
+2. **Undo "redo" at the prompt (I18) — omitted.** ⌘Z → readline UNDO (`0x1F`) at an editable prompt;
+   ⌘⇧Z/⌘Y returns nil and falls through because there is no portable readline redo keystroke.
+
+3. **Scroll-past overscroll + smooth-scroll (I14/I15) — PARTIAL, rendering deferred (ceiling).** The client
+   libghostty owns the viewport and the pinned fork exposes no overscroll-margin / sub-row-render /
+   `smooth-scroll` API. The settings persist, the pure `ScrollPastPolicy` anchor arithmetic exists, and the
+   alt-screen suppression gate is computed; BUT the policy is not yet called from `Sources/` (dormant anchor)
+   and the blank-overscroll rendering + pixel-snap-on-gesture-end are deferred pending a libghostty viewport
+   hook. ES-E8-5 is a documented PARTIAL. The Settings rows are relabelled "Preference saved; overscroll
+   rendering deferred" so the UI does not imply a behavior that does not occur. No fake overscroll is faked.
+
+4. **Backspace-deletes-selection (I7) — NOT YET FUNCTIONAL, default OFF (ceiling).** No set-selection /
+   cursor-geometry C API in the pinned fork, so the embedder cannot prove a selection ends at the cursor; a
+   blind DEL run for a mid-line selection would delete the WRONG characters (data loss), so the GUI pre-sends
+   nothing and the effect with the toggle ON is indistinguishable from OFF (one character deleted). Rather
+   than ship a default-ON toggle that does nothing, the `Defaults` default is now **OFF** and the Settings
+   rows are relabelled "not yet functional" — the behavior is ABSENT, not degraded. The pure
+   `BackspaceSelectionPolicy` (+ the `selectionEndsAtCursor` seam) stays wired for a future geometry API.
+
+See [docs/DECISIONS.md](../../DECISIONS.md) "## E8 terminal interaction parity" for the full decision log.
 
 ### Architecture note on "na-remote" items
 

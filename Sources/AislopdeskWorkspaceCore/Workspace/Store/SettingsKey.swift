@@ -51,6 +51,52 @@ public enum SettingsKey {
     /// otty `mouse-scroll-multiplier` — multiply the scroll-wheel delta (default `1.0`). **E8 owns the
     /// behaviour.**
     public static let scrollMultiplier = "controls.scrollMultiplier"
+
+    // E8 WI-1: the remaining otty Controls / Mouse / Scroll knobs. Same fire-time `Defaults.Keys`
+    // discipline (never folded into a typed prefs model → never reach the env overlay / sidecar →
+    // golden-safe). E8 owns the behaviour; declared + persisted here so the Controls UI round-trips. The
+    // bool keys take the bare name (`…Enabled` accessor); the enum-valued keys take a `…Key` suffix (like
+    // `onLaunchKey`) so the typed accessor below can use the bare name.
+    /// otty `selection-clear-on-typing` — clear the selection when the user types (default ON).
+    public static let clearSelectionOnTyping = "controls.clearSelectionOnTyping"
+    /// otty `selection-clear-on-copy` — clear the selection after an explicit copy (default OFF).
+    public static let clearSelectionOnCopy = "controls.clearSelectionOnCopy"
+    /// otty backspace-deletes-selection (I7) — Backspace with an active prompt-line selection deletes the
+    /// whole selection (default ON). Read by `BackspaceSelectionPolicy` (WI-10).
+    public static let backspaceDeletesSelection = "controls.backspaceDeletesSelection"
+    /// otty "Shift+Arrow Select" (I2) — ⇧+arrows drive native selection instead of forwarding the arrow
+    /// escapes (default ON). Emits the four `adjust_selection` keybinds (WI-2).
+    public static let shiftArrowSelect = "controls.shiftArrowSelect"
+    /// otty `clipboard-paste-bracketed-safe` — treat a bracketed paste as safe, skipping the warning when
+    /// the program advertised `?2004h` (default ON).
+    public static let pasteBracketedSafe = "controls.pasteBracketedSafe"
+    /// otty `clipboard-write` — the OSC-52 clipboard-WRITE access gate (stored ``ClipboardAccess`` rawValue,
+    /// default `allow`).
+    public static let clipboardWriteKey = "controls.clipboardWrite"
+    /// otty `clipboard-read` — the OSC-52 clipboard-READ access gate (stored ``ClipboardAccess`` rawValue,
+    /// default `ask`).
+    public static let clipboardReadKey = "controls.clipboardRead"
+    /// otty `mouse-reporting` (Allow Mouse Capture) — allow programs to capture mouse events (default ON).
+    public static let allowMouseCapture = "controls.allowMouseCapture"
+    /// otty `mouse-shift-capture` (Allow Shift with Mouse Click) — whether ⇧ bypasses a program's mouse
+    /// capture (stored ``MouseShiftCapture`` rawValue, default `enabled`).
+    public static let allowShiftClickKey = "controls.allowShiftClick"
+    /// otty `cursor-click-to-move` — click in the prompt to move the shell cursor (default ON).
+    public static let clickToMove = "controls.clickToMove"
+    /// otty `mouse.rightClickAction` — what a bare right-click does in the viewport (stored
+    /// ``RightClickAction`` rawValue, default `context-menu`).
+    public static let rightClickActionKey = "controls.rightClickAction"
+    /// otty "Scroll Past Last Line" — overscroll past the last content row (stored ``ScrollPastLast``
+    /// rawValue, default `disabled`).
+    public static let scrollPastLastLineKey = "controls.scrollPastLastLine"
+    /// otty "Scroll Past First Line" — overscroll past the first scrollback row (stored ``ScrollPastFirst``
+    /// rawValue, default `disabled`).
+    public static let scrollPastFirstLineKey = "controls.scrollPastFirstLine"
+    /// otty "Smooth Scroll" — pixel-granularity scrolling during the gesture, snap-to-row on end (default
+    /// ON).
+    public static let smoothScroll = "controls.smoothScroll"
+    /// otty undo-at-prompt (I18) — ⌘Z emits the readline undo (`0x1f`) when in the prompt zone (default ON).
+    public static let undoAtPrompt = "controls.undoAtPrompt"
     // Features / advanced
     public static let systemDialogPanes = "features.systemDialogPanes"
     public static let autoSwitchLayouts = "features.autoSwitchLayouts"
@@ -221,6 +267,62 @@ public enum SettingsKey {
     /// The scroll-wheel delta multiplier (otty `mouse-scroll-multiplier`), default `1.0`. **E8 owns the
     /// behaviour.**
     public static var scrollMultiplierValue: Double { Defaults[.scrollMultiplier] }
+
+    // MARK: E8 WI-1: the remaining Controls / Mouse / Scroll knobs (fire-time accessors)
+
+    /// Whether the selection clears when the user types (otty `selection-clear-on-typing`), default ON.
+    public static var clearSelectionOnTypingEnabled: Bool { Defaults[.clearSelectionOnTyping] }
+
+    /// Whether the selection clears after an explicit copy (otty `selection-clear-on-copy`), default OFF.
+    public static var clearSelectionOnCopyEnabled: Bool { Defaults[.clearSelectionOnCopy] }
+
+    /// Whether Backspace deletes the whole prompt-line selection (otty backspace-deletes-selection, I7),
+    /// default **OFF — not yet functional**: the pinned libghostty fork exposes no selection-geometry C API,
+    /// so even ON it cannot faithfully delete the run (it degrades to a single-character Backspace,
+    /// indistinguishable from OFF). Read by `BackspaceSelectionPolicy` (WI-10); see docs/DECISIONS.md.
+    public static var backspaceDeletesSelectionEnabled: Bool { Defaults[.backspaceDeletesSelection] }
+
+    /// Whether ⇧+arrows drive native selection (otty "Shift+Arrow Select", I2), default ON.
+    public static var shiftArrowSelectEnabled: Bool { Defaults[.shiftArrowSelect] }
+
+    /// Whether a bracketed paste is treated as safe (otty `clipboard-paste-bracketed-safe`), default ON.
+    public static var pasteBracketedSafeEnabled: Bool { Defaults[.pasteBracketedSafe] }
+
+    /// Whether programs may capture mouse events (otty `mouse-reporting`, Allow Mouse Capture), default ON.
+    public static var allowMouseCaptureEnabled: Bool { Defaults[.allowMouseCapture] }
+
+    /// Whether clicking in the prompt moves the shell cursor (otty `cursor-click-to-move`), default ON.
+    public static var clickToMoveEnabled: Bool { Defaults[.clickToMove] }
+
+    /// Whether smooth (pixel-granularity) scrolling is on (otty "Smooth Scroll"), default ON.
+    public static var smoothScrollEnabled: Bool { Defaults[.smoothScroll] }
+
+    /// Whether ⌘Z at the prompt emits the readline undo (otty undo-at-prompt, I18), default ON.
+    public static var undoAtPromptEnabled: Bool { Defaults[.undoAtPrompt] }
+
+    /// The OSC-52 clipboard-WRITE access gate (otty `clipboard-write`), default ``ClipboardAccess/allow``.
+    /// A stale / invalid persisted raw value repairs to `.allow` via the `RawRepresentableBridge`.
+    public static var clipboardWrite: ClipboardAccess { Defaults[.clipboardWrite] }
+
+    /// The OSC-52 clipboard-READ access gate (otty `clipboard-read`), default ``ClipboardAccess/ask``.
+    /// A stale / invalid persisted raw value repairs to `.ask` via the `RawRepresentableBridge`.
+    public static var clipboardRead: ClipboardAccess { Defaults[.clipboardRead] }
+
+    /// Whether ⇧ bypasses a program's mouse capture (otty `mouse-shift-capture`, Allow Shift with Mouse
+    /// Click), default ``MouseShiftCapture/enabled``. A stale / invalid raw value repairs to `.enabled`.
+    public static var allowShiftClick: MouseShiftCapture { Defaults[.allowShiftClick] }
+
+    /// What a bare right-click does in the viewport (otty `mouse.rightClickAction`), default
+    /// ``RightClickAction/contextMenu``. A stale / invalid raw value repairs to `.contextMenu`.
+    public static var rightClickAction: RightClickAction { Defaults[.rightClickAction] }
+
+    /// Overscroll past the last content row (otty "Scroll Past Last Line"), default ``ScrollPastLast/disabled``.
+    /// A stale / invalid raw value repairs to `.disabled`. The render policy suppresses it on the alt screen.
+    public static var scrollPastLastLine: ScrollPastLast { Defaults[.scrollPastLastLine] }
+
+    /// Overscroll past the first scrollback row (otty "Scroll Past First Line"), default
+    /// ``ScrollPastFirst/disabled``. A stale / invalid raw value repairs to `.disabled`.
+    public static var scrollPastFirstLine: ScrollPastFirst { Defaults[.scrollPastFirstLine] }
 }
 
 // MARK: - Typed Defaults keys (the single source the accessors + `@Default(.key)` views read)
@@ -267,6 +369,31 @@ public extension Defaults.Keys {
     static let focusFollowsMouse = Key<Bool>(SettingsKey.focusFollowsMouse, default: false)
     static let scrollOnOutput = Key<Bool>(SettingsKey.scrollOnOutput, default: true)
     static let scrollMultiplier = Key<Double>(SettingsKey.scrollMultiplier, default: 1.0)
+    // E8 WI-1: the remaining Controls / Mouse / Scroll knobs. Same fire-time-only discipline (never folded
+    // into a typed prefs model → golden-safe). The enum-valued keys store the bare enum rawValue via the
+    // `RawRepresentableBridge` (the `Defaults.PreferRawRepresentable` conformances below), repairing a stale
+    // value to the default exactly like `closeConfirmTab` / `onLaunch`.
+    static let clearSelectionOnTyping = Key<Bool>(SettingsKey.clearSelectionOnTyping, default: true)
+    static let clearSelectionOnCopy = Key<Bool>(SettingsKey.clearSelectionOnCopy, default: false)
+    // Default OFF — NOT YET FUNCTIONAL: the pinned libghostty fork exposes no set-selection / cursor-geometry
+    // C API, so a faithful "Backspace deletes the whole selection wherever it sits" cannot be actuated (a
+    // blind DEL run would delete the WRONG characters for a mid-line selection — default-on data loss). With
+    // the toggle ON the behaviour is INDISTINGUISHABLE from OFF (one character deleted + selection cleared),
+    // so it ships OFF rather than as a default-ON toggle that does nothing. See `BackspaceSelectionPolicy`
+    // and docs/DECISIONS.md (E8 WI-10) — the policy stays wired for a future libghostty geometry API.
+    static let backspaceDeletesSelection = Key<Bool>(SettingsKey.backspaceDeletesSelection, default: false)
+    static let shiftArrowSelect = Key<Bool>(SettingsKey.shiftArrowSelect, default: true)
+    static let pasteBracketedSafe = Key<Bool>(SettingsKey.pasteBracketedSafe, default: true)
+    static let allowMouseCapture = Key<Bool>(SettingsKey.allowMouseCapture, default: true)
+    static let clickToMove = Key<Bool>(SettingsKey.clickToMove, default: true)
+    static let smoothScroll = Key<Bool>(SettingsKey.smoothScroll, default: true)
+    static let undoAtPrompt = Key<Bool>(SettingsKey.undoAtPrompt, default: true)
+    static let clipboardWrite = Key<ClipboardAccess>(SettingsKey.clipboardWriteKey, default: .allow)
+    static let clipboardRead = Key<ClipboardAccess>(SettingsKey.clipboardReadKey, default: .ask)
+    static let allowShiftClick = Key<MouseShiftCapture>(SettingsKey.allowShiftClickKey, default: .enabled)
+    static let rightClickAction = Key<RightClickAction>(SettingsKey.rightClickActionKey, default: .contextMenu)
+    static let scrollPastLastLine = Key<ScrollPastLast>(SettingsKey.scrollPastLastLineKey, default: .disabled)
+    static let scrollPastFirstLine = Key<ScrollPastFirst>(SettingsKey.scrollPastFirstLineKey, default: .disabled)
 }
 
 /// Store ``PaneKind`` as its bare `String` rawValue (not JSON-wrapped) so the value stays wire-compatible
@@ -297,3 +424,14 @@ extension CloseConfirmationPolicy: Defaults.Serializable, Defaults.PreferRawRepr
 /// the `RawRepresentableBridge`. A stale / invalid raw value repairs to `.restoreLastSession` via the enum's
 /// own non-failable ``OnLaunchBehavior/init(rawValue:)`` (and the key default is also `.restoreLastSession`).
 extension OnLaunchBehavior: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
+/// Store the E8 Controls / Mouse / Scroll enums as their bare `String` rawValue (the otty / aislopdesk
+/// config tokens) so each persisted setting round-trips compactly; `PreferRawRepresentable` selects the
+/// `RawRepresentableBridge`. Each enum's own non-failable ``init(rawValue:)`` repairs a stale / hostile
+/// persisted string to its default (`.ask` / `.contextMenu` / `.disabled` / `.enabled`), so a future-version
+/// value can never trap the bridge — the same shape as ``CloseConfirmationPolicy`` / ``OnLaunchBehavior``.
+extension ClipboardAccess: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+extension RightClickAction: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+extension ScrollPastLast: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+extension ScrollPastFirst: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+extension MouseShiftCapture: Defaults.Serializable, Defaults.PreferRawRepresentable {}

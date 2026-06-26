@@ -160,18 +160,59 @@ public final class PreferencesStore {
 
     // MARK: Apply paths
 
-    /// Rebuild the libghostty config string from the live terminal prefs (+ any terminal keybind lines)
-    /// and bump the broadcaster so the (Xcode-only) `GhosttyTerminalView` re-applies it live.
+    /// Rebuild the libghostty config string from the live terminal prefs (+ any terminal keybind lines + the
+    /// E8 fire-time Controls toggles) and bump the broadcaster so the (Xcode-only) `GhosttyTerminalView`
+    /// re-applies it live.
     private func applyTerminal() {
         // The active otty THEME pins the terminal CELL bg/fg (flat design) — `resolveTerminalColors` reads
         // the resolved `ThemeStore.active` (GUI only; `nil` headless ⇒ the pref's own colours stand).
         let themeColors = AppearanceApplier.resolveTerminalColors?()
+        // E8 WI-2: resolve the fire-time Controls bundle (`copy-on-select` / `clipboard-*` / `mouse-*` /
+        // ⇧+arrow select). The Controls toggles live in `Defaults.standard` (the global `SettingsKey`
+        // namespace — NOT the per-instance injected `defaults`, which stays test-isolated for the typed
+        // models), so read them from `.standard`; the builder maps an absent key to its declared default.
+        let controls = TerminalControls.from(defaults: .standard)
         let config = TerminalConfigBuilder.string(
             for: terminal,
             backgroundOverride: themeColors?.background,
             foregroundOverride: themeColors?.foreground,
+            controls: Self.controlsConfig(from: controls),
         )
         TerminalConfigBroadcaster.shared.publish(config)
+    }
+
+    /// Rebuild + publish the libghostty config from the live terminal prefs AND the current fire-time
+    /// Controls toggles, so a Controls change re-applies live. The Settings rows call this from their
+    /// `.onChange` (PreferencesStore stays isolated on its injected `UserDefaults`; the Controls toggles
+    /// live in `Defaults.standard`, so an explicit refresh is the seam that re-reads them — there is no
+    /// `Defaults.observe` wiring in the store, by design, to keep it test-isolated).
+    public func refreshTerminalControls() {
+        applyTerminal()
+    }
+
+    /// Map the WorkspaceCore fire-time ``TerminalControls`` bundle to the leaf ``TerminalControlsConfig`` the
+    /// (VideoProtocol) ``TerminalConfigBuilder`` consumes: the boolean knobs pass straight through, the
+    /// multi-state enums resolve to their libghostty token (`ClipboardAccess.rawValue` /
+    /// `MouseShiftCapture.configValue`). The mapping lives HERE (not in the leaf) so the builder never
+    /// imports WorkspaceCore — the one-way module graph (WorkspaceCore → VideoProtocol) is preserved.
+    private static func controlsConfig(from controls: TerminalControls) -> TerminalControlsConfig {
+        TerminalControlsConfig(
+            copyOnSelect: controls.copyOnSelect,
+            trimTrailing: controls.trimTrailing,
+            clearOnTyping: controls.clearOnTyping,
+            clearOnCopy: controls.clearOnCopy,
+            pasteProtection: controls.pasteProtection,
+            bracketedSafe: controls.bracketedSafe,
+            clipboardReadToken: controls.clipboardRead.rawValue,
+            clipboardWriteToken: controls.clipboardWrite.rawValue,
+            hideMouseWhileTyping: controls.hideMouseWhileTyping,
+            mouseShiftCaptureToken: controls.allowShiftClick.configValue,
+            clickToMove: controls.clickToMove,
+            allowMouseCapture: controls.allowMouseCapture,
+            rightClickActionToken: controls.rightClickAction.rawValue,
+            shiftArrowSelect: controls.shiftArrowSelect,
+            scrollMultiplier: controls.scrollMultiplier,
+        )
     }
 
     /// Fold the video + agent prefs (and the raw overrides) into the process-wide ``EnvConfig`` overlay

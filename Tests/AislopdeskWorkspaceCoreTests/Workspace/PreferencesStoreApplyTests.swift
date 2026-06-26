@@ -79,6 +79,21 @@ final class PreferencesStoreApplyTests: XCTestCase {
         XCTAssertTrue(TerminalConfigBroadcaster.shared.configString.contains("font-size = 16"))
     }
 
+    /// E8 WI-2: `applyTerminal()` now resolves the fire-time Controls bundle and passes it to the builder,
+    /// so the published config carries the control passthrough block — and `refreshTerminalControls()`
+    /// re-publishes it live. Asserts the KEY's PRESENCE (value depends on `Defaults.standard`, the global
+    /// toggle store), which is absent on the pre-WI-2 `controls: nil` build — revert-to-confirm-fail.
+    func testTerminalBroadcastCarriesTheControlPassthrough() {
+        let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil)
+        let afterInit = TerminalConfigBroadcaster.shared.generation
+        store.refreshTerminalControls()
+        XCTAssertGreaterThan(TerminalConfigBroadcaster.shared.generation, afterInit, "refresh re-publishes")
+        let config = TerminalConfigBroadcaster.shared.configString
+        XCTAssertTrue(config.contains("copy-on-select = "), "the Copy-on-Select control line is emitted via the store")
+        XCTAssertTrue(config.contains("mouse-reporting = "), "the Allow-Mouse-Capture control line is emitted")
+        XCTAssertTrue(config.contains("keybind = shift+left="), "the ⇧+arrow select keybind is emitted")
+    }
+
     // MARK: Appearance (D2 — client chrome; NEVER touches the overlay/sidecar)
 
     /// A default ``AppearancePreferences`` + a default ``PreferencesStore`` leaves ``EnvConfig/overlay``

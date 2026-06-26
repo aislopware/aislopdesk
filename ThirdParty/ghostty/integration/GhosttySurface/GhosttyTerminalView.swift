@@ -77,6 +77,7 @@ import AislopdeskWorkspaceCore  // TerminalRenderingView, TerminalViewModel, Ter
 import CGhostty            // the clang module over ghostty.h (link "ghostty")
 
 #if os(macOS)
+import AislopdeskClientUI    // PasteProtectionSheet (the macOS paste-protection confirmation surface, E8 WI-4)
 import AppKit
 #elseif os(iOS)
 import UIKit
@@ -94,7 +95,123 @@ import UIKit
         ? NSPasteboard(name: NSPasteboard.Name("com.aislopdesk.terminal.selection"))
         : .general
 }
+
+/// E8 WI-4 (ES-E8-3): the embedder side of otty's Paste Protection. Reached from
+/// `confirm_read_clipboard_cb` for a PASTE that libghostty already deemed unsafe (paste-protection on,
+/// not bracketed-safe). Decides — via the PURE, headless-tested ``PasteSafetyAnalyzer`` — whether to show
+/// the confirmation sheet, then completes the pending clipboard request exactly once.
+///
+/// The decision uses otty's OWN four-danger criteria (not libghostty's broader `isSafe`), so the sheet
+/// appears only for an otty-classified danger even if libghostty's gate is more eager. On approve we
+/// complete with the text + `confirmed: true` (`allow_unsafe`); on cancel we complete with EMPTY data,
+/// which short-circuits `Surface.completeClipboardPaste` (`if (data.len == 0) return;`) so the request
+/// frees cleanly with no paste and NO gate re-trip (the de-risked cancel contract — see the callback).
+@MainActor
+func aislopdeskConfirmUnsafePaste(
+    surface: GhosttySurface,
+    text: String,
+    state: UnsafeMutableRawPointer?
+) {
+    // Empty paste: nothing to warn about — terminate the request (mirrors libghostty's own len==0 guard).
+    guard !text.isEmpty else {
+        surface.completeClipboardRead(text, state: state, confirmed: true)
+        return
+    }
+
+    // WI-5: the REAL alt-screen flag, sourced from the client `TerminalModeTracker` (via the model) through
+    // the surface's `isAlternateScreen` hook, so this libghostty-initiated paste backstop skips the sheet
+    // inside a full-screen TUI — agreeing with the ⌘V `requestPaste` path. Unset ⇒ primary screen.
+    let isAlternateScreen = surface.isAlternateScreen?() ?? false
+    let dangers = PasteSafetyAnalyzer.analyze(text)
+    let shouldWarn = PasteSafetyAnalyzer.shouldWarn(
+        text: text,
+        // The LIVE otty "Paste Protection" toggle is authoritative — not a hardcoded `true`. libghostty's own
+        // `clipboard-paste-protection` config gate (default on) is what ROUTES a `\n`/bracketed-end paste here,
+        // but whether to WARN is otty's decision: with otty protection OFF this auto-approves (below), so a user
+        // who disabled the feature is not warned. (The embedder pre-check `requestPaste` is the primary gate for
+        // a ⌘V / menu paste; this stays the backstop for a libghostty-initiated paste, e.g. middle-click.)
+        protectionOn: SettingsKey.pasteProtectionEnabled,
+        bracketedSafe: false,               // bracketed-safe is already applied upstream; don't double-skip
+        programAdvertisedBracketed: false,
+        isAlternateScreen: isAlternateScreen
+    )
+
+    guard shouldWarn else {
+        // No otty-classified danger (or a skip rule applied) → approve without a dialog.
+        surface.completeClipboardRead(text, state: state, confirmed: true)
+        return
+    }
+
+    PasteProtectionSheet.present(
+        kind: .unsafePaste,
+        preview: text,
+        dangers: dangers,
+        in: NSApp.keyWindow
+    ) { pasteAnyway in
+        if pasteAnyway {
+            surface.completeClipboardRead(text, state: state, confirmed: true)
+        } else {
+            // CANCEL contract: complete with EMPTY data (NOT the unsafe text + confirmed:false, which
+            // would recurse). libghostty resolves an empty paste as a no-op and frees the request state.
+            surface.completeClipboardRead("", state: state, confirmed: false)
+        }
+    }
+}
+
+/// E8 WI-6 (I11): the embedder side of otty's OSC-52 clipboard-READ access gate. Reached from
+/// `confirm_read_clipboard_cb` for a `GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ` — a terminal program (vim,
+/// tmux, an SSH session running inside the hosted PTY) asked to READ the system clipboard. It honours the
+/// LIVE otty `clipboard-read` access (Allow / Ask / Deny, default Ask — the spec's riskier direction),
+/// reusing the paste-protection surface with the OSC-52 "Allow this program to read the clipboard?" copy
+/// (``PasteProtectionSheet.Kind.clipboardRead``).
+///
+/// RECURSION-SAFETY — the read contract differs from a paste's: `completeClipboardReadOSC52` checks
+/// `clipboard_read == .ask and !confirmed` BEFORE any empty-data short-circuit (verified in ghostty-src
+/// `src/Surface.zig`), so completing a READ with `confirmed: false` RE-TRIPS the ask gate → libghostty
+/// re-invokes this callback → unbounded recursion → stack overflow. Every terminating completion here
+/// therefore uses `confirmed: true`; a DENY / CANCEL passes EMPTY text (the pure
+/// ``ClipboardAccess.silentClipboardRead(text:)`` "" outcome) — a well-formed but empty OSC-52 reply that
+/// frees the request exactly once and never leaks the clipboard. ALLOW passes the real text.
+@MainActor
+func aislopdeskConfirmClipboardRead(
+    surface: GhosttySurface,
+    text: String,
+    state: UnsafeMutableRawPointer?,
+    access: ClipboardAccess
+) {
+    // Allow / Deny resolve SILENTLY (no dialog): allow → the real clipboard text, deny → "" (empty reply,
+    // no leak). A `nil` resolution means the access is `ask` → fall through to the confirmation sheet.
+    if let resolved = access.silentClipboardRead(text: text) {
+        surface.completeClipboardRead(resolved, state: state, confirmed: true)
+        return
+    }
+    // Ask → surface the confirmation; the user's verdict maps to allow (text) / deny ("") — BOTH
+    // confirmed:true so neither completion re-trips the read gate (the recursion hazard above).
+    PasteProtectionSheet.present(
+        kind: .clipboardRead,
+        preview: text,
+        dangers: [],
+        in: NSApp.keyWindow
+    ) { allow in
+        surface.completeClipboardRead(allow ? text : "", state: state, confirmed: true)
+    }
+}
 #endif
+
+/// Performs the actual pasteboard WRITE libghostty requested (E8 WI-2, the clipboard-write actuation).
+/// HONORS `location`: STANDARD = the system clipboard; SELECTION = the PRIVATE selection pasteboard (so a
+/// copy-on-select drag never clobbers the user's real clipboard). iOS has no selection clipboard. Split out
+/// of `write_clipboard_cb` so both the direct-write path and the post-confirm (clipboard-write = ask) path
+/// share one site. Pasteboard is main-thread-only; every caller is on the main actor.
+@MainActor func aislopdeskWriteClipboard(_ text: String, location: ghostty_clipboard_e) {
+    #if os(macOS)
+    let pb = aislopdeskPasteboard(for: location)
+    pb.declareTypes([.string], owner: nil)
+    pb.setString(text, forType: .string)
+    #elseif os(iOS)
+    if location != GHOSTTY_CLIPBOARD_SELECTION { UIPasteboard.general.string = text }
+    #endif
+}
 
 /// Owns the single process-wide `ghostty_app_t`. libghostty is initialized once per
 /// process (`ghostty_init`, header 1117) and one `app` handle is shared by every
@@ -215,21 +332,60 @@ final class GhosttyApp {
         // asks the embedder to OPEN the resolved URL (W14 #7). We hand it to the system opener (the
         // embedder's job upstream too) so a clicked OSC 8 link / hovered-URL click opens — no wire change,
         // no host-side OSC 8 parsing needed (see docs/DECISIONS.md). Everything else returns false.
-        runtime.action_cb = { (_, _, action) -> Bool in
-            guard action.tag == GHOSTTY_ACTION_OPEN_URL else { return false }
-            let urlAction = action.action.open_url
-            guard let cstr = urlAction.url else { return false }
-            let urlString = String(cString: cstr)
-            guard !urlString.isEmpty else { return false }
-            // NSWorkspace/UIApplication open are main-thread; the action fires on the main loop tick.
-            ghosttyOnMainActor {
-                #if os(macOS)
-                if let url = URL(string: urlString) { NSWorkspace.shared.open(url) }
-                #else
-                if let url = URL(string: urlString) { UIApplication.shared.open(url) }
-                #endif
+        runtime.action_cb = { (_, target, action) -> Bool in
+            // Match the C action tag by `==` (it imports as a RawRepresentable struct, not a Swift enum, so
+            // it is not `switch`-case-able — same idiom as the clipboard-request comparison above).
+            if action.tag == GHOSTTY_ACTION_OPEN_URL {
+                let urlAction = action.action.open_url
+                guard let cstr = urlAction.url else { return false }
+                let urlString = String(cString: cstr)
+                guard !urlString.isEmpty else { return false }
+                // NSWorkspace/UIApplication open are main-thread; the action fires on the main loop tick.
+                ghosttyOnMainActor {
+                    #if os(macOS)
+                    if let url = URL(string: urlString) { NSWorkspace.shared.open(url) }
+                    #else
+                    if let url = URL(string: urlString) { UIApplication.shared.open(url) }
+                    #endif
+                }
+                return true
+            } else if action.tag == GHOSTTY_ACTION_MOUSE_SHAPE {
+                // E8 WI-9 (H14): OSC-22 pointer shape. A remote program's `OSC 22 ; <css-name> ST` arrives in
+                // the CLIENT libghostty over the existing PATH-1 byte stream (no wire change); libghostty
+                // resolves it and asks the embedder to set the pointer. Route the raw
+                // `ghostty_action_mouse_shape_e` to the SURFACE it targets so THAT surface's macOS view maps it
+                // (via the headless `PointerShapeMapping`) to an `NSCursor`. iOS leaves `onMouseShape` unset.
+                guard target.tag == GHOSTTY_TARGET_SURFACE,
+                      let cSurface = target.target.surface,
+                      let ud = ghostty_surface_userdata(cSurface) else { return false }
+                // Recover the wrapper IN-FRAME (libghostty is delivering an action ABOUT this surface, so it is
+                // alive and strongly owned by its view); binding it to a Swift local retains it across the
+                // main-actor hop. The raw shape is a value, copied here; `PointerShapeMapping` validate-then-
+                // drops an unknown value (read defensively, never assuming a {0,1} enum layout).
+                let surface = Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
+                let rawShape = Int32(truncatingIfNeeded: action.action.mouse_shape.rawValue)
+                ghosttyOnMainActor { surface.onMouseShape?(rawShape) }
+                return true
+            } else if action.tag == GHOSTTY_ACTION_MOUSE_VISIBILITY {
+                // E8 (H9, ES-E8-6): mouse-hide-while-typing actuation. The `mouse-hide-while-typing = true`
+                // config (otty default ON) only makes libghostty DECIDE to hide the pointer — it then
+                // delegates the actual hide/show to the embedder via THIS action (`Surface.zig`
+                // `hideMouse`/`showMouse` → `performAction(.mouse_visibility, .hidden/.visible)`). Without
+                // this branch the action was dropped (`return false`) and the pointer never hid, so a
+                // default-ON otty behavior silently did nothing. Mirror the MOUSE_SHAPE branch: recover the
+                // target surface, resolve the raw `ghostty_action_mouse_visibility_e` via the headless,
+                // {0,1}-guarded `MouseVisibilityMapping` (read defensively — never assume the enum layout),
+                // hop to the main actor, and drive the pane's NSCursor through `onMouseVisibility`.
+                guard target.tag == GHOSTTY_TARGET_SURFACE,
+                      let cSurface = target.target.surface,
+                      let ud = ghostty_surface_userdata(cSurface) else { return false }
+                let surface = Unmanaged<GhosttySurface>.fromOpaque(ud).takeUnretainedValue()
+                let rawVisibility = Int32(truncatingIfNeeded: action.action.mouse_visibility.rawValue)
+                let visible = MouseVisibilityMapping.isVisible(forRawValue: rawVisibility)
+                ghosttyOnMainActor { surface.onMouseVisibility?(visible) }
+                return true
             }
-            return true
+            return false
         }
 
         // Clipboard callbacks — modeled on upstream `Ghostty.App.swift:324-405`. The `userdata`
@@ -269,24 +425,66 @@ final class GhosttyApp {
                 #else
                 let str = (location == GHOSTTY_CLIPBOARD_SELECTION) ? "" : (UIPasteboard.general.string ?? "")
                 #endif
-                surface.completeClipboardRead(str, state: state)
+                // E8 WI-4 (ES-E8-3): if the embedder already ran otty's paste-protection sheet for THIS paste
+                // and the user approved it, complete with `confirmed: true` (allow_unsafe) so libghostty pastes
+                // without re-tripping its own (narrower) `isSafe` gate → no SECOND dialog. The flag is one-shot
+                // and consumed here; every other read keeps `confirmed: false`, so the OSC-52 read access gate
+                // (`clipboard-read = ask`) is never bypassed.
+                surface.completeClipboardRead(str, state: state, confirmed: surface.consumePasteApproval())
             }
             return true
         }
 
         // CONFIRM-READ: libghostty reaches here when the access gate tripped on the FIRST completion —
         // an OSC-52 read (`clipboard-read = .ask`) or a paste of unsafe content
-        // (`clipboard-paste-protection = true`). This is the embedder's APPROVE/DENY decision point;
-        // upstream posts a confirm-dialog Notification. aislopdesk has no dialog, so it AUTO-APPROVES by
-        // completing with `confirmed: true`. This is REQUIRED: completing with `confirmed: false` here
-        // would re-trip the same gate → core re-invokes this callback → unbounded synchronous recursion
-        // → stack-overflow crash (host OSC-52 read / multi-line paste would crash the whole client).
-        runtime.confirm_read_clipboard_cb = { (userdata, cString, state, _ /*request*/) in
+        // (`clipboard-paste-protection = true`). This is the embedder's APPROVE/DENY decision point; the
+        // `request` arg distinguishes which gate fired.
+        //
+        // E8 WI-4 (ES-E8-3) — the OLD code blanket-AUTO-APPROVED everything (`confirmed: true`) because
+        // there was no dialog. We now run otty's paste-protection sheet for an UNSAFE PASTE. The historical
+        // crash warning still holds and is the WHOLE point of the de-risk: completing with `confirmed: false`
+        // AND THE SAME UNSAFE DATA re-trips the gate → core re-invokes this callback → unbounded recursion →
+        // stack overflow. The CANCEL path therefore does NOT re-complete the unsafe data — it completes with
+        // EMPTY data, which hits libghostty's `if (data.len == 0) return;` short-circuit in
+        // `Surface.completeClipboardPaste` (verified in ghostty-src `src/Surface.zig`): the request resolves
+        // cleanly (apprt frees the request state in `embedded.zig:completeClipboardRequest`), nothing is
+        // pasted, and the gate is NOT re-evaluated. "Paste Anyway" completes with the text + `confirmed: true`
+        // (`allow_unsafe`), which pastes and frees the state. Either way the request terminates exactly once.
+        //
+        // E8 WI-6 (I11) — the `request` arg now ROUTES the decision: PASTE → otty's paste-protection sheet
+        // (WI-4); OSC-52 READ → otty's `clipboard-read` access gate (Allow / Ask / Deny, default Ask) via
+        // `aislopdeskConfirmClipboardRead`. An OSC-52 WRITE never routes through this READ-confirm callback in
+        // the pinned fork — a program WRITE goes via `write_clipboard_cb`, where `clipboard-write =
+        // deny/ask/allow` is honoured: libghostty enforces `deny` (never calls the write callback) and
+        // `allow` (calls with `confirm == false`), while `ask` is DELEGATED to that callback's `confirm` flag
+        // (E8 WI-2 — `ClipboardWritePolicy` presents the write-confirm sheet there). So `clipboardWrite` is
+        // honoured at `write_clipboard_cb`, not here. The trailing `else` therefore only guards an unexpected
+        // / future request kind by terminating it once (auto-approve, matching the default `clipboard-read`).
+        runtime.confirm_read_clipboard_cb = { (userdata, cString, state, request) in
             guard let userdata else { return }
             let str = cString.map { String(cString: $0) } ?? ""   // upstream uses String(cString:)
             MainActor.assumeIsolated {
                 let surface = Unmanaged<GhosttySurface>.fromOpaque(userdata).takeUnretainedValue()
+                #if os(macOS)
+                // Match the C enum by `==` (it imports as a RawRepresentable struct, not a Swift enum, so it
+                // is not `switch`-case-able); read it explicitly, never assuming a {0,1} layout.
+                if request == GHOSTTY_CLIPBOARD_REQUEST_PASTE {
+                    aislopdeskConfirmUnsafePaste(surface: surface, text: str, state: state)
+                } else if request == GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ {
+                    aislopdeskConfirmClipboardRead(
+                        surface: surface,
+                        text: str,
+                        state: state,
+                        access: TerminalControls.from(defaults: .standard).clipboardRead,
+                    )
+                } else {
+                    surface.completeClipboardRead(str, state: state, confirmed: true)
+                }
+                #else
+                // iOS has no confirmation sheet — auto-approve (confirmed: true terminates the request once).
+                _ = request
                 surface.completeClipboardRead(str, state: state, confirmed: true)
+                #endif
             }
         }
 
@@ -294,7 +492,7 @@ final class GhosttyApp {
         // `ghostty_clipboard_content_s` { mime, data }. Write the text/plain entry to
         // NSPasteboard.general (upstream writeClipboard, App.swift:371-405). We model the STANDARD
         // clipboard only (the selection clipboard is virtual on macOS); ignore non-text mimes.
-        runtime.write_clipboard_cb = { (_ /*userdata*/, location, content, len, _ /*confirm*/) in
+        runtime.write_clipboard_cb = { (_ /*userdata*/, location, content, len, confirm) in
             guard let content, len > 0 else { return }
             // Find the text/plain entry (mime == "text/plain"); fall back to the first entry's data.
             // Both pointers are NUL-terminated UTF-8 owned by libghostty — copied via String(cString:)
@@ -309,18 +507,38 @@ final class GhosttyApp {
                 if text == nil { text = data }
             }
             guard let text else { return }
-            // Pasteboard is main-thread-only; this path is main (copy_to_clipboard binding / main feed).
-            // HONOR `location`: a SELECTION write (copy-on-select drag) goes to a PRIVATE pasteboard so
-            // it never clobbers the user's real system clipboard; only an explicit STANDARD copy
-            // (Cmd-C / copy_to_clipboard) writes the system clipboard. (iOS: no selection clipboard.)
+            // E8 WI-2 (I11): HONOR the libghostty `confirm` flag — the embedder side of `clipboard-write =
+            // ask`. libghostty enforces `deny` (never calls this) and `allow` itself (calls with
+            // `confirm == false`); `ask` is DELEGATED here with `confirm == true`, and the OLD code IGNORED
+            // it and wrote unconditionally — so "Ask" silently behaved like "Allow" (any remote OSC-52 could
+            // overwrite the system clipboard with no prompt). The PURE, headless-tested `ClipboardWritePolicy`
+            // makes the decision; `confirm` already imports as a Swift `Bool` from C `bool` (no {0,1} byte to
+            // re-read). Pasteboard is main-thread-only; this path is main (copy_to_clipboard / main feed).
             MainActor.assumeIsolated {
-                #if os(macOS)
-                let pb = aislopdeskPasteboard(for: location)
-                pb.declareTypes([.string], owner: nil)
-                pb.setString(text, forType: .string)
-                #else
-                if location != GHOSTTY_CLIPBOARD_SELECTION { UIPasteboard.general.string = text }
-                #endif
+                switch ClipboardWritePolicy.decide(confirmRequested: confirm, text: text) {
+                case .drop:
+                    return
+                case .write:
+                    aislopdeskWriteClipboard(text, location: location)
+                case .confirm:
+                    #if os(macOS)
+                    // `clipboard-write = ask`: present the "a program wants to set your clipboard" sheet;
+                    // write ONLY on approve, drop on cancel. Mirrors the OSC-52 READ-ask plumbing (WI-6).
+                    PasteProtectionSheet.present(
+                        kind: .clipboardWrite,
+                        preview: text,
+                        dangers: [],
+                        in: NSApp.keyWindow,
+                    ) { allow in
+                        if allow { aislopdeskWriteClipboard(text, location: location) }
+                    }
+                    #else
+                    // iOS has no confirmation sheet. An "Ask" we cannot present must NOT silently allow —
+                    // conservatively DROP the write (the user explicitly chose Ask; honoring it as Allow
+                    // would be the very inert-toggle bug this fix removes).
+                    break
+                    #endif
+                }
             }
         }
 
@@ -607,6 +825,14 @@ final class GhosttyLayerBackedView: NSView {
             // that REPLACES a free-running per-frame `draw_now` (the spin source). Without it the
             // gated tick would never present live output.
             s.onContentChanged = { [weak self] in self?.requestPresent() }
+            // E8 WI-9 (H14): OSC-22 pointer shape → this pane's NSCursor (mapped headlessly, set thinly here).
+            s.onMouseShape = { [weak self] raw in self?.applyPointerShape(rawShape: raw) }
+            // E8 (H9): mouse-hide-while-typing → hide/show this pane's NSCursor (libghostty decides; we actuate).
+            s.onMouseVisibility = { [weak self] visible in self?.applyMouseVisibility(visible) }
+            // E8 (WI-5): the libghostty-initiated paste BACKSTOP (`aislopdeskConfirmUnsafePaste`, reached via
+            // middle-click) reads the REAL alt-screen flag through this hook so it suppresses inside a true
+            // full-screen TUI — matching the ⌘V `requestPaste` path (no more hardcoded `false`).
+            s.isAlternateScreen = { [weak model] in model?.isAlternateScreen ?? false }
             self.surface = s
             // A BRAND-NEW surface must get its first real layout (setPixelSize) — drop the
             // same-size guard's cache so the next layout() pass applies unconditionally.
@@ -675,6 +901,15 @@ final class GhosttyLayerBackedView: NSView {
         let detaching = surface
         surface = nil
         detaching?.close()
+        // E8 WI-9 (H14): reset the OSC-22 pointer to arrow on teardown so a custom shape a program had set
+        // can't outlive the surface into a re-attach (the hard "reset on exit" guard; the DEFAULT-shape path
+        // covers the in-session case). Cheap and idempotent — invalidate so AppKit re-reads on the next event.
+        pointerCursor = .arrow
+        // E8 (H9): also unhide the pointer on teardown so a mouse-hide-while-typing hide can't outlive the
+        // surface into a re-attach (cheap + idempotent; `setHiddenUntilMouseMoves(false)` cancels any pending
+        // hide). `setHiddenUntilMouseMoves(true)` already auto-shows on the next move, so this is belt-and-braces.
+        NSCursor.setHiddenUntilMouseMoves(false)
+        window?.invalidateCursorRects(for: self)
         // Pass the detaching surface so the model clears its `surface` ONLY if this is the surface it
         // currently feeds. A stale duplicate view's detach must NOT nil the live (on-screen) surface
         // — that froze the visible terminal on its initial replay while new output was dropped.
@@ -859,6 +1094,93 @@ final class GhosttyLayerBackedView: NSView {
         // ⌘D/⌘⇧D against the override-aware `resolvedChordTable` and routes `.splitRight`/`.splitDown`), so a
         // user rebind takes effect and the live dispatcher owns the chord. Nothing to do here.
 
+        // E8 WI-10 (I7, ES-E8-2): BACKSPACE-DELETES-SELECTION. A PLAIN Backspace (keyCode 51, no
+        // ⌘/⌃/⌥ — the modified variants are word/line-delete and forward unchanged) on a pane with an
+        // active selection deletes the WHOLE selected run instead of one character. The PURE, headless-
+        // tested `BackspaceSelectionPolicy` makes the 3-way decision; this view is the thin actuator that
+        // applies the documented geometry ceiling. The gate state is read LIVE from the model's public
+        // OSC-133 shell-activity truth (no CGhostty import, no host round-trip):
+        //   • a full-screen / foreground program owns the screen ⇒ `shellActivity == .running` (a TUI/
+        //     command runs AS a shell command) → NEVER intercept (the "repeat inside vim → single-char
+        //     passthrough" leg); the policy's `isAlternateScreen` gate.
+        //   • the editable prompt zone ⇒ connected AND `shellActivity == .idle` — the only place DEL bytes
+        //     faithfully erase the selected run; the policy's `isPromptZone` gate.
+        // The setting is read live off `Defaults` (the same idiom WI-7/WI-8 use) so a Settings toggle takes
+        // effect on the very next Backspace.
+        if event.keyCode == 51,
+           !event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.control),
+           !event.modifierFlags.contains(.option),
+           let model
+        {
+            let decision = BackspaceSelectionPolicy.action(
+                hasSelection: surface?.hasSelection() ?? false,
+                setting: SettingsKey.backspaceDeletesSelectionEnabled,
+                // REAL alt-screen flag (DECSET 1049/47/1047 via the client `TerminalModeTracker`), NOT the
+                // coarse `shellActivity == .running` proxy — which is true for ANY foreground command, so it
+                // would suppress the gate while editing a non-TUI running command's line.
+                isAlternateScreen: model.isAlternateScreen,
+                isPromptZone: model.connectionStatus.isLive
+                    && model.shellActivity == .idle
+                    && !model.isAlternateScreen,
+            )
+            if decision == .deleteSelection {
+                // GEOMETRY CEILING (ES-E8-2): the pinned libghostty fork exposes no set-selection /
+                // cursor-geometry API, so we CANNOT prove the selection ends at the cursor. DEL bytes always
+                // erase the chars immediately BEFORE the cursor, so pre-sending (count − 1) DELs for a run
+                // that does NOT end at the cursor (e.g. a word selected in the MIDDLE of a typed command)
+                // would delete the WRONG characters and silently corrupt the line — default-on data loss.
+                // We therefore pass `selectionEndsAtCursor: false` to the pure ``leadingDeleteCount``, which
+                // returns 0 → we pre-send NOTHING and degrade to the safe clear-then-single path. The
+                // fall-through Backspace below still erases one char + clears the highlight (clear-on-typing),
+                // so the worst case is a one-character delete, never wrong-character deletion. (The call is
+                // kept wired so a FUTURE libghostty geometry API that can prove the trailing run lights up the
+                // faithful whole-run delete with no further change here.)
+                let leading = BackspaceSelectionPolicy.leadingDeleteCount(
+                    selection: surface?.readSelection() ?? "",
+                    selectionEndsAtCursor: false,
+                )
+                if leading > 0 { model.sendInput(Data(repeating: 0x7F, count: leading)) }
+            }
+            // `.forward` / `.clearThenSingle` / the `.deleteSelection` tail all FALL THROUGH to the libghostty
+            // encoder below: it sends one DEL and (clear-on-typing) clears the selection. With no
+            // `clear_selection` binding action in the pinned fork, `clearThenSingle` currently maps to this
+            // same path — the distinction is preserved in the policy for a future libghostty API.
+        }
+
+        // E8 WI-11 (I18): UNDO AT PROMPT. ⌘Z at an editable shell prompt emits the readline UNDO control byte
+        // (Ctrl-_, 0x1F) so the remote shell's line editor rolls back the last prompt edit; ⌘⇧Z / ⌘Y (redo)
+        // is a documented omit — there is no portable readline redo. The PURE, headless-tested
+        // `PromptEditPolicy` makes the decision; this view only maps the NSEvent → the (undo, redo) intent and
+        // sends the returned bytes. The prompt-zone gate is read LIVE from the model's public OSC-133 truth,
+        // identical to the backspace block above: connected AND `shellActivity == .idle` (false while a TUI
+        // owns the alternate screen → ⌘Z passes through to the program, which keeps its own undo). The setting
+        // is read live off `Defaults` so a Settings toggle takes effect on the very next ⌘Z. We require ⌘ with
+        // neither ⌃ nor ⌥ (those are other line-edit chords) and key off `charactersIgnoringModifiers` so the
+        // chord is layout-aware. On a non-nil result we consume; otherwise (redo, or ⌘Z off the prompt) we
+        // FALL THROUGH so the chord stays an app shortcut / program key.
+        if SettingsKey.undoAtPromptEnabled,
+           event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.control),
+           !event.modifierFlags.contains(.option),
+           let model,
+           let baseChar = event.charactersIgnoringModifiers?.lowercased()
+        {
+            let hasShift = event.modifierFlags.contains(.shift)
+            let isUndo = baseChar == "z" && !hasShift
+            let isRedo = (baseChar == "z" && hasShift) || baseChar == "y"
+            if isUndo || isRedo {
+                let inPromptZone = model.connectionStatus.isLive
+                    && model.shellActivity == .idle
+                    && !model.isAlternateScreen
+                if let bytes = PromptEditPolicy.bytes(forUndo: isUndo, redo: isRedo, inPromptZone: inPromptZone) {
+                    model.sendInput(Data(bytes))
+                    return
+                }
+                // redo (omitted) or ⌘Z off the prompt → fall through; no readline redo, no stray byte.
+            }
+        }
+
         // Route every other key through libghostty's encoder (DECISIONS: never hand-roll VT).
         // ghostty_input_key_s (header 322): action / mods / keycode / text /
         // unshifted_codepoint / composing.
@@ -991,8 +1313,31 @@ final class GhosttyLayerBackedView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         let mods = Self.ghosttyMods(event.modifierFlags)
-        // libghostty returns whether it consumed the right-click (e.g. turned it into a paste). If not
-        // consumed, fall through to the default (which would surface a context menu were one installed).
+
+        // E8 WI-7 (H8): the otty ⌃-right-always-menu override. ⌃+right-click ALWAYS shows the native context
+        // menu, regardless of the configured Right-Click Action. libghostty now OWNS the bare-right-click
+        // dispatch (WI-2 emits `right-click-action`) but does NOT special-case the ⌃ modifier, so we must
+        // intercept ⌃+right HERE — BEFORE forwarding the press — otherwise a `copy`/`paste`/… config would
+        // FIRE on ⌃+right (and then the menu would also show). Defer straight to AppKit's `menu(for:)` path;
+        // the menu's Copy enables on the genuine pre-click selection (never a word-select we injected).
+        if event.modifierFlags.contains(.control) {
+            super.rightMouseDown(with: event)
+            return
+        }
+
+        // E8 WI-7 (H7): a BARE right-click is owned END-TO-END by libghostty via the `right-click-action`
+        // config line (Context Menu / Copy / Paste / Copy or Paste / Ignore, set from the LIVE Settings by
+        // WI-2). `sendMouseButton` returns true when the surface CONSUMED the press — either a mouse-reporting
+        // program (vim/tmux/htop) turned it into an SGR report, OR libghostty performed the configured action
+        // (copy/paste/copy-or-paste/ignore all consume). The ONE action that does NOT consume is Context Menu:
+        // libghostty word-selects under the cursor and returns false so the apprt shows its menu — so on a
+        // false return we fall through to AppKit's native `menu(for:)`.
+        //
+        // This deletes the old client-side effect switch (which read `hasSelection()` AFTER libghostty had
+        // already word-selected at the click point, so Copy-or-Paste always saw a selection → always copied,
+        // and Ignore/Paste left a stray highlight — the WI-7 right-click-action review finding). A right-click
+        // Paste still hits otty's paste-protection sheet via libghostty's own `confirm_read_clipboard_cb`
+        // backstop (WI-4), so the protection gate is preserved.
         if surface?.sendMouseButton(state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_RIGHT, mods: mods) == true { return }
         super.rightMouseDown(with: event)
     }
@@ -1007,6 +1352,10 @@ final class GhosttyLayerBackedView: NSView {
         let mods = Self.ghosttyMods(event.modifierFlags)
         let p = surfacePoint(event)
         surface?.sendMousePos(x: p.x, y: p.y, mods: mods)
+        // E8 WI-8 (H6): a move WITHIN a still-unfocused pane (e.g. focus was taken by a keyboard nav while the
+        // pointer sat here) also claims focus. The policy's `!isFocusedPane` short-circuit keeps this a cheap
+        // no-op once focused, so the per-move call can't flicker the title bar.
+        requestFocusFollowsMouseIfNeeded()
     }
 
     // A drag is just a moved position to libghostty (it tracks the held button from the down/up pair);
@@ -1022,6 +1371,31 @@ final class GhosttyLayerBackedView: NSView {
         let mods = Self.ghosttyMods(event.modifierFlags)
         let p = surfacePoint(event)
         surface?.sendMousePos(x: p.x, y: p.y, mods: mods)
+        // E8 WI-8 (H6): crossing INTO an unfocused pane grabs the workspace focus when focus-follows-mouse
+        // is on (the cross-pane relay libghostty's own key can't do — see `requestFocusFollowsMouseIfNeeded`).
+        requestFocusFollowsMouseIfNeeded()
+    }
+
+    /// E8 WI-8 (H6, ES-E8-6): MOUSE-OVER-TO-FOCUS. When otty's `focus-follows-mouse` (`focusFollowsMouse`) is
+    /// on, hovering a pane focuses it — but ONLY across aislopdesk's OWN panes: libghostty's native
+    /// `focus-follows-mouse` only relays focus inside ghostty's internal split tree, and each aislopdesk pane
+    /// is a SEPARATE `GhosttySurface` tiled at the SwiftUI layer, so this cross-pane focus relay must be ours.
+    ///
+    /// The PURE, headless-tested ``FocusFollowsMousePolicy/shouldRequestFocus(focusFollowsMouse:isAlreadyFocused:)``
+    /// makes the decision; this view is the thin actuator. The setting is read LIVE off `Defaults` (via
+    /// ``SettingsKey/focusFollowsMouseEnabled``) so a Settings toggle takes effect on the very next hover — the
+    /// same live-read idiom WI-7's `rightMouseDown` uses for `RightClickAction`.
+    ///
+    /// The `!isFocusedPane` short-circuit inside the policy is load-bearing: `mouseMoved` fires on EVERY pointer
+    /// motion, so without it an already-focused pane would re-fire `onRequestFocus` on every move, thrashing the
+    /// workspace focus and redrawing the title bar (the flicker the plan warns about). `onRequestFocus` is the
+    /// SAME callback `mouseDown` uses, and the focus transfer is idempotent, so the two paths never fight.
+    private func requestFocusFollowsMouseIfNeeded() {
+        guard FocusFollowsMousePolicy.shouldRequestFocus(
+            focusFollowsMouse: SettingsKey.focusFollowsMouseEnabled,
+            isAlreadyFocused: isFocusedPane,
+        ) else { return }
+        model?.onRequestFocus?()
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -1059,6 +1433,23 @@ final class GhosttyLayerBackedView: NSView {
         if precision { packed |= 0b0000_0001 }                                   // bit0 = precision
         packed |= Int32(Self.scrollMomentum(event.momentumPhase)) << 1           // bits1-3 = momentum
         surface?.sendMouseScroll(deltaX: Double(x), deltaY: Double(y), mods: packed)
+
+        // E8 WI-12 (I14/I15, ES-E8-5): SCROLL-PAST overscroll + SMOOTH-SCROLL — DOCUMENTED RENDERING CEILING.
+        // The delta above is handed straight to libghostty, which OWNS the viewport: on the primary screen it
+        // navigates scrollback (auto-snapping to the bottom on new output / typing — otty's auto-snap, native),
+        // and in an alt-screen mouse-mode TUI it is encoded as a mouse-scroll report — both handled internally.
+        //   • SMOOTH SCROLL: the precision-delta path above already scrolls at sub-row (pixel) granularity, so
+        //     `smoothScroll` ON ≈ the native behaviour. The OFF variant (snap each gesture to a whole-row
+        //     boundary) would need to quantise the delta to the cell height — the pinned libghostty fork
+        //     (`Config.zig`) exposes no `smooth-scroll` / row-snap viewport hook, so OFF is not actuated here.
+        //   • SCROLL PAST LAST/FIRST: the overscroll ANCHOR is the PURE, headless-tested `ScrollPastPolicy`
+        //     (`targetTopRow` / `minTopRow`) — it computes where the last/first content row should float and
+        //     SUPPRESSES on the alternate screen (returns nil) so a full-screen TUI keeps its own edge. But
+        //     RENDERING that float (blank terminal-background overscroll above/below the content) needs an
+        //     overscroll-margin / sub-row-render API the pinned fork also lacks. So the SETTINGS + the policy +
+        //     the alt-screen gate land (and `mouse-scroll-multiplier` rides the WI-2 config passthrough); the
+        //     blank-overscroll rendering + pixel-snap are DEFERRED pending a libghostty viewport hook (recorded
+        //     in `docs/DECISIONS.md`). The same ceiling applies to the iOS `handlePanToScroll` path below.
     }
 
     override func pressureChange(with event: NSEvent) {
@@ -1121,6 +1512,81 @@ final class GhosttyLayerBackedView: NSView {
         addTrackingArea(area)
     }
 
+    // MARK: OSC-22 pointer shape (E8 WI-9 / H14)
+
+    /// The cursor a remote program last requested for THIS pane via OSC-22 (`GHOSTTY_ACTION_MOUSE_SHAPE`),
+    /// resolved by the headless ``PointerShapeMapping``. Starts as — and is reset to — `.arrow`. AppKit asks
+    /// for it back through ``resetCursorRects()``; ``applyPointerShape(rawShape:)`` updates it live.
+    private var pointerCursor: NSCursor = .arrow
+
+    /// AppKit invalidates and re-asks for a view's cursor regions on resize / key-window changes / our own
+    /// ``NSWindow/invalidateCursorRects(for:)``. We claim the whole bounds for the libghostty-requested shape
+    /// so a remote program's OSC-22 pointer change actually shows under the pointer as it moves over the pane.
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: pointerCursor)
+    }
+
+    /// Apply an OSC-22 pointer shape libghostty resolved for this surface. `raw` is the C
+    /// `ghostty_action_mouse_shape_e` value; ``PointerShapeMapping`` turns it into a ``PointerShapeToken`` or
+    /// `nil` to KEEP the current cursor (shapes with no native `NSCursor` — upstream's "ignore" behaviour).
+    /// `GHOSTTY_MOUSE_SHAPE_DEFAULT` resolves to `.arrow`, which is the "reset to arrow on default" the spec
+    /// calls for — and the same path covers "reset on program exit" because a program leaving a custom shape
+    /// (e.g. `btop`/`yazi` returning to the shell) re-emits the default shape.
+    func applyPointerShape(rawShape raw: Int32) {
+        guard let token = PointerShapeMapping.token(forRawValue: raw) else { return }
+        let cursor = Self.nsCursor(for: token)
+        guard cursor !== pointerCursor else { return }
+        pointerCursor = cursor
+        // Re-arm the bounds cursor rect so AppKit adopts the new shape as the pointer moves within the pane,
+        // and `.set()` it now so a STATIONARY pointer updates immediately (an OSC-22 change is usually a
+        // response to the pointer already sitting over the targeted cell, where no mouse-moved event follows).
+        window?.invalidateCursorRects(for: self)
+        cursor.set()
+    }
+
+    // MARK: Mouse-hide-while-typing (E8 H9 / ES-E8-6)
+
+    /// Actuate libghostty's mouse-hide-while-typing decision (H9). The `mouse-hide-while-typing = true`
+    /// config (otty default ON) makes libghostty emit a `GHOSTTY_ACTION_MOUSE_VISIBILITY` action when the
+    /// user types / when the pointer should reappear; the app-level `action_cb` resolves it through the
+    /// headless ``MouseVisibilityMapping`` and forwards the `visible` Bool here. We mirror ghostty's macOS
+    /// `setCursorVisibility` EXACTLY — `NSCursor.setHiddenUntilMouseMoves(!visible)` — which is the
+    /// preferred actuation for this use case: it hides the pointer now and AUTO-shows it on the next mouse
+    /// move (so we never have to balance hide/unhide counters, and a stuck-hidden cursor is impossible).
+    func applyMouseVisibility(_ visible: Bool) {
+        NSCursor.setHiddenUntilMouseMoves(!visible)
+    }
+
+    /// The single ``PointerShapeToken`` → `NSCursor` switch — mirrors ghostty's macOS `CursorStyle.cursor`
+    /// (`Helpers/Cursor.swift`), incl. the macOS-15 `columnResize`/`rowResize` directional cursors with the
+    /// legacy `resize*` fallback. Lives in the view (the only place AppKit is available); the token itself is
+    /// resolved headlessly so the OSC-22 table stays unit-testable.
+    private static func nsCursor(for token: PointerShapeToken) -> NSCursor {
+        switch token {
+        case .arrow: return .arrow
+        case .text: return .iBeam
+        case .verticalText: return .iBeamCursorForVerticalLayout
+        case .pointer: return .pointingHand
+        case .grab: return .openHand
+        case .grabbing: return .closedHand
+        case .contextMenu: return .contextualMenu
+        case .crosshair: return .crosshair
+        case .notAllowed: return .operationNotAllowed
+        case .resizeLeft:
+            if #available(macOS 15.0, *) { return .columnResize(directions: .left) } else { return .resizeLeft }
+        case .resizeRight:
+            if #available(macOS 15.0, *) { return .columnResize(directions: .right) } else { return .resizeRight }
+        case .resizeUp:
+            if #available(macOS 15.0, *) { return .rowResize(directions: .up) } else { return .resizeUp }
+        case .resizeDown:
+            if #available(macOS 15.0, *) { return .rowResize(directions: .down) } else { return .resizeDown }
+        case .resizeUpDown:
+            if #available(macOS 15.0, *) { return .rowResize } else { return .resizeUpDown }
+        case .resizeLeftRight:
+            if #available(macOS 15.0, *) { return .columnResize } else { return .resizeLeftRight }
+        }
+    }
+
     // MARK: Clipboard responder selectors (Cmd-C / Cmd-V / Cmd-A)
     //
     // The terminal keyDown deliberately does NOT intercept Cmd-combos (they are app shortcuts). The
@@ -1138,7 +1604,48 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     @objc func paste(_ sender: Any?) {
-        surface?.performBindingAction("paste_from_clipboard")   // libghostty applies bracketed-paste
+        requestPaste()
+    }
+
+    /// E8 WI-4 (ES-E8-3): the single embedder paste entry point for ⌘V / right-click-Paste / context-menu
+    /// Paste. It runs otty's paste-protection pre-check BEFORE handing the bytes to libghostty, because
+    /// libghostty's own `isSafe` gate is NARROWER than otty's four dangers (it trips its
+    /// `confirm_read_clipboard_cb` only for a `\n` / bracketed-end payload) — so a single-line `sudo`, an
+    /// ESC-laced control-char paste, or a bare-`\r` paste would otherwise reach the shell SILENTLY. The PURE,
+    /// headless-tested ``PastePrecheck`` makes the decision off the LIVE otty "Paste Protection" toggle and
+    /// the OSC-133 shell-activity (a full-screen TUI owns the screen ⇒ `.running` ⇒ skip, the paste lands
+    /// inertly). On a danger we present ``PasteProtectionSheet``; only on approve do we paste, with
+    /// `allow_unsafe` (the one-shot `pasteApprovedOnce` flag) so libghostty's own gate is not re-tripped into
+    /// a SECOND dialog. A safe payload (or protection off) pastes straight through libghostty, which still
+    /// applies bracketed-paste framing.
+    private func requestPaste() {
+        guard let surface else { return }
+        let clipboard = NSPasteboard.general.string(forType: .string) ?? ""
+        let decision = PastePrecheck.decide(
+            clipboard: clipboard,
+            protectionOn: SettingsKey.pasteProtectionEnabled,
+            // REAL alt-screen flag, not the `.running` proxy: a single-line `sudo` pasted into a non-TUI
+            // foreground command must STILL trip the sheet (the `.running` proxy wrongly skipped it).
+            isAlternateScreen: model?.isAlternateScreen ?? false,
+        )
+        switch decision {
+        case .pasteDirect:
+            surface.performBindingAction("paste_from_clipboard")   // libghostty applies bracketed-paste
+        case let .confirm(dangers):
+            PasteProtectionSheet.present(
+                kind: .unsafePaste,
+                preview: clipboard,
+                dangers: dangers,
+                in: window,
+            ) { [weak self] pasteAnyway in
+                guard pasteAnyway, let self, let surface = self.surface else { return }
+                // Approved → paste with allow_unsafe (one-shot), consumed by `read_clipboard_cb`. Cleared right
+                // after the SYNCHRONOUS binding-action read so it can never leak into a later read.
+                surface.pasteApprovedOnce = true
+                surface.performBindingAction("paste_from_clipboard")
+                surface.pasteApprovedOnce = false
+            }
+        }
     }
 
     @objc override func selectAll(_ sender: Any?) {
@@ -1187,6 +1694,8 @@ final class GhosttyLayerBackedView: NSView {
             paneConnected: true,
             // WB2: "Copy Command Output" is enabled when this pane has at least one completed command block.
             hasCommandOutput: model?.blocks.latest?.complete ?? false,
+            // E8 / ES-E8-4: "Paste and continue in Composer" lights only when the Composer hook is wired.
+            hasComposer: model?.onPasteToComposer != nil,
         )
         let menu = NSMenu()
         for item in TerminalContextMenu.items {
@@ -1196,6 +1705,28 @@ final class GhosttyLayerBackedView: NSView {
             menuItem.representedObject = item.rawValue
             menuItem.isEnabled = TerminalContextMenu.isEnabled(item, context: ctx)
             menu.addItem(menuItem)
+
+            // E8 / ES-E8-4: the "Paste as…" submenu sits directly below Paste (Edit ▸ Paste ▸ Paste as).
+            // Each variant is tagged + targeted like a top-level item, so it dispatches through the same
+            // `contextMenuAction(_:)`; enablement comes from the same unit-tested `TerminalContextMenu` rule.
+            if item == .paste {
+                let pasteAsItem = NSMenuItem(
+                    title: TerminalContextMenu.pasteAsSubmenuTitle, action: nil, keyEquivalent: "",
+                )
+                let submenu = NSMenu(title: TerminalContextMenu.pasteAsSubmenuTitle)
+                for sub in TerminalContextMenu.pasteAsItems {
+                    if sub.separatorBefore { submenu.addItem(.separator()) }
+                    let subItem = NSMenuItem(
+                        title: sub.title, action: #selector(contextMenuAction(_:)), keyEquivalent: "",
+                    )
+                    subItem.target = self
+                    subItem.representedObject = sub.rawValue
+                    subItem.isEnabled = TerminalContextMenu.isEnabled(sub, context: ctx)
+                    submenu.addItem(subItem)
+                }
+                pasteAsItem.submenu = submenu
+                menu.addItem(pasteAsItem)
+            }
         }
         return menu
     }
@@ -1207,11 +1738,31 @@ final class GhosttyLayerBackedView: NSView {
               let item = TerminalContextMenu.Item(rawValue: raw) else { return }
         switch item {
         case .copy: surface?.performBindingAction("copy_to_clipboard")
-        case .paste: surface?.performBindingAction("paste_from_clipboard")
+        case .paste: requestPaste()   // ES-E8-3: paste-protection pre-check, then libghostty's bracketed paste
         case .pasteAsKeystrokes:
             // Type the pasteboard string as raw keystrokes (no bracketed-paste) — the "paste literally"
             // affordance for TUIs that swallow bracketed paste.
             if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty { surface?.text(s) }
+        // E8 / ES-E8-4 — "Paste as…" variants. The three transforms are typed via the surface's `text(_:)`
+        // path (PasteTransform is the unit-tested engine); the routing variants read a different source.
+        case .pasteSelection:
+            // X11 middle-click convention: type the current SELECTION rather than the clipboard.
+            if let sel = surface?.readSelection(), !sel.isEmpty { surface?.text(sel) }
+        case .pasteFileBase64:
+            pasteFileAsBase64()
+        case .pasteEscaped:
+            if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty {
+                surface?.text(PasteTransform.shellEscaped(s))
+            }
+        case .pasteBracketed:
+            if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty {
+                surface?.text(PasteTransform.bracketed(s))
+            }
+        case .pasteToComposer:
+            // Append the clipboard to the client Composer draft instead of sending to the shell (no wire).
+            if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty {
+                model?.onPasteToComposer?(s)
+            }
         case .selectAll: surface?.performBindingAction("select_all")
         case .clear: surface?.performBindingAction("clear_screen")
         case .copyOutput:
@@ -1229,6 +1780,20 @@ final class GhosttyLayerBackedView: NSView {
         case .splitDown: model?.onContextMenuSplit?(false)
         case .find: model?.onRequestFind?()
         }
+    }
+
+    /// E8 / ES-E8-4 "Paste File Base64-Encoded…": pick a single file, base64-encode its bytes, and type
+    /// the result. Reads the bytes DEFENSIVELY — a cancelled panel, a missing URL, or an unreadable file is
+    /// a silent no-op (never a crash). The encoding is the unit-tested `PasteTransform.base64`.
+    private func pasteFileAsBase64() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let bytes = try? Data(contentsOf: url) else { return }
+        let encoded = PasteTransform.base64(ofFileBytes: bytes)
+        if !encoded.isEmpty { surface?.text(encoded) }
     }
 
     /// Catch Cmd-C / Cmd-V / Cmd-A DIRECTLY, regardless of whether an Edit menu is installed. Returning

@@ -26,10 +26,14 @@ final class AllSettingsCatalogTests: XCTestCase {
         XCTAssertEqual(AllSettingsCatalog.filter("").count, AllSettingsCatalog.entries.count)
         XCTAssertEqual(AllSettingsCatalog.filter("   ").count, AllSettingsCatalog.entries.count)
 
-        // `cursor` → exactly the two cursor render-pref rows (key + label + description match).
-        XCTAssertEqual(Set(AllSettingsCatalog.filter("cursor").map(\.key)), ["cursor-style", "cursor-style-blink"])
-        // Case-insensitive.
-        XCTAssertEqual(AllSettingsCatalog.filter("CURSOR").count, 2)
+        // `cursor` → the two cursor render-pref rows PLUS the E8 "Cursor Click-to-Move" control row; all
+        // three legitimately contain "cursor" in their key / label / description. The render rows are always
+        // present (superset pin), and the faithfully-named Click-to-Move row now also matches.
+        let cursorKeys = Set(AllSettingsCatalog.filter("cursor").map(\.key))
+        XCTAssertTrue(cursorKeys.isSuperset(of: ["cursor-style", "cursor-style-blink"]))
+        XCTAssertTrue(cursorKeys.contains(SettingsKey.clickToMove), "Cursor Click-to-Move matches a 'cursor' search")
+        // Case-insensitive — the same matches.
+        XCTAssertEqual(AllSettingsCatalog.filter("CURSOR").count, cursorKeys.count)
 
         // `scrollback` → only the scrollback row (the scroll-multiplier / scroll-on-output rows say "scroll",
         // never "scrollback").
@@ -68,6 +72,13 @@ final class AllSettingsCatalogTests: XCTestCase {
             SettingsKey.copyOnSelect, SettingsKey.trimTrailingSpacesOnCopy, SettingsKey.pasteProtection,
             SettingsKey.mouseHideWhileTyping, SettingsKey.focusFollowsMouse, SettingsKey.scrollOnOutput,
             SettingsKey.scrollMultiplier, SettingsKey.systemDialogPanes,
+            // E8 WI-1: the remaining Controls / Mouse / Scroll knobs
+            SettingsKey.clearSelectionOnTyping, SettingsKey.clearSelectionOnCopy,
+            SettingsKey.backspaceDeletesSelection, SettingsKey.shiftArrowSelect, SettingsKey.pasteBracketedSafe,
+            SettingsKey.clipboardReadKey, SettingsKey.clipboardWriteKey, SettingsKey.allowMouseCapture,
+            SettingsKey.allowShiftClickKey, SettingsKey.clickToMove, SettingsKey.rightClickActionKey,
+            SettingsKey.scrollPastLastLineKey, SettingsKey.scrollPastFirstLineKey, SettingsKey.smoothScroll,
+            SettingsKey.undoAtPrompt,
             // Appearance (New Tab Position — tab-setting.png — + chrome orphans + density)
             SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers, SettingsKey.hideStatusBar,
             SettingsKey.density,

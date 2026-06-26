@@ -27,9 +27,17 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(def.fontFamily, "SF Mono")
         XCTAssertEqual(def.scrollbackLines, 10000)
         XCTAssertEqual(def.cursorStyle, .block)
+        XCTAssertEqual(def.cursorBlink, .default) // tri-state default = defer to DEC mode 12
+        // E8 WI-1: cursor color/text/opacity/animation render-pref defaults (empty colour = follow theme,
+        // opacity 1.0, animation Off — the otty "Default" state).
+        XCTAssertEqual(def.cursorColor, "")
+        XCTAssertEqual(def.cursorTextColor, "")
+        XCTAssertEqual(def.cursorOpacity, 1.0)
+        XCTAssertEqual(def.cursorAnimation, .off)
         let custom = TerminalPreferences(
             fontFamily: "JetBrains Mono", fontSize: 14, fontWeight: "bold", theme: "Light",
-            cursorStyle: .bar, cursorBlink: false, scrollbackLines: 50000,
+            cursorStyle: .bar, cursorBlink: .off, scrollbackLines: 50000,
+            cursorColor: "FF8800", cursorTextColor: "101010", cursorOpacity: 0.75, cursorAnimation: .smooth,
         )
         XCTAssertEqual(try roundTrip(custom), custom)
     }

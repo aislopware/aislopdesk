@@ -60,4 +60,52 @@ final class TerminalContextMenuTests: XCTestCase {
             XCTAssertFalse(item.symbol.isEmpty)
         }
     }
+
+    // MARK: Paste as… (E8 / ES-E8-4)
+
+    func testPasteAsItemsAreNotInTopLevelMenu() {
+        // The "Paste as…" variants hang off the submenu, never the flat top-level list (so adding them as
+        // Item cases must not leak into `items`).
+        for item in TerminalContextMenu.pasteAsItems {
+            XCTAssertFalse(TerminalContextMenu.items.contains(item), "\(item) must not be top-level")
+        }
+    }
+
+    func testPasteAsSubmenuOrderMatchesOtty() {
+        XCTAssertEqual(
+            TerminalContextMenu.pasteAsItems,
+            [.pasteSelection, .pasteFileBase64, .pasteEscaped, .pasteBracketed, .pasteToComposer],
+        )
+    }
+
+    func testPasteSelectionRequiresSelection() {
+        let withSel = TerminalContextMenu.Context(hasSelection: true, clipboardHasText: false)
+        let noSel = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: false)
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.pasteSelection, context: withSel))
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.pasteSelection, context: noSel))
+    }
+
+    func testPasteFileBase64IsAlwaysEnabled() {
+        // It picks its own file via NSOpenPanel, so it never depends on selection / clipboard / composer.
+        let empty = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: false)
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.pasteFileBase64, context: empty))
+    }
+
+    func testPasteEscapedAndBracketedRequireClipboardText() {
+        let hasClip = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: true)
+        let noClip = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: false)
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.pasteEscaped, context: hasClip))
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.pasteBracketed, context: hasClip))
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.pasteEscaped, context: noClip))
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.pasteBracketed, context: noClip))
+    }
+
+    func testPasteToComposerRequiresClipboardTextAndComposer() {
+        let both = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: true, hasComposer: true)
+        let clipOnly = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: true, hasComposer: false)
+        let composerOnly = TerminalContextMenu.Context(hasSelection: false, clipboardHasText: false, hasComposer: true)
+        XCTAssertTrue(TerminalContextMenu.isEnabled(.pasteToComposer, context: both))
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.pasteToComposer, context: clipOnly))
+        XCTAssertFalse(TerminalContextMenu.isEnabled(.pasteToComposer, context: composerOnly))
+    }
 }

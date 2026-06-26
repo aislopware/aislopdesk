@@ -56,6 +56,24 @@ struct AllSettingsListView: View {
     @Default(.hideStatusBar) private var hideStatusBar
     @Default(.autoSwitchLayouts) private var autoSwitchLayouts
     @Default(.recordClipboardHistory) private var recordClipboardHistory
+    // E8 WI-3: the remaining Controls / Mouse / Scroll knobs + the OSC-52 read/write access pickers (otty
+    // homes the clipboard-read/write gates under Advanced → All Settings — `copy-and-paste` spec). Mirror the
+    // catalog rows here so every `.advancedOnly` entry has an inline editor instead of falling to plain text.
+    @Default(.clearSelectionOnTyping) private var clearSelectionOnTyping
+    @Default(.clearSelectionOnCopy) private var clearSelectionOnCopy
+    @Default(.backspaceDeletesSelection) private var backspaceDeletesSelection
+    @Default(.shiftArrowSelect) private var shiftArrowSelect
+    @Default(.pasteBracketedSafe) private var pasteBracketedSafe
+    @Default(.allowMouseCapture) private var allowMouseCapture
+    @Default(.clickToMove) private var clickToMove
+    @Default(.smoothScroll) private var smoothScroll
+    @Default(.undoAtPrompt) private var undoAtPrompt
+    @Default(.clipboardRead) private var clipboardRead
+    @Default(.clipboardWrite) private var clipboardWrite
+    @Default(.allowShiftClick) private var allowShiftClick
+    @Default(.rightClickAction) private var rightClickAction
+    @Default(.scrollPastLastLine) private var scrollPastLastLine
+    @Default(.scrollPastFirstLine) private var scrollPastFirstLine
 
     private var filtered: [AllSettingsCatalog.SettingEntry] { AllSettingsCatalog.filter(query) }
 
@@ -164,8 +182,8 @@ struct AllSettingsListView: View {
         case "font-family": store.terminal.fontFamily
         case "font-size": "\(Int(store.terminal.fontSize))"
         case "scrollback-limit": "\(store.terminal.scrollbackLines)"
-        case "cursor-style": store.terminal.cursorStyle.rawValue.capitalized
-        case "cursor-style-blink": store.terminal.cursorBlink ? "On" : "Off"
+        case "cursor-style": store.terminal.cursorStyle.displayName
+        case "cursor-style-blink": store.terminal.cursorBlink.rawValue.capitalized
         case "theme": themeLabel(store.appearance.theme ?? .system)
         case SettingsKey.density: (store.appearance.density ?? "comfortable").capitalized
         default: entry.defaultText
@@ -181,10 +199,22 @@ struct AllSettingsListView: View {
         case SettingsKey.oscNotifications: boolControl($oscNotifications)
         case SettingsKey.longCommandNotifications: boolControl($longCommandNotifications)
         case SettingsKey.redactSecrets: boolControl($redactSecrets)
-        case SettingsKey.copyOnSelect: boolControl($copyOnSelect)
-        case SettingsKey.trimTrailingSpacesOnCopy: boolControl($trimTrailingSpacesOnCopy)
-        case SettingsKey.pasteProtection: boolControl($pasteProtection)
-        case SettingsKey.mouseHideWhileTyping: boolControl($mouseHideWhileTyping)
+        // Controls / Mouse / Scroll knobs that feed the libghostty config passthrough (`TerminalControls`)
+        // refresh the live surface on change (`refresh: true`); the client-fire-time-only knobs (right-click,
+        // scroll-past, smooth-scroll, undo, backspace, focus-follows) persist without a config rebuild.
+        case SettingsKey.copyOnSelect: boolControl($copyOnSelect, refresh: true)
+        case SettingsKey.trimTrailingSpacesOnCopy: boolControl($trimTrailingSpacesOnCopy, refresh: true)
+        case SettingsKey.clearSelectionOnTyping: boolControl($clearSelectionOnTyping, refresh: true)
+        case SettingsKey.clearSelectionOnCopy: boolControl($clearSelectionOnCopy, refresh: true)
+        case SettingsKey.pasteProtection: boolControl($pasteProtection, refresh: true)
+        case SettingsKey.pasteBracketedSafe: boolControl($pasteBracketedSafe, refresh: true)
+        case SettingsKey.mouseHideWhileTyping: boolControl($mouseHideWhileTyping, refresh: true)
+        case SettingsKey.allowMouseCapture: boolControl($allowMouseCapture, refresh: true)
+        case SettingsKey.clickToMove: boolControl($clickToMove, refresh: true)
+        case SettingsKey.shiftArrowSelect: boolControl($shiftArrowSelect, refresh: true)
+        case SettingsKey.backspaceDeletesSelection: boolControl($backspaceDeletesSelection)
+        case SettingsKey.smoothScroll: boolControl($smoothScroll)
+        case SettingsKey.undoAtPrompt: boolControl($undoAtPrompt)
         case SettingsKey.focusFollowsMouse: boolControl($focusFollowsMouse)
         case SettingsKey.scrollOnOutput: boolControl($scrollOnOutput)
         case SettingsKey.systemDialogPanes: boolControl($systemDialogPanes)
@@ -192,13 +222,52 @@ struct AllSettingsListView: View {
         case SettingsKey.hideStatusBar: boolControl($hideStatusBar)
         case SettingsKey.autoSwitchLayouts: boolControl($autoSwitchLayouts)
         case SettingsKey.recordClipboardHistory: boolControl($recordClipboardHistory)
+        // OSC-52 clipboard access gates (allow / deny / ask) — otty's Advanced → All Settings home; feed the
+        // config passthrough, so refresh on change.
+        case SettingsKey.clipboardReadKey:
+            menuPicker($clipboardRead, refresh: true) { clipboardAccessOptions }
+        case SettingsKey.clipboardWriteKey:
+            menuPicker($clipboardWrite, refresh: true) { clipboardAccessOptions }
+        case SettingsKey.allowShiftClickKey:
+            // otty exposes this as an ON/OFF switch (`spec/cursor-and-mouse`): ON ⇒ `.enabled` (⇧ extends the
+            // selection, the default), OFF ⇒ `.disabled` (⇧ forwarded to the program). The leaf enum retains
+            // `.always`/`.never` for the token mapping, but the UI surfaces only the binary the spec shows.
+            boolControl(
+                Binding(
+                    get: { allowShiftClick == .enabled },
+                    set: { allowShiftClick = $0 ? .enabled : .disabled },
+                ),
+                refresh: true,
+            )
+        case SettingsKey.rightClickActionKey:
+            menuPicker($rightClickAction) {
+                Text("Context Menu").tag(RightClickAction.contextMenu)
+                Text("Copy").tag(RightClickAction.copy)
+                Text("Paste").tag(RightClickAction.paste)
+                Text("Copy or Paste").tag(RightClickAction.copyOrPaste)
+                Text("Ignore").tag(RightClickAction.ignore)
+            }
+        case SettingsKey.scrollPastLastLineKey:
+            menuPicker($scrollPastLastLine) {
+                Text("Disabled").tag(ScrollPastLast.disabled)
+                Text("Last Line With Content").tag(ScrollPastLast.lastLineWithContent)
+                Text("Last Line In Middle").tag(ScrollPastLast.lastLineInMiddle)
+                Text("Cursor Line").tag(ScrollPastLast.cursorLine)
+            }
+        case SettingsKey.scrollPastFirstLineKey:
+            menuPicker($scrollPastFirstLine) {
+                Text("Disabled").tag(ScrollPastFirst.disabled)
+                Text("Same as Last Line").tag(ScrollPastFirst.sameAsLast)
+                Text("First Line With Content").tag(ScrollPastFirst.firstLineWithContent)
+                Text("First Line In Middle").tag(ScrollPastFirst.firstLineInMiddle)
+            }
         case SettingsKey.scrollMultiplier:
             AnyView(HStack(spacing: Otty.Metric.space1) {
                 Text(String(format: "%.2f×", scrollMultiplier))
                     .font(.system(size: Otty.Typeface.footnote))
                     .foregroundStyle(Otty.Text.secondary)
                     .monospacedDigit()
-                Stepper("", value: $scrollMultiplier, in: 0.25...5, step: 0.25).labelsHidden()
+                Stepper("", value: refreshing($scrollMultiplier), in: 0.25...5, step: 0.25).labelsHidden()
             })
         case SettingsKey.onLaunchKey:
             menuPicker($onLaunch) {
@@ -229,17 +298,38 @@ struct AllSettingsListView: View {
         }
     }
 
-    private func boolControl(_ binding: Binding<Bool>) -> AnyView {
-        AnyView(Toggle("", isOn: binding).labelsHidden())
+    private func boolControl(_ binding: Binding<Bool>, refresh: Bool = false) -> AnyView {
+        AnyView(Toggle("", isOn: refresh ? refreshing(binding) : binding).labelsHidden())
     }
 
     private func menuPicker(
-        _ binding: Binding<some Hashable>, @ViewBuilder _ content: () -> some View,
+        _ binding: Binding<some Hashable>, refresh: Bool = false, @ViewBuilder _ content: () -> some View,
     ) -> AnyView {
-        AnyView(Picker("", selection: binding, content: content)
+        AnyView(Picker("", selection: refresh ? refreshing(binding) : binding, content: content)
             .labelsHidden()
             .pickerStyle(.menu)
             .fixedSize())
+    }
+
+    /// Wrap a fire-time `Defaults` control binding so an inline edit ALSO re-applies the live terminal config
+    /// (the E8 Controls passthrough), matching the Controls tab's `.onChange → refreshTerminalControls()`. The
+    /// global toggles live in `Defaults.standard`; the store stays isolated on its injected `UserDefaults`, so
+    /// the explicit refresh is the seam that re-reads them.
+    private func refreshing<V: Equatable>(_ binding: Binding<V>) -> Binding<V> {
+        Binding(
+            get: { binding.wrappedValue },
+            set: { newValue in
+                binding.wrappedValue = newValue
+                store.refreshTerminalControls()
+            },
+        )
+    }
+
+    /// The shared allow / deny / ask options for the OSC-52 clipboard-read and -write access pickers.
+    @ViewBuilder private var clipboardAccessOptions: some View {
+        Text("Allow").tag(ClipboardAccess.allow)
+        Text("Deny").tag(ClipboardAccess.deny)
+        Text("Ask").tag(ClipboardAccess.ask)
     }
 
     @ViewBuilder private var closeConfirmOptions: some View {

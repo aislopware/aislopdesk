@@ -506,51 +506,197 @@ private struct ShellSettingsTab: View {
 
 // MARK: - Controls section
 
-/// Controls: the otty Controls/Scroll/Copy fire-time toggles (E8 owns the BEHAVIOUR; E7 surfaces + persists
-/// them), the SCROLLBACK depth (otty's `Settings → Controls → Scroll` home — `spec/terminal-features__
-/// scroll.md`, relocated out of the old Editor tab), and the system-dialog-panes toggle. All LIVE (the
-/// toggles + scroll knobs are read at fire-time / next render; scrollback rebuilds the libghostty config).
-/// NOTE: the cursor (style + blink) is NOT here — otty puts it under **Appearance** (`cursor-style.png`).
+/// Controls: the otty Controls fire-time toggles + multi-state pickers (E8 owns the BEHAVIOUR; E7 declared +
+/// persisted them). The groups mirror otty's own section headers from the `spec/terminal-features__
+/// {selection,copy-and-paste,scroll,cursor-and-mouse}.md` pages and `mouse-option.png`: **Selection**,
+/// **Copy & Paste**, **Scroll** (incl. the SCROLLBACK depth — otty's `Settings → Controls → Scroll` home),
+/// **Mouse**, **Keyboard** (Undo at Prompt), and the aislopdesk-specific **System** dialog-panes toggle.
+/// All LIVE — every `Defaults` control row re-applies the libghostty config through `refreshTerminalControls()`
+/// on change (the `refreshing(_:)` wrapper), and the scrollback stepper rebuilds via the `terminal` model's
+/// own `didSet`. NOTE: the cursor (color / opacity / style / blink / animation) is NOT here — otty puts the
+/// whole Cursor group under **Appearance** (`cursor-style.png`), hosted by `CursorPreviewView`.
 private struct ControlsSettingsTab: View {
     @Bindable var store: PreferencesStore
 
+    // Selection (otty Settings → Controls → Selection).
+    @Default(.shiftArrowSelect) private var shiftArrowSelect
+    @Default(.clearSelectionOnTyping) private var clearSelectionOnTyping
+    @Default(.clearSelectionOnCopy) private var clearSelectionOnCopy
+    @Default(.backspaceDeletesSelection) private var backspaceDeletesSelection
+    // Copy & Paste.
     @Default(.copyOnSelect) private var copyOnSelect
     @Default(.trimTrailingSpacesOnCopy) private var trimTrailingSpacesOnCopy
     @Default(.pasteProtection) private var pasteProtection
-    @Default(.mouseHideWhileTyping) private var mouseHideWhileTyping
-    @Default(.focusFollowsMouse) private var focusFollowsMouse
+    @Default(.pasteBracketedSafe) private var pasteBracketedSafe
+    // Scroll.
     @Default(.scrollOnOutput) private var scrollOnOutput
+    @Default(.scrollPastLastLine) private var scrollPastLastLine
+    @Default(.scrollPastFirstLine) private var scrollPastFirstLine
+    @Default(.smoothScroll) private var smoothScroll
     @Default(.scrollMultiplier) private var scrollMultiplier
+    // Mouse (otty `mouse-option.png` order).
+    @Default(.focusFollowsMouse) private var focusFollowsMouse
+    @Default(.rightClickAction) private var rightClickAction
+    @Default(.mouseHideWhileTyping) private var mouseHideWhileTyping
+    @Default(.allowShiftClick) private var allowShiftClick
+    @Default(.clickToMove) private var clickToMove
+    @Default(.allowMouseCapture) private var allowMouseCapture
+    // Keyboard / System.
+    @Default(.undoAtPrompt) private var undoAtPrompt
     @Default(.systemDialogPanes) private var systemDialogPanes
 
     var body: some View {
         Form {
-            Section("Copy & Paste") {
-                Toggle("Copy on select", isOn: $copyOnSelect)
-                Toggle("Trim trailing spaces on copy", isOn: $trimTrailingSpacesOnCopy)
-                Toggle("Paste protection", isOn: $pasteProtection)
+            Section("Selection") {
+                toggleRow(
+                    "Shift+Arrow Select",
+                    "Use Shift+arrows to drive a native selection instead of forwarding the arrow escapes.",
+                    isOn: $shiftArrowSelect,
+                )
+                toggleRow(
+                    "Clear Selection on Typing",
+                    "Drop the selection the moment any key is sent to the program.",
+                    isOn: $clearSelectionOnTyping,
+                )
+                toggleRow(
+                    "Clear Selection on Copy",
+                    "Drop the highlight after an explicit copy (does not apply when Copy on Select fires).",
+                    isOn: $clearSelectionOnCopy,
+                )
+                toggleRow(
+                    "Backspace Deletes Selection",
+                    "Not yet functional — the terminal renderer exposes no selection-geometry API, so "
+                        + "Backspace deletes a single character whether this is on or off. Off by default.",
+                    isOn: $backspaceDeletesSelection,
+                )
                 timingFooter(.live)
             }
 
-            Section("Mouse & Scroll") {
-                Toggle("Hide mouse while typing", isOn: $mouseHideWhileTyping)
-                Toggle("Focus follows mouse", isOn: $focusFollowsMouse)
-                Toggle("Scroll to bottom on output", isOn: $scrollOnOutput)
+            Section("Copy & Paste") {
+                toggleRow(
+                    "Copy on Select",
+                    "Copy the selection to the pasteboard as soon as it is made.",
+                    isOn: $copyOnSelect,
+                )
+                toggleRow(
+                    "Trim Trailing Spaces on Copy",
+                    "Strip trailing whitespace from each copied line.",
+                    isOn: $trimTrailingSpacesOnCopy,
+                )
+                toggleRow(
+                    "Paste Protection",
+                    "Warn before pasting multi-line, trailing-newline, sudo/su, or control-character text.",
+                    isOn: $pasteProtection,
+                )
+                toggleRow(
+                    "Paste Bracketed Safe",
+                    "Skip the paste warning when the receiving program advertises bracketed-paste support.",
+                    isOn: $pasteBracketedSafe,
+                )
+                timingFooter(.live)
+            }
+
+            Section("Scroll") {
+                toggleRow(
+                    "Scroll to Bottom on Output",
+                    "Snap the viewport to the bottom when new output arrives.",
+                    isOn: $scrollOnOutput,
+                )
+                pickerRow(
+                    "Scroll Past Last Line",
+                    "Overscroll mode past the last content row. Preference saved; the overscroll rendering "
+                        + "is not yet active (the terminal renderer owns the viewport — deferred).",
+                    selection: $scrollPastLastLine,
+                ) {
+                    Text("Disabled").tag(ScrollPastLast.disabled)
+                    Text("Last Line With Content").tag(ScrollPastLast.lastLineWithContent)
+                    Text("Last Line In Middle").tag(ScrollPastLast.lastLineInMiddle)
+                    Text("Cursor Line").tag(ScrollPastLast.cursorLine)
+                }
+                pickerRow(
+                    "Scroll Past First Line",
+                    "Overscroll mode past the first (oldest) scrollback row. Preference saved; the overscroll "
+                        + "rendering is not yet active (deferred — same renderer ceiling as Scroll Past Last).",
+                    selection: $scrollPastFirstLine,
+                ) {
+                    Text("Disabled").tag(ScrollPastFirst.disabled)
+                    Text("Same as Last Line").tag(ScrollPastFirst.sameAsLast)
+                    Text("First Line With Content").tag(ScrollPastFirst.firstLineWithContent)
+                    Text("First Line In Middle").tag(ScrollPastFirst.firstLineInMiddle)
+                }
+                toggleRow(
+                    "Smooth Scroll",
+                    "Scrolling already runs at pixel granularity. The whole-row snap when this is off is not "
+                        + "yet active (the renderer exposes no row-snap hook — deferred).",
+                    isOn: $smoothScroll,
+                )
                 LabeledContent("Scroll multiplier") {
                     HStack(spacing: Otty.Metric.space2) {
-                        Slider(value: $scrollMultiplier, in: 0.25...5, step: 0.25)
+                        Slider(value: refreshing($scrollMultiplier), in: 0.25...5, step: 0.25)
                         Text(String(format: "%.2f×", scrollMultiplier))
                             .foregroundStyle(Otty.Text.secondary)
                             .monospacedDigit()
                     }
                 }
+                Stepper(
+                    "Scrollback: \(store.terminal.scrollbackLines) lines",
+                    value: $store.terminal.scrollbackLines, in: 1000...100_000, step: 1000,
+                )
                 timingFooter(.live)
             }
 
-            Section("Scrollback") {
-                Stepper(
-                    "Lines: \(store.terminal.scrollbackLines)",
-                    value: $store.terminal.scrollbackLines, in: 1000...100_000, step: 1000,
+            Section("Mouse") {
+                toggleRow(
+                    "Mouse Over to Focus",
+                    "Focus the pane under the mouse cursor automatically.",
+                    isOn: $focusFollowsMouse,
+                )
+                pickerRow(
+                    "Right-Click Action",
+                    "What right-click does in the terminal viewport (Ctrl+right-click always opens the menu).",
+                    selection: $rightClickAction,
+                ) {
+                    Text("Context Menu").tag(RightClickAction.contextMenu)
+                    Text("Copy").tag(RightClickAction.copy)
+                    Text("Paste").tag(RightClickAction.paste)
+                    Text("Copy or Paste").tag(RightClickAction.copyOrPaste)
+                    Text("Ignore").tag(RightClickAction.ignore)
+                }
+                toggleRow(
+                    "Hide Mouse When Typing",
+                    "Hide the mouse cursor while the keyboard is in use.",
+                    isOn: $mouseHideWhileTyping,
+                )
+                // otty surfaces this as a simple ON/OFF switch (`spec/cursor-and-mouse`), not a 4-way picker:
+                // ON ⇒ ⇧ extends the selection (`MouseShiftCapture.enabled`, the default), OFF ⇒ ⇧ is forwarded
+                // to the program (`.disabled`). The leaf enum keeps `.always`/`.never` for the power-user token
+                // mapping, but the otty-faithful UI exposes only the binary the spec shows.
+                toggleRow(
+                    "Allow Shift with Mouse Click",
+                    "Hold Shift to select text even when the running app captures the mouse.",
+                    isOn: Binding(
+                        get: { allowShiftClick == .enabled },
+                        set: { allowShiftClick = $0 ? .enabled : .disabled },
+                    ),
+                )
+                toggleRow(
+                    "Cursor Click-to-Move",
+                    "Click in the prompt to move the shell cursor — sends arrow keys across soft-wrapped rows.",
+                    isOn: $clickToMove,
+                )
+                toggleRow(
+                    "Allow Mouse Capture",
+                    "Allow shell apps to capture mouse events (e.g. vim, tmux).",
+                    isOn: $allowMouseCapture,
+                )
+                timingFooter(.live)
+            }
+
+            Section("Keyboard") {
+                toggleRow(
+                    "Undo at Prompt",
+                    "Press Cmd-Z at the shell prompt to emit the readline undo sequence.",
+                    isOn: $undoAtPrompt,
                 )
                 timingFooter(.live)
             }
@@ -561,6 +707,55 @@ private struct ControlsSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Row helpers
+
+    /// Wrap a fire-time `Defaults` control binding so a change ALSO re-applies the live terminal config (the
+    /// E8 Controls passthrough). `PreferencesStore` stays isolated on its injected `UserDefaults`; the global
+    /// Controls toggles live in `Defaults.standard`, so `refreshTerminalControls()` is the explicit seam that
+    /// re-reads them (there is no `Defaults.observe` in the store, by design — see `PreferencesStore`).
+    private func refreshing<V: Equatable>(_ binding: Binding<V>) -> Binding<V> {
+        Binding(
+            get: { binding.wrappedValue },
+            set: { newValue in
+                binding.wrappedValue = newValue
+                store.refreshTerminalControls()
+            },
+        )
+    }
+
+    /// A toggle row with otty's bold-label-over-gray-subtext layout (the switch trailing).
+    private func toggleRow(_ title: String, _ subtitle: String? = nil, isOn binding: Binding<Bool>) -> some View {
+        Toggle(isOn: refreshing(binding)) { rowLabel(title, subtitle) }
+    }
+
+    /// A dropdown row (label + subtext leading, a `.menu` picker trailing) for the multi-state Controls enums.
+    private func pickerRow(
+        _ title: String, _ subtitle: String? = nil,
+        selection: Binding<some Hashable>, @ViewBuilder options: () -> some View,
+    ) -> some View {
+        LabeledContent {
+            Picker("", selection: refreshing(selection), content: options)
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+        } label: {
+            rowLabel(title, subtitle)
+        }
+    }
+
+    /// otty's row label: a bold title with an optional gray subtext beneath.
+    private func rowLabel(_ title: String, _ subtitle: String?) -> some View {
+        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            Text(title)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: Otty.Typeface.footnote))
+                    .foregroundStyle(Otty.Text.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
@@ -691,14 +886,26 @@ private struct AppearanceSettingsTab: View {
                 )
             }
 
+            // otty homes the FULL Cursor group (live preview + color / text-under / opacity / style / blink /
+            // animation) under Appearance (`cursor-style.png`). macOS hosts the rich `CursorPreviewView` (its
+            // color wells + preview caret are AppKit); the compact iOS sheet keeps the cross-platform Style +
+            // Blink controls (`CursorPreviewView` is `#if os(macOS)`).
+            #if os(macOS)
+            CursorPreviewView(store: store)
+            #else
             Section("Cursor") {
                 Picker("Style", selection: $store.terminal.cursorStyle) {
                     ForEach(TerminalPreferences.CursorStyle.allCases, id: \.self) { style in
-                        Text(style.rawValue.capitalized).tag(style)
+                        Text(style.displayName).tag(style)
                     }
                 }
-                Toggle("Blink", isOn: $store.terminal.cursorBlink)
+                Picker("Blink", selection: $store.terminal.cursorBlink) {
+                    Text("Default").tag(TerminalPreferences.CursorBlink.default)
+                    Text("On").tag(TerminalPreferences.CursorBlink.on)
+                    Text("Off").tag(TerminalPreferences.CursorBlink.off)
+                }
             }
+            #endif
 
             Section("Chrome") {
                 Toggle("Show command dividers", isOn: $showBlockDividers)

@@ -28,15 +28,28 @@ final class TerminalConfigBuilderTests: XCTestCase {
         XCTAssertEqual(map["background"], "FCFBF9") // otty Paper — overrides the (unbundled) named theme
         XCTAssertEqual(map["foreground"], "37352F")
         XCTAssertEqual(map["cursor-style"], "block")
-        XCTAssertEqual(map["cursor-style-blink"], "true")
+        // The default cursor blink is the TRI-STATE `.default` (defer to DEC mode 12), which SKIPS the
+        // `cursor-style-blink` line entirely (libghostty's optional-bool null). Pre-fix this emitted `true`.
+        XCTAssertNil(map["cursor-style-blink"], "the .default tri-state defers to DEC mode 12 (no line)")
         // 10000 lines × 256 B/line.
         XCTAssertEqual(map["scrollback-limit"], "2560000")
+    }
+
+    /// The tri-state cursor blink: `.default` SKIPS the line (defer to DEC mode 12), `.on`/`.off` emit the
+    /// explicit libghostty optional-bool. FAILS before the fix (blink was a plain Bool that always emitted).
+    func testCursorBlinkTriStateEmitsOnlyForExplicitStates() {
+        let def = parse(TerminalConfigBuilder.string(for: TerminalPreferences(cursorBlink: .default)))
+        XCTAssertNil(def["cursor-style-blink"], ".default defers to DEC mode 12 → no line")
+        let on = parse(TerminalConfigBuilder.string(for: TerminalPreferences(cursorBlink: .on)))
+        XCTAssertEqual(on["cursor-style-blink"], "true")
+        let off = parse(TerminalConfigBuilder.string(for: TerminalPreferences(cursorBlink: .off)))
+        XCTAssertEqual(off["cursor-style-blink"], "false")
     }
 
     func testEachCustomFieldChangesItsLine() {
         let prefs = TerminalPreferences(
             fontFamily: "JetBrains Mono", fontSize: 14.5, fontWeight: "bold", theme: "Light",
-            cursorStyle: .bar, cursorBlink: false, scrollbackLines: 5000,
+            cursorStyle: .bar, cursorBlink: .off, scrollbackLines: 5000,
         )
         let map = parse(TerminalConfigBuilder.string(for: prefs))
         XCTAssertEqual(map["font-family"], "JetBrains Mono")
@@ -53,8 +66,16 @@ final class TerminalConfigBuilderTests: XCTestCase {
             let prefs = TerminalPreferences(cursorStyle: style)
             let map = parse(TerminalConfigBuilder.string(for: prefs))
             XCTAssertEqual(map["cursor-style"], style.rawValue)
-            XCTAssertTrue(["block", "bar", "underline"].contains(style.rawValue))
+            XCTAssertTrue(["block", "block_hollow", "bar", "underline"].contains(style.rawValue))
         }
+    }
+
+    /// otty's four cursor styles round-trip through `cursor-style`, including the native libghostty
+    /// `block_hollow` (`terminal/cursor.zig`). FAILS before the fix: the enum lacked `blockHollow`.
+    func testBlockHollowCursorStyleEmitsNativeToken() {
+        let map = parse(TerminalConfigBuilder.string(for: TerminalPreferences(cursorStyle: .blockHollow)))
+        XCTAssertEqual(map["cursor-style"], "block_hollow")
+        XCTAssertEqual(TerminalPreferences.CursorStyle.allCases.count, 4, "Block / Block (hollow) / Bar / Underline")
     }
 
     func testEmptyFamilyOrThemeIsSkippedNotEmittedEmpty() {

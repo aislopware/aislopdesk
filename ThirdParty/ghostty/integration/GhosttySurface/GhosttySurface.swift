@@ -307,6 +307,32 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
     /// loop permanently kicked and busy-spinning at ~100% CPU.
     public var onContentChanged: (() -> Void)?
 
+    /// E8 WI-9 (H14): OSC-22 pointer-shape observer. libghostty parses `OSC 22 ; <css-name> ST` from the
+    /// remote program's byte stream and emits a `GHOSTTY_ACTION_MOUSE_SHAPE` action; the app-level
+    /// `action_cb` (in `GhosttyApp`) recovers THIS surface from the action target and forwards the raw
+    /// `ghostty_action_mouse_shape_e` value here as an `Int32`. The macOS view sets this to translate the
+    /// raw shape (via the headless `PointerShapeMapping`) into an `NSCursor`. Kept as a plain `Int32` so
+    /// this ABI binding stays free of any AppKit / workspace-core dependency (the cursor policy lives in
+    /// the view). iOS leaves it unset (no pointer hardware → no-op).
+    public var onMouseShape: ((Int32) -> Void)?
+
+    /// E8 (H9 / ES-E8-6): mouse-hide-while-typing visibility observer. `mouse-hide-while-typing = true`
+    /// (otty default ON) only makes libghostty DECIDE to hide the pointer; it then delegates the actual
+    /// hide/show to the embedder via a `GHOSTTY_ACTION_MOUSE_VISIBILITY` action (`Surface.zig`
+    /// `hideMouse`/`showMouse`). The app-level `action_cb` (in `GhosttyApp`) recovers THIS surface from the
+    /// action target, resolves the raw `ghostty_action_mouse_visibility_e` via the headless
+    /// `MouseVisibilityMapping`, and forwards the resulting `visible` Bool here. The macOS view sets this to
+    /// drive `NSCursor.setHiddenUntilMouseMoves(!visible)` (mirroring ghostty's `setCursorVisibility`); kept
+    /// as a plain `Bool` so this ABI binding stays AppKit-free. iOS leaves it unset (no pointer → no-op).
+    public var onMouseVisibility: ((Bool) -> Void)?
+
+    /// Reports whether the host terminal is on the ALTERNATE screen (a full-screen TUI owns the viewport).
+    /// The view wires this to `TerminalViewModel.isAlternateScreen` (the real DECSET 1049/47/1047 parse from
+    /// the client `TerminalModeTracker`) so the libghostty-initiated paste BACKSTOP (`write`/middle-click,
+    /// which reaches `aislopdeskConfirmUnsafePaste` WITHOUT going through the view's `requestPaste`) can apply
+    /// the same alt-screen suppression rule as the ⌘V path. `nil` (or unset) ⇒ treat as the primary screen.
+    public var isAlternateScreen: (() -> Bool)?
+
     /// Frees the surface (header 1160). Idempotent. Must run on the main thread.
     ///
     /// TEARDOWN ORDER (the deferred free is load-bearing — see the header contract):
@@ -693,6 +719,27 @@ public final class GhosttySurface: @MainActor TerminalSurface, FeedBackpressurin
         string.withCString { cstr in
             ghostty_surface_complete_clipboard_request(s, cstr, state, confirmed)   // header 1212
         }
+    }
+
+    // MARK: Paste-protection approval (E8 / ES-E8-3)
+
+    /// One-shot "the embedder already ran otty's paste-protection sheet for THIS paste and the user
+    /// approved it" flag. The embedder sets it immediately before `performBindingAction("paste_from_clipboard")`
+    /// (inside the SYNCHRONOUS approved-paste window) and clears it right after; while set, the next clipboard
+    /// READ completion passes `confirmed: true` (allow_unsafe) so libghostty pastes WITHOUT re-evaluating its
+    /// own (narrower) `isSafe` gate — preventing a SECOND confirmation dialog for a paste the user already
+    /// authorised. Because the binding-action read fires synchronously on the main thread inside
+    /// `performBindingAction`, this is effectively scoped to that call: it can never leak `allow_unsafe` into
+    /// an unrelated OSC-52 read (those fire from a separate `feed` call stack, with the flag already cleared).
+    public var pasteApprovedOnce: Bool = false
+
+    /// Reads and CLEARS ``pasteApprovedOnce`` — `read_clipboard_cb` calls this so an embedder-approved unsafe
+    /// paste completes with `confirmed: true` exactly once, and every other read keeps the default
+    /// `confirmed: false` (so the OSC-52 read access gate is never bypassed).
+    public func consumePasteApproval() -> Bool {
+        let approved = pasteApprovedOnce
+        pasteApprovedOnce = false
+        return approved
     }
 
     // MARK: Render hooks (for the GUI coordinator / CVDisplayLink)

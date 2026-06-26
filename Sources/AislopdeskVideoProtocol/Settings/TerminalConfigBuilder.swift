@@ -19,8 +19,8 @@ import Foundation
 ///   • `theme`              — named theme / palette.
 ///   • `background`         — surface background colour (6-hex; overrides the theme).
 ///   • `foreground`         — text colour (6-hex; overrides the theme).
-///   • `cursor-style`       — `block` / `bar` / `underline`.
-///   • `cursor-style-blink` — `true` / `false`.
+///   • `cursor-style`       — `block` / `block_hollow` / `bar` / `underline`.
+///   • `cursor-style-blink` — `true` / `false`, or OMITTED (tri-state `.default` defers to DEC mode 12).
 ///   • `scrollback-limit`   — scrollback buffer size (BYTES in Ghostty; we map lines × a per-line
 ///                            estimate — see ``scrollbackLimitBytes``).
 ///   • `keybind`            — one `keybind = <chord>=<action>` line per user rebind (additive).
@@ -47,11 +47,19 @@ public enum TerminalConfigBuilder {
     /// (``PreferencesStore`` passes the theme's `terminalBackgroundHex`/`terminalForegroundHex`) so the
     /// terminal cells track the chrome flat-design palette. Omit them (the default `nil`) to keep the pref's
     /// own colours — existing callers are unchanged.
+    /// `controls` (E8 WI-2) — when a non-nil ``TerminalControlsConfig`` is supplied the builder APPENDS the
+    /// E8 control passthrough block (selection / copy / paste / mouse / scroll knobs + the cursor
+    /// colour/opacity/text render lines + the ⇧+arrow `adjust_selection` keybinds), after the existing
+    /// render lines. A `nil` `controls` (the default — existing callers, the headless build, the golden
+    /// generator) reproduces the pre-E8 output BYTE-FOR-BYTE: no control key is emitted, so the wire / golden
+    /// corpus is untouched (this epic is wholly client-side). ``PreferencesStore`` always passes a resolved
+    /// `controls` so the live surface tracks the fire-time Controls toggles.
     public static func string(
         for prefs: TerminalPreferences,
         keybinds: [String] = [],
         backgroundOverride: String? = nil,
         foregroundOverride: String? = nil,
+        controls: TerminalControlsConfig? = nil,
     ) -> String {
         var lines: [String] = []
 
@@ -71,7 +79,13 @@ public enum TerminalConfigBuilder {
         if !foreground.isEmpty { lines.append("foreground = \(foreground)") }
 
         lines.append("cursor-style = \(prefs.cursorStyle.rawValue)")
-        lines.append("cursor-style-blink = \(prefs.cursorBlink ? "true" : "false")")
+        // `cursor-style-blink` is a libghostty OPTIONAL bool (null = defer to DEC mode 12). otty's tri-state
+        // maps `.default` → SKIP the line (defer to DEC mode 12), `.on`/`.off` → explicit `true`/`false`.
+        switch prefs.cursorBlink {
+        case .default: break
+        case .on: lines.append("cursor-style-blink = true")
+        case .off: lines.append("cursor-style-blink = false")
+        }
         lines.append("scrollback-limit = \(scrollbackLimitBytes(lines: prefs.scrollbackLines))")
 
         // Additive keybind lines (one per user rebind), validate-then-skip an empty one.
@@ -79,8 +93,76 @@ public enum TerminalConfigBuilder {
             lines.append("keybind = \(kb)")
         }
 
+        // E8 WI-2: the control passthrough block — emitted ONLY when `controls` is supplied so a `nil`
+        // build stays byte-identical to the pre-E8 output (the regression guard for the existing tests +
+        // the frozen golden corpus).
+        if let controls { appendControls(&lines, controls: controls, prefs: prefs) }
+
         return lines.joined(separator: "\n")
     }
+
+    /// Append the E8 *control* passthrough lines (selection / copy / paste / mouse / scroll knobs + the
+    /// cursor colour/opacity/text render lines + the ⇧+arrow `adjust_selection` keybinds) to `lines`, in a
+    /// STABLE order after the existing render lines. Every emitted token is a verified libghostty config
+    /// value (see ``TerminalControlsConfig``); the cursor colours come from `prefs` (render prefs) under the
+    /// same "empty ⇒ skip" rule as `background` / `foreground`.
+    private static func appendControls(
+        _ lines: inout [String],
+        controls c: TerminalControlsConfig,
+        prefs: TerminalPreferences,
+    ) {
+        // Selection → pasteboard. `copy-on-select` is a libghostty tri-state; otty's boolean maps ON →
+        // `clipboard` (copy straight to the system pasteboard) and OFF → `false`.
+        lines.append("copy-on-select = \(c.copyOnSelect ? "clipboard" : "false")")
+        lines.append("clipboard-trim-trailing-spaces = \(boolToken(c.trimTrailing))")
+        lines.append("selection-clear-on-typing = \(boolToken(c.clearOnTyping))")
+        lines.append("selection-clear-on-copy = \(boolToken(c.clearOnCopy))")
+        // Paste protection.
+        lines.append("clipboard-paste-protection = \(boolToken(c.pasteProtection))")
+        lines.append("clipboard-paste-bracketed-safe = \(boolToken(c.bracketedSafe))")
+        // OSC-52 clipboard access gates (token already resolved to libghostty's allow / deny / ask).
+        lines.append("clipboard-read = \(c.clipboardReadToken)")
+        lines.append("clipboard-write = \(c.clipboardWriteToken)")
+        // Mouse / pointer.
+        lines.append("mouse-hide-while-typing = \(boolToken(c.hideMouseWhileTyping))")
+        lines.append("mouse-shift-capture = \(c.mouseShiftCaptureToken)")
+        lines.append("cursor-click-to-move = \(boolToken(c.clickToMove))")
+        lines.append("mouse-reporting = \(boolToken(c.allowMouseCapture))")
+        // Right-Click Action (H7/H8) — libghostty OWNS the bare-right-click dispatch (Context Menu / Copy /
+        // Paste / Copy or Paste / Ignore). The token is the libghostty `right-click-action` enum value 1:1
+        // (otty is ghostty-based, and `RightClickAction.rawValue` matches the Zig enum names exactly), so the
+        // surface itself performs the action — the GUI view no longer re-reads `hasSelection()` after the
+        // surface has already word-selected under the cursor (the WI-7 race). The view keeps ONLY the otty
+        // ⌃-right-always-menu override.
+        lines.append("right-click-action = \(c.rightClickActionToken)")
+        // otty's single scroll multiplier drives BOTH of libghostty's precision + discrete factors, but
+        // PRESERVING libghostty's native per-axis ratio (precision:1, discrete:3). Emitting the SAME factor on
+        // both axes (the pre-fix bug) made discrete mouse-wheel scroll 3× slower than stock ghostty/otty at the
+        // default `m == 1.0`. So precision rides `m` and discrete rides `3 × m` (PLAIN multiply — NEVER fused /
+        // `addingProduct`, per the codec/controller convention). Formatted via the integral-aware `formatSize`
+        // mirror, so the default emits `precision:1,discrete:3` (ghostty's native defaults).
+        let precision = formatSize(c.scrollMultiplier)
+        let discrete = formatSize(c.scrollMultiplier * 3)
+        lines.append("mouse-scroll-multiplier = precision:\(precision),discrete:\(discrete)")
+        // Cursor colour / text-under / opacity (render prefs). An empty colour ⇒ skip (the "unset honoured"
+        // rule, same as background / foreground); opacity always emits (a numeric pref, formatted not fused).
+        let cursorColor = prefs.cursorColor.trimmingCharacters(in: .whitespaces)
+        if !cursorColor.isEmpty { lines.append("cursor-color = \(cursorColor)") }
+        let cursorText = prefs.cursorTextColor.trimmingCharacters(in: .whitespaces)
+        if !cursorText.isEmpty { lines.append("cursor-text = \(cursorText)") }
+        lines.append("cursor-opacity = \(formatSize(prefs.cursorOpacity))")
+        // ⇧+Arrow selection. The vendored libghostty fork binds shift+arrow → adjust_selection by DEFAULT, so
+        // the toggle must EXPLICITLY (re)bind when ON and `unbind` when OFF — a bare "emit nothing" for OFF
+        // would leave the default selection binding live and the arrows would never reach the program. NEVER
+        // touch shift+cmd+arrow (the caret-move passthrough).
+        for dir in ["left", "right", "up", "down"] {
+            let action = c.shiftArrowSelect ? "adjust_selection:\(dir)" : "unbind"
+            lines.append("keybind = shift+\(dir)=\(action)")
+        }
+    }
+
+    /// The `true` / `false` token for a libghostty boolean config value.
+    private static func boolToken(_ flag: Bool) -> String { flag ? "true" : "false" }
 
     /// Resolve a colour value: the `override` (trimmed) if it is non-empty, else the `fallback` (trimmed).
     /// Lets the theme override win while an empty / absent override transparently keeps the pref's colour.
@@ -100,5 +182,92 @@ public enum TerminalConfigBuilder {
             return String(Int(size))
         }
         return String(size)
+    }
+}
+
+// MARK: - TerminalControlsConfig (the leaf, libghostty-token mirror the builder consumes)
+
+/// The PURE, libghostty-token mirror of the fire-time terminal CONTROL knobs (E8 WI-2), defined HERE in the
+/// leaf ``AislopdeskVideoProtocol`` module so ``TerminalConfigBuilder`` (and its headless test) can emit the
+/// control config lines WITHOUT importing the higher-level `AislopdeskWorkspaceCore.TerminalControls` value
+/// type — which carries the `Defaults`-backed `from(defaults:)` factory and the multi-state enums
+/// (`ClipboardAccess`, `MouseShiftCapture`, …). The module graph is one-way (`AislopdeskWorkspaceCore` →
+/// `AislopdeskVideoProtocol`, never the reverse — VideoProtocol stays the pure wire/settings leaf with no
+/// `Defaults` dependency), so the builder's input MUST live in the leaf; the embedder maps
+/// `AislopdeskWorkspaceCore.TerminalControls` → this struct at the `PreferencesStore.applyTerminal()`
+/// call-site (boolean knobs pass straight through; the multi-state enums resolve to their libghostty token —
+/// `clipboard-read` / `clipboard-write` ← `ClipboardAccess.rawValue`, `mouse-shift-capture` ←
+/// `MouseShiftCapture.configValue`).
+///
+/// The init defaults MIRROR `TerminalControls`' defaults, so a default-constructed value is a faithful
+/// "factory" control bundle and a test can vary one field at a time.
+public struct TerminalControlsConfig: Sendable, Equatable {
+    /// otty Copy-on-Select (I4) — ON → libghostty `copy-on-select = clipboard`, OFF → `false`.
+    public var copyOnSelect: Bool
+    /// otty Trim-Trailing-Spaces (I5) — `clipboard-trim-trailing-spaces`.
+    public var trimTrailing: Bool
+    /// otty Clear-Selection-on-Typing (I6) — `selection-clear-on-typing`.
+    public var clearOnTyping: Bool
+    /// otty Clear-Selection-on-Copy (I6) — `selection-clear-on-copy`.
+    public var clearOnCopy: Bool
+    /// otty Paste-Protection (I9) — `clipboard-paste-protection`.
+    public var pasteProtection: Bool
+    /// otty Paste-Bracketed-Safe (I9) — `clipboard-paste-bracketed-safe`.
+    public var bracketedSafe: Bool
+    /// OSC-52 READ access token (I11) — emitted verbatim as `clipboard-read` (libghostty `allow`/`deny`/`ask`).
+    public var clipboardReadToken: String
+    /// OSC-52 WRITE access token (I11) — emitted verbatim as `clipboard-write`.
+    public var clipboardWriteToken: String
+    /// otty Hide-Mouse-When-Typing (H9) — `mouse-hide-while-typing`.
+    public var hideMouseWhileTyping: Bool
+    /// otty Allow-Shift-with-Mouse-Click (H-shift) token — emitted verbatim as `mouse-shift-capture`
+    /// (libghostty `false`/`true`/`always`/`never`).
+    public var mouseShiftCaptureToken: String
+    /// otty Cursor-Click-to-Move — `cursor-click-to-move`.
+    public var clickToMove: Bool
+    /// otty Allow-Mouse-Capture — `mouse-reporting`.
+    public var allowMouseCapture: Bool
+    /// otty Right-Click Action (H7/H8) token — emitted verbatim as `right-click-action` so libghostty owns the
+    /// bare-right-click dispatch (libghostty `ignore`/`paste`/`copy`/`copy-or-paste`/`context-menu`, default
+    /// `context-menu`). The GUI view keeps only the otty ⌃-right-always-menu override.
+    public var rightClickActionToken: String
+    /// otty Shift+Arrow-Select (I2) — ON emits four `shift+<dir>=adjust_selection:<dir>` keybinds; OFF emits
+    /// four `shift+<dir>=unbind` (the fork binds them by default, so OFF must unbind to forward to the program).
+    public var shiftArrowSelect: Bool
+    /// otty Scroll-Multiplier — drives BOTH `mouse-scroll-multiplier` precision + discrete factors.
+    public var scrollMultiplier: Double
+
+    public init(
+        copyOnSelect: Bool = false,
+        trimTrailing: Bool = true,
+        clearOnTyping: Bool = true,
+        clearOnCopy: Bool = false,
+        pasteProtection: Bool = true,
+        bracketedSafe: Bool = true,
+        clipboardReadToken: String = "ask",
+        clipboardWriteToken: String = "allow",
+        hideMouseWhileTyping: Bool = true,
+        mouseShiftCaptureToken: String = "false",
+        clickToMove: Bool = true,
+        allowMouseCapture: Bool = true,
+        rightClickActionToken: String = "context-menu",
+        shiftArrowSelect: Bool = true,
+        scrollMultiplier: Double = 1.0,
+    ) {
+        self.copyOnSelect = copyOnSelect
+        self.trimTrailing = trimTrailing
+        self.clearOnTyping = clearOnTyping
+        self.clearOnCopy = clearOnCopy
+        self.pasteProtection = pasteProtection
+        self.bracketedSafe = bracketedSafe
+        self.clipboardReadToken = clipboardReadToken
+        self.clipboardWriteToken = clipboardWriteToken
+        self.hideMouseWhileTyping = hideMouseWhileTyping
+        self.mouseShiftCaptureToken = mouseShiftCaptureToken
+        self.clickToMove = clickToMove
+        self.allowMouseCapture = allowMouseCapture
+        self.rightClickActionToken = rightClickActionToken
+        self.shiftArrowSelect = shiftArrowSelect
+        self.scrollMultiplier = scrollMultiplier
     }
 }

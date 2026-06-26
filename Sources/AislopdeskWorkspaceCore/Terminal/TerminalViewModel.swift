@@ -189,6 +189,13 @@ public final class TerminalViewModel {
     /// view state. Nil for headless/preview callers (never invoked).
     @ObservationIgnored public var onContextMenuSplit: ((_ horizontal: Bool) -> Void)?
 
+    /// E8 / ES-E8-4: the right-click "Paste as ▸ Paste and continue in Composer" item — instead of typing
+    /// the clipboard into the shell, the renderer hands the text here so the leaf APPENDS it to the client
+    /// Composer draft (a client-only buffer; no wire). The presence of this hook also DRIVES the menu item's
+    /// enablement (`TerminalContextMenu.Context.hasComposer`): while it is `nil` (Composer unwired, E12) the
+    /// submenu row greys out. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
+    @ObservationIgnored public var onPasteToComposer: ((String) -> Void)?
+
     /// W14 #5: the ⌘F / right-click "Find…" action — opens the find-in-terminal bar over THIS pane. The
     /// renderer's menu (and the `find:` responder selector) call it; the leaf wires it to the find-bar
     /// `@State`. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
@@ -549,12 +556,23 @@ public final class TerminalViewModel {
     @ObservationIgnored private var rttGateOpen = false
     /// Pane-local EWMA RTT mirror (folded from the `.rtt` event; diagnostics + gate).
     @ObservationIgnored public private(set) var paneLatencyMS: Double?
-    /// Alt-screen gate: a client-side `TerminalModeTracker` fed in ``ingestPass`` (only
-    /// while the feature is on — it has a memchr skim fast path, but off means OFF).
-    @ObservationIgnored private let glitchModeTracker = TerminalModeTracker()
+    /// Client-side `TerminalModeTracker` (DECSET/DECRST 1049/47/1047 + OSC-133) fed UNCONDITIONALLY in
+    /// ``ingestPass`` — it backs BOTH the glitch-caret alt-screen gate and the public ``isAlternateScreen``
+    /// accessor the E8 paste / backspace / scroll-past gates read. It has a `memchr` skim fast path, so a
+    /// pass while every feature is off is one `memchr` per chunk; tracking it always means the alt-screen
+    /// truth is fresh even with the glitch caret disabled (its default).
+    @ObservationIgnored private let modeTracker = TerminalModeTracker()
+
+    /// TRUE while the host terminal is on the ALTERNATE screen — a full-screen TUI (vim, htop, less, a
+    /// fullscreen Claude Code) owns the viewport. Derived from ``modeTracker`` (the real DECSET 1049/47/1047
+    /// parse), NOT the coarse `shellActivity == .running` proxy — which is true for ANY foreground command
+    /// (cat, a Python REPL, `npm install`), so using it as the alt-screen flag would over-suppress E8's
+    /// paste-protection / backspace gates inside ordinary running commands. The E8 GUI gates read this so
+    /// they suppress ONLY inside a true full-screen TUI.
+    public var isAlternateScreen: Bool { modeTracker.mode == .altScreen }
 
     private var glitchCaretArmed: Bool {
-        guard connectionStatus == .connected, glitchModeTracker.mode == .shellPrompt else { return false }
+        guard connectionStatus == .connected, modeTracker.mode == .shellPrompt else { return false }
         switch glitchCaretMode {
         case .off: return false
         case .forced: return true
@@ -837,13 +855,14 @@ public final class TerminalViewModel {
             let ms = Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
             FileHandle.standardError.write(Data(String(format: "[echo-probe] key→ingest %.1fms\n", ms).utf8))
         }
-        // Glitch caret (docs/31 #3): host output is the ground truth — ANY ingest hides
-        // the caret (the entire reconciliation policy: we never painted characters, so a
-        // "misprediction" can only ever be a caret shown one output-gap too long). The
-        // mode tracker keeps the alt-screen gate fresh (memchr skim — ground content is
-        // one memchr per chunk). One enum compare when the feature is off.
+        // Alt-screen tracking is fed UNCONDITIONALLY: the public `isAlternateScreen` accessor (read by the
+        // E8 paste / backspace / scroll-past gates) must be fresh even when the glitch caret is off (its
+        // default). The tracker's `memchr` skim makes a ground-content pass one `memchr` per chunk.
+        for chunk in chunks { modeTracker.consume(chunk) }
+        // Glitch caret (docs/31 #3): host output is the ground truth — ANY ingest hides the caret (the
+        // entire reconciliation policy: we never painted characters, so a "misprediction" can only ever be
+        // a caret shown one output-gap too long).
         if glitchCaretMode != .off {
-            for chunk in chunks { glitchModeTracker.consume(chunk) }
             clearGlitchCaret()
         }
         // FRESH-SESSION WIPE: the first output after a reconnect belongs to a brand-new host shell
@@ -1070,7 +1089,7 @@ public final class TerminalViewModel {
         // The dead session's terminal MODE is a lie for the fresh shell (a drop inside
         // vim leaves .altScreen latched and would disarm the caret for the entire new
         // session; a drop mid-DCS would swallow the new session's markers).
-        glitchModeTracker.reset()
+        modeTracker.reset()
     }
 
     /// Clears the pending-bell flag once the view has flashed.
@@ -1102,6 +1121,6 @@ public final class TerminalViewModel {
         sessionEpoch += 1
         clearGlitchCaret()
         endAwaitingReflow() // a fresh session has nothing pending to reflow
-        glitchModeTracker.reset() // same session-boundary truth as markReconnecting()
+        modeTracker.reset() // same session-boundary truth as markReconnecting()
     }
 }

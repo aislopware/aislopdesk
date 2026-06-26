@@ -29,6 +29,22 @@ final class SettingsKeyTests: XCTestCase {
             SettingsKey.focusFollowsMouse,
             SettingsKey.scrollOnOutput,
             SettingsKey.scrollMultiplier,
+            // E8 WI-1: the remaining Controls / Mouse / Scroll knobs.
+            SettingsKey.clearSelectionOnTyping,
+            SettingsKey.clearSelectionOnCopy,
+            SettingsKey.backspaceDeletesSelection,
+            SettingsKey.shiftArrowSelect,
+            SettingsKey.pasteBracketedSafe,
+            SettingsKey.allowMouseCapture,
+            SettingsKey.clickToMove,
+            SettingsKey.smoothScroll,
+            SettingsKey.undoAtPrompt,
+            SettingsKey.clipboardReadKey,
+            SettingsKey.clipboardWriteKey,
+            SettingsKey.allowShiftClickKey,
+            SettingsKey.rightClickActionKey,
+            SettingsKey.scrollPastLastLineKey,
+            SettingsKey.scrollPastFirstLineKey,
         ]
     }
 
@@ -210,5 +226,87 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(SettingsKey.focusFollowsMouse, "controls.focusFollowsMouse")
         XCTAssertEqual(SettingsKey.scrollOnOutput, "controls.scrollOnOutput")
         XCTAssertEqual(SettingsKey.scrollMultiplier, "controls.scrollMultiplier")
+    }
+
+    // MARK: - E8 WI-1: the remaining Controls / Mouse / Scroll knobs
+
+    /// The new E8 Bool toggles each read their declared default when unset, and respect a persisted explicit
+    /// value (the toggle-persistence proof). These are fire-time `Defaults.Keys` flags (never folded into a
+    /// typed prefs model → golden-safe). E8 owns the behaviour; this pins the persisted defaults today.
+    func testE8BoolToggleDefaults() {
+        XCTAssertTrue(SettingsKey.clearSelectionOnTypingEnabled, "clear-on-typing defaults ON")
+        XCTAssertFalse(SettingsKey.clearSelectionOnCopyEnabled, "clear-on-copy defaults OFF")
+        // Backspace-deletes-selection ships default OFF: with no libghostty selection-geometry API it cannot
+        // faithfully delete the run (it degrades to a single-char Backspace, indistinguishable from OFF), so
+        // it is NOT presented as a default-ON toggle that does nothing (honest-disclosure, docs/DECISIONS E8).
+        XCTAssertFalse(SettingsKey.backspaceDeletesSelectionEnabled, "backspace-deletes-selection defaults OFF")
+        XCTAssertTrue(SettingsKey.shiftArrowSelectEnabled, "shift-arrow-select defaults ON")
+        XCTAssertTrue(SettingsKey.pasteBracketedSafeEnabled, "paste-bracketed-safe defaults ON")
+        XCTAssertTrue(SettingsKey.allowMouseCaptureEnabled, "allow-mouse-capture defaults ON")
+        XCTAssertTrue(SettingsKey.clickToMoveEnabled, "click-to-move defaults ON")
+        XCTAssertTrue(SettingsKey.smoothScrollEnabled, "smooth-scroll defaults ON")
+        XCTAssertTrue(SettingsKey.undoAtPromptEnabled, "undo-at-prompt defaults ON")
+        // An explicit persisted value is respected.
+        UserDefaults.standard.set(false, forKey: SettingsKey.clearSelectionOnTyping)
+        UserDefaults.standard.set(true, forKey: SettingsKey.clearSelectionOnCopy)
+        UserDefaults.standard.set(false, forKey: SettingsKey.smoothScroll)
+        XCTAssertFalse(SettingsKey.clearSelectionOnTypingEnabled)
+        XCTAssertTrue(SettingsKey.clearSelectionOnCopyEnabled)
+        XCTAssertFalse(SettingsKey.smoothScrollEnabled)
+    }
+
+    /// The new enum-valued knobs default to the otty value when unset, round-trip the alternative case via
+    /// the persisted raw string (`Defaults.PreferRawRepresentable` → `RawRepresentableBridge`), and repair a
+    /// stale / hostile persisted raw value to the default rather than trapping (the non-failable
+    /// `init(rawValue:)`). Read through the public typed accessors + the raw `UserDefaults` the
+    /// `@Default(.key)` pickers bind.
+    func testE8EnumKnobDefaultsAndRoundTrip() {
+        // Defaults when unset.
+        XCTAssertEqual(SettingsKey.clipboardRead, .ask, "clipboard-read defaults Ask")
+        XCTAssertEqual(SettingsKey.clipboardWrite, .allow, "clipboard-write defaults Allow")
+        XCTAssertEqual(SettingsKey.allowShiftClick, .enabled, "allow-shift-click defaults Enabled")
+        XCTAssertEqual(SettingsKey.rightClickAction, .contextMenu, "right-click-action defaults Context Menu")
+        XCTAssertEqual(SettingsKey.scrollPastLastLine, .disabled, "scroll-past-last defaults Disabled")
+        XCTAssertEqual(SettingsKey.scrollPastFirstLine, .disabled, "scroll-past-first defaults Disabled")
+        // Round-trip the alternative case from its persisted raw value.
+        UserDefaults.standard.set(ClipboardAccess.deny.rawValue, forKey: SettingsKey.clipboardReadKey)
+        UserDefaults.standard.set(MouseShiftCapture.always.rawValue, forKey: SettingsKey.allowShiftClickKey)
+        UserDefaults.standard.set(RightClickAction.copyOrPaste.rawValue, forKey: SettingsKey.rightClickActionKey)
+        UserDefaults.standard.set(ScrollPastLast.cursorLine.rawValue, forKey: SettingsKey.scrollPastLastLineKey)
+        UserDefaults.standard.set(
+            ScrollPastFirst.firstLineInMiddle.rawValue,
+            forKey: SettingsKey.scrollPastFirstLineKey,
+        )
+        XCTAssertEqual(SettingsKey.clipboardRead, .deny)
+        XCTAssertEqual(SettingsKey.allowShiftClick, .always)
+        XCTAssertEqual(SettingsKey.rightClickAction, .copyOrPaste)
+        XCTAssertEqual(SettingsKey.scrollPastLastLine, .cursorLine)
+        XCTAssertEqual(SettingsKey.scrollPastFirstLine, .firstLineInMiddle)
+        // A stale / hostile persisted raw value repairs to the default rather than trapping.
+        UserDefaults.standard.set("garbage-from-a-future-version", forKey: SettingsKey.clipboardReadKey)
+        UserDefaults.standard.set("garbage", forKey: SettingsKey.rightClickActionKey)
+        XCTAssertEqual(SettingsKey.clipboardRead, .ask, "an invalid raw value repairs to ask")
+        XCTAssertEqual(SettingsKey.rightClickAction, .contextMenu, "an invalid raw value repairs to context menu")
+    }
+
+    /// The new E8 wire key strings are the single source of truth shared with every `@Default`/`@AppStorage`
+    /// consumer + the fire-sites — a rename that would split-brain the Settings UI from the fire-sites fails
+    /// this pin.
+    func testE8SettingsKeyStringsAreStable() {
+        XCTAssertEqual(SettingsKey.clearSelectionOnTyping, "controls.clearSelectionOnTyping")
+        XCTAssertEqual(SettingsKey.clearSelectionOnCopy, "controls.clearSelectionOnCopy")
+        XCTAssertEqual(SettingsKey.backspaceDeletesSelection, "controls.backspaceDeletesSelection")
+        XCTAssertEqual(SettingsKey.shiftArrowSelect, "controls.shiftArrowSelect")
+        XCTAssertEqual(SettingsKey.pasteBracketedSafe, "controls.pasteBracketedSafe")
+        XCTAssertEqual(SettingsKey.allowMouseCapture, "controls.allowMouseCapture")
+        XCTAssertEqual(SettingsKey.clickToMove, "controls.clickToMove")
+        XCTAssertEqual(SettingsKey.smoothScroll, "controls.smoothScroll")
+        XCTAssertEqual(SettingsKey.undoAtPrompt, "controls.undoAtPrompt")
+        XCTAssertEqual(SettingsKey.clipboardReadKey, "controls.clipboardRead")
+        XCTAssertEqual(SettingsKey.clipboardWriteKey, "controls.clipboardWrite")
+        XCTAssertEqual(SettingsKey.allowShiftClickKey, "controls.allowShiftClick")
+        XCTAssertEqual(SettingsKey.rightClickActionKey, "controls.rightClickAction")
+        XCTAssertEqual(SettingsKey.scrollPastLastLineKey, "controls.scrollPastLastLine")
+        XCTAssertEqual(SettingsKey.scrollPastFirstLineKey, "controls.scrollPastFirstLine")
     }
 }

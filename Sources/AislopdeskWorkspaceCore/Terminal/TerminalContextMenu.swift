@@ -16,6 +16,13 @@ public enum TerminalContextMenu {
         case copy
         case paste
         case pasteAsKeystrokes
+        // E8 / ES-E8-4 — the "Paste as…" submenu variants (otty parity). These are NOT in the top-level
+        // `items` list; they hang off the `pasteAsItems` submenu (see `pasteAsSubmenuTitle`).
+        case pasteSelection // pastes the current selection instead of the clipboard (X11 middle-click)
+        case pasteFileBase64 // base64-encodes a chosen file's bytes and types them
+        case pasteEscaped // shell-escapes the clipboard so spaces/metachars land as literals
+        case pasteBracketed // forces DEC bracketed-paste framing even if the program didn't ask
+        case pasteToComposer // appends the clipboard to the client Composer draft (no shell send)
         case selectAll
         case clear
         case copyOutput // WB2: copy the latest command BLOCK's output (request type 15 → VT-strip → clipboard)
@@ -29,6 +36,11 @@ public enum TerminalContextMenu {
             case .copy: "Copy"
             case .paste: "Paste"
             case .pasteAsKeystrokes: "Paste as Keystrokes"
+            case .pasteSelection: "Paste Selection"
+            case .pasteFileBase64: "Paste File Base64-Encoded…"
+            case .pasteEscaped: "Paste Escaping Special Characters"
+            case .pasteBracketed: "Bracketed Paste"
+            case .pasteToComposer: "Paste and continue in Composer"
             case .selectAll: "Select All"
             case .clear: "Clear"
             case .copyOutput: "Copy Command Output"
@@ -44,6 +56,11 @@ public enum TerminalContextMenu {
             case .copy: "doc.on.doc"
             case .paste: "clipboard"
             case .pasteAsKeystrokes: "keyboard"
+            case .pasteSelection: "text.cursor"
+            case .pasteFileBase64: "doc.badge.plus"
+            case .pasteEscaped: "textformat"
+            case .pasteBracketed: "curlybraces"
+            case .pasteToComposer: "square.and.pencil"
             case .selectAll: "selection.pin.in.out"
             case .clear: "eraser"
             case .copyOutput: "text.alignleft"
@@ -60,6 +77,8 @@ public enum TerminalContextMenu {
                  .copyOutput,
                  .splitRight,
                  .find: true
+            // In the "Paste as…" submenu, set the Composer destination apart from the four shell pastes.
+            case .pasteToComposer: true
             default: false
             }
         }
@@ -81,25 +100,48 @@ public enum TerminalContextMenu {
         /// is no block at all is the honest affordance.
         public var hasCommandOutput: Bool
 
+        /// E8 / ES-E8-4: a client Composer draft is available to receive a paste (gates "Paste and continue
+        /// in Composer"). False until the Composer (E12) is wired — the item then greys out honestly.
+        public var hasComposer: Bool
+
         public init(
             hasSelection: Bool,
             clipboardHasText: Bool,
             paneConnected: Bool = true,
             hasCommandOutput: Bool = false,
+            hasComposer: Bool = false,
         ) {
             self.hasSelection = hasSelection
             self.clipboardHasText = clipboardHasText
             self.paneConnected = paneConnected
             self.hasCommandOutput = hasCommandOutput
+            self.hasComposer = hasComposer
         }
     }
 
-    /// The menu items in display order. Stable; the view renders separators from `Item.separatorBefore`.
-    public static let items: [Item] = Item.allCases
+    /// The TOP-LEVEL menu items in display order. Stable; the view renders separators from
+    /// `Item.separatorBefore`. The "Paste as…" variants are deliberately EXCLUDED — they hang off the
+    /// ``pasteAsItems`` submenu (the view inserts it directly below `paste`), so `items != Item.allCases`.
+    public static let items: [Item] = [
+        .copy, .paste, .pasteAsKeystrokes, .selectAll, .clear, .copyOutput, .splitRight, .splitDown, .find,
+    ]
+
+    /// E8 / ES-E8-4: the "Paste as…" submenu items, in otty's order (`spec/terminal-features__copy-and-paste`):
+    /// Paste Selection · Paste File Base64-Encoded… · Paste Escaping Special Characters · Bracketed Paste ·
+    /// Paste and continue in Composer.
+    public static let pasteAsItems: [Item] = [
+        .pasteSelection, .pasteFileBase64, .pasteEscaped, .pasteBracketed, .pasteToComposer,
+    ]
+
+    /// The title of the "Paste as…" submenu (Edit ▸ Paste ▸ Paste as), referenced by the GUI renderer.
+    public static let pasteAsSubmenuTitle = "Paste as…"
 
     /// Whether `item` is enabled for `context` — the testable enablement rule:
     /// - **Copy** needs a live selection.
     /// - **Paste / Paste as Keystrokes** need non-empty clipboard text.
+    /// - **Paste as…** (ES-E8-4): *Paste Selection* needs a selection; *Paste File Base64* is always live
+    ///   (it picks its own file); *Paste Escaping* / *Bracketed Paste* need clipboard text; *Paste to
+    ///   Composer* needs clipboard text AND an available Composer draft.
     /// - **Copy Command Output** (WB2) needs a completed command block to fetch.
     /// - **Select All / Clear / Split Right / Split Down / Find** are always available (Select-All/Clear
     ///   act on the surface regardless of selection; splits + find act on the workspace).
@@ -110,6 +152,15 @@ public enum TerminalContextMenu {
         case .paste,
              .pasteAsKeystrokes:
             context.clipboardHasText
+        case .pasteSelection:
+            context.hasSelection
+        case .pasteFileBase64:
+            true
+        case .pasteEscaped,
+             .pasteBracketed:
+            context.clipboardHasText
+        case .pasteToComposer:
+            context.clipboardHasText && context.hasComposer
         case .copyOutput:
             context.hasCommandOutput
         case .selectAll,
