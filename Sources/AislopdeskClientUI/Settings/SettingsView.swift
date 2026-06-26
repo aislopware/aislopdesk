@@ -670,12 +670,14 @@ private struct ControlsSettingsTab: View {
                 // otty surfaces this as a simple ON/OFF switch (`spec/cursor-and-mouse`), not a 4-way picker:
                 // ON ⇒ ⇧ extends the selection (`MouseShiftCapture.enabled`, the default), OFF ⇒ ⇧ is forwarded
                 // to the program (`.disabled`). The leaf enum keeps `.always`/`.never` for the power-user token
-                // mapping, but the otty-faithful UI exposes only the binary the spec shows.
+                // mapping, but the otty-faithful UI exposes only the binary the spec shows. The getter projects
+                // through `extendsSelection` (NOT a bare `== .enabled`) so a value persisted by the removed
+                // 4-way picker reads sanely: `.always` → ON, `.never` → OFF.
                 toggleRow(
                     "Allow Shift with Mouse Click",
                     "Hold Shift to select text even when the running app captures the mouse.",
                     isOn: Binding(
-                        get: { allowShiftClick == .enabled },
+                        get: { allowShiftClick.extendsSelection },
                         set: { allowShiftClick = $0 ? .enabled : .disabled },
                     ),
                 )

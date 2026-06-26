@@ -149,7 +149,9 @@ struct CursorPreviewView: View {
             } label: {
                 VStack(alignment: .leading, spacing: Otty.Metric.space1) {
                     Text("Cursor Animation")
-                    Text("Smooth glides the caret on same-row moves and adds an overshoot on click/focus.")
+                    Text("Smooth would glide the caret on same-row moves and overshoot on click/focus — "
+                        + "preference saved, but deferred: the renderer exposes no cursor-animation hook, so "
+                        + "the caret does not yet animate.")
                         .font(.system(size: Otty.Typeface.footnote))
                         .foregroundStyle(Otty.Text.secondary)
                         .fixedSize(horizontal: false, vertical: true)

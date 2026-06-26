@@ -1098,13 +1098,16 @@ final class GhosttyLayerBackedView: NSView {
         // ⌘/⌃/⌥ — the modified variants are word/line-delete and forward unchanged) on a pane with an
         // active selection deletes the WHOLE selected run instead of one character. The PURE, headless-
         // tested `BackspaceSelectionPolicy` makes the 3-way decision; this view is the thin actuator that
-        // applies the documented geometry ceiling. The gate state is read LIVE from the model's public
-        // OSC-133 shell-activity truth (no CGhostty import, no host round-trip):
-        //   • a full-screen / foreground program owns the screen ⇒ `shellActivity == .running` (a TUI/
-        //     command runs AS a shell command) → NEVER intercept (the "repeat inside vim → single-char
-        //     passthrough" leg); the policy's `isAlternateScreen` gate.
-        //   • the editable prompt zone ⇒ connected AND `shellActivity == .idle` — the only place DEL bytes
-        //     faithfully erase the selected run; the policy's `isPromptZone` gate.
+        // applies the documented geometry ceiling. The gate state is read LIVE from the model (no CGhostty
+        // import, no host round-trip):
+        //   • a full-screen / foreground program owns the screen ⇒ the REAL alt-screen flag
+        //     `model.isAlternateScreen` (DECSET 1049/47/1047 tracked by the client `TerminalModeTracker`),
+        //     NOT the coarse `shellActivity == .running` proxy (true for ANY foreground command, which would
+        //     suppress the gate while editing a non-TUI running command's line) → NEVER intercept (the
+        //     "repeat inside vim → single-char passthrough" leg); the policy's `isAlternateScreen` gate.
+        //   • the editable prompt zone ⇒ connected AND `shellActivity == .idle` AND NOT on the alternate
+        //     screen — the only place DEL bytes faithfully erase the selected run; the policy's `isPromptZone`
+        //     gate.
         // The setting is read live off `Defaults` (the same idiom WI-7/WI-8 use) so a Settings toggle takes
         // effect on the very next Backspace.
         if event.keyCode == 51,
@@ -1311,6 +1314,13 @@ final class GhosttyLayerBackedView: NSView {
         surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: Self.mouseButton(event.buttonNumber), mods: mods)
     }
 
+    /// Set when a `rightMouseDown` was handled LOCALLY (the ⌃-right context-menu override) and so was NOT
+    /// forwarded to libghostty as a right-button PRESS. The matching `rightMouseUp` then suppresses the
+    /// right-button RELEASE forward too, so under mouse-reporting (capture) a TUI never sees an UNPAIRED
+    /// release report (the press it would pair with was swallowed locally). One-shot: consumed on the next
+    /// `rightMouseUp`.
+    private var suppressedRightButtonPress = false
+
     override func rightMouseDown(with event: NSEvent) {
         let mods = Self.ghosttyMods(event.modifierFlags)
 
@@ -1321,6 +1331,10 @@ final class GhosttyLayerBackedView: NSView {
         // FIRE on ⌃+right (and then the menu would also show). Defer straight to AppKit's `menu(for:)` path;
         // the menu's Copy enables on the genuine pre-click selection (never a word-select we injected).
         if event.modifierFlags.contains(.control) {
+            // The PRESS is swallowed locally (never forwarded). Record it so the paired `rightMouseUp` also
+            // withholds the RELEASE forward — otherwise a mouse-reporting TUI receives an UNPAIRED right-button
+            // release report (press/release must stay balanced under capture).
+            suppressedRightButtonPress = true
             super.rightMouseDown(with: event)
             return
         }
@@ -1343,6 +1357,14 @@ final class GhosttyLayerBackedView: NSView {
     }
 
     override func rightMouseUp(with event: NSEvent) {
+        // If the matching PRESS was handled locally (⌃-right context-menu override) it was never forwarded to
+        // libghostty, so do NOT forward this RELEASE either — forwarding it would inject an UNPAIRED
+        // right-button release report into a mouse-reporting (capture) TUI. Defer to AppKit and consume the flag.
+        if suppressedRightButtonPress {
+            suppressedRightButtonPress = false
+            super.rightMouseUp(with: event)
+            return
+        }
         let mods = Self.ghosttyMods(event.modifierFlags)
         if surface?.sendMouseButton(state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_RIGHT, mods: mods) == true { return }
         super.rightMouseUp(with: event)

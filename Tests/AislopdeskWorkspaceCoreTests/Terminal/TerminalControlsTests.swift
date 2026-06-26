@@ -181,50 +181,15 @@ final class TerminalControlsTests: XCTestCase {
         )
     }
 
-    // MARK: - Right-click action resolution (WI-7)
-
-    /// The pure right-click dispatch the GUI `rightMouseDown` (WI-7, H7/H8) drives.
-    /// ``RightClickAction/effect(controlHeld:hasSelection:)`` collapses a bare / ⌃ right-click into the
-    /// concrete ``RightClickEffect``: each plain action maps to its effect, ``RightClickAction/copyOrPaste``
-    /// picks ``RightClickEffect/copy`` WHEN a selection exists else ``RightClickEffect/paste``, and — the otty
-    /// override — ⌃+right-click ALWAYS resolves to ``RightClickEffect/contextMenu`` regardless of the
-    /// configured action (incl. ``RightClickAction/ignore``). Pinning it headlessly proves the H7/H8 semantics
-    /// without an AppKit `NSEvent` / `GhosttySurface`; the un-fixed view always showed the menu, so a wrong
-    /// effect mapping fails here.
-    func testRightClickEffectResolvesEachAction() {
-        // Bare right-click → the configured action's effect (selection state irrelevant for the plain cases).
-        XCTAssertEqual(RightClickAction.contextMenu.effect(controlHeld: false, hasSelection: false), .contextMenu)
-        XCTAssertEqual(RightClickAction.copy.effect(controlHeld: false, hasSelection: true), .copy)
-        XCTAssertEqual(RightClickAction.paste.effect(controlHeld: false, hasSelection: false), .paste)
-        XCTAssertEqual(RightClickAction.ignore.effect(controlHeld: false, hasSelection: true), .ignore)
-    }
-
-    /// ``RightClickAction/copyOrPaste`` is the only selection-sensitive case: copy WHEN there is a selection,
-    /// else paste.
-    func testRightClickEffectCopyOrPasteFollowsSelection() {
-        XCTAssertEqual(
-            RightClickAction.copyOrPaste.effect(controlHeld: false, hasSelection: true), .copy,
-            "copy-or-paste copies when a selection exists",
-        )
-        XCTAssertEqual(
-            RightClickAction.copyOrPaste.effect(controlHeld: false, hasSelection: false), .paste,
-            "copy-or-paste pastes when there is no selection",
-        )
-    }
-
-    /// ⌃+right-click ALWAYS shows the context menu, overriding EVERY configured action (the otty escape
-    /// hatch — the menu is always reachable, even under `ignore` / `copy`), independent of the selection.
-    func testControlRightClickAlwaysShowsContextMenu() {
-        for action in RightClickAction.allCases {
-            XCTAssertEqual(
-                action.effect(controlHeld: true, hasSelection: false), .contextMenu,
-                "⌃+right-click overrides \(action.rawValue) to the context menu",
-            )
-            XCTAssertEqual(
-                action.effect(controlHeld: true, hasSelection: true), .contextMenu,
-                "⌃+right-click overrides \(action.rawValue) to the context menu (with a selection)",
-            )
-        }
+    /// `MouseShiftCapture.extendsSelection` is the binary projection the Settings ON/OFF toggle reads. It must
+    /// map BOTH "⇧ extends selection" forms (soft `.enabled`, hard `.always`) to ON and BOTH "⇧ goes to the
+    /// program" forms (soft `.disabled`, hard `.never`) to OFF — so a value persisted by the removed 4-way
+    /// picker (`.always` / `.never`) reads sanely instead of mis-projecting through a bare `== .enabled` check.
+    func testMouseShiftCaptureExtendsSelectionProjection() {
+        XCTAssertTrue(MouseShiftCapture.enabled.extendsSelection, "the soft default extends selection → ON")
+        XCTAssertTrue(MouseShiftCapture.always.extendsSelection, "hard always-extend reads ON, not OFF")
+        XCTAssertFalse(MouseShiftCapture.disabled.extendsSelection, "soft forward-to-program → OFF")
+        XCTAssertFalse(MouseShiftCapture.never.extendsSelection, "hard never-extend reads OFF")
     }
 
     // MARK: - OSC-52 read confirm decision (WI-6)

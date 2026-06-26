@@ -84,47 +84,12 @@ public enum RightClickAction: String, Codable, Sendable, CaseIterable {
         }
     }
 
-    /// The headless model of otty's right-click semantics (WI-7, H7/H8), applying otty's two rules in order:
-    ///
-    /// 1. **⌃+right-click ALWAYS shows the context menu**, overriding the configured action entirely (the
-    ///    otty escape hatch — the menu is always reachable, even when the action is ``ignore`` or ``copy``).
-    /// 2. Otherwise the configured action maps straight through, except ``copyOrPaste`` which picks
-    ///    ``RightClickEffect/copy`` WHEN a selection exists, else ``RightClickEffect/paste``.
-    ///
-    /// PURE so the H7/H8 semantics are unit-pinned without an AppKit `NSEvent` / `GhosttySurface`. NOTE: the
-    /// LIVE bare-right-click dispatch is owned END-TO-END by libghostty — the config builder (WI-2) emits this
-    /// action's ``rawValue`` as `right-click-action`, so the surface itself performs Copy / Paste / Copy-or-
-    /// Paste / Ignore / Context-Menu (1:1 with otty, which is ghostty-based). That avoids the GUI re-reading
-    /// `hasSelection()` AFTER libghostty has already word-selected under the cursor (the WI-7 race). The GUI
-    /// view (`rightMouseDown`, compile-only behind `#if canImport(CGhostty)`) therefore enforces ONLY rule 1
-    /// (the ⌃ override) inline; this function remains the canonical, byte-pinned statement of both rules.
-    public func effect(controlHeld: Bool, hasSelection: Bool) -> RightClickEffect {
-        if controlHeld { return .contextMenu }
-        switch self {
-        case .contextMenu: return .contextMenu
-        case .copy: return .copy
-        case .paste: return .paste
-        case .copyOrPaste: return hasSelection ? .copy : .paste
-        case .ignore: return .ignore
-        }
-    }
-}
-
-/// The concrete outcome a ``RightClickAction`` resolves to once the ⌃-override + selection state are applied
-/// (the result of ``RightClickAction/effect(controlHeld:hasSelection:)``). Distinct from the persisted
-/// ``RightClickAction`` because ``RightClickAction/copyOrPaste`` collapses to ``copy`` / ``paste`` and the
-/// ⌃-override collapses everything to ``contextMenu`` — so the GUI view switches on these four cases, not the
-/// five persisted actions.
-///
-/// - ``contextMenu``: show the native `NSMenu` (defer to AppKit's `menu(for:)` path).
-/// - ``copy``: run the `copy_to_clipboard` binding action.
-/// - ``paste``: run the `paste_from_clipboard` binding action (libghostty applies bracketed paste).
-/// - ``ignore``: swallow the click — no menu, no copy/paste.
-public enum RightClickEffect: Equatable, Sendable {
-    case contextMenu
-    case copy
-    case paste
-    case ignore
+    // NOTE: the LIVE bare-right-click dispatch is owned END-TO-END by libghostty — the config builder (WI-2)
+    // emits this action's ``rawValue`` as `right-click-action`, so the surface itself performs Copy / Paste /
+    // Copy-or-Paste / Ignore / Context-Menu (1:1 with otty, which is ghostty-based). That avoids the GUI
+    // re-reading `hasSelection()` AFTER libghostty has already word-selected under the cursor (the WI-7 race).
+    // The GUI view (`rightMouseDown`, compile-only behind `#if canImport(CGhostty)`) enforces ONLY the
+    // ⌃-right-always-menu override inline; there is no client-side effect model left to keep in sync.
 }
 
 /// Overscroll behaviour past the LAST line of content (otty "Scroll Past Last Line", default Disabled).
@@ -241,6 +206,20 @@ public enum MouseShiftCapture: String, Codable, Sendable, CaseIterable {
         case .enabled: "false"
         case .always: "never"
         case .never: "always"
+        }
+    }
+
+    /// Whether ⇧ EXTENDS THE SELECTION — the ON state of otty's binary "Allow Shift with Mouse Click" switch.
+    /// The Settings UI surfaces this leaf as a simple ON/OFF toggle (not the 4-way enum), so a value persisted
+    /// by the removed 4-way picker must project onto that binary axis: ``enabled`` / ``always`` (soft / hard
+    /// "⇧ extends selection") read ON; ``disabled`` / ``never`` (soft / hard "⇧ goes to the program") read OFF.
+    /// Without this a stale ``always`` would mis-read as OFF against a bare `== .enabled` check.
+    public var extendsSelection: Bool {
+        switch self {
+        case .enabled,
+             .always: true
+        case .disabled,
+             .never: false
         }
     }
 }

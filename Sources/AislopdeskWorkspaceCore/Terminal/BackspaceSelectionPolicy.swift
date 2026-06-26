@@ -60,7 +60,8 @@ public enum BackspaceSelectionPolicy {
     ///   - hasSelection: whether the surface currently holds a text selection
     ///     (`GhosttySurface.hasSelection()`).
     ///   - setting: the live otty "Backspace deletes selection" toggle
-    ///     (``SettingsKey/backspaceDeletesSelectionEnabled``, default ON).
+    ///     (``SettingsKey/backspaceDeletesSelectionEnabled``, default OFF — honest-disclosure: the faithful
+    ///     whole-run delete is a documented geometry ceiling, so the feature ships non-default).
     ///   - isAlternateScreen: whether a full-screen / foreground program owns the screen — the GUI derives
     ///     this from the OSC-133 shell-activity the host streams (a TUI/command runs as `.running`), so a
     ///     `true` means "do not intercept; the key is the program's".
@@ -88,13 +89,14 @@ public enum BackspaceSelectionPolicy {
     /// ``BackspaceAction/deleteSelection`` decision, BEFORE the fall-through Backspace keystroke (which
     /// sends the final DEL and clears the highlight via libghostty's default-ON `selection-clear-on-typing`).
     ///
-    /// ## The default-on data-loss trap this guards (ES-E8-2)
+    /// ## The data-loss trap this guards (ES-E8-2)
     /// DEL bytes ALWAYS erase the characters immediately BEFORE the host cursor — so pre-sending
     /// `count − 1` DELs only erases the *selected* run when that run **ends at the cursor**. The pinned
     /// libghostty fork exposes no set-selection / cursor-geometry API, so the embedder CANNOT verify that.
     /// Selecting a word in the MIDDLE of a typed command (a natural mouse action) and pressing Backspace
     /// would otherwise delete the last N characters of the line — the WRONG characters — silently
-    /// corrupting the command. This feature defaults ON, so an optimistic pre-send is default-on data loss.
+    /// corrupting the command. So even when the user opts INTO this feature (it ships default OFF — the
+    /// faithful whole-run delete is a documented geometry ceiling), an optimistic pre-send would be data loss.
     ///
     /// Therefore this returns a non-zero count ONLY when the caller can PROVE the selection ends at the
     /// cursor (`selectionEndsAtCursor == true`) AND it is a single line. The GUI passes `false` against the

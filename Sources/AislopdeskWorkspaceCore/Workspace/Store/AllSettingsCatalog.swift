@@ -298,7 +298,7 @@ public enum AllSettingsCatalog {
             key: SettingsKey.allowShiftClickKey,
             label: "Allow Shift with Mouse Click",
             description: "Hold Shift to select text even when the running app captures the mouse.",
-            defaultText: "Enabled",
+            defaultText: "On",
             bucket: .advancedOnly,
             keywords: "shift mouse click capture selection bypass",
         ),
