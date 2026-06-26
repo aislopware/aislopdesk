@@ -88,7 +88,7 @@ final class TerminalFindBarModelTests: XCTestCase {
             XCTAssertEqual(bar.controller.positionLabel?.current, 3)
 
             XCTAssertTrue(surface.actions.contains("navigate_search:next"))
-            XCTAssertTrue(surface.actions.contains("navigate_search:prev"))
+            XCTAssertTrue(surface.actions.contains("navigate_search:previous"))
         }
     }
 

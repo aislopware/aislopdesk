@@ -9,9 +9,9 @@
 // Anatomy matches `find.png` (top-trailing of the focused pane, floating card, `Otty.*` tokens ONLY — raw
 // font / radius literals fail `scripts/check-ds-leaks.sh`):
 //   [ query field ][ Aa case pill ][ .* regex pill ][ N of M ][ ∧ prev ][ ∨ next ][ × close ]
-// (The screenshot places the `N of M` counter before the nav chevrons — `spec/user-interface__find.md` /
-// `screenshots/find.png` are the visual source of truth, so the counter sits there rather than after the
-// chevrons as the plan's prose anatomy listed it.)
+// (ES-E5-2 requires the `N of M` counter; otty places it contextually — `find.png` does not show a separate
+// inline counter for the captured query, so the screenshot is NOT the source for the counter's placement. We
+// keep it before the nav chevrons as a reasonable home for the required count.)
 //
 // Behaviour (ES-E5-1..4): auto-focus the field on appear (pre-focused per spec); live query → recompute +
 // re-arm highlight; ↩ / ⇧↩ next / prev; `Aa` / `.*` toggle case / regex; Esc (or ×) closes + clears all
@@ -94,7 +94,7 @@ final class TerminalFindBarModel {
     func previous() {
         if !visible { open() }
         controller.previous()
-        model?.performSearchSurfaceAction("navigate_search:prev")
+        model?.performSearchSurfaceAction("navigate_search:previous")
     }
 
     /// × / Esc — clear the query + matches, end libghostty's search (drops every highlight), hide the bar. The
@@ -142,6 +142,9 @@ struct TerminalFindBar: View {
     var body: some View {
         HStack(spacing: Otty.Metric.space1) {
             queryField
+            // KNOWN FIDELITY GAP: find.png shows THREE toggles (Aa, an underlined whole-word `ab`, .*); we emit
+            // only Aa + .* because ``TerminalSearchController`` has no whole-word mode. The third pill is
+            // deliberately deferred (engine lacks whole-word) — the two-pill row is intentional, not an accident.
             FindTogglePill(label: "Aa", isOn: model.controller.caseSensitive, help: "Case sensitive", plate: plate) {
                 model.toggleCaseSensitive()
             }
@@ -240,8 +243,9 @@ struct TerminalFindBar: View {
 }
 
 /// A compact `Aa` / `.*` toggle pill (the two find-bar mode buttons). Active → accent text on an accent wash +
-/// hairline; idle → secondary text, hover plate. Factored to file scope (internal) so the WI-4 GlobalSearch
-/// surface reuses the EXACT pill. `Otty.*` tokens only.
+/// accent hairline; idle → secondary text on a resting plate (a subtle `Surface.card` fill + a `Line.subtle`
+/// hairline, so the chip is delineated even at rest per `find.png`), brightening to `State.hover` on hover.
+/// Factored to file scope (internal) so the WI-4 GlobalSearch surface reuses the EXACT pill. `Otty.*` tokens only.
 struct FindTogglePill: View {
     let label: String
     let isOn: Bool
@@ -259,13 +263,15 @@ struct FindTogglePill: View {
                 .frame(minWidth: plate, minHeight: plate)
                 .padding(.horizontal, Otty.Metric.space1)
                 .background(
-                    isOn ? Otty.State.accentMuted : (hovering ? Otty.State.hover : Color.clear),
+                    // Resting plate even when idle (find.png delineates the chips at rest): a subtle card fill,
+                    // brightening on hover, swapping to the accent wash when on.
+                    isOn ? Otty.State.accentMuted : (hovering ? Otty.State.hover : Otty.Surface.card),
                     in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall),
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
                         .strokeBorder(
-                            isOn ? Otty.State.accent.opacity(0.5) : Color.clear,
+                            isOn ? Otty.State.accent.opacity(0.5) : Otty.Line.subtle,
                             lineWidth: Otty.Metric.hairline,
                         ),
                 )

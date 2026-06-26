@@ -2997,6 +2997,14 @@ public final class WorkspaceStore {
     public private(set) var globalSearchCaseSensitive = false
     public private(set) var globalSearchRegex = false
 
+    /// E5 perf: the per-pane scrollback sources for the OPEN ⇧⌘F overlay, mirrored across the libghostty seam
+    /// ONCE per overlay-open (``beginGlobalSearchSession()``) and reused for every keystroke's in-memory match
+    /// pass (``runGlobalSearch(query:caseSensitive:isRegex:)``) — so typing does NOT re-snapshot the full
+    /// scrollback of every pane across the seam on each character. `nil` while the overlay is closed (dropped
+    /// by ``endGlobalSearchSession()``); a re-open re-snapshots fresh scrollback. `@ObservationIgnored`: a
+    /// derived buffer, not view state (the rendered `globalSearch` results carry the observation).
+    @ObservationIgnored private var globalSearchSourceCache: [GlobalSearchSource]?
+
     /// Moves (swaps) the active pane with its geometric neighbour in `direction` (Zellij "move pane"),
     /// resolved against the bounds the active-tab view last reported via ``updateSolvedLayout(_:)`` — the
     /// keyboard/menu/palette entry point that has no `GeometryReader` of its own. Mirrors
@@ -3860,12 +3868,42 @@ public extension WorkspaceStore {
         globalSearchQuery = query
         globalSearchCaseSensitive = caseSensitive
         globalSearchRegex = isRegex
+        // E5 perf: re-run only the IN-MEMORY match pass over the per-overlay scrollback snapshot (gathered
+        // ONCE on open by ``beginGlobalSearchSession()``). Fall back to a fresh snapshot if no overlay session
+        // is active (defensive — e.g. a direct call from a test or the seed path before begin) so behaviour is
+        // identical either way; only the redundant cross-seam re-mirroring per keystroke is removed.
+        let sources = globalSearchSourceCache ?? collectGlobalSearchSources()
+        globalSearch = GlobalSearchController.run(
+            sources: sources, query: query, caseSensitive: caseSensitive, isRegex: isRegex,
+        )
+    }
+
+    /// E5 perf: snapshot every live terminal pane's scrollback into searchable sources ONCE and cache them for
+    /// the open ⇧⌘F overlay. Called on overlay-OPEN (a re-open re-snapshots fresh scrollback); keystrokes then
+    /// re-run only the in-memory match pass over this cache via ``runGlobalSearch(query:caseSensitive:isRegex:)``.
+    func beginGlobalSearchSession() {
+        globalSearchSourceCache = collectGlobalSearchSources()
+    }
+
+    /// E5 perf: drop the cached scrollback sources when the overlay CLOSES so the next open re-snapshots fresh
+    /// scrollback (and the mirrored buffers don't outlive the overlay).
+    func endGlobalSearchSession() {
+        globalSearchSourceCache = nil
+    }
+
+    /// Crosses the libghostty seam to mirror EVERY live terminal pane's scrollback (session → tab → pane order)
+    /// into a ``GlobalSearchSource`` (group title = the pane's spec title, else its last-known shell title, else
+    /// "Tab"). The ONLY cross-seam step in Global Search; ``runGlobalSearch`` caches its result per overlay-open
+    /// so keystrokes don't repeat it. Non-terminal (video) and never-connected panes contribute no lines and so
+    /// are simply absent (E5 divergence #4/#5). Resolves the model through the ``TerminalModelProviding`` seam
+    /// (not an `as? LivePaneSession` cast) so it stays headlessly testable with a recording double.
+    private func collectGlobalSearchSources() -> [GlobalSearchSource] {
         var sources: [GlobalSearchSource] = []
         for session in tree.sessions {
             for tab in session.tabs {
                 for paneID in tab.allPaneIDs() {
                     guard let spec = session.spec(for: paneID), spec.kind == .terminal,
-                          let model = (registry[paneID] as? LivePaneSession)?.terminalModel else { continue }
+                          let model = (registry[paneID] as? TerminalModelProviding)?.terminalModel else { continue }
                     let title = spec.title.isEmpty ? (spec.lastKnownTitle ?? "Tab") : spec.title
                     sources.append(GlobalSearchSource(
                         paneID: paneID,
@@ -3877,9 +3915,7 @@ public extension WorkspaceStore {
                 }
             }
         }
-        globalSearch = GlobalSearchController.run(
-            sources: sources, query: query, caseSensitive: caseSensitive, isRegex: isRegex,
-        )
+        return sources
     }
 
     /// E5 ES-E5-5: jumps to a Global Search hit — selects its session, its tab, and focuses its pane
@@ -3889,10 +3925,16 @@ public extension WorkspaceStore {
     func jumpToGlobalSearchResult(_ hit: GlobalSearchHit) {
         guard tree.contains(hit.paneID) else { return }
         focusPaneTree(hit.paneID) // selects hit.sessionID + hit.tabID + focuses hit.paneID
-        guard let model = (registry[hit.paneID] as? LivePaneSession)?.terminalModel else { return }
-        guard !globalSearchQuery.isEmpty else { return }
-        model.performSearchSurfaceAction("search:\(globalSearchQuery)")
-        model.performSearchSurfaceAction("navigate_search:next")
+        guard let model = (registry[hit.paneID] as? TerminalModelProviding)?.terminalModel else { return }
+        // ES-E5-5 click-to-line: arm the search, then advance to the CLICKED hit's ordinal within its pane
+        // group so distinct rows land distinctly (not all on the nearest match). The pure controller computes
+        // the ordered action sequence from the current results; an empty query yields no actions.
+        let actions = GlobalSearchController.navigationActions(
+            for: hit, in: globalSearch ?? .empty, query: globalSearchQuery,
+        )
+        for action in actions {
+            model.performSearchSurfaceAction(action)
+        }
     }
 
     /// Closes the active pane through the busy-shell guard (W6): an idle pane closes immediately,

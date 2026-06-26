@@ -25,6 +25,16 @@ final class RecordingSurfaceActions: TerminalSurface, TerminalSurfaceActions, @u
     /// Drives ``scrollbackTextLines`` so the no-selection copy fallback has something to return.
     var scrollbackLines: [String] = []
 
+    private var scrollbackCalls = 0
+
+    /// How many times ``scrollbackTextLines`` was called — the assertion surface for the E5 perf fix
+    /// (the cross-seam scrollback mirror must be gathered ONCE per overlay-open, not once per keystroke).
+    var scrollbackTextLinesCallCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return scrollbackCalls
+    }
+
     /// Every `performBindingAction` argument, in call order — the assertion surface for jump routing.
     var actions: [String] {
         lock.lock()
@@ -55,7 +65,12 @@ final class RecordingSurfaceActions: TerminalSurface, TerminalSurfaceActions, @u
         return true
     }
 
-    func scrollbackTextLines() -> [String] { scrollbackLines }
+    func scrollbackTextLines() -> [String] {
+        lock.lock()
+        scrollbackCalls += 1
+        lock.unlock()
+        return scrollbackLines
+    }
 }
 
 // MARK: - RecordingTerminalPaneSession (a LivePaneSession-shaped recording double)

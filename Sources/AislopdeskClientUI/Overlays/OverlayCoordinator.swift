@@ -394,20 +394,27 @@ public final class OverlayCoordinator {
     /// ⇧⌘F REOPENS onto the previous results (E5 divergence #1). The view restores its field + pills from the
     /// store's retained query/flags on appear, then live-re-runs as the user edits.
     public func openGlobalSearch(seed: String? = nil) {
-        if let store,
-           let trimmed = seed?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !trimmed.isEmpty, trimmed != store.globalSearchQuery
-        {
-            store.runGlobalSearch(
-                query: trimmed,
-                caseSensitive: store.globalSearchCaseSensitive,
-                isRegex: store.globalSearchRegex,
-            )
+        if let store {
+            // E5 perf: snapshot every pane's scrollback ONCE per open; the seed run + every keystroke then
+            // re-run only the in-memory match pass over this cache (no per-keystroke cross-seam re-mirroring).
+            store.beginGlobalSearchSession()
+            if let trimmed = seed?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !trimmed.isEmpty, trimmed != store.globalSearchQuery
+            {
+                store.runGlobalSearch(
+                    query: trimmed,
+                    caseSensitive: store.globalSearchCaseSensitive,
+                    isRegex: store.globalSearchRegex,
+                )
+            }
         }
         globalSearchVisible = true
     }
 
-    public func closeGlobalSearch() { globalSearchVisible = false }
+    public func closeGlobalSearch() {
+        globalSearchVisible = false
+        store?.endGlobalSearchSession() // E5 perf: drop the cached scrollback so the next open re-snapshots.
+    }
 
     /// Toggle the Global Search surface (the ⇧⌘F binding the app threads into the key dispatcher + menu).
     /// Opening with no seed restores the last in-memory results.

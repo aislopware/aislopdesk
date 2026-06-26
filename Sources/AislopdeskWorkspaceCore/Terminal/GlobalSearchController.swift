@@ -177,4 +177,27 @@ public enum GlobalSearchController {
 
         return GlobalSearchResults(groups: groups, totalMatches: totalMatches, tabCount: groups.count)
     }
+
+    /// E5 ES-E5-5 (click-to-line): the ORDERED libghostty surface-action sequence that lands the in-pane
+    /// viewport on the CLICKED `hit` — arm the search (`search:<query>`) then advance to the hit's ORDINAL
+    /// within ITS pane group so DISTINCT rows land DISTINCTLY: clicking the 10th hit in a pane issues 10
+    /// `navigate_search:next`, not 1 (the half-delivered behaviour that made every row in a tab jump to the
+    /// nearest match). The ordinal is the hit's 0-based index among its group's `hits` (which `run` builds in
+    /// buffer order), so `index + 1` forward steps — the FIRST hit keeps the old single-step behaviour.
+    ///
+    /// Validate-then-drop: an empty `query` yields `[]` (nothing to arm). A `hit` absent from `results`
+    /// (stale results vs. the clicked row) degrades to ordinal 0 (a single step) rather than trapping.
+    public static func navigationActions(
+        for hit: GlobalSearchHit,
+        in results: GlobalSearchResults,
+        query: String,
+    ) -> [String] {
+        guard !query.isEmpty else { return [] }
+        let ordinal = results.groups
+            .first { $0.paneID == hit.paneID && $0.sessionID == hit.sessionID && $0.tabID == hit.tabID }?
+            .hits.firstIndex(of: hit) ?? 0
+        var actions = ["search:\(query)"]
+        actions.append(contentsOf: Array(repeating: "navigate_search:next", count: ordinal + 1))
+        return actions
+    }
 }

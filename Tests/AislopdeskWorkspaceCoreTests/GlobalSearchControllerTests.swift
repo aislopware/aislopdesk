@@ -144,4 +144,54 @@ final class GlobalSearchControllerTests: XCTestCase {
         XCTAssertEqual(results.tabCount, 0)
         XCTAssertEqual(results.summary, "0 results — 0 tabs")
     }
+
+    // MARK: Click-to-line navigation (ES-E5-5)
+
+    /// Two DIFFERENT hits in the SAME pane must produce DIFFERENT navigation intent — the click-to-line fix.
+    /// The half-delivered behaviour armed `search:` + a SINGLE `navigate_search:next` for every row, so the
+    /// 1st and 3rd hits were indistinguishable. Here the 3rd hit advances by its ordinal (3 nexts) while the
+    /// 1st advances by 1 — revert ``navigationActions`` to a single shared next and this fails.
+    func testNavigationActionsAdvanceToTheClickedHitsOrdinal() throws {
+        // One pane, THREE hits on distinct lines (buffer order).
+        let results = GlobalSearchController.run(
+            sources: [source("pane", ["alpha doc", "beta doc", "gamma doc"])],
+            query: "doc",
+            caseSensitive: false,
+            isRegex: false,
+        )
+        let hits = try XCTUnwrap(results.groups.first?.hits)
+        XCTAssertEqual(hits.count, 3)
+
+        let first = GlobalSearchController.navigationActions(for: hits[0], in: results, query: "doc")
+        let third = GlobalSearchController.navigationActions(for: hits[2], in: results, query: "doc")
+
+        // Both arm the same search…
+        XCTAssertEqual(first.first, "search:doc")
+        XCTAssertEqual(third.first, "search:doc")
+        // …but advance by the hit's 0-based ordinal + 1 — so the rows land DISTINCTLY.
+        XCTAssertEqual(first, ["search:doc", "navigate_search:next"])
+        XCTAssertEqual(
+            third,
+            ["search:doc", "navigate_search:next", "navigate_search:next", "navigate_search:next"],
+        )
+        XCTAssertNotEqual(first, third, "distinct rows in one pane must produce distinct navigation intent")
+    }
+
+    /// An empty query arms nothing (validate-then-drop); a hit absent from the results degrades to a single
+    /// step (ordinal 0) rather than trapping.
+    func testNavigationActionsEmptyQueryAndStaleHit() throws {
+        let results = GlobalSearchController.run(
+            sources: [source("pane", ["a doc"])],
+            query: "doc",
+            caseSensitive: false,
+            isRegex: false,
+        )
+        let hit = try XCTUnwrap(results.groups.first?.hits.first)
+        XCTAssertEqual(GlobalSearchController.navigationActions(for: hit, in: results, query: ""), [])
+        // A hit not present in an (empty) result set falls back to a single step (no trap, no over-advance).
+        XCTAssertEqual(
+            GlobalSearchController.navigationActions(for: hit, in: .empty, query: "doc"),
+            ["search:doc", "navigate_search:next"],
+        )
+    }
 }

@@ -5,12 +5,15 @@
 //
 // Anatomy matches `screenshots/global-search.png` (`Otty.*` tokens ONLY — raw font / colour / radius literals
 // fail `scripts/check-ds-leaks.sh`):
-//   ┌ query field [ Aa ][ .* ][ × ] ──────────────────────────────────┐
+//   ┌ query field [ Aa ][ .* ] ────────────────────────────────────────┐
 //   │ N results — M tabs                                               │
-//   │ ▸ <group title (tab)>                                  ⌘1        │
+//   │ ▸ <terminal-glyph> <group title (tab)>                           │
 //   │     <excerpt with the matched run highlighted amber>      ↗      │
 //   │ ▸ <group title> …                                                │
 //   └──────────────────────────────────────────────────────────────────┘
+// (No leading magnifier on the query bar — the field is flush-left per global-search.png — and no in-bar `×`:
+// the surface is dismissed via Esc. The ⌘1/⌘2/⌘3 numbers in the screenshot are SIDEBAR tab numbers, NOT group
+// headers, so the group header carries only a leading terminal glyph + the tab title.)
 //
 // SEAM discipline: this view owns ONLY its transient field/toggle `@State` (mirroring the store's retained
 // `globalSearchQuery`/flags so a re-open restores them); ALL match math runs in the store via the PURE
@@ -67,10 +70,9 @@ struct GlobalSearchView: View {
     // MARK: - Query bar
 
     private var queryBar: some View {
+        // No leading magnifier — the query text is flush-left per global-search.png. No in-bar `×` either: the
+        // overlay's dismiss affordance is Esc (`onExitCommand` / `.onKeyPress(.escape)` on the surface).
         HStack(spacing: Otty.Metric.space2) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: Otty.Typeface.body))
-                .foregroundStyle(Otty.Text.secondary)
             TextField("Search across all tabs…", text: queryBinding)
                 .textFieldStyle(.plain)
                 .font(.system(size: Otty.Typeface.body))
@@ -84,9 +86,6 @@ struct GlobalSearchView: View {
             FindTogglePill(label: ".*", isOn: isRegex, help: "Regex (ICU)") {
                 isRegex.toggle()
                 rerun()
-            }
-            OttyPlateButton(symbol: .xmark, help: "Close (Esc)") {
-                coordinator.closeGlobalSearch()
             }
         }
         .padding(.horizontal, Otty.Metric.space4)
@@ -115,8 +114,8 @@ struct GlobalSearchView: View {
                 if groups.isEmpty {
                     emptyState
                 } else {
-                    ForEach(Array(groups.enumerated()), id: \.offset) { groupIndex, group in
-                        groupHeader(group, ordinal: groupIndex + 1)
+                    ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                        groupHeader(group)
                         ForEach(Array(group.hits.enumerated()), id: \.offset) { _, hit in
                             hitRow(hit)
                         }
@@ -141,9 +140,11 @@ struct GlobalSearchView: View {
 
     // MARK: - Group header (one per tab/pane)
 
-    private func groupHeader(_ group: GlobalSearchGroup, ordinal: Int) -> some View {
+    private func groupHeader(_ group: GlobalSearchGroup) -> some View {
+        // Per global-search.png the group header carries only a leading per-tab terminal glyph + the tab title.
+        // (No ⌘ordinal badge: the ⌘1/⌘2/⌘3 numbers in the screenshot are SIDEBAR tab numbers, not group headers.)
         HStack(spacing: Otty.Metric.space2) {
-            Image(systemName: "macwindow")
+            Image(systemName: "terminal")
                 .font(.system(size: Otty.Typeface.footnote))
                 .foregroundStyle(Otty.Text.secondary)
             Text(group.groupTitle)
@@ -151,19 +152,6 @@ struct GlobalSearchView: View {
                 .foregroundStyle(Otty.Text.primary)
                 .lineLimit(1)
             Spacer(minLength: Otty.Metric.space2)
-            // The first nine groups carry the ⌘1…⌘9 select-tab hint (cosmetic — groups are in session → tab →
-            // pane order, so the ordinal tracks the tab number for the leading tabs; matches global-search.png).
-            if ordinal <= 9 {
-                Text("⌘\(ordinal)")
-                    .font(.system(size: Otty.Typeface.small, weight: .medium))
-                    .foregroundStyle(Otty.Text.secondary)
-                    .padding(.horizontal, Otty.Metric.space1)
-                    .frame(minHeight: 18)
-                    .background(
-                        RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
-                            .fill(Otty.Surface.element),
-                    )
-            }
         }
         .padding(.horizontal, Otty.Metric.space4)
         .padding(.top, Otty.Metric.space3)
