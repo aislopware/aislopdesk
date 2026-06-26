@@ -9,7 +9,12 @@ import Foundation
 ///   detached host sessions resume on reconnect — see `DetachedSessionStore`). This is the EXISTING
 ///   aislopdesk launch behaviour (the store already restores the persisted tree), so it is the default —
 ///   byte-identical to today. otty's recommended value.
-/// - ``newWindow``: open a fresh empty window instead of restoring.
+/// - ``newWindow``: open a fresh single-pane session instead of restoring.
+///
+/// The launch path reads this via `WorkspacePersistence.launchTree(behavior:persistence:)` at the app's
+/// store-construction site (`AislopdeskClientApp.init`): `.newWindow` seeds
+/// ``TreeWorkspace/defaultWorkspace()`` instead of `loadTree()`, so the General → On Launch picker
+/// genuinely changes launch behaviour.
 ///
 /// PURE: a `String`-raw + `CaseIterable` enum so it bridges to `Defaults` (see `SettingsKey`) and the
 /// General-settings picker can enumerate it. ``init(rawValue:)`` is validate-then-repair (a stale /

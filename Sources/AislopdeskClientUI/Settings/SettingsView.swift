@@ -1,17 +1,32 @@
 // SettingsView — the SwiftUI Settings surface (REBUILD-V2, WS-D / D4; E7 8-section taxonomy).
 //
-// A tabbed Settings window whose tabs are THIN `@Bindable` bindings over the one live `@Observable`
-// `PreferencesStore`. Each tab edits a slice of the typed prefs models (`TerminalPreferences`,
-// `VideoPreferences`, `AgentPreferences`, `AppearancePreferences`, `KeybindingPreferences`) or the
-// fire-time `SettingsKey` toggles (bound via `@Default(.key)`), and the store's `didSet` apply-paths do the
-// rest (terminal live-reload, env overlay + sidecar, theme repoint, keybinding republish).
+// A two-column Settings window whose right column is a THIN `@Bindable` binding over the one live
+// `@Observable` `PreferencesStore`. Each section edits a slice of the typed prefs models
+// (`TerminalPreferences`, `VideoPreferences`, `AgentPreferences`, `AppearancePreferences`,
+// `KeybindingPreferences`) or the fire-time `SettingsKey` toggles (bound via `@Default(.key)`), and the
+// store's `didSet` apply-paths do the rest (terminal live-reload, env overlay + sidecar, theme repoint,
+// keybinding republish).
+//
+// LAYOUT (otty fidelity): otty renders Settings as a TWO-COLUMN window — a left NAVIGATOR column with a
+// rounded SEARCH PILL pinned at the top and a vertical icon+label section list, and a content column on the
+// right (`docs/otty-clone/screenshots/{all-settings,launch-option,editor-settings,cursor-style}.png`). This
+// view reproduces that with a flat two-column `HStack` (NOT a macOS `TabView` top tab strip): a fixed-width
+// `Otty.Surface.sidebar` navigator (`settingsSidebarWidth`) holding `SettingsSidebarSearchField` + the
+// `SettingsSidebarRow` list, a hairline divider, and the selected section's `Form` on the right. The sidebar
+// search pill (which SECTION ROWS show) is DISTINCT from the Advanced → All-Settings content search (which
+// config KEYS show) — otty surfaces both, and so do we.
 //
 // E7 reorg: the old 5-tab strip (General / Terminal / Video / Keybindings / Advanced) is reshaped into
 // otty's 8 sections (`SettingsSection`): General / Shell / Controls / Editor / Appearance / Agents /
-// Keybindings / Advanced. Controls relocate to their otty home (font + scrollback → Editor, cursor →
-// Controls, theme → Appearance, agent host flags → Agents); the 5 orphan toggles + the new Controls/Scroll/
-// Copy toggles are surfaced via `@Default(.key)`; the Video HOST flags (QP/FEC/pacer/sharpen) have no otty
-// section, so they fold into Advanced as a "Video (host)" sub-section (real functionality — not dropped).
+// Keybindings / Advanced. Groups relocate to their otty home proven by the screenshots: terminal FONT
+// (family + size) + the CURSOR group (style + blink) → **Appearance** (`font-setting.png` / `cursor-style.png`
+// both show them under Appearance); SCROLLBACK → **Controls** (`spec/terminal-features__scroll.md`: Settings
+// → Controls → Scroll); theme → Appearance; agent host flags → Agents. otty's **Editor** section is the
+// built-in FILE-editor's settings (Soft Wrap / Line Numbers / Tab Size — `editor-settings.png`), which
+// aislopdesk has no equivalent for, so it stays RESERVED/empty (a deferral placeholder, not terminal-render
+// prefs). The 5 orphan toggles + the Controls/Scroll/Copy toggles are surfaced via `@Default(.key)`; the
+// Video HOST flags (QP/FEC/pacer/sharpen) have no otty section, so they fold into Advanced as a
+// "Video (host)" sub-section (real functionality — not dropped).
 //
 // SURFACING: the main window is `.hiddenTitleBar` and `OverlayCoordinator` is NOT yet mounted, so this
 // rides a STOCK SwiftUI `Settings` scene (`AislopdeskSettingsScene`) — ⌘, opens a separate, system-chromed
@@ -170,31 +185,147 @@ private struct TimingChip: View {
 
 // MARK: - The tabbed Settings view
 
-/// The Settings body: a `TabView` whose tabs each bind a slice of the live store. The tab set + order +
-/// icons are driven from `SettingsSection` so the strip can never drift from the pinned taxonomy.
+/// The Settings body: a flat two-column layout (otty fidelity) — a left navigator (search pill + icon+label
+/// section rows) and the selected section's content on the right. The section set + order + icons are driven
+/// from `SettingsSection` so the navigator can never drift from the pinned taxonomy.
 struct SettingsView: View {
     @Bindable var store: PreferencesStore
 
-    /// The selected section — a `TabView(selection:)` binding so the Advanced All-Settings list's ✎ jump
-    /// buttons can repoint the strip to the owning tab (WI-3).
+    /// The selected section — also bound into ``SettingsSectionContent`` so the Advanced All-Settings list's
+    /// ✎ jump buttons can repoint the navigator to the owning section (WI-3).
     @State private var selectedSection: SettingsSection = .general
 
+    /// The SIDEBAR search pill query — narrows which SECTION ROWS show in the left navigator. This is a
+    /// DISTINCT control from the Advanced → All-Settings content search (`AllSettingsListView`, which narrows
+    /// the config-KEY list): otty shows both (the navigator pill top-left + the All-Settings field top-right),
+    /// and so do we. A plain case-insensitive substring match over the section titles.
+    @State private var sidebarQuery: String = ""
+
     var body: some View {
-        TabView(selection: $selectedSection) {
-            ForEach(SettingsSection.allCases) { section in
-                content(for: section)
-                    .tabItem { Label(section.title, systemImage: section.systemImage) }
-                    .tag(section)
-            }
+        HStack(spacing: 0) {
+            sidebar
+            Rectangle()
+                .fill(Otty.Line.divider)
+                .frame(width: Otty.Metric.hairline)
+            content(for: selectedSection)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Otty.Surface.window)
         }
-        .frame(minWidth: 560, minHeight: 460)
+        .frame(minWidth: 720, minHeight: 480)
         .background(Otty.Surface.window)
     }
 
+    /// The left navigator: the search pill pinned at the top, then the (filtered) icon+label section rows.
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: Otty.Metric.space2) {
+            SettingsSidebarSearchField(text: $sidebarQuery)
+                .padding(.horizontal, Otty.Metric.space2)
+                .padding(.top, Otty.Metric.space3)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(filteredSections) { section in
+                        SettingsSidebarRow(
+                            section: section,
+                            isSelected: section == selectedSection,
+                            action: { selectedSection = section },
+                        )
+                    }
+                }
+                .padding(.horizontal, Otty.Metric.space2)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: Otty.Metric.settingsSidebarWidth)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Otty.Surface.sidebar)
+    }
+
+    /// The section rows the navigator shows — every section, or the title-substring matches when the pill has
+    /// a query. Empty / whitespace query ⇒ all sections (taxonomy order preserved).
+    private var filteredSections: [SettingsSection] {
+        let needle = sidebarQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return SettingsSection.allCases }
+        return SettingsSection.allCases.filter { $0.title.lowercased().contains(needle) }
+    }
+
     /// The body for a section — a thin dispatch onto the shared ``SettingsSectionContent`` (the SAME switch
-    /// the iOS sheet renders, so the macOS tab strip and the iOS list can never show different content).
+    /// the iOS sheet renders, so the macOS navigator and the iOS list can never show different content).
     private func content(for section: SettingsSection) -> some View {
         SettingsSectionContent(section: section, store: store, selectedSection: $selectedSection)
+    }
+}
+
+// MARK: - Sidebar navigator pieces (search pill + icon+label rows)
+
+/// The rounded SEARCH PILL pinned at the top of the navigator (otty's top-left sidebar field). A leading
+/// magnifying-glass + a plain `TextField` on the inset element surface, clipped to a `Capsule` with a
+/// hairline border. Filters which section rows show; see `SettingsView.filteredSections`.
+private struct SettingsSidebarSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: Otty.Metric.space2) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: Otty.Typeface.footnote))
+                .foregroundStyle(Otty.Text.tertiary)
+            TextField("Search", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: Otty.Typeface.base))
+                .foregroundStyle(Otty.Text.primary)
+        }
+        .padding(.horizontal, Otty.Metric.space3)
+        .padding(.vertical, Otty.Metric.space2)
+        .background(Otty.Surface.element, in: Capsule())
+        .overlay(Capsule().strokeBorder(Otty.Line.subtle, lineWidth: 1))
+    }
+}
+
+/// One navigator row: a leading SF Symbol + the section title, with otty's idle/hover/selected styling (the
+/// selected row is the signature elevated card; hover is a flat plate). Mirrors `OttySidebarRow` but binds a
+/// `SettingsSection` (whose `systemImage` is a plain SF-Symbol String, not an `SFSymbol`).
+private struct SettingsSidebarRow: View {
+    let section: SettingsSection
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Otty.Metric.space2) {
+                Image(systemName: section.systemImage)
+                    .font(.system(size: Otty.Metric.iconSize))
+                    .foregroundStyle(isSelected ? Otty.Text.primary : Otty.Text.icon)
+                    .frame(width: 20)
+                Text(section.title)
+                    .font(.system(size: Otty.Typeface.body))
+                    .foregroundStyle(isSelected ? Otty.Text.primary : Otty.Text.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Otty.Metric.space2)
+            .padding(.vertical, Otty.Metric.space2)
+            .background { rowBackground }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Otty.Anim.smallFade, value: hovering)
+        .animation(Otty.Anim.smallFade, value: isSelected)
+    }
+
+    @ViewBuilder private var rowBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: Otty.Metric.radiusTab, style: .continuous)
+        if isSelected {
+            shape
+                .fill(Otty.Surface.selectedCard)
+                .overlay(shape.strokeBorder(Otty.Line.card, lineWidth: 1))
+                .shadow(color: .black.opacity(0.04), radius: 2, y: 1)
+        } else if hovering {
+            shape.fill(Otty.State.hover)
+        } else {
+            Color.clear
+        }
     }
 }
 
@@ -216,7 +347,7 @@ struct SettingsSectionContent: View {
         case .general: GeneralSettingsTab()
         case .shell: ShellSettingsTab()
         case .controls: ControlsSettingsTab(store: store)
-        case .editor: EditorSettingsTab(store: store)
+        case .editor: EditorSettingsTab()
         case .appearance: AppearanceSettingsTab(store: store)
         case .agents: AgentsSettingsTab(store: store)
         case .keybindings: KeybindingsSettingsTab(store: store)
@@ -339,9 +470,11 @@ private struct ShellSettingsTab: View {
 
 // MARK: - Controls section
 
-/// Controls: the cursor (relocated from the old Terminal tab) plus the otty Controls/Scroll/Copy fire-time
-/// toggles (E8 owns the BEHAVIOUR; E7 surfaces + persists them) and the system-dialog-panes toggle. All
-/// LIVE (the cursor rebuilds the libghostty config; the toggles are read at fire-time).
+/// Controls: the otty Controls/Scroll/Copy fire-time toggles (E8 owns the BEHAVIOUR; E7 surfaces + persists
+/// them), the SCROLLBACK depth (otty's `Settings → Controls → Scroll` home — `spec/terminal-features__
+/// scroll.md`, relocated out of the old Editor tab), and the system-dialog-panes toggle. All LIVE (the
+/// toggles + scroll knobs are read at fire-time / next render; scrollback rebuilds the libghostty config).
+/// NOTE: the cursor (style + blink) is NOT here — otty puts it under **Appearance** (`cursor-style.png`).
 private struct ControlsSettingsTab: View {
     @Bindable var store: PreferencesStore
 
@@ -356,16 +489,6 @@ private struct ControlsSettingsTab: View {
 
     var body: some View {
         Form {
-            Section("Cursor") {
-                Picker("Style", selection: $store.terminal.cursorStyle) {
-                    ForEach(TerminalPreferences.CursorStyle.allCases, id: \.self) { style in
-                        Text(style.rawValue.capitalized).tag(style)
-                    }
-                }
-                Toggle("Blink", isOn: $store.terminal.cursorBlink)
-                timingFooter(.live)
-            }
-
             Section("Copy & Paste") {
                 Toggle("Copy on select", isOn: $copyOnSelect)
                 Toggle("Trim trailing spaces on copy", isOn: $trimTrailingSpacesOnCopy)
@@ -388,6 +511,14 @@ private struct ControlsSettingsTab: View {
                 timingFooter(.live)
             }
 
+            Section("Scrollback") {
+                Stepper(
+                    "Lines: \(store.terminal.scrollbackLines)",
+                    value: $store.terminal.scrollbackLines, in: 1000...100_000, step: 1000,
+                )
+                timingFooter(.live)
+            }
+
             Section("System") {
                 Toggle("Auto-spawn panes for system password dialogs", isOn: $systemDialogPanes)
                 timingFooter(.live)
@@ -397,38 +528,32 @@ private struct ControlsSettingsTab: View {
     }
 }
 
-// MARK: - Editor section (live reload via TerminalConfigBroadcaster)
+// MARK: - Editor section (RESERVED — deferred)
 
-/// Editor: the terminal font (family + size, relocated from the old Terminal tab), the scrollback depth,
-/// and the per-block command divider toggle. These apply LIVE (the store rebuilds the libghostty config
-/// string and bumps `TerminalConfigBroadcaster`; `showBlockDividers` is read on the next render).
+/// Editor is RESERVED/empty by design. In otty the Editor section configures the built-in FILE-editor (Soft
+/// Wrap / Show Line Numbers / Show Whitespace / Tab Size / Scroll Past Last Line / Default-to-Preview — see
+/// `docs/otty-clone/screenshots/editor-settings.png`). aislopdesk has no built-in file editor, so there are
+/// NO settings to surface here. Deliberately we do NOT backfill it with terminal-render prefs — those have
+/// otty homes elsewhere (FONT + CURSOR → Appearance `font-setting.png`/`cursor-style.png`; SCROLLBACK →
+/// Controls `spec/terminal-features__scroll.md`). The section is kept in the taxonomy (pinned by
+/// `SettingsSectionTaxonomyTests`) as a placeholder so the navigator stays 1:1 with otty's; it fills in if/
+/// when a file-pane editor lands (otty-clone backlog).
 private struct EditorSettingsTab: View {
-    @Bindable var store: PreferencesStore
-
-    @Default(.showBlockDividers) private var showBlockDividers
-
     var body: some View {
         Form {
-            Section("Font") {
-                TextField("Family", text: $store.terminal.fontFamily)
-                Stepper(
-                    "Size: \(Int(store.terminal.fontSize))",
-                    value: $store.terminal.fontSize, in: 8...32, step: 1,
+            Section("Editor") {
+                LabeledContent("File editor") {
+                    Text("Not available")
+                        .foregroundStyle(Otty.Text.tertiary)
+                }
+                Text(
+                    "Editor settings (Soft Wrap, Line Numbers, Tab Size, …) configure a built-in file editor, "
+                        + "which aislopdesk does not have yet. Terminal font, cursor, and scrollback live under "
+                        + "Appearance and Controls.",
                 )
+                .font(.system(size: Otty.Typeface.footnote))
+                .foregroundStyle(Otty.Text.secondary)
             }
-
-            Section("Scrollback") {
-                Stepper(
-                    "Lines: \(store.terminal.scrollbackLines)",
-                    value: $store.terminal.scrollbackLines, in: 1000...100_000, step: 1000,
-                )
-            }
-
-            Section("Blocks") {
-                Toggle("Show command dividers", isOn: $showBlockDividers)
-            }
-
-            Section { timingFooter(.live) }
         }
         .formStyle(.grouped)
     }
@@ -436,11 +561,16 @@ private struct EditorSettingsTab: View {
 
 // MARK: - Appearance section
 
-/// Appearance: the otty theme picker (via `AppearancePreferences` → `ThemeStore`), the density tier, and
-/// the status-bar visibility toggle. All LIVE.
+/// Appearance: the otty theme picker (via `AppearancePreferences` → `ThemeStore`), the density tier, the
+/// terminal FONT (family + size) and the CURSOR group (style + blink) — both relocated here from the old
+/// Editor/Controls tabs to match otty's screenshots (`font-setting.png` shows Font Family under Appearance;
+/// `cursor-style.png` shows the Cursor group under Appearance) — plus the chrome toggles (command dividers,
+/// status bar). All LIVE (theme repoints every token; font/cursor rebuild the libghostty config string and
+/// bump `TerminalConfigBroadcaster`; the chrome toggles are read on the next render).
 private struct AppearanceSettingsTab: View {
     @Bindable var store: PreferencesStore
 
+    @Default(.showBlockDividers) private var showBlockDividers
     @Default(.hideStatusBar) private var hideStatusBar
 
     var body: some View {
@@ -469,7 +599,25 @@ private struct AppearanceSettingsTab: View {
                 }
             }
 
+            Section("Font") {
+                TextField("Family", text: $store.terminal.fontFamily)
+                Stepper(
+                    "Size: \(Int(store.terminal.fontSize))",
+                    value: $store.terminal.fontSize, in: 8...32, step: 1,
+                )
+            }
+
+            Section("Cursor") {
+                Picker("Style", selection: $store.terminal.cursorStyle) {
+                    ForEach(TerminalPreferences.CursorStyle.allCases, id: \.self) { style in
+                        Text(style.rawValue.capitalized).tag(style)
+                    }
+                }
+                Toggle("Blink", isOn: $store.terminal.cursorBlink)
+            }
+
             Section("Chrome") {
+                Toggle("Show command dividers", isOn: $showBlockDividers)
                 Toggle("Hide status bar", isOn: $hideStatusBar)
             }
 

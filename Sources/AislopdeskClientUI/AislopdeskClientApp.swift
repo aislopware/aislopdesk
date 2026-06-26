@@ -129,7 +129,13 @@ public struct AislopdeskClientApp: App {
         // host, each as a logical channel.
         let muxRegistry = ConnectionRegistry(makeConnection: LiveMuxConnectionFactory.makeConnection)
 
-        let restoredTree = persistence?.loadTree() // nil in automation ⇒ bootstrap replaces it anyway
+        // O1: honour the otty `On Launch` general setting (General → On Launch). `.restoreLastSession` (the
+        // default) restores the persisted tree; `.newWindow` seeds a fresh single-pane session instead
+        // (`launchTree` returns nil ⇒ the store uses `TreeWorkspace.defaultWorkspace()`), so the picker is a
+        // live control, not a dead accessor. nil in automation ⇒ bootstrap replaces it anyway.
+        let restoredTree = WorkspacePersistence.launchTree(
+            behavior: SettingsKey.onLaunch, persistence: persistence,
+        )
         let env = WorkspaceStore.automationInputs()
         let seedTarget: ConnectionTarget = isAutomation
             ? (WorkspaceStore.videoTarget(from: env)?.0 ?? WorkspaceStore.terminalTarget(from: env) ?? .default)

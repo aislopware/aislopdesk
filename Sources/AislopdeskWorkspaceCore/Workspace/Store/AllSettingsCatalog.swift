@@ -25,6 +25,13 @@ public enum AllSettingsCatalog {
         public enum Bucket: Equatable, Sendable {
             /// No richer tab UI (or a simple flag) — render an INLINE control (toggle / stepper / picker)
             /// bound to the key. Edits apply live, identical to hand-editing the config.
+            ///
+            /// NOTE: this bucket is a pure RENDERING hint for the All-Settings list ("inline editor vs
+            /// jump-to-tab button") — it is NOT a "reset bucket". Many `.advancedOnly`-rendered keys (e.g.
+            /// `copyOnSelect`, `oscNotifications`, `hideStatusBar`) ALSO have a dedicated tab and are
+            /// therefore tab-reachable, so they are PRESERVED by ``PreferencesStore/resetAdvancedOnly()``.
+            /// Do not conflate "rendered inline here" with "is an advanced-only key" — the reset scope lives
+            /// in ``PreferencesStore``, not in this bucket.
             case advancedOnly
             /// A richer control lives on a dedicated tab — render the current value + a ✎ button that jumps
             /// to that tab (the destination is ``SettingEntry/targetSection``).
@@ -276,14 +283,18 @@ public enum AllSettingsCatalog {
 
         // MARK: Typed render fields with a richer dedicated tab (jump-to-tab)
 
+        // otty homes (proven by the screenshots): FONT FAMILY + the CURSOR group live under **Appearance**
+        // (`docs/otty-clone/screenshots/font-setting.png`, `cursor-style.png`); SCROLLBACK lives under
+        // **Controls → Scroll** (`spec/terminal-features__scroll.md`). otty's Editor section is the built-in
+        // file-editor's settings, which aislopdesk has no equivalent for, so nothing routes there.
         SettingEntry(
             key: "font-family",
             label: "Font Family",
             description: "The terminal font family.",
             defaultText: "SF Mono",
             bucket: .hasDedicatedTab,
-            targetSection: "editor",
-            keywords: "font family typeface monospace editor",
+            targetSection: "appearance",
+            keywords: "font family typeface monospace appearance",
         ),
         SettingEntry(
             key: "font-size",
@@ -291,8 +302,8 @@ public enum AllSettingsCatalog {
             description: "The terminal font point size.",
             defaultText: "13",
             bucket: .hasDedicatedTab,
-            targetSection: "editor",
-            keywords: "font size point editor zoom",
+            targetSection: "appearance",
+            keywords: "font size point appearance zoom",
         ),
         SettingEntry(
             key: "scrollback-limit",
@@ -300,8 +311,8 @@ public enum AllSettingsCatalog {
             description: "The terminal scrollback buffer size, in lines.",
             defaultText: "10000",
             bucket: .hasDedicatedTab,
-            targetSection: "editor",
-            keywords: "scrollback lines buffer history editor",
+            targetSection: "controls",
+            keywords: "scrollback lines buffer history controls scroll",
         ),
         SettingEntry(
             key: "cursor-style",
@@ -309,8 +320,8 @@ public enum AllSettingsCatalog {
             description: "The terminal cursor style.",
             defaultText: "Block",
             bucket: .hasDedicatedTab,
-            targetSection: "controls",
-            keywords: "cursor style block bar underline controls",
+            targetSection: "appearance",
+            keywords: "cursor style block bar underline appearance",
         ),
         SettingEntry(
             key: "cursor-style-blink",
@@ -318,8 +329,8 @@ public enum AllSettingsCatalog {
             description: "Whether the terminal cursor blinks.",
             defaultText: "On",
             bucket: .hasDedicatedTab,
-            targetSection: "controls",
-            keywords: "cursor blink controls",
+            targetSection: "appearance",
+            keywords: "cursor blink appearance",
         ),
         SettingEntry(
             key: "theme",

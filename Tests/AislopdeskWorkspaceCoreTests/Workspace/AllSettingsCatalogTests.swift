@@ -10,6 +10,7 @@ final class AllSettingsCatalogTests: XCTestCase {
     // dev machine's real defaults are not polluted (the catalog/filter tests touch no defaults at all).
     private let touchedKeys = [
         SettingsKey.copyOnSelect, SettingsKey.hideStatusBar, SettingsKey.density,
+        SettingsKey.oscNotifications, SettingsKey.autoSwitchLayouts,
     ]
 
     override func setUp() { touchedKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
@@ -116,6 +117,37 @@ final class AllSettingsCatalogTests: XCTestCase {
         }
     }
 
+    /// E7 fidelity fix: the ✎ jump destinations match the otty section taxonomy proven by the screenshots
+    /// (`docs/otty-clone/screenshots/font-setting.png` shows FONT FAMILY under Appearance;
+    /// `cursor-style.png` shows the CURSOR group under Appearance; `terminal-features__scroll.md` puts
+    /// Scrollback under Controls → Scroll). Pins — against an INDEPENDENT expectation table, not the catalog's
+    /// own derivation — that font + cursor + theme + density jump to **appearance** and scrollback jumps to
+    /// **controls**. Revert-to-fail: the pre-fix catalog routed font/scrollback → `editor` and cursor →
+    /// `controls`, which fails this.
+    func testDedicatedTabTargetSectionsMatchOttyTaxonomy() {
+        let expected: [String: String] = [
+            "font-family": "appearance",
+            "font-size": "appearance",
+            "cursor-style": "appearance",
+            "cursor-style-blink": "appearance",
+            "scrollback-limit": "controls",
+            "theme": "appearance",
+            SettingsKey.density: "appearance",
+        ]
+        for (key, section) in expected {
+            let entry = AllSettingsCatalog.entries.first { $0.key == key }
+            XCTAssertEqual(entry?.targetSection, section, "'\(key)' must jump to the '\(section)' section")
+        }
+        // No dedicated-tab field still routes to the now-reserved (empty) Editor section.
+        for entry in AllSettingsCatalog.entries where entry.bucket == .hasDedicatedTab {
+            XCTAssertNotEqual(
+                entry.targetSection,
+                "editor",
+                "'\(entry.key)' must not jump to the reserved Editor section",
+            )
+        }
+    }
+
     // MARK: - PreferencesStore reset behaviour (the panel's Reset buttons)
 
     /// An isolated `UserDefaults` suite for the injected store models (the global `Defaults.Keys` are still
@@ -127,9 +159,16 @@ final class AllSettingsCatalogTests: XCTestCase {
         return d
     }
 
-    /// "Reset Advanced Only" clears the video / agent host flags + raw overrides AND the global advanced
-    /// toggles, but LEAVES the font (`terminal`), theme (`appearance`), and keybinding choices intact —
-    /// `customization__advanced-settings.md`.
+    /// "Reset Advanced Only" clears ONLY the advanced-only keys — the `video` / `agent` host flags + the raw
+    /// `AISLOPDESK_*` overrides (the keys with no dedicated tab) — and LEAVES every tab-reachable choice
+    /// intact: font (`terminal`), theme (`appearance`), keybindings, AND the General/Shell/Controls/
+    /// Appearance/Agents `Defaults.Keys` toggles. Per `customization__advanced-settings.md`: "restores only
+    /// the advanced-only keys (those not reachable from General, Shell, Appearance, or Key Bindings), leaving
+    /// font, theme, and keybinding choices intact."
+    ///
+    /// Revert-to-fail: before the data-loss fix, `resetAdvancedOnly()` reset the ENTIRE global toggle set, so
+    /// `copyOnSelect` / `oscNotifications` / `hideStatusBar` / `autoSwitchLayouts` were wrongly cleared — the
+    /// four `…Enabled` "preserved" asserts below fail on the un-fixed code.
     func testResetAdvancedOnlyPreservesAppearanceFontKeybindings() {
         let store = PreferencesStore(defaults: makeIsolatedDefaults(), sidecarURL: nil, applyOnInit: false)
         store.terminal = TerminalPreferences(fontSize: 18)
@@ -138,21 +177,32 @@ final class AllSettingsCatalogTests: XCTestCase {
         store.video = VideoPreferences(qpSharp: 30)
         store.agent = AgentPreferences(agentDetect: true)
         store.rawOverrides = ["AISLOPDESK_X": "9"]
-        // A flipped advanced-bucket orphan toggle (global `.standard` key).
-        UserDefaults.standard.set(true, forKey: SettingsKey.copyOnSelect)
+        // Flip a tab-reachable toggle on each non-Advanced section (Controls / General / Appearance / Agents).
+        // These are NON-default values that a Reset-Advanced-Only must NOT destroy.
+        UserDefaults.standard.set(true, forKey: SettingsKey.copyOnSelect) // Controls (default Off)
+        UserDefaults.standard.set(false, forKey: SettingsKey.oscNotifications) // General (default On)
+        UserDefaults.standard.set(true, forKey: SettingsKey.hideStatusBar) // Appearance (default Off)
+        UserDefaults.standard.set(false, forKey: SettingsKey.autoSwitchLayouts) // Agents (default On)
         XCTAssertTrue(SettingsKey.copyOnSelectEnabled)
+        XCTAssertFalse(SettingsKey.oscNotificationsEnabled)
+        XCTAssertTrue(SettingsKey.hideStatusBarEnabled)
+        XCTAssertFalse(SettingsKey.autoSwitchLayoutsEnabled)
 
         store.resetAdvancedOnly()
 
-        // Advanced bucket cleared.
+        // Advanced bucket cleared (the only thing Reset-Advanced-Only touches).
         XCTAssertEqual(store.video, VideoPreferences())
         XCTAssertEqual(store.agent, AgentPreferences())
         XCTAssertTrue(store.rawOverrides.isEmpty)
-        XCTAssertFalse(SettingsKey.copyOnSelectEnabled, "advanced-only toggle is reset")
         // Font / theme / keybindings preserved.
         XCTAssertEqual(store.terminal.fontSize, 18)
         XCTAssertEqual(store.appearance.theme, .dark)
         XCTAssertEqual(store.keybindings.overrides["pane.splitRight"]?.key, "e")
+        // Tab-reachable toggles PRESERVED — the data-loss fix. None of these is advanced-only.
+        XCTAssertTrue(SettingsKey.copyOnSelectEnabled, "Controls toggle survives Reset-Advanced-Only")
+        XCTAssertFalse(SettingsKey.oscNotificationsEnabled, "General toggle survives Reset-Advanced-Only")
+        XCTAssertTrue(SettingsKey.hideStatusBarEnabled, "Appearance toggle survives Reset-Advanced-Only")
+        XCTAssertFalse(SettingsKey.autoSwitchLayoutsEnabled, "Agents toggle survives Reset-Advanced-Only")
     }
 
     /// "Reset All Settings" returns EVERYTHING to defaults — the typed models AND a flipped global orphan

@@ -20,7 +20,8 @@ public enum SettingsKey {
     // General / launch
     /// The otty `On Launch` general setting (O1) — restore the last session vs open a fresh window.
     /// Stored as the ``OnLaunchBehavior`` rawValue (`restore-last-session` / `new-window`); default
-    /// `.restoreLastSession` (the existing launch behaviour). Read by the app-launch path.
+    /// `.restoreLastSession` (the existing launch behaviour). Read by the app-launch path via
+    /// ``WorkspacePersistence/launchTree(behavior:persistence:)`` at store construction.
     public static let onLaunchKey = "general.onLaunch" // OnLaunchBehavior.rawValue
     // Notifications
     public static let oscNotifications = "notifications.osc"
@@ -170,7 +171,8 @@ public enum SettingsKey {
     /// ``OnLaunchBehavior/restoreLastSession`` (the existing launch behaviour — the store already restores
     /// the persisted tree). A stale / invalid persisted raw value repairs to `.restoreLastSession` (via the
     /// policy's own non-failable ``OnLaunchBehavior/init(rawValue:)`` + the `RawRepresentableBridge`). Read
-    /// by the app-launch path.
+    /// by the app-launch path via ``WorkspacePersistence/launchTree(behavior:persistence:)`` (a `.newWindow`
+    /// value seeds a fresh single-pane session instead of restoring the persisted tree).
     public static var onLaunch: OnLaunchBehavior { Defaults[.onLaunch] }
 
     // MARK: Controls / scroll / copy (E8-owned behaviour — declared + persisted here)

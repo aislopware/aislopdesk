@@ -237,28 +237,37 @@ public final class PreferencesStore {
         keybindings = KeybindingPreferences()
         appearance = AppearancePreferences()
         rawOverrides = [:]
-        resetGlobalDefaultsKeys(advancedOnly: false)
+        resetTabReachableDefaultsKeys()
+        defaults.removeObject(forKey: SettingsKey.density)
     }
 
-    /// Reset the ADVANCED-bucket settings only (the "Reset Advanced Only" affordance) — leaving the user's
-    /// font (`terminal`), theme + density (`appearance`), and keybinding (`keybindings`) choices intact, per
-    /// `customization__advanced-settings.md` ("leaving font, theme, and keybinding choices intact"). Clears
-    /// the `video` / `agent` host flags + the raw `AISLOPDESK_*` overrides, and resets the global
-    /// `Defaults.Keys` toggles EXCEPT the appearance-bucket `density` key.
+    /// Reset the ADVANCED-ONLY settings — the keys with NO dedicated settings tab (the "Reset Advanced Only"
+    /// affordance). Per `customization__advanced-settings.md` this "restores only the advanced-only keys
+    /// (those not reachable from General, Shell, Appearance, or Key Bindings), leaving font, theme, and
+    /// keybinding choices intact."
+    ///
+    /// CRITICAL (data-loss footgun fixed): in aislopdesk the ONLY truly advanced-only keys are the `video` /
+    /// `agent` host flags and the raw `AISLOPDESK_*` overrides — they have no dedicated tab and surface only
+    /// in the Advanced panel. EVERY global `Defaults.Keys` toggle in ``globalTabReachableDefaultsKeys`` IS
+    /// reachable from a dedicated tab (On-Launch / notifications / privacy / default-pane-kind → General;
+    /// working-dir / new-tab-position / close-confirm → Shell; copy / paste / mouse / scroll / system-dialog
+    /// → Controls; hide-status-bar / command-dividers → Appearance; auto-switch-layouts / clipboard-history
+    /// → Agents). So a Reset-Advanced-Only must NOT touch any of them, or it destroys the user's
+    /// General/Shell/Controls/Appearance/Agents choices — which Reset-Advanced-Only promises to leave intact.
     public func resetAdvancedOnly() {
         video = VideoPreferences()
         agent = AgentPreferences()
         rawOverrides = [:]
-        resetGlobalDefaultsKeys(advancedOnly: true)
     }
 
-    /// The `.standard`-backed global `Defaults.Keys` app-flag toggles a "Reset Settings" must clear. These
-    /// live in `Defaults.standard` (NOT the injected ``defaults`` — the per-instance store deliberately
+    /// The `.standard`-backed global `Defaults.Keys` app-flag toggles a FULL "Reset All Settings" must clear.
+    /// They live in `Defaults.standard` (NOT the injected ``defaults`` — the per-instance store deliberately
     /// stays isolated for tests), so they are reset via `Defaults.reset(_:)` regardless of the store's
-    /// injected store. NONE of these is a font / theme / keybinding choice, so the same set is cleared by
-    /// both Reset-All and Reset-Advanced; the only `advancedOnly` difference is the appearance-bucket
-    /// ``SettingsKey/density`` key (preserved on an advanced-only reset).
-    private static let globalDefaultsKeys: [Defaults.Keys] = [
+    /// injected store. EVERY key here is reachable from a dedicated settings tab (General / Shell / Controls /
+    /// Appearance / Agents), so it is **tab-reachable, NOT advanced-only** — Reset-Advanced-Only must leave
+    /// these intact (the spec keeps font/theme/keybinding AND the other tabs' choices), and only Reset-All
+    /// zeroes them.
+    private static let globalTabReachableDefaultsKeys: [Defaults.Keys] = [
         .oscNotifications, .longCommandNotifications, .systemDialogPanes, .autoSwitchLayouts,
         .redactSecrets, .recordClipboardHistory, .hideStatusBar, .showBlockDividers,
         .defaultPaneKind, .newTabPosition,
@@ -268,13 +277,10 @@ public final class PreferencesStore {
         .focusFollowsMouse, .scrollOnOutput, .scrollMultiplier,
     ]
 
-    /// Reset the `.standard`-backed global `Defaults.Keys` toggles to their declared defaults. When
-    /// `advancedOnly` is true the appearance-bucket ``SettingsKey/density`` key is PRESERVED (Reset-Advanced
-    /// leaves font / theme / density / keybinding intact); a full reset also clears `density` on the injected
-    /// store (where ``applyAppearance()`` writes it).
-    private func resetGlobalDefaultsKeys(advancedOnly: Bool) {
-        Defaults.reset(Self.globalDefaultsKeys)
-        if !advancedOnly { defaults.removeObject(forKey: SettingsKey.density) }
+    /// Reset the tab-reachable global `Defaults.Keys` toggles to their declared defaults. Called ONLY by
+    /// ``resetAll()`` (Reset-Advanced-Only leaves every tab-reachable toggle intact).
+    private func resetTabReachableDefaultsKeys() {
+        Defaults.reset(Self.globalTabReachableDefaultsKeys)
     }
 
     // MARK: Block bookmarks (WB3 — per-session starred command blocks)

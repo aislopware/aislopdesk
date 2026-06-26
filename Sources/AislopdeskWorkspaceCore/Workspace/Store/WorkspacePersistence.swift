@@ -202,6 +202,35 @@ public struct WorkspacePersistence: @unchecked Sendable {
         return result
     }
 
+    // MARK: On-Launch behaviour (O1 — the otty `On Launch` general setting → actual launch behaviour)
+
+    /// Resolves the tree the store should seed on launch, honouring the otty `On Launch` general setting
+    /// (``OnLaunchBehavior``, persisted under ``SettingsKey/onLaunchKey``). This is the wiring that makes the
+    /// General → On Launch picker a LIVE control instead of a dead accessor:
+    ///
+    /// - ``OnLaunchBehavior/restoreLastSession`` (the default) → return the persisted tree (``loadTree()``),
+    ///   so a relaunch restores the last workspace shape exactly as before. With no persistence handle
+    ///   (automation builds construct the store WITHOUT one so a throwaway shape can't clobber the real
+    ///   `workspace.json`) this is `nil` and the store's bootstrap seeds the tree.
+    /// - ``OnLaunchBehavior/newWindow`` → return `nil`, so the store seeds ``TreeWorkspace/defaultWorkspace()``
+    ///   (one fresh "Local" session with a single terminal pane) instead of restoring — picking "New Window"
+    ///   genuinely opens a fresh window rather than being a silent no-op.
+    ///
+    /// Pure aside from the read (`loadTree` is a non-mutating decode), so the launch branch is unit-testable
+    /// against a temp-file persistence seam — no window / store / UI is constructed (the hang-safety rule).
+    public static func launchTree(
+        behavior: OnLaunchBehavior, persistence: Self?,
+    ) -> TreeWorkspace? {
+        switch behavior {
+        case .restoreLastSession:
+            // Restore the persisted shape (nil under automation ⇒ the store's bootstrap replaces it anyway).
+            persistence?.loadTree()
+        case .newWindow:
+            // Do NOT restore: nil ⇒ the store seeds `TreeWorkspace.defaultWorkspace()` (a fresh single pane).
+            nil
+        }
+    }
+
     /// The tree counterpart of ``resetToDefault()``: copy the unrestorable file aside to the single
     /// fixed-name `.corrupt` sidecar before the next `save()` overwrites it, then return the default tree.
     private func resetTreeToDefault() -> TreeWorkspace {

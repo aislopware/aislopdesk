@@ -339,6 +339,9 @@ enum Otty {
         /// terminal starts BELOW the titlebar (otty's resting silhouette), not under the centred title.
         static let titlebarHeight: CGFloat = 40
         static let sidebarWidth: CGFloat = 220
+        /// The Settings window's left navigator column (otty's two-column Settings layout — wider than the
+        /// workspace sidebar so the icon+label section rows + the search pill sit comfortably).
+        static let settingsSidebarWidth: CGFloat = 260
         static let hairline: CGFloat = 1
         static let cardBorderWidth: CGFloat = 1
         static let dividerHoverWidth: CGFloat = 2
