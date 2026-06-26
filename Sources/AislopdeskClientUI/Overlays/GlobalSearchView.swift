@@ -45,6 +45,15 @@ struct GlobalSearchView: View {
     /// Pre-focuses the query field on appear so typing reaches it immediately (otty parity).
     @FocusState private var queryFocused: Bool
 
+    // Platform mode-pill plate size — MUST match ``TerminalFindBar``'s `plate` exactly (34 on iOS for the touch
+    // target, `Otty.Metric.plate` on macOS) so the locked invariant "the find bar and the global-search query
+    // bar render the pills IDENTICALLY" holds on BOTH platforms. Threaded into each ``FindTogglePill`` below.
+    #if os(iOS)
+    private let plate: CGFloat = 34
+    #else
+    private let plate: CGFloat = Otty.Metric.plate
+    #endif
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             queryBar
@@ -79,15 +88,26 @@ struct GlobalSearchView: View {
                 .foregroundStyle(Otty.Text.primary)
                 .tint(Otty.State.accent) // the active caret is the accent colour (otty parity)
                 .focused($queryFocused)
+                // The query text sits inside a FILLED, hairline-bordered rounded plate (global-search.png) —
+                // the EXACT treatment `TerminalFindBar.queryField` gives its field (same `Surface.card` fill +
+                // `radiusSmall` + `Line.subtle` hairline), so the two search surfaces read identically. The
+                // `Aa` / `.*` pills stay OUTSIDE this plate (they are siblings in the HStack, not wrapped here).
+                .padding(.horizontal, Otty.Metric.space2)
+                .padding(.vertical, Otty.Metric.space1)
+                .background(Otty.Surface.card, in: RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Otty.Metric.radiusSmall)
+                        .strokeBorder(Otty.Line.subtle, lineWidth: Otty.Metric.hairline),
+                )
             // The mode pills render as INDIVIDUALLY-OUTLINED chips (each its own resting plate + hairline,
             // gaps between — NO shared backing tray) per global-search.png. ``FindTogglePillTray`` is the EXACT
             // layout container the find bar reuses, so the two surfaces render the pills identically.
             FindTogglePillTray {
-                FindTogglePill(label: "Aa", isOn: caseSensitive, help: "Case sensitive") {
+                FindTogglePill(label: "Aa", isOn: caseSensitive, help: "Case sensitive", plate: plate) {
                     caseSensitive.toggle()
                     rerun()
                 }
-                FindTogglePill(label: ".*", isOn: isRegex, help: "Regex (ICU)") {
+                FindTogglePill(label: ".*", isOn: isRegex, help: "Regex (ICU)", plate: plate) {
                     isRegex.toggle()
                     rerun()
                 }
