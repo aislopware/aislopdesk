@@ -93,22 +93,6 @@ public enum AllSettingsCatalog {
             keywords: "launch startup restore session new window open",
         ),
         SettingEntry(
-            key: SettingsKey.oscNotifications,
-            label: "Explicit Notifications",
-            description: "Post OSC 9 / OSC 777 notifications emitted by the terminal.",
-            defaultText: "On",
-            bucket: .advancedOnly,
-            keywords: "notification osc bell alert badge",
-        ),
-        SettingEntry(
-            key: SettingsKey.longCommandNotifications,
-            label: "Long-Command Notification",
-            description: "Notify when a long-running command finishes in an unfocused pane.",
-            defaultText: "On",
-            bucket: .advancedOnly,
-            keywords: "notification command complete long running done",
-        ),
-        SettingEntry(
             key: SettingsKey.redactSecrets,
             label: "Redact Secrets",
             description: "Mask likely secrets in window titles and notification bodies.",
@@ -124,9 +108,41 @@ public enum AllSettingsCatalog {
             bucket: .advancedOnly,
             keywords: "pane kind terminal gui remote default new",
         ),
+        SettingEntry(
+            key: SettingsKey.closeConfirmTabKey,
+            label: "Close Confirmation · Tab",
+            description: "When to confirm before closing a tab or pane.",
+            defaultText: "Running Process",
+            bucket: .advancedOnly,
+            keywords: "close confirm tab pane prompt quit running process always",
+        ),
+        SettingEntry(
+            key: SettingsKey.closeConfirmWindowKey,
+            label: "Close Confirmation · Window",
+            description: "When to confirm before closing a window.",
+            defaultText: "Running Process",
+            bucket: .advancedOnly,
+            keywords: "close confirm window prompt quit running process always",
+        ),
 
-        // MARK: Shell
+        // MARK: Shell (notifications — notification-setting.png — + working directory — window-tab-split spec)
 
+        SettingEntry(
+            key: SettingsKey.oscNotifications,
+            label: "Explicit Notifications",
+            description: "Post OSC 9 / OSC 777 notifications emitted by the terminal.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "notification osc bell alert badge shell",
+        ),
+        SettingEntry(
+            key: SettingsKey.longCommandNotifications,
+            label: "Long-Command Notification",
+            description: "Notify when a long-running command finishes in an unfocused pane.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "notification command complete long running done shell",
+        ),
         SettingEntry(
             key: SettingsKey.workingDirectoryNewWindowKey,
             label: "Working Directory · New Window",
@@ -150,30 +166,6 @@ public enum AllSettingsCatalog {
             defaultText: "Same as Current",
             bucket: .advancedOnly,
             keywords: "working directory cwd folder split home inherit same",
-        ),
-        SettingEntry(
-            key: SettingsKey.newTabPositionKey,
-            label: "New Tab Position",
-            description: "Where a new tab is inserted in the active session's tab bar.",
-            defaultText: "Automatic",
-            bucket: .advancedOnly,
-            keywords: "tab position new placement order end after current",
-        ),
-        SettingEntry(
-            key: SettingsKey.closeConfirmTabKey,
-            label: "Close Confirmation · Tab",
-            description: "When to confirm before closing a tab or pane.",
-            defaultText: "Running Process",
-            bucket: .advancedOnly,
-            keywords: "close confirm tab pane prompt quit running process always",
-        ),
-        SettingEntry(
-            key: SettingsKey.closeConfirmWindowKey,
-            label: "Close Confirmation · Window",
-            description: "When to confirm before closing a window.",
-            defaultText: "Running Process",
-            bucket: .advancedOnly,
-            keywords: "close confirm window prompt quit running process always",
         ),
 
         // MARK: Controls (copy / paste / mouse / scroll fire-time flags — E8 owns the behaviour)
@@ -243,8 +235,17 @@ public enum AllSettingsCatalog {
             keywords: "system dialog password security pane spawn authorization",
         ),
 
-        // MARK: Editor / chrome orphan toggles
+        // MARK: Appearance (New Tab Position + chrome orphan toggles)
 
+        // otty homes New Tab Position under **Appearance** in a TABS group (`tab-setting.png`), NOT Shell.
+        SettingEntry(
+            key: SettingsKey.newTabPositionKey,
+            label: "New Tab Position",
+            description: "Where a new tab is inserted in the active session's tab bar.",
+            defaultText: "Automatic",
+            bucket: .advancedOnly,
+            keywords: "tab position new placement order end after current appearance",
+        ),
         SettingEntry(
             key: SettingsKey.showBlockDividers,
             label: "Show Command Dividers",

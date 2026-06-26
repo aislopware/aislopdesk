@@ -57,23 +57,22 @@ final class AllSettingsCatalogTests: XCTestCase {
     /// they belong to the legacy canvas surface, not the otty 8-section settings.)
     func testCatalogCoversEveryClientSettingsKey() {
         let required: [String] = [
-            // General
-            SettingsKey.onLaunchKey, SettingsKey.oscNotifications, SettingsKey.longCommandNotifications,
-            SettingsKey.redactSecrets, SettingsKey.defaultPaneKindKey,
-            // Shell
-            SettingsKey.workingDirectoryNewWindowKey, SettingsKey.workingDirectoryNewTabKey,
-            SettingsKey.workingDirectoryNewSplitKey, SettingsKey.newTabPositionKey,
+            // General (close confirmation is on the General page — launch-option.png)
+            SettingsKey.onLaunchKey, SettingsKey.redactSecrets, SettingsKey.defaultPaneKindKey,
             SettingsKey.closeConfirmTabKey, SettingsKey.closeConfirmWindowKey,
+            // Shell (notifications — notification-setting.png — + working directory — window-tab-split spec)
+            SettingsKey.oscNotifications, SettingsKey.longCommandNotifications,
+            SettingsKey.workingDirectoryNewWindowKey, SettingsKey.workingDirectoryNewTabKey,
+            SettingsKey.workingDirectoryNewSplitKey,
             // Controls / copy / mouse / scroll
             SettingsKey.copyOnSelect, SettingsKey.trimTrailingSpacesOnCopy, SettingsKey.pasteProtection,
             SettingsKey.mouseHideWhileTyping, SettingsKey.focusFollowsMouse, SettingsKey.scrollOnOutput,
             SettingsKey.scrollMultiplier, SettingsKey.systemDialogPanes,
-            // Editor / chrome orphans
-            SettingsKey.showBlockDividers, SettingsKey.hideStatusBar,
+            // Appearance (New Tab Position — tab-setting.png — + chrome orphans + density)
+            SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers, SettingsKey.hideStatusBar,
+            SettingsKey.density,
             // Agents
             SettingsKey.autoSwitchLayouts, SettingsKey.recordClipboardHistory,
-            // Appearance
-            SettingsKey.density,
         ]
         let present = Set(AllSettingsCatalog.entries.map(\.key))
         for key in required {
@@ -180,7 +179,7 @@ final class AllSettingsCatalogTests: XCTestCase {
         // Flip a tab-reachable toggle on each non-Advanced section (Controls / General / Appearance / Agents).
         // These are NON-default values that a Reset-Advanced-Only must NOT destroy.
         UserDefaults.standard.set(true, forKey: SettingsKey.copyOnSelect) // Controls (default Off)
-        UserDefaults.standard.set(false, forKey: SettingsKey.oscNotifications) // General (default On)
+        UserDefaults.standard.set(false, forKey: SettingsKey.oscNotifications) // Shell (default On)
         UserDefaults.standard.set(true, forKey: SettingsKey.hideStatusBar) // Appearance (default Off)
         UserDefaults.standard.set(false, forKey: SettingsKey.autoSwitchLayouts) // Agents (default On)
         XCTAssertTrue(SettingsKey.copyOnSelectEnabled)
@@ -200,7 +199,7 @@ final class AllSettingsCatalogTests: XCTestCase {
         XCTAssertEqual(store.keybindings.overrides["pane.splitRight"]?.key, "e")
         // Tab-reachable toggles PRESERVED — the data-loss fix. None of these is advanced-only.
         XCTAssertTrue(SettingsKey.copyOnSelectEnabled, "Controls toggle survives Reset-Advanced-Only")
-        XCTAssertFalse(SettingsKey.oscNotificationsEnabled, "General toggle survives Reset-Advanced-Only")
+        XCTAssertFalse(SettingsKey.oscNotificationsEnabled, "Shell toggle survives Reset-Advanced-Only")
         XCTAssertTrue(SettingsKey.hideStatusBarEnabled, "Appearance toggle survives Reset-Advanced-Only")
         XCTAssertFalse(SettingsKey.autoSwitchLayoutsEnabled, "Agents toggle survives Reset-Advanced-Only")
     }

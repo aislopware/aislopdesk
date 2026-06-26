@@ -105,23 +105,48 @@ final class OnLaunchBehaviorWiringTests: XCTestCase {
     /// `workspace.json` with the fresh default tree; `launchTree(.newWindow)` therefore snapshots the existing
     /// `workspace.json` aside to the `.previous` sidecar FIRST, so the prior session stays recoverable.
     ///
-    /// This test simulates the full sequence — persist a marked tree, run the `.newWindow` launch branch, then
-    /// emulate the store's first autosave overwriting `workspace.json` with a fresh default — and asserts the
-    /// marked session is still recoverable from the sidecar.
+    /// This test simulates the full sequence the way the app actually runs it — persist a marked tree, persist
+    /// `general.onLaunch = new-window`, drive the SAME app-shaped launch read
+    /// (`launchTree(behavior: SettingsKey.onLaunch, persistence:)`, exactly the call in `AislopdeskClientApp`),
+    /// then emulate the store's first autosave overwriting `workspace.json` with a fresh default — and asserts
+    /// the marked session is STILL recoverable. The proof is non-tautological: it writes the would-be-fresh
+    /// snapshot THROUGH the live persistence handle (the real destructive write) and re-reads from disk, rather
+    /// than asserting `launchTree`'s pure return value.
     ///
     /// Revert-to-confirm-fail: with the old `case .newWindow: nil` (no `snapshotPreviousSession()`), no sidecar
-    /// is written, so the overwrite leaves the marked tree unrecoverable and BOTH assertions below FAIL.
+    /// is written, so the overwrite leaves the marked tree unrecoverable and BOTH disk assertions below FAIL.
     func testNewWindowLaunchPreservesPriorSessionInSidecar() throws {
         let marker = "Doomed-Session-Marker"
         let (persistence, dir) = try makeMarkedPersistence(marker: marker)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = SettingsKey.onLaunchKey
+        let prior = UserDefaults.standard.string(forKey: key)
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            if let prior { UserDefaults.standard.set(prior, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
 
-        // The `.newWindow` launch branch runs (returns nil → store would seed a fresh default).
-        XCTAssertNil(WorkspacePersistence.launchTree(behavior: .newWindow, persistence: persistence))
+        // Drive the launch off the PERSISTED key — the real app shape (`launchTree(behavior: SettingsKey.onLaunch,
+        // persistence:)`). A persisted "new-window" choice resolves to a fresh window (nil → store seeds a fresh
+        // default) and must FIRST snapshot the saved session aside.
+        UserDefaults.standard.set("new-window", forKey: key)
+        XCTAssertEqual(SettingsKey.onLaunch, .newWindow)
+        XCTAssertNil(
+            WorkspacePersistence.launchTree(behavior: SettingsKey.onLaunch, persistence: persistence),
+            "a persisted new-window key seeds a fresh window (nil tree)",
+        )
 
         // Emulate the store's first debounced autosave: the live handle overwrites `workspace.json` with the
         // fresh default tree — exactly the write that, pre-fix, PERMANENTLY destroyed the saved session.
         try persistence.save(TreeWorkspace.defaultWorkspace().normalized())
+
+        // `workspace.json` now holds the fresh default — the marker is gone from the primary file (this is the
+        // data-loss the sidecar must offset; assert it so the recovery below isn't trivially satisfied by the
+        // primary file).
+        XCTAssertNotEqual(
+            persistence.loadTree().activeSession?.name, marker,
+            "the autosave must have overwritten the primary workspace.json with the fresh default",
+        )
 
         // The prior (marked) session must still be recoverable from the `.previous` sidecar.
         let sidecar = persistence.previousSessionURL

@@ -370,9 +370,10 @@ struct SettingsSectionContent: View {
 // MARK: - General section
 
 /// General: On-Launch behaviour (O1), the tab/window close-confirmation policies (otty puts the Close
-/// Confirmation group on the General page — `launch-option.png`), notifications (OSC 9/777 + long-command),
-/// privacy (redact secrets), and the default pane kind. All fire-time `Defaults.Keys` (bound via
-/// `@Default(.key)`) — applied LIVE.
+/// Confirmation group on the General page — `launch-option.png`), privacy (redact secrets), and the default
+/// pane kind. All fire-time `Defaults.Keys` (bound via `@Default(.key)`) — applied LIVE. NOTE: the
+/// NOTIFICATION group is NOT here — otty homes it under **Shell** (`notification-setting.png` shows the
+/// NOTIFICATION + TAB BADGE groups on the Shell page), so it lives in `ShellSettingsTab`.
 private struct GeneralSettingsTab: View {
     /// The fire-time keys are NOT in the typed models, so bind the global `Defaults.Keys` directly through
     /// the type-safe `@Default(.key)` wrapper (the default lives in the key declaration, not here). General
@@ -380,8 +381,6 @@ private struct GeneralSettingsTab: View {
     @Default(.onLaunch) private var onLaunch
     @Default(.closeConfirmTab) private var closeConfirmTab
     @Default(.closeConfirmWindow) private var closeConfirmWindow
-    @Default(.oscNotifications) private var oscNotifications
-    @Default(.longCommandNotifications) private var longCommandNotifications
     @Default(.redactSecrets) private var redactSecrets
     @Default(.defaultPaneKind) private var defaultPaneKind
 
@@ -398,12 +397,6 @@ private struct GeneralSettingsTab: View {
             Section("Close Confirmation") {
                 Picker("Closing Tab", selection: $closeConfirmTab) { closeConfirmOptions }
                 Picker("Closing Window", selection: $closeConfirmWindow) { closeConfirmOptions }
-                timingFooter(.live)
-            }
-
-            Section("Notifications") {
-                Toggle("Explicit notifications (OSC 9 / 777)", isOn: $oscNotifications)
-                Toggle("Long-command completion", isOn: $longCommandNotifications)
                 timingFooter(.live)
             }
 
@@ -428,14 +421,20 @@ private struct GeneralSettingsTab: View {
 
 // MARK: - Shell section
 
-/// Shell: the otty window/tab/split working-directory policy and the new-tab insertion position. Each reads
-/// a fire-time `Defaults.Key` consumed at the new-tab fire-site, so they apply LIVE (on the next ⌘T). The
-/// close-confirmation policies live under **General** (otty's `launch-option.png`), not here.
+/// Shell: the otty NOTIFICATION group (OSC 9/777 + long-command completion) and the window/tab/split
+/// working-directory policy. `notification-setting.png` (Shell row highlighted) shows the NOTIFICATION +
+/// TAB BADGE groups under the Shell section, so the notification toggles live here (NOT on General). The
+/// Working Directory group is also Shell's by otty's own docs (`spec/user-interface__window-tab-split.md`
+/// lines 66 + 282: "Settings → Shell → Working Directory", `open-option.png`). NOT here: the New Tab
+/// Position picker → **Appearance** (`tab-setting.png` shows it in a TABS group on the Appearance page); the
+/// close-confirmation policies → **General** (`launch-option.png`). Each reads a fire-time `Defaults.Key`
+/// consumed at the new-tab / notification fire-site, so they apply LIVE.
 private struct ShellSettingsTab: View {
+    @Default(.oscNotifications) private var oscNotifications
+    @Default(.longCommandNotifications) private var longCommandNotifications
     @Default(.workingDirectoryNewWindow) private var workingDirNewWindow
     @Default(.workingDirectoryNewTab) private var workingDirNewTab
     @Default(.workingDirectoryNewSplit) private var workingDirNewSplit
-    @Default(.newTabPosition) private var newTabPosition
 
     /// The two policy choices the picker surfaces. A custom-path policy (set from the config / Advanced
     /// editor) is shown as `home` here; editing the path lands in WI-3's All-Settings raw editor.
@@ -447,19 +446,19 @@ private struct ShellSettingsTab: View {
 
     var body: some View {
         Form {
+            Section("Notifications") {
+                Toggle("Explicit notifications (OSC 9 / 777)", isOn: $oscNotifications)
+                Toggle("Long-command completion", isOn: $longCommandNotifications)
+                timingFooter(.live)
+            }
+
+            // Working Directory's Shell home is confirmed by otty's docs (NOT unconfirmed-by-screenshot):
+            // `spec/user-interface__window-tab-split.md` ("Settings → Shell → Working Directory" + the
+            // `open-option.png` reference) places this group on the Shell page.
             Section("Working Directory") {
                 Picker("New window", selection: workingDirBinding($workingDirNewWindow)) { workingDirOptions }
                 Picker("New tab", selection: workingDirBinding($workingDirNewTab)) { workingDirOptions }
                 Picker("New split", selection: workingDirBinding($workingDirNewSplit)) { workingDirOptions }
-                timingFooter(.live)
-            }
-
-            Section("New Tab") {
-                Picker("New tab position", selection: $newTabPosition) {
-                    Text("Automatic").tag(NewTabPosition.auto)
-                    Text("End").tag(NewTabPosition.end)
-                    Text("After Current Tab").tag(NewTabPosition.afterCurrent)
-                }
                 timingFooter(.live)
             }
         }
@@ -602,20 +601,32 @@ private struct RecipesSettingsTab: View {
 
 // MARK: - Appearance section
 
-/// Appearance: the otty theme picker (via `AppearancePreferences` → `ThemeStore`), the density tier, the
-/// terminal FONT (family + size) and the CURSOR group (style + blink) — both relocated here from the old
-/// Editor/Controls tabs to match otty's screenshots (`font-setting.png` shows Font Family under Appearance;
-/// `cursor-style.png` shows the Cursor group under Appearance) — plus the chrome toggles (command dividers,
-/// status bar). All LIVE (theme repoints every token; font/cursor rebuild the libghostty config string and
-/// bump `TerminalConfigBroadcaster`; the chrome toggles are read on the next render).
+/// Appearance: the otty TABS group (the New Tab Position picker — `tab-setting.png` shows it in a TABS group
+/// on the Appearance page, NOT Shell), the theme picker (via `AppearancePreferences` → `ThemeStore`), the
+/// density tier, the terminal FONT (family + size) and the CURSOR group (style + blink) — font/cursor
+/// relocated here from the old Editor/Controls tabs to match otty's screenshots (`font-setting.png` shows
+/// Font Family under Appearance; `cursor-style.png` shows the Cursor group under Appearance) — plus the
+/// chrome toggles (command dividers, status bar). All LIVE (theme repoints every token; font/cursor rebuild
+/// the libghostty config string and bump `TerminalConfigBroadcaster`; the New Tab Position + chrome toggles
+/// are read at fire-time / on the next render).
 private struct AppearanceSettingsTab: View {
     @Bindable var store: PreferencesStore
 
+    @Default(.newTabPosition) private var newTabPosition
     @Default(.showBlockDividers) private var showBlockDividers
     @Default(.hideStatusBar) private var hideStatusBar
 
     var body: some View {
         Form {
+            Section("Tabs") {
+                Picker("New tab position", selection: $newTabPosition) {
+                    Text("Automatic").tag(NewTabPosition.auto)
+                    Text("End").tag(NewTabPosition.end)
+                    Text("After Current Tab").tag(NewTabPosition.afterCurrent)
+                }
+                timingFooter(.live)
+            }
+
             Section("Theme") {
                 Picker("Theme", selection: themeBinding) {
                     Text("System").tag(ThemeChoice.system)

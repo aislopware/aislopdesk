@@ -13,6 +13,12 @@ import XCTest
 final class SettingsSectionTaxonomyTests: XCTestCase {
     /// The otty taxonomy, frozen: ordered (rawValue, title, systemImage). Edited only with an intentional
     /// taxonomy change (and a matching screenshot/spec update).
+    ///
+    /// 5th-ROW LABEL NOTE: otty ships BOTH "Agents" and "Integrations" for this row across builds —
+    /// `all-settings.png` and `notification-setting.png` label it **Agents**, while `tab-setting.png` /
+    /// `launch-option.png` label it **Integrations**. aislopdesk pins to all-settings.png's **"Agents"**; a
+    /// future reviewer comparing against a build that shows "Integrations" should NOT treat that as a
+    /// regression (the label is the only thing that differs — same row, same `powerplug` glyph, same slot).
     private static let expected: [(raw: String, title: String, icon: String)] = [
         ("general", "General", "exclamationmark.circle"),
         ("shell", "Shell", "terminal"),
