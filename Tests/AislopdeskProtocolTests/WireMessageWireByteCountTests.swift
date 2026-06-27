@@ -47,6 +47,10 @@ final class WireMessageWireByteCountTests: XCTestCase {
             ), // wireByteCount must track the clamp
             .inputEcho(enabled: true),
             .inputEcho(enabled: false),
+            .progress(state: 0, percent: 0),
+            .progress(state: 1, percent: 40),
+            .progress(state: 2, percent: 80),
+            .progress(state: 3, percent: 0),
         ]
         for message in messages {
             XCTAssertEqual(

@@ -172,16 +172,41 @@ public final class CommandCompletionNotifier {
     /// rate-limited by the ~10s threshold, so it is not gated.)
     private var explicitLimiter = NotificationRateLimiter(now: ProcessInfo.processInfo.systemUptime)
 
+    /// The K8 dock-bounce seam (E14/WI-5): called when a notification is DELIVERED while the app is not
+    /// active. otty drives the bounce from the notification OSCs, NOT the bell — so it rides every delivered
+    /// banner. WI-5 wires this to `NSApp.requestUserAttention(.informationalRequest)` (gated by the
+    /// "Bounce Dock Icon" toggle); the default is a no-op so the pre-WI-5 build (and tests) never bounce.
+    public var bounceDock: () -> Void = {}
+
     public init() {}
 
-    /// Posts a "command finished" notification IFF `durationMS` clears the long-running threshold. A
-    /// no-op for quick commands. The B3 focus gate (unfocused + enabled) is applied UPSTREAM in
-    /// ``WorkspaceStore`` so the store's focus state drives it; this poster keeps only the threshold
-    /// floor as a defence-in-depth guard. `paneIDKey` (the originating pane's id string) is embedded in
-    /// the notification's `userInfo` so a click reveals that pane via ``PaneNotificationRouter`` — `nil`
-    /// ⇒ no reveal target (e.g. an unresolved pane).
-    public func notifyIfLong(paneTitle: String, exitCode: Int32?, durationMS: UInt32, paneIDKey: String? = nil) {
+    /// Posts a "command finished" notification IFF `durationMS` clears the long-running threshold AND the
+    /// E14/K9 ``NotificationPolicy`` allows it (Notify on Finish for a clean exit / Notify on Error Exit for
+    /// a non-zero exit, then the Notify-While-Foreground tri-state with the store-supplied `appActive` +
+    /// `sourcePaneFocused`). A no-op for quick commands. The B3 focus gate (unfocused + enabled) is applied
+    /// UPSTREAM in ``WorkspaceStore`` so the store's focus state drives WHETHER it fires; this poster adds the
+    /// otty toggle/foreground policy + keeps the threshold floor as defence-in-depth. `paneIDKey` (the
+    /// originating pane's id string) is embedded in the notification's `userInfo` so a click reveals that
+    /// pane via ``PaneNotificationRouter`` — `nil` ⇒ no reveal target (e.g. an unresolved pane).
+    public func notifyIfLong(
+        paneTitle: String,
+        exitCode: Int32?,
+        durationMS: UInt32,
+        paneIDKey: String? = nil,
+        appActive: Bool,
+        sourcePaneFocused: Bool,
+        settings: NotificationSettings,
+    ) {
+        // The long-running floor is defence-in-depth (the store fires this only for a long command).
         guard CommandNotificationPolicy.shouldNotify(durationMS: durationMS) else { return }
+        // E14/K9: the otty per-event toggle (Notify on Finish / Error) + the Notify-While-Foreground gate.
+        // A clean exit is `notifyOnFinish` (default OFF — so a clean long command no longer posts a banner,
+        // matching otty); a non-zero exit is `notifyOnError` (default ON).
+        guard NotificationPolicy.shouldDeliver(
+            event: .commandFinish(exit: exitCode),
+            appActive: appActive, sourcePaneFocused: sourcePaneFocused, settings: settings,
+        ) else { return }
+        bounceDockIfBackgrounded(appActive: appActive)
 
         if granted != nil {
             // Already resolved — post (or no-op if denied) without re-prompting.
@@ -200,6 +225,12 @@ public final class CommandCompletionNotifier {
         }
     }
 
+    /// Fires the K8 dock-bounce seam iff the app is NOT active (a delivered banner the user can't see in
+    /// the foreground earns a bounce). A no-op while the app is active or until WI-5 wires ``bounceDock``.
+    private func bounceDockIfBackgrounded(appActive: Bool) {
+        if !appActive { bounceDock() }
+    }
+
     /// Builds + adds the notification request — a no-op unless authorization was granted. Embeds
     /// `paneIDKey` in `userInfo` (via the pure ``LongCommandNotificationUserInfo``) so a click reveals
     /// the originating pane.
@@ -216,15 +247,33 @@ public final class CommandCompletionNotifier {
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 
-    /// Posts an EXPLICIT (OSC 9 / OSC 777) child-requested notification, carrying `paneIDKey` in
-    /// `userInfo` so a click can focus the originating pane (see ``PaneNotificationRouter``). Lazy-auth
-    /// + best-effort like the long-command path; resolves the title fallback via the pure
-    /// ``ExplicitNotificationContent``.
-    public func notifyExplicit(paneIDKey: String, paneTitle: String, title: String, body: String) {
+    /// Posts an EXPLICIT (OSC 9 / 777 / 99) child-requested notification — OR a Claude agent edge (the
+    /// `event` distinguishes them) — carrying `paneIDKey` in `userInfo` so a click can focus the originating
+    /// pane (see ``PaneNotificationRouter``). Gated by the E14/K9 ``NotificationPolicy`` (the per-event toggle
+    /// + the Notify-While-Foreground tri-state) with the store-supplied `appActive` + `sourcePaneFocused`,
+    /// then the anti-flood limiter. Lazy-auth + best-effort like the long-command path; resolves the title
+    /// fallback via the pure ``ExplicitNotificationContent``.
+    public func notifyExplicit(
+        event: NotificationEvent,
+        paneIDKey: String,
+        paneTitle: String,
+        title: String,
+        body: String,
+        appActive: Bool,
+        sourcePaneFocused: Bool,
+        settings: NotificationSettings,
+    ) {
+        // E14/K9: the per-event toggle (explicit OSC rides "Allow App Notifications"; an agent edge rides its
+        // own toggle) + the Notify-While-Foreground gate. Checked FIRST so a suppressed notification neither
+        // consumes a rate-limit token nor triggers the auth prompt.
+        guard NotificationPolicy.shouldDeliver(
+            event: event, appActive: appActive, sourcePaneFocused: sourcePaneFocused, settings: settings,
+        ) else { return }
         // Anti-flood: drop a notification that exceeds the burst/refill budget (a hostile process must
         // not be able to bury the user under alerts). Checked BEFORE auth so a flood can't even trigger
         // the first auth prompt repeatedly.
         guard explicitLimiter.allow(now: ProcessInfo.processInfo.systemUptime) else { return }
+        bounceDockIfBackgrounded(appActive: appActive)
         let resolved = ExplicitNotificationContent.resolve(paneTitle: paneTitle, explicitTitle: title, body: body)
         if granted != nil {
             postExplicit(paneIDKey: paneIDKey, title: resolved.title, body: resolved.body)

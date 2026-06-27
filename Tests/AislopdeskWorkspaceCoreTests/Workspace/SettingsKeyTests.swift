@@ -10,6 +10,16 @@ final class SettingsKeyTests: XCTestCase {
         [
             SettingsKey.oscNotifications,
             SettingsKey.longCommandNotifications,
+            // E14/K9 notification policy keys.
+            SettingsKey.notifyOnFinish,
+            SettingsKey.notifyOnError,
+            SettingsKey.notifyOnWatchFinish,
+            SettingsKey.notifyWhileForegroundKey,
+            SettingsKey.bounceDockIcon,
+            SettingsKey.soundShellControlled,
+            SettingsKey.soundOnErrorExit,
+            SettingsKey.agentNotifyTaskComplete,
+            SettingsKey.agentNotifyAwaitInput,
             SettingsKey.systemDialogPanes,
             SettingsKey.defaultPaneKindKey,
             SettingsKey.snapPanes,
@@ -41,6 +51,13 @@ final class SettingsKeyTests: XCTestCase {
             SettingsKey.undoAtPrompt,
             SettingsKey.clipboardReadKey,
             SettingsKey.clipboardWriteKey,
+            // E14/K11-K12: privilege surface (title gates + OSC-52 master switch).
+            SettingsKey.titleShellControlled,
+            SettingsKey.titleReport,
+            SettingsKey.clipboardShellControlled,
+            // E14/K13: IPC guards on the agent-control ctl socket.
+            SettingsKey.ipcAllowSendKeys,
+            SettingsKey.ipcAllowSensitiveSessions,
             SettingsKey.allowShiftClickKey,
             SettingsKey.rightClickActionKey,
             SettingsKey.scrollPastLastLineKey,
@@ -125,6 +142,53 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal, "a retired/invalid raw value falls back to terminal")
         UserDefaults.standard.set("garbage", forKey: SettingsKey.defaultPaneKindKey)
         XCTAssertEqual(SettingsKey.defaultPaneKind, .terminal, "an invalid raw value falls back to terminal")
+    }
+
+    // MARK: - E14/K9: notification policy keys + the resolved `notificationSettings` bundle
+
+    /// The new E14 notification keys read their notification-setting.png defaults when unset, and the
+    /// resolved ``SettingsKey/notificationSettings`` bundle (which the macOS poster consumes) matches the
+    /// spec baseline `NotificationSettings()`. This pins the `Defaults.Key` defaults against an INDEPENDENT
+    /// expectation (the struct defaults), catching a divergence between the two sources. Round-trips the
+    /// `notifyWhileForeground` enum + repairs a stale raw value to `.off`.
+    func testNotificationKeyDefaultsAndResolvedBundle() {
+        XCTAssertFalse(SettingsKey.notifyOnFinishEnabled, "Notify on Command Finish defaults OFF")
+        XCTAssertTrue(SettingsKey.notifyOnErrorEnabled, "Notify on Error Exit defaults ON")
+        XCTAssertTrue(SettingsKey.notifyOnWatchFinishEnabled, "Notify on Watch Finish defaults ON")
+        XCTAssertEqual(SettingsKey.notifyWhileForeground, .off, "Notify While Foreground defaults Off")
+        XCTAssertTrue(SettingsKey.bounceDockIconEnabled, "Bounce Dock Icon defaults ON")
+        XCTAssertTrue(SettingsKey.soundShellControlledEnabled, "Sound — Shell Controlled defaults ON")
+        XCTAssertFalse(SettingsKey.soundOnErrorExitEnabled, "Sound on Error Exit defaults OFF")
+        XCTAssertTrue(SettingsKey.agentNotifyTaskCompleteEnabled, "Agent task-complete defaults ON")
+        XCTAssertTrue(SettingsKey.agentNotifyAwaitInputEnabled, "Agent await-input defaults ON")
+        // The resolved bundle the notifier reads equals the spec baseline (the two default sources agree).
+        XCTAssertEqual(SettingsKey.notificationSettings, NotificationSettings())
+        // Round-trip the enum from its persisted otty raw value + repair a stale value.
+        UserDefaults.standard.set("tab-unfocused", forKey: SettingsKey.notifyWhileForegroundKey)
+        XCTAssertEqual(SettingsKey.notifyWhileForeground, .tabUnfocused)
+        UserDefaults.standard.set("garbage-from-a-future-version", forKey: SettingsKey.notifyWhileForegroundKey)
+        XCTAssertEqual(SettingsKey.notifyWhileForeground, .off, "an invalid raw value repairs to off")
+        // A flipped toggle flows into the resolved bundle (proves the resolver reads the live keys).
+        UserDefaults.standard.set(true, forKey: SettingsKey.notifyOnFinish)
+        XCTAssertTrue(SettingsKey.notificationSettings.notifyOnFinish)
+    }
+
+    /// The new E14 wire key strings are the single source of truth shared with every `@Default`/`@AppStorage`
+    /// consumer + the All-Settings catalog + the WI-7 navigator — a rename that would split-brain them fails
+    /// this pin. The `notifyWhileForeground` enum raw values are the otty config tokens.
+    func testNotificationKeyStringsAreStable() {
+        XCTAssertEqual(SettingsKey.notifyOnFinish, "notifications.onFinish")
+        XCTAssertEqual(SettingsKey.notifyOnError, "notifications.onError")
+        XCTAssertEqual(SettingsKey.notifyOnWatchFinish, "notifications.onWatchFinish")
+        XCTAssertEqual(SettingsKey.notifyWhileForegroundKey, "notifications.whileForeground")
+        XCTAssertEqual(SettingsKey.bounceDockIcon, "notifications.bounceDock")
+        XCTAssertEqual(SettingsKey.soundShellControlled, "notifications.soundShellControlled")
+        XCTAssertEqual(SettingsKey.soundOnErrorExit, "notifications.soundOnErrorExit")
+        XCTAssertEqual(SettingsKey.agentNotifyTaskComplete, "notifications.agentTaskComplete")
+        XCTAssertEqual(SettingsKey.agentNotifyAwaitInput, "notifications.agentAwaitInput")
+        XCTAssertEqual(NotifyWhileForeground.off.rawValue, "off")
+        XCTAssertEqual(NotifyWhileForeground.always.rawValue, "always")
+        XCTAssertEqual(NotifyWhileForeground.tabUnfocused.rawValue, "tab-unfocused")
     }
 
     // MARK: - PreferencesStore (W13) — the live source the Settings panels bind to
@@ -374,5 +438,69 @@ final class SettingsKeyTests: XCTestCase {
         XCTAssertEqual(LinkCmdShiftClick.openSystemDefault.rawValue, "open-system-default")
         XCTAssertEqual(AutoDetectLinkSchemes.all.rawValue, "all")
         XCTAssertEqual(AutoDetectLinkSchemes.custom.rawValue, "custom")
+    }
+
+    // MARK: - E14/K11-K12: privilege surface (title gates + OSC-52 master switch)
+
+    /// The new E14 privilege keys read their notification-setting.png defaults when unset (Title — Shell
+    /// Controlled ON, Title Report OFF, Clipboard — Shell Controlled ON), respect an explicit persisted value,
+    /// and their wire key strings are the single source of truth shared with the navigator + the All-Settings
+    /// catalog (a rename that would split-brain them fails this pin).
+    func testPrivilegeKeyDefaultsAndStrings() {
+        // Defaults when unset.
+        XCTAssertTrue(SettingsKey.titleShellControlledEnabled, "Title — Shell Controlled defaults ON")
+        XCTAssertFalse(SettingsKey.titleReportEnabled, "Title Report defaults OFF")
+        XCTAssertTrue(SettingsKey.clipboardShellControlledEnabled, "Clipboard — Shell Controlled defaults ON")
+        // An explicit persisted value is respected (the toggle persists across reads).
+        UserDefaults.standard.set(false, forKey: SettingsKey.titleShellControlled)
+        UserDefaults.standard.set(true, forKey: SettingsKey.titleReport)
+        UserDefaults.standard.set(false, forKey: SettingsKey.clipboardShellControlled)
+        XCTAssertFalse(SettingsKey.titleShellControlledEnabled)
+        XCTAssertTrue(SettingsKey.titleReportEnabled)
+        XCTAssertFalse(SettingsKey.clipboardShellControlledEnabled)
+        // The wire key strings are the single source of truth.
+        XCTAssertEqual(SettingsKey.titleShellControlled, "controls.titleShellControlled")
+        XCTAssertEqual(SettingsKey.titleReport, "controls.titleReport")
+        XCTAssertEqual(SettingsKey.clipboardShellControlled, "controls.clipboardShellControlled")
+    }
+
+    /// The "Clipboard — Shell Controlled" master switch (default ON) gates the resolved OSC-52 read/write
+    /// access AHEAD of the per-direction Ask/Allow/Deny gate: when OFF, ``TerminalControls/from(defaults:)``
+    /// resolves BOTH directions to ``ClipboardAccess/deny`` so the libghostty config emits
+    /// `clipboard-read/write = deny`. Revert-to-confirm-fail: before the master gate, `from()` returned the
+    /// raw per-direction value, so the two `.deny` asserts fail on the un-gated code.
+    func testClipboardMasterSwitchGatesResolvedAccess() {
+        // Set both directions to a permissive non-default value so the gate's effect is observable.
+        UserDefaults.standard.set(ClipboardAccess.allow.rawValue, forKey: SettingsKey.clipboardReadKey)
+        UserDefaults.standard.set(ClipboardAccess.allow.rawValue, forKey: SettingsKey.clipboardWriteKey)
+        // Master ON (the unset default) → the per-direction values pass through.
+        let onControls = TerminalControls.from(defaults: .standard)
+        XCTAssertEqual(onControls.clipboardRead, .allow, "master ON passes the per-direction read value")
+        XCTAssertEqual(onControls.clipboardWrite, .allow, "master ON passes the per-direction write value")
+        // Master OFF → both resolve to deny regardless of the per-direction value.
+        UserDefaults.standard.set(false, forKey: SettingsKey.clipboardShellControlled)
+        let offControls = TerminalControls.from(defaults: .standard)
+        XCTAssertEqual(offControls.clipboardRead, .deny, "master OFF denies clipboard read")
+        XCTAssertEqual(offControls.clipboardWrite, .deny, "master OFF denies clipboard write")
+    }
+
+    // MARK: - E14/K13: IPC guards on the agent-control ctl socket (client edit surface)
+
+    /// The two E14/K13 IPC-guard keys are the CLIENT edit/display surface for the HOST ctl-socket guards
+    /// (enforced host-side via the AISLOPDESK_IPC_ALLOW_* env bridge). They default OFF (conservative —
+    /// mutation / sensitive-session access is opt-in), respect an explicit persisted value, and their wire
+    /// strings are the single source of truth shared with the All-Settings catalog.
+    func testIPCGuardKeyDefaultsAndStrings() {
+        // Defaults when unset — both OFF.
+        XCTAssertFalse(SettingsKey.ipcAllowSendKeysEnabled, "IPC — Allow Send Keys defaults OFF")
+        XCTAssertFalse(SettingsKey.ipcAllowSensitiveSessionsEnabled, "IPC — Allow Sensitive Sessions defaults OFF")
+        // An explicit persisted value is respected.
+        UserDefaults.standard.set(true, forKey: SettingsKey.ipcAllowSendKeys)
+        UserDefaults.standard.set(true, forKey: SettingsKey.ipcAllowSensitiveSessions)
+        XCTAssertTrue(SettingsKey.ipcAllowSendKeysEnabled)
+        XCTAssertTrue(SettingsKey.ipcAllowSensitiveSessionsEnabled)
+        // The wire key strings are the single source of truth.
+        XCTAssertEqual(SettingsKey.ipcAllowSendKeys, "advanced.ipcAllowSendKeys")
+        XCTAssertEqual(SettingsKey.ipcAllowSensitiveSessions, "advanced.ipcAllowSensitiveSessions")
     }
 }

@@ -48,6 +48,12 @@ import AislopdeskVideoProtocol
 import AislopdeskWorkspaceCore
 import Defaults
 import SwiftUI
+import UserNotifications
+#if os(macOS)
+import AppKit
+#elseif os(iOS)
+import UIKit
+#endif
 
 // MARK: - Settings scene (stock SwiftUI, ⌘,)
 
@@ -428,17 +434,36 @@ private struct GeneralSettingsTab: View {
 
 // MARK: - Shell section
 
-/// Shell: the otty NOTIFICATION group (OSC 9/777 + long-command completion) and the window/tab/split
-/// working-directory policy. `notification-setting.png` (Shell row highlighted) shows the NOTIFICATION +
-/// TAB BADGE groups under the Shell section, so the notification toggles live here (NOT on General). The
-/// Working Directory group is also Shell's by otty's own docs (`spec/user-interface__window-tab-split.md`
-/// lines 66 + 282: "Settings → Shell → Working Directory", `open-option.png`). NOT here: the New Tab
-/// Position picker → **Appearance** (`tab-setting.png` shows it in a TABS group on the Appearance page); the
-/// close-confirmation policies → **General** (`launch-option.png`). Each reads a fire-time `Defaults.Key`
-/// consumed at the new-tab / notification fire-site, so they apply LIVE.
+/// Shell: the full otty NOTIFICATION group + the SOUND + CODE AGENT groups (E14/K9-K11) and the
+/// window/tab/split working-directory policy. `notification-setting.png` (Shell row highlighted) homes the
+/// NOTIFICATION group under the Shell section, so the toggles live here (NOT on General): the System
+/// Permission status row at the top, the master "Allow App Notifications", the per-event toggles, the
+/// Notify-While-Foreground tri-state picker, and the macOS-only Bounce Dock Icon — all backed by the pure
+/// `NotificationPolicy` engine (WI-4). The Working Directory group is also Shell's by otty's own docs
+/// (`spec/user-interface__window-tab-split.md` lines 66 + 282: "Settings → Shell → Working Directory",
+/// `open-option.png`). NOT here: the New Tab Position picker → **Appearance** (`tab-setting.png` shows it in a
+/// TABS group on the Appearance page); the close-confirmation policies → **General** (`launch-option.png`);
+/// the title + OSC-52 privilege gates → **Advanced** (`terminal-features__notifications.md`). Each reads a
+/// fire-time `Defaults.Key` consumed at the new-tab / notification fire-site, so they apply LIVE.
 private struct ShellSettingsTab: View {
+    // NOTIFICATION group (notification-setting.png). The full otty panel — the master + per-event toggles +
+    // the Notify-While-Foreground tri-state picker — is now backed by the pure `NotificationPolicy` engine
+    // (E14/K9, WI-4), so the rows are real behaviour, not deferred stubs.
     @Default(.oscNotifications) private var oscNotifications
     @Default(.longCommandNotifications) private var longCommandNotifications
+    @Default(.notifyOnFinish) private var notifyOnFinish
+    @Default(.notifyOnError) private var notifyOnError
+    @Default(.notifyOnWatchFinish) private var notifyOnWatchFinish
+    @Default(.notifyWhileForeground) private var notifyWhileForeground
+    #if os(macOS)
+    @Default(.bounceDockIcon) private var bounceDockIcon
+    #endif
+    // SOUND group (Shell). BEL → NSSound.beep() gate + error-exit beep (E14/K10).
+    @Default(.soundShellControlled) private var soundShellControlled
+    @Default(.soundOnErrorExit) private var soundOnErrorExit
+    // CODE AGENT group (Claude-only — E14 scope exclusion). IPC-driven, no shell integration needed.
+    @Default(.agentNotifyTaskComplete) private var agentNotifyTaskComplete
+    @Default(.agentNotifyAwaitInput) private var agentNotifyAwaitInput
     @Default(.workingDirectoryNewWindow) private var workingDirNewWindow
     @Default(.workingDirectoryNewTab) private var workingDirNewTab
     @Default(.workingDirectoryNewSplit) private var workingDirNewSplit
@@ -453,28 +478,9 @@ private struct ShellSettingsTab: View {
 
     var body: some View {
         Form {
-            // INTENTIONAL SUBSET (pinned, not a regression): otty's NOTIFICATION group has ~6 rows (Allow App
-            // Notifications, Notify on Command Finish, Notify on Error Exit, Notify on Watch Finish, a Notify
-            // While Foreground banner-behaviour picker, Bounce Dock Icon) plus a separate TAB BADGE group
-            // (`notification-setting.png`). aislopdesk surfaces ONLY the two rows backed by real behaviour: the
-            // OSC 9/777 escape-sequence gate (≈ otty's "Allow App Notifications") and the long-running-command
-            // completion notice (≈ otty's "Notify on Command Finish"). The rest — the TAB BADGE group,
-            // dock-bounce, the foreground-banner picker, and per-event (error-exit / watch-finish) toggles —
-            // are DEFERRED-until-backed: there is no notification dispatcher behind them yet, so adding the
-            // toggles would lie about behaviour. The two labels below are aligned toward otty's wording only as
-            // far as stays honest about what actually fires.
-            Section("Notifications") {
-                Toggle("Allow app notifications (OSC 9 / 777)", isOn: $oscNotifications)
-                Toggle("Notify on long-command completion", isOn: $longCommandNotifications)
-                Text(
-                    "aislopdesk surfaces the subset of otty's NOTIFICATION group backed by real behaviour. Tab "
-                        + "badge, dock-bounce, the foreground-banner picker, and per-event toggles are deferred "
-                        + "until there is a notification dispatcher behind them.",
-                )
-                .font(.system(size: Otty.Typeface.footnote))
-                .foregroundStyle(Otty.Text.secondary)
-                timingFooter(.live)
-            }
+            notificationSection
+            soundSection
+            codeAgentSection
 
             // Working Directory's Shell home is confirmed by otty's docs (NOT unconfirmed-by-screenshot):
             // `spec/user-interface__window-tab-split.md` ("Settings → Shell → Working Directory" + the
@@ -489,6 +495,113 @@ private struct ShellSettingsTab: View {
         .formStyle(.grouped)
     }
 
+    /// The full otty NOTIFICATION group (notification-setting.png): the System Permission status row at the
+    /// TOP, then the master "Allow App Notifications" + the per-event toggles + the Notify-While-Foreground
+    /// tri-state picker + Bounce Dock Icon (macOS-only — no Dock on iOS). Extracted so the `Form` closure
+    /// stays under the `closure_body_length` ceiling.
+    private var notificationSection: some View {
+        Section("Notification") {
+            NotificationPermissionRow()
+            toggleRow(
+                "Allow App Notifications",
+                "Allow shell apps to send system notifications (OSC 9 / 777 / 99).",
+                isOn: $oscNotifications,
+            )
+            toggleRow(
+                "Notify on Command Finish",
+                "Notify when a background command finishes (exit 0).",
+                isOn: $notifyOnFinish,
+            )
+            toggleRow(
+                "Notify on Error Exit",
+                "Notify when a command fails (exits non-zero).",
+                isOn: $notifyOnError,
+            )
+            toggleRow(
+                "Notify on Watch Finish",
+                "Notify when an `aislopdesk watch`-wrapped command finishes.",
+                isOn: $notifyOnWatchFinish,
+            )
+            LabeledContent {
+                Picker("", selection: $notifyWhileForeground) {
+                    ForEach(NotifyWhileForeground.allCases, id: \.self) { policy in
+                        Text(policy.displayLabel).tag(policy)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+            } label: {
+                rowLabel("Notify While Foreground", "Banner behavior while aislopdesk is the foreground app.")
+            }
+            toggleRow(
+                "Long-Command Completion",
+                "Also notify when a slow command finishes in an unfocused pane.",
+                isOn: $longCommandNotifications,
+            )
+            #if os(macOS)
+            toggleRow(
+                "Bounce Dock Icon",
+                "Bounce the Dock icon when a notification arrives and aislopdesk isn't focused.",
+                isOn: $bounceDockIcon,
+            )
+            #endif
+            timingFooter(.live)
+        }
+    }
+
+    /// The otty SOUND group (Shell): the BEL → system-beep gate + the error-exit beep (E14/K10).
+    private var soundSection: some View {
+        Section("Sound") {
+            toggleRow(
+                "Sound — Shell Controlled",
+                "Let shell apps ring the terminal bell (BEL) as the system alert sound.",
+                isOn: $soundShellControlled,
+            )
+            toggleRow(
+                "Sound on Error Exit",
+                "Beep when a command exits non-zero (requires shell integration).",
+                isOn: $soundOnErrorExit,
+            )
+            timingFooter(.live)
+        }
+    }
+
+    /// The otty CODE AGENT group (Claude-only — E14 scope exclusion). IPC-driven, no shell integration needed.
+    private var codeAgentSection: some View {
+        Section("Code Agent") {
+            toggleRow(
+                "Notify When Task Completes",
+                "Notify when a coding agent finishes a task and goes idle.",
+                isOn: $agentNotifyTaskComplete,
+            )
+            toggleRow(
+                "Notify When Awaiting Input",
+                "Notify when a coding agent needs approval or input.",
+                isOn: $agentNotifyAwaitInput,
+            )
+            timingFooter(.live)
+        }
+    }
+
+    /// A toggle row with otty's bold-label-over-gray-subtext layout (the switch trailing).
+    private func toggleRow(_ title: String, _ subtitle: String? = nil, isOn binding: Binding<Bool>) -> some View {
+        Toggle(isOn: binding) { rowLabel(title, subtitle) }
+    }
+
+    /// otty's row label: a bold title with an optional gray subtext beneath.
+    private func rowLabel(_ title: String, _ subtitle: String?) -> some View {
+        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            Text(title)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: Otty.Typeface.footnote))
+                    .foregroundStyle(Otty.Text.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     @ViewBuilder private var workingDirOptions: some View {
         Text("Same as Current").tag(WorkingDirChoice.inherit)
         Text("Home Directory").tag(WorkingDirChoice.home)
@@ -501,6 +614,82 @@ private struct ShellSettingsTab: View {
             get: { WorkingDirectoryPolicy(rawConfig: raw.wrappedValue) == .inherit ? .inherit : .home },
             set: { raw.wrappedValue = ($0 == .inherit ? WorkingDirectoryPolicy.inherit : .home).rawConfig },
         )
+    }
+}
+
+// MARK: - System Permission status row (top of the Notification group)
+
+/// The otty System Permission status row (`terminal-features__notifications.md`, shown at the TOP of the
+/// Notification group): a coloured dot (green = allowed, amber = will-prompt / unknown, red = blocked) plus
+/// an **Open System Settings** deep-link. The dot DECISION is the pure, headless-pinned
+/// ``PermissionStatus/dot(forAuthorization:)``; this view only queries
+/// `UNUserNotificationCenter.current().getNotificationSettings` and renders the result.
+///
+/// **iOS caveat (carryover / spec flag):** macOS deep-links to the Notifications preference pane
+/// (`x-apple.systempreferences:com.apple.preference.notifications`); iOS CANNOT deep-link to the per-app OS
+/// notification pane, so the button opens the app's OWN settings via `UIApplication.openSettingsURLString` —
+/// the macOS deep-link is `#if os(macOS)` and the iOS fallback `#if os(iOS)`. See docs/DECISIONS.md E14 WI-7.
+private struct NotificationPermissionRow: View {
+    /// The current dot — starts amber (unknown) until the async query resolves, never a false green.
+    @State private var dot: PermissionStatus.Dot = .amber
+
+    var body: some View {
+        LabeledContent {
+            Button("Open System Settings", action: openSystemSettings)
+                .controlSize(.small)
+        } label: {
+            HStack(spacing: Otty.Metric.space2) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+                    Text("System Permission")
+                    Text(dotSubtitle)
+                        .font(.system(size: Otty.Typeface.footnote))
+                        .foregroundStyle(Otty.Text.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .task { await refresh() }
+    }
+
+    private var dotColor: Color {
+        switch dot {
+        case .green: Otty.Status.ok
+        case .amber: Otty.Status.warn
+        case .red: Otty.Status.err
+        }
+    }
+
+    private var dotSubtitle: String {
+        switch dot {
+        case .green: "Notifications are allowed for aislopdesk."
+        case .amber: "Notification permission has not been granted yet."
+        case .red: "Notifications are blocked — enable them in System Settings."
+        }
+    }
+
+    /// Query `UNUserNotificationCenter` and map the authorization status through the pure dot decision. Never
+    /// instantiated in a test (the pure mapping is what `PermissionStatusTests` pins) — `current()` traps
+    /// without a bundle, the same hang/crash-safety boundary as the video sessions. The `rawValue` Int is
+    /// extracted INSIDE the `await` expression so the non-`Sendable` `UNNotificationSettings` object never
+    /// crosses the actor hop (only the `Int` does — Swift 6 region isolation).
+    private func refresh() async {
+        let raw = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus.rawValue
+        dot = PermissionStatus.dot(forAuthorization: raw)
+    }
+
+    private func openSystemSettings() {
+        #if os(macOS)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+            NSWorkspace.shared.open(url)
+        }
+        #elseif os(iOS)
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
+        #endif
     }
 }
 
@@ -1237,6 +1426,14 @@ private struct AdvancedSettingsTab: View {
     /// The shared navigator selection — threaded into the All-Settings list so a ✎ jump can repoint it.
     @Binding var selectedSection: SettingsSection
 
+    // E14/K11-K12 privilege surface (terminal-features__notifications.md → Settings → Advanced). Cross-platform
+    // — these gate what a remote OSC sequence may do client-side, so they apply on macOS AND iOS.
+    @Default(.titleShellControlled) private var titleShellControlled
+    @Default(.titleReport) private var titleReport
+    @Default(.clipboardShellControlled) private var clipboardShellControlled
+    @Default(.clipboardRead) private var clipboardRead
+    @Default(.clipboardWrite) private var clipboardWrite
+
     #if os(macOS)
     /// Local edit buffer of `key = value` lines; committed into `store.rawOverrides` on change. macOS-only:
     /// the raw `AISLOPDESK_*` editor is a HOST-side concern, so the compact iOS sheet (WI-5) omits it.
@@ -1245,6 +1442,8 @@ private struct AdvancedSettingsTab: View {
 
     var body: some View {
         Form {
+            privilegesSection
+
             // The raw `AISLOPDESK_*` override editor + the Video HOST flags are macOS-host-relevant, so the
             // iOS settings sheet (WI-5) omits them; the cross-platform All-Settings list + Workspace transfer
             // below still reach iOS.
@@ -1286,6 +1485,87 @@ private struct AdvancedSettingsTab: View {
         #if os(macOS)
             .onAppear { text = Self.render(store.rawOverrides) }
         #endif
+    }
+
+    // MARK: - Privileges (E14/K11-K12 — title gates + OSC-52 master + read/write tri-state)
+
+    /// otty's privilege surface (Settings → Advanced, `terminal-features__notifications.md`): the title gates
+    /// + the OSC-52 master switch + the read/write tri-state pickers. The pickers are DISABLED while the
+    /// master is off (the whole OSC-52 path resolves to Deny then). Title Report is a documented ceiling — it
+    /// persists/surfaces but does not yet actuate (the libghostty fork owns XTWINOPS; see docs/DECISIONS.md).
+    private var privilegesSection: some View {
+        Section("Privileges") {
+            Toggle(isOn: $titleShellControlled) {
+                privilegeLabel(
+                    "Title — Shell Controlled",
+                    "Allow programs to set the tab and window title via OSC 0 / OSC 2.",
+                )
+            }
+            Toggle(isOn: $titleReport) {
+                privilegeLabel(
+                    "Title Report",
+                    "Allow programs to read the window title back via OSC 21 / XTWINOPS. Persisted but not "
+                        + "yet enforced — the terminal renderer answers this query itself.",
+                )
+            }
+            Toggle(isOn: refreshingControls($clipboardShellControlled)) {
+                privilegeLabel(
+                    "Clipboard — Shell Controlled",
+                    "Master switch for OSC 52 clipboard access. When off, clipboard read and write are denied.",
+                )
+            }
+            clipboardPicker(
+                "Clipboard Read", "Whether a program may READ the clipboard via OSC 52.", $clipboardRead,
+            )
+            clipboardPicker(
+                "Clipboard Write", "Whether a program may WRITE the clipboard via OSC 52.", $clipboardWrite,
+            )
+            timingFooter(.live)
+        }
+    }
+
+    /// A tri-state OSC-52 access picker (Ask / Allow / Deny), disabled while the master switch is off. The
+    /// change re-applies the live libghostty config (the clipboard tokens feed `clipboard-read/write`).
+    private func clipboardPicker(
+        _ title: String, _ subtitle: String, _ selection: Binding<ClipboardAccess>,
+    ) -> some View {
+        LabeledContent {
+            Picker("", selection: refreshingControls(selection)) {
+                Text("Ask").tag(ClipboardAccess.ask)
+                Text("Allow").tag(ClipboardAccess.allow)
+                Text("Deny").tag(ClipboardAccess.deny)
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+        } label: {
+            privilegeLabel(title, subtitle)
+        }
+        .disabled(!clipboardShellControlled)
+    }
+
+    /// otty's row label: a bold title with a gray subtext beneath.
+    private func privilegeLabel(_ title: String, _ subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: Otty.Metric.space1) {
+            Text(title)
+            Text(subtitle)
+                .font(.system(size: Otty.Typeface.footnote))
+                .foregroundStyle(Otty.Text.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Wrap a fire-time `Defaults` clipboard binding so a change ALSO re-applies the live terminal config —
+    /// the master + read/write tokens are read by `TerminalControls.from(defaults:)` into the libghostty
+    /// `clipboard-*` lines, so `refreshTerminalControls()` is the explicit re-read seam (the E8 idiom).
+    private func refreshingControls<V: Equatable>(_ binding: Binding<V>) -> Binding<V> {
+        Binding(
+            get: { binding.wrappedValue },
+            set: { newValue in
+                binding.wrappedValue = newValue
+                store.refreshTerminalControls()
+            },
+        )
     }
 
     /// Clear the local raw-overrides edit buffer after a reset. macOS-only buffer → a no-op on iOS.

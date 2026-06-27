@@ -1,10 +1,48 @@
 import AislopdeskClaudeCode
 import AislopdeskClient
+import AislopdeskProtocol
 import AislopdeskTerminal
 import Foundation
 #if canImport(AppKit)
 import AppKit
 #endif
+
+/// The per-pane OSC 9;4 PROGRESS mirror (E14/K1) the tab badge resolver, the macOS Dock aggregate, and the
+/// pane status strip all read. A tiny pure value derived from the VALIDATED ``ProgressState`` + the clamped
+/// percent: ``ProgressState/clear`` maps to the ABSENCE of progress (`nil`), not a case here. Lives next to
+/// ``TerminalViewModel`` (whose observable `progress` holds it) so the resolver / store / Dock share one
+/// vocabulary and can't drift.
+public enum PaneProgress: Equatable, Sendable {
+    /// OSC 9;4;3 — an indeterminate / busy spinner (no meaningful percent).
+    case indeterminate
+    /// OSC 9;4;1;<pct> — a DETERMINATE value (0…100), the taskbar-style percent readout.
+    case determinate(percent: UInt8)
+    /// OSC 9;4;2[;<pct>] — an ERROR (held red); `percent` is the value at which it failed.
+    case error(percent: UInt8)
+
+    /// Builds the per-pane mirror from a VALIDATED wire `(state, percent)`. A ``ProgressState/clear``
+    /// returns `nil` — there is no indicator to show — while every other state maps to its value. The
+    /// `percent` is already clamped 0…100 host-side (``ProgressOSCParser``); no float math here.
+    public init?(state: ProgressState, percent: UInt8) {
+        switch state {
+        case .clear: return nil
+        case .inProgress: self = .determinate(percent: percent)
+        case .error: self = .error(percent: percent)
+        case .indeterminate: self = .indeterminate
+        }
+    }
+
+    /// Whether this is an ACTIVE running state (indeterminate spinner / determinate bar) as opposed to an
+    /// error. Drives the ``TabBadgeResolver`` "running" tier — an error is handled at the higher error tier,
+    /// so this returns `false` for ``error``.
+    public var isRunning: Bool {
+        switch self {
+        case .indeterminate,
+             .determinate: true
+        case .error: false
+        }
+    }
+}
 
 /// The terminal screen's view-model: it consumes a ``AislopdeskClient``'s `output` byte stream +
 /// `events` and projects connection / title / exit / byte-count state for the SwiftUI views.
@@ -75,6 +113,15 @@ public final class TerminalViewModel {
     /// the host-measured duration in ms. Used by the header/tooltip + the long-command
     /// notification trigger. `nil` until the first command completes.
     public private(set) var lastCommand: (exitCode: Int32?, durationMS: UInt32)?
+
+    /// The per-pane OSC 9;4 PROGRESS mirror (E14/K1, wire type 32): `nil` when there is no active indicator
+    /// (a `9;4;0` clear, or none ever reported), else the determinate / indeterminate / error state. OBSERVABLE
+    /// so the pane status strip + the macOS Dock aggregate update reactively. The ``WorkspaceStore`` ALSO holds
+    /// a per-pane mirror (`paneProgress`, pushed over the same `.progress` event) that feeds the sidebar tab
+    /// badge + the Dock rollup; this VM-local copy is the per-pane status-strip source. Set on a `.progress`
+    /// event in ``handle(_:)`` (the state is validated at the client boundary) and cleared on exit / drop /
+    /// reconnect so a dead shell can't leave a stuck spinner.
+    public private(set) var progress: PaneProgress?
 
     /// The per-pane Warp-style "Blocks" store (WB2): the host's `commandBlock` metadata (wire type 28)
     /// folded into an ordered, bounded `[CommandBlock]`. Drives the Command Navigator, the sticky command
@@ -1556,9 +1603,17 @@ public final class TerminalViewModel {
             // Empty-body OSC title messages (e.g. zsh/p10k prompt redraws) are silently dropped;
             // only a non-empty string updates the stored title so the previous real title is
             // preserved across command boundaries.
-            if !text.isEmpty { title = text }
+            // E14/K11 "Title — Shell Controlled" (default ON): when OFF, the client DROPS the OSC 0/2 title
+            // update so a remote program cannot rewrite the tab/window title (the privilege gate).
+            if SettingsKey.titleShellControlledEnabled, !text.isEmpty { title = text }
         case .bell:
             bellPending = true
+            // otty "Sound — Shell Controlled" (E14/K10): a BEL rings the system beep (audio-only — otty
+            // implements no visual bell). The pure ``BellPolicy`` gates it on the `soundShellControlled`
+            // toggle (default ON); the injected ``beep`` seam actuates (so tests count without a real NSSound).
+            if BellPolicy.shouldBeep(soundShellControlled: SettingsKey.soundShellControlledEnabled) {
+                beep()
+            }
         case let .commandStatus(status):
             switch status {
             case .running:
@@ -1566,6 +1621,15 @@ public final class TerminalViewModel {
             case let .idle(exitCode, durationMS):
                 shellActivity = .idle
                 lastCommand = (exitCode, durationMS)
+                // otty "Sound on Error Exit" (E14/K10): a non-zero exit beeps when enabled (default OFF;
+                // requires the OSC-133 shell-integration mark that carries the exit code). Pure
+                // ``ErrorSoundPolicy`` → the `soundOnErrorExit` toggle + a non-zero exit. Same `beep` seam.
+                if ErrorSoundPolicy.shouldBeep(
+                    exit: exitCode,
+                    soundOnErrorEnabled: SettingsKey.soundOnErrorExitEnabled,
+                ) {
+                    beep()
+                }
             }
         case .notification:
             // An explicit child notification (OSC 9 / OSC 777) is handled at the connection/store
@@ -1594,6 +1658,7 @@ public final class TerminalViewModel {
             // dead pane (HW-confirmed). Clear it — a terminated shell runs nothing. (Mirrors
             // `markReconnecting`, which already clears this stale state on a drop.)
             shellActivity = .idle
+            progress = nil // a terminated shell reports no progress — never leave a stuck OSC 9;4 spinner
             clearGlitchCaret() // no host left to echo — drop the nudge immediately
             endAwaitingReflow() // a dead shell will not reflow — never leave the scrim hung
         case let .disconnected(reason):
@@ -1604,6 +1669,7 @@ public final class TerminalViewModel {
             // Same stale-OSC-133 guard as the exit/reconnect paths: a drop straddling a C→D pair
             // would otherwise pin the indicator on "running…" across the disconnect.
             shellActivity = .idle
+            progress = nil // a dropped link's last OSC 9;4 is a lie for the reconnect — clear the indicator
             clearGlitchCaret()
             endAwaitingReflow() // a dropped link will not reflow — release the scrim
         case let .reconnected(sessionID, resumeFromSeq):
@@ -1626,6 +1692,12 @@ public final class TerminalViewModel {
             // the macOS leaf forwards to the pane's `SecureKeyboardEntryController` to engage / disengage
             // process-global secure event input. Echo-on (the canonical default) clears it.
             hostNoEcho = !enabled
+        case let .progress(state, percent):
+            // OSC 9;4 PROGRESS (E14/K1, wire type 32): the host parsed the taskbar-style progress subtype out
+            // of the OSC-9 stream and the state was validated at the client boundary. Fold it into the
+            // observable `progress` mirror — a `.clear` removes the indicator (`nil`), every other state sets
+            // the determinate / indeterminate / error value the pane status strip + the Dock read.
+            progress = PaneProgress(state: state, percent: percent)
         }
     }
 
@@ -1694,6 +1766,9 @@ public final class TerminalViewModel {
         // echoes by default — clear it so secure input does not stay latched across a reconnect (the leaf's
         // controller disengages on the resulting `onHostEchoChanged(false)`).
         hostNoEcho = false
+        // The dead session's OSC 9;4 progress is likewise a lie for the fresh shell — clear the indicator so
+        // a spinner/bar can't carry across a reconnect (the new shell re-reports its own progress, if any).
+        progress = nil
     }
 
     /// Clears the pending-bell flag once the view has flashed.

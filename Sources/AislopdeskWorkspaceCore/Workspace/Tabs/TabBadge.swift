@@ -92,6 +92,11 @@ public enum TabBadgeResolver {
     ///     ``CompletionFreshness/fresh`` checkmark FLASH or has ``CompletionFreshness/settled`` into the
     ///     accent dot. Supplied by the store (an ephemeral `completedAt` vs "now"); defaults to
     ///     ``CompletionFreshness/settled`` so an un-stamped completion shows the persistent marker.
+    ///   - progress: the live OSC 9;4 ``PaneProgress`` (E14/K1, wire type 32), or `nil` when there is no
+    ///     active indicator. ``PaneProgress/error`` resolves to the ``error`` alert (a held-red `9;4;2`,
+    ///     ranked with a failed exit); an active ``PaneProgress/indeterminate``/``PaneProgress/determinate``
+    ///     resolves to the ``running`` spinner — reusing the EXISTING tiers, no new badge kind. Outranks a
+    ///     stale completion dot (progress-error sits at the error tier, above completed/finished).
     /// - Returns: the badge to render, or `nil` when the row is all-clear.
     public static func badge(
         agent: ClaudeStatus,
@@ -99,15 +104,22 @@ public enum TabBadgeResolver {
         isBusy: Bool,
         foregroundProcess: String?,
         completionFreshness: CompletionFreshness = .settled,
+        progress: PaneProgress? = nil,
     ) -> TabBadgeKind? {
         // 1. Awaiting input — a blocked agent demands a human; highest urgency.
         if agent == .needsPermission { return .awaitingInput }
 
-        // 2. Error — a failed command (non-zero exit / OSC 9;4;2).
+        // 2. Error — a failed command (non-zero exit) OR a held-red OSC 9;4;2 progress error. Either at the
+        // error tier, above a running spinner and a stale completion dot. (Unwrap first, then match the
+        // non-optional case so there is no optional-pattern ambiguity.)
         if completion == .failure { return .error }
+        if let progress, case .error = progress { return .error }
 
-        // 3. Running — a busy shell or a working agent spins.
+        // 3. Running — a busy shell, a working agent, or an active OSC 9;4;1/3 progress spinner. (A
+        // progress `.error` already returned at the error tier above, so `isRunning` here is exactly the
+        // indeterminate/determinate "still going" states.)
         if isBusy || agent == .working { return .running }
+        if let progress, progress.isRunning { return .running }
 
         // 4 + 5. Privilege badges, only when the shell is at rest: sudo (shield) > caffeinate (coffee).
         if let privilege = privilegeBadge(forProcess: foregroundProcess) { return privilege }

@@ -108,6 +108,42 @@ enum StatusPresentation {
         case .sudo: "Privileged"
         }
     }
+
+    // MARK: Progress (E14/K1 — OSC 9;4 taskbar-style readout)
+
+    /// The taskbar-style percent readout for a pane's OSC 9;4 progress, or `nil` when there is no number to
+    /// show. Only a DETERMINATE state (`9;4;1;<pct>`) carries a meaningful "taskbar" percent — an
+    /// indeterminate spinner shows the spinner only, and an error is conveyed by its alert glyph (held red),
+    /// not a number. Matches otty's determinate "NN%" readout (`progress-state.md` Behaviors). Pure text.
+    static func progressPercentLabel(_ progress: PaneProgress?) -> String? {
+        if case let .determinate(percent) = progress { return "\(percent)%" }
+        return nil
+    }
+
+    /// How a pane's OSC 9;4 progress renders in the status presentation (E14/K1) — a pure value (no view) so
+    /// the status strip's progress affordance and the Dock have one source. A determinate state carries its
+    /// 0…1 bar fraction PLUS the "NN%" readout; an indeterminate state is the bare spinner; an error holds
+    /// red; `nil` = nothing. The 0…1 fraction is plain view geometry (a single `/`, no fused multiply).
+    static func progressPresentation(_ progress: PaneProgress?) -> ProgressPresentation {
+        switch progress {
+        case .none: .none
+        case .indeterminate: .spinner
+        case let .determinate(percent):
+            .determinate(fraction: Double(Swift.min(percent, 100)) / 100.0, label: "\(percent)%")
+        case .error: .error
+        }
+    }
+}
+
+/// The rendering recipe for a pane's OSC 9;4 progress (see ``StatusPresentation/progressPresentation(_:)``).
+/// A pure value (no view) so the determinate / indeterminate / error mapping is unit-testable without
+/// rendering. `.spinner` is a bespoke indeterminate animation; `.determinate` carries the 0…1 fraction the
+/// taskbar-style bar fills to plus its "NN%" label; `.error` holds red; `.none` draws nothing.
+enum ProgressPresentation: Equatable {
+    case none
+    case spinner
+    case determinate(fraction: Double, label: String)
+    case error
 }
 
 /// The rendering recipe for one tab badge (see ``StatusPresentation/tabBadge(_:)``). `.spinner` and `.dot`

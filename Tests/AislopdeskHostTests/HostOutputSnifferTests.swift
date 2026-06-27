@@ -745,6 +745,72 @@ final class HostOutputSnifferTests: XCTestCase {
         )
     }
 
+    // MARK: - OSC 9;4 taskbar progress → .progress (E14 / K1)
+
+    /// The `.progress` subsequence (the fused sniffer may interleave titles/bells/notifications).
+    private func progressOnly(_ messages: [WireMessage]) -> [WireMessage] {
+        messages.filter { if case .progress = $0 { return true }
+            return false
+        }
+    }
+
+    func testOSC9ProgressSubtypeEmitsProgressNotNotification() {
+        // ESC]9;4;1;40 BEL is the determinate-progress subtype → `.progress(state:1, percent:40)`, and
+        // it must NOT also fire a desktop notification (the whole reason 9;4 was carved out of OSC-9).
+        let msgs = observeWhole(bytes("\u{1B}]9;4;1;40\u{07}"))
+        XCTAssertEqual(msgs, [.progress(state: 1, percent: 40)])
+        XCTAssertEqual(notificationsOnly(msgs), [], "a 9;4 progress update is never a desktop notification")
+    }
+
+    func testOSC9ProgressStatesAndClear() {
+        XCTAssertEqual(
+            progressOnly(observeWhole(bytes("\u{1B}]9;4;3\u{07}"))),
+            [.progress(state: 3, percent: 0)], // indeterminate spinner
+        )
+        XCTAssertEqual(
+            progressOnly(observeWhole(bytes("\u{1B}]9;4;2;80\u{07}"))),
+            [.progress(state: 2, percent: 80)], // error (held)
+        )
+        XCTAssertEqual(
+            progressOnly(observeWhole(bytes("\u{1B}]9;4;0\u{07}"))),
+            [.progress(state: 0, percent: 0)], // clear the indicator
+        )
+    }
+
+    func testOSC9ProgressClampsOutOfRangePercent() {
+        XCTAssertEqual(
+            progressOnly(observeWhole(bytes("\u{1B}]9;4;1;250\u{07}"))),
+            [.progress(state: 1, percent: 100)], // 250 clamped to 100, never trusted raw
+        )
+    }
+
+    func testOSC9MalformedProgressEmitsNothing() {
+        // A bare `9;4` (no state) and an unknown state digit are dropped — neither progress nor notification.
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]9;4\u{07}")), [])
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]9;4;9\u{07}")), [])
+        XCTAssertEqual(observeWhole(bytes("\u{1B}]9;4;1;abc\u{07}")), [])
+    }
+
+    func testOSC9FreeTextNotificationPathUnchanged() {
+        // REGRESSION GUARD (frozen `hostOutputSniffer` key): only the previously-DROPPED 9;4 subtype
+        // changed; a free-text OSC-9 still fires a byte-identical `.notification` (empty title).
+        XCTAssertEqual(
+            observeWhole(bytes("\u{1B}]9;Build done\u{07}")),
+            [.notification(title: "", body: "Build done")],
+        )
+    }
+
+    func testOSC9ProgressSplitAcrossChunksEquivalence() {
+        // The 9;4 parse runs in finishOSC, so it is reached identically no matter where the chunk
+        // boundary falls — pin the chunk-invariance for a progress sequence too.
+        let raw = bytes("\u{1B}]9;4;1;40\u{07}")
+        let whole = observeWhole(raw)
+        XCTAssertEqual(whole, [.progress(state: 1, percent: 40)])
+        for size in 1...raw.count {
+            XCTAssertEqual(observeChunked(raw, size: size), whole, "diverged at chunk size \(size)")
+        }
+    }
+
     func testNotificationSplitAcrossChunksEquivalence() {
         let raw = bytes("\u{1B}]777;notify;Title;Body text 🚀\u{07}")
         let whole = observeWhole(raw)

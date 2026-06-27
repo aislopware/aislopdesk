@@ -148,6 +148,13 @@ extension WireMessage {
             // [UInt8 enabled] — a single canonical-echo flag (1 = echo on, 0 = no-echo prompt).
             frame.append(enabled ? 1 : 0)
 
+        case let .progress(state, percent):
+            // [UInt8 state][UInt8 percent] — two raw bytes (no BE needed for single bytes). The state
+            // is carried verbatim so the codec is a faithful round-trip; the client re-validates via
+            // ProgressState(wire:) and drops an unknown discriminant.
+            frame.append(state)
+            frame.append(percent)
+
         case .bell:
             break // empty body
 
@@ -265,6 +272,7 @@ public extension WireMessage {
             case let .metadataResponse(_, _, payload): 4 + 1 + 4 + payload
                 .count // requestID + status + UInt32 len + payload
             case .inputEcho: 1 // enabled UInt8
+            case .progress: 2 // state UInt8 + percent UInt8
             case .helloAck: Self.sessionIDByteCount + 8 + 1 // UUID + Int64 + Bool
             case let .title(string): string.utf8.count
             case let .notification(title, bodyText): 2 + Self.clampedNotificationTitle(title).utf8.count + bodyText.utf8

@@ -143,6 +143,84 @@ public enum AllSettingsCatalog {
             bucket: .advancedOnly,
             keywords: "notification command complete long running done shell",
         ),
+
+        // E14/K9 (notification-setting.png NOTIFICATION section). Fire-time toggles; the pure
+        // NotificationPolicy reads the resolved `notificationSettings` bundle. WI-7 surfaces the rich
+        // navigator panel; declared here so the searchable All Settings list is complete + round-trips.
+        SettingEntry(
+            key: SettingsKey.notifyOnFinish,
+            label: "Notify on Command Finish",
+            description: "Notify when a background command finishes.",
+            defaultText: "Off",
+            bucket: .advancedOnly,
+            keywords: "notification command finish complete exit success shell background",
+        ),
+        SettingEntry(
+            key: SettingsKey.notifyOnError,
+            label: "Notify on Error Exit",
+            description: "Notify when a command fails (exits non-zero).",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "notification command error fail exit non-zero shell",
+        ),
+        SettingEntry(
+            key: SettingsKey.notifyOnWatchFinish,
+            label: "Notify on Watch Finish",
+            description: "Notify when an `aislopdesk watch`-wrapped command finishes.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "notification watch finish command wrapped shell",
+        ),
+        SettingEntry(
+            key: SettingsKey.notifyWhileForegroundKey,
+            label: "Notify While Foreground",
+            description: "Banner behavior while the app is the foreground app — off, always, or only when "
+                + "the source tab is unfocused.",
+            defaultText: "Off",
+            bucket: .advancedOnly,
+            keywords: "notification foreground banner frontmost tab unfocused while active",
+        ),
+        SettingEntry(
+            key: SettingsKey.bounceDockIcon,
+            label: "Bounce Dock Icon",
+            description: "Bounce the Dock icon when a notification arrives and the app isn't focused.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "notification dock bounce attention macos icon request",
+        ),
+        SettingEntry(
+            key: SettingsKey.soundShellControlled,
+            label: "Sound — Shell Controlled",
+            description: "Let shell apps ring the terminal bell (BEL) as the system alert sound.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "sound bell beep audio shell controlled alert nssound",
+        ),
+        SettingEntry(
+            key: SettingsKey.soundOnErrorExit,
+            label: "Sound on Error Exit",
+            description: "Beep when a command exits non-zero (requires shell integration).",
+            defaultText: "Off",
+            bucket: .advancedOnly,
+            keywords: "sound error exit beep non-zero fail shell integration",
+        ),
+        SettingEntry(
+            key: SettingsKey.agentNotifyTaskComplete,
+            label: "Code Agent — Notify When Task Completes",
+            description: "Notify when a coding agent finishes a task and goes idle.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "agent claude notification task complete done idle code",
+        ),
+        SettingEntry(
+            key: SettingsKey.agentNotifyAwaitInput,
+            label: "Code Agent — Notify When Awaiting Input",
+            description: "Notify when a coding agent needs approval or input.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "agent claude notification awaiting input approval permission code",
+        ),
+
         SettingEntry(
             key: SettingsKey.workingDirectoryNewWindowKey,
             label: "Working Directory · New Window",
@@ -408,6 +486,71 @@ public enum AllSettingsCatalog {
             keywords: "system dialog password security pane spawn authorization",
         ),
 
+        // E14/K2 (Auto Progress-Bar Commands — terminal-features__progress-state.md). Advanced list key;
+        // the host enforces its own copy via the AISLOPDESK_AUTO_PROGRESS_COMMANDS env bridge.
+        SettingEntry(
+            key: SettingsKey.autoProgressCommands,
+            label: "Auto Progress-Bar Commands",
+            description: "Commands that auto-show an indeterminate progress spinner while running. "
+                + "Whitespace-delimited prefixes (git push matches git push origin main); clear to disable.",
+            defaultText: "Built-in list",
+            bucket: .advancedOnly,
+            keywords: "auto progress bar spinner slow command curl git npm brew docker osc 9;4 shell integration",
+        ),
+
+        // E14/K11-K12 (privilege surface — terminal-features__notifications.md → Settings → Advanced). The
+        // OSC-52 read/write tri-state pickers (clipboardReadKey/clipboardWriteKey, above) are gated by the
+        // Clipboard — Shell Controlled master; Title — Shell Controlled gates OSC 0/2; Title Report is a
+        // documented ceiling (persists/surfaces but does not yet actuate — see docs/DECISIONS.md E14 WI-7).
+        SettingEntry(
+            key: SettingsKey.titleShellControlled,
+            label: "Title — Shell Controlled",
+            description: "Allow programs to set the tab and window title via OSC 0 / OSC 2.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "title shell controlled osc 0 2 window tab name privilege",
+        ),
+        SettingEntry(
+            key: SettingsKey.titleReport,
+            label: "Title Report",
+            description: "Allow programs to read the window title back via OSC 21 / XTWINOPS. Persisted but "
+                + "not yet enforced — the terminal renderer answers the query itself (see release notes).",
+            defaultText: "Off",
+            bucket: .advancedOnly,
+            keywords: "title report osc 21 xtwinops read window exfiltration privilege security",
+        ),
+        SettingEntry(
+            key: SettingsKey.clipboardShellControlled,
+            label: "Clipboard — Shell Controlled",
+            description: "Master switch for OSC 52 clipboard access. When off, both clipboard read and write "
+                + "are denied regardless of the per-direction setting.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "clipboard shell controlled osc 52 master read write privilege deny",
+        ),
+
+        // E14/K13 (IPC guards on the agent-control ctl socket — privilege surface → Settings → Advanced). The
+        // ENFORCEMENT is HOST-side (the guard runs on the host's NDJSON ctl socket); these client toggles are
+        // the edit surface and re-drive the host via the AISLOPDESK_IPC_ALLOW_* env bridge on the next launch.
+        SettingEntry(
+            key: SettingsKey.ipcAllowSendKeys,
+            label: "IPC — Allow Send Keys",
+            description: "Let the agent-control socket write input, run commands, or spawn / kill / resize "
+                + "panes. Read-only control (list, read, wait) is always allowed. Enforced on the host.",
+            defaultText: "Off",
+            bucket: .advancedOnly,
+            keywords: "ipc agent control socket send keys write run spawn kill resize privilege ctl security",
+        ),
+        SettingEntry(
+            key: SettingsKey.ipcAllowSensitiveSessions,
+            label: "IPC — Allow Sensitive Sessions",
+            description: "Let the agent-control socket target a pane running a sensitive command (ssh, sudo, "
+                + "login). Off refuses send-keys into a password prompt. Enforced on the host.",
+            defaultText: "Off",
+            bucket: .advancedOnly,
+            keywords: "ipc agent control sensitive ssh sudo login password session privilege ctl security",
+        ),
+
         // MARK: Appearance (New Tab Position + chrome orphan toggles)
 
         // otty homes New Tab Position under **Appearance** in a TABS group (`tab-setting.png`), NOT Shell.
@@ -434,6 +577,26 @@ public enum AllSettingsCatalog {
             defaultText: "Off",
             bucket: .advancedOnly,
             keywords: "status bar hide chrome appearance bottom strip",
+        ),
+
+        // otty homes the DOCK ICON group under **Appearance** (terminal-features__progress-state.md). macOS-only
+        // NSDockTile behaviour (inert on iOS); declared here so the searchable All Settings list is complete and
+        // the keys round-trip on both platforms.
+        SettingEntry(
+            key: SettingsKey.dockIconAnimateProgress,
+            label: "Animate Dock Icon During Progress",
+            description: "Animate the macOS Dock icon while any session reports OSC 9;4 progress.",
+            defaultText: "Off",
+            bucket: .advancedOnly,
+            keywords: "dock icon animate progress macos appearance osc 9 4 spinner",
+        ),
+        SettingEntry(
+            key: SettingsKey.dockIconErrorBadge,
+            label: "Red Icon on Error",
+            description: "Tint the macOS Dock icon red on a non-zero exit; clicking jumps to the next failing tab.",
+            defaultText: "On",
+            bucket: .advancedOnly,
+            keywords: "dock icon red error badge tint exit failing tab macos appearance",
         ),
 
         // MARK: Agents behaviour toggles

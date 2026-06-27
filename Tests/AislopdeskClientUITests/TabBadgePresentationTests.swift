@@ -73,4 +73,33 @@ final class TabBadgePresentationTests: XCTestCase {
         XCTAssertTrue(labels.allSatisfy { !$0.isEmpty }, "no blank badge labels")
         XCTAssertEqual(Set(labels).count, kinds.count, "labels are distinct per kind")
     }
+
+    // MARK: - Progress readout (E14/K1 WI-2 — the OSC 9;4 taskbar-style determinate percent)
+
+    /// Only a DETERMINATE (`9;4;1;<pct>`) state has a "taskbar" percent readout; an indeterminate spinner /
+    /// an error / no-progress show no number. Reverting `progressPercentLabel` to always-nil fails the
+    /// determinate cases.
+    func testProgressPercentLabelOnlyForDeterminate() {
+        XCTAssertEqual(StatusPresentation.progressPercentLabel(.determinate(percent: 40)), "40%")
+        XCTAssertEqual(StatusPresentation.progressPercentLabel(.determinate(percent: 0)), "0%")
+        XCTAssertEqual(StatusPresentation.progressPercentLabel(.determinate(percent: 100)), "100%")
+        XCTAssertNil(StatusPresentation.progressPercentLabel(.indeterminate), "a spinner shows no percent")
+        XCTAssertNil(
+            StatusPresentation.progressPercentLabel(.error(percent: 80)),
+            "an error shows the alert, not a number",
+        )
+        XCTAssertNil(StatusPresentation.progressPercentLabel(nil), "no progress → no readout")
+    }
+
+    /// The full presentation mapping: `nil` → none, indeterminate → spinner, determinate → a 0…1 bar fraction
+    /// plus the "NN%" label, error → error.
+    func testProgressPresentationMapping() {
+        XCTAssertEqual(StatusPresentation.progressPresentation(nil), .none)
+        XCTAssertEqual(StatusPresentation.progressPresentation(.indeterminate), .spinner)
+        XCTAssertEqual(StatusPresentation.progressPresentation(.error(percent: 80)), .error)
+        XCTAssertEqual(
+            StatusPresentation.progressPresentation(.determinate(percent: 25)),
+            .determinate(fraction: 0.25, label: "25%"),
+        )
+    }
 }

@@ -1460,11 +1460,13 @@
       ]
     },
     {
-      "name": "osc9ProgressIgnored",
+      "name": "osc9Progress",
       "steps": [
         {
           "inputHex": "1b5d393b343b313b353007",
-          "messagesHex": [],
+          "messagesHex": [
+            "00000003200132"
+          ],
           "nowMs": 0
         },
         {
@@ -3545,6 +3547,30 @@
       "enabled": true,
       "hex": "000000021f01",
       "kind": "inputEcho"
+    },
+    {
+      "hex": "00000003200128",
+      "kind": "progress",
+      "percent": 40,
+      "state": 1
+    },
+    {
+      "hex": "00000003200300",
+      "kind": "progress",
+      "percent": 0,
+      "state": 3
+    },
+    {
+      "hex": "00000003200250",
+      "kind": "progress",
+      "percent": 80,
+      "state": 2
+    },
+    {
+      "hex": "00000003200000",
+      "kind": "progress",
+      "percent": 0,
+      "state": 0
     }
   ],
   "trendlineDrive": {

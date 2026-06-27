@@ -55,11 +55,15 @@ struct CommandBlockTracker {
     private var lastEmitted: [UInt32: BlockMeta] = [:]
 
     init(
-        segmenter: CommandBlockSegmenter = CommandBlockSegmenter(),
+        segmenter: CommandBlockSegmenter? = nil,
         maxBlocks: Int = Self.defaultMaxBlocks,
         maxTotalOutputBytes: Int = Self.defaultMaxTotalOutputBytes,
+        autoProgressPrefixes: [String] = [],
     ) {
-        self.segmenter = segmenter
+        // K2 (E14/WI-3): when the caller does not inject a segmenter, build one carrying the resolved
+        // auto-progress prefix list (otty "Auto Progress-Bar Commands"). An INJECTED segmenter keeps its
+        // OWN prefixes (tests). An empty list ⇒ no synthetic spinner (byte-identical to the pre-E14 tap).
+        self.segmenter = segmenter ?? CommandBlockSegmenter(autoProgressPrefixes: autoProgressPrefixes)
         // Validate-then-clamp: a non-positive bound would mean "retain nothing"; treat <=0 as the
         // default so a caller can never accidentally disable retention or under/overflow.
         self.maxBlocks = maxBlocks > 0 ? maxBlocks : Self.defaultMaxBlocks
@@ -73,6 +77,10 @@ struct CommandBlockTracker {
     mutating func ingest(_ chunk: Data) -> [WireMessage] {
         let completed = segmenter.ingest(Array(chunk))
         var messages: [WireMessage] = []
+        // K2 auto-progress (E14/WI-3): drain any synthetic OSC-9;4 spinner/clear the segmenter queued at
+        // the C / D marks for a configured slow command. These ride the SAME CONTROL FIFO as the type-28
+        // commandBlock metadata (the live owner enqueues the whole returned batch together).
+        messages.append(contentsOf: segmenter.drainAutoProgress())
         for block in completed {
             // Emit BEFORE retaining so dedup compares against the PRIOR emit, then retain the output.
             if let message = emitIfChanged(block) { messages.append(message) }

@@ -111,6 +111,14 @@ public actor AislopdeskClient {
         /// `ssh` / `read -s`). The macOS UI engages process-global Secure Keyboard Entry while `false`. Emitted
         /// only on the edge (the host's `EchoModeDetector` suppresses chatter).
         case inputEcho(enabled: Bool)
+        /// An OSC 9;4 taskbar-style PROGRESS update (E14/K1, wire type 32, host → client). The host parses
+        /// the `ESC]9;4;<state>[;<pct>]` subtype out of the OSC-9 stream and forwards it on the CONTROL
+        /// channel. The decoder carries the RAW state byte verbatim (a faithful byte round-trip keeps the
+        /// golden vector stable); this event carries the byte VALIDATED at the client boundary
+        /// (``ProgressState/init(wire:)``), so an unknown discriminant (4/5/…/255) is DROPPED and never
+        /// reaches the UI. `percent` is clamped 0…100 host-side; it is meaningful for `inProgress`/`error`.
+        /// Drives the per-pane tab badge (spinner / error) + the macOS Dock aggregate. Rides CONTROL.
+        case progress(state: ProgressState, percent: UInt8)
         /// The transport dropped (network loss / clean close). ``ReconnectManager``
         /// reacts to this; surfaced for diagnostics.
         case disconnected(reason: String)
@@ -498,6 +506,13 @@ public actor AislopdeskClient {
             // process-global Secure Keyboard Entry while the remote shell is at a no-echo password prompt.
             // Rides CONTROL; never blocks output.
             eventBroadcaster.yield(.inputEcho(enabled: enabled))
+        case let .progress(state, percent):
+            // OSC 9;4 PROGRESS (type 32, E14): the decoder carried the RAW state byte verbatim (a faithful
+            // byte round-trip keeps the golden vector stable); VALIDATE it HERE at the boundary and DROP an
+            // unknown discriminant (4/5/…/255) rather than forwarding a byte the UI cannot map. The
+            // host-clamped `percent` (0…100) rides through. Only a known state reaches the UI's badge/Dock.
+            guard let validated = ProgressState(wire: state) else { break }
+            eventBroadcaster.yield(.progress(state: validated, percent: percent))
         case let .pong(timestampMS):
             recordPong(sentAtMS: timestampMS)
         default:

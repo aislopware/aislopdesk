@@ -171,6 +171,8 @@ final class AgentControlListenerTests: XCTestCase {
             id: "5", method: "write",
             params: ["paneId": "00000000-0000-0000-0000-000000000000"],
             server: server,
+            // K13 send-keys gate is OFF by default; opt in so this still tests the missing-text path.
+            guards: IPCGuards(allowSendKeys: true, allowSensitiveSessions: true),
         )
         let obj = parseResponseObject(resp)
         XCTAssertEqual(obj?["ok"] as? Bool, false)
@@ -182,6 +184,8 @@ final class AgentControlListenerTests: XCTestCase {
             id: "6", method: "kill",
             params: ["paneId": "00000000-0000-0000-0000-000000000000"],
             server: server,
+            // K13 send-keys gate is OFF by default; opt in so this still tests the unknown-pane path.
+            guards: IPCGuards(allowSendKeys: true, allowSensitiveSessions: true),
         )
         let obj = parseResponseObject(resp)
         XCTAssertEqual(obj?["ok"] as? Bool, false)
@@ -320,6 +324,8 @@ final class AgentControlListenerTests: XCTestCase {
         let server = makeNullServer()
         let resp = AgentControlHandler.dispatch(
             id: "r1", method: "resize", params: ["rows": 24, "cols": 80], server: server,
+            // K13 send-keys gate is OFF by default; opt in so this still tests resize param validation.
+            guards: IPCGuards(allowSendKeys: true, allowSensitiveSessions: true),
         )
         let obj = parseResponseObject(resp)
         XCTAssertEqual(obj?["ok"] as? Bool, false)
@@ -333,6 +339,7 @@ final class AgentControlListenerTests: XCTestCase {
             id: "r2", method: "resize",
             params: ["paneId": "00000000-0000-0000-0000-000000000000", "rows": 0, "cols": 80],
             server: server,
+            guards: IPCGuards(allowSendKeys: true, allowSensitiveSessions: true),
         )
         let obj = parseResponseObject(resp)
         XCTAssertEqual(obj?["ok"] as? Bool, false)
@@ -345,6 +352,7 @@ final class AgentControlListenerTests: XCTestCase {
             id: "r3", method: "resize",
             params: ["paneId": "00000000-0000-0000-0000-000000000000", "rows": 24, "cols": 65536],
             server: server,
+            guards: IPCGuards(allowSendKeys: true, allowSensitiveSessions: true),
         )
         let obj = parseResponseObject(resp)
         XCTAssertEqual(obj?["ok"] as? Bool, false)
@@ -357,6 +365,7 @@ final class AgentControlListenerTests: XCTestCase {
             id: "r4", method: "resize",
             params: ["paneId": "00000000-0000-0000-0000-000000000000", "rows": 24, "cols": 80],
             server: server,
+            guards: IPCGuards(allowSendKeys: true, allowSensitiveSessions: true),
         )
         let obj = parseResponseObject(resp)
         XCTAssertEqual(obj?["ok"] as? Bool, false)
@@ -457,6 +466,8 @@ final class AgentControlListenerTests: XCTestCase {
             id: "s1", method: "resize",
             params: ["rows": 24, "cols": 80], // intentionally missing paneId
             server: server,
+            // K13 send-keys gate is OFF by default; opt in so this still proxies the param-validation path.
+            guards: IPCGuards(allowSendKeys: true, allowSensitiveSessions: true),
         )
         let obj = parseResponseObject(resp)
         XCTAssertEqual(obj?["ok"] as? Bool, false)

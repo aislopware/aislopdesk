@@ -82,6 +82,10 @@ final class AllSettingsCatalogTests: XCTestCase {
             // E10 (Path/link detection — Open With / Link Schemes)
             SettingsKey.linkDetection, SettingsKey.linkCmdClickKey, SettingsKey.linkCmdShiftClickKey,
             SettingsKey.autoDetectLinkSchemesKey, SettingsKey.customLinkSchemes,
+            // E14/K11-K12 (privilege surface — title gates + OSC-52 master switch — Advanced)
+            SettingsKey.titleShellControlled, SettingsKey.titleReport, SettingsKey.clipboardShellControlled,
+            // E14/K13 (IPC guards on the agent-control ctl socket — Advanced)
+            SettingsKey.ipcAllowSendKeys, SettingsKey.ipcAllowSensitiveSessions,
             // Appearance (New Tab Position — tab-setting.png — + chrome orphans + density)
             SettingsKey.newTabPositionKey, SettingsKey.showBlockDividers, SettingsKey.hideStatusBar,
             SettingsKey.density,

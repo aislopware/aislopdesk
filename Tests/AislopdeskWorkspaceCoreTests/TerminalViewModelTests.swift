@@ -70,6 +70,26 @@ final class TerminalViewModelTests: XCTestCase {
         )
     }
 
+    /// E14/K11 "Title — Shell Controlled" (default ON): when the toggle is OFF, an OSC 0/2 `.title` event is
+    /// DROPPED client-side so a remote program cannot rewrite the tab/window title; when ON (the default), the
+    /// title updates as before. Revert-to-confirm-fail: the un-gated `.title` handler updates the title
+    /// regardless of the toggle, so the "OFF must not change" assert fails on it.
+    func testTitleShellControlledGatesTitleUpdate() {
+        defer { UserDefaults.standard.removeObject(forKey: SettingsKey.titleShellControlled) }
+        let model = TerminalViewModel()
+        // Default ON → the title flows through.
+        model.handle(.title("first"))
+        XCTAssertEqual(model.title, "first", "default ON lets the title through")
+        // Gate OFF → a new title event is DROPPED, the prior title preserved.
+        UserDefaults.standard.set(false, forKey: SettingsKey.titleShellControlled)
+        model.handle(.title("hijacked"))
+        XCTAssertEqual(model.title, "first", "Title — Shell Controlled OFF drops the OSC 0/2 title update")
+        // Gate ON again → title updates resume.
+        UserDefaults.standard.set(true, forKey: SettingsKey.titleShellControlled)
+        model.handle(.title("second"))
+        XCTAssertEqual(model.title, "second", "Title — Shell Controlled ON resumes title updates")
+    }
+
     func testBellEventSetsAndClears() {
         let model = TerminalViewModel()
         XCTAssertFalse(model.bellPending)

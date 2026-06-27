@@ -39,6 +39,10 @@ public struct AislopdeskClientApp: App {
     @State private var dialogMonitor: SystemDialogMonitor
     #if os(macOS)
     @State private var clipboardMonitor: ClipboardMonitor
+    /// E14/K5/K8: the macOS Dock progress/error-tint controller (`NSApp.dockTile`). macOS-only — there is no
+    /// iOS Dock. Fed the store's resolved ``WorkspaceStore/dockTileModel`` on each progress/completion edge;
+    /// the K8 bounce rides ``CommandCompletionNotifier/bounceDock``.
+    @State private var dockProgress: DockProgressController
     #endif
     @State private var appLaunchMonitor: AppLaunchMonitor
     @State private var preferences: PreferencesStore
@@ -238,25 +242,45 @@ public struct AislopdeskClientApp: App {
         router.onReveal = { [weak store] idString in store?.revealPane(byIDString: idString) }
         UNUserNotificationCenter.current().delegate = router
         Self.notificationRouter = router
+
+        // E14/K5/K8: the macOS Dock progress/error-tint controller. The K8 bounce is driven from the notifier
+        // (a DELIVERED banner, NOT the bell): the "Bounce Dock Icon" toggle gates it HERE at the actuation seam
+        // so the pure `CommandCompletionNotifier` stays toggle-agnostic. Returning to the app while the Dock is
+        // red jumps to the next failing tab + clears the tint (the closest-faithful stand-in for the dock-click
+        // hook SwiftUI owns — see docs/DECISIONS.md). Retained for the scene lifetime by `_dockProgress` below.
+        let dockProgress = DockProgressController()
+        explicitNotifier.bounceDock = { [weak dockProgress] in
+            guard SettingsKey.bounceDockIconEnabled else { return }
+            dockProgress?.bounce()
+        }
+        dockProgress.onActivatedWhileErrored = { [weak store] in store?.revealNextErrorPane() }
         #endif
 
         // E2/WI-1 (ES-E2-5): surface the SAME background events as IN-APP toasts on BOTH platforms. A toast
         // is in-app UI, INDEPENDENT of the OS-notification setting — push it unconditionally; the macOS
-        // `UNUserNotification` stays gated on `SettingsKey.oscNotificationsEnabled` exactly as before. Each
-        // toast carries a stable `pane.<key>` id so a newer event for the same pane REPLACES the old one (the
-        // coordinator's de-dupe), and a flavour that matches the event class.
-        store.onPaneNotification = { [weak overlay] paneID, paneTitle, title, body in
+        // `UNUserNotification` is gated by the pure ``NotificationPolicy`` (E14/K9 — the per-event toggle +
+        // the Notify-While-Foreground tri-state), applied inside the notifier with the store-supplied
+        // appActive + sourcePaneFocused. Each toast carries a stable `pane.<key>` id so a newer event for the
+        // same pane REPLACES the old one (the coordinator's de-dupe), and a flavour matching the event class.
+        store.onPaneNotification = { [weak overlay, weak store] paneID, paneTitle, title, body in
             overlay?.pushToast(Toast(
                 id: "pane.\(paneID.raw.uuidString)", flavor: .default, title: title, body: body,
             ))
             #if os(macOS)
-            guard SettingsKey.oscNotificationsEnabled else { return }
+            // E14/K9: the OS banner now goes through the pure NotificationPolicy (master "Allow App
+            // Notifications" + the Notify-While-Foreground tri-state) — the store supplies appActive +
+            // whether the SOURCE pane is the focused one. The in-app toast above stays unconditional.
+            guard let store else { return }
             explicitNotifier.notifyExplicit(
+                event: .explicitOSC,
                 paneIDKey: paneID.raw.uuidString, paneTitle: paneTitle, title: title, body: body,
+                appActive: store.isAppActive,
+                sourcePaneFocused: store.isSourcePaneFocused(paneID),
+                settings: SettingsKey.notificationSettings,
             )
             #endif
         }
-        store.onLongCommandNotify = { [weak overlay] paneIDKey, paneTitle, exitCode, durationMS in
+        store.onLongCommandNotify = { [weak overlay, weak store] paneIDKey, paneTitle, exitCode, durationMS in
             // The store fires this ONLY for an unfocused, genuinely-long command (its own gate), so a toast
             // here is the background "your build finished" cue. A clean exit is `.success`; a non-zero exit is
             // `.error` (a green checkmark on a failed build would mislead).
@@ -269,12 +293,18 @@ public struct AislopdeskClientApp: App {
                 body: "command finished (exit \(exitCode.map(String.init) ?? "?"), \(secs)s)",
             ))
             #if os(macOS)
+            // E14/K9: route the OS banner through NotificationPolicy — Notify on Finish (clean exit, default
+            // OFF) / Notify on Error Exit (non-zero, default ON) + the Notify-While-Foreground gate.
+            guard let store else { return }
             explicitNotifier.notifyIfLong(
                 paneTitle: paneTitle, exitCode: exitCode, durationMS: durationMS, paneIDKey: paneIDKey,
+                appActive: store.isAppActive,
+                sourcePaneFocused: store.isSourcePaneFocused(byIDString: paneIDKey),
+                settings: SettingsKey.notificationSettings,
             )
             #endif
         }
-        store.onAgentAttention = { [weak overlay] paneIDKey, name, needsInput, detail in
+        store.onAgentAttention = { [weak overlay, weak store] paneIDKey, name, needsInput, detail in
             let headline = needsInput ? "needs your input" : "finished"
             let body: String = {
                 guard let detail, !detail.isEmpty else { return headline }
@@ -287,9 +317,16 @@ public struct AislopdeskClientApp: App {
                 title: name, body: body,
             ))
             #if os(macOS)
-            guard SettingsKey.oscNotificationsEnabled else { return }
+            // E14/K9: agent edges (Claude-only, reusing AttentionSupervision) ride their OWN per-event
+            // toggles — awaiting-input vs task-complete — NOT the shell-app master switch, then the
+            // Notify-While-Foreground gate.
+            guard let store else { return }
             explicitNotifier.notifyExplicit(
+                event: needsInput ? .agentAwaitInput : .agentTaskComplete,
                 paneIDKey: paneIDKey, paneTitle: name, title: name, body: body,
+                appActive: store.isAppActive,
+                sourcePaneFocused: store.isSourcePaneFocused(byIDString: paneIDKey),
+                settings: SettingsKey.notificationSettings,
             )
             #endif
         }
@@ -319,6 +356,7 @@ public struct AislopdeskClientApp: App {
         _appLaunchMonitor = State(initialValue: launchMonitor)
         #if os(macOS)
         _clipboardMonitor = State(initialValue: ClipboardMonitor(store: store))
+        _dockProgress = State(initialValue: dockProgress)
         // WS-B / B3: build the live keybinding dispatcher over the single store. A new-pane action (split /
         // new-tab / new-session / floating) mints an in-pane `.chooser` pane via the store's routing, focused,
         // so the user picks Terminal / Remote window INSIDE the new pane; ⌘T stays a direct-terminal escape
@@ -418,6 +456,13 @@ public struct AislopdeskClientApp: App {
                 // drives); the monitor swallows ONLY the prefix + armed follow-ups + bound chords and passes
                 // every bare key through, so it never interferes with autoconnect typing.
                 .task { keyDispatcher.install() }
+                // E14/K5/K8: drive the macOS Dock tile from the store's resolved aggregate. `dockTileModel`
+                // reads `paneProgress` + `panePendingCompletion` (@Observable), so a progress/completion edge
+                // re-renders here and re-applies the tile; a last-session-end edge resolves to `.inert` → the
+                // controller CLEARS (no stuck red tile). The initial `.task` applies any restored state once
+                // (onChange fires only on a change).
+                .onChange(of: store.dockTileModel) { _, model in dockProgress.apply(model) }
+                .task { dockProgress.apply(store.dockTileModel) }
             #endif
                 .task {
                     guard !Self.hasAutomationEnvironment() else { return }
@@ -464,6 +509,9 @@ public struct AislopdeskClientApp: App {
                 // macOS delivers no reliable flush on ⌘Q; flush the tree synchronously on termination.
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     store.saveImmediately()
+                    // E14/K5/K8: reset the process-global Dock tile on teardown so a quit never leaves a
+                    // stuck progress/red tile behind for the next app to inherit.
+                    dockProgress.clear()
                 }
             #endif
         }

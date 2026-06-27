@@ -96,6 +96,13 @@ public final class ConnectionViewModel {
     /// dropped). Cross-platform (the store owns the macOS-only poster behind its `onLongCommandNotify` sink).
     public var onCommandCompleted: ((_ exitCode: Int32?, _ durationMS: UInt32) -> Void)?
 
+    /// An OSC 9;4 taskbar-style PROGRESS update (E14/K1, wire type 32). The store wires this to
+    /// ``WorkspaceStore/handleProgress(_:for:)`` so the validated state lands in the per-pane `paneProgress`
+    /// mirror (→ the sidebar tab badge + the macOS Dock aggregate). A ``ProgressState/clear`` arrives as `nil`
+    /// (remove the indicator). `nil` ⇒ no observer (the side-effect is dropped); the terminal model still folds
+    /// its own observable `progress` mirror via `terminal.handle` regardless.
+    public var onProgressUpdate: ((_ progress: PaneProgress?) -> Void)?
+
     private var client: AislopdeskClient?
     /// The pane's typed metadata façade (E4), created on connect bound to the live ``client`` and torn
     /// down on disconnect. The inspector's ``PaneMetadataModel`` drives it; this VM folds the inbound
@@ -533,6 +540,10 @@ public final class ConnectionViewModel {
     private func foldEvent(_ event: AislopdeskClient.Event) {
         switch event {
         case .disconnected:
+            // A dropped link's last OSC 9;4 is a lie for the reconnect — clear the store's per-pane progress
+            // mirror (the badge source) so it agrees with the terminal model, which clears its own `progress`
+            // on the same edge (no stuck spinner across a drop/reconnect). The fresh shell re-reports its own.
+            onProgressUpdate?(nil)
             if deliberatelyClosed {
                 status = .disconnected
             } else {
@@ -574,6 +585,9 @@ public final class ConnectionViewModel {
             }
         case .exit:
             status = .disconnected
+            // A terminated shell reports no progress — clear the store's per-pane mirror to match the terminal
+            // model's own `.exit` clear (no stuck OSC 9;4 spinner on a dead pane).
+            onProgressUpdate?(nil)
         case let .commandStatus(commandStatus):
             // A finished command (OSC 133;D): route the completion to the store, which owns the FOCUS
             // GATE (badge an unfocused pane; notify only for a backgrounded long command). Moving the
@@ -628,6 +642,12 @@ public final class ConnectionViewModel {
             // (`terminal.handle` below) into `hostNoEcho` → the `secureInputActive` pill mirror + the macOS
             // leaf's `SecureKeyboardEntryController`. No connection-layer side effect here.
             break
+        case let .progress(state, percent):
+            // OSC 9;4 PROGRESS (E14/K1, wire type 32): route the validated taskbar-style progress to the
+            // store's per-pane mirror (→ the sidebar tab badge + the macOS Dock aggregate). The terminal model
+            // ALSO folds it (`terminal.handle` below) into its observable `progress` mirror for the pane
+            // status strip / Dock read. `PaneProgress(state:percent:)` maps a `.clear` to `nil` (remove it).
+            onProgressUpdate?(PaneProgress(state: state, percent: percent))
         case .bell:
             break
         }

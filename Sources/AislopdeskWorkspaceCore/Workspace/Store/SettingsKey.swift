@@ -27,6 +27,30 @@ public enum SettingsKey {
     // Notifications
     public static let oscNotifications = "notifications.osc"
     public static let longCommandNotifications = "notifications.longCommand"
+    // E14/K9 (notification-setting.png NOTIFICATION section). Fire-time `Defaults.Keys` flags, never folded
+    // into a typed prefs model (golden-safe, like `oscNotifications`). The pure ``NotificationPolicy`` reads
+    // the resolved ``notificationSettings`` bundle; the UI (WI-7 navigator) binds the SAME keys.
+    /// otty "Notify on Command Finish" — fire when a command exits 0 (default OFF).
+    public static let notifyOnFinish = "notifications.onFinish"
+    /// otty "Notify on Error Exit" — fire when a command exits non-zero (default ON).
+    public static let notifyOnError = "notifications.onError"
+    /// otty "Notify on Watch Finish" — fire when an `aislopdesk watch`-wrapped command finishes (default ON).
+    public static let notifyOnWatchFinish = "notifications.onWatchFinish"
+    /// otty "Notify While Foreground" — banner behaviour while the app is frontmost. Stored as the
+    /// ``NotifyWhileForeground`` rawValue (`off`/`always`/`tab-unfocused`); default `.off`. Named with the
+    /// `Key` suffix (like ``newTabPositionKey``) so the typed accessor below takes the bare name.
+    public static let notifyWhileForegroundKey = "notifications.whileForeground" // NotifyWhileForeground.rawValue
+    /// otty "Bounce Dock Icon" — bounce the Dock when a notification arrives and the app is not focused
+    /// (default ON; macOS-only behaviour — the Dock tile is process-global, wired in WI-5).
+    public static let bounceDockIcon = "notifications.bounceDock"
+    /// otty "Sound — Shell Controlled" — a `BEL` rings `NSSound.beep()` (default ON). Read by ``BellPolicy``.
+    public static let soundShellControlled = "notifications.soundShellControlled"
+    /// otty "Sound on Error Exit" — beep when a command exits non-zero (default OFF). Read by ``ErrorSoundPolicy``.
+    public static let soundOnErrorExit = "notifications.soundOnErrorExit"
+    /// otty "Code Agent — Notify When Task Completes" — agent went idle (default ON; Claude-only).
+    public static let agentNotifyTaskComplete = "notifications.agentTaskComplete"
+    /// otty "Code Agent — Notify When Awaiting Input" — agent needs approval / input (default ON; Claude-only).
+    public static let agentNotifyAwaitInput = "notifications.agentAwaitInput"
     // Controls / scroll / copy (otty Controls section). These are FIRE-TIME `Defaults.Keys` flags — they
     // are deliberately NOT folded into any typed prefs model, so they never reach the `EnvConfig` overlay
     // or the `video-prefs.json` sidecar (golden-safe by construction, like `oscNotifications`). E8 owns the
@@ -105,6 +129,22 @@ public enum SettingsKey {
     /// active (default ON; macOS-only). **WI-7 owns it.**
     public static let secureInputIndicator = "controls.secureInputIndicator"
 
+    // E14/K11-K12 (terminal-features__notifications.md privilege surface — Settings → Advanced). Fire-time
+    // `Defaults.Keys` flags (never folded into a typed prefs model → golden-safe, like the clipboard keys).
+    // These gate what an OSC sequence from the remote shell is allowed to do client-side.
+    /// otty "Title — Shell Controlled" — allow apps to set the tab/window title via `OSC 0` / `OSC 2`
+    /// (default ON). Read fire-time by ``TerminalViewModel`` at the `.title` event: OFF drops the title update.
+    public static let titleShellControlled = "controls.titleShellControlled"
+    /// otty "Title Report" — allow apps to read the window title back via `OSC 21` / XTWINOPS (default OFF —
+    /// a program that can both set and read the title can exfiltrate data through a pane). **CEILING:** the
+    /// pinned libghostty fork answers XTWINOPS itself with no enable/disable hook on the ``TerminalSurface``
+    /// seam, so this persists/surfaces but does NOT yet actuate — see docs/DECISIONS.md (E14 WI-7).
+    public static let titleReport = "controls.titleReport"
+    /// otty "Clipboard — Shell Controlled" — the master switch for the whole `OSC 52` clipboard path (default
+    /// ON). When OFF, ``TerminalControls/from(defaults:)`` resolves BOTH read + write to ``ClipboardAccess/deny``
+    /// ahead of the per-direction gate, so the libghostty config emits `clipboard-read/write = deny`.
+    public static let clipboardShellControlled = "controls.clipboardShellControlled"
+
     // E10 (Path/link detection — otty Settings → Controls → Open With / Link Schemes). Fire-time
     // `Defaults.Keys` flags (never folded into a typed prefs model → golden-safe). Declared + persisted here
     // so the Controls UI round-trips; E10 WI-5/6/8/9 read them fire-time (the ⌘-hold underline, the
@@ -138,6 +178,30 @@ public enum SettingsKey {
     public static let autoSwitchLayouts = "features.autoSwitchLayouts"
     public static let redactSecrets = "features.redactSecrets"
     public static let recordClipboardHistory = "features.recordClipboardHistory"
+    /// otty "Auto Progress-Bar Commands" (E14/K2) — the whitespace-delimited command PREFIX list that
+    /// auto-emits an INDETERMINATE OSC-9;4 progress spinner while running (Settings → Advanced). Default =
+    /// the otty built-in slow-command list (``autoProgressCommandsBuiltIn``); clearing the list disables
+    /// auto-progress entirely. The CLIENT setting is the EDIT/DISPLAY surface; the HOST resolves its own
+    /// copy from `AISLOPDESK_AUTO_PROGRESS_COMMANDS` at launch (set identically host+client, like
+    /// `AISLOPDESK_FEC_M`) — a live edit re-drives the host on the NEXT launch. Stored `[String]`.
+    public static let autoProgressCommands = "advanced.autoProgressCommands" // [String]
+    // E14/K13 (IPC guards on the agent-control ctl socket — terminal-features__notifications.md privilege
+    // surface → Settings → Advanced). Fire-time `Defaults.Keys` flags (never folded into a typed prefs model
+    // → golden-safe, like `autoProgressCommands`). These are CLIENT-displayed toggles whose ENFORCEMENT is
+    // HOST-side: the guard runs on the host's NDJSON ctl socket, so a live client edit applies on the NEXT
+    // host launch via the env bridge (same resolution discipline as K2 — set identically host+client, like
+    // `AISLOPDESK_FEC_M`). The threat model differs from otty's local-process IPC (the WireGuard mesh is the
+    // security boundary); this maps the toggles onto the host agent-control socket. See docs/DECISIONS.md.
+    /// otty/E14-K13 "IPC — Allow Send Keys" — whether the agent-control ctl socket may run the MUTATING verbs
+    /// (`write`/`run`/`spawn`/`kill`/`resize`, the "send keys" equivalents). Default OFF. The host ENFORCES
+    /// via `HostEnvironment.ipcAllowSendKeys()` (`AISLOPDESK_IPC_ALLOW_SEND_KEYS`); read-only verbs
+    /// (`list-panes`/`read`/`wait`/`report`) are ALWAYS allowed. Stored Bool.
+    public static let ipcAllowSendKeys = "advanced.ipcAllowSendKeys"
+    /// otty/E14-K13 "IPC — Allow Sensitive Sessions" — whether a mutating ctl verb may target a pane whose
+    /// foreground process is a SENSITIVE command (`ssh`/`sudo`/`login`/…). Default OFF — OFF refuses
+    /// send-keys into a live password prompt. Host-enforced via `AISLOPDESK_IPC_ALLOW_SENSITIVE`; same
+    /// next-launch env-bridge discipline as ``ipcAllowSendKeys``. Stored Bool.
+    public static let ipcAllowSensitiveSessions = "advanced.ipcAllowSensitiveSessions"
     // Appearance / chrome
     /// The active ``DSDensity`` tier rawValue. Mirrors ``DSDensity/storageKey`` (the SAME `UserDefaults`
     /// key ``DSThemeStore`` reads at init + on a Settings change) so the picker, persistence, and the live
@@ -147,6 +211,17 @@ public enum SettingsKey {
     public static let hideStatusBar = "appearance.hideStatusBar"
     /// Whether the per-block sticky command divider/header is shown over terminal panes. Default ON.
     public static let showBlockDividers = "terminal.showBlockDividers"
+    // E14/K5/K8 (terminal-features__progress-state.md "DOCK ICON" group). macOS-only NSDockTile behaviour;
+    // the keys still compile + round-trip on iOS, where the feature is inert (no Dock). Fire-time
+    // `Defaults.Keys` flags, never folded into a typed prefs model → golden-safe (like `hideStatusBar`).
+    /// otty "Animate Dock Icon During Progress" (`dock-icon-animate-progress`) — animate the macOS Dock tile
+    /// while ANY session reports an OSC 9;4 in-progress / indeterminate state (default OFF; macOS-only). Read
+    /// by the macOS ``DockProgressController`` via the pure ``DockTintPolicy``.
+    public static let dockIconAnimateProgress = "appearance.dockIconAnimateProgress"
+    /// otty "Red Icon on Error" (`dock-icon-error-badge`) — tint the macOS Dock tile red when any session
+    /// reports a non-zero exit / OSC 9;4;2 error; clicking the Dock jumps to the next failing tab + clears the
+    /// tint (default ON; macOS-only). Read by the macOS ``DockProgressController`` via ``DockTintPolicy``.
+    public static let dockIconErrorBadge = "appearance.dockIconErrorBadge"
     // E12 (Composer / Prompt Queue). Fire-time `Defaults.Keys` flags — like the E8 Controls knobs they are
     // NEVER folded into the env overlay / sidecar (golden-safe by construction). They MIRROR the typed
     // `TerminalPreferences.composer*` client-pref fields; the leaf view reads these fire-time accessors so it
@@ -207,6 +282,54 @@ public enum SettingsKey {
     /// Whether the long-command completion notification should post (default ON). Read at fire-time.
     public static var longCommandNotificationsEnabled: Bool { Defaults[.longCommandNotifications] }
 
+    // MARK: E14/K9 notification policy (fire-time accessors → the resolved `notificationSettings` bundle)
+
+    /// otty "Notify on Command Finish" — fire when a command exits 0 (default OFF). Read at fire-time.
+    public static var notifyOnFinishEnabled: Bool { Defaults[.notifyOnFinish] }
+
+    /// otty "Notify on Error Exit" — fire when a command exits non-zero (default ON). Read at fire-time.
+    public static var notifyOnErrorEnabled: Bool { Defaults[.notifyOnError] }
+
+    /// otty "Notify on Watch Finish" — fire when an `aislopdesk watch`-wrapped command finishes (default ON).
+    public static var notifyOnWatchFinishEnabled: Bool { Defaults[.notifyOnWatchFinish] }
+
+    /// otty "Notify While Foreground" — banner behaviour while the app is frontmost (default
+    /// ``NotifyWhileForeground/off``). A stale / invalid persisted raw value repairs to `.off` via the
+    /// `RawRepresentableBridge`. Read at fire-time.
+    public static var notifyWhileForeground: NotifyWhileForeground { Defaults[.notifyWhileForeground] }
+
+    /// otty "Bounce Dock Icon" — bounce the Dock when a notification arrives and the app is unfocused
+    /// (default ON; macOS-only behaviour, actuated in WI-5). Read at fire-time.
+    public static var bounceDockIconEnabled: Bool { Defaults[.bounceDockIcon] }
+
+    /// otty "Sound — Shell Controlled" — a `BEL` rings the system beep (default ON). Read at fire-time.
+    public static var soundShellControlledEnabled: Bool { Defaults[.soundShellControlled] }
+
+    /// otty "Sound on Error Exit" — beep when a command exits non-zero (default OFF). Read at fire-time.
+    public static var soundOnErrorExitEnabled: Bool { Defaults[.soundOnErrorExit] }
+
+    /// otty "Code Agent — Notify When Task Completes" (default ON; Claude-only). Read at fire-time.
+    public static var agentNotifyTaskCompleteEnabled: Bool { Defaults[.agentNotifyTaskComplete] }
+
+    /// otty "Code Agent — Notify When Awaiting Input" (default ON; Claude-only). Read at fire-time.
+    public static var agentNotifyAwaitInputEnabled: Bool { Defaults[.agentNotifyAwaitInput] }
+
+    /// The resolved ``NotificationSettings`` bundle the pure ``NotificationPolicy`` consumes — the ONE seam
+    /// the macOS poster (``CommandCompletionNotifier``) reads so the notification toggles are applied in
+    /// exactly one place (mirrors ``linkSchemePolicy``). The master "Allow App Notifications" maps onto the
+    /// existing ``oscNotifications`` key.
+    public static var notificationSettings: NotificationSettings {
+        NotificationSettings(
+            appNotificationsEnabled: oscNotificationsEnabled,
+            notifyOnFinish: notifyOnFinishEnabled,
+            notifyOnError: notifyOnErrorEnabled,
+            notifyOnWatchFinish: notifyOnWatchFinishEnabled,
+            notifyWhileForeground: notifyWhileForeground,
+            agentNotifyTaskComplete: agentNotifyTaskCompleteEnabled,
+            agentNotifyAwaitInput: agentNotifyAwaitInputEnabled,
+        )
+    }
+
     /// Whether the system-dialog monitor should auto-spawn dialog panes (default ON). The
     /// `AISLOPDESK_SYSTEM_DIALOG_PANES` env var still overrides for tests (`0` off / `force` on).
     public static var systemDialogPanesEnabled: Bool { Defaults[.systemDialogPanes] }
@@ -223,12 +346,71 @@ public enum SettingsKey {
     /// History".
     public static var recordClipboardHistoryEnabled: Bool { Defaults[.recordClipboardHistory] }
 
+    /// The otty built-in slow-command prefix list (E14/K2) — the DEFAULT for ``autoProgressCommands``
+    /// and the value otty pre-populates in the field. CLIENT-SIDE mirror of the host's
+    /// `AutoProgressMatcher.builtInPrefixes` (the two live in different modules — `AislopdeskWorkspaceCore`
+    /// cannot import `AislopdeskHost` — so the canonical list is duplicated; this copy is the DISPLAY/edit
+    /// default, the host copy is the ENFORCEMENT fallback). Keep the two in sync; see docs/DECISIONS.md.
+    public static let autoProgressCommandsBuiltIn: [String] = [
+        "curl",
+        "wget",
+        "rsync",
+        "scp",
+        "git fetch",
+        "git pull",
+        "git push",
+        "git clone",
+        "brew install",
+        "brew update",
+        "brew upgrade",
+        "npm install",
+        "pnpm install",
+        "yarn install",
+        "bun install",
+        "pip install",
+        "cargo build",
+        "cargo install",
+        "cargo update",
+        "docker pull",
+        "docker push",
+        "docker build",
+        "apt install",
+        "apt update",
+        "apt upgrade",
+        "apt-get install",
+        "apt-get update",
+        "apt-get upgrade",
+    ]
+
+    /// The configured auto-progress slow-command prefix list (E14/K2), default ``autoProgressCommandsBuiltIn``.
+    /// The read seam the client→host env bridge serialises into `AISLOPDESK_AUTO_PROGRESS_COMMANDS`; an
+    /// empty list disables auto-progress entirely. Read at fire-time.
+    public static var autoProgressCommandsList: [String] { Defaults[.autoProgressCommands] }
+
+    /// otty/E14-K13 "IPC — Allow Send Keys" (default OFF) — the CLIENT edit/display surface for the host
+    /// ctl-socket send-keys guard. The host ENFORCES via `HostEnvironment.ipcAllowSendKeys()`; this toggle
+    /// round-trips today + bridges to the host env on the next launch. Read at fire-time.
+    public static var ipcAllowSendKeysEnabled: Bool { Defaults[.ipcAllowSendKeys] }
+
+    /// otty/E14-K13 "IPC — Allow Sensitive Sessions" (default OFF) — the CLIENT edit/display surface for the
+    /// host ctl-socket sensitive-session guard. Host-enforced via `HostEnvironment.ipcAllowSensitiveSessions()`.
+    /// Read at fire-time.
+    public static var ipcAllowSensitiveSessionsEnabled: Bool { Defaults[.ipcAllowSensitiveSessions] }
+
     /// Whether the bottom status bar is hidden (default OFF — the strip shows unless the user hides it).
     /// Read at fire-time so a Settings change applies on the next render.
     public static var hideStatusBarEnabled: Bool { Defaults[.hideStatusBar] }
 
     /// Whether the per-block command divider/header is shown (default ON). Read at fire-time.
     public static var showBlockDividersEnabled: Bool { Defaults[.showBlockDividers] }
+
+    /// Whether the macOS Dock tile animates during OSC 9;4 progress (otty `dock-icon-animate-progress`),
+    /// default OFF (macOS-only; inert on iOS). Read fire-time by ``DockProgressController`` via ``DockTintPolicy``.
+    public static var dockIconAnimateProgressEnabled: Bool { Defaults[.dockIconAnimateProgress] }
+
+    /// Whether the macOS Dock tile tints red on a non-zero exit / OSC 9;4;2 error (otty `dock-icon-error-badge`),
+    /// default ON (macOS-only; inert on iOS). Read fire-time by ``DockProgressController`` via ``DockTintPolicy``.
+    public static var dockIconErrorBadgeEnabled: Bool { Defaults[.dockIconErrorBadge] }
 
     /// The resolved Composer max-height fraction (otty "Composer max height", E12) — the persisted value
     /// clamped into a sane `0.15…0.9` band, or ``TerminalPreferences/defaultComposerMaxHeightFraction`` (~0.4)
@@ -394,6 +576,21 @@ public enum SettingsKey {
     /// A stale / invalid persisted raw value repairs to `.ask` via the `RawRepresentableBridge`.
     public static var clipboardRead: ClipboardAccess { Defaults[.clipboardRead] }
 
+    // MARK: E14/K11-K12 privilege surface (title + OSC-52 master switch)
+
+    /// otty "Title — Shell Controlled" — whether a remote `OSC 0` / `OSC 2` may set the tab/window title
+    /// (default ON). Read fire-time by ``TerminalViewModel`` at the `.title` event (OFF drops the update).
+    public static var titleShellControlledEnabled: Bool { Defaults[.titleShellControlled] }
+
+    /// otty "Title Report" — whether apps may read the window title back via `OSC 21` / XTWINOPS (default
+    /// OFF). **CEILING:** persists/surfaces but does not yet actuate (the libghostty fork owns XTWINOPS with
+    /// no enable hook — docs/DECISIONS.md E14 WI-7). Read fire-time for forward-compatibility.
+    public static var titleReportEnabled: Bool { Defaults[.titleReport] }
+
+    /// otty "Clipboard — Shell Controlled" — the master switch gating the whole `OSC 52` path (default ON).
+    /// When OFF, ``TerminalControls/from(defaults:)`` resolves read + write to ``ClipboardAccess/deny``.
+    public static var clipboardShellControlledEnabled: Bool { Defaults[.clipboardShellControlled] }
+
     /// Whether ⇧ bypasses a program's mouse capture (otty `mouse-shift-capture`, Allow Shift with Mouse
     /// Click), default ``MouseShiftCapture/enabled``. A stale / invalid raw value repairs to `.enabled`.
     public static var allowShiftClick: MouseShiftCapture { Defaults[.allowShiftClick] }
@@ -463,12 +660,43 @@ public enum SettingsKey {
 public extension Defaults.Keys {
     static let oscNotifications = Key<Bool>(SettingsKey.oscNotifications, default: true)
     static let longCommandNotifications = Key<Bool>(SettingsKey.longCommandNotifications, default: true)
+    // E14/K9 notification policy (notification-setting.png). Fire-time flags, never folded into a typed prefs
+    // model → golden-safe. The enum-valued `notifyWhileForeground` stores the bare rawValue via the
+    // `RawRepresentableBridge` (repairing a stale value to `.off`, like `closeConfirmTab`).
+    static let notifyOnFinish = Key<Bool>(SettingsKey.notifyOnFinish, default: false)
+    static let notifyOnError = Key<Bool>(SettingsKey.notifyOnError, default: true)
+    static let notifyOnWatchFinish = Key<Bool>(SettingsKey.notifyOnWatchFinish, default: true)
+    static let notifyWhileForeground = Key<NotifyWhileForeground>(
+        SettingsKey.notifyWhileForegroundKey,
+        default: .off,
+    )
+    static let bounceDockIcon = Key<Bool>(SettingsKey.bounceDockIcon, default: true)
+    static let soundShellControlled = Key<Bool>(SettingsKey.soundShellControlled, default: true)
+    static let soundOnErrorExit = Key<Bool>(SettingsKey.soundOnErrorExit, default: false)
+    static let agentNotifyTaskComplete = Key<Bool>(SettingsKey.agentNotifyTaskComplete, default: true)
+    static let agentNotifyAwaitInput = Key<Bool>(SettingsKey.agentNotifyAwaitInput, default: true)
     static let systemDialogPanes = Key<Bool>(SettingsKey.systemDialogPanes, default: true)
     static let autoSwitchLayouts = Key<Bool>(SettingsKey.autoSwitchLayouts, default: true)
     static let redactSecrets = Key<Bool>(SettingsKey.redactSecrets, default: true)
     static let recordClipboardHistory = Key<Bool>(SettingsKey.recordClipboardHistory, default: true)
+    // E14/K2: the otty "Auto Progress-Bar Commands" list. Fire-time `[String]` key (never folded into a
+    // typed prefs model → golden-safe, like `customLinkSchemes`). Default = the built-in slow-command
+    // list; the host enforces its own copy from `AISLOPDESK_AUTO_PROGRESS_COMMANDS`.
+    static let autoProgressCommands = Key<[String]>(
+        SettingsKey.autoProgressCommands,
+        default: SettingsKey.autoProgressCommandsBuiltIn,
+    )
+    // E14/K13: the IPC guards on the agent-control ctl socket. Fire-time flags (never folded into a typed
+    // prefs model → golden-safe). Both default OFF (conservative — mutation/sensitive access is opt-in); the
+    // host enforces its own copy via AISLOPDESK_IPC_ALLOW_SEND_KEYS / _SENSITIVE on the next launch.
+    static let ipcAllowSendKeys = Key<Bool>(SettingsKey.ipcAllowSendKeys, default: false)
+    static let ipcAllowSensitiveSessions = Key<Bool>(SettingsKey.ipcAllowSensitiveSessions, default: false)
     static let hideStatusBar = Key<Bool>(SettingsKey.hideStatusBar, default: false)
     static let showBlockDividers = Key<Bool>(SettingsKey.showBlockDividers, default: true)
+    // E14/K5/K8 Dock-icon toggles (macOS-only NSDockTile; the keys compile + round-trip on iOS, inert there).
+    // Fire-time flags, never folded into a typed prefs model → golden-safe. Animate default OFF, error-tint ON.
+    static let dockIconAnimateProgress = Key<Bool>(SettingsKey.dockIconAnimateProgress, default: false)
+    static let dockIconErrorBadge = Key<Bool>(SettingsKey.dockIconErrorBadge, default: true)
     // E12 Composer / Prompt Queue — fire-time flags, never folded into the env overlay / sidecar (golden-safe).
     // The max-height default mirrors `TerminalPreferences.defaultComposerMaxHeightFraction` (one source).
     static let composerMaxHeight = Key<Double>(
@@ -530,6 +758,13 @@ public extension Defaults.Keys {
     static let secureInputIndicator = Key<Bool>(SettingsKey.secureInputIndicator, default: true)
     static let clipboardWrite = Key<ClipboardAccess>(SettingsKey.clipboardWriteKey, default: .allow)
     static let clipboardRead = Key<ClipboardAccess>(SettingsKey.clipboardReadKey, default: .ask)
+    // E14/K11-K12 privilege surface (terminal-features__notifications.md → Settings → Advanced). Fire-time
+    // flags, never folded into a typed prefs model → golden-safe. Title — Shell Controlled + Clipboard —
+    // Shell Controlled default ON; Title Report defaults OFF (the conservative exfiltration-safe default, and
+    // it cannot yet actuate — see docs/DECISIONS.md E14 WI-7).
+    static let titleShellControlled = Key<Bool>(SettingsKey.titleShellControlled, default: true)
+    static let titleReport = Key<Bool>(SettingsKey.titleReport, default: false)
+    static let clipboardShellControlled = Key<Bool>(SettingsKey.clipboardShellControlled, default: true)
     static let allowShiftClick = Key<MouseShiftCapture>(SettingsKey.allowShiftClickKey, default: .enabled)
     static let rightClickAction = Key<RightClickAction>(SettingsKey.rightClickActionKey, default: .contextMenu)
     static let scrollPastLastLine = Key<ScrollPastLast>(SettingsKey.scrollPastLastLineKey, default: .disabled)
@@ -578,6 +813,12 @@ extension CloseConfirmationPolicy: Defaults.Serializable, Defaults.PreferRawRepr
 /// the `RawRepresentableBridge`. A stale / invalid raw value repairs to `.restoreLastSession` via the enum's
 /// own non-failable ``OnLaunchBehavior/init(rawValue:)`` (and the key default is also `.restoreLastSession`).
 extension OnLaunchBehavior: Defaults.Serializable, Defaults.PreferRawRepresentable {}
+
+/// Store ``NotifyWhileForeground`` as its bare `String` rawValue (`off`/`always`/`tab-unfocused`) so the
+/// persisted otty "Notify While Foreground" setting round-trips with the otty config value (E14/K9);
+/// `PreferRawRepresentable` selects the `RawRepresentableBridge`, which yields the key default (`.off`) for a
+/// stale / invalid raw value — the same shape as ``CloseConfirmationPolicy``.
+extension NotifyWhileForeground: Defaults.Serializable, Defaults.PreferRawRepresentable {}
 
 /// Store the E8 Controls / Mouse / Scroll enums as their bare `String` rawValue (the otty / aislopdesk
 /// config tokens) so each persisted setting round-trips compactly; `PreferRawRepresentable` selects the

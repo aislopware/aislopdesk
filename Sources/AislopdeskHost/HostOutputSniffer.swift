@@ -92,6 +92,13 @@ public final class HostOutputSniffer: @unchecked Sendable {
     /// The last title we emitted, for trivial coalescing (don't spam identical titles).
     private var lastTitle: String?
 
+    /// IN-FLIGHT kitty (OSC 99) notifications keyed by their `i=<id>` group (or `""` when the chunk
+    /// omits `i`), accumulated across `d=0` continuation chunks and FINALIZED + emitted at the `d=1`
+    /// (default) chunk. Bounded by ``kittyAssemblyMax`` entries / ``kittyAssemblyCap`` chars; an OSC-99
+    /// sequence mutates this only at completion (``finishOSC``), exactly like ``lastTitle`` — so the
+    /// chunk-invariance oracle (byte-split == whole) still holds.
+    private var kittyAssembly: [String: (title: String, body: String)] = [:]
+
     /// Hard cap on the buffered OSC payload (the TITLE sniffer's cap — the larger of the
     /// two). A real title is tiny; anything longer is not a title we care about — abandon it
     /// and resync. (Generous enough for long window titles / paths, small enough to bound a
@@ -104,9 +111,21 @@ public final class HostOutputSniffer: @unchecked Sendable {
     /// re-impose 256 on the 133 branch to keep those payloads ignored byte-for-byte.
     private static let cmdOscCap = 256
 
-    /// Payload cap for the OSC 9 / OSC 777 notification path: a real notification line is short;
-    /// a multi-kilobyte one is not worth surfacing as a desktop alert (and bounds a hostile stream).
+    /// Payload cap for the OSC 9 / OSC 777 / OSC 99 notification path: a real notification line is
+    /// short; a multi-kilobyte one is not worth surfacing as a desktop alert (and bounds a hostile
+    /// stream). Applied per OSC sequence (each chunk), before any parse.
     private static let notifyOscCap = 1024
+
+    /// Bounded number of IN-FLIGHT kitty (OSC 99) notifications being assembled across `d=0`
+    /// continuation chunks, keyed by their `i=<id>` group. A hostile stream that opens many distinct
+    /// ids with `d=0` can never grow ``kittyAssembly`` past this — a brand-new id over the cap is
+    /// DROPPED (validate-then-drop), not buffered.
+    private static let kittyAssemblyMax = 8
+
+    /// Bounded TOTAL assembled (title + body) character length for a single in-flight kitty
+    /// notification; a `d=0` stream that keeps appending is abandoned once it exceeds this. Each
+    /// chunk is already ≤ ``notifyOscCap``; this additionally bounds the cross-chunk accumulation.
+    private static let kittyAssemblyCap = 4096
 
     private static let esc: UInt8 = 0x1B
     private static let bel: UInt8 = 0x07
@@ -336,7 +355,7 @@ public final class HostOutputSniffer: @unchecked Sendable {
         }
     }
 
-    // MARK: OSC handling — fused dispatch: OSC 0/2 (title) + OSC 133 C/D (command status)
+    // MARK: OSC handling — fused dispatch: title (0/2) + command status (133) + notifications (9/777/99)
 
     private func finishOSC(into messages: inout [WireMessage]) {
         defer { oscBuffer.removeAll(keepingCapacity: true) }
@@ -406,9 +425,15 @@ public final class HostOutputSniffer: @unchecked Sendable {
             // OSC 9 is overloaded: iTerm2/ConEmu use `ESC]9;4;<state>;<pct>` for the taskbar PROGRESS-BAR
             // protocol (emitted continuously by winget, long builds, etc.), NOT a desktop notification.
             // Surfacing those as alerts with body text like "4;1;50" floods the user with raw program
-            // output. Only the free-text iTerm2 form (`ESC]9;<message>`) is a real notification — skip the
-            // `9;4` progress subtype.
-            guard body != "4", !body.hasPrefix("4;") else { return }
+            // output. So the `9;4` subtype is parsed into a `.progress` CONTROL message (E14/K1) — never
+            // a `.notification` — while the free-text iTerm2 form (`ESC]9;<message>`) stays a notification,
+            // BYTE-IDENTICAL to before (only the previously-DROPPED `9;4` subtype now emits progress).
+            if body == "4" || body.hasPrefix("4;") {
+                if let (state, percent) = ProgressOSCParser.parse(body) {
+                    messages.append(.progress(state: state.rawValue, percent: percent))
+                }
+                return // a 9;4 is progress (or malformed → dropped), never a notification
+            }
             messages.append(.notification(title: "", body: body))
 
         case "777":
@@ -423,11 +448,115 @@ public final class HostOutputSniffer: @unchecked Sendable {
             guard !title.isEmpty || !body.isEmpty else { return }
             messages.append(.notification(title: title, body: body))
 
+        case "99":
+            // OSC 99 — the kitty desktop-notification protocol (`ESC ] 99 ; <metadata> ; <payload> ST`).
+            // A BOUNDED validate-then-drop parse of the title/body + base64 (`e=1`) + single
+            // replace-by-id (`i=<id>`) / chunked-continuation (`d=0`) SUBSET, mapped onto the EXISTING
+            // ``WireMessage/notification(title:body:)`` (type 25) — NO new wire. The broader kitty
+            // surface (urgency `u`, capability query `p=?`, buttons, icons, multi-datagram reassembly)
+            // is a documented CEILING (see docs/DECISIONS.md): such chunks are DROPPED, never answered
+            // (no dead capability-query path). Same per-chunk ``notifyOscCap`` bound as OSC 9 / 777.
+            guard oscBuffer.count <= Self.notifyOscCap else { return }
+            let remainderBytes = oscBuffer[oscBuffer.index(after: sep)...]
+            guard let remainder = String(bytes: remainderBytes, encoding: .utf8) else { return }
+            finishKittyNotification(remainder, into: &messages)
+
         default:
             // Any other Ps (OSC 1 icon, OSC 8 hyperlink, OSC 52 clipboard, OSC 4 palette …)
             // is neither a title, a command mark, nor a notification — skip.
             return
         }
+    }
+
+    // MARK: OSC 99 (kitty notification protocol) — bounded validate-then-drop → .notification
+
+    /// One parsed kitty (OSC 99) chunk after the `99;` Ps was stripped: the `i=` group id, whether
+    /// this is the FINAL chunk (`d != "0"`, default `1`), which field the payload sets (`p=body` →
+    /// body, else title — kitty's default `p` is `title`), and the DECODED payload text.
+    ///
+    /// Returns `nil` (DROP) on ANY malformed / unsupported shape: a missing metadata/payload `;`,
+    /// an unknown encoding `e` (only `0`/`1`), an unsupported payload type `p` (anything other than
+    /// `title`/`body` — incl. the capability query `p=?`, `buttons`, `icon`, …), bad base64, or
+    /// non-UTF-8 decoded bytes. Pure: the only allocation is the split + the decoded string.
+    private struct KittyChunk {
+        let id: String
+        let done: Bool
+        let isBody: Bool
+        let text: String
+    }
+
+    /// Parses `<metadata>;<payload>` (the OSC-99 body after the leading `99;`). See ``KittyChunk``.
+    private static func parseKittyChunk(_ remainder: String) -> KittyChunk? {
+        // kitty REQUIRES `99;<metadata>;<payload>`; after stripping `99;` the remainder must still
+        // carry the metadata/payload `;`. A single-`;` form (`ESC]99;text`) is malformed → drop.
+        guard let metaEnd = remainder.firstIndex(of: ";") else { return nil }
+        let metadata = remainder[remainder.startIndex..<metaEnd]
+        let payload = remainder[remainder.index(after: metaEnd)...]
+
+        // Read ONLY the supported metadata keys (`:`-separated `key=value`); every other key
+        // (urgency `u`, actions `a`, when `o`, close `c`, …) is ignored — the documented ceiling.
+        var id = ""
+        var done = true // d default 1 (this is the final/only chunk)
+        var encoding = "" // e default 0 (plain UTF-8)
+        var payloadType = "title" // p default (kitty: an unmarked payload is the title)
+        for token in metadata.split(separator: ":", omittingEmptySubsequences: true) {
+            guard let eq = token.firstIndex(of: "=") else { continue } // lenient: skip a keyless token
+            let key = String(token[token.startIndex..<eq])
+            let value = String(token[token.index(after: eq)...])
+            switch key {
+            case "i": id = value
+            case "d": done = value != "0"
+            case "e": encoding = value
+            case "p": payloadType = value
+            default: break // unsupported metadata key — ceiling, ignore
+            }
+        }
+        // Validate-then-drop the discriminants we DO act on (never trust an unknown one).
+        guard encoding.isEmpty || encoding == "0" || encoding == "1" else { return nil }
+        guard payloadType == "title" || payloadType == "body" else { return nil }
+
+        let text: String
+        if encoding == "1" {
+            // base64 (`e=1`): decode, then UTF-8; a malformed payload is dropped, never trusted.
+            guard let data = Data(base64Encoded: String(payload)),
+                  let decoded = String(data: data, encoding: .utf8) else { return nil }
+            text = decoded
+        } else {
+            text = String(payload)
+        }
+        return KittyChunk(id: id, done: done, isBody: payloadType == "body", text: text)
+    }
+
+    /// Assembles a kitty (OSC 99) chunk across `d=0` continuations (keyed by `i=`), finalizing at the
+    /// `d=1` chunk into the EXISTING ``WireMessage/notification(title:body:)``. Bounded by
+    /// ``kittyAssemblyMax`` in-flight ids + ``kittyAssemblyCap`` accumulated chars.
+    private func finishKittyNotification(_ remainder: String, into messages: inout [WireMessage]) {
+        guard let chunk = Self.parseKittyChunk(remainder) else { return }
+
+        // Bound the in-flight id count BEFORE creating a new slot (drop a brand-new id over the cap).
+        let existing = kittyAssembly[chunk.id]
+        if existing == nil, kittyAssembly.count >= Self.kittyAssemblyMax { return }
+        var note = existing ?? (title: "", body: "")
+
+        if chunk.isBody { note.body += chunk.text } else { note.title += chunk.text }
+        // Bound the cross-chunk accumulation: a hostile `d=0` stream that keeps appending is abandoned.
+        guard note.title.count + note.body.count <= Self.kittyAssemblyCap else {
+            kittyAssembly[chunk.id] = nil
+            return
+        }
+        guard chunk.done else {
+            kittyAssembly[chunk.id] = note // d=0 → keep waiting for the final chunk
+            return
+        }
+        kittyAssembly[chunk.id] = nil // finalize: clear the in-flight slot
+
+        // Map onto .notification (type 25): fold a TITLE-only kitty notification into the body (so the
+        // macOS banner shows it as primary text, consistent with the OSC-9 empty-title + the client's
+        // pane-title fallback); keep both fields when a `p=body` chunk supplied a distinct body.
+        let title = note.body.isEmpty ? "" : note.title
+        let body = note.body.isEmpty ? note.title : note.body
+        guard !title.isEmpty || !body.isEmpty else { return } // empty title+body → drop
+        messages.append(.notification(title: title, body: body))
     }
 
     /// Parses the optional exit code from a `133;D[;<exit>[;k=v…]]` field list (field[2],

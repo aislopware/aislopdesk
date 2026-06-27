@@ -398,15 +398,19 @@ public struct TerminalControls: Codable, Sendable, Equatable {
     /// `SettingsKey` accessors use, just routed through an explicit store for testability. Each missing key
     /// falls back to its `Defaults.Key` default (mirrored by this struct's init defaults).
     public static func from(defaults: UserDefaults = .standard) -> Self {
-        Self(
+        // E14/K12: the "Clipboard — Shell Controlled" master switch (default ON) gates the WHOLE OSC-52 path
+        // ahead of the per-direction Ask/Allow/Deny gate. When OFF, both read + write resolve to `.deny`, so
+        // the config builder emits `clipboard-read/write = deny` and no remote OSC-52 ever reaches the gate.
+        let clipboardShellControlled = defaults[.clipboardShellControlled]
+        return Self(
             copyOnSelect: defaults[.copyOnSelect],
             trimTrailing: defaults[.trimTrailingSpacesOnCopy],
             clearOnTyping: defaults[.clearSelectionOnTyping],
             clearOnCopy: defaults[.clearSelectionOnCopy],
             pasteProtection: defaults[.pasteProtection],
             bracketedSafe: defaults[.pasteBracketedSafe],
-            clipboardRead: defaults[.clipboardRead],
-            clipboardWrite: defaults[.clipboardWrite],
+            clipboardRead: clipboardShellControlled ? defaults[.clipboardRead] : .deny,
+            clipboardWrite: clipboardShellControlled ? defaults[.clipboardWrite] : .deny,
             hideMouseWhileTyping: defaults[.mouseHideWhileTyping],
             allowShiftClick: defaults[.allowShiftClick],
             clickToMove: defaults[.clickToMove],

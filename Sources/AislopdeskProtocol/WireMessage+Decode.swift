@@ -190,6 +190,17 @@ extension WireMessage {
             let echoByte = try reader.readUInt8()
             return .inputEcho(enabled: echoByte != 0)
 
+        case 32: // progress
+            // Exactly 2 bytes: [UInt8 state][UInt8 percent]. `readUInt8` throws `truncated` on a short
+            // body (validate-then-drop — never over-reads a hostile datagram). The state is carried
+            // VERBATIM here (an unknown discriminant is not rejected by the codec) so the byte
+            // round-trip stays faithful and the golden vector is stable; the CLIENT handler validates
+            // it via `ProgressState(wire:)` and drops an unknown state. Trailing bytes are ignored,
+            // matching the file's other fixed-field decoders (inputEcho/bell/ack).
+            let state = try reader.readUInt8()
+            let percent = try reader.readUInt8()
+            return .progress(state: state, percent: percent)
+
         default:
             throw AislopdeskError.unknownMessageType(type)
         }

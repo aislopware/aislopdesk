@@ -3125,6 +3125,17 @@ public final class WorkspaceStore {
     /// shared `reconcileRegistry` cache-prune) so a closed pane's entry drops out (no unbounded growth).
     public internal(set) var paneForegroundProcess: [PaneID: String] = [:]
 
+    /// The per-pane OSC 9;4 PROGRESS mirror (E14/K1, wire type 32) — the SINGLE observable source the sidebar
+    /// tab badge (via ``TabBadgeResolver`` → ``RailRowsBuilder``) and the macOS Dock aggregate
+    /// (``rollupProgress(forSession:)``) both read. Written by ``handleProgress(_:for:)`` from each live
+    /// pane's `.progress` event (routed off ``Connection/ConnectionViewModel`` `onProgressUpdate` → the store
+    /// hook in `wireMaterializedLeaf`); a ``ProgressState/clear`` removes the key. A progress edge bumps
+    /// ``completionFlashTick`` so the rail repaints. PRUNED to the live leaf set on every reconcile alongside
+    /// ``paneForegroundProcess`` so a closed pane's entry drops out (no unbounded growth, no stale spinner in
+    /// a rollup). The methods live in `WorkspaceStore+Progress.swift`; the stored dict stays here so
+    /// `@Observable` synthesises on it.
+    public internal(set) var paneProgress: [PaneID: PaneProgress] = [:]
+
     // MARK: - Read-only mode (E17 ES-E17-1 — the per-pane input gate's single source of truth)
 
     /// The set of panes currently in READ-ONLY mode (E17). The SINGLE observable source of truth the
@@ -3349,6 +3360,12 @@ public final class WorkspaceStore {
         connection?.onAgentSignal = { [weak self] event in
             self?.handleAgentSignal(id: id, event: event)
         }
+        // OSC 9;4 PROGRESS (E14/K1, wire type 32): mirror this pane's validated taskbar-style progress into
+        // `paneProgress` (→ the sidebar tab badge + the macOS Dock aggregate). A `.clear` arrives as `nil` and
+        // removes the indicator; `handleProgress` bumps `completionFlashTick` on an edge so the rail repaints.
+        connection?.onProgressUpdate = { [weak self] progress in
+            self?.handleProgress(progress, for: id)
+        }
         // B3 BACKGROUND-PANE COMMAND-COMPLETION: route a finished command (OSC 133;D, type 23) to the
         // focus-gated store handler — badges an UNFOCUSED pane (✓/✗) and fires the long-command
         // notification only when backgrounded (replaces the old direct notifier.notifyIfLong in the VM).
@@ -3532,6 +3549,11 @@ public final class WorkspaceStore {
         // unbounded across a long session of open/close.
         if !paneForegroundProcess.isEmpty {
             paneForegroundProcess = paneForegroundProcess.filter { leafSet.contains($0.key) }
+        }
+        // Prune the per-pane OSC 9;4 progress mirror in lockstep (E14): a closed pane must not keep a stale
+        // spinner/bar in a Dock rollup, and the dict must not grow unbounded across a long session.
+        if !paneProgress.isEmpty {
+            paneProgress = paneProgress.filter { leafSet.contains($0.key) }
         }
         // Prune the per-pane READ-ONLY set in lockstep (E17): a closed pane must not keep a stale lock, and
         // the set must not grow unbounded across a long session of open/close. An absent id reads writable.

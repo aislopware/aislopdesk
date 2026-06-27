@@ -268,7 +268,11 @@ type_body_length:
   # STORED set (`@Observable` synthesises on it, so it can't live in WorkspaceStore+ReadOnly.swift — only the
   # toggle/set logic does) plus its reconcile-prune + the `onReadOnlyChanged` mirror wire in
   # `wireMaterializedLeaf`. Single stored-property + wire-closure cluster, not bloat.
-  warning: 1910
+  # 1910 → 1920 (2026-06-28): E14/K1 (WI-2) — WorkspaceStore gains the per-pane OSC 9;4 `paneProgress` STORED
+  # dict (`@Observable` synthesises on it, so it can't live in WorkspaceStore+Progress.swift — only the
+  # handleProgress/progress(for:)/rollup logic does) plus its reconcile-prune + the `onProgressUpdate` mirror
+  # wire in `wireMaterializedLeaf`. Single stored-property + wire-closure cluster, not bloat.
+  warning: 1920
   error: 2700
 
 # Error backstops tightened toward the warnings (2026-06-24): under `--strict` the WARNING is the binding

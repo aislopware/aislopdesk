@@ -65,17 +65,71 @@ public struct AgentControlHandler: Sendable {
     /// Max bytes accumulated in the `wait` regex buffer before the oldest half is trimmed.
     static let waitBufferCap = 4 * 1024 * 1024
 
+    // MARK: E14/K13 IPC guards
+
+    /// The MUTATING ("send keys" equivalent) verbs — they write to a PTY, spawn, kill, or resize a
+    /// pane. Gated behind ``IPCGuards/allowSendKeys``. The READ-ONLY verbs (`list-panes`/`read`/`wait`/
+    /// `report`) are NOT in this set and are always allowed. (`subscribe` is intercepted in the acceptor
+    /// before `dispatch` and only STREAMS output, so it is read-only too.)
+    static let mutatingVerbs: Set<String> = ["write", "run", "spawn", "kill", "resize"]
+
+    /// Whether `method` mutates a pane (and so is gated by the send-keys / sensitive-session guards).
+    static func isMutatingVerb(_ method: String) -> Bool { mutatingVerbs.contains(method) }
+
+    /// The default foreground-name resolver for the sensitive-session gate: looks the pane up on the
+    /// server and probes its live PTY foreground basename via ``PTYForegroundProbe``. Returns `""` when
+    /// the pane is unknown / the probe fails (→ not sensitive; the send-keys gate still applies). Tests
+    /// inject a fake resolver into ``dispatch(id:method:params:server:guards:foregroundName:)`` instead.
+    @usableFromInline static let probeForegroundName: @Sendable (HostServer, String) -> String = { server, paneId in
+        guard let session = server.lookupPaneForControl(paneId: paneId) else { return "" }
+        return PTYForegroundProbe.foregroundName(masterFD: session.pty.masterFD)
+    }
+
     // MARK: Dispatch
 
     /// Dispatches one decoded request and returns a response line (UTF-8, newline-terminated).
     /// May block on the calling thread for the `wait` verb.
+    ///
+    /// **E14/K13 — IPC guards.** Before the verb runs, the MUTATING verbs
+    /// (`write`/`run`/`spawn`/`kill`/`resize`, the "send keys" equivalents) are gated behind
+    /// ``IPCGuards/allowSendKeys`` (default OFF), and a mutating verb whose target pane runs a
+    /// SENSITIVE foreground process (`ssh`/`sudo`/`login`/…) is additionally gated behind
+    /// ``IPCGuards/allowSensitiveSessions`` (default OFF). The READ-ONLY verbs
+    /// (`list-panes`/`read`/`wait`/`report`) are ALWAYS allowed. No new socket, no tokens, no crypto —
+    /// these are pure host-side guards on the existing NDJSON ctl socket (the WireGuard mesh is the
+    /// security boundary). The two flags resolve from the host env AT THIS dispatch site via
+    /// ``IPCGuards/resolved()``; tests inject `guards` (and `foregroundName`) directly.
+    ///
+    /// - Parameters:
+    ///   - guards: the resolved send-keys / sensitive-session permissions (default: from env).
+    ///   - foregroundName: resolves a pane's current foreground-process BASENAME for the
+    ///     sensitive-session gate (default: probes the live PTY; injected in tests).
+    @preconcurrency
     public static func dispatch(
         id: String,
         method: String,
         params: [String: Any],
         server: HostServer,
+        guards: IPCGuards = .resolved(),
+        foregroundName: @Sendable (HostServer, String) -> String = Self.probeForegroundName,
     ) -> String {
-        switch method {
+        // E14/K13: gate the mutating verbs on the trusted ctl socket. Fire BEFORE the verb acts (and
+        // before any pane lookup / side effect) so a refused verb never touches the PTY.
+        if isMutatingVerb(method) {
+            guard guards.allowSendKeys else {
+                return errorResponse(id: id, message: "ipc send-keys disabled")
+            }
+            // The sensitive-session gate only applies to a verb that NAMES a target pane (`spawn`
+            // creates a fresh pane and has no target → only the send-keys gate covers it).
+            if !guards.allowSensitiveSessions, let paneId = params["paneId"] as? String {
+                let fg = foregroundName(server, paneId)
+                if SensitiveSessionPolicy.isSensitive(processName: fg) {
+                    return errorResponse(id: id, message: "ipc sensitive-session blocked: \(fg)")
+                }
+            }
+        }
+
+        return switch method {
         case "list-panes":
             listPanes(id: id, server: server)
         case "read":
@@ -407,6 +461,74 @@ public struct AgentControlHandler: Sendable {
         else { return nil }
         let params = obj["params"] as? [String: Any] ?? [:]
         return (id, method, params)
+    }
+}
+
+// MARK: - E14/K13 IPC guards (host-side, no crypto)
+
+/// The resolved send-keys / sensitive-session permissions for the agent-control ctl socket (E14/K13).
+///
+/// Pure value the dispatcher consults BEFORE running a mutating verb. The flags resolve from the host
+/// env (``HostEnvironment/ipcAllowSendKeys(environment:)`` / ``ipcAllowSensitiveSessions(environment:)``)
+/// at the dispatch site via ``resolved()`` — DEFAULT-OFF (only an explicit `"1"` enables), the same idiom
+/// as ``HostEnvironment/agentControlEnabled(environment:)``. **No new socket, no tokens, no crypto:** these
+/// are host-side guards on the existing NDJSON ctl socket; the WireGuard mesh is the security boundary.
+public struct IPCGuards: Sendable {
+    /// Whether the MUTATING verbs (`write`/`run`/`spawn`/`kill`/`resize`) may run at all.
+    public let allowSendKeys: Bool
+    /// Whether a mutating verb may target a pane running a SENSITIVE foreground process
+    /// (`ssh`/`sudo`/`login`/…).
+    public let allowSensitiveSessions: Bool
+
+    public init(allowSendKeys: Bool, allowSensitiveSessions: Bool) {
+        self.allowSendKeys = allowSendKeys
+        self.allowSensitiveSessions = allowSensitiveSessions
+    }
+
+    /// Resolves both guards from the host env at the dispatch site (default-OFF). The client toggles map
+    /// onto these via the env bridge (set identically host+client, like `AISLOPDESK_FEC_M`); a live client
+    /// edit applies on the NEXT host launch. Evaluated at the call site (the `dispatch` default argument).
+    public static func resolved() -> Self {
+        Self(
+            allowSendKeys: HostEnvironment.ipcAllowSendKeys(),
+            allowSensitiveSessions: HostEnvironment.ipcAllowSensitiveSessions(),
+        )
+    }
+}
+
+/// Decides whether a pane's foreground-process BASENAME is a "sensitive" command — a mutating ctl verb
+/// driven into a live `sudo`/`ssh`/`login` password prompt is exactly the threat K13 closes when
+/// ``IPCGuards/allowSensitiveSessions`` is OFF. The host has no broader sensitive-session detector, so
+/// this is the small, BOUNDED basename list the plan calls for (no env, no allocation beyond the
+/// basename split — a pure decision unit-pinned by `IPCGuardTests`).
+public enum SensitiveSessionPolicy {
+    /// The bounded set of sensitive foreground-command basenames (credential / remote-shell entry points).
+    /// Matched CASE-SENSITIVELY against the basename, like the foreground-process basenames the host
+    /// already resolves (``ForegroundProcessDetector/basename(of:)``).
+    public static let sensitiveBasenames: Set<String> = [
+        "ssh",
+        "sshpass",
+        "ssh-agent",
+        "ssh-add",
+        "sudo",
+        "doas",
+        "su",
+        "login",
+        "passwd",
+        "gpg",
+        "security",
+    ]
+
+    /// Whether `processName` (a foreground-process basename, or a full path that is reduced to its last
+    /// component) is a sensitive command. An EMPTY / unknown name is NOT sensitive — the host could not
+    /// prove a sensitive session, and the send-keys gate already guards the mutating path, so the benign
+    /// default is to allow rather than fail-closed on an unresolved probe.
+    public static func isSensitive(processName: String) -> Bool {
+        guard !processName.isEmpty else { return false }
+        // Reuse the host's existing basename reducer (the same one that resolves foreground-process
+        // basenames) so a full path and a bare basename are matched identically.
+        let base = ForegroundProcessDetector.basename(of: processName)
+        return sensitiveBasenames.contains(base)
     }
 }
 

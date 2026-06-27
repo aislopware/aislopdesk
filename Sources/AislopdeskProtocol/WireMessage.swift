@@ -221,6 +221,28 @@ public enum WireMessage: Equatable, Sendable {
     /// can't delay it). The pane identity is carried by the mux channel envelope, not in this body.
     case inputEcho(enabled: Bool)
 
+    /// An OSC 9;4 taskbar-style PROGRESS update (E14/K1, type 32, host → client, CONTROL). iTerm2 /
+    /// ConEmu / winget / long builds emit `ESC ] 9 ; 4 ; <state> [ ; <pct> ] <terminator>` to drive a
+    /// per-window progress bar; the host parses that subtype out of the OSC-9 stream (it is NOT a
+    /// desktop ``notification`` — surfacing `"4;1;50"` as an alert would flood the user) and forwards
+    /// it here so the client can light the rail-row spinner / determinate badge (app chrome, NOT
+    /// terminal content — hence a control message, not a VT byte).
+    ///
+    /// - `state` is the RAW `UInt8` of ``ProgressState`` (`0` clear / `1` in-progress / `2` error /
+    ///   `3` indeterminate). The wire carries the raw byte (NOT the enum) so the codec stays a faithful
+    ///   2-byte round-trip and the golden vector is stable; the CLIENT re-validates via
+    ///   `ProgressState(wire:)` and DROPS an unknown discriminant (the forward-tolerant idiom shared
+    ///   with `claudeStatus`/`metadataResponse`).
+    /// - `percent` is `0…100` (the host clamps it in `ProgressOSCParser`); meaningful for state `1`/`2`,
+    ///   `0` for clear/indeterminate.
+    ///
+    /// Flat 2-byte body `[UInt8 state][UInt8 percent]` (no BE needed for single bytes). Additive within
+    /// wire version 1 (host accepts only v1, no negotiation → host + client redeploy together); a peer
+    /// that does not know type 32 DROPS the frame (`unknownMessageType`), never traps. Rides the
+    /// head-of-line-independent CONTROL channel like the other inline signals (an output flood can't
+    /// delay it); the pane identity is carried by the mux channel envelope, not in this body.
+    case progress(state: UInt8, percent: UInt8)
+
     /// The semantic state of the foreground command in a pane's shell (from OSC 133).
 
     /// The semantic state of the foreground command in a pane's shell (from OSC 133).
@@ -259,6 +281,7 @@ public enum WireMessage: Equatable, Sendable {
         case .blockOutput: 29
         case .metadataResponse: 30
         case .inputEcho: 31
+        case .progress: 32
         }
     }
 
@@ -287,7 +310,8 @@ public enum WireMessage: Equatable, Sendable {
              .commandBlock,
              .blockOutput,
              .metadataResponse,
-             .inputEcho:
+             .inputEcho,
+             .progress:
             .control
         }
     }

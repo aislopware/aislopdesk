@@ -162,6 +162,61 @@ public enum HostEnvironment {
         environment[blocksEnvKey] != "0"
     }
 
+    /// E14/K2 — the env-bridge key carrying the client's "Auto Progress-Bar Commands" list to the
+    /// host's synthetic OSC-9;4 spinner matcher (``AutoProgressMatcher``). The value is NEWLINE-separated
+    /// prefix entries (each itself a whitespace-delimited command prefix, e.g. `git push`). It is
+    /// resolved at THIS ONE shared site — set IDENTICALLY on host + client (like ``AISLOPDESK_FEC_M``):
+    /// the client setting `autoProgressCommands` is the edit surface, and a live edit re-drives the host
+    /// only on the NEXT host launch (the env is read at start). See docs/DECISIONS.md.
+    public static let autoProgressCommandsEnvKey = "AISLOPDESK_AUTO_PROGRESS_COMMANDS"
+
+    /// Resolves the host's auto-progress prefix list (E14/K2). UNSET ⇒ ``AutoProgressMatcher/builtInPrefixes``
+    /// (the otty default list — auto-progress ON for known slow commands); SET-but-EMPTY ⇒ `[]`
+    /// (auto-progress DISABLED, the otty "clear the field" behaviour); SET ⇒ the parsed entries. Same
+    /// ``EnvConfig`` overlay resolution as the other gates (an empty overlay is byte-identical to a
+    /// `ProcessInfo` read), so a GUI override reaches the matcher; an explicit `environment:` (tests)
+    /// bypasses the overlay.
+    public static func autoProgressPrefixes(
+        environment: [String: String] = configEnv(autoProgressCommandsEnvKey),
+    )
+        -> [String]
+    {
+        AutoProgressMatcher.parsePrefixes(envValue: environment[autoProgressCommandsEnvKey])
+    }
+
+    /// E14/K13 — the env-bridge keys gating the agent-control ctl socket's MUTATING verbs. Default idiom =
+    /// DEFAULT-OFF via `env[key] == "1"` (same as ``agentControlEnvKey``): injecting keys into a live PTY,
+    /// spawning / killing a pane, or reaching a `sudo`/`ssh` prompt is not something to enable silently. The
+    /// CLIENT toggles (`SettingsKey.ipcAllowSendKeys` / `ipcAllowSensitiveSessions`) are the edit surface and
+    /// re-drive the host on the NEXT launch — set IDENTICALLY host+client, like ``AISLOPDESK_FEC_M``. The
+    /// guard ENFORCES host-side on the existing NDJSON ctl socket (no new socket, no tokens, no crypto — the
+    /// WireGuard mesh is the security boundary). See docs/DECISIONS.md.
+    public static let ipcAllowSendKeysEnvKey = "AISLOPDESK_IPC_ALLOW_SEND_KEYS"
+    public static let ipcAllowSensitiveEnvKey = "AISLOPDESK_IPC_ALLOW_SENSITIVE"
+
+    /// Resolves whether the ctl socket may run MUTATING verbs (`write`/`run`/`spawn`/`kill`/`resize`).
+    /// Default-OFF: only the exact string `"1"` enables; read-only verbs are always allowed regardless. Same
+    /// ``EnvConfig`` overlay resolution as the other gates (an empty overlay is byte-identical to a
+    /// `ProcessInfo` read), so a GUI toggle reaches the gate; an explicit `environment:` (tests) bypasses it.
+    public static func ipcAllowSendKeys(
+        environment: [String: String] = configEnv(ipcAllowSendKeysEnvKey),
+    )
+        -> Bool
+    {
+        environment[ipcAllowSendKeysEnvKey] == "1"
+    }
+
+    /// Resolves whether a mutating ctl verb may target a SENSITIVE foreground session (`ssh`/`sudo`/`login`/…).
+    /// Default-OFF: only the exact string `"1"` enables. Same ``EnvConfig`` overlay resolution as
+    /// ``ipcAllowSendKeys(environment:)``.
+    public static func ipcAllowSensitiveSessions(
+        environment: [String: String] = configEnv(ipcAllowSensitiveEnvKey),
+    )
+        -> Bool
+    {
+        environment[ipcAllowSensitiveEnvKey] == "1"
+    }
+
     /// W10 — whether the opt-in Claude-Code HOOK listener (the `AF_UNIX` socket) is enabled.
     /// Default idiom = DEFAULT-OFF via `env[key] == "1"` (only an explicit `"1"` enables):
     /// hooks are the SECOND/opt-in signal (Decision #5), so the socket is bound only when the

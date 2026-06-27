@@ -791,6 +791,13 @@ root["terminalWireMessages"] = [
     // type 31 inputEcho: 1-byte body = [UInt8 enabled] (1 = canonical echo on, 0 = no-echo password prompt).
     wmRecord("inputEcho", .inputEcho(enabled: false), ["enabled": false]),
     wmRecord("inputEcho", .inputEcho(enabled: true), ["enabled": true]),
+    // E14 / K1 — OSC 9;4 taskbar progress (terminal CONTROL, host → client).
+    // type 32 progress: 2-byte body = [UInt8 state][UInt8 percent].
+    // state = ProgressState (0 clear / 1 in-progress / 2 error / 3 indeterminate); percent 0…100.
+    wmRecord("progress", .progress(state: 1, percent: 40), ["state": Int(1), "percent": Int(40)]),
+    wmRecord("progress", .progress(state: 3, percent: 0), ["state": Int(3), "percent": Int(0)]),
+    wmRecord("progress", .progress(state: 2, percent: 80), ["state": Int(2), "percent": Int(80)]),
+    wmRecord("progress", .progress(state: 0, percent: 0), ["state": Int(0), "percent": Int(0)]),
 ]
 
 // WB1 — Warp-style "Blocks" wire messages (terminal CONTROL).

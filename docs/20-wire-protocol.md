@@ -102,6 +102,7 @@ UUIDs (`sessionID`) are sent as their **16 raw bytes** in canonical order (not a
 | 29 | `blockOutput` | host → client | control | `UInt32 index` + `UInt32 outputLen` (BE) + `output` bytes (RAW VT, not UTF-8) — reply to `requestBlockOutput` |
 | 30 | `metadataResponse` | host → client | control | `UInt32 requestID` (BE) + `UInt8 status` + `UInt32 payloadLen` (BE) + `payload` bytes (opaque) — reply to `metadataRequest` (E4) |
 | 31 | `inputEcho` | host → client | control | `UInt8 enabled` (`1` = canonical echo on, `0` = no-echo password prompt) — PTY termios `ECHO` edge; drives AUTO Secure Keyboard Entry (E17/I22) |
+| 32 | `progress` | host → client | control | `UInt8 state` (`0` clear / `1` in-progress / `2` error / `3` indeterminate) + `UInt8 percent` (`0`–`100`; meaningful for state `1`/`2`) — OSC 9;4 taskbar progress (E14/K1) |
 
 `protocolVersion` is currently **1** (`Aislopdesk.protocolVersion`). There is **no version
 negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` whose
@@ -238,8 +239,33 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     PTY (where `ECHO` flips fastest) plus the low-rate foreground-watch poll as a backstop. Rides the
     head-of-line-independent CONTROL channel and is **not** sequenced/replayed.
 
+- **`progress` (32) is the OSC 9;4 taskbar-progress signal** (host → client, CONTROL; E14/K1). iTerm2 /
+  ConEmu / winget / long builds emit `ESC ] 9 ; 4 ; <state> [ ; <pct> ] <terminator>` to drive a
+  per-window progress bar. The host parses that subtype out of the OSC-9 stream with the pure
+  `ProgressOSCParser` and forwards it as a 2-byte `[UInt8 state][UInt8 percent]` body so the client can
+  light the per-pane rail-row spinner / determinate badge.
+  - **Why a control message (not the VT stream).** The progress badge is APP CHROME on the rail row, not
+    terminal content — the client renders it as a spinner/percent badge, never as bytes in the terminal
+    grid. And it must NOT surface as a desktop `notification` (25): a `9;4;1;50` shown as an alert with
+    body text `"4;1;50"` would flood the user. So the host strips the `9;4` subtype from the OSC-9
+    notification path and emits `progress` instead; the **free-text OSC-9 notification path is unchanged
+    / byte-identical** (only the previously-DROPPED `9;4` subtype now emits a message).
+  - **State mapping + ceilings.** Only states `0`/`1`/`2`/`3` are carried. State `4` (paused/warning) is
+    ignored. State `5` (OSC 9;4;5;`<exit>`[;watch], finished + exit) is NOT a new progress state — it
+    maps onto the EXISTING `commandStatus(.idle(exitCode:))` path (OSC-133-D); the `watch` finish suffix
+    is deferred to E20's watch command. The host CLAMPS `percent` to `0…100` and DROPS any malformed
+    `9;4` (unknown state digit, non-integer percent, bad shape) — validate-then-drop, never trust.
+  - **Forward-tolerant byte round-trip.** The decoder carries the raw `state` byte VERBATIM (it does NOT
+    reject an unknown discriminant) so the codec stays a faithful 2-byte round-trip and the golden vector
+    is stable; the CLIENT re-validates via `ProgressState(wire:)` and DROPS an unknown state. A missing
+    body decodes to `truncated` (never an over-read).
+  - **Additive within wire version 1**: a peer that does not know type 32 DROPS the frame
+    (`unknownMessageType`) — validate-then-drop, never a trap. Host + client **redeploy together** (no
+    version negotiation). Rides the head-of-line-independent CONTROL channel like the other inline
+    signals; the pane identity is carried by the mux channel envelope, not the body. Not sequenced/replayed.
+
 The next free **client → host** CONTROL type byte is **17** (10–16 used). The next free
-**host → client** CONTROL type byte is **32** (20–31 used). (Byte 28 was once reserved for a W14 OSC-8
+**host → client** CONTROL type byte is **33** (20–32 used). (Byte 28 was once reserved for a W14 OSC-8
 hyperlink type, but W14 ships OSC-8 click-to-open via **libghostty's own hit-testing** —
 `GHOSTTY_ACTION_OPEN_URL` / `GHOSTTY_ACTION_MOUSE_OVER_LINK` — so no wire change was needed; 28 was
 later taken by the Warp-style `commandBlock`. See DECISIONS.md "W14 terminal parity".)

@@ -1,3 +1,4 @@
+import AislopdeskProtocol
 import Foundation
 
 // The HOST-side per-command "Blocks" segmenter (Warp-style). Segments the raw PTY OUTBOUND
@@ -88,15 +89,28 @@ public struct CommandBlockSegmenter {
     private let clock: () -> Date
     private let outputCap: Int
 
+    /// K2 auto-progress (E14/WI-3): the configured slow-command PREFIX list (otty "Auto Progress-Bar
+    /// Commands"). EMPTY disables auto-progress entirely — no synthetic spinner is ever emitted, so the
+    /// segmenter is byte-identical to the pre-E14 tap. Resolved by the owner from
+    /// `AISLOPDESK_AUTO_PROGRESS_COMMANDS` (host) → ``AutoProgressMatcher/builtInPrefixes`` fallback.
+    private let autoProgressPrefixes: [String]
+
     /// - Parameters:
     ///   - clock: wall-clock source for the C→D duration. Injectable so a test advances it
     ///     deterministically; defaults to `Date.init` in production.
     ///   - outputCap: per-block output byte ceiling (defaults to ``defaultOutputCap``).
-    public init(clock: @escaping () -> Date = { Date() }, outputCap: Int = Self.defaultOutputCap) {
+    ///   - autoProgressPrefixes: the slow-command prefix list for the synthetic OSC-9;4 spinner
+    ///     (E14/K2). Defaults to `[]` (auto-progress OFF — byte-identical to the pre-E14 segmenter).
+    public init(
+        clock: @escaping () -> Date = { Date() },
+        outputCap: Int = Self.defaultOutputCap,
+        autoProgressPrefixes: [String] = [],
+    ) {
         self.clock = clock
         // Validate-then-clamp: a non-positive cap would mean "capture nothing"; treat <=0 as
         // the default so a caller can never accidentally disable capture or under/overflow.
         self.outputCap = outputCap > 0 ? outputCap : Self.defaultOutputCap
+        self.autoProgressPrefixes = autoProgressPrefixes
     }
 
     // MARK: One-shot convenience
@@ -155,6 +169,15 @@ public struct CommandBlockSegmenter {
         )
     }
 
+    /// Drains + clears the SYNTHETIC OSC-9;4 progress frames queued at the `C` / `D` marks (E14/WI-3,
+    /// K2). The owner (``CommandBlockTracker``) calls this after each ``ingest`` and enqueues the
+    /// frames on the CONTROL channel alongside the type-28 block metadata. Returns `[]` when
+    /// auto-progress is disabled (empty prefix list) or nothing matched in this batch.
+    public mutating func drainAutoProgress() -> [WireMessage] {
+        defer { pendingProgress.removeAll(keepingCapacity: true) }
+        return pendingProgress
+    }
+
     // MARK: Parser state — mirrors HostOutputSniffer's OSC machine (NOT shared, NOT changed)
 
     private enum State {
@@ -192,6 +215,19 @@ public struct CommandBlockSegmenter {
     private var openOutputTruncated = false
     private var hasOpenBlock = false
     private var runningSince: Date?
+
+    // MARK: K2 auto-progress state (E14/WI-3) — synthetic OSC-9;4 spinner for configured slow commands
+
+    /// Whether a SYNTHETIC indeterminate spinner is currently active for the open block — so its
+    /// matching clear is emitted exactly once when the block closes (and never twice).
+    private var syntheticSpinnerActive = false
+    /// Whether the PROGRAM drove its OWN OSC 9;4 in the open block. A real `9;4` (which the live
+    /// ``HostOutputSniffer`` parses into the real type-32 `.progress`) SUPPRESSES the synthetic
+    /// spinner/clear so the two never fight — the program owns the indicator then.
+    private var sawRealProgressThisBlock = false
+    /// The SYNTHETIC ``WireMessage/progress`` frames queued at the `C` / `D` marks, drained by
+    /// ``drainAutoProgress()`` and enqueued on the CONTROL channel beside the type-28 block metadata.
+    private var pendingProgress: [WireMessage] = []
 
     // MARK: Byte constants (verbatim from HostOutputSniffer)
 
@@ -375,6 +411,20 @@ public struct CommandBlockSegmenter {
         guard let sep = oscBuffer.firstIndex(of: Self.semicolon) else { return }
         let psBytes = oscBuffer[oscBuffer.startIndex..<sep]
         let ps = String(bytes: psBytes, encoding: .utf8) ?? ""
+        // K2 auto-progress (E14/WI-3): NOTICE a program-emitted OSC 9;4 so the SYNTHETIC spinner stands
+        // down (the program drives the badge itself; the live ``HostOutputSniffer`` emits the REAL
+        // type-32 `.progress` — the segmenter only OBSERVES, it never emits the real one). Allocation-free
+        // byte probe for a body of `"4"` or `"4;…"`, mirroring HostOutputSniffer's `9;4` intercept.
+        if ps == "9" {
+            let bodyStart = oscBuffer.index(after: sep)
+            if bodyStart < oscBuffer.endIndex, oscBuffer[bodyStart] == 0x34 { // ASCII '4'
+                let afterFour = oscBuffer.index(after: bodyStart)
+                if afterFour == oscBuffer.endIndex || oscBuffer[afterFour] == Self.semicolon {
+                    sawRealProgressThisBlock = true
+                }
+            }
+            return
+        }
         guard ps == "133" else { return } // only 133 marks segment; ignore titles / OSC 9 / 777.
 
         // EXACT-PARITY guard: the live sniffer ignores a 133 payload over 256 bytes.
@@ -410,6 +460,20 @@ public struct CommandBlockSegmenter {
             }
             runningSince = clock()
             phase = .output
+            // K2 auto-progress (E14/WI-3): synthesize an INDETERMINATE OSC-9;4 spinner when the typed
+            // command matches a configured slow-command prefix AND the program has not already driven its
+            // OWN 9;4 in this block. An empty prefix list disables this (matches() → false). This is the
+            // host-side equivalent of otty's shell-integration auto-wrap of known slow commands.
+            if !syntheticSpinnerActive,
+               !sawRealProgressThisBlock,
+               AutoProgressMatcher.matches(
+                   commandLine: Self.decodeCommand(openCommandBytes),
+                   prefixes: autoProgressPrefixes,
+               )
+            {
+                pendingProgress.append(.progress(state: ProgressState.indeterminate.rawValue, percent: 0))
+                syntheticSpinnerActive = true
+            }
 
         case "D":
             // Command finished. A `D` with no open block is the first-prompt phantom `D;0`
@@ -439,6 +503,10 @@ public struct CommandBlockSegmenter {
         openOutputBytes.removeAll(keepingCapacity: true)
         openOutputTruncated = false
         hasOpenBlock = true
+        // K2 auto-progress (E14/WI-3): a fresh block starts with no synthetic spinner + no observed
+        // real 9;4 (suppression is strictly per-block).
+        syntheticSpinnerActive = false
+        sawRealProgressThisBlock = false
     }
 
     /// Materializes + clears the currently-open block, or `nil` if none is open.
@@ -448,6 +516,15 @@ public struct CommandBlockSegmenter {
         durationMS: UInt32? = nil,
     ) -> CommandBlock? {
         guard hasOpenBlock else { return nil }
+        // K2 auto-progress (E14/WI-3): CLEAR a synthetic spinner when its block closes (complete OR
+        // not — a `D`, or an interrupted re-prompt at `A`/`B`/`finish`), UNLESS the program drove its
+        // OWN 9;4 (then the program owns the clear — its 9;4;0 / the client's command-finish handler
+        // resets it). This is the per-block "double-driving" suppression the plan requires.
+        if syntheticSpinnerActive, !sawRealProgressThisBlock {
+            pendingProgress.append(.progress(state: ProgressState.clear.rawValue, percent: 0))
+        }
+        syntheticSpinnerActive = false
+        sawRealProgressThisBlock = false
         let index = nextIndex
         nextIndex += 1
         let block = CommandBlock(

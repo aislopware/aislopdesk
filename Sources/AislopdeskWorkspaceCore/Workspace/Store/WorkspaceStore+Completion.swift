@@ -64,7 +64,7 @@ public extension WorkspaceStore {
 
     /// Whether pane `id`'s clean completion (`.success` badge / agent `.done`) is still showing its brief
     /// ``TabBadgeKind/completed`` checkmark FLASH or has ``TabBadgeKind/finished`` SETTLED into the accent
-    /// dot. The PURE freshness input ``TabBadgeResolver/badge(agent:completion:isBusy:foregroundProcess:completionFreshness:)``
+    /// dot. The PURE freshness input ``TabBadgeResolver/badge(agent:completion:isBusy:foregroundProcess:completionFreshness:progress:)``
     /// switches on — computed HERE (the store owns the clock) by comparing the ephemeral
     /// ``WorkspaceStore/paneCompletedAt`` stamp against `now` (injectable for tests). No stamp ⇒
     /// ``TabBadgeResolver/CompletionFreshness/settled`` (show the persistent marker). Ordered compare —
@@ -134,6 +134,21 @@ public extension WorkspaceStore {
     /// active tab's active pane. Cross-platform (reads `tree.activePane`, NOT the iOS focus coordinator).
     internal func isPaneFocused(_ id: PaneID) -> Bool {
         isAppActive && id == tree.activeSession?.activeTab?.activePane
+    }
+
+    /// Whether pane `id` is the focused leaf RIGHT NOW — the `sourcePaneFocused` input the macOS notifier's
+    /// ``NotificationPolicy`` gate reads (E14/K9). A public wrapper over the B3 focus gate
+    /// (``isPaneFocused(_:)``) so the app shell can supply the Notify-While-Foreground tri-state input
+    /// without reaching into the store's internals.
+    func isSourcePaneFocused(_ id: PaneID) -> Bool { isPaneFocused(id) }
+
+    /// Whether the pane whose id string (`PaneID.raw.uuidString`) matches is the focused leaf — the
+    /// `sourcePaneFocused` input for the notification sinks that carry only the pane-id STRING
+    /// (``WorkspaceStore/onLongCommandNotify`` / ``WorkspaceStore/onAgentAttention``). `false` for an
+    /// unparseable / unknown id (a closed pane).
+    func isSourcePaneFocused(byIDString idString: String) -> Bool {
+        guard let uuid = UUID(uuidString: idString) else { return false }
+        return isPaneFocused(PaneID(raw: uuid))
     }
 
     /// Clears the badge on whatever leaf is the active one (called when the app returns active via the

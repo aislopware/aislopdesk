@@ -68,6 +68,9 @@ enum RailRowsBuilder {
                     // flash to the persistent `.finished` accent dot — the store owns the clock (ephemeral
                     // `completedAt` vs now), the resolver stays pure.
                     completionFreshness: store.completionFreshness(forPane: paneID),
+                    // E14/K1: a live OSC 9;4 progress resolves to the `.running` spinner (in-progress /
+                    // indeterminate) or `.error` (held-red `9;4;2`) via the EXISTING precedence — no new badge.
+                    progress: store.progress(for: paneID),
                 )
                 out.append(RailRow(
                     id: paneID,

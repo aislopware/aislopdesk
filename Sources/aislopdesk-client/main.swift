@@ -384,6 +384,12 @@ Task {
                 // Secure input (wire type 31, E17) drives the GUI client's Secure Keyboard Entry. The raw-mode
                 // interactive CLI relies on the host PTY's own no-echo line discipline, so this is a no-op here.
                 break
+            case .progress:
+                // OSC 9;4 taskbar-style progress (wire type 32, E14) drives the GUI client's per-pane tab
+                // badge + the macOS Dock aggregate. The raw-mode interactive CLI has no badge/Dock surface —
+                // the local terminal already shows the program's own progress natively — so this is a no-op
+                // here (mirrors the `.inputEcho` no-op).
+                break
             }
         }
     }
