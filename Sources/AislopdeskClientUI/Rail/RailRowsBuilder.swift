@@ -24,6 +24,10 @@ struct RailRow: Identifiable, Equatable {
     /// The coarse host-reported foreground-process name (wire type 26), shown trailing on the active row; `nil`
     /// when the host has not reported one.
     let processLabel: String?
+    /// Whether this pane's input gate is READ-ONLY (E17 ES-E17-1 / WI-3) — read from the store's convergent
+    /// ``WorkspaceStore/paneReadOnly`` set so the sidebar lock indicator and the pane's `🔒 READ ONLY ×` pill
+    /// share one source of truth. Drives ``OttyTabRow``'s trailing lock glyph.
+    let readOnly: Bool
     /// Selected = the row's tab is active AND this pane is the tab's active pane.
     let isSelected: Bool
 }
@@ -75,6 +79,7 @@ enum RailRowsBuilder {
                     tabNumber: tabIndex + 1,
                     badge: badge,
                     processLabel: processLabel,
+                    readOnly: store.isReadOnly(for: paneID),
                     isSelected: isSelected,
                 ))
             }

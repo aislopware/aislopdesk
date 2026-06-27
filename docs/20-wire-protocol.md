@@ -101,6 +101,7 @@ UUIDs (`sessionID`) are sent as their **16 raw bytes** in canonical order (not a
 | 28 | `commandBlock` | host → client | control | `UInt32 index` + `UInt8 hasExit` + `Int32 exitCode` (BE, 0 if absent) + `UInt8 hasDuration` + `UInt32 durationMS` (BE, 0 if absent) + `UInt8 complete` + `UInt32 outputLen` (BE) + `UInt16 cmdLen` (BE) + `commandText` UTF-8 (Warp-style Block metadata) |
 | 29 | `blockOutput` | host → client | control | `UInt32 index` + `UInt32 outputLen` (BE) + `output` bytes (RAW VT, not UTF-8) — reply to `requestBlockOutput` |
 | 30 | `metadataResponse` | host → client | control | `UInt32 requestID` (BE) + `UInt8 status` + `UInt32 payloadLen` (BE) + `payload` bytes (opaque) — reply to `metadataRequest` (E4) |
+| 31 | `inputEcho` | host → client | control | `UInt8 enabled` (`1` = canonical echo on, `0` = no-echo password prompt) — PTY termios `ECHO` edge; drives AUTO Secure Keyboard Entry (E17/I22) |
 
 `protocolVersion` is currently **1** (`Aislopdesk.protocolVersion`). There is **no version
 negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` whose
@@ -202,8 +203,29 @@ negotiation**: the host accepts **only** `protocolVersion == 1`. Any `hello` who
     head-of-line-independent CONTROL channel like `title`/`commandStatus` and are **not**
     sequenced/replayed.
 
+- **`inputEcho` (31) is the secure-input echo signal** (host → client, CONTROL; E17/I22). The host
+  watches the PTY master's termios `ECHO` line-discipline flag (`tcgetattr`) and emits a 1-byte
+  `[UInt8 enabled]` body on a state EDGE — `enabled = 1` is canonical echo (the default), `enabled = 0`
+  is a hidden-password prompt (`sudo`/`ssh`/`login`/`read -s`/`getpass` clear `ECHO` with `tcsetattr`).
+  The macOS client engages `EnableSecureEventInput` while `enabled == 0`.
+  - **Why a wire signal.** termios `ECHO` is a HOST-side line-discipline attribute — it is **not in the
+    output byte stream** (unlike DECSET/DECRST/OSC-133, which the client parses), so the client cannot
+    derive the no-echo state itself; the AUTO Secure-Keyboard-Entry path genuinely needs this host→client
+    message. (The MANUAL Edit ▸ Secure Keyboard Entry path is client-only and works without the wire.)
+  - **Additive within wire version 1**: a peer that does not know type 31 DROPS the frame
+    (`unknownMessageType`) — validate-then-drop, never a trap. Host + client **redeploy together** (no
+    version negotiation). The pane identity is carried by the mux channel envelope, not in the body.
+  - The decoder reads the flag as `byte != 0` (untrusted-bool rule — never assumes `{0,1}`) and a missing
+    body decodes to `truncated` (never an over-read). The host **dedupes**: it is anchored at echo-on (the
+    canonical default the client also assumes) and emits ONLY on a deviation from — and a restore to —
+    that default, so the steady (echo-on) case adds nothing to the CONTROL stream. Host delivery is driven
+    by the pure `EchoModeDetector` (the `ForegroundProcessDetector` pure-core / thin-`PTYEchoProbe`-shim
+    split) from `MuxChannelSession`: opportunistically right after a client keystroke is written to the
+    PTY (where `ECHO` flips fastest) plus the low-rate foreground-watch poll as a backstop. Rides the
+    head-of-line-independent CONTROL channel and is **not** sequenced/replayed.
+
 The next free **client → host** CONTROL type byte is **17** (10–16 used). The next free
-**host → client** CONTROL type byte is **31** (20–30 used). (Byte 28 was once reserved for a W14 OSC-8
+**host → client** CONTROL type byte is **32** (20–31 used). (Byte 28 was once reserved for a W14 OSC-8
 hyperlink type, but W14 ships OSC-8 click-to-open via **libghostty's own hit-testing** —
 `GHOSTTY_ACTION_OPEN_URL` / `GHOSTTY_ACTION_MOUSE_OVER_LINK` — so no wire change was needed; 28 was
 later taken by the Warp-style `commandBlock`. See DECISIONS.md "W14 terminal parity".)

@@ -61,8 +61,8 @@ public enum PaletteCategory: String, CaseIterable, Sendable, Hashable {
     public var label: String { rawValue }
 
     /// The fixed display order: Working Directory leads (it OWNS the cwd badge in the view, per the
-    /// screenshot), then otty's verb groups. An empty category (e.g. Shell, until shell verbs land) is
-    /// skipped by the mixer / zero-state, so it never renders an empty header.
+    /// screenshot), then otty's verb groups. An empty category is skipped by the mixer / zero-state, so it
+    /// never renders an empty header. (Shell carries the E17 "Read Only" verb — otty's "Shell → Read Only".)
     public static let commandOrder: [Self] = [
         .workingDirectory, .window, .pane, .tab, .view, .shell, .settings,
     ]
@@ -119,6 +119,12 @@ public struct PaletteItem: Identifiable, Sendable {
     public let icon: String
     public let title: String
     public let subtitle: String?
+    /// HIDDEN fuzzy-match synonyms — extra terms the user might type that should surface this row but are
+    /// NEVER rendered (e.g. "Read Only" also accepts `lock` / `freeze` / `view only`). The ``SearchMixer``
+    /// folds them into the haystack at a LOWER tier than the title / subtitle (a keyword hit never out-ranks
+    /// a title hit and adds no title highlight), so the row stays visually clean. `nil` for rows with no
+    /// synonyms. Mirrors ``WorkspaceBinding/keywords`` (the same idea on the registry side).
+    public let keywords: String?
     /// Right-aligned shortcut hint chip text (e.g. "⌘T"), or `nil`.
     public let shortcut: String?
     /// Which source/domain produced this row (for the section grouping + filter match).
@@ -137,6 +143,7 @@ public struct PaletteItem: Identifiable, Sendable {
         icon: String,
         title: String,
         subtitle: String? = nil,
+        keywords: String? = nil,
         shortcut: String? = nil,
         filter: QueryFilter,
         category: PaletteCategory? = nil,
@@ -147,6 +154,7 @@ public struct PaletteItem: Identifiable, Sendable {
         self.icon = icon
         self.title = title
         self.subtitle = subtitle
+        self.keywords = keywords
         self.shortcut = shortcut
         self.filter = filter
         self.category = category
@@ -177,6 +185,7 @@ public struct PaletteItem: Identifiable, Sendable {
             icon: icon,
             title: title,
             subtitle: subtitle,
+            keywords: keywords,
             shortcut: shortcut,
             filter: filter,
             category: category,

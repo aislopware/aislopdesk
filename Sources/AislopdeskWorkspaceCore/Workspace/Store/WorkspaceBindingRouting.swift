@@ -117,7 +117,16 @@ public extension WorkspaceBindingRegistry {
         // View
         case .toggleZoom: store.toggleZoomActivePane()
         case .commandPalette: toggles.palette?()
-        case .cheatSheet: toggles.cheatSheet?()
+        // Cheat sheet / vi key hints (E17 ES-E17-2 / WI-5): `⌘/` is CONTEXTUAL. While the active pane is in
+        // vi / copy-mode, `⌘/` toggles that pane's vi KEY-HINT BAR (the reference card) instead of the global
+        // keyboard cheat sheet — ONE binding, contextual behaviour (otty parity), no new chord, no conflict.
+        // Out of copy-mode it falls through to the view-owned cheat-sheet toggle (the existing behaviour).
+        case .cheatSheet:
+            if store.activeTerminalModel?.isCopyMode == true {
+                store.toggleViKeyHintsInActivePane()
+            } else {
+                toggles.cheatSheet?()
+            }
         // Find opens the active pane's find bar via the store (so the menu + chord work without threading a
         // view closure); an explicit `toggleFind` override wins when supplied.
         case .find: if let f = toggles.find { f() } else { store.requestFindInActivePane() }
@@ -132,6 +141,14 @@ public extension WorkspaceBindingRegistry {
         case .globalSearch: toggles.globalSearch?()
         // Copy Mode (P5b): arm modal keyboard scrollback navigation over the active terminal pane.
         case .toggleCopyMode: store.requestCopyModeInActivePane()
+        // Read-Only (E17 ES-E17-1): toggle the active pane's input gate via the store (so the pill ×, the
+        // View-menu item, and the command-palette term all converge on the one `paneReadOnly` source of
+        // truth). A graceful no-op for an empty / non-terminal shell.
+        case .toggleReadOnly: store.toggleReadOnlyInActivePane()
+        // Secure Keyboard Entry (E17 ES-E17-4): toggle MANUAL macOS secure event input over the active pane
+        // (the auto path engages on a host no-echo prompt without an action). A graceful no-op for an empty /
+        // non-terminal shell; the macOS leaf's `SecureKeyboardEntryController` actuates the process-global API.
+        case .secureKeyboardEntry: store.toggleSecureKeyboardEntryInActivePane()
         // Toggle Tabs Panel (otty ⌘⇧L): the LEFT sidebar collapse on the macOS shell is VIEW @State
         // (`WorkspaceChromeState.sidebarCollapsed`, read by the native split controller) — NOT the legacy
         // `store.sidebarCollapsed`, which nothing reads on macOS. So it is a passed-in closure (like
@@ -266,7 +283,15 @@ public extension WorkspaceBindingRegistry {
         case .cyclePanePrev: apply(.cycleFocus(forward: false), to: store)
         case .toggleZoom: apply(.toggleZoom, to: store)
         case .commandPalette: toggles.palette?()
-        case .cheatSheet: toggles.cheatSheet?()
+        // Cheat sheet / vi key hints (E17 ES-E17-2 / WI-5): same CONTEXTUAL `⌘/` as the tree path — while the
+        // canvas-focused pane is in vi / copy-mode (which the canvas path also arms via `.toggleCopyMode`), the
+        // chord toggles that pane's vi key-hint bar; otherwise it forwards to the view-owned cheat-sheet toggle.
+        case .cheatSheet:
+            if store.activeTerminalModel?.isCopyMode == true {
+                store.toggleViKeyHintsInActivePane()
+            } else {
+                toggles.cheatSheet?()
+            }
         case .find: toggles.find?() // canvas path: find is view-overlay only (no tree active-pane store hook)
         // Find Next / Previous: the canvas path resolves the active pane via canvas focus, so the same store
         // hooks open + advance the find bar there too (a graceful no-op for a non-terminal / empty canvas).
@@ -277,6 +302,12 @@ public extension WorkspaceBindingRegistry {
         // Copy Mode (P5b): the canvas path resolves the active pane via canvas focus, so the same store hook
         // arms copy-mode there too (a no-op for a non-terminal active pane / empty shell).
         case .toggleCopyMode: store.requestCopyModeInActivePane()
+        // Read-Only (E17 ES-E17-1): the canvas path resolves the active pane via canvas focus, so the same
+        // store seam toggles the input gate there too (a no-op for a non-terminal active pane / empty shell).
+        case .toggleReadOnly: store.toggleReadOnlyInActivePane()
+        // Secure Keyboard Entry (E17 ES-E17-4): the canvas path resolves the active pane via canvas focus, so
+        // the same store seam toggles manual secure input there too (a no-op for a non-terminal / empty shell).
+        case .secureKeyboardEntry: store.toggleSecureKeyboardEntryInActivePane()
         // Sidebar is the tree-shell chrome; the canvas path still toggles it via the closure (the live macOS
         // app wires `chrome.toggleSidebar`). `nil` (the canvas test default) is a graceful no-op.
         case .toggleSidebar: toggles.sidebar?()

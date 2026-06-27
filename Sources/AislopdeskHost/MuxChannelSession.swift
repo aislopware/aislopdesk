@@ -97,6 +97,15 @@ final class MuxChannelSession: @unchecked Sendable {
     /// The foreground-watch poll task (cancel on shutdown).
     private var agentWatchTask: Task<Void, Never>?
 
+    /// E17 / I22 — the pure per-pane PTY-echo edge detector (the AUTO Secure-Keyboard-Entry signal).
+    /// Driven by ``PTYEchoProbe`` from TWO contexts — the input task (opportunistically right after a
+    /// client keystroke is written to the PTY, where `ECHO` flips fastest around a password prompt) and
+    /// the foreground-watch poll (a low-rate backstop, when `agentDetectEnabled`) — so it is guarded by
+    /// `echoDetectLock`. Anchored at echo-on, so it is SILENT until the child actually clears `ECHO`
+    /// (the CONTROL stream stays byte-identical when no no-echo prompt ever appears).
+    private let echoDetectLock = NSLock()
+    private var echoDetector = EchoModeDetector()
+
     // MARK: - Agent-control surface state
 
     /// The last OSC-0/2 title sniffed from the PTY output stream. Updated on the PTY
@@ -452,6 +461,10 @@ final class MuxChannelSession: @unchecked Sendable {
                                 done.resume()
                             }
                         }
+                        // E17/I22: termios ECHO flips fastest around a password prompt — re-probe right
+                        // after writing this keystroke so AUTO Secure Keyboard Entry engages with minimal
+                        // lag. The detector dedupes, so the steady (echo-on) state emits nothing.
+                        self?.sampleEcho(masterFD: masterFD)
                     }
                     // Consumed (written to the PTY / processed): grant the window back.
                     await data.noteConsumed(message.wireByteCount)
@@ -579,6 +592,22 @@ final class MuxChannelSession: @unchecked Sendable {
         if !tickEmission.isEmpty { enqueueControl(tickEmission.messages) }
         if !sampleEmission.isEmpty { enqueueControl(sampleEmission.messages) }
         if let newStatus { notifyAgentStatusChanged(newStatus) }
+        // E17 / I22: ride the same low-rate poll as a BACKSTOP for the PTY-echo edge (a no-echo
+        // prompt that appears without a fresh keystroke). The PRIMARY driver is the post-input probe.
+        sampleEcho(masterFD: masterFD)
+    }
+
+    /// E17 / I22 — probes the PTY master's termios `ECHO` flag via the thin ``PTYEchoProbe`` shim,
+    /// folds it through the pure ``EchoModeDetector``, and enqueues a type-31 ``WireMessage/inputEcho``
+    /// on the CONTROL sender on an edge (the detector dedupes — an unchanged echo state emits nothing).
+    /// Called opportunistically right after writing client input to the PTY (where `ECHO` flips fastest
+    /// around a password prompt) and from the foreground poll backstop. Cheap (one `tcgetattr` syscall).
+    private func sampleEcho(masterFD: Int32) {
+        let echoOn = PTYEchoProbe.echoEnabled(masterFD: masterFD)
+        echoDetectLock.lock()
+        let message = echoDetector.sample(echoOn: echoOn)
+        echoDetectLock.unlock()
+        if let message { enqueueControl([message]) }
     }
 
     // MARK: - Detach / reattach (tmux-style survival — C1–C4)
@@ -737,6 +766,10 @@ final class MuxChannelSession: @unchecked Sendable {
                                 done.resume()
                             }
                         }
+                        // E17/I22: re-probe termios ECHO right after writing input on the reattached
+                        // channel too (same rationale as the live relay) — AUTO Secure Keyboard Entry
+                        // must keep working after a reconnect. The detector dedupes the steady state.
+                        self?.sampleEcho(masterFD: masterFD)
                     }
                     await newData.noteConsumed(message.wireByteCount)
                 }

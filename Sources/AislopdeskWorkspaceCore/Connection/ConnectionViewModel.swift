@@ -623,6 +623,11 @@ public final class ConnectionViewModel {
             // Persist the live shell title into the pane spec so a relaunch can restore it.
             // Empty strings are suppressed — the host emits "" on connect before the shell sets a real one.
             if !text.isEmpty { onTitleChanged?(text) }
+        case .inputEcho:
+            // Secure input (E17 ES-E17-4, wire type 31): the host PTY echo edge. The terminal model folds it
+            // (`terminal.handle` below) into `hostNoEcho` → the `secureInputActive` pill mirror + the macOS
+            // leaf's `SecureKeyboardEntryController`. No connection-layer side effect here.
+            break
         case .bell:
             break
         }

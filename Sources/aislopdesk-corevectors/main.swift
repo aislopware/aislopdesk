@@ -787,6 +787,10 @@ root["terminalWireMessages"] = [
         .claudeStatus(state: 2, kind: 3, label: "Done — ✅ build green 🚀"),
         ["state": Int(2), "kindByte": Int(3), "label": "Done — ✅ build green 🚀"],
     ),
+    // E17 / I22 — secure-input echo signal (terminal CONTROL, host → client).
+    // type 31 inputEcho: 1-byte body = [UInt8 enabled] (1 = canonical echo on, 0 = no-echo password prompt).
+    wmRecord("inputEcho", .inputEcho(enabled: false), ["enabled": false]),
+    wmRecord("inputEcho", .inputEcho(enabled: true), ["enabled": true]),
 ]
 
 // WB1 — Warp-style "Blocks" wire messages (terminal CONTROL).

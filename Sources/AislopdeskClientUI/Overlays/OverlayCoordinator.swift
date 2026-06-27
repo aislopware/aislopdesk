@@ -252,7 +252,8 @@ public final class OverlayCoordinator {
             out.append(contentsOf: recentItems)
         }
         // The rest of the catalog, grouped into otty categories in display order (Working Directory already
-        // led above). A category with no rows (e.g. Shell, today) is skipped — no empty section header.
+        // led above). A category with no rows is skipped — no empty section header. (Shell now carries the
+        // E17 "Read Only" verb; a still-empty category like a future one stays skipped.)
         for category in PaletteCategory.commandOrder where category != .workingDirectory {
             let items = ActionsPaletteSource.items(in: category)
             guard !items.isEmpty else { continue }

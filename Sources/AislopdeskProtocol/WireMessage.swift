@@ -207,6 +207,20 @@ public enum WireMessage: Equatable, Sendable {
     /// (`unknownMessageType`), never traps. Rides CONTROL like the other inline signals.
     case metadataResponse(requestID: UInt32, status: UInt8, payload: Data)
 
+    /// The PTY's canonical-echo state (E17/I22, type 31, host → client, CONTROL). The host watches the
+    /// PTY master's termios `ECHO` line-discipline flag (`tcgetattr`, cleared by `sudo`/`ssh`/`login`/
+    /// `read -s`/`getpass` for a hidden-password prompt) and emits this on a state EDGE — `enabled: true`
+    /// is canonical echo (the default), `enabled: false` is a no-echo password prompt. termios `ECHO` is
+    /// a HOST-side line-discipline attribute the child sets with `tcsetattr`; it is **invisible to the
+    /// output byte stream** (libghostty / the client's DECSET/OSC-133 parsing never see it), so the
+    /// AUTO-Secure-Keyboard-Entry path genuinely requires this host→client signal — the client engages
+    /// `EnableSecureEventInput` while `enabled == false`. 1-byte body (`enabled ? 1 : 0`), decoded as
+    /// `byte != 0` (untrusted-bool rule). Additive within wire version 1 (host accepts only v1, no
+    /// negotiation → host + client redeploy together); a peer that does not know type 31 DROPS the frame
+    /// (`unknownMessageType`), never traps. Rides CONTROL like the other inline signals (an output flood
+    /// can't delay it). The pane identity is carried by the mux channel envelope, not in this body.
+    case inputEcho(enabled: Bool)
+
     /// The semantic state of the foreground command in a pane's shell (from OSC 133).
 
     /// The semantic state of the foreground command in a pane's shell (from OSC 133).
@@ -244,6 +258,7 @@ public enum WireMessage: Equatable, Sendable {
         case .commandBlock: 28
         case .blockOutput: 29
         case .metadataResponse: 30
+        case .inputEcho: 31
         }
     }
 
@@ -271,7 +286,8 @@ public enum WireMessage: Equatable, Sendable {
              .claudeStatus,
              .commandBlock,
              .blockOutput,
-             .metadataResponse:
+             .metadataResponse,
+             .inputEcho:
             .control
         }
     }

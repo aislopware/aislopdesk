@@ -3125,6 +3125,18 @@ public final class WorkspaceStore {
     /// shared `reconcileRegistry` cache-prune) so a closed pane's entry drops out (no unbounded growth).
     public internal(set) var paneForegroundProcess: [PaneID: String] = [:]
 
+    // MARK: - Read-only mode (E17 ES-E17-1 — the per-pane input gate's single source of truth)
+
+    /// The set of panes currently in READ-ONLY mode (E17). The SINGLE observable source of truth the
+    /// `🔒 READ ONLY ×` pill, the sidebar lock indicator, and ``isReadOnly(for:)`` all read — so a flip
+    /// from ANY entry point (the pill `×`, the View-menu item, the command-palette term, or a programmatic
+    /// `setPaneReadOnly`) converges to one value. Written by the per-pane seams in
+    /// `WorkspaceStore+ReadOnly.swift` AND mirrored from each live ``TerminalViewModel/onReadOnlyChanged``
+    /// (wired in ``wireMaterializedLeaf``). Pure VIEW state, NOT persisted (read-only is a runtime toggle —
+    /// otty ships no launch config key for it). PRUNED to the live leaf set on every reconcile alongside
+    /// ``paneAgentStatus`` so a closed pane's entry drops out (no unbounded growth, no stale lock surfacing).
+    public internal(set) var paneReadOnly: Set<PaneID> = []
+
     // MARK: - Tab grouping / sort + recency (E6 WI-3 — the sidebar hamburger's store-backed order)
 
     /// How the sidebar buckets tabs into sections (otty hamburger "Group By"). The SINGLE source of truth
@@ -3391,6 +3403,15 @@ public final class WorkspaceStore {
         // FOCUS-ON-CLICK: the surface's mouseDown calls `onRequestFocus`; route it to the tree focus so the
         // workspace focus (chrome / inspector / which pane the next split or close targets) follows a click.
         terminal?.onRequestFocus = { [weak self] in self?.focusPaneTree(id) }
+        // READ-ONLY convergence (E17 ES-E17-1): mirror a flip of THIS pane's input gate — by the pill `×`,
+        // the View-menu item, the command-palette term, or the model's own toggle — into the store's
+        // `paneReadOnly` set (the single source the pill + the sidebar lock both read). The closure writes
+        // the set DIRECTLY (not back through `setPaneReadOnly`, which also drives the model) so there is no
+        // re-entrant loop with the model's `isReadOnly` didSet; both writers land the same value, idempotent.
+        terminal?.onReadOnlyChanged = { [weak self] on in
+            guard let self else { return }
+            if on { paneReadOnly.insert(id) } else { paneReadOnly.remove(id) }
+        }
         // WB3 BOOKMARKS: seed the pane's block model from persistence + wire its change closure to persist
         // back (the helper lives in WorkspaceStore+Blocks so this body stays under the lint ceiling).
         seedBlockBookmarks(id: id, handle: handle)
@@ -3511,6 +3532,12 @@ public final class WorkspaceStore {
         // unbounded across a long session of open/close.
         if !paneForegroundProcess.isEmpty {
             paneForegroundProcess = paneForegroundProcess.filter { leafSet.contains($0.key) }
+        }
+        // Prune the per-pane READ-ONLY set in lockstep (E17): a closed pane must not keep a stale lock, and
+        // the set must not grow unbounded across a long session of open/close. An absent id reads writable.
+        // Mirrors the `selectedPanes` Set-prune idiom above (intersect, not reallocate, only when needed).
+        if !paneReadOnly.isEmpty, !paneReadOnly.isSubset(of: leafSet) {
+            paneReadOnly.formIntersection(leafSet)
         }
 
         // 2. Orphans: remove from the registry synchronously (the registry is the source of truth for

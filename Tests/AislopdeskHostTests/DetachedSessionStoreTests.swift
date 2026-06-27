@@ -53,9 +53,16 @@ final class DetachedSessionStoreTests: XCTestCase {
         // Confirm it is present immediately.
         let immediate = await store.lookup(id)
         XCTAssertNotNil(immediate, "session must be present right after insert")
-        // Sleep past the TTL.
-        try await Task.sleep(for: .milliseconds(50))
-        let afterTTL = await store.lookup(id)
+        // Poll past the TTL with a generous deadline rather than a single fixed sleep: the eviction is an
+        // async `Task.sleep(ttl)` continuation, so a saturated cooperative pool (the full parallel suite) can
+        // starve it well past the nominal 10ms and flake a one-shot check. Polling asserts EVENTUAL eviction
+        // without weakening the contract and returns the instant the TTL task fires (fast in isolation).
+        var afterTTL = await store.lookup(id)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while afterTTL != nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+            afterTTL = await store.lookup(id)
+        }
         XCTAssertNil(afterTTL, "TTL-evicted session must not be returned by lookup")
     }
 

@@ -106,6 +106,11 @@ public actor AislopdeskClient {
         /// channel). Surfaced so the chrome can show a latency badge and lag can be
         /// attributed (network RTT vs host stall vs client render).
         case rtt(milliseconds: Double)
+        /// The host PTY's termios `ECHO` edge (E17 ES-E17-4, wire type 31, host → client). `enabled == true`
+        /// is the canonical echoing prompt; `enabled == false` is a no-echo hidden-password prompt (`sudo` /
+        /// `ssh` / `read -s`). The macOS UI engages process-global Secure Keyboard Entry while `false`. Emitted
+        /// only on the edge (the host's `EchoModeDetector` suppresses chatter).
+        case inputEcho(enabled: Bool)
         /// The transport dropped (network loss / clean close). ``ReconnectManager``
         /// reacts to this; surfaced for diagnostics.
         case disconnected(reason: String)
@@ -488,6 +493,11 @@ public actor AislopdeskClient {
             // opaque payload verbatim; the UI's MetadataRequestRegistry correlates it by requestID and the
             // typed MetadataClient decodes the payload (AislopdeskClient does not depend on MetadataCodec).
             eventBroadcaster.yield(.metadataResponse(requestID: requestID, status: status, payload: payload))
+        case let .inputEcho(enabled):
+            // SECURE INPUT (type 31, E17): surface the host PTY termios `ECHO` edge so the macOS UI can engage
+            // process-global Secure Keyboard Entry while the remote shell is at a no-echo password prompt.
+            // Rides CONTROL; never blocks output.
+            eventBroadcaster.yield(.inputEcho(enabled: enabled))
         case let .pong(timestampMS):
             recordPong(sentAtMS: timestampMS)
         default:

@@ -45,6 +45,8 @@ final class WireMessageWireByteCountTests: XCTestCase {
                 title: String(repeating: "T", count: 70000),
                 body: "overlong title is clamped",
             ), // wireByteCount must track the clamp
+            .inputEcho(enabled: true),
+            .inputEcho(enabled: false),
         ]
         for message in messages {
             XCTAssertEqual(

@@ -888,6 +888,36 @@ final class TreeCommandRoutingTests: XCTestCase {
         }
     }
 
+    // MARK: - View: read-only (E17 ES-E17-1) — chord-less registry pin + active-pane routing
+
+    /// `.toggleReadOnly` is registered, in the View category, and CHORD-LESS — otty documents no default
+    /// chord, so it must never collide with a chord yet must not be a dead row. Revert-to-confirm-fail by
+    /// removing the registry case (this test then fails to find the binding).
+    func testReadOnlyBindingIsViewAndChordless() {
+        let binding = WorkspaceBindingRegistry.binding(for: .toggleReadOnly)
+        XCTAssertEqual(binding?.id, "view.readOnly", "read-only has the stable id view.readOnly")
+        XCTAssertEqual(binding?.category, .view, "read-only is a View command")
+        XCTAssertNil(binding?.chord, "read-only is unbound by default (otty documents no chord)")
+    }
+
+    /// Routing `.toggleReadOnly` flips the ACTIVE pane's membership in the convergent `paneReadOnly` set
+    /// (the single source the pill `×` + the sidebar lock both read) WITHOUT mutating the tree, and a second
+    /// route clears it. Proven to fail before the action / routing case / store seam exist.
+    func testToggleReadOnlyRoutesToActivePaneAndIsReversible() throws {
+        let store = makeTreeStore()
+        let active = try XCTUnwrap(activePane(store))
+        let treeBefore = store.tree
+        XCTAssertFalse(store.isReadOnly(for: active), "panes start writable")
+
+        WorkspaceBindingRegistry.route(.toggleReadOnly, to: store)
+        XCTAssertTrue(store.paneReadOnly.contains(active), "toggleReadOnly locked the active pane")
+        XCTAssertTrue(store.isReadOnly(for: active), "isReadOnly reflects the convergent set")
+
+        WorkspaceBindingRegistry.route(.toggleReadOnly, to: store)
+        XCTAssertFalse(store.paneReadOnly.contains(active), "a second toggle cleared the lock")
+        XCTAssertEqual(store.tree, treeBefore, "read-only is a view-state gate — the tree is unchanged")
+    }
+
     // MARK: - View: peek-and-reply falls back to the store when no overlay closure (no dead ⌘⇧J)
 
     /// `.peekAndReply` WITH an explicit `togglePeekReply` override fires the closure (the future overlay

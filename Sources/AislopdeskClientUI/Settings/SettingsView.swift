@@ -544,6 +544,12 @@ private struct ControlsSettingsTab: View {
     // Keyboard / System.
     @Default(.undoAtPrompt) private var undoAtPrompt
     @Default(.systemDialogPanes) private var systemDialogPanes
+    // Secure Input (E17 ES-E17-4 / WI-7) — macOS-only (the iOS sheet hides the section). The keys still
+    // compile + round-trip on iOS; only the UI is gated.
+    #if os(macOS)
+    @Default(.autoSecureInput) private var autoSecureInput
+    @Default(.secureInputIndicator) private var secureInputIndicator
+    #endif
 
     var body: some View {
         Form {
@@ -596,103 +602,9 @@ private struct ControlsSettingsTab: View {
                 timingFooter(.live)
             }
 
-            Section("Scroll") {
-                toggleRow(
-                    "Scroll to Bottom on Output",
-                    "Snap the viewport to the bottom when new output arrives.",
-                    isOn: $scrollOnOutput,
-                )
-                pickerRow(
-                    "Scroll Past Last Line",
-                    "Overscroll mode past the last content row. Preference saved; the overscroll rendering "
-                        + "is not yet active (the terminal renderer owns the viewport — deferred).",
-                    selection: $scrollPastLastLine,
-                ) {
-                    Text("Disabled").tag(ScrollPastLast.disabled)
-                    Text("Last Line With Content").tag(ScrollPastLast.lastLineWithContent)
-                    Text("Last Line In Middle").tag(ScrollPastLast.lastLineInMiddle)
-                    Text("Cursor Line").tag(ScrollPastLast.cursorLine)
-                }
-                pickerRow(
-                    "Scroll Past First Line",
-                    "Overscroll mode past the first (oldest) scrollback row. Preference saved; the overscroll "
-                        + "rendering is not yet active (deferred — same renderer ceiling as Scroll Past Last).",
-                    selection: $scrollPastFirstLine,
-                ) {
-                    Text("Disabled").tag(ScrollPastFirst.disabled)
-                    Text("Same as Last Line").tag(ScrollPastFirst.sameAsLast)
-                    Text("First Line With Content").tag(ScrollPastFirst.firstLineWithContent)
-                    Text("First Line In Middle").tag(ScrollPastFirst.firstLineInMiddle)
-                }
-                toggleRow(
-                    "Smooth Scroll",
-                    "Scrolling already runs at pixel granularity. The whole-row snap when this is off is not "
-                        + "yet active (the renderer exposes no row-snap hook — deferred).",
-                    isOn: $smoothScroll,
-                )
-                LabeledContent("Scroll multiplier") {
-                    HStack(spacing: Otty.Metric.space2) {
-                        Slider(value: refreshing($scrollMultiplier), in: 0.25...5, step: 0.25)
-                        Text(String(format: "%.2f×", scrollMultiplier))
-                            .foregroundStyle(Otty.Text.secondary)
-                            .monospacedDigit()
-                    }
-                }
-                Stepper(
-                    "Scrollback: \(store.terminal.scrollbackLines) lines",
-                    value: $store.terminal.scrollbackLines, in: 1000...100_000, step: 1000,
-                )
-                timingFooter(.live)
-            }
+            scrollSection
 
-            Section("Mouse") {
-                toggleRow(
-                    "Mouse Over to Focus",
-                    "Focus the pane under the mouse cursor automatically.",
-                    isOn: $focusFollowsMouse,
-                )
-                pickerRow(
-                    "Right-Click Action",
-                    "What right-click does in the terminal viewport (Ctrl+right-click always opens the menu).",
-                    selection: $rightClickAction,
-                ) {
-                    Text("Context Menu").tag(RightClickAction.contextMenu)
-                    Text("Copy").tag(RightClickAction.copy)
-                    Text("Paste").tag(RightClickAction.paste)
-                    Text("Copy or Paste").tag(RightClickAction.copyOrPaste)
-                    Text("Ignore").tag(RightClickAction.ignore)
-                }
-                toggleRow(
-                    "Hide Mouse When Typing",
-                    "Hide the mouse cursor while the keyboard is in use.",
-                    isOn: $mouseHideWhileTyping,
-                )
-                // otty surfaces this as a simple ON/OFF switch (`spec/cursor-and-mouse`), not a 4-way picker:
-                // ON ⇒ ⇧ extends the selection (`MouseShiftCapture.enabled`, the default), OFF ⇒ ⇧ is forwarded
-                // to the program (`.disabled`). The leaf enum keeps `.always`/`.never` for the power-user token
-                // mapping, but the otty-faithful UI exposes only the binary the spec shows. The getter projects
-                // through `extendsSelection` (NOT a bare `== .enabled`) so a value persisted by the removed
-                // 4-way picker reads sanely: `.always` → ON, `.never` → OFF.
-                toggleRow(
-                    "Allow Shift with Mouse Click",
-                    "Hold Shift to select text even when the running app captures the mouse.",
-                    isOn: Binding(
-                        get: { allowShiftClick.extendsSelection },
-                        set: { allowShiftClick = $0 ? .enabled : .disabled },
-                    ),
-                )
-                toggleRow(
-                    "Cursor Click-to-Move",
-                    "Click in the prompt to move the shell cursor — sends arrow keys across soft-wrapped rows.",
-                    isOn: $clickToMove,
-                )
-                toggleRow(
-                    "Allow Mouse Capture",
-                    "Allow shell apps to capture mouse events (e.g. vim, tmux).",
-                    isOn: $allowMouseCapture,
-                )
-                timingFooter(.live)
-            }
+            mouseSection
 
             Section("Keyboard") {
                 toggleRow(
@@ -703,12 +615,137 @@ private struct ControlsSettingsTab: View {
                 timingFooter(.live)
             }
 
+            // Secure Input (E17 ES-E17-4 / WI-7) — macOS-only (process-global `EnableSecureEventInput`). The
+            // whole Section is `#if os(macOS)`, so the iOS sheet hides it; the `SettingsKey` keys still compile.
+            #if os(macOS)
+            Section("Secure Input") {
+                toggleRow(
+                    "Auto Secure Input",
+                    "Automatically engage macOS Secure Keyboard Entry when the remote shell shows a hidden "
+                        + "password prompt (sudo, ssh, read -s), so no other app can read your keystrokes.",
+                    isOn: $autoSecureInput,
+                )
+                toggleRow(
+                    "Show Secure Input Indicator",
+                    "Show the SECURE INPUT pill in the pane while secure keyboard entry is active.",
+                    isOn: $secureInputIndicator,
+                )
+                timingFooter(.live)
+            }
+            #endif
+
             Section("System") {
                 Toggle("Auto-spawn panes for system password dialogs", isOn: $systemDialogPanes)
                 timingFooter(.live)
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// otty Settings → Controls → Scroll. Extracted from `body` so the `Form` closure stays under the
+    /// `closure_body_length` ceiling; the rows are unchanged.
+    private var scrollSection: some View {
+        Section("Scroll") {
+            toggleRow(
+                "Scroll to Bottom on Output",
+                "Snap the viewport to the bottom when new output arrives.",
+                isOn: $scrollOnOutput,
+            )
+            pickerRow(
+                "Scroll Past Last Line",
+                "Overscroll mode past the last content row. Preference saved; the overscroll rendering "
+                    + "is not yet active (the terminal renderer owns the viewport — deferred).",
+                selection: $scrollPastLastLine,
+            ) {
+                Text("Disabled").tag(ScrollPastLast.disabled)
+                Text("Last Line With Content").tag(ScrollPastLast.lastLineWithContent)
+                Text("Last Line In Middle").tag(ScrollPastLast.lastLineInMiddle)
+                Text("Cursor Line").tag(ScrollPastLast.cursorLine)
+            }
+            pickerRow(
+                "Scroll Past First Line",
+                "Overscroll mode past the first (oldest) scrollback row. Preference saved; the overscroll "
+                    + "rendering is not yet active (deferred — same renderer ceiling as Scroll Past Last).",
+                selection: $scrollPastFirstLine,
+            ) {
+                Text("Disabled").tag(ScrollPastFirst.disabled)
+                Text("Same as Last Line").tag(ScrollPastFirst.sameAsLast)
+                Text("First Line With Content").tag(ScrollPastFirst.firstLineWithContent)
+                Text("First Line In Middle").tag(ScrollPastFirst.firstLineInMiddle)
+            }
+            toggleRow(
+                "Smooth Scroll",
+                "Scrolling already runs at pixel granularity. The whole-row snap when this is off is not "
+                    + "yet active (the renderer exposes no row-snap hook — deferred).",
+                isOn: $smoothScroll,
+            )
+            LabeledContent("Scroll multiplier") {
+                HStack(spacing: Otty.Metric.space2) {
+                    Slider(value: refreshing($scrollMultiplier), in: 0.25...5, step: 0.25)
+                    Text(String(format: "%.2f×", scrollMultiplier))
+                        .foregroundStyle(Otty.Text.secondary)
+                        .monospacedDigit()
+                }
+            }
+            Stepper(
+                "Scrollback: \(store.terminal.scrollbackLines) lines",
+                value: $store.terminal.scrollbackLines, in: 1000...100_000, step: 1000,
+            )
+            timingFooter(.live)
+        }
+    }
+
+    /// otty `mouse-option.png` order. Extracted from `body` so the `Form` closure stays under the
+    /// `closure_body_length` ceiling; the rows are unchanged.
+    private var mouseSection: some View {
+        Section("Mouse") {
+            toggleRow(
+                "Mouse Over to Focus",
+                "Focus the pane under the mouse cursor automatically.",
+                isOn: $focusFollowsMouse,
+            )
+            pickerRow(
+                "Right-Click Action",
+                "What right-click does in the terminal viewport (Ctrl+right-click always opens the menu).",
+                selection: $rightClickAction,
+            ) {
+                Text("Context Menu").tag(RightClickAction.contextMenu)
+                Text("Copy").tag(RightClickAction.copy)
+                Text("Paste").tag(RightClickAction.paste)
+                Text("Copy or Paste").tag(RightClickAction.copyOrPaste)
+                Text("Ignore").tag(RightClickAction.ignore)
+            }
+            toggleRow(
+                "Hide Mouse When Typing",
+                "Hide the mouse cursor while the keyboard is in use.",
+                isOn: $mouseHideWhileTyping,
+            )
+            // otty surfaces this as a simple ON/OFF switch (`spec/cursor-and-mouse`), not a 4-way picker:
+            // ON ⇒ ⇧ extends the selection (`MouseShiftCapture.enabled`, the default), OFF ⇒ ⇧ is forwarded
+            // to the program (`.disabled`). The leaf enum keeps `.always`/`.never` for the power-user token
+            // mapping, but the otty-faithful UI exposes only the binary the spec shows. The getter projects
+            // through `extendsSelection` (NOT a bare `== .enabled`) so a value persisted by the removed
+            // 4-way picker reads sanely: `.always` → ON, `.never` → OFF.
+            toggleRow(
+                "Allow Shift with Mouse Click",
+                "Hold Shift to select text even when the running app captures the mouse.",
+                isOn: Binding(
+                    get: { allowShiftClick.extendsSelection },
+                    set: { allowShiftClick = $0 ? .enabled : .disabled },
+                ),
+            )
+            toggleRow(
+                "Cursor Click-to-Move",
+                "Click in the prompt to move the shell cursor — sends arrow keys across soft-wrapped rows.",
+                isOn: $clickToMove,
+            )
+            toggleRow(
+                "Allow Mouse Capture",
+                "Allow shell apps to capture mouse events (e.g. vim, tmux).",
+                isOn: $allowMouseCapture,
+            )
+            timingFooter(.live)
+        }
     }
 
     // MARK: - Row helpers

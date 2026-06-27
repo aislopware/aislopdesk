@@ -380,6 +380,10 @@ Task {
                 // E4 host metadata replies (wire type 30) back the GUI Details Panel. The raw-mode CLI
                 // never issues a metadata request, so a reply is a no-op here.
                 break
+            case .inputEcho:
+                // Secure input (wire type 31, E17) drives the GUI client's Secure Keyboard Entry. The raw-mode
+                // interactive CLI relies on the host PTY's own no-echo line discipline, so this is a no-op here.
+                break
             }
         }
     }

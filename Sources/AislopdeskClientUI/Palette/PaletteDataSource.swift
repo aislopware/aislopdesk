@@ -180,6 +180,27 @@ public struct ActionsPaletteSource: PaletteDataSource {
             subtitle: nil, shortcut: glyph(.selectDetailsTab(.files)), filter: .actions, category: .view,
             action: .selectDetailsTab(.files),
         ),
+        // Read Only (E17 ES-E17-1): toggle the active pane's input gate. Under the SHELL section to mirror
+        // otty's "Shell → Read Only" menu placement (the first shell verb in the catalog). The spec accepts
+        // "read only" plus the synonyms `readonly` / `lock` / `freeze` / `view only` — folded into the row's
+        // HIDDEN `keywords` so they search without being rendered. No registry chord (otty ships none) ⇒ the
+        // glyph resolves to nil ⇒ no hint chip. Drives the store seam that converges with the pill `×` + menu.
+        item(
+            id: "action.toggleReadOnly", icon: "lock", title: "Read Only",
+            keywords: "readonly lock freeze view only locked viewer input gate protect",
+            shortcut: glyph(.toggleReadOnly), category: .shell,
+            run: { store in store.toggleReadOnlyInActivePane() },
+        ),
+        // Secure Keyboard Entry (E17 ES-E17-4): the MANUAL toggle for macOS process-global secure event input
+        // over the active pane (otty Edit ▸ Secure Keyboard Entry). Under the SHELL section beside Read Only.
+        // No registry chord (otty ships none) ⇒ the glyph resolves to nil ⇒ no hint chip. Drives the store
+        // seam that flips the active model's manual flag (→ the pill + the leaf's controller).
+        item(
+            id: "action.secureKeyboardEntry", icon: "lock.shield", title: "Secure Keyboard Entry",
+            keywords: "secure input keyboard entry password sudo protect eavesdrop sniff secure event input",
+            shortcut: glyph(.secureKeyboardEntry), category: .shell,
+            run: { store in store.toggleSecureKeyboardEntryInActivePane() },
+        ),
         // Connect to a (possibly non-default) host — the only entry point to the host/port editor besides
         // the top-bar status pill. No registry chord ⇒ no hint chip.
         PaletteItem(
@@ -235,12 +256,12 @@ public struct ActionsPaletteSource: PaletteDataSource {
 
     /// Build a `.store` action row in a category.
     private static func item(
-        id: String, icon: String, title: String, shortcut: String? = nil,
+        id: String, icon: String, title: String, keywords: String? = nil, shortcut: String? = nil,
         category: PaletteCategory,
         run: @escaping @MainActor @Sendable (WorkspaceStore) -> Void,
     ) -> PaletteItem {
         PaletteItem(
-            id: id, icon: icon, title: title, shortcut: shortcut,
+            id: id, icon: icon, title: title, keywords: keywords, shortcut: shortcut,
             filter: .actions, category: category, action: .store(run),
         )
     }
@@ -378,7 +399,8 @@ public struct SearchMixer: Sendable {
     public func ranked(query: String, activeFilter: QueryFilter? = nil) -> [RankedRow] {
         var out: [RankedRow] = []
         for source in sources where runs(source, for: activeFilter) {
-            // (row, score, tier, sourceOffset) — tier 1 = title match, tier 0 = subtitle-only match.
+            // (row, score, tier, sourceOffset) — tier 1 = title match, tier 0 = subtitle-only match, tier -1
+            // = hidden-keyword (synonym) match. A higher tier always outranks a lower one (see the sort).
             let scored: [(row: RankedRow, score: Int, tier: Int, offset: Int)] = source
                 .candidates(query: query)
                 .enumerated()
@@ -388,6 +410,12 @@ public struct SearchMixer: Sendable {
                     }
                     if let subtitle = item.subtitle, let sub = FuzzyMatcher.score(query, subtitle) {
                         return (RankedRow(item: item), sub.score, 0, offset)
+                    }
+                    // HIDDEN synonyms (E17): a row's `keywords` (e.g. "Read Only" accepting `lock` / `freeze`
+                    // / `view only`) are searchable but never rendered, so a keyword hit sits at tier -1 —
+                    // below every title (1) and subtitle (0) hit — and carries NO title highlight ranges.
+                    if let keywords = item.keywords, let kw = FuzzyMatcher.score(query, keywords) {
+                        return (RankedRow(item: item), kw.score, -1, offset)
                     }
                     return nil
                 }

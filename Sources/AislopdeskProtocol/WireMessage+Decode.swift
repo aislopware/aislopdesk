@@ -182,6 +182,14 @@ extension WireMessage {
             let payload = try reader.readBytes(payloadLen)
             return .metadataResponse(requestID: requestID, status: status, payload: payload)
 
+        case 31: // inputEcho
+            // 1-byte body: the canonical-echo flag. Validate-then-drop on a short body (`readUInt8`
+            // throws `truncated` if the body is missing — never an over-read of a hostile datagram).
+            // Read as `byte != 0` (untrusted-bool rule — never assume {0,1}); any trailing bytes are
+            // ignored, matching the file's forward-tolerant fixed-field decoders (bell/ack/etc.).
+            let echoByte = try reader.readUInt8()
+            return .inputEcho(enabled: echoByte != 0)
+
         default:
             throw AislopdeskError.unknownMessageType(type)
         }

@@ -219,6 +219,7 @@ struct NavigatorColumn: View {
                 subtitle: row.subtitle,
                 processLabel: row.processLabel,
                 badge: row.badge,
+                readOnly: row.readOnly,
                 onSelect: { select(row.id) },
                 onClose: { store.requestClosePaneTree(row.id) },
             ),
@@ -285,6 +286,12 @@ struct NavigatorColumn: View {
                     Image(systemSymbol: Self.symbol(for: row.kind))
                 }
                 Spacer(minLength: 6)
+                if row.readOnly {
+                    Image(systemSymbol: .lockFill)
+                        .font(.system(size: Otty.Typeface.small, weight: .semibold))
+                        .foregroundStyle(Otty.Text.secondary)
+                        .accessibilityLabel("Read only")
+                }
                 if let badge = row.badge {
                     TabBadgeView(kind: badge)
                 }

@@ -44,6 +44,16 @@ struct TerminalLeafView: View {
     /// ``ComposerModel``'s concern (that lives on the live session so the draft survives tab switches).
     @State private var composerChrome = ComposerLeafChrome()
 
+    /// E17 ES-E17-4 / WI-7: the per-pane macOS Secure Keyboard Entry actuator. Driven (in `wirePaneCallbacks`)
+    /// from the pane model's `onHostEchoChanged` (auto, on a host no-echo password prompt) + the manual
+    /// `onManualSecureInputChanged` toggle, it engages / disengages process-global `EnableSecureEventInput`
+    /// with a strict single-reference balance. It also observes the app-frontmost edge (see
+    /// ``SecureKeyboardEntryController/observeAppActivity()``), so the lock is released whenever aislopdesk is
+    /// backgrounded / window-resigned and re-acquired on return — never leaked to other apps' keyboards. Per-pane
+    /// (`.id(PaneID)`-keyed leaf), torn down on disappear so the lock can never leak past a pane close either.
+    /// Inert off macOS (the controller is a no-op).
+    @State private var secureInput = SecureKeyboardEntryController()
+
     var body: some View {
         VStack(spacing: 0) {
             // TODO(L5): mount `FileExplorerPanel` beside the surface when the per-pane explorer is open.
@@ -98,9 +108,10 @@ struct TerminalLeafView: View {
     }
 
     /// The terminal pixels (the seam) — production renderer if the app registered one, else the headless
-    /// placeholder. This library NEVER imports libghostty/Metal: it only calls the factory seam. The ⌘F find
-    /// bar floats top-trailing OVER the surface (it does not reflow the buffer) — never in the static-mirror
-    /// snapshot path.
+    /// placeholder. This library NEVER imports libghostty/Metal: it only calls the factory seam. The E17 vi-mode
+    /// pill, the `🔒 READ ONLY ×` pill and the ⌘F find bar float top-trailing OVER the surface (none reflow the
+    /// buffer), stacked in one overlay so they never collide; the E17 vi key-hint bar floats along the bottom —
+    /// never in the static-mirror snapshot path.
     private var terminalSurface: some View {
         ZStack(alignment: .topLeading) {
             if let model = live?.terminalModel {
@@ -115,26 +126,102 @@ struct TerminalLeafView: View {
                 Color.clear
             }
         }
+        // ONE top-trailing overlay holds the vi-mode pill (E17 WI-5), the read-only pill (E17 WI-3), the
+        // SECURE INPUT pill (E17 WI-7) and the find bar (E5), stacked top→down so an open find bar reflows
+        // BELOW the persistent pills instead of overlapping them. otty places the pills in the window
+        // titlebar's top-right; aislopdesk has no
+        // persistent titlebar, so the pane's top-trailing overlay is the faithful equivalent (see
+        // `PaneStatusPills.swift` / `ViModeOverlay.swift`). The vi pill and the read-only pill are mutually
+        // exclusive by construction — `showReadOnlyPill` is gated `!copyModeBadgeActive`, so the lock pill
+        // steps aside while vi mode owns the slot.
         .overlay(alignment: .topTrailing) {
-            if !staticMirror, findBar.visible, live?.terminalModel != nil {
-                TerminalFindBar(model: findBar)
+            VStack(alignment: .trailing, spacing: Otty.Metric.space2) {
+                if !staticMirror, showViModePill, let model = live?.terminalModel {
+                    ViModePill(model: model, onExit: { model.exitCopyMode() })
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if !staticMirror, showReadOnlyPill {
+                    ReadOnlyPill(onDeactivate: { live?.terminalModel?.exitReadOnly() })
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if !staticMirror, showSecureInputPill {
+                    SecureInputPill()
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if !staticMirror, findBar.visible, live?.terminalModel != nil {
+                    TerminalFindBar(model: findBar)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .padding(Otty.Metric.space2)
+        }
+        // The vi key-hint bar (E17 WI-5) floats along the pane BOTTOM (the vi-mode spec's likely position) when
+        // `⌘/` has toggled it on during a vi session — `showViHintBar` gates it on `copyModeBadgeActive` so it
+        // tears down the instant vi mode exits (which also resets `showViKeyHints`).
+        .overlay(alignment: .bottom) {
+            if !staticMirror, showViHintBar {
+                ViKeyHintBar()
                     .padding(Otty.Metric.space2)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(Otty.Anim.reveal, value: findBar.visible)
+        .animation(Otty.Anim.reveal, value: showReadOnlyPill)
+        .animation(Otty.Anim.reveal, value: showSecureInputPill)
+        .animation(Otty.Anim.reveal, value: showViModePill)
+        .animation(Otty.Anim.reveal, value: showViHintBar)
     }
 
-    /// Wire all per-pane view callbacks (find + Composer) on appear / live-session swap.
+    /// Whether the `🛡 SECURE INPUT` pill is shown (E17 ES-E17-4 / WI-7). Visible iff secure input is active for
+    /// the pane (``TerminalViewModel/secureInputActive`` — the auto password-prompt path or the manual toggle),
+    /// the indicator setting is on (``SettingsKey/secureInputIndicatorEnabled``), AND the pane is NOT read-only
+    /// (under read-only no input path can fire, so the secure-input cue is moot — spec). `secureInputActive` is
+    /// always `false` off macOS, so the cross-platform pill never lights on iOS. `false` for a not-yet-live pane.
+    private var showSecureInputPill: Bool {
+        guard let model = live?.terminalModel else { return false }
+        return model.secureInputActive && SettingsKey.secureInputIndicatorEnabled && !model.readOnlyBadgeActive
+    }
+
+    /// Whether the `🔒 READ ONLY ×` pill is shown (E17 ES-E17-1 / WI-3). Reads the pane model's OBSERVABLE
+    /// mirrors so it lights / clears reactively: visible iff the pane's input gate is armed
+    /// (``TerminalViewModel/readOnlyBadgeActive``) AND it is NOT in vi / copy mode
+    /// (``TerminalViewModel/copyModeBadgeActive``) — copy mode temporarily hides the pill per the spec (its
+    /// keybindings drive selection, not the shell, so the lock is not needed while it is active). `false`
+    /// for a non-terminal / not-yet-live pane.
+    private var showReadOnlyPill: Bool {
+        guard let model = live?.terminalModel else { return false }
+        return model.readOnlyBadgeActive && !model.copyModeBadgeActive
+    }
+
+    /// Whether the vi-mode pill (E17 ES-E17-2 / WI-5) is shown. Reads the pane model's OBSERVABLE
+    /// ``TerminalViewModel/copyModeBadgeActive`` mirror (NOT the `@ObservationIgnored` `isCopyMode` the keyDown
+    /// path reads) so the pill lights / clears reactively as copy-mode arms / exits. `false` for a non-terminal
+    /// / not-yet-live pane.
+    private var showViModePill: Bool {
+        live?.terminalModel?.copyModeBadgeActive == true
+    }
+
+    /// Whether the vi key-hint bar (E17 ES-E17-2 / WI-5) is shown: in vi mode AND the per-session `⌘/` toggle is
+    /// on. Both reads are OBSERVABLE mirrors, so the bar reveals / hides reactively; it is gated on
+    /// `copyModeBadgeActive` too so it can never linger after vi mode exits (``TerminalViewModel/exitCopyMode()``
+    /// resets ``TerminalViewModel/showViKeyHints``, but the extra gate makes the teardown unconditional).
+    private var showViHintBar: Bool {
+        guard let model = live?.terminalModel else { return false }
+        return model.copyModeBadgeActive && model.showViKeyHints
+    }
+
+    /// Wire all per-pane view callbacks (find + Composer + secure input) on appear / live-session swap.
     private func wirePaneCallbacks() {
         wireFindCallbacks()
         wireComposerCallbacks()
+        wireSecureInputCallbacks()
     }
 
     /// Clear all per-pane view callbacks on teardown so a surviving model can't drive a dead leaf's `@State`.
     private func clearPaneCallbacks() {
         clearFindCallbacks()
         clearComposerCallbacks()
+        clearSecureInputCallbacks()
     }
 
     /// Wire the pane's ⌘F / ⌘G / ⇧⌘G callbacks to the find-bar holder (the seam the store fires via
@@ -189,6 +276,34 @@ struct TerminalLeafView: View {
         model.onRequestComposer = nil
         model.onRequestPromptQueue = nil
         model.onPasteToComposer = nil
+    }
+
+    /// Wire the pane's SECURE-INPUT actuator (E17 ES-E17-4 / WI-7): sync the controller to the model's current
+    /// secure-input inputs + the live Auto-Secure-Input setting, then drive it on each change so macOS
+    /// process-global Secure Keyboard Entry engages on a host no-echo password prompt (auto) or the manual
+    /// toggle, and disengages on the inverse edge. Also starts the controller observing the app-frontmost edge
+    /// (idempotent) so an engaged lock is RELEASED whenever aislopdesk is backgrounded (the user ⌘-Tabs away
+    /// while a remote prompt is still up) and re-acquired on return — never leaked process-wide to other apps'
+    /// keyboards. No-op for a non-terminal / not-yet-live pane; inert off macOS (the controller is a stub there).
+    private func wireSecureInputCallbacks() {
+        guard let model = live?.terminalModel else { return }
+        let controller = secureInput
+        controller.setAutoSecureInput(SettingsKey.autoSecureInputEnabled)
+        controller.setHostNoEcho(model.hostNoEcho)
+        controller.setManualOn(model.manualSecureInput)
+        controller.observeAppActivity()
+        model.onHostEchoChanged = { controller.setHostNoEcho($0) }
+        model.onManualSecureInputChanged = { controller.setManualOn($0) }
+    }
+
+    /// Force-disengage secure input + nil the callbacks on teardown so the process-global `EnableSecureEventInput`
+    /// reference is always released on a pane close (never leaked) and a surviving model can't drive a dead
+    /// leaf's controller.
+    private func clearSecureInputCallbacks() {
+        secureInput.teardown()
+        guard let model = live?.terminalModel else { return }
+        model.onHostEchoChanged = nil
+        model.onManualSecureInputChanged = nil
     }
 
     private func connectIfNeeded() async {

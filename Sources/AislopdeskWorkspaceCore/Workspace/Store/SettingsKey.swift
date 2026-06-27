@@ -98,6 +98,12 @@ public enum SettingsKey {
     public static let smoothScroll = "controls.smoothScroll"
     /// otty undo-at-prompt (I18) — ⌘Z emits the readline undo (`0x1f`) when in the prompt zone (default ON).
     public static let undoAtPrompt = "controls.undoAtPrompt"
+    /// otty `auto-secure-input` (E17 ES-E17-4) — automatically engage macOS Secure Keyboard Entry while the
+    /// remote shell is at a no-echo (hidden-password) prompt (default ON; macOS-only). **WI-7 owns it.**
+    public static let autoSecureInput = "controls.autoSecureInput"
+    /// otty secure-input INDICATOR (E17 ES-E17-4) — show the `🛡 SECURE INPUT` pill while secure input is
+    /// active (default ON; macOS-only). **WI-7 owns it.**
+    public static let secureInputIndicator = "controls.secureInputIndicator"
     // Features / advanced
     public static let systemDialogPanes = "features.systemDialogPanes"
     public static let autoSwitchLayouts = "features.autoSwitchLayouts"
@@ -341,6 +347,16 @@ public enum SettingsKey {
     /// Whether ⌘Z at the prompt emits the readline undo (otty undo-at-prompt, I18), default ON.
     public static var undoAtPromptEnabled: Bool { Defaults[.undoAtPrompt] }
 
+    /// Whether macOS Secure Keyboard Entry engages AUTOMATICALLY on a host no-echo password prompt (otty
+    /// `auto-secure-input`, E17 ES-E17-4), default ON. Read fire-time by ``SecureKeyboardEntryController`` +
+    /// ``TerminalViewModel/secureInputActive``. macOS-only behaviour (the controller is inert off macOS).
+    public static var autoSecureInputEnabled: Bool { Defaults[.autoSecureInput] }
+
+    /// Whether the `🛡 SECURE INPUT` pill is shown while secure input is active (otty secure-input indicator,
+    /// E17 ES-E17-4), default ON. Read fire-time by the leaf's pill gate. macOS-only (the pill never lights
+    /// on iOS — ``TerminalViewModel/secureInputActive`` is always `false` there).
+    public static var secureInputIndicatorEnabled: Bool { Defaults[.secureInputIndicator] }
+
     /// The OSC-52 clipboard-WRITE access gate (otty `clipboard-write`), default ``ClipboardAccess/allow``.
     /// A stale / invalid persisted raw value repairs to `.allow` via the `RawRepresentableBridge`.
     public static var clipboardWrite: ClipboardAccess { Defaults[.clipboardWrite] }
@@ -436,6 +452,10 @@ public extension Defaults.Keys {
     static let clickToMove = Key<Bool>(SettingsKey.clickToMove, default: true)
     static let smoothScroll = Key<Bool>(SettingsKey.smoothScroll, default: true)
     static let undoAtPrompt = Key<Bool>(SettingsKey.undoAtPrompt, default: true)
+    // Secure input (E17 ES-E17-4 / WI-7) — both default ON (macOS-only behaviour; the keys still compile +
+    // round-trip on iOS, where the feature is inert). Fire-time flags, never folded into the env overlay.
+    static let autoSecureInput = Key<Bool>(SettingsKey.autoSecureInput, default: true)
+    static let secureInputIndicator = Key<Bool>(SettingsKey.secureInputIndicator, default: true)
     static let clipboardWrite = Key<ClipboardAccess>(SettingsKey.clipboardWriteKey, default: .allow)
     static let clipboardRead = Key<ClipboardAccess>(SettingsKey.clipboardReadKey, default: .ask)
     static let allowShiftClick = Key<MouseShiftCapture>(SettingsKey.allowShiftClickKey, default: .enabled)

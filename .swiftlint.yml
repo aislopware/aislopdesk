@@ -264,7 +264,11 @@ type_body_length:
   # close (Tab vs Window policy) vs the non-cascading busy-shell guard. It resolves the owning session's tab
   # count off `tree` (only readable in the main body) and is called from the body's `closeConfirmationNeeded`
   # switch, so it can't move to an extension. Single-helper growth, not bloat.
-  warning: 1900
+  # 1900 → 1910 (2026-06-27): E17 ES-E17-1 (WI-2) — WorkspaceStore gains the per-pane read-only `paneReadOnly`
+  # STORED set (`@Observable` synthesises on it, so it can't live in WorkspaceStore+ReadOnly.swift — only the
+  # toggle/set logic does) plus its reconcile-prune + the `onReadOnlyChanged` mirror wire in
+  # `wireMaterializedLeaf`. Single stored-property + wire-closure cluster, not bloat.
+  warning: 1910
   error: 2700
 
 # Error backstops tightened toward the warnings (2026-06-24): under `--strict` the WARNING is the binding

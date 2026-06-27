@@ -27,6 +27,10 @@ struct OttyTabRow: View {
     var processLabel: String?
     /// The single fused status badge (spinner / check / dot / error / hand / coffee / shield). `nil` ⇒ none.
     var badge: TabBadgeKind?
+    /// E17 ES-E17-1 / WI-3: whether this pane's input gate is READ-ONLY — renders a small trailing lock glyph
+    /// (the sidebar's read-only indicator, twin of the pane's `🔒 READ ONLY ×` pill). Default `false` keeps
+    /// existing call sites source-compatible.
+    var readOnly: Bool = false
     var onSelect: () -> Void
     var onClose: () -> Void
 
@@ -74,11 +78,18 @@ struct OttyTabRow: View {
         .animation(Otty.Anim.smallFade, value: active)
     }
 
-    /// The trailing status cluster: the fused `badge` (if any), then the monospaced light-gray `#N`, then the
-    /// foreground-process label on the ACTIVE row — all muted, right-aligned (`tab-badge.png` /
-    /// `workspace-tabs.png`). Fades out under the hover close `×`.
+    /// The trailing status cluster: the read-only lock (if locked), the fused `badge` (if any), then the
+    /// monospaced light-gray `#N`, then the foreground-process label on the ACTIVE row — all muted,
+    /// right-aligned (`tab-badge.png` / `workspace-tabs.png`). Fades out under the hover close `×`.
     private var trailingMeta: some View {
         HStack(spacing: 6) {
+            if readOnly {
+                Image(systemSymbol: .lockFill)
+                    .font(.system(size: Otty.Typeface.small, weight: .semibold))
+                    .foregroundStyle(Otty.Text.secondary)
+                    .accessibilityLabel("Read only")
+                    .help("Read only")
+            }
             if let badge {
                 TabBadgeView(kind: badge)
             }

@@ -60,6 +60,16 @@ public enum WorkspaceAction: Hashable, Sendable {
     case findPrev // ⇧⌘G — step to the PREVIOUS find match (opens the find bar if closed)
     case globalSearch // ⇧⌘F — show/hide the cross-tab Global Search results surface (E5 ES-E5-5)
     case toggleCopyMode // ⌘⇧C — enter modal keyboard copy-mode over the active pane's scrollback (P5b)
+    // Read-Only mode (E17 ES-E17-1): toggle the active pane's READ-ONLY input gate — every outbound input
+    // path (keys / paste / IME commit / mouse-report / click-to-move / drop / sync-broadcast) is dropped +
+    // beeps once while output keeps streaming. otty documents NO default chord; reachable via the menu +
+    // command palette ("Read Only" / readonly / lock / freeze / view only) only.
+    case toggleReadOnly
+    // Secure Keyboard Entry (E17 ES-E17-4): the MANUAL toggle for macOS process-global secure event input
+    // over the active pane (otty Edit ▸ Secure Keyboard Entry). The AUTO path engages on a host no-echo
+    // password prompt without an action; this is the explicit user override. otty ships no default chord —
+    // reachable via the menu + command palette ("Secure Keyboard Entry") only.
+    case secureKeyboardEntry
     case toggleSidebar // ⌘⇧L — show/hide the sessions sidebar (otty "Toggle Tabs Panel")
     case toggleDetailsPanel // ⌘⇧R — show/hide the right-hand Details / inspector panel (otty parity)
     // Jump the Details / inspector panel to a SPECIFIC tab (Info / Outline / Git / Files) AND reveal it if
@@ -168,6 +178,12 @@ public extension WorkspaceAction {
              .findNext,
              .findPrev,
              .toggleCopyMode,
+             // Read-only gates the ACTIVE terminal pane's input — needs a pane, but degrades gracefully
+             // (an empty / non-terminal shell just no-ops), so it rides the same family, not greyed out.
+             .toggleReadOnly,
+             // Secure Keyboard Entry toggles the ACTIVE terminal pane's manual secure input — needs a pane,
+             // but degrades gracefully (an empty / non-terminal shell just no-ops), same family.
+             .secureKeyboardEntry,
              .commandNavigator,
              .jumpPreviousBlock,
              .jumpNextBlock,
@@ -594,6 +610,29 @@ public enum WorkspaceBindingRegistry {
             category: .view, chord: KeyChord(character: "c", [.command, .shift]),
             symbol: "doc.on.clipboard",
             keywords: "copy mode scrollback keyboard navigate select yank vi tmux zellij",
+        ),
+        // Read-Only mode (E17 ES-E17-1): toggle the active pane's input gate. otty documents NO default
+        // chord — the feature is reachable via the menu (otty's "Shell → Read Only"; aislopdesk surfaces it
+        // in the View menu, as the app ships no Shell menu) + the command palette ("Read Only", also
+        // `readonly` / `lock` / `freeze` / `view only` — the spec's exact accepted terms). `chord: nil`
+        // surfaces the row WITHOUT binding a key (the chord-less idiom — like `pane.rename` / `tab.close`);
+        // the user may bind it in Settings → Keybindings. Pinned chord-less by `TreeCommandRoutingTests`.
+        WorkspaceBinding(
+            id: "view.readOnly", action: .toggleReadOnly, title: "Read Only",
+            category: .view, chord: nil,
+            symbol: "lock",
+            keywords: "read only readonly lock freeze view only locked viewer input gate protect",
+        ),
+        // Secure Keyboard Entry (E17 ES-E17-4): the MANUAL toggle for macOS process-global secure event input
+        // over the active pane (otty Edit ▸ Secure Keyboard Entry). otty ships NO default chord — `chord: nil`
+        // surfaces the row in the menu + palette WITHOUT binding a key (the chord-less idiom — like
+        // `view.readOnly` / `pane.rename`); the user may bind it in Settings → Keybindings. Pinned chord-less
+        // by `TreeCommandRoutingTests`.
+        WorkspaceBinding(
+            id: "view.secureKeyboardEntry", action: .secureKeyboardEntry, title: "Secure Keyboard Entry",
+            category: .view, chord: nil,
+            symbol: "lock.shield",
+            keywords: "secure input keyboard entry password sudo protect eavesdrop sniff secure event input",
         ),
         // Toggle Tabs Panel ⌘⇧L — otty's reference default (spec/reference__keybindings.md:66 "Toggle tabs
         // panel | ⌘⇧L"; line 201 "⌘⇧L … map to sidebar … toggles"). RE-BOUND from the old ⌘B: ⌘B routed to

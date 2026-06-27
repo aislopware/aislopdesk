@@ -144,6 +144,10 @@ extension WireMessage {
             frame.appendBE(UInt32(truncatingIfNeeded: payload.count))
             frame.append(payload)
 
+        case let .inputEcho(enabled):
+            // [UInt8 enabled] — a single canonical-echo flag (1 = echo on, 0 = no-echo prompt).
+            frame.append(enabled ? 1 : 0)
+
         case .bell:
             break // empty body
 
@@ -260,6 +264,7 @@ public extension WireMessage {
                 .count // requestID + verb + UInt32 len + payload
             case let .metadataResponse(_, _, payload): 4 + 1 + 4 + payload
                 .count // requestID + status + UInt32 len + payload
+            case .inputEcho: 1 // enabled UInt8
             case .helloAck: Self.sessionIDByteCount + 8 + 1 // UUID + Int64 + Bool
             case let .title(string): string.utf8.count
             case let .notification(title, bodyText): 2 + Self.clampedNotificationTitle(title).utf8.count + bodyText.utf8

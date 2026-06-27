@@ -166,6 +166,40 @@ final class RailRowBuilderTests: XCTestCase {
         )
     }
 
+    // MARK: - E17 WI-3: the read-only lock flag (sidebar indicator ⟂ pane pill, one source of truth)
+
+    /// A row's `readOnly` mirrors the store's convergent ``WorkspaceStore/paneReadOnly`` set, so the sidebar
+    /// lock glyph and the pane's `🔒 READ ONLY ×` pill read ONE truth. Locking the pane lights the flag;
+    /// unlocking clears it. Fails on the pre-WI-3 `RailRow` (no `readOnly` field ⇒ won't compile) and on a
+    /// build that derived the flag from anything but the store set (the assertion checks the row against the
+    /// store's `isReadOnly(for:)`, not against its own input).
+    func testReadOnlyFlagMirrorsTheStoreSet() {
+        let store = makeStore()
+        let pane = paneID(store, row: 0)
+        XCTAssertFalse(RailRowsBuilder.rows(for: store)[0].readOnly, "a fresh pane is editable → no lock")
+
+        store.setPaneReadOnly(pane, true)
+        XCTAssertTrue(store.isReadOnly(for: pane), "the store recorded the lock in its convergent set")
+        XCTAssertTrue(RailRowsBuilder.rows(for: store)[0].readOnly, "and the row surfaces it for the lock glyph")
+
+        store.setPaneReadOnly(pane, false)
+        XCTAssertFalse(RailRowsBuilder.rows(for: store)[0].readOnly, "unlocking clears the row flag")
+    }
+
+    /// The lock is strictly per-pane: locking one pane of a split tab leaves its sibling's row unlocked
+    /// (faithful to otty's "splitting gives a fresh editable pane; the state does not propagate to siblings").
+    func testReadOnlyFlagIsPerPane() {
+        let store = makeStore()
+        store.splitActivePane(axis: .horizontal, kind: .terminal, leading: false, launchGrace: .zero)
+        let rows = RailRowsBuilder.rows(for: store)
+        XCTAssertEqual(rows.count, 2, "the split tab contributes two pane rows")
+
+        store.setPaneReadOnly(rows[0].id, true)
+        let after = RailRowsBuilder.rows(for: store)
+        XCTAssertTrue(after.first { $0.id == rows[0].id }?.readOnly ?? false, "the locked pane's row shows the lock")
+        XCTAssertFalse(after.first { $0.id == rows[1].id }?.readOnly ?? true, "its sibling row stays unlocked")
+    }
+
     // MARK: - cwd subtitle + the reused title+cwd filter
 
     /// The row's subtitle is the pane's last-known cwd, and `filtered` narrows by BOTH the title and the cwd.

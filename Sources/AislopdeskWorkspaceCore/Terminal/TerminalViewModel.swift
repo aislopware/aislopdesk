@@ -315,6 +315,109 @@ public final class TerminalViewModel {
         #endif
     }
 
+    // MARK: Vi/copy-mode repeat-count + visual-mode (E17 WI-4 — pure, NSEvent-free)
+
+    /// The three vi visual-selection modes (otty parity) plus `.none` (plain scrollback navigation). Drives
+    /// the ``ViModeOverlay`` pill label AND switches the line-motion handler from scroll (`scroll_page_lines`)
+    /// to selection-EXTEND (`adjust_selection:<dir>`). Public so the GUI overlay (WI-5) reads ``viVisualMode``.
+    public enum VisualMode: Equatable, Sendable {
+        case none
+        case char
+        case line
+        case block
+
+        /// The pill label otty shows per visual mode; `nil` = not in a visual mode (the bare "VI" pill).
+        public var pillLabel: String? {
+            switch self {
+            case .none: nil
+            case .char: "VISUAL"
+            case .line: "VISUAL LINE"
+            case .block: "VISUAL BLOCK"
+            }
+        }
+    }
+
+    /// The PURE copy-mode vi state: the pending repeat-count digits + the active visual mode. Free of
+    /// `@Observable`/`NSEvent` so ``handleCopyModeKey(_:)`` (driven from the renderer keyDown event path)
+    /// mutates it without registering a SwiftUI dependency — the same rationale ``isCopyMode`` is
+    /// `@ObservationIgnored`. The observable ``viPendingCount``/``viVisualMode`` mirrors (read by the pill)
+    /// are kept in lock-step by ``syncViObservables()`` after every key.
+    struct CopyModeState: Equatable {
+        /// `nil` = no count pending; otherwise the accumulated decimal repeat-count (vim left-to-right).
+        var pendingCount: Int?
+        /// The active visual-selection mode (or `.none` for plain navigation).
+        var visualMode: VisualMode = .none
+
+        /// Hard ceiling on an accumulated count so a key-repeat / paste flood can't overflow `Int` or ask for
+        /// an absurd scroll. 9999 lines is far past any real scrollback motion; the digit append clamps to it.
+        static let maxCount = 9999
+
+        /// Appends one decimal digit (vim `5` then `0` → 50), clamped to ``maxCount``.
+        mutating func appendDigit(_ digit: Int) {
+            pendingCount = min((pendingCount ?? 0) * 10 + digit, Self.maxCount)
+        }
+
+        /// Reads-AND-clears the pending count, defaulting to 1 (a bare motion = one step). The clear is why a
+        /// count applies to exactly the NEXT motion, then evaporates (faithful to vim's count semantics).
+        mutating func consumeCount() -> Int {
+            defer { pendingCount = nil }
+            return pendingCount ?? 1
+        }
+    }
+
+    /// The pure repeat-count + visual-mode state. `@ObservationIgnored`: the keyDown event path mutates it;
+    /// the pill reads the observable mirrors below (the ``isCopyMode``/``copyModeBadgeActive`` twin idiom).
+    @ObservationIgnored private var copyModeState = CopyModeState()
+
+    /// OBSERVABLE mirror of the pending repeat-count for the vi-mode pill's LIVE digits (e.g. `5` shows while
+    /// the user types `5` before a motion). `nil` when no count is pending. Kept in lock-step with
+    /// ``copyModeState`` by ``syncViObservables()``.
+    public private(set) var viPendingCount: Int?
+
+    /// OBSERVABLE mirror of the active visual mode for the vi-mode pill label (`VISUAL` / `VISUAL LINE` /
+    /// `VISUAL BLOCK`). `.none` outside a visual selection. Kept in lock-step by ``syncViObservables()``.
+    public private(set) var viVisualMode: VisualMode = .none
+
+    /// Vi-mode key-hint bar visibility (the `⌘/` reference card; WI-5 renders the bar). Observable so the GUI
+    /// hint bar shows/hides; toggled per copy-mode session via ``toggleViKeyHints()`` and reset on
+    /// enter/exit (off by default — otty shows the hints on demand).
+    public private(set) var showViKeyHints = false
+
+    /// `⌘/` (contextual, only while in copy-mode) → toggle the vi key-hint bar. The store routes the chord
+    /// here via this hook so the GUI overlay can also animate/focus; nil for headless/preview. The model owns
+    /// the ``showViKeyHints`` truth (``toggleViKeyHints()`` flips it). `@ObservationIgnored`: wiring, not view
+    /// state.
+    @ObservationIgnored public var onRequestViKeyHints: (() -> Void)?
+
+    /// `?` find-backward hook: the copy-mode `?` key opens the SAME find bar as `/` but biased BACKWARD so
+    /// `n`/`N` step against the search direction (WI-5 wires it to `TerminalFindBarModel.open(backward:)`).
+    /// Falls back to ``onRequestFind`` when unset, so `?` still opens the bar before the backward bias is
+    /// wired. `@ObservationIgnored`: wiring, not view state. Nil for headless/preview callers.
+    @ObservationIgnored public var onRequestFindBackward: (() -> Void)?
+
+    /// Toggles the vi key-hint bar (the `⌘/` contextual binding while in copy-mode). Flips the observable
+    /// ``showViKeyHints`` and fires ``onRequestViKeyHints``.
+    public func toggleViKeyHints() {
+        showViKeyHints.toggle()
+        onRequestViKeyHints?()
+    }
+
+    /// Mirrors the pure ``copyModeState`` into the observable ``viPendingCount``/``viVisualMode`` twins so the
+    /// pill re-renders. Written ONLY when the value actually changes (SwiftUI change tracking is not free).
+    private func syncViObservables() {
+        if viPendingCount != copyModeState.pendingCount { viPendingCount = copyModeState.pendingCount }
+        if viVisualMode != copyModeState.visualMode { viVisualMode = copyModeState.visualMode }
+    }
+
+    /// Clears ALL vi state (pending count + visual mode + key hints) and syncs the observable mirrors. Called
+    /// on ``enterCopyMode()`` (fresh session) and ``exitCopyMode()`` (leaving), so a re-entry always starts
+    /// clean — no stale count carries into the next session and the hint bar defaults back off.
+    private func resetViState() {
+        copyModeState = CopyModeState()
+        showViKeyHints = false
+        syncViObservables()
+    }
+
     /// An abstract key the copy-mode dispatch consumes — deliberately FREE of `NSEvent` so
     /// ``handleCopyModeKey(_:)`` is unit-testable without a window server (the renderer's `CopyModeKey(event:)`
     /// initializer maps the real `NSEvent` at the single NSEvent-aware point, and is excluded from tests).
@@ -353,61 +456,139 @@ public final class TerminalViewModel {
     }
     #endif
 
-    /// The PURE copy-mode dispatch (P5b): maps an abstract ``CopyModeKey`` to a navigation / search / copy /
-    /// exit intent, driving the active surface's ``TerminalSurfaceActions`` seam (scroll/jump/search bindings)
-    /// or the find / copy / exit hooks. Everything else is SWALLOWED (consumed while armed → nothing leaks to
-    /// the shell). No `NSEvent`, no AppKit — fully unit-testable against a mock `TerminalSurfaceActions`.
+    /// The PURE copy-mode dispatch (P5b + E17 WI-4): maps an abstract ``CopyModeKey`` to a navigation /
+    /// repeat-count / visual-mode / search / copy / exit intent, driving the active surface's
+    /// ``TerminalSurfaceActions`` seam (scroll/jump/search/adjust-selection bindings) or the find / copy / exit
+    /// hooks. Everything else is SWALLOWED (consumed while armed → nothing leaks to the shell). No `NSEvent`,
+    /// no AppKit — fully unit-testable against a mock `TerminalSurfaceActions`.
+    ///
+    /// REPEAT-COUNT (vim parity): digits `1`–`9` (and `0` once a count is pending) accumulate into the pure
+    /// ``copyModeState`` and show live in the pill (``viPendingCount``); the NEXT motion applies the count and
+    /// clears it. The count SCALES a parameterized action (`scroll_page_lines:±count`, `jump_to_prompt:±count`)
+    /// and REPEATS a directional one (`adjust_selection:<dir>` / `navigate_search:…` ×count, which take no
+    /// magnitude). An absolute jump (`g`/`G`) and a half-page (`⌃d`/`⌃u`) just consume/clear the count.
+    ///
+    /// VISUAL MODES: `v`/`V`/`⌃v` set ``VisualMode`` `.char`/`.line`/`.block` (pill `VISUAL`/`VISUAL LINE`/
+    /// `VISUAL BLOCK`); in a visual mode the line motions drive `adjust_selection:<dir>` to EXTEND an anchored
+    /// (mouse-made) selection. `o` (anchor-swap) is a documented no-op — see the ABI ceiling below.
     ///
     /// DOCUMENTED ABI CEILING: the pinned libghostty fork exposes NO programmatic cursor-move / set-selection
-    /// action, so there is NO rendered vi visual-char-select. `y`/Enter copies the MOUSE-made libghostty
-    /// selection (``TerminalSurfaceActions/readSelection``) when one exists, else the visible scrollback text
-    /// — never a client-guessed character range (the anti-"rung lắc" rule: never claim a position the host /
-    /// libghostty can contradict).
+    /// action, so a vi cursor cannot START a char-range selection from nothing and there is NO rendered vi
+    /// visual-char-select. The pill shows TRUE mode state; selection-extend (`adjust_selection`) and yank work
+    /// only against an anchored mouse-made selection. `y`/Enter copies the MOUSE-made libghostty selection
+    /// (``TerminalSurfaceActions/readSelection``) when one exists, else the visible scrollback text — never a
+    /// client-guessed character range (the anti-"rung lắc" rule: never claim a position libghostty can
+    /// contradict) — then EXITS vi mode (spec). See DECISIONS.md (E17) for the precise ceiling.
     ///
     /// Scroll-sign convention (Binding.zig): NEGATIVE = UP toward older scrollback, so `j`/↓ = `+1` (down),
     /// `k`/↑ = `-1` (up). `jump_to_prompt`/scroll actions are re-resolved every call (the seam reads live
     /// libghostty truth — never cache a client line index, which drifts under host output).
     public func handleCopyModeKey(_ key: CopyModeKey) {
         let actions = surface as? TerminalSurfaceActions
+        // Every path re-syncs the pill mirrors after mutating the pure ``copyModeState`` (digit append /
+        // motion-consume / visual-mode flip), so the live repeat-count + mode label stay current.
+        defer { syncViObservables() }
         // Plain (non-Control) nav/copy/exit keys match `control: false` so a Ctrl-<key> chord is a clean
         // no-op (swallowed via `default`) rather than silently aliasing onto a nav action — e.g. Ctrl-J must
-        // not scroll, Ctrl-N must not navigate_search. Ctrl-D / Ctrl-U deliberately require `control: true`.
+        // not scroll, Ctrl-N must not navigate_search. Ctrl-D / Ctrl-U / Ctrl-V deliberately require
+        // `control: true`.
         switch key {
+        // Repeat-count digits (pure, client-side accumulation; shown live in the pill). `0` only EXTENDS an
+        // existing count (10, 20…); a bare `0` is the line-start motion (a documented column-motion ceiling,
+        // see DECISIONS.md) → it falls to `default` and is swallowed.
+        case .char("0", control: false, _) where copyModeState.pendingCount != nil:
+            copyModeState.appendDigit(0)
+        case let .char(ch, control: false, _) where ch >= "1" && ch <= "9":
+            copyModeState.appendDigit(ch.wholeNumberValue ?? 0)
+        // Vertical line motions: the count SCALES the scroll (`scroll_page_lines:±count`), or in a visual mode
+        // EXTENDS the selection (`adjust_selection:<dir>` ×count) — see ``applyLineMotion(_:sign:)``.
         case .char("j", control: false, _),
              .down:
-            actions?.performBindingAction("scroll_page_lines:1")
+            applyLineMotion(actions, sign: 1)
         case .char("k", control: false, _),
              .up:
-            actions?.performBindingAction("scroll_page_lines:-1")
+            applyLineMotion(actions, sign: -1)
+        // Half-page: a single half-page step; the count is consumed/cleared, not scaled.
         case .char("d", control: true, _):
+            _ = copyModeState.consumeCount()
             actions?.performBindingAction("scroll_page_fractional:0.5")
         case .char("u", control: true, _):
+            _ = copyModeState.consumeCount()
             actions?.performBindingAction("scroll_page_fractional:-0.5")
+        // Absolute top/bottom: a count is meaningless on an absolute jump → consumed/cleared.
         case .char("g", control: false, shift: false):
+            _ = copyModeState.consumeCount()
             actions?.performBindingAction("scroll_to_top")
         case .char("g", control: false, shift: true),
              .char("G", control: false, _):
+            _ = copyModeState.consumeCount()
             actions?.performBindingAction("scroll_to_bottom")
+        // Prompt jump: the count SCALES the magnitude (`3]` → jump_to_prompt:3).
         case .char("[", control: false, _):
-            actions?.performBindingAction("jump_to_prompt:-1")
+            actions?.performBindingAction("jump_to_prompt:\(-copyModeState.consumeCount())")
         case .char("]", control: false, _):
-            actions?.performBindingAction("jump_to_prompt:1")
+            actions?.performBindingAction("jump_to_prompt:\(copyModeState.consumeCount())")
+        // Visual modes (v / V / ⌃v): set/toggle the mode; subsequent motions EXTEND the selection.
+        case .char("v", control: false, shift: false):
+            setVisualMode(.char)
+        case .char("v", control: false, shift: true),
+             .char("V", control: false, _):
+            setVisualMode(.line)
+        case .char("v", control: true, _):
+            setVisualMode(.block)
+        case .char("o", control: false, _):
+            // Anchor-swap: the pinned libghostty fork exposes no "swap selection ends" action, so this is a
+            // documented no-op (the char-range ceiling, see DECISIONS.md) — never a faked cursor move. The
+            // pending count is dropped (a count on a non-motion is meaningless).
+            copyModeState.pendingCount = nil
+        // Search (reuse the find bar / TerminalSearchController — no second search impl).
         case .char("/", control: false, _):
-            onRequestFind?() // REUSE the existing find bar / TerminalSearchController — no second search impl
+            _ = copyModeState.consumeCount()
+            onRequestFind?() // forward bias
+        case .char("?", control: false, _):
+            _ = copyModeState.consumeCount()
+            (onRequestFindBackward ?? onRequestFind)?() // backward bias (falls back to the same bar)
         case .char("n", control: false, shift: false):
-            actions?.performBindingAction("navigate_search:next")
+            let count = copyModeState.consumeCount()
+            for _ in 0..<count { actions?.performBindingAction("navigate_search:next") }
         case .char("n", control: false, shift: true),
              .char("N", control: false, _):
-            actions?.performBindingAction("navigate_search:previous")
+            let count = copyModeState.consumeCount()
+            for _ in 0..<count { actions?.performBindingAction("navigate_search:previous") }
+        // Yank: copies the mouse-made selection / visible scrollback, then EXITS vi mode (spec).
         case .char("y", control: false, _),
              .enter:
+            _ = copyModeState.consumeCount()
             copyCurrentSelectionOrScrollback(actions)
+            exitCopyMode()
         case .char("q", control: false, _),
              .escape:
-            exitCopyMode()
+            exitCopyMode() // resets all vi state (count/visual/hints) via ``resetViState()``
         default:
             break // swallow every other key (consumed while in mode — nothing reaches the shell)
         }
+    }
+
+    /// Applies a vertical line motion under the current repeat-count. In a VISUAL mode it EXTENDS the
+    /// selection — `adjust_selection:<dir>` repeated `count` times (the directional libghostty action takes no
+    /// magnitude). In plain navigation it SCALES the scroll — one `scroll_page_lines:±count` (the parameter IS
+    /// the line count). `sign` is +1 for down (`j`/↓), -1 for up (`k`/↑).
+    private func applyLineMotion(_ actions: TerminalSurfaceActions?, sign: Int) {
+        let count = copyModeState.consumeCount()
+        if copyModeState.visualMode != .none {
+            let direction = sign > 0 ? "down" : "up"
+            for _ in 0..<count { actions?.performBindingAction("adjust_selection:\(direction)") }
+        } else {
+            actions?.performBindingAction("scroll_page_lines:\(sign * count)")
+        }
+    }
+
+    /// Sets (or toggles OFF) a visual-selection mode. Pressing the SAME mode key again returns to plain
+    /// navigation (`.none`); a different mode key SWITCHES (vim parity: `V` from char-visual → line-visual).
+    /// Entering/switching a visual mode drops any pending repeat-count.
+    private func setVisualMode(_ mode: VisualMode) {
+        copyModeState.pendingCount = nil
+        copyModeState.visualMode = (copyModeState.visualMode == mode) ? .none : mode
     }
 
     /// Copies the libghostty selection if one exists, else the visible scrollback text — then flashes the
@@ -426,15 +607,18 @@ public final class TerminalViewModel {
         onCopyConfirmation?()
     }
 
-    /// Arms copy-mode and fires ``onRequestCopyMode`` so the overlay shows (the ⌘⇧C / menu / store entry).
+    /// Arms copy-mode and fires ``onRequestCopyMode`` so the overlay shows (the ⌘⇧C / menu / store entry). A
+    /// fresh session starts with NO pending count, plain navigation, and the hint bar off (``resetViState``).
     public func enterCopyMode() {
         guard !isCopyMode else { return }
+        resetViState()
         isCopyMode = true
         onRequestCopyMode?()
     }
 
-    /// Exits copy-mode (the `q`/Esc keys, or a programmatic dismiss) and fires ``onRequestCopyMode`` so the
-    /// overlay back-off matches the flag. Idempotent.
+    /// Exits copy-mode (the `q`/Esc keys, a `y`/Enter yank, or a programmatic dismiss), clears all vi state
+    /// (count/visual/hints), and fires ``onRequestCopyMode`` so the overlay back-off matches the flag.
+    /// Idempotent.
     public func exitCopyMode() {
         guard isCopyMode else {
             // Defensive: a key arrived with the flag already cleared (overlay raced) — still dismiss cleanly.
@@ -442,7 +626,156 @@ public final class TerminalViewModel {
             return
         }
         isCopyMode = false
+        resetViState()
         onRequestCopyMode?()
+    }
+
+    // MARK: Read-only mode (E17 ES-E17-1 — per-pane user-toggled input gate)
+
+    /// TRUE while this pane is READ-ONLY: the single input ingress seam ``sendInput(_:)`` drops every
+    /// outbound byte (keys / paste / IME commit / mouse-report / click-to-move / iOS input-bar /
+    /// synchronized-input broadcast) and rings a (rate-limited) beep instead of forwarding it. Output
+    /// ingest is UNTOUCHED — the host's video/bytes keep streaming (faithful to otty's "view only").
+    ///
+    /// VIEW state, NOT persisted (the `isCopyMode` / `copyModeBadgeActive` twin pattern):
+    /// `@ObservationIgnored` because the renderer's `keyDown` / mouse-report path READS this flag from
+    /// inside the AttributeGraph update path (the same infinite-render-loop hazard documented on
+    /// ``surface``), so it must not register a SwiftUI dependency. The SwiftUI pill reads the observable
+    /// ``readOnlyBadgeActive`` mirror instead, kept in lock-step by this `didSet`. The `didSet` ALSO
+    /// fires ``onReadOnlyChanged`` so the pill `×`, the menu, and the command-palette term all converge
+    /// to one source of truth through the store (WI-2).
+    @ObservationIgnored public var isReadOnly = false {
+        didSet {
+            readOnlyBadgeActive = isReadOnly
+            onReadOnlyChanged?(isReadOnly)
+        }
+    }
+
+    /// OBSERVABLE mirror of ``isReadOnly`` for the SwiftUI `🔒 READ ONLY ×` pill. ``isReadOnly`` itself is
+    /// `@ObservationIgnored` (the keyDown intercept reads it from the renderer's AttributeGraph update path);
+    /// the pill reads THIS twin from a normal view body, where observation is exactly what we want, so it
+    /// lights / clears reactively. Kept in lock-step by ``isReadOnly``'s `didSet`.
+    public private(set) var readOnlyBadgeActive = false
+
+    /// The read-only transition hook: the store wires it (in `wireMaterializedLeaf`) so flipping
+    /// ``isReadOnly`` — by the pill `×`, the menu item, the palette term, OR a programmatic
+    /// `setPaneReadOnly` — keeps `WorkspaceStore.paneReadOnly` in sync (the single source of truth the
+    /// pill + the sidebar lock indicator both read). `@ObservationIgnored`: wiring, not view state. Nil for
+    /// headless / preview callers (never invoked).
+    @ObservationIgnored public var onReadOnlyChanged: ((Bool) -> Void)?
+
+    /// The injected system-beep seam — the read-only "blocked input" cue. The default rings the AppKit
+    /// system beep on macOS (a no-op on iOS / non-AppKit platforms); tests override it with a counting
+    /// closure (the ``copyToPasteboard`` idiom) so ``rateLimitedBeep`` is unit-testable without a real
+    /// `NSSound`. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var beep: () -> Void = {
+        #if canImport(AppKit)
+        NSSound.beep()
+        #endif
+    }
+
+    /// Minimum spacing between read-only blocked-input beeps. A mouse-report flood (every pointer motion
+    /// event funnels through ``sendInput(_:)`` while read-only) would otherwise beep per event; otty beeps
+    /// ONCE, so ``rateLimitedBeep`` coalesces to one beep per window. Instance-settable so a test drives the
+    /// throttle without real-time waits. `@ObservationIgnored`: tuning, not view state.
+    @ObservationIgnored var readOnlyBeepInterval: Duration = .milliseconds(400)
+
+    /// When the last read-only beep rang, so ``rateLimitedBeep`` can throttle a flood to one beep per
+    /// ``readOnlyBeepInterval``. `@ObservationIgnored`: bookkeeping, not view state.
+    @ObservationIgnored private var lastReadOnlyBeepAt: ContinuousClock.Instant?
+
+    /// Rings the (injected) ``beep`` at most once per ``readOnlyBeepInterval`` — so a mouse-report or
+    /// key-repeat flood blocked by read-only beeps once, not per event (faithful to otty's "beeps once").
+    private func rateLimitedBeep() {
+        let now = ContinuousClock.now
+        if let last = lastReadOnlyBeepAt, now - last < readOnlyBeepInterval { return }
+        lastReadOnlyBeepAt = now
+        beep()
+    }
+
+    /// Arms read-only mode (the pill / menu / palette / store entry). Idempotent — re-entering an
+    /// already-read-only pane does not re-fire ``onReadOnlyChanged`` (the `didSet` only runs on a real
+    /// transition because the guard suppresses the redundant write).
+    public func enterReadOnly() {
+        guard !isReadOnly else { return }
+        isReadOnly = true
+    }
+
+    /// Disarms read-only mode (the pill `×` / menu / palette / store entry). Idempotent — exiting an
+    /// already-writable pane is a clean no-op (no redundant ``onReadOnlyChanged`` fire).
+    public func exitReadOnly() {
+        guard isReadOnly else { return }
+        isReadOnly = false
+    }
+
+    /// Toggles read-only mode (the single `.toggleReadOnly` action / menu item).
+    public func toggleReadOnly() {
+        if isReadOnly { exitReadOnly() } else { enterReadOnly() }
+    }
+
+    // MARK: Secure input (E17 ES-E17-4 — auto password-prompt + manual secure keyboard entry)
+
+    /// TRUE while the HOST shell is at a no-echo (hidden-password) prompt — the inverse of the host PTY's
+    /// termios `ECHO` flag, signalled over wire type 31 (``WireMessage/inputEcho(enabled:)``) and routed here
+    /// by ``ConnectionViewModel`` via ``handle(_:)``. The macOS leaf forwards it (``onHostEchoChanged``) to a
+    /// ``SecureKeyboardEntryController`` that engages process-global `EnableSecureEventInput` so no other app
+    /// can sniff the password keystrokes. `@ObservationIgnored` (the connection-layer fold sets it, the pill
+    /// reads the observable ``secureInputActive`` mirror — the `isReadOnly`/`readOnlyBadgeActive` twin idiom).
+    @ObservationIgnored public var hostNoEcho = false {
+        didSet {
+            guard hostNoEcho != oldValue else { return }
+            refreshSecureInput()
+            onHostEchoChanged?(hostNoEcho)
+        }
+    }
+
+    /// The MANUAL Secure-Keyboard-Entry toggle (otty Edit ▸ Secure Keyboard Entry / the palette term): engages
+    /// secure input regardless of the host echo state. Toggled by the store seam over the active pane
+    /// (``WorkspaceStore/toggleSecureKeyboardEntryInActivePane()``); the macOS leaf forwards it
+    /// (``onManualSecureInputChanged``) to the pane's ``SecureKeyboardEntryController``. `@ObservationIgnored`
+    /// (the pill reads ``secureInputActive``, not this raw flag).
+    @ObservationIgnored public var manualSecureInput = false {
+        didSet {
+            guard manualSecureInput != oldValue else { return }
+            refreshSecureInput()
+            onManualSecureInputChanged?(manualSecureInput)
+        }
+    }
+
+    /// OBSERVABLE mirror that drives the `🛡 SECURE INPUT` pill: TRUE when secure input is active for this pane
+    /// — either the AUTO path (the "Auto Secure Input" setting is on AND the host is at a no-echo prompt) or
+    /// the MANUAL toggle. `@ObservationIgnored` `hostNoEcho`/`manualSecureInput` feed it; the pill reads THIS
+    /// twin from a normal view body (reactive). Always `false` off macOS (secure input is macOS-only), so the
+    /// shared cross-platform pill never lights on iOS. Kept in lock-step by ``refreshSecureInput()``.
+    public private(set) var secureInputActive = false
+
+    /// Fired when ``hostNoEcho`` flips (the host entered / left a no-echo password prompt). The macOS leaf
+    /// wires it to ``SecureKeyboardEntryController/setHostNoEcho(_:)`` so the auto secure-input engages /
+    /// disengages on the prompt edge. `@ObservationIgnored`: wiring, not view state. Nil for headless / iOS.
+    @ObservationIgnored public var onHostEchoChanged: ((Bool) -> Void)?
+
+    /// Fired when ``manualSecureInput`` flips (the Edit-menu / palette manual toggle). The macOS leaf wires it
+    /// to ``SecureKeyboardEntryController/setManualOn(_:)``. `@ObservationIgnored`: wiring, not view state.
+    @ObservationIgnored public var onManualSecureInputChanged: ((Bool) -> Void)?
+
+    /// Recomputes the observable ``secureInputActive`` pill mirror from the raw inputs, writing it only on a
+    /// real change (SwiftUI change tracking is not free). Mirrors the `SecureKeyboardEntryController`'s engage
+    /// formula `(autoSecureInput && hostNoEcho) || manualOn` so the pill and the OS actuator agree; gated to
+    /// `false` off macOS so the cross-platform pill never lights on iOS (secure input is macOS-only).
+    private func refreshSecureInput() {
+        #if os(macOS)
+        let value = (SettingsKey.autoSecureInputEnabled && hostNoEcho) || manualSecureInput
+        #else
+        let value = false
+        #endif
+        if secureInputActive != value { secureInputActive = value }
+    }
+
+    /// Toggles MANUAL secure keyboard entry over this pane (the `.secureKeyboardEntry` action / Edit-menu item
+    /// / palette term). Flips ``manualSecureInput``, whose `didSet` refreshes the pill mirror and fires
+    /// ``onManualSecureInputChanged`` so the leaf's controller engages / disengages.
+    public func toggleSecureKeyboardEntry() {
+        manualSecureInput.toggle()
     }
 
     /// WB2: the "Command Navigator" toggle (⌃⌘O / the chrome chip / a menu item) — opens the searchable
@@ -511,6 +844,17 @@ public final class TerminalViewModel {
     /// A no-op while disconnected (``inputSink`` is `nil`). Called on the main actor by
     /// the renderer's `GhosttySurface.onWrite` bridge.
     public func sendInput(_ data: Data) {
+        // READ-ONLY gate (E17): this is the SINGLE outbound ingress seam — every key/paste/IME-commit/
+        // mouse-report/click-to-move byte libghostty encodes funnels here via `onWrite`, plus the iOS
+        // input-bar submit, the Ctrl+C0 raw fast-path, and the synchronized-input broadcast. Dropping at
+        // the very top (before `inputSink`/`broadcastTap`, and before any echo-probe / glitch-caret
+        // bookkeeping) blocks EVERY input path with one check, so neither the local host nor the broadcast
+        // siblings see the bytes. A blocked input rings the rate-limited beep (otty "beeps once"). Output
+        // ingest (`ingestBatch`/`ingestPass`) is intentionally NOT gated — read-only never blocks inbound.
+        if isReadOnly {
+            rateLimitedBeep()
+            return
+        }
         if Self.echoProbeEnabled { probeInputAt = ContinuousClock.now }
         if glitchCaretMode != .off { noteGlitchCaretSend(data) }
         inputSink?(data)
@@ -1070,6 +1414,13 @@ public final class TerminalViewModel {
             } else if milliseconds < Self.glitchRTTOffMS {
                 rttGateOpen = false
             }
+        case let .inputEcho(enabled):
+            // Secure input (E17 ES-E17-4, wire type 31): the host signalled its PTY termios `ECHO` edge —
+            // `enabled == false` means a no-echo password prompt is up. Fold it into `hostNoEcho` (inverse);
+            // its `didSet` refreshes the `secureInputActive` pill mirror and fires `onHostEchoChanged`, which
+            // the macOS leaf forwards to the pane's `SecureKeyboardEntryController` to engage / disengage
+            // process-global secure event input. Echo-on (the canonical default) clears it.
+            hostNoEcho = !enabled
         }
     }
 
@@ -1134,6 +1485,10 @@ public final class TerminalViewModel {
         // vim leaves .altScreen latched and would disarm the caret for the entire new
         // session; a drop mid-DCS would swallow the new session's markers).
         modeTracker.reset()
+        // The dead session's no-echo (password-prompt) state is likewise a lie for the fresh shell, which
+        // echoes by default — clear it so secure input does not stay latched across a reconnect (the leaf's
+        // controller disengages on the resulting `onHostEchoChanged(false)`).
+        hostNoEcho = false
     }
 
     /// Clears the pending-bell flag once the view has flashed.
@@ -1166,5 +1521,9 @@ public final class TerminalViewModel {
         clearGlitchCaret()
         endAwaitingReflow() // a fresh session has nothing pending to reflow
         modeTracker.reset() // same session-boundary truth as markReconnecting()
+        // A fresh connect target starts at a normal echoing prompt with no manual secure-entry — drop any
+        // stale secure-input state so the pill / process-global lock never carry across a target change.
+        hostNoEcho = false
+        manualSecureInput = false
     }
 }

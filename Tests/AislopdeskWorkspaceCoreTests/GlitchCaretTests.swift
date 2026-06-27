@@ -156,7 +156,12 @@ final class GlitchCaretTests: XCTestCase {
     // MARK: Expiry backstop (non-echoing prompts: stty -echo, read -s)
 
     func testExpiryHidesCaretWithoutAnyEcho() async {
-        let model = makeModel(expiryMS: 80)
+        // The caret is only visible for the `expiry` span (window 0 → show, expiry → hide).
+        // Keep that span comfortably wider than the 10 ms poll cadence so a loaded CI box
+        // (where a `Task.sleep(10 ms)` can balloon to ~80 ms) still lands several polls
+        // inside it — an 80 ms span could pass entirely between two polls and the `shown`
+        // observation would miss the transient. 500 ms is ~6× the observed worst-case stall.
+        let model = makeModel(expiryMS: 500)
         model.sendInput(a)
         let shown = await waitUntil { model.glitchCaretVisible }
         XCTAssertTrue(shown)
