@@ -1621,6 +1621,11 @@ public final class TerminalViewModel {
             case let .idle(exitCode, durationMS):
                 shellActivity = .idle
                 lastCommand = (exitCode, durationMS)
+                // M3 (E14): OSC 133;D ≡ the OSC 9;4;5 "remove" state. A program that drove a 9;4 bar/spinner
+                // and finished WITHOUT an explicit 9;4;0 (or was killed mid-progress) must not leave a stuck
+                // determinate/indeterminate badge — `ProgressOSCParser` DROPS state 5, so this completion edge
+                // is what clears it. The store mirror is cleared on the same edge (handleCommandCompleted).
+                progress = nil
                 // otty "Sound on Error Exit" (E14/K10): a non-zero exit beeps when enabled (default OFF;
                 // requires the OSC-133 shell-integration mark that carries the exit code). Pure
                 // ``ErrorSoundPolicy`` → the `soundOnErrorExit` toggle + a non-zero exit. Same `beep` seam.

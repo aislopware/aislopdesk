@@ -30,6 +30,20 @@ final class WorkspaceStoreProgressTests: XCTestCase {
         XCTAssertNil(store.progress(for: id), "a clear removes the indicator")
     }
 
+    /// M3: a finished command (OSC 133;D) clears the store's per-pane progress mirror too, so the sidebar rail
+    /// doesn't rank the running tier over the just-completed ✓/✗ badge (the `9;4;5`-equivalent on the store
+    /// side). Revert-to-confirm-fail: the un-fixed `handleCommandCompleted` never touched `paneProgress`, so a
+    /// program that finished without an explicit `9;4;0` left a stuck spinner over the completion badge.
+    func testHandleCommandCompletedClearsStoreProgress() throws {
+        let store = makeStore()
+        let id = try XCTUnwrap(store.tree.allPaneIDs().first)
+        store.handleProgress(.determinate(percent: 50), for: id)
+        XCTAssertEqual(store.progress(for: id), .determinate(percent: 50), "precondition: progress is showing")
+
+        store.handleCommandCompleted(id: id, exitCode: 0, durationMS: 1200, paneTitle: "term")
+        XCTAssertNil(store.progress(for: id), "a finished command clears the store's per-pane progress mirror")
+    }
+
     // MARK: - completionFlashTick bumps on an edge (the rail re-render seam), not on a dup
 
     /// A genuine progress edge bumps ``WorkspaceStore/completionFlashTick`` (the E6 seam the sidebar rail
@@ -121,6 +135,19 @@ final class WorkspaceStoreProgressTests: XCTestCase {
         XCTAssertEqual(vm.progress, .indeterminate)
         vm.handle(.exit(code: 0))
         XCTAssertNil(vm.progress, "a terminated shell reports no progress")
+    }
+
+    /// M3: OSC 133;D (a command finished) clears a stuck OSC 9;4 badge — the `9;4;5`-equivalent. A program that
+    /// drove a determinate bar and finished WITHOUT an explicit `9;4;0` (or was killed mid-progress) must not
+    /// leave the indicator showing. `ProgressOSCParser` DROPS state 5, so the completion edge is what clears it.
+    /// Revert-to-confirm-fail: the un-fixed `.commandStatus(.idle)` arm sets `shellActivity`/`lastCommand`/beep
+    /// but NEVER `progress = nil`, so the determinate badge sticks — this asserts it now clears.
+    func testCommandIdleClearsTerminalModelProgress() {
+        let vm = TerminalViewModel()
+        vm.handle(.progress(state: .inProgress, percent: 50))
+        XCTAssertEqual(vm.progress, .determinate(percent: 50), "precondition: a determinate badge is showing")
+        vm.handle(.commandStatus(.idle(exitCode: 0, durationMS: 1200)))
+        XCTAssertNil(vm.progress, "a finished command (OSC 133;D) clears the stuck 9;4 badge")
     }
 
     // MARK: - connection → store push (the production path, end to end)

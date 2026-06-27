@@ -299,4 +299,63 @@ final class BackgroundCompletionWiringTests: XCTestCase {
         XCTAssertFalse(fired, "a short command never notifies")
         XCTAssertEqual(store.pendingCompletion(for: second), .failure, "but the short background failure still badges")
     }
+
+    // MARK: - M1: per-command finish/error gate (NotificationPolicy as the PRIMARY authority)
+
+    /// M1: a SHORT failing command must notify PER-COMMAND through the pure ``NotificationPolicy`` (Notify on
+    /// Error, default ON) — DECOUPLED from both the ~10s long-running floor AND aislopdesk's own "Long-Command
+    /// Completion" master. The app is backgrounded so the Notify-While-Foreground gate is a pass-through; the
+    /// master is forced OFF to prove the otty per-event toggle has INDEPENDENT authority. Revert-to-confirm-fail:
+    /// the un-fixed store gates ONLY on `BackgroundCompletionPolicy.shouldNotify` (long + enabled), so a 500ms
+    /// command with the master OFF never fires the sink — this asserts it now does.
+    func testShortBackgroundedFailureNotifiesPerCommandEvenWithLongMasterOff() throws {
+        UserDefaults.standard.set(false, forKey: SettingsKey.longCommandNotifications) // master OFF
+        defer { UserDefaults.standard.removeObject(forKey: SettingsKey.longCommandNotifications) }
+        let store = makeStore()
+        var calls: [(key: String, exit: Int32?, dur: UInt32)] = []
+        store.onLongCommandNotify = { key, _, exit, dur in calls.append((key, exit, dur)) }
+        let paneID = try XCTUnwrap(store.tree.allPaneIDs().first)
+        store.isAppActive = false // backgrounded → the foreground gate passes
+
+        store.handleCommandCompleted(id: paneID, exitCode: 1, durationMS: 500, paneTitle: "make")
+        XCTAssertEqual(
+            calls.count,
+            1,
+            "a short backgrounded failure notifies per-command (Notify on Error) with the master OFF",
+        )
+        XCTAssertEqual(calls[0].key, paneID.raw.uuidString)
+        XCTAssertEqual(calls[0].exit, 1)
+        XCTAssertEqual(calls[0].dur, 500)
+    }
+
+    /// M1: a SHORT clean exit does NOT notify — "Notify on Finish" is default OFF, so the per-command gate
+    /// stays silent for a quick `ls`. Pins that the new per-command authority is the toggle, not "fire on every
+    /// completion" (guards against over-firing; not tautological — it exercises the notifyOnFinish branch).
+    func testShortBackgroundedCleanExitDoesNotNotifyWhenNotifyOnFinishOff() throws {
+        UserDefaults.standard.set(false, forKey: SettingsKey.longCommandNotifications)
+        defer { UserDefaults.standard.removeObject(forKey: SettingsKey.longCommandNotifications) }
+        let store = makeStore()
+        var fired = false
+        store.onLongCommandNotify = { _, _, _, _ in fired = true }
+        let paneID = try XCTUnwrap(store.tree.allPaneIDs().first)
+        store.isAppActive = false
+
+        store.handleCommandCompleted(id: paneID, exitCode: 0, durationMS: 500, paneTitle: "ls")
+        XCTAssertFalse(fired, "a clean short command stays silent (Notify on Finish default OFF)")
+    }
+
+    /// M1: when BOTH authorities would fire (a backgrounded LONG failing command — per-command Notify-on-Error
+    /// AND the Long-Command Completion master), the sink fires EXACTLY ONCE (no double-banner).
+    func testLongBackgroundedFailureFiresExactlyOnceWhenBothAuthoritiesAgree() throws {
+        UserDefaults.standard.set(true, forKey: SettingsKey.longCommandNotifications) // master ON
+        defer { UserDefaults.standard.removeObject(forKey: SettingsKey.longCommandNotifications) }
+        let store = makeStore()
+        var count = 0
+        store.onLongCommandNotify = { _, _, _, _ in count += 1 }
+        let paneID = try XCTUnwrap(store.tree.allPaneIDs().first)
+        store.isAppActive = false
+
+        store.handleCommandCompleted(id: paneID, exitCode: 2, durationMS: longMS, paneTitle: "build")
+        XCTAssertEqual(count, 1, "both authorities agreeing still deliver ONE notification (no double-banner)")
+    }
 }

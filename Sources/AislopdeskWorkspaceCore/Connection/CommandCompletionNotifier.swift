@@ -180,12 +180,12 @@ public final class CommandCompletionNotifier {
 
     public init() {}
 
-    /// Posts a "command finished" notification IFF `durationMS` clears the long-running threshold AND the
-    /// E14/K9 ``NotificationPolicy`` allows it (Notify on Finish for a clean exit / Notify on Error Exit for
-    /// a non-zero exit, then the Notify-While-Foreground tri-state with the store-supplied `appActive` +
-    /// `sourcePaneFocused`). A no-op for quick commands. The B3 focus gate (unfocused + enabled) is applied
-    /// UPSTREAM in ``WorkspaceStore`` so the store's focus state drives WHETHER it fires; this poster adds the
-    /// otty toggle/foreground policy + keeps the threshold floor as defence-in-depth. `paneIDKey` (the
+    /// Posts a "command finished" notification IFF the E14/K9 ``NotificationPolicy`` allows it (Notify on Finish
+    /// for a clean exit / Notify on Error Exit for a non-zero exit, then the Notify-While-Foreground tri-state
+    /// with the store-supplied `appActive` + `sourcePaneFocused`). M1: there is NO LONGER a long-running floor —
+    /// the per-command gate is applied UPSTREAM in ``WorkspaceStore/handleCommandCompleted`` (the same policy,
+    /// per-command + any duration), so a SHORT failing command notifies. This poster re-applies the policy as the
+    /// foreground-gate actuator (defence-in-depth, agreeing with the store). `paneIDKey` (the
     /// originating pane's id string) is embedded in the notification's `userInfo` so a click reveals that
     /// pane via ``PaneNotificationRouter`` — `nil` ⇒ no reveal target (e.g. an unresolved pane).
     public func notifyIfLong(
@@ -197,8 +197,11 @@ public final class CommandCompletionNotifier {
         sourcePaneFocused: Bool,
         settings: NotificationSettings,
     ) {
-        // The long-running floor is defence-in-depth (the store fires this only for a long command).
-        guard CommandNotificationPolicy.shouldNotify(durationMS: durationMS) else { return }
+        // M1 (E14): the ~10s long-running FLOOR is gone here — the per-command gate now lives UPSTREAM in the
+        // store (``WorkspaceStore/handleCommandCompleted``), which routes finish/error through the SAME pure
+        // ``NotificationPolicy`` per-command (any duration). Re-imposing a floor here would silently drop the
+        // short failing `make` the store just authorised. The poster re-applies the policy as the foreground-gate
+        // actuator (defence-in-depth — agreeing with the store), then auth + post.
         // E14/K9: the otty per-event toggle (Notify on Finish / Error) + the Notify-While-Foreground gate.
         // A clean exit is `notifyOnFinish` (default OFF — so a clean long command no longer posts a banner,
         // matching otty); a non-zero exit is `notifyOnError` (default ON).

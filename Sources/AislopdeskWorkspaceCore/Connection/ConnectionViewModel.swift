@@ -636,7 +636,12 @@ public final class ConnectionViewModel {
         case let .title(text):
             // Persist the live shell title into the pane spec so a relaunch can restore it.
             // Empty strings are suppressed — the host emits "" on connect before the shell sets a real one.
-            if !text.isEmpty { onTitleChanged?(text) }
+            // M4 (E14/K11) "Title — Shell Controlled" (default ON): when OFF, the SAME fire-time gate the VM
+            // applies to `TerminalViewModel.handle(.title)` must ALSO gate this PERSISTENCE path — otherwise a
+            // remote OSC 0/2 title still writes `spec.lastKnownTitle` and leaks onto the sidebar rail (which
+            // sources its row title from `lastKnownTitle`). Gating here keeps the rail + the relaunch restore
+            // consistent with the VM display gate.
+            if SettingsKey.titleShellControlledEnabled, !text.isEmpty { onTitleChanged?(text) }
         case .inputEcho:
             // Secure input (E17 ES-E17-4, wire type 31): the host PTY echo edge. The terminal model folds it
             // (`terminal.handle` below) into `hostNoEcho` → the `secureInputActive` pill mirror + the macOS

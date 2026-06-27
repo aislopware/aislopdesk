@@ -1179,6 +1179,10 @@ private struct AppearanceSettingsTab: View {
     @Default(.newTabPosition) private var newTabPosition
     @Default(.showBlockDividers) private var showBlockDividers
     @Default(.hideStatusBar) private var hideStatusBar
+    #if os(macOS)
+    @Default(.dockIconAnimateProgress) private var dockIconAnimateProgress
+    @Default(.dockIconErrorBadge) private var dockIconErrorBadge
+    #endif
 
     var body: some View {
         Form {
@@ -1278,6 +1282,17 @@ private struct AppearanceSettingsTab: View {
                 Toggle("Show command dividers", isOn: $showBlockDividers)
                 Toggle("Hide status bar", isOn: $hideStatusBar)
             }
+
+            // DOCK ICON (E14/K5/K8 — M2): otty homes these under **Appearance** (Visual spec,
+            // terminal-features__progress-state.md). macOS-only (there is no Dock on iOS — the whole group is
+            // `#if os(macOS)`, absent on iOS). Both toggles actuate ``DockProgressController`` via the pure
+            // ``DockTintPolicy`` (read fire-time through `WorkspaceStore.dockTileModel`), so neither is dead UI.
+            #if os(macOS)
+            Section("Dock Icon") {
+                Toggle("Animate Icon on Progress", isOn: $dockIconAnimateProgress)
+                Toggle("Red Icon on Error", isOn: $dockIconErrorBadge)
+            }
+            #endif
 
             Section { timingFooter(.live) }
         }

@@ -110,9 +110,12 @@ public extension WorkspaceStore {
     }
 
     /// Folds a finished command (OSC 133;D `.idle`, wire type 23) for pane `id`: updates the
-    /// background-completion badge (unfocused only) and fires the focus-gated long-command notification.
-    /// The notify decision lives HERE (not in ``ConnectionViewModel``) so the focus gate applies — the
-    /// store knows which leaf is active. `paneTitle` is the live pane title (notification content).
+    /// background-completion badge (unfocused only), CLEARS any stuck OSC 9;4 progress (the `9;4;5`-equivalent),
+    /// and fires the notification sink. The notify decision lives HERE (not in ``ConnectionViewModel``) so the
+    /// store's focus/app-active state drives the pure ``NotificationPolicy`` — the per-command Notify on Error /
+    /// Finish + Notify-While-Foreground gate (the PRIMARY authority, per-command + any duration), with the
+    /// "Long-Command Completion" master as an ADDITIONAL path. `paneTitle` is the live pane title (notification
+    /// content).
     func handleCommandCompleted(id: PaneID, exitCode: Int32?, durationMS: UInt32, paneTitle: String) {
         let focused = isPaneFocused(id)
         let threshold = CommandNotificationPolicy.longRunningThresholdMS
@@ -120,12 +123,31 @@ public extension WorkspaceStore {
             exitCode: exitCode, durationMS: durationMS, isPaneFocused: focused, longThresholdMS: threshold,
         )
         if let badge { setCompletionBadge(badge, for: id) }
-        if BackgroundCompletionPolicy.shouldNotify(
+        // M1 (E14): a finished command (OSC 133;D) clears any stuck OSC 9;4 badge on this pane — the
+        // documented `9;4;5`-equivalent (a program that finished without an explicit `9;4;0`, or was killed
+        // mid-progress, must not leave the rail showing a spinner over a completed command). Idempotent.
+        handleProgress(nil, for: id)
+        // M1 (E14): the otty PER-COMMAND finish/error gate is the PRIMARY authority. Route through the pure
+        // ``NotificationPolicy`` — Notify on Error (non-zero exit) / Notify on Finish (clean exit) + the
+        // Notify-While-Foreground tri-state — per-command, ANY exit code, ANY duration. This is DECOUPLED from
+        // both the ~10s long-running floor AND aislopdesk's own "Long-Command Completion" master, so a short
+        // failing `make` notifies just like otty (the old over-gating dropped it).
+        let perCommand = NotificationPolicy.shouldDeliver(
+            event: .commandFinish(exit: exitCode),
+            appActive: isAppActive,
+            sourcePaneFocused: focused,
+            settings: SettingsKey.notificationSettings,
+        )
+        // aislopdesk's own "Long-Command Completion" feature stays an ADDITIONAL/separate authority: a LONG
+        // unfocused command still drives the completion cue (its master ON) even when the per-event toggles
+        // are off. Either authority delivering fires the sink EXACTLY ONCE (no double-banner).
+        let longCommand = BackgroundCompletionPolicy.shouldNotify(
             durationMS: durationMS,
             isPaneFocused: focused,
             enabled: SettingsKey.longCommandNotificationsEnabled,
             longThresholdMS: threshold,
-        ) {
+        )
+        if perCommand || longCommand {
             onLongCommandNotify?(id.raw.uuidString, paneTitle, exitCode, durationMS)
         }
     }

@@ -165,6 +165,19 @@ final class AllSettingsCatalogTests: XCTestCase {
         }
     }
 
+    /// M2: the Dock-icon toggles are surfaced under **Appearance → Dock Icon**, so their searchable All-Settings
+    /// rows must JUMP to the Appearance section (`hasDedicatedTab` → `appearance`) rather than rendering a
+    /// duplicate inline control. Revert-to-confirm-fail: the un-fixed catalog declared both keys `.advancedOnly`
+    /// with a `nil` targetSection (so a search landed on a bare inline toggle, never the Appearance group) —
+    /// this asserts they now jump to `appearance`, matching DECISIONS.md's "under Appearance per the spec".
+    func testDockIconKeysJumpToAppearanceSection() {
+        for key in [SettingsKey.dockIconAnimateProgress, SettingsKey.dockIconErrorBadge] {
+            let entry = AllSettingsCatalog.entries.first { $0.key == key }
+            XCTAssertEqual(entry?.bucket, .hasDedicatedTab, "'\(key)' must jump to its dedicated tab")
+            XCTAssertEqual(entry?.targetSection, "appearance", "'\(key)' must jump to the Appearance section")
+        }
+    }
+
     // MARK: - PreferencesStore reset behaviour (the panel's Reset buttons)
 
     /// An isolated `UserDefaults` suite for the injected store models (the global `Defaults.Keys` are still

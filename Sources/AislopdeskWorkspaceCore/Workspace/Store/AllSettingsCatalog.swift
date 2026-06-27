@@ -580,14 +580,16 @@ public enum AllSettingsCatalog {
         ),
 
         // otty homes the DOCK ICON group under **Appearance** (terminal-features__progress-state.md). macOS-only
-        // NSDockTile behaviour (inert on iOS); declared here so the searchable All Settings list is complete and
-        // the keys round-trip on both platforms.
+        // NSDockTile behaviour (inert on iOS); the live toggles live under Appearance → Dock Icon, so the
+        // searchable All Settings rows JUMP there (M2 — `hasDedicatedTab` → `appearance`) rather than rendering
+        // a duplicate inline control. The keys round-trip on both platforms.
         SettingEntry(
             key: SettingsKey.dockIconAnimateProgress,
             label: "Animate Dock Icon During Progress",
             description: "Animate the macOS Dock icon while any session reports OSC 9;4 progress.",
             defaultText: "Off",
-            bucket: .advancedOnly,
+            bucket: .hasDedicatedTab,
+            targetSection: "appearance",
             keywords: "dock icon animate progress macos appearance osc 9 4 spinner",
         ),
         SettingEntry(
@@ -595,7 +597,8 @@ public enum AllSettingsCatalog {
             label: "Red Icon on Error",
             description: "Tint the macOS Dock icon red on a non-zero exit; clicking jumps to the next failing tab.",
             defaultText: "On",
-            bucket: .advancedOnly,
+            bucket: .hasDedicatedTab,
+            targetSection: "appearance",
             keywords: "dock icon red error badge tint exit failing tab macos appearance",
         ),
 
