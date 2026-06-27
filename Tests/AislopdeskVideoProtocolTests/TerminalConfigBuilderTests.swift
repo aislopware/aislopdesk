@@ -162,4 +162,240 @@ final class TerminalConfigBuilderTests: XCTestCase {
         let lines = a.split(separator: "\n").map(String.init)
         XCTAssertEqual(lines.first, "font-family = Menlo", "font-family leads the stable order")
     }
+
+    // MARK: - E15 WI-2: byte-identical pre-E15 guard
+
+    /// The load-bearing regression guard: a default-constructed `TerminalPreferences` with NO E15 args
+    /// (palette / selection nil) reproduces the EXACT pre-E15 builder output — NONE of the new E15 keys
+    /// appear. FAILS if any font-parity / palette default accidentally emits a line. (Mirrors the E8
+    /// `controls: nil` byte-for-byte guard.)
+    func testPreE15DefaultPathIsByteIdentical() {
+        let expected = [
+            "font-family = SF Mono",
+            "font-size = 13",
+            "font-style = regular",
+            "theme = Aislopdesk Dark",
+            "background = FCFBF9",
+            "foreground = 37352F",
+            "cursor-style = block",
+            "scrollback-limit = 2560000",
+        ].joined(separator: "\n")
+        XCTAssertEqual(TerminalConfigBuilder.string(for: TerminalPreferences()), expected)
+    }
+
+    /// Passing the new E15 args as nil is byte-for-byte the no-args build (so existing callers and the
+    /// headless build are untouched), even when the prefs carry old non-default font/cursor/keybind data.
+    func testE15NilArgsAreByteForByteTheNoArgsBuild() {
+        let prefs = TerminalPreferences(fontFamily: "JetBrains Mono", fontSize: 14.5, cursorStyle: .bar)
+        XCTAssertEqual(
+            TerminalConfigBuilder.string(
+                for: prefs, keybinds: ["cmd+d=new_split:right"],
+                paletteOverride: nil, selectionBackgroundOverride: nil,
+            ),
+            TerminalConfigBuilder.string(for: prefs, keybinds: ["cmd+d=new_split:right"]),
+            "nil palette/selection must not perturb the output",
+        )
+    }
+
+    // MARK: - E15 WI-2: palette + selection emission (validate-then-drop)
+
+    /// A valid 16-entry palette emits `palette = N=hex` for indices 0–15, AFTER `foreground`. The palette
+    /// hex matches the existing bare-hex `background`/`foreground` form (no leading `#`).
+    func testPaletteOverrideEmitsSixteenIndexedLinesAfterForeground() {
+        let palette = (0..<16).map { String(format: "%06X", $0 * 0x111111 % 0x1000000) }
+        let config = TerminalConfigBuilder.string(for: TerminalPreferences(), paletteOverride: palette)
+        let paletteLines = config.split(separator: "\n").filter { $0.hasPrefix("palette = ") }.map(String.init)
+        XCTAssertEqual(paletteLines.count, 16, "all sixteen ANSI indices emit")
+        XCTAssertEqual(paletteLines.first, "palette = 0=\(palette[0])")
+        XCTAssertEqual(paletteLines.last, "palette = 15=\(palette[15])")
+        // Order: the first palette line follows the foreground line.
+        let lines = config.split(separator: "\n").map(String.init)
+        guard let fgIdx = lines.firstIndex(where: { $0.hasPrefix("foreground = ") }),
+              let palIdx = lines.firstIndex(where: { $0.hasPrefix("palette = ") })
+        else {
+            XCTFail("expected both foreground and palette lines")
+            return
+        }
+        XCTAssertLessThan(fgIdx, palIdx, "palette follows foreground")
+    }
+
+    /// validate-then-drop: a short (≠16) palette or one with a bad-hex entry emits NO `palette` line — the
+    /// same discipline as a hostile datagram. FAILS on a builder that emits an unvalidated palette.
+    func testMalformedPaletteOverrideIsDropped() {
+        let short = Array(repeating: "FF6188", count: 15) // one short
+        XCTAssertFalse(
+            TerminalConfigBuilder.string(for: TerminalPreferences(), paletteOverride: short).contains("palette = "),
+            "a 15-entry palette is dropped (must be exactly 16)",
+        )
+        var badHex = Array(repeating: "FF6188", count: 16)
+        badHex[7] = "#GG0000" // hash + non-hex
+        XCTAssertFalse(
+            TerminalConfigBuilder.string(for: TerminalPreferences(), paletteOverride: badHex).contains("palette = "),
+            "a palette with any invalid-hex entry is dropped whole",
+        )
+        XCTAssertFalse(
+            TerminalConfigBuilder.string(for: TerminalPreferences(), paletteOverride: []).contains("palette = "),
+            "an empty palette is dropped",
+        )
+    }
+
+    /// A valid selection colour emits `selection-background`; a malformed / nil one is dropped.
+    func testSelectionBackgroundOverrideEmitsWhenValidAndDropsOtherwise() {
+        let valid = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(), selectionBackgroundOverride: "403E41",
+        ))
+        XCTAssertEqual(valid["selection-background"], "403E41")
+        let bad = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(), selectionBackgroundOverride: "nope",
+        ))
+        XCTAssertNil(bad["selection-background"], "a non-hex selection is dropped")
+        let nilArg = parse(TerminalConfigBuilder.string(for: TerminalPreferences()))
+        XCTAssertNil(nilArg["selection-background"], "nil selection emits nothing")
+    }
+
+    // MARK: - E15 WI-2: font-parity keys
+
+    /// `font-family-fallback` emits only when non-empty.
+    func testFontFamilyFallbackEmitsWhenNonEmpty() {
+        let with = parse(TerminalConfigBuilder
+            .string(for: TerminalPreferences(fontFamilyFallback: "PingFang SC, Symbols Nerd Font")))
+        XCTAssertEqual(with["font-family-fallback"], "PingFang SC, Symbols Nerd Font")
+        let without = parse(TerminalConfigBuilder.string(for: TerminalPreferences()))
+        XCTAssertNil(without["font-family-fallback"], "the default empty fallback emits nothing")
+    }
+
+    /// The explicit per-face families surface ONLY when Auto-match is OFF (otty shows them only then).
+    func testPerFaceFamiliesEmitOnlyWhenAutoMatchOff() {
+        // Auto-match ON (default): the per-face families are NOT emitted even when set.
+        let on = parse(TerminalConfigBuilder.string(for: TerminalPreferences(
+            fontFamilyBold: "IBM Plex Mono Bold", autoMatchWeightStyle: true,
+        )))
+        XCTAssertNil(on["font-family-bold"], "auto-match ON suppresses the manual face keys")
+        // Auto-match OFF: each non-empty face emits its key; an empty one is skipped.
+        let off = parse(TerminalConfigBuilder.string(for: TerminalPreferences(
+            fontFamilyBold: "IBM Plex Mono Bold", fontFamilyItalic: "IBM Plex Mono Italic",
+            fontFamilyBoldItalic: "", autoMatchWeightStyle: false,
+        )))
+        XCTAssertEqual(off["font-family-bold"], "IBM Plex Mono Bold")
+        XCTAssertEqual(off["font-family-italic"], "IBM Plex Mono Italic")
+        XCTAssertNil(off["font-family-bold-italic"], "an empty bold-italic face is skipped")
+    }
+
+    /// Ligatures → `font-feature`: off emits NOTHING (byte-identical default), calt → `calt`, dlig →
+    /// `calt,dlig`; the alphabet flag appends `liga`. FAILS on a builder that emits a feature for off.
+    func testLigatureModesMapToFontFeature() {
+        XCTAssertNil(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(fontLigatures: .off)))["font-feature"],
+            "off emits no font-feature (the font's own default governs)",
+        )
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(fontLigatures: .calt)))["font-feature"], "calt",
+        )
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(fontLigatures: .dlig)))["font-feature"],
+            "calt,dlig",
+        )
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(
+                fontLigatures: .calt, fontLigaturesAlphabet: true,
+            )))["font-feature"], "calt,liga", "the alphabet flag appends liga",
+        )
+        // Alphabet has no effect while ligatures are off (off stays unligated).
+        XCTAssertNil(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(
+                fontLigatures: .off, fontLigaturesAlphabet: true,
+            )))["font-feature"], "off + alphabet still emits nothing",
+        )
+    }
+
+    /// Bold / italic FACE modes: `off` → `font-style-{kind} = false`; `primaryOnly` / `synthetic` feed a
+    /// SINGLE combined `font-synthetic-style`; `auto` (default) emits nothing.
+    func testBoldItalicFaceModesMapToStyleAndSyntheticKeys() {
+        let auto = parse(TerminalConfigBuilder.string(for: TerminalPreferences()))
+        XCTAssertNil(auto["font-style-bold"], "auto emits no font-style-bold")
+        XCTAssertNil(auto["font-style-italic"])
+        XCTAssertNil(auto["font-synthetic-style"], "auto/auto contributes no synthetic-style")
+
+        let off = parse(TerminalConfigBuilder.string(for: TerminalPreferences(fontBold: .off, fontItalic: .off)))
+        XCTAssertEqual(off["font-style-bold"], "false")
+        XCTAssertEqual(off["font-style-italic"], "false")
+        XCTAssertNil(off["font-synthetic-style"], "off uses font-style-*=false, not synthetic")
+
+        // A combined synthetic key: synthetic bold + primary-only italic → `bold,no-italic` (one line).
+        let mixed = TerminalConfigBuilder.string(for: TerminalPreferences(
+            fontBold: .synthetic,
+            fontItalic: .primaryOnly,
+        ))
+        XCTAssertTrue(mixed.contains("font-synthetic-style = bold,no-italic"))
+        let syntheticLines = mixed.split(separator: "\n").filter { $0.hasPrefix("font-synthetic-style") }
+        XCTAssertEqual(syntheticLines.count, 1, "bold + italic collapse into ONE font-synthetic-style key")
+    }
+
+    /// Line-height → `adjust-cell-height`: default → no line, compact → `0%`, loose → `20%`, custom →
+    /// `(m-1)*100%` (integral-formatted), and an out-of-band / NaN custom multiplier is clamped (no trap).
+    func testLineHeightModesMapToAdjustCellHeight() {
+        XCTAssertNil(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(lineHeight: .default)))["adjust-cell-height"],
+            "default defers to the theme/font (no line)",
+        )
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(lineHeight: .compact)))["adjust-cell-height"],
+            "0%",
+        )
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(lineHeight: .loose)))["adjust-cell-height"],
+            "20%",
+        )
+        // Exactly-representable multipliers so the plain `(m-1)*100` lands on a clean integral percent
+        // (1.5 → 50, 0.5 → -50). Arbitrary fractional multipliers (e.g. 1.1) emit float-faithful noise.
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder
+                .string(for: TerminalPreferences(lineHeight: .custom(1.5))))["adjust-cell-height"],
+            "50%", "(1.5 - 1) * 100 = 50, integral-formatted",
+        )
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder
+                .string(for: TerminalPreferences(lineHeight: .custom(0.5))))["adjust-cell-height"],
+            "-50%", "a sub-1 multiplier tightens the cell (negative percent)",
+        )
+        // A huge multiplier clamps to the +200% band; a NaN resolves to a finite bound (never `nan%`).
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder.string(
+                for: TerminalPreferences(lineHeight: .custom(99)),
+            ))["adjust-cell-height"],
+            "200%",
+        )
+        let nanValue = parse(TerminalConfigBuilder.string(
+            for: TerminalPreferences(lineHeight: .custom(.nan)),
+        ))["adjust-cell-height"]
+        XCTAssertNotNil(nanValue)
+        XCTAssertFalse(nanValue?.lowercased().contains("nan") ?? true, "a NaN multiplier never emits `nan%`")
+    }
+
+    /// Blending → `font-thicken`: only `macos-like` maps; `default` and the three deferred modes emit
+    /// nothing (no verified libghostty key — the documented deferral).
+    func testFontBlendingOnlyMacosLikeEmitsFontThicken() {
+        XCTAssertEqual(
+            parse(TerminalConfigBuilder.string(for: TerminalPreferences(fontBlending: .macosLike)))["font-thicken"],
+            "true",
+        )
+        for mode in [FontBlending.default, .srgbOver, .linear, .perceptual] {
+            XCTAssertNil(
+                parse(TerminalConfigBuilder.string(for: TerminalPreferences(fontBlending: mode)))["font-thicken"],
+                "\(mode) does not map to font-thicken",
+            )
+        }
+    }
+
+    /// The DEFERRED controls (underline-off, SGR blink, the non-mapping blending modes) are PERSISTED but
+    /// emit NO libghostty line — we only emit keys verified to exist. FAILS if a future change leaks an
+    /// unverified `font-underline` / `font-blink` / `font-blending` key.
+    func testDeferredUnderlineBlinkBlendingEmitNoLine() {
+        let config = TerminalConfigBuilder.string(for: TerminalPreferences(
+            fontUnderline: false, fontBlink: true, fontBlending: .perceptual,
+        ))
+        XCTAssertFalse(config.contains("font-underline"), "underline-off has no verified key (deferred)")
+        XCTAssertFalse(config.contains("font-blink"), "SGR blink has no verified key (deferred)")
+        XCTAssertFalse(config.contains("font-blending"), "the blending mode itself is never emitted as a key")
+    }
 }

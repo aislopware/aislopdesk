@@ -27,6 +27,7 @@
 // `ThemeStore`-backed `@MainActor` accessors keep the `NativePaneColor` injection pattern.
 
 #if canImport(SwiftUI)
+import AislopdeskVideoProtocol
 import SwiftUI
 
 /// A full otty colour theme (every chrome role). Two instances ship: `.paper` (light, default) and `.dark`.
@@ -80,6 +81,18 @@ struct OttyTheme {
     /// The libghostty terminal `foreground` colour (6-hex, no `#`).
     let terminalForegroundHex: String
 
+    /// The 16 ANSI terminal colours (indices 0–15: 0=black … 7=white, 8–15 = bright). 6-hex, no `#`. Reaches
+    /// the terminal CELLS via ``TerminalConfigBuilder`` `palette = N=<hex>` and the Appearance swatch grid (the
+    /// 16-dot two-row grid in `dark-mode-theme.png`). Built-ins ship a canonical palette; a custom theme's
+    /// comes straight from its ``ThemeDocument``.
+    let ansiPalette: [String]
+    /// Selection highlight background (`selection-background`), 6-hex no `#`; `nil` ⇒ let the renderer pick.
+    let selectionBackgroundHex: String?
+    /// Cursor block colour (`cursor-color`), 6-hex no `#`; `nil` ⇒ follow the foreground.
+    let cursorHex: String?
+    /// Glyph-under-cursor colour (`cursor-text`), 6-hex no `#`; `nil` ⇒ follow the background.
+    let cursorTextHex: String?
+
     /// "Paper" — the original otty light palette, MEASURED from the app (`ReplicaKit.RC`). Warm off-white +
     /// green; kept as a selectable theme (the default is now Monokai Pro Classic).
     static let paper = Self(
@@ -111,6 +124,15 @@ struct OttyTheme {
         id: "paper",
         terminalBackgroundHex: "FCFBF9",
         terminalForegroundHex: "37352F",
+        // Warm light-terminal ANSI set (matches the two-row swatch grid in `dark-mode-theme.png`'s Paper
+        // preview): normal 0–7 then the lighter bright 8–15.
+        ansiPalette: [
+            "37352F", "B23B3B", "2E6B3E", "C2731A", "3D7A99", "3C2E66", "2E7D6E", "C9C6BE",
+            "8A8780", "C57A7A", "7FAE84", "D6A35C", "8AAAC2", "9387B5", "7FC4B5", "E8E6DE",
+        ],
+        selectionBackgroundHex: "E7E5DF",
+        cursorHex: "37352F",
+        cursorTextHex: nil,
     )
 
     /// otty Dark — from `design-tokens.css` (neutral grays + system-blue accent, opacity-based structure).
@@ -143,6 +165,15 @@ struct OttyTheme {
         id: "dark",
         terminalBackgroundHex: "161616",
         terminalForegroundHex: "EEEEEE",
+        // Neutral dark-terminal ANSI set (One-Dark-style — a clean general-purpose dark palette to match the
+        // grey chrome + system-blue accent).
+        ansiPalette: [
+            "2A2A2A", "E06C75", "98C379", "E5C07B", "61AFEF", "C678DD", "56B6C2", "ABB2BF",
+            "5C6370", "E06C75", "98C379", "E5C07B", "61AFEF", "C678DD", "56B6C2", "FFFFFF",
+        ],
+        selectionBackgroundHex: "2A2A2A",
+        cursorHex: "EEEEEE",
+        cursorTextHex: nil,
     )
 
     // MARK: - Monokai Pro filters (palette from monokai.pro/contribute; cross-verified across 4 ports)
@@ -159,11 +190,13 @@ struct OttyTheme {
         let foreground: UInt32 // primary text
         let secondary: UInt32 // dimmed-2 — secondary text + icons
         let tertiary: UInt32 // dimmed-3 — tertiary text + section headers
-        let accent: UInt32 // active-state accent (the filter's blue/cyan)
-        let ok: UInt32 // status OK (green)
-        let warn: UInt32 // status warn (yellow)
-        let err: UInt32 // status error (red)
-        let info: UInt32 // status info (blue)
+        let accent: UInt32 // active-state accent (the filter's blue/cyan) — ANSI cyan (idx 6/14)
+        let ok: UInt32 // status OK (green) — ANSI green (idx 2/10)
+        let warn: UInt32 // status warn (yellow) — ANSI yellow (idx 3/11)
+        let err: UInt32 // status error (red) — ANSI red (idx 1/9)
+        let info: UInt32 // status info (blue) — usually == accent
+        let orange: UInt32 // the filter's orange — Monokai's ANSI "blue" slot (idx 4/12)
+        let purple: UInt32 // the filter's purple — ANSI magenta (idx 5/13)
         let isLight: Bool
     }
 
@@ -200,6 +233,18 @@ struct OttyTheme {
             id: "monokai-\(s.name)",
             terminalBackgroundHex: hex6(s.background),
             terminalForegroundHex: hex6(s.foreground),
+            // Canonical Monokai Pro terminal palette: color0 = background (Monokai's quirk), the 6 filter
+            // chromatics in ANSI order (red/green/yellow, then orange in the "blue" slot, purple, cyan),
+            // white = foreground; the bright row 8–15 repeats the chromatics with bright-black = dimmed grey.
+            ansiPalette: [
+                hex6(s.background), hex6(s.err), hex6(s.ok), hex6(s.warn),
+                hex6(s.orange), hex6(s.purple), hex6(s.accent), hex6(s.foreground),
+                hex6(s.tertiary), hex6(s.err), hex6(s.ok), hex6(s.warn),
+                hex6(s.orange), hex6(s.purple), hex6(s.accent), hex6(s.foreground),
+            ],
+            selectionBackgroundHex: hex6(s.elevated),
+            cursorHex: hex6(s.foreground),
+            cursorTextHex: nil,
         )
     }
 
@@ -217,43 +262,152 @@ struct OttyTheme {
     static let monokaiProClassic = monokai(MonokaiSeed(
         name: "classic", background: 0x2D2A2E, sidebar: 0x221F22, elevated: 0x403E41,
         foreground: 0xFCFCFA, secondary: 0x939293, tertiary: 0x727072,
-        accent: 0x78DCE8, ok: 0xA9DC76, warn: 0xFFD866, err: 0xFF6188, info: 0x78DCE8, isLight: false,
+        accent: 0x78DCE8, ok: 0xA9DC76, warn: 0xFFD866, err: 0xFF6188, info: 0x78DCE8,
+        orange: 0xFC9867, purple: 0xAB9DF2, isLight: false,
     ))
 
     /// Monokai Pro Light (Classic Light) — the warm off-white light filter.
     static let monokaiProClassicLight = monokai(MonokaiSeed(
         name: "classic-light", background: 0xFAF4F2, sidebar: 0xEDE7E5, elevated: 0xFFFFFF,
         foreground: 0x29242A, secondary: 0x918C8E, tertiary: 0xA59FA0,
-        accent: 0x1C8CA8, ok: 0x269D69, warn: 0xCC7A0A, err: 0xE14775, info: 0x1C8CA8, isLight: true,
+        accent: 0x1C8CA8, ok: 0x269D69, warn: 0xCC7A0A, err: 0xE14775, info: 0x1C8CA8,
+        orange: 0xD4572B, purple: 0x7058BE, isLight: true,
     ))
 
     /// Monokai Pro (Filter Octagon) — cool blue-purple dark filter. bg #282A3A.
     static let monokaiProOctagon = monokai(MonokaiSeed(
         name: "octagon", background: 0x282A3A, sidebar: 0x1E1F2B, elevated: 0x3A3D4B,
         foreground: 0xEAF2F1, secondary: 0x888D94, tertiary: 0x696D77,
-        accent: 0x9CD1BB, ok: 0xBAD761, warn: 0xFFD76D, err: 0xFF657A, info: 0x9CD1BB, isLight: false,
+        accent: 0x9CD1BB, ok: 0xBAD761, warn: 0xFFD76D, err: 0xFF657A, info: 0x9CD1BB,
+        orange: 0xFF9B5E, purple: 0xC39AC9, isLight: false,
     ))
 
     /// Monokai Pro (Filter Machine) — teal-green dark filter. bg #273136.
     static let monokaiProMachine = monokai(MonokaiSeed(
         name: "machine", background: 0x273136, sidebar: 0x1D2528, elevated: 0x3A4449,
         foreground: 0xF2FFFC, secondary: 0x8B9798, tertiary: 0x6B7678,
-        accent: 0x7CD5F1, ok: 0xA2E57B, warn: 0xFFED72, err: 0xFF6D7E, info: 0x7CD5F1, isLight: false,
+        accent: 0x7CD5F1, ok: 0xA2E57B, warn: 0xFFED72, err: 0xFF6D7E, info: 0x7CD5F1,
+        orange: 0xFFB270, purple: 0xBAA0F8, isLight: false,
     ))
 
     /// Monokai Pro (Filter Ristretto) — warm coffee dark filter. bg #2C2525.
     static let monokaiProRistretto = monokai(MonokaiSeed(
         name: "ristretto", background: 0x2C2525, sidebar: 0x211C1C, elevated: 0x403838,
         foreground: 0xFFF1F3, secondary: 0x948A8B, tertiary: 0x72696A,
-        accent: 0x85DACC, ok: 0xADDA78, warn: 0xF9CC6C, err: 0xFD6883, info: 0x85DACC, isLight: false,
+        accent: 0x85DACC, ok: 0xADDA78, warn: 0xF9CC6C, err: 0xFD6883, info: 0x85DACC,
+        orange: 0xF38D70, purple: 0xA8A9EB, isLight: false,
     ))
 
     /// Monokai Pro (Filter Spectrum) — neutral near-black dark filter. bg #222222.
     static let monokaiProSpectrum = monokai(MonokaiSeed(
         name: "spectrum", background: 0x222222, sidebar: 0x191919, elevated: 0x363537,
         foreground: 0xF7F1FF, secondary: 0x8B888F, tertiary: 0x69676C,
-        accent: 0x5AD4E6, ok: 0x7BD88F, warn: 0xFCE566, err: 0xFC618D, info: 0x5AD4E6, isLight: false,
+        accent: 0x5AD4E6, ok: 0x7BD88F, warn: 0xFCE566, err: 0xFC618D, info: 0x5AD4E6,
+        orange: 0xFD9353, purple: 0x948AE3, isLight: false,
     ))
+}
+
+// MARK: - OttyTheme ← ThemeDocument (E15 WI-1: a scanned custom theme → a full chrome theme)
+
+extension OttyTheme {
+    /// Build a full ``OttyTheme`` from a parsed ``ThemeDocument`` (a scanned `.ottytheme`). The chrome roles
+    /// are DERIVED from the document's `background`/`foreground`/`accent` with the SAME structural opacities
+    /// the ``monokai(_:)`` factory uses (so a custom theme has identical chrome geometry — only the hues
+    /// differ), then OVERLAID by any explicit `[ui]`/`[window]`/`[sidebar]`/`[tab]`/`[panel]` hexes the file
+    /// declares. Status colours map from the ANSI palette (red/green/yellow/blue → err/ok/warn/info). The
+    /// terminal-cell hexes are re-emitted from the parsed background/foreground so a `"none"` (transparent)
+    /// background still yields a valid 6-hex pin for the libghostty cells. Built-ins stay FLAT (radius 0); a
+    /// custom `[container] radius` is parsed but applied by a later container-styling pass, not here.
+    init(document doc: ThemeDocument) {
+        let light = doc.mode == .light
+        let bg = Self.rgb24(doc.background) ?? (light ? 0xFFFFFF : 0x000000)
+        let fg = Self.rgb24(doc.foreground) ?? (light ? 0x000000 : 0xFFFFFF)
+
+        // Derived chrome surfaces: sidebar a touch off the backdrop; the elevated surface is white in light
+        // mode and a slight raise in dark mode; secondary/tertiary text interpolate foreground → background.
+        let sidebarHex = Self.rgb24(doc.sidebar) ?? Self.mix(bg, 0x000000, light ? 0.05 : 0.06)
+        let elevatedHex = light ? 0xFFFFFF : Self.mix(bg, 0xFFFFFF, 0.10)
+        let secondaryHex = Self.mix(fg, bg, 0.50)
+        let tertiaryHex = Self.mix(fg, bg, 0.65)
+
+        // Status + accent map off the ANSI palette (idx 1=red, 2=green, 3=yellow, 4=blue); the `[token] accent`
+        // wins when present, else the blue slot, else the foreground.
+        func paletteEntry(_ index: Int) -> UInt32? {
+            guard doc.palette.indices.contains(index) else { return nil }
+            return Self.rgb24(doc.palette[index])
+        }
+        let accentHex = Self.rgb24(doc.accent) ?? paletteEntry(4) ?? fg
+        let errHex = paletteEntry(1) ?? secondaryHex
+        let okHex = paletteEntry(2) ?? secondaryHex
+        let warnHex = paletteEntry(3) ?? secondaryHex
+        let infoHex = paletteEntry(4) ?? accentHex
+
+        let line: Color = light ? .black : .white
+        self.init(
+            window: Self.color(doc.window, fallback: Color(ottyHex: bg)),
+            sidebar: Color(ottyHex: sidebarHex),
+            content: Color(ottyHex: bg),
+            card: Color(ottyHex: bg), // FLAT: pane surface == backdrop
+            selectedCard: Self.color(doc.tab, fallback: Color(ottyHex: elevatedHex)),
+            element: Self.color(doc.panel, fallback: Color(ottyHex: elevatedHex)),
+            textPrimary: Color(ottyHex: fg),
+            textSecondary: Color(ottyHex: secondaryHex),
+            textTertiary: Color(ottyHex: tertiaryHex),
+            icon: Color(ottyHex: secondaryHex),
+            divider: line.opacity(light ? 0.08 : 0.07),
+            cardBorder: line.opacity(light ? 0.08 : 0.07),
+            border: line.opacity(light ? 0.05 : 0.06),
+            borderActive: line.opacity(0.15),
+            hover: line.opacity(light ? 0.045 : 0.05),
+            selected: line.opacity(light ? 0.07 : 0.09),
+            header: Color(ottyHex: tertiaryHex),
+            accent: Color(ottyHex: accentHex),
+            accentMuted: line.opacity(light ? 0.06 : 0.10),
+            panelShadow: Color.black.opacity(light ? 0.12 : 0.40),
+            isLight: light,
+            statusOK: Color(ottyHex: okHex),
+            statusWarn: Color(ottyHex: warnHex),
+            statusErr: Color(ottyHex: errHex),
+            statusInfo: Color(ottyHex: infoHex),
+            id: "custom-\(doc.slug)",
+            terminalBackgroundHex: Self.hex6(bg),
+            terminalForegroundHex: Self.hex6(fg),
+            ansiPalette: doc.palette,
+            selectionBackgroundHex: doc.selectionBackground,
+            cursorHex: doc.cursor,
+            cursorTextHex: doc.cursorText,
+        )
+    }
+
+    /// Parse a 6-hex colour string (tolerating one leading `#`) into a 24-bit RGB literal, or `nil` when it is
+    /// absent / malformed — the caller then substitutes a derived fallback (validate-then-default).
+    private static func rgb24(_ hex: String?) -> UInt32? {
+        guard var s = hex else { return nil }
+        if s.hasPrefix("#") { s = String(s.dropFirst()) }
+        guard s.count == 6, let value = UInt32(s, radix: 16) else { return nil }
+        return value
+    }
+
+    /// A ``Color`` from a (possibly absent / malformed) 6-hex string, falling back to `fallback`.
+    private static func color(_ hex: String?, fallback: Color) -> Color {
+        guard let value = rgb24(hex) else { return fallback }
+        return Color(ottyHex: value)
+    }
+
+    /// Linearly interpolate two 24-bit RGB colours by `t` (0 ⇒ `a`, 1 ⇒ `b`), per channel. The channel math is
+    /// PLAIN `*`/`+` (NEVER fused / `addingProduct` — the package-wide codec/controller convention) and clamps
+    /// with ordered, NaN-faithful `Double.minimum`/`Double.maximum`.
+    private static func mix(_ a: UInt32, _ b: UInt32, _ t: Double) -> UInt32 {
+        let clampedT = Double.minimum(1, Double.maximum(0, t))
+        func lane(_ shift: UInt32) -> UInt32 {
+            let av = Double((a >> shift) & 0xFF)
+            let bv = Double((b >> shift) & 0xFF)
+            let blended = av * (1 - clampedT) + bv * clampedT
+            let clamped = Double.minimum(255, Double.maximum(0, blended.rounded()))
+            return UInt32(clamped) & 0xFF
+        }
+        return (lane(16) << 16) | (lane(8) << 8) | lane(0)
+    }
 }
 
 /// Static token namespace. Colours read the active `theme` (default Monokai Pro Classic); metrics/anim are

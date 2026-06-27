@@ -54,11 +54,23 @@ public enum TerminalConfigBuilder {
     /// generator) reproduces the pre-E8 output BYTE-FOR-BYTE: no control key is emitted, so the wire / golden
     /// corpus is untouched (this epic is wholly client-side). ``PreferencesStore`` always passes a resolved
     /// `controls` so the live surface tracks the fire-time Controls toggles.
+    /// `paletteOverride` (E15 WI-2) — the active theme's 16-entry ANSI palette. When supplied AND valid
+    /// (exactly ``ThemeDocument/paletteCount`` entries, every one a clean 6-hex), the builder emits
+    /// `palette = N=hex` lines (indices 0–15) AFTER `foreground`, so the terminal cells track the theme. A
+    /// `nil` (or malformed — validate-then-drop) value emits NO `palette` line (byte-identical default).
+    /// `selectionBackgroundOverride` (E15 WI-2) — the theme's selection-highlight colour. A valid 6-hex emits
+    /// `selection-background` after the palette; `nil` / malformed ⇒ no line.
+    /// The FONT-PARITY keys (E15 WI-2) are read from `prefs` (``TerminalFontSettings``) and emitted ONLY for
+    /// the non-default value of each setting, so a default-constructed `prefs` stays byte-identical to the
+    /// pre-E15 output. otty's underline-off / SGR blink / and the `srgb-over`/`linear`/`perceptual` blending
+    /// modes are PERSISTED but NOT emitted (no verified libghostty key — deferred-apply; decision #5).
     public static func string(
         for prefs: TerminalPreferences,
         keybinds: [String] = [],
         backgroundOverride: String? = nil,
         foregroundOverride: String? = nil,
+        paletteOverride: [String]? = nil,
+        selectionBackgroundOverride: String? = nil,
         controls: TerminalControlsConfig? = nil,
     ) -> String {
         var lines: [String] = []
@@ -68,6 +80,10 @@ public enum TerminalConfigBuilder {
         lines.append("font-size = \(formatSize(prefs.fontSize))")
         let weight = prefs.fontWeight.trimmingCharacters(in: .whitespaces)
         if !weight.isEmpty { lines.append("font-style = \(weight)") }
+        // E15 WI-2: the font-parity block (fallback / per-face families / ligatures / bold-italic mode /
+        // line-height / blending). Grouped here with the other font keys; every line is gated so a
+        // default-constructed `prefs` emits nothing → byte-identical to the pre-E15 output.
+        appendFontParity(&lines, prefs: prefs)
         let theme = prefs.theme.trimmingCharacters(in: .whitespaces)
         if !theme.isEmpty { lines.append("theme = \(theme)") }
         // Emit explicit background/foreground AFTER `theme` so they override the named theme (which isn't
@@ -77,6 +93,13 @@ public enum TerminalConfigBuilder {
         if !background.isEmpty { lines.append("background = \(background)") }
         let foreground = resolved(foregroundOverride, or: prefs.foreground)
         if !foreground.isEmpty { lines.append("foreground = \(foreground)") }
+        // E15 WI-2: the active theme's ANSI palette + selection colour, AFTER bg/fg (so they layer onto the
+        // surface). Both validate-then-drop — a nil / malformed value emits nothing (byte-identical default).
+        appendPalette(
+            &lines,
+            paletteOverride: paletteOverride,
+            selectionBackgroundOverride: selectionBackgroundOverride,
+        )
 
         lines.append("cursor-style = \(prefs.cursorStyle.rawValue)")
         // `cursor-style-blink` is a libghostty OPTIONAL bool (null = defer to DEC mode 12). otty's tri-state
@@ -99,6 +122,87 @@ public enum TerminalConfigBuilder {
         if let controls { appendControls(&lines, controls: controls, prefs: prefs) }
 
         return lines.joined(separator: "\n")
+    }
+
+    /// Append the E15 FONT-PARITY lines (`font-family-fallback`, the per-face families, `font-feature`,
+    /// `font-style-bold/italic` + `font-synthetic-style`, `adjust-cell-height`, `font-thicken`) read from
+    /// `prefs`. Every line is GATED on the setting being NON-default, so a default-constructed `prefs` adds
+    /// nothing and the build stays byte-identical to the pre-E15 output. Only keys verified to exist are
+    /// emitted; otty's underline-off / SGR blink / `srgb-over`·`linear`·`perceptual` blending are persisted
+    /// but intentionally NOT emitted (deferred-apply — decision #5).
+    private static func appendFontParity(_ lines: inout [String], prefs: TerminalPreferences) {
+        // Fallback families (CJK / icon coverage). Empty (default) ⇒ skip (the "unset honoured" rule).
+        let fallback = prefs.fontFamilyFallback.trimmingCharacters(in: .whitespaces)
+        if !fallback.isEmpty { lines.append("font-family-fallback = \(fallback)") }
+        // Explicit per-face families surface ONLY when "Auto-match weight & style" is OFF (otty shows the
+        // three manual pickers only then); each empty face is skipped.
+        if !prefs.autoMatchWeightStyle {
+            let bold = prefs.fontFamilyBold.trimmingCharacters(in: .whitespaces)
+            if !bold.isEmpty { lines.append("font-family-bold = \(bold)") }
+            let italic = prefs.fontFamilyItalic.trimmingCharacters(in: .whitespaces)
+            if !italic.isEmpty { lines.append("font-family-italic = \(italic)") }
+            let boldItalic = prefs.fontFamilyBoldItalic.trimmingCharacters(in: .whitespaces)
+            if !boldItalic.isEmpty { lines.append("font-family-bold-italic = \(boldItalic)") }
+        }
+        // Ligatures → `font-feature`. `off` (default) emits NOTHING (byte-identical; the font's own default
+        // governs — aislopdesk's default SF Mono has no ligatures). `calt`/`dlig` opt in, and the alphabet
+        // flag extends ligation to alphabetic runs (otty `font-ligatures-alphabet`).
+        switch prefs.fontLigatures {
+        case .off:
+            break
+        case .calt,
+             .dlig:
+            var features = prefs.fontLigatures.baseFeatures
+            if prefs.fontLigaturesAlphabet { features.append("liga") }
+            lines.append("font-feature = \(features.joined(separator: ","))")
+        }
+        // Bold / italic FACE mode. `off` disables the face (`font-style-{kind} = false`); the `primaryOnly` /
+        // `synthetic` modes feed a SINGLE combined `font-synthetic-style` key (avoid a duplicate key). `auto`
+        // (default) contributes nothing.
+        if prefs.fontBold.disablesFace { lines.append("font-style-bold = false") }
+        if prefs.fontItalic.disablesFace { lines.append("font-style-italic = false") }
+        var synthetic = prefs.fontBold.syntheticTokens(kind: "bold")
+        synthetic.append(contentsOf: prefs.fontItalic.syntheticTokens(kind: "italic"))
+        if !synthetic.isEmpty { lines.append("font-synthetic-style = \(synthetic.joined(separator: ","))") }
+        // Line-height → `adjust-cell-height` (percentage of the natural cell height). `.default` emits no
+        // line. `compact`/`loose` are exact integral constants (0 / 20); `custom` uses `(m-1)*100` (PLAIN
+        // subtract-then-multiply, never fused). The percent is clamped NaN-faithfully + integral-formatted.
+        if let percent = prefs.lineHeight.adjustCellHeightPercent {
+            lines.append("adjust-cell-height = \(formatSize(clampCellHeightPercent(percent)))%")
+        }
+        // Blending → only `macos-like` maps (a verified `font-thicken`); the rest persist but are not emitted.
+        if prefs.fontBlending.thickens { lines.append("font-thicken = true") }
+    }
+
+    /// Ordered, NaN-faithful clamp of an `adjust-cell-height` percentage to a sane band (multiplier
+    /// ~0.5…3.0 ⇒ −50 %…200 %). Uses ``Double/maximum(_:_:)`` / ``Double/minimum(_:_:)`` (NOT a bare `<`/`>`
+    /// ternary) so a NaN / ±inf custom multiplier resolves to a finite bound rather than emitting garbage —
+    /// mirrors the `CursorColorHex.channel` clamp discipline (validate, never trap).
+    static func clampCellHeightPercent(_ percent: Double) -> Double {
+        Double.maximum(-50.0, Double.minimum(200.0, percent))
+    }
+
+    /// Append the E15 theme PALETTE lines (`palette = N=hex`, indices 0–15) + `selection-background`. Both
+    /// validate-then-drop: the palette is emitted only when it is exactly ``ThemeDocument/paletteCount``
+    /// clean 6-hex entries, and the selection only when it is a clean 6-hex — a `nil`/malformed value emits
+    /// NOTHING (byte-identical default). Hex matches the existing bare-hex `background`/`foreground` form.
+    private static func appendPalette(
+        _ lines: inout [String],
+        paletteOverride: [String]?,
+        selectionBackgroundOverride: String?,
+    ) {
+        if let paletteOverride,
+           paletteOverride.count == ThemeDocument.paletteCount,
+           paletteOverride.allSatisfy(ThemeDocument.isValidHex)
+        {
+            for (index, hex) in paletteOverride.enumerated() {
+                lines.append("palette = \(index)=\(hex)")
+            }
+        }
+        if let selectionBackgroundOverride {
+            let selection = selectionBackgroundOverride.trimmingCharacters(in: .whitespaces)
+            if ThemeDocument.isValidHex(selection) { lines.append("selection-background = \(selection)") }
+        }
     }
 
     /// Append the E8 *control* passthrough lines (selection / copy / paste / mouse / scroll knobs + the

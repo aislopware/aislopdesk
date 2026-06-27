@@ -68,18 +68,34 @@ public struct AislopdeskClientApp: App {
         // D3: register the runtime-theme hook BEFORE building `PreferencesStore` so its init-time
         // `applyAppearance` repoints `ThemeStore.shared` (and the persisted theme is live from the first
         // frame). `WorkspaceCore` owns the `AppearanceApplier` seam but cannot import this SwiftUI layer, so
-        // the closure lives here — it maps the persisted `ThemeChoice` onto `ThemeStore.shared`, which posts
-        // the cross-`NSHostingController` repaint notification the split controller re-pins on.
-        AppearanceApplier.apply = { choice in
-            ThemeStore.shared.apply(choice)
+        // the closure lives here — E15 WI-3 widened it to take the WHOLE `AppearancePreferences`, so
+        // `ThemeStore` resolves the dual-slot / custom-slug / follow-OS selection and posts the
+        // cross-`NSHostingController` repaint notification the split controller re-pins on.
+        AppearanceApplier.apply = { appearance in
+            ThemeStore.shared.apply(appearance: appearance)
         }
-        // The terminal CELLS adopt the active theme's flat background/foreground (otty flat design): this
-        // hook reads the already-resolved `ThemeStore.active` (so `.system` is concrete) and hands its
-        // libghostty 6-hex colours to `PreferencesStore` when it (re)builds the terminal config.
+        // The terminal CELLS adopt the active theme's flat palette (otty flat design): this hook reads the
+        // already-resolved `ThemeStore.active` (so the dual-slot / `.system` selection is concrete) and hands
+        // its libghostty 6-hex background/foreground PLUS (E15 WI-3) the 16-entry ANSI palette + selection
+        // colour to `PreferencesStore` when it (re)builds the terminal config.
         AppearanceApplier.resolveTerminalColors = {
             let theme = ThemeStore.shared.active
-            return (theme.terminalBackgroundHex, theme.terminalForegroundHex)
+            return ResolvedTerminalTheme(
+                background: theme.terminalBackgroundHex,
+                foreground: theme.terminalForegroundHex,
+                palette: theme.ansiPalette,
+                selectionBackground: theme.selectionBackgroundHex,
+            )
         }
+        // E15 WI-6: build the custom-theme catalog (scan `~/.config/aislopdesk/themes/` — `[]` on iOS) and
+        // wire it as the `ThemeStore` custom-resolution seam BEFORE the first `PreferencesStore` apply below, so
+        // a persisted `.custom` light/dark slot resolves to its scanned `ThemeDocument` on the very first frame
+        // (not the default fallback). A since-deleted / not-yet-scanned slug still falls back gracefully.
+        ThemeCatalog.shared.reloadCustom()
+        ThemeStore.shared.resolveCustomDocument = { slug in ThemeCatalog.shared.customDocument(slug: slug) }
+        // E15 WI-3: start the macOS OS-appearance observer so a dual-slot / `.system` user follows the system
+        // colour scheme LIVE (a no-op on iOS).
+        ThemeStore.shared.observeOSAppearanceChanges()
 
         // Build the GUI Settings store FIRST so its apply paths run before the video pipeline / any
         // `static let` env flag is forced (folds persisted prefs into `EnvConfig.overlay`).

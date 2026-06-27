@@ -108,9 +108,10 @@ final class PreferencesStoreApplyTests: XCTestCase {
 
     func testAppearanceApplyRepointsThemeAndWritesDensityWithoutOverlayOrSidecar() {
         EnvConfig.overlay = [:]
-        // Capture what the GUI-layer ThemeStore hook would receive (the store can't import ClientUI).
-        var appliedTheme: ThemeChoice??
-        AppearanceApplier.apply = { appliedTheme = $0 }
+        // Capture the WHOLE model the GUI-layer ThemeStore hook receives (E15 WI-3 widened the seam from a
+        // bare `ThemeChoice?` to the full `AppearancePreferences`; the store can't import ClientUI).
+        var appliedAppearance: AppearancePreferences?
+        AppearanceApplier.apply = { appliedAppearance = $0 }
 
         let defaults = makeIsolatedDefaults()
         // A temp sidecar URL that must NOT be written by an appearance change.
@@ -119,17 +120,21 @@ final class PreferencesStoreApplyTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: sidecar) }
 
         let store = PreferencesStore(defaults: defaults, sidecarURL: sidecar)
-        // init applies the default (all-nil) appearance once → hook fired with nil.
-        XCTAssertEqual(appliedTheme, .some(.none), "init applies the default appearance (theme nil)")
-        appliedTheme = nil
+        // init applies the default (all-nil) appearance once → hook fired with the default model.
+        XCTAssertEqual(appliedAppearance, AppearancePreferences(), "init applies the default appearance")
+        appliedAppearance = nil
         // init's applyVideoAndAgent already wrote the (default) sidecar; capture its bytes to prove an
         // appearance change does NOT re-touch it.
         let sidecarBefore = try? Data(contentsOf: sidecar)
 
         store.appearance = AppearancePreferences(theme: .dark, density: "compact")
 
-        // 1) Repoints the theme (via the AppearanceApplier hook → ThemeStore.shared in the GUI layer).
-        XCTAssertEqual(appliedTheme, .some(.dark), "appearance apply repoints the theme")
+        // 1) Repoints the theme (via the AppearanceApplier hook → ThemeStore.shared in the GUI layer) — the
+        //    WHOLE model is handed over so the GUI resolves the dual-slot / custom-slug / follow-OS selection.
+        XCTAssertEqual(
+            appliedAppearance, AppearancePreferences(theme: .dark, density: "compact"),
+            "appearance apply hands the GUI layer the whole model",
+        )
         // 2) Persists under settings.appearance.v1.
         let blob = defaults.data(forKey: "settings.appearance.v1")
         XCTAssertNotNil(blob)
@@ -143,6 +148,46 @@ final class PreferencesStoreApplyTests: XCTestCase {
         //    appearance change leaves the sidecar bytes exactly as init left them).
         let sidecarAfter = try? Data(contentsOf: sidecar)
         XCTAssertEqual(sidecarAfter, sidecarBefore, "an appearance change must not rewrite the sidecar")
+    }
+
+    /// E15 WI-3 golden-safety: the NEW dual-slot / custom-slug / follow-OS / per-theme-font appearance fields
+    /// are PURE client chrome — setting them must NOT mutate ``EnvConfig/overlay`` nor rewrite the sidecar (the
+    /// frozen golden corpus would shift otherwise). The whole model still reaches the GUI hook for resolution.
+    func testDualSlotAppearanceFieldsStayOutOfOverlayAndSidecar() {
+        EnvConfig.overlay = [:]
+        var appliedAppearance: AppearancePreferences?
+        AppearanceApplier.apply = { appliedAppearance = $0 }
+
+        let defaults = makeIsolatedDefaults()
+        let sidecar = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aislopdesk-dualslot-sidecar-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: sidecar) }
+
+        let store = PreferencesStore(defaults: defaults, sidecarURL: sidecar)
+        let sidecarBefore = try? Data(contentsOf: sidecar)
+        appliedAppearance = nil
+
+        let dualSlot = AppearancePreferences(
+            theme: .paper,
+            themeDark: .dark,
+            useSeparateDarkTheme: true,
+            customLightSlug: "solarized-light",
+            customDarkSlug: "dracula",
+            themeFonts: ["dracula": "Fira Code"],
+        )
+        store.appearance = dualSlot
+
+        // The whole dual-slot model reaches the GUI hook …
+        XCTAssertEqual(appliedAppearance, dualSlot, "the whole dual-slot model reaches the GUI hook")
+        // … it round-trips through UserDefaults …
+        let blob = defaults.data(forKey: "settings.appearance.v1")
+        XCTAssertEqual(try? JSONDecoder().decode(AppearancePreferences.self, from: blob ?? Data()), dualSlot)
+        // … and NOTHING leaked into the overlay or the sidecar (the golden canary).
+        XCTAssertTrue(EnvConfig.overlay.isEmpty, "dual-slot appearance must not touch EnvConfig.overlay")
+        XCTAssertEqual(
+            try? Data(contentsOf: sidecar), sidecarBefore,
+            "dual-slot appearance must not rewrite the sidecar",
+        )
     }
 
     func testResetAllResetsAppearance() {

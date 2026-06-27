@@ -176,6 +176,11 @@ public final class PreferencesStore {
             for: terminal,
             backgroundOverride: themeColors?.background,
             foregroundOverride: themeColors?.foreground,
+            // E15 WI-3: the active theme's ANSI palette + selection colour reach the terminal cells. Both are
+            // optional and validate-then-drop in the builder, so a `nil` themeColors (headless / no GUI hook)
+            // or a theme with no palette is byte-identical to the pre-E15 build.
+            paletteOverride: themeColors?.palette,
+            selectionBackgroundOverride: themeColors?.selectionBackground,
             controls: Self.controlsConfig(from: controls),
         )
         TerminalConfigBroadcaster.shared.publish(config)
@@ -251,10 +256,11 @@ public final class PreferencesStore {
     ///
     /// GOLDEN-SAFE BY CONSTRUCTION: appearance NEVER touches ``EnvConfig/overlay`` nor the sidecar — it is
     /// pure client chrome. A `nil` density leaves the key untouched (so a default ``AppearancePreferences``
-    /// is a pure no-op, behaviour-preserving). The theme hook is invoked with the (possibly `nil`) choice
-    /// so the GUI can fall back to its compile-time default when appearance is reset.
+    /// is a pure no-op, behaviour-preserving). The theme hook is invoked with the WHOLE model (E15 WI-3 — the
+    /// GUI layer resolves the dual-slot / custom-slug / follow-OS selection) so it can fall back to its
+    /// compile-time default when appearance is reset.
     private func applyAppearance() {
-        AppearanceApplier.apply?(appearance.theme)
+        AppearanceApplier.apply?(appearance)
         // The theme also drives the terminal CELL bg/fg (flat design), so rebuild the terminal config AFTER
         // the theme is repointed — a theme switch then repaints the terminal surface, not just the chrome.
         applyTerminal()

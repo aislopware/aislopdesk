@@ -34,12 +34,36 @@ final class PreferencesTests: XCTestCase {
         XCTAssertEqual(def.cursorTextColor, "")
         XCTAssertEqual(def.cursorOpacity, 1.0)
         XCTAssertEqual(def.cursorAnimation, .off)
+        // E15 WI-2: the font-parity defaults — every one is the value that emits NO new libghostty line, so
+        // a default-constructed prefs stays byte-identical to the pre-E15 builder output.
+        XCTAssertEqual(def.fontFamilyFallback, "")
+        XCTAssertEqual(def.fontFamilyBold, "")
+        XCTAssertEqual(def.fontFamilyItalic, "")
+        XCTAssertEqual(def.fontFamilyBoldItalic, "")
+        XCTAssertTrue(def.autoMatchWeightStyle)
+        XCTAssertEqual(def.fontLigatures, .off)
+        XCTAssertFalse(def.fontLigaturesAlphabet)
+        XCTAssertEqual(def.fontBold, .auto)
+        XCTAssertEqual(def.fontItalic, .auto)
+        XCTAssertTrue(def.fontUnderline)
+        XCTAssertFalse(def.fontBlink)
+        XCTAssertEqual(def.fontBlending, .default)
+        XCTAssertEqual(def.lineHeight, .default)
         let custom = TerminalPreferences(
             fontFamily: "JetBrains Mono", fontSize: 14, fontWeight: "bold", theme: "Light",
             cursorStyle: .bar, cursorBlink: .off, scrollbackLines: 50000,
             cursorColor: "FF8800", cursorTextColor: "101010", cursorOpacity: 0.75, cursorAnimation: .smooth,
+            fontFamilyFallback: "PingFang SC", fontFamilyBold: "IBM Plex Mono Bold",
+            fontFamilyItalic: "IBM Plex Mono Italic", fontFamilyBoldItalic: "IBM Plex Mono Bold Italic",
+            autoMatchWeightStyle: false, fontLigatures: .dlig, fontLigaturesAlphabet: true,
+            fontBold: .synthetic, fontItalic: .primaryOnly, fontUnderline: false, fontBlink: true,
+            fontBlending: .macosLike, lineHeight: .custom(1.5),
         )
         XCTAssertEqual(try roundTrip(custom), custom)
+        // The associated-value `LineHeightMode` round-trips its payload (and the simple cases).
+        for mode in [LineHeightMode.default, .compact, .loose, .custom(0.9), .custom(2.0)] {
+            XCTAssertEqual(try roundTrip(TerminalPreferences(lineHeight: mode)).lineHeight, mode)
+        }
     }
 
     func testAgentPreferencesRoundTrip() throws {

@@ -92,6 +92,46 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
     /// Cursor glide animation (otty `cursor.animation`), default ``CursorAnimation/off``.
     public var cursorAnimation: CursorAnimation
 
+    // E15 (WI-2): otty FONT-PARITY render prefs (Appearance → Font). Like the cursor render fields these are
+    // pure-chrome prefs with real defaults — applied live via `TerminalConfigBuilder` → libghostty — NEVER
+    // env overrides / `video-prefs.json` / golden corpus. Every default value below is the one that emits NO
+    // new libghostty line, so a default-constructed value stays byte-identical to the pre-E15 builder output
+    // (the regression guard). The enums + their token mapping live in ``TerminalFontSettings``.
+    /// Comma-separated fallback font families (libghostty `font-family-fallback`); used when the primary font
+    /// lacks a glyph (CJK, Nerd-Font icons). Empty (the default) ⇒ no line.
+    public var fontFamilyFallback: String
+    /// Explicit bold face family (libghostty `font-family-bold`). Emitted ONLY when ``autoMatchWeightStyle``
+    /// is OFF and non-empty (otty surfaces the four manual face pickers only when auto-match is off).
+    public var fontFamilyBold: String
+    /// Explicit italic face family (libghostty `font-family-italic`). Same gate as ``fontFamilyBold``.
+    public var fontFamilyItalic: String
+    /// Explicit bold-italic face family (libghostty `font-family-bold-italic`). Same gate as ``fontFamilyBold``.
+    public var fontFamilyBoldItalic: String
+    /// otty "Auto-match weight & style" (default ON): pick the real bold/italic/bold-italic faces of the
+    /// chosen family automatically. When OFF, the explicit `fontFamilyBold/Italic/BoldItalic` fields apply.
+    public var autoMatchWeightStyle: Bool
+    /// Ligature mode (otty `font-ligatures`), default ``FontLigatures/off`` (no `font-feature` line).
+    public var fontLigatures: FontLigatures
+    /// Extend ligation to alphabetic sequences (otty `font-ligatures-alphabet`), default `false`. When `true`
+    /// AND ligatures are on, the builder appends `liga` to the `font-feature` list.
+    public var fontLigaturesAlphabet: Bool
+    /// Bold face mode (otty `font-bold`), default ``FontStyleMode/auto`` (no line).
+    public var fontBold: FontStyleMode
+    /// Italic face mode (otty `font-italic`), default ``FontStyleMode/auto`` (no line).
+    public var fontItalic: FontStyleMode
+    /// SGR underline rendering (otty `font-underline`), default `true` (on). PERSISTED + surfaced but NOT
+    /// emitted — there is no verified stock libghostty key (deferred-apply; see ``TerminalFontSettings``).
+    public var fontUnderline: Bool
+    /// SGR 5/6 blink rendering (otty `font-blink`), default `false` (off — an accessibility concern).
+    /// PERSISTED + surfaced but NOT emitted — no verified stock libghostty key (deferred-apply).
+    public var fontBlink: Bool
+    /// Glyph anti-aliasing blend mode (otty `font-blending`), default ``FontBlending/default``. Only
+    /// ``FontBlending/macosLike`` maps (→ `font-thicken = true`); the others persist but are not emitted.
+    public var fontBlending: FontBlending
+    /// Cell-height mode (otty `line-height`), default ``LineHeightMode/default`` (no `adjust-cell-height`
+    /// line — the theme/font decides).
+    public var lineHeight: LineHeightMode
+
     // E12 (Composer): the otty "Composer max height" default lives here as the single source the fire-time
     // `SettingsKey.composerMaxHeight` Defaults key reads for its default. The per-instance max-height / pin
     // MIRROR fields were removed — they had zero readers (the leaf reads the fire-time
@@ -116,6 +156,19 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
         cursorTextColor: String = "",
         cursorOpacity: Double = 1.0,
         cursorAnimation: CursorAnimation = .off,
+        fontFamilyFallback: String = "",
+        fontFamilyBold: String = "",
+        fontFamilyItalic: String = "",
+        fontFamilyBoldItalic: String = "",
+        autoMatchWeightStyle: Bool = true,
+        fontLigatures: FontLigatures = .off,
+        fontLigaturesAlphabet: Bool = false,
+        fontBold: FontStyleMode = .auto,
+        fontItalic: FontStyleMode = .auto,
+        fontUnderline: Bool = true,
+        fontBlink: Bool = false,
+        fontBlending: FontBlending = .default,
+        lineHeight: LineHeightMode = .default,
     ) {
         self.fontFamily = fontFamily
         self.fontSize = fontSize
@@ -130,5 +183,18 @@ public struct TerminalPreferences: Codable, Sendable, Equatable {
         self.cursorTextColor = cursorTextColor
         self.cursorOpacity = cursorOpacity
         self.cursorAnimation = cursorAnimation
+        self.fontFamilyFallback = fontFamilyFallback
+        self.fontFamilyBold = fontFamilyBold
+        self.fontFamilyItalic = fontFamilyItalic
+        self.fontFamilyBoldItalic = fontFamilyBoldItalic
+        self.autoMatchWeightStyle = autoMatchWeightStyle
+        self.fontLigatures = fontLigatures
+        self.fontLigaturesAlphabet = fontLigaturesAlphabet
+        self.fontBold = fontBold
+        self.fontItalic = fontItalic
+        self.fontUnderline = fontUnderline
+        self.fontBlink = fontBlink
+        self.fontBlending = fontBlending
+        self.lineHeight = lineHeight
     }
 }

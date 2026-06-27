@@ -70,5 +70,125 @@ final class ThemeStoreTests: XCTestCase {
         store.apply(.monokaiProClassicLight) // dark → light → one more post
         XCTAssertEqual(posts, 2)
     }
+
+    // MARK: E15 WI-3 — dual-slot follow-OS + custom resolution + cross-module id round-trip
+
+    /// With "Use separated theme for dark mode" ON, the OS appearance SELECTS the slot (light → primary
+    /// `theme`, dark → `themeDark`) and an OS flip re-resolves LIVE. The `osIsDark` probe is stubbed (no NSApp).
+    func testDualSlotFollowsOSAppearanceLive() {
+        let store = ThemeStore()
+        var dark = false
+        store.osIsDark = { dark }
+        store.apply(appearance: AppearancePreferences(
+            theme: .paper, themeDark: .dark, useSeparateDarkTheme: true,
+        ))
+        XCTAssertEqual(store.active.id, "paper", "OS light → the primary/light slot")
+        dark = true
+        store.reresolveForOSAppearance()
+        XCTAssertEqual(store.active.id, "dark", "OS dark → the dark slot, live")
+        dark = false
+        store.reresolveForOSAppearance()
+        XCTAssertEqual(store.active.id, "paper", "flip back to light, live")
+    }
+
+    /// An OS flip posts the cross-boundary repaint EXACTLY when the resolved theme actually changes (a
+    /// follow-OS user), and a re-resolve with no OS change posts nothing.
+    func testReresolvePostsOnOSFlipForSeparateDark() {
+        let store = ThemeStore()
+        var dark = false
+        store.osIsDark = { dark }
+        store.apply(appearance: AppearancePreferences(
+            theme: .paper, themeDark: .dark, useSeparateDarkTheme: true,
+        ))
+        var posts = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: ThemeStore.didChangeNotification, object: store, queue: nil,
+        ) { _ in posts += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        dark = true
+        store.reresolveForOSAppearance()
+        XCTAssertEqual(posts, 1, "an OS flip to dark posts the cross-boundary repaint")
+        store.reresolveForOSAppearance() // OS still dark → idempotent
+        XCTAssertEqual(posts, 1, "re-resolving with no OS change posts nothing")
+    }
+
+    /// A NON-follow-OS user (separate-dark OFF, a concrete theme) does not change — nor post — on an OS flip.
+    /// Revert-to-confirm: a resolver that ignored `useSeparateDarkTheme` and always followed the OS would fail.
+    func testNonFollowOSThemeDoesNotChangeOnOSFlip() {
+        let store = ThemeStore()
+        var dark = false
+        store.osIsDark = { dark }
+        store.apply(appearance: AppearancePreferences(theme: .monokaiProClassic))
+        var posts = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: ThemeStore.didChangeNotification, object: store, queue: nil,
+        ) { _ in posts += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        dark = true
+        store.reresolveForOSAppearance()
+        XCTAssertEqual(posts, 0, "a fixed (non-follow-OS) theme doesn't change on an OS flip")
+        XCTAssertEqual(store.active.id, "monokai-classic")
+    }
+
+    /// The legacy `.system` single choice follows the OS through `apply(appearance:)` + the live re-resolve.
+    func testSystemChoiceFollowsOSThroughApplyAppearance() {
+        let store = ThemeStore()
+        store.osIsDark = { true }
+        store.apply(appearance: AppearancePreferences(theme: .system))
+        XCTAssertEqual(store.active.id, "monokai-classic", "OS dark → Monokai Pro Classic")
+        store.osIsDark = { false }
+        store.reresolveForOSAppearance()
+        XCTAssertEqual(store.active.id, "monokai-classic-light", "OS light → Monokai Pro Classic Light, live")
+    }
+
+    /// A `.custom` slot with NO catalog resolver (pre-WI-6 / a since-deleted slug) falls back GRACEFULLY to the
+    /// built-in default — never a crash.
+    func testCustomSlotFallsBackWhenNoResolver() {
+        let store = ThemeStore()
+        store.osIsDark = { false }
+        store.apply(appearance: AppearancePreferences(theme: .paper, customLightSlug: "ghost"))
+        XCTAssertEqual(
+            store.active.id, "monokai-classic",
+            "a custom slot with no resolver falls back to the default theme",
+        )
+    }
+
+    /// A `.custom` slot resolves through the injected `resolveCustomDocument` seam → an `OttyTheme(document:)`
+    /// (the seam WI-6's `ThemeCatalog` fills). The terminal palette tracks the document.
+    func testCustomSlotResolvesViaSeam() {
+        let store = ThemeStore()
+        store.osIsDark = { false }
+        let palette = Array(repeating: "112233", count: 16)
+        let doc = ThemeDocument(
+            displayName: "Dracula", slug: "dracula", mode: .dark,
+            foreground: "F8F8F2", background: "282A36", palette: palette,
+        )
+        store.resolveCustomDocument = { slug in slug == "dracula" ? doc : nil }
+        store.apply(appearance: AppearancePreferences(theme: .paper, customLightSlug: "dracula"))
+        XCTAssertEqual(store.active.id, "custom-dracula")
+        XCTAssertEqual(store.active.terminalBackgroundHex, "282A36", "the custom doc drives the terminal cells")
+    }
+
+    /// CROSS-MODULE PIN: every concrete ``ThemeChoice``'s `builtinID` (in the leaf) round-trips to a built-in
+    /// ``OttyTheme`` whose `id` matches (in ClientUI). Catches a drift between the leaf's id strings
+    /// (``ThemeResolution`` / ``ThemeChoice/builtinID``) and the SwiftUI `OttyTheme.id` halves.
+    func testBuiltinIDRoundTripsToOttyThemeID() {
+        for choice in ThemeChoice.allCases where choice != .system {
+            guard let id = choice.builtinID else {
+                XCTFail("\(choice) must expose a builtinID")
+                continue
+            }
+            let theme = ThemeStore.builtin(id: id)
+            XCTAssertNotNil(theme, "\(choice) id \(id) must resolve to a built-in OttyTheme")
+            XCTAssertEqual(theme?.id, id, "round-trip: ThemeChoice.builtinID ⇄ OttyTheme.id")
+        }
+        // The leaf's default ids match the shipped Classic / Classic-Light themes.
+        XCTAssertEqual(ThemeStore.builtin(id: ThemeResolution.defaultDarkID)?.id, OttyTheme.monokaiProClassic.id)
+        XCTAssertEqual(
+            ThemeStore.builtin(id: ThemeResolution.defaultLightID)?.id, OttyTheme.monokaiProClassicLight.id,
+        )
+    }
 }
 #endif

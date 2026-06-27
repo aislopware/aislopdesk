@@ -856,19 +856,14 @@ private struct AppearanceSettingsTab: View {
                 timingFooter(.live)
             }
 
+            // THEME (E15 WI-6): the picker lists every built-in PLUS the scanned custom `.ottytheme`s
+            // (`ThemeCatalog.shared.customThemes`); picking a built-in writes `theme`/`themeDark` (clearing the
+            // slot's custom slug), picking a custom writes `customLightSlug`/`customDarkSlug` so the slot points
+            // at the scanned document. With "Use separated theme for dark mode" ON the OS appearance selects the
+            // slot, so a Dark Theme picker appears below the toggle (`dark-mode-theme.png`).
             Section("Theme") {
-                Picker("Theme", selection: themeBinding) {
-                    Text("System").tag(ThemeChoice.system)
-                    Divider()
-                    Text("Monokai Pro (Classic)").tag(ThemeChoice.monokaiProClassic)
-                    Text("Monokai Pro Light").tag(ThemeChoice.monokaiProClassicLight)
-                    Text("Monokai Pro Octagon").tag(ThemeChoice.monokaiProOctagon)
-                    Text("Monokai Pro Machine").tag(ThemeChoice.monokaiProMachine)
-                    Text("Monokai Pro Ristretto").tag(ThemeChoice.monokaiProRistretto)
-                    Text("Monokai Pro Spectrum").tag(ThemeChoice.monokaiProSpectrum)
-                    Divider()
-                    Text("Paper (Light)").tag(ThemeChoice.paper)
-                    Text("Dark").tag(ThemeChoice.dark)
+                Picker("Theme", selection: themeSelectionBinding(forDarkSlot: false)) {
+                    themeOptions
                 }
                 LabeledContent("Density") {
                     Picker("Density", selection: densityBinding) {
@@ -880,13 +875,40 @@ private struct AppearanceSettingsTab: View {
                 }
             }
 
-            Section("Font") {
-                TextField("Family", text: $store.terminal.fontFamily)
-                Stepper(
-                    "Size: \(Int(store.terminal.fontSize))",
-                    value: $store.terminal.fontSize, in: 8...32, step: 1,
-                )
+            // THEME EDITOR (E15 WI-7): otty's swatch grid (fg/bg + 16 ANSI dots) + chrome-region groups (Tabbar
+            // OMITTED — vertical-tabs-only) + Duplicate / Edit Selected Theme / Open Themes Folder + the Import
+            // Theme… dropdown, bound to the active `ThemeStore` theme. macOS hosts the editable ColorPickers +
+            // filesystem actions; iOS shows the read-only swatch display (see `ThemeEditorView`).
+            ThemeEditorView(store: store)
+
+            Section {
+                Toggle(isOn: separateDarkBinding) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Use separated theme for dark mode")
+                        Text(
+                            "Follow the system color scheme: theme above is used in light mode, "
+                                + "the dark theme below in dark mode.",
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
             }
+
+            if store.appearance.useSeparateDarkTheme ?? false {
+                Section("Dark Theme") {
+                    Picker("Dark Theme", selection: themeSelectionBinding(forDarkSlot: true)) {
+                        themeOptions
+                    }
+                }
+            }
+
+            // FONT (E15 WI-8): otty's Font-Family scope tabs (Computed / Global / Light Theme / Dark Theme /
+            // Fallback) + the "Aa" specimen combobox + Auto-match + per-face families + size + line-height +
+            // ligatures + the bold/italic/underline/blink/blending controls (with deferred-apply notes), bound
+            // to `store.terminal` and `store.appearance.themeFonts`. Replaces the old family-TextField +
+            // size-Stepper Section (`font-setting.png` / `font-setting-bold.png`). See `FontSettingsView`.
+            FontSettingsView(store: store)
 
             // otty homes the FULL Cursor group (live preview + color / text-under / opacity / style / blink /
             // animation) under Appearance (`cursor-style.png`). macOS hosts the rich `CursorPreviewView` (its
@@ -919,12 +941,74 @@ private struct AppearanceSettingsTab: View {
         .formStyle(.grouped)
     }
 
-    /// Bridge the picker (non-optional `ThemeChoice`) to the optional model field: unset (`nil`) reads as
-    /// `.system`-equivalent default but writing always sets an explicit choice (so the user's pick persists).
-    private var themeBinding: Binding<ThemeChoice> {
+    /// The shared picker options — the fixed built-in list THEN the scanned custom themes (each tagged with a
+    /// ``ThemeSelection`` so the SAME body serves both the light/primary slot and the dark slot). Reading
+    /// `ThemeCatalog.shared.customThemes` here registers the `@Observable` dependency, so the picker re-renders
+    /// live when a freshly imported theme is scanned in.
+    @ViewBuilder private var themeOptions: some View {
+        Text("System").tag(ThemeSelection.builtin(.system))
+        Divider()
+        Text("Monokai Pro (Classic)").tag(ThemeSelection.builtin(.monokaiProClassic))
+        Text("Monokai Pro Light").tag(ThemeSelection.builtin(.monokaiProClassicLight))
+        Text("Monokai Pro Octagon").tag(ThemeSelection.builtin(.monokaiProOctagon))
+        Text("Monokai Pro Machine").tag(ThemeSelection.builtin(.monokaiProMachine))
+        Text("Monokai Pro Ristretto").tag(ThemeSelection.builtin(.monokaiProRistretto))
+        Text("Monokai Pro Spectrum").tag(ThemeSelection.builtin(.monokaiProSpectrum))
+        Divider()
+        Text("Paper (Light)").tag(ThemeSelection.builtin(.paper))
+        Text("Dark").tag(ThemeSelection.builtin(.dark))
+        let customThemes = ThemeCatalog.shared.customThemes
+        if !customThemes.isEmpty {
+            Divider()
+            ForEach(customThemes, id: \.slug) { document in
+                Text(document.displayName).tag(ThemeSelection.custom(slug: document.slug))
+            }
+        }
+    }
+
+    /// Bridge the unified picker selection to one theme SLOT's pair of model fields (`theme`/`customLightSlug`
+    /// for the light/primary slot, `themeDark`/`customDarkSlug` for the dark slot). A non-empty custom slug
+    /// reads as `.custom`; otherwise the slot's built-in ``ThemeChoice`` (unset light ⇒ `.system`, unset dark
+    /// ⇒ Monokai Pro Classic). Picking a built-in CLEARS the slot's custom slug (so it reverts to the built-in);
+    /// picking a custom sets the slug. Writing always sets an explicit choice so the user's pick persists.
+    private func themeSelectionBinding(forDarkSlot dark: Bool) -> Binding<ThemeSelection> {
         Binding(
-            get: { store.appearance.theme ?? .system },
-            set: { store.appearance.theme = $0 },
+            get: {
+                let slug = dark ? store.appearance.customDarkSlug : store.appearance.customLightSlug
+                if let slug, !slug.isEmpty { return .custom(slug: slug) }
+                let choice = dark ? store.appearance.themeDark : store.appearance.theme
+                return .builtin(choice ?? (dark ? .monokaiProClassic : .system))
+            },
+            set: { selection in
+                // Mutate a local copy and assign ONCE so the store's `appearance` didSet (which re-applies the
+                // theme) fires a single time for the paired (choice, slug) write.
+                var appearance = store.appearance
+                switch selection {
+                case let .builtin(choice):
+                    if dark {
+                        appearance.themeDark = choice
+                        appearance.customDarkSlug = nil
+                    } else {
+                        appearance.theme = choice
+                        appearance.customLightSlug = nil
+                    }
+                case let .custom(slug):
+                    if dark {
+                        appearance.customDarkSlug = slug
+                    } else {
+                        appearance.customLightSlug = slug
+                    }
+                }
+                store.appearance = appearance
+            },
+        )
+    }
+
+    /// The "Use separated theme for dark mode" toggle (`useSeparateDarkTheme`): `nil` reads as OFF.
+    private var separateDarkBinding: Binding<Bool> {
+        Binding(
+            get: { store.appearance.useSeparateDarkTheme ?? false },
+            set: { store.appearance.useSeparateDarkTheme = $0 },
         )
     }
 
@@ -934,6 +1018,14 @@ private struct AppearanceSettingsTab: View {
             set: { store.appearance.density = $0 },
         )
     }
+}
+
+/// A Theme-picker selection — a built-in ``ThemeChoice`` or a scanned custom theme (by slug). Bridges the
+/// dropdown's single selection to a slot's `theme`/`customLightSlug` (resp. `themeDark`/`customDarkSlug`)
+/// model pair: a built-in pick clears the slot's custom slug, a custom pick sets it.
+private enum ThemeSelection: Hashable {
+    case builtin(ThemeChoice)
+    case custom(slug: String)
 }
 
 // MARK: - Agents section
