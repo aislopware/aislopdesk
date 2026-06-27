@@ -63,5 +63,96 @@ final class ComposerPasteHandlerTests: XCTestCase {
         XCTAssertFalse(ComposerPasteHandler.paste(rich: true, at: nil, into: composer), "nothing to paste → false")
         XCTAssertEqual(composer.draft, "keep", "an empty paste leaves the draft untouched")
     }
+
+    /// RICH-ONLY clipboard (HTML present, NO plain `.string` flavour — some apps copy rich-only): `⌘V` still
+    /// reads the HTML and runs the HTML→Markdown conversion rather than falling through to an empty paste.
+    func testRichOnlyPasteboardConvertsWhenNoPlainString() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString("<b>bold</b>", forType: .html)
+        XCTAssertNil(pb.string(forType: .string), "precondition: the clipboard carries NO plain-string flavour")
+
+        let composer = ComposerModel()
+        composer.draft = ""
+
+        XCTAssertTrue(ComposerPasteHandler.paste(rich: true, at: nil, into: composer), "rich-only paste runs")
+        XCTAssertEqual(composer.draft, "**bold**", "⌘V converts the rich-only HTML even without a plain string")
+    }
+
+    /// The hosted field advertises the rich/image flavours in `readablePasteboardTypes` so AppKit ENABLES
+    /// Edit ▸ Paste (and routes `⌘V` into `paste(_:)`) for a rich-only clipboard. Without the override a
+    /// plain-text field (`isRichText == false`) would advertise only `.string`, leaving Paste disabled.
+    func testReadablePasteboardTypesAdvertiseRichFlavours() {
+        let (textView, _) = makeTextView(draft: "")
+        XCTAssertTrue(textView.readablePasteboardTypes.contains(.html), "HTML is advertised as readable")
+        XCTAssertTrue(textView.readablePasteboardTypes.contains(.rtf), "RTF is advertised as readable")
+    }
+
+    /// A converted `⌘V` paste is applied through the text view's edit path (`shouldChangeText`/`didChangeText`)
+    /// so it registers with the undo manager and `⌘Z` undoes it as ONE edit. Revert-to-confirm-fail: apply the
+    /// paste by setting `string` directly (bypassing `shouldChangeText`) and `canUndo` goes false.
+    func testConvertedPasteIsUndoableAsOneEdit() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString("<b>bold</b>", forType: .html)
+
+        let (textView, coordinator) = makeTextView(draft: "")
+        XCTAssertTrue(textView.insertConvertedPaste(rich: true), "the paste runs")
+        XCTAssertEqual(textView.string, "**bold**", "the converted Markdown lands in the field")
+        XCTAssertTrue(coordinator.textUndoManager.canUndo, "the converted paste registered an undo step")
+
+        coordinator.textUndoManager.undo()
+        XCTAssertEqual(textView.string, "", "⌘Z undoes the converted paste as one edit")
+    }
+
+    /// PLACEHOLDER repaint decision: a placeholder change (e.g. `⌘⇧M` flipping queue-mode while the field is
+    /// open and empty) needs a redraw ONLY while empty and only when it actually changed (kept cheap — no
+    /// per-keystroke redraw).
+    func testPlaceholderRedrawOnlyWhenChangedAndEmpty() {
+        XCTAssertTrue(
+            ComposerTextView.placeholderNeedsRedraw(old: "Message…", new: "Add to Prompt Queue…", isEmpty: true),
+            "queue-mode flip while empty → repaint the new placeholder",
+        )
+        XCTAssertFalse(
+            ComposerTextView.placeholderNeedsRedraw(old: "Message…", new: "Add to Prompt Queue…", isEmpty: false),
+            "a non-empty field draws no placeholder → no repaint",
+        )
+        XCTAssertFalse(
+            ComposerTextView.placeholderNeedsRedraw(old: "Message…", new: "Message…", isEmpty: true),
+            "unchanged placeholder → no repaint",
+        )
+    }
+
+    /// Builds a hosted ``ComposerTextView`` + its ``ComposerTextEditor/Coordinator`` (the undo-manager vendor)
+    /// WITHOUT a window — the hang-safety rule forbids an `NSWindow`, not a bare `NSTextView`.
+    private func makeTextView(draft: String) -> (ComposerTextView, ComposerTextEditor.Coordinator) {
+        let composer = ComposerModel()
+        composer.draft = draft
+        let editor = ComposerTextEditor(
+            text: draft,
+            composer: composer,
+            chrome: ComposerLeafChrome(),
+            placeholder: "",
+            minLines: 1,
+            maxLines: 12,
+            onSend: {},
+            onEnqueue: {},
+            onCancel: {},
+        )
+        let coordinator = editor.makeCoordinator()
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: 200, height: CGFloat.greatestFiniteMagnitude))
+        layout.addTextContainer(container)
+        let textView = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 40), textContainer: container)
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.coordinator = coordinator
+        textView.delegate = coordinator
+        textView.string = draft
+        coordinator.textView = textView
+        return (textView, coordinator)
+    }
 }
 #endif

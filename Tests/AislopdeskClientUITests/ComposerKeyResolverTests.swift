@@ -55,5 +55,20 @@ final class ComposerKeyResolverTests: XCTestCase {
             .send,
         )
     }
+
+    /// `⎋` is the Composer's cancel-keep-draft ONLY when no IME composition is in flight. While the text view
+    /// `hasMarkedText()` (Telex / Pinyin / Kotoeri mid-composition), `⎋` belongs to the input context — it
+    /// drops the marked text — so it must NOT be treated as composer-cancel. Revert-to-confirm-fail: drop the
+    /// `!` in `escapeCancels` and the marked-text arm flips.
+    func testEscapeCancelsOnlyWithoutMarkedText() {
+        XCTAssertTrue(
+            ComposerKeyResolver.escapeCancels(hasMarkedText: false),
+            "no IME composition → ⎋ cancels the Composer (keeps the draft)",
+        )
+        XCTAssertFalse(
+            ComposerKeyResolver.escapeCancels(hasMarkedText: true),
+            "IME composing → ⎋ drops the marked text, it does NOT cancel the Composer",
+        )
+    }
 }
 #endif

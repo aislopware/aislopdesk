@@ -58,6 +58,12 @@ enum ComposerKeyResolver {
         if queueMode { return .enqueue } // bare ↩ in the queue-input bar adds a line
         return .newline // bare ↩ / ⇧↩ in the Composer — newline, never a send
     }
+
+    /// Whether a `⎋` press should be treated as the Composer's cancel-keep-draft action. It must NOT cancel
+    /// while an IME composition is in flight (`hasMarkedText()`): there, `⎋` belongs to the input context so
+    /// it drops the marked text (Telex / Pinyin / Kotoeri) instead of tearing down the whole Composer. Pure so
+    /// the decision is testable without a live text view / input context.
+    static func escapeCancels(hasMarkedText: Bool) -> Bool { !hasMarkedText }
 }
 
 // MARK: - Per-leaf chrome (the wired-callback target)
@@ -164,11 +170,22 @@ enum ComposerPasteboard {
 /// right-click "Paste and continue in Composer" seam uses. Returns `false` when the pasteboard had nothing
 /// to insert, so the hosted text view can fall back to the system paste.
 enum ComposerPasteHandler {
+    /// Reads + converts the pasteboard WITHOUT mutating the model — the richest flavour to Markdown for `⌘V`
+    /// (HTML/RTF/image, even when NO plain `.string` flavour is present — some apps copy rich-only), the plain
+    /// string verbatim for `⇧⌘V`. `nil` when there is nothing convertible. The hosted text views use this so
+    /// they can apply the insert through their own undo-aware path (`shouldChangeText`/`replace`); the
+    /// no-responder context-menu seam uses ``paste(rich:at:into:)`` below.
+    @MainActor
+    static func convertedText(rich: Bool) -> String? {
+        let text = rich ? ComposerPasteboard.richMarkdown() : ComposerPasteboard.plainText()
+        guard let text, !text.isEmpty else { return nil }
+        return text
+    }
+
     @MainActor
     @discardableResult
     static func paste(rich: Bool, at range: NSRange?, into composer: ComposerModel) -> Bool {
-        let text = rich ? ComposerPasteboard.richMarkdown() : ComposerPasteboard.plainText()
-        guard let text, !text.isEmpty else { return false }
+        guard let text = convertedText(rich: rich) else { return false }
         composer.insert(text, at: range)
         return true
     }

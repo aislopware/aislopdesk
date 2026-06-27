@@ -71,6 +71,10 @@ extension ComposerTextEditor {
         weak var textView: ComposerTextView?
         /// Last `focusToken` we acted on, so a re-open (token bump) re-grabs focus exactly once.
         var lastFocusToken = Int.min
+        /// Undo manager vended to the hosted text view via the delegate, so an in-field edit (incl. a
+        /// converted `⌘V` paste) is undoable with `⌘Z` even before the view is in a window (the default
+        /// responder-chain `undoManager` is `nil` until the view joins a window).
+        let textUndoManager = UndoManager()
 
         init(_ parent: ComposerTextEditor) { self.parent = parent }
 
@@ -90,13 +94,6 @@ extension ComposerTextEditor {
                 return true
             case .newline: return false
             }
-        }
-
-        /// `⌘V` (rich) / `⇧⌘V` (plain): read the pasteboard, convert, and splice at `range` via the model.
-        /// Returns `false` when there was nothing to paste so the caller can fall back to the system paste.
-        @discardableResult
-        func handlePaste(rich: Bool, range: NSRange) -> Bool {
-            ComposerPasteHandler.paste(rich: rich, at: range, into: parent.composer)
         }
     }
 }
@@ -198,15 +195,56 @@ extension ComposerTextEditor: NSViewRepresentable {
 /// coordinator. A placeholder is drawn when empty (NSTextView has no native one).
 final class ComposerTextView: NSTextView {
     weak var coordinator: ComposerTextEditor.Coordinator?
-    var placeholderString = ""
+    /// The empty-state placeholder. Repaints the field when it CHANGES while empty (e.g. `⌘⇧M` flips
+    /// queue-mode's "Add to Prompt Queue…" ↔ "Message…" while the open Composer is empty) — `draw(_:)` only
+    /// runs on a redraw, so without this the new placeholder string would not appear until the next event.
+    var placeholderString = "" {
+        didSet {
+            if Self.placeholderNeedsRedraw(old: oldValue, new: placeholderString, isEmpty: string.isEmpty) {
+                needsDisplay = true
+            }
+        }
+    }
+
+    /// PURE: a placeholder change only needs a repaint while the field is empty (the placeholder is drawn
+    /// only then) and the string actually changed — keeps it cheap (no per-keystroke redraw). Testable
+    /// without a view.
+    static func placeholderNeedsRedraw(old: String, new: String, isEmpty: Bool) -> Bool {
+        isEmpty && old != new
+    }
+
+    /// Advertise the rich/image flavours we convert so AppKit ENABLES Edit ▸ Paste (and routes `⌘V` into
+    /// `paste(_:)`) even for a rich-only clipboard. A plain-text field (`isRichText == false`) would otherwise
+    /// advertise only `.string`, so a pasteboard carrying HTML/RTF/image but NO `.string` would leave Paste
+    /// disabled and our HTML/RTF→Markdown override would never run.
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        var types = super.readablePasteboardTypes
+        for extra in [NSPasteboard.PasteboardType.html, .rtf, .png, .tiff] where !types.contains(extra) {
+            types.append(extra)
+        }
+        return types
+    }
+
+    /// Convert the pasteboard and splice it at the selection THROUGH the text view's edit path
+    /// (`shouldChangeText`/`textStorage`/`didChangeText`) so the paste registers with the undo manager and
+    /// `⌘Z` undoes it as one edit. Returns `false` when there is nothing convertible (caller falls back to the
+    /// system paste).
+    @discardableResult
+    func insertConvertedPaste(rich: Bool) -> Bool {
+        guard let markdown = ComposerPasteHandler.convertedText(rich: rich), !markdown.isEmpty else { return false }
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: markdown) else { return false }
+        textStorage?.replaceCharacters(in: range, with: markdown)
+        didChangeText() // fires textDidChange → mirrors the new draft into the model
+        setSelectedRange(NSRange(location: range.location + markdown.utf16.count, length: 0))
+        return true
+    }
 
     override func paste(_ sender: Any?) {
-        // ⌘V / Edit ▸ Paste → rich HTML/RTF→Markdown convert + caret splice; fall back to the system paste
-        // when there is nothing convertible on the pasteboard.
-        guard let coordinator, coordinator.handlePaste(rich: true, range: selectedRange()) else {
-            super.paste(sender)
-            return
-        }
+        // ⌘V / Edit ▸ Paste → rich HTML/RTF→Markdown convert + undoable caret splice; fall back to the system
+        // paste when there is nothing convertible on the pasteboard.
+        if insertConvertedPaste(rich: true) { return }
+        super.paste(sender)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -217,17 +255,22 @@ final class ComposerTextView: NSTextView {
         let flags = event.modifierFlags
         // ⇧⌘V — plain paste (no menu shortcut owns it, so it lands here, not in paste(_:)).
         if flags.contains(.command), flags.contains(.shift), event.charactersIgnoringModifiers?.lowercased() == "v" {
-            if coordinator.handlePaste(rich: false, range: selectedRange()) { return }
+            if insertConvertedPaste(rich: false) { return }
         }
         // Return / keypad-Enter — bare ↩/⇧↩ fall through to the editor (newline); ⌘↩ / ⌥⌘↩ / queue-mode-↩
         // are handled (the decision is the PURE resolver).
         if event.keyCode == 36 || event.keyCode == 76 {
             if coordinator.handleReturn(command: flags.contains(.command), option: flags.contains(.option)) { return }
         }
-        // ⎋ — cancel (keeps the draft).
+        // ⎋ — cancel (keeps the draft), UNLESS an IME composition is active: then ⎋ belongs to the input
+        // context, which drops the marked text (Telex / Pinyin / Kotoeri) rather than tearing down the
+        // Composer. The decision is the PURE resolver.
         if event.keyCode == 53 {
-            coordinator.parent.onCancel()
-            return
+            if ComposerKeyResolver.escapeCancels(hasMarkedText: hasMarkedText()) {
+                coordinator.parent.onCancel()
+                return
+            }
+            if inputContext?.handleEvent(event) == true { return }
         }
         super.keyDown(with: event)
     }
@@ -248,6 +291,10 @@ final class ComposerTextView: NSTextView {
 }
 
 extension ComposerTextEditor.Coordinator: NSTextViewDelegate {
+    /// Vend our own undo manager so in-field edits (and the converted `⌘V` paste, applied via
+    /// `shouldChangeText`/`didChangeText`) are undoable with `⌘Z` regardless of window membership.
+    func undoManager(for _: NSTextView) -> UndoManager? { textUndoManager }
+
     func textDidChange(_ notification: Notification) {
         guard let textView = notification.object as? ComposerTextView else { return }
         // Mirror the user edit into the model (the source of truth). Programmatic `setString` does NOT fire
@@ -346,19 +393,33 @@ final class ComposerTextView: UITextView {
 
     func refreshPlaceholder() { placeholderLabel?.isHidden = !text.isEmpty }
 
-    override func paste(_ sender: Any?) {
-        guard let coordinator, coordinator.handlePaste(rich: true, range: selectedRange) else {
-            super.paste(sender)
-            return
+    /// Convert the pasteboard and splice it at the selection through the UIKit text-input path
+    /// (`replace(_:withText:)` / `insertText`) so the paste registers with the text view's undo manager and
+    /// `⌘Z` undoes it. Returns `false` when there is nothing convertible (caller falls back to system paste).
+    @discardableResult
+    func insertConvertedPaste(rich: Bool) -> Bool {
+        guard let markdown = ComposerPasteHandler.convertedText(rich: rich), !markdown.isEmpty else { return false }
+        if let range = selectedTextRange {
+            replace(range, withText: markdown) // undo-coalesced edit → textViewDidChange mirrors the model
+        } else {
+            insertText(markdown)
         }
+        return true
+    }
+
+    override func paste(_ sender: Any?) {
+        if insertConvertedPaste(rich: true) { return }
+        super.paste(sender)
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         // Keep the system Paste enabled whenever the pasteboard holds something convertible, so the
-        // edit-menu Paste and the hardware ⌘V both route into our paste(_:) override.
+        // edit-menu Paste and the hardware ⌘V both route into our paste(_:) override — INCLUDING a rich-only
+        // clipboard (HTML/RTF with no plain string), which our override converts to Markdown.
         if action == #selector(paste(_:)) {
             let pb = UIPasteboard.general
             return pb.hasStrings || pb.hasImages || pb.hasURLs
+                || pb.contains(pasteboardTypes: ["public.html", "public.rtf"])
         }
         return super.canPerformAction(action, withSender: sender)
     }
@@ -380,7 +441,7 @@ final class ComposerTextView: UITextView {
     private func composerCancel() { coordinator?.parent.onCancel() }
     @objc
     private func composerPastePlain() {
-        coordinator?.handlePaste(rich: false, range: selectedRange)
+        insertConvertedPaste(rich: false)
     }
 }
 
